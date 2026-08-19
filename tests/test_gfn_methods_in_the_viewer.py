@@ -1411,7 +1411,11 @@ def test_the_page_stops_the_picture_without_asking_the_kernel(editor):
     assert 'classList.contains("mod-active")' in watcher
     # and it is checked before anything is drawn, every frame
     body = watcher.split("function frame(now)")[1]
-    assert body.index("switchIsOn()") < body.index("read(now);")
+    # The order is between the *drop-the-queue* test and the read that
+    # follows it, and a drag now reads before either -- the widget is one
+    # slot, so a write nobody reads is a write the next one erases.
+    tail = body.rsplit("read(now);", 1)[0]
+    assert "switchIsOn()" in tail, "the drop-the-queue test comes before the read"
 
 
 # ---------------------------------------------------------------------------
@@ -2730,7 +2734,11 @@ def test_a_run_that_ends_lands_the_picture_on_its_last_frame(player_js):
     """
     assert "show(play.last,play.queue[play.queue.length-1],1);" in player_js
     landing = player_js.split("if(run!==play.run){")[1].split("play.run=run;")[0]
-    assert "if(play.queue.length){" in landing, (
+    # Unless the run was abandoned -- then its queue is exactly what must not
+    # be drawn, because the kernel threw those frames away when the user
+    # changed the structure under them, and landing on the newest of them put
+    # the viewer on a geometry nobody has any more.
+    assert "if(play.queue.length&&!data.abandoned){" in landing, (
         "the frames of the ending run have to be landed before they are dropped"
     )
 

@@ -117,14 +117,15 @@ def test_the_estimate_becomes_a_converged_transition_state():
 def test_it_runs_where_the_dashboard_runs_and_is_kept_small():
     """On a cluster that is the login node, which is a place with rules.
 
-    One core, two gigabytes and three minutes -- welcome exactly as long as it
-    is small and short.  A run that wants more than that is a job, and saying
-    so is better than taking the node.
+    Four cores, two gigabytes and three minutes -- welcome exactly as long as
+    it is small and short.  Four is about the most such a node is usually
+    happy to lend; a run that wants more than that is a job, and saying so is
+    better than taking the node.
     """
     import inspect
 
     source = inspect.getsource(saddle)
-    assert 'cores: int = 1,' in source
+    assert 'cores: int = 4,' in source
     assert 'timeout: Optional[float] = 180.0' in source
     assert "'%maxcore 2000\\n'" in source
     assert 'nprocs {max(1, int(cores))}' in source
