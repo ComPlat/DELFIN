@@ -2924,6 +2924,14 @@ def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs,
                         Q = _orient_diatomic_block(
                             Q, lsyms, _dp[0], _dp[1], np.zeros(3), vertex)
             cl = _clash_count(Q, np.array(placed_P), lsyms, placed_syms)
+            # DER FREIE FREIHEITSGRAD, AUFRUFSTELLE 2 von 2 (rein monodentater Pfad).
+            # Hier ist der Azimut um M-D der einzige freie DOF, und er wird auf diesem
+            # Pfad NIRGENDS abgetastet -- die vorhandene Achsendrehung (CN2_SPINS)
+            # sitzt in der Ensemble-Schwester assemble_heteroleptic_ensemble, nicht
+            # hier.  Vorgabe AUS -> None -> byte-identisch.
+            _fd = _free_dof_reseat(Q, lsyms, [di], np.array(placed_P), placed_syms, cl)
+            if _fd is not None:
+                Q, cl = _fd
             if cl < best_clash:
                 best_clash, best_Q = cl, Q
             if cl == 0:
@@ -4528,6 +4536,185 @@ def _oc6_twist_seat(syms, P, blocks, metal, geometry):
     return Xc
 
 
+# ===== DER LETZTE FREIHEITSGRAD DES LIGANDEN =================================
+# DER BEFUND, DER DIESEN BLOCK ERZWINGT (18.08., 492 saubere Restsysteme).
+# `org_bond` -- die groesste Fehlmasse der Organogeometrie -- haengt NICHT an der
+# Bindungsklasse (molekuelintern ist die Lokalisierung massiv, zwischen Treffern und
+# Fehlschlaegen aber identisch, max |delta| 0,14).  Zwei Groessen reichern echt an:
+# `worst_n` (Zahl gleichzeitig verbogener Organobindungen) 3,83x, und die
+# KOORDINATIONSZAHL 1,62x (CN>=5 51,3 % gegen CN<=4 31,7 %).  Und CN wirkt DURCH
+# `worst_n`: mittleres `worst_n` steigt 3,46 -> 7,07 (CN 2..6) bei praktisch
+# konstanter Molekuelgroesse, mit KORREKT gebautem Polyeder 3,6 gegen 7,1.
+# ⇒ Bei gleicher Ligandgroesse verbiegt ein CN-6-Zentrum doppelt so viele
+# Organobindungen wie ein CN-4-Zentrum.  Der Polyeder wird erzwungen, der Ligand zahlt.
+#
+# DIE DOF-BILANZ DES BAUERS (nachgemessen, siehe _self_test_ligand_dof):
+#   * Ein Ligandblock wird STARR gesetzt -- 6 Starrkoerper-DOF.
+#   * Monodentat: `_rot_align(lp, -Vunit)` legt 5 davon fest (3 Translation ueber
+#     `+ Vunit*md`, 2 Richtung ueber die Rodrigues-Drehung).  Der SECHSTE -- der
+#     Azimut um die M-D-Achse -- ist chemisch voellig unbestimmt und wird trotzdem
+#     festgenagelt, naemlich auf den Zufallswert, den die MINIMALE Drehung von
+#     `_rot_align` gerade liefert.  Er wird auf dem Konfigurationspfad NIE abgetastet.
+#   * Bidentat: der Kabsch-Fit in `_orient_chelate_to_vertices` setzt beide Donoren
+#     auf ihre Vertices; uebrig bleibt exakt EINE Drehung -- um die Donor-Donor-Achse.
+#     Der Fit kann sie nicht sehen (beide Donoren liegen AUF der Achse).  Sie wird
+#     heute nur von `_lp_orient_seated_bidentate` benutzt, um einen BINDUNGSwinkel zu
+#     optimieren (Vorgabe AUS, als Setzung negativ gemessen) -- fuer die PACKUNG hat
+#     sie noch nie jemand benutzt.
+#   * Tridentat und hoeher: drei nicht-kollineare Donoren legen den Starrkoerper
+#     VOLLSTAENDIG fest.  NULL freie Drehung.  Das Register hat recht: 0 DOF.
+#
+# WAS DIESE ACHSE ERHAELT -- und das ist der Grund, aus dem sie gebaut wird.  Beide
+# Faelle drehen um eine Linie, die JEDEN Donor dieses Blocks ENTHAELT.  Die Donoren
+# sind damit PUNKTWEISE fix: M-D-Abstand, M-D-RICHTUNG, Biss, Vertexwinkel und CShM
+# aendern sich nicht um ein Bit.  Es ist eine Isometrie des Ligandblocks auf einer
+# bereits gebauten Konformation -- keine neue Einbettung, keine neue Konformation.
+# Nach dem an vier Punkten gemessenen Kostengesetz (Ordnung/Auswahl ~0, Isometrie
+# +0,98 pp, starre Drehung mit NEUER Konformation +6,57 pp, Neueinbettung +11,9 pp)
+# ist das die billigste Klasse, die ueberhaupt etwas an der Packung aendern kann.
+#
+# ⚠ ABGRENZUNG ZU DELFIN_FFFREE_LIGAND_SWING (joint_declash.py:305).  Der Schwenk ist
+# eine ANDERE Bewegung an einer ANDEREN Stelle: er dreht den ganzen Liganden um die
+# Achse M -> Donorschwerpunkt, NACH der Montage, im Declash-Pass, und dabei BEWEGEN
+# SICH DIE DONOREN -- deshalb braucht er eine 3-Grad-Kappe und ein CShM-Budget, und
+# deshalb kann er den Polyeder ueberhaupt beschaedigen (bei 8 Grad hat er es).  Diese
+# Achse hier bewegt die Donoren nicht, braucht darum keine Winkelkappe und darf den
+# vollen Kreis abtasten; und sie greift bei der AUSWAHL, wo der Kandidat noch
+# entschieden wird, nicht hinterher am fertigen Frame.  Der Schwenk erweitern hiesse
+# ihn zu einer Bewegung umbauen, die er nicht ist -- und in einer Datei, die zu diesem
+# Revier nicht gehoert.  Deshalb zweite Achse, nicht Erweiterung.
+_LIGAND_DOF_AXIS_TOL = 1.0e-6      # Kollinearitaet der Donoren / Achsennaehe (Angstroem)
+
+
+def _ligand_dof_seat_enabled() -> bool:
+    """DIE eine Stelle, an der DELFIN_FFFREE_LIGAND_DOF_SEAT gelesen wird
+    (Vorgabe 0 -> byte-identisch)."""
+    return os.environ.get("DELFIN_FFFREE_LIGAND_DOF_SEAT", "0") == "1"
+
+
+def _ligand_dof_seat_steps() -> int:
+    """Zahl der abgetasteten Winkel auf dem vollen Kreis (Vorgabe 6, wie die schon
+    vorhandene CN2-Achsendrehung DELFIN_FFFREE_CN2_SPINS).  Nur gelesen, wenn der
+    Schalter oben an ist."""
+    try:
+        n = int(os.environ.get("DELFIN_FFFREE_LIGAND_DOF_SEAT_N", "6"))
+    except Exception:
+        n = 6
+    return max(2, min(n, 36))
+
+
+def _free_rigid_axis(Q, donor_locals, metal_pos):
+    """Die EINZIGE Linie, um die dieser gesetzte Ligandblock noch starr gedreht werden
+    darf, ohne die Koordinationssphaere auch nur um ein Bit zu aendern -- oder ``None``.
+
+    Bedingung: die Achse muss JEDEN Donor des Blocks enthalten, dann sind alle Donoren
+    punktweise fix und damit M-D-Abstand, M-D-Richtung, Biss und CShM exakt erhalten.
+      * 1 Donor  -> die Linie M--D (unter allen Linien durch den Donor die einzige, die
+                    zusaetzlich JEDEN M-X-Abstand des Liganden erhaelt, weil das Metall
+                    dann selbst auf der Achse liegt -- der Ligand kann nicht ins Metall
+                    schwenken).
+      * >=2 Donoren -> die Linie durch die Donoren, aber NUR wenn sie kollinear sind.
+      * sonst    -> ``None``.  Drei nicht-kollineare Donoren legen den Starrkoerper
+                    vollstaendig fest; hier etwas zu drehen hiesse den Polyeder anfassen.
+    Rueckgabe ``(origin, unit_axis)``; ``origin`` ist ein Donorpunkt, damit dieser Donor
+    unter der Drehung BITGENAU stehenbleibt.
+    """
+    try:
+        d = [np.asarray(Q[int(i)], float) for i in donor_locals]
+    except Exception:
+        return None
+    if not d or any(not np.all(np.isfinite(x)) for x in d):
+        return None
+    if len(d) == 1:
+        a = d[0] - np.asarray(metal_pos, float)
+        n = float(np.linalg.norm(a))
+        if n < _LIGAND_DOF_AXIS_TOL:
+            return None
+        return (d[0], a / n)
+    a = d[-1] - d[0]
+    n = float(np.linalg.norm(a))
+    if n < _LIGAND_DOF_AXIS_TOL:
+        return None
+    a = a / n
+    for p in d[1:-1]:                       # Kollinearitaet ALLER Donoren
+        w = p - d[0]
+        if float(np.linalg.norm(w - float(np.dot(w, a)) * a)) > _LIGAND_DOF_AXIS_TOL:
+            return None
+    return (d[0], a)
+
+
+def _free_dof_reseat(Q, lsyms, donor_locals, existing, existing_syms, base_clash,
+                     metal_pos=None):
+    """Tastet den einen freien Freiheitsgrad dieses Ligandblocks ab und gibt
+    ``(Q_gedreht, clash)`` zurueck -- oder ``None``, wenn nichts STRIKT besser ist.
+
+    NEVER-WORSE PER KONSTRUKTION, an drei Stellen:
+      1) Schalter aus -> sofort ``None``, der Aufrufer sieht nichts.  Byte-identisch.
+      2) Es wird dieselbe Groesse gemessen, die die Auswahl ohnehin als ersten
+         Schluessel liest (`_clash_count` gegen die bereits gesetzten Atome) -- kein
+         neues Kriterium, das gegen das alte gewinnen koennte.
+      3) Nur ein STRIKT kleinerer Clash wird genommen; bei Gleichstand bleibt die
+         historische Pose stehen.  Und angefasst wird ueberhaupt nur ein Block, der
+         SCHON kollidiert (`base_clash > 0`) -- eine kollisionsfreie Setzung bleibt
+         unberuehrt, dort ist an der Packung nichts zu gewinnen.
+    Deterministisch: feste Winkelliste, kleinster Index gewinnt bei Gleichstand.
+    """
+    if not _ligand_dof_seat_enabled():
+        return None
+    if base_clash <= 0 or len(Q) < 2:
+        return None
+    ax = _free_rigid_axis(Q, donor_locals,
+                          np.zeros(3) if metal_pos is None else metal_pos)
+    if ax is None:
+        return None
+    o, u = ax
+    W = np.asarray(Q, float) - o
+    perp = W - np.outer(W @ u, u)
+    if float(np.max(np.linalg.norm(perp, axis=1))) < _LIGAND_DOF_AXIS_TOL:
+        return None                     # alles liegt AUF der Achse -> Drehung = Identitaet
+    n = _ligand_dof_seat_steps()
+    best = None
+    for k in range(1, n):
+        try:
+            R = _axis_rot(u, 2.0 * np.pi * float(k) / float(n))
+        except Exception:
+            continue
+        Qk = W @ R.T + o
+        if not np.all(np.isfinite(Qk)):
+            continue
+        ck = _clash_count(Qk, existing, lsyms, existing_syms)
+        if ck < base_clash and (best is None or ck < best[1]):
+            best = (Qk, ck)
+    if best is None:
+        return None
+    # DIE ZUSICHERUNG WIRD NACHGEMESSEN, NICHT BEHAUPTET.  Mathematisch haelt eine
+    # Drehung um eine Achse durch alle Donoren jeden Donorpunkt fest -- gemessen wird
+    # es trotzdem, denn genau hier koennte eine entartete Achse still etwas anderes
+    # tun, und der Preis waere die Koordinationssphaere.  Bricht die Zusicherung, wird
+    # die Drehung VERWORFEN (der Aufrufer behaelt seine historische Pose).
+    _mp = np.zeros(3) if metal_pos is None else np.asarray(metal_pos, float)
+    for _d in donor_locals:
+        _d = int(_d)
+        if float(np.linalg.norm(best[0][_d] - Q[_d])) > 1.0e-9:
+            return None                                   # Donor hat sich bewegt
+        if abs(float(np.linalg.norm(best[0][_d] - _mp))
+               - float(np.linalg.norm(np.asarray(Q[_d], float) - _mp))) > 1.0e-9:
+            return None                                   # r(M-D) gebrochen
+    _tp = os.environ.get("DELFIN_LIGAND_DOF_TRACE", "")
+    if _tp and _tp != "0":
+        # ⚠️ SPUR, WEIL "byte-identisch" HIER MEHRERE URSACHEN HAT: der Block laeuft
+        # nicht, es gibt keine freie Achse, nichts kollidierte, oder die Drehung fand
+        # keine bessere Pose.  Ohne diese Zeile waere nicht zu sagen, welche zutrifft.
+        try:
+            with open(_tp, "a") as _fh:
+                _fh.write("[LIGDOF] ndon=%d nat=%d clash %d -> %d\n"
+                          % (len(list(donor_locals)), len(Q), int(base_clash),
+                             int(best[1])))
+        except Exception:
+            pass
+    return best
+
+
 def assemble_from_config(metal, geometry, config, ligands, refine=True,
                          n_frames=1, per_lig_confs=6, rmsd_dedup=0.5,
                          planar_bite=None, planar_coplanar=None, prefer_beta=False,
@@ -4965,6 +5152,14 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
             if not np.all(np.isfinite(Q)):
                 continue
             cl = _clash_count(Q, np.array(placed), lsyms, placed_syms)
+            # DER FREIE FREIHEITSGRAD, AUFRUFSTELLE 1 von 2 (die Hauptstrasse: dieser
+            # Pfad baut jede Chelat-Konfiguration).  Er greift NUR, wenn dieser Block
+            # schon mit etwas bereits Gesetztem kollidiert -- genau der Fall, in dem
+            # das Register sagt "der Ligand zahlt".  Vorgabe AUS -> `_fd` ist immer
+            # None, `Q` und `cl` bleiben unangetastet: byte-identisch.
+            _fd = _free_dof_reseat(Q, lsyms, dons, np.array(placed), placed_syms, cl)
+            if _fd is not None:
+                Q, cl = _fd
             # (collapsed, clash) beats (clash) alone: a clean conformer outranks a colliding
             # one, and among equals the historic clash order is untouched.  With the flag OFF
             # _coll is False for every candidate, so the tuple compare degenerates to the
@@ -5400,6 +5595,139 @@ def _run_self_tests() -> None:
     _self_test_lp_orient()
     _self_test_trilateration()
     _self_test_oc6_twist()
+    _self_test_ligand_dof()
+
+
+def _self_test_ligand_dof() -> None:
+    """WIEVIEL FREIHEIT HAT DER LIGAND NOCH -- und kostet ihre Nutzung die Sphaere?
+
+    Vier Fragen, und jede darf NEIN sagen:
+      1) ZENSUS: wieviele freie Starrkoerperdrehungen bleiben je Zaehnigkeit uebrig?
+         Erwartung aus der Codelesung: monodentat 1, bidentat 1, tridentat 0.
+      2) ERHALTUNG: bleiben unter dieser Drehung Donorposition, M-D-Abstand, Biss und
+         die GESAMTE innere Ligandgeometrie exakt?  Gemessen wird in Angstroem, nicht
+         behauptet.  (Isometrie: es duerfen nur Rundungsreste stehenbleiben.)
+      3) VORGABE AUS: liefert `_free_dof_reseat` ohne Schalter garantiert None?
+      4) REICHWEITE AN: loest die Drehung an einem ECHTEN, wirklich kollidierenden
+         Ligandpaar Ueberlapp auf -- oder findet sie nichts?  Beides ist ein Befund.
+    """
+    print("\nfreier Ligand-Freiheitsgrad -- Zensus, Erhaltung, Vorgabe, Reichweite")
+    metal = "Fe"
+    ref = MSB._ref_vectors("OC-6 octahedron")
+    _ANG = 137.0                       # krummer Winkel: kein Symmetriezufall
+
+    def _seat_mono(smi, want=("N", "P", "S", "O")):
+        lsyms, lP, lmol = _ligand_3d(smi)
+        di = next(a.GetIdx() for a in lmol.GetAtoms() if a.GetSymbol() in want)
+        V = ref[0] / np.linalg.norm(ref[0])
+        md = MSB.md_distance(metal, lsyms[di], atom=lmol.GetAtomWithIdx(di), mol=lmol)
+        lPv, lp = _vsepr_reconstruct(lsyms, lP, lmol, di)
+        return lsyms, (lPv - lPv[di]) @ _rot_align(lp, -V).T + V * md, [di]
+
+    def _seat_chelate(smi, dons):
+        lmol = Chem.AddHs(Chem.MolFromSmiles(smi))
+        tp = [ref[v] / np.linalg.norm(ref[v])
+              * MSB.md_distance(metal, lmol.GetAtomWithIdx(int(d)).GetSymbol(),
+                                atom=lmol.GetAtomWithIdx(int(d)), mol=lmol)
+              for v, d in zip((0, 2, 4)[:len(dons)], dons)]
+        rc = _embed_metallacycle(lmol, list(dons), metal, donor_target_pos=tp)
+        if rc is None:
+            return None
+        lsyms, confs = rc
+        Q = _orient_chelate_to_vertices(confs[0], list(dons), tp, asym=False)
+        return (lsyms, Q, list(dons)) if Q is not None else None
+
+    cases = []
+    try:
+        cases.append(("pyridin (monodentat)",) + _seat_mono("c1ccncc1"))
+    except Exception as exc:
+        print("   pyridin: SKIP (%s)" % type(exc).__name__)
+    for label, smi, dons in (("ethylendiamin (bidentat)", "NCCN", [0, 3]),
+                             ("diethylentriamin (tridentat)", "NCCNCCN", [0, 3, 6])):
+        try:
+            s = _seat_chelate(smi, dons)
+        except Exception as exc:
+            s = None
+            print("   %s: SKIP (%s)" % (label, type(exc).__name__))
+        if s is not None:
+            cases.append((label,) + s)
+
+    print(f"{'Ligand':>30} | {'#Don':>4} | {'freie Achse':>11} | {'d(Donor)':>9} | "
+          f"{'d(M-D)':>8} | {'d(Biss)':>8} | {'d(intern)':>9}")
+    M = np.zeros(3)
+    for label, lsyms, Q, dons in cases:
+        ax = _free_rigid_axis(Q, dons, M)
+        if ax is None:
+            print(f"{label:>30} | {len(dons):4d} | {'KEINE (0 DOF)':>11} | "
+                  f"{'--':>9} | {'--':>8} | {'--':>8} | {'--':>9}")
+            continue
+        o, u = ax
+        Qr = (np.asarray(Q, float) - o) @ _axis_rot(u, math.radians(_ANG)).T + o
+        d_don = max(float(np.linalg.norm(Qr[d] - Q[d])) for d in dons)
+        d_md = max(abs(float(np.linalg.norm(Qr[d] - M))
+                       - float(np.linalg.norm(Q[d] - M))) for d in dons)
+        d_bite = 0.0
+        for i, a in enumerate(dons):
+            for b in dons[i + 1:]:
+                d_bite = max(d_bite, abs(float(np.linalg.norm(Qr[a] - Qr[b]))
+                                         - float(np.linalg.norm(Q[a] - Q[b]))))
+        D0 = np.linalg.norm(Q[:, None, :] - Q[None, :, :], axis=-1)
+        D1 = np.linalg.norm(Qr[:, None, :] - Qr[None, :, :], axis=-1)
+        d_int = float(np.max(np.abs(D1 - D0)))
+        print(f"{label:>30} | {len(dons):4d} | {'1 (%.0f Grad)' % _ANG:>11} | "
+              f"{d_don:9.2e} | {d_md:8.2e} | {d_bite:8.2e} | {d_int:9.2e}")
+
+    # --- 3) VORGABE AUS ------------------------------------------------------
+    _prev = os.environ.pop("DELFIN_FFFREE_LIGAND_DOF_SEAT", None)
+    try:
+        _off = None
+        if cases:
+            _l, _s, _Q, _d = cases[0]
+            _off = _free_dof_reseat(_Q, _s, _d, np.zeros((1, 3)), [metal], 99)
+        print("   Vorgabe AUS -> _free_dof_reseat liefert %s  (%s)"
+              % (_off, "OK" if _off is None else "FEHLER"))
+    finally:
+        if _prev is not None:
+            os.environ["DELFIN_FFFREE_LIGAND_DOF_SEAT"] = _prev
+
+    # --- 4) REICHWEITE: ein ECHTES kollidierendes Ligandpaar ------------------
+    # Zwei sperrige Phosphine auf BENACHBARTEN Oktaedervertices.  Beide werden genau
+    # so gesetzt, wie es assemble_from_config tut (VSEPR + _rot_align), das zweite
+    # sieht das erste in `_clash_count` -- und hat danach nur noch den Azimut.
+    try:
+        smi = "P(C(C)(C)C)(C(C)(C)C)C(C)(C)C"
+        lsyms, lP, lmol = _ligand_3d(smi)
+        di = next(a.GetIdx() for a in lmol.GetAtoms() if a.GetSymbol() == "P")
+        md = MSB.md_distance(metal, "P", atom=lmol.GetAtomWithIdx(di), mol=lmol)
+        lPv, lp = _vsepr_reconstruct(lsyms, lP, lmol, di)
+        blocks = []
+        for v in (0, 2):
+            V = ref[v] / np.linalg.norm(ref[v])
+            blocks.append((lPv - lPv[di]) @ _rot_align(lp, -V).T + V * md)
+        ex = np.vstack([np.zeros((1, 3)), blocks[0]])
+        ex_s = [metal] + list(lsyms)
+        c0 = _clash_count(blocks[1], ex, lsyms, ex_s)
+        os.environ["DELFIN_FFFREE_LIGAND_DOF_SEAT"] = "1"
+        try:
+            res = _free_dof_reseat(blocks[1], lsyms, [di], ex, ex_s, c0)
+        finally:
+            if _prev is None:
+                os.environ.pop("DELFIN_FFFREE_LIGAND_DOF_SEAT", None)
+            else:
+                os.environ["DELFIN_FFFREE_LIGAND_DOF_SEAT"] = _prev
+        if c0 <= 0:
+            print("   Reichweite: das Paar kollidiert gar nicht (clash 0) -> die Achse"
+                  " wird hier nicht gebraucht; das ist ein Befund, kein Erfolg.")
+        elif res is None:
+            print("   Reichweite: clash %d, aber KEINE Drehung ist besser -> der"
+                  " Freiheitsgrad traegt an diesem Paar nicht." % c0)
+        else:
+            Qn, c1 = res
+            _dmd = abs(float(np.linalg.norm(Qn[di])) - float(np.linalg.norm(blocks[1][di])))
+            print("   Reichweite: P(tBu)3 / P(tBu)3 cis  clash %d -> %d, "
+                  "M-D-Drift %.2e A" % (c0, c1, _dmd))
+    except Exception as exc:
+        print("   Reichweite: SKIP (%s: %s)" % (type(exc).__name__, exc))
 
 
 def _self_test_oc6_twist() -> None:
@@ -5677,5 +6005,70 @@ def _self_test_trilateration() -> None:
             print(f"{label:>24} | {nm:>14} | {md:8.3f} | {dd:8.3f}")
 
 
+_REAL_FRAME_CASES = [
+    ("cisplatin CN4",        "N[Pt](N)(Cl)Cl"),
+    ("CoCl3(NH3)3 CN6",      "[NH3][Co]([NH3])([NH3])([Cl])([Cl])[Cl]"),
+    ("Fe(en)3 CN6, 3 Chel",  "[Fe]123([N]CC[N]1)([N]CC[N]2)[N]CC[N]3"),
+    ("CoCl(en)2 CN6, 2 Chel", "[Cl][Co]12([NH3])([N]CC[N]1)[N]CC[N]2"),
+    ("Pd(PtBu3)Cl2",         "[Cl][Pd]([Cl])[P](C(C)(C)C)(C(C)(C)C)C(C)(C)C"),
+    ("Ni(Cl)2(NMe3) CN4",    "[Ni](Cl)(Cl)N(C)(C)C"),
+    ("CoCl2(en)2 CN6",       "[NH2]CC[NH2][Co]1([NH2]CC[NH2]1)([Cl])[Cl]"),
+    ("Fe-Citrat, polydentat",
+     "O=C1C(CC(O)=O)(CC(O)=O)O[Fe]23(OC(C(CC(O)=O)(CC(O)=O)O2)=O)"
+     "(OC(CC(O)=O)(CC(O)=O)C(O3)=O)O1"),
+    ("Pt(en)(NH2CH2CH2NH2)", "NCCN[Pt]1NCCN1"),
+]
+
+
+def _real_frame_hashes() -> None:
+    """ECHTE Frames, nicht synthetische: baut jedes System des Satzes ueber den
+    normalen Konverterpfad und druckt je System einen SHA1 ueber ALLE emittierten
+    XYZ-Strings.  Zwei Verwendungen:
+
+      * BYTE-IDENTITAET.  Derselbe Aufruf gegen den unveraenderten Stand (Schalter
+        nicht gesetzt) muss Zeichen fuer Zeichen dieselben Hashes liefern.
+      * DER EINFRIER-ZENSUS.  Pro System: wieviele Atome nagelt der Bauer fest
+        (Metall + Donoren, siehe `fixed` in assemble_from_config) und wieviele
+        bleiben beweglich?  Das ist die Zahl, um die es in der DOF-Frage geht.
+    """
+    import hashlib
+    from delfin.manta import converter_backend as CB
+    from delfin.manta import decompose as DEC
+    print("%-24s | %4s | %5s | %-8s | %s"
+          % ("System", "#Iso", "CN", "fix/Atome", "sha1(alle XYZ)"))
+    for label, smi in _REAL_FRAME_CASES:
+        try:
+            r = CB._fffree_isomers(smi)
+        except Exception as exc:
+            print("%-24s | FEHLER %s: %s" % (label, type(exc).__name__, exc))
+            continue
+        if not r:
+            print("%-24s | %4s | %5s | %-8s | %s" % (label, "-", "-", "-", "None (legacy)"))
+            continue
+        h = hashlib.sha1()
+        for xyz, lab in r:
+            h.update(lab.encode())
+            h.update(xyz.encode())
+        try:
+            cn = int(DEC.decompose(smi).get("cn"))
+        except Exception:
+            cn = -1
+        nat = 0
+        for _ln in r[0][0].splitlines():
+            _f = _ln.split()
+            if len(_f) >= 4 and _f[0][:1].isalpha():
+                try:
+                    float(_f[1]); float(_f[2]); float(_f[3])
+                except ValueError:
+                    continue
+                nat += 1
+        print("%-24s | %4d | %5d | %8s | %s"
+              % (label, len(r), cn, "%d/%d" % (cn + 1, nat), h.hexdigest()))
+
+
 if __name__ == "__main__":       # pragma: no cover
+    import sys as _sys
+    if len(_sys.argv) > 1 and _sys.argv[1] == "realframes":
+        _real_frame_hashes()
+        raise SystemExit(0)
     _run_self_tests()
