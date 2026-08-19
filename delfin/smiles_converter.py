@@ -1600,6 +1600,96 @@ def _hapto_scaffold_primary_enabled() -> bool:
     return os.environ.get("DELFIN_FFFREE_HAPTO_SCAFFOLD_PRIMARY", "0") == "1"
 
 
+def _hapto_seat_rigid_enabled() -> bool:
+    """DELFIN_FFFREE_HAPTO_SEAT_RIGID -- Vorgabe 0, also byte-identisch AUS.
+
+    DIE MESSUNG (19.08.2026, Kandidatenzensus auf den 42 eta-Systemen mit
+    flachem Stereozentrum).  Die Hapto-Saat kommt aus
+    ``smiles_to_xyz(hapto_approx=True)``, und dort waehlt
+    ``_select_best_hapto_candidate`` zwischen zwei Bauarten:
+
+      ``scaffold``  -- ``_build_hapto_scaffold``: der eta-Ring wird als regelmaessiges
+                       Polygon gesetzt (korrekt und STARR), ALLES uebrige aber ATOMWEISE
+                       per BFS-VSEPR aus EINEM Elternatom heraus, ohne jede Kollisions-
+                       pruefung (Zeilen 16119-16219).
+      ``hybrid*``   -- ``_build_hybrid_hapto_complex``: dasselbe Geruest, aber jeder
+                       Ligandenast wird SEPARAT eingebettet (ETKDG + UFF) und danach als
+                       STARRER KOERPER auf seine Ankerpunkte gedreht/geschoben
+                       (``_embed_hybrid_fragment`` + ``_align_hybrid_fragment_onto_scaffold``).
+                       Die innere Geometrie bleibt dabei unangetastet.
+
+    Gemessen (kollabierte Bindungen der SAAT, ``_bond_decollapse``-Boden):
+        AHIGUW  starr  1 : atomweise 21      ALEKIM  starr  3 : atomweise 10
+        ALEKOS  starr  2 : atomweise 12      BEXVAC  starr  6 : atomweise 64
+        ABEWUZ  starr 10 : atomweise 47      BAKLAB  starr 54 : atomweise 51
+    In 5 von 6 Faellen traegt der STARRE Bau ein Vielfaches WENIGER Kollaps -- und
+    verliert trotzdem die Auswahl, weil ``_hapto_candidate_quality_score`` gar keinen
+    Kollapsterm hat: sein einziger Ueberlappungstest ``_has_atom_clash`` misst gegen
+    0.80 A, waehrend der Kollapsboden bei C-C 0.82*1.52 = 1.25 A liegt.  Der Score
+    unterscheidet die beiden Bauten um ~0.4 %, die Geometrie um das Drei- bis
+    Zehnfache.
+
+    WARUM AUSWAHL UND KEIN NEUBAU.  Das Kostengesetz misst Ordnung/Auswahl mit ~0,
+    Neueinbettung mit +11,9 pp.  Der starre Koerper ist bereits gebaut; ihn ein
+    zweites Mal zu bauen waere die teuerste Klasse fuer dasselbe Ergebnis.  Diese
+    Zeile laesst ihn nur ankommen.
+
+    ERGEBNIS AN (A/B gegen den Stand vor dem Eingriff, Champion-Umgebung):
+        SAAT, 42 Systeme:  Kollapssumme 677 -> 498, Median 11 -> 9,
+                           11 Systeme besser, 0 schlechter, 31 unberuehrt.
+        FRAMES, 12 Systeme / 330 Frames: Kollapssumme 5560 -> 2048 (-63 %),
+                           6 besser, 0 schlechter.
+        AUS: byte-identisch 42/42 (Saat) und 12/12 (Frames).
+
+    ⚠ DER GRUND, WARUM DIESER SCHALTER SO NICHT LANDEN DARF -- DIE FRAMES WERDEN
+    WENIGER.  Auf denselben 12 Systemen faellt die Frame-Zahl von 320 auf 230, und
+    die verlorenen sind samt und sonders die ``hd-ta-*``-Frames des OB-Rotor-
+    Zweigs (AHIGUW 24 -> 4, EQEYIJ 22 -> 1).  Der starre Sitz liefert also
+    SAUBERERE Frames, aber WENIGER -- und Vollstaendigkeit ist die heiligere
+    Achse.  Der Kollapsgewinn ist damit zum Teil ein Zaehlerartefakt (weniger
+    Frames tragen weniger Kollaps); PRO FRAME bleibt der Gewinn trotzdem
+    bestehen (AHIGUW 18,4 -> 5,0; BEXVAC 65,5 -> 10,7; ALEKOS 7,7 -> 1,5).
+    WARUM die Rotor-Frames wegfallen, ist NICHT gemessen -- das ist die naechste
+    Frage, nicht eine erledigte.  Solange sie offen ist, gehoert der richtige
+    Bauplan in die ADDITIVE Form: beide Saaten bauen und BEIDE Frame-Mengen
+    behalten (das UNION-Muster), statt die eine gegen die andere zu tauschen.
+    """
+    return _delfin_env_int("DELFIN_FFFREE_HAPTO_SEAT_RIGID", 0) == 1
+
+
+def _hapto_candidate_collapsed_bonds(cand_mol) -> Optional[int]:
+    """Kollabierte Bindungen eines Hapto-Kandidaten -- EINE Quelle fuer den Boden.
+
+    Der Boden (``COLLAPSE_FLOOR``, Vorgabe 0.82) und die geometrische Bindungs-
+    erkennung kommen unveraendert aus ``delfin.manta._bond_decollapse``; hier wird
+    NICHTS nachgebaut und keine zweite Schwelle erfunden.  Der Import steht in der
+    Funktion, damit der ausgeschaltete Pfad ihn nie bezahlt.
+
+    Rueckgabe ``None`` heisst "nicht messbar" -- der Aufrufer muss das wie "kein
+    Urteil" behandeln, nie wie "null Kollaps".
+    """
+    if cand_mol is None:
+        return None
+    try:
+        import numpy as np
+        from delfin.manta import _bond_decollapse as _BD
+        conf = cand_mol.GetConformer(0)
+        n = cand_mol.GetNumAtoms()
+        syms = [cand_mol.GetAtomWithIdx(i).GetSymbol() for i in range(n)]
+        pts = []
+        for i in range(n):
+            p = conf.GetAtomPosition(i)
+            pts.append([p.x, p.y, p.z])
+        P = np.asarray(pts, dtype=float)
+        if P.shape[0] == 0:
+            return None
+        bonds = _BD._geometric_bonds(syms, P)
+        return int(_BD._count_collapsed(syms, P, bonds))
+    except Exception as _exc:
+        logger.debug("Kollapszaehlung am Hapto-Kandidaten fehlgeschlagen: %s", _exc)
+        return None
+
+
 def _apply_uff_jitter(
     xyz_delfin: str,
     atom_indices,
@@ -20601,6 +20691,42 @@ def _select_best_hapto_candidate(
             return best_mol
     pool.sort(key=lambda item: (item[0], item[2]))
     best_score, best_mol, best_label = pool[0]
+
+    # ---- DER STARRE SITZ DARF ANKOMMEN (DELFIN_FFFREE_HAPTO_SEAT_RIGID) --------
+    # Vorgabe 0 -> dieser Block ist ein einziges `if` und aendert kein Byte.
+    #
+    # Der Score kennt keinen Kollapsterm (Begruendung und Zahlen stehen bei
+    # `_hapto_seat_rigid_enabled`).  Wenn der ATOMWEISE Bau (`scaffold`) gewinnt,
+    # obwohl ein STARRER Bau (`hybrid*`) im SELBEN Topf steht und STRIKT weniger
+    # kollabierte Bindungen traegt, dann nimm den starren.
+    #
+    # Drei Selbstbeschraenkungen, damit das kein Freibrief wird:
+    #   1. nur INNERHALB desselben Topfes -- ein topologisch kaputter Kandidat
+    #      kann so nie einen topologisch heilen verdraengen.
+    #   2. nur bei STRIKT weniger Kollaps.  BAKLAB (starr 54 : atomweise 51) bleibt
+    #      damit von selbst beim atomweisen Bau -- die Regel begrenzt sich selbst.
+    #   3. `None` (nicht messbar) ist KEIN Urteil und laesst die Auswahl unberuehrt.
+    if _hapto_seat_rigid_enabled() and str(best_label).startswith("scaffold"):
+        _n_atomwise = _hapto_candidate_collapsed_bonds(best_mol)
+        if _n_atomwise is not None:
+            _bester_starr = None
+            for _sc, _mo, _lb in pool:
+                if not str(_lb).startswith("hybrid"):
+                    continue
+                _n_starr = _hapto_candidate_collapsed_bonds(_mo)
+                if _n_starr is None or _n_starr >= _n_atomwise:
+                    continue
+                if _bester_starr is None or _n_starr < _bester_starr[0]:
+                    _bester_starr = (_n_starr, _sc, _mo, _lb)
+            if _bester_starr is not None:
+                _n_starr, best_score, best_mol, best_label = _bester_starr
+                logger.info(
+                    "HAPTO_SEAT_RIGID: starrer Sitz %s statt atomweisem %s "
+                    "(Kollaps %d statt %d, Score %.2f statt %.2f)",
+                    best_label, pool[0][2], _n_starr, _n_atomwise,
+                    best_score, pool[0][0],
+                )
+
     logger.info(
         "Selected hapto candidate %s (score=%.2f, strict_topology=%s, pool=%d)",
         best_label,
@@ -39891,3 +40017,63 @@ def smiles_to_xyz_architector(smiles: str) -> Tuple[Optional[str], Optional[str]
         return '\n'.join(xyz_lines), None
     except Exception as exc:
         return None, f'Architector conversion failed: {exc}'
+
+
+# ---------------------------------------------------------------------------
+# SELBSTTEST fuer DELFIN_FFFREE_HAPTO_SEAT_RIGID
+#   PYTHONPATH=/home/qmchem_max/DELFIN_dev python -m delfin.smiles_converter
+# Ein direkter Dateiaufruf laedt wegen der editable-Installation eine ANDERE
+# Modulkopie -- immer ueber `-m` starten.
+# ---------------------------------------------------------------------------
+if __name__ == "__main__":
+    import sys as _sys
+
+    _fehler = 0
+
+    def _pruefe(name: str, ist, soll):
+        global _fehler
+        ok = ist == soll
+        if not ok:
+            _fehler += 1
+        print(f"   [{'ok' if ok else 'FEHL'}] {name}: {ist!r} (erwartet {soll!r})")
+
+    print("## Selbsttest HAPTO_SEAT_RIGID")
+
+    # 1. Das Tor ist zu, solange niemand es oeffnet -- und es liest genau EINE Variable.
+    os.environ.pop("DELFIN_FFFREE_HAPTO_SEAT_RIGID", None)
+    _pruefe("Vorgabe AUS", _hapto_seat_rigid_enabled(), False)
+    os.environ["DELFIN_FFFREE_HAPTO_SEAT_RIGID"] = "1"
+    _pruefe("Schalter AN", _hapto_seat_rigid_enabled(), True)
+    os.environ["DELFIN_FFFREE_HAPTO_SEAT_RIGID"] = "0"
+    _pruefe("Schalter 0", _hapto_seat_rigid_enabled(), False)
+    os.environ.pop("DELFIN_FFFREE_HAPTO_SEAT_RIGID", None)
+
+    # 2. Die Kollapszaehlung urteilt zweiseitig: sie muss den gestauchten Bau
+    #    finden UND den gesunden in Ruhe lassen.
+    if RDKIT_AVAILABLE:
+        def _mol_mit(abstand: float):
+            m = Chem.RWMol()
+            m.AddAtom(Chem.Atom(6))
+            m.AddAtom(Chem.Atom(6))
+            m.AddBond(0, 1, Chem.BondType.SINGLE)
+            out = m.GetMol()
+            out.UpdatePropertyCache(strict=False)
+            c = Chem.Conformer(2)
+            c.SetAtomPosition(0, Point3D(0.0, 0.0, 0.0))
+            c.SetAtomPosition(1, Point3D(abstand, 0.0, 0.0))
+            out.AddConformer(c, assignId=True)
+            return out
+
+        _pruefe("gesunde C-C (1.50 A) -> kein Kollaps",
+                _hapto_candidate_collapsed_bonds(_mol_mit(1.50)), 0)
+        _pruefe("gestauchte C-C (1.00 A) -> ein Kollaps",
+                _hapto_candidate_collapsed_bonds(_mol_mit(1.00)), 1)
+        _pruefe("ohne Konformer -> kein Urteil (None)",
+                _hapto_candidate_collapsed_bonds(Chem.MolFromSmiles("CC")), None)
+        _pruefe("None hinein -> None heraus",
+                _hapto_candidate_collapsed_bonds(None), None)
+    else:
+        print("   (RDKit fehlt -- Geometrieteil uebersprungen)")
+
+    print(f"## {'ALLES GRUEN' if _fehler == 0 else str(_fehler) + ' FEHLER'}")
+    _sys.exit(1 if _fehler else 0)
