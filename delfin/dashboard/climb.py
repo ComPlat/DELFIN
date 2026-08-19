@@ -294,13 +294,13 @@ class _InProcess:
                                    np.asarray(bohr, dtype=float),
                                    charge=float(charge), uhf=int(uhf))
             self.calc.set_verbosity(VERBOSITY_MUTED)
-            # GFN-FF writes a page of force-field setup from the Fortran side
-            # straight to the process's own stdout, and muting the verbosity
-            # does not stop it -- it lands in the kernel's log where no widget
-            # can catch it.  ``set_output`` is the API for that and it is not
-            # used here: bound to a file, the very next ``update`` came back
-            # "Update of molecular structure failed" and every climb stopped.
-            # A page in a log once per climb is the better of the two.
+            # Nothing louder is asked for and nothing quieter is available:
+            # ``set_output`` is the API for binding the Fortran side's own
+            # output elsewhere, and bound to a file the very next ``update``
+            # came back "Update of molecular structure failed" and every climb
+            # stopped.  The one method that prints anyway is GFN-FF, and it
+            # does not come through here -- see the engine choice in
+            # :class:`Climb`.
             if solvent:
                 try:
                     from xtb.utils import get_solvent
@@ -597,9 +597,19 @@ class Climb:
         self.steps = 0
         self.refused = 0
         self._before: Any = None
-        maker = _InProcess if have_fast_gradients() else _CommandLine
-        self.engine = maker(self.numbers, self.bohr, self.method,
-                            charge, uhf, solvent, cores)
+        # GFN-FF goes out through the command line even when the library is
+        # there, and it is the file it writes that decides that: measured, an
+        # in-process GFN-FF drops ``gfnff_topo`` -- 142 kB of it -- into
+        # whatever directory the process happens to be in, which for a
+        # dashboard is the directory the user launched it from.  The library
+        # takes no working directory to be told about; the command line has
+        # one of its own, and left nothing behind at all in the same test.
+        # It also keeps the setup banner out of the kernel's log, since a
+        # subprocess's output is captured rather than shared.  Three gradients
+        # a second slower is worth not writing into somebody's project.
+        fast = have_fast_gradients() and self.method != 'gfnff'
+        self.engine = (_InProcess if fast else _CommandLine)(
+            self.numbers, self.bohr, self.method, charge, uhf, solvent, cores)
 
     # -- what the caller reads -------------------------------------------
 
