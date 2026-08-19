@@ -687,7 +687,10 @@ def test_a_loose_hold_stops_the_drag_rather_than_only_saying_so():
     """
     follow = EDITOR_SOURCE.split("def _thermal_wall(")[1].split("def ")[0]
     assert "def _thermal_wall" not in follow
-    assert "if spent <= ceiling and not refuse:" in follow
+    # On the highest price the drag has been at, not on the price of where it
+    # is standing -- the ceiling is a barrier height.  The two are the same
+    # number on the way up, which is the case this test is about.
+    assert "if peak <= ceiling and not refuse:" in follow
     body = EDITOR_SOURCE.split("state['thermal_now'] = priced.get('energy')")[1]
     body = body.split("state['gfn_last_status'] = said")[0]
     assert "aside = (slipped > _SLIP_LOOSE) or crowded" in body
@@ -2672,6 +2675,7 @@ def test_the_placing_hand_is_not_measured_and_does_not_pretend_to_be():
 
     part = _budgeted(begin, kelvin=298.15, hand="move")
     assert part._thermal_live() is False, "nothing reads the switch here"
+    anchored = part.coords_widget.value
     _dragged_apart(part, begin, far=2.0)
 
     # Nothing was priced and nothing was refused.  The same drag under a pull
@@ -2681,10 +2685,11 @@ def test_the_placing_hand_is_not_measured_and_does_not_pretend_to_be():
     assert "following the drag" in said, said
     for claim in ("kcal/mol", f"{ceiling:.1f}", "budget"):
         assert claim not in said, (claim, said)
-    # And the wall never ran, so there is no geometry it is holding on to and
-    # no maximum it is carrying.
-    for key in ("thermal_good", "thermal_peak", "thermal_good_peak"):
-        assert key not in part.state, key
+    # And the wall never ran while the hand was down: the maximum it carries
+    # is still the zero the anchor left it at, and the geometry it would hand
+    # back is still the anchor's own.
+    assert part.state.get("thermal_peak") == 0.0, part.state.get("thermal_peak")
+    assert part.state.get("thermal_good") == anchored
 
 
 @_needs_xtb
@@ -3112,4 +3117,268 @@ def test_the_placing_hand_keeps_everything_that_still_works():
     for spare in ("submit_sens_slider", "submit_topology_btn",
                   "submit_scan_btn", "submit_strength_slider"):
         assert spare not in body, spare
+
+
+# ---------------------------------------------------------------------------
+# And it belongs to the whole way the drag came, not to where it is standing
+# ---------------------------------------------------------------------------
+
+#: The four atoms of that nitrosamine's N-N rotation, in the order the
+#: geometry above has them.
+_TURN = (4, 3, 1, 0)
+
+
+def _armed(part, state, text, energy, T=298.15, method="gfn2"):
+    """The budget switched on with a known anchor, and a hand that pulls."""
+    part.submit_ff_dd.value = method
+    part.submit_hand_dd.value = "pull"
+    part.submit_temperature.value = T
+    part.coords_widget.value = text
+    state["thermal_e0"] = float(energy)
+    state["thermal_method"] = method
+    state["thermal_for"] = part._structure_fingerprint(text)
+    state["thermal_good"] = text
+    state.pop("thermal_good_peak", None)
+    state.pop("thermal_peak", None)
+
+
+def _pulled(text, far):
+    """The same molecule with one atom pulled *far* Angstrom out.
+
+    A rigid shift would not do: the wall lays one geometry onto the other as a
+    rigid body before comparing them, because an energy does not depend on
+    where a molecule is and neither does whether it is the same structure.
+    Only a change *inside* the molecule makes it a different place to be
+    standing.
+    """
+    rows = [line.split() for line in gfn.atom_lines(text)]
+    rows[0][1] = f"{float(rows[0][1]) + float(far):.6f}"
+    return (f"{len(rows)}\npulled {far:.2f} A\n"
+            + "\n".join(" ".join(one) for one in rows) + "\n")
+
+
+def _dihedral(text, a, b, c, d):
+    """The torsion in degrees, for setting up a drive that means something."""
+    import math
+
+    flat = gfn.coordinates_of(text)
+    p = [flat[i:i + 3] for i in range(0, len(flat), 3)]
+    b0 = [p[b][i] - p[a][i] for i in range(3)]
+    b1 = [p[c][i] - p[b][i] for i in range(3)]
+    b2 = [p[d][i] - p[c][i] for i in range(3)]
+
+    def cross(u, v):
+        return [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2],
+                u[0] * v[1] - u[1] * v[0]]
+
+    def dot(u, v):
+        return sum(x * y for x, y in zip(u, v))
+
+    n1, n2 = cross(b0, b1), cross(b1, b2)
+    return math.degrees(math.atan2(
+        dot(cross(n1, b1), n2) / math.sqrt(dot(b1, b1)), dot(n1, n2)))
+
+
+def test_the_wall_refuses_on_the_highest_point_the_drag_has_been_at():
+    """A ceiling is a barrier height, so a point is not what to hold against it.
+
+    A drag that crossed +32 and settled at 0 has still crossed +32, and at 298
+    K -- where the hour buys 22.3 -- it could not have.  Priced on the point
+    alone the far side was kept: the wall refused the step at the top, the next
+    answer came back cheap, and that geometry became the one to fall back to.
+
+    The numbers are the measured ones from the live run further down, so what
+    this fixes is stated in the units it was found in.
+    """
+    part, state = _editor(_NITROSAMINE)
+    _armed(part, state, _NITROSAMINE, -17.172582)
+
+    def at(kcal):
+        return -17.172582 + kcal / 627.5094740631
+
+    def step(kcal, far):
+        return part._thermal_wall(_pulled(_NITROSAMINE, far), at(kcal), [])
+
+    # Up the near side, inside the budget the whole way, the hand travelling
+    # as it goes -- a drag that never moves is not a drag.
+    assert step(0.0, 0.0) is None
+    assert step(13.4, 0.6) is None
+    assert step(19.9, 1.2) is None
+    # Over the top, and refused there as it always was.
+    assert step(26.5, 1.8) is not None
+    assert step(32.2, 2.4) is not None
+    # And now the far side, which is cheap.  This is the one that was kept.
+    assert step(13.7, 3.0) is not None
+    assert step(0.0, 3.6) is not None, "it got here through what it cannot pay"
+    # What the line quotes is the crossing, not where the structure stands.
+    said = part._thermal_note(at(0.0))
+    assert "went through +32.2" in said, said
+    assert state["thermal_over"] == "path"
+
+
+def test_an_excursion_that_is_taken_back_stops_refusing():
+    """The failure mode in the other direction, which is the worse one.
+
+    A maximum that never comes down makes the editor unusable: one jerk of the
+    mouse past the ceiling and every later step of that grab is refused,
+    including the ones walking straight back home.  What undoes a crossing is
+    coming back over it, so the maximum drops to what was recorded for the last
+    geometry the budget agreed to as soon as the structure is standing there
+    again -- which, after a rollback, is exactly where it has just been put.
+    """
+    part, state = _editor(_NITROSAMINE)
+    _armed(part, state, _NITROSAMINE, -17.172582)
+
+    def at(kcal):
+        return -17.172582 + kcal / 627.5094740631
+
+    out = _pulled(_NITROSAMINE, 0.0)
+    # Out past the 0.25 A that counts as standing in the same place, which is
+    # the threshold the loose hold is already judged by.
+    far = _pulled(_NITROSAMINE, 2.0)
+
+    assert part._thermal_wall(out, at(5.0), []) is None
+    # Over the ceiling, out where the hand has taken it: refused, and the last
+    # affordable geometry comes back.
+    assert part._thermal_wall(far, at(40.0), []) == out
+    # Still out there and cheap: still refused, because it never came back.
+    assert part._thermal_wall(far, at(1.0), []) == out
+    # And back where the budget last agreed: allowed again, and the drag lives.
+    assert part._thermal_wall(out, at(5.0), []) is None
+    assert part._thermal_wall(out, at(12.0), []) is None
+
+
+def test_letting_go_forgets_the_way_the_drag_came():
+    """What a release leaves behind was inside the budget the whole way.
+
+    Its own way here was affordable end to end -- that is what being kept
+    means -- so the next grab starts from where it is standing rather than
+    from the last one's worst moment.  Kept, one bad drag would have refused
+    every drag after it until the anchor was set again.
+    """
+    part, state = _editor(_NITROSAMINE)
+    _armed(part, state, _NITROSAMINE, -17.172582)
+    state["thermal_peak"] = 40.0
+    state["thermal_good_peak"] = 40.0
+    part._clear_thermal_wall()
+    assert "thermal_peak" not in state
+    assert "thermal_good_peak" not in state
+    # And it is the release that calls it, not only the walled case.
+    off = EDITOR_SOURCE.split("def _end_gfn_follow()")[1].split("\n    def ")[0]
+    assert "_clear_thermal_wall()" in off
+
+
+def test_a_new_anchor_is_a_new_path():
+    """Set here is pressed on the intermediate a drag has just reached.
+
+    That is what it is for: something that has crossed a barrier thermalises,
+    and the next elementary step is measured from where it landed.  Carrying
+    the barrier it came over into the new budget would refuse everything from
+    the moment it was pressed.
+    """
+    body = EDITOR_SOURCE.split("def _set_thermal_anchor(")[1].split(
+        "\n    def ")[0]
+    assert "state['thermal_peak'] = 0.0" in body
+    assert "state['thermal_good_peak'] = 0.0" in body
+    assert "state['thermal_good'] = _current_xyz() or xyz" in body
+
+
+@_needs_xtb
+def test_the_wall_prices_the_path_a_real_drag_took():
+    """The whole of it, against xtb, on a rotation that really is hindered.
+
+    N-nitrosodimethylamine, GFN2, the N-N torsion driven with everything else
+    relaxed -- which is the question a drag under the budget asks.  Measured in
+    15 degree steps from one minimum to the equivalent one:
+
+        deg    -180   -150   -120    -90    -75    -60    -30      0
+        kcal    0.0    3.6   13.4   26.5   32.2   13.7    3.5    0.0
+
+    At 298.15 K the hour buys 22.3 kcal/mol.  The far minimum costs nothing at
+    all, so a wall that prices the point keeps it -- and a structure that got
+    there over a 32 kcal/mol barrier is one room temperature cannot make
+    within the hour.  The decision is what is asserted and not the numbers:
+    xtb's optimiser is not bit-reproducible under threading, and the same
+    eight-step drag has been measured at +12.2 once and +28.9 another time.
+    Every margin here is a third of the ceiling or more.
+    """
+    from delfin.dashboard.structure_editor import thermal_ceiling
+
+    began = gfn.optimize_with_gfn(_NITROSAMINE, "gfn2", timeout=None)
+    assert began.get("ok"), began.get("status")
+    anchor, here = float(began["energy"]), began["xyz"]
+    was = _dihedral(here, *_TURN)
+
+    path, standing = [], here
+    for n in range(13):
+        got = gfn.optimize_with_gfn(
+            standing, "gfn2", timeout=None,
+            constraints=[{"kind": "dihedral", "atoms": list(_TURN),
+                          "mode": "fix", "value": was + 15.0 * n}])
+        assert got.get("ok"), got.get("status")
+        standing = got["xyz"]
+        path.append((standing, float(got["energy"])))
+
+    kcal = [(e - anchor) * 627.5094740631 for _x, e in path]
+    ceiling = thermal_ceiling(298.15, 3600.0)
+    assert max(kcal) > ceiling * 1.3, kcal
+    assert kcal[-1] < ceiling * 0.5, kcal[-1]
+
+    # Room temperature: the far side is refused, because of how it was reached.
+    part, state = _editor(here)
+    _armed(part, state, here, anchor, T=298.15)
+    verdicts = [part._thermal_wall(x, e, []) is None for x, e in path]
+    assert verdicts[0] is True, "the anchor itself is affordable"
+    assert verdicts[-1] is False, "and the far side was reached through the top"
+    assert "went through" in part._thermal_note(path[-1][1])
+
+    # The same drag where the temperature can pay for it.  A ceiling that
+    # refused this too would not be a ceiling, it would be a rule.
+    part, state = _editor(here)
+    _armed(part, state, here, anchor, T=1500.0)
+    assert thermal_ceiling(1500.0, 3600.0) > max(kcal) * 1.3
+    assert all(part._thermal_wall(x, e, []) is None for x, e in path), (
+        "1500 K buys the whole rotation")
+
+
+@_needs_xtb
+def test_a_drag_that_stays_cheap_is_never_taken_back():
+    """The other half of the pair, and the one that would be easy to break.
+
+    A rule that refuses a barrier it never crossed is worse than no rule.  Two
+    drags room temperature certainly does allow, both under GFN2 with
+    everything but the driven coordinate relaxed: an ethane C-C lengthened
+    from 1.53 to 1.65 A, which costs +4.4 kcal/mol at the far end, and the same
+    ethane turned from staggered to eclipsed, which costs +2.6 -- the whole of
+    a torsional barrier that at room temperature turns over some 10^11 times a
+    second.
+    """
+    from delfin.dashboard.structure_editor import thermal_ceiling
+
+    began = gfn.optimize_with_gfn(_ETHANE, "gfn2", timeout=None)
+    assert began.get("ok"), began.get("status")
+    anchor, here = float(began["energy"]), began["xyz"]
+    ceiling = thermal_ceiling(298.15, 3600.0)
+
+    for leg, values in (
+        ({"kind": "distance", "atoms": [0, 1]},
+         [1.53, 1.56, 1.59, 1.62, 1.65]),
+        ({"kind": "dihedral", "atoms": [2, 0, 1, 5]},
+         [_dihedral(here, 2, 0, 1, 5) + 15.0 * n for n in range(5)]),
+    ):
+        path, standing = [], here
+        for value in values:
+            got = gfn.optimize_with_gfn(
+                standing, "gfn2", timeout=None,
+                constraints=[dict(leg, mode="fix", value=float(value))])
+            assert got.get("ok"), got.get("status")
+            standing = got["xyz"]
+            path.append((standing, float(got["energy"])))
+        kcal = [(e - anchor) * 627.5094740631 for _x, e in path]
+        assert max(kcal) < ceiling * 0.5, (leg, kcal)
+
+        part, state = _editor(here)
+        _armed(part, state, here, anchor, T=298.15)
+        assert all(part._thermal_wall(x, e, []) is None for x, e in path), (
+            leg, kcal)
 
