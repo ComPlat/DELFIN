@@ -206,9 +206,14 @@ def test_optimisation_covers_every_frame_and_is_undoable():
     )
     assert "state['pre_optimize_frames']" in body
     assert 'relax_xyz(' in body and 'max_steps=500' in body
-    # A 500-step minimisation per frame takes seconds; it must not block the UI.
-    assert 'threading.Thread(target=_work, daemon=True)' in body
-    assert 'worker.start()' in body
+    # A 500-step minimisation per frame takes seconds; it must not block the UI
+    # -- and it goes on a thread through the one place that counts the work, so
+    # the spinner is up for the whole of it and comes down even if it raises.
+    assert '_start_background(_work,' in body
+    # The thread is kept where the next press can find it: an interrupted run
+    # is still shutting its process down when the replacement starts, and a
+    # login node is shared.
+    assert "remember_in='optimize_thread'" in body
     # One bad frame must not lose the others.
     assert 'results.append(item)' in body
 
@@ -1636,13 +1641,19 @@ def test_the_fullscreen_status_is_cleared_with_the_small_one():
     Clearing only the small one left fullscreen showing "Quick convert (single
     structure)..." long after the structure was on screen -- and in fullscreen
     that stale line is the only thing there is to go by.
-    """
-    from delfin.dashboard import tab_submit
 
-    source = _EDITOR_PY
-    clear = source.split('def _clear_mol_status')[1].split('\n    def ')[0]
-    assert "mol_status.value = ''" in clear
-    assert "mol_status_fs.value = ''" in clear
+    Driven rather than read, because clearing goes through the one renderer
+    now: it has to leave the ring alone while something is still running, and
+    only the renderer knows whether anything is.
+    """
+    part, _state, _pump = _a_part()
+    part._set_mol_status('Quick convert (single structure)...')
+    assert part.mol_status.value
+    assert part.mol_status_fs.value
+
+    part._clear_mol_status()
+    assert part.mol_status.value == ''
+    assert part.mol_status_fs.value == ''
 
 
 # ---------------------------------------------------------------------------
@@ -2336,3 +2347,246 @@ def test_the_hand_lets_go_over_a_few_frames_rather_than_at_once():
     # that is getting weaker rather than one that has vanished.
     assert 'if (state.ffFading) ffFadeStep(scopeKey);' in _body('ffRelaxFrame')
     assert 'if (state.ffFading) ffFadeStep(scopeKey);' in _body('ffRelaxAsync')
+
+
+# --- the ring, and whether it says the truth about what is running ---------
+#
+# Measured by driving the real handlers with a queued schedule_ui_update -- the
+# way Voila's io_loop queues one -- and sampling both status labels from the
+# interface thread while the worker really runs on its own.  Reading the source
+# cannot answer this class of question: the source says exactly what it means
+# to do at every call site, and the defect was in which call sites there are.
+
+_RING = "class='delfin-busy'"
+
+
+def _a_part(xyz=_BENZENE):
+    """One structure editor, and the queue its interface updates go through.
+
+    Queued rather than called straight through, because a worker that runs to
+    completion before anything is sampled proves nothing about what is on
+    screen while it runs.
+    """
+    import collections
+    import pathlib
+    import tempfile
+
+    pytest.importorskip("ipywidgets")
+    import ipywidgets as widgets
+
+    from delfin.dashboard import structure_editor
+    from delfin.dashboard.context import DashboardContext
+
+    room = pathlib.Path(tempfile.mkdtemp())
+    for name in ("calc", "archive", "office"):
+        (room / name).mkdir()
+    ctx = DashboardContext(calc_dir=room / "calc", archive_dir=room / "archive",
+                           office_dir=room / "office")
+    ctx.run_js = lambda _script: None
+    ctx.add_init_js = lambda _script: None
+    queue = collections.deque()
+    state = {}
+    box = widgets.Textarea(value=xyz)
+    part = structure_editor.build(
+        ctx, state=state, coords_widget=box, viewer_height=560,
+        schedule_ui_update=lambda func, *a, **k: queue.append((func, a, k)),
+        update_view=lambda *a, **k: None, get_smiles_charge=lambda *a, **k: None)
+    state["current_xyz_for_copy"] = {"content": xyz}
+    part.submit_ff_dd.value = "gfn2"
+
+    def pump():
+        while queue:
+            func, a, k = queue.popleft()
+            func(*a, **k)
+
+    return part, state, pump
+
+
+def _watch(part, state, pump, press, seconds=20.0):
+    """Press something and sample both labels until the work is over.
+
+    Each sample is (work in flight, ring in the inline label, ring in the
+    fullscreen copy, the text).
+    """
+    import time
+
+    samples = []
+    press()
+    began = time.perf_counter()
+    while True:
+        pump()
+        inline, full = part.mol_status.value, part.mol_status_fs.value
+        running = bool(state.get("busy_jobs"))
+        samples.append((running, _RING in inline, _RING in full,
+                        re.sub("<[^>]+>", "", inline)))
+        if not running or time.perf_counter() - began > seconds:
+            break
+        time.sleep(0.01)
+    for _ in range(3):
+        pump()
+        inline, full = part.mol_status.value, part.mol_status_fs.value
+        samples.append((bool(state.get("busy_jobs")), _RING in inline,
+                        _RING in full, re.sub("<[^>]+>", "", inline)))
+        time.sleep(0.01)
+    return samples
+
+
+def _slow(seconds, answer):
+    import time
+
+    def _fake(*_a, **_k):
+        time.sleep(seconds)
+        return answer
+    return _fake
+
+
+def test_the_ring_turns_for_the_whole_of_a_run_and_stops_with_it():
+    """A settle driven for real, sampled while xtb is being waited on.
+
+    The settle was one of the workers that already announced itself properly,
+    and this holds it to that now that the announcement no longer decides
+    anything.  What the ring is decided by was the defect: sampled the same
+    way, a scan showed no ring at all for its first third of a second -- the
+    line on screen was the note left over from choosing GFN2, written without
+    one -- and the 0.35 s each release waits before a settle or a minimisation
+    starts showed none either.  Someone who reads that as finished picks an
+    atom up, and then two calculations are moving the same structure.
+    """
+    from delfin.dashboard import gfn_optimize as _gfn
+
+    part, state, pump = _a_part()
+    real = _gfn.optimize_with_gfn
+    _gfn.optimize_with_gfn = _slow(0.3, {"ok": True, "xyz": _BENZENE,
+                                         "converged": True, "energy": -7.0})
+    try:
+        samples = _watch(part, state, pump, part._gfn_settle_now)
+    finally:
+        _gfn.optimize_with_gfn = real
+
+    running = [s for s in samples if s[0]]
+    assert len(running) > 5, "the settle was over before it could be sampled"
+    assert all(s[1] and s[2] for s in running), (
+        "the ring went out while the settle was still running: "
+        f"{[s[3] for s in running if not (s[1] and s[2])][:1]}")
+    assert not any(s[1] or s[2] for s in samples if not s[0]), (
+        "the ring was still turning after the settle had finished")
+
+
+def test_a_progress_line_cannot_take_the_ring_off_a_running_job():
+    """The defect, at its smallest: 127 status writes, 23 asking for the ring.
+
+    The other 104 turned it off, and several of them are written from inside a
+    worker that is still running -- a scan saying which step it is on, an
+    optimisation saying how far the last round moved.  The ring belongs to
+    whether anything is running, which no single status message is in a
+    position to know, so it is read from the register of running work instead.
+    """
+    part, state, _pump = _a_part()
+    token = part._busy_begin("something long")
+    try:
+        part._set_mol_status("step 12 of 40")
+        assert _RING in part.mol_status.value
+        assert _RING in part.mol_status_fs.value
+        # Including the one that clears the words: a structure arriving is not
+        # the same event as the work being over.
+        part._clear_mol_status()
+        assert _RING in part.mol_status.value
+        assert _RING in part.mol_status_fs.value
+    finally:
+        part._busy_end(token)
+    assert state.get("busy_jobs") == {}
+
+
+def test_a_worker_that_dies_stops_the_ring_instead_of_turning_for_ever():
+    """The opposite failure, and just as bad: a ring that cannot be stopped.
+
+    None of the fourteen background workers was wrapped, and each cleared its
+    own run flag inside a callback an exception skips.  Measured before this:
+    a saddle search whose engine raised left ``saddle_run`` true and the ring
+    turning over a calculation that had stopped -- for the rest of the
+    session, with the button still offering to stop it.
+    """
+    import time
+
+    from delfin.dashboard import saddle as _saddle
+
+    part, state, pump = _a_part()
+    real = _saddle.optimise_to_saddle
+
+    def _boom(*_a, **_k):
+        time.sleep(0.2)
+        raise RuntimeError("xtb went missing halfway through")
+
+    _saddle.optimise_to_saddle = _boom
+    try:
+        samples = _watch(part, state, pump, part.on_submit_saddle)
+    finally:
+        _saddle.optimise_to_saddle = real
+
+    assert any(s[0] for s in samples), "the climb never started"
+    assert not state.get("busy_jobs"), "the register still says work is running"
+    assert not any(s[1] or s[2] for s in samples if not s[0]), (
+        "the ring outlived the worker that died")
+    assert state.get("saddle_run") is False, (
+        "the run flag stayed set, so the button still says Stop")
+    assert "stopped on an error" in re.sub("<[^>]+>", "", part.mol_status.value)
+
+
+def test_a_question_asked_of_the_page_counts_as_work_and_is_on_a_leash():
+    """Reading a drawing has no thread behind it, and is still a wait.
+
+    The molfile comes back through a hidden box the page writes into, so
+    between the press and the answer there was no worker to count and the ring
+    was decided by a status message alone.  A frame that has been folded away
+    never answers at all -- which is why the wait is on a leash rather than
+    trusted to end.
+    """
+    part, state, _pump = _a_part()
+    part.on_submit_draw_get()
+    assert state.get("busy_jobs"), "waiting on the page did not count as work"
+    assert _RING in part.mol_status.value
+    assert _RING in part.mol_status_fs.value
+
+    # The page answers, and the wait is over.
+    part.submit_draw_sync.value = "1\n!no-editor"
+    assert not state.get("busy_jobs")
+    assert _RING not in part.mol_status.value
+    assert _RING not in part.mol_status_fs.value
+
+
+def test_both_status_labels_always_agree_about_the_ring():
+    """A ring in the inline line and none in the overlay is the same bug.
+
+    Which of the two is on screen is the overlay's business, so a reader in
+    fullscreen and a reader outside it have to be told the same thing.  The
+    one line the overlay drops -- the prompt asking for coordinates, which
+    would sit there for ever over a structure that is plainly on screen --
+    keeps the ring even so.
+    """
+    part, state, _pump = _a_part()
+    token = part._busy_begin("something long")
+    try:
+        for line in ("Optimising 1 frame(s) with GFN2-xTB...",
+                     "step 12 of 40",
+                     "Load a structure before optimising.",
+                     "Paste or enter XYZ coordinates."):
+            part._set_mol_status(line)
+            assert (_RING in part.mol_status.value) is True, line
+            assert (_RING in part.mol_status_fs.value) is True, line
+    finally:
+        part._busy_end(token)
+
+
+def test_every_background_worker_is_started_through_the_one_place():
+    """So that the next one added cannot forget the ring.
+
+    Fixing the call sites one at a time leaves the next status message anyone
+    writes re-introducing the defect, and the next thread anyone starts
+    leaving the register untouched.  There are two raw threads in the editor
+    and they are the mechanism itself: the wrapper that counts the work, and
+    the leash on a question the page may never answer.
+    """
+    started = re.findall(r'threading\.Thread\(target=(\w+)', _EDITOR_PY)
+    assert sorted(started) == ["_leash", "_run"], (
+        f"a background worker bypasses _start_background: {started}")
+    assert "_start_background(" in _EDITOR_PY
