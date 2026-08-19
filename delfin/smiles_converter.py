@@ -853,6 +853,38 @@ def _ml_bond_kind(mol, metal_idx: int, donor_idx: int) -> str:
         return "sigma"
 
 
+def _apply_h_placement_if_enabled(results):
+    """H-Platzierung fuer den FF-freien Pfad (19.08.2026, DELFIN_FFFREE_H_PLACEMENT).
+
+    Braucht KEIN ``mol``: alle drei Stufen arbeiten auf dem XYZ-Text, damit entfaellt die
+    Atomreihenfolge-Falle, vor der der Docstring von ``_ffree_shared_tail`` warnt.  Genau
+    daran scheitert ``FIX_F19``, dessen Bewegungsklasse eigentlich die beste im Baum ist --
+    er liest RDKit-Hybridisierung und braucht ``frame_to_mol_map``.
+
+    ⚠ DEN SCHALTER PRUEFT DAS MODUL SELBST.  Bewusst NICHT hier noch einmal: ein Schalter,
+    der an zwei Stellen gelesen wird, driftet.
+
+    ⚠ WARUM DAS SICHER IST: Schweratome werden byte-genau festgehalten und am Ende
+    geprueft (``aborted_heavy_moved``); bewegt werden ausschliesslich H.  Stufe B haelt
+    die RICHTUNG und aendert nur die Laenge, kann also weder Winkel noch Vorzeichen
+    kippen.  Fuer Stufe A und C steht ein Stereotor: kippt in einem Frame ein echter
+    Kandidat oder wird ein Zentrum plattgedrueckt, faellt der GANZE Frame zurueck.
+    Gemessen: von 1076 echten Kandidaten kippte genau einer, und das Tor kostet nichts.
+
+    ⚠ STUFE A BAUT NICHTS NACH, sie DELEGIERT an ``_vsepr_repair`` -- den einzigen der
+    sieben vorhandenen H-Mechanismen, der unwiderlegt ist und nur wegen seiner Position
+    (3038 Zeilen hinter dem FF-freien return) nie FF-frei feuerte.
+    """
+    try:
+        from delfin.manta import _h_placement as _hp
+    except Exception:
+        return results
+    try:
+        return _hp.apply_to_results(results)
+    except Exception:
+        return results
+
+
 def _apply_mirror_enum_if_enabled(results):
     """Spiegelabschluss des Manifolds (17.08.2026).
 
@@ -32671,6 +32703,24 @@ def _smiles_to_xyz_isomers_impl(
                 # Hier steht er darum unbedingt, gattert nur durch seinen EIGENEN Schalter
                 # (Vorgabe 0 -> byte-identisch) und ist bei SHARED_TAIL=1 ein No-op, weil
                 # expand_results seit heute idempotent ist (Label-Suffix ``_mirror``).
+                # ── H-PLATZIERUNG (DELFIN_FFFREE_H_PLACEMENT, Vorgabe 0) ──
+                # Die Wasserstoff-Familie traegt 28 % der Haertemasse und hatte bis zum
+                # 19.08. KEINEN aktiven Mechanismus: von sieben vorhandenen sind drei
+                # gemessen widerlegt (5B_VSEPR_H_REALISM, H_FOLLOW, DONOR_FOLLOW), einer
+                # hat null Aufrufstellen im ganzen Baum (H_CLASH_ROTATE) und die uebrigen
+                # liegen HINTER dem FF-freien return -- VSEPR_REPAIR sogar 3038 Zeilen.
+                #
+                # ⚠️ DIE POSITION IST TEIL DES MECHANISMUS, nicht Geschmack:
+                #   * VOR dem Spiegel, damit BEIDE Haende dieselbe H-Reparatur tragen.
+                #   * NACH _apply_stereocenter_enum_if_enabled, damit dessen `present`-
+                #     Lesung unberuehrt bleibt (genau daran hat trans208 Stereozentren
+                #     verdraengt, obwohl beide Paesse additiv waren).
+                #
+                # Schweratome bleiben byte-genau fest, und ein Stereotor rollt den GANZEN
+                # Frame zurueck, falls ein echtes Zentrum kippt.  Gemessen mit den
+                # Detektoren des Auges auf 2144 Frames: Kollisionen 80->48, harte
+                # HH-Kontakte 225->142, Methylverstoesse in 133->103 Dateien.
+                _ff = _apply_h_placement_if_enabled(_ff)
                 _ff = _apply_mirror_enum_if_enabled(_ff)
                 # RING PUCKER FOR THE FF-FREE PATH: the hook that USED to sit here has been
                 # removed, and the reason is worth keeping.
