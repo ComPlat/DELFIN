@@ -144,11 +144,31 @@ def xyz_document(lines, comment):
 #: a name off a file or a note the user typed.  Only these may be replaced when
 #: the coordinates underneath them are no longer the ones they were written
 #: for; everything else in that line belongs to the user.
+#:
+#: A claim that is not in this list is treated as the user's and carried over
+#: whatever happens to the coordinates beneath it, which turns it into a lie
+#: nobody can see.  Measured: a drag that the budget rolled back left "Past
+#: the budget: back to the last structure that was inside it" in the box, the
+#: next message from the page wrote its own coordinates under that line, and
+#: what the user was looking at was a torn ethane at +141.2 kcal/mol wearing
+#: the sentence that says it had been taken back.  So every line this file
+#: writes belongs here, and adding one to the writing means adding it here in
+#: the same breath.
 _EDITOR_COMMENTS = (
     'optimised in delfin viewer',
     'edited in delfin viewer',
     'settled with ',
     'stopped at the frame on screen',
+    'stopped where you took hold',
+    'relaxed, and the budget measured from here',
+    'within the budget',
+    'past the budget',
+    'back to the last structure that was measured and allowed',
+    'kept: the bonding would have changed',
+    'scanned',
+    'where the saddle search got to',
+    'optimised to a transition state',
+    'estimated transition state, from the path',
     'delfin drag-end',
     'delfin drag-follow',
     'from the delfin viewer',
@@ -1200,28 +1220,26 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: 1.0 is a hand as strong as the bond, which can break it.  0 is the old
     #: rigid hand, for placing an atom exactly where it is wanted.
     #:
-    #: It opens at 0.4, which is what room temperature allows.  A tenth was
-    #: gentler than the budget's own hand, so switching the budget *on* made
-    #: the drag stronger -- which is backwards, and is not what a ceiling
-    #: should feel like.  Without the budget this is the whole story and the
-    #: top of it takes anything apart; with the budget on, the temperature is
-    #: the ceiling and this can only ask for less than it.
+    #: It opens at 0.4, which is about what room temperature allows: it turns
+    #: a molecule into its own conformers and it does not break a bond.
     #:
-    #: With the thermal budget on, the temperature sets it instead: the hand
-    #: becomes the force whose push can spend the ceiling over its reach, 45
-    #: kcal/mol per Angstrom and per radian at 298 K within the hour.  Enough
-    #: to turn a molecule into its own conformers, which is what the setting
-    #: is for; what refuses what the temperature cannot pay for is the wall.
+    #: The temperature does not touch this, with the budget on or off.  It
+    #: once did -- the hand was derived from the ceiling over a reach -- and
+    #: that needs a length no temperature supplies; sized as a distance it was
+    #: too weak to turn a torsion, so a molecule could not be put into its own
+    #: conformers at exactly the temperature that certainly allows it.  What
+    #: the temperature limits is the energy of what is *kept*, and the wall is
+    #: what enforces that.  See :func:`_pull_force`.
     submit_pull_slider = widgets.FloatSlider(
         value=0.4, min=0.0, max=3.0, step=0.05,
         description='Pull', continuous_update=False,
         readout=True, readout_format='.2f',
-        tooltip=('How hard dragging pulls, as a share of a bond. 0.4 is what '
-                 'room temperature allows: it turns a molecule into its own '
-                 'conformers and cannot break a bond. 1.0 is as strong as the '
-                 'bond; 3.0 takes anything apart; 0 places the atom outright. '
-                 'With the thermal budget on the temperature caps it, and '
-                 'this can only ask for less.'),
+        tooltip=('How hard dragging pulls, as a share of a bond. 0.4 is about '
+                 'what room temperature allows: it turns a molecule into its '
+                 'own conformers and cannot break a bond. 1.0 is as strong as '
+                 'the bond; 3.0 takes anything apart; 0 places the atom '
+                 'outright. The thermal budget does not change this -- it '
+                 'limits the energy of what you are left with.'),
         style={'description_width': '58px'},
         layout=widgets.Layout(width='200px'),
         disabled=True,
@@ -2811,20 +2829,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         49, a C-O at 60 -- near enough one number that "half a bond" is a
         statement about any molecule rather than about ethane.
 
-        And with the budget on, the temperature sets it.  What the
-        temperature grants is an energy, so the hand is the force whose push
-        can spend that much over its reach: 22.3 kcal/mol at 298 K within the
-        hour is a hand of 45 kcal/mol per Angstrom and per radian, four tenths
-        of what a bond holds.  At 150 K it is 22, at 1500 K it is 234.
+        The temperature does not come into it, and this used to say that it
+        did.  It was written when the budget derived the hand from the ceiling
+        -- 22.3 kcal/mol over a reach was a hand of 45 kcal/mol per Angstrom
+        -- and that chain was taken out because it needs a length no
+        temperature supplies and it forbade what the temperature allows: sized
+        as a distance the hand was too weak to turn a torsion, so a molecule
+        could not be put into its own conformers at room temperature.  See
+        :func:`_pull_most`, which is what is left of it.
 
-        The hand is sized so that everything the temperature allows can be
-        *asked for* -- a rotational barrier of 4.8 kcal/mol needs about 11
-        kcal/mol per radian to be driven over, and 22 is enough for it.  What
-        refuses what the temperature does not allow is the wall, which prices
-        the structure that was actually reached: a hand strong enough to drive
-        a barrier can always be dragged for longer than one barrier's worth,
-        and no force ceiling can prevent that.  The two are different jobs and
-        this is only the first of them.
+        So the slider is the whole of the hand, with the budget on or off, and
+        what the temperature limits is the *energy* of what is kept.  That is
+        the wall's job: a hand strong enough to drive one barrier can always
+        be dragged for longer than one barrier's worth, and no force ceiling
+        anywhere can prevent that.  The two are different jobs and this is
+        only the first of them.
         """
         if str(submit_hand_dd.value) == 'move':
             # The rigid hand: the coordinate is set and whoever is calculating
@@ -3224,6 +3243,66 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         )
                     else:
                         priced = {}
+                    # What this step would leave behind, worked out before the
+                    # budget is asked about it rather than after.
+                    #
+                    # The price above belongs to the geometry xtb relaxed, and
+                    # under a pull that is emphatically not the geometry the
+                    # mouse asked for: the push is soft, the bond comes most of
+                    # the way back, and the two structures part company further
+                    # with every step of the drag.  Priced one and kept the
+                    # other, the budget was answering about a molecule nobody
+                    # was looking at -- measured on an ethane methyl pulled
+                    # out at 298 K, a 22.3 ceiling: the relaxed answer went
+                    # +0.1, +1.1, +0.2, +4.0, +6.8, +12.2, +16.2 kcal/mol and
+                    # was allowed every time, while what was left in the box
+                    # went +15.8, +45.3, +74.8, +99.1, +116.9, +129.0, +136.7.
+                    #
+                    # So the wall is asked about the structure that survives
+                    # the step, and the two placements below are chosen to
+                    # keep that honest: settle_onto is a rigid body, so the
+                    # energy that was priced is exactly the energy of what is
+                    # kept; hold_atoms_at moves single atoms, and how much
+                    # that changes the structure is the slip measured further
+                    # down, which refuses the step once it is more than a
+                    # nudge.
+                    #
+                    # Under a rigid hand the held atoms go back where the
+                    # cursor had them; that is what a rigid hand is.  Under a
+                    # pull they emphatically do not -- how far the atom got is
+                    # the answer to the question the drag asked, and putting it
+                    # back under the cursor is how a force was made to look
+                    # like a move.  The structure is laid onto the geometry it
+                    # was handed by everything that is *not* held, so the
+                    # molecule stays where it is on screen and only what was
+                    # pulled has moved.
+                    if pull is not None and contacts:
+                        count = len(_gfn.atom_lines(current))
+                        grabbed = {int(i) for i in (holding or ())}
+                        rest = [i for i in range(count) if i not in grabbed]
+                        laid = _gfn.settle_onto(
+                            outcome['xyz'], current, rest or range(count))
+                        reached = laid
+                    else:
+                        # Twice over, and the first of the two is what makes
+                        # the second honest.  A held value is an internal
+                        # coordinate: xtb meets it and is then free to put the
+                        # whole molecule anywhere that does, so the answer
+                        # comes back turned and slid bodily away from the
+                        # cursor.  Laid back on as a rigid body that costs
+                        # nothing -- an energy does not depend on where a
+                        # molecule is -- and what is left over is the only
+                        # part that is really a shortfall.
+                        #
+                        # Measured on a butane turned about its middle bond
+                        # under a rigid hand: the body slid 0.27 A, which was
+                        # counted as slip and refused the turn at 0.25 -- with
+                        # the price standing at +0.0 of 22.3 kcal/mol, so the
+                        # temperature was allowing it and the drag stopped
+                        # anyway.  Laid on first, the residue is 0.005 A.
+                        laid = _gfn.settle_onto(
+                            outcome['xyz'], current, holding)
+                        reached = _gfn.hold_atoms_at(laid, current, holding)
                     if not stale:
                         state['thermal_now'] = priced.get('energy')
                     if stale and submit_thermal_btn.value:
@@ -3257,11 +3336,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         # answer it asked for -- so measuring the shortfall
                         # against a rigid hand and refusing the drag for it
                         # would refuse every pull there is.
-                        slipped = _gfn.largest_shift(
-                            _gfn.hold_atoms_at(
-                                outcome['xyz'], current, holding),
-                            outcome['xyz']) if (contacts and pull is None) \
-                            else 0.0
+                        # Between the two placements above, so the molecule's
+                        # freedom to sit anywhere is not counted as a
+                        # shortfall.  Measured against the raw answer it was,
+                        # and a butane turned about its middle bond was refused
+                        # for a 0.27 A body slide while the price stood at
+                        # +0.0 of 22.3 -- a refusal the temperature had nothing
+                        # to do with.
+                        slipped = (_gfn.largest_shift(reached, laid)
+                                   if (contacts and pull is None) else 0.0)
                         # Two refusals that do not depend on the budget.
                         #
                         # A loose hold means the price is about a nearby
@@ -3293,9 +3376,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             current, [int(i) for i in (holding or ())]
                         ) if priced.get('energy') is not None \
                             and _thermal_budget()[0] is not None else None
+                        # Whether the temperature is what refused this, or one
+                        # of the two things that are refused at any
+                        # temperature.  Said apart, because "past the budget"
+                        # over a step the budget was perfectly happy with sends
+                        # the user to the temperature box to fix something that
+                        # is not there: measured on a butane turned about its
+                        # middle bond, "+0.0 of 22.3 kcal/mol available. Past
+                        # the budget, so the last structure that was inside it
+                        # is back."
+                        aside = (slipped > _SLIP_LOOSE) or crowded
                         came_back = _thermal_wall(
-                            current, priced.get('energy'), holding,
-                            refuse=(slipped > _SLIP_LOOSE) or crowded)
+                            reached, priced.get('energy'), holding,
+                            refuse=aside)
                         # What the hand was asking for when it ran out, so the
                         # next steps can tell "still pulling" from "easing
                         # off" without running anything.
@@ -3303,30 +3396,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             [dict(one) for one in contacts]
                             if came_back is not None and contacts else None)
                         if came_back is not None:
-                            said = (f'{said} Past the budget, so the last '
-                                    f'structure that was inside it is back.')
-                            # The box as well, not only the picture.
-                            #
-                            # The frames go to the viewer, but the coordinate
-                            # box is written from the page's own model when the
-                            # hand lets go -- and that model still has the atom
-                            # where the cursor left it.  So the drag sprang
-                            # back on screen, the user let go, and what was
-                            # kept was the torn structure after all: measured,
-                            # the viewer drew 1.40 A while the box held 3.40.
-                            # The rollback has to reach the thing that outlives
-                            # the drag.
-                            rows = [line for line
-                                    in came_back.splitlines()[2:]
-                                    if line.strip()]
-                            if rows:
-                                schedule_ui_update(
-                                    _write_coords,
-                                    xyz_document(
-                                        rows,
-                                        'Past the budget: back to the last '
-                                        'structure that was inside it'),
-                                    True)
+                            said = (f'{said} ' + (
+                                'So the last structure that was measured and '
+                                'allowed is back.' if aside else
+                                'Past the budget, so the last structure that '
+                                'was inside it is back.'))
                         if crowded:
                             said = (f'{said} Two atoms are inside '
                                     f'{tightest:.2f} of a bond length, which '
@@ -3386,26 +3460,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # the hand as a rigid body it costs nothing -- an energy
                     # does not depend on where a molecule is -- and the two are
                     # still the same structure.
-                    # Under a rigid hand the held atoms go back where the
-                    # cursor had them; that is what a rigid hand is.  Under a
-                    # pull they emphatically do not -- how far the atom got is
-                    # the answer to the question the drag asked, and putting it
-                    # back under the cursor is how a force was made to look
-                    # like a move.  The structure is laid onto the geometry it
-                    # was handed by everything that is *not* held, so the
-                    # molecule stays where it is on screen and only what was
-                    # pulled has moved.
-                    if came_back is not None:
-                        settled = came_back
-                    elif pull is not None and contacts:
-                        count = len(_gfn.atom_lines(current))
-                        grabbed = {int(i) for i in (holding or ())}
-                        rest = [i for i in range(count) if i not in grabbed]
-                        settled = _gfn.settle_onto(
-                            outcome['xyz'], current, rest or range(count))
-                    else:
-                        settled = _gfn.hold_atoms_at(
-                            outcome['xyz'], current, holding)
+                    #
+                    # Which of the two placements this is was decided further
+                    # up, where the price was taken, because the budget has to
+                    # be asked about the geometry that is going to survive.
+                    settled = came_back if came_back is not None else reached
                     # Whatever the budget said, the molecule stays the
                     # molecule it was if that was asked for.  Judged on what
                     # the user would be left with rather than on the raw
@@ -3429,19 +3488,37 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                     f'is set to move the atom, which is '
                                     f'asking for a place that breaks a bond. '
                                     f'Pull instead, or turn Keep bonds off.')
-                        # The box as well as the picture, or letting go keeps
-                        # the structure whose bonding was refused.
-                        rows = [line for line in kept.splitlines()[2:]
+                    else:
+                        state['topology_refused'] = 0
+                    # What the box is to be left holding, and why.
+                    #
+                    # One write, at the end, of the geometry that survives the
+                    # step -- rather than one write per refusal and nothing at
+                    # all when the step was allowed.  The box is what outlives
+                    # the drag: it is what Copy and Submit read and what the
+                    # next calculation starts from, so whatever reaches it has
+                    # to be something that has been priced.  Nothing wrote it
+                    # on an allowed step, so the page's own model wrote it
+                    # instead -- and the page's model is the mouse's wish, at
+                    # +136.7 kcal/mol under a 22.3 ceiling while the line
+                    # underneath read "+16.2 of 22.3 available".
+                    why = ''
+                    if kept is not None:
+                        why = 'Kept: the bonding would have changed'
+                    elif came_back is not None:
+                        why = ('Back to the last structure that was measured '
+                               'and allowed' if aside else
+                               'Past the budget: back to the last structure '
+                               'that was inside it')
+                    elif pricing:
+                        why = ('Within the budget at '
+                               f'{float(submit_temperature.value):g} K')
+                    if why:
+                        rows = [line for line in settled.splitlines()[2:]
                                 if line.strip()]
                         if rows:
                             schedule_ui_update(
-                                _write_coords,
-                                xyz_document(
-                                    rows, 'Kept: the bonding would have '
-                                          'changed'),
-                                True)
-                    else:
-                        state['topology_refused'] = 0
+                                _write_coords, xyz_document(rows, why), True)
                     # What the next answer measures the hand against: the
                     # geometry this one handed back, not the one it was
                     # handed.  Against the latter the difference holds the
@@ -3685,6 +3762,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     def _thermal_wall(xyz, energy, holding, refuse=False):
         """Keep what the budget agreed to, and take back what it did not.
 
+        *xyz* is the geometry that will be kept if this says yes, and *energy*
+        is the energy of that same geometry.  Both halves of that sentence are
+        load-bearing and neither used to hold: what was handed in was the
+        page's own model -- the mouse's wish -- while the energy belonged to
+        the structure xtb had relaxed around it.  Under a pull those two part
+        company completely, because the push is soft and the bond comes most
+        of the way back, so the budget was answering about one molecule and
+        the user was left with another.  Measured on an ethane methyl pulled
+        out at 298 K against a 22.3 ceiling, the relaxed answers were +0.1,
+        +1.1, +0.2, +4.0, +6.8, +12.2, +16.2 kcal/mol and every one of them was
+        allowed, while what stayed in the box went +15.8, +45.3, +74.8, +99.1,
+        +116.9, +129.0, +136.7.  The geometry kept back as "the last one that
+        was inside the budget" was the same wish, at +136.7.
+
         Act, then undo, rather than hold back.  The hand cannot be stopped at
         the right place in real time -- xtb is far too slow for that and always
         will be -- but nothing that was not allowed has to be *kept*.  So the
@@ -3721,6 +3812,49 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             state.pop('thermal_good', None)
             return None
         return good
+
+    def _settle_price(outcome, constraints):
+        """What a relaxation reached, with any held value's own energy out.
+
+        The same arithmetic the drag is priced by, for the same reason: a
+        value held with a force leaves a real restraint energy in xtb's total,
+        and charging the budget for the hand as well as for the structure
+        prices something nobody is looking at.  A value met exactly leaves
+        none worth the name, so the answer is then its own price.
+        """
+        if not outcome.get('ok') or outcome.get('energy') is None:
+            return None
+        if not constraints:
+            return float(outcome['energy'])
+        bias = _gfn.restraint_energy(outcome['xyz'], constraints, _value_in)
+        return (float(outcome['energy']) - bias if bias is not None
+                else float(outcome['energy']))
+
+    def _keep_the_priced_geometry():
+        """Leave the box holding the last geometry the budget agreed to.
+
+        The follow writes every step it prices, so ordinarily the box has this
+        already and nothing happens here.  What it is for is the release: the
+        page sends its own model when the hand lets go, and that model is
+        where the *cursor* was rather than where the chemistry allowed -- so
+        the last word on a drag was the one geometry nothing had ever priced.
+        """
+        good = state.get('thermal_good')
+        if not good:
+            return
+        rows = [line for line in good.splitlines()[2:] if line.strip()]
+        here = coords_widget.value or ''
+        if not rows or len(_gfn.atom_lines(here)) != len(rows):
+            # A different molecule, so the kept geometry is not about this
+            # one and handing it over would swap the structure underneath the
+            # user.  The wall guards itself the same way, for the same reason.
+            return
+        if _gfn.coordinates_of(here) == _gfn.coordinates_of(good):
+            return          # already holding it, and the comment says why
+        _write_coords(
+            xyz_document(rows, 'Within the budget at '
+                               f'{float(submit_temperature.value):g} K'),
+            True)
 
     def _topology_wall(xyz):
         """Keep the molecule the molecule it was, and take back what did not.
@@ -3780,13 +3914,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             lambda text=json.dumps(payload): setattr(
                 submit_gfn_wall, 'value', text))
 
-    def _set_thermal_anchor(relax=None, note='Measuring from here'):
+    def _set_thermal_anchor(relax=None, note='Measuring from here',
+                            note_after=''):
         """Take the energy of the structure on screen as the budget's zero.
 
         A single point when the structure is to be kept as it is, one
         optimisation when it is not.  Either way what is stored is an energy
         of the *chosen method*, so the budget and the drag are the same
         calculation and their difference means something.
+
+        *note_after* is anything the caller has to say about what switching
+        the budget on has changed besides the anchor, said on the end of the
+        line that reports the ceiling rather than in a line of its own -- this
+        row stands above the viewer, and a second one moves the picture.
         """
         xyz = _current_xyz()
         method = str(submit_ff_dd.value)
@@ -3861,7 +4001,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 _set_mol_status(
                     f'{note}. At {float(submit_temperature.value):g} K '
                     f'this structure has {ceiling:.1f} kcal/mol to spend '
-                    f'within {_timescale_label()}.')
+                    f'within {_timescale_label()}.{note_after}')
 
             schedule_ui_update(_done)
 
@@ -4179,6 +4319,31 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         f'{label} could not settle it: '
                         f'{outcome.get("status") or "it did not run"}')
                     return
+                # The release answers to the ceiling as well.
+                #
+                # A settle is a relaxation and a relaxation goes downhill, so
+                # this ordinarily has nothing to refuse -- which is exactly why
+                # it is worth asking rather than assuming: a value the user is
+                # holding is restored on every step of it, and restoring one
+                # is uphill.  Anything a settle produces is what outlives the
+                # drag, so it is held to the same ceiling the drag was.
+                priced = _settle_price(outcome, constraints)
+                anchor, ceiling = _thermal_budget()
+                over = (None if not (submit_thermal_btn.value
+                                     and anchor is not None
+                                     and priced is not None)
+                        else (float(priced) - float(anchor))
+                        * _HARTREE_TO_KCAL)
+                if over is not None and over > ceiling:
+                    state['gfn_settle_forced'] = False
+                    state['gfn_settle_rounds'] = 0
+                    _set_mol_status(
+                        f'{label} settled to a structure that costs '
+                        f'{over:+.1f} kcal/mol, past the {ceiling:.1f} this '
+                        f'one has at {float(submit_temperature.value):g} K, '
+                        'so it has been left as it was. '
+                        f'{_thermal_wait(over, submit_temperature.value)}')
+                    return
                 lines = [line for line in outcome['xyz'].splitlines()[2:]
                          if line.strip()]
                 if lines:
@@ -4187,6 +4352,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # frame happened to land.
                     _write_coords(xyz_document(lines, f'Settled with {label}'),
                                   drawn=True, run=run)
+                if over is not None:
+                    state['thermal_good'] = outcome['xyz']
                 # Not converged and the switch is still down: keep going.  That
                 # is what makes this a relaxation rather than a single push.
                 # It ends three ways -- converged, standing still, or out of
@@ -4370,6 +4537,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             if not active:
                 state['gfn_settle_forced'] = False
                 state['gfn_settle_rounds'] = 0
+                # The budget goes with it, because it cannot price a drag
+                # this switch is not answering.  The page only reports a drag
+                # while it is down; without those messages nothing runs, the
+                # ceiling has nothing to compare against, and it would sit
+                # there lit up refusing nothing at all -- which is worse than
+                # being off, because it is off and says it is on.
+                if submit_thermal_btn.value:
+                    submit_thermal_btn.value = False
+                    _set_mol_status(
+                        'The structure is no longer being relaxed, so the '
+                        'thermal budget has nothing to measure a drag with '
+                        'and has gone off with it. Switch the relaxation back '
+                        'on to have changes priced again.')
+                    return
                 _set_mol_status('The structure is no longer being relaxed.')
                 return
             if _server_binary(submit_ff_dd.value) is None:
@@ -6952,6 +7133,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             way = -1.0 if float(leg['to']) < float(leg['from']) else 1.0
             return max(0.2, now + way * _gfn.PUSH_REACH)
 
+        # What the temperature will pay for, read once before the walk starts.
+        #
+        # A scan is a change to the structure like any other, and with the
+        # budget on it answers to the same ceiling a drag does: the walk may
+        # go wherever it likes -- that is what a scan is for, and the verdict
+        # below reports the whole path however high it goes -- but what is
+        # handed back into the box at the end has to be somewhere the
+        # temperature can reach.  Otherwise the one place the ceiling is
+        # enforced can be walked round by pressing a different button.
+        scan_anchor, scan_ceiling = _thermal_budget()
+        budgeted = bool(submit_thermal_btn.value) and scan_anchor is not None
+        state['scan_walled'] = None
+
         def _work():
             walked, path = xyz, []
             base = None
@@ -6960,6 +7154,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             began_at = None
             standing = None
             shown = []
+            # Where the walk was last inside the budget, and what every point
+            # it kept costs against the anchor.  The structure it started from
+            # is affordable by construction -- it is what the box was holding.
+            affordable = xyz
+            costs = {}
             force = _gfn.PUSH_FORCE_FROM
             growth = (_gfn.PUSH_FORCE_TO / _gfn.PUSH_FORCE_FROM) ** (
                 1.0 / max(1, steps - 1))
@@ -7160,6 +7359,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         walked = standing if standing is not None else walked
                         break
                     standing = walked
+                    if budgeted:
+                        # Against the budget's own anchor, not against the
+                        # point the walk happened to start from: the two are
+                        # the same only when the scan starts where the budget
+                        # was measured, and the question here is what the
+                        # structure the user is left with costs.
+                        costs[walked] = ((float(energy) - float(scan_anchor))
+                                         * _HARTREE_TO_KCAL)
+                        if costs[walked] <= scan_ceiling:
+                            affordable = walked
                     if began_at is None:
                         # The first point, which is the start relaxed at the
                         # value it already had -- a minimum in every direction
@@ -7255,6 +7464,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         began_at, bottom[1] if bottom is not None else walked)
             finally:
                 state['scan_run'] = False
+                # The walk is reported whole; what is handed back is not.
+                #
+                # A path that climbs past the ceiling is exactly the answer a
+                # scan is asked for, and the verdict says how high it went and
+                # what temperature would cross it.  Leaving that geometry in
+                # the box is a different thing: it is the structure the user
+                # carries on from, and at this temperature they cannot get to
+                # it.  So the box gets the last point the budget could pay for
+                # and the line says which one that was.
+                if budgeted and costs.get(walked, 0.0) > scan_ceiling:
+                    state['scan_walled'] = costs[walked]
+                    walked = affordable
 
                 def _done(final=walked):
                     submit_scan_run_btn.description = 'Run scan'
@@ -7274,7 +7495,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             if line.strip()]
                     if rows:
                         _write_coords(xyz_document(
-                            rows, 'Scanned to the next minimum'
+                            rows,
+                            'Scanned, and back to the last point the '
+                            'temperature can pay for'
+                            if state.get('scan_walled') is not None else
+                            'Scanned to the next minimum'
                             if state.get('scan_arrived') else 'Scanned'),
                             run=state.get('scan_frame_run'))
                     _set_mol_status(*_scan_verdict(path, steps))
@@ -7609,14 +7834,25 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         else:
             wants = (f'It wants about {needs:.0f} K ({needs - 273.15:+.0f} C) '
                      f'to be crossed within {_timescale_label()}.')
+        # What was handed back, when it is not where the walk ended.  The walk
+        # is reported whole either way -- that is what a scan is for -- but a
+        # structure the temperature cannot reach is not one to carry on from,
+        # so the box has the last point it could and this says so.
+        walled = state.get('scan_walled')
+        held_back = ('' if walled is None else
+                     f' Where it ended costs {walled:+.1f} kcal/mol against '
+                     f'this structure, which is past the {ceiling:.1f} '
+                     f'available at {T:g} K, so the box has the last point '
+                     f'that was inside it.')
         if rise <= ceiling:
             return (first,
                     f'{wants} You have {ceiling:.1f} kcal/mol at {T:g} K, so '
-                    f'the whole path is open. {_thermal_wait(rise, T)}')
+                    f'the whole path is open. {_thermal_wait(rise, T)}'
+                    + held_back)
         return (first,
                 f'{wants} At {T:g} K only {ceiling:.1f} kcal/mol is '
                 f'available, so the path is closed there. '
-                f'{_thermal_wait(rise, T)}')
+                f'{_thermal_wait(rise, T)}' + held_back)
 
     def on_submit_hold(_button=None):
         """Hold the value the selection describes while the field runs."""
@@ -7956,7 +8192,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             _set_mol_status('The thermal budget is off. Drags are unmeasured '
                             'again.')
             return
-        _set_thermal_anchor()
+        # A budget prices the relaxation that runs while the hand is down, so
+        # that relaxation has to be running.  The page only reports a drag
+        # while this switch is down -- without it nothing is calculated, the
+        # ceiling has nothing to compare against, and every drag goes through
+        # whatever the temperature says.  A switch that turns a limit off
+        # without saying so is the defect this whole wall exists to close, so
+        # the two go on together and the line says that they did.
+        follow_too = ''
+        if _server_method() and not submit_relax_btn.value:
+            submit_relax_btn.value = True
+            follow_too = (' The structure follows the hand while you drag, '
+                          'because that relaxation is what the price is read '
+                          'from.')
+        _set_thermal_anchor(note_after=follow_too)
 
     def on_submit_scan_whole(change):
         """Only the light on the button; what it means is read where it is
@@ -8692,10 +8941,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         lines = new_xyz.splitlines()
         note = lines[1].strip() if len(lines) > 1 else ''
         drag_ended = note.startswith('DELFIN drag-end')
+        dragging = note.startswith('DELFIN drag-follow')
+        # The hand letting go, kept apart from drag_ended because an undo
+        # joins that one further down and an undo is not a drag: it hands back
+        # a geometry that was already there, so there is nothing to price and
+        # nothing to refuse.  Held to the budget it would be answered with the
+        # very structure it is undoing.
+        released = drag_ended
         # Sent while the mouse is still down, so the molecule can follow the
         # atom rather than wait for it to be let go.  The comment line names
         # the atoms the hand is on, so the answer can keep them there.
-        if note.startswith('DELFIN drag-follow'):
+        if dragging:
             holding = []
             for word in note.split():
                 if word.startswith('held='):
@@ -8719,6 +8975,41 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if note.startswith('DELFIN undo'):
             drag_ended = True
 
+        # A drag the budget is pricing does not write its own coordinates.
+        #
+        # This is where the ceiling was being got round, and it needed no race
+        # and no cleverness: the page's model landed in the box on every
+        # message of every drag, unconditionally, and nothing on this path
+        # ever asked what it cost.  The wall ran a moment behind in a thread
+        # of its own and wrote the box only when it refused, so the geometry
+        # that *survived* a drag had never been priced at all.  Measured, an
+        # ethane methyl dragged out at 298 K under a 22.3 kcal/mol ceiling was
+        # left at +141.2 -- and under the rigid hand it was worse, because the
+        # first refusal sets thermal_spent and the follow then deliberately
+        # stands still rather than shake, so from that moment nothing was
+        # computing and every later mouse position went into the box untouched.
+        #
+        # That is also the whole of "sometimes it works at room temperature":
+        # whether a drag was stopped came down to whether the wall happened to
+        # write last, which is a race between xtb at a tenth of a second and a
+        # mouse.  Let go a moment after a refusal and the ceiling looked real;
+        # keep dragging and it was not there.
+        #
+        # So while something is pricing this drag, the box belongs to it: the
+        # follow writes the geometry it priced, and the page's wish reaches the
+        # picture and nothing else.  With the budget off, or with no anchor to
+        # measure against, this is the drag it always was.
+        #
+        # The release lands while the follow is still on, and not by luck: the
+        # page sends the geometry from its mouseup handler and says the hand
+        # has gone from the animation frame after it, which the browser runs
+        # once that handler has finished.  That order is what makes the last
+        # write of a drag a priced one rather than a raw one, so it is worth
+        # knowing that it is the event loop guaranteeing it.
+        walled = ((dragging or released)
+                  and bool(submit_thermal_btn.value)
+                  and state.get('gfn_follow')
+                  and _thermal_budget()[0] is not None)
         if drag_ended:
             # Set, Hold, a bond edit and a drag all arrive here.  Any of them
             # during an optimisation makes what xtb is doing about a structure
@@ -8736,6 +9027,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # the shape the "Optimised in DELFIN viewer" header was found in:
             # a box holding something no run had produced.  The optimisation
             # owns the box until it is done or a hand takes it back.
+            return
+
+        if walled:
+            # The picture has the drag and the box has what was priced.
+            #
+            # At the release that is the last geometry the budget agreed to,
+            # which the follow has usually written already -- so this is a
+            # no-op whenever the answers kept up with the hand, and a spring
+            # back to the last affordable structure when they did not.  Either
+            # way what the user is left with is a structure that was measured
+            # and allowed, which is the whole of what the temperature means.
+            if released:
+                _keep_the_priced_geometry()
+            if state.pop('poly_recheck', False):
+                schedule_ui_update(_enable_live_forcefield)
             return
 
         payload = header + coord_body
