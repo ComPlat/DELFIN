@@ -3008,6 +3008,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # pulled strictly uphill was reported as "Falling 94 kcal/mol per A".
         state.pop('thermal_slope', None)
         state.pop('thermal_last', None)
+        # And the highest price this drag went through, with the one recorded
+        # for the geometry it could fall back to.  A ceiling is a barrier
+        # height, so the wall refuses on the maximum since the anchor -- and
+        # that maximum belongs to the drag that is over.  What a release
+        # leaves behind is a structure the budget agreed to, whose own way
+        # here was affordable the whole length of it, so the next grab starts
+        # from where it is standing rather than from the last one's worst
+        # moment.  Kept, one bad drag would have refused every drag after it
+        # until the anchor was set again.
+        state.pop('thermal_peak', None)
+        state.pop('thermal_good_peak', None)
+        state.pop('thermal_over', None)
         _push_thermal_wall(None)
 
     def _end_gfn_follow():
@@ -3559,13 +3571,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         said = (f'{said} The hand is on atoms this structure '
                                 f'does not have, so this step is not priced.')
                     if pricing:
-                        spent = _thermal_note(priced.get('energy'))
-                        if spent:
-                            # On the end of the line that is already there,
-                            # never under it: this row stands above the viewer
-                            # and a second one moves the picture while the
-                            # user is aiming an atom.
-                            said = f'{said} {spent}'
                         # How far the answer put the held atoms from where
                         # the cursor has them.  A held value is an internal
                         # coordinate, so xtb meets it and is free to place the
@@ -3639,6 +3644,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         came_back = _thermal_wall(
                             reached, priced.get('energy'), holding,
                             refuse=aside)
+                        # Said after the wall has run rather than before it.
+                        # The wall is what works out the highest price this
+                        # drag has been at, and the line has to quote the
+                        # number it is being refused on; read the other way
+                        # round it quoted the maximum as it stood one step
+                        # ago, which is a statement about the previous answer.
+                        spent = _thermal_note(priced.get('energy'))
+                        if spent:
+                            # On the end of the line that is already there,
+                            # never under it: this row stands above the viewer
+                            # and a second one moves the picture while the
+                            # user is aiming an atom.
+                            said = f'{said} {spent}'
                         # What the hand was asking for when it ran out, so the
                         # next steps can tell "still pulling" from "easing
                         # off" without running anything.
@@ -3646,9 +3664,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             [dict(one) for one in contacts]
                             if came_back is not None and contacts else None)
                         if came_back is not None:
+                            # Three cases rather than two.  Which number the
+                            # budget refused on -- where the structure is
+                            # standing, or what the drag went through to put
+                            # it there -- is as much a difference as whether
+                            # the budget refused at all: only the first can be
+                            # answered by easing off where you are, so a line
+                            # that did not tell them apart had the user pulling
+                            # harder at a wall already behind them.
                             said = (f'{said} ' + (
                                 'So the last structure that was measured and '
                                 'allowed is back.' if aside else
+                                'Past the budget on the way here, so the last '
+                                'structure that was inside it is back.'
+                                if state.get('thermal_over') == 'path' else
                                 'Past the budget, so the last structure that '
                                 'was inside it is back.'))
                         if crowded:
@@ -3928,20 +3957,40 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         return bool(submit_thermal_btn.value) and _hand_pulls()
 
     def _thermal_note(energy):
-        """Where this geometry stands against the budget, said in one line."""
+        """Where this geometry stands against the budget, said in one line.
+
+        Two numbers, and the line says which of them it is talking about.
+        Where the structure stands is one thing; what the drag went through to
+        put it there is another, and only the second is a barrier.  "You are
+        standing somewhere expensive" can be fixed by easing off where you
+        are; "you got here through somewhere expensive" cannot be fixed at all
+        except by coming back, and a line that showed only the first number
+        would have the user pulling harder at a wall they had already gone
+        past.
+        """
         anchor, ceiling = _thermal_budget()
         if anchor is None or energy is None:
             return ''
         spent = (float(energy) - float(anchor)) * _HARTREE_TO_KCAL
         T = float(submit_temperature.value)
-        if spent <= ceiling:
+        was = state.get('thermal_peak')
+        peak = spent if was is None else max(float(was), spent)
+        if peak <= ceiling:
             return (f'{spent:+.1f} of {ceiling:.1f} kcal/mol available at '
                     f'{T:g} K.')
         # Said as a time rather than as a number: how long this would take is
         # the thing a chemist can judge, and 34.7 kcal/mol means nothing until
         # it is "longer than the age of the earth".
-        return (f'{spent:+.1f} kcal/mol -- past the {ceiling:.1f} this '
-                f'structure has at {T:g} K. {_thermal_wait(spent, T)}')
+        if spent > ceiling:
+            return (f'{spent:+.1f} kcal/mol -- past the {ceiling:.1f} this '
+                    f'structure has at {T:g} K. {_thermal_wait(spent, T)}')
+        # Cheap here, and it got here over something that was not.  The
+        # refusal is about the crossing, so the crossing is the number quoted
+        # and the wait is worked out from it.
+        return (f'{spent:+.1f} of {ceiling:.1f} kcal/mol available at '
+                f'{T:g} K, but this drag went through {peak:+.1f} to reach '
+                f'it -- past the {ceiling:.1f} it has at {T:g} K. '
+                f'{_thermal_wait(peak, T)}')
 
     def _thermal_wait(kcal, temperature):
         """How long a barrier of that height takes at that temperature.
@@ -4022,6 +4071,30 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         here = _current_xyz() or ''
         if here:
             state['thermal_good'] = here
+            # The pair travels together: a geometry to come back to, and what
+            # the way to it cost.  Nothing has priced this one yet, so there
+            # is no maximum to record against it.
+            state.pop('thermal_good_peak', None)
+
+    def _back_at(xyz, good):
+        """Whether the structure is standing where the budget last agreed.
+
+        Laid onto the other as a rigid body before the two are compared.  An
+        energy does not depend on where a molecule is, and neither does
+        whether it is the same structure; without the fit, a drag that had
+        turned the whole molecule a little read as a different geometry at
+        every atom, and the running maximum below would never have come down.
+
+        The threshold is the one the loose hold is already judged by --
+        _SLIP_LOOSE, 0.25 A on the atom that moved most -- so there is one
+        number in this file for "near enough to be the same placement" rather
+        than two that can drift apart.
+        """
+        count = len(_gfn.atom_lines(xyz or ''))
+        if not good or not count or count != len(_gfn.atom_lines(good)):
+            return False
+        return _gfn.largest_shift(
+            good, _gfn.settle_onto(xyz, good, range(count))) <= _SLIP_LOOSE
 
     def _thermal_wall(xyz, energy, holding, refuse=False):
         """Keep what the budget agreed to, and take back what it did not.
@@ -4054,13 +4127,60 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         Something that jumps a narrow barrier and is cheap again on the far
         side could slip through, and that is what the scan is for: it walks the
         coordinate rather than following a hand.
+
+        What the ceiling is, though, is a barrier *height*, so what is held
+        against it is the highest price this drag has been at since the anchor
+        and not the price of wherever it happens to be standing.  A drag that
+        crossed +32 and settled at 0 has still crossed +32, and at 298 K --
+        where the hour buys 22.3 -- it could not have.  On the point alone the
+        far side was kept: measured on the hindered N-N rotation of a
+        nitrosamine under GFN2, the wall refused the two steps over the top at
+        +26.5 and +32.2 and then allowed every step of the far side, +13.7,
+        +7.9, +3.5, +0.8 and +0.0, so what the drag left behind was a
+        structure reached over a barrier room temperature cannot pay for
+        within the hour.  The maximum is carried, and it is what refuses.
+
+        Carried, and not carried for ever.  A maximum that never comes down
+        makes the editor unusable in the other direction: one jerk of the
+        mouse past the ceiling and every later step of that grab is refused,
+        including the ones walking straight back home.  What undoes a crossing
+        is coming back over it, so the maximum drops to the one recorded for
+        the last geometry the budget agreed to as soon as the structure is
+        standing at that geometry again -- which, after a rollback, is exactly
+        where it has just been put.  An overshoot then costs one refused step
+        instead of the rest of the grab; a far side the structure is still
+        standing on costs every step, because it never comes back.  Letting go
+        clears it: what a release leaves behind was inside the budget the
+        whole way, so the next grab starts on an affordable path.
+
+        Where this still does not mean what it looks like: the sampling gap
+        above is unchanged, so a top that falls between two answers is a top
+        nothing has priced, and the retreat is judged on placement -- a
+        crossing whose whole width is inside the 0.25 A that counts as
+        standing in the same place is forgiven.  Both are what the scan is
+        for, which walks the coordinate instead of following a hand.
         """
         anchor, ceiling = _thermal_budget()
         if anchor is None or energy is None:
             return None
         spent = (float(energy) - float(anchor)) * _HARTREE_TO_KCAL
-        if spent <= ceiling and not refuse:
+        good = state.get('thermal_good')
+        carried = state.get('thermal_peak')
+        if _back_at(xyz, good):
+            # The excursion has been retracted, so it is not on the way here
+            # any more: what this geometry cost to reach is what it cost when
+            # it was agreed to.  Read the other way -- while the structure is
+            # still out where it went -- the maximum stands and every step is
+            # refused, which is the whole point.
+            carried = state.get('thermal_good_peak')
+        peak = spent if carried is None else max(float(carried), spent)
+        state['thermal_peak'] = peak
+        # Which number is doing the refusing, for the line that says so.
+        state['thermal_over'] = ('here' if spent > ceiling
+                                 else 'path' if peak > ceiling else '')
+        if peak <= ceiling and not refuse:
             state['thermal_good'] = xyz
+            state['thermal_good_peak'] = peak
             return None
         # Past it.  Hand back the last geometry that was not, if there is one;
         # a drag that was already over budget when it started has nowhere to
@@ -4071,9 +4191,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # measured, the coordinate box became twelve atoms of benzene and a
         # thirty-six float frame went to a three-atom viewer, with nothing
         # anywhere saying the molecule had been replaced.
-        good = state.get('thermal_good')
         if good and len(_gfn.atom_lines(good)) != len(_gfn.atom_lines(xyz)):
             state.pop('thermal_good', None)
+            state.pop('thermal_good_peak', None)
             return None
         return good
 
@@ -4234,6 +4354,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 state['thermal_method'] = method
                 state['thermal_for'] = _structure_fingerprint(
                     outcome.get('xyz') or xyz)
+                # A new zero is a new path, and nothing has been crossed on
+                # the way to it.  Without this, Set here -- pressed on the
+                # intermediate a drag has just reached, which is exactly what
+                # it is for -- would be refused for ever by the barrier the
+                # drag came over to get there.
+                state['thermal_peak'] = 0.0
+                state['thermal_good_peak'] = 0.0
+                state.pop('thermal_over', None)
                 # An optimisation takes as long as it takes, and the editor is
                 # not frozen while it runs.  Writing its answer into the box
                 # unconditionally overwrote whatever had been done since --
@@ -4261,6 +4389,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         'measured, so that anchor belongs to the older one. '
                         'Press Measure from here to take one for this.')
                     return
+                # The zero is also the last geometry the budget agreed
+                # to, and its way here cost nothing by construction.  Left
+                # pointing at an earlier drag's structure, the maximum would
+                # be measured against a geometry this anchor knows nothing
+                # about.
+                state['thermal_good'] = _current_xyz() or xyz
                 _, ceiling = _thermal_budget()
                 _set_mol_status(
                     f'{note}. At {float(submit_temperature.value):g} K '
@@ -10584,6 +10718,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         """
         if state.get('thermal_e0') is not None:
             state['thermal_e0'] = None
+            # And what the last structure's drag went through, which is not a
+            # statement about this one.
+            state.pop('thermal_peak', None)
+            state.pop('thermal_good_peak', None)
             if submit_thermal_btn.value:
                 _set_mol_status(
                     'A different structure: the thermal budget has no anchor '
