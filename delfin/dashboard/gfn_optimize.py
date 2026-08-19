@@ -32,7 +32,7 @@ import sys
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from . import solvents as _solvents
 
@@ -40,7 +40,7 @@ __all__ = ['GFN_METHODS', 'as_pushes', 'atom_lines', 'bond_graph',
            'constraint_input', 'contacts_holding', 'graph_changed',
            'bonds_to_freeze', 'graph_holds', 'method_is_out_of_its_depth',
            'push_constant', 'turn_for',
-           'restraint_energy', 'walk_the_path',
+           'restraint_energy', 'walk_the_path', 'lowest_real_modes',
            'find_xtb', 'find_binary', 'find_gxtb',
            'closest_contact', 'held_note', 'hold_atoms_at', 'settle_onto', 'install_command', 'install_root',
            'install_script',
@@ -108,6 +108,11 @@ _FREE_ENERGY_RE = re.compile(r'TOTAL FREE ENERGY\s+(-?\d+\.\d+)')
 #: How many modes go the wrong way, which is what says whether a structure is
 #: a minimum, a transition state, or neither.  xtb counts them itself, against
 #: a cutoff of its own, so this is read rather than worked out again.
+#:
+#: The cutoff is printed beside the count and is -20 cm-1 in 6.7.1, so a mode
+#: at -11 is listed among the frequencies and not among the imaginary ones.
+#: That is why both are handed on: the count is the engine's own answer, and
+#: the modes are what it was counting.
 _IMAGINARY_RE = re.compile(r'#\s*imaginary freq\.\s+(\d+)')
 #: How far apart the frontier orbitals are, which is how a single-determinant
 #: method says whether it is still able to answer.
@@ -419,6 +424,49 @@ def why_it_stopped(output: Any) -> str:
 def _said_version(output: Any) -> str:
     found = _VERSION_RE.search(str(output or ''))
     return found.group(1) if found else ''
+
+
+#: Below this a printed frequency is one of the six xtb projects out.
+#:
+#: The translations and the rotations come out of the Hessian as zero and are
+#: printed as ``-0.00`` and ``0.00`` exactly, so a cut this fine separates
+#: them from anything that is a vibration -- including a very soft one, which
+#: is the case that matters here: a real mode of a few wavenumbers is what
+#: says a stationary point is nearly flat in that direction, and rounding it
+#: away with the trivial modes would throw out the very thing being looked
+#: for.
+_TRIVIAL_MODE = 0.005
+
+
+def lowest_real_modes(output: Any, most: int = 4) -> List[float]:
+    """The softest genuine vibrations of the last Hessian in *output*.
+
+    The last one, because a run that took several -- a saddle search
+    recalculates as it goes -- has left the geometries the earlier ones
+    describe.
+
+    Real rather than imaginary, because how flat a stationary point is in its
+    remaining directions is a separate question from how many of them go the
+    wrong way, and one that published searches ask: AutoMeKin, with its
+    default ``tight_ts``, refuses a transition state when the two lowest real
+    frequencies sum to less than 10 cm-1.  A structure that flat is on the
+    edge of being a saddle point of higher order, and the number that says so
+    is here rather than among the imaginary modes.
+    """
+    text = str(output or '')
+    block = text.split('projected vibrational frequencies')[-1]
+    seen: List[float] = []
+    for row in _EIGVAL_RE.finditer(block):
+        for word in row.group(1).split():
+            try:
+                seen.append(float(word))
+            except ValueError:
+                pass
+        # The list is printed lowest first, so the soft end is at the front
+        # and a big molecule's three hundred modes need not all be read.
+        if len(seen) > 200:
+            break
+    return sorted(one for one in seen if one > _TRIVIAL_MODE)[:max(0, int(most))]
 
 
 def which_xtb_ran(binary: Any, output: Any = '') -> str:
@@ -2489,6 +2537,13 @@ def optimize_with_gfn(
                 wrong_way = {
                     'count': int(counted.group(1)),
                     'modes': sorted({one for one in seen if one < -5.0})[:4],
+                    # And the softest real ones, which say how flat what is
+                    # left is.  One imaginary mode makes a transition state
+                    # only if the directions around it are directions; a
+                    # stationary point with a real mode of a few wavenumbers
+                    # is on the edge of being a saddle of higher order, and
+                    # published searches refuse it for that reason.
+                    'real': lowest_real_modes(output),
                 }
         seconds = time.perf_counter() - started
 
