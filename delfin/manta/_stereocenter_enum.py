@@ -31,6 +31,7 @@ coordination-created X-H stereocentre.
 """
 from __future__ import annotations
 
+import itertools
 import logging
 import os
 from typing import List, Optional, Tuple
@@ -406,6 +407,161 @@ def _build_fold(A: dict, target: List[str], h_heavy_min: float, h_h_min: float):
     return _format_xyz(lines, syms, use), tag
 
 
+# ---------------------------------------------------------------------------
+# MEHRZENTREN-FALTUNGEN JENSEITS VON KMAX (DELFIN_STEREOCENTER_MULTI_CENTRE)
+# ---------------------------------------------------------------------------
+#
+# DER BEFUND (18.08.2026).  Das Korpus traegt KEINE Stereochemie: 9 von 129 314
+# SMILES.  Haendigkeit ist damit zu 100 % ERZEUGUNGSPFLICHT -- es gibt nichts zu
+# uebertragen.  Die Fehlrate ist flach (sp3 20,7 % / Metall 22,4 %), also ist eine
+# ALLGEMEINE Erzeugung gefragt und keine Sonderregel.  620 Diastereomer-Teilfaelle
+# deckt heute kein Mechanismus ab.
+#
+# DIE LUECKE STEHT IN EINER EINZIGEN VERZWEIGUNG.  Bei k > KMAX faellt die
+# Enumeration von 2^k auf k zurueck -- "single-centre flips only".  Ein Einzelflip
+# ist per Definition der Fall, in dem sich GENAU EIN Zentrum unterscheidet.  Ein
+# Diastereomer, das sich an ZWEI oder mehr Zentren unterscheidet, ist danach nicht
+# mehr im Topf.  Der Rueckfall wirft also nicht "ein paar seltene" Faelle weg,
+# sondern der Bauart nach GENAU die Mehrzentren-Diastereomere -- und das ist die
+# Klasse, die oben als ungedeckt gemessen wurde.
+#
+# DIE ANTWORT IST AUSDUENNEN, NICHT WEGWERFEN.  2^k ist bei k = 12 schon 4096 und
+# damit jenseits jedes Deckels; die Frage ist nie "alle oder keine", sondern WELCHE
+# Teilmenge.  Diese Auswahl muss zwei Eigenschaften haben:
+#
+#   1. DETERMINISTISCH.  Das Projekt prueft Byte-Determinismus ganzer Pools.  Eine
+#      Menge (`set`) in der AUSGABEREIHENFOLGE laesst den Lauf durchfallen, darum
+#      steht `seen` hier nur in der Dublettenpruefung, nie in der Reihenfolge.
+#
+#   2. AUSGEWOGEN -- und genau das kann die naheliegende Loesung nicht.  Nimmt man
+#      `itertools.combinations` in lexikographischer Ordnung und schneidet beim
+#      Deckel ab, dann sind bei k = 10 und Deckel 32 die Paare (0,1)..(0,9),
+#      (1,2)..(1,9), (2,3)..(2,9), (3,4)..(3,9), (4,5), (4,6).  Beteiligung je
+#      Zentrum, gemessen im Selbsttest: [9, 9, 9, 9, 6, 5, 5, 4, 4, 4] -- die
+#      hinteren Donoren kommen weniger als halb so oft vor, und ein Tripel kommt
+#      nie.  Der Deckel waere damit keine Kuerzung, sondern eine stille VORAUSWAHL
+#      zugunsten der niedrigen Donorindizes -- also derselbe Fehler, den
+#      `dofs = dofs[:4]` und `_WELL_MAX_SIBLINGS = 12` schon gemacht haben.
+#
+# ZIRKULANT STATT LEXIKOGRAPHISCH.  Eine Kombination wird als STARTINDEX i plus
+# SCHRITTVEKTOR (s_1..s_{r-1}) modulo k erzeugt.  Fuer festen Schrittvektor laeuft
+# i ueber alle k Zentren, also steht jedes Zentrum in genau r Kombinationen dieser
+# Familie -- die Auswahl ist nach JEDER vollen Familie exakt ausgewogen und
+# innerhalb einer angefangenen Familie um hoechstens eine Kombination unausgewogen.
+# Der Deckel kuerzt damit gleichmaessig statt einseitig.  Gemessen im Selbsttest:
+# k = 10, Deckel 32 -> Beteiligung je Zentrum [8, 7, 7, 7, 8, 7, 7, 7, 7, 7]
+# (der Antipode steuert jedem Zentrum die eine bei, die zirkulanten Paare den Rest).
+#
+# REIHENFOLGE (die Ausduennung schneidet immer von HINTEN, also stehen die am
+# besten begruendeten Ziele vorn):
+#   * zuerst alle k EINZELFLIPS -- unveraendert, damit jedes Zentrum weiterhin
+#     garantiert beide Vorzeichen ANGEBOTEN bekommt (das Vollstaendigkeitsgesetz);
+#   * dann der ANTIPODE (alle k Zentren gekippt).  Er ist die einzige
+#     Mehrfachkombination, deren Partner CHEMISCH GARANTIERT existiert: das
+#     antipodische Vorzeichenmuster ist die enantiomere Konfiguration der Basis,
+#     gleiche Energie, gleiche Sterik.  Er steht vor den Paaren, damit kein Deckel
+#     ihn je wegschneiden kann;
+#   * dann Paare, dann Tripel, ... , jeweils zirkulante Familien nach Schrittsumme
+#     (enge Nachbarschaften zuerst) und lexikographisch innerhalb der Summe.
+#     Kleine Flipzahlen zuerst, weil eine Faltung mit weniger gleichzeitig
+#     gekippten Zentren die Klemmpruefung `_flip_clash` haeufiger ueberlebt.
+#
+# VOLLSTAENDIGKEIT BLEIBT ERREICHBAR: die Erzeugung laeuft ueber ALLE r-Teilmengen
+# (jede r-Teilmenge von Z_k ist eine Rotation eines Schrittvektors mit Summe <= k-1),
+# der Deckel ist also eine TRUNKIERUNG einer vollstaendigen Aufzaehlung und keine
+# eingeschraenkte Familie.  Der Selbsttest prueft genau das: mit grossem Deckel
+# kommen bei k = 5 exakt die 2^5 - 1 - 5 = 26 Mehrfachkombinationen heraus.
+#
+# ⚠ VORGABE AUS.  Mit DELFIN_STEREOCENTER_MULTI_CENTRE = 0 ist `_fold_targets` in
+# BEIDEN Zweigen zeichengleich mit dem alten Code, inklusive der alten Warnung.
+
+def _step_vectors(m: int, span: int):
+    """Alle Schrittvektoren (s_1..s_m) mit s_j >= 1 und Summe <= ``span``, faul
+    erzeugt und stabil sortiert nach (Summe, lexikographisch).
+
+    Die Summe steht vorn, weil sie der Spannweite der Kombination auf dem Kreis der
+    Zentren entspricht: enge Gruppen zuerst.  Kompositionen werden ueber Schnitt-
+    punkte erzeugt (`combinations` ist lexikographisch, also ist es die Ausgabe
+    auch)."""
+    if m < 1:
+        return
+    for total in range(m, span + 1):
+        for cuts in itertools.combinations(range(1, total), m - 1):
+            prev = 0
+            parts = []
+            for c in cuts:
+                parts.append(c - prev)
+                prev = c
+            parts.append(total - prev)
+            yield tuple(parts)
+
+
+def _multi_flip_combos(k: int, limit: int) -> List[Tuple[int, ...]]:
+    """Deterministische, ausgewogene Auswahl von MEHRFACHFLIP-Kombinationen ueber k
+    Zentren: aufsteigend sortierte Indextupel der Laenge >= 2, hoechstens ``limit``
+    Stueck, in der oben begruendeten Reihenfolge (Antipode, dann zirkulante Paare,
+    Tripel, ...).  Faul erzeugt -- bei grossem k wird nie die volle Potenzmenge
+    aufgebaut, es wird beim Deckel abgebrochen."""
+    out: List[Tuple[int, ...]] = []
+    if k < 2 or limit <= 0:
+        return out
+    seen = set()                                   # NUR Dublettenpruefung, nie Reihenfolge
+
+    def _emit_combo(idx) -> bool:
+        """Nimmt eine Kombination auf; True heisst 'Deckel erreicht, aufhoeren'."""
+        t = tuple(sorted(idx))
+        if len(t) < 2 or t in seen:
+            return False
+        seen.add(t)
+        out.append(t)
+        return len(out) >= limit
+
+    if _emit_combo(range(k)):                      # der Antipode zuerst -- unkuerzbar
+        return out
+    for r in range(2, k):                          # r == k ist der Antipode, schon drin
+        for steps in _step_vectors(r - 1, k - 1):
+            for i in range(k):
+                idx = [i]
+                pos = i
+                for s in steps:
+                    pos = (pos + s) % k
+                    idx.append(pos)
+                if len(set(idx)) != r:
+                    continue                       # kann bei Summe <= k-1 nicht auftreten
+                if _emit_combo(idx):
+                    return out
+    return out
+
+
+def _fold_targets(base: List[str], kmax: int, multi_centre: int, multi_max: int):
+    """Die Zielvorzeichenmuster fuer EINE Anordnungsfamilie.
+
+    Rueckgabe ``(targets, multi_info)``.  ``multi_info`` ist None, wenn dieser
+    Aufruf nichts ausgeduennt hat (k <= KMAX, oder Schalter aus -- dann ist die
+    Ausgabe zeichengleich mit dem Verhalten vor dem 18.08.2026); sonst
+    ``(k, gebaut, moeglich)`` fuer die Meldezeile.  Ein Deckel, der nicht meldet,
+    liest sich hinterher wie 'mehr gab es nicht'."""
+    k = len(base)
+    if k <= kmax:
+        return [["+" if (combo >> i) & 1 else "-" for i in range(k)]
+                for combo in range(1 << k)], None
+    # Rare: 2^k too large.  Still guarantee BOTH signs per centre via single-centre flips.
+    targets = []
+    for i in range(k):
+        t = list(base)
+        t[i] = "-" if base[i] == "+" else "+"
+        targets.append(t)
+    if not multi_centre:
+        return targets, None
+    combos = _multi_flip_combos(k, multi_max)
+    for combo in combos:
+        t = list(base)
+        for i in combo:
+            t[i] = "-" if base[i] == "+" else "+"
+        targets.append(t)
+    return targets, (k, len(combos), (1 << k) - 1 - k)
+
+
 def expand_results(results):
     """ADDITIVE stereocentre-fold expansion of a finished ``results`` list of (xyz, label[, ...]).
 
@@ -421,6 +577,10 @@ def expand_results(results):
     kmax = _env_int("DELFIN_STEREOCENTER_KMAX", 8)
     h_heavy_min = _env_float("DELFIN_STEREOCENTER_H_HEAVY_MIN", 1.45)
     h_h_min = _env_float("DELFIN_STEREOCENTER_H_H_MIN", 1.25)
+    # Mehrzentren-Faltungen jenseits von KMAX -- Begruendung im Block ueber
+    # `_step_vectors`.  Vorgabe 0 -> byte-identisch.
+    multi_centre = _env_int("DELFIN_STEREOCENTER_MULTI_CENTRE", 0)
+    multi_max = _env_int("DELFIN_STEREOCENTER_MULTI_MAX", 32)
 
     # ===== FAMILY PARTITION (DELFIN_STEREOCENTER_FAMILY_PARTITION, default OFF -> byte-identical) =====
     #
@@ -497,21 +657,34 @@ def expand_results(results):
     out = list(results)                                # additive: keep every original frame
     added = 0
     capped = False
+    multi_built = 0                                    # Zaehlzeile: aufgenommene Mehrfachflips
+    multi_dropped = 0                                  # Zaehlzeile: vom Deckel weggeschnittene
     for g, (A, lbl, _order) in reps.items():
         base = A["base_signs"]
         k = len(base)
-        if k <= kmax:
-            targets = [["+" if (combo >> i) & 1 else "-" for i in range(k)] for combo in range(1 << k)]
-        else:
-            # Rare: 2^k too large.  Still guarantee BOTH signs per centre via single-centre flips.
-            targets = []
-            for i in range(k):
-                t = list(base)
-                t[i] = "-" if base[i] == "+" else "+"
-                targets.append(t)
+        targets, multi_info = _fold_targets(base, kmax, multi_centre, multi_max)
+        if k > kmax and multi_info is None:
             _LOG.warning(
                 "stereocenter_enum: %d centres > KMAX=%d -> single-centre flips only "
                 "(full 2^k fold set not enumerated; raise DELFIN_STEREOCENTER_KMAX)", k, kmax)
+        elif multi_info is not None:
+            # ⚠ KEINE STILLE KAPPUNG.  Ein Deckel, der nicht meldet, sieht hinterher
+            # aus wie "es gab nicht mehr" -- genau die Verwechslung, die `dofs[:4]`
+            # und `_WELL_MAX_SIBLINGS = 12` in diesem Projekt erzeugt haben.
+            _k, _n_built, _n_possible = multi_info
+            multi_built += _n_built
+            multi_dropped += max(0, _n_possible - _n_built)
+            if _n_built < _n_possible:
+                _LOG.warning(
+                    "stereocenter_enum: %d centres > KMAX=%d -> %d single flips + %d of %d "
+                    "multi-centre flips (thinned, %d not enumerated; raise "
+                    "DELFIN_STEREOCENTER_MULTI_MAX=%d or DELFIN_STEREOCENTER_KMAX=%d)",
+                    _k, kmax, _k, _n_built, _n_possible, _n_possible - _n_built,
+                    multi_max, kmax)
+            else:
+                _LOG.info(
+                    "stereocenter_enum: %d centres > KMAX=%d -> %d single flips + all %d "
+                    "multi-centre flips (nothing thinned)", _k, kmax, _k, _n_built)
         present_signs = {sv for (gg, sv) in present if gg == g}   # folds already in this isomer
         for target in targets:
             if tuple(target) in present_signs:
@@ -537,4 +710,230 @@ def expand_results(results):
         _LOG.warning(
             "stereocenter_enum: added capped at %d folds (DELFIN_STEREOCENTER_MAX_ADDED); "
             "some feasible folds not emitted", max_added)
+    if multi_built or multi_dropped:
+        # EINE Zeile fuer den ganzen Lauf, damit ein grep die Gesamtbilanz gibt und
+        # nicht nur die Meldung der einzelnen Familie.
+        _LOG.info("stereocenter_enum: Mehrzentren-Faltungen: %d angeboten, %d gedeckelt "
+                  "(DELFIN_STEREOCENTER_MULTI_MAX=%d)", multi_built, multi_dropped, multi_max)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Selbsttest:  python delfin/manta/_stereocenter_enum.py
+# ---------------------------------------------------------------------------
+
+def _synthetic_frame() -> str:
+    """Ein synthetischer oktaedrischer fac-[Co(NHR2)3Cl3] mit DREI koordinations-
+    erzeugten N-H-Stereozentren.  Jedes N traegt das Metall, ein H und zwei C.
+
+    ⚠ Die Azimute der drei N-Substituenten sind ABSICHTLICH unsymmetrisch
+    (0 / 100 / 215 Grad statt 0 / 120 / 240).  Bei symmetrischer Anordnung liegen
+    H, der Schwerpunkt der beiden C und die M-N-Achse in EINER Ebene; das
+    Spatprodukt in `_center_sign` ist dann exakt 0, das Zentrum ist entartet und
+    wird zu Recht verworfen.  Ein symmetrisch gebautes Testmolekuel haette also
+    'kein Zentrum gefunden' gemeldet und wie ein Fehlschlag des Mechanismus
+    ausgesehen, obwohl es der Testfall selbst war -- die Symmetrie IST die
+    Abwesenheit von Haendigkeit.
+
+    Die C tragen bewusst keine H: geprueft wird die Verzweigung, nicht die Chemie,
+    und je duenner das Geruest, desto sicher kollisionsfrei die Faltungen."""
+    axes = [(np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0]), np.array([0.0, 0.0, 1.0])),
+            (np.array([0.0, 1.0, 0.0]), np.array([0.0, 0.0, 1.0]), np.array([1.0, 0.0, 0.0])),
+            (np.array([0.0, 0.0, 1.0]), np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0]))]
+    tet = np.radians(70.53)                            # 109.47 Grad gegen die M-Richtung
+    rows = [("Co", np.zeros(3))]
+    for u, e1, e2 in axes:
+        d = 2.10 * u
+        rows.append(("N", d))
+        for sym, r, phi in (("H", 1.02, 0.0), ("C", 1.47, 100.0), ("C", 1.47, 215.0)):
+            p = np.radians(phi)
+            dirv = np.cos(tet) * u + np.sin(tet) * (np.cos(p) * e1 + np.sin(p) * e2)
+            rows.append((sym, d + r * dirv))
+    for u, _e1, _e2 in axes:
+        rows.append(("Cl", -2.30 * u))
+    out = [str(len(rows)), "synthetischer fac-[Co(NHR2)3Cl3] -- Selbsttest"]
+    for s, v in rows:
+        out.append(f"{s:4s} {float(v[0]):12.6f} {float(v[1]):12.6f} {float(v[2]):12.6f}")
+    return "\n".join(out) + "\n"
+
+
+def _targets_before_18_08(base, kmax):
+    """WORTGLEICHE Nachbildung des Zweiges vor dem 18.08.2026 -- die Messlatte fuer
+    'mit Schalter 0 byte-identisch'.  Wird nur im Selbsttest gebraucht."""
+    k = len(base)
+    if k <= kmax:
+        return [["+" if (combo >> i) & 1 else "-" for i in range(k)] for combo in range(1 << k)]
+    targets = []
+    for i in range(k):
+        t = list(base)
+        t[i] = "-" if base[i] == "+" else "+"
+        targets.append(t)
+    return targets
+
+
+def _self_test_folds() -> int:                         # pragma: no cover -- Selbsttest
+    class _Catcher(logging.Handler):
+        """Faengt die Meldezeilen ab -- eine Kappung, die nicht meldet, ist der Fehler."""
+
+        def __init__(self):
+            super().__init__()
+            self.records = []
+
+        def emit(self, record):
+            self.records.append(record)
+
+    state = {"n": 0, "bad": 0}
+
+    def _pruefe(name: str, ok: bool, extra: str = "") -> None:
+        state["n"] += 1
+        if not ok:
+            state["bad"] += 1
+        print(f"{state['n']:2d} {name}: {'OK' if ok else 'FEHLER'}"
+              + (f"  [{extra}]" if extra else ""))
+
+    # === 1. VORGABE AUS = ZEICHENGLEICH mit dem Zweig vor dem 18.08. ==============
+    same = True
+    detail = ""
+    for k in (1, 3, 5, 8, 9, 10, 14):
+        b = ["+" if (i % 3) else "-" for i in range(k)]
+        for kmax in (2, 8):
+            t_new, info = _fold_targets(b, kmax, 0, 32)
+            t_old = _targets_before_18_08(b, kmax)
+            if t_new != t_old or info is not None:
+                same = False
+                detail = f"k={k} kmax={kmax}"
+    _pruefe("Schalter AUS ist zeichengleich mit dem alten Zweig (k=1..14, KMAX=2/8)",
+            same, detail)
+
+    # === 2. k <= KMAX bleibt die volle 2^k-Aufzaehlung, der Schalter aendert nichts
+    b3 = ["+", "-", "+"]
+    t_off, i_off = _fold_targets(b3, 8, 0, 32)
+    t_on, i_on = _fold_targets(b3, 8, 1, 32)
+    _pruefe("k=3 unter KMAX=8: EIN und AUS identisch, 2^3 = 8 Ziele",
+            t_off == t_on and len(t_off) == 8 and i_off is None and i_on is None,
+            f"aus {len(t_off)} / ein {len(t_on)}")
+
+    # === 3. k > KMAX: Einzelflips PLUS ausgeduennte Mehrfachflips =================
+    b10 = ["+" if i % 2 else "-" for i in range(10)]
+    t10_off, _i = _fold_targets(b10, 8, 0, 32)
+    t10_on, info10 = _fold_targets(b10, 8, 1, 32)
+    uniq = len({tuple(t) for t in t10_on}) == len(t10_on)
+    no_base = all(t != b10 for t in t10_on)
+    _pruefe("k=10 ueber KMAX=8: 10 -> 42 Ziele, alle verschieden, keins ist die Basis",
+            len(t10_off) == 10 and len(t10_on) == 42 and uniq and no_base
+            and info10 == (10, 32, (1 << 10) - 1 - 10),
+            f"aus {len(t10_off)} / ein {len(t10_on)} / Meldung {info10}")
+
+    # === 4. DETERMINISMUS: zwei Laeufe, dieselbe Reihenfolge =====================
+    det = (_multi_flip_combos(11, 40) == _multi_flip_combos(11, 40)
+           and _multi_flip_combos(7, 200) == _multi_flip_combos(7, 200)
+           and _fold_targets(b10, 8, 1, 32)[0] == t10_on)
+    _pruefe("Determinismus: identische Reihenfolge bei Wiederholung", det)
+
+    # === 5. TRUNKIERUNG, KEINE EINGESCHRAENKTE FAMILIE ===========================
+    full5 = _multi_flip_combos(5, 10 ** 6)
+    want5 = {c for r in range(2, 6) for c in itertools.combinations(range(5), r)}
+    _pruefe("mit grossem Deckel kommen bei k=5 ALLE 26 Mehrfachkombinationen",
+            len(full5) == 26 and set(full5) == want5 and len(set(full5)) == len(full5),
+            f"{len(full5)} von {len(want5)}")
+
+    # === 6. AUSGEWOGENHEIT: der Deckel darf kein Zentrum aushungern ===============
+    combos10 = _multi_flip_combos(10, 32)
+    load = [sum(1 for c in combos10 if i in c) for i in range(10)]
+    lex = []
+    for r in range(2, 11):
+        for c in itertools.combinations(range(10), r):
+            lex.append(c)
+            if len(lex) >= 32:
+                break
+        if len(lex) >= 32:
+            break
+    load_lex = [sum(1 for c in lex if i in c) for i in range(10)]
+    _pruefe("zirkulant: Beteiligung je Zentrum fast gleich -- lexikographisch nicht",
+            max(load) - min(load) <= 1 and max(load_lex) - min(load_lex) > 1,
+            f"zirkulant {load} / lexikographisch {load_lex}")
+
+    # === 7. DER ANTIPODE STEHT VORN und ueberlebt jeden Deckel ====================
+    _pruefe("der Antipode (alle Zentren gekippt) ist die erste Mehrfachkombination",
+            _multi_flip_combos(9, 1) == [tuple(range(9))]
+            and _multi_flip_combos(12, 3)[0] == tuple(range(12)))
+
+    # === 8. DER MECHANISMUS ERREICHT DEN BAU (Ende zu Ende) ======================
+    frame = _synthetic_frame()
+    A = _analyze_frame(frame)
+    _pruefe("synthetischer Komplex traegt 3 nicht-entartete N-H-Zentren",
+            A is not None and len(A["centers"]) == 3,
+            "keins gefunden" if A is None else f"{len(A['centers'])} Zentren, Vorzeichen "
+            + "".join(A["base_signs"]))
+
+    res = [(frame, "iso0")]
+    prev = {kk: os.environ.get(kk) for kk in
+            ("DELFIN_STEREOCENTER_KMAX", "DELFIN_STEREOCENTER_MULTI_CENTRE",
+             "DELFIN_STEREOCENTER_MULTI_MAX")}
+    os.environ["DELFIN_STEREOCENTER_KMAX"] = "2"       # k=3 ist damit der Fall k > KMAX
+    os.environ["DELFIN_STEREOCENTER_MULTI_CENTRE"] = "0"
+    out_off = expand_results(res)
+    os.environ["DELFIN_STEREOCENTER_MULTI_CENTRE"] = "1"
+    os.environ["DELFIN_STEREOCENTER_MULTI_MAX"] = "32"
+    cat = _Catcher()
+    _LOG.addHandler(cat)
+    out_on = expand_results(res)
+    _LOG.removeHandler(cat)
+    os.environ["DELFIN_STEREOCENTER_KMAX"] = "8"       # k=3 <= KMAX -> volle 2^k
+    os.environ["DELFIN_STEREOCENTER_MULTI_CENTRE"] = "0"
+    out_full = expand_results(res)
+
+    _pruefe("k=3 > KMAX, Schalter AUS: nur Einzelflips, Original unberuehrt",
+            out_off[0] == res[0] and len(out_off) - 1 == 3,
+            f"{len(out_off) - 1} Faltungen")
+    _pruefe("k=3 > KMAX, Schalter EIN: mehr Faltungen, Einzelflips als Praefix erhalten",
+            len(out_on) > len(out_off) and out_on[:len(out_off)] == out_off,
+            f"{len(out_on) - 1} statt {len(out_off) - 1} Faltungen")
+    _pruefe("EIN bei KMAX=2 liefert GENAU den Satz der vollen 2^k-Aufzaehlung",
+            sorted(l for _x, l in out_on) == sorted(l for _x, l in out_full),
+            " ".join(sorted(l for _x, l in out_on)))
+
+    # === 9. DIE KAPPUNG MELDET SICH =============================================
+    bilanz = [r for r in cat.records if "Mehrzentren-Faltungen" in r.getMessage()]
+    _pruefe("ungekappt: genau eine Bilanzzeile im Log, keine Warnung",
+            len(bilanz) == 1 and not [r for r in cat.records
+                                      if r.levelno >= logging.WARNING],
+            " | ".join(r.getMessage() for r in cat.records))
+
+    os.environ["DELFIN_STEREOCENTER_KMAX"] = "2"
+    os.environ["DELFIN_STEREOCENTER_MULTI_CENTRE"] = "1"
+    os.environ["DELFIN_STEREOCENTER_MULTI_MAX"] = "2"  # 2 von 4 -> MUSS warnen
+    cat2 = _Catcher()
+    _LOG.addHandler(cat2)
+    out_cap = expand_results(res)
+    _LOG.removeHandler(cat2)
+    warn_cap = [r for r in cat2.records
+                if r.levelno >= logging.WARNING and "multi-centre flips" in r.getMessage()]
+    _pruefe("Deckel MULTI_MAX=2 schlaegt zu und WARNT (keine stille Kappung)",
+            len(warn_cap) == 1 and len(out_cap) < len(out_on),
+            warn_cap[0].getMessage() if warn_cap else "keine Warnung")
+
+    for kk, vv in prev.items():
+        if vv is None:
+            os.environ.pop(kk, None)
+        else:
+            os.environ[kk] = vv
+
+    # === 10. DIE ZAHLENTAFEL FUER DEN BERICHT ===================================
+    print("\n   Zusatzziele je Anordnungsfamilie (KMAX=8, MULTI_MAX=32):")
+    print("     k    AUS    EIN   Zusatz   moegliche Mehrfachflips")
+    for k in (3, 5, 10):
+        b = ["+" if i % 2 else "-" for i in range(k)]
+        n_off = len(_fold_targets(b, 8, 0, 32)[0])
+        n_on = len(_fold_targets(b, 8, 1, 32)[0])
+        print(f"    {k:2d}   {n_off:4d}   {n_on:4d}   {n_on - n_off:+6d}   {(1 << k) - 1 - k:8d}")
+    print("   (k <= KMAX ist per Bauart ein No-op: 2^k war dort schon vollstaendig.)")
+
+    print(f"\n{state['n'] - state['bad']}/{state['n']} bestanden")
+    return 1 if state["bad"] else 0
+
+
+if __name__ == "__main__":                             # pragma: no cover -- Selbsttest
+    import sys as _sys
+    logging.basicConfig(level=logging.INFO, format="   %(levelname)s %(message)s")
+    _sys.exit(_self_test_folds())

@@ -4259,10 +4259,279 @@ def _global_donor_seat(syms, P, blocks):
     return Xc
 
 
+# ===== DER HALBE BAILAR-TWIST, FF-FREI ZURUECKGEDREHT ========================
+# Gemessen 18.08.2026 auf 30921 Systemen: netto +988 Systeme fliessen vom Oktaeder
+# ins trigonale Prisma (McNemar X2 = 860,8 auf 1 df).  TPR-6 wird 2,99 mal so oft
+# gebaut wie es real vorkommt, waehrend JEDE andere Form zwischen 0,86 und 1,29
+# liegt -- der groesste Einzeldefekt der Polyederachse, 3,7 mal die Masse des
+# zweitgroessten Paares.
+#
+# DREI MESSUNGEN SAGEN, WAS ES NICHT IST:
+#   * Es ist KEIN Ligandenfeld-Effekt.  Metall flach, d-Zahl flach; das Signal ist
+#     allein die VERZAHNUNG durch Chelatringe, monoton von 2,49 % bei null Ringen
+#     auf 16,12 % bei fuenf (6,5-fach).  Also Geometrie, nicht Chemie.
+#   * Es sind KEINE echten Prismen.  CShM(OC-6) liegt im Median bei 11,03 statt bei
+#     16,7, wie ein ideales TPR es haette -- ein HALBER Bailar-Twist, auf halbem Weg
+#     stehengeblieben.
+#   * Es ist KEINE Auswahlfrage.  poly_match ist in 1061 von 1061 Faellen false,
+#     obwohl das Auge poly_build als Minimum ueber ALLE realistischen Frames liest.
+#     Im ganzen Manifold gibt es kein Oktaeder -- es wird also keines gebaut.
+#
+# ⛔ WARUM DIE VORHANDENE REPARATUR NICHT REICHT.  Es gibt sie zweimal, beide in
+# smiles_converter.py: DELFIN_FFFREE_CN6_OH_ADD (:27452) beginnt mit `apply_uff and`,
+# und DELFIN_FFFREE_CN6_OH_ANGLES (:38153) steckt in
+# _build_coordination_constraints_from_xyz, also in der UFF-Zwangsmaschinerie.  Beide
+# geben UFF oktaedrische Winkelziele (90/180 Grad), damit UFF den Twist herausrelaxiert.
+# Auf dem FF-freien Pfad laeuft kein UFF ⇒ Reichweite null.  Sie lassen sich nicht
+# verdrahten; sie muessen konstruktionsseitig neu entstehen, und das ist dieser Block.
+#
+# ⚠ WAS HIER BEWUSST UEBERNOMMEN IST, UND WARUM.  Die drei Sicherungen der UFF-Fassung
+# sind nicht Beiwerk, sie sind der Grund, warum sie isomersicher ist:
+#   1) Die drei trans-Paare kommen aus dem FRAME SELBST (greedy: jeder Donor mit seinem
+#      am meisten gegenueberliegenden), NICHT aus einer Enumerator-Permutation.  Die
+#      PERM-Variante ist am 2026-07-14 gemessen worden und hat Isomere KOLLABIERT
+#      (VOYWUD verlor all-trans + trans-OH) -- sie zwingt manchen Anordnungen den
+#      falschen trans-Satz auf.  Was das Frame schon hat, bleibt: fac bleibt fac,
+#      cis bleibt cis.  Es ist eine Twist-Korrektur, keine Anordnungsaenderung.
+#   2) Nur wenn ALLE drei Paare klar trans sind (min > 120 Grad).  Ein gueltiges
+#      TPR/OC-Frame sitzt bei 140-180; ein mehrdeutiges nicht -> uebersprungen, damit
+#      nichts kollabiert.
+#   3) Nur bei CN 6 und _PREFERRED_CN6_GEOMETRY.get(metal, 'OH') == 'OH'.
+#
+# ⚠ UND WAS ANDERS IST -- das ist der Grund, warum dies landen kann.  Nach dem am
+# 18.08. an drei Punkten gemessenen Kostengesetz kostet Ordnung/Auswahl rund 0,
+# Isometrie +0,98 pp, eine starre Drehung mit NEUER Konformation +6,57 pp und eine
+# Neueinbettung +11,9 pp.  Was HINZUFUEGT, ohne neue Geometrie zu erfinden, landet.
+# Deshalb wird hier der GANZE Ligandenarm STARR um das Metall gedreht und nicht das
+# einzelne Donoratom verschoben: eine Drehung um das Metall laesst r(M-D) exakt und
+# den Biss exakt, sie erfindet keine Konformation.  Einzelne Donoren zu verschieben
+# risse Bindungen -- genau die Neueinbettung, die am teuersten gemessen wurde.
+#
+# Ein Chelat mit 78-Grad-Biss KANN kein perfektes Oktaeder geben, und das soll es
+# auch nicht: der Kabsch-Fit legt seine Donoren so nah an die Idealrichtungen, wie
+# sein Biss es zulaesst, und der Biss gewinnt.  Das Ziel ist nicht CShM 0, das Ziel
+# ist "kein halber Twist mehr".
+_OC6_TRANS_MIN = 120.0   # Grad; darunter ist das Paar nicht eindeutig trans -> Abbruch
+_OC6_AXIS_MIN = 0.20     # kleinster Singulaerwert der drei Achsen: darunter sind sie
+                         # fast koplanar und die Orthonormalisierung waere geraten
+_OC6_RIGID_TOL = 1e-6    # Angstroem; Nachmessung von r(M-D) und Biss NACH der Drehung
+
+# ⚠ EIN AUSGANG, EINE ZEILE -- und `call` ganz vorn.  Die Funktion hat zehn Wege, mit
+# None zurueckzukommen, und jeder einzelne heisst etwas anderes: "nicht mein Fall",
+# "mehrdeutig, Finger weg", "gedreht, aber es hat nichts gebracht".  Ohne den Nenner
+# waeren sie im Bericht alle dieselbe Null -- der Fehler, der hier am 10.08. und noch
+# einmal am 14.08. gemacht wurde.  Nur beschrieben, wenn der Korrektor ueberhaupt
+# gerufen wird, also nur hinter oc6_twist=True.  Gelesen von _self_test_oc6_twist und
+# vom Geschwister-Selbsttest in converter_backend.
+_OC6_SEAT_CENSUS = dict.fromkeys(
+    ("call", "not_oc6", "metal_pref", "shape", "book", "not_cn6", "zero_md",
+     "ambiguous", "coplanar_axes", "rot_bad", "rigid_broken", "cshm_flat", "ok"), 0)
+# (CShM vor, CShM nach, kleinster trans-Winkel) je Aufruf -- die Rohzahlen, an denen
+# abzulesen ist, OB die Setzung ueberhaupt verdreht ist.  Ein Zaehler allein koennte
+# das nicht sagen: "nicht verbessert" heisst entweder "schon richtig" oder "zu
+# schlecht zum Retten", und das sind gegensaetzliche Befunde.  Nur hinter oc6_twist.
+_OC6_SEAT_CSHM = []
+_OC6_CSHM_KEEP = 4096   # Deckel; die Zaehler oben bleiben vollstaendig, nur die
+                        # Rohwertliste hoert irgendwann auf zu wachsen
+
+
+def _oc6_twist_seat_enabled() -> bool:
+    """DIE eine Lesestelle von DELFIN_FFFREE_OC6_TWIST_SEAT (Vorgabe 0 -> byte-identisch).
+
+    Sie entscheidet NICHT ueber das Primaerframe.  ``assemble_from_config`` fuehrt die
+    Korrektur ausschliesslich auf das Schluesselwort ``oc6_twist=True`` hin aus, das
+    per Vorgabe False ist -- der gebaute Primaerframe ist also byte-identisch, ganz
+    gleich was in der Umgebung steht.  Dieser Schalter sagt nur, ob der Aufrufer
+    zusaetzlich ein GESCHWISTERFRAME baut."""
+    return os.environ.get("DELFIN_FFFREE_OC6_TWIST_SEAT", "0") == "1"
+
+
+def _oc6_trans_pairs(u, donors):
+    """Die drei trans-Paare aus dem Frame selbst: jeder Donor mit seinem am meisten
+    gegenueberliegenden, greedy in fester Indexreihenfolge (deterministisch, kein RNG).
+
+    ``u``: dict Donorindex -> Einheitsvektor vom Metall aus.  Rueckgabe
+    ``(paare, kleinster_trans_winkel_grad)`` oder ``(None, 0.0)``.  Wortgleich die
+    Paarung der UFF-Fassung in smiles_converter.py:38160 -- nicht aus Bequemlichkeit,
+    sondern weil GENAU diese Paarung die isomersichere ist (siehe Kopfnotiz)."""
+    rem = list(donors)
+    pairs = []
+    min_trans = 180.0
+    while len(rem) >= 2:
+        a = rem[0]
+        b = min(rem[1:], key=lambda x: float(np.dot(u[a], u[x])))
+        c = max(-1.0, min(1.0, float(np.dot(u[a], u[b]))))
+        min_trans = min(min_trans, math.degrees(math.acos(c)))
+        pairs.append((a, b))
+        rem.remove(a)
+        rem.remove(b)
+    if len(pairs) != 3:
+        return None, 0.0
+    return pairs, min_trans
+
+
+def _oc6_ideal_axes(u, pairs):
+    """Die drei gemessenen trans-Achsen, auf das NAECHSTGELEGENE orthonormale Dreibein
+    gezogen (Polarzerlegung, ``A = U S Vt`` -> ``U Vt``).
+
+    WARUM POLARZERLEGUNG UND NICHT GRAM-SCHMIDT: Gram-Schmidt ist reihenfolgeabhaengig
+    -- die erste Achse bliebe unangetastet, die dritte truege den ganzen Fehler.  Die
+    Polarzerlegung minimiert die Summe der Quadrate ueber alle drei gleichzeitig und
+    ist damit unabhaengig davon, welches Paar zuerst gefunden wurde.  Das ist wichtig,
+    weil die greedy-Paarung oben eine Indexreihenfolge hat, die Chemie aber nicht.
+
+    Die Haendigkeit wird NICHT korrigiert.  Gesucht sind drei zueinander senkrechte
+    Einheitsvektoren; {±e1, ±e2, ±e3} ist derselbe Oktaeder, ob das Dreibein rechts-
+    oder linkshaendig ist.  Eine det-Korrektur waere hier kein Schutz, sondern eine
+    zusaetzliche, unnoetige Drehung.  Rueckgabe ``(E, kleinster_singulaerwert)``."""
+    A = []
+    for a, b in pairs:
+        ax = u[a] - u[b]
+        na = float(np.linalg.norm(ax))
+        if na < 1e-9:
+            return None, 0.0
+        A.append(ax / na)
+    A = np.asarray(A, float)
+    try:
+        U, S, Vt = np.linalg.svd(A)
+    except Exception:
+        return None, 0.0
+    if not np.all(np.isfinite(U)) or not np.all(np.isfinite(Vt)):
+        return None, 0.0
+    return U @ Vt, float(S[-1])
+
+
+def _oc6_twist_seat(syms, P, blocks, metal, geometry):
+    """Dreh den halben Twist heraus -- starr, ligandweise, um das Metall.
+
+    ``blocks``: je gesetztem Liganden ein ``(start, n_atome, [globale Donorindizes])``,
+    dieselbe Buchhaltung, die ``_global_donor_seat`` benutzt; Atom 0 ist das Metall.
+    Rueckgabe: der korrigierte Frame, oder ``None``, wenn eine der Sicherungen
+    anspricht ODER die Korrektur den Twist nicht messbar verkleinert.  Der Aufrufer
+    behaelt dann den gesetzten Frame woertlich.
+
+    Ablauf:
+      1) CN 6, OC-6 angefordert, Metall bevorzugt OH -- sonst nichts.
+      2) trans-Paare aus dem Frame, alle drei klar trans (> 120 Grad).
+      3) die drei Achsen orthonormalisieren -> das dem Frame NAECHSTE Oktaeder.
+         Nicht das Laborachsen-Oktaeder: das naechste ist das, zu dem am wenigsten
+         bewegt werden muss, und Bewegung ist genau das, was nach dem Kostengesetz
+         bezahlt wird.
+      4) je Ligand EINE starre Drehung um das Metall, die seine Donoren im
+         Kabsch-Sinn auf ihre Zielrichtungen legt.  Ein einzaehniger Ligand bekommt
+         die minimale Drehung (Rodrigues), ab zwei Donoren den Kabsch-Fit -- der ist
+         bei zwei Punkten NICHT entartet, weil das Metall im Ursprung mitgehalten
+         wird und die Kovarianz damit Rang 2 hat, deren Nullrichtung eindeutig ist.
+      5) NACHMESSEN statt vertrauen: r(M-D) und jeder ligandinterne Donor-Donor-
+         Abstand muessen auf 1e-6 unveraendert sein, und CShM(OC-6) muss STRIKT
+         gefallen sein.  Beides sind Messungen am Ergebnis, keine auf einen Pool
+         eingestellten Schwellen -- eine Drehung, die den Twist nicht verkleinert,
+         wird verworfen, statt sie schoenzurechnen."""
+    def _no(reason):
+        _OC6_SEAT_CENSUS[reason] += 1
+        return None
+
+    _OC6_SEAT_CENSUS["call"] += 1
+    if not str(geometry).startswith("OC-6"):
+        return _no("not_oc6")              # ein ANGEFORDERTES TPR-6 bleibt ein TPR-6
+    # Metallpraeferenz.  Verzoegerter Import wie in _finish_config_frame; faellt das
+    # Modul aus, gilt die Vorgabe 'OH' -- dieselbe, die die Tabelle selbst gibt.
+    try:
+        from delfin.smiles_converter import _PREFERRED_CN6_GEOMETRY as _PCN6
+        if _PCN6.get(str(metal), 'OH') != 'OH':
+            return _no("metal_pref")
+    except Exception:
+        pass
+    try:
+        X0 = np.asarray(P, float)
+    except Exception:
+        return _no("shape")
+    n = len(syms)
+    if X0.shape != (n, 3) or not np.all(np.isfinite(X0)) or not blocks:
+        return _no("shape")
+    donors = []
+    for st, ln, dn in blocks:
+        if st < 1 or st + ln > n:
+            return _no("book")             # Buchhaltung passt nicht -> nichts tun
+        donors += [int(x) for x in dn]
+    if len(donors) != 6 or len(set(donors)) != 6:
+        return _no("not_cn6")              # CN 6, und jeder Donor genau einmal
+    M = X0[0].copy()
+    u = {}
+    r = {}
+    for d in sorted(donors):
+        v = X0[d] - M
+        nv = float(np.linalg.norm(v))
+        if nv < 1e-6:
+            return _no("zero_md")
+        u[d] = v / nv
+        r[d] = nv
+    pairs, min_trans = _oc6_trans_pairs(u, sorted(donors))
+    if pairs is None or min_trans <= _OC6_TRANS_MIN:
+        return _no("ambiguous")            # mehrdeutig -> ueberspringen, nichts kollabiert
+    E, smin = _oc6_ideal_axes(u, pairs)
+    if E is None or smin < _OC6_AXIS_MIN:
+        return _no("coplanar_axes")        # fast koplanare Achsen -> das Dreibein waere geraten
+    tgt = {}
+    for i, (a, b) in enumerate(pairs):
+        e = np.asarray(E[i], float)
+        ne = float(np.linalg.norm(e))
+        if ne < 1e-9:
+            return _no("coplanar_axes")
+        e = e / ne
+        if float(np.dot(u[a], e)) < 0.0:
+            e = -e                         # die Achse zeigt zu a, nicht von a weg
+        tgt[a] = e * r[a]
+        tgt[b] = -e * r[b]
+    Xc = X0.copy()
+    for st, ln, dn in blocks:
+        dn = [int(x) for x in dn]
+        if ln < 1 or not dn:
+            continue
+        obs = np.asarray([X0[d] - M for d in dn], float)
+        tar = np.asarray([tgt[d] for d in dn], float)
+        if len(dn) == 1:
+            R = _rot_align(obs[0], tar[0])
+        else:
+            R = _kabsch_rot(obs, tar)
+        if R is None or not np.all(np.isfinite(R)):
+            return _no("rot_bad")
+        Xc[st:st + ln] = (X0[st:st + ln] - M) @ R.T + M
+    if not np.all(np.isfinite(Xc)):
+        return _no("rot_bad")
+    # 5a) die beiden Invarianten NACHMESSEN.  Eine Drehung um das Metall haelt sie
+    #     mathematisch; gemessen wird trotzdem, weil eine entartete Kabsch-Matrix
+    #     genau hier stillschweigend eine Spiegelung einschleusen koennte.
+    for st, ln, dn in blocks:
+        dn = [int(x) for x in dn]
+        for i, da in enumerate(dn):
+            if abs(float(np.linalg.norm(Xc[da] - M)) - r[da]) > _OC6_RIGID_TOL:
+                return _no("rigid_broken")             # r(M-D) gebrochen
+            for db in dn[i + 1:]:
+                if abs(float(np.linalg.norm(Xc[da] - Xc[db]))
+                       - float(np.linalg.norm(X0[da] - X0[db]))) > _OC6_RIGID_TOL:
+                    return _no("rigid_broken")         # Biss gebrochen
+    # 5b) und die eine Zahl, um die es geht.  Faellt sie nicht, hat der Block nichts
+    #     zu bieten und gibt den Frame unveraendert zurueck (der Aufrufer behaelt ihn).
+    try:
+        from delfin.manta import polyhedra as _PH
+        before = _PH.cshm([X0[d] - M for d in sorted(donors)], "OC-6 octahedron")
+        after = _PH.cshm([Xc[d] - M for d in sorted(donors)], "OC-6 octahedron")
+        if len(_OC6_SEAT_CSHM) < _OC6_CSHM_KEEP:      # gedeckelt: ein 30-Stunden-Lauf
+            _OC6_SEAT_CSHM.append(                    # soll keine Liste mitschleppen
+                (float(before), float(after), float(min_trans)))
+    except Exception:
+        return _no("cshm_flat")
+    if not (after < before - 1e-9):
+        return _no("cshm_flat")
+    _OC6_SEAT_CENSUS["ok"] += 1
+    return Xc
+
+
 def assemble_from_config(metal, geometry, config, ligands, refine=True,
                          n_frames=1, per_lig_confs=6, rmsd_dedup=0.5,
                          planar_bite=None, planar_coplanar=None, prefer_beta=False,
-                         lp_orient=False):
+                         lp_orient=False, oc6_twist=False):
     """Build a 3D complex from a chelate-isomer config (vertex -> (ligand_idx,
     arm_idx)) and the decomposed ligand list.  Chelating ligands are Kabsch-fit
     onto their two assigned vertices; monodentate ligands are oriented onto their
@@ -4801,6 +5070,17 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
     donors = sorted(fixed - {0})              # global indices of the constructed donor atoms
     if not ensemble:
         P = np.vstack([np.zeros((1, 3))] + [np.array(placed[1:], float)])
+        # OC-6 TWIST-KORREKTUR IN DER SETZUNG (nur auf ``oc6_twist=True``; das
+        # Schluesselwort ist per Vorgabe False, der Primaerframe also byte-identisch,
+        # unabhaengig von jeder Umgebungsvariablen).  Sie steht VOR der globalen
+        # Donorsetzung, weil die dort erlaubte Drift (0,05 A) gegen den Frame gemessen
+        # wird, den sie vorfindet: erst das Polyeder richtigstellen, dann entzerren --
+        # umgekehrt muesste die Entzerrung ihre eigene Arbeit noch einmal aufgeben.
+        # Und VOR _finish_config_frame, weil die Relaxation dort die Donoren festnagelt.
+        if oc6_twist:
+            _t = _oc6_twist_seat(out_syms, P, lig_blocks, metal, geometry)
+            if _t is not None:
+                P = _t
         # GLOBAL DONOR SEATING (default OFF -> byte-identical).  Every ligand up to here was
         # seated ALONE; this is the first and only point where all of them exist at once, so
         # it is the first point where an inter-ligand distance can even be written down.  It
@@ -4840,6 +5120,13 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
         Pc = np.vstack(blocks)
         if not np.all(np.isfinite(Pc)):
             continue
+        # dieselbe Twist-Korrektur fuer die Ensemble-Kombinationen: die Ligandenspannen
+        # sind ueber alle Kombinationen gleich (gleiche Konformer-Atomzahlen), lig_blocks
+        # gilt also unveraendert.  Wieder nur auf das Schluesselwort hin.
+        if oc6_twist:
+            _t = _oc6_twist_seat(out_syms, Pc, lig_blocks, metal, geometry)
+            if _t is not None:
+                Pc = _t
         # same global seating for the ensemble combos; the per-ligand spans are identical
         # across combos (same conformer atom counts), so lig_blocks applies unchanged.
         if _global_donor_seat_enabled():
@@ -5112,6 +5399,147 @@ def _run_self_tests() -> None:
     _self_test_bite_law()
     _self_test_lp_orient()
     _self_test_trilateration()
+    _self_test_oc6_twist()
+
+
+def _self_test_oc6_twist() -> None:
+    """Dreht der Korrektor den halben Twist wirklich heraus -- und laesst er dabei
+    alles stehen, was er stehenlassen muss?
+
+    Gemessen wird an SYNTHETISCHEN Frames, deren Wahrheit bekannt ist, nicht an einem
+    Pool: ein Oktaeder, das um die C3-Achse um einen bekannten Winkel verdreht wurde.
+    phi = 0 ist das Oktaeder, phi = 60 Grad das ideale trigonale Prisma, und der
+    gemessene Median CShM 11,03 liegt dazwischen -- der halbe Twist, um den es geht.
+
+    Fuenf Fragen, und jede davon kann NEIN sagen:
+      1) faellt CShM(OC-6) -- und zwar auf ~0, nicht nur ein bisschen?
+      2) bleibt r(M-D) exakt (die Drehung ist um das Metall)?
+      3) bleibt der Biss exakt (der Arm dreht sich STARR)?
+      4) laesst er ein ANGEFORDERTES TPR-6 in Ruhe?  (sonst zerstoert er ein Isomer)
+      5) laesst er ein mehrdeutiges Frame in Ruhe (min-trans <= 120 Grad)?
+    Und die sechste, die keine Frage, sondern die Vorgabe ist: mit Schalter AUS
+    passiert ueberhaupt nichts.
+    """
+    from delfin.manta import polyhedra as _PH
+    print("\nOC-6 Twist-Korrektor -- der halbe Bailar-Twist, FF-frei zurueckgedreht")
+    print(f"  Schalter DELFIN_FFFREE_OC6_TWIST_SEAT gelesen als: "
+          f"{_oc6_twist_seat_enabled()}  (Vorgabe muss False sein)")
+
+    def _twisted_oct(phi_deg, rad=2.10):
+        """Ein Oktaeder, um die C3-Achse [1,1,1] verdreht: die obere Dreiecksflaeche
+        um +phi/2, die untere um -phi/2.  phi=0 -> OC-6, phi=60 -> ideales TPR-6."""
+        V = _PH.ref_vectors("OC-6 octahedron")
+        c3 = np.array([1.0, 1.0, 1.0]) / math.sqrt(3.0)
+        top, bot = [], []
+        for v in V:                       # die zwei zur C3-Achse senkrechten Dreiecke
+            (top if float(np.dot(v, c3)) > 0 else bot).append(v)
+        Rt = _axis_rot(c3, math.radians(+phi_deg / 2.0))
+        Rb = _axis_rot(c3, math.radians(-phi_deg / 2.0))
+        return ([np.asarray(v) @ Rt.T * rad for v in top]
+                + [np.asarray(v) @ Rb.T * rad for v in bot])
+
+    def _mk_monodentate_frame(dirs):
+        """Metall + sechs einzaehnige Arme (Donor + ein Rueckgratatom nach aussen), so
+        dass jeder Block wirklich einen KOERPER hat, den die Drehung mitnehmen muss."""
+        syms = ["Fe"]
+        P = [np.zeros(3)]
+        blocks = []
+        for v in dirs:
+            st = len(P)
+            syms.append("N")
+            P.append(np.asarray(v, float))
+            syms.append("C")
+            P.append(np.asarray(v, float) * 1.65)          # radial nach aussen
+            blocks.append((st, 2, [st]))
+        return syms, np.asarray(P, float), blocks
+
+    print(f"\n{'Frame':>26} | {'min-trans':>9} | {'CShM vor':>9} | {'CShM nach':>9} | "
+          f"{'dM-D':>8} | Urteil")
+    ok_all = True
+    for phi in (0.0, 15.0, 30.0, 45.0, 60.0):
+        dirs = _twisted_oct(phi)
+        syms, P, blocks = _mk_monodentate_frame(dirs)
+        u = {b[2][0]: P[b[2][0]] / float(np.linalg.norm(P[b[2][0]])) for b in blocks}
+        _pairs, _mt = _oc6_trans_pairs(u, sorted(u))
+        before = _PH.cshm([P[b[2][0]] for b in blocks], "OC-6 octahedron")
+        Xc = _oc6_twist_seat(syms, P, blocks, "Fe", "OC-6 octahedron")
+        if Xc is None:
+            verdict = ("uebersprungen (min-trans <= 120)" if _mt <= _OC6_TRANS_MIN
+                       else "uebersprungen")
+            print(f"{'OC-6 twist %4.1f' % phi:>26} | {_mt:8.1f}d | {before:9.3f} | "
+                  f"{'--':>9} | {'--':>8} | {verdict}")
+            # phi=0 ist BEREITS das Oktaeder -> CShM kann nicht fallen -> None ist richtig
+            if phi == 0.0 and before < 1e-6:
+                continue
+            if _mt > _OC6_TRANS_MIN and before > 1.0:
+                ok_all = False              # haette greifen muessen
+            continue
+        after = _PH.cshm([Xc[b[2][0]] for b in blocks], "OC-6 octahedron")
+        dmd = max(abs(float(np.linalg.norm(Xc[b[2][0]]))
+                      - float(np.linalg.norm(P[b[2][0]]))) for b in blocks)
+        # der Arm muss MITGEKOMMEN sein: das Rueckgratatom haelt seinen Abstand zum Donor
+        darm = max(abs(float(np.linalg.norm(Xc[b[0]] - Xc[b[0] + 1]))
+                       - float(np.linalg.norm(P[b[0]] - P[b[0] + 1]))) for b in blocks)
+        good = (after < before - 1e-9) and dmd < 1e-6 and darm < 1e-6
+        ok_all = ok_all and good
+        print(f"{'OC-6 twist %4.1f' % phi:>26} | {_mt:8.1f}d | {before:9.3f} | "
+              f"{after:9.3f} | {dmd:8.1e} | {'OK' if good else 'FEHLER'}"
+              f"  (Arm {darm:.1e})")
+
+    # 4) ein ANGEFORDERTES TPR-6 muss unangetastet bleiben -- sonst faellt ein Isomer
+    dirs = [np.asarray(v, float) * 2.10 for v in _PH.ref_vectors("TPR-6 trigonal prism")]
+    syms, P, blocks = _mk_monodentate_frame(dirs)
+    tpr = _oc6_twist_seat(syms, P, blocks, "Fe", "TPR-6 trigonal prism")
+    print(f"{'TPR-6 angefordert':>26} | {'--':>9} | {'--':>9} | {'--':>9} | {'--':>8} | "
+          f"{'OK (nicht angefasst)' if tpr is None else 'FEHLER: Isomer zerstoert'}")
+    ok_all = ok_all and (tpr is None)
+
+    # 5) mehrdeutig: ein Frame, dessen beste Paarung unter 120 Grad bleibt (alle sechs
+    #    Donoren in EINE Halbkugel gedraengt) -- der Korrektor darf nicht raten
+    amb = []
+    for k in range(6):
+        a = 2.0 * math.pi * k / 6.0
+        v = np.array([math.cos(a) * 0.80, math.sin(a) * 0.80, 0.60])
+        amb.append(v / float(np.linalg.norm(v)) * 2.10)
+    syms, P, blocks = _mk_monodentate_frame(amb)
+    u = {b[2][0]: P[b[2][0]] / float(np.linalg.norm(P[b[2][0]])) for b in blocks}
+    _p2, _mt2 = _oc6_trans_pairs(u, sorted(u))
+    ambr = _oc6_twist_seat(syms, P, blocks, "Fe", "OC-6 octahedron")
+    print(f"{'mehrdeutig (Halbkugel)':>26} | {_mt2:8.1f}d | {'--':>9} | {'--':>9} | "
+          f"{'--':>8} | {'OK (uebersprungen)' if ambr is None else 'FEHLER: geraten'}")
+    ok_all = ok_all and (ambr is None)
+
+    # 6) ein CHELAT: zwei Donoren an EINEM starren Koerper.  Er darf sich nur STARR
+    #    drehen -- der Biss ist Ligandengeometrie, nicht Polyedergeometrie.
+    dirs = _twisted_oct(30.0)
+    syms = ["Fe"]; P = [np.zeros(3)]; blocks = []
+    for i in range(0, 6, 2):
+        st = len(P)
+        syms += ["N", "C", "N"]
+        P += [np.asarray(dirs[i], float),
+              (np.asarray(dirs[i], float) + np.asarray(dirs[i + 1], float)) * 0.62,
+              np.asarray(dirs[i + 1], float)]
+        blocks.append((st, 3, [st, st + 2]))
+    P = np.asarray(P, float)
+    bite0 = [float(np.linalg.norm(P[b[2][0]] - P[b[2][1]])) for b in blocks]
+    before = _PH.cshm([P[d] for b in blocks for d in b[2]], "OC-6 octahedron")
+    Xc = _oc6_twist_seat(syms, P, blocks, "Fe", "OC-6 octahedron")
+    if Xc is None:
+        print(f"{'3 Chelate, Biss fest':>26} | {'--':>9} | {before:9.3f} | {'--':>9} | "
+              f"{'--':>8} | uebersprungen")
+        ok_all = False
+    else:
+        after = _PH.cshm([Xc[d] for b in blocks for d in b[2]], "OC-6 octahedron")
+        bite1 = [float(np.linalg.norm(Xc[b[2][0]] - Xc[b[2][1]])) for b in blocks]
+        dbite = max(abs(x - y) for x, y in zip(bite0, bite1))
+        dmd = max(abs(float(np.linalg.norm(Xc[d])) - float(np.linalg.norm(P[d])))
+                  for b in blocks for d in b[2])
+        good = (after < before - 1e-9) and dbite < 1e-6 and dmd < 1e-6
+        ok_all = ok_all and good
+        print(f"{'3 Chelate, Biss fest':>26} | {'--':>9} | {before:9.3f} | {after:9.3f} | "
+              f"{dmd:8.1e} | {'OK' if good else 'FEHLER'}  (Biss {dbite:.1e})")
+    print(f"\n  Gesamturteil: "
+          f"{'ALLE BESTANDEN' if ok_all else 'MINDESTENS EINER FEHLGESCHLAGEN'}")
 
 
 def _self_test_lp_orient() -> None:

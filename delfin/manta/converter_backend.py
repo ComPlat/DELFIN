@@ -659,35 +659,84 @@ def _append_ffree_torsion_wells(results, metal, lig_groups, base_syms, base_P, b
     if os.environ.get("DELFIN_FFFREE_TORSION_WELLS", "0") != "1" or not lig_groups:
         return
     # ===== SIEBEN AUSGAENGE, SECHS DAVON STUMM ================================
-    # Gemessen 18.08.2026: diese Funktion hat im GESAMTEN Korpus null Frames
-    # angehaengt -- 2739 Dateien in archive_tors10k_on, 0 Etiketten `-well`.
-    # Ihre Nachbarn an derselben Aufrufstelle haben dagegen geliefert: `-pucker`
-    # ~1010, `-conf` 30416, `-lp` 62, `-beta` 55.  Die Aufrufzeilen :1852 und
-    # :1856 stehen VIER Zeilen auseinander und bekommen identische Argumente --
-    # Erreichbarkeit, Vorlage-Mol, Etikettenverlust und das Selbstgate als
-    # solches sind damit ausgeschlossen.
     #
-    # Historisch ist die Ursache belegt: die Funktion wurde am 03.08. in einen
-    # NameError HINEINGEBOREN (`_INTERLIG_VDW_FLOOR` war am 02.08. geloescht
-    # worden, wiederhergestellt erst am 17.08. um 10:59), und `except: continue`
-    # verschluckte ihn fuer JEDEN Kandidaten.  Fuer den tors10k-Lauf traegt das
-    # aber NICHT mehr: dessen aelteste Archivdateien stammen von 17.08. 13:56,
-    # also drei Stunden nach dem Restore.
+    # 🔴 DIE ERSTE FASSUNG DIESES BLOCKS (18.08., 12:56) STAND AUF EINER FALSCHEN
+    # PRAEMISSE.  Sie hielt fest: "diese Funktion hat im GESAMTEN Korpus null Frames
+    # angehaengt -- 2739 Dateien in archive_tors10k_on, 0 Etiketten `-well`", und
+    # schloss daraus auf zwei Verdaechtige im Rumpf ((A) `dofs` leer wegen `IsInRing`
+    # auf den DATIV geschlossenen Chelatringen, (B) die 0,95x-base_min-Latte).
     #
-    # ⇒ Es bleiben zwei Verdaechtige, und sie sind ohne Zaehler NICHT trennbar:
-    #   (A) `dofs` ist fast immer leer -- `_config_template_mol` bindet M-D
-    #       DATIV, also sind alle Chelatringe echte RDKit-Ringe und `IsInRing`
-    #       wirft jede Chelat-Rueckgratbindung heraus;
-    #   (B) alle Kombinationen fallen an der 0,95x-base_min-Latte durch.
-    # "Erzeugt und verworfen" ist von "nie gebaut" nicht zu unterscheiden --
-    # exakt der Fehlschluss vom 14.08., an dem der Feuerzensus Befunde erfunden
-    # hat.  Der Ring-Pucker hat dafuer am 17.08. seinen Zaehler bekommen; diese
-    # Funktion nicht.  Hiermit doch.
+    # DAS ARCHIV IST ECHT UND DIE NULL IST ECHT -- die SCHLUSSFOLGERUNG war falsch.
+    # Nachgeprueft 18.08. an den Laufmetadaten selbst:
+    #   results/log_tors10k.txt : ... --label tors10k --config champion
+    #                             --on DELFIN_FFFREE_TORSION_RELAX --off  --ab
+    #   axis_tors10k_on.json / axis_tors10k_off.json : "TORSION_WELLS" kommt
+    #                             NULL mal vor; das einzige TORSION-Flag im ganzen
+    #                             Lauf ist DELFIN_FFFREE_TORSION_RELAX, und in der
+    #                             Champion-Flagliste (30 Flags) steht WELLS nicht.
+    # ⇒ `DELFIN_FFFREE_TORSION_WELLS` war in BEIDEN Armen von tors10k AUS.  Die null
+    # `-well`-Etiketten sind der Ausgang 1 (der Schalter) und sonst nichts.  Gemessen
+    # wurde `torsion_relax` -- ein UMFORMENDER Pass, der laut seiner eigenen
+    # Vorregistrierung "nichts anhaengt"; auch die "3 von 24 Systeme geaendert" der
+    # Reichweitensonde gehoeren ihm, nicht dieser Funktion.  Zwei Mechanismen mit
+    # aehnlichem Namen, ein Laufetikett: TORSION_RELAX ist nicht TORSION_WELLS.
+    # Die Achse hier ist damit UNGEMESSEN, nicht widerlegt.
+    #
+    # GEGENPROBE, damit die Nullmeldung nicht wieder nur eine Behauptung ist
+    # (`python delfin/manta/converter_backend.py wells`, Zaehler unten):
+    #   BIQCOV (Ta, k3, iPr/tBu-Arme) 2 Aufrufe, dof_n=8, cand=24, ADDED=24
+    #   Co-Fall mit haengendem Aminoethyl 3 Aufrufe, dof_n=6, cand=27, ADDED=21
+    #   ABEZAJ (Ti, k3, Cyclohexyl) 1 Aufruf, dof_n=2, cand=6, ADDED=2
+    # Der Mechanismus laeuft, er wird erreicht, und er HAENGT AN.  Verdacht (A) und
+    # (B) sind damit beide vom Tisch; was tatsaechlich bindet, ist `_WELL_MAX_SIBLINGS`
+    # (auf BIQCOV in beiden Aufrufen) -- und der Deckel meldet sich jetzt.
+    #
+    # ⇒ ES GAB GENAU ZWEI LAEUFE MIT WELLS=1, UND BEIDE FIELEN INS NAMEERROR-FENSTER.
+    # 1234 `axis_*.json` durchsucht; `TORSION_WELLS` steht in genau zweien:
+    #   `wells`     03.08. 07:30, pool_ffonly (187):  affected=0, byte-identisch=187,
+    #               0 `-well`-Etiketten in archive_wells_on -> gelesen als "keine Reichweite"
+    #   `torswells` 07.08. 06:24, pool_ffree_built:   REACH 0/24, von der Sonde
+    #               abgebrochen -- es entstand nicht einmal ein Archiv
+    # Der Dateistand zu BEIDEN Zeitpunkten (622f4075 bzw. 4cc5dc48): `_INTERLIG_VDW_FLOOR`
+    # NULL mal definiert, aber in `_interlig_clash_ok` benutzt -- Commit a9b82598 vom 02.08.
+    # loeschte die Konstante und liess die Benutzung stehen.  Der Aufruf steht hier
+    # INNERHALB des `try` mit `except Exception: continue`, also starb JEDER Kandidat
+    # lautlos am NameError, bevor irgendetwas angehaengt werden konnte.  Exakt der Fehler,
+    # den Commit 41255fee am 17.08. fuer `_append_reembed` benannt hat -- nur teilte diese
+    # Funktion sich denselben Konsumenten, und den zweiten Ort hat niemand mitgezaehlt.
+    # Die Konstante ist seit 17.08. 10:59 zurueck; seither hat NIEMAND die Achse gefahren.
+    #
+    # ⇒ ALLE drei Nullbefunde sind erklaert, und keiner widerlegt den Mechanismus:
+    # zweimal NameError unter einem breiten except, einmal der falsche Schalter.
+    #
+    # LEHRE, teuer bezahlt: ein Archiv beweist nur, was der Lauf eingeschaltet hatte.
+    # Vor jedem "der Mechanismus liefert nichts" gehoert der Blick in die
+    # Laufmetadaten -- war sein Schalter AN?  "Lief und scheiterte" ist nicht
+    # "lief nie", und beides sieht im Archiv gleich aus.
+    #
+    # ⚠ 18.08.2026, ZWEITE RUNDE.  Der Zaehler von 12:56 war ausserdem ein RUMPF: das Woerterbuch
+    # stand da, aber nur `import` und `tmpl_none` wurden je gesetzt, und `_wtrace()` wurde
+    # auf dem NORMALEN Weg nie gerufen -- also meldete er genau die zwei Faelle, die
+    # ohnehin nicht vorkommen, und schwieg zu den fuenf, um die es geht.  Ein Zaehler, der
+    # nur an den unwahrscheinlichen Ausgaengen haengt, ist kein Zaehler.  Jetzt haengt an
+    # JEDEM Ausgang einer, und `enter` ist der NENNER: ohne ihn ist "keine Zeile" nicht von
+    # "nie betreten" zu unterscheiden -- derselbe Fehlschluss wie am 14.08.
+    #
+    # DIE SIEBEN AUSGAENGE (Funktionsebene), in Reihenfolge:
+    #   1 switch      Schalter aus oder keine lig_groups  (vor dem Zaehler, kein stiller Fall)
+    #   2 import      rdkit/numpy/assemble_complex nicht importierbar
+    #   3 tmpl_none   _config_template_mol passt nicht auf den Frame (Anzahl/Reihenfolge)
+    #   4 base_exc    die LATTE des Primaerframes ist nicht berechenbar
+    #   5 dof_exc     die Bindungsschleife wirft
+    #   6 no_dof      keine drehbare Bindung uebrig  (gemessen: NICHT der Killer)
+    #   7 conf_exc    der Konformer laesst sich nicht auf den Frame setzen
+    # ... und die sechs VERWUERFE pro Kandidat: same/unclean/collapse/beta/clash/exc.
     #
     # DELFIN_FFFREE_WELLS_TRACE=<pfad>, sonst still und kostenlos.
-    _wk = {"cand": 0, "no_dof": 0, "tmpl_none": 0, "import": 0, "same": 0,
+    _wk = {"enter": 1, "cand": 0, "no_dof": 0, "tmpl_none": 0, "import": 0, "same": 0,
            "unclean": 0, "collapse": 0, "beta": 0, "clash": 0, "exc": 0,
-           "added": 0, "dof_n": 0}
+           "added": 0, "dof_n": 0, "base_exc": 0, "dof_exc": 0, "conf_exc": 0,
+           "nrot": 0, "dof_cap": 0, "sib_cap": 0, "iso_cap": 0}
 
     def _wtrace():
         _p = os.environ.get("DELFIN_FFFREE_WELLS_TRACE", "")
@@ -695,7 +744,7 @@ def _append_ffree_torsion_wells(results, metal, lig_groups, base_syms, base_P, b
             return
         try:
             with open(_p, "a") as _fh:
-                _fh.write("[WELLS] " + " ".join(
+                _fh.write("[WELLS] lab=%s " % (base_label,) + " ".join(
                     "%s=%d" % (k, v) for k, v in sorted(_wk.items())) + "\n")
         except Exception:
             pass
@@ -722,6 +771,8 @@ def _append_ffree_torsion_wells(results, metal, lig_groups, base_syms, base_P, b
                     float(_AC._beta_score(list(base_syms), base_P, _dloc)))
         base_min = _min_nonbonded_heavy(base_syms, base_P)
     except Exception:
+        _wk["base_exc"] = 1
+        _wtrace()
         return
     # rotatable bonds whose moving half is free of metal AND donors
     dofs = []
@@ -729,6 +780,7 @@ def _append_ffree_torsion_wells(results, metal, lig_groups, base_syms, base_P, b
         for b in m.GetBonds():
             if b.GetBondType() != _Chem.BondType.SINGLE or b.IsInRing():
                 continue
+            _wk["nrot"] += 1        # Nenner VOR den Freiheitsgrad-Filtern
             i, j = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
             if m.GetAtomWithIdx(i).GetAtomicNum() == 1 or m.GetAtomWithIdx(j).GetAtomicNum() == 1:
                 continue
@@ -750,9 +802,22 @@ def _append_ffree_torsion_wells(results, metal, lig_groups, base_syms, base_P, b
                     dofs.append((r1, a, c, r2, w))
                 break
     except Exception:
+        _wk["dof_exc"] = 1
+        _wtrace()
         return
+    _wk["dof_n"] = len(dofs)
     if not dofs:
-        return _scope_no("WELLS_NO_DOF", "nrot=0")
+        _wk["no_dof"] = 1
+        _wtrace()
+        return _scope_no("WELLS_NO_DOF", "nrot=%d" % _wk["nrot"])
+    # ⚠ KEINE STILLE KAPPUNG.  Der Deckel meldet sich, wenn er bindet -- sonst liest sich
+    # das Ergebnis hinterher als "mehr Freiheitsgrade gab es nicht", und genau diese
+    # Verwechslung ist der Grund, warum diese Funktion vierzehn Tage lang als "ohne
+    # Reichweite" galt.  Vorgabe still: nur ueber den Trace-Kanal des Moduls.
+    if len(dofs) > 4:
+        _wk["dof_cap"] = len(dofs) - 4
+        _ff_trace_write("[WELL_DOF_CAP] dofs=%d cap=4 dropped=%d lab=%s"
+                        % (len(dofs), len(dofs) - 4, base_label))
     dofs = dofs[:4]                           # bound the product; 3^4 = 81 before dedup
     try:
         conf0 = _Chem.Conformer(m.GetNumAtoms())
@@ -762,13 +827,21 @@ def _append_ffree_torsion_wells(results, metal, lig_groups, base_syms, base_P, b
         m.RemoveAllConformers()
         m.AddConformer(conf0, assignId=True)
     except Exception:
+        _wk["conf_exc"] = 1
+        _wtrace()
         return
     n_added = 0
     for combo in _it.product(*[d[4] for d in dofs]):
         if n_added >= _WELL_MAX_SIBLINGS:
+            # zweite Kappung, dieselbe Regel: sie meldet sich, wenn sie bindet.
+            _wk["sib_cap"] = 1
+            _ff_trace_write("[WELL_SIB_CAP] added=%d cap=%d lab=%s"
+                            % (n_added, _WELL_MAX_SIBLINGS, base_label))
             break
         if max_isomers and len(results) >= max_isomers:
+            _wk["iso_cap"] = 1
             break
+        _wk["cand"] += 1
         try:
             w = _Chem.Mol(m)
             c = w.GetConformer()
@@ -777,21 +850,31 @@ def _append_ffree_torsion_wells(results, metal, lig_groups, base_syms, base_P, b
             _pP = _np.array(c.GetPositions(), float)
             _ps = list(base_syms)
             if _np.allclose(_pP, _np.asarray(base_P, float), atol=1e-6):
+                _wk["same"] += 1
                 continue                      # the base frame already sits in this well
             _ps, _pP = _maybe_relax(_ps, _pP)
             if not _build_is_clean(_ps, _pP, cn=cn, geom=geom, donors=donors,
                                    exempt_pairs=exempt_pairs, graph_bonds=graph_bonds):
+                _wk["unclean"] += 1
                 continue
             if _AC._collapsed_heavy_bonds_strict(_ps, _pP) and not base_bad[0]:
+                _wk["collapse"] += 1
                 continue
             if _AC._beta_score(_ps, _pP, _dloc) > base_bad[1] + 1e-9:
+                _wk["beta"] += 1
                 continue
             if base_min is not None and not _interlig_clash_ok(_ps, _pP, base_min):
+                _wk["clash"] += 1
                 continue
             results.append((_xyz(_ps, _pP), "%s-well%d" % (base_label, n_added + 1)))
             n_added += 1
+            _wk["added"] = n_added
         except Exception:
+            _wk["exc"] += 1
             continue
+    # Der REGULAERE Ausgang -- ohne diese Zeile meldete der Zaehler nur die zwei
+    # unwahrscheinlichen Faelle und schwieg genau dann, wenn es interessant wird.
+    _wtrace()
 # vdW-level inter-ligand clash floor (Å) for the NEW-frame never-worse gate below.
 # A re-embedded / re-seated conformer must not introduce a non-bonded heavy-heavy
 # contact below this (a backbone folding into a NEIGHBOUR ligand collapses well
@@ -1861,6 +1944,107 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers, union: bool = False):
                             # (112 Systeme bedienen beide, 0 bauen das Produkt; rund 1210
                             # fehlende Etiketten).  Dieselbe Saat wie oben.
                             _prod_seeds.append((_ls, _lP, f"{_lab}-lp", _dl))
+        # DER HALBE TWIST ALS GESCHWISTER (DELFIN_FFFREE_OC6_TWIST_SEAT, Vorgabe AUS).
+        #
+        # Gemessen 18.08. auf 30921 Systemen: netto +988 Systeme vom Oktaeder ins
+        # trigonale Prisma, McNemar X2 = 860,8 -- der groesste Einzeldefekt der
+        # Polyederachse.  Und es ist KEINE Auswahlfrage: poly_match ist 1061 von 1061
+        # false, obwohl das Auge poly_build als Minimum ueber ALLE realistischen Frames
+        # liest.  Im ganzen Manifold gibt es kein Oktaeder -- also muss eines HINEIN,
+        # und genau das tut ein Geschwister.
+        #
+        # ⚠ WARUM ADDITIV UND NICHT AN DER PRIMAERSTELLE.  Die lange Notiz am
+        # -beta-Geschwister oben sagt es fuer diesen Pfad bereits mit Zahlen: was hier
+        # ERSETZT, stirbt (die Setzung mit gedrehtem Rueckgrat kollidiert, das Config
+        # faellt, das System geht an legacy -- reach 49 von 187, cap_LOST 2, valid
+        # 28 -> 27); was HINZUFUEGT, landet.  Der Primaerframe bleibt hier woertlich
+        # stehen; das Schluesselwort ``oc6_twist`` in assemble_from_config ist per
+        # Vorgabe False, der Bau des Primaerframes ist also byte-identisch, unabhaengig
+        # von dieser Umgebungsvariablen.  Kippt der gedrehte Frame um, kostet das
+        # nichts, weil nichts weggenommen wurde.
+        #
+        # ⚠ UND ER MUSS DIESELBE LATTE NEHMEN WIE DER FRAME, AN DEM ER HAENGT.  Das
+        # Selbstgate fragt "ist das baubar", nicht "ist das so gut wie das, was wir
+        # schon haben" -- deshalb hier dieselben drei Nachweise wie beim -beta-Zweig
+        # (kein neuer Kollaps, keine schlechtere Bindung, kein neu verbogenes sp2) und
+        # dazu der eine, um den es geht: das Polyeder muss NACH der Nachrelaxation
+        # immer noch naeher am Oktaeder sein als das Primaerframe.  Der Korrektor misst
+        # das schon vor _finish_config_frame; hier wird es am ENDPRODUKT nachgemessen,
+        # weil die Relaxation danach laeuft und den Twist zurueckdrehen kann.  Ein
+        # Geschwister, das den Twist nicht wirklich verkleinert, ist ein Duplikat mit
+        # Etikett und wird nicht aufgenommen.
+        if AC._oc6_twist_seat_enabled():
+            # ⚠ DER NENNER, UND ZWAR AN JEDEM AUSGANG.  Am 10.08. hat ein Feuerzensus
+            # zwei von dreizehn Ausgaengen verdrahtet und daraus "58 von 64" erfunden;
+            # am 14.08. hat derselbe Zensus auf Docstrings gezaehlt und "erreicht 0"
+            # neben "feuert 990" gestellt.  Deshalb bekommt HIER jeder Ausgang seine
+            # eigene Zeile und `enter` steht ganz vorn: ohne ihn ist "nichts gebaut"
+            # nicht von "nie betreten" zu unterscheiden.  Reine Buchhaltung -- sie
+            # laeuft nur, wenn der Schalter an ist, und aendert keinen Frame.
+            _OC6_CENSUS["enter"] += 1
+            # dieselbe Zahl am FERTIGEN Primaerframe, auf den ECHTEN Donorindizes --
+            # nicht auf "den sechs naechsten Schweratomen", was bei einem Chelat das
+            # Rueckgrat trifft und Unsinn misst.  Sie ist der Gegenpol zur Setzungszahl.
+            try:
+                if len(_OC6_FINAL_CSHM) < AC._OC6_CSHM_KEEP:     # derselbe Deckel
+                    _OC6_FINAL_CSHM.append(
+                        _shell_cshm(d, (list(syms), P,
+                                        sorted(int(x) for x in (donors or [])))))
+            except Exception:
+                pass
+            try:
+                _tb = AC.assemble_from_config(d["metal"], d["geometry"], config, ligands,
+                                              oc6_twist=True)
+            except Exception:
+                _tb = None
+                _OC6_CENSUS["build_exc"] += 1
+            if _tb is None:
+                _OC6_CENSUS["build_none"] += 1
+            else:
+                _ts, _tP, _td = _tb
+                _ts, _tP = _maybe_relax(_ts, _tP)
+                _tx = _xyz(_ts, _tP)
+                if _tx == _xyz(syms, P):
+                    _OC6_CENSUS["same_xyz"] += 1      # Korrektor hat nichts geaendert
+                elif max_isomers and len(results) >= max_isomers:
+                    _OC6_CENSUS["iso_cap"] += 1
+                elif not _build_is_clean(_ts, _tP, cn=d.get("cn"), geom=d.get("geometry"),
+                                         donors=_td, exempt_pairs=_ex, graph_bonds=_gb):
+                    _OC6_CENSUS["unclean"] += 1
+                else:
+                    try:
+                        _tdl = sorted(int(x) for x in (_td or []))
+                        # die eine Zahl, um die es geht -- am fertigen Frame gemessen,
+                        # mit demselben Instrument, das schon der CN5- und der
+                        # Koplanar-Vergleich benutzen (+inf bei Fehlschlag, ein
+                        # misslungener Frame gewinnt also nie).
+                        _c_new = _shell_cshm(d, (_ts, _tP, _tdl))
+                        _c_old = _shell_cshm(d, (list(syms), P,
+                                                 sorted(int(x) for x in (donors or []))))
+                        _tok = _c_new < _c_old - 1e-9
+                        if not _tok:
+                            _OC6_CENSUS["cshm_flat"] += 1
+                        # ... und dieselben drei Nachweise, die das -beta-Geschwister
+                        # tragen: nichts, was der Primaerframe nicht auch hat.
+                        if _tok and (AC._collapsed_heavy_bonds_strict(_ts, _tP)
+                                     and not AC._collapsed_heavy_bonds_strict(syms, P)):
+                            _tok = False
+                            _OC6_CENSUS["collapse"] += 1
+                        if _tok and not _org_bond_ok(_ts, _tP, _org_bond_worst(syms, P)):
+                            _tok = False
+                            _OC6_CENSUS["org_bond"] += 1
+                        if _tok and not _sp2_planarity_ok(_ts, _tP,
+                                                          _sp2_planarity_worst(syms, P)):
+                            _tok = False
+                            _OC6_CENSUS["sp2"] += 1
+                    except Exception:
+                        _tok = False                  # nicht beweisbar besser -> nicht aufnehmen
+                        _OC6_CENSUS["bar_exc"] += 1
+                    if _tok:
+                        _OC6_CENSUS["added"] += 1
+                        results.append((_tx, f"{_lab}-oc6"))
+                        if _prod_on:
+                            _prod_seeds.append((_ts, _tP, f"{_lab}-oc6", _tdl))
         # SIGMA-ENSEMBLE CONFORMERS, now as siblings of the accepted frame rather than in
         # place of it (see the long note where the old short-circuit branch used to be).
         # Every one clears the same per-frame self-gate as before; the one that reproduces
@@ -1984,6 +2168,18 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers, union: bool = False):
                                             exempt_pairs=_ex, graph_bonds=_gb,
                                             max_isomers=max_isomers)
     return results or None
+
+
+# Ausgangszaehler des OC-6-Twist-Geschwisters.  Nur beschrieben, wenn
+# DELFIN_FFFREE_OC6_TWIST_SEAT an ist; `enter` ist der NENNER, ohne den "nichts
+# gebaut" und "nie betreten" dieselbe Zeile waeren.  Gelesen von _oc6_twist_selftest.
+_OC6_CENSUS = dict.fromkeys(
+    ("enter", "build_exc", "build_none", "same_xyz", "iso_cap", "unclean",
+     "cshm_flat", "collapse", "org_bond", "sp2", "bar_exc", "added"), 0)
+# CShM(OC-6) des FERTIGEN Primaerframes, auf den echten Donorindizes.  Gegen die
+# Setzungszahl in assemble_complex._OC6_SEAT_CSHM gehalten sagt sie, WO der Twist
+# entsteht -- die eine Frage, die ein Zaehler nicht beantworten kann.
+_OC6_FINAL_CSHM = []
 
 
 def _shell_cshm(d, built):
@@ -2854,7 +3050,250 @@ def _enumerate_geometry(d, geom_key, geom_name, lig_ref, lab_elem, spec, max_iso
     return out
 
 
+def _wells_selftest():
+    """Wo sterben die Torsionsmulden?  `python delfin/manta/converter_backend.py wells`.
+
+    Kein inline-python (per Hook gesperrt), also lebt die Diagnose IM Modul.  Sie
+    faehrt den echten Bauer ueber echte Chelatsysteme, mit dem Schalter AN und dem
+    Zaehler auf eine Datei, und liest hinterher ab, an WELCHEM der sieben Ausgaenge
+    die Mulden verloren gehen.  Ohne den Nenner `enter` waere "keine Zeile" nicht von
+    "nie betreten" zu unterscheiden -- das ist der ganze Zweck.
+    """
+    import tempfile
+    # Chelate aus der Testsuite (dort dokumentiert und lauffaehig).  Absicht der
+    # Mischung: EN ist starr (Rueckgrat komplett im Chelatring, also die erwartete
+    # Null), BIQCOV/ABEZAJ tragen iPr-, tBu- und Cyclohexyl-ARME -- das ist genau die
+    # Klasse, fuer die die Funktion laut Docstring gebaut wurde.
+    cases = [
+        ("Co(en)2Cl2", "[NH2]CC[NH2][Co]1([NH2]CC[NH2]1)([Cl])[Cl]"),
+        ("Pt(en)(NCCN)", "NCCN[Pt]1NCCN1"),
+        ("BIQCOV_Ta_k3", "CC(C)[N]1C2=CC(C(C)(C)C)=CC=C2[N]2C3=CC=C(C(C)(C)C)C=C3"
+                         "[N](C(C)C)[Ta]21([Cl])[Cl]"),
+        ("ABEZAJ_Ti_k3", "CC1=CC(C)=C([N]2C3=CC=CC=C3C3(C)[N](C4CCCCC4)"
+                         "[Ti-]2([Cl])([N](C)C)[N+]3(C)C)C(C)=C1"),
+        ("Pd_diSb", "[CH3][Sb+]1([CH3])[CH2]C2=CC=CC=C2[CH2][Sb+]([CH3])"
+                    "([CH3])[Pd-2]12"),
+    ]
+    keys = ("enter", "nrot", "dof_n", "dof_cap", "cand", "added", "no_dof",
+            "same", "unclean", "collapse", "beta", "clash", "exc",
+            "base_exc", "dof_exc", "conf_exc", "tmpl_none", "import",
+            "sib_cap", "iso_cap")
+    import hashlib
+    tf = os.path.join(tempfile.mkdtemp(prefix="wells_"), "wells.trace")
+    os.environ["DELFIN_FFFREE_WELLS_TRACE"] = tf
+    os.environ["DELFIN_FFFREE_CHELATE_BACKBONE"] = "1"
+
+    def _run(smi, on):
+        """Ein Lauf; gibt (Frames, well-Etiketten, Zaehlerzeilen, Summe, Hash) zurueck."""
+        os.environ["DELFIN_FFFREE_TORSION_WELLS"] = "1" if on else "0"
+        try:
+            open(tf, "w").close()
+        except Exception:
+            pass
+        try:
+            r = _fffree_isomers(smi)
+        except Exception as _e:
+            return None, 0, [], {}, "RAISED %s: %s" % (type(_e).__name__, _e)
+        try:
+            with open(tf) as fh:
+                lines = [ln for ln in fh.read().splitlines() if ln.startswith("[WELLS]")]
+        except Exception:
+            lines = []
+        agg = dict.fromkeys(keys, 0)
+        for ln in lines:
+            for tok in ln.split():
+                if "=" not in tok:
+                    continue
+                k, _, v = tok.partition("=")
+                if k in agg:
+                    try:
+                        agg[k] += int(v)
+                    except ValueError:
+                        pass
+        h = hashlib.sha256()
+        for _x, _l in (r or []):
+            h.update(_l.encode()); h.update(b"\0"); h.update(_x.encode()); h.update(b"\0")
+        nwell = len([1 for _, lab in (r or []) if "-well" in lab])
+        return r, nwell, lines, agg, h.hexdigest()[:16]
+
+    for label, smi in cases:
+        # AUS-Arm zuerst -- er ist die Kontrolle.  Erreicht ein Zaehler ihn oder taucht
+        # ein `-well`-Etikett auf, ist die Vorgabe verletzt und alles andere egal.
+        r0, w0, l0, _a0, h0 = _run(smi, False)
+        r1, w1, l1, a1, h1 = _run(smi, True)
+        print("%-14s AUS frames=%-4s well=%-2d aufrufe=%-2d sig=%s" % (
+            label, len(r0 or []), w0, len(l0), h0))
+        print("%-14s AN  frames=%-4s well=%-2d aufrufe=%-2d sig=%s" % (
+            "", len(r1 or []), w1, len(l1), h1))
+        print("               " + (" ".join(
+            "%s=%d" % (k, a1[k]) for k in keys if a1[k]) or "(keine Zaehler)"))
+        if not l1:
+            print("               ⚠ kein Aufruf im AN-Arm -- Funktion NICHT erreicht")
+        if w0 or l0:
+            print("               🔴 VORGABE VERLETZT: der AUS-Arm ist nicht still")
+
+
+def _oc6_twist_selftest():
+    """Erreicht die OC-6-Twist-Korrektur den FF-freien Bauer -- und ist der AUS-Arm
+    wirklich still?  `python delfin/manta/converter_backend.py oc6twist`.
+
+    Dieselbe Bauart wie `_wells_selftest` daneben und aus demselben Grund: kein
+    inline-python, also lebt die Diagnose IM Modul und faehrt den ECHTEN Bauer ueber
+    ECHTE Chelatsysteme.  Zwei Arme, und der AUS-Arm ist die Kontrolle.
+    Die Systeme sind aus der Testsuite uebernommen (dort dokumentiert und lauffaehig),
+    mit dem Schwerpunkt auf CN 6 -- das ist die Klasse, um die es geht.
+
+    Abgelesen wird genau dreierlei, und jedes davon kann NEIN sagen:
+      * BYTE-IDENTITAET -- die Frames des AUS-Arms muessen im AN-Arm Zeichen fuer
+        Zeichen und in derselben Reihenfolge wieder auftauchen.  Ein Geschwister darf
+        nur HINTEN drankommen; verschiebt sich etwas davor, ist es kein Geschwister
+        mehr, sondern ein Ersatz.
+      * REICHWEITE -- taucht ueberhaupt ein `-oc6`-Etikett auf?  Ohne diese Zeile
+        waere "keine Wirkung" nicht von "nie erreicht" zu unterscheiden, und genau
+        diese Verwechslung hat in diesem Projekt schon fuenf Mechanismen gekostet.
+      * DIE ZAHL, UM DIE ES GEHT -- CShM(OC-6) des Primaerframes gegen die des
+        Geschwisters.  Faellt sie nicht, ist das Geschwister ein Duplikat mit
+        Etikett und wird vom Bauer ohnehin nicht aufgenommen.
+    """
+    import hashlib
+    # ALLE aus dem Bestand dieses Repos (Testsuite / Regressionsfaelle), damit sie
+    # nachweislich zerlegbar sind -- und nach der Zahl der CHELATRINGE gestaffelt, weil
+    # GENAU das die gemessene Achse ist: 2,49 % Fehlrate bei null Ringen, 16,12 % bei
+    # fuenf.  Ein Pool ohne Verzahnung koennte den Defekt gar nicht zeigen.
+    cases = [
+        ("Co(en)2Cl2   k2", "Cl[Co+3]12(Cl)(NCCN1)NCCN2"),
+        ("Fe(dmpe)2(MeCN)2 k2", "CC#[N+][Fe-4]12([P+](C)(CC[P+]1(C)C)C)"
+                                "([P+](C)(CC[P+]2(C)C)C)[N+]#CC"),
+        ("Fe(en)3      k3", "[Fe]123([N]CC[N]1)([N]CC[N]2)[N]CC[N]3"),
+        ("Ir(ppy)3     k3", "[N+]12=CC=CC=C1C(C=CC=C3)=C3[Ir-3]24"
+                            "([N+]5=CC=CC=C5C6=C4C=CC=C6)([N+]7=CC=CC=C78)C9=C8C=CC=C9"),
+        ("Fe(citrate)3 k3", "O=C1C(CC(O)=O)(CC(O)=O)O[Fe]23(OC(C(CC(O)=O)"
+                            "(CC(O)=O)O2)=O)(OC(CC(O)=O)(CC(O)=O)C(O3)=O)O1"),
+        ("Cr(CN)2(cyclam) k4", "N#C[Cr+]123([NH]4CCC[NH]1CC[NH]2CCC[NH]3CC4)C#N"),
+        ("Os(terpy)(py-Ph) k4", "C1(C2=CC(C3=CC=CC=[N+]3[Os-4]4567[N+](C=CC=C8)=C8C9"
+                                "=CC(C%10=CC=CC=C%10)=CC(C%11=CC=CC=[N+]%117)=[N+]96)"
+                                "=[N+]5C(C%12=[N+]4C=CC=C%12)=C2)=CC=CC=C1"),
+        ("Fe(terpy-NMe2)2 k4", "CC1=CC(N(C)C)=CC2=[N+]1[Fe-6]345([N+]6=C(C7=CC(N(C)C)"
+                               "=CC(C)=[N+]75)C=CC=C62)[N+](C(C)=CC(N(C)C)=C8)=C8C9=CC"
+                               "=CC(C%10=CC(N(C)C)=CC(C)=[N+]%104)=[N+]93"),
+        ("BEFFOJ Ti-N2O4 k5", "ClC1=CC(Cl)=C2[O][Ti-2]3456[O]C7=C(Cl)C=C(Cl)C=C7C[N+]3"
+                              "(CC[N+]4(CC3=CC(Cl)=CC(Cl)=C3[O]5)CC3=CC(Cl)=CC(Cl)=C3"
+                              "[O]6)CC2=C1"),
+        ("YEBPAW Co(Tp)2 k6", "C1=NC=[N+]2[BH-]3[N+]4=CN=C[N]4[Co-4]45([N]12)"
+                              "([N]1C=NC=[N+]31)[N]1C=NC=[N+]1[BH-]([N+]1=CN=C[N]14)"
+                              "[N+]1=CN=C[N]15"),
+    ]
+
+    def _run(smi, on):
+        os.environ["DELFIN_FFFREE_OC6_TWIST_SEAT"] = "1" if on else "0"
+        try:
+            r = _fffree_isomers(smi)
+        except Exception as _e:
+            return None, "RAISED %s: %s" % (type(_e).__name__, _e)
+        h = hashlib.sha256()
+        for _x, _l in (r or []):
+            h.update(_l.encode()); h.update(b"\0"); h.update(_x.encode()); h.update(b"\0")
+        return r, h.hexdigest()[:16]
+
+    def _cshm_of(xyz):
+        """CShM(OC-6) der Koordinationsschale, direkt aus dem XYZ-Text zurueckgerechnet:
+        Metall = Atom 0 (der Bauer legt es dorthin), Donoren = die sechs naechsten
+        Schweratome.  Grob, aber es ist genau die Groesse, um die gestritten wird."""
+        try:
+            lines = [ln.split() for ln in xyz.splitlines()[2:] if ln.strip()]
+            pts = [(t[0], np.array([float(t[1]), float(t[2]), float(t[3])]))
+                   for t in lines if len(t) >= 4]
+            M = pts[0][1]
+            heavy = [(float(np.linalg.norm(p - M)), p) for s, p in pts[1:] if s != "H"]
+            heavy.sort(key=lambda t: t[0])
+            if len(heavy) < 6:
+                return float("nan")
+            return float(PLY.cshm([p - M for _d, p in heavy[:6]], "OC-6 octahedron"))
+        except Exception:
+            return float("nan")
+
+    print("OC-6 Twist-Geschwister -- Reichweite auf dem FF-freien Pfad und AUS-Arm-Stille")
+    print("  Kette: smiles_converter.py DELFIN_FFFREE_BUILDER -> _fffree_isomers")
+    print("         -> _fffree_chelate_isomers -> AC.assemble_from_config(oc6_twist=True)")
+    print("         -> AC._oc6_twist_seat  (Setzung, vor _finish_config_frame)\n")
+    n_reach = 0
+    n_break = 0
+    for label, smi in cases:
+        # Was der Zerleger UEBERHAUPT anfordert -- ohne diese Zeile ist "kein
+        # Geschwister" nicht von "gar kein CN6-Oktaeder im Pool" zu unterscheiden.
+        try:
+            _dd = DEC.decompose(smi)
+            _dg = "cn=%s geom=%r chelat=%s" % (
+                _dd.get("cn"), _dd.get("geometry"), _dd.get("has_chelate")) if _dd \
+                else "decompose -> None"
+        except Exception as _e:
+            _dg = "decompose RAISED %s" % type(_e).__name__
+        r0, h0 = _run(smi, False)          # AUS-Arm zuerst: er ist die Kontrolle
+        # ⚠ Marke VOR dem AN-Lauf setzen.  Ohne sie zeigt `[-1]` den Wert des
+        # VORIGEN Systems weiter, sobald der Korrektor bei diesem gar nicht gerufen
+        # wurde -- eine geerbte Zahl, die wie eine Messung aussieht.  Genau die
+        # Sorte stiller Falschmeldung, die hier einen 30-Stunden-Lauf kostet.
+        _m_seat = len(AC._OC6_SEAT_CSHM)
+        _m_fin = len(_OC6_FINAL_CSHM)
+        r1, h1 = _run(smi, True)
+        print("%-14s %s" % (label, _dg))
+        l0 = [lab for _, lab in (r0 or [])]
+        l1 = [lab for _, lab in (r1 or [])]
+        new = [lab for lab in l1 if lab.endswith("-oc6")]
+        # der AUS-Arm muss im AN-Arm woertlich und in der Reihenfolge wieder auftauchen
+        prefix_ok = (r0 or []) == (r1 or [])[:len(r0 or [])]
+        if not prefix_ok:
+            n_break += 1
+        if new:
+            n_reach += 1
+        print("%-14s AUS frames=%-3d sig=%s" % (label, len(r0 or []), h0))
+        print("%-14s AN  frames=%-3d sig=%s   neu=%s" % ("", len(r1 or []), h1, new or "-"))
+        print("               Vorlaeufer zeichengleich: %s%s" % (
+            prefix_ok, "" if prefix_ok else "   🔴 VORGABE VERLETZT"))
+        # ⚠ DIE ENTSCHEIDENDE GEGENUEBERSTELLUNG: dieselbe Zahl an ZWEI Punkten.
+        # links, was der Korrektor in der SETZUNG vorfindet (vor _finish_config_frame);
+        # rechts, was am FERTIGEN Frame ankommt.  Sind sie verschieden, entsteht der
+        # Twist NICHT in der Setzung, sondern danach -- und dann steht dieser Block an
+        # der falschen Stelle, egal wie gut er rechnet.
+        _seats = AC._OC6_SEAT_CSHM[_m_seat:]          # NUR was dieses System erzeugt hat
+        _fins = _OC6_FINAL_CSHM[_m_fin:]
+        if not _seats:
+            print("               (Korrektor bei diesem System nicht gerufen -- "
+                  "kein CN6-OC-6-Config erreicht die Setzung)")
+        for _i, _s in enumerate(_seats):
+            _f = _fins[_i] if _i < len(_fins) else float("nan")
+            print("               config %d: CShM(OC-6) SETZUNG vor %.3f -> nach %.3f "
+                  "(min-trans %.1fd)   FERTIGES Primaerframe %.3f"
+                  % (_i + 1, _s[0], _s[1], _s[2], _f))
+        if new:
+            base = next((x for x, lab in r1 if not lab.endswith("-oc6")), None)
+            for x, lab in r1:
+                if lab.endswith("-oc6") and base is not None:
+                    print("               CShM(OC-6)  primaer %.3f -> %s %.3f" % (
+                        _cshm_of(base), lab, _cshm_of(x)))
+                    break
+    print("\n  Systeme mit -oc6-Geschwister: %d von %d" % (n_reach, len(cases)))
+    print("  Byte-Identitaet des AUS-Arms verletzt: %d von %d" % (n_break, len(cases)))
+    print("\n  Ausgangszensus Geschwister-Block (Nenner `enter`):")
+    print("    " + (" ".join("%s=%d" % (k, v) for k, v in _OC6_CENSUS.items() if v)
+                    or "(NICHTS -- der Block wurde nie betreten)"))
+    print("  Ausgangszensus Korrektor in der Setzung (Nenner `call`):")
+    print("    " + (" ".join("%s=%d" % (k, v) for k, v in AC._OC6_SEAT_CENSUS.items() if v)
+                    or "(NICHTS -- _oc6_twist_seat wurde nie gerufen)"))
+    if n_reach == 0:
+        print("  ⚠ NICHT ERREICHT -- kein einziges Geschwister gebaut.  Entweder greift")
+        print("    keine der Sicherungen, oder der Pfad kommt hier nie an.  Beides ist")
+        print("    ein Befund, KEIN Erfolg.")
+
+
 if __name__ == "__main__":
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "oc6twist":
+        _oc6_twist_selftest()
+        raise SystemExit(0)
+    if len(sys.argv) > 1 and sys.argv[1] == "wells":
+        _wells_selftest()
+        raise SystemExit(0)
     for label, smi in [("cisplatin", "N[Pt](N)(Cl)Cl"),
                        ("[CoCl3(NH3)3]", "[NH3][Co]([NH3])([NH3])([Cl])([Cl])[Cl]"),
                        ("hexammineCo", "[NH3][Co]([NH3])([NH3])([NH3])([NH3])[NH3]")]:
