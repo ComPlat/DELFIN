@@ -518,6 +518,57 @@ def test_from_the_complex_alone_there_is_no_saddle_to_find():
     assert got['imaginary']['count'] == 0, got['imaginary']
 
 
+@_needs_xtb
+def test_a_climb_already_running_takes_what_the_hand_made():
+    """The loop the editor actually runs, without the editor.
+
+    Start climbing from the bare complex, let it take a few steps going
+    nowhere, then do what a mouse does -- put the ethene where the user wants
+    it -- and hand that structure back with the geometry it came from.  The
+    climb starts again from there, aimed along the way the hand moved it, and
+    reaches the saddle.
+
+    The Hessian is recomputed on the hand-over rather than carried across, and
+    that is measured rather than careful: carried across, the same climb still
+    gets there but in 62 steps against 15, because a Bofill update repairs a
+    Hessian one step at a time and a hand moves further in one gesture than a
+    climb does in twenty.  Six tenths of a second once, on the mouse being let
+    go, is cheaper than 47 gradients and a picture that wanders on the way.
+    """
+    walk = climb.Climb(_COMPLEX, 'gfn2')
+    try:
+        walk.start()
+        for _ in range(5):
+            walk.step()
+        # Nowhere near a saddle, and about to be told where to go.
+        assert min(_forming(walk.angstrom)) > 3.0
+
+        walk.took(_dragged(0.95), aimed_from=_COMPLEX)
+        arrived = False
+        for _ in range(200):
+            if walk.step()['converged']:
+                arrived = True
+                break
+        assert arrived, walk.steps
+        one, two = _forming(walk.angstrom)
+        assert 2.25 < one < 2.40 and abs(one - two) < 0.02, (one, two)
+        assert _rmsd(walk.angstrom, _where(_ORCA_SADDLE)) < 0.05
+        said = walk.verdict()
+    finally:
+        walk.close()
+    assert said['ok'] and said['count'] == 1, said
+
+    # A structure with a different number of atoms is a different molecule,
+    # and the climb says so rather than reading one geometry as another.
+    walk = climb.Climb(_COMPLEX, 'gfn2')
+    try:
+        walk.start()
+        refused = walk.took('3\n\nO 0 0 0\nH 0 0.76 0.59\nH 0 -0.76 0.59\n')
+    finally:
+        walk.close()
+    assert not refused['ok'] and 'changed' in refused['status']
+
+
 def test_the_hand_guides_the_climb_and_never_restrains_it():
     """A restrained saddle is not a saddle, and this is measured rather than
     argued.
