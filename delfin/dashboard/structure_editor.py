@@ -4589,6 +4589,30 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['gfn_settle_note'] = note
         _arm_gfn_settle(forced=True)
 
+    def _climb_owns_the_release():
+        """Whether letting go of an atom belongs to the climb rather than to a
+        relaxation.
+
+        It does whenever a climb is running, and the reason is not tidiness.
+        Both write a geometry after a release, and only one may -- but more
+        than that, they pull opposite ways: a settle and an auto-minimisation
+        walk downhill, and a climb walks *up* along one mode while walking down
+        along every other.  Armed together, downhill wins, which is what
+        "I drag towards the transition state, let go, and it falls back" is.
+
+        Nothing is lost by standing them down.  The tidy-up a settle performs
+        -- relaxing everything around where the atom was put -- is exactly what
+        the climb's minimised subspace does on every one of its steps, and the
+        climb does it without undoing the one direction the user pointed at.
+        For this mode the climb *is* what happens when you let go.
+
+        The drag itself is untouched.  Dynamik Opt goes on relaxing under the
+        hand and streaming its frames exactly as it always did; only the
+        downhill step at the *release* stands down.  The two compose, and the
+        user does not have to choose between them.
+        """
+        return state.get('climb_run') is not None
+
     def _arm_gfn_settle(forced=False):
         """Tidy the structure after a release, with the method on screen.
 
@@ -4605,6 +4629,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # tidy-up to be skipped when something else is in the air; it is
             # the answer to something the user just did, and it has to happen.
             state['gfn_settle_forced'] = True
+        if _climb_owns_the_release():
+            return
         if not (_server_method()
                 and _server_binary(submit_ff_dd.value) is not None):
             return
@@ -4648,6 +4674,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                           guards={'gfn_settle_armed': False})
 
     def _gfn_settle_now():
+        if _climb_owns_the_release():
+            # Armed before the climb was switched on, and firing after.  The
+            # arming guards stop one being scheduled; this stops one that
+            # already was, which is the difference between the invariant
+            # holding and it holding most of the time.
+            return
         if state.get('gfn_follow'):
             return                      # a new drag started in the meantime
         if state.get('gfn_settle_busy'):
@@ -5119,23 +5151,35 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             blank, **{'frames': [], 'abandoned': 1})
         return True
 
-    def _stand_down_after_interrupt():
+    def _stand_down_after_interrupt(note=None):
         """The run the change interrupted is not coming back by itself.
 
         The switch goes back up with it. Left lit over a structure nobody is
         minimising, it says a calculation is running that is not.
+
+        *note* is what to say instead of the usual sentence, for the caller
+        that is standing the run down because something else has taken the
+        release rather than because nothing has.
         """
         state.pop('optimize_interrupted', None)
         for button in (submit_optimize_btn, submit_optimize_all_btn):
             if button.value:
                 button.value = False
-        _set_mol_status(
+        _set_mol_status(note or (
             'Stopped where your change left it. Move what else you want to, '
-            'then press Optimize to go down to a minimum.')
+            'then press Optimize to go down to a minimum.'))
 
     def _arm_gfn_restart():
         """Start the optimisation again, once the changing has stopped."""
         if state.get('optimize_interrupted') is None:
+            return
+        if _climb_owns_the_release():
+            # The climb has the release.  The interrupted run is not left
+            # armed behind it -- armed, it would come back the moment the
+            # climb ended and undo what the climb had just found.
+            _stand_down_after_interrupt(
+                'The climb has this release. Switch Climb to TS off to go '
+                'down to a minimum instead.')
             return
         if not submit_auto_btn.value:
             # Auto is off, so nothing carries on by itself. The guard is here
@@ -5170,6 +5214,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         wait is pushed out again by every release -- moving three atoms one
         after another is one minimisation at the end of it, not three.
         """
+        if _climb_owns_the_release():
+            return
         if not (_server_method()
                 and _server_binary(submit_ff_dd.value) is not None):
             return
@@ -5191,6 +5237,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                           guards={'gfn_minimise_armed': False})
 
     def _minimise_now():
+        if _climb_owns_the_release():
+            return                      # armed before the climb was switched on
         if not submit_auto_btn.value:
             return                      # switched off while it was waiting
         if state.get('optimize_run') is not None:
@@ -7036,6 +7084,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 _set_mol_status('Moved while it ran; the optimisation stops '
                                 'there and starts again from what you make.',
                                 spinner=True)
+            # A running climb stands still from here until the hand has gone.
+            # Set at the grab rather than at the first drag-follow, because a
+            # follow message is a tenth of a second away and the climb makes a
+            # step every ten milliseconds: ten steps away from the hand before
+            # anything told it a hand had arrived.
+            if state.get('climb_run') is not None:
+                state['climb_hand_down'] = True
+                # Where the structure stood when the hand arrived.  The
+                # difference between this and where it is let go is the
+                # direction the user asked for, and that direction -- not the
+                # pull -- is what guides the climb.  The climb's own last
+                # frame if it has made one, and otherwise what is in the box:
+                # a hand can arrive before the first Hessian is finished.
+                state['climb_was'] = (state.get('climb_showing')
+                                      or _current_xyz())
             _begin_gfn_follow()
             # The leash goes on before the hand has moved anything.  It used
             # to be set from the first follow answer, and the first answer is
@@ -7055,6 +7118,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
         if verb == 'gfnfree':
             _end_gfn_follow()
+            # The hand has gone, whatever else did or did not arrive.  The
+            # drag-end message carries the geometry and is what hands the
+            # climb its structure; this is the signal that the hand is off,
+            # and it is cleared here as well so that a drag-end the page never
+            # sent cannot leave the climb standing still for ever.
+            state.pop('climb_hand_down', None)
             # Let go of.  Whether that goes down to a minimum, or leaves the
             # structure where the hand put it, is the Auto switch -- and it is
             # asked in one place so the answer cannot depend on whether a run
@@ -8263,8 +8332,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['climb_run'] = token
         state.pop('climb_hand', None)
         state.pop('climb_was', None)
-        run_id = int(state.get('gfn_run', 0)) + 1
-        state['gfn_run'] = run_id
+        state.pop('climb_hand_down', None)
+        # A running optimisation and a climb are two answers to the same
+        # question over one structure.  The press is the later of the two
+        # things the user asked for, so it wins and the other is told to stop.
+        if _interrupt_gfn():
+            _stand_down_after_interrupt(
+                'The optimisation stopped: a climb and a minimisation cannot '
+                'own one structure.')
         charge = int(submit_gfn_charge.value or 0)
         uhf = _gfn_uhf_now()
         wet = str(submit_gfn_solvent.value or '') or None
@@ -8275,6 +8350,41 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         'point it somewhere...', spinner=True)
         walked: list = []
         sent = [0, 0, 0.0]                  # window start, window end, when
+
+        def _claim_the_run():
+            """Take the next run number, and start the path again from nothing.
+
+            Once was not enough, and that is what "I do not see the climb in
+            the viewer" was.  A run number claimed when the toggle went down
+            is stale by the time the climb has anything to draw: the counter
+            is what every writer uses to say it is the current one, and a drag
+            moves it -- the hand being followed takes a number, the settle
+            after the release takes another.  Holding the first one, the climb
+            failed its own guard on every write and threw away every frame it
+            made, silently and correctly.
+
+            So the climb claims a run at each moment it *starts* producing
+            frames, and at no other: when it begins to step, and again each
+            time it begins again after a hand.  That is the same protocol
+            every other writer follows; the climb only has to do it more than
+            once because it is the only one that survives a drag.  The window
+            resets with it, because to the page this is a new run and its
+            frames are numbered from the start.
+
+            Claimed at any other moment it would be taking the run from
+            somebody who is using it.  Claiming it when the starting Hessian
+            came back -- which is where this was first put -- takes it from
+            the hand being followed, because a Hessian is six tenths of a
+            second and a user who grabs an atom straight after pressing the
+            toggle is still dragging when it finishes.  The follow would then
+            spend the rest of that drag failing its own guard, which is the
+            defect this exists to fix, pointed the other way.
+            """
+            state['climb_frame_run'] = state['gfn_run'] = int(
+                state.get('gfn_run', 0)) + 1
+            walked.clear()
+            sent[0] = sent[1] = 0
+            sent[2] = 0.0
 
         def _push(final=False):
             """Hand the path over while the climb is still walking it.
@@ -8291,15 +8401,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 return
             start, sent[0], sent[1], sent[2] = sent[0], sent[1], len(walked), now
             fresh = [list(one) for one in walked[start:]]
+            mine = state.get('climb_frame_run')
 
-            def _write(rows=fresh, first=start, last=bool(final)):
-                if state.get('gfn_run') != run_id:
+            def _write(rows=fresh, first=start, last=bool(final), r=mine):
+                # Asked at the write and not at the answer, the way the follow
+                # and the saddle search ask it: a step is long enough for the
+                # run under it to have been replaced, and a frame that lands
+                # after that is a climb drawn over whatever replaced it.
+                if not _frame_run_is_current(r):
                     return
-                payload = {'run': run_id, 'from': first, 'follow': 1,
-                           'frames': rows}
+                fields = {'from': first, 'follow': 1, 'frames': rows}
                 if last:
-                    payload['final'] = 1
-                submit_gfn_frame.value = json.dumps(payload)
+                    fields['final'] = 1
+                # Through the helper, so the climb is played at the pace the
+                # slider is set to rather than at whatever the page last heard.
+                submit_gfn_frame.value = _frame_payload(r, **fields)
 
             schedule_ui_update(_write)
 
@@ -8310,7 +8426,38 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 walk = _climb.Climb(xyz, method, charge=charge, uhf=uhf,
                                     solvent=wet)
                 walk.start()
+                # Claimed on the first step and after every hand, never while
+                # a hand is down: see _claim_the_run.
+                standing = [True]
                 while state.get('climb_run') is token:
+                    if state.get('climb_hand_down'):
+                        # A hand is on the structure.  The climb stands
+                        # completely still for it: no step, no frame, and no
+                        # finishing.
+                        #
+                        # Stepping through a drag is what "the structure does
+                        # not follow my hand" was, and it is worse than a
+                        # wasted gradient.  The climb steps on the geometry it
+                        # was given, which is the one from *before* the drag,
+                        # so it walks away from the hand while the hand is
+                        # working -- and on a structure a long way from any
+                        # saddle it can converge in a second or two, write what
+                        # it found into the coordinate box and switch its own
+                        # toggle off, all in the middle of the gesture.
+                        # Measured on the van-der-Waals complex: the box came
+                        # out of a drag at 3.53 A, further apart than it
+                        # started, where the same drag with the climb off left
+                        # it at 2.45.
+                        #
+                        # Standing still is also what makes the hand-over
+                        # honest.  What the climb resumes from is the structure
+                        # the hand let go of, and what it aims along is the
+                        # distance between that and where the climb stood when
+                        # the hand arrived; neither means anything if the climb
+                        # has been moving underneath the drag.
+                        standing[0] = True
+                        time.sleep(0.03)
+                        continue
                     hand = state.pop('climb_hand', None)
                     if hand is not None:
                         # The user has just made a structure.  Start again
@@ -8321,9 +8468,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             spinner=True)
                         walk.took(hand.get('xyz') or '',
                                   aimed_from=hand.get('was'))
-                        walked.clear()
-                        sent[0] = sent[1] = 0
+                        standing[0] = True
                         continue
+                    if standing[0]:
+                        _claim_the_run()
+                        standing[0] = False
                     outcome = walk.step()
                     state['climb_showing'] = walk.xyz()
                     walked.append(walk.frame())
@@ -8347,23 +8496,34 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 if state.get('climb_run') is token:
                     state['climb_run'] = None
                 submit_climb_btn.value = False
+                # A hand that arrived after the last step is a structure the
+                # user made after the climb had stopped making one.  Reading
+                # what it reached takes a moment -- xtb's own Hessian is a
+                # third of a second -- and a hand can land inside it; writing
+                # the climb's geometry then would take back an edit that came
+                # afterwards, which is the one thing an editor may never do.
+                interrupted = state.pop('climb_hand', None) is not None
+                state.pop('climb_hand_down', None)
+                state.pop('climb_was', None)
                 if shape is None:
                     _set_mol_status('The climb could not run: '
                                     + str(state.pop('climb_error', '')))
                     return
-                if rows:
+                if rows and not interrupted:
                     _write_coords(xyz_document(
                         rows, 'Climbed towards a transition state'), drawn=True)
                 lines = _climb_verdict(shape, steps, seconds)
-                lines.append('Undo takes the whole climb back. Refine it with '
-                             'OPTTS in the ORCA Builder at a level worth '
-                             'quoting.')
+                lines.append(
+                    'You moved the structure while it was finishing, so what '
+                    'you made is what is in the box.' if interrupted else
+                    'Undo takes the whole climb back. Refine it with OPTTS in '
+                    'the ORCA Builder at a level worth quoting.')
                 _set_mol_status(*lines)
 
             schedule_ui_update(_done)
 
-        _start_background(_work, 'The saddle search',
-                          guards={'saddle_run': False, 'saddle_stop': False})
+        _start_background(_work, 'The climb to a transition state',
+                          guards={'climb_run': None, 'climb_hand_down': False})
 
     def on_submit_path_from(_button=None):
         """Mark what is on screen as where a path starts.
@@ -10076,14 +10236,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     holding = [int(n) for n in word[5:].split(',')
                                if n.strip().lstrip('-').isdigit()]
             _gfn_follow_step(new_xyz, holding)
-            # A climb does not fight a hand.  Where the structure stood when
-            # the hand first arrived is remembered, because the difference
-            # between then and where it is let go is the direction the user
-            # asked for -- and that direction, not the pull itself, is what
-            # guides the climb.  See :func:`on_submit_climb`.
-            if (state.get('climb_run') is not None
-                    and not state.get('climb_was')):
-                state['climb_was'] = state.get('climb_showing')
+            # A climb does not fight a hand.  The grab has normally said this
+            # already; this is the second way of hearing it, for a drag that
+            # reaches the kernel without one.
+            if state.get('climb_run') is not None:
+                state['climb_hand_down'] = True
+                if not state.get('climb_was'):
+                    state['climb_was'] = (state.get('climb_showing')
+                                          or _current_xyz())
         if (drag_ended and state.get('poly_applied')
                 and state.get('poly_metal') is not None):
             # Only a real end of a drag, not the twice-a-second heartbeat the
@@ -10156,6 +10316,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     'xyz': xyz_document(coord_rows, 'Where the hand left it'),
                     'was': state.pop('climb_was', None),
                 }
+                # And it may move again.  The order matters: the structure is
+                # put down before the climb is let go, so the first thing the
+                # climb does is take it rather than step once from where it
+                # was standing.
+                state.pop('climb_hand_down', None)
         elif state.get('optimize_run') is not None:
             # Not an edit, and something is optimising.  The browser's own
             # field reports where it has got to twice a second and once more

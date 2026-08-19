@@ -633,8 +633,11 @@ def test_the_hand_guides_the_climb_and_never_restrains_it():
     assert 'def on_submit_climb(change=None):' in source
     assert "submit_climb_btn.observe(on_submit_climb, names='value')" in source
     # Where the structure stood when the hand arrived, which is the other end
-    # of the direction the drag names.
-    assert "state['climb_was'] = state.get('climb_showing')" in source
+    # of the direction the drag names.  The climb's own last frame if it has
+    # made one, and what is in the box otherwise: a hand can arrive before the
+    # first Hessian has finished.
+    assert "state['climb_was'] = (state.get('climb_showing')" in source
+    assert "or _current_xyz())" in source
     # And the hand-over, on the drag ending and not on every frame of it.
     assert "state['climb_hand'] = {" in source
     assert "'was': state.pop('climb_was', None)," in source
@@ -712,6 +715,306 @@ def test_the_button_climbs_and_the_drag_reaches_it(tmp_path):
     assert 'cm-1' in said, said
 
 
+def _an_editor(room):
+    """A real editor over the van-der-Waals complex, driven from the kernel."""
+    import ipywidgets as widgets
+
+    from delfin.dashboard import structure_editor
+    from delfin.dashboard.context import DashboardContext
+
+    room.mkdir(parents=True, exist_ok=True)
+    for name in ('calc', 'archive', 'office'):
+        (room / name).mkdir(exist_ok=True)
+    ctx = DashboardContext(calc_dir=room / 'calc', archive_dir=room / 'archive',
+                           office_dir=room / 'office')
+    ctx.run_js = lambda _script: None
+    state = {}
+    box = widgets.Textarea(value=_COMPLEX)
+    part = structure_editor.build(
+        ctx, state=state, coords_widget=box, viewer_height=560,
+        schedule_ui_update=lambda call, *a, **k: call(*a, **k),
+        update_view=lambda *a, **k: None,
+        get_smiles_charge=lambda *a, **k: None)
+    state['current_xyz_for_copy'] = {'content': _COMPLEX}
+    part.submit_ff_dd.value = 'gfn2'
+    return part, state, box
+
+
+def _frames_seen(part):
+    """Every write to the frame channel, as (run, how many frames)."""
+    import json
+
+    seen = []
+
+    def note(change):
+        if change.get('name') != 'value' or not change.get('new'):
+            return
+        try:
+            said = json.loads(change['new'])
+        except ValueError:
+            return
+        seen.append((said.get('run'), len(said.get('frames') or [])))
+
+    part.submit_gfn_frame.observe(note, names='value')
+    return seen
+
+
+_SERIAL = [0]
+
+
+def _command(part, verb, payload=''):
+    """What the page sends when it cannot finish a gesture on its own."""
+    _SERIAL[0] += 1
+    part.submit_cmd_sync.value = f'{verb}:{_SERIAL[0]}:{payload}'
+
+
+def _drag_towards_the_saddle(part, box, depth=0.95, steps=6, pause=0.25):
+    """The page's own protocol, in the order the page sends it.
+
+    ``gfngrab``, then a ``DELFIN drag-follow`` message per mouse move, then
+    ``DELFIN drag-end`` carrying the geometry, then ``gfnfree``.  The last two
+    are separate messages and arrive in that order because the page sends the
+    geometry from its mouseup handler and says the hand has gone from the
+    animation frame after it.
+    """
+    import time as clock
+
+    from delfin.dashboard import climb as _c
+
+    names = _c._elements(_COMPLEX)['symbols']
+    start = _where(box.value)
+    _command(part, 'gfngrab', '0')
+    for turn in range(1, steps + 1):
+        moved = start.copy()
+        moved[10:16] += np.array([0.0, 0.0, -depth * turn / steps])
+        part.submit_manip_sync.value = _c.xyz_document(
+            names, moved, f'DELFIN drag-follow held=10,11 n={turn}')
+        clock.sleep(pause)
+    part.submit_manip_sync.value = _c.xyz_document(
+        names, _where(box.value), 'DELFIN drag-end')
+    _command(part, 'gfnfree', '')
+
+
+def _settled(part, state, climb_on, seconds=120.0):
+    """Wait for whatever owns the release to finish, then read the box."""
+    import time as clock
+
+    began = clock.time()
+    while clock.time() - began < seconds:
+        if climb_on and state.get('climb_run') is None:
+            break
+        if not climb_on and clock.time() - began > 25:
+            break
+        clock.sleep(0.1)
+    part.submit_climb_btn.value = False
+    clock.sleep(1.5)
+
+
+@_needs_xtb
+def test_a_drag_is_as_visible_with_the_climb_on_as_with_it_off(tmp_path):
+    """The first thing the feature has to do is let you see what you are doing.
+
+    It did not.  With Climb to TS on, the climb went on stepping while the
+    hand was down -- on the geometry from *before* the drag, because that is
+    what it had been given -- so it walked away from the hand while the hand
+    was working.  On a structure a long way from any saddle it can converge in
+    a second or two, and it then wrote what it had found into the coordinate
+    box and switched its own toggle off in the middle of the gesture.
+    Measured on this complex: the box came out of the drag at 3.53 A, further
+    apart than it started, where the same drag with the climb off left it at
+    2.45.
+
+    So the climb now stands completely still while a hand is down: no step, no
+    frame, no finishing.  Two things are pinned here, and neither is a frame
+    count -- how many follow rounds fit inside a drag depends on what else the
+    machine is doing, and a number that moves with the load is not a fact about
+    this code.
+
+    What is exact is *whose* frames those are.  During the drag every frame on
+    the channel must belong to the run the hand being followed claimed, and
+    none to the climb's; and the structure the drag leaves must be the one the
+    hand put there.  Measured either way, with the climb off and on: 2.450 and
+    2.445 A.
+    """
+    quiet, _, box = _an_editor(tmp_path / 'off')
+    quiet.submit_relax_btn.value = True
+    seen = _frames_seen(quiet)
+    _drag_towards_the_saddle(quiet, box)
+    without = [run for run, count in seen if count]
+    plain = _forming(_where(box.value))
+    assert without, 'Dynamik Opt drew nothing at all, so nothing is being read'
+
+    busy, state, box = _an_editor(tmp_path / 'on')
+    busy.submit_relax_btn.value = True
+    busy.submit_climb_btn.value = True
+    began = time.time()
+    while not state.get('climb_showing') and time.time() - began < 120:
+        time.sleep(0.02)
+    assert state.get('climb_run') is not None, 'the climb never started'
+    mine = state.get('climb_frame_run')
+    seen = _frames_seen(busy)
+    _drag_towards_the_saddle(busy, box)
+    withal = [run for run, count in seen if count]
+    climbed = _forming(_where(box.value))
+
+    # The hand is still drawn, and the climb has not drawn over it.
+    assert withal, 'the drag put nothing on the channel with the climb on'
+    assert all(run != mine for run in withal), (mine, withal)
+    # And the structure the drag leaves is the hand's, not the climb's.
+    assert abs(climbed[0] - plain[0]) < 0.05, (plain, climbed)
+    assert abs(climbed[1] - plain[1]) < 0.05, (plain, climbed)
+    assert 2.3 < climbed[0] < 2.6, climbed
+    _settled(busy, state, True)
+
+
+@_needs_xtb
+def test_letting_go_hands_over_to_the_climb_and_not_to_a_relaxation(tmp_path):
+    """"Ich ziehe in TS, lasse los, und es faellt zurueck."
+
+    Two things were armed by one release.  Dynamik Opt's own settle and Auto's
+    minimisation walk downhill, the climb walks up along one mode, and downhill
+    wins because it is a minimisation of the whole structure against a search
+    that moves one direction at a time.  Nothing had ever told them about each
+    other.
+
+    Measured here, the same gesture with Dynamik Opt on either way: with the
+    climb off the structure comes back to the van-der-Waals complex at 3.353
+    and 3.348 A with no mode going the wrong way, and with the climb on it
+    reaches 2.314 and 2.315 A with one mode at -394 cm-1.  Which is the
+    difference between the feature working and the feature being the thing the
+    user reported.
+    """
+    plain, state, box = _an_editor(tmp_path / 'off')
+    plain.submit_relax_btn.value = True
+    _drag_towards_the_saddle(plain, box)
+    _settled(plain, state, False)
+    fell = _forming(_where(box.value))
+
+    part, state, box = _an_editor(tmp_path / 'on')
+    part.submit_relax_btn.value = True
+    part.submit_climb_btn.value = True
+    began = time.time()
+    while not state.get('climb_showing') and time.time() - began < 120:
+        time.sleep(0.02)
+    _drag_towards_the_saddle(part, box)
+    _settled(part, state, True)
+    reached = _forming(_where(box.value))
+
+    # Without the climb, back to the complex it started from.
+    assert fell[0] > 3.0 and fell[1] > 3.0, fell
+    # With it, the saddle -- and it says so.
+    assert 2.25 < reached[0] < 2.40, reached
+    assert abs(reached[0] - reached[1]) < 0.03, reached
+    assert _rmsd(_where(box.value), _where(_ORCA_SADDLE)) < 0.05
+    said = part.mol_status.value
+    assert 'transition state' in said, said
+    assert 'cm-1' in said, said
+
+
+@_needs_xtb
+def test_the_climb_claims_a_run_again_every_time_it_starts_drawing(tmp_path):
+    """"Ich sehe nicht das Update von Climb to TS im Viewer."
+
+    The run number is how a writer says it is the current one, and a drag
+    moves it: the hand being followed takes a number, and the settle after the
+    release takes another.  The climb claimed one when its toggle went down
+    and held it -- so by the time it had anything to draw it was two behind,
+    it failed its own guard on every write, and it threw away every frame it
+    made.  Silently, and correctly: it really was not the current run.
+
+    Measured on this gesture: the climb claims run 1, the drag leaves run 2
+    behind it, and the climb writes under run 3 afterwards -- so a climb
+    holding the toggle-time number would have discarded all 94 frames of its
+    own path.  It claims a run at each moment it starts producing frames
+    instead, which is when it begins and after every hand-over.
+    """
+    part, state, box = _an_editor(tmp_path / 'run')
+    part.submit_relax_btn.value = True
+    part.submit_climb_btn.value = True
+    began = time.time()
+    while not state.get('climb_showing') and time.time() - began < 120:
+        time.sleep(0.02)
+    at_the_toggle = state.get('climb_frame_run')
+    assert at_the_toggle, state.get('climb_frame_run')
+
+    _drag_towards_the_saddle(part, box)
+    after_the_drag = int(state.get('gfn_run', 0))
+    seen = _frames_seen(part)
+    _settled(part, state, True)
+
+    drawn = [(run, count) for run, count in seen if count]
+    assert drawn, 'the climb drew nothing after the release'
+    # The drag moved the counter past the number the climb started with...
+    assert after_the_drag > at_the_toggle, (at_the_toggle, after_the_drag)
+    # ...and the climb took a fresh one rather than writing under a stale one.
+    assert all(run > at_the_toggle for run, _ in drawn), (at_the_toggle, drawn)
+    # Every frame of it would have been thrown away by the old guard.
+    assert sum(count for run, count in drawn if run == at_the_toggle) == 0
+
+
+def test_only_one_thing_writes_a_geometry_after_a_release():
+    """A settle, an auto-minimisation and a climb all answer the same release.
+
+    The invariant is put on each of the four things that would break it rather
+    than on the places that call them, because the call sites are not all in
+    one function and a fifth one added later would not know to ask.  Two of the
+    four are the arming, which stops one being scheduled; the other two are the
+    running, which stops one that already was.
+    """
+    source = EDITOR_SOURCE
+    assert 'def _climb_owns_the_release():' in source
+    # Armed, and about to run: both are guarded.
+    for after in ('def _arm_gfn_settle(forced=False):',
+                  'def _arm_gfn_minimise():',
+                  'def _gfn_settle_now():',
+                  'def _minimise_now():',
+                  'def _arm_gfn_restart():'):
+        body = source.split(after, 1)[1].split('\n    def ', 1)[0]
+        assert '_climb_owns_the_release()' in body, after
+    # And an optimisation interrupted by the grab is stood down rather than
+    # left armed to come back over what the climb finds.
+    assert "'The climb has this release." in source
+    # Dynamik Opt itself is untouched: the follow under the hand is not gated
+    # on the climb at all, only the downhill step at the release is.
+    follow = source.split('def _gfn_follow_step(', 1)[1].split(
+        '\n    def ', 1)[0]
+    assert '_climb_owns_the_release' not in follow
+
+
+def test_the_climb_stands_still_while_a_hand_is_down():
+    """And is told at the grab, not at the first drag-follow.
+
+    A follow message is a tenth of a second away and the climb makes a step
+    every ten milliseconds, so waiting for one is ten steps away from the hand
+    before anything has told the climb a hand arrived.  The grab is the
+    earliest word the page says.
+    """
+    source = EDITOR_SOURCE
+    grab = source.split("if verb == 'gfngrab':", 1)[1].split(
+        "if verb == 'gfnfree':", 1)[0]
+    assert "state['climb_hand_down'] = True" in grab
+    assert "state['climb_was'] = (state.get('climb_showing')" in grab
+    # Cleared by the hand going, whatever else did or did not arrive.
+    free = source.split("if verb == 'gfnfree':", 1)[1].split('\n        if ',
+                                                             1)[0]
+    assert "state.pop('climb_hand_down', None)" in free
+    # The loop stands still rather than stepping.
+    assert "if state.get('climb_hand_down'):" in source
+    # And the structure is put down before the climb is let go, so the first
+    # thing the climb does is take it rather than step once from where it was
+    # standing.  The order is the whole of it, so the order is what is read.
+    handover = source.split("state['climb_hand'] = {", 1)[1].split(
+        '\n        elif ', 1)[0]
+    assert "state.pop('climb_hand_down', None)" in handover
+    # A hand that lands while the climb is reading what it reached -- xtb's
+    # own Hessian is a third of a second, and a hand fits inside that -- keeps
+    # what it made.  Writing the climb's geometry over an edit that came after
+    # it is the one thing an editor may never do.
+    assert "interrupted = state.pop('climb_hand', None) is not None" in source
+    assert 'if rows and not interrupted:' in source
+    assert 'You moved the structure while it was finishing' in source
+
+
 def test_the_picture_is_fed_frames_and_never_the_coordinate_box():
     """Every write to the box rebuilds the viewer from nothing.
 
@@ -721,7 +1024,12 @@ def test_the_picture_is_fed_frames_and_never_the_coordinate_box():
     written once at the end.
     """
     source = EDITOR_SOURCE
-    assert 'submit_gfn_frame.value = json.dumps(payload)' in source
+    # Through the same helper every other writer uses, so the climb is played
+    # at the pace the slider is set to rather than at whatever the page last
+    # heard -- and asked at the write, not at the answer, whether the run it
+    # was prepared for is still the current one.
+    assert 'submit_gfn_frame.value = _frame_payload(r, **fields)' in source
+    assert 'if not _frame_run_is_current(r):' in source
     # The window starts where the previous one started, so every frame is sent
     # twice and a read that lands between two writes misses nothing.
     assert 'start, sent[0], sent[1], sent[2] = sent[0], sent[1], len(walked), now' \
