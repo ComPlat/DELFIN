@@ -2259,15 +2259,42 @@ def test_xtb_finds_its_own_way_between_the_two_ends_of_a_scan():
     assert not gfn.walk_the_path(_ETHANE, _BROMOBENZENE, "gfn2")["ok"]
 
 
+@_needs_xtb
+def test_a_chain_that_cannot_walk_never_climbs():
+    """The chain is two halves, and the first one is allowed to refuse.
+
+    A path walks atom 1 to atom 1, so two structures that are not the same
+    molecule in the same order are not a path at all.  The refusal is the
+    walk's and it arrives before any of ORCA's time is spent -- said as the
+    walk's refusal, with the half it got to named, rather than as a saddle
+    search that failed for reasons of its own.
+    """
+    from delfin.dashboard import saddle
+
+    got = saddle.path_to_saddle(_ETHANE, _BROMOBENZENE, "gfn2")
+    assert not got["ok"]
+    assert got["stage"] == "path"
+    assert got.get("xyz") is None
+    assert "8" in got["status"] and "12" in got["status"], got["status"]
+
+
 def test_the_path_is_offered_once_there_is_something_to_walk_between():
     """It cannot invent a product to aim at, so it appears when a scan has
-    made one -- and what it finds is one step, which Undo takes back whole."""
+    made one -- and what it finds is one step, which Undo takes back whole.
+
+    Both ways of walking between the two ends appear together: the path on its
+    own, and the path chained into the saddle search.  A pair of ends that can
+    be walked can be walked and climbed, and offering one without the other
+    would be an offer to do half the job.
+    """
     source = EDITOR_SOURCE
     assert 'submit_path_btn = widgets.Button(' in source
     assert "description='Find the path'" in source
     assert "state['scan_ends'] = (" in source
     assert "if state.get('scan_ends'):" in source
-    assert "submit_path_btn.layout.display = ''" in source
+    assert 'def _offer_the_path():' in source
+    assert '_offer_the_path()' in source
+    assert 'for button in (submit_path_btn, submit_path_saddle_btn):' in source
     assert 'def on_submit_path(_button=None):' in source
     assert 'submit_path_btn.on_click(on_submit_path)' in source
     # Its own answer, kept as its own step.
@@ -2310,18 +2337,32 @@ def test_whether_an_estimated_transition_state_is_one():
 
 
 def test_the_path_says_whether_what_it_found_is_a_transition_state():
-    """And what to do about it either way."""
+    """And what to do about it either way.
+
+    In the same words the saddle search says it in, and against the same
+    thresholds, because it is the same question asked twice: a structure one
+    of them names a second-order saddle must not be called a transition state
+    by the other.  Both go through
+    :func:`delfin.dashboard.saddle.verdict`, which is where the thresholds are
+    kept and where the searches they were taken from are cited.
+
+    Without its advice, though.  What to do about a converged second-order
+    saddle is to displace along the second mode and climb again; an estimate
+    is nobody's stationary point, and a climb from one with two modes going
+    the wrong way may perfectly well end on a transition state.
+    """
     source = EDITOR_SOURCE
     assert "state['path_shape'] = shape.get('imaginary')" in source
-    assert "shape.get('count') == 1" in source
-    assert 'It is a transition state: one mode goes the wrong ' in source
+    assert "lines.extend(_said_modes(" in source
+    assert "shape, 'The structure it estimates', advise=False))" in source
     # A minimum is not one, and neither is a second-order saddle -- both are
     # said rather than left for the user to notice.
-    assert "elif shape.get('count') == 0:" in source
-    assert 'It is a minimum, not a transition state' in source
-    assert 'a saddle ' in source
-    # And where it goes next, since xtb has no saddle optimiser at all.
-    assert 'Refine it with OPTTS in the ORCA Builder.' in source
+    assert "if shape.get('count') == 0:" in source
+    assert 'not sitting on' in source
+    # And where it goes next, since xtb has no saddle optimiser at all: the
+    # climb is one press away and both halves together are another.
+    assert 'Press To the saddle to sharpen it here in seconds, ' in source
+    assert 'or Path to saddle next time to do both at one press ' in source
 
 
 #: cis- and trans-2-butene, relaxed under GFN2.  The plainest reaction there

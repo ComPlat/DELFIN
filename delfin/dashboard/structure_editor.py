@@ -1650,6 +1650,29 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='140px', height='30px', display='none'),
         disabled=True,
     )
+    #: The two halves at one press: the path finder, and then ORCA's saddle
+    #: optimiser on what it estimated.
+    #:
+    #: Neither engine can answer alone -- xtb has no saddle optimiser and ORCA
+    #: has nothing that finds an estimate to give one -- and the pair is
+    #: quick.  Measured on the sixteen-atom Diels-Alder, from the two ends a
+    #: scan leaves: 3.6 s for the path, 12 s for the chain, and it arrives at
+    #: -393.5 cm-1 where a nudged elastic band takes 416 s to reach -393.6.
+    #: Seven minutes and twelve seconds, the same saddle.
+    #:
+    #: A press of its own and not something Find the path does on its way
+    #: past: the path's own answer is a complete one, needs no ORCA, and takes
+    #: a quarter of the time, and the climb can end somewhere nobody asked for
+    #: -- measured on a sloppy pair of ends, on a structure with two modes
+    #: going the wrong way.  Whoever wants both presses this instead.
+    submit_path_saddle_btn = widgets.Button(
+        description='Path to saddle', icon='mountain', button_style='warning',
+        tooltip=('Find the path between the two ends and climb its estimate '
+                 'to a converged saddle, at one press. Says what was reached '
+                 'and whether it is a transition state.'),
+        layout=widgets.Layout(width='150px', height='30px', display='none'),
+        disabled=True,
+    )
     #: Climb from whatever is on screen to the nearest first-order saddle.
     #:
     #: xtb has no saddle-point optimiser.  ORCA has one, and ORCA can be told
@@ -1719,7 +1742,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
          submit_scan_stop_at, submit_scan_to,
          submit_scan_dd, submit_scan_del, submit_scan_whole,
          submit_scan_how, submit_scan_energy, submit_scan_run_btn,
-         submit_path_from_btn, submit_path_btn],
+         submit_path_from_btn, submit_path_btn, submit_path_saddle_btn],
         layout=widgets.Layout(
             gap='6px', align_items='center', flex_flow='row nowrap',
             flex='0 0 auto', overflow='visible',
@@ -7512,8 +7535,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # There are two ends now, so the path finder has something
                     # to be given.
                     if state.get('scan_ends'):
-                        submit_path_btn.layout.display = ''
-                        submit_path_btn.disabled = False
+                        _offer_the_path()
                     rows = [line for line in final.splitlines()[2:]
                             if line.strip()]
                     if rows:
@@ -7531,21 +7553,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
         threading.Thread(target=_work, daemon=True).start()
 
-    def _said_modes(shape, what):
-        """What a Hessian says a structure is, in one sentence."""
-        if not shape:
-            return f'{what} could not be checked for imaginary modes.'
-        if shape.get('count') == 1:
-            return (f'{what} is a transition state: one mode goes the wrong '
-                    f'way, at {shape["modes"][0]:.0f} cm-1, and no others.')
-        if shape.get('count') == 0:
-            return (f'{what} is a minimum, not a transition state: no mode '
-                    'goes the wrong way.')
-        many = ', '.join(f'{one:.0f}' for one in shape.get('modes') or [])
-        return (f'{shape["count"]} modes go the wrong way'
-                + (f' ({many} cm-1)' if many else '')
-                + f', so {what.lower()} is not a transition state -- a saddle '
-                  'point of first order has exactly one.')
+    def _said_modes(shape, what, advise=True):
+        """What a Hessian says a structure is, in sentences.
+
+        The wording and the thresholds it is said against live in
+        :func:`delfin.dashboard.saddle.verdict`, with the searches each
+        threshold was taken from cited where it is defined.  One place,
+        because the path finder's estimate and the saddle search's answer are
+        the same question asked twice, and a structure that is named a
+        second-order saddle by one of them must not be called a transition
+        state by the other.
+        """
+        return _saddle.verdict(shape, what, advise=advise)['lines']
 
     def on_submit_saddle(_button=None):
         """Climb from the structure on screen to the nearest saddle point.
@@ -7564,6 +7583,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # it climbs.  What it reached is kept.
             state['saddle_stop'] = True
             _set_mol_status('Stopping the climb...', spinner=True)
+            return
+        if state.get('chain_run'):
+            # A chain is already climbing, and two climbs drawing into one
+            # viewer would each show half a trajectory.
+            _set_mol_status('A path and its climb are already running; stop '
+                            'that first.')
             return
         xyz = _current_xyz()
         method = str(submit_ff_dd.value)
@@ -7652,21 +7677,59 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     _set_mol_status(str(found.get('status')
                                         or 'The saddle search did not run.'))
                     return
-                lines = [found['status']]
-                lines.append(_said_modes(found.get('imaginary'),
-                                         'What it reached'))
+                said = _saddle.verdict(found.get('imaginary'),
+                                       'What it reached')
+                lines = [found['status'], *said['lines']]
                 if rows:
                     _remember('the saddle search')
+                    # Named in the box by what it is rather than by what was
+                    # being looked for.  A comment that says "transition
+                    # state" over a second-order saddle is the one place the
+                    # mistake would outlive the sentence that said so.
                     _write_coords(xyz_document(
-                        rows, 'Optimised to a transition state'))
-                    lines.append('It is in the box; Undo takes it back. '
-                                 'Refine it with OPTTS in the ORCA Builder at '
-                                 'a level worth quoting.')
+                        rows, f'Optimised to {said["name"]}'))
+                    lines.append('It is in the box; Undo takes it back.')
+                    if said['first_order']:
+                        lines.append(
+                            'Refine it with OPTTS in the ORCA Builder at a '
+                            'level worth quoting.')
                 _set_mol_status(*lines)
 
             schedule_ui_update(_done)
 
         threading.Thread(target=_work, daemon=True).start()
+
+    def _offer_the_path():
+        """There are two ends now, so both ways of walking between them show.
+
+        The pair travels together: what can be walked can be walked and
+        climbed, and a button that appeared without the other would be an
+        offer to do half of the job.
+        """
+        for button in (submit_path_btn, submit_path_saddle_btn):
+            button.layout.display = ''
+            button.disabled = False
+
+    def _path_ends():
+        """The two structures to walk between, or nothing and why.
+
+        A marked start and whatever is on screen, or the two ends a scan
+        left.  The marked pair comes first: it is the one the user set on
+        purpose, and a scan from an earlier question should not quietly win
+        over it.
+        """
+        marked = state.get('path_from')
+        here = _current_xyz()
+        if marked and here and marked.strip() != here.strip():
+            return (marked, here)
+        ends = state.get('scan_ends')
+        if not ends:
+            _set_mol_status(
+                'A path needs two structures. Press Path from here on one of '
+                'them and then this on the other -- or run a scan, which '
+                'leaves both.')
+            return None
+        return ends
 
     def on_submit_path_from(_button=None):
         """Mark what is on screen as where a path starts.
@@ -7679,12 +7742,166 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if not xyz:
             return
         state['path_from'] = xyz
-        submit_path_btn.layout.display = ''
-        submit_path_btn.disabled = False
+        _offer_the_path()
         _set_mol_status(
             f'Marked as the start of a path ({len(_gfn.atom_lines(xyz))} '
             'atoms). Load or build the other structure and press Find the '
-            'path.')
+            'path -- or Path to saddle, which walks it and climbs the '
+            'estimate it leaves in one press.')
+
+    def on_submit_path_to_saddle(_button=None):
+        """Two structures in, a converged saddle out, at one press.
+
+        The path finder and the saddle optimiser are two halves of one
+        question and neither engine holds both: xtb walks between two ends and
+        estimates the top of what it crossed, and has no saddle optimiser at
+        all; ORCA has one and nothing that produces an estimate to give it.
+        Chained, the pair is twelve seconds on sixteen atoms -- and lands
+        within a wavenumber of a nudged elastic band that takes seven minutes.
+
+        Watched while it climbs and stopped by the same press, like the climb
+        on its own.  The walk itself is not drawn: it ends at the product and
+        the climb starts from the highest point of it, so playing both would
+        run the picture forward and then jump back, and the picture is meant
+        to be believable.
+
+        What was reached is named rather than assumed, which is the half that
+        cannot be left out -- a saddle search does not fail when it goes
+        wrong, it succeeds at arriving somewhere.
+        """
+        if state.get('chain_run'):
+            # The same button, because there is only one thing to want while
+            # it runs.  What it reached is kept.
+            state['chain_stop'] = True
+            _set_mol_status('Stopping...', spinner=True)
+            return
+        if state.get('path_run') or state.get('saddle_run'):
+            _set_mol_status('Something is already running on this structure; '
+                            'let it finish or stop it first.')
+            return
+        method = str(submit_ff_dd.value)
+        ends = _path_ends()
+        if not ends:
+            return
+        if method.lower() not in _saddle.SADDLE_METHODS:
+            _set_mol_status(
+                'The path is xtb\'s and the climb is ORCA on xtb gradients, '
+                'so both halves want GFN2, GFN1 or GFN-FF. Anything with a '
+                'basis set is a job for the ORCA Builder.')
+            return
+        state['chain_run'] = True
+        state['chain_stop'] = False
+        # The picture belongs to this run and to nothing else: a number the
+        # page has not seen yet, so whatever was queued from before cannot
+        # play out over it.
+        state['chain_frame_run'] = int(state.get('gfn_run', 0)) + 1
+        state['gfn_run'] = state['chain_frame_run']
+        _ensure_manip_bootstrap()
+        schedule_ui_update(_install_gfn_frame_watcher)
+        submit_path_saddle_btn.description = 'Stop'
+        submit_path_saddle_btn.icon = 'stop'
+        charge = int(submit_gfn_charge.value or 0)
+        uhf = _gfn_uhf_now()
+        wet = str(submit_gfn_solvent.value or '') or None
+        model = _solv_model()
+        label = _server_label(method)
+        _set_mol_status(f'{label} is looking for a path between the two '
+                        'ends...', spinner=True)
+
+        def _work():
+            sent = [0]
+
+            def _watch(walked, energies):
+                """Every accepted step of the climb, as it is accepted.
+
+                Down the frame channel and not into the box: a write to the
+                box rebuilds the viewer from nothing, and a climb of thirty
+                steps would be thirty rebuilds.
+                """
+                if state.get('gfn_run') != state.get('chain_frame_run'):
+                    return
+                for n in range(sent[0], len(walked)):
+                    schedule_ui_update(
+                        lambda text=json.dumps({
+                            'run': state.get('chain_frame_run'),
+                            'from': n,
+                            'follow': 1,
+                            'frames': [[round(float(v), 4)
+                                        for v in walked[n]]],
+                        }): setattr(submit_gfn_frame, 'value', text))
+                sent[0] = len(walked)
+                climbed = None
+                if len(energies) > 1 and None not in (energies[0],
+                                                      energies[-1]):
+                    climbed = (energies[-1] - energies[0]) * _HARTREE_TO_KCAL
+                schedule_ui_update(
+                    _set_mol_status,
+                    f'Climbing from the estimate: step {len(walked)}'
+                    + (f', {climbed:+.1f} kcal/mol from where it started.'
+                       if climbed is not None else '.'),
+                    spinner=True)
+
+            found = _saddle.path_to_saddle(
+                ends[0], ends[1], method, charge=charge, uhf=uhf,
+                solvent=wet, solvation_model=model, on_frame=_watch,
+                should_stop=lambda: bool(state.get('chain_stop')),
+                on_stage=lambda said: schedule_ui_update(
+                    _set_mol_status, said, spinner=True))
+
+            def _done():
+                state['chain_run'] = False
+                state['chain_stop'] = False
+                submit_path_saddle_btn.description = 'Path to saddle'
+                submit_path_saddle_btn.icon = 'mountain'
+                lines = []
+                if found.get('barrier') is not None:
+                    near = found.get('rmsd')
+                    lines.append(
+                        f'{label} walked a path in '
+                        f'{found["path_seconds"]:.1f} s: '
+                        f'{found["barrier"]:.1f} kcal/mol forward'
+                        + (f', {found["back"]:.1f} back'
+                           if found.get('back') is not None else '')
+                        + '.'
+                        + ('' if near is None else
+                           f' It came within {near:.2f} A RMSD of the '
+                           'structure it was aiming at.'))
+                # What is shown is what the climb reached, or -- if it never
+                # got that far -- the estimate the walk left, which is still
+                # an answer and is named as the one it is.
+                text = found.get('xyz') or found.get('estimate') or ''
+                rows = [line for line in text.splitlines()[2:] if line.strip()]
+                if not found.get('ok'):
+                    lines.append(str(found.get('status')
+                                     or 'The chain did not run.'))
+                    if rows:
+                        _remember('the path and the climb')
+                        _write_coords(xyz_document(
+                            rows, 'Where the chain got to'))
+                    _set_mol_status(*lines)
+                    return
+                said = _saddle.verdict(found.get('imaginary'),
+                                       'What it reached')
+                lines.append(f'{found["status"]} '
+                             f'{found["seconds"]:.1f} s for the pair.')
+                lines.extend(said['lines'])
+                if rows:
+                    # One step for the whole chain, which Undo takes back
+                    # whole: two structures went in and one came out, and
+                    # halfway back is not a place anyone asked for.
+                    _remember('the path and the climb')
+                    _write_coords(xyz_document(
+                        rows, f'From a path, optimised to {said["name"]}'))
+                    lines.append('It is in the box; Undo takes it back.')
+                    if said['first_order']:
+                        lines.append(
+                            'Refine it with OPTTS in the ORCA Builder at a '
+                            'level worth quoting.')
+                _set_mol_status(*lines)
+
+            schedule_ui_update(_done)
+
+        threading.Thread(target=_work, daemon=True).start()
 
     def on_submit_path(_button=None):
         """Walk between the two ends the scan left, and keep what is found.
@@ -7695,27 +7912,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         them alone; when they do not, the difference is the interesting part
         and both numbers are said.
         """
-        # A marked start and whatever is on screen, or the two ends a scan
-        # left.  The marked pair comes first: it is the one the user set on
-        # purpose, and a scan from an earlier question should not quietly win
-        # over it.
         method = str(submit_ff_dd.value)
-        marked = state.get('path_from')
-        here = _current_xyz()
-        if marked and here and marked.strip() != here.strip():
-            ends = (marked, here)
-        else:
-            ends = state.get('scan_ends')
+        ends = _path_ends()
         if not ends:
-            _set_mol_status(
-                'A path needs two structures. Press Path from here on one of '
-                'them and then this on the other -- or run a scan, which '
-                'leaves both.')
             return
         if not _gfn.is_gfn_method(method):
             _set_mol_status('A path needs xtb: choose a GFN method.')
             return
-        if state.get('path_run'):
+        if state.get('path_run') or state.get('chain_run'):
             return
         state['path_run'] = True
         submit_path_btn.disabled = True
@@ -7804,24 +8008,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     lines.append(state['path_depth'])
                 shape = state.get('path_shape')
                 if shape is not None:
-                    if shape.get('count') == 1:
+                    # Said in the same words the saddle search says it in, and
+                    # without its advice: an estimate is nobody's stationary
+                    # point, and what to do about one is the next line rather
+                    # than a displacement along a mode.
+                    lines.extend(_said_modes(
+                        shape, 'The structure it estimates', advise=False))
+                    if shape.get('count') == 0:
                         lines.append(
-                            'It is a transition state: one mode goes the wrong '
-                            f'way, at {shape["modes"][0]:.0f} cm-1, and no '
-                            'others. Refine it with OPTTS in the ORCA Builder.')
-                    elif shape.get('count') == 0:
-                        lines.append(
-                            'It is a minimum, not a transition state: no mode '
-                            'goes the wrong way. The path went over something '
-                            'this estimate is not sitting on.')
-                    else:
-                        many = ', '.join(f'{one:.0f}'
-                                         for one in shape.get('modes') or [])
-                        lines.append(
-                            f'{shape["count"]} modes go the wrong way'
-                            + (f' ({many} cm-1)' if many else '')
-                            + ', so this is not a transition state -- a saddle '
-                              'point of first order has exactly one.')
+                            'The path went over something this estimate is '
+                            'not sitting on.')
+                    lines.append(
+                        'Press To the saddle to sharpen it here in seconds, '
+                        'or Path to saddle next time to do both at one press '
+                        '-- measured on a sixteen-atom case, 3.6 s for the '
+                        'path and 12 s for the pair.')
                 rows = [line for line in (found.get('ts') or '').splitlines()[2:]
                         if line.strip()]
                 if rows:
@@ -8802,7 +9003,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                            submit_scan_stop_at,
                            submit_scan_dd, submit_scan_del, submit_scan_whole,
                            submit_scan_how, submit_scan_energy,
-                           submit_scan_run_btn, submit_path_btn):
+                           submit_scan_run_btn, submit_path_btn,
+                           submit_path_saddle_btn):
                 widget.layout.display = 'none'
             if _scan_legs():
                 _set_mol_status(
@@ -9190,6 +9392,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_topology_btn.observe(on_submit_topology, names='value')
     submit_scan_whole.observe(on_submit_scan_whole, names='value')
     submit_path_btn.on_click(on_submit_path)
+    submit_path_saddle_btn.on_click(on_submit_path_to_saddle)
     submit_path_from_btn.on_click(on_submit_path_from)
     submit_saddle_btn.on_click(on_submit_saddle)
     submit_sens_slider.observe(on_submit_sens_changed, names='value')
