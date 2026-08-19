@@ -1010,7 +1010,10 @@ def test_the_climb_stands_still_while_a_hand_is_down():
     # own Hessian is a third of a second, and a hand fits inside that -- keeps
     # what it made.  Writing the climb's geometry over an edit that came after
     # it is the one thing an editor may never do.
-    assert "interrupted = state.pop('climb_hand', None) is not None" in source
+    assert "interrupted = (state.pop('climb_hand', None) is not None" in source
+    # And a hand still on the structure counts the same, which is the toggle
+    # being switched off in the middle of a drag.
+    assert "or bool(state.pop('climb_hand_down', None)))" in source
     assert 'if rows and not interrupted:' in source
     assert 'You moved the structure while it was finishing' in source
 
