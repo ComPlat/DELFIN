@@ -131,8 +131,24 @@ _ANGLE_MIN_DEG = 70.0   # optional angle proxy: heavy-heavy-heavy angle < this =
 _F20_OOP_TOL = 0.20     # ring-H out-of-plane tolerance (Å)   (matches detector)
 _F20_RING_TOL = 0.10    # ring planarity tolerance (Å)        (matches detector)
 _F20_AROMATIC = {"C", "N", "O", "S"}
-_AROMATIC_BOND_MAX = 1.46   # mean intra-ring heavy-bond gate (matches
-                            # _arom_planarize._AROMATIC_BOND_MAX)
+# ===== DIE SCHWELLE STAND DREIMAL IM BAUM (19.08.2026) ================================
+# Hier stand ein eigenes Literal 1.46 mit dem Kommentar "matches
+# _arom_planarize._AROMATIC_BOND_MAX" -- also ein handgepflegter Abgleich, und genau so
+# einer laeuft auseinander: am 18.08. traf die sp3-Reparatur zwei der drei Kopien, diese
+# dritte nicht.  Die Zahl kommt jetzt aus ``_arom_criterion``, und dort haengt auch der
+# Schalter ``DELFIN_FFFREE_AROM_CRITERION_RADII`` (Vorgabe 0 -> byte-identisch).
+#
+# ⚠ DER IMPORT BRICHT DIE ZIRKELFREIHEIT DIESES MODULS NICHT.  ``_arom_criterion`` zieht
+# auf Modulebene NUR ``os`` und ``typing``; die Radientabelle holt es erst beim ersten
+# normiert bewerteten Ring.  Damit verschiebt dieser Import auch keinen import-zeitigen
+# env-Lesevorgang (``polyhedra`` liest DELFIN_FFFREE_COV_COMPLETE beim Import, und
+# _bond_decollapse wird frueh gezogen -- deshalb ist die Lazy-Bauart dort Pflicht).
+# ``_AROMATIC_BOND_MAX`` wird nur weitergereicht (der Name bleibt erhalten),
+# entschieden wird in ``ring_rejected_by_length``.
+from delfin.manta._arom_criterion import (   # noqa: E402,F401
+    _AROMATIC_BOND_MAX,
+    ring_rejected_by_length,
+)
 _AROM_M_COORD_DIST = 2.6    # atom within this of a metal counts as coordinated;
                             # a ring TOUCHING the coordination sphere is never
                             # aromatic-retargeted (LUMTAP never-worse scope)
@@ -326,10 +342,20 @@ def _cut_geminal(syms, P, bonds):
 def _aromatic_ring_bonds(syms, P, bonds) -> set:
     """Set of (min,max) heavy–heavy bonds lying in a geometric 5/6-ring of
     aromatic-eligible atoms (C/N/O/S) whose mean intra-ring bond is in the
-    aromatic band (< _AROMATIC_BOND_MAX).  Self-contained (mirrors the
-    _arom_planarize detector but stays inside this module, so the graph path
-    keeps no cross-import) and used only to select the aromatic spring target;
-    returns the empty set unless the seat flag is on (caller guards)."""
+    aromatic band; used only to select the aromatic spring target; returns the
+    empty set unless the seat flag is on (caller guards).
+
+    ⚠ DER RINGSUCHER IST WEITER EIGEN, NUR DAS TOR IST GEMEINSAM (19.08.2026).
+    Diese Kopie sieht eine ANDERE Ringmenge als ``_arom_planarize``, und zwar aus
+    zwei nachweisbaren Gruenden:
+      * die Bindungswahrnehmung ist eine andere -- hier ``d < 1.30 * _ideal_bond``
+        (fuer C-C also 1.98 A), dort ``d < Sigma_r_cov + 0.25`` (1.77 A).  Diese
+        Kopie sieht damit systematisch MEHR Kanten und mehr Ringe.
+      * jeder Ring, der die Koordinationssphaere BERUEHRT, faellt hier ganz heraus
+        (LUMTAP never-worse scope) -- dort wird er verankert und mitbehandelt.
+    Der Ringsucher bleibt deshalb, wo er ist; gemeinsam ist ab jetzt allein die
+    Frage "ist diese Ringlaengen-Signatur aromatisch", und die steht in
+    ``_arom_criterion.ring_rejected_by_length``."""
     n = len(syms)
     arom_nbr: List[List[int]] = [[] for _ in range(n)]
     for i, j in bonds:
@@ -381,7 +407,9 @@ def _aromatic_ring_bonds(syms, P, bonds) -> set:
                 if j in rset and j > i:
                     lens.append(float(np.linalg.norm(P[i] - P[j])))
                     edges.append((i, j))
-        if not lens or (sum(lens) / len(lens)) >= _AROMATIC_BOND_MAX:
+        # EINE QUELLE (siehe Import oben): Schalter AUS = alter Vergleich
+        # ``mittel >= 1.46``, Schalter AN = Mittel von d/(r_i+r_j) >= 0.939.
+        if not lens or ring_rejected_by_length(syms, edges, lens):
             continue                       # saturated / non-aromatic ring
         for (i, j) in edges:
             out.add((min(i, j), max(i, j)))

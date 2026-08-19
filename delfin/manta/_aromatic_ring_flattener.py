@@ -40,11 +40,19 @@ from delfin.manta._pi_h_projector import (
     project_ring_h_atoms,
     _MD_INVARIANT_TOL,
 )
+# EINE QUELLE fuer das Laengentor (19.08.2026) -- dieselbe, die
+# ``_arom_planarize`` und ``_bond_decollapse._aromatic_ring_bonds`` benutzen.
+# Schalter ``DELFIN_FFFREE_AROM_CRITERION_RADII`` (Vorgabe 0 -> byte-identisch).
+# ``_AROMATIC_BOND_MAX`` wird nur weitergereicht (der Name bleibt erhalten),
+# entschieden wird in ``ring_rejected_by_length``.
+from delfin.manta._arom_criterion import (   # noqa: F401
+    _AROMATIC_BOND_MAX,
+    ring_rejected_by_length,
+)
 
 _AROMATIC_ELIGIBLE = {"C", "N", "O", "S"}
 _OOP_TOL: float = 0.10          # below this the ring is already flat
 _PUCKER_CAP: float = 0.80       # above this it is not a planar-intended ring
-_AROMATIC_BOND_MAX: float = 1.46  # mean intra-ring heavy-bond length gate (Å)
 _M_COORD_DIST: float = 2.60       # ring atom within this of a metal → coordinated (skip)
 
 
@@ -97,13 +105,17 @@ def _detect_aromatic_rings(
         # mean intra-ring heavy-bond length (consecutive bonded pairs only)
         rset = set(ring)
         bond_lens: List[float] = []
+        bond_edges: List[Tuple[int, int]] = []
         for i in ring:
             for j in heavy_nbrs[i]:
                 if j in rset and j > i:
                     bond_lens.append(float(np.linalg.norm(pts[i] - pts[j])))
+                    bond_edges.append((i, j))
         if not bond_lens:
             continue
-        if (sum(bond_lens) / len(bond_lens)) >= _AROMATIC_BOND_MAX:
+        # EINE QUELLE (siehe Import oben): Schalter AUS = alter Vergleich
+        # ``mittel >= 1.46``, Schalter AN = Mittel von d/(r_i+r_j) >= 0.939.
+        if ring_rejected_by_length(syms, bond_edges, bond_lens):
             continue  # saturated ring — leave its (correct) pucker alone
         if _sp3_veto and _has_sp3(syms, nbrs, ring):
             continue  # traegt ein sp3-Zentrum -> kein Aromat, nicht verflachen

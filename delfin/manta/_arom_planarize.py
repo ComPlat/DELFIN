@@ -64,11 +64,24 @@ from delfin.manta._pi_h_projector import (
     _is_metal_sym,
     _MD_INVARIANT_TOL,
 )
+# EINE QUELLE fuer das Laengentor (19.08.2026).  Die Zahl 1.46 stand dreimal im
+# Baum -- hier, im Zwilling ``_aromatic_ring_flattener`` und in
+# ``_bond_decollapse._aromatic_ring_bonds``.  Sie steht jetzt EINMAL in
+# ``_arom_criterion``; dort haengt auch der Schalter
+# ``DELFIN_FFFREE_AROM_CRITERION_RADII`` (Vorgabe 0 -> byte-identisch), der die
+# absolute Angstroem-Schwelle durch das elementnormierte Mittel d/(r_i+r_j)
+# ersetzt.  Warum: siehe Modul-Docstring dort (54,46 % Falschdurchlass, Thiophen 0 %).
+# ``_AROMATIC_BOND_MAX`` wird hier nur noch WEITERGEREICHT (nichts geloescht: der
+# Name bleibt fuer jeden Leser und jeden externen Zugriff erhalten), entschieden
+# wird ausschliesslich in ``ring_rejected_by_length``.
+from delfin.manta._arom_criterion import (   # noqa: F401
+    _AROMATIC_BOND_MAX,
+    ring_rejected_by_length,
+)
 
 _AROMATIC_ELIGIBLE = {"C", "N", "O", "S"}
 _OOP_TOL: float = 0.05            # target: rings flatter than this are done
 _PUCKER_CAP: float = 0.80         # above this it is not a planar-intended ring
-_AROMATIC_BOND_MAX: float = 1.46  # mean intra-ring heavy-bond gate (Å)
 _M_COORD_DIST: float = 2.60       # ring atom within this of metal → anchor
 _SUBST_BOND_MAX_FACTOR: float = 1.30  # heavy substituent within this·Σr_cov is dragged
 
@@ -210,13 +223,19 @@ def _detect_aromatic_rings(
     for ring in rings_canon:
         rset = set(ring)
         bond_lens: List[float] = []
+        bond_edges: List[Tuple[int, int]] = []
         for i in ring:
             for j in heavy_nbrs[i]:
                 if j in rset and j > i:
                     bond_lens.append(float(np.linalg.norm(pts[i] - pts[j])))
+                    bond_edges.append((i, j))
         if not bond_lens:
             continue
-        if (sum(bond_lens) / len(bond_lens)) >= _AROMATIC_BOND_MAX:
+        # EINE QUELLE (siehe Import oben): mit Schalter AUS exakt der alte
+        # Vergleich ``mittel >= 1.46``, mit Schalter AN das elementnormierte
+        # Mittel d/(r_i+r_j) >= 0.939.  Die Elemente muessen mitgegeben werden --
+        # genau die Information, die der rohe Mittelwert wegwirft.
+        if ring_rejected_by_length(syms, bond_edges, bond_lens):
             continue  # saturated ring — leave its (correct) pucker alone
         # DAS VERBOT (19.08.2026, Vorgabe AUS -> byte-identisch): der Mittelwert oben
         # laesst Oxazolin/Imidazolin/Dioxolan durch, weil C=N und C-O die eine
