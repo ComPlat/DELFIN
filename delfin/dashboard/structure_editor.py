@@ -3051,6 +3051,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         return bool(state.get('gfn_follow')
                     or state.get('optimize_run') is not None)
 
+    def _hand_pulls():
+        """Whether the hand on the molecule is a force or a placement.
+
+        One question, asked in one place, because several things in this
+        toolbar mean nothing without a force behind the hand and every one of
+        them used to ask for itself.  Both hands are wanted and neither is the
+        lesser: placing an atom exactly where it is meant to go is what
+        building a structure *is*, and no force can do it, because the whole
+        point of a force is that the chemistry gets a say.  What differs is
+        which controls have anything to act on -- see
+        :func:`_refresh_hand_controls` for the list and for why each one is on
+        it or is not.
+        """
+        return str(submit_hand_dd.value) == 'pull'
+
     def _pull_force():
         """How hard the hand may pull under a server method, in kcal/mol/A.
 
@@ -3080,7 +3095,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         anywhere can prevent that.  The two are different jobs and this is
         only the first of them.
         """
-        if str(submit_hand_dd.value) == 'move':
+        if not _hand_pulls():
             # The rigid hand: the coordinate is set and whoever is calculating
             # is told to meet it.  Not a force at all, which is what None says.
             return None
@@ -3122,7 +3137,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         Zero is the rigid hand there as it is here, so the two sides never
         disagree about which one is in the user's hand.
         """
-        if str(submit_hand_dd.value) != 'pull':
+        if not _hand_pulls():
             return 0.0
         return float(submit_pull_slider.value or 0.0)
 
@@ -3264,7 +3279,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     count = len(_gfn.atom_lines(current))
                     stale = bool(holding) and not any(
                         0 <= int(i) < count for i in holding)
-                    pricing = bool(submit_thermal_btn.value) and not stale
+                    pricing = _thermal_live() and not stale
                     # The hand as a force rather than as a value.
                     #
                     # The coordinates the hand has changed were held exactly,
@@ -3540,7 +3555,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         reached = _gfn.hold_atoms_at(laid, current, holding)
                     if not stale:
                         state['thermal_now'] = priced.get('energy')
-                    if stale and submit_thermal_btn.value:
+                    if stale and _thermal_live():
                         said = (f'{said} The hand is on atoms this structure '
                                 f'does not have, so this step is not priced.')
                     if pricing:
@@ -3898,6 +3913,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return None, ceiling
         return state.get('thermal_e0'), ceiling
 
+    def _thermal_live():
+        """Whether the budget is switched on *and* has a hand it can price.
+
+        The switch alone is not enough.  A budget prices what is kept, and
+        under a placing hand what is kept is not exactly what was priced --
+        measured at 1.4 kcal/mol, +16.8 priced against +18.2 kept, bounded by
+        _SLIP_LOOSE rather than by zero.  So the budget does not act there;
+        see :func:`_refresh_hand_controls`, which is where it also stops being
+        on screen.  The switch keeps its value across the change, because a
+        hand is changed constantly and re-measuring the anchor each time is a
+        calculation the user did not ask for.
+        """
+        return bool(submit_thermal_btn.value) and _hand_pulls()
+
     def _thermal_note(energy):
         """Where this geometry stands against the budget, said in one line."""
         anchor, ceiling = _thermal_budget()
@@ -3985,7 +4014,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         So the hand is free and the answer arrives behind it.  What this keeps
         is the geometry to come back to.
         """
-        if not submit_thermal_btn.value:
+        if not _thermal_live():
             return
         anchor, _ceiling = _thermal_budget()
         if anchor is None:
@@ -8864,9 +8893,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             f'{json.dumps(submit_scope_id)},{_hand_share()},'
             f'{json.dumps(_pull_most() if active else None)});'
         )
-        for widget in (submit_temperature, submit_thermal_relax,
-                       submit_thermal_anchor_btn):
-            widget.layout.display = '' if active else 'none'
+        _refresh_hand_controls()
         if not active:
             state['thermal_e0'] = None
             state['thermal_for'] = None
@@ -9044,12 +9071,95 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 pass
         _refresh_scan()
 
+    def _refresh_hand_controls():
+        """Show only what the hand in use has something to act on.
+
+        The hand's rule, kept in one place so that it and the method's rule --
+        :func:`_refresh_method_controls`, which is about a different thing --
+        compose rather than overwrite one another.  Both hands are wanted and
+        neither is the lesser: placing an atom exactly where it is meant to go
+        is what building a structure is, and no force can do it, because the
+        whole point of a force is that the chemistry gets a say.
+
+        What is on the list:
+
+        * The pull slider.  It is the size of a force, and a placement has no
+          force in it.  The page is told the same number through
+          setPullStrength and its own field skips the pull entirely at a share
+          of zero, which is what a placing hand sends.
+
+        * The thermal budget, its temperature, its relax-first and its anchor.
+          A budget has to price what is kept, and under a placing hand what is
+          kept is not exactly what was priced: the answer comes back a little
+          away from where the cursor asked and is laid back onto the hand,
+          which is a second geometry.  Measured, +16.8 kcal/mol priced against
+          +18.2 kept -- bounded by the same 0.25 A the loose hold is judged by
+          and not by zero -- and whether a drag was stopped in time came down
+          to a race between xtb at 70-170 ms and a page reporting every 16-120
+          ms.  Under a pull that residual is exactly nothing: the geometry
+          that was priced is the geometry that is kept, laid back only on the
+          atoms the hand never touched.  A budget that cannot be made exact
+          under one hand should not claim to be a budget there, so it goes
+          away with that hand instead of sitting there being approximately
+          true.
+
+        What is deliberately not on the list, because taking away something
+        that works is as bad as leaving something that does not:
+
+        * Strength.  How many steps the browser's own field takes per
+          animation frame -- the relaxation, not the hand.  The rest of the
+          structure settles round a placed atom exactly as it settles round a
+          pulled one.
+
+        * Sensitivity.  How far the structure moves for how far the mouse
+          moves, which is a property of dragging and not of what dragging
+          does.
+
+        * Keep bonds.  It reads the bonding off what came back and takes the
+          step back if it changed; a placing hand is if anything the one that
+          needs it more, because a rigid hand can put an atom anywhere at all.
+
+        * The scan and the path finder.  A scan drives its own ramp of forces
+          from PUSH_FORCE_FROM to PUSH_FORCE_TO and never reads the hand's
+          slider, so it walks the same path whichever hand is chosen.  It does
+          read the temperature box, for its own free energies and its verdict;
+          that box is hidden here, and it was already hidden whenever the
+          budget was switched off, so the scan is no worse off than it has
+          always been and keeps whatever value it was set to.
+        """
+        pulling = _hand_pulls()
+        submit_pull_slider.layout.display = '' if pulling else 'none'
+        # Two conditions, about two different things.
+        #
+        # The method: the budget differences energies against an anchor, and
+        # only xtb's follow hands back one that can be differenced -- MOPAC
+        # reports a heat of formation, which is not the same quantity.  A
+        # method that cannot price takes the switch down with it, because the
+        # anchor it holds is an energy of the method that measured it and
+        # means nothing under another.
+        #
+        # The hand: it does not take the switch down.  A hand is changed
+        # constantly while working and losing the anchor each time would mean
+        # measuring it again each time, so the setting survives out of sight
+        # and comes back with the pull.  Nothing reads it in between -- see
+        # the pricing in _gfn_follow_step, which asks _thermal_live.
+        xtb = _gfn.is_gfn_method(submit_ff_dd.value)
+        if not xtb and submit_thermal_btn.value:
+            submit_thermal_btn.value = False
+        shown = bool(xtb and pulling)
+        submit_thermal_btn.layout.display = '' if shown else 'none'
+        for widget in (submit_temperature, submit_thermal_relax,
+                       submit_thermal_anchor_btn):
+            widget.layout.display = ('' if (shown and submit_thermal_btn.value)
+                                     else 'none')
+
     def on_submit_hand_changed(change):
-        """Moving or pulling.  The slider belongs to one of them."""
+        """Moving or pulling, and what each of them brings with it."""
         if change.get('name') != 'value':
             return
-        pulling = str(submit_hand_dd.value) == 'pull'
-        submit_pull_slider.layout.display = '' if pulling else 'none'
+        pulling = _hand_pulls()
+        _refresh_hand_controls()
+        budget = bool(submit_thermal_btn.value)
         if state.get('hand_quiet'):
             # The method took the hand away or gave it back, which is the
             # toolbar following the choice that was just made.  The page still
@@ -9060,9 +9170,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return
         _set_mol_status(
             'Dragging pulls: the atom follows as far as the chemistry allows.'
+            + (' The thermal budget measures it again.' if budget else '')
             if pulling else
             'Dragging moves: the atom goes where you put it and the rest '
-            'settles around it.')
+            'settles around it.'
+            + (' The thermal budget does not act on a placing hand -- what is '
+               'kept there is not exactly what was priced -- so it is out of '
+               'the way until you pull again.' if budget else ''))
         on_submit_pull_changed({'name': 'value'})
 
     def on_submit_pull_changed(change):
@@ -9430,17 +9544,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     submit_hand_dd.value = 'pull'
         finally:
             state['hand_quiet'] = False
-        # The slider is the pull's own setting, so it goes where the pull
-        # goes.  Shown unconditionally it came back on every change of method
-        # -- pick the move hand under UFF, switch to GFN2, and there it was
-        # again, offering to set the strength of a hand that is not in use.
-        submit_pull_slider.layout.display = (
-            '' if str(submit_hand_dd.value) == 'pull' else 'none')
-        # The thermal budget needs an energy per follow step, and that is
-        # xtb's: MOPAC's follow reports a heat of formation, which is not the
-        # same quantity and cannot be differenced against an xtb anchor.
-        submit_thermal_btn.layout.display = '' if xtb else 'none'
-        # And the scan, for the same reason: it is xtb's.  Left visible under
+        # The slider is the pull's own setting, and so is the budget, so
+        # both go where the pull goes -- and both also answer to the method,
+        # which is why one function decides them and neither refresh can undo
+        # the other.  Shown unconditionally the slider came back on every
+        # change of method: pick the move hand under UFF, switch to GFN2, and
+        # there it was again, offering to set the strength of a hand that is
+        # not in use.
+        _refresh_hand_controls()
+        # And the scan is xtb's for the same reason.  Left visible under
         # UFF or PM7 a whole scan could be armed, with the line saying "or
         # press Run scan" -- an instruction that cannot work -- and the
         # refusal arrived only on the press.  Switching away with one armed
@@ -9486,12 +9598,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # same reason as Auto: nothing reads it under a browser method, and
         # taking the toolbar away should not also take the setting.
         submit_topology_btn.layout.display = '' if server else 'none'
-        if not xtb and submit_thermal_btn.value:
-            submit_thermal_btn.value = False
-        for widget in (submit_temperature, submit_thermal_relax,
-                       submit_thermal_anchor_btn):
-            widget.layout.display = ('' if (xtb and submit_thermal_btn.value)
-                                     else 'none')
         # And the playback pace is the other way round: only a server engine
         # walks a path worth pacing.  The browser's field draws its own frames
         # as it computes them and there is nothing queued to play.
