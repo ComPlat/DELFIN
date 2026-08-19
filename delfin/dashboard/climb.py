@@ -1009,14 +1009,13 @@ def climb_to_saddle(xyz_text: str, method: str = 'gfn2', *,
     try:
         opened = walk.start(aimed_from=aimed_from)
         arrived = False
-        last: Dict[str, Any] = {}
         for _ in range(max(1, int(max_steps))):
             if should_stop is not None and should_stop():
                 break
-            last = walk.step()
+            outcome = walk.step()
             if on_frame is not None:
-                on_frame(walk.frame(), last)
-            if last.get('converged'):
+                on_frame(walk.frame(), outcome)
+            if outcome.get('converged'):
                 arrived = True
                 break
         shape = walk.verdict()
