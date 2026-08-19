@@ -1655,7 +1655,9 @@ def test_the_grab_ends_the_run_and_the_release_starts_the_next_one(editor):
     assert "state.get('optimize_interrupted') is token" in optimise, (
         "an interrupted run must not write the geometry it reached"
     )
-    assert "state.get('gfn_run') != run_id" in optimise, (
+    # Through the one door every frame write goes through now: three other
+    # writers kept a run number and never asked again.
+    assert "_frame_run_is_current(run_id)" in optimise, (
         "nor draw the path it had walked over the structure now on screen"
     )
 
@@ -2734,10 +2736,10 @@ def test_a_run_that_ends_lands_the_picture_on_its_last_frame(player_js):
     """
     assert "show(play.last,play.queue[play.queue.length-1],1);" in player_js
     landing = player_js.split("if(run!==play.run){")[1].split("play.run=run;")[0]
-    # Unless the run was abandoned -- then its queue is exactly what must not
-    # be drawn, because the kernel threw those frames away when the user
-    # changed the structure under them, and landing on the newest of them put
-    # the viewer on a geometry nobody has any more.
+    # Unless the run was abandoned -- then its queue is exactly what must
+    # not be drawn, because the kernel threw those frames away when the
+    # user changed the structure under them, and landing on the newest of
+    # them put the viewer on a geometry nobody has any more.
     assert "if(play.queue.length&&!data.abandoned){" in landing, (
         "the frames of the ending run have to be landed before they are dropped"
     )
@@ -5368,3 +5370,590 @@ def test_a_drag_keeps_up_and_the_top_of_the_slider_means_keep_up(bare_editor):
     # decides which frame a grab keeps would drift.
     assert "play.shown=(play.shown||0)+play.queue.length;" in source
     assert sent == []
+
+
+# ---------------------------------------------------------------------------
+# the player, driven
+# ---------------------------------------------------------------------------
+#
+# There is no browser on the machine these were written on, and the player is
+# the one part of the editor a unit test cannot reach by calling a function:
+# it lives on an animation frame, reads a widget value off the DOM and writes
+# positions into 3Dmol.  So it is run in node over a page that is faked down
+# to the last method it touches, with the clock turned by hand a frame at a
+# time.  What it draws is recorded: a frame here is three numbers whose first
+# is the frame's index in the run, so the position handed to setPositions *is*
+# the index that was drawn, and a whole run comes back as a list of numbers
+# that can be read.
+
+_needs_node = pytest.mark.skipif(not shutil.which("node"),
+                                 reason="node not installed")
+
+_PAGE_JS = r"""
+'use strict';
+const fs = require('fs');
+const playerSrc = fs.readFileSync(process.argv[2], 'utf8');
+const spec = JSON.parse(fs.readFileSync(process.argv[3], 'utf8'));
+const SCOPE = spec.scope;
+
+class FakeField {
+  constructor(tag) { this._v = ''; this.tagName = tag || 'TEXTAREA'; }
+  get value() { return this._v; }
+  set value(x) { this._v = x; }
+  dispatchEvent() { return true; }
+  querySelector() { return null; }
+}
+
+const frameField = new FakeField('TEXTAREA');
+const wallField = new FakeField('TEXTAREA');
+const cmdInput = new FakeField('TEXTAREA');
+const cmdWrap = { tagName: 'DIV', querySelector: () => cmdInput };
+
+const flags = { follow: false, optimise: true };
+const button = (name) => ({
+  tagName: 'BUTTON',
+  classList: { contains: (c) => c === 'mod-active' && flags[name] },
+});
+const followHolder = { tagName: 'DIV', querySelector: () => button('follow') };
+const optHolder = { tagName: 'DIV', querySelector: () => button('optimise') };
+
+const root = {
+  querySelector(sel) {
+    if (sel.indexOf('submit-gfn-frame') >= 0) return frameField;
+    if (sel.indexOf('submit-gfn-wall') >= 0) return wallField;
+    if (sel.indexOf('submit-cmd-sync') >= 0) return cmdWrap;
+    if (sel.indexOf('submit-gfn-follow') >= 0) return followHolder;
+    if (sel.indexOf('submit-optimize-switch') >= 0) return optHolder;
+    return null;
+  },
+};
+
+const drawn = [];
+const notes = [];
+let pushes = 0;
+let pending = null;
+let tick = 0;
+let now = 0;
+
+global.window = {
+  requestAnimationFrame(cb) { pending = cb; },
+  HTMLTextAreaElement: FakeField,
+  HTMLInputElement: FakeField,
+  _submitManipStateByScope: {},
+  __delfinSubmitManip: {
+    setPositions(scope, out) { drawn.push(out[0]); return true; },
+    pushXyz() { pushes += 1; return true; },
+    setThermalWall() {},
+  },
+};
+global.document = {
+  querySelectorAll() { return [root]; },
+  querySelector() { return null; },
+};
+global.Event = class Event { constructor(kind) { this.type = kind; } };
+Object.defineProperty(cmdInput, 'value', {
+  get() { return this._v; },
+  set(x) { this._v = x; notes.push(x); },
+});
+
+eval(playerSrc);
+const play = global.window.__delfinGfnPlay[SCOPE];
+
+const byTick = new Map();
+for (const ev of spec.events || []) {
+  if (!byTick.has(ev.tick)) byTick.set(ev.tick, []);
+  byTick.get(ev.tick).push(ev);
+}
+
+const STEP = 1000 / 60;
+for (tick = 0; tick < spec.ticks; tick += 1) {
+  now = tick * STEP;
+  for (const ev of byTick.get(tick) || []) {
+    if (ev.payload !== undefined) frameField.value = JSON.stringify(ev.payload);
+    if (ev.grab !== undefined) {
+      global.window._submitManipStateByScope[SCOPE] = ev.grab
+        ? { drag: { kind: 'translate', targets: [] } } : null;
+    }
+    if (ev.follow !== undefined) flags.follow = ev.follow;
+    if (ev.optimise !== undefined) flags.optimise = ev.optimise;
+    if (ev.pace !== undefined) play.pace = ev.pace;
+  }
+  const cb = pending;
+  pending = null;
+  if (cb) cb(now);
+}
+
+process.stdout.write(JSON.stringify({
+  drawn, pushes, notes,
+  play: { seen: play.seen, run: play.run, shown: play.shown,
+          queue: play.queue.length, pace: play.pace,
+          stopped: play.stopped || 0 },
+}));
+"""
+
+
+class _Window:
+    """What ``_push_frames`` sends: a window starting where the last began.
+
+    Every frame therefore goes out in two consecutive writes, which is the
+    insurance against a read the page was too busy to make.
+    """
+
+    def __init__(self, run, offset=0):
+        self.run = run
+        self.offset = offset
+        self.start = 0
+        self.end = 0
+
+    def push(self, walked, final=False):
+        start = self.start
+        self.start = self.end
+        self.end = walked
+        out = {'run': self.run, 'from': start,
+               'frames': [[self.offset + i, 0, 0] for i in range(start, walked)]}
+        if final:
+            out['final'] = 1
+        return out
+
+
+def _drive(tmp_path, program, events, ticks=200, cap=None):
+    """Turn the clock by hand and report what the player drew."""
+    import json
+    import re
+    import subprocess
+
+    if cap is not None:
+        program = program.replace('100000', str(cap))
+    scope = re.search(r'var scope="([^"]+)"', program).group(1)
+    player = tmp_path / 'player.js'
+    player.write_text(program, encoding='utf-8')
+    page = tmp_path / 'page.js'
+    page.write_text(_PAGE_JS, encoding='utf-8')
+    spec = tmp_path / 'spec.json'
+    spec.write_text(json.dumps(
+        {'scope': scope, 'ticks': ticks, 'events': events}), encoding='utf-8')
+    done = subprocess.run(
+        ['node', str(page), str(player), str(spec)],
+        capture_output=True, text=True, timeout=120)
+    assert not done.returncode, done.stderr
+    return json.loads(done.stdout)
+
+
+def _reached(drawn):
+    """The frames the structure actually arrived at.
+
+    The player interpolates between two frames to make the motion continuous,
+    so most of what it draws is a position between two computed geometries.
+    Only the whole numbers are frames of the trajectory.
+    """
+    return [v for v in drawn if float(v).is_integer()]
+
+
+def _never_goes_back(drawn):
+    """No frame is drawn after a later one has been: no jump back, no replay."""
+    return all(b >= a for a, b in zip(drawn, drawn[1:]))
+
+
+@pytest.fixture
+def player_program(tmp_path):
+    """The player as one script, ready to run.
+
+    ``player_js`` starts inside the function for the sake of the tests that
+    read it as text; this is the whole part, which is what node needs.
+    """
+    pytest.importorskip("ipywidgets")
+    from delfin.dashboard import tab_submit
+
+    for name in ("calc", "archive", "office"):
+        (tmp_path / name).mkdir()
+    ctx = DashboardContext(
+        calc_dir=tmp_path / "calc",
+        archive_dir=tmp_path / "archive",
+        office_dir=tmp_path / "office",
+    )
+    ctx.run_js = lambda _script: None
+    tab_submit.create_tab(ctx)
+    part, = [one for one in ctx.init_js_parts if '__delfinGfnPlay' in one]
+    return part
+
+
+@_needs_node
+def test_a_run_is_walked_once_from_end_to_end(player_program, tmp_path):
+    """Forty frames arriving in four bursts, drawn at twelve a second.
+
+    Driven in node, the clock turned a frame at a time: the whole path comes
+    out in order, every frame once, and the last frame of the run is the one
+    the picture is left on -- which is the geometry the coordinate box holds,
+    so the next drag starts from what is on the screen.
+    """
+    events = [{'tick': 0, 'pace': 33}]
+    window = _Window(1)
+    for at, walked in ((6, 10), (12, 20), (18, 30), (24, 40)):
+        events.append({'tick': at, 'payload': window.push(walked)})
+    events.append({'tick': 30, 'payload': window.push(40, final=True)})
+
+    got = _drive(tmp_path, player_program, events)
+    assert _reached(got['drawn']) == list(range(40))
+
+
+@_needs_node
+def test_a_stop_does_not_walk_the_tail_of_the_run_it_stopped(
+        player_program, tmp_path):
+    """Stop, and the last thing the page hears from that run is the halt.
+
+    A worker is told to stop between two xtb rounds, so it has frames computed
+    and not yet written when it hears -- and it writes them.  The halt used to
+    set the count of frames already seen from the halt payload, which carries
+    none, so that late write looked like a run beginning: its window was taken
+    up from the front and walked out over a picture that had already passed
+    it.
+
+    Driven in node with the picture caught up to frame 69 at the moment of the
+    Stop, the last write in flight covering frames 56 to 69::
+
+        before  ... 66, 67, 68, 69, 69, 56, 57, 58, ... 68, 69
+        after   ... 66, 67, 68, 69
+
+    -- the jump back to 56 and the tail of the trajectory a second time, which
+    is what "es springt zurueck und nochmal Trajektorie" was.
+    """
+    events = [{'tick': 0, 'pace': 17}]
+    window = _Window(1)
+    for at, walked in ((4, 20), (30, 40), (55, 56), (75, 70)):
+        events.append({'tick': at, 'payload': window.push(walked)})
+    events += [
+        {'tick': 95, 'payload': {'run': 1, 'halt': 1, 'frames': []}},
+        {'tick': 100, 'payload': window.push(70, final=True)},
+    ]
+
+    got = _drive(tmp_path, player_program, events)
+    reached = _reached(got['drawn'])
+    assert _never_goes_back(got['drawn']), reached
+    assert max(reached) == 69
+    # Every frame once: the tail is not walked a second time.
+    assert sorted(set(reached)) == sorted(set(range(70)) & set(reached))
+    assert reached.count(69) == 1
+    assert got['play']['stopped'] == 1
+
+
+@_needs_node
+def test_a_stop_with_the_picture_behind_stays_where_it_stopped(
+        player_program, tmp_path):
+    """The same Stop, with the pace set below the rate the frames arrive at.
+
+    Where the picture has got to is where the user is, so a Stop keeps that
+    frame and not the ones xtb had run on to.  Measured, stopping with the
+    picture at frame 19 of 70::
+
+        before  ... 17, 18, 19, 19, 56, 57, ... 69
+        after   ... 17, 18, 19
+
+    The forward jump is the same fault as the backward one: the count of what
+    had been seen was thrown away, so a window from the middle of the run
+    looked new.
+    """
+    events = [{'tick': 0, 'pace': 33}]
+    window = _Window(1)
+    for at, walked in ((4, 20), (8, 40), (12, 56), (16, 70)):
+        events.append({'tick': at, 'payload': window.push(walked)})
+    events += [
+        {'tick': 44, 'payload': {'run': 1, 'halt': 1, 'frames': []}},
+        {'tick': 50, 'payload': window.push(70, final=True)},
+    ]
+
+    got = _drive(tmp_path, player_program, events)
+    reached = _reached(got['drawn'])
+    assert _never_goes_back(got['drawn']), reached
+    assert max(reached) == 19, reached
+
+
+@_needs_node
+def test_a_new_run_lands_the_old_one_and_then_only_goes_forward(
+        player_program, tmp_path):
+    """A second run starting while the first is still queued.
+
+    The run that is ending is landed on its last frame first -- dropped where
+    the picture had got to, the viewer and the kernel hold different
+    geometries and the next drag hands back one that is behind.  After that
+    nothing of the old run may be drawn again.
+
+    The two runs are given frame numbers a hundred apart here, so a single
+    reading of the trace answers both questions: nothing goes backwards, and
+    the old run's last frame is drawn before the new run's first.
+    """
+    events = [{'tick': 0, 'pace': 100}]
+    first = _Window(1)
+    for at, walked in ((6, 10), (12, 20), (18, 30)):
+        events.append({'tick': at, 'payload': first.push(walked)})
+    second = _Window(2, offset=100)
+    for at, walked in ((30, 8), (36, 16)):
+        events.append({'tick': at, 'payload': second.push(walked)})
+
+    got = _drive(tmp_path, player_program, events, ticks=260)
+    reached = _reached(got['drawn'])
+    assert _never_goes_back(got['drawn']), reached
+    assert 29 in reached, "the run that ended was not landed on its last frame"
+    assert reached[-1] == 115, reached
+
+
+@_needs_node
+def test_a_hand_on_the_structure_is_not_painted_over_by_the_run_it_ended(
+        player_program, tmp_path):
+    """Taking hold of an atom abandons the run under it, frames and all.
+
+    The kernel says so -- a run number the page has never seen, carrying
+    nothing, marked abandoned -- and it says it while the mouse is still down.
+    Two things went wrong there.  The player stopped reading the moment a hand
+    landed unless Relax was on, so it never heard; and the write the worker
+    still had in hand arrived afterwards under the *old* run number, which
+    the player read as a run beginning.
+
+    Driven in node, a hand landing at frame 2 of a sixty-frame relaxation::
+
+        before  0, 1, 2, 60, 61, 62, ... 69
+        after   0, 1, 2
+
+    Sixty-seven frames of a relaxation of a structure that no longer existed,
+    walked across the user's drag.
+    """
+    events = [{'tick': 0, 'pace': 100}]
+    window = _Window(1)
+    for at, walked in ((6, 20), (12, 40), (18, 60)):
+        events.append({'tick': at, 'payload': window.push(walked)})
+    events += [
+        {'tick': 24, 'grab': True},
+        {'tick': 25, 'payload': {'run': 2, 'frames': [], 'abandoned': 1}},
+        # the worker's last write, arriving after it was abandoned
+        {'tick': 28, 'payload': window.push(70, final=True)},
+        {'tick': 60, 'grab': False},
+    ]
+
+    got = _drive(tmp_path, player_program, events)
+    reached = _reached(got['drawn'])
+    assert _never_goes_back(got['drawn']), reached
+    assert max(reached) <= 2, reached
+    assert got['play']['run'] == 2
+
+
+@_needs_node
+def test_the_queue_ceiling_drops_the_oldest_and_counts_what_it_dropped(
+        player_program, tmp_path):
+    """A pace far below the rate frames arrive at, with the ceiling lowered.
+
+    The ceiling is a hundred thousand frames, far above any real path, so it
+    is lowered to ten here to reach it at all.  Two things have to hold: what
+    goes is the *oldest*, because the newest frame is where the calculation
+    actually is; and the count of where the picture stands moves on by as many
+    as were dropped, because that count is what a grab hands the kernel as the
+    frame to keep.
+
+    It did not.  Measured over eighty frames at one a second, the picture
+    stood at frame 70 and reported frame 1 -- so taking hold of an atom would
+    have cut the run 69 frames behind what was on the screen.
+    """
+    events = [{'tick': 0, 'pace': 1000}]
+    window = _Window(1)
+    for at, walked in ((6, 20), (12, 40), (18, 60), (24, 80)):
+        events.append({'tick': at, 'payload': window.push(walked)})
+
+    got = _drive(tmp_path, player_program, events, ticks=120, cap=10)
+    reached = _reached(got['drawn'])
+    assert _never_goes_back(got['drawn']), reached
+    assert max(reached) == 70, reached
+    assert got['play']['shown'] == max(reached), (
+        "the frame the picture stands on is not the one it would report")
+
+
+@_needs_node
+def test_the_top_of_the_slider_takes_everything_that_has_arrived(
+        player_program, tmp_path):
+    """Speed 60 has to mean the fastest the machine can go, and it did not.
+
+    The pace reached the page through run_js alone, and run_js clears its
+    output before it displays -- so the one write that carries it races the
+    start-up script that builds the player, and a page that lost that race ran
+    at the built-in 55 ms a frame whatever the slider said.  It rides on the
+    frames now, and the player is built holding the slider's setting to begin
+    with.
+
+    Measured over one second of clock with six hundred frames arriving in it
+    -- ten every animation frame, which is a GFN-FF relaxation of something
+    small:
+
+    =========================================  ========  =======  ======
+    the pace                                   consumed  drawn to  queued
+    =========================================  ========  =======  ======
+    never arrived (the built-in pacing)             600      121     478
+    arrived                                         600      599       0
+    =========================================  ========  =======  ======
+
+    112 frames a second against 554: the picture was 478 frames behind the
+    calculation after one second and losing ground.
+    """
+    events = []
+    window = _Window(1)
+    made = 0
+    for at in range(4, 64):
+        made += 10
+        payload = window.push(made)
+        payload['pace'] = 0             # the top of the slider, on the payload
+        events.append({'tick': at, 'payload': payload})
+
+    got = _drive(tmp_path, player_program, events, ticks=66)
+    reached = _reached(got['drawn'])
+    assert _never_goes_back(got['drawn'])
+    assert got['play']['seen'] == 600
+    assert got['play']['queue'] == 0, "the queue is not being drained"
+    assert max(reached) == 599, "the picture is behind the calculation"
+
+
+@_needs_node
+def test_the_player_starts_at_the_pace_the_slider_is_already_set_to(
+        player_program, tmp_path):
+    """Nothing has been sent yet, and the setting still applies.
+
+    The player used to be built with no pace at all and wait to be told, so
+    the first run after a page load was drawn at the built-in 55 ms a frame
+    however the slider stood.
+    """
+    got = _drive(tmp_path, player_program, [], ticks=2)
+    assert got['play']['pace'] == 83, "the slider's default is twelve a second"
+
+
+@_needs_node
+def test_a_write_from_a_run_the_page_has_left_is_refused(
+        player_program, tmp_path):
+    """Run numbers only go up, so anything older is stale by definition.
+
+    Three writers keep the run number they started with and answer long after
+    -- a hand being followed, the settle after a release, and the scan.  A
+    late write naming a run the page has already left used to read as a run
+    *beginning*: the player reset and walked the abandoned path over whatever
+    had replaced it.
+    """
+    events = [{'tick': 0, 'pace': 33}]
+    second = _Window(2, offset=100)
+    events.append({'tick': 4, 'payload': second.push(6)})
+    stale = _Window(1)
+    events.append({'tick': 20, 'payload': stale.push(40)})
+
+    got = _drive(tmp_path, player_program, events, ticks=120)
+    reached = _reached(got['drawn'])
+    assert _never_goes_back(got['drawn']), reached
+    assert min(reached) >= 100, reached
+    assert got['play']['run'] == 2
+
+
+def test_every_frame_writer_asks_whether_its_run_is_still_the_one():
+    """Four writers, and three of them never asked.
+
+    A hand being followed, the settle after a release and the scan each keep
+    the run number they were given when they started, and each goes on
+    answering for as long as xtb takes -- which is long enough for the run to
+    have been replaced by another, or abandoned outright.  Only the
+    optimisation checked.
+    """
+    source = SUBMIT_SOURCE
+    for name in ("_gfn_follow_step", "_gfn_settle_now", "on_submit_scan_run("):
+        body = source.split(f"def {name}")[1].split("\n    def ")[0]
+        assert "_frame_run_is_current(" in body, f"{name} writes without asking"
+    optimise = source.split(
+        "def on_submit_optimize(change=None, every_frame=False)")[1]
+    optimise = optimise.split("\n    def ")[0]
+    assert "_frame_run_is_current(run_id)" in optimise
+
+
+def test_stopping_moves_the_run_on_but_converging_does_not():
+    """A Stop has to refuse the writes the stopped run still has in hand.
+
+    Moving the run number on is what refuses them.  It must happen only for a
+    real Stop, though: a run that converged sets its own token to None and
+    then lifts the switch, and moving the number there would refuse that run's
+    *final* write -- the one frame that has to land, because it is the
+    geometry the coordinate box ends up holding.
+    """
+    source = SUBMIT_SOURCE
+    handler = source.split(
+        "def on_submit_optimize(change=None, every_frame=False)")[1]
+    handler = handler.split("\n    def ")[0]
+    stop = handler.split("if not button.value:")[1].split("return")[0]
+    assert "running = state.get('optimize_run')" in stop
+    assert "if running is not None:" in stop
+    assert "state['gfn_run'] = int(state.get('gfn_run', 0)) + 1" in stop
+
+
+def test_a_stopped_run_never_writes_what_it_had_in_hand(editor, monkeypatch):
+    """Driven through the kernel, not read off it.
+
+    xtb is asked to stop between rounds, so a worker hears about a Stop with
+    frames already computed and not yet written.  It writes them.  Every write
+    that lands after the halt used to be taken up by the player, which is
+    where the replay came from; the run number moves on at the Stop now and
+    the write is refused before it leaves the kernel.
+    """
+    import json
+    import time as _time
+
+    from delfin.dashboard import tab_submit
+
+    monkeypatch.setattr(tab_submit._gfn, "find_binary", lambda _m=None: "/x/xtb")
+    editor["submit_ff_dd"].value = "gfn2"
+    path = [[float(i)] * 9 for i in range(70)]
+    ran: list[str] = []
+
+    def fake(xyz, method, **kw):
+        on = kw.get("on_frames")
+        stop = kw.get("should_stop") or (lambda: False)
+        for cut in (20, 40, 56):
+            if on:
+                on(path[:cut])
+        ran.append("walking")
+        deadline = _time.time() + 30
+        while _time.time() < deadline and not stop():
+            _time.sleep(0.01)
+        # Told to stop, with the rest of the path already computed.
+        if on:
+            on(path)
+            on(path)
+        ran.append("done")
+        return {"ok": True, "xyz": xyz, "energy": -1.0, "converged": False,
+                "frames": path, "status": "stopped"}
+
+    monkeypatch.setattr(tab_submit._gfn, "optimize_with_gfn", fake)
+    seen: list[str] = []
+    editor["submit_gfn_frame"].observe(
+        lambda c: seen.append(c["new"]), names="value")
+
+    editor["submit_optimize_btn"].value = True
+    deadline = _time.time() + 30
+    while _time.time() < deadline and "walking" not in ran:
+        _time.sleep(0.01)
+    assert "walking" in ran, editor["mol_status"].value
+
+    editor["submit_optimize_btn"].value = False          # Stop
+    deadline = _time.time() + 40
+    while _time.time() < deadline and "done" not in ran:
+        _time.sleep(0.01)
+    assert "done" in ran
+    _time.sleep(0.3)                                     # anything still queued
+
+    payloads = [json.loads(text) for text in seen if text]
+    halts = [i for i, one in enumerate(payloads) if one.get("halt")]
+    assert halts, f"no halt was written: {payloads}"
+    stopped_run = payloads[halts[0]].get("run")
+    late = [one for one in payloads[halts[0] + 1:]
+            if one.get("frames") and one.get("run") == stopped_run]
+    assert not late, f"the stopped run wrote {len(late)} more times"
+
+
+def test_the_pace_rides_with_the_frames_as_well_as_on_its_own():
+    """run_js clears its output before it displays, so the write that carries
+    the pace races the start-up script that builds the player -- and a page
+    that lost that race played at the built-in 55 ms a frame however the
+    slider stood.  The frames carry it too, and they cannot be lost."""
+    source = SUBMIT_SOURCE
+    assert "def _play_pace():" in source
+    assert "json.dumps(dict(fields, run=run, pace=_play_pace()))" in source
+    assert "if(data&&data.pace!==undefined&&data.pace!==null)" in source
+    # and the player is built already holding it
+    assert "pace:' + json.dumps(_play_pace())" in source
