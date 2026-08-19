@@ -2118,3 +2118,49 @@ def test_the_path_is_offered_once_there_is_something_to_walk_between():
     # And how near it came, because the finder always reports a barrier and
     # only this says whether it is about the reaction that was asked for.
     assert 'RMSD of the structure ' in source
+
+
+@_needs_xtb
+def test_whether_an_estimated_transition_state_is_one():
+    """"Estimated transition state" is a phrase; one imaginary frequency is a
+    fact.
+
+    A path finder returns an estimate whatever happened, and what makes a
+    structure a transition state is one mode going the wrong way and no
+    others.  That is a Hessian, and a Hessian is 0.6 s on sixteen atoms --
+    nothing beside not knowing.  Measured on what the path finder handed back
+    for the Diels-Alder: a single imaginary frequency at -131.4 cm-1, so it
+    really is a first-order saddle at this level of theory and worth handing
+    to ORCA's OptTS.  An ethane at rest has none.
+    """
+    rest = gfn.optimize_with_gfn(_ETHANE, "gfn2", max_steps=300, timeout=300)
+    assert rest.get("ok"), rest.get("status")
+    settled = gfn.optimize_with_gfn(rest["xyz"], "gfn2", timeout=300,
+                                    optimise=False, free_energy=True)
+    assert settled.get("imaginary") is not None
+    assert settled["imaginary"]["count"] == 0, settled["imaginary"]
+
+    # Not asked for, not counted -- it is a Hessian either way.
+    plain = gfn.optimize_with_gfn(rest["xyz"], "gfn2", timeout=300,
+                                  optimise=False)
+    assert plain.get("imaginary") is None
+
+    # And the same mode is not two of them: xtb prints its list more than
+    # once, and counted twice a saddle point looks like a second-order one.
+    modes = settled["imaginary"]["modes"]
+    assert len(modes) == len(set(modes)), modes
+
+
+def test_the_path_says_whether_what_it_found_is_a_transition_state():
+    """And what to do about it either way."""
+    source = EDITOR_SOURCE
+    assert "state['path_shape'] = shape.get('imaginary')" in source
+    assert "shape.get('count') == 1" in source
+    assert 'It is a transition state: one mode goes the wrong ' in source
+    # A minimum is not one, and neither is a second-order saddle -- both are
+    # said rather than left for the user to notice.
+    assert "elif shape.get('count') == 0:" in source
+    assert 'It is a minimum, not a transition state' in source
+    assert 'a saddle ' in source
+    # And where it goes next, since xtb has no saddle optimiser at all.
+    assert 'Refine it with OPTTS in the ORCA Builder.' in source
