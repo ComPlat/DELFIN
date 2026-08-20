@@ -2794,15 +2794,19 @@ def test_the_polyhedron_is_offered_where_its_restraints_can_act(editor):
 
 
 def test_the_saddle_search_is_offered_where_orca_can_drive_the_method(editor):
-    """It is ORCA's optimiser on xtb's gradients, and ORCA is told which
-    method by name -- so the ones it can run are the ones ORCA has a keyword
-    for.
+    """It is ORCA's optimiser on somebody's gradients, and the button is
+    offered wherever ORCA can be told how to ask for them.
 
-    That is not the whole GFN family: g-xTB is a build of its own and ORCA
-    cannot drive it. Pressed under any of the other six, the button answered
-    "a saddle search here runs on xtb through ORCA, so choose GFN2, GFN1 or
-    GFN-FF" -- six of the eight methods offering a button that could only
-    refuse.
+    That was once the ORCA keywords alone -- XTB1, XTB2, XTBFF -- and under
+    the other five methods the button answered "a saddle search here runs on
+    xtb through ORCA, so choose GFN2, GFN1 or GFN-FF", which is a button that
+    promises what it cannot do.
+
+    g-xTB has no keyword and never will: it is a build of its own, and an
+    ordinary xtb accepts --gxtb and silently runs GFN2. It is driven through
+    ExtOpt instead, ORCA's own interface for a program it does not know, and
+    the button is offered under it too. Under UFF, MMFF94 and the three MOPAC
+    methods there is still nothing to drive, and the button is not there.
 
     Read from the table the run itself reads, so the button and the refusal
     cannot drift apart.
@@ -2814,9 +2818,9 @@ def test_the_saddle_search_is_offered_where_orca_can_drive_the_method(editor):
         part.submit_ff_dd.value = method
         assert _visible(part.submit_saddle_btn) is (
             method in _saddle.SADDLE_METHODS), method
-    # Which, for the methods this box offers, is these two and no others.
+    # Which, for the methods this box offers, is these three and no others.
     assert [m for m in _METHODS if m in _saddle.SADDLE_METHODS] == [
-        'gfnff', 'gfn2']
+        'gfnff', 'gfn2', 'gxtb']
 
 
 def test_path_from_here_no_longer_promises_a_path_nothing_can_walk(editor):

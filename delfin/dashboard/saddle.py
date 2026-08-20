@@ -5,6 +5,19 @@ xtb has no saddle-point optimiser -- 6.7.1 offers ``--hess``, ``--ohess``,
 ORCA has one, and ORCA can be told to take its gradients from xtb.  That pair
 is the whole of this file: ORCA's optimiser, xtb's speed.
 
+Three of the four methods here are ORCA's own xtb, named by keyword.  g-xTB is
+not: it is a build of its own that no ORCA keyword names, and an ordinary xtb
+accepts ``--gxtb`` and silently runs GFN2, so there is nothing to point an
+existing keyword at.  It is driven through ``! ExtOpt`` instead -- the
+interface ORCA publishes for programs it does not know -- and
+:mod:`delfin.dashboard.gxtb_engrad` is what answers it.  Measured on the
+sixteen-atom Diels-Alder saddle, that is 101 s, against 97 s for the same
+optimiser on GFN2 taken on the same box within the hour -- the box was carrying
+a load average of 480 on 384 cores at the time, which is why the GFN2 number is
+not the 7 s quoted above; the two are worth comparing with each other and not
+with anything else.  A press at that size and a job above it, which is what
+:data:`SECONDS_ALLOWED` is for.
+
 Measured on the transition state the path finder estimated for a Diels-Alder,
 sixteen atoms: ``! XTB2 OPTTS`` converged in 7 s.  The estimate came in with
 its two forming bonds at 2.524 and 2.520 A and one imaginary mode at
@@ -81,7 +94,66 @@ SADDLE_METHODS = {
     'gfn2': 'XTB2',
     'gfn1': 'XTB1',
     'gfnff': 'XTBFF',
+    # And g-xTB, which ORCA has no keyword for and can still be driven.
+    #
+    # ORCA runs the three above through its own bundled otool_xtb, an xtb
+    # 6.7.1 from 2024; g-xTB is a statically linked xtb 6.7.1 of its own from
+    # 2026, and an ordinary xtb accepts --gxtb and silently runs GFN2.  So
+    # there is no keyword to add and there never will be one.  What there is
+    # is ExtOpt, the interface ORCA publishes for programs it does not know:
+    # it writes a geometry and a request, calls whatever EXTOPTEXE names, and
+    # reads back an energy and a gradient.  See
+    # :mod:`delfin.dashboard.gxtb_engrad`, which is what answers it.
+    #
+    # It matters because g-xTB approximates wB97M-V/def2-TZVPPD and is the
+    # most accurate method the editor offers -- the one somebody chooses when
+    # the transition state has to be worth quoting -- and until this it was
+    # the one method with no route to a saddle at all.
+    'gxtb': 'ExtOpt',
 }
+
+#: Which of those are ORCA's own xtb rather than a program of ours.
+_DRIVEN_BY_ORCAS_XTB = ('gfn2', 'gfn1', 'gfnff')
+
+#: How often the optimiser computes the Hessian again rather than updating it.
+#:
+#: ORCA's own ``Recalc_Hess``, and five is what this file has always asked
+#: for.  It is not a nicety, and the price of finding out was measured here on
+#: the sixteen-atom Diels-Alder estimate under g-xTB, where one numerical
+#: Hessian is forty-odd separate processes and dropping the recalculation is
+#: tempting: with one Hessian and Bofill updates after it, the optimiser
+#: walked the two
+#: forming bonds from 2.524 A out to 3.03 and 3.05, ran to the sixty-cycle
+#: bound without converging, and left a structure with no imaginary mode at
+#: all -- it had gone back down to the van-der-Waals complex.  Which is the
+#: same thing :mod:`delfin.dashboard.climb` measured about a carried Hessian
+#: on twenty-one drags, and what Baker and Chan named in 1996: an update
+#: cannot be relied on to preserve the eigenvalue structure a transition state
+#: is defined by.
+RECALC_HESS = 5
+
+#: How long a press is given, by method, in seconds.
+#:
+#: Three minutes for the methods ORCA drives itself, which is what this file
+#: has always allowed and what the login node it runs on is owed.
+#:
+#: g-xTB gets longer because every gradient is a separate process and every
+#: numerical Hessian is forty-odd of them with an ORCA start-up each: measured
+#: on the sixteen-atom Diels-Alder, ORCA's OptTS converged in 268 s from the
+#: path finder's estimate over sixteen cycles and four Hessians, and in 101 s
+#: from the saddle GFN2 reaches.  Three minutes would stop the first of those
+#: a cycle or two from the answer, which is the worst of both -- the whole
+#: cost and none of the result.  Ten minutes is what it needs at that size;
+#: above it the run is a job, and the timeout says so and keeps what it had
+#: reached.
+SECONDS_ALLOWED: Dict[str, float] = {'gxtb': 600.0}
+DEFAULT_SECONDS = 180.0
+
+
+def seconds_for(method: Any) -> float:
+    """What a press of this method is allowed, before it is a job instead."""
+    return SECONDS_ALLOWED.get(str(method or '').lower(), DEFAULT_SECONDS)
+
 
 #: How often the trajectory on disk is looked at while the climb runs.
 #:
@@ -449,12 +521,31 @@ def optimise_to_saddle(xyz_text: str, method: str = 'gfn2', *,
     5.5.  A run that wants more than that is a job, and saying so is better
     than taking the node.
     """
-    keyword = SADDLE_METHODS.get(str(method or '').lower())
+    key = str(method or '').lower()
+    keyword = SADDLE_METHODS.get(key)
+    label = (_gfn.GFN_METHODS.get(key) or {}).get('label') or str(method)
     if keyword is None:
         return {'ok': False,
                 'status': (f'A saddle search here runs on xtb through ORCA, '
                            f'and {method} is not one of '
                            f'{", ".join(sorted(SADDLE_METHODS))}.')}
+    own_binary = None
+    if key not in _DRIVEN_BY_ORCAS_XTB:
+        own_binary = _gfn.find_binary(key)
+        if own_binary is None:
+            return {'ok': False,
+                    'status': (f'A saddle search on {label} is ORCA driving a '
+                               'program of its own, and that program was not '
+                               'found. Install it from Settings.')}
+        if solvent:
+            # Said rather than dropped.  Handed ALPB, this build of g-xTB
+            # stops; run without it, the answer would be a gas-phase saddle
+            # reported under a solvent nobody removed.
+            return {'ok': False,
+                    'status': (f'{label} has no implicit solvation in this '
+                               'build, so a saddle in a solvent is not '
+                               'something it can look for. Search in the gas '
+                               'phase, or choose GFN2-xTB.')}
     binary = find_orca()
     if binary is None:
         return {'ok': False,
@@ -473,14 +564,44 @@ def optimise_to_saddle(xyz_text: str, method: str = 'gfn2', *,
         (folder / 'in.xyz').write_text(
             f'{len(body)}\nfrom the DELFIN viewer\n' + '\n'.join(body) + '\n',
             encoding='utf-8')
-        wet = f' ALPB({solvent})' if solvent else ''
+        # Whether ORCA is driving one of its own or one of ours.  For g-xTB it
+        # is ours, and the hook that answers ORCA's requests is written into
+        # this run's own directory so that two runs at once cannot share one.
+        own_program = None
+        if key not in _DRIVEN_BY_ORCAS_XTB:
+            from . import gxtb_engrad
+
+            own_program = gxtb_engrad.write_hook(folder)
+        wet = f' ALPB({solvent})' if solvent and own_program is None else ''
+        # A numerical Hessian, when the gradient is not ORCA's own to
+        # differentiate.  ORCA's default for a method it drives itself is an
+        # analytic one, and asked for that with ExtOpt it stops in PROPINT --
+        # "ERROR (SHARK): Failed to read input file" -- because there is no
+        # basis set for it to work with.  It is ORCA's own remedy: its message
+        # elsewhere reads "for optimizations: %geom Calc_Hess true; NumHess
+        # true end".
+        numerical = '  NumHess true\n' if own_program is not None else ''
+        # And ORCA runs on one process when it is not doing the arithmetic.
+        #
+        # Asked for eight, ORCA runs its numerical Hessian as an eight-process
+        # job, and through ExtOpt that is where it comes apart: driven twice
+        # here it failed twice and differently -- once with two of forty-six
+        # displacements missing and "the Numerical calculation ISN'T
+        # COMPLETE", once with "ERROR (ORCA_NUMCALC): Cannot open
+        # in.hostnames" -- and both ended the whole search in nine seconds
+        # having produced nothing.  There is nothing for those processes to do
+        # anyway: with ExtOpt every gradient is somebody else's program, and
+        # the cores are better handed to it, which is what
+        # DELFIN_GXTB_CORES below does.
+        ranks = 1 if own_program is not None else _share(cores)
         (folder / 'in.inp').write_text(
             f'! {keyword} OPTTS{wet}\n'
-            f'%pal\n  nprocs {_share(cores)}\nend\n'
+            f'%pal\n  nprocs {ranks}\nend\n'
             '%maxcore 2000\n'
             '%geom\n'
             '  Calc_Hess true\n'
-            '  Recalc_Hess 5\n'
+            + numerical
+            + f'  Recalc_Hess {RECALC_HESS}\n'
             f'  MaxIter {max(5, int(max_steps))}\n'
             'end\n'
             f'* xyzfile {int(charge)} {max(0, int(uhf)) + 1} in.xyz\n',
@@ -491,6 +612,23 @@ def optimise_to_saddle(xyz_text: str, method: str = 'gfn2', *,
         # xtb interface, and stops with a message about neither.
         environment['PATH'] = (str(Path(binary).parent) + os.pathsep
                                + environment.get('PATH', ''))
+        if own_program is not None:
+            # Where ORCA is to send its energy-and-gradient requests, and how
+            # many threads whatever answers them may take.  The count is said
+            # here rather than left to what ORCA writes into its request,
+            # because a thread count is only read when the runtime starts:
+            # measured on this box, an unpinned sixteen-atom gradient costs
+            # 1.66 s against 6 ms on four threads, and setting the variable
+            # afterwards changes nothing at all.
+            environment['EXTOPTEXE'] = str(own_program)
+            environment['DELFIN_GXTB_CORES'] = str(_share(cores))
+            # And which binary, so the hook does not have to look: it is
+            # started once per gradient and forty-odd times per Hessian, and
+            # importing the resolver to find out costs 80 ms of that each
+            # time -- measured, a bare interpreter starts in 37 ms and one
+            # that imports gfn_optimize in 119.  This process asked the same
+            # resolver a moment ago, before ORCA was started at all.
+            environment['DELFIN_GXTB_BINARY'] = str(own_binary)
         trail = folder / 'in_trj.xyz'
         log = folder / 'out.log'
         halted = False
@@ -586,7 +724,10 @@ def optimise_to_saddle(xyz_text: str, method: str = 'gfn2', *,
         return dict(rest, ok=True, halted=False,
                     imaginary=shape, confirmed=confirmed,
                     verdict=verdict(shape),
-                    status=(f'ORCA reached a stationary point on {keyword} in '
+                    # The method, not the keyword.  ExtOpt is how ORCA was
+                    # told to ask; g-xTB is what answered, and that is what
+                    # the number is about.
+                    status=(f'ORCA reached a stationary point on {label} in '
                             f'{seconds:.1f} s.'))
     finally:
         shutil.rmtree(folder, ignore_errors=True)

@@ -65,9 +65,14 @@ def test_a_saddle_search_here_is_xtb_through_orca():
     xtb has no saddle optimiser at all, and ORCA on a real basis set is a job
     rather than a press.  ORCA driving xtb is the pair that is both: measured
     on this estimate, sixteen atoms, under seven seconds.
+
+    Three of the four are ORCA's own xtb, asked for by keyword.  g-xTB is not
+    and cannot be -- it is a build of its own, and no ORCA keyword names it --
+    so it is driven through ExtOpt, the interface ORCA publishes for programs
+    it does not know; see :mod:`test_the_saddle_reaches_g_xtb`.
     """
     assert saddle.SADDLE_METHODS == {'gfn2': 'XTB2', 'gfn1': 'XTB1',
-                                     'gfnff': 'XTBFF'}
+                                     'gfnff': 'XTBFF', 'gxtb': 'ExtOpt'}
     # Anything with a basis set is refused here and named as a job.
     refused = saddle.optimise_to_saddle(_ESTIMATE, 'PBE0')
     assert not refused['ok']
@@ -169,13 +174,22 @@ def test_it_runs_where_the_dashboard_runs_and_is_kept_small():
     assert 'cores: int = 8,' in source
     assert 'timeout: Optional[float] = 180.0' in source
     assert "'%maxcore 2000\\n'" in source
-    assert 'nprocs {_share(cores)}' in source
+    # Eight processes where ORCA is doing the arithmetic; one where it is not,
+    # because through ExtOpt the gradient belongs to another program and
+    # ORCA's own parallel numerical Hessian came apart twice on it.
+    assert 'ranks = 1 if own_program is not None else _share(cores)' in source
+    assert 'nprocs {ranks}' in source
     assert 'min(want, os.cpu_count() or 1)' in source
     assert 'submit it as a job for more' in source
     # A saddle search needs a Hessian to know which mode to climb, and
-    # recalculates it because the mode changes character as it moves.
+    # recalculates it because the mode changes character as it moves.  The
+    # cadence is a named constant now rather than a literal in the input,
+    # because under g-xTB one Hessian is forty-odd separate processes and
+    # dropping the recalculation is a tempting saving -- measured, it walks
+    # the Diels-Alder estimate back down to the van-der-Waals complex.
     assert "'  Calc_Hess true\\n'" in source
-    assert "'  Recalc_Hess 5\\n'" in source
+    assert 'RECALC_HESS = 5' in source
+    assert "f'  Recalc_Hess {RECALC_HESS}\\n'" in source
 
 
 def test_the_button_works_on_whatever_is_in_the_box():
