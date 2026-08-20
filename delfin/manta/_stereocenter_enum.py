@@ -61,6 +61,31 @@ _SIGN_EPS = 1e-6
 # specific.  (Chalcogen / other centres are a separate axis needing their own eye + validation.)
 _STEREO_DONOR_ELEMENTS = frozenset({"N", "P", "As", "Sb", "Bi"})
 
+# ===== CHALKOGENE: DIE ZWEITE HAELFTE DERSELBEN ACHSE (20.08.2026) =====
+# Der Ausschluss oben sagt "Oxygen / chalcogen X-H stereocentres invert essentially
+# barrierlessly" und belegt ihn mit ZWEI Faellen: WIPHOW [OOOO] und JAJMUG [CC].  Das sind
+# SAUERSTOFF und KOHLENSTOFF.  **Schwefel und Selen wurden nie geprueft** -- sie sind per
+# Analogie unter "chalcogen" mitgefallen, und die Analogie ist chemisch schwach: die
+# Inversionsbarriere am KOORDINIERTEN Thioether liegt weit ueber der am Ether, weshalb
+# S-konfigurierte Komplexe als getrennte Diastereomere isolierbar sind.  Die Zeile oben
+# raeumt es selbst ein: "Chalcogen / other centres are a separate axis needing their own
+# eye + validation".
+#
+# 🔑 DAS AUGE FORDERT SIE BEREITS.  find_isomer_coverage._stereo_kind ist per Vorgabe
+# ELEMENTFREI (:759) -- es zaehlt jeden Donor als Zentrum und verlangt beide Faltungen.
+# Dort steht dazu: "on 38 of the 83 systems that carry a sign it demands a fold ... the
+# builder deliberately refuses to make.  Two instruments, never held against each other."
+# Gemessene Folge: Systeme mit solchem Zentrum realisieren das Naturisomer in 52 % der
+# Faelle gegen 90 % sonst.  Diese Achse schliesst die Haelfte des Streits, fuer die es
+# KEIN Gegenbeispiel gibt -- O und C bleiben ausgeschlossen.
+#
+# NENNER, vor dem Bau gemessen (harness/prochiral_zensus.py auf pool_full_10000):
+#   272 von 10000 Systemen = 2,72 % tragen >=1 unterscheidbares Chalkogen-Zentrum
+#   457 Zentren, davon 410 = 89,7 % mit hoechstens EINEM Arm im Chelatring
+#   (zum Vergleich: die schon abgedeckten Pnictogene sind nur zu 34,9 % so guenstig)
+# Eichung des Zensus: Pnictogene 3,42 % gegen den bekannten Zensus 3,03 %.
+_STEREO_CHALCOGEN_ELEMENTS = frozenset({"S", "Se"})
+
 
 # ---------------------------------------------------------------------------
 # Env gate + tunables (all default to the calibrated USEMOW-validated values)
@@ -165,7 +190,13 @@ def _center_plane_normal(pts: np.ndarray, c: dict):
     and D, so it exactly negates the triple product.  Returns None if the plane is degenerate."""
     D = pts[c["d"]]
     M = pts[c["m"]]
-    ref = (np.mean(pts[c["heavy"]], axis=0) if c["type"] == "XH" else pts[c["keyed"][0]])
+    # `plane_ref` waehlt die IN-EBENE-Referenz getrennt von `keyed`.  Gebraucht wird das nur
+    # vom Chalkogenzweig mit EINEM Chelatarm: dort muss die Ebene den CHELATARM enthalten,
+    # damit der Ring exakt stehenbleibt und nur der freie Arm kippt.  `keyed` bleibt davon
+    # unberuehrt, weil es die Vorzeichenkonvention des Auges traegt.  Fehlt der Schluessel,
+    # ist der Ausdruck buchstaeblich der alte -> byte-identisch.
+    ref = (np.mean(pts[c["heavy"]], axis=0) if c["type"] == "XH"
+           else pts[c.get("plane_ref", c["keyed"][0])])
     n = np.cross(M - D, ref - D)
     nn = float(np.linalg.norm(n))
     if nn < 1e-9:
@@ -202,12 +233,17 @@ def _find_centers(syms: List[str], pts: np.ndarray, nbrs: List[List[int]],
     # eines Zentralmetalls sind Donoren.
     _pnict_metalloid = (os.environ.get(
         "DELFIN_STEREOCENTER_PNICTOGEN_METALLOID", "0") == "1")
+    # Vorgabe 0 -> `_donor_elems` IST `_STEREO_DONOR_ELEMENTS`, der Chalkogenzweig unten ist
+    # unerreichbar, und der Lauf bleibt byte-identisch.
+    _chalc = (os.environ.get("DELFIN_STEREOCENTER_CHALCOGEN", "0") == "1")
+    _donor_elems = (_STEREO_DONOR_ELEMENTS | _STEREO_CHALCOGEN_ELEMENTS) if _chalc \
+        else _STEREO_DONOR_ELEMENTS
     for d in range(len(syms)):
         if d in metal_set and not (_pnict_metalloid
-                                   and syms[d] in _STEREO_DONOR_ELEMENTS):
+                                   and syms[d] in _donor_elems):
             continue
-        if syms[d] not in _STEREO_DONOR_ELEMENTS:
-            continue                                   # only pnictogen donors form a stable centre
+        if syms[d] not in _donor_elems:
+            continue                                   # nur stabile Donorzentren
         nb = nbrs[d]
         ms = [x for x in nb if x in metal_set]
         if not ms:
@@ -229,6 +265,40 @@ def _find_centers(syms: List[str], pts: np.ndarray, nbrs: List[List[int]],
             flip = sorted(subs[0] | subs[1] | subs[2])
             centers.append({"type": "XR", "d": d, "m": ms[0], "heavy": heavy,
                             "keyed": keyed, "flip": flip})
+        elif (_chalc and syms[d] in _STEREO_CHALCOGEN_ELEMENTS
+              and len(hs) == 0 and len(heavy) == 2
+              and len({_pkey(x) for x in heavy}) == 2):
+            # ===== CHALKOGEN: ZWEI ARME + METALL + FREIES ELEKTRONENPAAR =====
+            # Pyramidal wie ein Pnictogen, aber mit einem Arm weniger.  Die Inversion
+            # schiebt das freie Paar auf die andere Seite -- das Metall wechselt die
+            # Flaeche.  Drei Faelle, und nur der Chelatring entscheidet, nicht "im Ring":
+            chel = [x for x in heavy if _reaches_metal(nbrs, x, d, metal_set)]
+            if len(chel) == 2:
+                # BEIDE Arme fuehren zum Metall zurueck.  Dann ist die "Inversion" nichts
+                # anderes als die RINGFALTUNG des Chelats -- sie gehoert auf die
+                # Faltungsachse (DELFIN_STEREOCENTER_FAMILY_PARTITION), nicht hierher.
+                # Beides zu bauen waere doppelt gezaehlte Vollstaendigkeit.
+                # Gemessen: nur 47 von 457 Zentren, also 10,3 %.
+                continue
+            blocked = {d} | metal_set
+            subs = [_subtree(nbrs, x, blocked) for x in heavy]
+            if len(subs[0] | subs[1]) != sum(len(s) for s in subs):
+                continue                               # Arme haengen zusammen (Carbocyclus)
+            keyed = sorted(heavy, key=_pkey)           # Reihenfolge == die des Auges
+            if len(chel) == 1:
+                # EIN Arm im Chelat: der Ring bleibt STEHEN, gespiegelt wird nur der freie
+                # Arm an der Ebene durch M, D und den Chelatarm.  _center_plane_normal haelt
+                # M und D fest, also ist das eine echte Isometrie -- innere Ligandgeometrie
+                # unberuehrt, Preis +0,98 pp.  `plane_ref` waehlt die Ebene, `keyed` bleibt
+                # die Reihenfolge des Auges: wuerde man dafuer umsortieren, kippte das
+                # Vorzeichen im Kreuzprodukt und der Bau widerspraeche dem Fingerabdruck.
+                frei = [x for x in heavy if x not in chel][0]
+                centers.append({"type": "XR", "d": d, "m": ms[0], "heavy": heavy,
+                                "keyed": keyed, "plane_ref": chel[0],
+                                "flip": sorted(_subtree(nbrs, frei, blocked))})
+            else:
+                centers.append({"type": "XR", "d": d, "m": ms[0], "heavy": heavy,
+                                "keyed": keyed, "flip": sorted(subs[0] | subs[1])})
     centers.sort(key=lambda c: c["d"])
     return centers
 
