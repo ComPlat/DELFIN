@@ -4900,6 +4900,31 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                     }
                 }
             }
+            var redoKey = ((e.ctrlKey || e.metaKey)
+                && ((key === 'z' || key === 'Z') && e.shiftKey
+                    || key === 'y' || key === 'Y'));
+            if (redoKey) {
+                // Both spellings, because both are in use: Ctrl-Shift-Z is
+                // what the rest of this application's world uses and Ctrl-Y is
+                // what Windows users reach for.
+                //
+                // Always Python's. The browser keeps a snapshot stack for
+                // dragging and no way forward at all -- every re-render clears
+                // it -- so there is nothing here for a redo to pop, and the
+                // history that Undo walks back through is the one on the other
+                // side.
+                if (typingInAField()) return;
+                var undoneStates = window._submitManipStateByScope || {};
+                var undoneKeys = scopesByUse();
+                for (var r = 0; r < undoneKeys.length; r++) {
+                    var st = undoneStates[undoneKeys[r]];
+                    if (st && (st.mode === 'select' || st.mode === 'manipulate')) {
+                        e.preventDefault();
+                        pushCommandToPython(undoneKeys[r], 'redo', 'structure');
+                        break;
+                    }
+                }
+            }
             if (key === 'Delete' || key === 'Backspace') {
                 if (typingInAField()) return;
                 var scopes = window._submitManipStateByScope || {};

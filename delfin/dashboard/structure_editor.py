@@ -962,6 +962,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='84px', height='30px'),
         disabled=True,
     )
+    # Beside Undo, which is the one place anybody looks for it.  A second
+    # button is a cost, and this is the pair where the convention is strong
+    # enough to pay it: everywhere else Redo sits next to Undo, and a Redo
+    # that exists but has no control cannot be found at all.  It is greyed
+    # until there is a way forward, so it never claims to offer one.
+    submit_manip_redo_btn = widgets.Button(
+        description='Redo', button_style='info', icon='repeat',
+        tooltip='Put back what Undo took away (Ctrl-Shift-Z, or Ctrl-Y)',
+        layout=widgets.Layout(width='84px', height='30px'),
+        disabled=True,
+    )
     submit_relax_btn = widgets.ToggleButton(
         value=False, description='Dynamik Opt', icon='magic',
         button_style='',
@@ -1901,7 +1912,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             submit_element_dd, submit_adjust_h_btn,
             submit_manip_clear_btn, submit_centre_btn,
             submit_labels_btn, submit_label_size,
-            submit_manip_undo_btn, submit_reset_btn,
+            submit_manip_undo_btn, submit_manip_redo_btn, submit_reset_btn,
             submit_ff_dd, submit_gfn_charge, submit_gfn_mult,
             submit_gfn_autospin, submit_gfn_solvent, submit_gfn_solv_model,
             submit_thermal_btn, submit_temperature,
@@ -2211,6 +2222,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         submit_hold_mode.disabled = not enabled
         submit_scan_btn.disabled = not enabled
         submit_manip_undo_btn.disabled = not enabled
+        _refresh_undo_redo()
         submit_centre_btn.disabled = not enabled
         submit_reset_btn.disabled = not enabled
         submit_manip_toolbar.layout.display = 'flex' if enabled else 'none'
@@ -5700,6 +5712,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if state.get('gfn_restart_armed'):
             return                      # already waiting; it will wait longer
         state['gfn_restart_armed'] = True
+        # Which structure this is waiting for.  A third of a second is long
+        # enough to press Undo in, and the wait went on regardless: the
+        # minimisation woke up and ran on the geometry the user had just put
+        # back, so Undo looked as though it had done nothing.  Every timer in
+        # here belongs to the structure it was started for, and the generation
+        # counter is how the rest of them say so.
+        generation = state.get('gfn_generation')
 
         def _wait():
             while True:
@@ -5708,6 +5727,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     break
                 time.sleep(min(left, 0.05))
             state['gfn_restart_armed'] = False
+            if state.get('gfn_generation') != generation:
+                return
             schedule_ui_update(_restart_gfn)
 
         _start_background(_wait, 'The optimiser waiting to restart',
@@ -5737,6 +5758,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if state.get('gfn_minimise_armed'):
             return
         state['gfn_minimise_armed'] = True
+        # The structure this wait belongs to; see _arm_gfn_restart for the
+        # third of a second an Undo fits into.
+        generation = state.get('gfn_generation')
 
         def _wait():
             while True:
@@ -5745,6 +5769,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     break
                 time.sleep(min(left, 0.05))
             state['gfn_minimise_armed'] = False
+            if state.get('gfn_generation') != generation:
+                state.pop('gfn_optimise_asked', None)
+                return
             schedule_ui_update(_optimise_now)
 
         _start_background(_wait, 'The optimiser waiting to start',
@@ -6644,7 +6671,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 turnable = False
         submit_poly_turn_btn.layout.display = '' if turnable else 'none'
         submit_poly_turn_btn.disabled = not turnable
-        if not turnable:
+        # "Nothing to turn" and "not perceived yet" are different answers, and
+        # only the first of them may throw the arrangements away.
+        #
+        # Undo and Redo both drop the perception before they call this -- the
+        # structure has changed, so what was perceived is about another one --
+        # and this then cleared the very arrangement they had just put back.
+        # Measured on a trigonal-bipyramidal iron: Turn to arrangement 2, take
+        # it back, put it forward again, and the index came back 0 with the
+        # list empty, so the next press started from the beginning instead of
+        # stepping on.  Undo had it too and it never showed, because what it
+        # was restoring was empty anyway.
+        undecided = (geometry and metal is not None and perceived is None)
+        if not turnable and not undecided:
             state['poly_arrangements'] = []
             state['poly_arrangement_index'] = 0
 
@@ -7299,6 +7338,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if len(history) > _HISTORY_LIMIT:
             history = history[:1] + history[-(_HISTORY_LIMIT - 1):]
         state['history'] = history
+        # A new action makes the way forward unreachable, which is what every
+        # editor does and what people rely on without knowing they do: undo
+        # three things, do a fourth, and the three are gone rather than
+        # waiting to be redone on top of a structure they were never part of.
+        # Here rather than in each handler, because this is the one place
+        # every structure-changing action already passes through.
+        state['structure_undo'] = []
+        _refresh_undo_redo()
 
     def _stop_what_is_running():
         """End everything in flight: it is about a structure that has gone.
@@ -7406,6 +7453,31 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if submit_relax_btn.value or state.get('ff_bootstrap_done'):
             _enable_live_forcefield()
 
+    def _keep_for_redo(what, back):
+        """Put the state Undo is leaving on the way forward.
+
+        *back* is the history entry Undo took off the stack, kept whole so
+        that Redo can put the history back exactly as it was rather than
+        rebuild something that looks like it.  It is ``None`` for the one
+        Undo that takes nothing off -- the walk back to the structure as it
+        was loaded, which leaves the first entry standing -- and then Redo
+        puts nothing back either, or the history would grow an entry per
+        round trip and Undo would start returning what it had just restored.
+        """
+        forward = list(state.get('structure_undo') or [])
+        forward.append(dict(_structure_marks(),
+                            coords=coords_widget.value,
+                            what=str(what or 'the last step'),
+                            back=back))
+        if len(forward) > _HISTORY_LIMIT:
+            forward = forward[-_HISTORY_LIMIT:]
+        state['structure_undo'] = forward
+
+    def _refresh_undo_redo():
+        """Redo is offered only when there is something to go forward to."""
+        submit_manip_redo_btn.disabled = not (state.get('structure_undo')
+                                              and not submit_manip_undo_btn.disabled)
+
     def _undo_structure():
         """One step back, whatever kind of step it was.
 
@@ -7424,10 +7496,47 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         at_start = len(history) == 1
         entry = history[0] if at_start else history.pop()
         state['history'] = history
+        # What is being left, before it is left: Redo is Undo read backwards,
+        # and the state a step is taken away from is the state that step comes
+        # back to.
+        _keep_for_redo(entry.get('what'), None if at_start else entry)
         left = 0 if at_start else len(history)
         _restore(entry, f'Took back: {entry.get("what") or "the last step"}.'
                         + (f' {left} more to go back through.' if left
                            else ' That is the structure as it was loaded.'))
+        _refresh_undo_redo()
+
+    def _redo_structure():
+        """One step forward again, through what Undo took back.
+
+        Excel and Word, exactly: Undo puts what it leaves on the way forward,
+        Redo takes it off again and puts the step back on the way back, and
+        any new action clears the way forward -- see :func:`_remember`, which
+        is where that last one lives because every action passes through it.
+
+        It stops what is running for the same reason Undo does: a run started
+        on the structure Redo has just replaced would write its answer over
+        the one that was put back a second or two later, which from outside is
+        a button that does nothing.  :func:`_restore` is the one place that
+        knows how, so both presses go through it.
+        """
+        forward = list(state.get('structure_undo') or [])
+        if not forward:
+            _set_mol_status('Nothing to redo. Undo something first, and this '
+                            'puts it back.')
+            return
+        entry = forward.pop()
+        state['structure_undo'] = forward
+        back = entry.get('back')
+        if back is not None:
+            # The very entry Undo took off, back where it was, so a second
+            # Undo takes this step away again rather than one before it.
+            state['history'] = list(state.get('history') or []) + [back]
+        left = len(forward)
+        _restore(entry, f'Put back: {entry.get("what") or "the last step"}.'
+                        + (f' {left} more to go forward through.' if left
+                           else ''))
+        _refresh_undo_redo()
 
     def _push_hand_bonds():
         """Put the bonds the user drew or cut back into a rebuilt picture.
@@ -7679,6 +7788,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
         if verb == 'undo':
             _undo_structure()
+            return
+
+        if verb == 'redo':
+            # The keyboard's way in.  The browser keeps no way forward of its
+            # own -- its snapshot stack is cleared by every re-render -- so
+            # Redo is always this history's, whichever key asked for it.
+            state.pop('pre_optimize_frames', None)
+            _redo_structure()
             return
 
         if verb == 'unbond':
@@ -10830,6 +10947,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state.pop('pre_optimize_frames', None)
         _undo_structure()
 
+    def on_submit_manip_redo(_button=None):
+        """One step forward again, through what Undo took back."""
+        state.pop('pre_optimize_frames', None)
+        _redo_structure()
+
     def on_submit_manip_sync(change):
         if change.get('name') != 'value':
             return
@@ -11047,6 +11169,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_manip_btn.observe(on_submit_manip_toggle, names='value')
     submit_manip_clear_btn.on_click(on_submit_manip_clear)
     submit_manip_undo_btn.on_click(on_submit_manip_undo)
+    submit_manip_redo_btn.on_click(on_submit_manip_redo)
     submit_centre_btn.on_click(on_submit_centre)
     submit_relax_btn.observe(on_submit_relax_toggle, names='value')
     # On the page from the start: a player installed at click time races the
