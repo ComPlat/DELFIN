@@ -27,6 +27,14 @@ The assertion is the acceptance test the user's complaint implies, and nothing
 narrower: at every width, in both places, with the controls the method and the
 hand leave on screen and again with every control a user can be shown, no
 control's right edge is past the toolbar's and nothing is covered.
+
+The three buttons that reached a transition state have since become one press
+with two boxes beside it, and the checkbox that only revealed the scan's end
+field has become the third answer in the box that asks where the walk goes.
+Measured here again with a scan armed, before and after: 306/272 px at 1920
+embedded, 406/372 at 1536, 472/436 at 1280, 604/568 at 1024, and 204/170,
+236/204, 236/236, 304/272 in the fullscreen overlay -- shorter at seven of the
+eight, the same at the eighth, and nothing past the edge in any of them.
 """
 
 from __future__ import annotations
@@ -236,10 +244,10 @@ def _arm_a_scan(exports):
     exports['submit_hand_dd'].value = 'pull'
     exports['submit_thermal_btn'].value = True
     for name in ('submit_scan_way', 'submit_scan_steps', 'submit_scan_to',
-                 'submit_scan_stop_at', 'submit_scan_dd', 'submit_scan_del',
+                 'submit_scan_dd', 'submit_scan_del',
                  'submit_scan_whole', 'submit_scan_how', 'submit_scan_energy',
-                 'submit_scan_run_btn', 'submit_path_btn',
-                 'submit_path_saddle_btn', 'submit_constraint_dd',
+                 'submit_scan_run_btn', 'submit_saddle_from',
+                 'submit_saddle_how', 'submit_constraint_dd',
                  'submit_constraint_del'):
         exports[name].layout.display = ''
 

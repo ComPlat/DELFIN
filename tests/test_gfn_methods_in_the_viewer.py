@@ -6231,7 +6231,11 @@ def test_every_frame_writer_asks_whether_its_run_is_still_the_one():
     """
     source = SUBMIT_SOURCE
     for name in ("_gfn_follow_step", "_gfn_settle_now", "on_submit_scan_run(",
-                 "on_submit_saddle(", "_stream_frames("):
+                 # The saddle search from what is on screen. It was the whole
+                 # of on_submit_saddle; that press now asks the two boxes
+                 # beside it where to start and how to get there, and this is
+                 # the half of it that ORCA climbs and draws.
+                 "_saddle_from_here(", "_stream_frames("):
         body = source.split(f"def {name}")[1].split("\n    def ")[0]
         assert "_frame_run_is_current(" in body, f"{name} writes without asking"
     for walker in ("def _push_frames(frames, final=False):",

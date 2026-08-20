@@ -1276,26 +1276,35 @@ def test_the_scan_controls_say_what_they_are():
     screen showing a zero read as something that had to be filled in, and a
     zero typed into a distance is how two atoms came to be asked for 0.60 A
     when the bond between them is 1.53.
+
+    Asked for in the same box that asks the direction, because it is the same
+    question: a value says which way the walk goes all by itself, and
+    "further apart, to 2.40" was the same fact twice with nothing checking
+    that its two halves agreed.  One box, three answers, and the field for the
+    number under the third.
     """
     source = EDITOR_SOURCE
-    assert "options=[('closer together', 'in'), ('further apart', 'out')]" in source
-    assert "else [('narrower', 'in'), ('wider', 'out')])" in source
+    assert ("options=[('closer together', 'in'), ('further apart', 'out'),"
+            in source)
+    assert "('to a value you give', 'to')]" in source
+    assert "else [('narrower', 'in'), ('wider', 'out')," in source
     assert "kind = _CONSTRAINT_KINDS.get(picked)" in source
     assert "description='steps'" in source
     assert "description='to'" in source
 
-    assert 'submit_scan_stop_at = widgets.Checkbox(' in source
-    assert "description='to a set value'" in source
-    assert "set_end = wanted == '' and bool(submit_scan_stop_at.value)" in source
+    assert 'submit_scan_stop_at' not in source, (
+        'the checkbox that only revealed the field is a control of its own '
+        'again')
+    assert "set_end = wanted == '' and str(submit_scan_way.value) == 'to'" in source
     assert "submit_scan_to.layout.display = '' if set_end else 'none'" in source
     # The direction is what is always used; a value only overrides it when one
     # was actually asked for.
     assert ('target = _suggest_scan_target(kind, here, submit_scan_way.value)'
             in source)
-    assert 'if submit_scan_stop_at.value:' in source
+    assert "if str(submit_scan_way.value) == 'to':" in source
     # Opened on the value the coordinate has, not on a zero to be guessed at.
     assert 'submit_scan_to.value = float(submit_internal_value.value)' in source
-    assert 'submit_scan_stop_at.observe(on_submit_scan_stop_at' in source
+    assert 'submit_scan_way.observe(on_submit_scan_way' in source
 
 
 def test_a_drag_that_is_only_a_drag_stays_at_five_cycles():
@@ -2369,21 +2378,22 @@ def test_the_path_is_offered_once_there_is_something_to_walk_between():
     """It cannot invent a product to aim at, so it appears when a scan has
     made one -- and what it finds is one step, which Undo takes back whole.
 
-    Both ways of walking between the two ends appear together: the path on its
-    own, and the path chained into the saddle search.  A pair of ends that can
-    be walked can be walked and climbed, and offering one without the other
-    would be an offer to do half the job.
+    The offer is a start in the box beside the press rather than two buttons
+    of its own.  Both ways of walking between the two ends are still there --
+    the path on its own, and the path carried on into a saddle -- and they are
+    two answers to the one question the box next to it asks, so neither can
+    appear without the other.
     """
     source = EDITOR_SOURCE
-    assert 'submit_path_btn = widgets.Button(' in source
-    assert "description='Find the path'" in source
+    assert 'submit_saddle_from = widgets.Dropdown(' in source
+    assert '''("the scan's two ends", 'scan')''' in source
+    assert "('the path only', 'walk')" in source
     assert "state['scan_ends'] = (" in source
     assert "if state.get('scan_ends'):" in source
-    assert 'def _offer_the_path():' in source
-    assert '_offer_the_path()' in source
-    assert 'for button in (submit_path_btn, submit_path_saddle_btn):' in source
-    assert 'def on_submit_path(_button=None):' in source
-    assert 'submit_path_btn.on_click(on_submit_path)' in source
+    assert 'def _refresh_saddle_controls():' in source
+    assert '_refresh_saddle_controls()' in source
+    assert 'def _walk_the_path(ends, then_climb=False):' in source
+    assert 'submit_saddle_btn.on_click(on_submit_saddle)' in source
     # Its own answer, kept as its own step.
     assert "_remember('the transition state the path finder estimated')" in source
     assert "'Estimated transition state, from the path'" in source
@@ -2446,10 +2456,11 @@ def test_the_path_says_whether_what_it_found_is_a_transition_state():
     # said rather than left for the user to notice.
     assert "if shape.get('count') == 0:" in source
     assert 'not sitting on' in source
-    # And where it goes next, since xtb has no saddle optimiser at all: the
-    # climb is one press away and both halves together are another.
-    assert 'Press To the saddle to sharpen it here in seconds, ' in source
-    assert 'or Path to saddle next time to do both at one press ' in source
+    # And where it goes next, since xtb has no saddle optimiser at all: both
+    # ways on from the estimate are the same press with the box beside it
+    # moved, and the line names the two entries rather than two buttons.
+    assert 'Set the box beside the press to "through ORCA" ' in source
+    assert 'to sharpen it in seconds, or to "by hand" to ' in source
 
 
 #: cis- and trans-2-butene, relaxed under GFN2.  The plainest reaction there
@@ -2565,18 +2576,27 @@ def test_two_structures_are_a_path_without_a_scan():
 
 def test_a_path_can_be_marked_one_structure_at_a_time():
     """The finder needs a start and an end and cannot invent either.  A scan
-    leaves both; two structures the user has are marked one at a time."""
+    leaves both; two structures the user has are marked one at a time.
+
+    Marking stays a press of its own and does not become an entry in the box
+    that chooses the start.  Marking happens once and the box is a setting
+    that stands -- the same difference there is between Set and Hold -- and
+    the two sources it produces are what that box is for.
+    """
     source = EDITOR_SOURCE
     assert 'submit_path_from_btn = widgets.Button(' in source
-    assert "description='Path from here'" in source
+    assert "description='Mark this end'" in source
     assert "state['path_from'] = xyz" in source
     assert 'submit_path_from_btn.on_click(on_submit_path_from)' in source
-    # The marked pair wins over a scan's ends: it is the one the user set on
-    # purpose, and an earlier scan should not quietly take its place.
+    # Which of the two sources is used is asked rather than assumed: it used
+    # to prefer the marked pair silently, so a scan walked after marking
+    # something could not be walked between at all.
     assert 'if marked and here and marked.strip() != here.strip():' in source
     assert "ends = state.get('scan_ends')" in source
+    assert "if which == 'scan':" in source
+    assert "('the end you marked', 'marked')" in source
     # And with neither, what to do is said rather than "run a scan first".
-    assert 'Press Path from here on one of ' in source
+    assert 'Press Mark this end on one of them ' in source
 
 
 def test_the_method_says_when_it_has_stopped_being_able_to_answer():

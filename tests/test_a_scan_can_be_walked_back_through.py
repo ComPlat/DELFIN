@@ -97,7 +97,9 @@ def _run_the_scan(refs, steps=10):
     refs['submit_scan_how'].value = 'hold'
     refs['submit_pick_sync'].value = '0,1,2,3'
     refs['submit_internal_value'].value = 180.0
-    refs['submit_scan_stop_at'].value = True
+    # An end rather than a direction, which is the third answer in the box
+    # that used to be direction-only with a checkbox beside it.
+    refs['submit_scan_way'].value = 'to'
     refs['submit_scan_to'].value = 60.0
     refs['submit_scan_steps'].value = steps
     refs['submit_scan_whole'].value = True
