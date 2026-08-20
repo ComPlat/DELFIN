@@ -172,7 +172,7 @@ def _a_real_gesture(part, state, box, *, drags=6, depth=0.95, pause=0.2):
 
     part.submit_pick_sync.value = '0,10'
     ej.press(part.submit_scan_how, 'hold')
-    ej.press(part.submit_scan_stop_at, True)
+    ej.press(part.submit_scan_way, 'to')
     ej.press(part.submit_scan_to, 1.75)
     ej.press(part.submit_scan_steps, 8)
     ej.press(part.submit_scan_whole, True)
@@ -213,8 +213,31 @@ def test_a_recorded_session_replays_as_the_same_sequence(tmp_path,
     no value, and nothing about pressing one reaches a value observer.  The
     message sequences matched because a press is not a message, and the end
     geometries differed by 0.72 A.  That is why button presses are recorded as
-    their own kind of event, and why this test asserts on the geometry as well
-    as on the sequence.
+    their own kind of event, and why this test still asserts on more than the
+    sequence.
+
+    What it asserts on is not the end geometry, and the reason is worth
+    writing down because the obvious assertion is wrong.  This gesture crosses
+    a barrier: the sixth step of the scan is the cycloaddition, +4.9 to about
+    -21 kcal/mol in one step, and past it the surface has more than one
+    product geometry within reach.  Comparing the two end structures fails
+    about one run in four, always with the same value -- 0.814 A -- because it
+    is a switch between two definite answers rather than drift.
+
+    It is not the replay that is doing that.  Measured: the same scan, from a
+    structure written to a file and read back byte for byte, run five times in
+    five separate processes with no replay anywhere in it, walked the same
+    first seven steps every time and ended at -54.8 kcal/mol four times and
+    -54.9 once.  So the end geometry is not a property of the replay and this
+    test may not assert it.
+
+    What it asserts instead is everything that *is* reproducible, and all of
+    it is: the run claims, which say the scan and the drag really ran; the
+    whole structure history up to the barrier, which is identical to 0.000 A
+    -- the six follow answers at 3.201, 3.049, 2.898, 2.748, 2.598, 2.450 A
+    and the minimisation at 3.304; and the coordinate the scan was told to
+    walk, which is 1.75 A on both sides by construction and 3.30 if the scan
+    never ran.
     """
     pytest.importorskip('ipywidgets')
     monkeypatch.setenv('DELFIN_VIEWER_BUG_ARCHIVE', str(tmp_path / 'bugs'))
@@ -254,14 +277,113 @@ def test_a_recorded_session_replays_as_the_same_sequence(tmp_path,
     again, again_state, again_box = _an_editor(tmp_path / 'replay')
     wrote = ej.replay(timeline, again, pace=1.0, max_gap=2.0)
     _quiet(again, again_state)
-    replayed = ej.page_messages(again_state['editor_journal'].timeline())
+    second = again_state['editor_journal'].timeline()
+    replayed = ej.page_messages(second)
 
     assert wrote == recorded, (len(wrote), len(recorded))
     assert replayed == recorded, (len(replayed), len(recorded))
-    rmsd = float(np.sqrt(
-        ((_where(box.value) - _where(again_box.value)) ** 2)
-        .sum(axis=1).mean()))
-    assert rmsd < 0.05, rmsd
+
+    # The scan really ran in the replay, and so did the drag. This is what the
+    # end geometry used to stand in for, said directly and without depending
+    # on any chemistry: a run number is claimed when a run begins, so a Run
+    # scan that was not replayed leaves no run claimed by the scan. That is
+    # exactly the case that once passed while the replay skipped the scan.
+    again_claims = [(e['v'], e['by']) for e in second if e['k'] == 'run']
+    assert [by for _run, by in again_claims].count('follow') == 1, again_claims
+    assert 'scan' in [by for _run, by in again_claims], again_claims
+    assert [by for _run, by in again_claims] == [
+        by for _run, by in claims], (claims, again_claims)
+
+    # And it was the same molecule all the way to the barrier: every structure
+    # written to the box, in order, with the comment saying what produced it.
+    told = ej.answers(timeline)
+    barrier = next((i for i, one in enumerate(told) if one[1] == 'Scanned'),
+                   len(told))
+    parted = ej.first_difference(timeline, second)
+    assert parted is None or parted['at'] >= barrier, parted
+
+    # The coordinate the scan was told to walk is where it was told to walk
+    # to, on both sides. Whole-molecule agreement is not asserted past this
+    # point and must not be -- see the docstring.
+    def _walked(text):
+        rows = _where(text)
+        return float(np.linalg.norm(rows[0] - rows[10]))
+
+    assert abs(_walked(box.value) - 1.75) < 0.05, _walked(box.value)
+    assert abs(_walked(again_box.value) - _walked(box.value)) < 0.05, (
+        _walked(box.value), _walked(again_box.value))
+
+
+def test_where_two_runs_of_the_same_session_stopped_agreeing():
+    """A replay is judged on the messages and read on the answers.
+
+    "Did the replay work" has no yes-or-no answer past a certain point in a
+    session, and the first time that was asked it took three throwaway scripts
+    to find out where the two runs parted.  So the reading is a function now,
+    and what it reports is the sentence a maintainer wants -- "they were the
+    same molecule until the sixth step of the scan" -- rather than a number.
+
+    Two things are compared and nothing else: every structure written to the
+    coordinate box with the comment saying what produced it, and every run
+    number claimed with the name of what claimed it.  The status lines are
+    left out although the journal keeps them, because they carry the timings
+    of the run that wrote them -- "holding 2 atoms, 164 ms each" -- so two
+    runs of one session never agree on them and a comparison including them
+    would report a difference every time and mean nothing.
+    """
+    def one(comment, shift=0.0):
+        return {'k': 'box', 't': 0.0,
+                'v': f'2\n{comment}\nC 0.0 0.0 0.0\nH {1.0 + shift} 0.0 0.0\n'}
+
+    walk = [one('butadiene and ethene, relaxed apart'),
+            {'k': 'run', 't': 0.1, 'v': 1, 'by': 'follow'},
+            {'k': 'status', 't': 0.2, 'lines': ['holding 2 atoms, 164 ms each']},
+            one('Optimised in DELFIN viewer'),
+            {'k': 'run', 't': 0.3, 'v': 2, 'by': 'scan'},
+            one('Scanned')]
+
+    # The same walk twice agrees, and it agrees despite the status lines
+    # differing, which is the whole reason they are not compared.
+    other = [dict(e) for e in walk]
+    other[2] = {'k': 'status', 't': 0.2,
+                'lines': ['holding 2 atoms, 402 ms each']}
+    assert ej.first_difference(walk, other) is None
+
+    # A structure that came out somewhere else is named, with how far.
+    moved = [dict(e) for e in walk]
+    moved[3] = one('Optimised in DELFIN viewer', shift=0.6)
+    parted = ej.first_difference(walk, moved)
+    assert parted['kind'] == 'box'
+    assert parted['recorded'] == 'Optimised in DELFIN viewer'
+    assert 0.4 < parted['apart'] < 0.5, parted
+    # box, run, box, run, box -- the status line is not an answer, so
+    # the second structure is the third thing compared.
+    assert parted['at'] == 2, parted
+
+    # A run nobody claimed -- which is what a button that was not replayed
+    # looks like. Dropping it slides everything after it up, so what the
+    # reader is told is that a scan was expected where a structure arrived.
+    lost = [e for e in walk if not (e['k'] == 'run' and e['by'] == 'scan')]
+    parted = ej.first_difference(walk, lost)
+    assert parted['recorded'] == '2 by scan', parted
+    assert parted['replayed'] == 'Scanned', parted
+
+    # And when a side simply runs out -- the shape the real defect had, since
+    # the scan was the last thing in that session -- it is named as an
+    # absence rather than as a difference between two things.
+    parted = ej.first_difference(walk, walk[:3])
+    assert parted['kind'] == 'missing', parted
+    assert parted['at'] == 2, parted
+    assert 'nothing here' in parted['said'], parted
+
+    # And a structure written under a different name is a difference even
+    # when the coordinates agree: the comment says what produced it, and
+    # "Scanned" arriving where "Optimised" was expected is the report.
+    renamed = [dict(e) for e in walk]
+    renamed[5] = one('Optimised in DELFIN viewer')
+    parted = ej.first_difference(walk, renamed)
+    assert parted['recorded'] == 'Scanned', parted
+    assert parted['apart'] is None, parted
 
 
 def test_what_a_journal_keeps_of_a_gesture(tmp_path):
