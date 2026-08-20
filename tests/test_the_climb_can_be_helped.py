@@ -1279,9 +1279,15 @@ def test_the_stop_has_one_path_too_and_the_optimiser_is_its_parameter():
     assert 'while not _stopped():' in climbing
 
     # And both claim their run the same way, which is what clears the halt
-    # mark and the stale frame number for the run that is beginning.
+    # mark and the stale frame number for the run that is beginning.  The
+    # frame number goes with the walk it was counted along, so both are
+    # dropped together and there is one place that does it.
     assert "state['gfn_halt_sent'] = False" in climbing
-    assert "state.pop('gfn_shown_frame', None)" in climbing
+    assert '_forget_the_shown_frame()' in climbing
+    forget = EDITOR_SOURCE.split('def _forget_the_shown_frame')[1].split(
+        '\n    def ')[0]
+    assert "state.pop('gfn_shown_frame', None)" in forget
+    assert "state.pop('gfn_shown_run', None)" in forget
 
     # One cutter, and the box is written by whichever of the worker and the
     # page's report arrives second -- they race, and a climb step is ten
@@ -1291,7 +1297,10 @@ def test_the_stop_has_one_path_too_and_the_optimiser_is_its_parameter():
     assert '_the_picture_stopped_here(' in optimising
     landing = source.split('def _land_the_stopped_frame():', 1)[1].split(
         '\n    def ', 1)[0]
-    assert "state.get('gfn_shown_frame')" in landing
+    # The count the page reported, and only where it counts along the walk the
+    # stopped path belongs to: the page names both, and a count that came from
+    # another walk indexes this one's path perfectly well and wrongly.
+    assert "_the_shown_frame_of(held.get('run'))" in landing
     assert '_write_coords(text, drawn=True)' in landing
     cmd = source.split('def on_submit_cmd(', 1)[1].split('\n    def ', 1)[0]
     assert '_land_the_stopped_frame()' in cmd
