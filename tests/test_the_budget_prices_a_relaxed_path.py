@@ -2325,6 +2325,27 @@ def test_xtb_finds_its_own_way_between_the_two_ends_of_a_scan():
     assert not gfn.walk_the_path(_ETHANE, _BROMOBENZENE, "gfn2")["ok"]
 
 
+def test_a_solvent_the_method_has_not_got_is_not_blamed_on_the_structures():
+    """The walk's refusals must be about the walk, not about the chemistry.
+
+    Optimise has refused a solvent under a method that has none for a long
+    time; the path finder did not, and ran into it.  Driven: g-xTB handed
+    ``--alpb water`` stops with "No ALPB/GBSA parameters found for the
+    method/solvent", and what came back was "g-xTB found no path between the
+    two structures" -- a sentence about the reaction, where the truth was
+    about the build.  Nothing is run here: the answer arrives before the
+    binary is asked for anything.
+    """
+    refused = gfn.walk_the_path(_ETHANE, _ETHANE, "gxtb", solvent="water")
+    assert not refused["ok"]
+    assert "no implicit solvation" in refused["status"], refused["status"]
+    # A solvent nothing knows is still named as one, under a method that has
+    # solvation at all.
+    unknown = gfn.walk_the_path(_ETHANE, _ETHANE, "gfn2", solvent="unobtainium")
+    assert not unknown["ok"]
+    assert "not a solvent" in unknown["status"], unknown["status"]
+
+
 @_needs_xtb
 def test_a_chain_that_cannot_walk_never_climbs():
     """The chain is two halves, and the first one is allowed to refuse.
@@ -2609,6 +2630,56 @@ def test_the_gap_is_read_from_the_run_that_was_going_to_happen_anyway():
     # An ethane is nowhere near the edge of anything.
     assert got["gap"] > gfn.GAP_WORTH_SAYING, got["gap"]
     assert gfn.method_is_out_of_its_depth(got["gap"]) == ''
+
+
+def test_the_gap_is_read_in_both_the_hands_xtb_writes_it_in():
+    """xtb prints the gap twice, and g-xTB prints only one of the two.
+
+    A summary block says ``:: HOMO-LUMO gap`` after every single point; a
+    property block at the end says ``| HOMO-LUMO GAP``.  Only the second was
+    being matched, and g-xTB has no property block -- measured on a propane,
+    ``--sp``, ``--opt``, ``--ohess`` and ``--grad`` alike.  So the gap came
+    back as nothing under the most accurate method the editor offers, and
+    :func:`method_is_out_of_its_depth` -- which says nothing about a gap it
+    cannot read -- said nothing about a barrier most likely to be quoted.
+
+    The *last* one, because the summary is printed at every geometry the run
+    passes through: on that propane under GFN2, ``--ohess`` prints 14.3656 for
+    the structure that went in and 14.5837 for the one that came out, and it
+    is the second that the answer is about.  Taking the last reproduces what
+    was matched before, to every digit, for GFN2, GFN1 and GFN-FF across all
+    four run types.
+    """
+    both = ('           :: HOMO-LUMO gap             14.365616087375 eV    ::\n'
+            '  ...an optimisation happens here...\n'
+            '           :: HOMO-LUMO gap             14.583665010763 eV    ::\n'
+            '          | HOMO-LUMO GAP              14.583665065106 eV   |\n')
+    assert [one.group(1) for one in gfn._GAP_RE.finditer(both)][-1] \
+        == '14.583665065106'
+    # g-xTB writes the summary line and nothing else, and it must be read.
+    summary_only = (
+        '           :: HOMO-LUMO gap             18.511149638525 eV    ::\n'
+        '           :: HOMO-LUMO gap             18.656166584988 eV    ::\n')
+    assert [one.group(1) for one in gfn._GAP_RE.finditer(summary_only)][-1] \
+        == '18.656166584988'
+    # GFN-FF has no orbitals and prints neither, which stays nothing to say.
+    assert not gfn._GAP_RE.findall('| TOTAL ENERGY -5.070325081194 Eh |')
+
+
+@pytest.mark.skipif(gfn.find_gxtb() is None, reason="g-xTB not installed")
+def test_the_gap_comes_back_under_g_xtb_as_well_as_under_gfn2():
+    """Driven rather than read: the same ethane through both binaries.
+
+    g-xTB is the method somebody chooses when the number has to be worth
+    quoting, so it is the one where a silent warning matters most.
+    """
+    for method in ('gfn2', 'gxtb'):
+        got = gfn.optimize_with_gfn(_ETHANE, method, timeout=600,
+                                    optimise=False)
+        assert got.get('ok'), got.get('status')
+        assert got.get('gap') is not None, method
+        # An ethane is nowhere near the edge of anything under either.
+        assert got['gap'] > gfn.GAP_WORTH_SAYING, (method, got['gap'])
 
 
 def test_the_path_says_it_where_the_barrier_is_reported():

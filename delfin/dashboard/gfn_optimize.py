@@ -127,7 +127,28 @@ _IMAGINARY_RE = re.compile(r'#\s*imaginary freq\.\s+(\d+)')
 #:
 #: Nothing in this file can fix that; it is what the method is.  What it can
 #: do is notice, because the gap says so.
-_GAP_RE = re.compile(r'HOMO-LUMO GAP\s+(-?\d+\.\d+)')
+#:
+#: Both spellings, and the last of them.
+#:
+#: xtb writes the gap twice in two different hands: a summary block that says
+#: ``:: HOMO-LUMO gap`` after every single point, and a property block that
+#: says ``| HOMO-LUMO GAP`` at the end.  Only the second was matched, and
+#: g-xTB does not print it -- measured on a propane, ``--sp``, ``--opt``,
+#: ``--ohess`` and ``--grad`` alike, g-xTB prints the summary line and no
+#: property block at all.  So the gap came back ``None`` under the one method
+#: in the list a barrier is most likely to be quoted from, and
+#: :func:`method_is_out_of_its_depth` -- which returns nothing at all for a
+#: gap it cannot read -- said nothing about a structure it should have warned
+#: about.
+#:
+#: The *last* one, because the summary block is printed at every geometry the
+#: run passes through and the first of them describes the structure that went
+#: in rather than the one that came out: on the same propane under GFN2,
+#: ``--ohess`` prints 14.3656 for the input geometry and 14.5837 for the
+#: relaxed one.  Taking the last reproduces what this matched before, to every
+#: digit, for GFN2, GFN1 and GFN-FF across all four run types -- and gives
+#: g-xTB the number it was missing.
+_GAP_RE = re.compile(r'HOMO-LUMO\s+gap\s+(-?\d+\.\d+)', re.IGNORECASE)
 _EIGVAL_RE = re.compile(r'eigval\s*:\s*(.+)')
 _VERSION_RE = re.compile(r'xtb version\s+([0-9.]+)')
 # What the run says it did, taken from its own output rather than from the
@@ -2059,6 +2080,24 @@ def walk_the_path(reactant: str, product: str, method: str = 'gfn2', *,
     if binary is None:
         return {'ok': False, 'status': (f'A path needs xtb, which was not '
                                         f'found in {_where_it_looked()}.')}
+    # A solvent this method cannot be given, said before the walk rather than
+    # blamed on the two structures afterwards.  :func:`optimize_with_gfn` has
+    # refused this for a long time and this did not: driven, g-xTB handed
+    # ``--alpb water`` stops with "No ALPB/GBSA parameters found for the
+    # method/solvent" and the path finder reported "g-xTB found no path
+    # between the two structures" -- which reads as "these two do not react",
+    # and is a statement about the chemistry where the truth was about the
+    # build.
+    wet = str(solvent or '').strip().lower()
+    if wet and spec.get('solvation') is False:
+        return {'ok': False,
+                'status': (f'{label} has no implicit solvation in this build, '
+                           'so a path through a solvent is not something it '
+                           'can walk. Walk it in the gas phase, or choose '
+                           'GFN2-xTB or GFN-FF.')}
+    no = _solvents.refusal(solvation_model, solvent, key)
+    if no:
+        return {'ok': False, 'status': f'{label}: {no}'}
     here = [line for line in atom_lines(reactant)]
     there = [line for line in atom_lines(product)]
     if not here or len(here) != len(there):
@@ -2503,8 +2542,9 @@ def optimize_with_gfn(
             except ValueError:
                 energy = None
         gap = None
-        told_gap = _GAP_RE.search(output)
-        if told_gap:
+        # The last one the run printed, which is the geometry it ended on --
+        # see :data:`_GAP_RE` for why there is more than one.
+        for told_gap in _GAP_RE.finditer(output):
             try:
                 gap = float(told_gap.group(1))
             except ValueError:
