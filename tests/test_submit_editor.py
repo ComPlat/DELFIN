@@ -336,13 +336,28 @@ def test_toolbar_wraps_instead_of_clipping_its_own_controls():
     status = source.split('submit_manip_status = widgets.HTML')[1].split(')\n')[0]
     assert "flex='1 1 260px'" in status
 
-    # The label, the value box and Set are one wrapping unit: a label that
-    # lands on a different row from its field explains nothing.
+    # The label, the value box and Set are still one group, in that order: a
+    # label that lands on a different row from its field explains nothing.
+    #
+    # This used to be enforced by giving the group ``flex_flow='row nowrap'``,
+    # and that is the line the toolbar's overflow came out of: the toolbar
+    # around it wraps, a wrapping container breaks between its items and never
+    # inside one, and the group is one item -- so with a scan armed its
+    # nineteen controls were laid out on a single line about 1900 px wide,
+    # inside a row 620 px wide at a 1280 px window, and the last of them (Path
+    # from here, Find the path, Path to saddle) were off the screen with no way
+    # to reach them. The declaration bought nothing either: measured in
+    # chromium with the group wrapping, at six widths from 1920 to 800 px, in
+    # three states and in both the tab and the fullscreen overlay, the label,
+    # its value box and Set are on the same row in all seventy-two -- they lead
+    # the group, so they lead a line. Where they end up is measured in
+    # tests/test_the_toolbar_stays_on_the_screen.py; the order is what is
+    # asked here.
     group = source.split('submit_internal_group = widgets.HBox')[1].split(')\n')[0]
     for name in ('submit_internal_label', 'submit_internal_value',
                  'submit_internal_btn', 'submit_hold_btn'):
         assert name in group, name
-    assert "flex_flow='row nowrap'" in group
+    assert "flex_flow='row nowrap'" not in group
 
     # Force field, then its strength, then the one-shot run, then the
     # continuous one, then the internal-coordinate group.
