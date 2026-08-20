@@ -622,10 +622,10 @@ def test_the_hand_guides_the_climb_and_never_restrains_it():
     still: a push is a constant force, so it does not stop at a saddle, it
     drives past one.
 
-    So the hand is never part of the climb.  While the mouse is down the climb
-    is suspended; when it is let go the climb starts again from the structure
-    that was made, aimed along the way it was made.  Both halves of that are
-    in the editor, and this is the wiring that carries them.
+    So the hand is never part of the climb.  A grab ends it, through the same
+    interrupt that ends a minimisation; letting go starts it again from the
+    structure that was made, aimed along the way it was made.  Both halves of
+    that are in the editor, and this is the wiring that carries them.
     """
     source = EDITOR_SOURCE
     assert 'submit_climb_btn = widgets.ToggleButton(' in source
@@ -633,14 +633,24 @@ def test_the_hand_guides_the_climb_and_never_restrains_it():
     assert 'def on_submit_climb(change=None):' in source
     assert "submit_climb_btn.observe(on_submit_climb, names='value')" in source
     # Where the structure stood when the hand arrived, which is the other end
-    # of the direction the drag names.  The climb's own last frame if it has
-    # made one, and what is in the box otherwise: a hand can arrive before the
-    # first Hessian has finished.
-    assert "state['climb_was'] = (state.get('climb_showing')" in source
-    assert "or _current_xyz())" in source
-    # And the hand-over, on the drag ending and not on every frame of it.
-    assert "state['climb_hand'] = {" in source
-    assert "'was': state.pop('climb_was', None)," in source
+    # of the direction the drag names.  The climb's own last frame while one
+    # is really walking, and what is in the box otherwise: a hand can arrive
+    # before the first Hessian has finished, and it can arrive when nothing is
+    # climbing at all -- and that frame outlives the run that made it, so read
+    # unconditionally it is the far end of a direction nobody pointed in.
+    grab = source.split("if verb == 'gfngrab':", 1)[1].split(
+        "if verb == 'gfnfree':", 1)[0]
+    assert "(state.get('climb_showing') if climbing else None)" in grab
+    assert 'or _current_xyz())' in grab
+    # And it is read once, by the run that the release starts -- there is no
+    # hand-over of its own any more, because the release path is the
+    # minimisation's and it reads the structure out of the box like everything
+    # else.
+    climbing = source.split('def _climb_now():', 1)[1].split(
+        '\n    def ', 1)[0]
+    assert "aimed_from = state.pop('climb_was', None)" in climbing
+    assert 'walk.start(aimed_from=aimed_from)' in climbing
+    assert 'constraints' not in climbing, 'the pull is never part of the climb'
     # The loop reads this and stops, so the toggle is a real Stop.
     assert "state['climb_run'] = None" in source
 
@@ -654,8 +664,8 @@ def test_the_button_climbs_and_the_drag_reaches_it(tmp_path):
     the toggle is pressed, and then the browser's own field is written the way
     the page writes it -- a ``DELFIN drag-follow`` frame while the mouse is
     down and a ``DELFIN drag-end`` when it is let go.  The climb has to stop
-    for the hand, take the structure the hand made, remember where that
-    structure came from, and get to the saddle.
+    for the hand, remember where it stood when the hand arrived, start again
+    from the structure the hand made, and get to the saddle.
 
     Measured: from the bare complex it goes nowhere; interrupted by the drag it
     converges to 2.315 A on both forming bonds with one imaginary mode near
@@ -664,26 +674,8 @@ def test_the_button_climbs_and_the_drag_reaches_it(tmp_path):
     import time as clock
 
     pytest.importorskip('ipywidgets')
-    import ipywidgets as widgets
 
-    from delfin.dashboard import structure_editor
-    from delfin.dashboard.context import DashboardContext
-
-    for name in ('calc', 'archive', 'office'):
-        (tmp_path / name).mkdir()
-    room = DashboardContext(calc_dir=tmp_path / 'calc',
-                            archive_dir=tmp_path / 'archive',
-                            office_dir=tmp_path / 'office')
-    room.run_js = lambda _script: None
-    state = {}
-    box = widgets.Textarea(value=_COMPLEX)
-    part = structure_editor.build(
-        room, state=state, coords_widget=box, viewer_height=560,
-        schedule_ui_update=lambda call, *a, **k: call(*a, **k),
-        update_view=lambda *a, **k: None,
-        get_smiles_charge=lambda *a, **k: None)
-    state['current_xyz_for_copy'] = {'content': _COMPLEX}
-    part.submit_ff_dd.value = 'gfn2'
+    part, state, box = _an_editor(tmp_path)
 
     part.submit_climb_btn.value = True
     began = clock.time()
@@ -692,19 +684,19 @@ def test_the_button_climbs_and_the_drag_reaches_it(tmp_path):
     assert state.get('climb_run') is not None, 'the climb never started'
 
     # The hand: down, then let go somewhere else.  The page names the atoms it
-    # is holding in the comment line, which is what tells the climb a hand has
-    # arrived at all.
+    # is holding in the comment line, which is what tells the editor a hand has
+    # arrived at all when no grab came with it.
     moved = _dragged(0.95).splitlines()
     part.submit_manip_sync.value = '\n'.join(
         [moved[0], 'DELFIN drag-follow held=10,11'] + moved[2:])
     assert state.get('climb_was'), 'the climb did not remember where it stood'
+    assert state.get('climb_run') is None, 'the hand did not stop the climb'
     part.submit_manip_sync.value = '\n'.join(
         [moved[0], 'DELFIN drag-end'] + moved[2:])
 
-    began = clock.time()
-    while state.get('climb_run') is not None and clock.time() - began < 300:
-        clock.sleep(0.05)
-    part.submit_climb_btn.value = False
+    # It comes back through the same restart a minimisation comes back through,
+    # after the same wait, so it is not running the moment the hand lets go.
+    _quiet(part, state)
     assert state.get('climb_run') is None, 'the climb never finished'
 
     one, two = _forming(_where(box.value))
@@ -713,10 +705,22 @@ def test_the_button_climbs_and_the_drag_reaches_it(tmp_path):
     said = part.mol_status.value
     assert 'transition state' in said, said
     assert 'cm-1' in said, said
+    part.submit_climb_btn.value = False
+    _quiet(part, state)
+
 
 
 def _an_editor(room):
-    """A real editor over the van-der-Waals complex, driven from the kernel."""
+    """A real editor over the van-der-Waals complex, driven from the kernel.
+
+    The host is the Submit tab's, in the one respect these tests depend on:
+    a write to the coordinate box that the viewer has already drawn still
+    refreshes ``current_xyz_for_copy``, which is what ``_current_xyz`` answers
+    with.  A host that skips it leaves every optimiser -- the minimisation as
+    much as the climb -- starting from the structure the session opened on
+    rather than from the one the hand just made, and both are then measured
+    against a molecule nobody is looking at.
+    """
     import ipywidgets as widgets
 
     from delfin.dashboard import structure_editor
@@ -730,12 +734,25 @@ def _an_editor(room):
     ctx.run_js = lambda _script: None
     state = {}
     box = widgets.Textarea(value=_COMPLEX)
+
+    def update_view(*_a, **_k):
+        raw = (box.value or '').strip()
+        if not raw:
+            return
+        rows = [one for one in raw.split('\n') if one.strip()]
+        body = rows[2:] if rows and rows[0].strip().isdigit() else rows
+        state['current_xyz_for_copy'] = {
+            'content': f'{len(body)}\nEdited in DELFIN viewer\n'
+                       + '\n'.join(body)}
+        state['manip_inflight'] = False
+
     part = structure_editor.build(
         ctx, state=state, coords_widget=box, viewer_height=560,
         schedule_ui_update=lambda call, *a, **k: call(*a, **k),
-        update_view=lambda *a, **k: None,
+        update_view=update_view,
         get_smiles_charge=lambda *a, **k: None)
-    state['current_xyz_for_copy'] = {'content': _COMPLEX}
+    box.observe(lambda _change: update_view(), names='value')
+    update_view()
     part.submit_ff_dd.value = 'gfn2'
     return part, state, box
 
@@ -795,19 +812,31 @@ def _drag_towards_the_saddle(part, box, depth=0.95, steps=6, pause=0.25):
     _command(part, 'gfnfree', '')
 
 
-def _settled(part, state, climb_on, seconds=120.0):
-    """Wait for whatever owns the release to finish, then read the box."""
+def _quiet(part, state, seconds=300.0):
+    """Wait until nothing is armed and nothing is walking, whichever it was.
+
+    One waiter for both columns, because there is one release path: a release
+    arms a wait, the wait starts a walk, and the walk ends.  Asked for either
+    optimiser by name it would be a different question for each, which is the
+    shape the feature is being taken out of.
+    """
     import time as clock
 
     began = clock.time()
+    clock.sleep(2.0)                    # longer than the arming delay
     while clock.time() - began < seconds:
-        if climb_on and state.get('climb_run') is None:
+        busy = (state.get('climb_run') is not None
+                or state.get('optimize_run') is not None
+                or state.get('gfn_settle_busy')
+                or state.get('gfn_restart_armed')
+                or state.get('gfn_minimise_armed')
+                or state.get('gfn_settle_armed')
+                or part.submit_optimize_btn.value)
+        if not busy:
             break
-        if not climb_on and clock.time() - began > 25:
-            break
-        clock.sleep(0.1)
-    part.submit_climb_btn.value = False
-    clock.sleep(1.5)
+        clock.sleep(0.15)
+    clock.sleep(1.0)
+    return clock.time()
 
 
 @_needs_xtb
@@ -824,25 +853,29 @@ def test_a_drag_is_as_visible_with_the_climb_on_as_with_it_off(tmp_path):
     apart than it started, where the same drag with the climb off left it at
     2.45.
 
-    So the climb now stands completely still while a hand is down: no step, no
-    frame, no finishing.  Two things are pinned here, and neither is a frame
-    count -- how many follow rounds fit inside a drag depends on what else the
-    machine is doing, and a number that moves with the load is not a fact about
-    this code.
+    A grab now ends the climb the way it ends a minimisation, through the one
+    interrupt both go through, so there is nothing left to stand still.  Two
+    things are pinned here, and neither is a frame count -- how many follow
+    rounds fit inside a drag depends on what else the machine is doing, and a
+    number that moves with the load is not a fact about this code.
 
     What is exact is *whose* frames those are.  During the drag every frame on
     the channel must belong to the run the hand being followed claimed, and
     none to the climb's; and the structure the drag leaves must be the one the
     hand put there.  Measured either way, with the climb off and on: 2.450 and
-    2.445 A.
+    2.450 A, from the same six follow answers at 3.201, 3.049, 2.898, 2.748,
+    2.598, 2.450.
     """
-    quiet, _, box = _an_editor(tmp_path / 'off')
+    quiet, quiet_state, box = _an_editor(tmp_path / 'off')
     quiet.submit_relax_btn.value = True
     seen = _frames_seen(quiet)
     _drag_towards_the_saddle(quiet, box)
     without = [run for run, count in seen if count]
     plain = _forming(_where(box.value))
     assert without, 'Dynamik Opt drew nothing at all, so nothing is being read'
+    assert all(run == quiet_state.get('gfn_follow_run') for run in without), (
+        quiet_state.get('gfn_follow_run'), without)
+    _quiet(quiet, quiet_state)
 
     busy, state, box = _an_editor(tmp_path / 'on')
     busy.submit_relax_btn.value = True
@@ -860,35 +893,48 @@ def test_a_drag_is_as_visible_with_the_climb_on_as_with_it_off(tmp_path):
     # The hand is still drawn, and the climb has not drawn over it.
     assert withal, 'the drag put nothing on the channel with the climb on'
     assert all(run != mine for run in withal), (mine, withal)
+    assert all(run == state.get('gfn_follow_run') for run in withal), (
+        state.get('gfn_follow_run'), withal)
     # And the structure the drag leaves is the hand's, not the climb's.
     assert abs(climbed[0] - plain[0]) < 0.05, (plain, climbed)
     assert abs(climbed[1] - plain[1]) < 0.05, (plain, climbed)
     assert 2.3 < climbed[0] < 2.6, climbed
-    _settled(busy, state, True)
+    busy.submit_climb_btn.value = False
+    _quiet(busy, state)
 
 
 @_needs_xtb
-def test_letting_go_hands_over_to_the_climb_and_not_to_a_relaxation(tmp_path):
-    """"Ich ziehe in TS, lasse los, und es faellt zurueck."
+def test_the_release_is_one_path_and_the_toggle_is_the_only_difference(tmp_path):
+    """"Verhalten im Viewer von TS wie Dynamik Opt, nur dass man es beim
+    Loslassen hin zu TS bringt, nicht Minimum."
 
-    Two things were armed by one release.  Dynamik Opt's own settle and Auto's
-    minimisation walk downhill, the climb walks up along one mode, and downhill
-    wins because it is a minimisation of the whole structure against a search
-    that moves one direction at a time.  Nothing had ever told them about each
-    other.
+    The same gesture, twice over, with Dynamik Opt and Auto on both times and
+    Climb to TS the only thing that differs.  Everything the user can see
+    before the release has to be the same and only where it ends may differ,
+    because there is now one release path with the optimiser as its one
+    parameter.
 
-    Measured here, the same gesture with Dynamik Opt on either way: with the
-    climb off the structure comes back to the van-der-Waals complex at 3.353
-    and 3.348 A with no mode going the wrong way, and with the climb on it
-    reaches 2.314 and 2.315 A with one mode at -394 cm-1.  Which is the
-    difference between the feature working and the feature being the thing the
-    user reported.
+    Measured on this complex, and the drag half of it came out identical to
+    three decimals: the same six follow answers at 3.201, 3.049, 2.898, 2.748,
+    2.598, 2.450 A, the same geometry left behind at 2.450/2.445, the same
+    0.903 A of hand.  Then the release parts them -- 3.304/3.302 A and a
+    minimum with the toggle up, 2.315/2.315 A and one mode at -394 cm-1 with
+    it down.
+
+    Two things are deliberately not asserted.  Frame counts move with the
+    machine's load, and how many steps a climb takes depends on where the drag
+    happened to stop; what is pinned is that both columns drew, that the drag
+    reached the same place in both, and that the ends differ in the one way
+    they are meant to.
     """
-    plain, state, box = _an_editor(tmp_path / 'off')
+    plain, plain_state, plain_box = _an_editor(tmp_path / 'off')
     plain.submit_relax_btn.value = True
-    _drag_towards_the_saddle(plain, box)
-    _settled(plain, state, False)
-    fell = _forming(_where(box.value))
+    plain_seen = _frames_seen(plain)
+    _drag_towards_the_saddle(plain, plain_box)
+    plain_drag = _forming(_where(plain_box.value))
+    plain_during = [run for run, count in plain_seen if count]
+    _quiet(plain, plain_state)
+    fell = _forming(_where(plain_box.value))
 
     part, state, box = _an_editor(tmp_path / 'on')
     part.submit_relax_btn.value = True
@@ -896,11 +942,20 @@ def test_letting_go_hands_over_to_the_climb_and_not_to_a_relaxation(tmp_path):
     began = time.time()
     while not state.get('climb_showing') and time.time() - began < 120:
         time.sleep(0.02)
+    seen = _frames_seen(part)
     _drag_towards_the_saddle(part, box)
-    _settled(part, state, True)
+    climb_drag = _forming(_where(box.value))
+    climb_during = [run for run, count in seen if count]
+    _quiet(part, state)
     reached = _forming(_where(box.value))
 
-    # Without the climb, back to the complex it started from.
+    # Before the release the two are the same drag.
+    assert plain_during and climb_during, (plain_during, climb_during)
+    assert abs(plain_drag[0] - climb_drag[0]) < 0.05, (plain_drag, climb_drag)
+    assert abs(plain_drag[1] - climb_drag[1]) < 0.05, (plain_drag, climb_drag)
+
+    # After it they part, and only there.  Without the climb, back to the
+    # complex it started from.
     assert fell[0] > 3.0 and fell[1] > 3.0, fell
     # With it, the saddle -- and it says so.
     assert 2.25 < reached[0] < 2.40, reached
@@ -910,23 +965,85 @@ def test_letting_go_hands_over_to_the_climb_and_not_to_a_relaxation(tmp_path):
     assert 'transition state' in said, said
     assert 'cm-1' in said, said
 
+    # The toggle is a mode, so it is still down and the next release still
+    # goes up.  Lifted on convergence -- which it used to do -- the very next
+    # drag walked the structure back to 3.353 A, which is "ich kann es nicht
+    # beeinflussen": you can point it at a saddle exactly once.
+    assert part.submit_climb_btn.value is True
+    part.submit_climb_btn.value = False
+    _quiet(part, state)
+
 
 @_needs_xtb
-def test_the_climb_claims_a_run_again_every_time_it_starts_drawing(tmp_path):
+def test_auto_carries_the_climb_on_with_nothing_pressed_in_between(tmp_path):
+    """"Auch hier braucht es ja dann Auto Mode."
+
+    Auto is what makes letting go of an atom finish the job, and it had one
+    destination.  Here it is asked twice on one editor with no press of
+    anything between the two gestures: drag, let go, arrive; drag again, let
+    go again, arrive again.
+
+    Measured: 2.315/2.315 A with one mode at -394 cm-1 after the first, and
+    2.318/2.318 A at -390 after a second drag that pushed the two halves 0.30
+    A further together.  The second climb is the whole of the test -- it was
+    not possible at all before, because the toggle had lifted itself and the
+    release had gone back to being a minimisation.
+    """
+    part, state, box = _an_editor(tmp_path / 'auto')
+    part.submit_relax_btn.value = True
+    assert part.submit_auto_btn.value is True, 'Auto is the default'
+    part.submit_climb_btn.value = True
+    began = time.time()
+    while not state.get('climb_showing') and time.time() - began < 120:
+        time.sleep(0.02)
+
+    _drag_towards_the_saddle(part, box)
+    _quiet(part, state)
+    first = _forming(_where(box.value))
+    assert 2.25 < first[0] < 2.40, first
+
+    # Nothing is pressed here.  The switches stand exactly as the user left
+    # them, which is the point.
+    assert part.submit_climb_btn.value is True
+    assert part.submit_auto_btn.value is True
+    seen = _frames_seen(part)
+    _drag_towards_the_saddle(part, box, depth=0.30)
+    _quiet(part, state)
+    second = _forming(_where(box.value))
+
+    # It walked again, and it drew again while it walked.
+    drawn = [(run, count) for run, count in seen if count]
+    assert drawn, 'the second release drew nothing at all'
+    assert any(run for run, _ in drawn
+               if run == state.get('climb_frame_run')), (
+        state.get('climb_frame_run'), drawn)
+    # And it arrived at a transition state again rather than at a minimum.
+    assert 2.25 < second[0] < 2.45, second
+    assert abs(second[0] - second[1]) < 0.03, second
+    said = part.mol_status.value
+    assert 'transition state' in said, said
+    part.submit_climb_btn.value = False
+    _quiet(part, state)
+
+
+@_needs_xtb
+def test_the_climb_never_writes_under_a_run_number_a_drag_has_moved_past(
+        tmp_path):
     """"Ich sehe nicht das Update von Climb to TS im Viewer."
 
     The run number is how a writer says it is the current one, and a drag
-    moves it: the hand being followed takes a number, and the settle after the
+    moves it: the hand being followed takes a number, and whatever answers the
     release takes another.  The climb claimed one when its toggle went down
-    and held it -- so by the time it had anything to draw it was two behind,
-    it failed its own guard on every write, and it threw away every frame it
-    made.  Silently, and correctly: it really was not the current run.
+    and held it across all of that -- so by the time it had anything to draw
+    it was two behind, it failed its own guard on every write, and it threw
+    away every frame it made.  Silently, and correctly: it really was not the
+    current run.
 
-    Measured on this gesture: the climb claims run 1, the drag leaves run 2
-    behind it, and the climb writes under run 3 afterwards -- so a climb
-    holding the toggle-time number would have discarded all 94 frames of its
-    own path.  It claims a run at each moment it starts producing frames
-    instead, which is when it begins and after every hand-over.
+    It claims where the minimisation claims, through the same helper and at
+    the same moment: when a run begins.  Measured on this gesture, the climb
+    starts on run 1, the drag leaves run 3 behind it, and the climb draws
+    under run 4 -- so a climb still holding the toggle-time number would have
+    discarded every frame of its path.
     """
     part, state, box = _an_editor(tmp_path / 'run')
     part.submit_relax_btn.value = True
@@ -940,7 +1057,7 @@ def test_the_climb_claims_a_run_again_every_time_it_starts_drawing(tmp_path):
     _drag_towards_the_saddle(part, box)
     after_the_drag = int(state.get('gfn_run', 0))
     seen = _frames_seen(part)
-    _settled(part, state, True)
+    _quiet(part, state)
 
     drawn = [(run, count) for run, count in seen if count]
     assert drawn, 'the climb drew nothing after the release'
@@ -950,72 +1067,161 @@ def test_the_climb_claims_a_run_again_every_time_it_starts_drawing(tmp_path):
     assert all(run > at_the_toggle for run, _ in drawn), (at_the_toggle, drawn)
     # Every frame of it would have been thrown away by the old guard.
     assert sum(count for run, count in drawn if run == at_the_toggle) == 0
+    part.submit_climb_btn.value = False
+    _quiet(part, state)
 
 
-def test_only_one_thing_writes_a_geometry_after_a_release():
-    """A settle, an auto-minimisation and a climb all answer the same release.
+def test_the_release_has_one_path_and_the_optimiser_is_its_parameter():
+    """Ein Pfad, zwei Optimierer.
 
-    The invariant is put on each of the four things that would break it rather
-    than on the places that call them, because the call sites are not all in
-    one function and a fifth one added later would not know to ask.  Two of the
-    four are the arming, which stops one being scheduled; the other two are the
-    running, which stops one that already was.
+    Every defect this button has had came from being a second implementation
+    of something that already existed: it stepped on a stale geometry during
+    the drag, it fought Dynamik Opt for the release, it claimed its run once
+    and discarded its own frames, and it never got an auto mode because
+    nothing on the auto path knew it was there.  Each was patched on its own.
+
+    So what is read here is not that the two agree -- it is that there is only
+    one of them to agree with.  A release is decided in _after_release and
+    nowhere else, it is armed by one function, it lands on one function, and
+    that one function is the only place in the file where the two optimisers
+    are named apart.
     """
     source = EDITOR_SOURCE
-    assert 'def _climb_owns_the_release():' in source
-    # Armed, and about to run: both are guarded.
-    for after in ('def _arm_gfn_settle(forced=False):',
-                  'def _arm_gfn_minimise():',
-                  'def _gfn_settle_now():',
-                  'def _minimise_now():',
-                  'def _arm_gfn_restart():'):
-        body = source.split(after, 1)[1].split('\n    def ', 1)[0]
-        assert '_climb_owns_the_release()' in body, after
-    # And an optimisation interrupted by the grab is stood down rather than
-    # left armed to come back over what the climb finds.
-    assert "'The climb has this release." in source
-    # Dynamik Opt itself is untouched: the follow under the hand is not gated
-    # on the climb at all, only the downhill step at the release is.
-    follow = source.split('def _gfn_follow_step(', 1)[1].split(
+
+    # One decision, and it does not name either optimiser.
+    release = source.split('def _after_release():', 1)[1].split(
         '\n    def ', 1)[0]
+    assert '_arm_gfn_optimise()' in release
+    assert '_arm_gfn_settle()' in release
+    assert '_climb_now' not in release, 'the release picks a direction, not a run'
+    assert 'submit_optimize_btn' not in release
+
+    # One arming, and it does not name either optimiser either.
+    arming = source.split('def _arm_gfn_optimise(asked=False):', 1)[1].split(
+        '\n    def ', 1)[0]
+    assert '_climb' not in arming
+    assert 'submit_optimize_btn' not in arming
+
+    # And one landing, which is where -- and only where -- they part.
+    landing = source.split('def _optimise_now():', 1)[1].split(
+        '\n    def ', 1)[0]
+    assert '_climb_owns_the_release()' in landing
+    assert '_climb_now()' in landing
+    assert 'submit_optimize_btn.value = True' in landing
+
+    # The toggle is the direction and nothing else: a mode, read as a mode.
+    owns = source.split('def _climb_owns_the_release():', 1)[1].split(
+        '\n    def ', 1)[0]
+    assert 'return bool(submit_climb_btn.value)' in owns
+
+    # Both optimisers are interrupted by one function, and both are brought
+    # back by one function.  Named apart in either, a hand would once again be
+    # able to stop one of them and not the other.
+    stop = source.split('def _interrupt_gfn():', 1)[1].split('\n    def ', 1)[0]
+    assert "state['climb_run'] = None" in stop
+    assert "state['climb_interrupted'] = True" in stop
+    assert "state['optimize_interrupted'] = token" in stop
+    back = source.split('def _restart_gfn():', 1)[1].split('\n    def ', 1)[0]
+    assert "state.pop('climb_interrupted', False)" in back
+    assert '_climb_now()' in back
+    assert "state.pop('optimize_interrupted', None)" in back
+
+    # Dynamik Opt itself is untouched: the follow under the hand is not gated
+    # on the climb at all, which is why the drag measures the same either way.
+    # Cut at the last line of the function rather than at the next def: the
+    # bounds the two walks are held to are written between the two, so a split
+    # on "def" reads them as part of this one.
+    follow = source.split('def _gfn_follow_step(', 1)[1].split(
+        "_start_background(_work, 'The relaxation under the hand')", 1)[0]
     assert '_climb_owns_the_release' not in follow
+    assert 'climb' not in follow
 
 
-def test_the_climb_stands_still_while_a_hand_is_down():
-    """And is told at the grab, not at the first drag-follow.
+def test_the_toggle_is_a_mode_and_never_lifts_itself():
+    """Auto reads it, so a switch that turns itself off turns Auto off with it.
 
-    A follow message is a tenth of a second away and the climb makes a step
-    every ten milliseconds, so waiting for one is ten steps away from the hand
-    before anything has told the climb a hand arrived.  The grab is the
-    earliest word the page says.
+    Optimize lifts itself when it converges, and that is right for a run: one
+    press, one minimisation.  Climb to TS is not a run.  It is what Auto
+    consults to decide which way a release walks, and it lifted itself the
+    moment a climb converged -- so the next drag was answered by a
+    minimisation, which walked the structure straight back off the saddle it
+    had just found.  Measured on the van-der-Waals complex: 2.316 A after the
+    first release, 3.353 A after the second.
+
+    Dynamik Opt does not turn itself off and neither does Auto.  Nor does this.
     """
     source = EDITOR_SOURCE
-    grab = source.split("if verb == 'gfngrab':", 1)[1].split(
-        "if verb == 'gfnfree':", 1)[0]
-    assert "state['climb_hand_down'] = True" in grab
-    assert "state['climb_was'] = (state.get('climb_showing')" in grab
-    # Cleared by the hand going, whatever else did or did not arrive.
-    free = source.split("if verb == 'gfnfree':", 1)[1].split('\n        if ',
-                                                             1)[0]
-    assert "state.pop('climb_hand_down', None)" in free
-    # The loop stands still rather than stepping.
-    assert "if state.get('climb_hand_down'):" in source
-    # And the structure is put down before the climb is let go, so the first
-    # thing the climb does is take it rather than step once from where it was
-    # standing.  The order is the whole of it, so the order is what is read.
-    handover = source.split("state['climb_hand'] = {", 1)[1].split(
-        '\n        elif ', 1)[0]
-    assert "state.pop('climb_hand_down', None)" in handover
-    # A hand that lands while the climb is reading what it reached -- xtb's
-    # own Hessian is a third of a second, and a hand fits inside that -- keeps
-    # what it made.  Writing the climb's geometry over an edit that came after
-    # it is the one thing an editor may never do.
-    assert "interrupted = (state.pop('climb_hand', None) is not None" in source
-    # And a hand still on the structure counts the same, which is the toggle
-    # being switched off in the middle of a drag.
-    assert "or bool(state.pop('climb_hand_down', None)))" in source
-    assert 'if rows and not interrupted:' in source
-    assert 'You moved the structure while it was finishing' in source
+    climbing = source.split('def _climb_now():', 1)[1].split(
+        '\n    def ', 1)[0]
+    assert 'submit_climb_btn.value = False' not in climbing.split(
+        'def _done():', 1)[1], 'the climb lifted its own toggle again'
+    # It comes up for one reason: the method on screen cannot climb, which is
+    # a press that could never have worked.
+    handler = source.split('def on_submit_climb(change=None):', 1)[1].split(
+        '\n    def ', 1)[0]
+    assert handler.count('submit_climb_btn.value = False') == 1
+    assert '_climb_can_run()' in handler
+    # And standing a run down after a hand does not lift it either -- that
+    # path lifts the Optimize switches, which are runs.
+    stand = source.split('def _stand_down_after_interrupt(note=None):',
+                         1)[1].split('\n    def ', 1)[0]
+    assert 'submit_climb_btn' not in stand
+    assert "state.pop('climb_interrupted', False)" in stand
+
+
+def test_a_stop_keeps_what_it_reached_and_a_hand_keeps_nothing():
+    """The same two answers Optimize gives, told apart the same way.
+
+    Pressing the toggle off is a Stop: what is stopped is what you were
+    looking at, so it lands in the box -- and the run number moves on first,
+    so the frames the stopped walk still had in hand cannot play out over it
+    afterwards.  A hand is not a Stop: the user has made a structure since,
+    and writing what the climb reached over it is the one thing an editor may
+    never do.  Which of the two it was is marked by token, on the walk itself,
+    rather than read off a flag something else may have cleared in between.
+    """
+    source = EDITOR_SOURCE
+    stop = source.split('def _interrupt_gfn():', 1)[1].split(
+        '\n    def ', 1)[0]
+    assert "state['climb_cut'] = state['climb_run']" in stop
+    handler = source.split('def on_submit_climb(change=None):', 1)[1].split(
+        '\n    def ', 1)[0]
+    assert '_claim_the_frame_run()' in handler, 'a Stop must refuse what is in flight'
+    climbing = source.split('def _climb_now():', 1)[1].split(
+        '\n    def on_submit_', 1)[0]
+    assert "if state.get('climb_cut') is not token:" in climbing
+    assert "if state.get('climb_cut') is token:" in climbing
+    # And a toggle switched off in the middle of a drag is a hand too, even
+    # though no grab ever marked this walk as cut: by then it was already
+    # stopped, so there was nothing left for the grab to cut.
+    assert "holding = bool(state.get('gfn_follow'))" in climbing
+    assert 'if rows and not holding:' in climbing
+    assert 'You moved the structure while it was finishing' in climbing
+
+
+def test_a_climb_that_is_going_nowhere_stops_and_says_so():
+    """The minimisation has had a bound since it was written; this had none.
+
+    Measured on the van-der-Waals complex with an aim that named nothing: 24616
+    steps and still walking, a gradient every ten milliseconds for as long as
+    the toggle stayed down.  Nothing ended it, because a climb converges or it
+    does not and there was no third answer.
+
+    Four hundred is the third answer.  It is an order of magnitude above every
+    climb that has finished here -- 11 steps from the path finder's estimate,
+    39 from a dragged geometry, 105 for an unguided one onto a minimum -- and
+    about four seconds of gradients on sixteen atoms.
+    """
+    source = EDITOR_SOURCE
+    assert '_CLIMB_STEPS = 400' in source
+    climbing = source.split('def _climb_now():', 1)[1].split(
+        '\n    def on_submit_', 1)[0]
+    assert 'if walk.steps >= _CLIMB_STEPS:' in climbing
+    # And what it reached is still named, because a saddle search does not
+    # fail -- it succeeds at arriving somewhere.
+    assert 'lines = _climb_verdict(shape, steps, seconds)' in climbing
+    assert 'if steps >= _CLIMB_STEPS:' in climbing
+    assert 'It ran out of steps at ' in climbing
 
 
 def test_the_picture_is_fed_frames_and_never_the_coordinate_box():
@@ -1023,22 +1229,39 @@ def test_the_picture_is_fed_frames_and_never_the_coordinate_box():
 
     A hundred steps a second through the box would be a hundred rebuilds a
     second, which is not a picture of a climb but a slideshow of teardowns.
-    The frames go down the channel the optimiser already uses, and the box is
-    written once at the end.
+    The frames go down the channel the optimiser already uses -- through the
+    same writer, not through a second one that happens to agree -- and the box
+    is written once at the end.
     """
     source = EDITOR_SOURCE
-    # Through the same helper every other writer uses, so the climb is played
-    # at the pace the slider is set to rather than at whatever the page last
-    # heard -- and asked at the write, not at the answer, whether the run it
-    # was prepared for is still the current one.
-    assert 'submit_gfn_frame.value = _frame_payload(r, **fields)' in source
-    assert 'if not _frame_run_is_current(r):' in source
+    # One writer, and both walkers hand their path to it.
+    assert 'def _stream_frames(run_id, frames, *, final=False, follow=False,' \
+        in source
+    climbing = source.split('def _climb_now():', 1)[1].split(
+        '\n    def on_submit_', 1)[0]
+    assert '_stream_frames(run, walked, final=final, follow=True,' in climbing
+    assert 'least_apart=0.04' in climbing, \
+        'a climb makes frames faster than any page is asked to look'
+    optimising = source.split('def _push_frames(frames, final=False):',
+                              1)[1].split('\n        #', 1)[0]
+    assert '_stream_frames(run_id, frames, final=final)' in optimising
+
+    writer = source.split('def _stream_frames(', 1)[1].split(
+        '\n    def ', 1)[0]
     # The window starts where the previous one started, so every frame is sent
     # twice and a read that lands between two writes misses nothing.
-    assert 'start, sent[0], sent[1], sent[2] = sent[0], sent[1], len(walked), now' \
-        in source
-    # And it is held apart, because the climb makes frames far faster than any
-    # page is asked to look.
-    assert 'now - sent[2] < 0.04' in source
-    # The box, once, at the end, with the flag that says the picture has it.
-    assert "'Climbed towards a transition state'), drawn=True)" in source
+    assert "state['gfn_push_start'] = int(state.get('gfn_push_end') or 0)" \
+        in writer
+    # Asked at the write and not at the answer, so a run that has been
+    # replaced cannot draw over what replaced it.
+    assert 'if not _frame_run_is_current(run_id):' in writer
+    # And marked as a follow when no pressed Optimise stands behind it: the
+    # page abandons a queue when that switch is up, which would throw a
+    # climb's whole path away.
+    assert "fields['follow'] = 1" in writer
+
+    # The box, once, at the end -- and told whether the picture has it rather
+    # than assuming so.  Assumed, a climb whose final frames were refused left
+    # the viewer standing on a geometry the box no longer held.
+    assert "'Climbed towards a transition '" in source
+    assert 'drawn=_frame_run_is_current(run))' in source
