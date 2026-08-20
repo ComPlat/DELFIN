@@ -248,15 +248,21 @@ def _wait_for(called, seconds=10.0):
         time.sleep(0.01)
 
 
-def test_a_method_that_can_only_walk_still_offers_the_walk():
+def test_a_method_reached_through_another_program_offers_both_starts():
     """What a box hides must be what cannot run, never what is merely deeper.
 
-    g-xTB is a build of its own: ORCA has no keyword for it and the climb has
-    no gradient it knows how to ask for, so from the structure on screen there
-    is no way up at all -- while two ends still have xtb's own walk between
-    them.  Left to the two boxes to sort out between them the start stood at
-    "what is on screen", found no way, hid the press, and hid with it the only
-    control that could have chosen the start that worked.
+    g-xTB is a build of its own and ORCA has no keyword for it, so for a while
+    there was no way up from the structure on screen at all -- and left to the
+    two boxes to sort out between them, the start stood at "what is on screen",
+    found no way, hid the press, and hid with it the only control that could
+    have chosen the start that worked.
+
+    ORCA publishes ExtOpt, which is its interface to a program it does not
+    know, so the saddle optimiser reaches g-xTB after all and both starts are
+    real again.  The interesting half of this test is therefore not the answer
+    but where it comes from: the box is filled from the same table the run
+    reads, so a route that appears in one appears in the other without anybody
+    remembering to add it twice.
     """
     part, state = _an_editor()
     gxtb = _method(part, 'gxtb')
@@ -265,14 +271,20 @@ def test_a_method_that_can_only_walk_still_offers_the_walk():
     state['scan_ends'] = (_ETHANE, _STRETCHED)
     part.submit_ff_dd.value = gxtb
 
-    assert _values(part.submit_saddle_from) == ['scan']
-    assert not _shown(part.submit_saddle_from)      # one start is not a choice
-    assert _values(part.submit_saddle_how) == ['walk']
-    assert not _shown(part.submit_saddle_how)
+    from delfin.dashboard import climb as _climb
+    from delfin.dashboard import saddle as _saddle
+    assert 'gxtb' in _saddle.SADDLE_METHODS      # through ExtOpt
+    assert 'gxtb' not in _climb.CLIMB_METHODS    # a process per gradient
+    assert _values(part.submit_saddle_from) == ['here', 'scan']
     assert _shown(part.submit_saddle_btn)
-    assert part.submit_saddle_btn.description == 'Find the path'
-    # And the mark stays, because it describes two structures rather than a
-    # program.
+    # By hand is the one way that is still missing, and it is missing for a
+    # measured reason rather than an oversight: a g-xTB gradient is a whole
+    # process, 0.29 s at sixteen atoms against 6 ms, and one exact Hessian is
+    # 17.9 s against 0.55.  So the switch that walks a release uphill stays
+    # off rather than refusing after it has been pressed.
+    assert 'hand' not in _values(part.submit_saddle_how)
+    assert not _shown(part.submit_climb_btn)
+    # And the mark stays, because it describes two structures, not a program.
     assert _shown(part.submit_path_from_btn)
 
 
