@@ -318,6 +318,9 @@ def create_tab(ctx):
     orca_mol_nav_row.add_class('delfin-structure-fs-toolbar')
     # -- state ----------------------------------------------------------
     state = {
+        # Which room the editor is standing in, for a bug report written from
+        # it -- see the same key in the Submit tab.
+        'editor_host': 'ORCA Builder',
         'extra_files': {},
         'last_auto_keywords': '',
         'is_resetting': False,

@@ -476,6 +476,11 @@ def create_tab(ctx):
 
     # -- state ----------------------------------------------------------
     state = {
+        # Which room the editor is standing in, for a bug report written from
+        # it: the same gesture behaves differently over a tab that keeps one
+        # structure and a tab that keeps named blocks of them, so a report
+        # that did not say which is a report that has to be guessed at.
+        'editor_host': 'Submit',
         'converted_xyz_cache': {'smiles': None, 'xyz': None},
         'current_xyz_for_copy': {'content': None},
         'smiles_preview_index': 0,
