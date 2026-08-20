@@ -461,7 +461,22 @@ def _refine_core(syms, P, fixed, arom_targets, max_passes: int, damp: float):
     # Referenz EINMAL, auf dem EINGANGSframe: das ist der Zustand, den der Abstieg nicht
     # verschlechtern darf.  Pro Durchgang neu zu messen hiesse, jede erreichte Verschlechterung
     # sofort zur neuen Norm zu erklaeren -- dann verbietet der Term gar nichts mehr.
-    planar_ref = _walsh_sums(syms, P, adj) if _PLANAR_KEEP else None
+    # ⚠ ZUR AUFRUFZEIT LESEN, NICHT BEIM IMPORT (20.08.2026, teuer gelernt).
+    # `_PLANAR_KEEP` (:51) wird auf MODULEBENE aus der Umgebung gelesen, also EINMAL beim
+    # Import.  Ein `--ab`-Lauf setzt die Achsenvariable aber in einem Prozess, der `refine`
+    # laengst geladen hat -- der ON-Arm bekam den Schalter NIE.  Ergebnis: `pkeep6k` baute
+    # 24/24 Sondensysteme in BEIDEN Armen byte-identisch und starb an der Nullreichweiten-
+    # Sperre (rc=3).  Die Sonde hat nicht versagt, sie hat den Nulltest entlarvt.
+    # Und es erklaert den Widerspruch zur Feuerspur: die zaehlt, dass die ZEILE erreicht
+    # wird (346 von 993 Systemen), nicht dass der SCHALTER wirkt -- zwei verschiedene
+    # Dinge, die sie nicht trennen kann.
+    # ⚠ DASSELBE MUSTER steht zwei Zeilen ueber `_PLANAR_KEEP` bei `_AROM_SEAT` (:48) und
+    # in `_COD_BONDS` (:27).  Wie viele als "Reichweite 0" abgeheftete Achsen daran
+    # gestorben sind, ist eine eigene, billige Frage.
+    # `_PLANAR_TOL` (:53) bleibt bewusst auf Modulebene: es ist ein STELLWERT, kein Schalter,
+    # und `:254` wird ohnehin nur erreicht, wenn `planar_ref` gesetzt ist.
+    planar_ref = (_walsh_sums(syms, P, adj)
+                  if os.environ.get("DELFIN_FFFREE_PLANAR_KEEP", "0") == "1" else None)
     best_loss, _ = _violations(syms, P, bonded, adj, arom_targets, planar_ref)
     if best_loss == 0:
         return P
