@@ -278,6 +278,96 @@ def test_the_rank_one_share_goes_to_zero_where_rank_one_blows_up():
     assert np.isfinite(updated).all()
 
 
+def test_the_climbed_mode_is_looked_for_at_the_soft_end_and_nowhere_else():
+    """Because a Bofill update can grow an eigenvalue no surface has.
+
+    Measured while a climb was running, against a Hessian recomputed exactly
+    at the same geometry: a carried curvature of -1379 where the exact one
+    says +0.34, on a glycylglycine whose hydroxyl proton had been dragged
+    towards the other oxygen.  A spurious mode like that is self-consistent --
+    the overlap test reports 1.00 against it for ever, because Bofill keeps
+    reinforcing what it invented -- so the guard cannot be the overlap.  It
+    has to be the mode's *place in the ordering*, which is what every
+    implementation of Baker's mode following uses: geomeTRIC hard-codes the
+    climbed mode as the lowest and optking refuses anything else outright.
+
+    Here the reference vector is deliberately the stiffest mode in the list,
+    which is what a hand dragging a proton along an O-H bond looks like to an
+    unrestricted search.  With the window it is not chosen.
+    """
+    curvature = np.diag([-0.4, 0.2, 0.6, 1.2, 3.0, 9.0, 40.0])
+    gradient = np.array([0.05, 0.01, 0.03, -0.02, 0.01, 0.02, 0.04])
+    stiffest = np.zeros(7)
+    stiffest[6] = 1.0
+
+    # Unrestricted -- which is what this did before it was measured -- the
+    # stiffest mode is followed and the step goes uphill along it.
+    wide = climb.partitioned_step(curvature, gradient, stiffest, within=0)
+    assert wide['curvature'] == pytest.approx(40.0)
+    assert wide['step'][6] * gradient[6] > 0, wide['step']
+
+    # With the window, the search never reaches it: the best of the softest
+    # five is taken, and the mode climbed has a curvature a molecule has.
+    narrow = climb.partitioned_step(curvature, gradient, stiffest)
+    assert narrow['curvature'] <= curvature[climb.AIM_WITHIN - 1,
+                                            climb.AIM_WITHIN - 1]
+    assert narrow['step'][6] * gradient[6] < 0, narrow['step']
+    # And the window is the one the module says it is.
+    assert climb.AIM_WITHIN == 5
+
+
+@_needs_xtb
+def test_the_hessian_is_computed_again_rather_than_updated_for_ever():
+    """ORCA's ``Recalc_Hess``, which is what the button next door is given.
+
+    :mod:`saddle` writes ``Recalc_Hess 5`` into every OptTS it runs, and
+    pysisyphus says the same thing in its own documentation: "when the Hessian
+    for the chosen computational method is reasonably cheap it is a good idea
+    to recalculate it periodically; between recalculations it's updated using
+    the Bofill update".  What it defends against was measured rather than
+    taken on trust -- see :data:`climb.HESSIAN_EVERY` for the drift numbers,
+    of which the shortest is that a Bofill Hessian carries one to two negative
+    eigenvalues the exact Hessian at the same geometry does not have.
+
+    This pins the bookkeeping rather than the chemistry: that a refresh
+    happens on the interval, that it is not repeated for a step that was
+    refused, and that a climb cannot spend Hessians for ever.  What the
+    refresh buys is measured in
+    :func:`test_the_hand_names_the_mode_and_that_is_what_helps`, whose three
+    drags now converge in 23, 22 and 23 steps against 42, 39 and 37.
+    """
+    assert climb.HESSIAN_EVERY == 20
+    assert climb.MOST_HESSIANS == 8
+
+    walk = climb.Climb(_ESTIMATE, 'gfn2')
+    try:
+        # Counted rather than timed: a Hessian is 6N gradients, and on this
+        # box that is 0.55 s at sixteen atoms against 9 ms for a step -- a
+        # number that moves with the machine, where the count does not.
+        walk.hessian = np.eye(3 * len(walk.symbols))
+        walk.energy, walk.gradient = walk._measure(walk.bohr)
+        walk.steps = climb.HESSIAN_EVERY
+        walk.hessians = climb.MOST_HESSIANS
+        before = int(walk.engine.calls)
+        walk.step()
+        # Out of Hessians: one gradient for the step and nothing more.
+        assert int(walk.engine.calls) - before <= 2, walk.engine.calls
+
+        walk.hessians = 0
+        walk.steps = climb.HESSIAN_EVERY
+        walk._exact_at = -1
+        before = int(walk.engine.calls)
+        walk.step()
+        spent = int(walk.engine.calls) - before
+        # Central differences: two gradients per Cartesian, so 6N of them,
+        # and then the step's own -- unless the step was refused, which is
+        # why this is a floor rather than an equality.
+        assert spent >= 6 * len(walk.symbols), spent
+        assert walk.hessians == 1
+    finally:
+        walk.close()
+
+
 def test_a_method_with_a_basis_set_is_refused_and_named_as_a_job():
     """The same three methods the press next door offers, for the same reason.
 
@@ -493,22 +583,31 @@ def test_the_hand_names_the_mode_and_that_is_what_helps():
     drag in the viewer leaves.  From each, two climbs that differ in one
     thing: whether the climb is told which way the structure was moved.
 
-    Told, all three reach the Diels-Alder saddle -- 42, 39 and 37 steps for
+    Told, all three reach the Diels-Alder saddle -- 23, 22 and 23 steps for
     drags of 0.80, 0.95 and 1.10 A -- at 2.315 A on both forming bonds, one
-    imaginary mode near -394 cm-1, within 0.008 A RMSD of what ORCA reaches.
-    Not told, every one of them climbs the *lowest* mode instead, which is the
-    two fragments rocking against each other, and walks back down to the
-    van-der-Waals complex 0.43 to 0.66 A away with no imaginary mode at all.
+    imaginary mode near -394 cm-1, within 0.002 A RMSD of what ORCA reaches.
+    Not told, the shallower two climb the *lowest* mode instead, which is the
+    two fragments rocking against each other, and walk back down to the
+    van-der-Waals complex 0.43 A away with no imaginary mode at all.
+
+    The deepest drag is the exception and it is worth keeping rather than
+    hiding: at 1.10 A the ethene has already been placed at the separation the
+    saddle has, so the lowest mode *is* the reaction mode and an unaimed climb
+    reaches the saddle too -- in 41 steps against 23.  It did not before the
+    exact Hessian was recomputed along the way, which is a second measurement
+    of what that recomputation is worth.  So the pull is tested at the depths
+    where the answer is in doubt, which is where a hand is actually needed.
 
     So what a pull contributes is not force.  It is the answer to "which
     reaction", and the climb reads it as the Hessian eigenvector that most
-    resembles the direction the structure was dragged.  That is Baker's mode
+    resembles the direction the structure was dragged -- among the softest
+    few, for the reason :data:`climb.AIM_WITHIN` gives.  That is Baker's mode
     following with the reference mode seeded by the user instead of by an
     index, which is the same thing ORCA offers as ``TS_Mode {B 0 1}`` and a
     great deal easier to say with a mouse.
     """
     orca = _where(_ORCA_SADDLE)
-    for depth in (0.95, 1.1):
+    for depth in (0.80, 0.95):
         moved = _dragged(depth)
         guided = climb.climb_to_saddle(moved, 'gfn2', aimed_from=_COMPLEX,
                                        max_steps=200)
@@ -523,7 +622,8 @@ def test_the_hand_names_the_mode_and_that_is_what_helps():
         assert -450 < guided['imaginary']['modes'][0] < -330, \
             (depth, guided['imaginary'])
 
-        # And the same structure, unaimed, does not get there.
+        # And the same structure, unaimed, does not get there: at these two
+        # depths the lowest mode is the fragments rocking, not the reaction.
         there = _where(alone['xyz'])
         assert _rmsd(there, orca) > 0.2, (depth, _rmsd(there, orca))
         assert alone['imaginary']['count'] != 1 \
