@@ -2465,6 +2465,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         """
         run = int(state.get('gfn_run', 0)) + 1
         state['gfn_run'] = run
+        # A path put down by an earlier Stop and never claimed -- the page
+        # never said where the picture stood -- belongs to a run that is over.
+        # Left lying, it would be cut by the next Stop's frame number.
+        state.pop('gfn_stopped_path', None)
         return run
 
     def _stream_frames(run_id, frames, *, final=False, follow=False,
@@ -2551,6 +2555,40 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             submit_gfn_frame.value = _frame_payload(run_id, **fields)
 
         schedule_ui_update(_write)
+
+    def _halt_the_frames(run_id):
+        """Tell the page the run it is playing has been switched off.
+
+        One halt for both optimisers, because a Stop means one thing: the
+        picture keeps the frame it is showing and drops what was computed past
+        it.  The page cannot work that out for itself -- a run that ends and a
+        run that is stopped look identical from there -- so it has to be told,
+        and the climb never told it.  Measured on a climb stopped at frame 13
+        of 117 with the slider at twelve a second: 509 more draws afterwards,
+        frames 14 through 116, nine seconds of trajectory playing out over a
+        structure nothing was calculating any more.  That is "ein Stop von
+        Climb to TS laesst die ganze restliche Trajektorie noch nachspielen".
+
+        Addressed to the run that is playing and not to whatever is current.
+        The number has already moved on by the time this goes out -- moving it
+        is what refuses the frames the stopped run still has in hand -- and a
+        halt naming the newer run would clear *its* queue instead.
+
+        Once per run.  A hand that interrupts marks it sent without sending
+        anything, because an abandoned run is not a stopped one: its frames
+        must not be landed on at all, and it says so with a run number the
+        page has never seen.
+        """
+        if state.get('gfn_halt_sent'):
+            return False
+        state['gfn_halt_sent'] = True
+        # Through _frame_payload like every other write on this channel, so
+        # the pace rides with it too.  Written by hand it was the one payload
+        # that carried none.
+        schedule_ui_update(
+            lambda: setattr(submit_gfn_frame, 'value',
+                            _frame_payload(run_id, halt=1, frames=[])))
+        return True
 
     def _install_gfn_frame_watcher():
         """Teach the page to play the trajectory, once.
@@ -2676,6 +2714,23 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '      if(hit) return hit;\n'
             '    }\n'
             '    return null;\n'
+            '  }\n'
+            '  function inScopeAll(selector){\n'
+            '    /* Every match, not the first.  A class worn by one element\n'
+            '       can be read with inScope; a class worn by three cannot,\n'
+            '       and the switch class is worn by three -- Optimize,\n'
+            '       Optimize all and Climb to TS.  Taking the first found\n'
+            '       asked only about Optimize, so a path started by either of\n'
+            '       the other two read as a run whose switch was up. */\n'
+            '    var out=[];\n'
+            '    var roots=document.querySelectorAll("."+scope);\n'
+            '    for(var i=0;i<roots.length;i++){\n'
+            '      var hits=roots[i].querySelectorAll(selector);\n'
+            '      for(var k=0;k<hits.length;k++) out.push(hits[k]);\n'
+            '    }\n'
+            '    var loose=document.querySelectorAll("."+scope+selector);\n'
+            '    for(var j=0;j<loose.length;j++) out.push(loose[j]);\n'
+            '    return out;\n'
             '  }\n'
             '  function setWall(w,reach){\n'
             '    var api=window.__delfinSubmitManip;\n'
@@ -3005,16 +3060,27 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '    return btn.classList.contains("mod-active");\n'
             '  }\n'
             '  function switchIsOn(){\n'
-            '    /* ipywidgets marks a pressed toggle with mod-active.  Reading\n'
+            '    /* Whether a walk of this structure still has a switch behind\n'
+            '       it.  One question for all of them: Optimize walks down,\n'
+            '       Optimize all walks down through a set and Climb to TS\n'
+            '       walks up, and what the page does when the switch goes up\n'
+            '       is the same in every case -- drop what was computed past\n'
+            '       the picture and keep the frame on screen.  The climb was\n'
+            '       not on this list, so it had to be marked as a followed\n'
+            '       hand to survive here at all, and that mark is what took\n'
+            '       its playback off the slider.\n'
+            '\n'
+            '       ipywidgets marks a pressed toggle with mod-active.  Reading\n'
             '       it here is instant; asking the kernel costs a round trip,\n'
             '       and the picture ran on for the length of it. */\n'
-            '    var holder=inScope(".submit-optimize-switch")'
-            '||(document.querySelector("."+scope+".submit-optimize-switch"));\n'
-            '    if(!holder) return true;\n'
-            '    var btn=(holder.tagName==="BUTTON")?holder'
-            ':holder.querySelector("button");\n'
-            '    if(!btn) return true;\n'
-            '    return btn.classList.contains("mod-active");\n'
+            '    var held=inScopeAll(".submit-optimize-switch");\n'
+            '    if(!held.length) return true;\n'
+            '    for(var i=0;i<held.length;i++){\n'
+            '      var btn=(held[i].tagName==="BUTTON")?held[i]\n'
+            '        :held[i].querySelector("button");\n'
+            '      if(btn&&btn.classList.contains("mod-active")) return true;\n'
+            '    }\n'
+            '    return false;\n'
             '  }\n'
             '  function frame(now){\n'
             '    /* An atom picked up while xtb is running: the kernel is told\n'
@@ -5362,6 +5428,75 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             f'{json.dumps(submit_scope_id)});'
         )
 
+    def _frame_as_xyz(source, walked, shown, comment):
+        """One frame of a walked path, as a structure, or ``None``.
+
+        *shown* is the page's count of the frames it has drawn, so the frame
+        the picture is standing on is the one before it.  The arithmetic is
+        here and nowhere else: it was written out three times -- the
+        optimisation's Stop, the optimisation cut off by a hand, and now the
+        climb -- and three copies of an off-by-one is three chances to hand
+        back a geometry nobody was looking at.
+        """
+        walked = list(walked or [])
+        if not isinstance(shown, int) or not (0 < shown <= len(walked)):
+            return None
+        symbols = [line.split()[0] for line in _gfn.atom_lines(source or '')]
+        frame = walked[shown - 1]
+        if not symbols or len(symbols) * 3 != len(frame):
+            return None
+        return xyz_document(
+            [xyz_line(symbols[i], frame[3 * i], frame[3 * i + 1],
+                      frame[3 * i + 2]) for i in range(len(symbols))],
+            comment)
+
+    def _the_picture_stopped_here(run_id, source, walked, comment):
+        """Put a stopped run's path down, to be cut where the picture stands.
+
+        A Stop means the frame on screen, and the only thing that knows which
+        frame that is is the page: it is the page that draws them.  It says so
+        on the channel it says everything else on -- "stopped at frame 24" --
+        and that message and the worker noticing it was stopped are two
+        answers racing each other.  A climb takes a step every ten
+        milliseconds and hears the switch inside one of them, so it finishes
+        long before a round trip to the browser and back; an xtb round is
+        seconds, so it usually loses the same race instead.  Neither order may
+        decide what the user is left with, so the path is put down here and
+        whichever of the two arrives second lands it.
+
+        *run_id* is kept for nothing but the record: the number has moved on,
+        which is exactly why the ordinary write at the end of a run is refused
+        and this one is not.  What is written is the geometry the user is
+        looking at, not one the run computed past it.
+        """
+        state['gfn_stopped_path'] = {
+            'run': int(run_id or 0), 'source': source or '',
+            'comment': comment,
+            'frames': [list(one) for one in (walked or [])],
+        }
+        return _land_the_stopped_frame()
+
+    def _land_the_stopped_frame():
+        """Write the frame the picture stopped on, once both halves are in.
+
+        Called from the worker that was stopped and from the page's report,
+        and it does its work for whichever of the two is second.  Marked as
+        already drawn, because it is: the picture is standing on that frame,
+        and rebuilding the viewer around it would tear down a playback that
+        has correctly stopped there.
+        """
+        held = state.get('gfn_stopped_path')
+        if not held:
+            return False
+        text = _frame_as_xyz(held.get('source'), held.get('frames'),
+                             state.get('gfn_shown_frame'),
+                             held.get('comment') or
+                             'stopped at the frame on screen')
+        if text is None:
+            return False
+        state.pop('gfn_stopped_path', None)
+        return _write_coords(text, drawn=True)
+
     #: How long to wait after the last change before starting again.  Letting
     #: go of an atom arrives as a burst -- the release, then the coordinates,
     #: sometimes a settled version behind them -- and starting on the first of
@@ -5410,6 +5545,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             state['optimize_interrupted'] = token
         # No halt report: "stopped at frame 12" belongs to the switch.
         state['gfn_halt_sent'] = True
+        # And no landing either.  A run a hand cut off has its own answer --
+        # the geometry the user has just made -- and a path waiting to be cut
+        # at a frame number would be written over it.
+        state.pop('gfn_stopped_path', None)
         # A run number the page has never seen, carrying nothing.  It resets
         # the player, so the frames of the abandoned run cannot play out over
         # the geometry the user has just made.
@@ -5691,7 +5830,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # to None itself and then lifts the switch, and moving
                     # the number there would refuse its own final write --
                     # which is the one frame that has to land.
-                    state['gfn_run'] = int(state.get('gfn_run', 0)) + 1
+                    #
+                    # Through the one function that hands out run numbers, so
+                    # a Stop here and a Stop on the climb move the counter the
+                    # same way and clear the same things behind them.
+                    _claim_the_frame_run()
                 return
         elif not button.value:
             return
@@ -5780,13 +5923,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['optimize_run'] = token
 
         def _stopped():
+            """Whether this run is still the one, and the page told if not.
+
+            The same two lines the climb's loop reads, through the same halt:
+            one Stop, one thing it means.
+            """
             halted = state.get('optimize_run') is not token
-            if halted and not state.get('gfn_halt_sent'):
-                state['gfn_halt_sent'] = True
-                schedule_ui_update(
-                    lambda: setattr(submit_gfn_frame, 'value',
-                                    json.dumps({'run': run_id, 'halt': 1,
-                                                'frames': []})))
+            if halted:
+                _halt_the_frames(run_id)
             return halted
 
         # The run this one replaces, taken before it is overwritten below.
@@ -5917,20 +6061,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         # Stop means the frame that was on screen.  xtb runs
                         # ahead of the picture, and geometries nobody saw are
                         # not what the user stopped at.
-                        shown = state.get('gfn_shown_frame')
-                        walked = outcome['frames']
-                        if isinstance(shown, int) and 0 < shown <= len(walked):
-                            symbols = [line.split()[0]
-                                       for line in _gfn.atom_lines(xyz)]
-                            frame = walked[shown - 1]
-                            if len(symbols) * 3 == len(frame):
-                                rows = [
-                                    xyz_line(symbols[i], frame[3*i],
-                                             frame[3*i+1], frame[3*i+2])
-                                    for i in range(len(symbols))
-                                ]
-                                kept = (f'{len(rows)}\nstopped at the frame on '
-                                        f'screen\n' + '\n'.join(rows) + '\n')
+                        kept = _frame_as_xyz(
+                            xyz, outcome['frames'],
+                            state.get('gfn_shown_frame'),
+                            'stopped at the frame on screen') or kept
                     results.append((kept,) + tuple(item[1:]))
                     if gfn and outcome.get('frames') and position == 0:
                         trail[0] = outcome['frames']
@@ -5964,20 +6098,29 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # together if a drag happened to push the browser's model
                     # over.  Taking hold and letting go without moving left
                     # them apart.
-                    shown = state.get('gfn_shown_frame')
-                    walked = trail[0]
-                    if (isinstance(shown, int) and walked
-                            and 0 < shown <= len(walked)):
-                        symbols = [line.split()[0]
-                                   for line in _gfn.atom_lines(single or '')]
-                        frame = walked[shown - 1]
-                        if symbols and len(symbols) * 3 == len(frame):
-                            _write_coords(xyz_document(
-                                [xyz_line(symbols[i], frame[3 * i],
-                                          frame[3 * i + 1], frame[3 * i + 2])
-                                 for i in range(len(symbols))],
-                                'stopped where you took hold'), drawn=True)
+                    text = _frame_as_xyz(single or '', trail[0],
+                                         state.get('gfn_shown_frame'),
+                                         'stopped where you took hold')
+                    if text is not None:
+                        _write_coords(text, drawn=True)
                     return
+                if _stopped():
+                    # A Stop keeps the frame the picture stopped on, and it
+                    # keeps it in the box as well as on the screen.  The
+                    # ordinary write at the end of a run is refused here --
+                    # the run number moved on at the Stop, which is what
+                    # refuses the frames the run still had in hand -- and
+                    # refused with them was the one geometry that is not
+                    # stale: the one the user is looking at.  Measured, a Stop
+                    # left the picture standing at frame 14 and the box
+                    # holding the structure the run had started from, so Copy,
+                    # Submit, Undo and the next press all read a geometry that
+                    # was not on the screen.
+                    #
+                    # Put down rather than written, because which frame it is
+                    # comes from the page: see _the_picture_stopped_here.
+                    _the_picture_stopped_here(run_id, single or '', trail[0],
+                                              'stopped at the frame on screen')
                 # A run is one xtb --opt, and xtb's optimiser has a cycle limit
                 # of its own: when it reaches it, it hands back the geometry it
                 # got to and reports that it did not converge.  That was taken
@@ -7084,9 +7227,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # No optimisation to end, but a settle or a scan may still have
             # frames to push. A run number the page has never seen resets the
             # player and makes every one of them stale.
-            blank = int(state.get('gfn_run', 0)) + 1
-            state['gfn_run'] = blank
-            submit_gfn_frame.value = json.dumps({'run': blank, 'frames': []})
+            #
+            # Through the one function that hands them out, which also drops a
+            # path a Stop put down and the page has not yet cut: an undo is
+            # the one gesture where a geometry from before it must not arrive
+            # afterwards, and that path would arrive on the page's next word.
+            blank = _claim_the_frame_run()
+            submit_gfn_frame.value = _frame_payload(blank, frames=[])
         else:
             # The switch goes back up with the run. It is not coming back by
             # itself -- nothing restarts it, because what replaced the
@@ -7325,6 +7472,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     state['gfn_shown_frame'] = int(str(payload).rsplit(' ', 1)[1])
                 except ValueError:
                     pass
+                else:
+                    # The other half of a Stop.  The run that was stopped has
+                    # put its path down and cannot cut it, because only the
+                    # page knows where the picture got to; this is the page
+                    # saying so.  Whichever of the two arrives second lands
+                    # the geometry, so the answer does not depend on a race
+                    # between a browser and an optimiser -- and the two run at
+                    # opposite speeds, a climb finishing inside ten
+                    # milliseconds and an xtb round taking seconds.
+                    _land_the_stopped_frame()
             # The same two rows the follow step writes, and the spinner with
             # them while there is a calculation behind it -- this line and that
             # one are the same message, not two taking turns.
@@ -8622,12 +8779,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return
         if not submit_climb_btn.value:
             if state.get('climb_run') is not None:
-                # Pressed while it was still walking, so this is a Stop.  The
-                # run number moves on and every write the stopped run still
-                # has in hand is refused: it has frames computed and not yet
-                # sent, and writing them afterwards puts the player back where
-                # that window began.  What it reached still lands, in the box,
-                # and the box redraws because the frames no longer can.
+                # Pressed while it was still walking, so this is a Stop, and
+                # the same one Optimise's switch is: the run number moves on,
+                # which refuses every write the stopped run still has in hand,
+                # and the loop hears it and halts the page.  What is kept is
+                # the frame the picture is standing on -- the steps it walked
+                # past that one were never seen and were not chosen.
                 _claim_the_frame_run()
             state['climb_run'] = None       # the loop reads this and stops
             state.pop('climb_interrupted', None)
@@ -8700,6 +8857,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # then held the number through a drag.
         run = _claim_the_frame_run()
         state['climb_frame_run'] = run
+        # The same two things the minimisation clears when it claims a run.
+        # A halt marked as already sent -- by the very grab that brought this
+        # climb back -- would swallow this run's own Stop, and a frame number
+        # left over from an earlier grab is a plausible index into a path that
+        # was walked by something else.
+        state['gfn_halt_sent'] = False
+        state.pop('gfn_shown_frame', None)
         said = ('Carrying on from where you let go...' if aimed_from
                 else 'Climbing to a transition state; drag an atom to point '
                      'it somewhere...')
@@ -8711,24 +8875,55 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             """The same writer the minimisation uses, held further apart.
 
             A climb makes a hundred frames a second where xtb's optimiser
-            makes a few, and every write is a message.  Marked as a follow
-            because no pressed Optimise stands behind it: the page abandons a
-            queue when that switch is up, and without the mark it would throw
-            the climb's path away as soon as it had queued any of it.
+            makes a few, and every write is a message.
+
+            Not marked as a follow.  It was, and for one reason only: the page
+            abandons a queue when the Optimise switch is up, and nothing on
+            the page knew that Climb to TS is a switch too, so the mark was
+            what kept the climb's path from being thrown away.  It cost the
+            slider.  A followed hand is paced by how fast xtb answers -- that
+            is what the mark means to the player -- so at the top of the
+            slider the climb was drawn at its arrival rate, one frame an
+            animation frame, while the minimisation next to it drained
+            everything that had arrived.  Measured over the same release,
+            Speed 60: the minimisation drew 56 frames in 3 draws and never had
+            anything in hand, the climb drew 113 in 71 and always did.  The
+            page reads the climb's own switch now -- see switchIsOn -- so the
+            mark is not needed and the two are paced by one rule.
             """
-            _stream_frames(run, walked, final=final, follow=True,
-                           least_apart=0.04)
+            _stream_frames(run, walked, final=final, least_apart=0.04)
 
         def _work():
             began = time.time()
             walk = None
             shape, rows = None, []
             steps, seconds = 0, 0.0
+            # Whether the switch ended this, which is a different ending from
+            # both of the other two: a run that arrived somewhere has a result
+            # to name, one that failed has a reason, and one that was stopped
+            # has neither -- it has the frame the user was looking at.
+            switched_off = [False]
+
+            def _stopped():
+                """Whether this walk is still the one, and the page told if not.
+
+                The same two lines the minimisation's loop reads, through the
+                same halt: one Stop, one thing it means.  The climb had no
+                such line at all -- it stopped walking and said nothing -- so
+                the page went on drawing the path it already held.  Measured,
+                a Stop at frame 13 of 117 with the slider at twelve a second
+                drew 509 more times afterwards, frames 14 through 116.
+                """
+                halted = state.get('climb_run') is not token
+                if halted:
+                    _halt_the_frames(run)
+                return halted
+
             try:
                 walk = _climb.Climb(xyz, method, charge=charge, uhf=uhf,
                                     solvent=wet)
                 walk.start(aimed_from=aimed_from)
-                while state.get('climb_run') is token:
+                while not _stopped():
                     outcome = walk.step()
                     state['climb_showing'] = walk.xyz()
                     walked.append(walk.frame())
@@ -8754,12 +8949,25 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         # answer that matters -- a saddle search does not fail,
                         # it succeeds at arriving somewhere.
                         break
-                if state.get('climb_cut') is not token:
-                    # Converged, or stopped by the switch: either is a result
-                    # and worth naming.  A climb a hand cut off is not, and
-                    # reading what it reached costs an xtb Hessian -- a third
-                    # of a second and more -- which would be spent while the
-                    # user is dragging.
+                cut_by_a_hand = state.get('climb_cut') is token
+                if cut_by_a_hand or _stopped():
+                    # Nothing to name.  A climb a hand cut off is about a
+                    # structure the user has since replaced, and one the
+                    # switch stopped ended at the frame the picture was
+                    # showing rather than where the walk had got to -- so a
+                    # verdict on where the walk stands is a verdict on a
+                    # geometry nobody is being left with.  Reading it costs an
+                    # xtb Hessian, a third of a second and more, at the exact
+                    # moment the user asked for it to stop.
+                    #
+                    # This is Optimise's Stop, said in the climb's words:
+                    # neither of them reports a result, both keep the frame on
+                    # screen, and the path is put down for the page's own
+                    # report to cut.
+                    if not cut_by_a_hand:
+                        switched_off[0] = True
+                        steps, seconds = walk.steps, time.time() - began
+                else:
                     _push(final=True)
                     shape = walk.verdict()
                     steps, seconds = walk.steps, time.time() - began
@@ -8785,6 +8993,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     return
                 if state.get('climb_run') is token:
                     state['climb_run'] = None
+                if switched_off[0]:
+                    # The switch, not an arrival and not a failure.  What is
+                    # kept is the frame the picture stopped on and not where
+                    # the walk had got to -- the same thing a Stop means to
+                    # the minimisation, put down here for the page's own
+                    # report to cut.
+                    _the_picture_stopped_here(
+                        run, xyz, walked, 'stopped at the frame on screen')
+                    said = (f'The climb stopped at the frame you were looking '
+                            f'at, {steps} step(s) in ({seconds:.1f} s). Press '
+                            f'Climb to TS again to carry on from there.')
+                    state['gfn_last_status'] = said
+                    _set_mol_status(said)
+                    return
                 if shape is None:
                     _set_mol_status('The climb could not run: '
                                     + str(state.pop('climb_error', '')))
@@ -10751,12 +10973,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_reset_btn.on_click(on_submit_reset)
     submit_internal_btn.observe(on_submit_set_internal, names='value')
     submit_internal_value.observe(on_submit_internal_value, names='value')
-    # The page watches this button itself: waiting for the kernel to say the
+    # The page watches these buttons itself: waiting for the kernel to say the
     # switch went off costs a round trip, and the playback ran on for it.
+    #
+    # All three of them, because the page's question is "does a walk of this
+    # structure still have a switch behind it" and three toggles can answer
+    # yes.  Climb to TS was not one of them, so a climb read as a run whose
+    # switch was up and its path was thrown away the moment it was queued --
+    # which is why the climb had to pretend to be a followed hand, and why its
+    # playback then ignored the speed slider.  See switchIsOn.
     submit_optimize_btn.add_class('submit-optimize-switch')
     submit_optimize_btn.observe(on_submit_optimize, names='value')
     submit_optimize_all_btn.add_class('submit-optimize-switch')
     submit_optimize_all_btn.observe(on_submit_optimize_all, names='value')
+    submit_climb_btn.add_class('submit-optimize-switch')
     submit_manip_sync.observe(on_submit_manip_sync, names='value')
 
     # What the force field had to approximate belongs under the structure it

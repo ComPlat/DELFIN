@@ -838,6 +838,47 @@ def test_a_scan_streams_frames_instead_of_rewriting_the_box():
     assert "_write_coords" in body
 
 
+def test_the_rollback_is_drawn_down_the_channel_every_other_frame_uses():
+    """After a crossing the budget refuses every step until the structure is
+    back within 0.25 A of the last geometry it agreed to, so the picture goes
+    between two geometries at the rate the answers arrive.  That is the wall
+    working as designed.  What would not be working is a *second* writer
+    drawing it -- a rollback that reached the viewer by a path of its own would
+    be the thermal budget being a third mode rather than Dynamik Opt with a
+    ceiling on it.
+
+    There is one writer.  The follow writes the frame channel once, at the end
+    of a step, whether the step was allowed or taken back: the geometry that
+    survives is appended to the same trail and goes out under the same run
+    number with the same pace on it.  The box is written once in the same
+    place.  The wall has a field of its own and it carries marks for the
+    browser's hand, never coordinates.
+
+    Measured on a real editor at 298 K against a 22.3 kcal/mol ceiling with an
+    energy costing 30 kcal/mol per angstrom of pull: four answers, four writes,
+    all on run 1, all marked as a follow and all stamped at the slider's pace,
+    the fourth carrying the third's geometry again -- and from there the follow
+    stands still rather than shaking, which costs no xtb call and writes no
+    frames at all.
+    """
+    follow = EDITOR_SOURCE.split("def _gfn_follow_step(", 1)[1].split(
+        "_start_background(_work, 'The relaxation under the hand')", 1)[0]
+    assert follow.count("submit_gfn_frame") == 1, (
+        "the drag has a second frame writer in it")
+    assert follow.count("_write_coords") == 1, (
+        "one write to the box per step, allowed or refused")
+    # Once it is clearly refusing it stands still: no xtb, no frames.
+    assert "if _still_spent(current, holding):" in follow
+    assert "continue" in follow.split(
+        "if _still_spent(current, holding):", 1)[1].split("\n", 6)[5]
+
+    wall = EDITOR_SOURCE.split("def _push_thermal_wall(", 1)[1].split(
+        "\n    def ", 1)[0]
+    assert "submit_gfn_wall" in wall
+    assert "submit_gfn_frame" not in wall, "the wall must not draw geometries"
+    assert "_write_coords" not in wall
+
+
 def test_a_still_hand_holds_what_it_was_already_holding():
     """Nothing changed, so nothing about what is held should change either.
 

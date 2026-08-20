@@ -1237,6 +1237,73 @@ def test_the_release_has_one_path_and_the_optimiser_is_its_parameter():
     assert 'climb' not in follow
 
 
+def test_the_stop_has_one_path_too_and_the_optimiser_is_its_parameter():
+    """"Stop ist wie bei Dynamik Opt aus machen: das Frame, was man sieht."
+
+    The release was unified and the Stop was not, so the climb still had a
+    stop of its own -- and a stop of its own meant it did none of the three
+    things a Stop does.  It never told the page, so the page walked out the
+    rest of the trajectory: measured, a Stop at frame 13 of 117 at twelve
+    frames a second drew 509 more times, frames 14 through 116.  It never
+    cleared the halt mark when it started, so a halt could be swallowed by a
+    grab that happened before it.  And it wrote what the walk had reached into
+    the box, where the minimisation writes the frame the picture stopped on.
+
+    Read here as one path rather than as two that agree: one function tells
+    the page, one function cuts a path at the frame on screen, and both
+    walkers call both.
+    """
+    source = EDITOR_SOURCE
+
+    # One halt, and it names no optimiser.
+    halt = source.split('def _halt_the_frames(run_id):', 1)[1].split(
+        '\n    def ', 1)[0]
+    assert "state.get('gfn_halt_sent')" in halt
+    assert 'submit_gfn_frame' in halt
+    assert '_frame_payload(run_id, halt=1, frames=[])' in halt, \
+        'the halt is a write on the frame channel and is paced like one'
+    # Neither optimiser is named in what it does -- only in what it says about
+    # why it exists.  Read over the code alone, so a comment can go on telling
+    # the story.
+    doing = halt.split('"""', 2)[-1]
+    assert 'climb' not in doing and 'optimize_run' not in doing
+
+    # Both loops ask the same question and get the same answer written.
+    optimising = source.split('def on_submit_optimize(change=None, '
+                              'every_frame=False)', 1)[1].split(
+        '\n    def ', 1)[0]
+    assert '_halt_the_frames(run_id)' in optimising
+    climbing = source.split('def _climb_now():', 1)[1].split(
+        '\n    def on_submit_', 1)[0]
+    assert '_halt_the_frames(run)' in climbing
+    assert 'while not _stopped():' in climbing
+
+    # And both claim their run the same way, which is what clears the halt
+    # mark and the stale frame number for the run that is beginning.
+    assert "state['gfn_halt_sent'] = False" in climbing
+    assert "state.pop('gfn_shown_frame', None)" in climbing
+
+    # One cutter, and the box is written by whichever of the worker and the
+    # page's report arrives second -- they race, and a climb step is ten
+    # milliseconds against an xtb round of seconds.
+    assert 'def _frame_as_xyz(source, walked, shown, comment):' in source
+    assert '_the_picture_stopped_here(' in climbing
+    assert '_the_picture_stopped_here(' in optimising
+    landing = source.split('def _land_the_stopped_frame():', 1)[1].split(
+        '\n    def ', 1)[0]
+    assert "state.get('gfn_shown_frame')" in landing
+    assert '_write_coords(text, drawn=True)' in landing
+    cmd = source.split('def on_submit_cmd(', 1)[1].split('\n    def ', 1)[0]
+    assert '_land_the_stopped_frame()' in cmd
+
+    # A Stop pays for no Hessian either -- a verdict is about where the walk
+    # stands, and where the walk stands is not where the user stopped it.
+    # Measured rather than read:
+    # tests/test_gfn_methods_in_the_viewer.py drives a Stop against a climb
+    # whose verdict() raises, and it passes.
+    assert 'switched_off[0] = True' in climbing
+
+
 def test_the_toggle_is_a_mode_and_never_lifts_itself():
     """Auto reads it, so a switch that turns itself off turns Auto off with it.
 
@@ -1269,11 +1336,11 @@ def test_the_toggle_is_a_mode_and_never_lifts_itself():
     assert "state.pop('climb_interrupted', False)" in stand
 
 
-def test_a_stop_keeps_what_it_reached_and_a_hand_keeps_nothing():
+def test_a_stop_keeps_the_frame_on_screen_and_a_hand_keeps_nothing():
     """The same two answers Optimize gives, told apart the same way.
 
-    Pressing the toggle off is a Stop: what is stopped is what you were
-    looking at, so it lands in the box -- and the run number moves on first,
+    Pressing the toggle off is a Stop: what is kept is the frame you were
+    looking at, and it lands in the box -- and the run number moves on first,
     so the frames the stopped walk still had in hand cannot play out over it
     afterwards.  A hand is not a Stop: the user has made a structure since,
     and writing what the climb reached over it is the one thing an editor may
@@ -1289,8 +1356,11 @@ def test_a_stop_keeps_what_it_reached_and_a_hand_keeps_nothing():
     assert '_claim_the_frame_run()' in handler, 'a Stop must refuse what is in flight'
     climbing = source.split('def _climb_now():', 1)[1].split(
         '\n    def on_submit_', 1)[0]
-    assert "if state.get('climb_cut') is not token:" in climbing
+    assert "cut_by_a_hand = state.get('climb_cut') is token" in climbing
     assert "if state.get('climb_cut') is token:" in climbing
+    # A Stop lands the frame the picture stopped on, which is the same thing
+    # the minimisation's Stop lands and through the same function.
+    assert '_the_picture_stopped_here(' in climbing
     # And a toggle switched off in the middle of a drag is a hand too, even
     # though no grab ever marked this walk as cut: by then it was already
     # stopped, so there was nothing left for the grab to cut.
@@ -1339,9 +1409,15 @@ def test_the_picture_is_fed_frames_and_never_the_coordinate_box():
         in source
     climbing = source.split('def _climb_now():', 1)[1].split(
         '\n    def on_submit_', 1)[0]
-    assert '_stream_frames(run, walked, final=final, follow=True,' in climbing
-    assert 'least_apart=0.04' in climbing, \
-        'a climb makes frames faster than any page is asked to look'
+    assert '_stream_frames(run, walked, final=final, least_apart=0.04)' \
+        in climbing, 'a climb makes frames faster than any page is asked to look'
+    # And not marked as a followed hand.  The mark was there to keep the page
+    # from abandoning the climb's queue -- the page knew only one switch -- and
+    # it cost the speed slider, because a followed hand is paced by how fast
+    # xtb answers rather than by any setting.  The page reads the climb's own
+    # toggle now, so the climb is streamed exactly as a minimisation is.
+    assert 'follow=True' not in climbing, \
+        'the climb is a walked path, not a hand being followed'
     optimising = source.split('def _push_frames(frames, final=False):',
                               1)[1].split('\n        #', 1)[0]
     assert '_stream_frames(run_id, frames, final=final)' in optimising
@@ -1355,9 +1431,8 @@ def test_the_picture_is_fed_frames_and_never_the_coordinate_box():
     # Asked at the write and not at the answer, so a run that has been
     # replaced cannot draw over what replaced it.
     assert 'if not _frame_run_is_current(run_id):' in writer
-    # And marked as a follow when no pressed Optimise stands behind it: the
-    # page abandons a queue when that switch is up, which would throw a
-    # climb's whole path away.
+    # The mark itself stays, for the writers that really are a followed hand:
+    # the drag and the settle behind it have no switch to be read.
     assert "fields['follow'] = 1" in writer
 
     # The box, once, at the end -- and told whether the picture has it rather

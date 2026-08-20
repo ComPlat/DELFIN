@@ -399,11 +399,22 @@ def test_the_frames_go_through_a_widget_not_through_run_js(editor):
     from delfin.dashboard import tab_submit
 
     source = SUBMIT_SOURCE
+    # The field, reached directly or through one of the two functions that
+    # write it.  A halt is a write on the same channel as the frames it stops,
+    # and it used to be built by hand next to them -- which is how it came to
+    # be the one payload carrying no pace, and how the climb came to have no
+    # halt at all.
     for name in ("_gfn_follow_step", "on_submit_optimize(change=None, "
                  "every_frame=False)"):
         body = source.split(f"def {name}")[1].split("\n    def ")[0]
-        assert "submit_gfn_frame" in body, f"{name} does not use the field"
+        assert ("submit_gfn_frame" in body
+                or "_stream_frames(" in body
+                or "_halt_the_frames(" in body), (
+            f"{name} does not use the field")
         assert "setPositions" not in body, "a per-frame run_js is what failed"
+    for writer in ("_stream_frames(run_id, frames, *", "_halt_the_frames("):
+        body = source.split(f"def {writer}")[1].split("\n    def ")[0]
+        assert "submit_gfn_frame" in body, f"{writer} does not use the field"
 
     watcher = source.split("def _install_gfn_frame_watcher")[1].split("\n    def ")[0]
     # ipywidgets writes the DOM value without firing an event, so it is read
@@ -620,7 +631,9 @@ def test_optimise_sends_the_path_for_the_viewer_to_play(editor):
     source = SUBMIT_SOURCE
     handler = source.split("def on_submit_optimize(change=None, every_frame=False)")[1].split("\n    def ")[0]
     assert "outcome.get('frames')" in handler
-    assert "submit_gfn_frame" in handler
+    # Through the one writer both optimisers use, rather than into the field
+    # by hand: see test_every_frame_writer_asks_whether_its_run_is_still_the_one.
+    assert "_stream_frames(run_id, frames, final=final)" in handler
     assert "_install_gfn_frame_watcher" in handler
     # both ways of showing a result rebuild the viewer, and both would tear
     # the playback down
@@ -675,8 +688,15 @@ def test_each_run_is_told_apart_so_a_short_one_still_plays(editor):
     assert "play.seen=0" in watcher
 
     handler = source.split("def on_submit_optimize(change=None, every_frame=False)")[1].split("\n    def ")[0]
-    assert "'run': r" in handler, "every payload has to name its run"
-    assert "state['gfn_run']" in handler
+    # The run is claimed once, when the run begins, and every payload the run
+    # makes is named for it -- the frames and the halt alike, because both are
+    # writes on the same channel and the page tells runs apart by that number.
+    assert "run_id = _claim_the_frame_run()" in handler
+    assert "_stream_frames(run_id, frames, final=final)" in handler
+    assert "_halt_the_frames(run_id)" in handler
+    stamped = source.split("def _frame_payload(run, **fields):")[1]
+    stamped = stamped.split("\n    def ")[0]
+    assert "run=run" in stamped, "every payload has to name its run"
 
 
 def test_leaving_fullscreen_puts_every_member_back():
@@ -735,11 +755,12 @@ def test_the_finished_geometry_does_not_tear_down_the_playback(editor):
     # stays up and swallows the next redraw instead.
     assert "drawn=played[0]" in apply_body
     # the flag has to be set before the write that would re-render
-    # Two writes live in _apply now -- one cuts a run a hand interrupted, the
-    # other ends a finished one -- and this is about the second.  Measured
-    # from where the interrupt block returns, so the anchor cannot drift onto
-    # the wrong one again.
-    finished = apply_body.split("'stopped where you took hold'")[-1]
+    # Three writes live in _apply now -- one cuts a run a hand interrupted,
+    # one keeps the frame a Stop was pressed on, and the third ends a finished
+    # run -- and this is about the third.  Anchored on the comment that opens
+    # the finished-run part rather than on either of the other two, which have
+    # both moved once already and dragged this anchor with them.
+    finished = apply_body.split("# A run is one xtb --opt")[-1]
     assert (finished.index("if played[0]:")
             < finished.index("_write_coords("))
 
@@ -1418,7 +1439,11 @@ def test_the_page_stops_the_picture_without_asking_the_kernel(editor):
     from delfin.dashboard import tab_submit
 
     source = SUBMIT_SOURCE
-    assert "submit_optimize_btn.add_class('submit-optimize-switch')" in source
+    # Every toggle a walk can be running behind, so the page's question is
+    # about the run in front of it rather than about Optimize alone.
+    for switch in ("submit_optimize_btn", "submit_optimize_all_btn",
+                   "submit_climb_btn"):
+        assert f"{switch}.add_class('submit-optimize-switch')" in source
 
     watcher = source.split("def _install_gfn_frame_watcher")[1].split("\n    def ")[0]
     assert "function switchIsOn()" in watcher
@@ -4494,9 +4519,16 @@ def test_an_interrupted_run_leaves_the_frame_that_was_on_screen():
     )[1].split("\n    def ")[0].split("def _apply()")[1]
     cut = apply_body.split("if state.get('optimize_interrupted') is token:")[1]
     cut = cut.split("return")[0]
-    assert "shown = state.get('gfn_shown_frame')" in cut
-    assert "walked = trail[0]" in cut
+    # Through the one cutter.  The arithmetic was written out three times --
+    # here, at a Stop, and in the climb -- and a frame index is one place where
+    # three copies of an off-by-one means three chances to hand back a geometry
+    # nobody was looking at.
+    assert "_frame_as_xyz(single or '', trail[0]," in cut
+    assert "state.get('gfn_shown_frame')" in cut
     assert "'stopped where you took hold'" in cut
+    cutter = SUBMIT_SOURCE.split("def _frame_as_xyz(")[1].split("\n    def ")[0]
+    assert "walked[shown - 1]" in cutter, (
+        "the frame the picture stands on is the one before the count")
     # The path is kept somewhere a cut-short run can still reach it: reading
     # the loop's own name there is a crash in the one place written for a run
     # that ended early.
@@ -4539,7 +4571,7 @@ def test_every_geometry_the_editor_writes_goes_through_the_one_door():
     session."""
     for call in ("_write_coords(xyz_document(lines, f'Settled with {label}')",
                  "xyz_document(lines, 'Optimised in DELFIN viewer')",
-                 "'stopped where you took hold'), drawn=True)"):
+                 "_write_coords(text, drawn=True)"):
         assert call in EDITOR_SOURCE, call
     # No geometry is written beside a hand-raised flag any more.
     assert "state['manip_inflight'] = True\n                    coords_widget" \
@@ -4695,6 +4727,107 @@ def test_a_single_point_leaves_the_geometry_alone():
 def _gfn_source():
     from delfin.dashboard import gfn_optimize
     return gfn_optimize.__file__
+
+
+def _an_editor_over_water(room):
+    """A second Submit tab, so two of them can be driven side by side."""
+    from delfin.dashboard import tab_submit
+
+    room.mkdir(parents=True, exist_ok=True)
+    for name in ("calc", "archive", "office"):
+        (room / name).mkdir(exist_ok=True)
+    ctx = DashboardContext(calc_dir=room / "calc", archive_dir=room / "archive",
+                           office_dir=room / "office")
+    ctx.run_js = lambda _script: None
+    _widget, refs = tab_submit.create_tab(ctx)
+    refs["coords_widget"].value = _WATER
+    return refs
+
+
+def test_the_budget_adds_a_refusal_and_changes_nothing_else_about_a_drag(
+        tmp_path, monkeypatch):
+    """"Warum ist Thermal Opt nicht identisch zu Dynamik Opt?"
+
+    Because it is meant to be: Thermal is Dynamik Opt that additionally
+    refuses what the temperature cannot pay for.  Anything else that differs
+    -- a second frame writer, a release of its own, a run number of its own, a
+    status row that replaces Dynamik Opt's rather than adding to it -- is a
+    second implementation, and a second implementation is what every defect
+    the climb had turned out to be.
+
+    So the same gesture is driven twice on two real editors, with the budget
+    on and off, over an energy that is flat -- nothing is refused, so every
+    difference that shows up is wiring rather than refusal.  What is compared
+    is the stream of writes on the frame channel: the run each carried, the
+    follow mark, the pace stamped on it, and how many frames were in it.
+
+    Measured: identical, write for write.  The only state the budget adds is
+    its own -- the anchor, the method it was measured under, the last geometry
+    it agreed to -- and it takes nothing away.
+    """
+    import json
+    import time as _time
+
+    from delfin.dashboard import tab_submit
+
+    monkeypatch.setattr(tab_submit._gfn, "find_binary", lambda _m=None: "/x/xtb")
+
+    def flat(xyz, method, **kw):
+        return {"ok": True, "xyz": xyz, "energy": -5.0, "converged": True,
+                "frames": [], "status": "converged", "held": None,
+                "seconds": 0.01, "uhf": 0, "multiplicity": 1}
+
+    monkeypatch.setattr(tab_submit._gfn, "optimize_with_gfn", flat)
+
+    def drive(refs, budget):
+        seen: list[str] = []
+        refs["submit_gfn_frame"].observe(
+            lambda c: seen.append(c["new"]), names="value")
+        refs["submit_ff_dd"].value = "gfn2"
+        refs["submit_hand_dd"].value = "pull"
+        refs["submit_relax_btn"].value = True
+        if budget:
+            refs["submit_thermal_btn"].value = True
+            assert _wait_for(
+                lambda: refs["editor_state"].get("thermal_e0") is not None, 10)
+        refs["submit_cmd_sync"].value = "gfngrab:1:0"
+        for turn in range(1, 6):
+            moved = (f"3\nDELFIN drag-follow held=0\n"
+                     f"O {-0.1 * turn:.6f} 0.000000 0.000000\n"
+                     "H 0.960000 0.000000 0.000000\n"
+                     "H -0.240000 0.930000 0.000000\n")
+            refs["submit_manip_sync"].value = moved
+            _time.sleep(0.06)
+        refs["submit_cmd_sync"].value = "gfnfree:2:"
+        _time.sleep(0.3)
+        return [(one.get("run"), one.get("follow"), one.get("pace"),
+                 len(one.get("frames") or []))
+                for one in (json.loads(text) for text in seen if text)]
+
+    plain = drive(_an_editor_over_water(tmp_path / "plain"), budget=False)
+    priced = drive(_an_editor_over_water(tmp_path / "priced"), budget=True)
+
+    # How many answers fit inside a drag moves with the machine, so what is
+    # held here is the shape of the stream and not its length: one run, every
+    # write marked as a follow and stamped with the slider's pace, and a trail
+    # that grows by exactly one answer per write.
+    def shape(stream):
+        return (sorted({run for run, _f, _p, _n in stream}),
+                sorted({(mark, pace) for _r, mark, pace, _n in stream}),
+                [count for _r, _f, _p, count in stream])
+
+    plain_runs, plain_marks, plain_lengths = shape(plain)
+    priced_runs, priced_marks, priced_lengths = shape(priced)
+
+    assert len(plain_lengths) >= 3 and len(priced_lengths) >= 3, (
+        f"the drag barely ran: {plain_lengths} against {priced_lengths}")
+    assert len(plain_runs) == len(priced_runs) == 1, (plain_runs, priced_runs)
+    assert plain_marks == priced_marks, (
+        f"the budget changed how the drag is written: {plain_marks} against "
+        f"{priced_marks}")
+    assert plain_lengths == list(range(1, len(plain_lengths) + 1)), plain_lengths
+    assert priced_lengths == list(range(1, len(priced_lengths) + 1)), \
+        priced_lengths
 
 
 def test_the_thermal_controls_belong_to_xtb_alone(editor, monkeypatch):
@@ -5449,22 +5582,32 @@ const wallField = new FakeField('TEXTAREA');
 const cmdInput = new FakeField('TEXTAREA');
 const cmdWrap = { tagName: 'DIV', querySelector: () => cmdInput };
 
-const flags = { follow: false, optimise: true };
+const flags = { follow: false, optimise: true, all: false, climb: false };
 const button = (name) => ({
   tagName: 'BUTTON',
   classList: { contains: (c) => c === 'mod-active' && flags[name] },
 });
 const followHolder = { tagName: 'DIV', querySelector: () => button('follow') };
-const optHolder = { tagName: 'DIV', querySelector: () => button('optimise') };
+// Three toggles wear the switch class -- Optimize, Optimize all and Climb to
+// TS -- and the page asks all of them whether a walk still has a switch
+// behind it.  A page faked down to one of them cannot tell a rule that reads
+// every switch from one that reads the first.
+const switchNames = ['optimise', 'all', 'climb'];
 
 const root = {
+  querySelectorAll(sel) {
+    if (sel.indexOf('submit-gfn-frame') >= 0) return [frameField];
+    if (sel.indexOf('submit-gfn-wall') >= 0) return [wallField];
+    if (sel.indexOf('submit-cmd-sync') >= 0) return [cmdWrap];
+    if (sel.indexOf('submit-gfn-follow') >= 0) return [followHolder];
+    if (sel.indexOf('submit-optimize-switch') >= 0)
+      return switchNames.map((n) => ({ tagName: 'DIV',
+                                       querySelector: () => button(n) }));
+    return [];
+  },
   querySelector(sel) {
-    if (sel.indexOf('submit-gfn-frame') >= 0) return frameField;
-    if (sel.indexOf('submit-gfn-wall') >= 0) return wallField;
-    if (sel.indexOf('submit-cmd-sync') >= 0) return cmdWrap;
-    if (sel.indexOf('submit-gfn-follow') >= 0) return followHolder;
-    if (sel.indexOf('submit-optimize-switch') >= 0) return optHolder;
-    return null;
+    const many = root.querySelectorAll(sel);
+    return many.length ? many[0] : null;
   },
 };
 
@@ -5527,6 +5670,8 @@ for (tick = 0; tick < spec.ticks; tick += 1) {
     }
     if (ev.follow !== undefined) flags.follow = ev.follow;
     if (ev.optimise !== undefined) flags.optimise = ev.optimise;
+    if (ev.all !== undefined) flags.all = ev.all;
+    if (ev.climb !== undefined) flags.climb = ev.climb;
     if (ev.pace !== undefined) play.pace = ev.pace;
   }
   const cb = pending;
@@ -5722,6 +5867,160 @@ def test_a_stop_with_the_picture_behind_stays_where_it_stopped(
     reached = _reached(got['drawn'])
     assert _never_goes_back(got['drawn']), reached
     assert max(reached) == 19, reached
+
+
+def _after(got, when_ms):
+    """The frames drawn after that moment on the simulated clock."""
+    return [value for value, at in zip(got['drawn'], got['stamps'])
+            if at > when_ms]
+
+
+def _a_walk_and_a_stop(*, switch, at_tick=40, halt=True, pace=83):
+    """One walk of eighty frames, and its own switch coming up at *at_tick*.
+
+    The same payloads whichever switch is behind them, because that is the
+    thing being tested: a climb and a minimisation are one path walked in two
+    directions, and the page has no business telling them apart.
+    """
+    events = [{'tick': 0, 'pace': pace, 'optimise': switch == 'optimise',
+               'climb': switch == 'climb'}]
+    window = _Window(1)
+    for at, walked in ((4, 20), (10, 40), (16, 60), (22, 80)):
+        events.append({'tick': at, 'payload': window.push(walked)})
+    events.append({'tick': at_tick, switch: False})
+    if halt:
+        # The kernel hears a step later than the page does and says so.
+        events.append({'tick': at_tick + 2,
+                       'payload': {'run': 1, 'halt': 1, 'frames': []}})
+    # And the write the stopped run still had in hand, arriving after both.
+    events.append({'tick': at_tick + 6, 'payload': window.push(80, final=True)})
+    return events
+
+
+@_needs_node
+def test_a_stop_of_the_climb_is_the_stop_a_minimisation_gets(
+        player_program, tmp_path):
+    """The same eighty frames, stopped by Climb to TS and by Optimize.
+
+    "Ein Stop von Climb to TS laesst die ganze restliche Trajektorie noch
+    nachspielen."  It did, and for one reason: the page abandons a queue when
+    the switch behind it goes up, and the only switch it knew about was
+    Optimize.  The climb therefore had to mark its frames as a followed hand
+    to survive at all -- and a followed hand is exactly the thing that is
+    never abandoned, so nothing stopped it.  The kernel said nothing either:
+    the minimisation writes a halt when it notices the switch, and the climb
+    had no such line.
+
+    Driven in node, both switches taken up at the same tick over the same
+    path, at twelve frames a second::
+
+        Optimize     ... 10, 11, 12, 13   and nothing after
+        Climb to TS  ... 10, 11, 12, 13   and nothing after
+
+    Read as frame numbers rather than as counts, because "the rest played out"
+    is a statement about which frames were drawn.
+    """
+    stop_ms = 40 * (1000.0 / 60.0)
+    traces = {}
+    for switch in ('optimise', 'climb'):
+        got = _drive(tmp_path, player_program,
+                     _a_walk_and_a_stop(switch=switch), ticks=400)
+        traces[switch] = got
+        reached = _reached(got['drawn'])
+        assert _never_goes_back(got['drawn']), reached
+        assert not _reached(_after(got, stop_ms)), (
+            f'{switch}: the rest of the trajectory played out -- '
+            f'{_reached(_after(got, stop_ms))}')
+        assert got['play']['stopped'] == 1, switch
+        assert got['play']['queue'] == 0, switch
+
+    assert (_reached(traces['optimise']['drawn'])
+            == _reached(traces['climb']['drawn'])), (
+        'the same path stopped at the same moment drew two different things')
+
+
+@_needs_node
+def test_the_page_stops_the_climb_before_the_kernel_can_say_anything(
+        player_program, tmp_path):
+    """The halt is the second of two answers, not the only one.
+
+    The page reads the toggle itself, which is instant; the kernel's halt is a
+    round trip behind it.  Both have to be enough on their own, or a Stop is
+    only as good as whichever arrives -- so this drives the climb's switch
+    with no halt written at all.
+    """
+    stop_ms = 40 * (1000.0 / 60.0)
+    got = _drive(tmp_path, player_program,
+                 _a_walk_and_a_stop(switch='climb', halt=False), ticks=400)
+    assert not _reached(_after(got, stop_ms)), _reached(_after(got, stop_ms))
+    assert got['play']['queue'] == 0
+
+
+@_needs_node
+def test_the_slider_reaches_the_climb_exactly_as_it_reaches_a_minimisation(
+        player_program, tmp_path):
+    """"Und Speed brauchen wir auch."
+
+    The climb's frames were marked as a followed hand, and that mark means
+    something to the player: a hand is paced by how fast xtb answers, because
+    no setting makes xtb answer faster.  A walked path is not, and the climb
+    is a walked path.  Measured over one recorded release at the top of the
+    slider, before this: the minimisation drew 56 frames in 3 draws with
+    nothing ever in hand, the climb drew 113 in 71 and always had 1 to 4
+    waiting -- one frame an animation frame, which is the arrival rate and not
+    "everything that has arrived".
+
+    Both ends of the slider, both switches, the same payloads: what is drawn
+    has to be the same list at the same moments.
+    """
+    for pace in (83, 0):                        # Speed 12, and Speed 60
+        got = {}
+        for switch in ('optimise', 'climb'):
+            got[switch] = _drive(
+                tmp_path, player_program,
+                _a_walk_and_a_stop(switch=switch, at_tick=300, pace=pace),
+                ticks=400)
+        assert got['optimise']['drawn'] == got['climb']['drawn'], (
+            f'pace {pace}: the climb is drawn differently from the '
+            f'minimisation over the same frames')
+        assert got['optimise']['stamps'] == got['climb']['stamps'], (
+            f'pace {pace}: the same frames were drawn at different moments')
+
+    # And the two ends of the slider are two different pictures, or the
+    # setting is not doing anything at all.  At the top there is never
+    # anything in hand; at twelve a second the picture is behind on purpose.
+    quick = _drive(tmp_path, player_program,
+                   _a_walk_and_a_stop(switch='climb', at_tick=300, pace=0),
+                   ticks=40)
+    slow = _drive(tmp_path, player_program,
+                  _a_walk_and_a_stop(switch='climb', at_tick=300, pace=83),
+                  ticks=40)
+    assert quick['play']['queue'] == 0, quick['play']
+    assert slow['play']['queue'] > 20, slow['play']
+    assert quick['play']['shown'] > slow['play']['shown'] * 3, (
+        quick['play'], slow['play'])
+
+
+@_needs_node
+def test_a_run_started_by_optimise_all_is_not_read_as_a_switch_left_up(
+        player_program, tmp_path):
+    """Three toggles wear the switch class and the page read the first.
+
+    inScope answers with the first element it finds, so "is a switch down"
+    was always a question about Optimize.  A path walked by Optimize all --
+    or, since this landed, by Climb to TS -- therefore read as a run whose
+    switch was up, and the page threw its queue away as soon as it had queued
+    any of it.
+    """
+    events = [{'tick': 0, 'pace': 83, 'optimise': False, 'all': True}]
+    window = _Window(1)
+    for at, walked in ((4, 20), (10, 40)):
+        events.append({'tick': at, 'payload': window.push(walked)})
+    events.append({'tick': 16, 'payload': window.push(40, final=True)})
+
+    got = _drive(tmp_path, player_program, events, ticks=400)
+    assert _reached(got['drawn'])[-1] == 39, _reached(got['drawn'])[-4:]
+    assert got['play']['queue'] == 0
 
 
 @_needs_node
@@ -5944,7 +6243,16 @@ def test_stopping_moves_the_run_on_but_converging_does_not():
     stop = handler.split("if not button.value:")[1].split("return")[0]
     assert "running = state.get('optimize_run')" in stop
     assert "if running is not None:" in stop
-    assert "state['gfn_run'] = int(state.get('gfn_run', 0)) + 1" in stop
+    # Through the one function that hands out run numbers, which is also what
+    # the climb's Stop calls: two Stops moving the counter by two different
+    # lines is two chances for them to stop meaning the same thing.
+    assert "_claim_the_frame_run()" in stop
+    climb = source.split("def on_submit_climb(change=None):")[1]
+    climb = climb.split("\n    def ")[0]
+    off = climb.split("if not submit_climb_btn.value:")[1].split("return")[0]
+    assert "_claim_the_frame_run()" in off
+    claim = source.split("def _claim_the_frame_run():")[1].split("\n    def ")[0]
+    assert "state['gfn_run'] = run" in claim
 
 
 def test_a_stopped_run_never_writes_what_it_had_in_hand(editor, monkeypatch):
@@ -6009,6 +6317,211 @@ def test_a_stopped_run_never_writes_what_it_had_in_hand(editor, monkeypatch):
     late = [one for one in payloads[halts[0] + 1:]
             if one.get("frames") and one.get("run") == stopped_run]
     assert not late, f"the stopped run wrote {len(late)} more times"
+
+
+# ---------------------------------------------------------------------------
+# one Stop, whichever optimiser was walking
+# ---------------------------------------------------------------------------
+
+
+def _a_walk_of_numbered_frames(count=60):
+    """Frames of the water in the ``editor`` fixture, the oxygen on a ladder.
+
+    Frame *i* has the oxygen at x = i/100, so the geometry that ends up in the
+    coordinate box names the frame it came from.
+    """
+    return [[i / 100.0, 0.0, 0.0, 0.96, 0.0, 0.0, -0.24, 0.93, 0.0]
+            for i in range(count)]
+
+
+class _AClimbThatWalks:
+    """A climb that walks numbered frames at a real climb's rate.
+
+    A step of the real thing is about ten milliseconds -- a gradient -- which
+    is the whole reason its Stop is a different problem from the
+    minimisation's: the worker hears the switch long before a round trip to
+    the browser and back can answer.
+    """
+
+    def __init__(self, xyz, method, **kw):
+        self.steps = 0
+        self.path = _a_walk_of_numbered_frames(400)
+
+    def start(self, aimed_from=None):
+        return {"ok": True}
+
+    def step(self):
+        import time as _time
+        self.steps += 1
+        _time.sleep(0.01)
+        return {"converged": False, "steps": self.steps}
+
+    def frame(self):
+        return list(self.path[min(self.steps - 1, len(self.path) - 1)])
+
+    def xyz(self, comment="Climbing to a transition state"):
+        return ("3\n%s\nO 9.000000 0.000000 0.000000\n"
+                "H 0.960000 0.000000 0.000000\n"
+                "H -0.240000 0.930000 0.000000\n" % comment)
+
+    def verdict(self, exact=True):
+        raise AssertionError("a Stop must not pay for a Hessian")
+
+    def close(self):
+        pass
+
+
+def _wait_for(test, seconds=30.0):
+    import time as _time
+    end = _time.time() + seconds
+    while _time.time() < end:
+        if test():
+            return True
+        _time.sleep(0.01)
+    return False
+
+
+def test_a_stop_of_the_climb_halts_the_page_the_way_a_minimisation_does(
+        editor, monkeypatch):
+    """Driven through the kernel, not read off it.
+
+    "Ein Stop von Climb to TS laesst die ganze restliche Trajektorie noch
+    nachspielen."  The minimisation writes a halt the moment it notices the
+    switch went up, and the page keeps the frame it is showing and drops the
+    rest; the climb wrote nothing at all, so the page went on drawing a path
+    of a hundred frames over a structure nothing was calculating any more.
+
+    Both go through one function now, so this asks the climb for exactly what
+    tests_a_stopped_run_never_writes_what_it_had_in_hand asks the
+    minimisation: one halt, naming the run that was playing, and nothing
+    carrying frames after it.
+    """
+    import json
+
+    from delfin.dashboard import structure_editor, tab_submit
+
+    monkeypatch.setattr(tab_submit._gfn, "find_binary", lambda _m=None: "/x/xtb")
+    monkeypatch.setattr(structure_editor._climb, "Climb", _AClimbThatWalks)
+    editor["submit_ff_dd"].value = "gfn2"
+    state = editor["editor_state"]
+    seen: list[str] = []
+    editor["submit_gfn_frame"].observe(
+        lambda c: seen.append(c["new"]), names="value")
+
+    editor["submit_climb_btn"].value = True
+    assert _wait_for(lambda: (state.get("climb_run") is not None
+                              and len(seen) > 3)), "the climb never walked"
+
+    editor["submit_climb_btn"].value = False             # Stop
+    assert _wait_for(lambda: "stopped at the frame you were looking at"
+                     in editor["mol_status"].value), editor["mol_status"].value
+    # The page answers the Stop with where the picture had got to.
+    editor["submit_cmd_sync"].value = "gfnplay:9:stopped at frame 12"
+    assert _wait_for(lambda: state.get("gfn_stopped_path") is None)
+
+    payloads = [json.loads(text) for text in seen if text]
+    halts = [i for i, one in enumerate(payloads) if one.get("halt")]
+    assert len(halts) == 1, f"halts written: {len(halts)}"
+    stopped_run = payloads[halts[0]].get("run")
+    assert stopped_run == state.get("climb_frame_run"), (
+        "the halt has to name the run that is playing, not whatever is current")
+    late = [one for one in payloads[halts[0] + 1:] if one.get("frames")]
+    assert not late, f"the stopped climb wrote {len(late)} more times"
+    # And it is paced like every other write on that channel.  Built by hand
+    # beside the frames, the halt was the one payload carrying no pace at all.
+    assert payloads[halts[0]].get("pace") is not None
+
+
+def test_a_stop_leaves_the_box_holding_the_frame_the_picture_stopped_on(
+        editor, monkeypatch):
+    """Both optimisers, and the report arriving on either side of the worker.
+
+    A Stop means the frame on screen.  Only the page knows which frame that
+    is, and its message and the worker finishing are two answers racing: a
+    climb steps every ten milliseconds and finishes first, an xtb round is
+    seconds and finishes second.  Whichever is second lands the geometry, so
+    the order cannot decide what the user is left with.
+
+    Measured before this: a Stop left the picture standing at frame 14 and the
+    coordinate box holding the structure the run had started from -- the write
+    at the end of the run was refused by the very run number that had moved on
+    to refuse the frames, and Copy, Submit and the next press all read a
+    geometry that was not on the screen.
+    """
+    import time as _time
+
+    from delfin.dashboard import structure_editor, tab_submit
+
+    monkeypatch.setattr(tab_submit._gfn, "find_binary", lambda _m=None: "/x/xtb")
+    monkeypatch.setattr(structure_editor._climb, "Climb", _AClimbThatWalks)
+    editor["submit_ff_dd"].value = "gfn2"
+    state = editor["editor_state"]
+
+    # The climb: the worker finishes first and the page's word arrives after.
+    # Waited for rather than slept through -- how many gradients fit in a
+    # tenth of a second is the machine's business, and the frame the page is
+    # about to name has to have been walked.
+    walked = [0]
+
+    def _count(change):
+        import json as _json
+        try:
+            said = _json.loads(change["new"] or "{}")
+        except ValueError:
+            return
+        walked[0] = max(walked[0], int(said.get("from") or 0)
+                        + len(said.get("frames") or []))
+
+    editor["submit_gfn_frame"].observe(_count, names="value")
+    editor["submit_climb_btn"].value = True
+    assert _wait_for(lambda: walked[0] >= 20), walked
+    editor["submit_climb_btn"].value = False
+    assert _wait_for(lambda: "stopped at the frame you were looking at"
+                     in editor["mol_status"].value), editor["mol_status"].value
+    editor["submit_cmd_sync"].value = "gfnplay:3:stopped at frame 12"
+    assert _wait_for(lambda: "stopped at the frame on screen"
+                     in editor["coords_widget"].value)
+    lines = editor["coords_widget"].value.splitlines()
+    assert lines[1] == "stopped at the frame on screen", lines[1]
+    assert abs(float(lines[2].split()[1]) - 0.11) < 1e-6, (
+        f"the box holds {lines[2]!r}, not frame 12 of the climb")
+
+    # The minimisation: the page's word arrives first and the worker lands it.
+    path = _a_walk_of_numbered_frames(60)
+    ran: list[str] = []
+
+    def fake(xyz, method, **kw):
+        on = kw.get("on_frames")
+        stop = kw.get("should_stop")
+        if stop is None:
+            # The one-cycle run that perceives GFN-FF's topology, which has no
+            # switch behind it and must not be waited out.
+            return {"ok": True, "xyz": xyz, "energy": -1.0, "converged": True,
+                    "frames": [], "status": "converged"}
+        if on:
+            on(path[:20])
+        ran.append("walking")
+        end = _time.time() + 30
+        while _time.time() < end and not stop():
+            _time.sleep(0.01)
+        if on:
+            on(path)
+        return {"ok": True, "xyz": xyz, "energy": -1.0, "converged": False,
+                "frames": path, "status": "stopped before converging"}
+
+    monkeypatch.setattr(tab_submit._gfn, "optimize_with_gfn", fake)
+    editor["submit_optimize_btn"].value = True
+    assert _wait_for(lambda: "walking" in ran), editor["mol_status"].value
+    editor["submit_cmd_sync"].value = "gfnplay:4:stopped at frame 7"
+    editor["submit_optimize_btn"].value = False
+    assert _wait_for(lambda: state.get("optimize_run") is None)
+    assert _wait_for(
+        lambda: abs(float(editor["coords_widget"].value.splitlines()[2]
+                          .split()[1]) - 0.06) < 1e-6), (
+        f"the box holds {editor['coords_widget'].value.splitlines()[2]!r}, "
+        f"not frame 7 of the run")
+    assert (editor["coords_widget"].value.splitlines()[1]
+            == "stopped at the frame on screen")
 
 
 def test_the_pace_rides_with_the_frames_as_well_as_on_its_own():
