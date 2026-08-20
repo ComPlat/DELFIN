@@ -1630,8 +1630,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: (+5.2 kcal/mol), and at 20 the Diels-Alder goes over the top and lands
     #: in cyclohexene at 1.53 (-64.1).  Nothing said which bonds to form.
     submit_scan_how = widgets.Dropdown(
-        options=[('walk the value', 'hold'), ('push with a force', 'push')],
-        value='hold',
+        options=[('push with a force', 'push'), ('walk the value', 'hold')],
+        value='push',
         tooltip=(
             'Walk: the coordinate is told what to be at every step. Push: an '
             'artificial force between the atoms, ramped up until the reaction '
@@ -10267,6 +10267,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # the button and the refusal cannot drift apart.
         submit_saddle_btn.layout.display = (
             '' if str(chosen).lower() in _saddle.SADDLE_METHODS else 'none')
+        # And the same for the climb, which keeps its own table for the same
+        # reason: it needs a gradient it knows how to ask for, and g-xTB is a
+        # build of its own.  Left visible it refused only after the press,
+        # which is a button that promises what it cannot do -- under the most
+        # accurate method in the list, where a transition state is most worth
+        # having.
+        submit_climb_btn.layout.display = (
+            '' if str(chosen).lower() in _climb.CLIMB_METHODS else 'none')
         # Keep bonds works by watching what a follow step hands back and
         # taking back the ones that made or broke a bond -- so it needs a
         # follow step, and that is the kernel's, which runs for a server
