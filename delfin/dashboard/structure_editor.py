@@ -1555,7 +1555,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='74px', height='30px'),
         disabled=True,
     )
-    #: Which way, said in the words the coordinate is in.
+    #: Where the walk goes, said in the words the coordinate is in.
     #:
     #: "closer" and "further" next to a bare 0 and a bare 20 said nothing
     #: about what any of the three were: the direction read as a setting with
@@ -1563,31 +1563,26 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: are rewritten for the kind of coordinate that is picked -- two atoms
     #: are closer or further apart, three or four are narrower or wider -- and
     #: the numbers carry their own labels.
+    #:
+    #: The end of the walk is the third answer here and not a checkbox beside
+    #: it.  Normally there is no end: a scan walks to the next minimum, so
+    #: where it stops is the chemistry.  A number is wanted for two cases --
+    #: following a figure from the literature, and fixing the ratio of two
+    #: coordinates in a coupled scan -- and a value already says which way the
+    #: walk goes, so "further apart, to 2.40" was the same fact twice with
+    #: nothing checking that the two halves agreed.  One question, three
+    #: answers, and the field for the number appears under the third.
     submit_scan_way = widgets.Dropdown(
-        options=[('closer together', 'in'), ('further apart', 'out')],
+        options=[('closer together', 'in'), ('further apart', 'out'),
+                 ('to a value you give', 'to')],
         value='in',
         tooltip=(
-            'Which way to walk. A scan stops at the next minimum, so where it '
-            'ends is the chemistry rather than a number -- the direction is '
-            'the one thing that cannot be read off the selection.'
+            'Where to walk. A scan stops at the next minimum, so where it '
+            'ends is the chemistry rather than a number -- which way it goes '
+            'is the one thing that cannot be read off the selection. Give a '
+            'value instead when the end is the point.'
         ),
-        layout=widgets.Layout(width='168px', display='none'),
-        disabled=True,
-    )
-    #: Where to stop, for the cases that need one.
-    #:
-    #: Normally nothing: a scan walks to the next minimum, so where it ends is
-    #: the chemistry.  A number typed here is how two atoms came to be asked
-    #: for 0.60 A when the bond between them is 1.53, and as a field that was
-    #: always on screen showing a bare 0 it read as something that had to be
-    #: filled in.  It appears when it is asked for, and then it is the end of
-    #: the walk: following a figure from the literature, or fixing the ratio
-    #: of two coordinates in a coupled scan.
-    submit_scan_stop_at = widgets.Checkbox(
-        value=False, description='to a set value', indent=False,
-        tooltip=('Off, the scan walks to the next minimum. On, it walks to '
-                 'the value you give.'),
-        layout=widgets.Layout(width='128px', display='none'),
+        layout=widgets.Layout(width='178px', display='none'),
         disabled=True,
     )
     submit_scan_to = widgets.FloatText(
@@ -1706,64 +1701,104 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: seconds: 51.4 kcal/mol forward, trans 1.53 below cis, and its estimated
     #: transition state at 87.5 degrees, which is where a twisted alkene is.
     submit_path_from_btn = widgets.Button(
-        description='Path from here', icon='map-pin',
-        tooltip=('Mark the structure on screen as where a path starts. Then '
-                 'load or build the other one and press Find the path.'),
-        layout=widgets.Layout(width='142px', height='30px'),
+        description='Mark this end', icon='map-pin',
+        tooltip=('Mark the structure on screen as one end of a path. Then '
+                 'load or build the other one, and the press beside this can '
+                 'start from the pair.'),
+        layout=widgets.Layout(width='128px', height='30px'),
         disabled=True,
     )
-    submit_path_btn = widgets.Button(
-        description='Find the path', icon='route', button_style='info',
-        tooltip=('Let xtb find its own way between where the scan started and '
-                 'where it ended, and hand back the transition state it '
-                 'estimates. Needs a finished scan.'),
-        layout=widgets.Layout(width='140px', height='30px', display='none'),
+    #: Where the search starts from.
+    #:
+    #: There were three buttons here and they were not three tools.  ``To the
+    #: saddle`` climbed whatever was in the box, ``Path to saddle`` walked
+    #: between two ends and climbed the estimate, and ``Climb to TS`` did the
+    #: first of those by hand -- three of the six answers to two questions,
+    #: with the difference between them living only in the tooltips.  This is
+    #: the first question, and it is asked once.
+    #:
+    #: A start can come from three places and two of them appear on their own:
+    #: what is on screen, the end marked beside this, and the two ends a
+    #: finished scan leaves.  ``Path to saddle`` had both of the last two and
+    #: no way to say which it would use -- it silently preferred the marked
+    #: pair -- so a scan walked after marking something was unreachable.
+    #:
+    #: Shown only when there is more than one place to choose between, because
+    #: a list of one is not a choice.  Nothing is hidden by that: with nothing
+    #: marked and no scan walked, "the two ends" names a pair that does not
+    #: exist, and the press starts where the only start is.
+    submit_saddle_from = widgets.Dropdown(
+        options=[('what is on screen', 'here')], value='here',
+        tooltip=('Where the search starts. What is on screen, the end you '
+                 'marked, or the two ends the last scan left.'),
+        layout=widgets.Layout(width='158px', display='none'),
         disabled=True,
     )
-    #: The two halves at one press: the path finder, and then ORCA's saddle
-    #: optimiser on what it estimated.
+    #: And how it gets there, which is the other question.
     #:
-    #: Neither engine can answer alone -- xtb has no saddle optimiser and ORCA
-    #: has nothing that finds an estimate to give one -- and the pair is
-    #: quick.  Measured on the sixteen-atom Diels-Alder, from the two ends a
-    #: scan leaves: 3.6 s for the path, 12 s for the chain, and it arrives at
-    #: -393.5 cm-1 where a nudged elastic band takes 416 s to reach -393.6.
-    #: Seven minutes and twelve seconds, the same saddle.
+    #: Three answers, and each of them is offered exactly while it can run:
     #:
-    #: A press of its own and not something Find the path does on its way
-    #: past: the path's own answer is a complete one, needs no ORCA, and takes
-    #: a quarter of the time, and the climb can end somewhere nobody asked for
-    #: -- measured on a sloppy pair of ends, on a structure with two modes
-    #: going the wrong way.  Whoever wants both presses this instead.
-    submit_path_saddle_btn = widgets.Button(
-        description='Path to saddle', icon='mountain', button_style='warning',
-        tooltip=('Find the path between the two ends and climb its estimate '
-                 'to a converged saddle, at one press. Says what was reached '
-                 'and whether it is a transition state.'),
-        layout=widgets.Layout(width='150px', height='30px', display='none'),
+    #: * Through ORCA.  ORCA's OptTS on xtb gradients: measured on a
+    #:   sixteen-atom Diels-Alder transition state, ``! XTB2 OPTTS`` converged
+    #:   in under seven seconds from an estimate with its forming bonds at
+    #:   2.524 and 2.520 A to a symmetric saddle at 2.315 and 2.315 with one
+    #:   imaginary mode.  It needs a method ORCA has a keyword for, which is
+    #:   not the whole GFN family.
+    #: * By hand.  :mod:`climb` -- P-RFO with eigenvector following on a
+    #:   Bofill-updated Hessian -- walking on xtb gradients at about 10 ms a
+    #:   step, which is slow enough to watch and to interrupt and fast enough
+    #:   to drag in the middle of.  It needs a method it knows how to ask for
+    #:   a gradient from; see :data:`delfin.dashboard.climb.CLIMB_METHODS`.
+    #: * The path only.  The walk between the two ends and nothing after it:
+    #:   3.6 s against 12 for the pair on that same case, and a complete
+    #:   answer -- a barrier forward, a barrier back, and how near the walk
+    #:   came to the structure it was aimed at.  It was ``Find the path``, and
+    #:   it is not a second tool: it is this one stopping a step earlier.
+    #:
+    #: The last two are offered from two ends and not from the structure on
+    #: screen, where there is no walk to stop after and where climbing by hand
+    #: is ``Climb to TS`` -- a switch, over with the other switches, and one
+    #: press either way.  A second control that did the same thing under
+    #: another name is what this whole row was suffering from.
+    #:
+    #: Optimising is the ordinary case and is the default.  The path alone is
+    #: kept on the list rather than produced only when a climb fails, because
+    #: it is the answer on a machine with no ORCA and the fast answer on one
+    #: with it -- and something a user would go looking for must be findable
+    #: before they know they need it.
+    submit_saddle_how = widgets.Dropdown(
+        options=[('through ORCA', 'orca')], value='orca',
+        tooltip=('How it gets there. Through ORCA converges it; by hand you '
+                 'can watch it, steer it and drag in the middle of it; the '
+                 'path only stops at the structure the walk estimates.'),
+        layout=widgets.Layout(width='142px', display='none'),
         disabled=True,
     )
-    #: Climb from whatever is on screen to the nearest first-order saddle.
+    #: The one press, and what it does is whatever the two boxes beside it say.
     #:
-    #: xtb has no saddle-point optimiser.  ORCA has one, and ORCA can be told
-    #: to take its gradients from xtb -- that pair is fast enough to be a
-    #: button: measured on a Diels-Alder transition state, sixteen atoms,
-    #: ``! XTB2 OPTTS`` converged in under seven seconds, from an estimate
-    #: with its forming bonds at 2.524 and 2.520 A to a symmetric saddle at
-    #: 2.315 and 2.315 with one imaginary mode.
+    #: Neither engine answers alone from two ends -- xtb walks between them and
+    #: estimates the top of what it crossed and has no saddle optimiser at
+    #: all; ORCA has one and nothing that produces an estimate to give it --
+    #: and the pair is quick.  Measured on the sixteen-atom Diels-Alder, from
+    #: the two ends a scan leaves: 3.6 s for the walk, 12 s for the pair, and
+    #: it arrives at -393.5 cm-1 where a nudged elastic band takes 416 s to
+    #: reach -393.6.  Seven minutes and twelve seconds, the same saddle.
     #:
-    #: On whatever is in the box, not only on what the path finder left: a
+    #: From what is on screen it is the interactive half of the question: a
     #: structure posed by hand into something that looks like a transition
-    #: state is exactly the case this is for, and it is the interactive half
-    #: of the question.  One core, two gigabytes and three minutes, because
-    #: this runs where the dashboard runs and on a cluster that is the login
-    #: node.  A saddle search on a real basis set is a job, and the ORCA
-    #: Builder is where jobs are submitted.
+    #: state is exactly the case for it.  One core, two gigabytes and three
+    #: minutes, because this runs where the dashboard runs and on a cluster
+    #: that is the login node.  A saddle search on a real basis set is a job,
+    #: and the ORCA Builder is where jobs are submitted.
+    #:
+    #: Its name says which of the two it is about to do, because "To the
+    #: saddle" over a walk that stops at an estimate would be a promise the
+    #: press does not keep.  While it runs it says ``Stop``, and stopping
+    #: keeps what was reached.
     submit_saddle_btn = widgets.Button(
         description='To the saddle', icon='mountain', button_style='warning',
-        tooltip=('Optimise what is in the box to the nearest transition state '
-                 "-- ORCA's saddle optimiser on xtb gradients, seconds rather "
-                 'than hours. Says whether what it reached is one.'),
+        tooltip=('Optimise to the nearest transition state, from wherever the '
+                 'box beside this says. Says whether what it reached is one.'),
         layout=widgets.Layout(width='140px', height='30px'),
         disabled=True,
     )
@@ -1866,8 +1901,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: in the fullscreen overlay, and nine and seven of those not the topmost
     #: element at their own centre -- unreachable, and not reachable by
     #: scrolling either, because every container between here and the document
-    #: holds its overflow.  Path from here, Find the path and Path to saddle
-    #: were three of them, which is exactly what was reported.
+    #: holds its overflow.  The three path buttons that used to sit at the end
+    #: of this row were three of them, which is exactly what was reported.
+    #: They have since become one press, and it stands with the switches that
+    #: say what a walk does rather than at the end of this row.
     #:
     #: ``0 1 auto`` written out rather than left to the default, because the
     #: difference from ``0 0 auto`` is the point: when the group is wider than
@@ -1883,11 +1920,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_internal_group = widgets.HBox(
         [submit_internal_label, submit_internal_value,
          submit_internal_btn, submit_hold_btn, submit_hold_mode,
-         submit_scan_btn, submit_scan_way, submit_scan_steps,
-         submit_scan_stop_at, submit_scan_to,
+         submit_scan_btn, submit_scan_way, submit_scan_to,
+         submit_scan_steps,
          submit_scan_dd, submit_scan_del, submit_scan_whole,
-         submit_scan_how, submit_scan_energy, submit_scan_run_btn,
-         submit_path_from_btn, submit_path_btn, submit_path_saddle_btn],
+         submit_scan_how, submit_scan_energy, submit_scan_run_btn],
         layout=widgets.Layout(
             gap='6px', align_items='center', flex_flow='row wrap',
             flex='0 1 auto', min_width='0', overflow='visible',
@@ -1917,15 +1953,38 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             submit_gfn_autospin, submit_gfn_solvent, submit_gfn_solv_model,
             submit_thermal_btn, submit_temperature,
             submit_thermal_relax, submit_thermal_anchor_btn,
-            submit_topology_btn, submit_saddle_btn,
-            submit_climb_btn,
+            submit_topology_btn,
             submit_xtb_install_btn, submit_xtb_confirm_btn,
             submit_xtb_cancel_btn,
             submit_strength_slider, submit_hand_dd, submit_pull_slider,
             submit_sens_slider, submit_play_speed,
             submit_fs_row_break,
+            # Climb to TS stands with the other switches that say what a walk
+            # does, because that is what it is: the same release path with the
+            # optimiser walking uphill instead of down (e3442010). It used to
+            # sit beside the saddle press, where it read as a third way of
+            # pressing for a transition state rather than as the sibling of
+            # Dynamik Opt and Auto that it is.
             submit_optimize_btn, submit_optimize_all_btn,
-            submit_relax_btn, submit_auto_btn, submit_settle_btn,
+            submit_relax_btn, submit_auto_btn, submit_climb_btn,
+            submit_settle_btn,
+            # And the one press for a transition state next to them, with the
+            # two boxes that say where it starts and how it gets there. It is
+            # the third thing that makes this structure move -- down, up under
+            # a hand, or onto a saddle -- and it belongs with the other two
+            # rather than at the far end of the internal-coordinate row, where
+            # its three predecessors had accumulated.
+            #
+            # Measured in chromium with a scan armed, against the same row
+            # before the three became one: the toolbar is shorter at seven of
+            # the eight widths and places it is drawn in and the same at the
+            # eighth -- 306/272 at 1920 embedded, 406/372 at 1536, 472/436 at
+            # 1280, 604/568 at 1024, and 204/170, 236/204, 236/236, 304/272 in
+            # the fullscreen overlay. Put after the internal group instead it
+            # is 34 px taller at 1280 in the overlay; put inside it, taller
+            # again at three widths.
+            submit_path_from_btn, submit_saddle_from,
+            submit_saddle_how, submit_saddle_btn,
             submit_poly_dd, submit_poly_turn_btn,
             submit_hyb_dd, submit_hyb_auto_btn,
             submit_internal_group,
@@ -2203,6 +2262,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         for widget in (submit_thermal_btn, submit_temperature,
                        submit_thermal_relax, submit_thermal_anchor_btn,
                        submit_topology_btn, submit_saddle_btn,
+                       submit_saddle_from, submit_saddle_how,
                        submit_climb_btn,
                        submit_path_from_btn):
             widget.disabled = not enabled
@@ -8122,19 +8182,31 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # armed.
         picked = len(state.get('picked') or ())
         wanted = '' if picked in _CONSTRAINT_KINDS else 'none'
-        for widget in (submit_scan_way, submit_scan_steps, submit_scan_stop_at):
+        for widget in (submit_scan_way, submit_scan_steps):
             widget.layout.display = wanted
             widget.disabled = not wanted == ''
         # Two atoms are closer or further apart; three or four are narrower or
         # wider.  The words follow what is picked, so the direction is never a
         # setting with no subject.
         kind = _CONSTRAINT_KINDS.get(picked)
-        submit_scan_way.options = (
-            [('closer together', 'in'), ('further apart', 'out')]
+        options = (
+            [('closer together', 'in'), ('further apart', 'out'),
+             ('to a value you give', 'to')]
             if kind == 'distance'
-            else [('narrower', 'in'), ('wider', 'out')])
+            else [('narrower', 'in'), ('wider', 'out'),
+                  ('to a value you give', 'to')])
+        if list(submit_scan_way.options) != [tuple(one) for one in options]:
+            # Rewritten around whatever was chosen.  A dropdown handed a new
+            # list drops its value even where the new list still has it, and
+            # the three values are the same three in either wording -- so
+            # picking a torsion after setting an end silently turned the end
+            # back into a direction, and the walk went the other way.
+            want = submit_scan_way.value
+            submit_scan_way.options = options
+            if want in [value for _label, value in options]:
+                submit_scan_way.value = want
         # The end of the walk only when one has been asked for.
-        set_end = wanted == '' and bool(submit_scan_stop_at.value)
+        set_end = wanted == '' and str(submit_scan_way.value) == 'to'
         submit_scan_to.layout.display = '' if set_end else 'none'
         submit_scan_to.disabled = not set_end
 
@@ -8225,10 +8297,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # distance to zero walks it into a collision -- which is what the
         # floor below then had to catch.
         target = _suggest_scan_target(kind, here, submit_scan_way.value)
-        if submit_scan_stop_at.value:
+        if str(submit_scan_way.value) == 'to':
             asked = float(submit_scan_to.value)
-            if abs(asked - here) > 1e-9:
-                target = asked
+            # A value says which way the walk goes all by itself, so there is
+            # no direction left to fall back on when the value is the one the
+            # coordinate already has.  Said rather than guessed: the guess
+            # used to be inwards, and a scan that walks the opposite way from
+            # the one the number implied is worse than no scan.
+            if abs(asked - here) <= 1e-9:
+                _set_mol_status(
+                    f'{here:.3g} is where that coordinate already is, so '
+                    'there is nothing to walk. Give another value, or choose '
+                    'a direction and let the scan stop at the next minimum.')
+                return
+            target = asked
         legs = [one for one in _scan_legs() if one['atoms'] != indices]
         leg = {'kind': kind, 'atoms': indices, 'from': here,
                'to': target, 'steps': int(submit_scan_steps.value),
@@ -8738,10 +8820,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # 'The scan walked nothing' as though that were a result.
                     if not path:
                         return
-                    # There are two ends now, so the path finder has something
-                    # to be given.
+                    # There are two ends now, so the box beside the press has
+                    # a second place a search can start from and says so.
                     if state.get('scan_ends'):
-                        _offer_the_path()
+                        _refresh_saddle_controls()
                     # The places along the walk worth coming back to, put into
                     # the history in the order they were reached, so that Undo
                     # steps back through them and Redo forward again.
@@ -8800,29 +8882,82 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         return _saddle.verdict(shape, what, advise=advise)['lines']
 
     def on_submit_saddle(_button=None):
-        """Climb from the structure on screen to the nearest saddle point.
+        """The one press for a transition state, and what the boxes say.
 
-        The interactive half of a transition state: pose one by hand or take
-        the path finder's estimate, press, and a few seconds later it is a
-        converged first-order saddle or it is not, and which is said.
+        There were three buttons and they were three of the six answers to two
+        questions -- where the search starts, and how it gets there -- with
+        nothing on screen saying so.  The questions are asked in the two boxes
+        beside this, so all six are reachable and the press is one press.
 
-        Watched while it climbs, and stoppable, which the same press does.  A
+        Stopping is the same press, whichever half is running, because while
+        something is walking or climbing there is only one thing to want.  A
         minimisation that is following the wrong thing fails and says so; a
-        climb does not -- it succeeds at arriving somewhere nobody wanted, and
-        the only way to know that is early is to watch it happen.
+        climb does not -- it succeeds at arriving somewhere nobody wanted --
+        and the only way to know that early is to watch it happen and be able
+        to interrupt it.
         """
         if state.get('saddle_run'):
-            # The same button, because there is only one thing to want while
-            # it climbs.  What it reached is kept.
+            # What it reached is kept.
             state['saddle_stop'] = True
             _set_mol_status('Stopping the climb...', spinner=True)
             return
         if state.get('chain_run'):
-            # A chain is already climbing, and two climbs drawing into one
-            # viewer would each show half a trajectory.
-            _set_mol_status('A path and its climb are already running; stop '
-                            'that first.')
+            state['chain_stop'] = True
+            _set_mol_status('Stopping...', spinner=True)
             return
+        if state.get('path_run'):
+            # The walk is a single call to xtb and cannot be interrupted part
+            # way, so this says so rather than lighting a Stop that would do
+            # nothing until the call returned anyway.
+            _set_mol_status('The walk between the two ends is one call to '
+                            'xtb and cannot be cut short; it is seconds.')
+            return
+        if state.get('climb_run') is not None:
+            # The by-hand climb has a switch of its own and it is the same
+            # run, so this is that switch going up: two walks over one
+            # structure would each draw half a trajectory. What it reached is
+            # kept and the climb's own ending says so.
+            submit_climb_btn.value = False
+            return
+        start = str(submit_saddle_from.value or 'here')
+        how = str(submit_saddle_how.value or 'orca')
+        if start == 'here':
+            if how == 'hand':
+                _climb_from_here()
+                return
+            _saddle_from_here()
+            return
+        ends = _path_ends(start)
+        if not ends:
+            return
+        if how == 'orca':
+            _path_then_orca(ends)
+            return
+        _walk_the_path(ends, then_climb=(how == 'hand'))
+
+    def _climb_from_here():
+        """Hand what is on screen to the climb, by putting its switch down.
+
+        There is one climb and one switch for it.  The press does not start a
+        second walk beside the switch -- that is the defect e3442010 was
+        about, two paths that agreed about some of a drag and not the rest --
+        it puts the switch down and lets the one path run.  Pressed while the
+        switch is already down and nothing is walking, which is what a climb
+        that has converged and stood still looks like, it starts again from
+        where the structure is now.
+        """
+        if submit_climb_btn.value:
+            _climb_now()
+            return
+        submit_climb_btn.value = True
+
+    def _saddle_from_here():
+        """Climb from the structure on screen to the nearest saddle point.
+
+        ORCA's OptTS on xtb gradients: pose a transition state by hand or take
+        the estimate a walk left, press, and a few seconds later it is a
+        converged first-order saddle or it is not, and which is said.
+        """
         xyz = _current_xyz()
         method = str(submit_ff_dd.value)
         if not xyz:
@@ -8903,8 +9038,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             def _done():
                 state['saddle_run'] = False
                 state['saddle_stop'] = False
-                submit_saddle_btn.description = 'To the saddle'
-                submit_saddle_btn.icon = 'mountain'
+                _name_the_saddle_press()
                 rows = [line for line in (found.get('xyz') or '').splitlines()[2:]
                         if line.strip()]
                 if not found.get('ok'):
@@ -8938,37 +9072,168 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         _start_background(_work, 'The saddle search',
                           guards={'saddle_run': False})
 
-    def _offer_the_path():
-        """There are two ends now, so both ways of walking between them show.
+    def _marked_pair():
+        """The end that was marked and what is on screen, or nothing.
 
-        The pair travels together: what can be walked can be walked and
-        climbed, and a button that appeared without the other would be an
-        offer to do half of the job.
-        """
-        for button in (submit_path_btn, submit_path_saddle_btn):
-            button.layout.display = ''
-            button.disabled = False
-
-    def _path_ends():
-        """The two structures to walk between, or nothing and why.
-
-        A marked start and whatever is on screen, or the two ends a scan
-        left.  The marked pair comes first: it is the one the user set on
-        purpose, and a scan from an earlier question should not quietly win
-        over it.
+        Two structures, marked one at a time, so nothing has to hold two at
+        once.  The same structure twice is not a pair.
         """
         marked = state.get('path_from')
         here = _current_xyz()
         if marked and here and marked.strip() != here.strip():
             return (marked, here)
-        ends = state.get('scan_ends')
-        if not ends:
-            _set_mol_status(
-                'A path needs two structures. Press Path from here on one of '
-                'them and then this on the other -- or run a scan, which '
-                'leaves both.')
+        return None
+
+    def _path_ends(which='marked'):
+        """The two structures to walk between, or nothing and why.
+
+        Asked for by name.  There are two ways a pair of ends comes about --
+        a structure marked beside the press, and the two ends a finished scan
+        leaves -- and this used to prefer the marked one silently whenever it
+        had both, so a scan walked after marking something could not be walked
+        between at all.  Which one is used is now the user's answer to the box
+        that says so, and this is only the fetch.
+        """
+        if which == 'scan':
+            ends = state.get('scan_ends')
+            if ends:
+                return ends
+            _set_mol_status('The last scan left no two ends to walk between; '
+                            'run one, or mark two structures.')
             return None
-        return ends
+        pair = _marked_pair()
+        if pair:
+            return pair
+        _set_mol_status(
+            'A path needs two structures, and the one marked is the one on '
+            'screen. Press Mark this end on one of them and load or build '
+            'the other -- or run a scan, which leaves both.')
+        return None
+
+    def _name_the_saddle_press():
+        """Say on the press what the press is about to do.
+
+        A button that walks between two ends and stops at the estimate is not
+        going to the saddle, and a name that says it is would be a promise the
+        press does not keep.  Two names, and the box beside it decides which.
+        """
+        if str(submit_saddle_how.value) == 'walk':
+            submit_saddle_btn.description = 'Find the path'
+            submit_saddle_btn.icon = 'route'
+        else:
+            submit_saddle_btn.description = 'To the saddle'
+            submit_saddle_btn.icon = 'mountain'
+
+    def _refresh_saddle_controls():
+        """Offer the starts that exist and the ways that can run, and no more.
+
+        Composed with :func:`_refresh_method_controls` rather than fighting
+        it: that one decides what the chosen engine can do at all and calls
+        this, and this decides what is left to choose between.  Nothing here
+        is hidden for being advanced -- every option that is absent is absent
+        because the thing it names does not exist at this moment: a pair of
+        ends nobody has made, a walk with nothing to walk between, an engine
+        this method has no keyword for.
+
+        A box with one entry is not a choice, so it is not on screen.  The
+        press alone then means the only thing it can mean, which is what the
+        editor opens on: climb what is in the box.
+        """
+        if state.get('saddle_controls_quiet'):
+            # Rewriting a box's entries can move its value, which comes back
+            # through the observer that called this.  Once through is enough.
+            return
+        state['saddle_controls_quiet'] = True
+        try:
+            chosen = str(submit_ff_dd.value)
+            starts = [('what is on screen', 'here')]
+            if _marked_pair():
+                starts.append(('the end you marked', 'marked'))
+            if state.get('scan_ends'):
+                starts.append(("the scan's two ends", 'scan'))
+
+            def ways_from(start):
+                """The ways to a saddle that can run from this start."""
+                out = []
+                if chosen.lower() in _saddle.SADDLE_METHODS:
+                    out.append(('through ORCA', 'orca'))
+                # By hand and the walk alone are answers only where there is
+                # a walk.  From the structure on screen there is nothing
+                # between two ends to stop after -- and climbing what is on
+                # screen by hand is Climb to TS, which is a switch over with
+                # the other switches and one press either way.  Offered here
+                # as well it would be the same thing under two names in two
+                # places, which is the whole complaint this is answering.
+                if start != 'here':
+                    if chosen.lower() in _climb.CLIMB_METHODS:
+                        out.append(('by hand', 'hand'))
+                    if _gfn.is_gfn_method(chosen):
+                        out.append(('the path only', 'walk'))
+                return out
+
+            # A start this engine can do nothing from is not offered, which is
+            # what keeps the two boxes from arguing with each other.  Under a
+            # method with neither saddle optimiser -- g-xTB is its own build
+            # and ORCA cannot drive it -- the structure on screen has no way
+            # up at all while two ends still have the walk between them, so
+            # the list of starts is the pair and the press is the walk.  Left
+            # to the boxes to sort out between them, the start stood at "what
+            # is on screen", found no way, hid the press, and hid with it the
+            # box that was the only way to choose the start that worked.
+            starts = [one for one in starts if ways_from(one[1])]
+            _keep_the_choice(submit_saddle_from, starts,
+                             'saddle_start_wish')
+            ways = ways_from(str(submit_saddle_from.value)) if starts else []
+            _keep_the_choice(submit_saddle_how, ways,
+                             'saddle_way_wish')
+            # Nothing this method can do from anywhere, so nothing to press.
+            # The mark stays: it describes two structures rather than a
+            # program, and survives a change of method the way an armed scan
+            # does.
+            can_run = bool(starts and ways)
+            submit_saddle_btn.layout.display = '' if can_run else 'none'
+            submit_saddle_from.layout.display = (
+                '' if can_run and len(starts) > 1 else 'none')
+            submit_saddle_how.layout.display = (
+                '' if can_run and len(ways) > 1 else 'none')
+            submit_path_from_btn.layout.display = (
+                '' if _gfn.is_gfn_method(chosen) else 'none')
+            _name_the_saddle_press()
+        finally:
+            state['saddle_controls_quiet'] = False
+
+    def _keep_the_choice(box, options, wish):
+        """Rewrite a box's entries without throwing away what was chosen.
+
+        A dropdown handed a list its value is not in loses that value, and
+        losing it silently is how a setting somebody made comes back as the
+        default one press later.  What is on these two lists is decided by the
+        method and by which structures exist, and both of those change while
+        the user is doing something else -- so the wish is kept aside under
+        *wish* while it cannot be met and put back the moment it can.
+
+        An empty list is left alone rather than written over with a placeholder
+        entry: there is nothing on screen then anyway, and blanking it is how
+        "through ORCA" became "by hand" on the way through a method that could
+        run neither.
+        """
+        if not options:
+            return
+        want = state.get(wish) or box.value
+        values = [value for _label, value in options]
+        if list(box.options) != [tuple(one) for one in options]:
+            # Only when they have actually changed.  This runs on every redraw
+            # of the structure, and a scan redraws once a point: assigning the
+            # same list each time is a widget message a point for a box nobody
+            # is looking at.
+            box.options = options
+        if want in values:
+            box.value = want
+            state.pop(wish, None)
+        else:
+            state[wish] = want
+            box.value = values[0]
+
     def _climb_verdict(shape, steps, seconds):
         """What a climb reached, said the way the press next door says it."""
         lines = [f'The climb stopped after {steps} steps ({seconds:.1f} s).']
@@ -9249,6 +9514,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     return
                 if state.get('climb_run') is token:
                     state['climb_run'] = None
+                # What a walk between two ends said, when this climb is the
+                # second half of that press.  Its own opening line wrote over
+                # the walk's report the moment it started, so the numbers are
+                # kept and said again at the end: a barrier and the saddle it
+                # belongs to are one answer, and one replacing the other on
+                # the way past is how the barrier came to be lost.
+                walked_said = list(state.pop('path_said', None) or ())
                 if switched_off[0]:
                     # The switch, not an arrival and not a failure.  What is
                     # kept is the frame the picture stopped on and not where
@@ -9261,7 +9533,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             f'at, {steps} step(s) in ({seconds:.1f} s). Press '
                             f'Climb to TS again to carry on from there.')
                     state['gfn_last_status'] = said
-                    _set_mol_status(said)
+                    _set_mol_status(*walked_said, said)
                     return
                 if shape is None:
                     _set_mol_status('The climb could not run: '
@@ -9286,7 +9558,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         xyz_document(rows, 'Climbed towards a transition '
                                            'state'),
                         drawn=_frame_run_is_current(run))
-                lines = _climb_verdict(shape, steps, seconds)
+                verdict = _climb_verdict(shape, steps, seconds)
+                lines = walked_said + verdict
                 if steps >= _CLIMB_STEPS:
                     lines.append(
                         f'It ran out of steps at {_CLIMB_STEPS}, which is an '
@@ -9300,7 +9573,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     'to TS off to go back down to minima. Undo takes the '
                     'whole climb back; refine it with OPTTS in the ORCA '
                     'Builder at a level worth quoting.')
-                state['gfn_last_status'] = lines[0]
+                # The climb's own headline, not the walk's, because this is
+                # what the row is asked to say again whenever the picture
+                # redraws itself.
+                state['gfn_last_status'] = verdict[0]
                 _set_mol_status(*lines)
 
             schedule_ui_update(_done)
@@ -9311,22 +9587,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     def on_submit_path_from(_button=None):
         """Mark what is on screen as where a path starts.
 
-        The other end is whatever is on screen when Find the path is pressed,
-        so the two are marked one at a time and nothing has to hold two
-        structures at once.
+        The other end is whatever is on screen when the press is made, so the
+        two are marked one at a time and nothing has to hold two structures at
+        once.  Marking is what puts "from the end you marked" in the box
+        beside the press, which is where the pair is then chosen.
         """
         xyz = _current_xyz()
         if not xyz:
             return
         state['path_from'] = xyz
-        _offer_the_path()
+        _refresh_saddle_controls()
         _set_mol_status(
-            f'Marked as the start of a path ({len(_gfn.atom_lines(xyz))} '
-            'atoms). Load or build the other structure and press Find the '
-            'path -- or Path to saddle, which walks it and climbs the '
-            'estimate it leaves in one press.')
+            f'Marked as one end of a path ({len(_gfn.atom_lines(xyz))} '
+            'atoms). Load or build the other structure, and the box beside '
+            'the press will offer to start from the pair.')
 
-    def on_submit_path_to_saddle(_button=None):
+    def _path_then_orca(ends):
         """Two structures in, a converged saddle out, at one press.
 
         The path finder and the saddle optimiser are two halves of one
@@ -9345,21 +9621,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         What was reached is named rather than assumed, which is the half that
         cannot be left out -- a saddle search does not fail when it goes
         wrong, it succeeds at arriving somewhere.
+
+        Stopping it after the walk and before the climb is what "stop at the
+        estimate" asks for outright, and the two arrive at the same place:
+        what the walk found is kept and said.
         """
-        if state.get('chain_run'):
-            # The same button, because there is only one thing to want while
-            # it runs.  What it reached is kept.
-            state['chain_stop'] = True
-            _set_mol_status('Stopping...', spinner=True)
-            return
         if state.get('path_run') or state.get('saddle_run'):
             _set_mol_status('Something is already running on this structure; '
                             'let it finish or stop it first.')
             return
         method = str(submit_ff_dd.value)
-        ends = _path_ends()
-        if not ends:
-            return
         if method.lower() not in _saddle.SADDLE_METHODS:
             _set_mol_status(
                 'The path is xtb\'s and the climb is ORCA on a semiempirical '
@@ -9375,8 +9646,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['gfn_run'] = state['chain_frame_run']
         _ensure_manip_bootstrap()
         schedule_ui_update(_install_gfn_frame_watcher)
-        submit_path_saddle_btn.description = 'Stop'
-        submit_path_saddle_btn.icon = 'stop'
+        submit_saddle_btn.description = 'Stop'
+        submit_saddle_btn.icon = 'stop'
         charge = int(submit_gfn_charge.value or 0)
         uhf = _gfn_uhf_now()
         wet = str(submit_gfn_solvent.value or '') or None
@@ -9434,8 +9705,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             def _done():
                 state['chain_run'] = False
                 state['chain_stop'] = False
-                submit_path_saddle_btn.description = 'Path to saddle'
-                submit_path_saddle_btn.icon = 'mountain'
+                _name_the_saddle_press()
                 lines = []
                 if found.get('barrier') is not None:
                     near = found.get('rmsd')
@@ -9487,17 +9757,24 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         _start_background(_work, 'The walk and the climb after it',
                           guards={'chain_run': False})
 
-    def on_submit_path(_button=None):
-        """Walk between the two ends the scan left, and keep what is found.
+    def _walk_the_path(ends, then_climb=False):
+        """Walk between two ends and keep what is found.
 
-        Its own answer, not a refinement of the scan's: the scan drove a
+        Its own answer, not a refinement of a scan's: a scan drives a
         coordinate somebody chose and this finds its own way between two
         structures.  When the two agree, that is worth more than either of
         them alone; when they do not, the difference is the interesting part
         and both numbers are said.
+
+        *then_climb* hands what it estimated to the climb, which is the
+        by-hand half of the same question: the walk says where the top is and
+        the climb walks onto it at ten milliseconds a step, so it can be
+        watched and dragged in the middle of.  The estimate is in the box
+        before the climb starts, which is what the climb reads, so a climb
+        that goes somewhere nobody wanted still leaves the walk's own answer
+        one Undo away.
         """
         method = str(submit_ff_dd.value)
-        ends = _path_ends()
         if not ends:
             return
         if not _gfn.is_gfn_method(method):
@@ -9506,14 +9783,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if state.get('path_run') or state.get('chain_run'):
             return
         state['path_run'] = True
-        submit_path_btn.disabled = True
+        # The press keeps its name through this half.  A walk is one call to
+        # xtb and cannot be interrupted part way, so a "Stop" on it would be a
+        # button that does nothing -- what says the walk is running is the
+        # ring and the line under the picture, which say it for every other
+        # calculation here too.
         charge = int(submit_gfn_charge.value or 0)
         uhf = _gfn_uhf_now()
         wet = str(submit_gfn_solvent.value or '') or None
         model = _solv_model()
         label = _server_label(method)
-        _set_mol_status(f'{label} is looking for a path between the two ends '
-                        'of the scan...', spinner=True)
+        _set_mol_status(f'{label} is looking for a path between the two '
+                        'ends...', spinner=True)
 
         def _work():
             found = _gfn.walk_the_path(
@@ -9546,7 +9827,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
             def _done():
                 state['path_run'] = False
-                submit_path_btn.disabled = False
+                _name_the_saddle_press()
                 if not found.get('ok'):
                     _set_mol_status(str(found.get('status')
                                         or 'The path finder did not run.'))
@@ -9602,11 +9883,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         lines.append(
                             'The path went over something this estimate is '
                             'not sitting on.')
-                    lines.append(
-                        'Press To the saddle to sharpen it here in seconds, '
-                        'or Path to saddle next time to do both at one press '
-                        '-- measured on a sixteen-atom case, 3.6 s for the '
-                        'path and 12 s for the pair.')
+                    if not then_climb:
+                        lines.append(
+                            'Set the box beside the press to "through ORCA" '
+                            'to sharpen it in seconds, or to "by hand" to '
+                            'walk onto it yourself -- measured on a '
+                            'sixteen-atom case, 3.6 s for the path and 12 s '
+                            'for the pair.')
                 rows = [line for line in (found.get('ts') or '').splitlines()[2:]
                         if line.strip()]
                 if rows:
@@ -9619,6 +9902,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         'The structure it estimates for the transition state '
                         'is in the box; Undo takes it back.')
                 _set_mol_status(*lines)
+                # And on into the climb, from the estimate that is now in the
+                # box.  One turn of the interface later, because the climb
+                # reads the box and the write above has to have landed in it
+                # first -- and because the walk's own answer belongs on screen
+                # before anything starts walking away from it.
+                if then_climb and rows:
+                    state['path_said'] = tuple(lines)
+                    schedule_ui_update(_climb_from_here)
 
             schedule_ui_update(_done)
 
@@ -9717,15 +10008,23 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                      f'this structure, which is past the {ceiling:.1f} '
                      f'available at {T:g} K, so the box has the last point '
                      f'that was inside it.')
+        # And that there is now a second place a saddle search can start.
+        # The two ends are on the toolbar as an entry in a box, which is
+        # quieter than the two buttons that used to appear -- so it is said
+        # once, here, where the walk that made them is being reported.
+        left = ('' if not state.get('scan_ends') else
+                ' It left two ends: the box beside "To the saddle" will now '
+                'start from them, which walks its own way between the two '
+                'and does not need the coordinate you chose.')
         if rise <= ceiling:
             return (first,
                     f'{wants} You have {ceiling:.1f} kcal/mol at {T:g} K, so '
                     f'the whole path is open. {_thermal_wait(rise, T)}'
-                    + held_back)
+                    + held_back + left)
         return (first,
                 f'{wants} At {T:g} K only {ceiling:.1f} kcal/mol is '
                 f'available, so the path is closed there. '
-                f'{_thermal_wait(rise, T)}' + held_back)
+                f'{_thermal_wait(rise, T)}' + held_back + left)
 
     def on_submit_hold(_button=None):
         """Hold the value the selection describes while the field runs."""
@@ -10219,16 +10518,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                scale_for_px(submit_label_size.value))
         )
 
-    def on_submit_scan_stop_at(change):
-        """The end of the walk asked for, or not.
+    def on_submit_scan_way(change):
+        """A direction, or an end the user gives, and the field that follows.
 
-        Filled in with what the coordinate measures now the first time it is
-        asked for, so it opens on a number that means something instead of on
-        a zero that has to be guessed at.
+        Filled in with what the coordinate measures now the first time an end
+        is asked for, so the field opens on a number that means something
+        instead of on a zero that has to be guessed at.
         """
         if change.get('name') != 'value':
             return
-        if submit_scan_stop_at.value and not float(submit_scan_to.value):
+        if str(submit_scan_way.value) == 'to' and not float(submit_scan_to.value):
             try:
                 submit_scan_to.value = float(submit_internal_value.value)
             except (TypeError, ValueError):
@@ -10724,44 +11023,44 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         submit_scan_btn.layout.display = '' if xtb else 'none'
         if not xtb:
             for widget in (submit_scan_way, submit_scan_to, submit_scan_steps,
-                           submit_scan_stop_at,
                            submit_scan_dd, submit_scan_del, submit_scan_whole,
                            submit_scan_how, submit_scan_energy,
-                           submit_scan_run_btn, submit_path_btn,
-                           submit_path_saddle_btn):
+                           submit_scan_run_btn):
                 widget.layout.display = 'none'
             if _scan_legs():
                 _set_mol_status(
                     f'{_server_label(submit_ff_dd.value)} cannot walk a scan '
                     '-- that is xtb\'s. The armed legs are kept for when you '
                     'come back to a GFN method.')
-        # Where a path can start.  Both ends of it are walked by xtb's own
-        # path finder, and Find the path refuses anything else -- but Path
-        # from here asked nothing at all: under UFF it took the press, said
-        # "marked as the start of a path", and put Find the path on the
-        # toolbar, which then answered "a path needs xtb: choose a GFN
-        # method".  Two presses to be told the first one could not have
-        # worked.  The mark itself survives the change of method, the way an
-        # armed scan does: it describes two structures, not a program.
-        submit_path_from_btn.layout.display = '' if xtb else 'none'
-        # The saddle search is ORCA's optimiser on a semiempirical gradient,
-        # and the methods it can be told how to ask for are the ones this can
-        # run -- three of them by ORCA keyword, and g-xTB through ExtOpt,
-        # which is ORCA's own interface for a program it does not know.  Read
-        # from the table the run itself reads, so the button and the refusal
-        # cannot drift apart.
-        submit_saddle_btn.layout.display = (
-            '' if str(chosen).lower() in _saddle.SADDLE_METHODS else 'none')
-        # The climb keeps its own table, and it is a shorter one, because it
-        # is asking a harder question of the method: a press can afford a
-        # process per gradient and a drag cannot.  g-xTB has no entry in the
-        # xtb Python module at all -- the library the fast path uses is the
-        # ordinary xtb's -- so each of its gradients is a whole process, and a
-        # process is where its cost is: measured on water, 0.114 s for the run
-        # and 0.004 s of SCF inside it.  At sixteen atoms that is 0.29 s a
-        # step against 6 ms, and one exact Hessian is 17.9 s against 0.55.  So
-        # the button that suits it is the press next door, and this one stays
-        # off rather than refusing after it is clicked.
+        else:
+            # And they come back with it.  The line above promises that the
+            # armed legs are kept, and they were -- but nothing put their row
+            # back on screen, so a detour through UFF and back to GFN2 left a
+            # scan that was still armed with no list, no Run scan and no way
+            # to reach either.  Kept and unreachable is the same as gone.
+            _refresh_scan()
+        # The transition-state press and the two boxes beside it: which starts
+        # exist, and which of the ways to a saddle this engine can run.  Both
+        # are read from the tables the runs themselves read -- ORCA's keywords
+        # for the saddle optimiser, the climb's own list for the gradients it
+        # knows how to ask for -- so a control and its refusal cannot drift
+        # apart.  Neither is the whole GFN family, and they are no longer the
+        # same three: ORCA has no keyword for g-xTB and never will, but it
+        # publishes ExtOpt -- it writes an input, calls a program, reads an
+        # energy and a gradient back -- so the saddle optimiser reaches it
+        # where the climb cannot.
+        #
+        # The mark survives a change of method, the way an armed scan does: it
+        # describes two structures, not a program.  Its button does not --
+        # under UFF it used to take the press, say "marked as the start of a
+        # path", and offer a walk that then answered "a path needs xtb", which
+        # is two presses to be told the first could not have worked.
+        _refresh_saddle_controls()
+        # And the climb's own switch, which is not the press: it says which
+        # way a release walks.  Left visible under a method it cannot ask for
+        # a gradient from it refused only after the press, which is a button
+        # that promises what it cannot do -- under the most accurate method in
+        # the list, where a transition state is most worth having.
         submit_climb_btn.layout.display = (
             '' if str(chosen).lower() in _climb.CLIMB_METHODS else 'none')
         # Keep bonds works by watching what a follow step hands back and
@@ -11207,13 +11506,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_strength_slider.observe(on_submit_strength_changed, names='value')
     submit_pull_slider.observe(on_submit_pull_changed, names='value')
     submit_hand_dd.observe(on_submit_hand_changed, names='value')
-    submit_scan_stop_at.observe(on_submit_scan_stop_at, names='value')
+    submit_scan_way.observe(on_submit_scan_way, names='value')
     submit_topology_btn.observe(on_submit_topology, names='value')
     submit_scan_whole.observe(on_submit_scan_whole, names='value')
-    submit_path_btn.on_click(on_submit_path)
-    submit_path_saddle_btn.on_click(on_submit_path_to_saddle)
     submit_path_from_btn.on_click(on_submit_path_from)
     submit_saddle_btn.on_click(on_submit_saddle)
+    # The start decides which ways there are -- there is no walk to stop after
+    # when the start is the structure on screen -- so it goes through the one
+    # place that works both boxes out; the way only renames the press.
+    submit_saddle_from.observe(lambda _c: _refresh_saddle_controls(),
+                               names='value')
+    submit_saddle_how.observe(lambda _c: _name_the_saddle_press(),
+                              names='value')
     submit_climb_btn.observe(on_submit_climb, names='value')
     submit_sens_slider.observe(on_submit_sens_changed, names='value')
     submit_play_speed.observe(on_submit_play_speed, names='value')
@@ -11526,6 +11830,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         _ensure_manip_bootstrap()
         mol_output.outputs = _build_mol_output_bundle(xyz_data)
         _set_manip_toolbar_enabled(True)
+        # A marked end and the structure on screen are a pair only once they
+        # are two different structures, so the start that names them appears
+        # when the second one is drawn and not when the mark is made. Asked
+        # here because this is the one place every host goes through when what
+        # is on screen changes.
+        _refresh_saddle_controls()
         _push_hand_bonds()
 
     def _show_mol_busy(message):

@@ -1398,7 +1398,10 @@ def test_a_climb_that_is_going_nowhere_stops_and_says_so():
     assert 'if walk.steps >= _CLIMB_STEPS:' in climbing
     # And what it reached is still named, because a saddle search does not
     # fail -- it succeeds at arriving somewhere.
-    assert 'lines = _climb_verdict(shape, steps, seconds)' in climbing
+    assert 'verdict = _climb_verdict(shape, steps, seconds)' in climbing
+    # With whatever the walk that handed this climb its start had to say in
+    # front of it, so a barrier and the saddle it belongs to arrive together.
+    assert 'lines = walked_said + verdict' in climbing
     assert 'if steps >= _CLIMB_STEPS:' in climbing
     assert 'It ran out of steps at ' in climbing
 

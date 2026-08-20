@@ -657,10 +657,10 @@ def test_the_chain_is_one_press_and_the_same_press_stops_it():
     because every write to the box rebuilds the viewer from nothing.
     """
     source = EDITOR_SOURCE
-    assert 'submit_path_saddle_btn = widgets.Button(' in source
-    assert "description='Path to saddle'" in source
-    assert 'def on_submit_path_to_saddle(_button=None):' in source
-    assert 'submit_path_saddle_btn.on_click(on_submit_path_to_saddle)' in source
+    assert 'def _path_then_orca(ends):' in source
+    assert "('through ORCA', 'orca')" in source
+    assert '_path_then_orca(ends)' in source
+    assert 'submit_saddle_btn.on_click(on_submit_saddle)' in source
     assert '_saddle.path_to_saddle(' in source
     # Its own run id, so a run the page has been told to forget cannot draw
     # over this one.
@@ -670,10 +670,10 @@ def test_the_chain_is_one_press_and_the_same_press_stops_it():
     assert "'frames': [[round(float(v), 4)" in source
     # The same press stops it, and is not disabled while it runs -- a button
     # nobody can press cannot stop anything.
-    assert "submit_path_saddle_btn.description = 'Stop'" in source
-    assert "submit_path_saddle_btn.description = 'Path to saddle'" in source
+    assert "submit_saddle_btn.description = 'Stop'" in source
+    assert "state['chain_stop'] = True" in source
     assert "should_stop=lambda: bool(state.get('chain_stop'))" in source
-    assert 'submit_path_saddle_btn.disabled = True' not in source
+    assert 'submit_saddle_btn.disabled = True' not in source
     # One step for the whole chain, which Undo takes back whole.
     assert "_remember('the path and the climb')" in source
     # And two climbs never draw into one viewer.
@@ -740,10 +740,16 @@ def test_one_press_of_the_real_button_walks_climbs_and_draws_it_once():
     # anything having to hold two structures at once.
     state['current_xyz_for_copy'] = {'content': _REACTANT}
     part.on_submit_path_from()
-    # Both ways of walking between them are offered together.
-    assert part.submit_path_btn.layout.display == ''
-    assert part.submit_path_saddle_btn.layout.display == ''
     state['current_xyz_for_copy'] = {'content': _PRODUCT}
+    # The pair is now a start the press can be given, and every way of
+    # walking between the two ends is on the list beside it.
+    part._refresh_saddle_controls()
+    assert part.submit_saddle_from.layout.display == ''
+    assert 'marked' in [value for _label, value
+                        in part.submit_saddle_from.options]
+    part.submit_saddle_from.value = 'marked'
+    assert [value for _label, value in part.submit_saddle_how.options] == \
+        ['orca', 'hand', 'walk']
 
     frames = []
     part.submit_gfn_frame.observe(
@@ -752,13 +758,13 @@ def test_one_press_of_the_real_button_walks_climbs_and_draws_it_once():
     box.observe(lambda change: written.append(change['new']), names='value')
 
     began = time.time()
-    part.on_submit_path_to_saddle()
+    part.on_submit_saddle()
     # The same button stops it, so it says so while it runs.
-    assert part.submit_path_saddle_btn.description == 'Stop'
+    assert part.submit_saddle_btn.description == 'Stop'
     while state.get('chain_run') and time.time() - began < 600:
         time.sleep(0.05)
     assert not state.get('chain_run'), 'the chain never finished'
-    assert part.submit_path_saddle_btn.description == 'Path to saddle'
+    assert part.submit_saddle_btn.description == 'To the saddle'
 
     # Every frame once, in order, and all of them this run's.
     assert len(frames) > 3, frames
