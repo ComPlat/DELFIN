@@ -2437,9 +2437,17 @@ def test_the_follow_is_paced_by_the_machine_not_by_a_clock(player_js):
     assert "var floor=Math.max(16,Math.min(120,(play.gap||60)/2));" in player_js, (
         "and the floor is the machine's own answer time, not a constant"
     )
-    # and drawn over exactly as long as the next one takes to arrive -- but
-    # only while they arrive one at a time; a burst keeps the backlog rules
-    assert "if(play.follow&&play.gap&&n<=3) return play.gap;" in player_js
+    # and drawn over exactly as long as one answer takes to arrive -- but only
+    # while that is the slower of the two paces, so a burst somebody has asked
+    # to watch slowly is still walked at the speed they asked for
+    assert "if(play.follow&&play.gap&&n<=12){" in player_js
+    assert "return asked?Math.max(asked,play.gap):play.gap;" in player_js, (
+        "the slower of the arrival rate and the slider, not a queue count"
+    )
+    assert "var many=Math.max(1,frames.length-start);" in player_js, (
+        "and the interval belongs to one answer, not to the message that "
+        "carried three of them"
+    )
     assert "play.gap=play.gap?(play.gap*0.6+measured*0.4):measured;" in player_js, (
         "averaged, or the drawing speed jumps about as much as the arrivals do"
     )
@@ -2756,16 +2764,20 @@ def test_a_burst_is_not_played_at_the_pace_of_a_followed_hand(player_js):
     """A follow arrives one answer at a time and is drawn over the gap between
     them; a relaxation arrives in bursts, and those keep the backlog rules.
 
-    What keeps them apart is the length of the queue, not the order of the
-    two rules: the follow rule asks for three or fewer, and the backlog rules
-    for more than ten, so no queue reaches both.  The order that does matter
-    is the follow rule against the slider, and that is a rule above.
+    What keeps them apart is which of the two paces is the slower one: a
+    burst offers frames faster than the slider asks for them, so the slider
+    wins and the backlog rules behind it are reached in the usual way.  The
+    queue count that is still there is a bound rather than the distinction --
+    it stands well above the two or three answers a real message carries, so
+    that a settle is not handed back and forth between the two rules once a
+    message, which is what a bound of three did.
     """
     step = player_js.split("function stepMs(){")[1].split("\n  }")[0]
     assert "if(n>60) return 8;" in step
     assert "if(n>25) return 20;" in step
     assert "if(n>10) return 35;" in step
-    assert "play.follow&&play.gap&&n<=3" in step
+    assert "play.follow&&play.gap&&n<=12" in step
+    assert "Math.max(asked,play.gap)" in step
 
 
 @_needs_xtb
@@ -5465,7 +5477,14 @@ global.window = {
   HTMLInputElement: FakeField,
   _submitManipStateByScope: {},
   __delfinSubmitManip: {
-    setPositions(scope, out) { drawn.push(out[0]); stamps.push(now); return true; },
+    // The first number is the frame's index in the run for the tests that
+    // number their frames, and the whole array for the ones that hand over
+    // real coordinates and measure the geometry that was drawn.
+    setPositions(scope, out) {
+      drawn.push(spec.whole ? Array.prototype.slice.call(out) : out[0]);
+      stamps.push(now);
+      return true;
+    },
     pushXyz() { pushes += 1; return true; },
     setThermalWall() {},
   },
@@ -5540,8 +5559,13 @@ class _Window:
         return out
 
 
-def _drive(tmp_path, program, events, ticks=200, cap=None):
-    """Turn the clock by hand and report what the player drew."""
+def _drive(tmp_path, program, events, ticks=200, cap=None, whole=False):
+    """Turn the clock by hand and report what the player drew.
+
+    With *whole*, what comes back is every coordinate of every drawn geometry
+    rather than the frame number -- which is what a test about bond lengths
+    needs and what one about cadence does not.
+    """
     import json
     import re
     import subprocess
@@ -5555,7 +5579,8 @@ def _drive(tmp_path, program, events, ticks=200, cap=None):
     page.write_text(_PAGE_JS, encoding='utf-8')
     spec = tmp_path / 'spec.json'
     spec.write_text(json.dumps(
-        {'scope': scope, 'ticks': ticks, 'events': events}), encoding='utf-8')
+        {'scope': scope, 'ticks': ticks, 'events': events, 'whole': whole}),
+        encoding='utf-8')
     done = subprocess.run(
         ['node', str(page), str(player), str(spec)],
         capture_output=True, text=True, timeout=120)
@@ -6148,16 +6173,15 @@ def test_the_top_of_the_slider_still_empties_a_burst_as_fast_as_it_arrives(
 @_needs_node
 def test_a_follow_that_outruns_the_picture_is_paced_by_the_slider_again(
         player_program, tmp_path):
-    """Three in the queue is the whole guard, and it needs no other.
+    """The slower of the two paces is the one that is obeyed.
 
-    While the picture keeps up with the arrivals the queue cannot grow past a
-    frame or two.  The moment they outrun it -- a settle that computed twelve
-    cycles between writes, a scan, a climb -- the queue grows past three and
-    the slider has it back.  Twelve frames arriving every 100 ms with the
-    slider at twelve a second: 240 frames offered, 37 drawn over 3.2 s, which
-    is the rate that was asked for and not the rate they arrived at.  The
-    player from before the pace reached the page drew 218 of them, because a
-    pace it never received left it on the backlog rules.
+    Twelve answers every 100 ms is one every 8 ms, and the slider at twelve a
+    second asks for one every 83: the slider is the slower of the two and it
+    decides.  240 frames offered, 37 drawn over 3.2 s -- the rate that was
+    asked for and not the rate they arrived at -- and the queue grows, which
+    is what watching something slowly means.  The player from before the pace
+    reached the page drew 218 of them, because a pace it never received left
+    it on the backlog rules.
     """
     events = [{'tick': 0, 'follow': True, 'grab': False}]
     window = _Window(1)
@@ -6180,10 +6204,241 @@ def test_the_slider_is_not_asked_about_a_hand_being_followed():
 
     Below the slider the follow rule was unreachable at the top of the
     slider, which is zero: "take everything now" answered first, and every
-    answer was drawn the instant it landed.
+    answer was drawn the instant it landed.  The rule reads the slider itself
+    now -- it takes whichever of the two paces is slower -- so it has to stand
+    above the line that returns the slider and nowhere else.
     """
     source = SUBMIT_SOURCE
     step = source.split("function stepMs()")[1].split("function inScope")[0]
-    assert (step.index("play.follow&&play.gap&&n<=3")
+    assert (step.index("play.follow&&play.gap&&n<=12")
             < step.index("if(play.pace!==undefined")), \
         "the slider reaches a followed hand before the arrival gap does"
+
+
+# ---------------------------------------------------------------------------
+# a message that carries more than one answer
+# ---------------------------------------------------------------------------
+#
+# A followed hand sends one answer at a time.  A relaxation does not: the
+# kernel reads xtb's log twenty times a second and hands over everything
+# walked since, so a settle sends two, three or four answers in one write.
+# Recorded while xtb ran, a GFN2 settle of an ibuprofen sent 46 answers in 17
+# writes 53 ms apart; one of a cholesterol sent 44 answers in 44 writes.
+
+def _settle_writes(pace, answers=45, per_write=3, every=50.0):
+    """The events a settle makes: a message every so often with several in it.
+
+    ``from`` overlaps the way ``_push`` overlaps -- the tail goes out again
+    every time -- so a read the page was too busy to make costs nothing.
+    """
+    events = [{'tick': 0, 'follow': True, 'grab': False, 'pace': pace}]
+    at = 0.0
+    walked = 0
+    while walked < answers:
+        walked = min(answers, walked + per_write)
+        at += every
+        first = max(0, walked - 8)
+        events.append({'tick': _at(at), 'payload': {
+            'run': 1, 'from': first, 'follow': 1, 'pace': pace,
+            'frames': [[i, 0, 0] for i in range(first, walked)]}})
+    return events
+
+
+@_needs_node
+def test_a_message_with_three_answers_in_it_is_drawn_as_three_steps(
+        player_program, tmp_path):
+    """The stutter: creep, creep, jump, stand still -- ten times a second.
+
+    Three answers to a message is not a burst, it is what a settle looks like
+    from here, and pacing the whole message as though it carried one answer
+    drew a third of what arrived.  The queue then filled, and at four in hand
+    the guard handed the playback back to the slider -- which at the top of
+    the slider means "take everything now", so the queue went into a single
+    animation frame.  The two rules took turns, once per message.
+
+    Driven in node over a GFN2 settle's arrival pattern rounded to the clock
+    -- three answers every 50 ms -- the advance per draw, in frames of the
+    trajectory::
+
+        guard                       draws   median   largest   largest/median
+        three in the queue             29    0.333     5.333             16.0
+        the slower of the two paces    45    1.000     2.000              2.0
+
+    Over the recorded pattern itself -- 46 answers, 2.8 to a message, 53 ms
+    apart, taken off an ibuprofen while xtb ran -- it is 36 draws at
+    0.333/5.399 against 56 at 1.000/1.000.
+
+    The same settle before any of this was drawn 15 times, a whole 3 frames
+    each: even, and jerky, which is what the arrival-gap rule was introduced
+    to fix.  What it must not do is be even for one message in two.
+
+    On screen the jump is led by the hydrogens, which travel furthest per
+    answer -- a methyl's three most visibly of all.  That is what "the CH3
+    groups are acting up" was.
+    """
+    got = _drive(tmp_path, player_program,
+                 _settle_writes(0, answers=45, per_write=3, every=50.0),
+                 ticks=200)
+    moved = [b - a for a, b in zip(got['drawn'], got['drawn'][1:])]
+    forward = sorted(x for x in moved if x > 1e-9)
+    assert forward, got['drawn']
+    median = forward[len(forward) // 2]
+    assert max(moved) <= 2.0, got['drawn']
+    assert max(moved) / median <= 3.0, (median, max(moved))
+    # and none of it is bought by falling behind or by stopping short: the
+    # queue is empty at the end and the picture is standing on the last
+    # answer.  (The first message of a follow run is trimmed to its newest
+    # frame on purpose -- the answers before it are the user's own past -- so
+    # what is shown is two short of what was sent, and always was.)
+    assert got['play']['queue'] == 0, got['play']
+    assert got['drawn'][-1] == 44, got['drawn'][-5:]
+    assert got['play']['shown'] >= 42, got['play']
+    assert _never_goes_back(got['drawn']), got['drawn']
+
+
+@_needs_node
+def test_a_settle_watched_slowly_is_still_watched_at_the_speed_asked_for(
+        player_program, tmp_path):
+    """The arrival rate does not override a slider that is slower than it.
+
+    Both paces are limits, and obeying both means taking the longer interval:
+    the answers cannot arrive faster than they arrive, and the slider says not
+    to be shown more than so many frames a second.  Twelve a second over the
+    same settle -- three answers every 50 ms, which is sixty a second -- draws
+    at the slider's rate and lets the queue grow, which is what asking to
+    watch slowly means.
+    """
+    got = _drive(tmp_path, player_program,
+                 _settle_writes(83, answers=45, per_write=3, every=50.0),
+                 ticks=200)
+    # 200 ticks is 3.3 s, and at twelve a second that is forty frames at most.
+    assert got['play']['seen'] == 45, got['play']
+    assert got['play']['shown'] <= 40, got['play']
+    assert got['play']['queue'] > 0, (
+        "the picture is meant to be behind: that is what a slow setting is")
+    assert _never_goes_back(got['drawn']), got['drawn']
+
+
+# ---------------------------------------------------------------------------
+# what a drawn in-between is, as a geometry
+# ---------------------------------------------------------------------------
+#
+# The player interpolates between two answers in Cartesian coordinates, so a
+# group that turns between them is drawn travelling along the chord rather
+# than round the arc: bonds shorten and open out again across the interval.
+# How much depends entirely on how far apart the two answers are, which is why
+# it is measured at both ends of the range rather than argued about.
+
+def _turning_methyl(degrees):
+    """Two frames of an ethane whose methyl has turned by *degrees*.
+
+    Exact tetrahedral geometry, C-C 1.53 A and C-H 1.09 A, so any change in a
+    bond length in what is drawn between them is the drawing's doing.
+    """
+    import math
+
+    def place(polar, phi, at_z):
+        return [
+            1.09 * math.sin(math.radians(polar)) * math.cos(math.radians(phi)),
+            1.09 * math.sin(math.radians(polar)) * math.sin(math.radians(phi)),
+            at_z + 1.09 * math.cos(math.radians(polar)),
+        ]
+
+    def frame(turn):
+        out = [0.0, 0.0, 0.0, 0.0, 0.0, 1.53]
+        for k in range(3):
+            out += place(110.7, 120 * k + turn, 0.0)      # the one that turns
+        for k in range(3):
+            out += place(69.3, 120 * k + 60.0, 1.53)
+        return out
+
+    return frame(0.0), frame(degrees)
+
+
+def _bond(flat, i, j):
+    import math
+    return math.dist(flat[3 * i:3 * i + 3], flat[3 * j:3 * j + 3])
+
+
+def _shortest_ch(got):
+    """The shortest C-H the playback ever put on the screen."""
+    return min(min(_bond(one, 0, h) for h in (2, 3, 4)) for one in got['drawn'])
+
+
+@_needs_node
+def test_an_in_between_of_two_answers_keeps_the_bonds_they_agree_on(
+        player_program, tmp_path):
+    """A methyl that turns between two answers is drawn across the chord.
+
+    That is a real defect of interpolating in Cartesian coordinates, and it is
+    bounded by how far apart the two answers are.  Driven in node over an
+    exact ethane, C-H 1.09 A, with the methyl turned by:
+
+        turned between two answers    shortest C-H drawn
+        14 degrees                    1.0829 A   (-0.007)
+        30 degrees                    1.0577 A   (-0.032)
+        120 degrees                   0.6390 A   (-0.451)
+
+    So the collapse is real at 120 degrees and nothing at 14.  Which of those
+    a user sees is decided by the size of one optimiser step, and that was
+    measured rather than assumed: over seven real trajectories -- GFN-FF and
+    GFN2, settles of a toluene, a tert-butylbenzene, an ibuprofen and a
+    cholesterol, one of them after an atom had been shoved 55% of the way into
+    another -- the largest turn a methyl made between two consecutive answers
+    was 14.2 degrees, and the largest error any bond took anywhere inside an
+    interval was 0.010 A.  At that scale the straight line is what xtb's own
+    path looks like.
+
+    Kept as a test because it is the assumption the smoothing rests on.  If
+    answers ever do arrive that far apart -- a coarser optimiser, a scan that
+    steps a torsion, frames lost between two writes -- the drawing has to stop
+    being a straight line, and this says from where and by how much.
+    """
+    for turned, least in ((14.0, 1.0827), (30.0, 1.0576), (120.0, 0.6390)):
+        a, b = _turning_methyl(turned)
+        events = [{'tick': 0, 'payload': {
+            'run': 1, 'from': 0, 'pace': 200, 'frames': [a, b]}}]
+        got = _drive(tmp_path, player_program, events, ticks=40, whole=True)
+        assert len(got['drawn']) > 8, len(got['drawn'])
+        drawn = _shortest_ch(got)
+        # near the chord's own low point: the draws land on the interval at
+        # whatever fractions the clock gives them
+        assert abs(drawn - least) <= 0.004, (turned, drawn)
+        # the two ends themselves are exact, whatever happens between them
+        assert abs(_bond(got['drawn'][0], 0, 2) - 1.09) < 1e-6
+        assert abs(_bond(got['drawn'][-1], 0, 2) - 1.09) < 1e-6
+
+
+@_needs_node
+def test_a_step_the_budget_refuses_is_put_back_whole(player_program, tmp_path):
+    """What the thermal wall does to the picture, since it does it by frames.
+
+    A refused step comes back as a frame: the kernel sends the last structure
+    the budget agreed to, so two consecutive answers are a step forward and
+    the same step undone.  Drawn as an interpolation that would be the
+    molecule sliding backwards through the geometries in between, which is a
+    path nothing computed and a rollback nobody asked to watch.
+
+    It cannot happen, and the reason is worth holding still: the budget only
+    acts under a pull -- ``_thermal_live`` is the switch *and* ``_hand_pulls``
+    -- so every rollback there is arrives while the mouse is down, and a hand
+    on the structure is drawn answer by answer, whole.  Driven in node with a
+    hand down over two answers and the refusal of the second: three draws, a
+    whole frame each, and nothing between them.
+
+    What a settle after the release does is a separate question and is the
+    same for every method: it is paced like any other stream of answers.
+    """
+    events = [{'tick': 0, 'follow': True, 'grab': True}]
+    window = _Window(1)
+    for tick, walked in ((6, 1), (12, 2)):
+        payload = window.push(walked)
+        payload['follow'] = 1
+        payload['pace'] = 0
+        events.append({'tick': tick, 'payload': payload})
+    # the third answer is the first one again: the budget refused the second
+    events.append({'tick': 18, 'payload': {
+        'run': 1, 'from': 2, 'follow': 1, 'pace': 0, 'frames': [[0, 0, 0]]}})
+
+    got = _drive(tmp_path, player_program, events, ticks=40)
+    assert got['drawn'] == [0, 1, 0], got['drawn']
