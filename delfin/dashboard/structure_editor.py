@@ -36,6 +36,7 @@ import ipywidgets as widgets
 import py3Dmol
 
 from . import climb as _climb
+from . import editor_journal as _journal_mod
 from . import gfn_optimize as _gfn
 from . import ketcher as _ketcher
 from . import mopac_optimize as _mopac
@@ -782,6 +783,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                          # belongs on screen, whatever any status line says.
                          ('busy_jobs', {})):
         state.setdefault(_key, _value)
+
+    # What this session did, kept in memory so that a defect can be walked
+    # through again.  It records into a bounded ring and touches no disk until
+    # the user presses send, and `record` is the whole of what the hot paths
+    # below pay for it -- see :mod:`delfin.dashboard.editor_journal` for what
+    # is kept, what is dropped first, and where a report lands.
+    #
+    # A host that builds two editors gets two journals, which is right: a bug
+    # report is about the structure the user was looking at, and the other
+    # tab's session is somebody else's evidence.
+    journal = _journal_mod.Journal()
+    state['editor_journal'] = journal
+    record = journal.record
 
     # The status line lies ON the picture, along its bottom edge, rather than
     # in a row above it.
@@ -2018,6 +2032,115 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     # :data:`~delfin.dashboard.molecule_viewer.STRUCTURE_VIEWER_FULLSCREEN_CSS`.
     submit_manip_toolbar.add_class('delfin-structure-toolbar')
 
+    #: Reporting what just went wrong, in the shape the DELFIN Agent tab
+    #: already has it: a line to write in, and send.
+    #:
+    #: One button on the row until it is asked for, because the row is the
+    #: crowded one and the standing rule about it is that less is more. The
+    #: line and Send appear under the beetle and go away again, so the cost of
+    #: having this at all is 44 px next to controls that are 200.
+    #:
+    #: Where it goes is said on the control itself rather than in a manual.
+    #: These are the user's own structures on the user's own machine and the
+    #: report never leaves it -- no push, no network -- and the only way that
+    #: is worth anything to him is if he can see the directory it went to.
+    submit_bug_btn = widgets.ToggleButton(
+        value=False, description='🐞', tooltip=(
+            'Report what just went wrong. Everything you did in the viewer '
+            'has been remembered, so a maintainer can play it back.'),
+        layout=widgets.Layout(width='44px', flex='0 0 auto'),
+    )
+    submit_bug_note = widgets.Text(
+        value='', placeholder='What went wrong? (one line)',
+        layout=widgets.Layout(width='260px', display='none'),
+    )
+    submit_bug_send = widgets.Button(
+        description='Send', button_style='warning',
+        tooltip='Write the report',
+        layout=widgets.Layout(width='72px', display='none'),
+    )
+    submit_bug_where = widgets.HTML(
+        value='', layout=widgets.Layout(display='none'))
+    #: A row inside a row has to wrap too, or its far end leaves the screen:
+    #: a flexbox breaks between its items and never inside one, so a nested
+    #: row saying nowrap puts all four of these on one line however narrow
+    #: the toolbar is. That is how the internal-coordinate row came to hang
+    #: off the right of the screen, and it is caught here by the test that
+    #: was written for it rather than found again in a browser.
+    submit_bug_group = widgets.HBox(
+        [submit_bug_btn, submit_bug_note, submit_bug_send, submit_bug_where],
+        layout=widgets.Layout(gap='6px', align_items='center',
+                              flex_flow='row wrap',
+                              flex='0 1 auto', min_width='0',
+                              overflow='visible'),
+    )
+    # Appended to the row rather than written into the list that builds it.
+    # The control then has one place of its own that stays put while the
+    # contents of that list are rearranged around it, which is what a row
+    # holding forty controls gets rearranged for.
+    submit_manip_toolbar.children = (
+        tuple(submit_manip_toolbar.children) + (submit_bug_group,))
+
+    def on_submit_bug_toggle(change=None):
+        """Open the line to write in, or put it away again."""
+        if change is not None and change.get('name') != 'value':
+            return
+        open_now = bool(submit_bug_btn.value)
+        for widget in (submit_bug_note, submit_bug_send, submit_bug_where):
+            widget.layout.display = 'flex' if open_now else 'none'
+        if open_now:
+            where = str(_journal_mod.resolve_archive_dir())
+            home = str(Path.home())
+            if where.startswith(home):
+                where = '~' + where[len(home):]
+            submit_bug_where.value = (
+                '<span style="font-size:11px;opacity:.75">stays on this '
+                f'machine, in <code>{html.escape(where)}</code></span>')
+
+    def on_submit_bug_send(_button=None):
+        """Write everything this session did into a report and say where.
+
+        The sentence and the sequence go out together. Neither is much use
+        alone: the sentence says what to look for and the sequence is what
+        puts it back on the screen, and it is the pair that turns "es zappelt"
+        into a test somebody can fail.
+        """
+        record('note', v='the bug button was pressed')
+        try:
+            report_dir = _journal_mod.write_report(
+                journal,
+                description=(submit_bug_note.value or '').strip(),
+                widgets=journal_watching,
+                tab=str(state.get('editor_host') or ''),
+            )
+        except Exception as trouble:
+            _set_mol_status(
+                'The report could not be written: ' + str(trouble),
+                'Nothing was lost -- what you did is still remembered, so '
+                'Send can be pressed again.')
+            return
+        told = journal.summary()
+        where = str(report_dir)
+        home = str(Path.home())
+        if where.startswith(home):
+            where = '~' + where[len(home):]
+        # The drop is said out loud rather than left in the file. A report
+        # whose beginning the ring dropped replays from part-way through, and
+        # the one person who can say whether that matters is standing here.
+        went = (f' The session outran the buffer, so the oldest '
+                f'{told["dropped"]} things you did are not in it.'
+                if told['dropped'] else '')
+        _set_mol_status(
+            f'Reported. {told["events"]} things you did over '
+            f'{told["seconds"]:.1f} s are in {where}',
+            'It stays on this machine, and it can be played back into a '
+            'viewer to see the same thing happen again.' + went)
+        submit_bug_note.value = ''
+        submit_bug_btn.value = False
+
+    submit_bug_btn.observe(on_submit_bug_toggle, names='value')
+    submit_bug_send.on_click(on_submit_bug_send)
+
     def _set_mol_status(*lines, spinner=False):
         """Say what the editor is doing, in both copies of the status line.
 
@@ -2047,6 +2170,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # a new line: a worker starting or ending re-renders what is already
         # there rather than inventing a message for it.
         state['mol_status_lines'] = tuple(lines)
+        # In the plain lines it was given rather than the HTML they become: a
+        # bug report is read by a person, and "es zappelt" is answered by what
+        # the editor claimed at that second, not by its markup.
+        record('status', lines=[str(one) for one in lines])
         _render_mol_status()
 
     def _render_mol_status():
@@ -2521,6 +2648,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         """
         return int(run or 0) == int(state.get('gfn_run', 0))
 
+    def _note_the_run(run, by):
+        """Write down that *by* has taken run number *run*.
+
+        Said at every place that moves the counter, and said rather than
+        worked out afterwards from the frames.  A run that claims a number
+        and then never draws a frame is not an absence -- it is the shape two
+        of this week's defects had, a walker failing its own guard on every
+        write and throwing its whole path away silently and correctly.  Read
+        back from the frames alone that case is indistinguishable from a
+        number nobody ever took.
+        """
+        record('run', v=int(run), by=by)
+        return run
+
     def _claim_the_frame_run():
         """Take the next run number, for whatever is about to start drawing.
 
@@ -2537,6 +2678,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         """
         run = int(state.get('gfn_run', 0)) + 1
         state['gfn_run'] = run
+        # Who took it, worked out here from what is walking rather than said
+        # by the caller. The five callers of this are described by their exact
+        # text in the tests that read this source -- a Stop must contain
+        # ``_claim_the_frame_run()`` and be seen to -- and an argument they do
+        # not need is not worth being the reason those tests are rewritten.
+        # Where the distinction really carries something the site says it
+        # itself: the follow, the settle, the scan, the saddle and the chain
+        # each name themselves where they move the counter.
+        _note_the_run(run,
+                      'climb' if state.get('climb_run') is not None
+                      else 'optimise' if state.get('optimize_run') is not None
+                      else 'press')
         # A path put down by an earlier Stop and never claimed -- the page
         # never said where the picture stood -- belongs to a run that is over.
         # Left lying, it would be cut by the next Stop's frame number.
@@ -3414,7 +3567,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # Whatever the page said about the last drag's playback is not about
         # this one.
         state['gfn_play_note'] = ''
-        run = int(state.get('gfn_run', 0)) + 1
+        run = _note_the_run(int(state.get('gfn_run', 0)) + 1, 'follow')
         state['gfn_run'] = run
         state['gfn_follow_run'] = run
         return True
@@ -5120,7 +5273,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # round every few tenths of a second that is a twitch per round, and
         # what it looks like is the structure jittering.
         if rounds == 1:
-            state['gfn_run'] = int(state.get('gfn_run', 0)) + 1
+            state['gfn_run'] = _note_the_run(
+                int(state.get('gfn_run', 0)) + 1, 'settle')
             state['gfn_settle_offset'] = 0
         run = int(state.get('gfn_run', 0))
         offset = int(state.get('gfn_settle_offset') or 0)
@@ -5693,7 +5847,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # A run number the page has never seen, carrying nothing.  It resets
         # the player, so the frames of the abandoned run cannot play out over
         # the geometry the user has just made.
-        blank = int(state.get('gfn_run', 0)) + 1
+        blank = _note_the_run(int(state.get('gfn_run', 0)) + 1, 'abandoned')
         state['gfn_run'] = blank
         # Said out loud, because a new run and an abandoned one look the
         # same to the page and want opposite things: a run that ended
@@ -6527,6 +6681,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if change.get('name') != 'value':
             return
         raw = (submit_pick_sync.value or '').strip()
+        record('pick', v=raw)
         indices = [int(part) for part in raw.split(',') if part.strip().isdigit()]
         state['picked'] = indices
         _step_for_selection(indices)
@@ -7716,6 +7871,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         """
         if change.get('name') != 'value':
             return
+        # Recorded before it is acted on, and whatever it says: a message this
+        # handler refuses is still a message the page sent, and a report that
+        # showed only the ones the kernel understood would hide exactly the
+        # kind of defect where the page says something the kernel does not.
+        record('cmd', v=submit_cmd_sync.value or '')
         parts = (submit_cmd_sync.value or '').strip().split(':')
         if len(parts) != 3:
             return
@@ -8424,7 +8584,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['scan_gap_least'] = None
         state['scan_depth'] = ''
         state['scan_crowded'] = None
-        state['scan_frame_run'] = int(state.get('gfn_run', 0)) + 1
+        state['scan_frame_run'] = _note_the_run(
+            int(state.get('gfn_run', 0)) + 1, 'scan')
         state['gfn_run'] = state['scan_frame_run']
         _ensure_manip_bootstrap()
         schedule_ui_update(_install_gfn_frame_watcher)
@@ -8976,6 +9137,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # play out over it.
         state['saddle_frame_run'] = int(state.get('gfn_run', 0)) + 1
         state['gfn_run'] = state['saddle_frame_run']
+        _note_the_run(state['saddle_frame_run'], 'saddle')
         _ensure_manip_bootstrap()
         schedule_ui_update(_install_gfn_frame_watcher)
         submit_saddle_btn.description = 'Stop'
@@ -9644,6 +9806,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # play out over it.
         state['chain_frame_run'] = int(state.get('gfn_run', 0)) + 1
         state['gfn_run'] = state['chain_frame_run']
+        _note_the_run(state['chain_frame_run'], 'chain')
         _ensure_manip_bootstrap()
         schedule_ui_update(_install_gfn_frame_watcher)
         submit_saddle_btn.description = 'Stop'
@@ -11273,6 +11436,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         new_xyz = submit_manip_sync.value
         if not new_xyz or not new_xyz.strip():
             return
+        # The structure as the page sent it, comment line and all -- and the
+        # comment line is the half that matters, because it is where the page
+        # says whether this is a hand following, a hand letting go, an undo in
+        # the browser or the force field reporting from under all three.
+        record('manip', v=new_xyz)
         # Extract only the new coordinate lines; drop JS-side count + comment.
         new_lines = new_xyz.splitlines()
         if len(new_lines) >= 2:
@@ -11479,6 +11647,23 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # After the coordinates have landed, so the assignment is worked
             # out from where the ligands actually are now.
             schedule_ui_update(_enable_live_forcefield)
+
+    # The journal listens before anything else does, and that ordering is the
+    # whole of why it is written here rather than at the end of build().
+    # Traitlets calls observers in the order they were registered, so a
+    # recorder registered after the handlers would time-stamp a widget change
+    # *after* the status line and the frames that change produced -- and the
+    # readable half of a report would then say the editor answered a question
+    # before it was asked.
+    journal_watching = journal.watch(locals())
+    submit_gfn_frame.observe(journal.on_frame, names='value')
+    submit_gfn_wall.observe(journal.on_wall, names='value')
+    # The coordinate box is the one channel the editor shares with its host,
+    # and every write to it already carries a comment saying what produced it.
+    # Watching it here means the geometry's history costs nothing to collect:
+    # nobody has to remember to record it at each of the places that write.
+    coords_widget.observe(journal.on_box, names='value')
+    journal.opening(journal.snapshot(journal_watching), coords_widget.value)
 
     submit_select_btn.observe(on_submit_select_toggle, names='value')
     submit_manip_btn.observe(on_submit_manip_toggle, names='value')

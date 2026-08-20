@@ -9088,6 +9088,29 @@ def create_tab(ctx):
                 except Exception as exc:
                     _append_system_message(f"Task scaffold failed: {exc}")
                 return True
+            # The structure editor files its own reports, in the same shape
+            # and in an archive of its own, and they are the ones worth
+            # learning from about the viewer: each carries the whole message
+            # sequence of a session and can be replayed into a real editor.
+            # Named here because a folder nobody is told about is a folder
+            # nobody reads.
+            _viewer_line = ""
+            try:
+                from delfin.dashboard import editor_journal as _ej
+                _viewer = _ej.list_reports()
+                if _viewer:
+                    _viewer_line = (
+                        f"\n\n🔬 **Viewer reports** ({len(_viewer)}) in "
+                        f"`{_ej.resolve_archive_dir()}` — replay one with "
+                        f"`delfin.dashboard.editor_journal.replay`:\n"
+                        + "\n".join(
+                            f"- `{r['name']}` — "
+                            f"{(r['description'] or '—')[:60]}  "
+                            f"({r['events']} events · {r['tab'] or '?'})"
+                            for r in _viewer[:10]))
+            except Exception:
+                _viewer_line = ""
+
             # /bugs  |  /bugs ls — list the local archive
             reports = _br.list_reports()
             try:
@@ -9098,6 +9121,7 @@ def create_tab(ctx):
                 _append_system_message(
                     f"No bug reports in `{_archive}`.\n"
                     f"Click the 🐞 bug-report button to create one."
+                    + _viewer_line
                 )
                 return True
             lines = [f"🐞 **Bug-Reports** in `{_archive}` ({len(reports)}):", ""]
@@ -9107,7 +9131,7 @@ def create_tab(ctx):
                 lines.append(f"- `{r['name']}` — {desc}  ({meta})")
             lines.append("")
             lines.append("→ `/bugs task <name>` scaffolds a benchmark task from it.")
-            _append_system_message("\n".join(lines))
+            _append_system_message("\n".join(lines) + _viewer_line)
             return True
 
         # /grant — give the agent access to a directory (the explicit
