@@ -1839,6 +1839,36 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='40px', height='30px', display='none'),
         disabled=True,
     )
+    #: The internal-coordinate row: a row inside a row, and so a row that has
+    #: to wrap and to give way like the one it sits in.
+    #:
+    #: It used to say ``row nowrap`` and ``flex: 0 0 auto``, and that is the
+    #: whole of why the last buttons hung off the right of the screen.  The
+    #: toolbar around it does wrap; a wrapping container breaks *between* its
+    #: items and never inside one, and this group is one item.  Armed with a
+    #: scan it is nineteen controls and about 1900 px of content, in a row 620
+    #: px wide at a 1280 px window, laid out on a single line that had nowhere
+    #: to go.
+    #:
+    #: Measured in chromium before this changed, with a scan set up: at 1280
+    #: px, ten controls past the right edge of the toolbar embedded and eight
+    #: in the fullscreen overlay, and nine and seven of those not the topmost
+    #: element at their own centre -- unreachable, and not reachable by
+    #: scrolling either, because every container between here and the document
+    #: holds its overflow.  Path from here, Find the path and Path to saddle
+    #: were three of them, which is exactly what was reported.
+    #:
+    #: ``0 1 auto`` written out rather than left to the default, because the
+    #: difference from ``0 0 auto`` is the point: when the group is wider than
+    #: the line it is alone on it shrinks to the line and wraps inside itself
+    #: instead of painting past it.  ``min_width: 0`` because a flex item's
+    #: automatic minimum is its own content, and its content is the widest
+    #: control in it.
+    #:
+    #: In the state the editor opens in -- the label, the value, Set, Hold and
+    #: the mode, and nothing else on the row -- the group fits on its line
+    #: either way and nothing moves: measured, the toolbar is the same height
+    #: to the pixel at 1920, 1536, 1280 and 1024 px.
     submit_internal_group = widgets.HBox(
         [submit_internal_label, submit_internal_value,
          submit_internal_btn, submit_hold_btn, submit_hold_mode,
@@ -1848,8 +1878,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
          submit_scan_how, submit_scan_energy, submit_scan_run_btn,
          submit_path_from_btn, submit_path_btn, submit_path_saddle_btn],
         layout=widgets.Layout(
-            gap='6px', align_items='center', flex_flow='row nowrap',
-            flex='0 0 auto', overflow='visible',
+            gap='6px', align_items='center', flex_flow='row wrap',
+            flex='0 1 auto', min_width='0', overflow='visible',
         ),
     )
 
@@ -1910,6 +1940,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     # same fact written down twice and a third host free to forget it.
     submit_manip_toolbar.add_class('delfin-structure-fs-member')
     submit_manip_toolbar.add_class('delfin-structure-fs-toolbar')
+    # And a name of its own, for the rules that hold wherever it is -- in the
+    # Submit tab, in the ORCA Builder, and in the body-level overlay, which is
+    # outside both tabs and so outside the tab sheets that used to be the only
+    # thing keeping a control inside its column. The shared sheet is where
+    # those rules live; see the toolbar section of
+    # :data:`~delfin.dashboard.molecule_viewer.STRUCTURE_VIEWER_FULLSCREEN_CSS`.
+    submit_manip_toolbar.add_class('delfin-structure-toolbar')
 
     def _set_mol_status(*lines, spinner=False):
         """Say what the editor is doing, in both copies of the status line.

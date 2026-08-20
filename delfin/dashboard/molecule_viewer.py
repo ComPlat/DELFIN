@@ -5117,6 +5117,53 @@ def submit_manip_bootstrap_js():
 # left untouched: only the marked viewer/header/control members are moved into
 # a body-level overlay, then restored to their exact original DOM positions.
 STRUCTURE_VIEWER_FULLSCREEN_CSS = r"""
+/* ---- the structure editor's toolbar, wherever it is -------------------- */
+/* The rule the toolbar is laid out by: every row wraps, and nothing on a row
+   is wider than the row.  Those two together are what makes it impossible for
+   a control to end up somewhere the user cannot press it, at any window width
+   and whichever controls the chosen method and hand have left on screen.
+
+   It is here rather than in a tab sheet because the toolbar has three homes --
+   the Submit tab, the ORCA Builder, and the body-level fullscreen overlay,
+   which is a child of <body> and so outside every tab's own scope.  Each tab
+   used to keep the toolbar inside its column with a max-width of its own; the
+   overlay is not in a tab, and there the row simply ran off the screen.
+
+   !important throughout, and not out of habit: an ipywidgets Layout is written
+   onto the element as an inline style, and no selector outranks that.  A rule
+   that has to survive a widget declaring its own flex or width has to say so.
+
+   Boxes: a nested row is one item of the row above it, and a flexbox breaks
+   between items and never inside one, so a nested row that cannot wrap takes
+   its whole content past the edge however wide the toolbar is.  min-width 0
+   because a flex item's automatic minimum is its content -- without it the
+   shrink that fits it back onto the line cannot happen. */
+.delfin-structure-toolbar,
+.delfin-structure-toolbar .widget-box {
+    flex-wrap: wrap !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+}
+/* Controls: a ceiling of the row, so a control can be compressed by a narrow
+   window but can never stick out of one. */
+.delfin-structure-toolbar .jupyter-widgets {
+    max-width: 100% !important;
+}
+/* And a floor, for the things that are read rather than aimed: a button
+   compressed past its own label is no more usable than one off the screen --
+   measured at 1280 px before this, Hold, Scan, Run scan and Path to saddle
+   were all squeezed to 20 px stubs with nothing legible in them.  fit-content
+   is the width at which the label still fits, so the label is the floor and
+   the toolbar decides it rather than a number chosen here.
+
+   Deliberately not applied to the dropdowns, the number boxes or the sliders:
+   a narrowed select still opens its full menu, a number box still shows its
+   value, and a slider is still a slider.  Those give way first, which is what
+   leaves the room for the buttons to keep their words. */
+.delfin-structure-toolbar .widget-button,
+.delfin-structure-toolbar .widget-toggle-button {
+    min-width: fit-content !important;
+}
 /* Everything from Optimise onward starts a second row, the same as in the
    Submit tab's own overlay. Flexbox cannot be told to break, so the break is
    an element that takes a whole line and no height. Hidden outside an
