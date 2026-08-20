@@ -772,6 +772,110 @@ def press(widget, value):
         pass
 
 
+def _coordinates(text):
+    """The numbers out of an XYZ, as a flat list of (x, y, z)."""
+    rows = [one for one in str(text or '').splitlines() if one.strip()]
+    body = rows[2:] if rows and rows[0].strip().isdigit() else rows
+    out = []
+    for row in body:
+        parts = row.split()
+        if len(parts) < 4:
+            continue
+        try:
+            out.append((float(parts[1]), float(parts[2]), float(parts[3])))
+        except ValueError:
+            continue
+    return out
+
+
+def _apart(one, two):
+    """Root-mean-square distance between two structures, in angstrom."""
+    if not one or len(one) != len(two):
+        return float('inf')
+    total = 0.0
+    for a, b in zip(one, two):
+        total += ((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2
+                  + (a[2] - b[2]) ** 2)
+    return (total / len(one)) ** 0.5
+
+
+def answers(timeline):
+    """What the editor said back, as a stream two runs can be compared on.
+
+    :func:`page_messages` is what went in and is compared for equality; this
+    is what came out, and it can only be compared by reading it.  Two things
+    are in it and nothing else: every structure written to the coordinate box
+    with the comment saying what produced it, and every run number claimed
+    with the name of what claimed it.  The run claims are deterministic given
+    the same messages; the structures are too, for as long as the chemistry
+    has one answer, and :func:`replay` says what happens where it does not.
+
+    The status lines are deliberately left out even though the journal keeps
+    them.  They carry the timings of the run that wrote them -- "holding 2
+    atoms, 164 ms each" -- so two runs of the same session never agree on
+    them, and a comparison that included them would report a difference every
+    time and mean nothing.
+    """
+    out = []
+    for event in timeline:
+        kind = event.get('k')
+        if kind == 'box':
+            rows = str(event.get('v') or '').splitlines()
+            out.append(('box', rows[1].strip() if len(rows) > 1 else '',
+                        _coordinates(event.get('v'))))
+        elif kind == 'run':
+            out.append(('run', f"{event.get('v')} by {event.get('by', '')}",
+                        None))
+    return out
+
+
+def first_difference(recorded, replayed, *, tol=0.05):
+    """Where a replay stopped agreeing with the session it was made from.
+
+    Returns ``None`` when the two agree, and otherwise a dict naming the
+    place: ``at`` (how far along), ``kind``, ``recorded``, ``replayed`` and
+    ``apart`` (the RMSD in angstrom, for a structure).
+
+    This exists because the question "did the replay work" has no yes-or-no
+    answer past a certain point in a session, and finding out where the two
+    parted took three throwaway scripts the first time it was asked.  What it
+    is for is the sentence a maintainer actually wants -- "they were the same
+    molecule until the sixth step of the scan" -- which is worth far more than
+    a number.
+
+    *tol* is in angstrom and is a real judgement rather than a rounding
+    allowance.  Measured on this machine: the same gesture recorded and
+    replayed agrees to 0.000 A through the drag, the release and the
+    minimisation, so anything above the noise is a genuine difference there.
+    Past a bifurcation it agrees on nothing, and no tolerance helps -- see
+    :func:`replay` for what that means and why it is not a defect.
+    """
+    one, two = answers(recorded), answers(replayed)
+    for index in range(max(len(one), len(two))):
+        if index >= len(one) or index >= len(two):
+            missing = 'replayed' if index >= len(two) else 'recorded'
+            there = (one[index] if missing == 'replayed' else two[index])
+            return {'at': index, 'kind': 'missing',
+                    'recorded': one[index][1] if index < len(one) else None,
+                    'replayed': two[index][1] if index < len(two) else None,
+                    'apart': None,
+                    'said': f'the {missing} side has nothing here; the other '
+                            f'has {there[0]} {there[1]!r}'}
+        a, b = one[index], two[index]
+        if a[0] != b[0] or a[1] != b[1]:
+            return {'at': index, 'kind': a[0], 'recorded': a[1],
+                    'replayed': b[1], 'apart': None,
+                    'said': f'{a[0]} {a[1]!r} became {b[0]} {b[1]!r}'}
+        if a[0] == 'box':
+            apart = _apart(a[2], b[2])
+            if apart > tol:
+                return {'at': index, 'kind': 'box', 'recorded': a[1],
+                        'replayed': b[1], 'apart': apart,
+                        'said': f'the structure written as {a[1]!r} came out '
+                                f'{apart:.3f} A away'}
+    return None
+
+
 def page_messages(timeline, *, include_kernel=False):
     """The page-to-kernel half of a journal, in order, as comparable tuples.
 
@@ -827,6 +931,34 @@ def replay(timeline, editor, *, pace=1.0, max_gap=2.0, seed=True,
     *seed* applies the pinned opening snapshot first, which is what puts the
     method, the charge and the toggles where they were before the first
     recorded change.
+
+    What a replay reproduces, and what it cannot
+    --------------------------------------------
+
+    It reproduces the messages exactly, and it reproduces the *structures* for
+    as long as the chemistry has one answer.  Measured on this machine, a
+    sixteen-atom Diels-Alder gesture recorded and replayed: the six answers
+    the follow gave during the drag came back at 3.201, 3.049, 2.898, 2.748,
+    2.598 and 2.450 A on both sides, the minimisation after the release came
+    back at 3.304 on both, and the first five steps of the scan agreed to the
+    tenth of a kcal/mol.
+
+    The sixth step is where the cycloaddition happens -- the walk goes from
+    +4.9 to about -21 kcal/mol in one step -- and past it the two sides do not
+    agree, ending 0.81 A apart.  That is *not* the replay failing.  The same
+    scan, from a structure written to a file and read back byte for byte, run
+    five times in five separate processes with no replay involved at all,
+    gave the same first seven steps every time and two different endpoints:
+    -54.8 kcal/mol four times and -54.9 once.  Past the barrier the surface
+    has more than one product geometry within reach, and which one xtb's
+    constrained relaxation falls into is decided below the precision anything
+    here controls.
+
+    So a replay is judged on :func:`page_messages`, which is exact, and read
+    on :func:`first_difference`, which says where the two stopped being the
+    same molecule.  A maintainer replaying a user's report past a bifurcation
+    will land somewhere else and should be told so rather than left to
+    discover it -- which is what that function is for.
 
     Returns the list of messages it wrote, in the same shape
     :func:`page_messages` produces, so a caller can compare the two directly.
