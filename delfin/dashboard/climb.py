@@ -14,12 +14,40 @@ So this file is a saddle optimiser, and the method is the one production codes
 use rather than one invented here: **partitioned rational function optimisation**
 with **eigenvector following** (Banerjee, Adams, Simons and Shepard 1985;
 Baker, *J. Comput. Chem.* **7**, 385, 1986) on a **Bofill-updated** Hessian
-(*J. Comput. Chem.* **15**, 1, 1994).  One Hessian at the start, then one
-gradient per step: the step maximises the energy along one chosen mode and
-minimises it along every other, and the Hessian is updated from the step rather
-than recomputed.  It is what Gaussian's Berny and ORCA's OptTS do, and the
-gradient-only form of it is what pysisyphus and Sella do; their sources were
-read for the step control and the mode tracking rather than derived here.
+(*J. Comput. Chem.* **15**, 1, 1994), with the exact Hessian computed again
+every twenty steps.  The step maximises the energy along one chosen mode and
+minimises it along every other, and between recomputations the Hessian is
+updated from the step.  It is what Gaussian's Berny and ORCA's OptTS do -- the
+recomputation is ORCA's ``Recalc_Hess``, which :mod:`saddle` sets to 5 for the
+button next door -- and the gradient-only form of it is what pysisyphus and
+Sella do; their sources were read for the step control and the mode tracking
+rather than derived here.
+
+Two things about it were wrong until they were measured against twenty-one
+drags a hand could actually make -- partly formed bonds, rings pulled open,
+protons half transferred, on fifteen to fifty atoms -- rather than against the
+one tidy Diels-Alder estimate the file was written for.  Both are recorded at
+:data:`AIM_WITHIN` and :data:`HESSIAN_EVERY`, and both were the difference
+between a climb that arrives and one that walks:
+
+* the hand's direction was matched against the *whole* spectrum, so dragging a
+  proton across a hydrogen bond aimed the climb at the O-H stretch at 1360
+  cm-1 and P-RFO went uphill along it; and
+* the Bofill update does not merely drift, it **invents curvature that is not
+  there** -- one to two negative eigenvalues the exact Hessian at the same
+  geometry does not have, and once at 1400 times its size.
+
+With both put right, on those twenty-one drags: the climb reaches the reaction
+the hand pointed at **9 times in 21, in a median of 5.7 s**, against **6 in 21**
+before and against **9 in 21 in a median of 50.3 s** for ORCA's own OptTS
+started from the same geometries.  "Reaches the reaction" is not "converged":
+both routes also arrive, confidently, at methyl torsions at -48 cm-1 and at
+fragments rocking at -52, so what is counted is whether xtb's own Hessian on
+what came back has one imaginary mode *and that mode is the stretch of the pair
+of atoms the hand was holding*.  Neither route is better than about two in five
+from a rough hand-made guess, and they fail on different cases -- both are
+right on 4, one of them on 14 of the 21.  That is the honest state of a saddle
+search begun by hand, and it is worth saying rather than implying otherwise.
 
 What it costs, measured on the sixteen-atom Diels-Alder estimate under GFN2:
 
@@ -35,6 +63,13 @@ What it costs, measured on the sixteen-atom Diels-Alder estimate under GFN2:
   end, of which 0.6 is the starting Hessian and 0.3 is xtb's own Hessian for
   the verdict at the end -- so the climb itself is a seventh of a second,
   against ORCA's 8.0 s for the same structure
+* and with the exact Hessian recomputed every twenty steps, a step costs on
+  average four times its bare price at sixteen atoms and eight times at fifty,
+  because one Hessian is 6N gradients: 0.55 s at sixteen atoms, 1.10 at
+  twenty, 4.92 at thirty-three and 16.3 at fifty, against 9.1, 14.9, 51.2 and
+  116.5 ms for a step.  So the climb is interactive in the sense the word is
+  used here -- tens of milliseconds a step -- up to about twenty atoms, and
+  above that it is a short wait rather than an animation
 
 and it lands in the same place: 2.3144 and 2.3161 A for the two forming bonds
 against ORCA's 2.3153 and 2.3153, 0.0057 A RMSD, and the same one imaginary
@@ -132,6 +167,83 @@ BEST_RATIO = 4.0
 #: in Hartree -- MOPAC's own guard, so that a converging climb is not taken
 #: back for a rounding error.
 RATIO_MATTERS_ABOVE = 1.0e-5
+
+#: How many of the softest modes the hand is allowed to have meant.
+#:
+#: A drag is answered by the Hessian eigenvector that most resembles it, and
+#: for a long time that search ran over the whole spectrum.  Measured on
+#: twenty-one drags, that is where most of them died: dragging a hydroxyl
+#: proton across a hydrogen bond in a glycylglycine, the eigenvector nearest
+#: the drag is the **O-H stretch at 1360 cm-1**, mode 31 of 45.  P-RFO then
+#: maximises the energy along it, which is not a saddle search -- it is
+#: pulling the proton off.  That climb passed +30 000 kcal/mol by its eleventh
+#: step and never came back.  Eleven of the twenty-one aimed at a mode above
+#: 170 cm-1, and not one of those reached the reaction the hand meant.
+#:
+#: So the hand may only name one of the softest few, which is where every
+#: implementation of Baker's mode following looks: geomeTRIC hard-codes the
+#: climbed mode as the lowest, optking refuses anything else outright, and
+#: MOPAC's default for a transition state is mode 1.  The reason is physical
+#: rather than numerical -- at a first-order saddle the reaction coordinate is
+#: the mode with the negative eigenvalue, so on the way to one it is soft, and
+#: a 1360 cm-1 stretch cannot become it without the molecule coming apart.
+#:
+#: Five, and the number is measured rather than chosen: over the same
+#: twenty-one drags the count that reached the reaction the hand pointed at
+#: was 7 at a window of one, 8 at three, **9 at five** and 8 at eight.  One is
+#: too narrow because it throws the hand's information away -- it is the
+#: lowest mode whatever was dragged, which is what the climb did before it was
+#: told about the hand at all.  Wider than five and the hard modes start
+#: coming back.  The overlap the hand achieved is reported either way, so a
+#: gesture that named nothing in particular can be said out loud.
+AIM_WITHIN = 5
+
+#: How often the Hessian is computed again rather than updated, in steps.
+#:
+#: This is the expensive half of the fix and it is ORCA's own answer --
+#: ``Recalc_Hess``, which :mod:`saddle` sets to 5 for the button next door.
+#: pysisyphus says it plainly in its own documentation: "when the Hessian for
+#: the chosen computational method is reasonably cheap it is a good idea to
+#: recalculate it periodically; between recalculations it's updated using the
+#: Bofill update", and "use as many exact Hessians as your computational
+#: budget allows".
+#:
+#: What it is defending against was measured here rather than taken on trust.
+#: A Bofill-updated Hessian does not merely drift: it **invents curvature that
+#: is not there**.  Against a freshly computed Hessian at the same geometry,
+#: every ten steps, on twenty-one climbs: 20 to 25 per cent relative Frobenius
+#: distance within ten steps even on the climbs that succeed, the curvature of
+#: the mode being climbed wrong by a factor of two, and one to two negative
+#: eigenvalues that the exact Hessian does not have.  On a salicylaldehyde
+#: proton transfer the exact Hessian has *no* negative eigenvalue from step 10
+#: onwards and the carried one insists on one or two for three hundred steps,
+#: so the climb spends them chasing a mode that does not exist.  On the
+#: glycylglycine above it reached 1400 times the size of the real Hessian.
+#: Baker and Chan named exactly this in 1996 (*J. Comput. Chem.* **17**, 888):
+#: "for Cartesian coordinates, the commonly used Hessian update schemes are
+#: unable to guarantee preservation of the necessary transition state
+#: eigenvalue structure".
+#:
+#: Twenty steps, and what it costs is not hidden: one Hessian is 6N gradients,
+#: measured on this box at 0.55 s for sixteen atoms, 1.10 for twenty, 4.92 for
+#: thirty-three and 16.3 for fifty -- 61, 74, 96 and 140 steps' worth.  So a
+#: refresh every twenty steps makes the climb about four times its bare cost
+#: at sixteen atoms and eight times at fifty.  That is the price of the
+#: eigenvalue structure, and it is the same price ORCA pays.
+HESSIAN_EVERY = 20
+
+#: And how many of those one climb may spend, so that a climb going nowhere
+#: cannot spend for ever.  Measured: every climb that reached the reaction the
+#: hand pointed at used four or fewer, the longest being 84 steps -- so this
+#: bound never touches a climb that is arriving, only one that is not.
+#:
+#: It is also what bounds how the climb *looks*, which is the other half of
+#: the price.  A refresh is a step that takes as long as a Hessian, and the
+#: loop that draws the frames and watches for a Stop is between steps, so a
+#: refresh is a pause in the animation and a Stop that waits.  A climb that
+#: arrives now takes twenty to thirty steps, so it pauses once; one that is
+#: lost pauses eight times and no more.
+MOST_HESSIANS = 8
 
 #: Below this a mode counts as imaginary rather than as noise, in cm-1.
 #:
@@ -472,7 +584,8 @@ def lowest_lambda(curvatures: np.ndarray, forces: np.ndarray) -> float:
 
 
 def partitioned_step(hessian: np.ndarray, gradient: np.ndarray,
-                     following: Optional[np.ndarray]) -> Dict[str, Any]:
+                     following: Optional[np.ndarray],
+                     within: int = AIM_WITHIN) -> Dict[str, Any]:
     """One P-RFO step: uphill along one mode, downhill along all the others.
 
     In the Hessian's own eigenbasis, with curvatures ``b`` and gradient
@@ -491,6 +604,14 @@ def partitioned_step(hessian: np.ndarray, gradient: np.ndarray,
     takes the lowest one walks back down to the van-der-Waals complex.  With
     nothing to compare against, the lowest is taken, which for a structure that
     is already near a saddle is the imaginary one.
+
+    *within* bounds that search to the softest few, for the reason
+    :data:`AIM_WITHIN` gives -- and it is needed here and not only at the
+    start, because a Bofill update can grow an eigenvalue no surface has.
+    Measured on a glycylglycine, a carried curvature of -1379 where the exact
+    Hessian at the same geometry says +0.34: once the followed vector has
+    rotated into one of those, the overlap test reports 1.00 for ever and
+    nothing brings the climb back.
     """
     curvature, direction = np.linalg.eigh(hessian)
     force = direction.T @ gradient
@@ -499,7 +620,8 @@ def partitioned_step(hessian: np.ndarray, gradient: np.ndarray,
         overlap = None
     else:
         against = np.abs(direction.T @ following)
-        chosen = int(np.argmax(against))
+        room = min(int(within), against.size) if within else against.size
+        chosen = int(np.argmax(against[:room]))
         overlap = float(against[chosen])
     up = 0.5 * (curvature[chosen]
                 + math.sqrt(curvature[chosen] ** 2 + 4.0 * force[chosen] ** 2))
@@ -596,6 +718,11 @@ class Climb:
         self.gradient: Optional[np.ndarray] = None
         self.steps = 0
         self.refused = 0
+        #: Exact Hessians spent since :meth:`start`, and which step the last
+        #: one belongs to -- a refused step does not advance ``steps``, so
+        #: without the second of these the same step could pay for two.
+        self.hessians = 0
+        self._exact_at = -1
         self._before: Any = None
         # GFN-FF goes out through the command line even when the library is
         # there, and it is the file it writes that decides that: measured, an
@@ -684,6 +811,8 @@ class Climb:
         self.energy, self.gradient = self._measure(self.bohr)
         self.steps = 0
         self.refused = 0
+        self.hessians = 0
+        self._exact_at = -1
         self._before = None
         self.trust = START_TRUST
         self.following = None
@@ -696,6 +825,12 @@ class Climb:
 
     def aim(self, aimed_from: Any) -> Optional[float]:
         """Point the climb along the way a hand has just moved the structure.
+
+        Only the softest :data:`AIM_WITHIN` modes are candidates, and that one
+        line is what most of the twenty-one measured drags turned on: over the
+        whole spectrum the nearest eigenvector to a proton being dragged
+        across a hydrogen bond is the O-H stretch, and climbing a stretch
+        tears the molecule apart rather than finding a saddle.
 
         Returns how much of that direction the chosen mode actually is, so a
         caller can say when the hand did not name anything in particular.  A
@@ -721,7 +856,8 @@ class Climb:
         inside /= length
         curvature, direction = np.linalg.eigh(basis.T @ self.hessian @ basis)
         against = np.abs(direction.T @ inside)
-        chosen = int(np.argmax(against))
+        room = min(int(AIM_WITHIN), against.size) if AIM_WITHIN else against.size
+        chosen = int(np.argmax(against[:room]))
         self.following = basis @ direction[:, chosen]
         self.following /= np.linalg.norm(self.following)
         return float(against[chosen])
@@ -785,12 +921,29 @@ class Climb:
         of which 6 are the gradient -- a hundred a second, so the picture and
         not the calculation is what limits how fast this can be shown.
 
+        Every :data:`HESSIAN_EVERY` steps the Hessian is computed again
+        instead of updated, and that step costs 6N gradients rather than one:
+        0.55 s at sixteen atoms, 16.3 at fifty.  It is the expensive half of
+        what makes the climb reach the reaction the hand pointed at rather
+        than some other stationary point, and :data:`HESSIAN_EVERY` says what
+        was measured about both halves of that trade.
+
         A step can also come back refused, having moved nothing: see
         :meth:`_back_out`.  It still cost a gradient, and the caller should
         simply ask for another.
         """
         if self.hessian is None:
             self.start()
+        if (HESSIAN_EVERY and self.steps and self.hessians < MOST_HESSIANS
+                and self.steps % int(HESSIAN_EVERY) == 0
+                and self._exact_at != self.steps):
+            # A refresh, not a restart: the trust radius, the mode being
+            # followed and everything the climb has learned about where it is
+            # going are kept.  Only the matrix that had stopped describing the
+            # surface is replaced.
+            self.hessian = self.numerical_hessian()
+            self._exact_at = self.steps
+            self.hessians += 1
         if self.energy is None or self.gradient is None:
             self.energy, self.gradient = self._measure(self.bohr)
         basis = self._basis()
