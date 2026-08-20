@@ -478,3 +478,104 @@ def declash_if_enabled(syms: Sequence[str], P, frozen: Iterable[int],
                        md_tol=md_tol, max_dofs=max_dofs, bond_pairs=bond_pairs)
     except Exception:
         return P
+
+
+# ===== DIE ADDITIVE FASSUNG DER M-D-DREHUNG ==================================
+# (DELFIN_FFFREE_MD_SPIN_SIBLINGS, Vorgabe 0)
+#
+# WARUM ES DIESE FUNKTION GIBT.  `declash` oben KANN die Drehung um M-D bereits --
+# `md_spins` (:259) sammelt genau die Freiheitsgrade, deren Anker das Metall ist, und
+# stellt sie nach vorn.  Sie ist im Champion AN (DELFIN_FFFREE_JOINT_DECLASH).  Aber sie
+# ist ein REPARATEUR:
+#   * sie feuert nur, wenn bereits eine Interligand-Kollision vorliegt, und
+#   * sie ERSETZT die Pose, statt eine zweite anzuhaengen.
+# Ein Monodentat, dessen Azimut bloss willkuerlich, aber kollisionsfrei gesetzt ist,
+# erzeugt damit KEIN zusaetzliches Frame -- und der Rueckgrat-Bin des Auges bleibt leer.
+#
+# GEMESSEN 20.08. auf rows_HIST1KV2_268f120a (969 Systeme): von 384 Systemen, die
+# ccdc_backbone verfehlen, scheitern 128 (33,3 %) AUSSCHLIESSLICH an metallhaltigen
+# Torsionen.  Von den 60 darunter, die ueberhaupt eine Koordinationszahl tragen, liegen
+# 44 (73 %) bei CN 4/5/6.  Es fehlt also nicht die BEWEGUNG, es fehlt die AUSGABEFORM.
+#
+# ⚠ WARUM ADDITIV UND NICHT "BESSER REPARIEREN".  Das Register ist auf diesem Punkt
+# eindeutig: was HINZUFUEGT landet, was WAEHLT stirbt (03.08.).  Und das Kostengesetz
+# (vier Punkte, 19.08.) nennt die Drehung um eine Achse DURCH das Metall eine ISOMETRIE:
+# sie laesst jeden Abstand zu M exakt unveraendert -- numerisch geprueft, groesste
+# |M-D|-Aenderung 0,000000 A.  Preis +0,98 pp, die billigste anhaengende Klasse.
+#
+# VORBILD, das hier abgeschrieben wird statt neu erfunden: `_cn2_spins`
+# (assemble_complex.py:2839) -- feste Azimutschritte, RMSD-dedupliziert, Primaerframe
+# unberuehrt.  Damit ist `cap_lost` per Konstruktion unmoeglich: es wird nichts
+# weggenommen, nur danebengestellt.
+#
+# ⚠ BYTE-IDENTITAET IST HIER KEINE BEHAUPTUNG, SONDERN STRUKTUR: diese Funktion hat im
+# ganzen Baum NULL Aufrufstellen.  Sie kann nichts aendern, solange sie niemand ruft.
+# Der Schalter unten ist fuer den Tag, an dem eine Aufrufstelle dazukommt -- die gehoert
+# an die Stelle, an der auch `_cn2_spins` seine Geschwister abgibt, NICHT hierher.
+def md_spin_siblings(syms, P, frozen, bond_pairs=None, n_steps=6, max_dofs=4):
+    """Geschwisterposen durch Drehung ganzer Liganden um ihre M-D-Achse.
+
+    Gibt eine LISTE zusaetzlicher Posen zurueck (ohne die Eingangspose).  Leere Liste,
+    wenn der Schalter aus ist, keine M-D-Achse existiert oder jede Drehung entartet ist.
+
+    KEINE Kollisionsvorbedingung -- das ist der ganze Unterschied zu `declash`.  Der
+    Azimut eines Monodentaten ist auch dann unterbestimmt, wenn nichts kollidiert; genau
+    diese Faelle fehlen dem Manifold heute.
+
+    Die Auswahl, welche Pose taugt, trifft NICHT diese Funktion, sondern das Selbstgate
+    des Aufrufers -- wie bei jedem Geschwister.  Wer hier schon filtert, baut wieder
+    einen Auswaehler.
+    """
+    if os.environ.get("DELFIN_FFFREE_MD_SPIN_SIBLINGS", "0") != "1":
+        return []
+    try:
+        P0 = np.array(P, dtype=float)
+    except Exception:
+        return []
+    n = len(syms)
+    if n < 3 or P0.shape != (n, 3) or not np.all(np.isfinite(P0)):
+        return []
+    try:
+        frozen_set = set(int(x) for x in frozen)
+        dofs = _TR.identify_dofs(syms, P0, frozen_set, max_dofs=max_dofs,
+                                 bond_pairs=bond_pairs)
+        if not dofs:
+            return []
+        metals = {i for i in range(n) if _is_center(syms[i])}
+        # NUR die M-D-Achsen.  Innere Torsionen sind eine andere Achse mit anderem
+        # Preis (starre Drehung mit neuer Konformation, +6,57 pp) und gehoeren nicht
+        # in dieselbe Ausgabe -- sonst ist ein Verdikt hinterher nicht zuordenbar.
+        spins = [d for d in dofs if d.get("anchor") in metals]
+        if not spins:
+            return []
+        step = 360.0 / max(2, int(n_steps))
+        out, seen = [], [P0]
+        for d in spins:
+            anchor, pivot = int(d["anchor"]), int(d["pivot"])
+            rot = d.get("rot") or d.get("rotating")
+            if rot is None:
+                continue
+            rot = [int(x) for x in rot]
+            origin = P0[anchor]
+            axis = P0[pivot] - P0[anchor]
+            if float(np.linalg.norm(axis)) < 1e-9:
+                continue
+            for k in range(1, int(n_steps)):
+                ang = step * k
+                try:
+                    trial = _TR._rotate_subtree(P0, origin, axis, ang, rot)
+                except Exception:
+                    continue
+                if trial is None or not np.all(np.isfinite(trial)):
+                    continue
+                # RMSD-Deduplizierung gegen ALLE bisherigen, nicht nur die Eingangspose:
+                # bei einem C2-symmetrischen Liganden faellt die halbe Drehung mit der
+                # Ausgangslage zusammen, und ein Duplikat mit Etikett ist kein Frame.
+                if any(float(np.sqrt(np.mean(np.sum((trial - q) ** 2, axis=1)))) < 0.25
+                       for q in seen):
+                    continue
+                seen.append(trial)
+                out.append(trial)
+        return out
+    except Exception:
+        return []
