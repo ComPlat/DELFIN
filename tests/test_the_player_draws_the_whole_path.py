@@ -236,10 +236,40 @@ def test_a_hand_on_the_structure_cuts_the_run_where_the_picture_stands(browser):
             "document.querySelector('.submit-cmd-sync input').value")
         verb, _serial, payload = said.split(":", 2)
         assert verb == "gfngrab"
-        assert payload == str(shown), (
-            f"the kernel was told {payload!r}, the picture stood on {shown}")
+        # The count and the walk it counts along.  The count alone is a
+        # plausible index into any path there is, and after a scan it was
+        # being read into somebody else's.
+        assert payload == f"{shown},1", (
+            f"the kernel was told {payload!r}, the picture stood on {shown} "
+            f"of run 1")
     finally:
         page.close()
+
+
+def test_the_count_the_page_reports_is_the_number_of_frames_it_has_drawn(
+        browser):
+    """A count, not an index, and the kernel reads it as ``walked[shown-1]``.
+
+    The branch that draws the first frame of a run has nothing to interpolate
+    from and drew without counting, so the number was one short for the whole
+    of the run after it.  Measured here over ten frames written one at a time,
+    the way a scan writes them: the picture stood on the tenth of the path and
+    the page reported nine, so a grab kept the ninth -- and a grab while the
+    picture stood on the first frame reported zero, which the kernel reads as
+    "no frame at all" and answers with wherever the calculation had got to.
+
+    Frames name themselves, so the picture can be read off the last draw:
+    every component of frame i is i, and the count has to be i + 1.
+    """
+    writes = [({"run": 1, "from": i, "follow": 1,
+                "frames": [[float(i)] * 9]}, 150) for i in range(10)]
+    out = _play(browser, writes, settle_ms=2000, pace=55)
+
+    assert out["queue"] == 0, "the path was not played to the end"
+    standing = out["frames"][-1][0]
+    assert standing == 9.0, f"the picture stands on frame {standing}"
+    assert out["shown"] == 10, (
+        f"ten frames were drawn and the page reports {out['shown']}")
 
 
 def test_a_finished_run_plays_its_path_out_after_the_switch_goes_up(browser):
@@ -321,15 +351,19 @@ def test_the_pace_reaches_down_to_one_frame_every_ten_seconds(browser):
     path = [[float(i)] * 9 for i in range(60)]
     one = [({"run": 1, "from": 0, "frames": path, "final": 1}, 50)]
 
+    # The count includes the frame the run opens on, which is drawn as soon as
+    # it arrives and has nothing to be paced against -- so three paced steps
+    # read as four.
     out = _play(browser, one, settle_ms=6000, pace=2000)   # half a frame a second
-    assert 2 <= out["shown"] <= 4, (
+    assert 3 <= out["shown"] <= 5, (
         f"half a frame a second over six seconds is three, not {out['shown']}")
     assert out["queue"] > 50, "and the rest is still waiting to be walked"
 
-    # And the floor: one every ten seconds, so six seconds moves nothing on.
+    # And the floor: one every ten seconds, so six seconds moves nothing on
+    # past the frame the run opened on.
     crawl = _play(browser, one, settle_ms=6000, pace=10000)
-    assert crawl["shown"] == 0, crawl["shown"]
-    assert crawl["queue"] >= 59, "the path is all still ahead"
+    assert crawl["shown"] == 1, crawl["shown"]
+    assert crawl["queue"] >= 58, "the path is all still ahead"
 
 
 def test_the_number_that_travels_for_a_held_atom_is_its_index(browser):

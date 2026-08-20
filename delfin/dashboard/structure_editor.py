@@ -2831,10 +2831,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '      if(run&&play.run!==null&&run!==play.run) return;\n'
             '      play.queue=[]; play.stopped=1;\n'
             '      if(!play.toldStop){ play.toldStop=1;\n'
-            '        /* Which frame is on screen.  Stopping keeps that one:\n'
-            '           frames xtb had already computed but nobody had seen\n'
-            '           are not what the user stopped at. */\n'
-            '        say("stopped at frame "+(play.shown||0)); }\n'
+            '        /* Which frame is on screen, and of which run.  Stopping\n'
+            '           keeps that one: frames xtb had already computed but\n'
+            '           nobody had seen are not what the user stopped at.  The\n'
+            '           run rides with it for the same reason it rides with a\n'
+            '           grab -- a count alone indexes any path at all. */\n'
+            '        say("stopped at frame "+(play.shown||0)\n'
+            '            +" of run "+(play.run||0)); }\n'
             '      return;\n'
             '    }\n'
 
@@ -3118,8 +3121,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '        play.queue=[]; play.last=null;\n'
             '        play.follow=0; play.pushed=0;\n'
             '      }\n'
+            '      /* Which frame, and which run it is a frame of.  A count on\n'
+            '         its own is a plausible index into any path: after a scan\n'
+            '         the page is still standing on the scan\'s trajectory, and\n'
+            '         a minimisation that starts a moment later is handed a\n'
+            '         number that names a point of somebody else\'s walk.  The\n'
+            '         kernel can only honour "the frame on screen" if it knows\n'
+            '         the frame is one of the ones it is holding, so the run\n'
+            '         goes with the number and it checks. */\n'
             '      send(held?"gfngrab":"gfnfree",\n'
-            '           held?String(play.shown||0):"");\n'
+            '           held?(String(play.shown||0)+","+(play.run||0)):"");\n'
             '    }\n'
             '    if(play.held&&!followIsOn()){\n'
             '      /* Still read.  The widget is one slot, so a write that\n'
@@ -3184,7 +3195,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '         a stop arrives as a halt, which clears the queue above. */\n'
             '      play.queue=[];\n'
             '      if(!play.toldStop){ play.toldStop=1;\n'
-            '        say("stopped at frame "+(play.shown||0)); }\n'
+            '        say("stopped at frame "+(play.shown||0)\n'
+            '            +" of run "+(play.run||0)); }\n'
             '    }\n'
             '    readWall();\n'
             '    read(now);\n'
@@ -3227,7 +3239,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '      } else if(play.last){\n'
             '        show(play.last,play.queue[0],t);\n'
             '      } else {\n'
+            '        /* Counted, like every other frame that is drawn.  This\n'
+            '           branch is the first frame of a run -- nothing to\n'
+            '           interpolate from -- and it drew without counting, so\n'
+            '           the number was one short for the whole of the run\n'
+            '           after it.  Measured over ten frames written one at a\n'
+            '           time: the picture stood on the tenth and the page\n'
+            '           reported nine, and the kernel reads this as a count\n'
+            '           (walked[shown-1]) -- so a grab kept the frame before\n'
+            '           the one on screen, and a grab on the very first frame\n'
+            '           reported zero, which the kernel reads as "no frame at\n'
+            '           all" and answers with wherever the calculation had got\n'
+            '           to instead. */\n'
             '        play.last=play.queue.shift(); show(null,play.last,1);\n'
+            '        play.shown=(play.shown||0)+1;\n'
             '        play.started=now;\n'
             '      }\n'
             '    }\n'
@@ -5489,7 +5514,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if not held:
             return False
         text = _frame_as_xyz(held.get('source'), held.get('frames'),
-                             state.get('gfn_shown_frame'),
+                             _the_shown_frame_of(held.get('run')),
                              held.get('comment') or
                              'stopped at the frame on screen')
         if text is None:
@@ -5502,6 +5527,50 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: sometimes a settled version behind them -- and starting on the first of
     #: those would launch an xtb for each one.
     _GFN_RESTART_DELAY = 0.35
+
+    def _keep_the_shown_frame(frame, walk):
+        """Note which frame the picture stands on, and of whose walk.
+
+        The page counts the frames it has drawn since the run it is playing
+        began, so the number means nothing without the run it is counted
+        along.  It used to travel alone, and after a scan that is a number
+        indexing the scan's trajectory: a minimisation started a moment later
+        was handed "frame 29" and cut its own path at its 29th point, which is
+        a geometry nobody had seen and nowhere near the one on screen.
+        """
+        try:
+            state['gfn_shown_frame'] = int(str(frame).strip())
+            state['gfn_shown_run'] = int(str(walk).strip())
+        except (TypeError, ValueError):
+            # A page from before the run travelled with the number.  Refused
+            # rather than guessed at: an index into the wrong path is worse
+            # than no index, because the wrong one is acted on.
+            state.pop('gfn_shown_frame', None)
+            state.pop('gfn_shown_run', None)
+
+    def _the_shown_frame_of(run):
+        """The page's count, but only where it counts along *this* walk.
+
+        ``None`` means the picture is not standing on any frame of this run --
+        the number was reported for another one, or nothing of this one has
+        been drawn -- and then the picture is whatever was on screen before
+        the run started, which is what the coordinate box already holds.
+        Answering with the run's own last geometry instead is how a structure
+        came to jump to somewhere nobody had chosen.
+
+        The arithmetic that turns a count into a frame is :func:`_frame_as_xyz`
+        and stays there; this is the other question, and it is asked
+        separately because the two go wrong in different ways -- one by a
+        frame, the other by a whole trajectory.
+        """
+        if state.get('gfn_shown_run') != int(run or 0):
+            return None
+        return state.get('gfn_shown_frame')
+
+    def _forget_the_shown_frame():
+        """The number belongs to a run that is over, so it is not kept."""
+        state.pop('gfn_shown_frame', None)
+        state.pop('gfn_shown_run', None)
 
     def _interrupt_gfn():
         """End the running optimiser because the structure under it changed.
@@ -5897,8 +5966,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # goes up.  Kept across runs, a number left over from an earlier grab
         # is a plausible index into this run's path -- so an edit that
         # interrupts this one would cut it at a frame nobody ever saw, from a
-        # trajectory that no longer exists.
-        state.pop('gfn_shown_frame', None)
+        # trajectory that no longer exists.  The run now travels with the
+        # number and is checked, so this is belt as well as braces.
+        _forget_the_shown_frame()
 
         def _push_frames(frames, final=False):
             """Hand the path over while xtb is still walking it.
@@ -6063,7 +6133,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         # not what the user stopped at.
                         kept = _frame_as_xyz(
                             xyz, outcome['frames'],
-                            state.get('gfn_shown_frame'),
+                            _the_shown_frame_of(run_id),
                             'stopped at the frame on screen') or kept
                     results.append((kept,) + tuple(item[1:]))
                     if gfn and outcome.get('frames') and position == 0:
@@ -6099,7 +6169,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # over.  Taking hold and letting go without moving left
                     # them apart.
                     text = _frame_as_xyz(single or '', trail[0],
-                                         state.get('gfn_shown_frame'),
+                                         _the_shown_frame_of(run_id),
                                          'stopped where you took hold')
                     if text is not None:
                         _write_coords(text, drawn=True)
@@ -7217,7 +7287,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # Left behind it is a plausible index into a path nobody is walking,
         # and the interrupted run would write that frame over the structure
         # being put back.
-        state.pop('gfn_shown_frame', None)
+        _forget_the_shown_frame()
         running = (state.get('optimize_run') is not None
                    or state.get('climb_run') is not None)
         scanning = bool(state.get('scan_run'))
@@ -7468,20 +7538,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # to read the browser's console.
             state['gfn_play_note'] = str(payload)
             if str(payload).startswith('stopped at frame '):
-                try:
-                    state['gfn_shown_frame'] = int(str(payload).rsplit(' ', 1)[1])
-                except ValueError:
-                    pass
-                else:
-                    # The other half of a Stop.  The run that was stopped has
-                    # put its path down and cannot cut it, because only the
-                    # page knows where the picture got to; this is the page
-                    # saying so.  Whichever of the two arrives second lands
-                    # the geometry, so the answer does not depend on a race
-                    # between a browser and an optimiser -- and the two run at
-                    # opposite speeds, a climb finishing inside ten
-                    # milliseconds and an xtb round taking seconds.
-                    _land_the_stopped_frame()
+                # "stopped at frame 12 of run 4": the count and the walk it
+                # counts along, because one without the other names nothing.
+                words = str(payload).split()
+                _keep_the_shown_frame(
+                    words[3] if len(words) > 3 else None,
+                    words[6] if len(words) > 6 else None)
+                # The other half of a Stop.  The run that was stopped has put
+                # its path down and cannot cut it, because only the page knows
+                # where the picture got to; this is the page saying so.
+                # Whichever of the two arrives second lands the geometry, so
+                # the answer does not depend on a race between a browser and
+                # an optimiser -- and the two run at opposite speeds, a climb
+                # finishing inside ten milliseconds and an xtb round taking
+                # seconds.
+                _land_the_stopped_frame()
             # The same two rows the follow step writes, and the spinner with
             # them while there is a calculation behind it -- this line and that
             # one are the same message, not two taking turns.
@@ -7509,10 +7580,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # Which frame the picture stood on comes with the message, and it
             # is what the run is cut at: the geometries past it were computed
             # for a structure the hand is changing, and nobody has seen them.
-            try:
-                state['gfn_shown_frame'] = int(str(payload).strip())
-            except (TypeError, ValueError):
-                pass
+            frame, _, walk = str(payload).strip().partition(',')
+            _keep_the_shown_frame(frame, walk)
             # Whichever of the two was walking, and the same sentence for
             # both: a hand has arrived, so the run under it is about a
             # structure that has stopped existing.  Set at the grab rather
@@ -8863,7 +8932,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # left over from an earlier grab is a plausible index into a path that
         # was walked by something else.
         state['gfn_halt_sent'] = False
-        state.pop('gfn_shown_frame', None)
+        _forget_the_shown_frame()
         said = ('Carrying on from where you let go...' if aimed_from
                 else 'Climbing to a transition state; drag an atom to point '
                      'it somewhere...')

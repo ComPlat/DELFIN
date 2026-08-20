@@ -1390,8 +1390,9 @@ def test_stopping_keeps_the_frame_that_was_on_screen(editor):
 
     xtb runs ahead of the picture -- it produces frames faster than any frame
     rate shows them -- so keeping its newest geometry hands back something
-    nobody saw and did not choose.  The page says which frame it was showing;
-    that one is kept and the rest are discarded.
+    nobody saw and did not choose.  The page says which frame it was showing
+    and which walk that frame is of; that one is kept and the rest are
+    discarded.
     """
     from delfin.dashboard import tab_submit
 
@@ -1401,10 +1402,10 @@ def test_stopping_keeps_the_frame_that_was_on_screen(editor):
     assert '"stopped at frame "' in watcher
 
     cmd = source.split("def on_submit_cmd")[1].split("\n    def ")[0]
-    assert "state['gfn_shown_frame']" in cmd
+    assert "_keep_the_shown_frame(" in cmd
 
     handler = source.split("def on_submit_optimize(change=None, every_frame=False)")[1].split("\n    def ")[0]
-    assert "gfn_shown_frame" in handler
+    assert "_the_shown_frame_of(" in handler
     assert "stopped at the frame on" in handler
 
 
@@ -1656,8 +1657,8 @@ def test_the_playback_lets_go_of_the_picture_while_an_atom_is_dragged(editor):
     assert "_submitManipStateByScope" in watcher, "it reads the drag off the page"
     assert 'drag.kind==="translate"' in watcher
     assert 'send(held?"gfngrab":"gfnfree",' in watcher
-    assert 'held?String(play.shown||0):""' in watcher, (
-        "and it says which frame the picture stood on")
+    assert 'held?(String(play.shown||0)+","+(play.run||0)):""' in watcher, (
+        "and it says which frame the picture stood on, and of which walk")
     assert "if(play.held&&!followIsOn()){" in watcher, (
         "with nothing following, the drag has the picture to itself"
     )
@@ -4497,14 +4498,15 @@ def test_the_grab_says_which_frame_the_picture_stood_on():
     """
     watcher = EDITOR_SOURCE.split("def _install_gfn_frame_watcher")[1].split(
         "\n    def ")[0]
-    assert 'held?String(play.shown||0):""' in watcher, (
-        "the grab has to name the frame it happened on")
+    assert 'held?(String(play.shown||0)+","+(play.run||0)):""' in watcher, (
+        "the grab has to name the frame it happened on, and the walk it is a "
+        "frame of -- a count alone indexes any path there is")
 
     cmd = EDITOR_SOURCE.split("def on_submit_cmd")[1].split("\n    def ")[0]
     grab = cmd.split("if verb == 'gfngrab':")[1].split("if verb ==")[0]
-    assert "state['gfn_shown_frame'] = int(str(payload).strip())" in grab
+    assert "_keep_the_shown_frame(frame, walk)" in grab
     # and it is read before the run is cut, or the cut has nothing to go on
-    assert grab.index("gfn_shown_frame") < grab.index("_interrupt_gfn()")
+    assert grab.index("_keep_the_shown_frame") < grab.index("_interrupt_gfn()")
 
 
 def test_an_interrupted_run_leaves_the_frame_that_was_on_screen():
@@ -4524,7 +4526,9 @@ def test_an_interrupted_run_leaves_the_frame_that_was_on_screen():
     # three copies of an off-by-one means three chances to hand back a geometry
     # nobody was looking at.
     assert "_frame_as_xyz(single or '', trail[0]," in cut
-    assert "state.get('gfn_shown_frame')" in cut
+    # And out of this run's own path and no other: a count is only a frame of
+    # the walk it was reported for, which is the other way this went wrong.
+    assert "_the_shown_frame_of(run_id)" in cut
     assert "'stopped where you took hold'" in cut
     cutter = SUBMIT_SOURCE.split("def _frame_as_xyz(")[1].split("\n    def ")[0]
     assert "walked[shown - 1]" in cutter, (
@@ -4637,7 +4641,12 @@ def test_the_frame_a_hand_arrived_on_belongs_to_one_run(editor, monkeypatch):
     start = SUBMIT_SOURCE.split(
         "def on_submit_optimize(change=None, every_frame=False)"
     )[1].split("\n    def ")[0]
-    assert "state.pop('gfn_shown_frame', None)" in start
+    assert "_forget_the_shown_frame()" in start
+    # And the number no longer travels alone, so even a stale one cannot be
+    # read into this run: it names the walk it was counted along.
+    reader = EDITOR_SOURCE.split("def _the_shown_frame_of")[1].split(
+        "\n    def ")[0]
+    assert "state.get('gfn_shown_run') != int(run or 0)" in reader
 
 
 # ---------------------------------------------------------------------------
@@ -6116,7 +6125,11 @@ def test_the_queue_ceiling_drops_the_oldest_and_counts_what_it_dropped(
     reached = _reached(got['drawn'])
     assert _never_goes_back(got['drawn']), reached
     assert max(reached) == 70, reached
-    assert got['play']['shown'] == max(reached), (
+    # A count, not an index: the kernel reads it as walked[shown-1], so the
+    # picture standing on path position 70 is the 71st frame drawn.  The first
+    # frame of a run used to be drawn without being counted, which is what put
+    # the two one apart everywhere.
+    assert got['play']['shown'] == max(reached) + 1, (
         "the frame the picture stands on is not the one it would report")
 
 
@@ -6415,8 +6428,11 @@ def test_a_stop_of_the_climb_halts_the_page_the_way_a_minimisation_does(
     editor["submit_climb_btn"].value = False             # Stop
     assert _wait_for(lambda: "stopped at the frame you were looking at"
                      in editor["mol_status"].value), editor["mol_status"].value
-    # The page answers the Stop with where the picture had got to.
-    editor["submit_cmd_sync"].value = "gfnplay:9:stopped at frame 12"
+    # The page answers the Stop with where the picture had got to, and with
+    # which walk it counted those frames along: a count on its own is a
+    # plausible index into any path there is.
+    editor["submit_cmd_sync"].value = (
+        f"gfnplay:9:stopped at frame 12 of run {state['climb_frame_run']}")
     assert _wait_for(lambda: state.get("gfn_stopped_path") is None)
 
     payloads = [json.loads(text) for text in seen if text]
@@ -6478,7 +6494,8 @@ def test_a_stop_leaves_the_box_holding_the_frame_the_picture_stopped_on(
     editor["submit_climb_btn"].value = False
     assert _wait_for(lambda: "stopped at the frame you were looking at"
                      in editor["mol_status"].value), editor["mol_status"].value
-    editor["submit_cmd_sync"].value = "gfnplay:3:stopped at frame 12"
+    editor["submit_cmd_sync"].value = (
+        f"gfnplay:3:stopped at frame 12 of run {state['climb_frame_run']}")
     assert _wait_for(lambda: "stopped at the frame on screen"
                      in editor["coords_widget"].value)
     lines = editor["coords_widget"].value.splitlines()
@@ -6512,7 +6529,8 @@ def test_a_stop_leaves_the_box_holding_the_frame_the_picture_stopped_on(
     monkeypatch.setattr(tab_submit._gfn, "optimize_with_gfn", fake)
     editor["submit_optimize_btn"].value = True
     assert _wait_for(lambda: "walking" in ran), editor["mol_status"].value
-    editor["submit_cmd_sync"].value = "gfnplay:4:stopped at frame 7"
+    editor["submit_cmd_sync"].value = (
+        f"gfnplay:4:stopped at frame 7 of run {state.get('gfn_run')}")
     editor["submit_optimize_btn"].value = False
     assert _wait_for(lambda: state.get("optimize_run") is None)
     assert _wait_for(
