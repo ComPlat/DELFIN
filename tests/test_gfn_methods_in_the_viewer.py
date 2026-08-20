@@ -434,9 +434,6 @@ def test_the_trail_is_sent_not_the_newest_frame_alone(editor):
     assert "frames.append(" in follow
     assert "frames[-40:]" in follow, "one frame per write can be missed"
 
-    handler = source.split(
-        "def on_submit_optimize(change=None, every_frame=False)"
-    )[1].split("\n    def ")[0]
     # The same concern, kept, and the fixed eight gone with it.  Eight was a
     # guess at how many frames fit between two reads, and xtb beats it easily
     # -- a benzene runs 23 cycles in a fraction of a second -- so everything
@@ -444,10 +441,19 @@ def test_the_trail_is_sent_not_the_newest_frame_alone(editor):
     # path.  The window starts where the previous window started instead:
     # every frame goes out twice, which is the same insurance, and it is still
     # bounded at two reads' worth rather than growing with the path.
-    assert "walked[-8:]" not in handler
-    assert "walked[start:]" in handler
-    assert "state['gfn_push_start']" in handler
-    assert "walked[-400:]" not in handler, 'a tail of what the page holds'
+    #
+    # Read in _stream_frames rather than inside the optimisation, because it
+    # is not the optimisation's any more: the climb hands its path to the same
+    # writer, so the two cannot disagree about how a path is shown.
+    writer = source.split("def _stream_frames(")[1].split("\n    def ")[0]
+    assert "walked[-8:]" not in writer
+    assert "walked[start:]" in writer
+    assert "state['gfn_push_start']" in writer
+    assert "walked[-400:]" not in writer, 'a tail of what the page holds'
+    handler = source.split(
+        "def on_submit_optimize(change=None, every_frame=False)"
+    )[1].split("\n    def ")[0]
+    assert "_stream_frames(run_id, frames, final=final)" in handler
 
 
 def test_the_playback_interpolates_between_computed_frames(editor):
@@ -1037,15 +1043,16 @@ def test_with_auto_off_nothing_carries_on_and_the_switch_says_so(bare_editor):
 def test_a_drag_with_no_run_behind_it_still_reaches_a_minimum(bare_editor):
     """The half that was missing: nothing to resume is not nothing to do.
 
-    _minimise_now is what the wait lands on. It presses the switch rather than
-    calling the handler, because the switch has to be seen to be down for as
-    long as the run lasts -- it is what the user presses to stop it again.
+    _optimise_now is what the wait lands on, for either optimiser. With Climb
+    to TS up it presses the switch rather than calling the handler, because
+    the switch has to be seen to be down for as long as the run lasts -- it is
+    what the user presses to stop it again.
     """
     part, state = bare_editor
     part.submit_optimize_btn.unobserve_all()
     assert part.submit_optimize_btn.value is False
 
-    part._minimise_now()
+    part._optimise_now()
     assert part.submit_optimize_btn.value is True, 'Auto is on; one should start'
 
 
@@ -1054,7 +1061,7 @@ def test_with_auto_off_a_drag_starts_nothing_at_all(bare_editor):
     part.submit_auto_btn.value = False
     part.submit_optimize_btn.unobserve_all()
 
-    part._minimise_now()
+    part._optimise_now()
 
     assert part.submit_optimize_btn.value is False, 'Auto is off; none should'
 
@@ -1663,10 +1670,13 @@ def test_the_grab_ends_the_run_and_the_release_starts_the_next_one(editor):
         "an interrupted run must not write the geometry it reached"
     )
     # Through the one door every frame write goes through now: three other
-    # writers kept a run number and never asked again.
-    assert "_frame_run_is_current(run_id)" in optimise, (
+    # writers kept a run number and never asked again.  The door is
+    # _stream_frames, which both optimisers hand their path to.
+    writer = source.split("def _stream_frames(")[1].split("\n    def ")[0]
+    assert "_frame_run_is_current(run_id)" in writer, (
         "nor draw the path it had walked over the structure now on screen"
     )
+    assert "_stream_frames(run_id, frames, final=final)" in optimise
 
 
 @_needs_xtb
@@ -1969,10 +1979,8 @@ def test_a_truncated_trail_says_where_in_the_run_it_starts(editor):
     assert "var from=(data&&data.from)||0;" in watcher
     assert "play.seen=from+frames.length;" in watcher
 
-    handler = source.split(
-        "def on_submit_optimize(change=None, every_frame=False)"
-    )[1].split("\n    def ")[0]
-    assert "'from': first" in handler
+    writer = source.split("def _stream_frames(")[1].split("\n    def ")[0]
+    assert "'from': first" in writer
     follow = source.split("def _gfn_follow_step")[1].split("\n    def ")[0]
     assert "'from': len(frames) - len(trail)" in follow
 
@@ -5902,20 +5910,22 @@ def test_every_frame_writer_asks_whether_its_run_is_still_the_one():
     long enough for the run to have been replaced by another, or abandoned
     outright.  Only the optimisation checked.
 
-    The climb is the one that looks as if it asks and does not: its guard is
-    read in the worker thread, and the write it schedules lands later still.
+    The climb is the one that looked as if it asked and did not: its guard was
+    read in the worker thread, and the write it scheduled landed later still.
     A step is seconds; the run can move in between, and the frame is then a
-    climb drawn over whatever replaced it.
+    climb drawn over whatever replaced it.  It writes through _stream_frames
+    now, along with the optimisation, so the two ask in one place and the
+    question cannot be answered differently for each.
     """
     source = SUBMIT_SOURCE
     for name in ("_gfn_follow_step", "_gfn_settle_now", "on_submit_scan_run(",
-                 "on_submit_saddle("):
+                 "on_submit_saddle(", "_stream_frames("):
         body = source.split(f"def {name}")[1].split("\n    def ")[0]
         assert "_frame_run_is_current(" in body, f"{name} writes without asking"
-    optimise = source.split(
-        "def on_submit_optimize(change=None, every_frame=False)")[1]
-    optimise = optimise.split("\n    def ")[0]
-    assert "_frame_run_is_current(run_id)" in optimise
+    for walker in ("def _push_frames(frames, final=False):",
+                   "def _climb_now():"):
+        body = source.split(walker)[1].split("\n    def on_submit_")[0]
+        assert "_stream_frames(" in body, f"{walker} has a writer of its own"
 
 
 def test_stopping_moves_the_run_on_but_converging_does_not():
