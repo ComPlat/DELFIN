@@ -568,8 +568,21 @@ summary() {
 }
 
 # What each tool was before we touched it, so an update can say what it did.
+#
+# The tool is not always called what its binary is called, and g-xTB is the
+# one where they differ: it is asked for as "gxtb" and installed as
+# "xtb-gxtb", because an ordinary xtb accepts --gxtb and silently runs GFN2,
+# so the two builds must never be confused for one another. Looked for under
+# the name it was asked for there is nothing in bin/ -- so a g-xTB that had
+# just been downloaded, checksummed, unpacked and linked was reported in the
+# closing summary as "gxtb absent", which is the one line a user reads.
 version_of() {
-  local prog="$1" binary="${BIN_DIR}/$1"
+  local prog="$1" binary
+  case "$1" in
+    gxtb|g-xtb) prog="xtb-gxtb" ;;
+    dftbplus)   prog="dftb+" ;;
+  esac
+  binary="${BIN_DIR}/${prog}"
   [[ -x "${binary}" ]] || { printf "absent\n"; return; }
   case "${prog}" in
     xtb|xtb-gxtb) "${binary}" --version 2>&1 | grep -oE "xtb version [0-9.]+" \

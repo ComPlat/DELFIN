@@ -8830,9 +8830,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return
         if method.lower() not in _saddle.SADDLE_METHODS:
             _set_mol_status(
-                'A saddle search here runs on xtb through ORCA, so choose '
-                'GFN2, GFN1 or GFN-FF. Anything with a basis set is a job for '
-                'the ORCA Builder.')
+                'A saddle search here is ORCA\'s optimiser on a semiempirical '
+                'gradient, so choose GFN2, GFN1, GFN-FF or g-xTB. Anything '
+                'with a basis set is a job for the ORCA Builder.')
             return
         state['saddle_run'] = True
         state['saddle_stop'] = False
@@ -8892,6 +8892,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
             found = _saddle.optimise_to_saddle(
                 xyz, method, charge=charge, uhf=uhf, solvent=wet,
+                # What this method is allowed before it is a job instead.
+                # Three minutes for the ones ORCA drives itself; longer for
+                # g-xTB, where every gradient is a separate process -- see
+                # saddle.SECONDS_ALLOWED for the measurement.
+                timeout=_saddle.seconds_for(method),
                 on_frame=_watch,
                 should_stop=lambda: bool(state.get('saddle_stop')))
 
@@ -9357,9 +9362,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return
         if method.lower() not in _saddle.SADDLE_METHODS:
             _set_mol_status(
-                'The path is xtb\'s and the climb is ORCA on xtb gradients, '
-                'so both halves want GFN2, GFN1 or GFN-FF. Anything with a '
-                'basis set is a job for the ORCA Builder.')
+                'The path is xtb\'s and the climb is ORCA on a semiempirical '
+                'gradient, so both halves want GFN2, GFN1, GFN-FF or g-xTB. '
+                'Anything with a basis set is a job for the ORCA Builder.')
             return
         state['chain_run'] = True
         state['chain_stop'] = False
@@ -9416,6 +9421,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             found = _saddle.path_to_saddle(
                 ends[0], ends[1], method, charge=charge, uhf=uhf,
                 solvent=wet, solvation_model=model, on_frame=_watch,
+                # The climbing half's allowance, which is the method's --
+                # g-xTB takes a good deal longer than the xtb methods for the
+                # reason saddle.SECONDS_ALLOWED gives.  The walking half's is
+                # already generous enough for either: measured on sixteen
+                # atoms, 13 s under GFN2 and 105 under g-xTB against 600.
+                timeout=_saddle.seconds_for(method),
                 should_stop=lambda: bool(state.get('chain_stop')),
                 on_stage=lambda said: schedule_ui_update(
                     _set_mol_status, said, spinner=True))
@@ -10733,19 +10744,24 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # worked.  The mark itself survives the change of method, the way an
         # armed scan does: it describes two structures, not a program.
         submit_path_from_btn.layout.display = '' if xtb else 'none'
-        # The saddle search is ORCA driving xtb, and the pair is asked for by
-        # name: the methods ORCA has a keyword for are the ones this can run,
-        # which is not the whole GFN family -- g-xTB is a build of its own and
-        # ORCA cannot drive it.  Read from the table the run itself reads, so
-        # the button and the refusal cannot drift apart.
+        # The saddle search is ORCA's optimiser on a semiempirical gradient,
+        # and the methods it can be told how to ask for are the ones this can
+        # run -- three of them by ORCA keyword, and g-xTB through ExtOpt,
+        # which is ORCA's own interface for a program it does not know.  Read
+        # from the table the run itself reads, so the button and the refusal
+        # cannot drift apart.
         submit_saddle_btn.layout.display = (
             '' if str(chosen).lower() in _saddle.SADDLE_METHODS else 'none')
-        # And the same for the climb, which keeps its own table for the same
-        # reason: it needs a gradient it knows how to ask for, and g-xTB is a
-        # build of its own.  Left visible it refused only after the press,
-        # which is a button that promises what it cannot do -- under the most
-        # accurate method in the list, where a transition state is most worth
-        # having.
+        # The climb keeps its own table, and it is a shorter one, because it
+        # is asking a harder question of the method: a press can afford a
+        # process per gradient and a drag cannot.  g-xTB has no entry in the
+        # xtb Python module at all -- the library the fast path uses is the
+        # ordinary xtb's -- so each of its gradients is a whole process, and a
+        # process is where its cost is: measured on water, 0.114 s for the run
+        # and 0.004 s of SCF inside it.  At sixteen atoms that is 0.29 s a
+        # step against 6 ms, and one exact Hessian is 17.9 s against 0.55.  So
+        # the button that suits it is the press next door, and this one stays
+        # off rather than refusing after it is clicked.
         submit_climb_btn.layout.display = (
             '' if str(chosen).lower() in _climb.CLIMB_METHODS else 'none')
         # Keep bonds works by watching what a follow step hands back and
