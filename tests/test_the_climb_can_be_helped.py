@@ -23,6 +23,18 @@ by following the Hessian eigenvector that most resembles the direction the
 structure was dragged.  From the same dragged geometry that is the difference
 between reaching the Diels-Alder saddle and walking back down to the
 van-der-Waals complex.
+
+And then the part that turned out to matter more.  Measured over sixteen hand
+drags whose structures are whole, the climb aimed by the hand reaches the
+reaction the hand meant 9 times, the same climb told to ignore the hand and
+follow the softest mode reaches it 9 times, and ORCA's OptTS reaches it 7 --
+and never the same nine, because each one sets off along a different
+direction.  Tried cheapest first, with what each one reached checked against
+the pair of atoms the hand was holding, they reach **13 of the 16**.  The
+tests from ``test_the_held_stretch_...`` down are about that ladder: that the
+check is a different question from counting imaginary modes, that every rung
+is handed the structure the hand made rather than the last rung's answer, and
+that a rung that was right is never followed by one that costs a minute.
 """
 
 import math
@@ -37,6 +49,13 @@ from editor_source import EDITOR_SOURCE
 _needs_xtb = pytest.mark.skipif(
     not climb.have_fast_gradients() and climb._gfn.find_xtb() is None,
     reason='no xtb to take gradients from')
+
+#: The last rung.  Only the end-to-end demonstration needs it:
+#: everything else about the hand-over is tested with a stand-in, because what
+#: is being tested there is which structure is passed on and when, not what
+#: ORCA does with it.
+_needs_orca = pytest.mark.skipif(climb._saddle.find_orca() is None,
+                                 reason='ORCA not installed')
 
 #: The transition state the path finder estimated for the Diels-Alder, the same
 #: sixteen atoms :mod:`test_the_saddle_is_a_button` hands to ORCA.  Two forming
@@ -1452,3 +1471,476 @@ def test_the_picture_is_fed_frames_and_never_the_coordinate_box():
     # the viewer standing on a geometry the box no longer held.
     assert "'Climbed towards a transition '" in source
     assert 'drawn=_frame_run_is_current(run))' in source
+
+
+# -- the ladder: one press, three tries -------------------------------------
+
+#: A ring pulled open by hand: cyclohexene with C0-C1 dragged from 1.53 to
+#: 2.39 A and everything else relaxed around it under GFN2, which is what the
+#: editor's follow leaves behind.  It is kept because it is the case that
+#: makes the ladder worth building -- the climb *converges* on it, in 84 steps,
+#: onto a saddle at -534 cm-1 whose imaginary mode has nothing to do with the
+#: bond that was pulled, and ORCA's OptTS from the same structure reaches the
+#: retro-Diels-Alder at -394.
+_RING_PULLED_OPEN = """16
+cyclohexene with C0-C1 held at 2.4 A, the rest relaxed under GFN2
+C      -1.488147806351    -0.537649585138    -0.047156919196
+C      -0.524460978485     1.637328020803     0.123593624669
+C       0.640367137115     1.383616704122    -0.627719776438
+C       1.438612632379     0.322243533332    -0.371715260080
+C       1.005644493407    -0.706951059580     0.582377782570
+C      -0.308430050328    -1.407730372038     0.028238271626
+H      -2.118269134393    -0.445955384136     0.819631273920
+H      -1.958150864626    -0.366588567961    -0.997419539675
+H      -1.263727705510     2.324616297746    -0.249981764156
+H      -0.521621450610     1.483261424764     1.187825325833
+H       0.842496407260     2.012178426677    -1.486681258414
+H       2.293322249921     0.116025962908    -0.998008615585
+H       1.764615633845    -1.476975358614     0.716192764571
+H       0.747704844024    -0.288828344783     1.554887323158
+H      -0.491468464467    -2.234289432240     0.718003717147
+H      -0.058486943179    -1.814302265860    -0.952066949949
+"""
+
+#: And where that ring stood before the hand touched it, minimised under GFN2.
+#: The climb is aimed by the difference between the two, which is what the
+#: editor hands it -- and on this drag that matters more than anywhere else in
+#: this file.  Aimed by the hand the climb goes to the wrong saddle; aimed at
+#: nothing it follows the lowest mode, which on this structure happens to be
+#: the retro-Diels-Alder already, and reaches it in 42 steps.  Leaving the
+#: aim out here would test a case the editor never produces.
+_CYCLOHEXENE = """16
+cyclohexene, minimised under GFN2
+C           -1.27487075798282       -0.27853481028821       -0.19519539689222
+C           -0.89976507622432        1.19310896921734       -0.04260954294814
+C            0.56710990115438        1.40677024953639       -0.26013402071706
+C            1.45721400480502        0.42892655197901       -0.24664719797261
+C            1.10436843117062       -1.00756919860520       -0.00861076010219
+C           -0.29392253602956       -1.14407965287449        0.58793672785123
+H           -2.29518149448465       -0.44312193976041        0.15693710051218
+H           -1.23318757803729       -0.55612624086301       -1.25062596970557
+H           -1.46707570112588        1.80332289934208       -0.75033844491857
+H           -1.16217438037387        1.54164472951602        0.96248667462100
+H            0.87790006082756        2.42982968963257       -0.42455774110749
+H            2.50418105459721        0.63711041887047       -0.42213656974589
+H            1.15672869739010       -1.54658216552424       -0.96112210924520
+H            1.84485815128365       -1.46074100544348        0.65576344721829
+H           -0.27812121693153       -0.81435948304502        1.62897619419220
+H           -0.60806156003763       -2.18959901168981        0.56987760895903
+"""
+
+
+def test_the_held_stretch_is_the_one_direction_the_check_asks_about():
+    """"Make this contact longer", in the metric the modes are written in.
+
+    The check that decides a hand-over is a dot product, so the vector it dots
+    against has to be a unit vector in the same space as the mode: the Wilson
+    B row of the pair's distance, divided by the root masses because a B row
+    differentiates with respect to Cartesians, and normalised.  Nothing here
+    needs xtb -- it is the geometry of one direction.
+    """
+    walk = climb.Climb(_ORCA_SADDLE, 'gfn2')
+    try:
+        unit = walk.held_stretch((0, 10))
+        assert unit is not None
+        assert float(np.linalg.norm(unit)) == pytest.approx(1.0)
+        rows = unit.reshape(-1, 3)
+        # Only the two atoms named move, and they move against each other.
+        moving = [i for i in range(len(rows))
+                  if np.linalg.norm(rows[i]) > 1e-12]
+        assert moving == [0, 10], moving
+        assert float(rows[0] @ rows[10]) < 0
+
+        # Mass weighting is not decoration: the same contact between a carbon
+        # and a hydrogen puts most of the vector on the hydrogen, because that
+        # is the atom that actually moves when the distance changes.
+        light = walk.held_stretch((0, 4)).reshape(-1, 3)
+        assert np.linalg.norm(light[4]) > 3.0 * np.linalg.norm(light[0])
+
+        # A pair that is not a pair is refused rather than guessed at.
+        assert walk.held_stretch((0, 0)) is None
+        assert walk.held_stretch((0, 99)) is None
+        assert walk.held_stretch(None) is None
+    finally:
+        walk.close()
+
+
+@_needs_xtb
+def test_one_imaginary_mode_is_not_the_same_question_as_the_right_one():
+    """Which is why the verdict grew a second half rather than a better number.
+
+    Counting imaginary modes is a test a wrong answer passes.  Measured over
+    twenty-one hand drags, both this climb and ORCA's OptTS converge -- with
+    exactly one mode going the wrong way, and reporting success -- onto methyl
+    torsions at -48 cm-1 and onto two fragments rocking at -52.  So the
+    structure is asked what its imaginary mode *does*, against the pair of
+    atoms the hand was holding.
+
+    The Diels-Alder saddle is the same structure either way; only the question
+    changes.  Asked about a bond that is forming it scores 0.68, and asked
+    about a C-H bond that is doing nothing it scores near zero -- and the gap
+    between those is where :data:`climb.IS_THE_REACTION` sits.
+    """
+    walk = climb.Climb(_ORCA_SADDLE, 'gfn2')
+    try:
+        forming = walk.verdict(held=(0, 10))
+        spectator = walk.verdict(held=(0, 4))
+        quiet = walk.verdict()
+    finally:
+        walk.close()
+    # One imaginary mode, and the old half of the verdict says so all three
+    # times: it cannot tell these apart, which is the point.
+    assert forming['ok'] and forming['count'] == 1, forming
+    assert spectator['ok'] and spectator['count'] == 1, spectator
+    # The new half separates them.  Margins rather than numbers: xtb under
+    # threading is not bit-reproducible, and a threshold is what is being
+    # tested anyway.
+    assert forming['share'] > 0.5, forming
+    assert spectator['share'] < 0.2, spectator
+    assert forming['reaction'] is True, forming
+    assert spectator['reaction'] is False, spectator
+    # And with nothing held there is no second half to report, rather than a
+    # guess presented as an answer.
+    assert quiet['share'] is None and quiet['reaction'] is None, quiet
+
+
+@_needs_xtb
+def test_xtbs_own_hessian_carries_the_shapes_as_well_as_the_numbers():
+    """The check needs a mode, not a frequency, and it is the same subprocess.
+
+    ``xtb --hess`` prints its frequencies and writes the whole Cartesian
+    Hessian to a file called ``hessian`` beside its input.  The module used to
+    parse the printout, which gives numbers and no shapes; it reads the file,
+    which gives both.  Measured over the twenty-one drags the two agree to
+    0.11 cm-1 on every mode of every structure and cost the same -- 0.11 s at
+    ten atoms, 0.4 at sixteen, 3.7 at thirty-three, 11.8 at fifty.
+    """
+    walk = climb.Climb(_ORCA_SADDLE, 'gfn2')
+    try:
+        got = walk.modes_from_xtb()
+        assert got is not None
+        # Translations and rotations are projected out, so 3N - 6 of them.
+        assert got['cm'].shape[0] == 3 * len(walk.symbols) - 6
+        assert got['shape'].shape[1] == got['cm'].shape[0]
+        # Softest first, and the softest is the reaction coordinate.
+        assert list(got['cm']) == sorted(got['cm'])
+        assert -450 < got['cm'][0] < -340, got['cm'][:3]
+        # The shapes are an orthonormal set, which is what makes an overlap
+        # against one of them a number between nought and one.
+        overlaps = got['shape'].T @ got['shape']
+        assert np.abs(overlaps - np.eye(overlaps.shape[0])).max() < 1e-8
+        # And the frequencies are the same object the older accessor returns.
+        assert np.abs(np.asarray(walk.frequencies_from_xtb())
+                      - got['cm']).max() < 1e-9
+    finally:
+        walk.close()
+
+
+@_needs_xtb
+def test_every_rung_is_handed_the_hands_structure_and_not_the_last_ones():
+    """It looks like throwing work away, and it is measured to be right.
+
+    Over the twelve drags of the twenty-one the aimed climb gets wrong, ORCA
+    started from the hand's own guess reaches the reaction on **5** of them
+    and ORCA started from where the climb stopped reaches it on **2**.  A
+    search that is going wrong does not stop somewhere useful: handing on its
+    endpoint loses the retro-Diels-Alder at 2.4 A, the Claisen at 2.0 and the
+    salicylaldehyde proton transfer, all three of which the same optimiser
+    reaches from the structure the hand made.
+
+    That is also what makes a rung that misses cheap to allow: it costs its
+    own wall time and changes nothing about what the next one is given.
+    """
+    handed = []
+
+    def _pretend(xyz_text, method='gfn2', **kw):
+        handed.append(xyz_text)
+        return {'ok': False, 'xyz': None, 'seconds': 0.0,
+                'status': 'not run in this test'}
+
+    was_orca = climb._saddle.find_orca
+    was_opt = climb._saddle.optimise_to_saddle
+    climb._saddle.find_orca = lambda: '/nowhere/orca'
+    climb._saddle.optimise_to_saddle = _pretend
+    try:
+        # The complex on its own has no saddle to find, so every check fails
+        # and the ladder runs to the end.  Six steps a rung, because what is
+        # being tested is which structure is passed on rather than where a
+        # climb gets to.
+        got = climb.reach_the_reaction(_COMPLEX, 'gfn2', held=(0, 10),
+                                       aimed_from=_dragged(0.4), max_steps=6)
+    finally:
+        climb._saddle.find_orca = was_orca
+        climb._saddle.optimise_to_saddle = was_opt
+
+    assert len(handed) == 1, handed
+    assert _where(handed[0]) == pytest.approx(_where(_COMPLEX)), \
+        'the last rung is given the structure the hand made'
+    assert not got['ok']
+
+
+@_needs_xtb
+def test_the_softest_mode_rung_is_skipped_when_it_would_be_the_same_climb():
+    """With no gesture to aim along, the first rung already *is* the second.
+
+    :meth:`aim` returns nothing without an *aimed_from*, and a climb with
+    nothing to follow takes the lowest mode -- which is exactly what the
+    second rung is for.  Running it would be the same climb twice and one more
+    Hessian for a certainty.
+    """
+    calls = []
+    was_climb = climb.climb_to_saddle
+
+    def _counted(*args, **kw):
+        calls.append(kw.get('aimed_from'))
+        return was_climb(*args, **kw)
+
+    was_orca = climb._saddle.find_orca
+    climb.climb_to_saddle = _counted
+    climb._saddle.find_orca = lambda: None
+    try:
+        climb.reach_the_reaction(_COMPLEX, 'gfn2', held=(0, 10), max_steps=6)
+    finally:
+        climb.climb_to_saddle = was_climb
+        climb._saddle.find_orca = was_orca
+    assert calls == [None], calls
+
+
+@_needs_xtb
+def test_a_climb_that_reached_the_reaction_never_pays_for_another_rung():
+    """The common case is the fast one, which is the whole point of the order.
+
+    Cheapest first and ORCA last reaches 15 of the twenty-one drags.  ORCA
+    first, with the climb after it, reaches 9 -- started from where ORCA
+    stopped the climb rescues 0 of the 12 ORCA gets wrong -- and started from
+    the hand's structure instead it would reach the same 15 while paying
+    ORCA's median 50.3 s on every press, including the nine the climb answers
+    in 0.5 to 36.5 s.  So nothing beyond the first rung may run when the first
+    rung was right, and this is what says so: both stand-ins raise if they are
+    ever reached.
+    """
+    def _never(*_, **__):
+        raise AssertionError('a later rung ran on a climb that was right')
+
+    calls = []
+    was_climb = climb.climb_to_saddle
+
+    def _counted(*args, **kw):
+        calls.append(kw.get('aimed_from'))
+        return was_climb(*args, **kw)
+
+    was_orca = climb._saddle.optimise_to_saddle
+    climb.climb_to_saddle = _counted
+    climb._saddle.optimise_to_saddle = _never
+    try:
+        got = climb.reach_the_reaction(_ESTIMATE, 'gfn2', held=(0, 10),
+                                       aimed_from=_COMPLEX)
+    finally:
+        climb.climb_to_saddle = was_climb
+        climb._saddle.optimise_to_saddle = was_orca
+    assert len(calls) == 1, 'the softest-mode rung ran on a climb that arrived'
+    assert got['ok'] and got['route'] == 'the climb', got.get('status')
+    assert got['imaginary']['reaction'] is True, got['imaginary']
+    # And the sentence names the contact the way the picture numbers it: the
+    # viewer's ``#`` button draws ``String(i)`` over the atoms, counting from
+    # nought, so a sentence that counted from one would name other atoms.
+    assert 'C0-C10' in got['status'], got['status']
+    assert 'reached the reaction you pointed at' in got['status']
+
+
+@_needs_xtb
+def test_with_no_contact_named_the_ladder_stops_at_the_first_rung():
+    """Because every later rung would be judged by the test this one passed.
+
+    Without a pair to check against, all that can be asked is how many modes
+    go the wrong way -- and that is a test the wrong answer passes: both
+    climbs and ORCA converge onto methyl torsions at -48 cm-1 with exactly one
+    imaginary mode.  So a retry could only spend a minute to agree, and the
+    sentence says which of the two questions was actually answered instead of
+    letting a weaker check read like the stronger one.
+    """
+    def _never(*_, **__):
+        raise AssertionError('a retry ran with nothing to judge it by')
+
+    was = climb._saddle.optimise_to_saddle
+    climb._saddle.optimise_to_saddle = _never
+    try:
+        got = climb.reach_the_reaction(_ESTIMATE, 'gfn2', aimed_from=_COMPLEX)
+    finally:
+        climb._saddle.optimise_to_saddle = was
+    assert got['route'] == 'the climb', got.get('status')
+    assert got['imaginary']['share'] is None, got['imaginary']
+    assert 'Nothing said which contact you meant' in got['status'], \
+        got['status']
+    # Still called a transition state, because that much was established.
+    assert got['ok'] and 'reached a transition state' in got['status']
+
+
+def test_the_numbers_the_ladder_is_built_on_are_the_ones_that_were_measured():
+    """Each of the three is a measurement, and each is written down where it is.
+
+    * :data:`climb.IS_THE_REACTION` -- the structures that are the reaction
+      score 0.40 to 0.95 and the torsions and rockings both routes wrongly
+      converge onto score 0.00 to 0.07, so any threshold between 0.07 and 0.40
+      gives the same answer on all twenty-one and a fifth is the middle of it.
+    * :data:`climb.CLIMB_CEILING` -- every climb that reached the reaction
+      arrived in 22 to 65 steps and none that ran longer ever did, so a
+      hundred cannot cut a climb that is getting there.
+    * :data:`climb.FALLBACK_STEPS` -- raising this was tried and dropped.
+      Two of ORCA's nine reactions over the twenty-one needed 80 and 120
+      optimiser cycles against the 60 it ships with, but both are among the
+      five drags whose structure fell apart while the bench built it; over
+      the sixteen whole ones every reaction ORCA reaches converges in 13 to
+      49 cycles and 60 and 120 give it 7 of 16 either way.  Meanwhile the
+      presses where ORCA's answer is no run to the ceiling by definition and
+      take a median 63 s at 120 against 25 s at 60.
+    """
+    import inspect
+
+    assert climb.IS_THE_REACTION == 0.20
+    assert 0.07 < climb.IS_THE_REACTION < 0.40
+    assert climb.CLIMB_CEILING == 100
+    assert climb.CLIMB_CEILING > 65, 'the longest climb that arrived'
+    assert climb.FALLBACK_STEPS == 60
+    assert climb.FALLBACK_STEPS > 49, (
+        'the most cycles any reaction ORCA reaches on a whole structure '
+        'needed')
+    default = inspect.signature(
+        climb._saddle.optimise_to_saddle).parameters['max_steps'].default
+    assert climb.FALLBACK_STEPS == default, (
+        'pinned to what the optimiser already ships with, and pinned rather '
+        'than inherited so this rung knows what it is asking for')
+
+
+def test_the_ladder_refuses_what_no_engine_here_can_take():
+    """The same two refusals the climb alone makes, before anything is started."""
+    refused = climb.reach_the_reaction(_ESTIMATE, 'PBE0', held=(0, 10))
+    assert not refused['ok'] and refused['route'] is None
+    assert 'runs on xtb' in refused['status']
+    empty = climb.reach_the_reaction('', 'gfn2', held=(0, 10))
+    assert not empty['ok'] and empty['route'] is None
+
+
+@_needs_xtb
+def test_the_ladder_reaches_a_reaction_the_aimed_climb_walks_straight_past():
+    """The demonstration the whole thing rests on, on a drag a hand could make.
+
+    Cyclohexene with one ring bond pulled to 2.4 A and the rest relaxed around
+    it.  The aimed climb *converges* on this one -- it is not a run that gives
+    up -- onto a saddle at about -534 cm-1 whose imaginary mode is 0.00 of the
+    bond that was pulled: a real stationary point, a real transition state,
+    and the wrong reaction.  Counting imaginary modes calls that a success.
+
+    Asking what the mode does calls it a miss, and the next rung is not ORCA
+    but the same climb told to forget the gesture: the softest mode at this
+    geometry is 0.94 of the C0-C1 stretch already, and following it reaches
+    the retro-Diels-Alder at about -394 cm-1 in 42 steps.  Measured end to
+    end, 6.4 s for the ladder, against 13.5 s for ORCA reaching the same
+    saddle from the same structure and 3.2 s for a climb that is confidently
+    wrong.  That rung is the reason this is three tries rather than two.
+    """
+    said = []
+    was_orca = climb._saddle.find_orca
+    # The third rung is taken away rather than allowed to rescue the test: what
+    # is being proved is that the second one is enough here, and a run that
+    # quietly fell through to ORCA would prove the opposite while passing.
+    climb._saddle.find_orca = lambda: None
+    try:
+        got = climb.reach_the_reaction(_RING_PULLED_OPEN, 'gfn2', held=(0, 1),
+                                       aimed_from=_CYCLOHEXENE,
+                                       on_route=said.append)
+    finally:
+        climb._saddle.find_orca = was_orca
+    assert got['route'] == 'the softest mode', got.get('status')
+    assert got['ok'], got.get('status')
+    shape = got['imaginary']
+    assert shape['count'] == 1 and shape['share'] > 0.5, shape
+    assert shape['modes'][0] < -300, shape
+    # The bond the hand pulled is what came apart, rather than something else
+    # that happened to be soft.
+    assert math.dist(*_where(got['xyz'])[[0, 1]]) > 2.0
+
+    # The user is told the route changed, while it changes rather than after,
+    # and told why in the same sentence.
+    assert len(said) == 1, said
+    assert 'C0-C1' in said[0] and 'softest mode' in said[0], said[0]
+    assert 'C0-C1' in got['status'], got['status']
+    # And the sentence about the first rung is still in there, because "it
+    # went somewhere else" is the reason the second one ran.
+    assert 'different reaction from the one you pointed at' in got['status']
+
+
+#: A proton half transferred: salicylaldehyde with the hydroxyl H dragged
+#: across its own hydrogen bond to 1.10 A of the aldehyde oxygen.  This is the
+#: one drag of the sixteen whole ones that only ORCA reaches, so it is what
+#: the last rung is tested on.
+_PROTON_HALF_MOVED = """15
+salicylaldehyde with O0-H14 held at 1.10 A, the rest relaxed under GFN2
+O       2.955825419586     0.673853493232     0.173427254023
+C       1.998907772225    -0.294240634235     0.329980407639
+C       0.664816508150    -0.198027998003     0.136885652934
+C       0.022314964497     1.017033130549    -0.286793965667
+C      -1.312646430845     1.074313535169    -0.466627571877
+C      -2.118765421991    -0.081054418519    -0.236257919133
+C      -1.579403981838    -1.250692889134     0.161533550317
+C      -0.148540304432    -1.413708685350     0.380413263177
+O       0.347859341899    -2.472693032314     0.737841158904
+H       2.664663222262     1.597379672186    -0.126262849056
+H       0.631982986848     1.896107541679    -0.460406733686
+H      -1.790736168544     1.988971156377    -0.784660700128
+H      -3.185729765118     0.005493157402    -0.390067805214
+H      -2.189758488170    -2.124411362691     0.335935059237
+H       3.039210345475    -0.418322666348     0.495061198530
+"""
+
+#: And where it stood before the hand touched it, minimised under GFN2.
+_SALICYLALDEHYDE = """15
+salicylaldehyde, minimised under GFN2
+O            2.62872278490865        1.69083157857552       -0.13401011557226
+C            2.14874100818517        0.60121369096412        0.05857344471600
+C            0.72524663873148        0.28272125992550        0.00299308315211
+C           -0.16768017606990        1.31329808144758       -0.32144963634084
+C           -1.52187372037606        1.08967529935414       -0.39778161613399
+C           -2.01740537195299       -0.18560109433387       -0.14824756717333
+C           -1.16178375232469       -1.21678142720703        0.17474137862119
+C            0.21442244508797       -1.00294037456158        0.25654048012243
+O            0.97206085434591       -2.07127920130876        0.58408729152588
+H            2.82108750314516       -0.25477342806656        0.29833449044618
+H            0.25258994135455        2.29003272583950       -0.50924368461900
+H           -2.19484023994761        1.89447265474598       -0.64881714668543
+H           -3.07885997269744       -0.37376060890566       -0.20617568923744
+H           -1.53013995234004       -2.21100772263288        0.37217230882333
+H            1.90971200995189       -1.84610143383494        0.61828297835522
+"""
+
+
+@_needs_xtb
+@_needs_orca
+@pytest.mark.slow
+def test_the_last_rung_is_orca_and_it_reaches_what_no_climb_here_does():
+    """One of the sixteen whole drags is reached by ORCA's optimiser and nothing else.
+
+    Salicylaldehyde with its hydroxyl proton dragged across its own hydrogen
+    bond.  Both climbs settle from this structure onto something with no mode
+    going the wrong way at all; ORCA, walking in redundant internal
+    coordinates rather than in Cartesians, reaches the transfer at about
+    -1174 cm-1 with 0.51 of its mode on the O0-H14 stretch.  Measured end to
+    end: about 26 s, of which the two climbs are ten.
+
+    Marked slow rather than trimmed.  It is the only test here that proves the
+    third rung earns its place, and the whole of what it proves is that a
+    minute of ORCA reaches something ten seconds of climbing does not -- there
+    is no cheap version of that.
+    """
+    said = []
+    got = climb.reach_the_reaction(_PROTON_HALF_MOVED, 'gfn2', held=(0, 14),
+                                   aimed_from=_SALICYLALDEHYDE,
+                                   on_route=said.append)
+    assert got['route'] == 'ORCA', got.get('status')
+    assert got['ok'], got.get('status')
+    shape = got['imaginary']
+    assert shape['count'] == 1 and shape['share'] > 0.4, shape
+    assert shape['modes'][0] < -800, shape
+    # Both retries were announced before they ran, not explained afterwards.
+    assert len(said) == 2, said
+    assert 'softest mode' in said[0] and 'ORCA' in said[1], said
