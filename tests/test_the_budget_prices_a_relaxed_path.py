@@ -1678,10 +1678,27 @@ def test_a_scan_hands_back_the_minimum_it_crossed_into_not_the_one_it_left():
         assert close < 1.8 and other < 1.8, (how, close, other)
         assert "Scanned to the next minimum" in box.value
 
-        # And it is one step, which Undo takes back whole.
-        part.on_submit_manip_undo()
-        back, also = _forming(box.value)
-        assert back > 3.0 and also > 3.0, (how, back, also)
+        # And the way back goes through the places the walk went through.
+        #
+        # This asserted one press, on the grounds that a scan is one action.
+        # It still is -- one entry, recorded before it starts -- but a scan
+        # also crosses two structures anyone would want again, and it works
+        # them out anyway for the free energies: where it started and the
+        # highest point it crossed.  Those are put into the history in the
+        # order they were reached, so the presses walk back through them and
+        # Redo walks forward again.  See
+        # tests/test_a_scan_can_be_walked_back_through.py.
+        #
+        # What the one press was for is kept and is checked here: the walk
+        # back reaches the structure from before the scan, and nothing in
+        # between is a press that appears to do nothing.
+        seen = [_forming(box.value)]
+        for _ in range(3):
+            part.on_submit_manip_undo()
+            seen.append(_forming(box.value))
+        assert len(set(seen)) == len(seen), (how, seen)
+        back, also = seen[-1]
+        assert back > 3.0 and also > 3.0, (how, seen)
 
 
 def test_the_walk_comes_back_to_the_bottom_of_the_descent():

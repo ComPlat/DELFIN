@@ -7208,6 +7208,44 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 state.get('poly_arrangement_index') or 0),
         }
 
+    def _remember_landmark(coords, what, comment):
+        """Put a geometry that is *not* the one on screen into the history.
+
+        :func:`_remember` records what is in the box at the moment it is
+        called, which is the whole of what an ordinary action needs: it is
+        called before the action, and before the action the box holds the
+        state to come back to.  A scan cannot do that.  It walks through
+        structures the user never chose and will want back -- where it
+        started, the highest point it crossed -- and by the time it can name
+        them it is standing at the far end of the walk.  So those go in from
+        the geometry rather than from the box.
+
+        Everything else about the state comes from where it stands now, which
+        is right: a scan changes coordinates and nothing else.  A landmark
+        that repeats the entry before it is not added -- a walk that only ever
+        went downhill has its highest point at its first step, and two
+        identical entries would be a press of Undo that appears to do nothing.
+
+        *comment* is the line the box carries when the landmark comes back, so
+        it says where the user is standing.  It has to be one this editor
+        recognises as its own, or the next edit would keep it as though the
+        user had typed it.
+        """
+        rows = [line for line in str(coords).splitlines()[2:] if line.strip()]
+        if not rows:
+            return False
+        entry = dict(_structure_marks(),
+                     coords=xyz_document(rows, comment),
+                     what=str(what), gesture=None)
+        history = list(state.get('history') or [])
+        if history and history[-1].get('coords') == entry['coords']:
+            return False
+        history.append(entry)
+        if len(history) > _HISTORY_LIMIT:
+            history = history[:1] + history[-(_HISTORY_LIMIT - 1):]
+        state['history'] = history
+        return True
+
     def _remember(what, gesture=None):
         """Put the state as it is now into the history, under a name.
 
@@ -8587,6 +8625,33 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # to be given.
                     if state.get('scan_ends'):
                         _offer_the_path()
+                    # The places along the walk worth coming back to, put into
+                    # the history in the order they were reached, so that Undo
+                    # steps back through them and Redo forward again.
+                    #
+                    # Undo is where the user asked for this, and Undo is also
+                    # where it belongs: a scan is one action and one entry
+                    # already, and the three landmarks are that one action's
+                    # own stations rather than three separate things that were
+                    # done.  Nothing new to press, which is the point -- these
+                    # are geometries the scan had already worked out for the
+                    # three Hessians the free-energy mode takes, and they were
+                    # being thrown away.
+                    #
+                    # The entry before them is the structure from before the
+                    # scan, recorded when it started, so the walk back reads:
+                    # where it came to, the highest point it crossed, where it
+                    # started, and then the structure that was there before
+                    # any of it.
+                    if began_at:
+                        _remember_landmark(
+                            began_at, 'the scan, on from where it started',
+                            'Scanned: where the walk started')
+                    if summit is not None and summit[1]:
+                        _remember_landmark(
+                            summit[1],
+                            'the scan, on from the highest point it crossed',
+                            'Scanned: the highest point the walk crossed')
                     rows = [line for line in final.splitlines()[2:]
                             if line.strip()]
                     if rows:
