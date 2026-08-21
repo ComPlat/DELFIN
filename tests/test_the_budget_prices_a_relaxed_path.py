@@ -23,7 +23,9 @@ rule about aromatics:
 
 from __future__ import annotations
 
+import math
 import shutil
+import time
 
 import pytest
 
@@ -261,6 +263,129 @@ H      1.9400   -1.0400   -0.8800
 """
 
 
+#: Cyclohexane, at its GFN2 chair: the case a naive fix would destroy.
+#:
+#: A ring flip is a torsion about a ring bond, so a rule that refused ring
+#: torsions would refuse the most ordinary conformational change there is.
+#: The six carbons come first, in ring order.
+_CHAIR = """18
+chair
+C       1.0094     0.9471     0.4872
+C      -0.1593     1.4088    -0.3785
+C      -1.3684     0.5017    -0.1704
+C      -1.0094    -0.9471    -0.4872
+C       0.1593    -1.4088     0.3785
+C       1.3684    -0.5017     0.1704
+H       0.7325     1.0284     1.5410
+H       1.8754     1.5911     0.3185
+H       0.1368     1.3805    -1.4299
+H      -0.4206     2.4404    -0.1324
+H      -1.6989     0.5730     0.8687
+H      -2.1937     0.8288    -0.8068
+H      -0.7325    -1.0284    -1.5410
+H      -1.8754    -1.5911    -0.3185
+H      -0.1368    -1.3805     1.4299
+H       0.4206    -2.4404     0.1324
+H       1.6989    -0.5730    -0.8687
+H       2.1937    -0.8288     0.8068
+"""
+
+#: Methylcyclohexane, at its GFN2 chair, for the flip driven as a gesture.
+#:
+#: The methyl carbon is first, the ring follows it in order.  A ring carbon is
+#: held by two ring bonds and hardly moves when it is pushed at; a substituent
+#: on one swings, and that is the grab that flips a chair.
+_METHYL_CHAIR = """21
+methylcyclohexane
+C       2.2574    -0.8403     0.0669
+C       0.8095    -0.4320     0.3213
+C       0.6739     1.0984     0.3593
+C      -0.7444     1.5597     0.0012
+C      -1.7687     0.5217     0.4438
+C      -1.5931    -0.7709    -0.3618
+C      -0.1255    -0.9993    -0.7455
+H       2.3650    -1.9221     0.1122
+H       2.5814    -0.5053    -0.9166
+H       2.9142    -0.3987     0.8136
+H       0.5063    -0.8426     1.2903
+H       0.9384     1.4543     1.3573
+H       1.3833     1.5424    -0.3426
+H      -0.8329     1.7017    -1.0776
+H      -0.9509     2.5211     0.4751
+H      -1.6319     0.3231     1.5084
+H      -2.7811     0.9069     0.3106
+H      -2.1965    -0.7243    -1.2707
+H      -1.9584    -1.6141     0.2280
+H       0.0591    -2.0674    -0.8755
+H       0.0951    -0.5123    -1.6976
+"""
+
+#: The user's own structure: 57 atoms, manganese in an N4O2 salen-like
+#: environment with four bromines, charge +1 and closed shell, at its GFN2
+#: geometry.  Every ring at a heavy atom either runs through the metal or is
+#: an aromatic one, which is what made every grab on it offer a torsion.
+_MANGANESE = """57
+manganese salen, +1
+Br     -1.5068    -0.1914     7.0173
+C      -1.0631    -0.6280     5.1985
+C      -1.7209    -1.6898     4.5845
+C      -1.3950    -1.9779     3.2821
+Br     -2.2403    -3.4281     2.3800
+C      -0.4475    -1.2529     2.5184
+O      -0.2046    -1.5908     1.3111
+Mn      0.5853    -0.4375    -0.1060
+O       1.3728     0.7302    -1.5092
+C       1.0813     1.9530    -1.7345
+C       1.9930     2.7843    -2.4306
+Br      3.6250     1.9543    -2.9605
+C       1.7625     4.1050    -2.7280
+C       0.5465     4.6566    -2.3352
+Br      0.1911     6.5016    -2.7441
+C      -0.4013     3.9074    -1.6767
+C      -0.1587     2.5669    -1.3549
+C      -1.1890     1.7732    -0.7648
+N      -1.0395     0.5721    -0.2883
+C      -2.2716    -0.1796    -0.1050
+C      -2.5010    -1.1599    -1.2722
+C      -1.4025    -2.2150    -1.4176
+N      -0.1256    -1.5613    -1.7196
+C       0.9692    -2.4498    -2.1414
+C       1.7390    -2.9536    -0.9231
+N       2.1481    -1.8224    -0.0757
+C       3.4399    -1.2100    -0.3992
+C       3.8549    -0.2576     0.7241
+C       2.8899     0.9281     0.9232
+N       1.5590     0.4642     1.2853
+C       1.2793     0.5193     2.5543
+C       0.2129    -0.1774     3.2004
+C      -0.1059     0.1038     4.5341
+H      -2.4615    -2.2669     5.1167
+H       2.4973     4.6966    -3.2521
+H      -1.3447     4.3544    -1.3993
+H      -2.1890     2.2127    -0.7951
+H      -2.2229    -0.7490     0.8218
+H      -3.1326     0.5000    -0.0483
+H      -3.4512    -1.6663    -1.0986
+H      -2.5844    -0.5874    -2.2018
+H      -1.6828    -2.9114    -2.2209
+H      -1.3066    -2.7752    -0.4851
+H      -0.3066    -0.9310    -2.5053
+H       1.6460    -1.8675    -2.7710
+H       0.5892    -3.3008    -2.7205
+H       1.0808    -3.5926    -0.3293
+H       2.6072    -3.5413    -1.2469
+H       2.2370    -2.1906     0.8748
+H       4.2162    -1.9795    -0.5172
+H       3.3498    -0.6557    -1.3360
+H       3.9298    -0.8118     1.6652
+H       4.8388     0.1511     0.4910
+H       3.2975     1.5790     1.7086
+H       2.8437     1.4969    -0.0040
+H       1.9375     1.0827     3.2203
+H       0.4055     0.9092     5.0406
+"""
+
+
 def _moved(xyz, atom, by):
     """*xyz* with one atom shifted, the way a hand shifts it."""
     rows = [line.split() for line in gfn.atom_lines(xyz)]
@@ -359,6 +484,358 @@ def test_the_first_answer_of_a_drag_turns_rather_than_stretches():
     held = gfn.contacts_holding(_BUTANE, [3], most=2)
     assert held and all(one["kind"] == "dihedral" for one in held), held
     assert held[0]["atoms"][0] == 3, held
+
+
+def test_which_way_the_hand_pulls_decides_and_no_topology_can():
+    """A torsion carries the grabbed atom one way and one way only.
+
+    It swings it about the axis, so what it can express is the part of the
+    hand's motion square to both the axis and the arm.  A hand pulling any
+    other way is pushing on a coordinate that cannot say what it is doing:
+    the drag moves almost nothing and spends a great deal not moving it.
+
+    That this is the question, and not "is the axis inside a ring", is
+    settled by one molecule.  The same end carbon of the same butane, dragged
+    across the chain and dragged along it, wants a torsion in the first case
+    and a bond in the second -- and the two grabs have identical topology, so
+    no rule about rings, bonds or fragments can tell them apart.  The
+    direction can: the swing about the C2-C3 axis is square to the plane the
+    anti chain lies in, so a hand across the chain has all of it -- 1.42 A
+    per radian along the pull against 0.16 for the bond -- and a hand along
+    the chain has none of it, 0.00 against 0.89.
+
+    Asked blind -- with the geometry the drag started from withheld -- both
+    come back as the same torsion, which is the bug this is about.
+    """
+    across = _moved(_BUTANE, 3, (0.0, 0.0, 0.25))
+    held = gfn.contacts_holding(across, [3], most=2, was=_BUTANE, opening=True)
+    assert held[0]["kind"] == "dihedral", held
+    assert held[0]["atoms"] == [3, 2, 1, 0], held
+
+    along = _moved(_BUTANE, 3, (0.25, 0.0, 0.0))
+    held = gfn.contacts_holding(along, [3], most=2, was=_BUTANE, opening=True)
+    assert held[0]["kind"] == "distance", held
+    assert set(held[0]["atoms"]) == {3, 2}, held
+
+    # The same two grabs with nothing said about where the hand came from.
+    assert gfn.contacts_holding(across, [3], most=2)[0]["kind"] == "dihedral"
+    assert gfn.contacts_holding(along, [3], most=2)[0]["kind"] == "dihedral"
+
+
+def test_a_ring_torsion_is_offered_by_the_gesture_and_not_by_the_ring():
+    """The trap, and why refusing ring torsions is not the fix.
+
+    A chelate's rings run through the metal, and turning about a bond in one
+    of them deforms the ring rather than moving the atom -- which is what
+    made a drag on the manganese complex feel dead and expensive at once.
+    But a cyclohexane ring flip *is* a torsion about a ring bond, and it is
+    the most ordinary conformational change there is.  A rule that refused
+    ring torsions would break the case the editor is most wanted for.
+
+    So the same ring carbon is grabbed twice.  Pushed out of the ring plane
+    the ring torsions carry it -- 1.19 A per radian along the push, against
+    0.16 for the bond it hangs on -- and one is offered, which is the pucker
+    and the flip.  Pulled radially outward, in the plane, the same torsions
+    carry 0.59 and the bond carries 0.62, so the bond is offered: pulling an
+    atom out of a ring really is a bond stretch, and the price the wall then
+    quotes is the price of one.
+    """
+    where = [tuple(float(one) for one in line.split()[1:4])
+             for line in gfn.atom_lines(_CHAIR)]
+    ring = list(range(6))
+    middle = [sum(where[n][k] for n in ring) / 6 for k in range(3)]
+    # The ring's own axis, summed over its edges: taken from any single pair
+    # of atoms a chair gives a skewed one.
+    axis = [0.0, 0.0, 0.0]
+    for a in range(6):
+        one = [where[ring[a]][k] - middle[k] for k in range(3)]
+        two = [where[ring[(a + 1) % 6]][k] - middle[k] for k in range(3)]
+        axis[0] += one[1] * two[2] - one[2] * two[1]
+        axis[1] += one[2] * two[0] - one[0] * two[2]
+        axis[2] += one[0] * two[1] - one[1] * two[0]
+    span = math.sqrt(sum(v * v for v in axis))
+    axis = [v / span for v in axis]
+
+    out = [where[0][k] - middle[k] for k in range(3)]
+    span = math.sqrt(sum(v * v for v in out))
+    out = [v / span for v in out]
+
+    def grabbed(unit, by=0.25):
+        rows = [line.split() for line in gfn.atom_lines(_CHAIR)]
+        for k in range(3):
+            rows[0][k + 1] = f"{where[0][k] + by * unit[k]:.6f}"
+        return (f"{len(rows)}\npushed\n"
+                + "\n".join(" ".join(r) for r in rows) + "\n")
+
+    held = gfn.contacts_holding(grabbed(axis), [0], most=3, was=_CHAIR,
+                                opening=True)
+    assert held[0]["kind"] == "dihedral", held
+    # And it is a bond of the ring itself that is turned about, which is the
+    # whole point: the ring is not being avoided, it is being puckered.
+    assert set(held[0]["atoms"][1:3]) < set(ring), held
+
+    held = gfn.contacts_holding(grabbed(out), [0], most=3, was=_CHAIR,
+                                opening=True)
+    assert held[0]["kind"] == "distance", held
+    assert set(held[0]["atoms"]) < set(ring), held
+
+
+def test_a_methyl_leaving_an_ethane_still_has_no_turn_to_offer():
+    """A bond is only the wrong answer where a better one exists.
+
+    There is no torsion between the two halves of an ethane, so nothing is
+    offered and the C-C bond stands -- which is the coordinate that really
+    does describe pulling one methyl off the other.  The direction the hand
+    is pulling makes no difference to that, because there is nothing to
+    choose between.
+    """
+    from delfin.atom_mapping import cov_radius
+
+    rows = [line.split() for line in gfn.atom_lines(_ETHANE)]
+    where = [(float(r[1]), float(r[2]), float(r[3])) for r in rows]
+    radius = [cov_radius(r[0]) for r in rows]
+    held = gfn.with_their_terminals(where, radius, [1])
+    assert gfn.turn_for(where, radius, [1], held) == []
+    assert gfn.turn_for(where, radius, [1], held,
+                        pulled=[1.0, 0.0, 0.0]) == []
+    # Which is what the caller is left holding, whole methyl or single atom.
+    assert set(gfn.contacts_holding(
+        _ETHANE, [1, 5, 6, 7], most=2)[0]["atoms"]) == {1, 0}
+
+
+def test_the_opening_decision_is_geometry_and_costs_nothing():
+    """It runs on every grab, so it has to be free beside the calculation.
+
+    Measured on the manganese complex, 57 atoms, every heavy atom grabbed in
+    turn: 1.7 ms to decide what the hand is driving, against 2.97 s for the
+    twenty relaxation cycles that answer the same frame under GFN2 -- about
+    six hundredths of one per cent, and it is asked once per drag rather than
+    once per answer.  Nothing in it evaluates an energy.
+    """
+    where = [tuple(float(one) for one in line.split()[1:4])
+             for line in gfn.atom_lines(_MANGANESE)]
+    heavy = [n for n, line in enumerate(gfn.atom_lines(_MANGANESE))
+             if line.split()[0] != "H"]
+    assert len(heavy) == 33
+    began = time.perf_counter()
+    for atom in heavy:
+        rows = [line.split() for line in gfn.atom_lines(_MANGANESE)]
+        rows[atom][1] = f"{where[atom][0] + 0.15:.6f}"
+        put = (f"{len(rows)}\npushed\n"
+               + "\n".join(" ".join(r) for r in rows) + "\n")
+        gfn.contacts_holding(put, [atom], most=3, was=_MANGANESE,
+                             opening=True)
+    each = (time.perf_counter() - began) / len(heavy)
+    # A wide margin: what is being defended is that this is nothing beside
+    # one xtb answer, not a particular millisecond count.
+    assert each < 0.05, f"{1000 * each:.1f} ms to decide one grab"
+
+
+def test_the_complex_stops_driving_what_the_hand_cannot_express():
+    """The finding, and what is left of it.
+
+    Measured on the user's own structure -- 57 atoms, manganese in an N4O2
+    salen-like environment with four bromines, charge +1 -- every heavy atom
+    grabbed in turn and pulled three ways: outward from the middle of the
+    molecule and along the two directions square to that.  Ninety-nine grabs.
+
+    What the hand was made to drive, in Angstrom the grabbed atom moves per
+    unit of the coordinate *along the pull*: a median of 0.542 before and
+    0.955 after.  The grabs where what was driven could express almost none
+    of the hand -- under 0.2 A -- fall from 19 to 6, and 87 torsions become
+    69, the difference being grabs where the honest coordinate was the bond
+    all along.  The chosen coordinate is never worse than the one that stood
+    before, which is not luck: the same candidates are weighed and the best
+    is taken, where before the first one the walk came to was.
+
+    What that is worth when the drags are actually run -- the same 99 grabs,
+    ten answers of 0.15 A each under GFN-FF, counting only the ground the
+    hand kept while the structure was still inside a 298 K budget: the median
+    goes from 0.034 to 0.100 of what the cursor asked for, the grabs that
+    move at all (a tenth or better) from 34 to 51, and the dead ones (under a
+    fiftieth) from 42 to 22.  Better on 37, unchanged on 51, worse on 11.
+    Pulled outward alone, which is how the finding was first measured, 29 of
+    33 drove a torsion and 5 moved; now 19 drive a torsion and 14 move.
+
+    The complex is still a rigid complex: a tenth of the cursor is what a
+    chelated salen gives, and the change is that the hand now spends its
+    budget on a coordinate the drag can express instead of on one it cannot.
+    """
+    from delfin.atom_mapping import cov_radius
+
+    lines = gfn.atom_lines(_MANGANESE)
+    where = [tuple(float(one) for one in line.split()[1:4]) for line in lines]
+    radius = [cov_radius(line.split()[0]) for line in lines]
+    middle = [sum(one[k] for one in where) / len(where) for k in range(3)]
+
+    def ways(atom):
+        out = [where[atom][k] - middle[k] for k in range(3)]
+        span = math.sqrt(sum(v * v for v in out)) or 1.0
+        out = [v / span for v in out]
+        other = [0.0, 0.0, 1.0] if abs(out[2]) < 0.9 else [1.0, 0.0, 0.0]
+        one = [out[1] * other[2] - out[2] * other[1],
+               out[2] * other[0] - out[0] * other[2],
+               out[0] * other[1] - out[1] * other[0]]
+        span = math.sqrt(sum(v * v for v in one)) or 1.0
+        one = [v / span for v in one]
+        two = [out[1] * one[2] - out[2] * one[1],
+               out[2] * one[0] - out[0] * one[2],
+               out[0] * one[1] - out[1] * one[0]]
+        return out, one, two
+
+    def carries(text, held, unit):
+        put = [tuple(float(one) for one in line.split()[1:4])
+               for line in gfn.atom_lines(text)]
+        atoms = held[0]["atoms"]
+        if held[0]["kind"] == "distance":
+            i, j = atoms
+            axis = [put[i][k] - put[j][k] for k in range(3)]
+            span = math.sqrt(sum(v * v for v in axis)) or 1.0
+            return gfn._carries([v / span for v in axis], unit)
+        return gfn._carries(gfn._swing(put, *atoms[:3]), unit)
+
+    heavy = [n for n, line in enumerate(lines) if line.split()[0] != "H"]
+    got, turns = [], 0
+    for atom in heavy:
+        for unit in ways(atom):
+            rows = [line.split() for line in lines]
+            for k in range(3):
+                rows[atom][k + 1] = f"{where[atom][k] + 0.15 * unit[k]:.6f}"
+            put = (f"{len(rows)}\npushed\n"
+                   + "\n".join(" ".join(r) for r in rows) + "\n")
+            held = gfn.contacts_holding(put, [atom], most=3, was=_MANGANESE,
+                                        opening=True)
+            got.append(carries(put, held, unit))
+            turns += held[0]["kind"] == "dihedral"
+    assert len(got) == 99
+    got.sort()
+    # Margins, because a covalent radius or a cursor step could move a grab
+    # from one side of the count to the other; the sizes are what is claimed.
+    assert got[len(got) // 2] > 0.85, got[len(got) // 2]
+    assert sum(1 for one in got if one < 0.2) <= 10
+    assert 55 <= turns <= 80, turns
+
+
+def _value_in(xyz, entry):
+    """One held coordinate, read off a geometry -- the editor's own reader."""
+    here = [tuple(float(one) for one in line.split()[1:4])
+            for line in gfn.atom_lines(xyz)]
+    at = [here[int(i)] for i in entry["atoms"]]
+    if entry["kind"] == "distance":
+        return math.dist(at[0], at[1])
+    return gfn._dihedral(at, 0, 1, 2, 3)
+
+
+def _gesture(xyz, atom, unit, frames=6, step=0.15, method="gfn2"):
+    """A whole drag, driven the way the editor's follow loop drives one.
+
+    The cursor moves a step between answers, each answer is what the next
+    step starts from, and the coordinate the first answer chose sticks --
+    which is thermal_was, thermal_turn and thermal_holding in the editor.
+    """
+    start = [tuple(float(one) for one in line.split()[1:4])
+             for line in gfn.atom_lines(xyz)]
+    rest = [n for n in range(len(start)) if n != atom]
+    was, turning, holding, opening, settled = xyz, None, None, True, xyz
+    trail = []
+    for k in range(1, frames + 1):
+        here = [tuple(float(one) for one in line.split()[1:4])
+                for line in gfn.atom_lines(settled)]
+        here[atom] = tuple(start[atom][n] + k * step * unit[n]
+                           for n in range(3))
+        rows = [line.split() for line in gfn.atom_lines(xyz)]
+        for row, point in zip(rows, here):
+            row[1:4] = [f"{one:.6f}" for one in point]
+        current = (f"{len(rows)}\ndragged\n"
+                   + "\n".join(" ".join(r) for r in rows) + "\n")
+        contacts = gfn.contacts_holding(current, [atom], most=3, was=was,
+                                        turning=turning, holding=holding)
+        if contacts and opening:
+            opening = False
+            fresh = gfn.contacts_holding(current, [atom], most=3, was=was,
+                                         opening=True)
+            if fresh and str(fresh[0].get("kind")) == "dihedral":
+                contacts = fresh
+        pushes = gfn.as_pushes(contacts, was, 0.4 * gfn.A_BOND_HOLDS,
+                               value_of=_value_in)
+        answer = gfn.relax_steps(current, method=method, cycles=20,
+                                 timeout=120.0, constraints=pushes)
+        assert answer.get("ok"), answer.get("status")
+        settled = gfn.settle_onto(answer["xyz"], current, rest)
+        holding = [dict(one) for one in pushes]
+        turned = [one for one in pushes if str(one.get("kind")) == "dihedral"]
+        if turned:
+            turning = list(turned[0]["atoms"])
+        was = settled
+        now = [tuple(float(one) for one in line.split()[1:4])
+               for line in gfn.atom_lines(settled)]
+        trail.append(sum((now[atom][n] - start[atom][n]) * unit[n]
+                         for n in range(3)))
+    return contacts, settled, trail
+
+
+@_needs_xtb
+def test_a_ring_flip_is_still_a_drag_that_works():
+    """The case a rule about ring bonds would have destroyed, driven for real.
+
+    A methyl on a chair, pushed back through the ring plane, six answers of
+    0.15 A.  The coordinate the drag settles on is a torsion about a *ring*
+    bond -- it has to be, that is what a flip is -- and the methyl carbon
+    follows: 0.04, 0.10, 0.18, 0.35, 0.55, 0.66 A against 0.90 asked, so
+    about three quarters of the last step's worth of ground, and the ring's
+    torsions come out with three of the six signs reversed, which is the
+    ring inverted rather than merely strained.  It costs +1.1 kcal/mol at its
+    worst and +0.0 where it lands, against the 10.7 the flip really is.
+
+    Identical before and after this change, to the third decimal: the carry
+    ranks the two ring torsions at the grabbed methyl 1.33 and 1.11, and the
+    one it takes is the one the walk used to reach first.  What the change
+    does here is leave the case alone, which is the point of it.
+
+    A ring *carbon* is a different grab and does not flip anything: it is
+    held by two ring bonds and moves 0.01 A for the same push.  That is the
+    chemistry and not the editor.
+    """
+    where = [tuple(float(one) for one in line.split()[1:4])
+             for line in gfn.atom_lines(_METHYL_CHAIR)]
+    ring = list(range(1, 7))
+    middle = [sum(where[n][k] for n in ring) / 6 for k in range(3)]
+    axis = [0.0, 0.0, 0.0]
+    for a in range(6):
+        one = [where[ring[a]][k] - middle[k] for k in range(3)]
+        two = [where[ring[(a + 1) % 6]][k] - middle[k] for k in range(3)]
+        axis[0] += one[1] * two[2] - one[2] * two[1]
+        axis[1] += one[2] * two[0] - one[0] * two[2]
+        axis[2] += one[0] * two[1] - one[1] * two[0]
+    span = math.sqrt(sum(v * v for v in axis))
+    axis = [v / span for v in axis]
+    # Back through the plane, not further out of it: one way is the flip and
+    # the other is a chair being made more of a chair, which is stiff.
+    lean = sum((where[0][k] - middle[k]) * axis[k] for k in range(3))
+    unit = [-math.copysign(1.0, lean) * v for v in axis]
+
+    def torsions(text):
+        put = [tuple(float(one) for one in line.split()[1:4])
+               for line in gfn.atom_lines(text)]
+        return [gfn._dihedral(put, ring[n], ring[(n + 1) % 6],
+                              ring[(n + 2) % 6], ring[(n + 3) % 6])
+                for n in range(6)]
+
+    held, settled, trail = _gesture(_METHYL_CHAIR, 0, unit)
+    assert held[0]["kind"] == "dihedral", held
+    # About a bond of the ring itself.
+    assert set(held[0]["atoms"][1:3]) < set(ring), held
+    # The methyl goes where it is pushed, and goes on going.  Measured at
+    # 0.04, 0.10, 0.18, 0.35, 0.55, 0.66 A, so both of these have room: xtb's
+    # optimiser is not bit-reproducible under threading and what is claimed
+    # here is the shape of the answer, not any one of its numbers.
+    assert trail[-1] > 0.4, trail
+    assert all(after > before - 0.05
+               for before, after in zip(trail, trail[1:])), trail
+    # And the ring is a different ring at the end of it.
+    before, after = torsions(_METHYL_CHAIR), torsions(settled)
+    flipped = sum(1 for one, two in zip(before, after) if one * two < 0)
+    assert flipped >= 2, (before, after)
 
 
 def test_the_atom_under_the_hand_stays_under_the_hand():

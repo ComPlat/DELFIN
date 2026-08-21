@@ -4209,27 +4209,34 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         # is turning something or driving a contact, and the
                         # decision sticks -- see thermal_turn below, and the
                         # cyclohexane that fell back towards the chair every
-                        # time it changed.  Asked with the drag's own history
-                        # the decision is made by which coordinate moved most,
-                        # and that comparison has no rule about bonds: a chain
-                        # carbon dragged sideways scores its own C-C above the
-                        # torsion that swings it.  Driven, a bond is the one
+                        # time it changed.  Asked by what has moved most the
+                        # decision goes to the bond the grabbed atom hangs on,
+                        # because on the first answer almost nothing else has
+                        # moved at all; and driven, a bond is the one
                         # coordinate a hand must not have -- measured on a
                         # 2,4-hexadiene, a chain carbon dragged 1.75 A moved
                         # 0.09 A under the pull and tore three bonds under the
                         # rigid hand.
                         #
-                        # So the question is put once more the way
-                        # contacts_holding puts it with no history at all,
-                        # which is where that rule lives, and a turn wins.  It
+                        # So the question is put once more, as what each
+                        # coordinate *can* do rather than what it has already
+                        # done, and a turn that carries the hand wins.  It
                         # costs no calculation -- the same geometry, read
-                        # again -- and it is asked once per drag.  A contact
-                        # is left to the scored answer, which is the half of
-                        # this that history is better at: the nearest contact
-                        # is not always the one being driven, and on the first
-                        # answer of every drag it was the only one on offer.
-                        opening = _gfn.contacts_holding(current, holding,
-                                                        most=3)
+                        # again -- and it is asked once per drag.
+                        #
+                        # With the geometry the drag started from, which it
+                        # used not to have.  Blind to which way the hand went,
+                        # the turn it chose was whichever the walk came to
+                        # first, and a torsion carries the grabbed atom in one
+                        # direction only: on a chelate, where every torsion at
+                        # a grabbed atom swings it out of a ring plane the
+                        # hand is not pulling out of, that is a coordinate the
+                        # drag cannot express.  A contact is still left to the
+                        # scored answer, which is the half of this that
+                        # history is better at.
+                        opening = _gfn.contacts_holding(
+                            current, holding, most=3,
+                            was=state.get('thermal_was'), opening=True)
                         if opening and str(
                                 opening[0].get('kind')) == 'dihedral':
                             contacts = opening
