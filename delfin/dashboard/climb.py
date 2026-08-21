@@ -37,30 +37,52 @@ between a climb that arrives and one that walks:
   there** -- one to two negative eigenvalues the exact Hessian at the same
   geometry does not have, and once at 1400 times its size.
 
-With both put right, on those twenty-one drags: the climb reaches the reaction
-the hand pointed at **9 times in 21, in a median of 5.7 s**, against **6 in 21**
-before and against **9 in 21 in a median of 50.3 s** for ORCA's own OptTS
-started from the same geometries.  "Reaches the reaction" is not "converged":
-both routes also arrive, confidently, at methyl torsions at -48 cm-1 and at
-fragments rocking at -52, so what is counted is whether xtb's own Hessian on
-what came back has one imaginary mode *and that mode is the stretch of the pair
-of atoms the hand was holding*.
+With both put right, on the twenty-one drags as they then stood: the climb
+reaches the reaction the hand pointed at **9 times in 21, in a median of
+5.7 s**, against **6 in 21** before and against **9 in 21 in a median of
+50.3 s** for ORCA's own OptTS started from the same geometries.  (Five of
+those drags have since been rebuilt -- see below -- and on the bench as it now
+is the same three routes reach 12, 12 and 10.)  "Reaches the reaction" is not
+"converged": both routes also arrive, confidently, at methyl torsions at -48
+cm-1 and at fragments rocking at -52, so what is counted is whether xtb's own
+Hessian on what came back has one imaginary mode *and that mode is the stretch
+of the pair of atoms the hand was holding*.
 
 And then the thing that mattered more than either number: **they are wrong
-about different drags**.  Nine each, never the same nine, because the climb
-sets off along the eigenvector nearest the gesture and ORCA sets off along the
-lowest mode of its own Hessian -- one is listening to the hand and the other to
-the surface.  A third search, this same climb told to forget the gesture, is a
-third nine again.  :func:`reach_the_reaction` is what that is worth: the three
-tried cheapest first, each one's answer checked against the contact the hand
-held, **13 of 16** where any one of them alone is 7 to 9.  (Sixteen and not
-twenty-one: five of the drags were built by a constrained relaxation that did
-not finish and left atoms off on their own, so they are not gestures anybody
-can make.  Both denominators are carried there.)  What is left after that is
-not an optimiser's failure -- on two of the three it misses, the reaction
-coordinate is not among the five softest modes of the structure the hand left
-at all.  That is the honest state of a saddle search begun by hand, and it is
-worth saying rather than implying otherwise.
+about different drags**, because the climb sets off along the eigenvector
+nearest the gesture and ORCA sets off along the lowest mode of its own Hessian
+-- one is listening to the hand and the other to the surface.  A third search,
+this same climb told to forget the gesture, is a third direction again.
+:func:`reach_the_reaction` is what that is worth: the three tried cheapest
+first, each one's answer checked against the contact the hand held, **16 of
+21** where any one of them alone is 10 to 12.
+
+Twenty-one, and it used to be sixteen.  Five of the drags had been built by a
+constrained relaxation that tore atoms off -- an H2 floating beside a Claisen,
+four loose hydrogens on a Cope -- so they were not gestures anybody could
+make.  They are rebuilt the way the editor's follow really builds one: the
+contact walked to where it ends a tenth of an angstrom at a time, five xtb
+cycles between, everything else free.  All twenty-one are whole now by the
+editor's own bond graph, and the three routes reproduce their old counts
+exactly on the sixteen that never changed.  Two of the five needed the
+molecule *posed* first as well, which is worth saying rather than hiding:
+dragging one end of an extended 1,5-hexadiene onto the other is not a Cope but
+a chain folding, and GFN2 closes two cyclopropanes instead at 3.1 A.  Posed
+into the gauche conformer the Cope actually goes through, the same drag builds
+it whole and all three searches reach the Cope saddle at -301 cm-1 in about
+two seconds.
+
+What is left after that is not an optimiser's failure, and the five drags none
+of the three reaches say why in three different ways.  On two of them -- both
+glycylglycine gestures -- the held contact is 0.00 and 0.02 of every one of
+the five softest modes at the structure the hand left, so nothing that follows
+a soft mode can find it from there.  One is a proton transfer whose drag
+geometry already has four imaginary modes.  And the last two are the Claisen
+and the Cope with their termini still 2.3 A apart, where the contact *is*
+0.52 and 0.66 of a soft mode and no search converges onto it anyway -- while
+the same two gestures taken 0.3 A further are reached by all three, in 1.4 and
+2.0 s, at -493 and -301 cm-1.  How far the hand got is most of the answer, and
+that is the honest state of a saddle search begun by hand.
 
 What it costs, measured on the sixteen-atom Diels-Alder estimate under GFN2:
 
@@ -314,13 +336,16 @@ CLIMB_CEILING = 100
 #: and it is written down here because raising it was tried and measured to be
 #: a loss rather than because nobody looked.
 #:
-#: It looked like an obvious win.  Two of the nine reactions ORCA reaches over
-#: the twenty-one drags needed 80 and 120 cycles, so at 60 they are lost --
-#: and both of those two turn out to be among the five drags whose structure
-#: fell apart while the bench was building it.  Over the sixteen whole ones
-#: every reaction ORCA reaches converges in **13 to 49 cycles**, all of them
-#: under 60, and 60 and 120 both give it 7 of 16.  The higher ceiling buys
-#: nothing on a structure a hand can actually make.
+#: It looked like an obvious win.  Two of the nine reactions ORCA reached over
+#: the bench as it then stood needed 80 and 120 cycles, so at 60 they are lost
+#: -- and both of those two turned out to be among the five drags whose
+#: structure had fallen apart while the bench was building it.  Over the
+#: sixteen whole ones every reaction ORCA reaches converges in **13 to 49
+#: cycles**, all of them under 60, and 60 and 120 both give it 7 of 16.  The
+#: higher ceiling buys nothing on a structure a hand can actually make, and
+#: the five have since been rebuilt so that a hand can: at 60 cycles ORCA
+#: reaches **10 of the whole 21**, and the three of the five it reaches
+#: converge in 4.5, 6.2 and 9.8 s.
 #:
 #: What it costs is not nothing, because an OptTS that is not going to arrive
 #: runs to the ceiling by definition.  Measured over the same twenty-one, the
@@ -1427,71 +1452,81 @@ def reach_the_reaction(xyz_text: str, method: str = 'gfn2', *,
     """One press, three tries: climb, check what it reached, try again if wrong.
 
     A saddle search started by hand does not fail -- it succeeds at arriving
-    somewhere, and usually somewhere else.  Measured over hand drags on
-    fifteen to fifty atoms, three searches that all start from the structure
-    the hand left reach the reaction the hand pointed at **about nine times
-    each, and never the same nine**:
+    somewhere, and usually somewhere else.  Measured over twenty-one hand
+    drags on ten to fifty atoms, three searches that all start from the
+    structure the hand left each reach the reaction the hand pointed at about
+    half the time, **and not on the same drags**:
 
-    ==================================  ========  ========  ===============
-    where it starts climbing             of 16     of 21     told by
-    ==================================  ========  ========  ===============
-    the eigenvector nearest the drag        9         9      :meth:`aim`
-    the surface's own softest mode          9         9      no *aimed_from*
-    ORCA's OptTS, redundant internals       7         8      :mod:`saddle`
-    **all three, in that order**          **13**    **14**
-    ==================================  ========  ========  ===============
+    ==================================  ========  ===============
+    where it starts climbing              of 21    told by
+    ==================================  ========  ===============
+    the eigenvector nearest the drag        12     :meth:`aim`
+    the surface's own softest mode          12     no *aimed_from*
+    ORCA's OptTS, redundant internals       10     :mod:`saddle`
+    **all three, in that order**          **16**
+    ==================================  ========  ===============
 
-    Two columns because the bench has to be read twice.  Twenty-one drags were
-    built by holding one contact and relaxing the rest under GFN2, and on five
-    of them that relaxation did not finish and left atoms off on their own --
-    an H2 floating beside a Claisen, four loose hydrogens on a Cope.  The
-    editor's follow does not do that, so those five are not drags anybody can
-    make and the sixteen are the honest denominator; the twenty-one are kept
-    beside them because every earlier measurement in this file was taken on
-    them.  Rebuilding the five and measuring again is the obvious next thing
-    and has not been done.  It also matters more than a footnote: every one of
-    the drags that made a higher optimiser ceiling look worth having was one
-    of the torn five -- see :data:`FALLBACK_STEPS`.
+    One column now, and it used to be two.  Twenty-one drags were built by
+    holding one contact and relaxing the rest under GFN2, and on five of them
+    that relaxation tore atoms off -- an H2 floating beside a Claisen, four
+    loose hydrogens on a Cope -- so for a while the sixteen whole ones were
+    the honest denominator and the counts were 9, 9, 7 and 13 of 16.  The five
+    are rebuilt: the contact walked to where it ends a tenth of an angstrom at
+    a time with five xtb cycles between, which is what the editor's follow
+    does, and the bond graph checked after every answer.  All twenty-one are
+    whole now, the three routes reproduce 9, 9 and 7 exactly on the sixteen
+    that did not change, and of the five rebuilt drags three are reached and
+    two are not.  Two of the five also had to be *posed* before they were
+    dragged, which the module docstring says out loud rather than hides.
 
-    Either way the shape is the same and it is the whole reason this function
-    exists: nine, nine and seven, and thirteen between them.  Closing that gap
-    needs no new optimiser -- it needs the three that are already here, tried
-    in order, with what each one reached actually checked.
+    Which is the useful half of rebuilding them.  A Claisen whose termini are
+    2.0 A apart and a Cope at 2.0 A are reached by **all three** searches, in
+    1.4 and 2.0 s, at -493 and -301 cm-1 -- so the ladder answers on its first
+    rung where it used to have nothing to answer with.  The same two gestures
+    stopped 0.3 A earlier are reached by none of the three.  How far the hand
+    got is most of the answer.
+
+    The shape is unchanged and it is the whole reason this function exists:
+    twelve, twelve and ten, and sixteen between them.  Closing that gap needs
+    no new optimiser -- it needs the three that are already here, tried in
+    order, with what each one reached actually checked.
 
     *Why* they differ is not a property of the molecules.  It is which
     direction each one sets off along, and each wins where *its* direction is
     already the reaction:
 
-    * the aimed climb reached it on 9 of the 11 drags whose gesture is mostly
-      one soft eigenvector (overlap 0.60 or better) and on **none of the 10**
+    * the aimed climb reached it on **11 of the 15** drags whose gesture is
+      mostly one soft eigenvector (overlap 0.60 or better) and on 1 of the 6
       below that;
-    * ORCA reached it on 8 of the 9 drags where the softest mode at the
-      structure the hand left is already the held contact stretching, and on
-      1 of the 12 where it is not.
+    * ORCA reached it on **10 of the 11** drags where the softest mode at the
+      structure the hand left is already the held contact stretching (0.60 or
+      better), and on **none of the 10** where it is not.
 
     So on the Diels-Alder drags only the aimed climb gets, the softest mode is
-    two fragments rocking -- 0.07 to 0.11 of the reaction -- and the gesture
-    is 0.66 to 0.82 of it.  On the retro-Diels-Alder, Claisen and
-    proton-transfer drags only ORCA gets, the softest mode is 0.80 to 0.94 of
-    the reaction and the gesture is a muddle at 0.39 to 0.71.  One of them is
-    listening to the hand and the other to the surface, and where those
-    disagree is exactly where one beats the other.
+    two fragments rocking -- 0.01 to 0.11 of the reaction -- and the gesture
+    is 0.51 to 0.82 of it.  On the retro-Diels-Alder and the salicylaldehyde
+    proton transfer only ORCA gets, the softest mode is 0.80 to 0.94 of the
+    reaction.  One of them is listening to the hand and the other to the
+    surface, and where those disagree is exactly where one beats the other.
 
     The middle rung is what that observation buys.  The same climb, told to
     forget the gesture and follow the softest mode, is ORCA's starting
     direction at the climb's price: it catches three drags the aimed climb
     misses -- the two retro-Diels-Alders and a Diels-Alder ORCA never reaches
-    at all -- in 3.0, 4.9 and 3.9 s where ORCA needs 13.5, 20.6 and 76.2.  It
+    at all -- in 3.9, 2.4 and 2.9 s where ORCA needs 12.5, 8.7 and 22.6.  It
     is the same class, the same code and one more Hessian, and it is what
-    takes the whole thing from 12 of the sixteen to 13.
+    takes the whole thing from 15 of the twenty-one to 16.
 
-    And the three of the sixteen that are never reached are not an optimiser's
-    failure.  On two of them the reaction coordinate is not among the five
-    softest modes at the structure the hand left at all (best overlap 0.00 and
-    0.02), so nothing that follows a soft mode from there can find it; the
-    third is a proton transfer whose drag geometry already has four imaginary
-    modes.  Those are guesses that missed, and the sentence says so rather
-    than implying that another minute of computing would help.
+    And the five that are never reached are not an optimiser's failure.  On
+    two of them -- both glycylglycine gestures -- the held contact is 0.00 and
+    0.02 of every one of the five softest modes at the structure the hand
+    left, so nothing that follows a soft mode from there can find it.  One is
+    a proton transfer whose drag geometry already has four imaginary modes.
+    And two are the Claisen and the Cope at 2.3 A, where the contact is 0.52
+    and 0.66 of a soft mode and no search converges onto it anyway, while the
+    same gestures 0.3 A further in are reached by all three.  Those are
+    guesses that missed, and the sentence says so rather than implying that
+    another minute of computing would help.
 
     Three things about the shape of this were measured rather than assumed.
 
@@ -1505,24 +1540,25 @@ def reach_the_reaction(xyz_text: str, method: str = 'gfn2', *,
     the ladder stops at the first rung and the sentence says which test it was.
 
     **Every rung is handed the hand's own structure, never the last rung's.**
-    That looks like throwing work away and it is measured to be right: over
-    the twelve drags the aimed climb gets wrong, ORCA started from the hand's
-    guess reaches the reaction on 5 and ORCA started from where the climb
-    stopped reaches it on **2** -- handing the endpoint on loses the
+    That looks like throwing work away and it is measured to be right.  Over
+    the twelve drags the aimed climb got wrong on the bench as it then stood,
+    ORCA started from the hand's guess reaches the reaction on 5 and ORCA
+    started from where the climb stopped reaches it on **2** -- handing the
+    endpoint on loses the
     retro-Diels-Alder at 2.4 A, the Claisen at 2.0 and the salicylaldehyde
     proton transfer, all three of which the same optimiser reaches from the
     hand's structure.  A search that is going wrong does not stop somewhere
     useful.  So a rung that misses costs its wall time and nothing else, and
     :data:`CLIMB_CEILING` keeps that short.
 
-    **This order and not the other.**  ORCA first, with the climb after it,
-    reaches 9 of 21 rather than 14: started from where ORCA stopped the climb
-    rescues **0 of the 12** ORCA gets wrong, because ORCA leaves it standing
-    on a stationary point with no gradient to work with.  Started from the
-    hand's structure instead it would reach the same fourteen -- it is the
-    same union -- but it would pay ORCA's median 44 s on every press,
-    including the nine the climb answers in 0.7 to 36.5 s.  Cheapest first is
-    both the same answer and sooner.
+    **This order and not the other.**  Measured on the bench as it then
+    stood: ORCA first, with the climb after it, reaches 9 of 21 rather than
+    14, because started from where ORCA stopped the climb rescues **0 of the
+    12** ORCA gets wrong -- ORCA leaves it standing on a stationary point with
+    no gradient to work with.  Started from the hand's structure instead it
+    would reach the same union, but it would pay ORCA's median 44 s on every
+    press, including the ones the climb answers in under two.  Cheapest first
+    is both the same answer and sooner.
 
     *on_frame* is handed the structure after every climb step, *on_path* the
     whole trajectory each time ORCA's grows -- the two hooks differ because
