@@ -772,3 +772,75 @@ def test_the_gesture_hands_the_climb_the_pair_it_is_checked_against(
     while state.get("climb_run") is not None and clock.time() - began < 120:
         clock.sleep(0.05)
     assert state.get("climb_run") is None, "a climb was left walking"
+
+
+def test_a_tap_does_not_grab_and_so_cuts_nothing_that_is_running():
+    """The other half of "a tap is not a drag", on the kernel's side.
+
+    The page's frame loop watches one predicate -- ``grabbed()`` -- and sends
+    ``gfngrab`` when it turns true and ``gfnfree`` when it turns false.  Those
+    two messages are not observations: the grab interrupts whatever is running
+    and the release arms it again, so a press and a release a tenth of a second
+    apart cut a relaxation or a climb and started it over.
+
+    Any click has always done that.  What changed is that a tap is now a
+    gesture the user makes on purpose -- it is how the atom a climb is aimed at
+    gets named -- so it goes from an accident to something he does while a walk
+    is running, and the walk stutters for no reason he can connect to anything.
+
+    A press that has not passed the slop has moved nothing: ``translate`` and
+    ``rotate`` both do their work under ``movedEnough``, which is asserted by
+    the node runs above.  So the predicate reads it too, and a tap sends
+    neither message.  Draw is not held to it, because there a press that does
+    not move still places an atom.
+    """
+    from editor_source import EDITOR_SOURCE
+
+    watcher = EDITOR_SOURCE.split("function grabbed()", 1)[1].split(
+        "function heldSerials()", 1)[0]
+    assert 'drag.kind==="translate"||drag.kind==="rotate")' in watcher
+    assert "return !!drag.movedEnough;" in watcher
+    # And draw still counts whether or not it moved.
+    assert 'return drag.kind==="draw";' in watcher
+    # The one predicate is what both messages hang off, so reading it is
+    # reading both.
+    loop = EDITOR_SOURCE.split("var held=grabbed();", 1)[1].split(
+        "function heldSerials", 1)[0]
+    assert 'send(held?"gfngrab":"gfnfree"' in loop
+
+
+def test_what_a_tap_would_have_reset_had_it_been_a_grab():
+    """Why this is worth more than a stutter: the budget hangs off the same two
+    messages.
+
+    ``gfngrab`` begins a follow, and beginning one clears what the last drag
+    went through and takes the geometry the budget may fall back to from the
+    structure as it stands; ``gfnfree`` ends it, and ending one clears the
+    running maximum again.  For a tap all of that is a no-op in effect -- the
+    structure did not change between the press and the release, so the
+    fallback geometry is the same one and the maximum was already cleared by
+    the previous release -- but it is a no-op by luck rather than by design,
+    and the interrupt beside it is not one at all.
+
+    Read here so that the claim is on the record rather than assumed: these are
+    the things that hang off the messages a tap no longer sends.
+    """
+    from editor_source import EDITOR_SOURCE
+
+    grab = EDITOR_SOURCE.split("if verb == 'gfngrab'", 1)[1].split(
+        "if verb == 'gfnfree'", 1)[0]
+    assert "_interrupt_gfn()" in grab
+    assert "_begin_gfn_follow()" in grab
+    assert "_arm_thermal_leash()" in grab
+
+    free = EDITOR_SOURCE.split("if verb == 'gfnfree'", 1)[1].split(
+        "if verb == 'undo'", 1)[0]
+    assert "_end_gfn_follow()" in free
+    assert "_after_release()" in free
+
+    begins = EDITOR_SOURCE.split("def _begin_gfn_follow", 1)[1].split(
+        "def _clear_thermal_wall", 1)[0]
+    assert "_clear_thermal_wall()" in begins
+    ends = EDITOR_SOURCE.split("def _end_gfn_follow", 1)[1].split(
+        "\n    #:", 1)[0]
+    assert "_clear_thermal_wall()" in ends

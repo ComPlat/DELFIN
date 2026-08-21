@@ -5674,8 +5674,12 @@ for (tick = 0; tick < spec.ticks; tick += 1) {
   for (const ev of byTick.get(tick) || []) {
     if (ev.payload !== undefined) frameField.value = JSON.stringify(ev.payload);
     if (ev.grab !== undefined) {
+      // movedEnough tells a drag from a tap: a press that has not passed
+      // the slop has moved nothing, and the player leaves it alone.  A grab
+      // in these events means a hand that is moving the structure.
       global.window._submitManipStateByScope[SCOPE] = ev.grab
-        ? { drag: { kind: 'translate', targets: [] } } : null;
+        ? { drag: { kind: 'translate', targets: [],
+                    movedEnough: ev.grab !== 'tap' } } : null;
     }
     if (ev.follow !== undefined) flags.follow = ev.follow;
     if (ev.optimise !== undefined) flags.optimise = ev.optimise;
@@ -6098,6 +6102,48 @@ def test_a_hand_on_the_structure_is_not_painted_over_by_the_run_it_ended(
     assert _never_goes_back(got['drawn']), reached
     assert max(reached) <= 2, reached
     assert got['play']['run'] == 2
+
+
+@_needs_node
+def test_a_tap_on_an_atom_does_not_cut_the_run_a_grab_cuts(
+        player_program, tmp_path):
+    """A press that moved nothing is not a hand on the structure.
+
+    The frame loop turns one predicate into two messages -- gfngrab when it
+    goes up, gfnfree when it comes down -- and neither is an observation: the
+    grab interrupts whatever is running and the release arms it again.  So a
+    press and a release a tenth of a second apart cut a relaxation or a climb
+    and started it over, and nothing on the screen connected that to the click.
+
+    Any click always did that.  It stops being an accident now that a press
+    which does not move is a gesture the user makes on purpose -- it is how the
+    atom a climb is aimed at gets named -- so it happens while a walk is
+    running, and often.
+
+    The same sixty-frame relaxation as above, driven twice: once with a tap in
+    the middle of it and once with a hand that really moved.  The hand throws
+    the queue away and stops the picture where it landed; the tap does neither.
+    """
+    events = [{'tick': 0, 'pace': 100}]
+    window = _Window(1)
+    for at, walked in ((6, 20), (12, 40), (18, 60)):
+        events.append({'tick': at, 'payload': window.push(walked)})
+    events += [{'tick': 24, 'grab': 'tap'}, {'tick': 30, 'grab': False}]
+
+    tap = _drive(tmp_path, player_program, events)
+    # The same events with a hand that really moved, which is the control: the
+    # queue is thrown away at the grab and the picture stops where the hand
+    # landed.  Read as a pair, because what is under test is the difference
+    # between the two presses and not the absolute number either one draws.
+    moved = events[:-2] + [{'tick': 24, 'grab': True},
+                           {'tick': 30, 'grab': False}]
+    hand = _drive(tmp_path, player_program, moved)
+
+    assert hand['play']['queue'] == 0, 'a grab throws away what is past it'
+    assert max(_reached(hand['drawn'])) <= 2, hand['drawn']
+    # The tap does none of that: nothing is thrown away and the relaxation
+    # goes on being drawn straight through it.
+    assert max(_reached(tap['drawn'])) > 2, tap['drawn']
 
 
 @_needs_node
