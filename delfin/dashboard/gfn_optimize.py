@@ -2076,10 +2076,6 @@ def walk_the_path(reactant: str, product: str, method: str = 'gfn2', *,
     key = str(method or 'gfn2').lower()
     spec = GFN_METHODS.get(key) or GFN_METHODS['gfn2']
     label = spec['label']
-    binary = find_binary(key)
-    if binary is None:
-        return {'ok': False, 'status': (f'A path needs xtb, which was not '
-                                        f'found in {_where_it_looked()}.')}
     # A solvent this method cannot be given, said before the walk rather than
     # blamed on the two structures afterwards.  :func:`optimize_with_gfn` has
     # refused this for a long time and this did not: driven, g-xTB handed
@@ -2098,6 +2094,15 @@ def walk_the_path(reactant: str, product: str, method: str = 'gfn2', *,
     no = _solvents.refusal(solvation_model, solvent, key)
     if no:
         return {'ok': False, 'status': f'{label}: {no}'}
+    # And only then look for the program.  A solvent this method has not got
+    # is true whether or not xtb is installed, so answering it first is both
+    # the more useful sentence and the one that does not change with the
+    # machine: asked on a box without xtb, the binary check spoke first and
+    # the refusal that was actually about the request never came out.
+    binary = find_binary(key)
+    if binary is None:
+        return {'ok': False, 'status': (f'A path needs xtb, which was not '
+                                        f'found in {_where_it_looked()}.')}
     here = [line for line in atom_lines(reactant)]
     there = [line for line in atom_lines(product)]
     if not here or len(here) != len(there):
