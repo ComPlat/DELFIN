@@ -217,9 +217,13 @@ def test_a_hand_on_the_structure_cuts_the_run_where_the_picture_stands(browser):
         assert 0 < shown < 120, shown
         standing = page.evaluate("window.__drawn[window.__drawn.length - 1][0]")
 
-        # A hand arrives on the structure.
+        # A hand arrives on the structure.  movedEnough, because that is what
+        # tells a drag from a tap now: a press that has not passed the slop has
+        # moved nothing, and the player leaves it alone rather than cutting the
+        # run under it.
         page.evaluate("""s => {window._submitManipStateByScope[s] =
-            {drag: {kind: 'translate', targets: [1]}};}""", scope)
+            {drag: {kind: 'translate', targets: [1], movedEnough: true}};}""",
+                      scope)
         page.wait_for_function(
             "s => window.__delfinGfnPlay[s].queue.length === 0",
             arg=scope, timeout=30000)
