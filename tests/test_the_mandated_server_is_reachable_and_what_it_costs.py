@@ -101,7 +101,12 @@ def test_the_registered_servers_answer_and_what_they_advertise_is_measured():
     reg.load(None)
     try:
         tools = reg.discover_all()
-        assert MC.unreachable_servers(reg) == [], "a built-in did not answer"
+        # The REASON, not a fixed sentence. When mcp 2.0.0 removed
+        # ``mcp.server.fastmcp`` this assertion fired reading "a built-in did
+        # not answer", which is the one thing already known; the traceback
+        # that said which module had moved went to DEVNULL.
+        problems = MC.unreachable_servers(reg)
+        assert problems == [], f"a built-in did not answer: {problems}"
     finally:
         reg.shutdown()
 
@@ -141,3 +146,113 @@ def test_the_dropped_surface_is_reported_not_silently_cut():
     assert '"mcp_budget"' in src
     from delfin.agent import security_events
     assert "mcp_budget" in security_events.known_kinds()
+
+
+# ---------------------------------------------------------------------------
+# 3. It survives the SDK's major version, which is where it died
+# ---------------------------------------------------------------------------
+#
+# ``mcp`` 2.0.0 (2026-07-28) removed ``mcp.server.fastmcp``; the replacement
+# is ``mcp.server.mcpserver.MCPServer``. All three DELFIN servers imported
+# the old path unconditionally and ``pyproject.toml`` declared ``mcp>=1.0``,
+# so a fresh install inside DELFIN's own declared range resolved 2.0.0 and
+# every built-in exited 1 before answering a single request — the whole
+# tools platform and all 67 ops tools, gone.
+#
+# The box these tests usually run on has an mcp 1.x, on which the defect is
+# invisible. So the 2.x line is SIMULATED here: the 1.x module is hidden and
+# a stand-in is put at the 2.x path, which is the only way this box can
+# assert on the behaviour that broke.
+
+def test_every_delfin_server_reaches_the_sdk_through_the_compat_loader():
+    """The import that broke was correct on the day it was written.
+
+    What makes it break again is a fourth server copying the old line, so
+    the guard is on the source: outside ``mcp_compat`` itself, nothing may
+    name a version-specific SDK server path.
+    """
+    root = Path(__file__).resolve().parents[1] / "delfin"
+    # An IMPORT of a version-specific path, not a mention of one: these
+    # module names are named in prose where the defect is explained, and
+    # explaining it is the opposite of repeating it.
+    moved = re.compile(r"^\s*(?:from|import)\s+mcp\.server\."
+                       r"(?:fastmcp|mcpserver)\b", re.MULTILINE)
+    offenders = []
+    for path in root.rglob("*.py"):
+        if path.name == "mcp_compat.py":
+            continue
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for hit in moved.findall(text):
+            offenders.append(f"{path.relative_to(root)}: {hit.strip()}")
+    assert offenders == [], (
+        "these reach a server class that moved between SDK major versions; "
+        f"go through delfin.mcp_compat.load_server_class instead: {offenders}")
+
+
+def test_the_loader_finds_a_server_class_on_the_installed_sdk():
+    """Whatever line is installed here, the loader must return the class the
+    three servers are built on — constructible, and carrying the three API
+    points they use."""
+    from delfin.mcp_compat import load_server_class
+
+    cls = load_server_class()
+    server = cls("probe", instructions="probe")
+    assert callable(server.tool)
+    assert callable(server.run)
+
+
+def test_the_two_1x_names_and_the_2x_name_are_both_tried():
+    from delfin import mcp_compat
+
+    assert ("mcp.server.fastmcp", "FastMCP") in mcp_compat._SERVER_CLASSES
+    assert ("mcp.server.mcpserver", "MCPServer") in mcp_compat._SERVER_CLASSES
+
+
+def test_the_loader_falls_through_to_the_2x_class_when_1x_is_gone(monkeypatch):
+    """The defect itself, reproduced on a box that has an mcp 1.x.
+
+    ``mcp.server.fastmcp`` is made unimportable and a stand-in is placed at
+    the 2.0.0 path. Before the fallback existed this raised
+    ``ModuleNotFoundError`` and the server process exited 1.
+    """
+    import sys
+    from delfin import mcp_compat
+
+    class _Stand_in:
+        pass
+
+    module = type(sys)("mcp.server.mcpserver")
+    module.MCPServer = _Stand_in
+    monkeypatch.setitem(sys.modules, "mcp.server.mcpserver", module)
+
+    # Blocked at the meta path, and evicted from the module cache it would
+    # otherwise be served from. Patching ``builtins.__import__`` does not
+    # do it: ``importlib.import_module`` goes to ``_bootstrap._gcd_import``
+    # and never touches the builtin.
+    class _NoFastMCP:
+        def find_spec(self, name, path=None, target=None):
+            if name == "mcp.server.fastmcp":
+                raise ModuleNotFoundError(
+                    "No module named 'mcp.server.fastmcp'", name=name)
+            return None
+
+    monkeypatch.delitem(sys.modules, "mcp.server.fastmcp", raising=False)
+    monkeypatch.setattr(sys, "meta_path", [_NoFastMCP(), *sys.meta_path])
+    assert mcp_compat.load_server_class() is _Stand_in
+
+
+def test_an_sdk_with_neither_class_says_so_in_full(monkeypatch):
+    """The message is what a user gets when a built-in will not start, so it
+    has to name what was tried and what is installed rather than repeat the
+    last ``ModuleNotFoundError`` on its own."""
+    from delfin import mcp_compat
+
+    monkeypatch.setattr(mcp_compat, "_SERVER_CLASSES",
+                        (("delfin_no_such_sdk_a", "A"),
+                         ("delfin_no_such_sdk_b", "B")))
+    with pytest.raises(ImportError) as excinfo:
+        mcp_compat.load_server_class()
+    text = str(excinfo.value)
+    assert "delfin_no_such_sdk_a" in text
+    assert "delfin_no_such_sdk_b" in text
+    assert "installed mcp:" in text
