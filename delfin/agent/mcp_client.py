@@ -59,7 +59,11 @@ environment, and its own project config was never read. Servers fail
 closed: a crash during discovery
 just leaves that server's tool set empty, and so does silence — every
 stdio read is bounded by ``_RPC_TIMEOUT_S``, with the reason kept in
-the server's ``last_error``.
+the server's ``last_error``. A stdio child's stderr is drained into a
+bounded ring and, where the process is found dead, joined onto that
+reason — discarding it meant a built-in that could not import its own
+dependencies reached the caller as "server not running", which reads as
+a server nobody configured rather than a broken install.
 """
 
 from __future__ import annotations
@@ -75,6 +79,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -82,6 +87,30 @@ from typing import Any, Optional
 
 _DEFAULT_PROTOCOL_VERSION = "2025-06-18"
 _RPC_TIMEOUT_S = 15.0
+# How much of a dead server's stderr is kept. A failing server explains
+# itself there and the explanation has to survive, but a server is an
+# arbitrary program and may write without end, so the account is held in a
+# ring rather than a buffer: forty lines of four hundred characters is at
+# most ~16 kB per server, and holds a Python traceback whole — the import
+# error this was built for is eight lines.
+_STDERR_KEEP_LINES = 40
+_STDERR_LINE_CHARS = 400
+# What is HELD and what is REPORTED are two different bounds. The ring above
+# is sized so a traceback survives; this is what a doctor line or a /mcp
+# listing is willing to print of it, so a server whose dying words fill the
+# ring does not fill the terminal too.
+_STDERR_REPORT_CHARS = 1200
+# Only ever waited out on a process that has ALREADY exited, whose stderr
+# is therefore closed and whose drain thread ends at EOF. It is a handover,
+# not a wait on a live server.
+_STDERR_JOIN_S = 0.5
+# A child that dies closes stdout a moment BEFORE its exit status is
+# reapable, and the reader sees the EOF first. Measured on a server that
+# exits on an import error: reporting straight from the EOF gave "EOF from
+# server" and lost the traceback that had already been captured. This is
+# how long the reader waits for the exit that EOF announced before deciding
+# the stream was merely closed by a server that is still running.
+_EOF_EXIT_GRACE_S = 0.25
 _NAMESPACE_PREFIX = "mcp__"
 _HTTP_TYPES = {"http", "sse", "streamable-http", "streamablehttp"}
 
@@ -318,6 +347,12 @@ class MCPServer:
     _waiters_lock: threading.Lock = field(default_factory=threading.Lock)
     _reader_proc: Optional[subprocess.Popen] = None
     _closed_reason: str = ""
+    # The last of the child's stderr, kept so a server that died can say
+    # what killed it. Bounded by the deque itself, not by trust in the
+    # child: see ``_drain_stderr``.
+    _stderr_tail_lines: Any = field(
+        default_factory=lambda: deque(maxlen=_STDERR_KEEP_LINES))
+    _stderr_thread: Optional[threading.Thread] = None
 
     def start(self) -> None:
         if self.transport == "http":
@@ -328,14 +363,30 @@ class MCPServer:
             env = dict(os.environ)
             env.update(self.env or {})
             try:
+                # stderr is PIPED, not discarded. It used to be DEVNULL,
+                # which threw away the only account a dying server ever
+                # gives: an unconditional ``mcp.server.fastmcp`` import in
+                # the three built-ins met an SDK that had moved the module,
+                # and every one of them exited 1 with a ModuleNotFoundError
+                # on stderr — while the caller was told "server not
+                # running", which is true, useless, and looks like a
+                # configuration mistake rather than a broken install.
                 self.proc = subprocess.Popen(
                     [self.command, *self.args],
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                    stderr=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
                     env=env, text=True, bufsize=1,
                 )
                 self._closed_reason = ""
                 self._reader_proc = None
+                # A restart must not be able to report the PREVIOUS
+                # process's dying words as this one's. A fresh ring rather
+                # than a cleared one, because the previous process's drain
+                # thread may still be emptying its pipe: it holds the
+                # object it was started with, so its late lines land in a
+                # ring nobody reads instead of in this process's account.
+                self._stderr_tail_lines = deque(maxlen=_STDERR_KEEP_LINES)
+                self._drain_stderr(self.proc)
             except FileNotFoundError as exc:
                 self.last_error = f"command not found: {self.command} ({exc})"
                 self.proc = None
@@ -384,6 +435,100 @@ class MCPServer:
             except Exception:   # pragma: no cover - slot already answered
                 pass
 
+    def _drain_stderr(self, proc: subprocess.Popen) -> None:
+        """Keep the child's stderr moving, and keep the last of it.
+
+        Draining cannot be skipped once the stream is a pipe: a pipe nobody
+        reads fills at the OS buffer — 64 kB on Linux — and the child then
+        blocks forever on its next write. So the choice was never "pipe or
+        not"; it was between discarding the stream and reading it
+        continuously, and discarding it is what made a one-line import
+        error indistinguishable from a server that was merely absent.
+
+        Whatever arrives is kept in a bounded ring, so a server that logs
+        without end costs a fixed amount of memory rather than growing one.
+        Nothing here judges the content: a healthy server logs to stderr as
+        a matter of course, and this thread runs for those too. The lines
+        become an ERROR only where a failure has already been established
+        by other means — see ``_exit_reason``.
+        """
+        stderr = proc.stderr
+        if stderr is None:      # pragma: no cover - only if PIPE was refused
+            return
+        # Bound to the ring current at spawn, not to the attribute: see the
+        # note in ``start`` about a restart overtaking a thread that is
+        # still draining the process before it.
+        ring = self._stderr_tail_lines
+
+        def _pump() -> None:
+            try:
+                for raw in stderr:
+                    line = raw.rstrip("\n")[:_STDERR_LINE_CHARS].strip()
+                    if line:
+                        ring.append(line)
+            except Exception:   # pragma: no cover - pipe torn down under us
+                pass
+            finally:
+                # The read end is this thread's to close; leaving it open
+                # would cost a file descriptor per server started, where
+                # DEVNULL cost none.
+                try:
+                    stderr.close()
+                except Exception:   # pragma: no cover - already closed
+                    pass
+        thread = threading.Thread(
+            target=_pump, name=f"mcp-stderr-{self.name}", daemon=True,
+        )
+        self._stderr_thread = thread
+        thread.start()
+
+    def _exit_reason(self, proc: Optional[subprocess.Popen]) -> str:
+        """Why this server is not answering, in the child's own words.
+
+        Called only from a path that has already established the process is
+        gone. The drain thread is given a moment to finish first: the child
+        has exited, so its stderr is closed and the thread is ending at EOF
+        anyway, but without the handover the parent can look at the ring
+        microseconds before the last line lands in it and report the same
+        empty "not running" this exists to replace.
+
+        The child's output is attached to an EXIT STATUS or not at all. With
+        no handle there is no process to attribute the ring to — the handle
+        is dropped by a deliberate ``stop``, not by a death — and a healthy
+        server's startup banner offered as the cause of a failure would be
+        worse than offering no cause, which is where this started.
+        """
+        if proc is None or proc.poll() is None:
+            return "server not running"
+        thread = self._stderr_thread
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=_STDERR_JOIN_S)
+        head = f"server exited with code {proc.poll()}"
+        tail = " | ".join(self._stderr_tail_lines)
+        if len(tail) > _STDERR_REPORT_CHARS:
+            # The END is kept, not the beginning: a traceback's last line is
+            # the one that names the error, and the frames above it are the
+            # part a reader can do without.
+            tail = "…" + tail[-_STDERR_REPORT_CHARS:]
+        return f"{head}: {tail}" if tail else head
+
+    def _record_rpc_error(self, err: Any) -> None:
+        """Keep the fuller of the two accounts of a failed call.
+
+        ``_send`` records the reason itself wherever it knows more than the
+        JSON-RPC envelope can carry — a dead child's stderr, a deadline that
+        expired. Re-encoding that here would JSON-escape it and cut it at
+        240 characters, and for a traceback 240 characters is precisely the
+        part BEFORE the one line that names the error. So a message ``_send``
+        has already recorded is left as it stands. An error that came from a
+        live SERVER is not something ``_send`` knows anything about, and is
+        stored bounded, as it always was.
+        """
+        msg = err.get("message") if isinstance(err, dict) else None
+        if msg and msg == self.last_error:
+            return
+        self.last_error = json.dumps(err)[:240]
+
     def _ensure_reader(self, proc: subprocess.Popen) -> None:
         """Start the daemon that reads this process's stdout, once.
 
@@ -428,9 +573,30 @@ class MCPServer:
                 # EOF is terminal for this process: recorded so every later
                 # call sees it at once, rather than each waiting out the
                 # budget on a pipe that can no longer produce anything.
+                #
+                # WHY it ended is worth more than the fact that it did. A
+                # child that closed stdout because it DIED can still account
+                # for itself on stderr; one that merely closed the stream and
+                # kept running cannot, and must not be waited on — so the
+                # exit is given a brief grace and the richer reason is used
+                # only if it actually arrives.
+                reason = "EOF from server"
+                try:
+                    proc.wait(timeout=_EOF_EXIT_GRACE_S)
+                except Exception:
+                    pass
+                if proc.poll() is not None:
+                    reason = self._exit_reason(proc)
+                    # Recorded here as well, because this thread reaches the
+                    # death before any caller does. Without it the FIRST
+                    # discovery pass — the one that actually runs at startup
+                    # — saw only the envelope this reason travels in, and
+                    # re-encoded it into the 240-character bound meant for a
+                    # live server's JSON-RPC errors.
+                    self.last_error = reason
                 if self._reader_proc is proc:
-                    self._closed_reason = "EOF from server"
-                self._release_waiters("EOF from server")
+                    self._closed_reason = reason
+                self._release_waiters(reason)
         threading.Thread(
             target=_pump, name=f"mcp-reader-{self.name}", daemon=True,
         ).start()
@@ -470,7 +636,12 @@ class MCPServer:
         with self._lock:
             proc = self.proc
             if proc is None or proc.poll() is not None:
-                return {"error": {"message": "server not running"}}
+                # Recorded as well as returned: ``list_tools`` fails closed
+                # and hands back ``[]``, so ``last_error`` is the only place
+                # the reason survives to reach ``unreachable_servers``, the
+                # doctor and the /mcp listing.
+                self.last_error = self._exit_reason(proc)
+                return {"error": {"message": self.last_error}}
             if self._closed_reason:
                 return {"error": {"message": self._closed_reason}}
             self._ensure_reader(proc)
@@ -592,7 +763,7 @@ class MCPServer:
             "clientInfo": {"name": "delfin-agent", "version": "0.1"},
         })
         if "error" in resp:
-            self.last_error = json.dumps(resp["error"])[:240]
+            self._record_rpc_error(resp["error"])
             return False
         # Required follow-up notification (over the active transport).
         self._notify("notifications/initialized")
@@ -604,7 +775,7 @@ class MCPServer:
             return []
         resp = self._send("tools/list")
         if "error" in resp:
-            self.last_error = json.dumps(resp["error"])[:240]
+            self._record_rpc_error(resp["error"])
             return []
         result = resp.get("result", {})
         items = result.get("tools", []) if isinstance(result, dict) else []
@@ -652,7 +823,7 @@ class MCPServer:
             return []
         resp = self._send("resources/list")
         if "error" in resp:
-            self.last_error = json.dumps(resp["error"])[:240]
+            self._record_rpc_error(resp["error"])
             return []
         result = resp.get("result", {})
         items = result.get("resources", []) if isinstance(result, dict) else []
@@ -676,7 +847,7 @@ class MCPServer:
             return ""
         resp = self._send("resources/read", {"uri": uri})
         if "error" in resp:
-            self.last_error = json.dumps(resp["error"])[:240]
+            self._record_rpc_error(resp["error"])
             return json.dumps({"error": resp["error"]})
         result = resp.get("result", {})
         contents = result.get("contents", []) if isinstance(result, dict) else []
@@ -698,7 +869,7 @@ class MCPServer:
             return []
         resp = self._send("prompts/list")
         if "error" in resp:
-            self.last_error = json.dumps(resp["error"])[:240]
+            self._record_rpc_error(resp["error"])
             return []
         result = resp.get("result", {})
         items = result.get("prompts", []) if isinstance(result, dict) else []
@@ -722,7 +893,7 @@ class MCPServer:
         resp = self._send("prompts/get",
                           {"name": name, "arguments": arguments or {}})
         if "error" in resp:
-            self.last_error = json.dumps(resp["error"])[:240]
+            self._record_rpc_error(resp["error"])
             return json.dumps({"error": resp["error"]})
         result = resp.get("result", {})
         if not isinstance(result, dict):

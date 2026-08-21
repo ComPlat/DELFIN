@@ -198,3 +198,142 @@ def test_the_doctor_still_passes_a_reachable_server(tmp_path, monkeypatch):
 
     rows = doctor._check_mcp({"workspace": str(tmp_path), "fast": False})
     assert rows and all(r["status"] == doctor.PASS for r in rows), rows
+
+
+# ---------------------------------------------------------------------------
+# Reported as dead is not enough: it has to say WHY
+# ---------------------------------------------------------------------------
+#
+# The reason a broken built-in went unnoticed for as long as it did. The
+# child was spawned with ``stderr=subprocess.DEVNULL``, so when mcp 2.0.0
+# removed ``mcp.server.fastmcp`` and all three built-ins exited 1 on their
+# import line, the traceback naming the moved module was discarded and the
+# caller was told "server not running" — which reads as a server nobody
+# configured rather than as an install that cannot work.
+
+def _dies_with(script: str, name: str = "dying") -> "MC.MCPServer":
+    import sys
+    return MC.MCPServer(name=name, command=sys.executable, args=["-c", script])
+
+
+def test_a_server_that_dies_on_an_import_says_which_import():
+    """The live defect, in the shape it actually had."""
+    srv = _dies_with("import mcp.server.fastmcp_gone_xyz")
+    try:
+        assert srv.list_tools() == []
+        # The FIRST call, not a second one: this is the pass that runs at
+        # startup and whose verdict reaches the doctor and the /mcp listing.
+        assert "ModuleNotFoundError" in srv.last_error, srv.last_error
+        assert "fastmcp_gone_xyz" in srv.last_error, srv.last_error
+        assert "exited with code 1" in srv.last_error, srv.last_error
+    finally:
+        srv.stop()
+
+
+def test_the_reason_survives_into_the_report_the_user_reads():
+    srv = _dies_with("import sys; print('boom: the index is missing',"
+                     " file=sys.stderr); sys.exit(2)")
+    reg = MC.MCPRegistry()
+    reg.servers["dying"] = srv
+    try:
+        problems = MC.unreachable_servers(reg)
+        assert problems, "a server that exited was not reported at all"
+        assert "boom: the index is missing" in problems[0], problems
+    finally:
+        srv.stop()
+
+
+def test_a_healthy_server_that_writes_to_stderr_is_not_a_failure():
+    """Draining stderr must not turn logging into an error.
+
+    An SDK server logs its startup banner there as a matter of course, so a
+    rule of "anything on stderr is a problem" would report every working
+    server as broken.
+    """
+    import sys
+    srv = MC.MCPServer(name="chatty", command=sys.executable, args=["-c", (
+        "import json, sys\n"
+        "print('starting up', file=sys.stderr, flush=True)\n"
+        "for line in sys.stdin:\n"
+        "    msg = json.loads(line)\n"
+        "    print('served a request', file=sys.stderr, flush=True)\n"
+        "    if msg.get('id') is None:\n"
+        "        continue\n"
+        "    r = ({'tools': [{'name': 'echo', 'inputSchema': "
+        "{'type': 'object'}}]} if msg['method'] == 'tools/list' else {})\n"
+        "    sys.stdout.write(json.dumps({'jsonrpc': '2.0', "
+        "'id': msg['id'], 'result': r}) + '\\n')\n"
+        "    sys.stdout.flush()\n")])
+    reg = MC.MCPRegistry()
+    reg.servers["chatty"] = srv
+    try:
+        assert [t.name for t in srv.list_tools()] == ["echo"]
+        assert srv.last_error == "", srv.last_error
+        assert MC.unreachable_servers(reg) == []
+    finally:
+        srv.stop()
+
+
+def test_a_server_that_floods_stderr_is_held_and_reported_bounded():
+    """A server is an arbitrary program and may write without end.
+
+    Measured: 200,000 lines of 500 characters — about 100 MB — offered to a
+    client that must neither buffer it nor block the child by refusing to
+    read it.
+    """
+    srv = _dies_with(
+        "import sys\n"
+        "for _ in range(200000): print('x' * 500, file=sys.stderr)\n"
+        "sys.exit(3)", name="flood")
+    try:
+        assert srv.list_tools() == []
+        assert "exited with code 3" in srv.last_error
+        assert len(srv.last_error) < 4000, len(srv.last_error)
+        assert len(srv._stderr_tail_lines) <= MC._STDERR_KEEP_LINES
+    finally:
+        srv.stop()
+
+
+def test_a_restart_does_not_report_the_previous_process_dying_words():
+    """One server object outlives the processes it spawns."""
+    import sys
+    srv = _dies_with("import sys; print('the first failure',"
+                     " file=sys.stderr); sys.exit(1)")
+    try:
+        srv.list_tools()
+        assert "the first failure" in srv.last_error
+        srv.stop()
+
+        srv.args = ["-c", "import sys; print('a different failure',"
+                          " file=sys.stderr); sys.exit(1)"]
+        srv.command = sys.executable
+        srv.list_tools()
+        assert "a different failure" in srv.last_error
+        assert "the first failure" not in srv.last_error, srv.last_error
+    finally:
+        srv.stop()
+
+
+def test_a_stopped_server_is_not_blamed_on_the_output_of_a_healthy_one():
+    """The failure mode the stderr capture could have introduced.
+
+    A stopped server has no exit status to attach output to — the handle
+    was dropped deliberately, not lost to a death — and its ring still
+    holds whatever it logged while it was working. Reporting the startup
+    banner of a server the user shut down, as the reason a later call
+    failed, would be a worse answer than the bare one it replaced.
+    """
+    import sys
+    srv = MC.MCPServer(name="banner", command=sys.executable, args=["-c", (
+        "import sys, time\n"
+        "print('INFO  server listening on stdio', file=sys.stderr,"
+        " flush=True)\n"
+        "time.sleep(30)\n")])
+    srv.start()
+    try:
+        assert srv.proc is not None
+        srv.stop()
+        resp = srv._send("tools/list")
+        assert resp["error"]["message"] == "server not running", resp
+    finally:
+        srv.stop()
