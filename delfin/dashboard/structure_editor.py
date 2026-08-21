@@ -1318,12 +1318,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         value=0.4, min=0.0, max=3.0, step=0.05,
         description='Pull', continuous_update=False,
         readout=True, readout_format='.2f',
-        tooltip=('How hard dragging pulls, as a share of a bond. 0.4 is about '
-                 'what room temperature allows: it turns a molecule into its '
-                 'own conformers and cannot break a bond. 1.0 is as strong as '
-                 'the bond; 3.0 takes anything apart; 0 places the atom '
-                 'outright. The thermal budget does not change this -- it '
-                 'limits the energy of what you are left with.'),
+        tooltip=('The hardest dragging may pull, as a share of a bond. 0.4 is '
+                 'about what room temperature allows: it turns a molecule '
+                 'into its own conformers and cannot break a bond. 1.0 is as '
+                 'strong as the bond; 3.0 takes anything apart; 0 places the '
+                 'atom outright. What is actually pulling is set by the '
+                 'mouse: the hand is a spring between the cursor and the '
+                 'atom, so the further you drag ahead of where the structure '
+                 'has got to, the harder it pulls -- up to this. The line '
+                 'under the viewer says both numbers while you drag. The '
+                 'thermal budget does not change either of them: it limits '
+                 'the energy of what you are left with.'),
         style={'description_width': '58px'},
         layout=widgets.Layout(width='200px'),
         disabled=True,
@@ -3696,6 +3701,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #:     kcal/mol  +40.0  +18.9   +8.3
     #:
     #: Every one of those is a wall in the wrong place, so this is generous.
+    #:
+    #: Generous and not wasteful, which was worth checking on a real system
+    #: rather than assuming either way.  ``--cycles`` is a *cap*: xtb stops
+    #: when the relaxation converges, so a cap above what convergence needs
+    #: costs nothing at all.  Measured on a 57-atom manganese complex under
+    #: GFN2 at charge +1, one answer priced from the same geometry:
+    #:
+    #:     cycles      2      4      6      8     12   16   20   30   50
+    #:     vs 200  +10.8   +2.3   +0.4  +0.17  +0.01  0.0  0.0  0.0  0.0
+    #:
+    #: Sixteen is already the converged answer to every digit, and twenty
+    #: returns at convergence rather than at the cap.  So the four-fold cost
+    #: over a plain drag is the price of relaxing properly, not of counting to
+    #: twenty, and cutting the number would buy nothing on an easy answer and
+    #: a wall in the wrong place on a hard one.
     #: It also does not start from nothing: the drag walks in small steps and
     #: each answer starts from the structure the last one relaxed, so the work
     #: is spread over the drag rather than repeated in it.  The cost is that
@@ -3717,6 +3737,31 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['gfn_follow_method'] = str(submit_ff_dd.value)
         if state.get('gfn_follow'):
             return True     # already following; it keeps the run it began
+        # Whatever the last drag left standing, this one starts clean.
+        #
+        # The release clears it, and the release is one message from the page
+        # -- sent from an animation frame when the pointer state changes.  A
+        # drag that ends any other way never sends it: the tab is put in the
+        # background and the frame loop stops, the pointer is cancelled, the
+        # page is reloaded under a hand that is still down.  What was left
+        # standing then was the *running maximum* of the last drag, and a
+        # maximum is what the wall refuses on -- so the next grab was refused
+        # for a crossing it had nothing to do with, and nothing anywhere said
+        # so.  That is one drag in a session behaving differently from the
+        # rest for no visible reason.
+        #
+        # Clearing it here as well makes it not depend on the message arriving:
+        # a grab is the one moment there certainly is one.
+        _clear_thermal_wall()
+        # And the floor goes back, which the clearing takes away with the
+        # rest.  Nothing has been crossed on the way to a drag that has not
+        # started, so this drag's maximum is zero -- and zero rather than
+        # absent, because absent lets the first answer set the maximum to
+        # whatever it costs.  Below the anchor that is a negative maximum, and
+        # a drag that dipped a little before it climbed would then be allowed
+        # to climb that much further than the temperature pays for.  The
+        # anchor is the zero; falling below it earns no credit.
+        state['thermal_peak'] = 0.0
         _gfn_new_generation()
         # What the molecule looked like before this drag: the bonding is read
         # from here, not from a frame that has already been pulled about.
@@ -3789,6 +3834,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # pulled strictly uphill was reported as "Falling 94 kcal/mol per A".
         state.pop('thermal_slope', None)
         state.pop('thermal_last', None)
+        # And what the last answer of the last drag was priced at, which is
+        # what "one answer cost this much" is measured against.
+        state.pop('thermal_priced', None)
         # And the highest price this drag went through, with the one recorded
         # for the geometry it could fall back to.  A ceiling is a barrier
         # height, so the wall refuses on the maximum since the anchor -- and
@@ -3983,6 +4031,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         Only one process at a time, and the newest geometry wins: a hand moves
         faster than xtb answers, and a queue of answers about where the atom
         used to be is worse than no answer at all.
+
+        Where an answer's time goes, measured on a 57-atom manganese complex
+        under GFN2 at charge +1 -- the system a user was dragging when he
+        reported that reaching the thermal ceiling took ten minutes:
+
+            xtb process        99.6 %
+            everything else     0.4 %
+
+        The "everything else" is all of this function's arithmetic together:
+        the contact perception, turning the held values into pushes, the
+        restraint energy, the rigid-body fit and the closest-contact scan.
+        Under GFN-FF, where the process is a tenth of a second rather than
+        three seconds, it is still 89 % xtb and about 8 % reading the
+        trajectory back out of the log.  So there is nothing here worth
+        optimising, and what an answer costs is what xtb costs.
         """
         if not state.get('gfn_follow') and not _begin_gfn_follow():
             return          # not following: Relax is up, or GFN is not chosen
@@ -4238,14 +4301,39 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # difference between a deformation and a torn molecule.
                     hand = ''
                     if pull is not None and contacts:
-                        # What was really applied, not what the slider says:
-                        # the hand grows with the drag, so the two are only
-                        # the same at the start of one.
-                        applied = _gfn.push_pulls_hardest(
-                            str(contacts[0].get('kind') or 'distance')
-                        ) * float(contacts[0].get('force') or 0.0)
-                        hand = (f' Pulling at {applied:.0f} kcal/mol/A, '
-                                f'{applied / _gfn.A_BOND_HOLDS:.2f} of what a '
+                        # What is being applied, and the most this hand could
+                        # apply -- two numbers, because they are two different
+                        # things and only the second one was ever shown.
+                        #
+                        # A push is a spring: it reaches its ceiling when the
+                        # target is a whole reach away and is weaker all the
+                        # way there.  So what the hand really pulls with is
+                        # set by how far the cursor has run ahead of the
+                        # structure, which is the thing the mouse controls
+                        # while the drag is running -- and that is exactly
+                        # what the user asked whether he could do.  Measured
+                        # on a manganese complex, a phenolate oxygen dragged
+                        # at 0.4 of a bond: about half a degree of torsion of
+                        # lead per answer, which is 0.4 kcal/mol per radian
+                        # applied.  The line said 44.
+                        driving = contacts[0]
+                        kind = str(driving.get('kind') or 'distance')
+                        constant = float(driving.get('force') or 0.0)
+                        hardest = _gfn.push_pulls_hardest(kind) * constant
+                        stands = _value_in(state.get('thermal_was') or current,
+                                           driving)
+                        applied = hardest
+                        if stands is not None and driving.get('value') is not None:
+                            applied = _gfn.push_pulls_now(
+                                kind, constant,
+                                float(driving['value']) - float(stands))
+                        units = ('kcal/mol/A' if kind == 'distance'
+                                 else 'kcal/mol per radian')
+                        hand = (f' Pulling at {applied:.1f} of a possible '
+                                f'{hardest:.0f} {units} -- drag further ahead '
+                                f'of the atom to pull harder. The most this '
+                                f'hand may reach is '
+                                f'{hardest / _gfn.A_BOND_HOLDS:.2f} of what a '
                                 f'bond holds.')
                     if held_too:
                         hand = (' A held value and a pull cannot share one '
@@ -4499,6 +4587,60 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                 if state.get('thermal_over') == 'path' else
                                 'Past the budget, so the last structure that '
                                 'was inside it is back.'))
+                            # And whether this was a slope or a step.
+                            #
+                            # A refusal on a slope can be worked with: ease
+                            # off, come at it more slowly, and the structure
+                            # stops somewhere near the ceiling.  A refusal on
+                            # a step cannot -- there is no geometry in between
+                            # at any step size, so trying again more gently
+                            # lands in exactly the same place, and the user
+                            # who does not know that goes on trying.
+                            #
+                            # Measured on the user's manganese complex under
+                            # GFN2, the phenolate oxygen pulled off the metal:
+                            # the price rises smoothly to -1.6 kcal/mol and
+                            # the next answer is +68.0, at a Mn-O of 3.19 A --
+                            # and it is +68 whether the cursor advances a
+                            # quarter of an Angstrom per answer or a fiftieth.
+                            # Under GFN-FF the same drag reads -20.4, ... ,
+                            # +2.5, +108.7 with the cursor moving 0.05 A at a
+                            # time, and +108.9 at 0.02 A. There is no path up
+                            # that face; what is on the other side is a
+                            # different coordination sphere.
+                            #
+                            # Judged against the ceiling rather than against a
+                            # fixed number of kcal/mol, so it means the same
+                            # thing at 100 K and at 1500 K.
+                            was = state.get('thermal_priced')
+                            now = priced.get('energy')
+                            jump = ((float(now) - float(was))
+                                    * _HARTREE_TO_KCAL
+                                    if was is not None and now is not None
+                                    else None)
+                            _, ceiling = _thermal_budget()
+                            if jump is not None and jump > max(1.0, ceiling):
+                                # What changed, named, because "the bonding is
+                                # different on the far side" is the fact that
+                                # makes the number make sense.  Perceived here
+                                # and not every answer: it is a pass over every
+                                # pair, and this is a refusal rather than the
+                                # ordinary case.
+                                bonding = ''
+                                allowed = state.get('thermal_good')
+                                if allowed:
+                                    bonding = _gfn.graph_changed(
+                                        _gfn.bond_graph(allowed),
+                                        _gfn.bond_graph(reached),
+                                        [line.split()[0] for line
+                                         in _gfn.atom_lines(reached)])
+                                said = (
+                                    f'{said} That was a step and not a slope '
+                                    f'-- one answer cost {jump:+.0f} kcal/mol '
+                                    f'-- so coming at it more gently lands in '
+                                    f'the same place.'
+                                    + (f' On the far side the bonding '
+                                       f'{bonding}.' if bonding else ''))
                         if crowded:
                             said = (f'{said} Two atoms are inside '
                                     f'{tightest:.2f} of a bond length, which '
@@ -4518,6 +4660,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                     f'({slipped:.2f} A), so the price is for '
                                     f'a nearby structure rather than this '
                                     f'one.')
+                        # What this answer cost, so the next one can say
+                        # whether the drag walked up to the wall or fell over
+                        # a step onto the far side of it.  Written last, after
+                        # everything that reads the previous value.
+                        if priced.get('energy') is not None:
+                            state['thermal_priced'] = float(priced['energy'])
                     state['gfn_last_status'] = said
                     schedule_ui_update(_set_mol_status,
                                        *_gfn_status_lines(said), spinner=True)
@@ -4820,10 +4968,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # Cheap here, and it got here over something that was not.  The
         # refusal is about the crossing, so the crossing is the number quoted
         # and the wait is worked out from it.
+        #
+        # And what to do about it, said in the same breath.  This is the one
+        # refusal with an obvious next move and no way of guessing it: the
+        # budget was spent getting here, the structure is standing somewhere
+        # cheap, and whether that somewhere is a state the system would have
+        # thermalised in is a chemist's judgement rather than a calculation.
+        # Set here is how that judgement is entered, and a user who does not
+        # know the button exists discovers instead that switching Dynamik Opt
+        # off and on again makes the drag work -- which is the same thing
+        # happening by accident.
         return (f'{spent:+.1f} of {ceiling:.1f} kcal/mol available at '
                 f'{T:g} K, but this drag went through {peak:+.1f} to reach '
                 f'it -- past the {ceiling:.1f} it has at {T:g} K. '
-                f'{_thermal_wait(peak, T)}')
+                f'{_thermal_wait(peak, T)} The budget is counted from where '
+                f'it was set; if the structure has settled here, Set here '
+                f'measures from this one instead.')
 
     def _thermal_wait(kcal, temperature):
         """How long a barrier of that height takes at that temperature.
@@ -5220,7 +5380,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     _set_mol_status(
                         'The structure changed while its energy was being '
                         'measured, so that anchor belongs to the older one. '
-                        'Press Measure from here to take one for this.')
+                        'Press Set here to take one for this.')
                     return
                 # The zero is also the last geometry the budget agreed
                 # to, and its way here cost nothing by construction.  Left
