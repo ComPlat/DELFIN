@@ -768,7 +768,7 @@ def test_the_hand_guides_the_climb_and_never_restrains_it():
     climbing = source.split('def _climb_now():', 1)[1].split(
         '\n    def ', 1)[0]
     assert "aimed_from = state.pop('climb_was', None)" in climbing
-    assert 'walk.start(aimed_from=aimed_from)' in climbing
+    assert 'aimed_from=aimed_from,' in climbing
     assert 'constraints' not in climbing, 'the pull is never part of the climb'
     # The loop reads this and stops, so the toggle is a real Stop.
     assert "state['climb_run'] = None" in source
@@ -1295,7 +1295,10 @@ def test_the_stop_has_one_path_too_and_the_optimiser_is_its_parameter():
     climbing = source.split('def _climb_now():', 1)[1].split(
         '\n    def on_submit_', 1)[0]
     assert '_halt_the_frames(run)' in climbing
-    assert 'while not _stopped():' in climbing
+    # The loop is the module's now -- three searches rather than one, and one
+    # Stop for all three -- so what the editor holds is the question, handed
+    # over to be asked by every rung of it.
+    assert 'should_stop=_stopped,' in climbing
 
     # And both claim their run the same way, which is what clears the halt
     # mark and the stale frame number for the run that is beginning.  The
@@ -1405,24 +1408,31 @@ def test_a_climb_that_is_going_nowhere_stops_and_says_so():
     the toggle stayed down.  Nothing ended it, because a climb converges or it
     does not and there was no third answer.
 
-    Four hundred is the third answer.  It is an order of magnitude above every
-    climb that has finished here -- 11 steps from the path finder's estimate,
-    39 from a dragged geometry, 105 for an unguided one onto a minimum -- and
-    about four seconds of gradients on sixteen atoms.
+    There were then two third answers, and they disagreed: four hundred in the
+    editor, picked as an order of magnitude above every climb that had
+    finished at the time, and a hundred in the module, measured afterwards
+    over twenty-one hand drags -- every climb that reached the reaction the
+    hand pointed at arrived in 22 to 65 steps, and the ones that ran longer
+    ran on to between 202 and 361 and were wrong at the end of all of them.
+    The measured one is kept, and it is kept in one place: the module that
+    walks the steps.  The other three hundred bought nothing but a longer wait
+    before the next search was tried -- measured on a Diels-Alder drag whose
+    first climb goes to a minimum, 211 steps and 83.8 s at four hundred
+    against 61 steps and 21.8 s at a hundred, for the same wrong answer.
     """
     source = EDITOR_SOURCE
-    assert '_CLIMB_STEPS = 400' in source
+    assert climb.CLIMB_CEILING == 100
+    assert '_CLIMB_STEPS' not in source, 'one ceiling, in the module'
     climbing = source.split('def _climb_now():', 1)[1].split(
         '\n    def on_submit_', 1)[0]
-    assert 'if walk.steps >= _CLIMB_STEPS:' in climbing
+    assert 'max_steps=_climb.CLIMB_CEILING,' in climbing
     # And what it reached is still named, because a saddle search does not
-    # fail -- it succeeds at arriving somewhere.
-    assert 'verdict = _climb_verdict(shape, steps, seconds)' in climbing
+    # fail -- it succeeds at arriving somewhere.  The sentence is the module's:
+    # it is the one that knows which searches were tried and what each reached.
+    assert "said = str(got.get('status') or '')" in climbing
     # With whatever the walk that handed this climb its start had to say in
     # front of it, so a barrier and the saddle it belongs to arrive together.
-    assert 'lines = walked_said + verdict' in climbing
-    assert 'if steps >= _CLIMB_STEPS:' in climbing
-    assert 'It ran out of steps at ' in climbing
+    assert 'lines = walked_said + [said]' in climbing
 
 
 def test_the_picture_is_fed_frames_and_never_the_coordinate_box():
@@ -1944,3 +1954,208 @@ def test_the_last_rung_is_orca_and_it_reaches_what_no_climb_here_does():
     # Both retries were announced before they ran, not explained afterwards.
     assert len(said) == 2, said
     assert 'softest mode' in said[0] and 'ORCA' in said[1], said
+
+
+def test_a_stop_does_not_pay_for_a_hessian_nobody_asked_for():
+    """What a Stop is about is the frame on screen, not where the walk stood.
+
+    The verdict is the expensive half of a climb -- xtb's own Hessian, 0.3 s
+    at sixteen atoms and 11.8 at fifty -- and it used to be taken whatever
+    ended the loop, including the press that ended it.  That is a third of a
+    second and more spent at the exact moment somebody asked for the walk to
+    stop, on a geometry they are not being left with: the editor keeps the
+    frame the picture stopped on and throws the rest away.
+
+    So a stopped climb says it was stopped and hands back no verdict at all,
+    and the ladder reads that and stops too -- a rung is only tried when the
+    one before it is known to have missed, and a rung that was stopped is not
+    known to have missed anything.
+    """
+    got = climb.climb_to_saddle(_ESTIMATE, 'gfn2', should_stop=lambda: True)
+    assert got['stopped'] is True
+    assert got['imaginary'] is None
+    assert 'stopped' in got['status']
+    assert got['xyz'], 'where it stood is still handed back'
+
+
+@_needs_xtb
+def test_the_ladder_stops_where_the_press_was_stopped():
+    """And says so, rather than reporting a minimum it never looked at."""
+    got = climb.reach_the_reaction(_ESTIMATE, 'gfn2', held=(0, 10),
+                                   should_stop=lambda: True)
+    assert got['ok'] is False
+    assert got['route'] == 'the climb', got.get('route')
+    assert 'stopped' in got['status'], got['status']
+
+
+def test_the_editor_hands_the_pair_over_and_never_guesses_it():
+    """The ladder needs two atoms, and a wrong two are worse than none.
+
+    Seven element-free rules were scored against twenty-one hand drags, each
+    of them given the atom the page names and both geometries -- before the
+    drag and after it.  The best is the contact the follow is actually
+    holding, :func:`gfn_optimize.contacts_holding`, and it names the pair the
+    gesture is about on **10 of the 21**; the other six score 1, 1, 1, 3, 7
+    and 9.  They fail in three shapes: a drag at a carbon names the hydrogen
+    on it, a drag that folds a chain names the torsion it turns rather than
+    the contact it closes, and a proton walked between two oxygens names the
+    one it started on.
+
+    A wrong pair is not a smaller version of the right one -- it is the ladder
+    throwing away an answer that was right.  Measured on the van-der-Waals
+    complex with the pair guessed that way: the first climb reached the
+    Diels-Alder saddle at 2.315 A and -394 cm-1, the check against C10-H4
+    scored it at less than a fifth, and the press then spent 73 s on two more
+    searches to report that it had not found what was already on the screen.
+
+    So nothing is guessed.  The page names the atom under the cursor and the
+    atoms that are picked, on messages it already sends and in the same
+    numbering, and the pair is one of each: what you are dragging, and what
+    you tapped to say what you are dragging it at.
+    """
+    source = EDITOR_SOURCE
+    naming = source.split('def _name_the_pair_the_hand_means(holding):',
+                          1)[1].split('\n    def ', 1)[0]
+    assert "state.get('picked')" in naming
+    assert "state['climb_held']" in naming
+    # Both halves come off messages the page already sends, so nothing new is
+    # recorded and a replayed journal names the same pair.
+    assert '_gfn.contacts_holding' not in naming, \
+        'the pair is named rather than guessed'
+    climbing = source.split('def _climb_now():', 1)[1].split(
+        '\n    def on_submit_', 1)[0]
+    assert "held = state.pop('climb_held', None)" in climbing
+    assert 'held=held,' in climbing
+    # A pair belongs to the gesture that named it, so a new grab starts
+    # without one rather than with the last drag's.
+    grab = source.split("if verb == 'gfngrab':", 1)[1].split(
+        "if verb == 'gfnfree':", 1)[0]
+    assert "state.pop('climb_held', None)" in grab
+
+
+@_needs_xtb
+def test_the_pair_arrives_from_the_page_and_the_ladder_uses_it(tmp_path):
+    """The gesture, through the page's own two messages and nothing else.
+
+    An atom is tapped -- ``submit_pick_sync``, which is how the editor is told
+    which atoms a user means everywhere else -- and another is dragged, which
+    the page reports as ``DELFIN drag-follow held=10``.  Between them those
+    two say which contact the gesture is about, and the release hands it to
+    the climb.
+    """
+    import time as clock
+
+    pytest.importorskip('ipywidgets')
+
+    part, state, box = _an_editor(tmp_path)
+    part.submit_relax_btn.value = True
+    part.submit_pick_sync.value = '0'
+    part.submit_climb_btn.value = True
+    began = clock.time()
+    while not state.get('climb_showing') and clock.time() - began < 60:
+        clock.sleep(0.02)
+
+    moved = _dragged(0.40).splitlines()
+    part.submit_manip_sync.value = '\n'.join(
+        [moved[0], 'DELFIN drag-follow held=10'] + moved[2:])
+    assert state.get('climb_held') == (10, 0), state.get('climb_held')
+
+    # And a gesture that names nothing leaves nothing behind, rather than the
+    # last one's pair.
+    part.submit_cmd_sync.value = 'gfngrab:991:0'
+    assert 'climb_held' not in state
+    part.submit_climb_btn.value = False
+    _quiet(part, state)
+
+
+def _pull_one_atom(part, box, grabbed, toward, reach, steps=6, pause=0.6):
+    """One atom picked up and pulled at another, in the page's own messages.
+
+    ``gfngrab``, a ``DELFIN drag-follow`` per mouse move naming the atom under
+    the cursor, ``DELFIN drag-end`` and ``gfnfree`` -- in that order, because
+    that is the order the page sends them in.  Each move is aimed straight at
+    the other atom, which is what a hand does when it is dragging one thing at
+    another.
+    """
+    import time as clock
+
+    names = climb._elements(box.value)['symbols']
+    start = _where(box.value)
+    span = float(np.linalg.norm(start[toward] - start[grabbed]))
+    _command(part, 'gfngrab', '0')
+    for turn in range(1, steps + 1):
+        rows = _where(box.value).copy()
+        arm = rows[toward] - rows[grabbed]
+        rows[grabbed] = rows[toward] - arm / float(np.linalg.norm(arm)) * (
+            span - (span - reach) * turn / steps)
+        part.submit_manip_sync.value = climb.xyz_document(
+            names, rows, f'DELFIN drag-follow held={grabbed} n={turn}')
+        clock.sleep(pause)
+    part.submit_manip_sync.value = climb.xyz_document(
+        names, _where(box.value), 'DELFIN drag-end')
+    _command(part, 'gfnfree', '')
+
+
+@_needs_xtb
+@_needs_orca
+@pytest.mark.slow
+def test_the_gesture_reaches_a_saddle_that_one_climb_walks_away_from(tmp_path):
+    """The whole of task one, as a gesture: tap, drag, let go.
+
+    Dynamik Opt on so the molecule follows the hand, Climb to TS on so the
+    release climbs, one ethene carbon dragged at a diene terminus until they
+    stand 2.6 A apart, and the diene terminus tapped first so the editor knows
+    which contact is meant.
+
+    Measured on this drag, which is the point of the ladder rather than a
+    detail of it: the climb aimed along the gesture converges -- in 61 steps
+    and 21.8 s -- onto a structure with **no mode going the wrong way at
+    all**, 2.693 A apart, and that is what the editor used to leave in the box
+    after 211 steps and 83.8 s at its old ceiling of 400.  The same press with
+    the three searches tried in turn ends on the Diels-Alder saddle: both
+    forming bonds at 2.315 A, one imaginary mode at -393.5 cm-1, and 0.68 of
+    that mode is the contact that was tapped.
+
+    Slow, and there is no cheap version: the gesture is six xtb relaxations
+    under the hand, then two climbs and an ORCA optimiser.
+    """
+    import time as clock
+
+    pytest.importorskip('ipywidgets')
+
+    part, state, box = _an_editor(tmp_path)
+    part.submit_relax_btn.value = True          # Dynamik Opt
+    part.submit_pick_sync.value = '0'           # the atom being aimed at
+    part.submit_climb_btn.value = True          # Climb to TS
+    began = clock.time()
+    while not state.get('climb_showing') and clock.time() - began < 60:
+        clock.sleep(0.05)
+
+    _pull_one_atom(part, box, 10, 0, 2.6)
+    assert state.get('climb_held') == (10, 0), state.get('climb_held')
+    # What the hand left, and where the structure stood when it arrived, kept
+    # so the same press can be run again with one search instead of three.
+    released, was = box.value, state.get('climb_was')
+    seen = _frames_seen(part)
+    _quiet(part, state, seconds=600.0)
+
+    # One press is one run, however many searches it takes.  The second climb
+    # starts again from the structure the hand made, so the picture jumps back
+    # to it and climbs away again -- and that must not be a new run: the
+    # frames go into one list in the order they are drawn, and the count the
+    # page reports back is an index into that list.
+    runs = {run for run, _ in seen if run is not None}
+    assert runs and max(runs) == state.get('climb_frame_run'), runs
+
+    one, two = _forming(_where(box.value))
+    assert 2.25 < one < 2.40 and abs(one - two) < 0.03, (one, two)
+    said = part.mol_status.value
+    assert 'reached it' in said, said
+    assert 'C10-C0 stretch' in said, said
+
+    # And the same gesture with only the first search, which is what this was
+    # before: it converges, and onto a minimum.
+    alone = climb.climb_to_saddle(released, 'gfn2', aimed_from=was,
+                                  max_steps=climb.CLIMB_CEILING, held=(0, 10))
+    assert alone['imaginary']['count'] == 0, alone['imaginary']
+    assert not alone['imaginary']['reaction']

@@ -1344,9 +1344,10 @@ def climb_to_saddle(xyz_text: str, method: str = 'gfn2', *,
                  cores=cores)
     try:
         opened = walk.start(aimed_from=aimed_from)
-        arrived = False
+        arrived = halted = False
         for _ in range(max(1, int(max_steps))):
             if should_stop is not None and should_stop():
+                halted = True
                 break
             outcome = walk.step()
             if on_frame is not None:
@@ -1354,17 +1355,25 @@ def climb_to_saddle(xyz_text: str, method: str = 'gfn2', *,
             if outcome.get('converged'):
                 arrived = True
                 break
-        shape = walk.verdict(held=held)
+        # A press the user ended is not a question about where the walk was
+        # standing, and the verdict is the expensive part of this function:
+        # xtb's own Hessian, 0.3 s at sixteen atoms and 11.8 at fifty, paid at
+        # the exact moment somebody asked for it to stop.  What they are left
+        # with is the frame on screen, which the caller knows about and this
+        # does not.
+        shape = None if halted else walk.verdict(held=held)
         seconds = time.perf_counter() - began
         return {'ok': arrived, 'xyz': walk.xyz(
                     'Climbed to a transition state' if arrived
                     else 'Where the climb got to'),
-                'seconds': seconds, 'steps': walk.steps,
+                'seconds': seconds, 'steps': walk.steps, 'stopped': halted,
                 'started': opened, 'imaginary': shape,
                 'gradients': int(getattr(walk.engine, 'calls', 0)),
                 'status': (
                     f'The climb converged in {walk.steps} steps '
                     f'({seconds:.1f} s).' if arrived else
+                    f'The climb was stopped after {walk.steps} steps.'
+                    if halted else
                     f'The climb did not converge in {walk.steps} steps; the '
                     f'structure it reached is shown.')}
     finally:
@@ -1616,6 +1625,13 @@ def reach_the_reaction(xyz_text: str, method: str = 'gfn2', *,
         on_frame=on_frame, should_stop=should_stop, held=held), 'the climb')
     if not first.get('xyz'):
         return first
+    if first.get('stopped'):
+        # Ended inside the first rung.  There is nothing to check -- the
+        # verdict was not asked for, because it costs a Hessian at the moment
+        # somebody pressed Stop -- and nothing to try, because a rung is only
+        # tried when the one before it is known to have missed.
+        first['ok'] = False
+        return first
     reached = first.get('imaginary') or {}
     # Without a pair to check against, only the mode count can be asked, and
     # then the ladder is no use: every rung would be judged by the very test
@@ -1662,6 +1678,12 @@ def reach_the_reaction(xyz_text: str, method: str = 'gfn2', *,
             aimed_from=None, max_steps=max_steps, cores=cores,
             on_frame=on_frame, should_stop=should_stop, held=held),
             'the softest mode')
+        if again.get('stopped'):
+            again['ok'] = False
+            again['status'] = (
+                why + ' Climbing along the softest mode instead was stopped '
+                'before it reached anything.')
+            return again
         if (again.get('imaginary') or {}).get('reaction'):
             return _arrived(
                 again, 'Climbing along the softest mode instead',
