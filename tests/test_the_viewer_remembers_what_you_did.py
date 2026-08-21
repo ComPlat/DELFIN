@@ -22,11 +22,27 @@ The rest of the file is what makes that affordable and what makes it fit on a
 disk: what recording costs per message, what the ring drops when a session
 outlasts it, and that a truncated report still replays from the earliest
 structure it kept.
+
+The last group is about the two ends of the button.  At the front, that the
+interface says a session is already being kept -- the user asked for a feature
+he had, which is a fact about the interface and not about him.  At the back,
+that a written report goes to his own cluster over the transfer the dashboard
+already uses, that the local copy survives whatever the transfer does, and
+that both outcomes are said out loud.  Those tests drive the transfer through
+a stand-in, because a suite may not open an SSH connection; the real one was
+run against a real sshd on this box on 2026-08-21, over the dashboard's own
+transfer configuration, and what it did is written into the tests that stand
+in for it -- see
+:func:`test_the_transfer_is_the_dashboards_own_and_carries_only_the_report`,
+:func:`test_a_send_does_not_block_the_editor_and_says_what_it_did` and
+:func:`test_a_transfer_that_fails_costs_nothing_and_is_never_silent`.
 """
 
 import json
 import statistics
+import threading
 import time
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -107,6 +123,21 @@ def _an_editor(room):
     box.observe(lambda _change: update_view(), names='value')
     update_view()
     return part, state, box
+
+
+def _no_remote(monkeypatch, **transfer):
+    """Answer the dashboard's settings with this transfer block and no other.
+
+    Every test that presses Send has to do this. Without it
+    :func:`delfin.dashboard.editor_journal.remote_target` reads the settings
+    file of whoever is running the suite, and on a machine with a cluster
+    configured -- which is every machine this feature is for -- pressing the
+    button in a test would open an SSH connection to it. Found the way these
+    things are found: the box this was written on has one configured, and the
+    first run of the suite after the send was wired up would have gone to it.
+    """
+    monkeypatch.setattr('delfin.user_settings.load_settings',
+                        lambda *a, **k: {'transfer': dict(transfer)})
 
 
 _SERIAL = [0]
@@ -626,6 +657,7 @@ def test_a_report_reads_as_a_report_and_lands_where_it_says(tmp_path,
     assert ej.resolve_archive_dir({'viewer': {'bug_archive_dir': '/tmp/x'}}) \
         == tmp_path / 'bugs'
     assert not (tmp_path / 'bugs').exists(), 'resolving must not create it'
+    _no_remote(monkeypatch)
 
     part, _state, _box = _an_editor(tmp_path / 'read')
     ej.press(part.submit_gfn_charge, -1)
@@ -633,8 +665,9 @@ def test_a_report_reads_as_a_report_and_lands_where_it_says(tmp_path,
     _command(part, 'gfnfree', '')
 
     ej.press(part.submit_bug_btn, True)
-    assert 'stays on this machine' in part.submit_bug_where.value
+    assert 'Kept as you work' in part.submit_bug_where.value
     assert 'bugs' in part.submit_bug_where.value
+    assert 'no transfer host is configured' in part.submit_bug_where.value
     ej.press(part.submit_bug_note, 'es zappelt beim Abspielen')
     part.submit_bug_send.click()
 
@@ -718,3 +751,395 @@ def test_the_button_is_on_the_toolbar_and_out_of_the_way(tmp_path):
     # else, under the name it has here.
     assert 'submit_bug_btn' in part.exported
     assert 'submit_bug_send' in part.exported
+
+
+# ---------------------------------------------------------------------------
+# The two ends of the button: that a session is being kept, and where it goes
+# ---------------------------------------------------------------------------
+
+
+def test_the_control_says_a_session_is_already_being_kept(tmp_path,
+                                                          monkeypatch):
+    """The recording was always on, and the interface never said so.
+
+    That is not a small thing to get wrong. The first question asked of this
+    feature by the person it was built for was whether it should not always
+    record -- it always had, from the moment the editor was built -- so what
+    was missing was not the behaviour but any sign of it. A ring filling up in
+    memory has no appearance at all, and a beetle beside it reads as plausibly
+    a start switch as a report button.
+
+    What is measured here is that the difference is now visible without
+    pressing anything irreversible: the tooltip says the viewer keeps what you
+    do and that Send hands over what has already happened, and opening the
+    control shows the amount held as a number that was already growing. A
+    number cannot be read as an invitation to begin, which is why it is the
+    count and not a word that carries this.
+
+    Also measured: the count is of the session and not of the control, so it
+    grows between two openings of the same editor.
+    """
+    pytest.importorskip('ipywidgets')
+    monkeypatch.setenv('DELFIN_VIEWER_BUG_ARCHIVE', str(tmp_path / 'bugs'))
+    _no_remote(monkeypatch)
+
+    part, _state, _box = _an_editor(tmp_path / 'evident')
+    tip = part.submit_bug_btn.tooltip
+    assert 'keeps what you do' in tip
+    assert 'has already happened' in tip
+    assert 'does not start a recording' in tip
+
+    # Opened before anything has been done: it says so in words rather than
+    # showing a zero, which reads as a counter waiting to be started.
+    ej.press(part.submit_bug_btn, True)
+    first = part.submit_bug_where.value
+    assert 'Kept as you work' in first
+    assert 'nothing yet' in first
+    ej.press(part.submit_bug_btn, False)
+
+    _command(part, 'gfngrab', '7,2')
+    _command(part, 'gfnfree', '')
+    ej.press(part.submit_bug_btn, True)
+    second = part.submit_bug_where.value
+    assert 'things you did' in second
+    assert second != first, 'the count did not follow the session'
+
+    # A count of what is held, read off the journal rather than invented by
+    # the control: the two have to agree or the number is decoration.
+    told = _state['editor_journal'].summary()
+    assert ej.how_much_is_held(told) in second
+
+    # And where a press would put it -- both places, before it is pressed.
+    assert 'bugs' in second
+    assert 'no transfer host is configured' in second
+
+
+def test_how_much_is_held_reads_as_a_sentence():
+    """Three places say this and they have to say it the same way.
+
+    The phrase is under the button before a send, in the status line after
+    one, and in the sentence a refused press ends on. Written out at each of
+    the three it was three phrasings, and the one a user compares against the
+    report is whichever he happened to read.
+
+    What is pinned is the shape rather than the wording: one is singular, an
+    empty buffer says so in words instead of showing a zero, and a session
+    that ran for minutes is reported in minutes -- "312.4 s" is a number the
+    reader has to convert before it means anything to him.
+    """
+    assert ej.how_much_is_held({'events': 0, 'seconds': 0.0}) == 'nothing yet'
+    assert ej.how_much_is_held({'events': 1, 'seconds': 2.0}) \
+        == '1 thing you did over 2.0 s'
+    assert ej.how_much_is_held({'events': 1599, 'seconds': 300.0}) \
+        == '1,599 things you did over 5 min'
+    assert ej.how_much_is_held({'events': 12, 'seconds': 45.0}) \
+        == '12 things you did over 45 s'
+
+
+def test_the_transfer_is_the_dashboards_own_and_carries_only_the_report(
+        tmp_path, monkeypatch):
+    """Where a report goes, and that nothing is assembled for the wire.
+
+    The destination is not configured here and must never be: it is
+    ``settings["transfer"]``, the host the archive browser copies to and the
+    one every other transfer in the dashboard goes over. A second place to
+    configure the same cluster is a second place to configure it wrongly.
+
+    What the report becomes on the wire is checked against the one thing a
+    user was promised: rsync is handed exactly the directory
+    :func:`write_report` returned and nothing else, so the copy a maintainer
+    reads on the cluster is the copy the interface told the user is on his
+    disk. Measured against a real sshd on 2026-08-21 as well, byte for byte
+    across all four files.
+    """
+    from delfin.agent import bug_report as br
+
+    journal = ej.Journal()
+    journal.opening({'submit_ff_dd': 'gfn2'}, _COMPLEX)
+    journal.record('cmd', v='gfngrab:1:4,2')
+    where = ej.write_report(journal, description='es zappelt',
+                            widgets={}, archive_dir=tmp_path / 'bugs')
+
+    # No transfer configured is not an error and not a silence: it comes back
+    # as a sentence the interface can print.
+    ok, said = ej.send_report(where, settings={})
+    assert ok is False
+    assert 'no transfer host is configured' in said
+
+    seen = []
+
+    class _Ran:
+        returncode = 0
+        stderr = ''
+
+    monkeypatch.setattr(br.subprocess, 'run',
+                        lambda cmd, **kw: (seen.append(list(cmd)), _Ran())[1])
+    ok, went = ej.send_report(where, settings={'transfer': {
+        'host': 'login.cluster', 'user': 'ka',
+        'remote_path': '/home/grp/archive', 'port': 2222}})
+
+    assert ok is True
+    assert went == f'/home/grp/archive/VIEWER_BUGS/{where.name}'
+    mkdir, rsync = seen
+    assert '/home/grp/archive/VIEWER_BUGS' in ' '.join(mkdir)
+    assert '-p' in mkdir and '2222' in mkdir
+
+    # Exactly one local source, and it is the report directory. Anything else
+    # in this list would be something the user was never shown.
+    sources = [part for part in rsync if part.startswith(str(tmp_path))]
+    assert sources == [str(where)], sources
+    assert rsync[-1] == 'ka@login.cluster:/home/grp/archive/VIEWER_BUGS/'
+
+    # And the report is still here, untouched by any of it.
+    assert sorted(p.name for p in where.iterdir()) == [
+        'journal.jsonl.gz', 'report.json', 'report.md',
+        'structure_at_start.xyz']
+
+
+def test_a_send_does_not_block_the_editor_and_says_what_it_did(tmp_path,
+                                                               monkeypatch):
+    """A third of a megabyte over SSH is nothing until the host is wedged.
+
+    The button is on the toolbar of a live editor with a molecule in it, and a
+    connect to a host that is up but not answering sits for the whole
+    ``ConnectTimeout``. So the transfer runs on a thread, and what this
+    measures is the property that makes that worth doing: the press returns
+    while the transfer is still in flight, with the local path already on the
+    status line, and the outcome arrives afterwards.
+
+    Measured against a real sshd on this box: the press returned in 9.5 ms
+    with the transfer still running. The stand-in here does not return until
+    this test releases it, so what is asserted is that the press does not wait
+    on the transfer at all rather than that it waits less than some number
+    this machine happened to produce.
+    """
+    pytest.importorskip('ipywidgets')
+    monkeypatch.setenv('DELFIN_VIEWER_BUG_ARCHIVE', str(tmp_path / 'bugs'))
+    _no_remote(monkeypatch, host='login.cluster', user='ka',
+               remote_path='/home/grp/archive', port=22)
+
+    slow = threading.Event()
+
+    def _crawl(report_dir, **kw):
+        slow.wait(10)
+        return True, '/home/grp/archive/VIEWER_BUGS/' + Path(report_dir).name
+
+    monkeypatch.setattr(ej, 'send_report', _crawl)
+
+    part, state, _box = _an_editor(tmp_path / 'thread')
+    _command(part, 'gfngrab', '7,2')
+    ej.press(part.submit_bug_btn, True)
+    assert 'ka@login.cluster' in part.submit_bug_where.value
+    ej.press(part.submit_bug_note, 'es zappelt')
+
+    began = time.time()
+    part.submit_bug_send.click()
+    took = time.time() - began
+    assert took < 0.5, f'the press waited {took:.2f} s on the transfer'
+
+    # The local copy and its path are already said, and the send is announced
+    # as something in flight rather than as something that happened.
+    said = part.mol_status.value
+    assert 'Reported.' in said
+    assert 'Sending it to ka@login.cluster' in said
+    written = sorted((tmp_path / 'bugs').iterdir())
+    assert len(written) == 1
+
+    slow.set()
+    for _ in range(400):
+        # Both, and in this order: the status is written from inside the
+        # worker and the ring is lowered in its ``finally`` afterwards, so a
+        # test that stopped at the message would read the ring mid-handover.
+        if 'Sent to' in part.mol_status.value and not state.get('busy_jobs'):
+            break
+        time.sleep(0.05)
+    said = part.mol_status.value
+    assert '/home/grp/archive/VIEWER_BUGS/' + written[0].name in said
+    assert 'is kept either way' in said
+    assert not state.get('busy_jobs'), 'the ring was left turning'
+
+
+def test_a_transfer_that_fails_costs_nothing_and_is_never_silent(
+        tmp_path, monkeypatch):
+    """The local copy is the promise; the transfer is the convenience.
+
+    A silent failure here is worse than not offering the transfer at all: the
+    user would believe a maintainer has his session. So the failure is said in
+    the words the transfer gave -- a refused connection is a different problem
+    from a full disk and he is the one who can tell which -- and the sentence
+    ends on the local path, because that path is what he passes on by hand
+    while the cluster is down.
+
+    Measured against a real sshd on this box, pointed at a port nothing was
+    listening on: "It could not be sent: remote mkdir failed: ssh: connect to
+    host 127.0.0.1 port 2223: Connection refused", with all four files still
+    in the local directory.
+    """
+    pytest.importorskip('ipywidgets')
+    monkeypatch.setenv('DELFIN_VIEWER_BUG_ARCHIVE', str(tmp_path / 'bugs'))
+    _no_remote(monkeypatch, host='login.cluster', user='ka',
+               remote_path='/home/grp/archive', port=22)
+    monkeypatch.setattr(ej, 'send_report', lambda *a, **k: (
+        False, 'rsync failed: connection refused'))
+
+    part, state, _box = _an_editor(tmp_path / 'down')
+    _command(part, 'gfngrab', '7,2')
+    ej.press(part.submit_bug_btn, True)
+    ej.press(part.submit_bug_note, 'es zappelt')
+    part.submit_bug_send.click()
+
+    for _ in range(400):
+        if ('could not be sent' in part.mol_status.value
+                and not state.get('busy_jobs')):
+            break
+        time.sleep(0.05)
+    said = part.mol_status.value
+    assert 'connection refused' in said
+    assert 'nothing was lost' in said
+
+    kept = sorted((tmp_path / 'bugs').iterdir())
+    assert len(kept) == 1
+    assert sorted(p.name for p in kept[0].iterdir()) == [
+        'journal.jsonl.gz', 'report.json', 'report.md',
+        'structure_at_start.xyz']
+    assert str(kept[0]) in said or kept[0].name in said
+    assert not state.get('busy_jobs')
+
+
+def test_the_sentence_reaches_the_top_of_both_halves(tmp_path, monkeypatch):
+    """The typed line is the only part of a report nobody else can rebuild.
+
+    Everything below it is a machine's account of the same minutes, and it is
+    worth reading only once the sentence has said what to look for. So it is
+    the first section of the human half and the first field under the schema
+    in the machine half -- it used to be six keys down among the version
+    numbers, which is where a reader of ``report.json`` stops looking.
+
+    The refusal is measured here too. A wordless press is stopped once, with
+    the reason, and goes through on the second: filing silently without a
+    sentence hands a maintainer a megabyte of coordinates and nothing to look
+    for, and refusing outright would silence the user whose report is worth
+    the most -- the one who cannot yet name what he saw.
+    """
+    pytest.importorskip('ipywidgets')
+    monkeypatch.setenv('DELFIN_VIEWER_BUG_ARCHIVE', str(tmp_path / 'bugs'))
+    _no_remote(monkeypatch)
+
+    part, _state, _box = _an_editor(tmp_path / 'sentence')
+    _command(part, 'gfngrab', '7,2')
+    ej.press(part.submit_bug_btn, True)
+
+    # Nothing typed: refused, and nothing written.
+    part.submit_bug_send.click()
+    assert 'Say in one line what went wrong' in part.mol_status.value
+    assert 'nobody else can reconstruct' in part.mol_status.value
+    assert not (tmp_path / 'bugs').exists(), 'a refusal wrote a report'
+
+    # Pressed again on the same empty line: filed, and marked for the reader.
+    part.submit_bug_send.click()
+    wordless = sorted((tmp_path / 'bugs').iterdir())[0]
+    assert 'without a sentence' in part.mol_status.value
+    assert 'no sentence was typed' in (wordless / 'report.md').read_text(
+        encoding='utf-8')
+
+    # And with a sentence, in both halves and at the top of each.
+    ej.press(part.submit_bug_btn, True)
+    ej.press(part.submit_bug_note, 'beim Ziehen zappelt das Wasserstoffatom')
+    part.submit_bug_send.click()
+    latest = max((tmp_path / 'bugs').iterdir(), key=lambda d: d.stat().st_mtime)
+
+    said = (latest / 'report.md').read_text(encoding='utf-8')
+    head = said.split('## Context', 1)[0]
+    assert 'beim Ziehen zappelt das Wasserstoffatom' in head
+    meta = json.loads((latest / 'report.json').read_text(encoding='utf-8'))
+    assert list(meta)[:2] == ['schema', 'description']
+    assert meta['description'] == 'beim Ziehen zappelt das Wasserstoffatom'
+
+    # The line is emptied afterwards, so the next report is not filed under
+    # this one's sentence -- and the next wordless press is refused again.
+    assert part.submit_bug_note.value == ''
+    ej.press(part.submit_bug_btn, True)
+    part.submit_bug_send.click()
+    assert 'Say in one line what went wrong' in part.mol_status.value
+
+    # And the asking is per opening rather than per session. Putting the
+    # control away and coming back to it later must ask again: otherwise a
+    # refusal from an hour ago silently turns the next empty press into a
+    # filed report, on the strength of a warning nobody remembers reading.
+    filed = len(list((tmp_path / 'bugs').iterdir()))
+    ej.press(part.submit_bug_btn, False)
+    ej.press(part.submit_bug_btn, True)
+    part.submit_bug_send.click()
+    assert 'Say in one line what went wrong' in part.mol_status.value
+    assert len(list((tmp_path / 'bugs').iterdir())) == filed
+
+
+def test_two_presses_and_a_viewer_nobody_touched(tmp_path, monkeypatch):
+    """Both are things a user does, and both used to happen without comment.
+
+    Pressed twice in one session, the second report is the *wider* of the two
+    and not the half that came after it: a send does not empty the ring. That
+    is the right behaviour and it is unreadable from the outside -- two
+    directories a minute apart, and no way to tell whether the later one
+    replaces the earlier. So both say which press wrote them, in the file and
+    on the status line, and the second one is measured here to hold every
+    message the first did.
+
+    Pressed from a viewer nobody has touched, there is no gesture to replay,
+    and a maintainer who is not told that spends his afternoon looking for a
+    sequence that is not there. It is still a report -- the structure that was
+    loaded and every control as it stands are in it, which is the whole of a
+    complaint about what the viewer opened on -- and it says exactly that,
+    rather than counting the editor's own bookkeeping as things the user did.
+    """
+    pytest.importorskip('ipywidgets')
+    monkeypatch.setenv('DELFIN_VIEWER_BUG_ARCHIVE', str(tmp_path / 'bugs'))
+    _no_remote(monkeypatch)
+
+    part, _state, _box = _an_editor(tmp_path / 'twice')
+    _command(part, 'gfngrab', '7,2')
+    ej.press(part.submit_bug_btn, True)
+    ej.press(part.submit_bug_note, 'es zappelt')
+    part.submit_bug_send.click()
+
+    _command(part, 'gfnfree', '')
+    ej.press(part.submit_bug_btn, True)
+    ej.press(part.submit_bug_note, 'und jetzt springt es zurueck')
+    part.submit_bug_send.click()
+    assert 'This is report 2 from this session' in part.mol_status.value
+
+    both = sorted((tmp_path / 'bugs').iterdir(),
+                  key=lambda d: d.stat().st_mtime)
+    assert len(both) == 2, [d.name for d in both]
+    first_meta, first_timeline = ej.load_report(both[0])
+    second_meta, second_timeline = ej.load_report(both[1])
+    assert first_meta['report_index'] == 1
+    assert second_meta['report_index'] == 2
+    assert 'This is report 2 from the same session' in (
+        both[1] / 'report.md').read_text(encoding='utf-8')
+
+    # The wider one, message for message: the second holds the first entire.
+    was = ej.page_messages(first_timeline)
+    now = ej.page_messages(second_timeline)
+    assert len(now) > len(was)
+    assert now[:len(was)] == was
+
+    # And a viewer nobody has touched.
+    untouched, _state2, _box2 = _an_editor(tmp_path / 'fresh')
+    assert untouched.submit_bug_btn.tooltip
+    ej.press(untouched.submit_bug_btn, True)
+    assert 'nothing yet' in untouched.submit_bug_where.value
+    ej.press(untouched.submit_bug_note, 'das Molekuel wird falsch gezeichnet')
+    untouched.submit_bug_send.click()
+
+    said = untouched.mol_status.value
+    assert 'nothing you did is in it' in said
+    assert 'no sequence to replay' in said
+    assert 'things you did' not in said, 'it counted its own bookkeeping'
+
+    fresh = max((tmp_path / 'bugs').iterdir(), key=lambda d: d.stat().st_mtime)
+    report = (fresh / 'report.md').read_text(encoding='utf-8')
+    assert 'Nothing the reporter did is in here' in report
+    # It still carries the molecule, which is the whole of such a complaint.
+    assert (fresh / 'structure_at_start.xyz').read_text(
+        encoding='utf-8').splitlines()[0] == '16'
