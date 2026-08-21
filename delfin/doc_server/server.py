@@ -67,10 +67,10 @@ def run_server(argv: list[str] | None = None) -> None:
     index = _load_index(index_path)
     engine = DocSearchEngine(index)
 
-    # --- MCP server setup via FastMCP ---
-    from mcp.server.fastmcp import FastMCP
+    # --- MCP server setup: the SDK class, whichever line is installed ---
+    from ..mcp_compat import load_server_class
 
-    mcp = FastMCP(
+    mcp = load_server_class()(
         "delfin-docs",
         instructions=(
             "DELFIN documentation server. Search and read ORCA manuals, "

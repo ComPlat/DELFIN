@@ -250,9 +250,9 @@ def run_server(argv: Optional[list[str]] = None) -> None:
     """Start the MCP server on stdio."""
     argparse.ArgumentParser(prog="delfin-tools-server").parse_args(argv)
 
-    from mcp.server.fastmcp import FastMCP
+    from ..mcp_compat import load_server_class
 
-    mcp = FastMCP(
+    mcp = load_server_class()(
         "delfin-tools",
         instructions=(
             "DELFIN tools platform. Discover computational-chemistry building "

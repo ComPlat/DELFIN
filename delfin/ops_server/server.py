@@ -32,8 +32,10 @@ functions keep the keyword so in-process callers (dashboard, tests) can
 still pass a decision they actually made.
 
 The tool functions are defined at module level so they can be imported and
-tested without the optional FastMCP dependency.  ``run_server`` only loads
-FastMCP when actually starting the stdio server.
+tested without the optional MCP SDK installed.  ``run_server`` only loads
+the SDK's server class when actually starting the stdio server, and reaches
+it through ``delfin.mcp_compat`` because the class changed module and name
+between the SDK's 1.x and 2.x lines.
 """
 
 from __future__ import annotations
@@ -1573,9 +1575,9 @@ def run_server(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     default_workspace = args.workspace
 
-    from mcp.server.fastmcp import FastMCP
+    from ..mcp_compat import load_server_class
 
-    mcp = FastMCP(
+    mcp = load_server_class()(
         "delfin-ops",
         instructions=(
             "DELFIN operations server. Run DELFIN workflows (pipeline, "

@@ -126,7 +126,14 @@ agent = [
     "odfpy>=1.4",
 ]
 docs = [
-    "mcp>=1.0",
+    # The floor is the oldest release DELFIN's three MCP servers can
+    # actually run on, measured rather than assumed: 1.0.0 and 1.1.0 ship
+    # no server class at all, and 1.2.0's FastMCP takes no ``instructions``
+    # argument, which all three pass. 1.3.0 is the first that starts and
+    # answers ``tools/list``. There is deliberately no ceiling — the class
+    # that 2.0.0 moved is reached through ``delfin.mcp_compat``, and both
+    # lines were started and measured to advertise the same tools.
+    "mcp>=1.3",
     "pypdf>=4.0",
 ]
 # Office-document handling for the agent (read_document / edit_sheet /
