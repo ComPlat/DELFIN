@@ -124,10 +124,21 @@ time it was written, holding a ``report.md`` for a person and a
 2. ``settings["viewer"]["bug_archive_dir"]``,
 3. ``~/.delfin/viewer_bugs``.
 
-It stays on this machine.  These are the user's own structures, and there is
-nothing here worth shipping anywhere: no push, no network, and the interface
-says the directory it wrote to so there is never a question where the report
-went.
+The local copy is written first and is kept whatever happens next.  That is
+not a detail and not an implementation order: the whole worth of the button is
+that a session which has just gone wrong is not lost, and a report that exists
+only once a network call has returned is lost exactly when the network is the
+thing that went wrong.
+
+Then, and only when the dashboard already has a transfer host configured, the
+written directory is handed to the same rsync-over-SSH the dashboard uses for
+every other transfer -- ``settings["transfer"]``, the user's own cluster under
+the account he already moves files under -- into ``<remote_path>/VIEWER_BUGS``.
+Nothing is assembled for the wire: what goes is the directory that is on this
+disk, so the maintainer reading the remote copy is reading the same files, and
+there is no second version of a report to disagree with the first.
+With no transfer host configured nothing is sent, and the interface says that
+rather than leaving a silence to be read either way.  See :func:`send_report`.
 """
 
 from __future__ import annotations
@@ -155,6 +166,12 @@ from delfin.agent.bug_report import (
 )
 
 _FALLBACK_DIR = Path.home() / '.delfin' / 'viewer_bugs'
+
+#: Where a sent report lands under the configured transfer root.  Its own name
+#: rather than the agent's ``AGENT_BUGS`` next to it: the two are read by
+#: different people looking for different things, and one directory holding
+#: both, sorted by timestamp, is a directory nobody can scan.
+REMOTE_SUBDIR = 'VIEWER_BUGS'
 
 #: The bound.  Both are hit by the frame channel long before anything else
 #: reaches them, and where they are put comes from the five-minute session
@@ -216,6 +233,94 @@ def resolve_archive_dir(settings=None):
     return _FALLBACK_DIR
 
 
+def remote_target(settings=None):
+    """The transfer this dashboard is configured for, or ``None``.
+
+    ``settings["transfer"]`` and nothing viewer-specific: this is the host the
+    archive browser copies to and the one every other transfer in the
+    dashboard already goes over, and a second place to configure the same
+    cluster is a second place to configure it wrongly.  A report is not a
+    different kind of file from the ones the user moves by hand every day.
+
+    Read before a report is written as well as after it, so the control can
+    say where a report *would* go while the sentence is still being typed --
+    which is the only moment at which "this leaves the machine" is worth
+    telling him, rather than after it already has.
+
+    ``shown`` is the destination as a person should see it, with the
+    subdirectory the report will actually land in.  No password or key ever
+    comes back from here: the transfer's own SSH configuration carries those,
+    and this returns only what may be printed on a screen.
+    """
+    if settings is None:
+        try:
+            from delfin.user_settings import load_settings
+            settings = load_settings()
+        except Exception:
+            settings = {}
+    config = (settings or {}).get('transfer') or {}
+    host = str(config.get('host') or '').strip()
+    user = str(config.get('user') or '').strip()
+    where = str(config.get('remote_path') or '').strip()
+    if not (host and user and where):
+        return None
+    try:
+        port = int(config.get('port') or 22)
+    except (TypeError, ValueError):
+        port = 22
+    return {
+        'host': host, 'user': user, 'remote_path': where, 'port': port,
+        'shown': f'{user}@{host}:{where.rstrip("/")}/{REMOTE_SUBDIR}',
+    }
+
+
+def send_report(report_dir, *, settings=None, timeout=120, target=None):
+    """Hand a written report to the configured transfer host, and say so.
+
+    Returns ``(ok, where_or_why)``: on success the remote directory the report
+    now sits in, and otherwise a short sentence saying what stopped it.  It
+    never raises and it never touches the local copy, which is the whole
+    contract the caller needs -- whatever this answers, the report is still on
+    this disk and the interface can say where.
+
+    The transfer itself is the agent's, not a second one written here.  The
+    agent tab's bug button ships its reports over that same rsync-over-SSH,
+    reading the same ``settings["transfer"]`` block and landing in a sibling
+    directory, and a viewer report is the same kind of object filed from a
+    different room.  What is different is only which subdirectory it lands
+    in.
+
+    What goes is the directory as it was written and nothing else.  rsync is
+    handed exactly the one local path :func:`write_report` returned, so there
+    is no second assembly step in which a report could grow something the
+    local copy does not have -- which matters because the local copy is what
+    the user was shown and told he could read.
+
+    *timeout* is per call, and there are two of them: a remote ``mkdir`` and
+    the transfer.  Both are capped because a host that is up but wedged
+    answers neither, and the caller is a button.
+
+    *target* is a destination already resolved by :func:`remote_target`, and a
+    caller that showed the user where the report was going passes back the one
+    it showed.  Resolving it twice reads the settings file twice, and between
+    the two reads the destination on the screen and the destination on the
+    wire are free to be different -- which is a small window and the wrong
+    thing to be wrong about, since the whole point of naming the host is that
+    he knows where his session went.
+    """
+    if target is None:
+        target = remote_target(settings)
+    if target is None:
+        return False, ('no transfer host is configured -- set one in the '
+                       'dashboard settings and it will go there too')
+    from delfin.agent.bug_report import push_report_to_remote
+    return push_report_to_remote(
+        report_dir,
+        host=target['host'], user=target['user'],
+        remote_path=target['remote_path'], port=target['port'],
+        subdir=REMOTE_SUBDIR, timeout=timeout)
+
+
 def _weigh(fields):
     """Roughly how many bytes this event will take as a line of JSON.
 
@@ -258,6 +363,13 @@ class Journal:
         self.bytes = 0
         self.dropped = 0
         self.dropped_bytes = 0
+        #: How many reports have been written out of this journal.  A send
+        #: does not empty the ring, so a second press files a superset of the
+        #: first rather than the half that came after it; both reports say
+        #: which they are, because two directories a minute apart with no way
+        #: to tell whether the later one replaces the earlier is a question a
+        #: maintainer should not have to ask the reporter.
+        self.reports_written = 0
         self.opened = None
         self.began = time.time()
         self._clock = time.monotonic
@@ -415,6 +527,18 @@ class Journal:
                 continue
         return out
 
+    def did_anything(self):
+        """Whether a hand has touched this viewer at all yet.
+
+        Only the page's own messages count.  An editor that was opened and
+        left alone still records: the coordinate box is written when the
+        structure loads and the status line says what it is doing, and those
+        are the editor talking to itself.  So the question a press has to
+        answer -- is there a gesture in here to replay -- is asked of what the
+        page sent, not of whether the ring is empty.
+        """
+        return any(event.get('k') in FROM_PAGE for event in self.events)
+
     def timeline(self):
         """The pinned opening, then the ring, in the order it happened."""
         out = [self.opened] if self.opened else []
@@ -437,6 +561,34 @@ class Journal:
             'max_events': self.max_events,
             'max_bytes': self.max_bytes,
         }
+
+
+def how_much_is_held(summary):
+    """What the buffer is holding, as the phrase the interface says out loud.
+
+    Here rather than written out at each call site because it has to read the
+    same in three places -- the line under the button before a send, the
+    status line after one, and the sentence a refusal ends on -- and three
+    hand-written versions of one fact are three versions to disagree.
+
+    Seconds up to a minute and a half, minutes above it: a session worth
+    reporting is minutes long, and "312.4 s" is a number a reader converts
+    before it means anything.  Under ten seconds it keeps a decimal, because
+    at that length the difference between 0 and 4 seconds is the whole of what
+    the number says.
+    """
+    events = summary.get('events', 0) or 0
+    seconds = summary.get('seconds', 0.0) or 0.0
+    if not events:
+        return 'nothing yet'
+    if seconds < 10:
+        span = f'{seconds:.1f} s'
+    elif seconds < 90:
+        span = f'{seconds:.0f} s'
+    else:
+        span = f'{seconds / 60:.0f} min'
+    thing = 'thing' if events == 1 else 'things'
+    return f'{events:,} {thing} you did over {span}'
 
 
 def _plain(value):
@@ -579,6 +731,22 @@ def _render_markdown(meta, timeline, summary, *, tail=400):
               f'{summary.get("events", 0)} events over '
               f'{summary.get("seconds", 0)} s, '
               f'{summary.get("bytes", 0)} bytes in memory.']
+    if int(meta.get('report_index') or 1) > 1:
+        lines += ['',
+                  f'**This is report {meta["report_index"]} from the same '
+                  f'session.** A send does not empty the buffer, so this one '
+                  f'holds everything the earlier report(s) held and what has '
+                  f'happened since: it is the wider of the two, not the half '
+                  f'that came after.']
+    if not any(e.get('k') in FROM_PAGE for e in timeline):
+        lines += ['',
+                  '**Nothing the reporter did is in here.** The viewer had '
+                  'sent nothing when this was filed, so there is no gesture '
+                  'to replay: what is below is the structure it opened on and '
+                  'the controls as they stood. If the complaint is about what '
+                  'the viewer loaded or how it looks, that is the evidence; '
+                  'if it is about something that happened, it was filed from '
+                  'a viewer other than the one it happened in.']
     if summary.get('dropped'):
         lines += ['',
                   f'**The session was longer than the buffer.** The oldest '
@@ -628,6 +796,13 @@ def write_report(journal, *, description='', widgets=None, tab='',
     coordinates, run numbers and widget values written by the editor itself,
     and running a regex scan over several megabytes of it would cost seconds
     at the one moment the user is waiting for a button.
+
+    Writing is all this does.  Whether the report also goes to the user's
+    cluster is :func:`send_report`, called after this has returned and on a
+    thread of its own: the local copy has to exist, and the interface has to
+    have been told where it is, before anything is attempted over a network.
+    The other order costs a dead host the very session the button was pressed
+    to save.
     """
     root = (Path(archive_dir).expanduser() if archive_dir
             else resolve_archive_dir(settings))
@@ -662,13 +837,23 @@ def write_report(journal, *, description='', widgets=None, tab='',
         head = start_xyz.splitlines()[0].strip()
         atoms = head if head.isdigit() else ''
 
+    # A send does not empty the ring. Counted before the header is built so
+    # both halves of the report can say which press wrote them.
+    journal.reports_written = getattr(journal, 'reports_written', 0) + 1
+
     meta = {
         'schema': 'delfin-viewer-bug-report/1',
+        # Second, under the schema and above everything a machine wrote. The
+        # reader of report.json is a person looking for the sentence as often
+        # as it is a script looking for a field, and the sentence is the one
+        # part of a report nobody else could have written -- it should not sit
+        # six keys down among the version numbers.
+        'description': description or '',
         'created_at': datetime.now(timezone.utc).isoformat(),
         'user': user,
         'host': socket.gethostname(),
         'tab': tab,
-        'description': description or '',
+        'report_index': journal.reports_written,
         'session_seconds': summary.get('seconds', 0),
         'atoms': atoms,
         'delfin_version': _delfin_version(),

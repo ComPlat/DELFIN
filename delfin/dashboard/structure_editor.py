@@ -2044,13 +2044,24 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: having this at all is 44 px next to controls that are 200.
     #:
     #: Where it goes is said on the control itself rather than in a manual.
-    #: These are the user's own structures on the user's own machine and the
-    #: report never leaves it -- no push, no network -- and the only way that
-    #: is worth anything to him is if he can see the directory it went to.
+    #: The local copy is the user's own structures on his own machine and he
+    #: can only judge that if he can see the directory it went to; the copy
+    #: that goes on to his cluster is the same directory over the same
+    #: transfer the dashboard uses for everything else, and the control names
+    #: that destination before he presses rather than after.
+    #:
+    #: And the tooltip says which way round the button works. It was already
+    #: recording -- into memory, from the moment the editor was built -- and
+    #: the first thing the user asked when he saw it was whether it should
+    #: not always record, which is the interface's answer to read, not his.
+    #: A button that could equally be a start switch has to say it is not
+    #: one, in the words that distinguish the two: what is here already, and
+    #: handed over.
     submit_bug_btn = widgets.ToggleButton(
         value=False, description='🐞', tooltip=(
-            'Report what just went wrong. Everything you did in the viewer '
-            'has been remembered, so a maintainer can play it back.'),
+            'This viewer keeps what you do as you work, in memory. Nothing is '
+            'written or sent until you press Send, and Send hands over what '
+            'has already happened -- it does not start a recording.'),
         layout=widgets.Layout(width='44px', flex='0 0 auto'),
     )
     submit_bug_note = widgets.Text(
@@ -2059,7 +2070,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     )
     submit_bug_send = widgets.Button(
         description='Send', button_style='warning',
-        tooltip='Write the report',
+        tooltip='Hand over what has already happened',
         layout=widgets.Layout(width='72px', display='none'),
     )
     submit_bug_where = widgets.HTML(
@@ -2084,35 +2095,115 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_manip_toolbar.children = (
         tuple(submit_manip_toolbar.children) + (submit_bug_group,))
 
+    def _under_home(path):
+        """A path as the user thinks of it, with his home written as ``~``."""
+        text = str(path)
+        home = str(Path.home())
+        return '~' + text[len(home):] if text.startswith(home) else text
+
+    #: A press that would file a report with no sentence in it, counted.
+    #: Refused once, allowed the second time -- see :func:`on_submit_bug_send`.
+    _bug_wordless = [0]
+
     def on_submit_bug_toggle(change=None):
-        """Open the line to write in, or put it away again."""
+        """Open the line to write in, or put it away again.
+
+        What opens with it is the amount being held, in words, and the two
+        places a press would put it. That the viewer remembers a session was
+        true before this line existed and invisible, which is why the user
+        asked for a feature he already had: a bounded ring filling up in
+        memory has no appearance at all, and the button beside it could as
+        easily have been a start switch. A count is the smallest thing that
+        makes the difference visible -- it is a number that was already
+        growing while he worked, so it cannot be read as an invitation to
+        begin.
+
+        Counted when the control is opened rather than kept live. A live
+        counter would write to a widget several times a second on the same
+        paths the journal is careful to cost nothing on, and it would be
+        doing it to say a thing that does not change: that the session is
+        being kept. The number is the evidence, not the instrument.
+        """
         if change is not None and change.get('name') != 'value':
             return
         open_now = bool(submit_bug_btn.value)
         for widget in (submit_bug_note, submit_bug_send, submit_bug_where):
             widget.layout.display = 'flex' if open_now else 'none'
-        if open_now:
-            where = str(_journal_mod.resolve_archive_dir())
-            home = str(Path.home())
-            if where.startswith(home):
-                where = '~' + where[len(home):]
-            submit_bug_where.value = (
-                '<span style="font-size:11px;opacity:.75">stays on this '
-                f'machine, in <code>{html.escape(where)}</code></span>')
+        if not open_now:
+            # Putting the control away forgets that a wordless press was
+            # already refused once, so the rule is per opening rather than
+            # per session: somebody who comes back to this an hour later is
+            # asked for a sentence again rather than filing without one on a
+            # press he does not remember making.
+            _bug_wordless[0] = 0
+            return
+        held = _journal_mod.how_much_is_held(journal.summary())
+        here = _under_home(_journal_mod.resolve_archive_dir())
+        target = _journal_mod.remote_target()
+        goes = f'→ <code>{html.escape(here)}</code>'
+        if target is None:
+            goes += ', and no further -- no transfer host is configured'
+            submit_bug_send.tooltip = (
+                'Write the report. It stays on this machine: no transfer '
+                'host is configured.')
+        else:
+            goes += (', then <code>'
+                     + html.escape(target['shown']) + '</code>')
+            submit_bug_send.tooltip = (
+                'Write the report and send it to ' + target['shown']
+                + '. The copy here is kept whatever the transfer does.')
+        submit_bug_where.value = (
+            '<span style="font-size:11px;opacity:.75">'
+            f'Kept as you work: <b>{html.escape(held)}</b>. '
+            'Send hands over what is already here.<br>'
+            f'{goes}</span>')
 
     def on_submit_bug_send(_button=None):
-        """Write everything this session did into a report and say where.
+        """Write everything this session did into a report, send it, say both.
 
         The sentence and the sequence go out together. Neither is much use
         alone: the sentence says what to look for and the sequence is what
         puts it back on the screen, and it is the pair that turns "es zappelt"
         into a test somebody can fail.
+
+        A wordless press is refused once and let through on the second, which
+        is neither of the two things it could have been. Filing silently
+        without a sentence hands a maintainer a megabyte of coordinates and no
+        idea what he is looking for -- of the four defects this feature was
+        built for, the one that is still open is the one nobody could
+        describe. Refusing outright would be worse: a user who cannot put a
+        name to what he saw is exactly the user whose report is worth the
+        most, and he must not be the one who cannot file. So the first press
+        says what the sentence is for, and the second files it with the report
+        marked so the maintainer knows to ask.
+
+        The transfer runs on a thread. A third of a megabyte over SSH is
+        nothing when the host answers and is a wedged connect when it does
+        not, and the button is on the toolbar of a live editor: the local copy
+        and its path are on the status line before the network is touched at
+        all, and what the transfer did arrives after.
         """
+        note = (submit_bug_note.value or '').strip()
+        if not note:
+            _bug_wordless[0] += 1
+            if _bug_wordless[0] == 1:
+                record('note', v='send refused: nothing was typed')
+                _set_mol_status(
+                    'Say in one line what went wrong, then press Send again.',
+                    'The sequence is already kept and can be replayed by '
+                    'anyone; your sentence is the only part of a report '
+                    'nobody else can reconstruct. Send again to file it '
+                    'without one.')
+                return
+        else:
+            _bug_wordless[0] = 0
+
         record('note', v='the bug button was pressed')
+        touched = journal.did_anything()
         try:
             report_dir = _journal_mod.write_report(
                 journal,
-                description=(submit_bug_note.value or '').strip(),
+                description=note,
                 widgets=journal_watching,
                 tab=str(state.get('editor_host') or ''),
             )
@@ -2123,23 +2214,89 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 'Send can be pressed again.')
             return
         told = journal.summary()
-        where = str(report_dir)
-        home = str(Path.home())
-        if where.startswith(home):
-            where = '~' + where[len(home):]
+        where = _under_home(report_dir)
+        record('note', v=f'report written to {report_dir}')
         # The drop is said out loud rather than left in the file. A report
         # whose beginning the ring dropped replays from part-way through, and
         # the one person who can say whether that matters is standing here.
         went = (f' The session outran the buffer, so the oldest '
                 f'{told["dropped"]} things you did are not in it.'
                 if told['dropped'] else '')
-        _set_mol_status(
-            f'Reported. {told["events"]} things you did over '
-            f'{told["seconds"]:.1f} s are in {where}',
-            'It stays on this machine, and it can be played back into a '
-            'viewer to see the same thing happen again.' + went)
+        # Two presses in one session file two reports and the second is the
+        # wider one, because a send does not empty the ring. Said here as well
+        # as in the file: the person deciding whether to press again is
+        # standing at the button, not reading the report.
+        earlier = ('the first one' if journal.reports_written == 2
+                   else 'the earlier ones')
+        again = (f' This is report {journal.reports_written} from this '
+                 f'session; it holds everything {earlier} did and what has '
+                 f'happened since.'
+                 if journal.reports_written > 1 else '')
+        # And a press from a viewer nobody has touched. It is still a report
+        # -- the structure that was loaded and every control as it stands are
+        # in it, which is the whole of a complaint about what the viewer
+        # opened on -- but it has no gesture to replay, and the difference
+        # matters enough to say before he waits for somebody to reproduce it.
+        empty = ('' if touched else
+                 ' This viewer had sent nothing yet, so what is in it is the '
+                 'structure it opened on and the controls as they stand, and '
+                 'there is no sequence to replay.')
+        wordless = ('' if note else
+                    ' It went without a sentence, so it says to ask you what '
+                    'went wrong.')
+        # The count is not offered in that case. It would be a count of the
+        # editor talking to itself -- the box it filled on load, the note this
+        # press just wrote -- read under a phrase that says it is a count of
+        # what the user did, which is the one number he cannot check.
+        did = (f'{_journal_mod.how_much_is_held(told)} are in {where}'
+               if touched else f'nothing you did is in it. It is in {where}')
+
+        target = _journal_mod.remote_target()
+        if target is None:
+            _set_mol_status(
+                f'Reported. {did}',
+                'No transfer host is configured, so it stays on this '
+                'machine. It can be played back into a viewer to see the '
+                'same thing happen again.' + went + again + empty + wordless)
+        else:
+            _set_mol_status(
+                f'Reported. {did}',
+                f'Sending it to {target["shown"]}...'
+                + went + again + empty + wordless)
+            _start_background(
+                lambda: _bug_report_travels(report_dir, where, target),
+                'Sending the bug report')
+
         submit_bug_note.value = ''
         submit_bug_btn.value = False
+        _bug_wordless[0] = 0
+
+    def _bug_report_travels(report_dir, where, target):
+        """Hand the written report to the configured transfer, from a thread.
+
+        Both outcomes are said and neither is said quietly. A silent success
+        leaves the user unable to tell a report that reached the cluster from
+        one that never left, and a silent failure is worse than not offering
+        the transfer at all: he would believe a maintainer has it.
+
+        Whatever happens, the sentence ends on the local copy. That is not
+        reassurance, it is the instruction -- the path is what he sends in a
+        mail, or what somebody reads over his shoulder, when the cluster is
+        the thing that is down.
+        """
+        # The destination it was told to go to is the one the status line
+        # named a moment ago, handed on rather than resolved again.
+        ok, said = _journal_mod.send_report(report_dir, target=target)
+        record('note', v=('sent to ' + said) if ok
+               else ('could not send: ' + said))
+        schedule_ui_update(
+            _set_mol_status,
+            ('Sent to ' + said) if ok
+            else ('It could not be sent: ' + said),
+            (f'The copy in {where} is kept either way, and it is the same '
+             f'report -- what went is the directory that is here.' if ok else
+             f'The report is in {where} and nothing was lost -- that path is '
+             f'what to pass on if the transfer stays down.'))
 
     submit_bug_btn.observe(on_submit_bug_toggle, names='value')
     submit_bug_send.on_click(on_submit_bug_send)
