@@ -3561,6 +3561,37 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # What the molecule looked like before this drag: the bonding is read
         # from here, not from a frame that has already been pulled about.
         state['gfn_topology_source'] = _current_xyz()
+        # And it is what the first answer measures the hand against.
+        #
+        # Every later answer sets this to the geometry it handed back, and the
+        # first one used to have nothing -- but nothing is not neutral here.
+        # With no geometry to compare against, contacts_holding cannot see
+        # what the hand has changed and falls back to the nearest contact,
+        # which for a grabbed atom is usually a bond it is not driving; and
+        # as_pushes then asks for that bond at the length it already has,
+        # which is no force at all.  So the first answer of every drag was a
+        # free relaxation with the coordinate the hand *is* driving left
+        # loose.
+        #
+        # Measured with Dynamik Opt on and Auto off, an ethene carbon dragged
+        # at a diene terminus, six mouse moves each way: the first answer of
+        # each drag was told to hold the ethene's own C=C at the length it
+        # already stood at, 1.373 A and then 1.387.  On the first grab that costs a step -- 0.03 A where
+        # the answers after it move 0.10 to 0.16.  On a second grab it is the
+        # spring back the report is about: the hand had left the contact at
+        # 2.772 A, the first answer relaxed it back to 3.033, and three more
+        # answers went on recovering ground the user had already covered.
+        # Same gesture in two halves did not equal the gesture in one.
+        #
+        # The structure on screen is where the hand arrived, so that is what
+        # the hand is measured against, and the drag bites from its first
+        # answer.
+        state['thermal_was'] = state['gfn_topology_source']
+        # The one thing that history takes away, put back below: with no
+        # geometry to compare against, contacts_holding decides between a turn
+        # and a stretch by a rule about bonds, and with one it decides by which
+        # coordinate moved most.  Both are wanted -- see where this is read.
+        state['gfn_follow_opening'] = True
         state['gfn_follow'] = True
         state['gfn_follow_steps'] = 0
         state['gfn_follow_frames'] = []
@@ -3935,6 +3966,35 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             holding=state.get('thermal_holding'))
                         if ((pricing or pull is not None)
                             and not _mopac.is_mopac_method(method)) else [])
+                    if contacts and state.pop('gfn_follow_opening', False):
+                        # The first answer of a drag decides whether the hand
+                        # is turning something or driving a contact, and the
+                        # decision sticks -- see thermal_turn below, and the
+                        # cyclohexane that fell back towards the chair every
+                        # time it changed.  Asked with the drag's own history
+                        # the decision is made by which coordinate moved most,
+                        # and that comparison has no rule about bonds: a chain
+                        # carbon dragged sideways scores its own C-C above the
+                        # torsion that swings it.  Driven, a bond is the one
+                        # coordinate a hand must not have -- measured on a
+                        # 2,4-hexadiene, a chain carbon dragged 1.75 A moved
+                        # 0.09 A under the pull and tore three bonds under the
+                        # rigid hand.
+                        #
+                        # So the question is put once more the way
+                        # contacts_holding puts it with no history at all,
+                        # which is where that rule lives, and a turn wins.  It
+                        # costs no calculation -- the same geometry, read
+                        # again -- and it is asked once per drag.  A contact
+                        # is left to the scored answer, which is the half of
+                        # this that history is better at: the nearest contact
+                        # is not always the one being driven, and on the first
+                        # answer of every drag it was the only one on offer.
+                        opening = _gfn.contacts_holding(current, holding,
+                                                        most=3)
+                        if opening and str(
+                                opening[0].get('kind')) == 'dihedral':
+                            contacts = opening
                     # Keep bonds, the way GOAT keeps them: frozen while the
                     # structure is being pushed, rather than the step refused
                     # afterwards.  The way not to break a bond is not to let
