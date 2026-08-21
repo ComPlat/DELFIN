@@ -3578,3 +3578,145 @@ def test_the_drag_is_priced_with_an_electronic_energy_and_says_so():
     # it is both affordable and meaningful.
     assert "is taking three Hessians for the free " in source
 
+
+
+def _page_model(part):
+    """The browser's own model of the structure, as far as this matters.
+
+    Under a pull the frames the kernel sends are written to every atom, the
+    dragged one included -- ``heldSerials`` hands back nothing when ``ffPull``
+    is on, because how far the atom got is the answer to the question the drag
+    asked.  So the page's model is the last answer, and the wish the cursor
+    carries is laid on top of it.
+    """
+    import json
+
+    held = {"rows": gfn.coordinates_of(part.coords_widget.value),
+            "answers": 0}
+
+    def frame(change):
+        try:
+            said = json.loads(str(change.get("new") or ""))
+        except ValueError:
+            return
+        frames = said.get("frames") or []
+        if frames and len(frames[-1]) == len(held["rows"]):
+            held["rows"] = [float(one) for one in frames[-1]]
+            held["answers"] += 1
+
+    def box(change):
+        rows = gfn.coordinates_of(str(change.get("new") or ""))
+        if len(rows) == len(held["rows"]):
+            held["rows"] = rows
+
+    part.submit_gfn_frame.observe(frame, names="value")
+    part.coords_widget.observe(box, names="value")
+    return held
+
+
+def _apart_in(rows, i, j):
+    import math
+
+    return math.dist(rows[3 * i:3 * i + 3], rows[3 * j:3 * j + 3])
+
+
+def _drag_at(part, held, grabbed, toward, step, turns):
+    """Grab, move the cursor *turns* times towards another atom, let go.
+
+    Every message the page sends and nothing else: ``gfngrab``, one
+    ``DELFIN drag-follow`` per mouse move, ``DELFIN drag-end``, ``gfnfree``.
+    Hands back the contact after each answer.
+    """
+    import math
+
+    symbols = [line.split()[0] for line in gfn.atom_lines(
+        part.coords_widget.value)]
+
+    def block(rows, note):
+        body = "\n".join(
+            f"{symbols[i]} {rows[3*i]:.8f} {rows[3*i+1]:.8f} {rows[3*i+2]:.8f}"
+            for i in range(len(symbols)))
+        return f"{len(symbols)}\n{note}\n{body}"
+
+    part.submit_cmd_sync.value = f"gfngrab:{id(held) % 9973}:0"
+    trail = []
+    for turn in range(1, turns + 1):
+        rows = list(held["rows"])
+        here = rows[3 * grabbed:3 * grabbed + 3]
+        there = rows[3 * toward:3 * toward + 3]
+        arm = [b - a for a, b in zip(here, there)]
+        far = math.sqrt(sum(one * one for one in arm)) or 1.0
+        for n in range(3):
+            rows[3 * grabbed + n] = here[n] + arm[n] / far * step
+        part.submit_manip_sync.value = block(
+            rows, f"DELFIN drag-follow held={grabbed} n={turn}")
+        _quiet(part.state)
+        if turn == 1:
+            # What the first answer of this drag was told to hold, read
+            # before the release clears it -- the wall forgets the way a
+            # finished drag came, and this is the way it came.
+            held["opened_on"] = [dict(one) for one
+                                 in (part.state.get("thermal_holding") or ())]
+        trail.append(_apart_in(held["rows"], grabbed, toward))
+    part.submit_manip_sync.value = block(held["rows"], "DELFIN drag-end")
+    part.submit_cmd_sync.value = f"gfnfree:{id(trail) % 9973}:"
+    _quiet(part.state)
+    return trail
+
+
+@_needs_xtb
+def test_a_second_grab_carries_on_from_where_the_structure_is():
+    """With Auto off a release leaves the structure where the hand put it, and
+    the next grab has to continue from there.
+
+    It did not.  Reported from the viewer: drag, let go -- it stays, which is
+    right -- grab the same atom again and it springs back towards the molecule
+    before it starts following, and then goes on past the point it had been
+    at.  The same gesture in two halves did not equal the gesture in one,
+    which for an instrument meant to walk over a surface is not a cosmetic
+    complaint.
+
+    The cause is one line's worth, and it is not the pull.  Every answer of a
+    drag sets ``thermal_was`` to the geometry it handed back, and the first
+    answer had none -- and having none is not neutral.  With no geometry to
+    compare against, :func:`gfn_optimize.contacts_holding` cannot see what the
+    hand has changed and falls back to the nearest contact, which for a
+    grabbed atom is usually a bond it is not driving; :func:`as_pushes` then
+    asks for that bond at the length it already has, which is no force at all.
+    So the first answer of every drag was a free relaxation with the
+    coordinate the hand *is* driving left loose.
+
+    Measured on butadiene and ethylene, an ethene carbon dragged at a diene
+    terminus, six mouse moves each way.  Before: the first answer of each drag
+    was told to hold the ethene's own C10=C11 at the length it already stood
+    at -- 1.373 A on the first grab and 1.387 on the second.  The first drag
+    closed 3.353 A to 2.772; the first answer of the second grab put it back
+    to **3.033**, and three more answers went on
+    recovering ground the hand had already covered -- six answers netted
+    0.096 A where the first six netted 0.581.  After: 2.733 A after the first
+    drag, then 2.695, 2.669, 2.650, 2.638, 2.629, 2.624 through the second,
+    every one of them the way the hand is pulling.  Twelve answers in one drag
+    land at 2.626 against 2.624 in two, so the gesture in two halves is the
+    gesture in one to within a thousandth of an angstrom.
+    """
+    part = _a_part(_DIELS_ALDER)
+    part.submit_ff_dd.value = "gfn2"
+    part.submit_hand_dd.value = "pull"
+    part.submit_relax_btn.value = True
+    part.submit_auto_btn.value = False
+    held = _page_model(part)
+    began = _apart_in(held["rows"], 10, 0)
+
+    first = _drag_at(part, held, 10, 0, 0.18, 6)
+    # The coordinate the hand is driving is held from the very first answer,
+    # rather than the bond the grabbed atom happens to hang on.
+    opened = held.get("opened_on") or []
+    assert opened and sorted(opened[0]["atoms"]) == [0, 10], opened
+    assert first[0] < began - 0.05, (began, first)
+
+    second = _drag_at(part, held, 10, 0, 0.18, 6)
+    # Not one answer of the second drag moves away from where the hand is
+    # pulling, and the first of them least of all.
+    assert second[0] < first[-1], (first[-1], second[0])
+    for before, after in zip([first[-1]] + second, second):
+        assert after <= before + 1e-6, (first, second)
