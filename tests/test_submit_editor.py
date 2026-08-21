@@ -622,8 +622,12 @@ def test_placed_atoms_are_held_against_the_running_field():
     end = _body('ffEndDrag')
     assert 'state.settleOnRelease === false' in end
     # The mouseup handler clears state.drag before ending the drag, so the
-    # held atoms have to be handed over rather than read back.
-    assert 'ffEndDrag(scopeKey, d.targets)' in EDITOR
+    # held atoms have to be handed over rather than read back -- and only
+    # when the press actually moved something.  A press that did not move
+    # is a tap, which selects the atom; pinning it as well would be one
+    # gesture doing two things, and it would freeze every atom the user
+    # named.
+    assert 'ffEndDrag(scopeKey, d.movedEnough ? d.targets : [])' in EDITOR
     assert 'heldSerials' in end
     assert 'state.pinned = pinned;' in end
 
