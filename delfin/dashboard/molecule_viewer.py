@@ -1261,7 +1261,32 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     var PIVOT_COLOR = '#e53935';
     var UNDO_LIMIT = 50;
     var ROT_RAD_PER_PX = 0.01;
-    var DRAG_THRESHOLD_PX = 3;
+    //: When a press stops being a tap and becomes a drag.
+    //
+    //: Stated in Angstrom, because that is the unit the gesture is
+    //: actually about: the drag turns pixels into world movement through
+    //: the camera, so the same three pixels are 0.09 A on the default
+    //: view of a small molecule and 0.009 A zoomed ten-fold in.  A
+    //: threshold in pixels alone therefore means something different at
+    //: every zoom -- zoomed in, a tap that wobbles five pixels asks the
+    //: structure for 0.015 A, which is nothing, and it would have counted
+    //: as a drag and selected nothing.  0.05 A is under the width of the
+    //: stick an atom is drawn on: below it the picture does not move.
+    //
+    //: The floor and the ceiling are what keep the Angstrom honest at the
+    //: two ends.  Zoomed far out one pixel is worth more than the
+    //: threshold and every tremor would be a drag; zoomed far in the
+    //: threshold would be hundreds of pixels and the atom would stand
+    //: still while the hand swept the screen.  Three pixels is what this
+    //: editor has always used, and twelve is still a tap by the touch
+    //: slop the platforms use (8 dp on Android, about 10 px on iOS).
+    //
+    //: Widening it costs the drag nothing, because the pixels spent
+    //: deciding are replayed once the decision is made -- see the
+    //: mousemove handler.
+    var TAP_SLOP_A = 0.05;
+    var TAP_SLOP_MIN_PX = 3;
+    var TAP_SLOP_MAX_PX = 12;
     var PICK_RADIUS_PX = 9;
     var DEFAULT_ATOM_SCALE = 0.28;
 
@@ -1453,6 +1478,29 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         } catch (e) {
             return 0.03;
         }
+    }
+    // How far this press may travel and still be a tap, in pixels, at the
+    // zoom the view is at right now.  Through the same conversion the drag
+    // itself uses, sensitivity included, so the number really is TAP_SLOP_A
+    // of asked-for world movement wherever the bounds allow.
+    //
+    // One rule for every gesture rather than one each.  Drawing places at one
+    // to one -- the sensitivity scales the drag alone -- and a rotation is
+    // radians rather than Angstrom, so for those two the Angstrom is a
+    // stand-in.  It is a bounded one: the floor and the ceiling hold every
+    // answer between three and twelve pixels whatever the arithmetic says, so
+    // the most a wrong unit can cost is a few pixels of slop, and that is a
+    // better bargain than three thresholds to keep in step.
+    function tapSlopPx(scopeKey) {
+        var state = getState(scopeKey);
+        var viewer = getViewer(scopeKey);
+        var perPx = (viewer && state.canvas)
+            ? getPixelToWorld(viewer, state.canvas) : 0;
+        perPx = perPx * (state.dragSensitivity || 1);
+        var slop = (perPx > 0) ? TAP_SLOP_A / perPx : TAP_SLOP_MIN_PX;
+        if (!isFinite(slop) || slop < TAP_SLOP_MIN_PX) slop = TAP_SLOP_MIN_PX;
+        if (slop > TAP_SLOP_MAX_PX) slop = TAP_SLOP_MAX_PX;
+        return slop;
     }
     function mat4Apply(m, x, y, z, w) {
         var e = m.elements;
@@ -4290,6 +4338,11 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                             ? state.picks.map(function(p) { return p.serial; })
                             : [atom.serial],
                         grabbed: atom.serial,
+                        // Whether a tap on this atom would add to the
+                        // selection or toggle it -- read here rather than
+                        // at the release, because the key can be let go of
+                        // before the mouse button is.
+                        additive: !!(e.shiftKey || e.ctrlKey || e.metaKey),
                         startX: e.clientX, startY: e.clientY,
                         lastX: e.clientX, lastY: e.clientY,
                         movedEnough: false, snapshotted: false
@@ -4362,10 +4415,22 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             var dx = e.clientX - d.lastX, dy = e.clientY - d.lastY;
             var totX = e.clientX - d.startX, totY = e.clientY - d.startY;
             var totMag2 = totX*totX + totY*totY;
-            if (!d.movedEnough && totMag2 > DRAG_THRESHOLD_PX*DRAG_THRESHOLD_PX) {
-                d.movedEnough = true;
+            if (!d.movedEnough) {
+                var slop = tapSlopPx(scopeKey);
+                if (totMag2 > slop*slop) d.movedEnough = true;
             }
-            d.lastX = e.clientX; d.lastY = e.clientY;
+            // The pixels spent deciding are not thrown away.  They were:
+            // this line ran on every move, so the frame that finally
+            // crossed the threshold moved the atom by that one frame's
+            // pixels and the ones before it were gone.  Measured on a
+            // straight 20 px drag at the default zoom, the atom travelled
+            // 0.51 A of the 0.60 A the hand asked for and lagged the
+            // cursor by the missing 0.09 A for the rest of the gesture.
+            // Held at the start until the press is a drag, the deciding
+            // frame carries the whole travel -- so the threshold can be as
+            // wide as telling a tap from a drag needs, and the drag is
+            // exact from its first pixel.
+            if (d.movedEnough) { d.lastX = e.clientX; d.lastY = e.clientY; }
 
             var viewer = getViewer(scopeKey);
             if (!viewer) return;
@@ -4429,9 +4494,34 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             var d = state2.drag;
             state2.drag = null;
             if (d.kind === 'translate' || d.kind === 'rotate') {
-                ffEndDrag(scopeKey, d.targets);
+                // Nothing was moved, so there is nothing to keep where it
+                // was put: with settling-on-release switched off ffEndDrag
+                // pins whatever it is handed, and a tap that pinned the
+                // atom it selected would be one gesture doing two things.
+                ffEndDrag(scopeKey, d.movedEnough ? d.targets : []);
                 if (d.movedEnough) {
                     pushXyzToPython(scopeKey, 'drag-end');
+                } else if (d.grabbed !== undefined && d.grabbed !== null) {
+                    // A press on an atom that did not move is a tap, and a
+                    // tap picks -- through the same toggle a tap in Select
+                    // mode goes through, so there is one rule and not two:
+                    // a second tap takes it back, a modifier adds without
+                    // taking anything back, and a tap on empty space
+                    // changes the selection in neither mode.
+                    //
+                    // Naming an atom is why.  The interactive climb is
+                    // checked against the pair the gesture is about -- the
+                    // atom being dragged and the one it is driven towards
+                    // -- and no rule over the geometry alone finds that
+                    // pair: the best reaches 10 of 21, and a wrong pair
+                    // made the climb discard a saddle it had already found
+                    // and spend 73 s more looking.  So the pair is named by
+                    // hand, and naming it used to mean leaving Manipulate
+                    // for Select, tapping, and coming back before the drag
+                    // could start: four steps for one gesture.
+                    var tapped = getAtomBySerial(getViewer(scopeKey),
+                                                 d.grabbed);
+                    if (tapped) togglePick(scopeKey, tapped, d.additive);
                 }
             } else if (d.kind === 'draw') {
                 finishDraw(scopeKey, d, e.clientX, e.clientY);
