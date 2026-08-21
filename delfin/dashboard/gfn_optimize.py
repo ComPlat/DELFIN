@@ -1689,21 +1689,54 @@ def _occluded(where, radius, i, j) -> bool:
     return False
 
 
-def _lever(where, i, b, c) -> float:
-    """How far *i* stands from the b-c axis.
+def _swing(where, i, b, c) -> list:
+    """Where a turn about the b-c axis takes atom *i*, per radian.
 
-    What turns a torsion into a length, so an angle can be weighed against a
-    bond in one currency.
+    A vector: which way the grabbed atom goes, and how fast.  Its length is
+    the lever arm -- how far *i* stands from the axis -- so a torsion and a
+    bond can be weighed against each other in one currency, and its direction
+    is what says whether the turn goes the way the hand is pulling.
     """
     axis = [where[c][n] - where[b][n] for n in range(3)]
     span = math.sqrt(sum(one * one for one in axis)) or 1.0
     axis = [one / span for one in axis]
     rel = [where[i][n] - where[b][n] for n in range(3)]
     along = sum(one * two for one, two in zip(rel, axis))
-    return math.sqrt(max(0.0, sum(one * one for one in rel) - along * along))
+    arm = [rel[n] - along * axis[n] for n in range(3)]
+    return [axis[1] * arm[2] - axis[2] * arm[1],
+            axis[2] * arm[0] - axis[0] * arm[2],
+            axis[0] * arm[1] - axis[1] * arm[0]]
 
 
-def turn_for(where, radius, grabbed, held) -> list:
+def _lever(where, i, b, c) -> float:
+    """How far *i* stands from the b-c axis.
+
+    What turns a torsion into a length, so an angle can be weighed against a
+    bond in one currency.
+    """
+    return math.sqrt(sum(one * one for one in _swing(where, i, b, c)))
+
+
+def _carries(vector, pulled) -> float:
+    """How far this coordinate carries the grabbed atom the hand's own way.
+
+    *vector* is where one unit of the coordinate takes the atom -- a radian of
+    a torsion, an Angstrom of a distance -- and *pulled* is the unit vector
+    the hand is moving it along.  What comes back is in Angstrom, for both
+    kinds, which is what lets a turn and a stretch be compared at all.
+
+    Without a direction it is the whole length, which is the older question --
+    how far could this coordinate move the atom, in any direction -- and it is
+    the right one to fall back to: a caller with no history does not know
+    which way the hand went.
+    """
+    length = math.sqrt(sum(one * one for one in vector))
+    if pulled is None or length <= 1e-12:
+        return length
+    return abs(sum(one * two for one, two in zip(vector, pulled)))
+
+
+def turn_for(where, radius, grabbed, held, pulled=None) -> list:
     """The soft coordinate a hand on *grabbed* would really be moving.
 
     A bond is the wrong thing for a drag to drive.  It is the one coordinate
@@ -1718,45 +1751,56 @@ def turn_for(where, radius, grabbed, held) -> list:
     in order to leave them free -- and it is what the user asked for in the
     first place: bond lengths hold, and the angles and torsions react.
 
-    So: the torsion about the bond *one further in* than the one the grabbed
+    So: a torsion about the bond *one further in* than the one the grabbed
     atom hangs on, with the grabbed atom as its outer end -- turning that
     swings it through an arc.  Turning about its own attachment bond would
     spin the group and leave the atom where it was, which is why the bond it
     sits on is not the one to use.
 
-    Nothing, when there is no such torsion, and then the caller keeps the
+    *Which* torsion is the question this used to skip.  There are usually
+    several and it took the first the walk came to, in index order, without
+    asking where it would take the atom -- and a torsion carries the grabbed
+    atom in one direction only, at right angles to both the axis and the arm.
+    A hand pulling any other way is pushing on a coordinate that cannot
+    express it, which is a drag that does almost nothing and spends a great
+    deal doing it.
+
+    So each candidate is asked how far it would carry the grabbed atom *the
+    way the hand is going*: :func:`_swing` says where a radian of it takes
+    the atom, and :func:`_carries` takes the part of that which points along
+    *pulled*.  The largest wins.  Without a *pulled* -- a caller with no
+    history does not know which way the hand went -- it is the whole lever
+    arm, which is the older question and the right thing to fall back to.
+
+    That this is the question and not "is the axis in a ring" was measured on
+    a butane.  The same end carbon of the same molecule, dragged across the
+    chain and dragged along it, wants a torsion in the first case and a bond
+    in the second; nothing topological can tell those two apart, because the
+    topology is identical.  The direction can, and does: the swing about the
+    C2-C3 axis is square to the chain's plane, so a hand across the chain has
+    all of it and a hand along the chain has none.
+
+    Nothing, when no such torsion exists, and then the caller keeps the
     contact it had.  Which is right: a whole methyl leaving the other half of
     an ethane has no torsion between the two, and the C-C bond really is the
     coordinate that describes that drag.  A bond is only the wrong answer
-    where a better one exists.
+    where a better one exists -- and the caller weighs the two, in the one
+    currency :func:`_carries` puts them both in.
 
-    Where this is known to be weak, written down because it was measured and
-    is not fixed here.  Nothing asks whether the torsion offered can actually
-    turn.  A torsion about a bond inside a ring cannot -- the ring holds both
-    ends -- so the hand pushes on a coordinate the molecule will not give, and
-    what the user sees is a drag that does very little until it suddenly does
-    something violent.
-
-    On a chelate that is not an edge case, it is every case, because the rings
-    run through the metal.  Measured on a 57-atom manganese complex in an
-    N4O2 salen-like environment, every heavy atom grabbed in turn and dragged
-    outward: 29 of the 33 grabs drive a torsion, and 29 of those 29 are about
-    a bond inside a ring.  The other four are the terminal bromines, which
-    have no torsion and drive a distance.  The take-up -- how much of what the
-    hand asked for the structure gave -- has a median of about a quarter, and
-    what eight answers cost runs from +0.05 to +220 kcal/mol on the same
-    molecule: either nothing moves or something tears.
-
-    Fixing it is not simply excluding ring bonds.  A ring torsion is exactly
-    the right coordinate for a ring that can pucker -- a cyclohexane is
-    flipped by driving one, and that is what the sticky *turning* above is
-    for.  What is wanted is a test for whether the offered torsion moves the
-    grabbed atom, which is a different question from whether it is in a ring
-    and needs its own measurement on both kinds of ring.
+    What this does not settle, said plainly because it was measured.  The
+    carry says which coordinates *can* move the grabbed atom; it cannot say
+    whether the molecule will let them, because that is an energy and there
+    is none here.  A cyclohexane carbon and a benzene carbon pushed through
+    their own ring planes are the same problem to every geometric measure --
+    the same six-ring, the same offer, carries of 1.19 and 1.20 Angstrom per
+    radian -- and the answers are 0.195 of the drag for +6.3 kcal/mol against
+    0.042 for +13.9.  What separates them is conjugation, which no
+    arrangement of coordinates can see.
     """
     if not grabbed:
         return []
     inside = set(held or ()) | set(grabbed)
+    best: tuple = (0.0, None)
     for i in sorted(grabbed):
         near = [n for n in range(len(where))
                 if n != i and _is_a_bond(where, radius, i, n)]
@@ -1777,12 +1821,18 @@ def turn_for(where, radius, grabbed, held) -> list:
                 far = [n for n in range(len(where))
                        if n not in (i, b, c) and n not in inside
                        and _is_a_bond(where, radius, c, n)]
-                if far:
-                    d = far[0]
-                    return [{'kind': 'dihedral', 'atoms': [i, b, c, d],
-                             'value': _dihedral(where, i, b, c, d),
-                             'mode': 'drag'}]
-    return []
+                if not far:
+                    continue
+                # Every d on this axis is the same turn and takes the grabbed
+                # atom to the same place, so the axis is scored once and the
+                # lowest-numbered d names it.
+                carry = _carries(_swing(where, i, b, c), pulled)
+                if carry > best[0]:
+                    best = (carry, [i, b, c, far[0]])
+    if best[1] is None:
+        return []
+    return [{'kind': 'dihedral', 'atoms': best[1], 'mode': 'drag',
+             'value': _dihedral(where, *best[1])}]
 
 
 def with_their_terminals(where, radius, dragged) -> set:
@@ -1832,6 +1882,7 @@ def contacts_holding(
     was: Any = None,
     turning: Any = None,
     holding: Any = None,
+    opening: bool = False,
 ) -> list:
     """The internal coordinates the hand moved, to hold while the rest relaxes.
 
@@ -1868,6 +1919,15 @@ def contacts_holding(
     oxidative addition is -- so the real Pd...Br contact went unheld, the
     bromide drove to 1.27 A of the metal, and the budget reported +13.2
     kcal/mol for a geometry worth several hundred.
+
+    *opening* is the first answer of a drag, and it is a different question:
+    what moved most is a poor guide when almost nothing has moved yet, and
+    for a grabbed atom the coordinate that has changed most is usually the
+    bond it hangs on rather than the one the hand is driving.  So the opening
+    is decided by what each coordinate *can* do -- see :func:`turn_for` -- and
+    the caller then makes that decision stick through *turning*.  It is still
+    given *was*, because which way the hand went is exactly what tells a turn
+    from a stretch, and a drag that has not been told cannot know.
     """
     rows = [line.split() for line in atom_lines(xyz_text)]
     if not rows:
@@ -1904,9 +1964,10 @@ def contacts_holding(
         # back is being told to price the geometry some other way.
         return []
     then = _snapshot(was, len(where))
-    if then is None:
-        # The first answer of a drag has nothing to compare against, so the
-        # nearest contact stands in -- unless that contact is a *bond*.
+    if then is None or opening:
+        # The opening answer of a drag decides by what the coordinates *can*
+        # do rather than by what they have already done -- the nearest contact
+        # stands in, unless that contact is a *bond*.
         #
         # A bond is the one coordinate a drag must not drive: a hand below
         # what a bond holds can only stretch one by a tenth of an angstrom,
@@ -1920,10 +1981,29 @@ def contacts_holding(
         # -- have no torsion between them, and the distance is the reaction.
         span, i, j = min(((math.dist(where[i], where[j]), i, j)
                           for i in grabbed for j in outside))
+        # Which way the hand went, when the caller has said where the drag
+        # came from.  A torsion carries the grabbed atom in one direction
+        # only, so without this the choice between a turn and a stretch is
+        # made blind -- and the blind choice is wrong the moment the hand
+        # pulls the other way.
+        pulled = None
+        if then is not None:
+            went = [where[i][n] - then[i][n] for n in range(3)]
+            far = math.sqrt(sum(one * one for one in went))
+            if far > 1e-9:
+                pulled = [one / far for one in went]
         if _is_a_bond(where, radius, i, j):
-            turning = turn_for(where, radius, grabbed, held)
-            if turning:
-                return turning
+            turn = turn_for(where, radius, grabbed, held, pulled=pulled)
+            if turn:
+                # Both in Angstrom the grabbed atom moves, so the two are
+                # comparable and nothing has to be chosen: a radian of the
+                # turn against an Angstrom of the stretch, which is the
+                # currency the scored branch below already weighs them in.
+                axis = [where[i][n] - where[j][n] for n in range(3)]
+                length = math.sqrt(sum(one * one for one in axis)) or 1.0
+                if (_carries(_swing(where, *turn[0]['atoms'][:3]), pulled)
+                        > _carries([one / length for one in axis], pulled)):
+                    return turn
         return [{'kind': 'distance', 'atoms': [i, j], 'value': span,
                  'mode': 'drag'}]
 
