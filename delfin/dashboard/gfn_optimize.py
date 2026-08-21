@@ -160,6 +160,84 @@ _GFNFF_BANNER = 'G F N - F F'
 _GFNFF_TOPOLOGY_FILES = ('gfnff_topo', 'gfnff_charges')
 
 
+def _restart_named(topology, key, charge, uhf, solvent, model):
+    """Where this run's wavefunction is kept between calls, or None.
+
+    A drag is a sequence of xtb runs on geometries a fraction of an Angstrom
+    apart, and every one of them starts its SCF from the extended Hueckel guess
+    as though it had never seen the molecule.  xtb writes the converged
+    wavefunction to ``xtbrestart`` and reads it back if it finds one, which is
+    a better guess by far.
+
+    How much it is worth depends on the shape of the run, and the difference
+    is not small.  Measured on a 57-atom manganese complex under GFN2 at
+    charge +1, cold and warm alternately so a machine carrying other people's
+    work could not favour either, six of each:
+
+        single point        0.42 s cold, 0.17 s warm   (59 % less)
+        20-cycle relaxation 2.65 s cold, 2.46 s warm   ( 7 % less)
+
+    A single point is one SCF, so the whole of it is the guess.  A twenty-cycle
+    relaxation is twenty SCFs and xtb already restarts from the last one inside
+    the run, so only the first of the twenty can be helped -- which is what a
+    seventh of the cost is.  The drag's own answers are relaxations; its
+    anchor, and the price of a placing hand, are single points.
+
+    It changes no number.  Ten points along a Mn-O stretch priced both ways
+    agree to 2.1e-5 kcal/mol at worst -- an SCF converged to its own threshold
+    from two different starting guesses -- against a budget that refuses on
+    tenths.  A six-answer walk priced three times cold and three times warm
+    has the warm prices inside the cold spread, which is about 0.2 kcal/mol on
+    that walk: xtb is not bit-reproducible under threading, and this sits
+    under that.
+
+    Keyed by everything that makes the wavefunction a different object.  A
+    restart written for one charge, spin, method or solvent is not a guess for
+    another, it is the wrong number of electrons in the wrong field; xtb would
+    take it and the answer would be confidently wrong.  The directory is the
+    caller's and already belongs to one molecule -- see the editor's
+    ``_gfn_topology_dir``, which keys it on the element column -- so what is
+    left to name here is the run.
+
+    GFN-FF has no wavefunction and writes none, so it gets nothing.
+    """
+    if topology is None or str(key) == 'gfnff':
+        return None
+    wet = str(solvent or '').strip().lower() or 'gas'
+    how = str(model or '').strip().lower() or 'alpb'
+    return Path(topology) / (
+        f'xtbrestart-{key}-q{int(charge)}-u{max(0, int(uhf))}-{how}-{wet}')
+
+
+def _keep_restart(folder: Path, kept: Path, output: str) -> None:
+    """Put this run's wavefunction where the next one will find it.
+
+    Only from a run that finished.  A wavefunction from a run that stopped
+    with an error is not a guess, and the next answer would start from it and
+    have no way of knowing; so a bad run takes the stored one with it and the
+    answer after that starts cold, which is how it worked before any of this.
+
+    Written beside and then renamed, because the directory belongs to the
+    molecule rather than to one run: an optimisation and a drag can be reading
+    and writing it at the same moment, and a copy is not one operation.  Half a
+    wavefunction handed to the next run is the one way this could produce a
+    wrong answer instead of merely a slower one, and a rename is atomic.
+    """
+    made = folder / 'xtbrestart'
+    finished = ('abnormal termination' not in output
+                and '[ERROR]' not in output and made.is_file())
+    try:
+        if finished:
+            kept.parent.mkdir(parents=True, exist_ok=True)
+            beside = kept.with_name(kept.name + f'.{os.getpid()}.part')
+            shutil.copy2(str(made), str(beside))
+            os.replace(str(beside), str(kept))
+        elif kept.is_file():
+            kept.unlink()
+    except OSError:
+        pass
+
+
 def is_gfn_method(method: Any) -> bool:
     return str(method or '').strip().lower() in GFN_METHODS
 
@@ -1193,6 +1271,36 @@ def push_pulls_hardest(kind: str, reach: float = PUSH_REACH) -> float:
     return 2.0 * EH_PER_BOHR2_IN_KCAL * (float(reach) or PUSH_REACH)
 
 
+def push_pulls_now(kind: str, constant: float, gap: float) -> float:
+    """What a push of this force constant is applying at this moment.
+
+    The companion to :func:`push_pulls_hardest`, which says what the same
+    constant would apply at full stretch.  A restraint is a spring: it reaches
+    its ceiling only when the target is a whole reach away and is weaker all
+    the way there, so the two numbers are different by however far the hand
+    has run ahead of the structure -- which is the whole of what a mouse
+    controls while a drag is running.
+
+    They were the same number on screen, and that was a misreport rather than
+    a rounding: the status line quoted the ceiling. Measured on the user's
+    manganese complex, a phenolate oxygen dragged at 0.4 of a bond under
+    GFN-FF, the hand ran about half a degree of torsion ahead of the structure
+    per answer -- 0.4 kcal/mol per radian applied, reported as 44.
+
+    *gap* is how far the target is from where the coordinate stands, in the
+    coordinate's own units: Angstrom for a distance, degrees for an angle or a
+    torsion.  The answer is in kcal/mol per Angstrom, or per radian.
+    """
+    far = abs(float(gap))
+    if str(kind) == 'dihedral':
+        # k * (1 - cos d), so the torque is k * sin d and falls away past a
+        # right angle rather than growing.
+        return 627.5095 * float(constant) * math.sin(math.radians(far))
+    if str(kind) == 'angle':
+        return 2.0 * 627.5095 * float(constant) * math.radians(far)
+    return 2.0 * EH_PER_BOHR2_IN_KCAL * float(constant) * far
+
+
 def push_constant(force: float, reach: float = PUSH_REACH,
                   kind: str = 'distance') -> float:
     """The xtb force constant whose ceiling is *force* kcal/mol/A.
@@ -1621,6 +1729,30 @@ def turn_for(where, radius, grabbed, held) -> list:
     an ethane has no torsion between the two, and the C-C bond really is the
     coordinate that describes that drag.  A bond is only the wrong answer
     where a better one exists.
+
+    Where this is known to be weak, written down because it was measured and
+    is not fixed here.  Nothing asks whether the torsion offered can actually
+    turn.  A torsion about a bond inside a ring cannot -- the ring holds both
+    ends -- so the hand pushes on a coordinate the molecule will not give, and
+    what the user sees is a drag that does very little until it suddenly does
+    something violent.
+
+    On a chelate that is not an edge case, it is every case, because the rings
+    run through the metal.  Measured on a 57-atom manganese complex in an
+    N4O2 salen-like environment, every heavy atom grabbed in turn and dragged
+    outward: 29 of the 33 grabs drive a torsion, and 29 of those 29 are about
+    a bond inside a ring.  The other four are the terminal bromines, which
+    have no torsion and drive a distance.  The take-up -- how much of what the
+    hand asked for the structure gave -- has a median of about a quarter, and
+    what eight answers cost runs from +0.05 to +220 kcal/mol on the same
+    molecule: either nothing moves or something tears.
+
+    Fixing it is not simply excluding ring bonds.  A ring torsion is exactly
+    the right coordinate for a ring that can pucker -- a cyclohexane is
+    flipped by driving one, and that is what the sticky *turning* above is
+    for.  What is wanted is a test for whether the offered torsion moves the
+    grabbed atom, which is a different question from whether it is in a ring
+    and needs its own measurement on both kinds of ring.
     """
     if not grabbed:
         return []
@@ -1992,6 +2124,20 @@ INTERACTIVE_CORES = 4
 #: worse than four.  A machine with 384 cores does not change that -- the work
 #: in one small SCC does not divide that far, and what is left is threads
 #: waiting for each other.  So the ladder is by size, and it ends.
+#:
+#: Checked again on chemistry the table above has none of: a 57-atom manganese
+#: complex with four bromines at charge +1, which is a very different SCC from
+#: 57 atoms of hydrocarbon.  Twenty GFN2 cycles, best of three:
+#:
+#:     cores      1     2     4     8    16    32
+#:     seconds 3.03  2.73  2.27  2.53  4.74  8.73
+#:
+#: The ladder hands this one eight and four is a tenth quicker, which is
+#: inside the spread on a machine that is also running other people's work --
+#: but sixteen is twice as slow and thirty-two nearly four times, so where the
+#: curve turns over is the same place it was on the hydrocarbons.  Left alone:
+#: the ladder is not costing anything worth a change, and the heavy elements
+#: do not move where it should stop.
 _CORE_LADDER = ((30, 4), (60, 8))
 _CORE_CEILING = 16
 
@@ -2245,6 +2391,13 @@ def optimize_with_gfn(
     Given a directory, the perception made at the start is reused: at a C-C of
     2.33 A it still pulls back, to 1.51.
 
+    The same directory carries the converged wavefunction between runs for the
+    methods that have one, so a sequence of calculations on neighbouring
+    geometries is not a sequence of unrelated ones -- 59 % off a single point
+    and 7 % off a twenty-cycle relaxation on a manganese complex under GFN2.
+    See :func:`_restart_named` for what it is keyed by, why the key has to be
+    that, and for the measurement that it changes no number.
+
     *solvent* is one of :data:`SOLVENTS` and *solvation_model* one of ALPB,
     GBSA or ddCOSMO -- see :mod:`delfin.dashboard.solvents` for which method
     can be run with which, and what each was measured to cost.  A geometry
@@ -2374,6 +2527,15 @@ def optimize_with_gfn(
                 source_file = Path(topology) / name
                 if source_file.is_file():
                     shutil.copy2(str(source_file), str(folder / name))
+        # And the last wavefunction, for the methods that have one.  See
+        # :func:`_restart_named` for what it is keyed by and why the key has
+        # to be that and not less.
+        warm = _restart_named(topology, key, charge, uhf, wet, model)
+        if warm is not None and warm.is_file():
+            try:
+                shutil.copy2(str(warm), str(folder / 'xtbrestart'))
+            except OSError:
+                pass
         # A few cores, and a scratch directory of its own: two of these must
         # not fight over xtbopt.xyz.
         environment = dict(os.environ, OMP_NUM_THREADS=str(cores),
@@ -2520,6 +2682,8 @@ def optimize_with_gfn(
             except OSError:
                 pass
         output = record.read_text(encoding='utf-8', errors='replace')
+        if warm is not None:
+            _keep_restart(folder, warm, output)
         # A single point writes no xtbopt.xyz and no path: the geometry that
         # went in is the geometry that comes back, and there is nothing to
         # play.  Reading them anyway would find the leftovers of whatever ran
@@ -2784,6 +2948,20 @@ def relax_steps(
     is a slideshow and keeps a core busy for it.  Whoever calls this is
     expected to say how long each step took, so the cost is visible rather
     than merely suffered.
+
+    How much of a slideshow, measured on real structures at the twenty cycles
+    a priced drag uses -- one whole follow answer, seconds:
+
+        atoms   16     30     49     57    105
+        GFN-FF   0.062  0.099  0.138  0.158  0.361
+        GFN2     0.165  0.838  1.685  2.966 17.46
+
+    A hundred atoms under GFN2 is a drag that answers once every seventeen
+    seconds, and under GFN-FF the same drag answers three times a second: at
+    that size the choice of method is the whole difference between an editor
+    and a queue.  The four in the middle are transition-metal complexes, which
+    is where the choice is hardest to make -- GFN-FF knows about the metal
+    where UFF guesses, and GFN2 knows more still.
     """
     result = optimize_with_gfn(
         xyz_text, method, charge=charge, uhf=uhf,
