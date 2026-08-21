@@ -1857,7 +1857,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                  'rather than down to a minimum, a step at a time on xtb '
                  'gradients. Stays down like Dynamik Opt -- drag an atom to '
                  'point it at the reaction you mean, and Auto carries on '
-                 'towards the saddle when you let go.'),
+                 'towards the saddle when you let go. Tap the atom you are '
+                 'aiming at first and the search knows which contact to check '
+                 'itself against, and tries two more ways when the first '
+                 'misses.'),
         layout=widgets.Layout(width='140px', height='30px'),
         disabled=True,
     )
@@ -4527,23 +4530,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: And a round that moved nothing has settled, whatever xtb calls it.
     _GFN_SETTLE_STILL = 0.005
 
-    #: The same bound for the walk that goes the other way: how many gradients
-    #: one climb may spend before it stops and says so.
-    #:
-    #: A guided climb is short -- 11 steps from the path finder's estimate, 39
-    #: from a dragged geometry -- and even an unguided one from a minimum took
-    #: 105 steps to converge, onto another minimum.  A climb that is going
-    #: nowhere is not short at all: measured on the van-der-Waals complex,
-    #: 24616 steps and still walking, which is a gradient every ten
-    #: milliseconds for as long as the toggle is down.  Nothing ended it,
-    #: because the climb was the one walk in the editor with no bound on it at
-    #: all while the minimisation has had _OPTIMISE_ROUNDS since it was
-    #: written.
-    #:
-    #: Four hundred is an order of magnitude above every climb that has
-    #: finished here and about four seconds of gradients on sixteen atoms, so
-    #: it ends the runaway without ending anything real.
-    _CLIMB_STEPS = 400
+    # The same bound for the walk that goes the other way -- how many
+    # gradients one climb may spend before it stops and says so -- lives in
+    # the module that walks it, as :data:`climb.CLIMB_CEILING`, and is not
+    # repeated here.
+    #
+    # There were two of them and they disagreed: four hundred here, chosen as
+    # an order of magnitude above every climb that had finished at the time,
+    # and a hundred there, measured afterwards over twenty-one hand drags --
+    # every climb that reached the reaction the hand pointed at arrived in 22
+    # to 65 steps, and the ones that ran longer ran on to between 202 and 361
+    # and were wrong at the end of all of them.  A hundred is the measured
+    # one, so a hundred is what is kept; the other three hundred bought
+    # nothing but a longer wait before the next rung was tried.
 
     def _write_coords(text, drawn=False, run=None):
         """Put a geometry in the box, and say whether the picture has it.
@@ -7674,6 +7673,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             state.pop('optimize_interrupted', None)
             state.pop('climb_interrupted', None)
             state.pop('climb_was', None)
+            state.pop('climb_held', None)
             for switch in (submit_optimize_btn, submit_optimize_all_btn):
                 if switch.value:
                     switch.value = False
@@ -8040,6 +8040,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 state['climb_was'] = (
                     (state.get('climb_showing') if climbing else None)
                     or _current_xyz())
+                # And the pair the last gesture was about is not this one's.
+                # Kept, a climb after a drag that names no contact -- a turn,
+                # or a hand that never moved -- would be checked against the
+                # bond somebody dragged a minute ago, and a check against the
+                # wrong pair is worse than no check: it is the ladder walking
+                # past an answer that was right.
+                state.pop('climb_held', None)
             _begin_gfn_follow()
             # The leash goes on before the hand has moved anything.  It used
             # to be set from the first follow answer, and the first answer is
@@ -9456,29 +9463,60 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             state[wish] = want
             box.value = values[0]
 
-    def _climb_verdict(shape, steps, seconds):
-        """What a climb reached, said the way the press next door says it."""
-        lines = [f'The climb stopped after {steps} steps ({seconds:.1f} s).']
-        count = int(shape.get('count') or 0)
-        if count == 1:
-            lines[0] = (f'Climbed to a transition state in {steps} steps '
-                        f'({seconds:.1f} s).')
-            lines.append(f'One mode goes the wrong way, at '
-                         f'{shape["modes"][0]:.0f} cm-1, and no others.')
-        elif count == 0:
-            lowest = shape.get('lowest')
-            lines.append(
-                'No mode goes the wrong way, so this is a minimum and not a '
-                'transition state'
-                + (f' -- the softest is {lowest:.0f} cm-1.' if lowest
-                   else '.'))
-        else:
-            many = ', '.join(f'{one:.0f}' for one in shape.get('modes') or [])
-            lines.append(
-                f'{count} modes go the wrong way ({many} cm-1), so this is a '
-                'saddle of higher order -- a transition state has exactly '
-                'one.')
-        return lines
+    def _name_the_pair_the_hand_means(holding):
+        """Which two atoms this gesture is about, when the user has said.
+
+        The climb a release starts is judged on whether what it reached is
+        *the reaction the hand pointed at*, and that is a question about two
+        atoms -- see :func:`climb.reach_the_reaction`, where three searches
+        reach 12, 12 and 10 of twenty-one hand drags and sixteen between
+        them, and only because each one's answer can be checked against the
+        pair.  Without a pair only the count of imaginary modes can be asked;
+        every later rung would then be judged by the very test the first one
+        has already passed, so the ladder stops at one rung and says which
+        test it used.
+
+        The page names the atom under the cursor and the atoms that are
+        picked, both on messages it already sends and both counted the same
+        way -- ``ffIndicesOf``, from nought.  So the pair is: the atom being
+        dragged, and the atom the user tapped to say what they are dragging it
+        at.  Picking two atoms and dragging them together names the pair
+        outright and is taken as well.
+
+        Nothing is guessed, and that is the measured part.  Seven element-free
+        rules were scored against twenty-one hand drags, given the atom the
+        page names and both geometries: the contact the follow is actually
+        holding -- :func:`gfn_optimize.contacts_holding`, which is the best of
+        them -- names the right pair on **10 of the 21**, and the other six on
+        1, 1, 1, 3, 7 and 9.  They fail in three shapes: a drag at a carbon
+        names the hydrogen on it, a drag that folds a chain names the torsion
+        it turns rather than the contact it closes, and a proton walked
+        between two oxygens names the one it started on.  A *wrong*
+        pair is worse than none, because it is the ladder rejecting an answer
+        that was right: measured on the van-der-Waals complex, the aimed climb
+        reached the Diels-Alder saddle at 2.315 A and -394 cm-1, the check
+        against C10-H4 scored it below a fifth, and the press then spent 73
+        seconds on two more searches to say it had not found what was already
+        on the screen.
+
+        A pick the user has forgotten about would do the same, and that is the
+        one case this cannot rule out.  It is a different kind of wrong,
+        though: the selection is drawn on the structure, and the sentence at
+        the end names the contact it checked against -- so it is visible
+        before the press and said after it, which a rule nobody chose is not.
+        """
+        hand = [int(i) for i in (holding or ())]
+        picked = [int(i) for i in (state.get('picked') or ())]
+        if len(hand) == 2 and set(hand) == set(picked):
+            # Both ends picked and dragged together.  It aims at nothing --
+            # a rigid translation is projected out of the Hessian before the
+            # gesture is matched against it -- but it names the contact, which
+            # is the other half of what the ladder needs.
+            state['climb_held'] = (hand[0], hand[1])
+            return
+        aimed = [i for i in picked if i not in hand]
+        if len(hand) == 1 and len(aimed) == 1:
+            state['climb_held'] = (hand[0], aimed[0])
 
     def _climb_can_run():
         """Whether an interactive climb is possible here, said out loud if not.
@@ -9532,6 +9570,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             state['climb_run'] = None       # the loop reads this and stops
             state.pop('climb_interrupted', None)
             state.pop('climb_was', None)
+            state.pop('climb_held', None)
             return
         if not _climb_can_run():
             submit_climb_btn.value = False
@@ -9553,6 +9592,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         each step costs about ten milliseconds instead of the three seconds a
         fresh ORCA needs to start. That is the whole reason this exists beside
         the press: a press cannot be dragged in the middle of.
+
+        Three searches rather than one, cheapest first, and each one's answer
+        checked against the pair of atoms the hand held --
+        :func:`climb.reach_the_reaction`, where the measurement is. A saddle
+        search begun by hand does not fail; it succeeds at arriving somewhere,
+        and usually somewhere else: all three of these converge, confidently
+        and with exactly one mode going the wrong way, onto methyl torsions at
+        -48 cm-1. So what is asked of what comes back is not "is it a saddle"
+        but "is its imaginary mode the contact you were dragging", and a rung
+        that misses hands the *hand's* structure to the next one rather than
+        its own endpoint. The pair is what makes that question askable, and
+        where it comes from is :func:`_name_the_pair_the_hand_means`; without
+        one only the mode count can be checked, every rung would be judged by
+        the test the first has already passed, and the ladder stops at one.
 
         Started from three places and identical from all three -- the toggle
         going down, a release with Auto on, and a release bringing back the
@@ -9585,6 +9638,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # brought us here.  Taken once: a second run from the same mark would
         # aim along a gesture that has already been answered.
         aimed_from = state.pop('climb_was', None)
+        # And which two atoms that gesture was about, written down while the
+        # drag was running -- see :func:`_name_the_pair_the_hand_means`.
+        # Taken once for the same reason: it belongs to the gesture, and the
+        # gesture is answered here.
+        held = state.pop('climb_held', None)
         token = object()
         state['climb_run'] = token
         state.pop('climb_interrupted', None)
@@ -9638,14 +9696,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
         def _work():
             began = time.time()
-            walk = None
-            shape, rows = None, []
+            got = None
+            rows = []
             steps, seconds = 0, 0.0
             # Whether the switch ended this, which is a different ending from
             # both of the other two: a run that arrived somewhere has a result
             # to name, one that failed has a reason, and one that was stopped
             # has neither -- it has the frame the user was looking at.
             switched_off = [False]
+            # Frames drawn by the climbs, and how many of ORCA's have been
+            # taken.  ORCA hands its whole trajectory over each time it grows
+            # where a climb hands one step, so one of the two counts and the
+            # other remembers where it had got to.
+            counted = [0]
+            from_orca = [0]
 
             def _stopped():
                 """Whether this walk is still the one, and the page told if not.
@@ -9656,42 +9720,93 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 the page went on drawing the path it already held.  Measured,
                 a Stop at frame 13 of 117 with the slider at twelve a second
                 drew 509 more times afterwards, frames 14 through 116.
+
+                Asked by all three searches, so a Stop ends the press and not
+                merely the rung that happens to be running.
                 """
                 halted = state.get('climb_run') is not token
                 if halted:
                     _halt_the_frames(run)
                 return halted
 
+            def _drew(frame, _outcome):
+                """One climb step, from whichever of the two climbs made it.
+
+                Both rungs report here, so when the second one starts the
+                picture jumps back to the structure the hand made and climbs
+                away from it again.  That is what the second rung *is* -- every
+                rung is handed the hand's own structure and never the last
+                one's, because a search that is going wrong does not stop
+                somewhere useful -- and the sentence that goes out before it
+                says so.
+
+                The run number is not troubled by the jump.  One press is one
+                run: the frames go into one list in the order they are drawn,
+                and the count the page reports back still indexes that list,
+                which is what a Stop cuts the path at.
+
+                What arrives is a flat coordinate list rather than xyz text,
+                because that is what the frame channel speaks, so the geometry
+                a grab reads off is rebuilt from it here.
+                """
+                walked.append([float(one) for one in frame])
+                showing = _frame_as_xyz(xyz, walked, len(walked),
+                                        'Climbing to a transition state')
+                if showing:
+                    state['climb_showing'] = showing
+                _push()
+                counted[0] += 1
+                # Said while it walks, in the row every other calculation
+                # writes.  Silent, the page's own playback notes rewrote
+                # that row with whatever the drag had last said, so a
+                # climb thirty seconds in was reported as a follow that
+                # had finished long ago.
+                if counted[0] % 8 == 0:
+                    state['gfn_last_status'] = (
+                        f'Climbing to a transition state: {counted[0]} '
+                        f'step(s).')
+                    schedule_ui_update(
+                        _set_mol_status,
+                        *_gfn_status_lines(state['gfn_last_status']),
+                        spinner=True)
+
+            def _walked(path, _energies):
+                """ORCA's trajectory, which arrives whole each time it grows.
+
+                The last rung is a different optimiser and reports differently
+                -- every accepted step, all of them, each time -- so what is
+                new is taken off the end and put on the one list the page is
+                playing.  Pretending the two report the same way would lose
+                one of them.
+                """
+                for n in range(from_orca[0], len(path)):
+                    walked.append([float(one) for one in path[n]])
+                from_orca[0] = len(path)
+                _push()
+
+            def _route(sentence):
+                """A rung's own sentence, said before the rung it explains.
+
+                The module writes these and they are shown as they come: a
+                retry is seconds of a still picture otherwise, and a user
+                watching one has no way of telling a search that has moved on
+                to its next idea from one that has hung.
+                """
+                state['gfn_last_status'] = sentence
+                schedule_ui_update(_set_mol_status,
+                                   *_gfn_status_lines(sentence), spinner=True)
+
             try:
-                walk = _climb.Climb(xyz, method, charge=charge, uhf=uhf,
-                                    solvent=wet)
-                walk.start(aimed_from=aimed_from)
-                while not _stopped():
-                    outcome = walk.step()
-                    state['climb_showing'] = walk.xyz()
-                    walked.append(walk.frame())
-                    _push()
-                    # Said while it walks, in the row every other calculation
-                    # writes.  Silent, the page's own playback notes rewrote
-                    # that row with whatever the drag had last said, so a
-                    # climb thirty seconds in was reported as a follow that
-                    # had finished long ago.
-                    if walk.steps % 8 == 0:
-                        state['gfn_last_status'] = (
-                            f'Climbing to a transition state: {walk.steps} '
-                            f'step(s).')
-                        schedule_ui_update(
-                            _set_mol_status,
-                            *_gfn_status_lines(state['gfn_last_status']),
-                            spinner=True)
-                    if outcome.get('converged'):
-                        break
-                    if walk.steps >= _CLIMB_STEPS:
-                        # Out of steps rather than arrived.  The verdict below
-                        # says what it is standing on either way, which is the
-                        # answer that matters -- a saddle search does not fail,
-                        # it succeeds at arriving somewhere.
-                        break
+                got = _climb.reach_the_reaction(
+                    xyz, method, held=held, charge=charge, uhf=uhf,
+                    solvent=wet, aimed_from=aimed_from,
+                    max_steps=_climb.CLIMB_CEILING,
+                    on_frame=_drew, on_path=_walked, on_route=_route,
+                    should_stop=_stopped,
+                    # What the last rung is allowed before it is a job
+                    # instead, taken from the same place the press next door
+                    # takes it.
+                    fallback_timeout=_saddle.seconds_for(method))
                 cut_by_a_hand = state.get('climb_cut') is token
                 if cut_by_a_hand or _stopped():
                     # Nothing to name.  A climb a hand cut off is about a
@@ -9699,9 +9814,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # switch stopped ended at the frame the picture was
                     # showing rather than where the walk had got to -- so a
                     # verdict on where the walk stands is a verdict on a
-                    # geometry nobody is being left with.  Reading it costs an
-                    # xtb Hessian, a third of a second and more, at the exact
-                    # moment the user asked for it to stop.
+                    # geometry nobody is being left with.
                     #
                     # This is Optimise's Stop, said in the climb's words:
                     # neither of them reports a result, both keep the frame on
@@ -9709,20 +9822,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # report to cut.
                     if not cut_by_a_hand:
                         switched_off[0] = True
-                        steps, seconds = walk.steps, time.time() - began
+                        steps, seconds = counted[0], time.time() - began
                 else:
                     _push(final=True)
-                    shape = walk.verdict()
-                    steps, seconds = walk.steps, time.time() - began
-                    rows = [line for line in walk.xyz().splitlines()[2:]
+                    steps, seconds = counted[0], time.time() - began
+                    rows = [line for line in
+                            str(got.get('xyz') or '').splitlines()[2:]
                             if line.strip()]
             except Exception as trouble:            # noqa: BLE001
-                shape, rows = None, []
+                got, rows = None, []
                 steps, seconds = 0, time.time() - began
                 state['climb_error'] = str(trouble)
-            finally:
-                if walk is not None:
-                    walk.close()
 
             def _done():
                 if state.get('climb_cut') is token:
@@ -9757,7 +9867,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     state['gfn_last_status'] = said
                     _set_mol_status(*walked_said, said)
                     return
-                if shape is None:
+                if got is None:
                     _set_mol_status('The climb could not run: '
                                     + str(state.pop('climb_error', '')))
                     return
@@ -9780,14 +9890,26 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         xyz_document(rows, 'Climbed towards a transition '
                                            'state'),
                         drawn=_frame_run_is_current(run))
-                verdict = _climb_verdict(shape, steps, seconds)
-                lines = walked_said + verdict
-                if steps >= _CLIMB_STEPS:
+                # The module's own sentence, whichever rung ended the press:
+                # it is the one that knows which searches were tried, what
+                # each reached and whether the mode it found is the contact
+                # the hand held.  Written again here would be a second opinion
+                # on one structure, and the wrong one is always the one that
+                # is easier to reach.
+                said = str(got.get('status') or '')
+                lines = walked_said + [said]
+                if held is None:
+                    # The module has already said that nothing named the
+                    # contact; what it cannot say is how to name one, because
+                    # that is the editor's own gesture.  Said whether or not
+                    # this press reached something: with no pair the other two
+                    # searches are never tried at all, so it is the difference
+                    # between one search and three either way.
                     lines.append(
-                        f'It ran out of steps at {_CLIMB_STEPS}, which is an '
-                        f'order of magnitude past what a climb with a hand '
-                        f'behind it takes -- so it is walking rather than '
-                        f'arriving. Drag it at the bond you mean.')
+                        'Tap the atom you are aiming at before you drag '
+                        'another one at it, and the climb can check what it '
+                        'reaches against that contact -- and try two more '
+                        'searches when the first one misses.')
                 lines.append(
                     'You moved the structure while it was finishing, so what '
                     'you made is what is in the box.' if holding else
@@ -9798,7 +9920,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # The climb's own headline, not the walk's, because this is
                 # what the row is asked to say again whenever the picture
                 # redraws itself.
-                state['gfn_last_status'] = verdict[0]
+                state['gfn_last_status'] = said
                 _set_mol_status(*lines)
 
             schedule_ui_update(_done)
@@ -11581,6 +11703,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         (state.get('climb_showing')
                          if state.get('climb_run') is not None else None)
                         or _current_xyz())
+                # Read here, off the message that carries the hand, because
+                # this is where the two halves of the pair are both in hand:
+                # the atom being dragged comes with this message and the atom
+                # it is being dragged at is the one already picked.
+                _name_the_pair_the_hand_means(holding)
                 _interrupt_gfn()
         if (drag_ended and state.get('poly_applied')
                 and state.get('poly_metal') is not None):

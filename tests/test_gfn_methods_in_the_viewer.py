@@ -6363,6 +6363,9 @@ class _AClimbThatWalks:
     def __init__(self, xyz, method, **kw):
         self.steps = 0
         self.path = _a_walk_of_numbered_frames(400)
+        # What ran the gradients, which the real one is asked for its count of
+        # when the walk is written up.  None here: this one never ran any.
+        self.engine = None
 
     def start(self, aimed_from=None):
         return {"ok": True}
@@ -6381,7 +6384,7 @@ class _AClimbThatWalks:
                 "H 0.960000 0.000000 0.000000\n"
                 "H -0.240000 0.930000 0.000000\n" % comment)
 
-    def verdict(self, exact=True):
+    def verdict(self, exact=True, held=None):
         raise AssertionError("a Stop must not pay for a Hessian")
 
     def close(self):
