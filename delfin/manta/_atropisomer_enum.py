@@ -553,14 +553,22 @@ def _atrop_find_axes(syms: Sequence[str], pts: np.ndarray,
             # AB HIER ist die Achse fuer das Auge eine Achse.  Erst jetzt fragt der Bauer,
             # ob er sie ueberhaupt DREHEN kann -- die Reihenfolge ist wichtig, sonst
             # verschwindet eine Baugrenze in der Achsenerkennung.
+            #
+            # ⚠ NICHT DREHBAR HEISST NICHT UNBAUBAR (23.08.2026).  Frueher fielen diese
+            # Achsen hier ganz heraus, und damit war der Manifold auf ihnen still
+            # unvollstaendig -- gemessen 89 Stueck auf 120 Systemen.  Sie bleiben jetzt in
+            # der Liste, mit `rotatable=False`: die Gegenhaendigkeit braucht dort eine
+            # NEUSETZUNG (Gesamtspiegelung), keine Drehung.  Wer sie herausfiltert, misst
+            # seine eigene Werkzeuggrenze und haelt sie fuer Chemie.
             side = _atrop_side_atoms(syms, nbr, i, j)      # None = Ring / Metallbruecke
-            if not side or len(side) < 2:
+            _rot = bool(side) and len(side) >= 2
+            if not _rot:
                 n_metallbruecke += 1
-                continue
             out.append({
                 "i": i, "j": j, "dih": dih, "fold": fold,
                 "sign": "P" if dih > 0 else "M",
-                "side": side,
+                "side": side if _rot else None,
+                "rotatable": _rot,
                 "sig": _atrop_axis_sig_flanks(syms, i, j, kHiA, kLoA, kHiB, kLoB),
             })
     if n_metallbruecke:
@@ -664,6 +672,60 @@ def _atrop_mirror_frame(xyz: str, ax: dict, clash_min: float) -> Optional[str]:
     return _format_xyz(lines, syms, new)
 
 
+def _atrop_reseat_frame(xyz: str) -> Optional[str]:
+    """NEUSETZUNG statt Drehung: die Gesamtspiegelung des Frames.
+
+    WOZU.  Haengen BEIDE Seiten einer Achse am Metall -- ein chelatisierendes Biaryl --,
+    laesst sich die Gegenhaendigkeit NICHT durch starre Drehung erzeugen: sie wuerde die
+    M-D-Bindung zerreissen.  Gemessen am 23.08. auf 120 Systemen: **89 Achsen**, die das
+    Auge fuehrt und der Bauer nicht drehen kann.  Bisher fielen sie still heraus.
+
+    Die Gesamtspiegelung ist die richtige Operation, und zwar aus einem Grund, nicht aus
+    Bequemlichkeit: sie ist eine ISOMETRIE.  Jeder Abstand bleibt exakt erhalten -- alle
+    Bindungslaengen, alle Winkel, auch jede M-D-Bindung.  Sie kann daher per Konstruktion
+    nichts zerreissen, und sie kippt das Vorzeichen JEDER stereogenen Achse auf einmal.
+
+    ⚠ SIE KIPPT AUCH ALLES ANDERE: Lambda/Delta am Metall, Rueckgrat-Zentren.  Das ist
+    kein Nebenschaden, sondern ein ANDERES Isomer -- und additiv angehaengt heisst das
+    Vollstaendigkeit, nicht Ersatz.  Das Original bleibt unberuehrt.
+
+    KEINE ZWEITE SPIEGELUNG.  `_mirror_enum.mirror_frame` macht genau das, samt
+    Achiralitaetspruefung (ist der Frame sein eigenes Spiegelbild, gibt es nichts zu
+    gewinnen und die Funktion gibt None).  Hier wird sie benutzt, nicht nachgebaut.
+    """
+    try:
+        from delfin.manta._mirror_enum import mirror_frame as _mf
+    except Exception as exc:                       # pragma: no cover
+        _LOG.debug("atropisomer-enum: Spiegelung nicht verfuegbar: %s", exc)
+        return None
+    try:
+        return _mf(xyz)
+    except Exception as exc:
+        _LOG.debug("atropisomer-enum: Neusetzung fehlgeschlagen: %s", exc)
+        return None
+
+
+def _atrop_realized(xyz: str, sig: tuple, want: str) -> bool:
+    """Traegt dieser Frame die Signatur `sig` mit dem Vorzeichen `want` -- WIRKLICH?
+
+    🔑 DIE FRAGE, DIE DEN GANZEN 23.08. GEFEHLT HAT.  `atrop44` und `atrop10k` haben Frames
+    angehaengt und die Achse blieb stehen; niemand hat je nachgesehen, ob das angehaengte
+    Frame das Vorzeichen ueberhaupt traegt, das es tragen sollte.  Bei PEHWEH tat es das
+    nicht -- es landete in einem NEUEN Signatur-Eimer, mit demselben Vorzeichen.
+
+    Ein Frame, das seinen Zweck nicht erfuellt, ist kein Gewinn: es kostet Bau- und
+    Augenzeit, hebt Maxima und traegt nichts bei.  Darum wird hier nach der Operation
+    GEPRUEFT, nicht vorher gehofft.
+    """
+    try:
+        A = _atrop_analyze(xyz)
+    except Exception:
+        return False
+    if not A:
+        return False
+    return any(ax["sig"] == sig and ax["sign"] == want for ax in A["axes"])
+
+
 def _atrop_analyze(xyz: str) -> Optional[dict]:
     syms, pts, _lines = _parse_xyz(xyz)
     if len(syms) < 4:
@@ -714,8 +776,14 @@ def expand_atropisomers(results):
     if not reps:
         return results
 
+    # NEUSETZUNG fuer nicht drehbare Achsen -- eigener Schalter, Vorgabe AUS, damit der
+    # Drehpfad unveraendert messbar bleibt und `atrop2` genau das misst, was vorregistriert
+    # wurde.  Ein zweiter Mechanismus im selben Lauf waere ein zweite Achse im A/B.
+    _reseat_on = _atrop_env_int("DELFIN_ATROPISOMER_RESEAT", 0) == 1
     added: List[tuple] = []
     capped = 0
+    n_unverifiziert = 0
+    n_nicht_drehbar = 0
     for sig, (order, xyz, lbl, ax) in sorted(reps.items(), key=lambda kv: kv[1][0]):
         want = "M" if ax["sign"] == "P" else "P"
         if (sig, want) in present:
@@ -723,15 +791,50 @@ def expand_atropisomers(results):
         if len(added) >= max_added:
             capped += 1
             continue
-        try:
-            mx = _atrop_mirror_frame(xyz, ax, clash_min)
-        except Exception as exc:
-            _LOG.debug("atropisomer-enum: Spiegelung fehlgeschlagen (%s): %s", lbl, exc)
-            continue
+        mx = None
+        how = "atrop"
+        if ax.get("rotatable", True):
+            try:
+                mx = _atrop_mirror_frame(xyz, ax, clash_min)
+            except Exception as exc:
+                _LOG.debug("atropisomer-enum: Drehung fehlgeschlagen (%s): %s", lbl, exc)
+                mx = None
+        else:
+            # Beide Seiten am Metall: eine Drehung wuerde die M-D-Bindung zerreissen.
+            # ⚠ KEIN RUECKFALL VON DER DREHUNG AUF DIE SPIEGELUNG.  Eine Drehung, die an
+            # Kollision oder Topologie SCHEITERT, ist eine begruendete Absage -- sie mit
+            # einer Operation zu ueberdecken, die nebenbei jedes andere Stereoelement
+            # kippt, waere Kosmetik.  Die Neusetzung gilt nur, wo gar nicht gedreht
+            # werden KANN.
+            n_nicht_drehbar += 1
+            if _reseat_on:
+                mx = _atrop_reseat_frame(xyz)
+                how = "atropR"
         if mx is None:
-            continue                             # Kollision -> nicht bauen, nichts verlieren
-        added.append((mx, f"{lbl}_atrop-{want}"))
+            continue                             # nicht bauen, nichts verlieren
+        # ===== VERIFIKATION: TUT DAS FRAME, WOFUER ES GEBAUT WURDE? =====================
+        if not _atrop_realized(mx, sig, want):
+            n_unverifiziert += 1
+            _LOG.debug("atropisomer-enum: %s traegt %s auf %r NICHT -- verworfen",
+                       lbl, want, sig)
+            continue
+        added.append((mx, f"{lbl}_{how}-{want}"))
+        # Die Gesamtspiegelung kippt ALLE Achsen auf einmal.  Was sie mitrealisiert, wird
+        # als vorhanden vermerkt -- sonst baut die naechste Runde dasselbe Frame noch
+        # einmal fuer eine andere Signatur.
+        if how == "atropR":
+            try:
+                for _a in (_atrop_analyze(mx) or {}).get("axes", []):
+                    present.add((_a["sig"], _a["sign"]))
+            except Exception:
+                pass
         present.add((sig, want))
+    if n_unverifiziert:
+        _LOG.warning("atropisomer-enum: %d Frame(s) gebaut und VERWORFEN, weil sie das "
+                     "fehlende Vorzeichen nicht trugen", n_unverifiziert)
+    if n_nicht_drehbar and not _reseat_on:
+        _LOG.info("atropisomer-enum: %d Achse(n) nicht drehbar (Metallbruecke); "
+                  "DELFIN_ATROPISOMER_RESEAT=1 setzt sie per Neusetzung", n_nicht_drehbar)
 
     if capped:
         # KEINE STILLE KUERZUNG: was der Deckel wegnimmt, wird gemeldet.
