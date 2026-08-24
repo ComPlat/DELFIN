@@ -32482,6 +32482,16 @@ def _ffree_shared_tail(mol, results, dual_parse_done: bool):
     """
     if not results:
         return results
+    # ===== RUECKNAHMETOR UM DIE GANZE KETTE (24.08.2026) ================================
+    # ZWEI Zeilen fuer FUENF Verfeinerer -- nicht fuenf Wrapper.  Der Schnappschuss ist
+    # eine flache Listenkopie (Etiketten und xyz-Texte sind unveraenderlich), kostet also
+    # nichts.  Am Ende entscheidet `_refine_gate.keep_better` je Frame ueber Ergebnis oder
+    # Original.  Vorgabe AUS -> byte-identisch.
+    # ⚠ ABSICHTLICH UM DIE KETTE, NICHT UM JEDEN PASS.  Das Produkt ist die Kette; wenn sie
+    # als Ganzes ein Frame verschlechtert, gehoert dieses Frame zurueckgenommen.  Wer jeden
+    # Pass einzeln bewacht, bekommt fuenf Tore, die sich gegenseitig gutmachen -- und
+    # genau das ist der Korrektor eines Korrektors, den es hier nicht geben soll.
+    _rg_before = list(results)
     results = _apply_isolated_reseat_if_enabled(mol, results, dual_parse_done)
     results = _apply_arom_planarize_if_enabled(mol, results, dual_parse_done)
     # ===== ZWEI WEITERE, UND WARUM SIE JETZT HIERHER GEHOEREN (16.08.2026 abends) ========
@@ -32540,6 +32550,14 @@ def _ffree_shared_tail(mol, results, dual_parse_done: bool):
     # Pfad bei :32361, dieser Schwanz wird bei :32429 gerufen -- der Spiegelpass sieht
     # den fertigen Topf und veraendert fuer niemanden mehr das, was `present` meldet.
     results = _apply_mirror_enum_if_enabled(results)
+    # Rest des Ruecknahmetors (siehe Schnappschuss am Kettenanfang).  Der Spiegel haengt
+    # NEUE Etiketten an; die gehen unberuehrt durch -- bewertet wird nur, was ein
+    # bestehendes Etikett veraendert hat.
+    try:
+        from delfin.manta._refine_gate import keep_better as _rg_keep
+        results = _rg_keep(_rg_before, results)
+    except Exception as _rg_exc:              # pragma: no cover
+        logger.debug("refine-gate nicht angewandt: %s", _rg_exc)
     return results
 
 
@@ -32646,6 +32664,9 @@ def _smiles_to_xyz_isomers_impl(
                 # available at this early return; the corrector is geometry-only and
                 # the flag is a plain integer env-var, so pass mol=None.  Default-OFF
                 # byte-identical (the dispatch returns _ff unchanged when unset).
+                # Schnappschuss fuer das Ruecknahmetor -- flache Listenkopie, kostet
+                # nichts.  Die Gegenzeile steht am Ende dieser Kette, hinter dem Spiegel.
+                _rg_before_ff = list(_ff)
                 _ff = _apply_pi_coplanar_m_if_enabled(None, _ff, False)
                 # ── THE POST-PASS CHAIN IS UNREACHABLE FROM HERE (found 2026-07-30) ──
                 # This ``return`` short-circuits ~2260 lines that hold B4, B5, **B6 (the
@@ -32774,6 +32795,15 @@ def _smiles_to_xyz_isomers_impl(
                 # HH-Kontakte 225->142, Methylverstoesse in 133->103 Dateien.
                 _ff = _apply_h_placement_if_enabled(_ff)
                 _ff = _apply_mirror_enum_if_enabled(_ff)
+                # RUECKNAHMETOR fuer die FF-freie Kette (Schnappschuss oben bei
+                # `_rg_before_ff`).  Deckt pi_coplanar_m, baustein6 und h_placement ab --
+                # die Enumeratoren dazwischen (Stereozentren, Atropisomer, Spiegel) haengen
+                # NEUE Etiketten an und gehen unberuehrt durch.
+                try:
+                    from delfin.manta._refine_gate import keep_better as _rg_keep_ff
+                    _ff = _rg_keep_ff(_rg_before_ff, _ff)
+                except Exception as _rg_exc_ff:   # pragma: no cover
+                    logger.debug("refine-gate (ffree) nicht angewandt: %s", _rg_exc_ff)
                 # RING PUCKER FOR THE FF-FREE PATH: the hook that USED to sit here has been
                 # removed, and the reason is worth keeping.
                 #
