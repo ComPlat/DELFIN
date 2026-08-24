@@ -2348,6 +2348,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # Both copies always say the same thing; which one is on screen is the
         # overlay's business, not the caller's.
         rendered = [html.escape(str(line)) for line in lines if line not in (None, '')]
+        # And what the page could not do with the frames, on the end of
+        # whatever the row is saying -- see :func:`_trajectory_fault` for why
+        # it is put on at the draw rather than written into the message.
+        fault = _trajectory_fault()
+        if fault:
+            escaped = html.escape(fault)
+            rendered = ([*rendered[:-1], f'{rendered[-1]} {escaped}']
+                        if rendered else [escaped])
         spinner_html = (
             "<span class='delfin-busy' style='margin-right:6px; vertical-align:middle;' "
             "title='Working'></span>"
@@ -3879,8 +3887,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: working; a trajectory that is not drawing is not.
     _PLAY_NOTE_FAULTS = ('setPositions did not draw', 'no setPositions on the page')
 
-    def _gfn_status_lines(said=None):
-        """One row, whoever is writing it.
+    def _trajectory_fault():
+        """What the page could not do with the frames, or ``''``.
 
         Three things report while a structure is being worked on: the kernel
         counts the follow steps it has run, the optimisation says what it
@@ -3894,27 +3902,35 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         trajectory from a missing one, and "received 41 frames" is the case
         where nothing is wrong; a fault goes on the end of the line that is
         already there rather than under it.
+
+        On the end of it at the moment it is drawn, which is the half that had
+        to change.  This used to be composed into a message and written, and
+        the message it was composed into was whatever the *optimiser* had last
+        said -- so every report the page sent rewrote the row with a sentence
+        about a run that might have finished minutes ago.  Measured: one press
+        of Optimize, then a scan of the central C-C of butane under GFN2 in
+        benzene, then the one message the browser sends when it takes the
+        scan's frames -- and the row went from "The scan walked 8 of 8 points.
+        Highest +52.8 kcal/mol at 2.2 ..." back to "Optimised with GFN2-xTB.
+        E = -13.670432 Eh ...", which is the line the user was left looking at
+        instead of the answer the scan had spent its minutes on.  Nothing was
+        running: there was no optimisation behind that sentence at all.
+
+        A decoration rather than a message, the way the spinner is: what the
+        row says belongs to whoever wrote it, and the page adds to it without
+        being able to take it away.  It cannot pile up either -- it is applied
+        once per draw rather than folded into what is remembered.
         """
-        line = said if said is not None else (state.get('gfn_last_status') or '')
         note = str(state.get('gfn_play_note') or '')
         if note and any(fault in note for fault in _PLAY_NOTE_FAULTS):
-            return ((f'{line} Trajectory: {note}.' if line
-                     else f'Trajectory: {note}.'),)
-        return (line,)
+            return f'Trajectory: {note}.'
+        return ''
 
-    def _gfn_is_working():
-        """Whether there is a calculation behind what the line is reporting.
-
-        Both optimisers count.  The climb was left out, so every playback note
-        the page sent while it walked rewrote the row without a spinner and
-        with the last thing the *follow* had said -- "is following the drag: 6
-        step(s)" standing over a climb that had been running for half a
-        minute.  The row is one row whoever is writing it, and that only works
-        if everything that can be running is named here.
-        """
-        return bool(state.get('gfn_follow')
-                    or state.get('optimize_run') is not None
-                    or state.get('climb_run') is not None)
+    # Whether there is a calculation behind what the line is reporting used to
+    # be asked here, for the playback note to carry a spinner with it.  It is
+    # asked of the register of running workers instead -- see _busy_now, which
+    # is the only authority on the ring -- and the note no longer writes a
+    # message that would need one.
 
     def _hand_pulls():
         """Whether the hand on the molecule is a force or a placement.
@@ -4122,13 +4138,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             and submit_topology_btn.value):
                         schedule_ui_update(
                             _set_mol_status,
-                            *_gfn_status_lines(state.get('gfn_last_status')),
+                            state.get('gfn_last_status') or '',
                             spinner=True)
                         continue
                     if _still_spent(current, holding):
                         schedule_ui_update(
                             _set_mol_status,
-                            *_gfn_status_lines(state.get('gfn_last_status')),
+                            state.get('gfn_last_status') or '',
                             spinner=True)
                         continue
                     # With the budget on, the drag is followed differently:
@@ -4689,8 +4705,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         if priced.get('energy') is not None:
                             state['thermal_priced'] = float(priced['energy'])
                     state['gfn_last_status'] = said
-                    schedule_ui_update(_set_mol_status,
-                                       *_gfn_status_lines(said), spinner=True)
+                    schedule_ui_update(_set_mol_status, said, spinner=True)
                     # The atoms under the cursor go back where they were sent.
                     # xtb pulls them most of the way home in five cycles, and
                     # this answer outlives the drag -- applied after the
@@ -6980,13 +6995,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     said = (f'{label} is still going: round {rounds}, '
                             f'{state.get("optimize_moved", 0.0):.3f} A moved.')
                     state['gfn_last_status'] = said
-                    _set_mol_status(*_gfn_status_lines(said), spinner=True)
+                    _set_mol_status(said, spinner=True)
                     state['optimize_carrying_on'] = True
                     schedule_ui_update(
                         lambda: on_submit_optimize(None, every_frame=every_frame))
                     return
-                _set_mol_status(*_gfn_status_lines(said),
-                                *(failures + unfinished)[:2])
+                _set_mol_status(said, *(failures + unfinished)[:2])
 
             schedule_ui_update(_apply)
 
@@ -8319,10 +8333,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # finishing inside ten milliseconds and an xtb round taking
                 # seconds.
                 _land_the_stopped_frame()
-            # The same two rows the follow step writes, and the spinner with
-            # them while there is a calculation behind it -- this line and that
-            # one are the same message, not two taking turns.
-            _set_mol_status(*_gfn_status_lines(), spinner=_gfn_is_working())
+            # Drawn again rather than written.  The page reporting on frames
+            # is not a result and has no sentence of its own to put in the
+            # row: what it has is a fault, and a fault goes on the end of
+            # whatever is already there -- see :func:`_trajectory_fault`.
+            #
+            # Written, it wrote the *optimiser's* last sentence, which is how
+            # a scan's verdict came to be replaced by "Optimised with
+            # GFN2-xTB..." from a run that had finished before the scan
+            # started.  A message that carries no news must not be able to
+            # take the row away from one that does.
+            _render_mol_status()
             return
 
         if verb == 'grabbed':
@@ -9387,10 +9408,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # 'The scan walked nothing' as though that were a result.
                     if not path:
                         return
-                    # There are two ends now, so the box beside the press has
-                    # a second place a search can start from and says so.
+                    # There are two ends now, and the press beside them is put
+                    # on the thing this walk made possible -- see
+                    # :func:`_scan_left_two_ends`, which is where the moment
+                    # is answered rather than merely allowed for.
                     if state.get('scan_ends'):
-                        _refresh_saddle_controls()
+                        _scan_left_two_ends()
                     # The places along the walk worth coming back to, put into
                     # the history in the order they were reached, so that Undo
                     # steps back through them and Redo forward again.
@@ -9663,11 +9686,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         that says so, and this is only the fetch.
         """
         if which == 'scan':
-            ends = state.get('scan_ends')
+            # Asked of the one place that decides whether the pair exists, so
+            # that the press cannot act on ends the box would not have offered
+            # -- they name atoms, and the molecule they name may have been
+            # replaced since.
+            ends = _scan_ends_here()
             if ends:
                 return ends
-            _set_mol_status('The last scan left no two ends to walk between; '
-                            'run one, or mark two structures.')
+            _set_mol_status('The last scan left no two ends to walk between '
+                            'on this structure; run one, or mark two '
+                            'structures.')
             return None
         pair = _marked_pair()
         if pair:
@@ -9691,6 +9719,61 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         else:
             submit_saddle_btn.description = 'To the saddle'
             submit_saddle_btn.icon = 'mountain'
+
+    def _scan_left_two_ends():
+        """A scan has finished: put the press on the pair it just made.
+
+        Two buttons used to *appear* when a scan left two ends -- Find the
+        path and Path to saddle -- and their arriving was the editor saying
+        that something new could be done now.  Folded into the box that asks
+        where a search starts (085cfd55), the entry appeared and nothing else
+        did: the box went on standing at "what is on screen", so the press
+        went on meaning climb what is in the box, and the one moment the user
+        was being told about passed without anything happening on screen.
+        The user, on that: "nach einem Scan konnten wir doch davor noch weiter
+        den Path absuchen mit Buttons -- wo sind die hin".
+
+        So the start moves.  A finished scan is the strongest statement there
+        is about what the user is interested in now -- it is minutes of
+        walking, and its two ends are what the walk was for -- and the press
+        beside it then means the thing that walk made possible, one press
+        away.  What changes on screen is the start naming the scan's ends and
+        the second box arriving beside it with the ways that are open from a
+        pair, which is the same news the two buttons used to carry.
+
+        Nothing is taken away: "what is on screen" is still in the list, one
+        selection away, and every way that could run from it can still run.
+
+        Moved through the wish rather than by writing the box, because that is
+        what the wish is for: a value that cannot be met is kept aside and put
+        back the moment it can (see :func:`_keep_the_choice`).  Under a method
+        with no route from a pair the start simply stays where it is and the
+        move happens later, if the user picks a method that has one.
+        """
+        state['saddle_start_wish'] = 'scan'
+        _refresh_saddle_controls()
+
+    def _scan_ends_here():
+        """The two ends the last scan left, while they are about this molecule.
+
+        They outlive the structure they were walked on -- a scan leaves them
+        and loading something else does not take them away -- and two ends
+        belonging to another molecule are not a pair for this one: the walk
+        between them would carry the previous structure into the box under the
+        name of a path.  Told apart by the element column, the way the held
+        values and the thermal anchor are, because that is what makes two
+        geometries the same molecule.
+
+        Absent for that reason and no other, which is the rule the whole of
+        :func:`_refresh_saddle_controls` is built on.
+        """
+        ends = state.get('scan_ends')
+        if not ends:
+            return None
+        here = _current_xyz() or ''
+        if _structure_fingerprint(ends[0]) != _structure_fingerprint(here):
+            return None
+        return ends
 
     def _refresh_saddle_controls():
         """Offer the starts that exist and the ways that can run, and no more.
@@ -9717,7 +9800,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             starts = [('what is on screen', 'here')]
             if _marked_pair():
                 starts.append(('the end you marked', 'marked'))
-            if state.get('scan_ends'):
+            if _scan_ends_here():
                 starts.append(("the scan's two ends", 'scan'))
 
             def ways_from(start):
@@ -10008,7 +10091,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 else 'Climbing to a transition state; drag an atom to point '
                      'it somewhere...')
         state['gfn_last_status'] = said
-        _set_mol_status(*_gfn_status_lines(said), spinner=True)
+        _set_mol_status(said, spinner=True)
         walked: list = []
 
         def _push(final=False):
@@ -10104,10 +10187,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     state['gfn_last_status'] = (
                         f'Climbing to a transition state: {counted[0]} '
                         f'step(s).')
-                    schedule_ui_update(
-                        _set_mol_status,
-                        *_gfn_status_lines(state['gfn_last_status']),
-                        spinner=True)
+                    schedule_ui_update(_set_mol_status,
+                                       state['gfn_last_status'], spinner=True)
 
             def _walked(path, _energies):
                 """ORCA's trajectory, which arrives whole each time it grows.
@@ -10132,8 +10213,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 to its next idea from one that has hung.
                 """
                 state['gfn_last_status'] = sentence
-                schedule_ui_update(_set_mol_status,
-                                   *_gfn_status_lines(sentence), spinner=True)
+                schedule_ui_update(_set_mol_status, sentence, spinner=True)
 
             try:
                 got = _climb.reach_the_reaction(
@@ -10692,14 +10772,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                      f'this structure, which is past the {ceiling:.1f} '
                      f'available at {T:g} K, so the box has the last point '
                      f'that was inside it.')
-        # And that there is now a second place a saddle search can start.
-        # The two ends are on the toolbar as an entry in a box, which is
-        # quieter than the two buttons that used to appear -- so it is said
-        # once, here, where the walk that made them is being reported.
+        # And what the walk has made possible, said where the walk is being
+        # reported.  The two ends are an entry in a box rather than the two
+        # buttons that used to appear, and a box that has gained an entry is
+        # quiet -- so the sentence says what the toolbar has just done, and
+        # :func:`_scan_left_two_ends` is what makes the sentence true rather
+        # than a description of something the user would have to find.
         left = ('' if not state.get('scan_ends') else
-                ' It left two ends: the box beside "To the saddle" will now '
-                'start from them, which walks its own way between the two '
-                'and does not need the coordinate you chose.')
+                ' It left two ends, and the press now starts from them: one '
+                'press walks its own way between the two and climbs what it '
+                'finds, without the coordinate you chose. The box beside it '
+                'says how far to go, and the one before it goes back to the '
+                'structure on screen.')
         if rise <= ceiling:
             return (first,
                     f'{wants} You have {ceiling:.1f} kcal/mol at {T:g} K, so '

@@ -867,8 +867,9 @@ def test_the_page_says_what_the_playback_is_doing(editor):
     handler = source.split("def on_submit_cmd")[1].split("\n    def ")[0]
     assert "verb == 'gfnplay'" in handler
     assert "state['gfn_play_note'] = str(payload)" in handler
-    assert "_gfn_status_lines()" in handler, (
-        "and it says it in the shape the follow step says its half in")
+    assert "_render_mol_status()" in handler, (
+        "the page's report draws the row again; it never writes one, so it "
+        "cannot take the row away from whoever has something to say")
 
 
 @pytest.fixture
@@ -945,7 +946,7 @@ def test_the_two_ends_of_a_drag_write_one_message_not_two(bare_editor):
     # The follow is running, which is what puts the ring on the line: it is a
     # fact about the worker, not about which of the two ends wrote last.
     token = part._busy_begin("the relaxation under the hand")
-    part._set_mol_status(*part._gfn_status_lines(said), spinner=True)
+    part._set_mol_status(said, spinner=True)
     from_kernel = part.mol_status.value
 
     part.submit_cmd_sync.value = "gfnplay:7:received 15 frames"
@@ -4911,7 +4912,7 @@ def test_the_budget_line_goes_on_the_row_that_is_already_there():
     assert "state['thermal_now'] = priced.get('energy')" in follow
     assert "said = f'{said} {spent}'" in follow
     # One line handed to the status, never two.
-    assert "_gfn_status_lines(said)" in follow
+    assert "schedule_ui_update(_set_mol_status, said, spinner=True)" in follow
 
 
 def test_the_last_affordable_structure_is_what_comes_back(bare_editor):
