@@ -975,6 +975,28 @@ def _apply_me_bond_snap_if_enabled(results):
         return results
 
 
+# M-C-Median aus 40 000 CCDC-Kristallen, je Metall -- der ZIELWERT, nicht geschaetzt.
+# Aufgenommen nur, wo |Bauer - Kristall| >= 0,10 A UND n >= 30 gemessene Bindungen.
+# Erhoben mit `MANTA2/harness/mc_laenge_kristallmedian.py` (Donormenge des AUGES auf dem
+# KRISTALL = die Koordinationssphaere; keine zweite Bindungserkennung).
+# Format: Metall -> (Median in A, n, bisheriger Wert)  -- n und Altwert stehen bewusst
+# daneben, damit jede Zeile ohne Nachschlagen pruefbar ist.
+_MC_LEN_CRYSTAL_SOURCE = {
+    # Carbonyl-Metalle: alle lagen auf dem glatten Platzhalter 2,10 (Cr 2,05)
+    "Mn": (1.809, 2137, 2.10), "Os": (1.908, 2834, 2.10), "Re": (1.925, 2453, 2.10),
+    "Cr": (1.886, 2078, 2.05), "Tc": (1.918,   31, 2.10),
+    # fruehe Uebergangsmetalle: standen zu KURZ
+    "Ti": (2.403,  875, 2.25), "Zr": (2.548,  751, 2.40), "Nb": (2.408,   97, 2.20),
+    "Hf": (2.552,   99, 2.35), "Ta": (2.439,   94, 2.15), "Sc": (2.537,   55, 2.30),
+    "V":  (2.281,  199, 2.15), "Y":  (2.670,  223, 2.55),
+    # Lanthanoide: standen zu LANG
+    "La": (2.850,   33, 3.13), "Ce": (2.815,   59, 3.25), "Lu": (2.642,   86, 3.08),
+    # Einzelfall
+    "Ge": (1.964,  308, 2.46),
+}
+_MC_LEN_CRYSTAL_MEDIAN = {_m: _v[0] for _m, _v in _MC_LEN_CRYSTAL_SOURCE.items()}
+
+
 def _get_ml_bond_length(metal_symbol: str, donor_symbol: str,
                         kind: str = "sigma") -> float:
     """Return estimated M-L bond length in Å.
@@ -995,6 +1017,36 @@ def _get_ml_bond_length(metal_symbol: str, donor_symbol: str,
         _me = _ml_me_band(metal_symbol, donor_symbol)
         if _me is not None:
             return float(_me)
+    # ===== M-C AUS DEN KRISTALLEN STATT AUS PLATZHALTERN (24.08.2026) =================
+    # Gemessen an 40 000 CCDC-Kristallen (14 566 mit M-C), Median je Metall gegen den
+    # hier angesetzten Wert -- `harness/mc_laenge_kristallmedian.py`.  Ueber 32 Metalle
+    # liegt der Median der Abweichung bei +0,033 A, die Tabelle ist im Kern also richtig.
+    # Falsch ist sie fuer DREI ZUSAMMENHAENGENDE FAMILIEN, jede in eine Richtung:
+    #   * die Carbonyl-Metalle stehen alle auf dem glatten Platzhalter 2,10 und sind
+    #     damit 0,16-0,29 A ZU LANG   (Mn n=2137, Os 2834, Re 2453, Cr 2078, Tc 31)
+    #   * die fruehen Uebergangsmetalle sind 0,12-0,29 A ZU KURZ, wo M-C wirklich lang
+    #     ist                          (Ti 875, Zr 751, Nb 97, Hf 99, Ta 94, Sc, V, Y)
+    #   * die Lanthanoide sind 0,28-0,44 A ZU LANG            (La 33, Ce 59, Lu 86)
+    #   * Ge ist der Einzelfall mit +0,496
+    # Richtig kalibriert sind ausgerechnet die haeufigsten: Fe (n=11 428) -0,024,
+    # Pt -0,000, Cu -0,001, Rh -0,003, Ir +0,007, Pd/Au -0,014.
+    #
+    # WARUM DAS ZAEHLT: das Donormodell des Auges laesst C nur bis 1,25 x Idealbindung
+    # als Donor gelten.  Ein um 0,19 A zu langes Os-C rutscht darueber, zaehlt nicht mehr
+    # als Donor, das Metall-CN faellt -- und weil das CN-Tor EXAKT ist, besteht KEIN
+    # Frame mehr die Topologiepruefung.  Gemessen an `ACAHUH`: Kristall CN 4, Bau CN 0
+    # in allen zwoelf Frames, `topo_correct_frame = false`, obwohl die Frames sauber sind.
+    #
+    # ⚠ NUR WO DIE EVIDENZ TRAEGT: aufgenommen sind Metalle mit |Delta| >= 0,10 A UND
+    # n >= 30 gemessenen Bindungen.  Der Wert ist der MEDIAN, nicht die Kovalenzsumme
+    # und nicht ein pauschal gestrichener Offset -- ein pauschaler Eingriff waere
+    # derselbe Fehler wie der, den er behebt.
+    # Vorgabe AUS -> byte-identisch.  EINE Lesestelle.
+    if (donor_symbol in ("C", "Si")
+            and os.environ.get("DELFIN_FFFREE_MC_LEN_CRYSTAL", "0") == "1"):
+        _mc = _MC_LEN_CRYSTAL_MEDIAN.get(metal_symbol)
+        if _mc is not None:
+            return float(_mc)
     key = (metal_symbol, donor_symbol)
     if key in _METAL_LIGAND_BOND_LENGTHS:
         return _METAL_LIGAND_BOND_LENGTHS[key]
