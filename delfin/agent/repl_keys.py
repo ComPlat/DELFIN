@@ -47,6 +47,15 @@ EDIT = "edit"                # the buffer changed; redraw the input line
 
 _ESC = "\x1b"
 _SHIFT_TAB = "\x1b[Z"
+# Bracketed paste. The terminal wraps pasted text in these two sequences,
+# which is the ONLY way to tell a paste from someone typing very fast —
+# and the difference matters, because every newline inside a paste is a
+# submit if it is read as typing. A stack trace pasted during a turn used
+# to queue one message per line.
+_PASTE_ON = "\x1b[?2004h"
+_PASTE_OFF = "\x1b[?2004l"
+_PASTE_START = "\x1b[200~"
+_PASTE_END = "\x1b[201~"
 _CTRL_O = "\x0f"
 _CTRL_L = "\x0c"
 _CTRL_T = "\x14"
@@ -85,6 +94,12 @@ class KeyDecoder:
     buffer: str = ""
     _seen: list[str] = field(default_factory=list, repr=False)
     _held_esc: bool = False
+    #: Inside a bracketed paste. Everything up to the end marker is
+    #: content — newlines included — and none of it is a key.
+    _pasting: bool = False
+    #: A partial marker held back across a read boundary. The start and
+    #: end markers are six bytes and a 1024-byte read can cut either one.
+    _partial: str = ""
 
     def feed(self, chunk: str) -> list[KeyEvent]:
         events: list[KeyEvent] = []
@@ -96,8 +111,19 @@ class KeyDecoder:
             else:
                 events.append(KeyEvent(INTERRUPT))
 
+        if self._partial:
+            chunk = self._partial + chunk
+            self._partial = ""
+
         if not chunk:
             return events
+
+        # While a paste is open a lone ESC is content, so the paste check
+        # comes first — but outside one it is the interrupt, and the
+        # prefix test deliberately does not claim a single ESC.
+        if (self._pasting or _PASTE_START in chunk
+                or self._prefix_of_marker(chunk)):
+            return events + self._feed_paste(chunk)
 
         if chunk == _ESC:
             events.append(KeyEvent(INTERRUPT))
@@ -174,6 +200,89 @@ class KeyDecoder:
 
         return events
 
+    # -- bracketed paste -------------------------------------------------
+
+    @staticmethod
+    def _prefix_of_marker(chunk: str) -> bool:
+        """True when the tail could be the start of a paste marker.
+
+        Six-byte markers and 1024-byte reads: the boundary lands inside a
+        marker often enough that not checking makes pasting unreliable in
+        exactly the way that is hardest to reproduce.
+
+        From TWO characters, never one. A lone trailing ESC is also the
+        first byte of this marker, and claiming it here would take the
+        boundary away from ``_held_esc`` — which is the mechanism that
+        knows an ESC with nothing behind it is the user asking to stop.
+        Losing that costs a working interrupt to buy a paste split at a
+        1023-character offset.
+        """
+        for n in range(2, len(_PASTE_START)):
+            if chunk.endswith(_PASTE_START[:n]):
+                return True
+        return False
+
+    def _feed_paste(self, chunk: str) -> list[KeyEvent]:
+        """Consume *chunk* as paste content and markers.
+
+        Content goes into the buffer verbatim, newlines included. The
+        whole point is that a paste is ONE message: read as typing, every
+        newline in a pasted stack trace queues another turn.
+        """
+        events: list[KeyEvent] = []
+        while chunk:
+            if not self._pasting:
+                start = chunk.find(_PASTE_START)
+                if start < 0:
+                    # No start in what is left. Anything before a possible
+                    # partial marker is ordinary input.
+                    hold = 0
+                    for n in range(len(_PASTE_START) - 1, 0, -1):
+                        if chunk.endswith(_PASTE_START[:n]):
+                            hold = n
+                            break
+                    if hold:
+                        self._partial = chunk[-hold:]
+                        chunk = chunk[:-hold]
+                    if chunk:
+                        events.extend(self._feed_typed(chunk))
+                    return events
+                if start:
+                    events.extend(self._feed_typed(chunk[:start]))
+                chunk = chunk[start + len(_PASTE_START):]
+                self._pasting = True
+                continue
+
+            end = chunk.find(_PASTE_END)
+            if end < 0:
+                # A partial END marker at the tail must not be pasted as
+                # text, or the user's message ends with "\x1b[201".
+                hold = 0
+                for n in range(len(_PASTE_END) - 1, 0, -1):
+                    if chunk.endswith(_PASTE_END[:n]):
+                        hold = n
+                        break
+                if hold:
+                    self._partial = chunk[-hold:]
+                    chunk = chunk[:-hold]
+                self.buffer += chunk
+                if chunk:
+                    events.append(KeyEvent(EDIT, text=self.buffer))
+                return events
+            self.buffer += chunk[:end]
+            self._pasting = False
+            chunk = chunk[end + len(_PASTE_END):]
+            events.append(KeyEvent(EDIT, text=self.buffer))
+        return events
+
+    def _feed_typed(self, chunk: str) -> list[KeyEvent]:
+        """Ordinary keys that arrived in the same read as a paste marker."""
+        was, self._pasting = self._pasting, False
+        try:
+            return self.feed(chunk)
+        finally:
+            self._pasting = was
+
 
 def raw_mode_supported(stream=None) -> bool:
     """POSIX terminal, or nothing. Elsewhere the loop stays line-based."""
@@ -212,10 +321,26 @@ class RawMode:
             tty.setcbreak(self._fd, termios.TCSADRAIN)
             atexit.register(self.restore)
             self._hooked = True
+            self._set_paste_mode(True)
         except Exception:
             self._fd = None
             self._saved = None
         return self
+
+    def _set_paste_mode(self, on: bool) -> None:
+        """Ask the terminal to bracket pasted text, and stop asking after.
+
+        Written to the terminal, not to stdout: the answer stream must
+        stay byte-exact, and this is a message to the device rather than
+        output. Left on, a later shell in the same terminal would receive
+        the markers as literal text.
+        """
+        try:
+            with open("/dev/tty", "w") as tty_out:
+                tty_out.write(_PASTE_ON if on else _PASTE_OFF)
+                tty_out.flush()
+        except Exception:
+            pass                     # no controlling terminal: nothing to ask
 
     def __exit__(self, *exc) -> None:
         self.restore()
@@ -227,6 +352,7 @@ class RawMode:
     def restore(self) -> None:
         if self._saved is None or self._fd is None:
             return
+        self._set_paste_mode(False)
         import termios
         try:
             termios.tcsetattr(self._fd, termios.TCSADRAIN, self._saved)

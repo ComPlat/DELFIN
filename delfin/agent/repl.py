@@ -73,13 +73,20 @@ class Transcript:
 
     def __init__(self, out=None, err=None, *, theme: rr.Theme | None = None,
                  show_tools: bool = True, show_thinking: bool = False,
-                 width: int | None = None) -> None:
+                 width: int | None = None, color: str = "auto") -> None:
         self.out = out if out is not None else sys.stdout
         self.err = err if err is not None else sys.stderr
         self.theme = theme if theme is not None else rr.theme_for(self.err)
         self.show_tools = show_tools
         self.show_thinking = show_thinking
         self.width = width or rr.terminal_width()
+        # A SECOND colour decision, taken about stdout. The theme above
+        # is about stderr, where the chrome goes; the answer goes to
+        # stdout, and the two streams are redirected independently. Asking
+        # stderr about stdout is how `delfin-agent -p "..." > answer.txt`
+        # in a terminal would end up writing escape codes into the file.
+        self._answer_theme = rr.theme_for(self.out, color)
+        self._markdown = rr.MarkdownStream(self._answer_theme)
         # Two flags, because one had to answer two different questions and
         # got one of them wrong. `_out_open` is about the FILE: stdout ends
         # mid-line and needs closing before the process exits.
@@ -92,10 +99,16 @@ class Transcript:
 
     # -- primitives ------------------------------------------------------
     def answer(self, delta: str) -> None:
-        """Answer text. The only thing that ever reaches stdout."""
+        """Answer text. The only thing that ever reaches stdout.
+
+        The line-open flags follow the MODEL's text, never the styled
+        form: an SGR reset is not a newline, and a delta that ends in one
+        would otherwise be read as a closed line and let the status row
+        repaint over the sentence being written.
+        """
         if not delta:
             return
-        self.out.write(delta)
+        self.out.write(self._markdown.feed(delta))
         self._flush(self.out)
         self._out_open = not delta.endswith("\n")
         self._break_pending = self._out_open
@@ -121,6 +134,13 @@ class Transcript:
 
     def finish(self) -> None:
         """Close the answer stream, so a redirected stdout ends in a newline."""
+        tail = self._markdown.flush()
+        if tail:
+            # Held-back bytes and any style still open. Without this a
+            # two-character tail that looked like the start of a marker
+            # would never be printed at all.
+            self.out.write(tail)
+            self._flush(self.out)
         if self._out_open:
             self.out.write("\n")
             self._flush(self.out)
@@ -408,6 +428,7 @@ class TerminalAgent:
             theme=rr.theme_for(self.err, self.opts.color),
             show_tools=self.opts.show_tools,
             show_thinking=self.opts.show_thinking,
+            color=self.opts.color,
         )
         self._read_line = read_line or self._input
         self._q: queue.Queue[RenderItem] = queue.Queue()
@@ -1340,6 +1361,13 @@ class TerminalAgent:
             readline.set_completer(_complete)
             readline.set_completer_delims(" \t\n")
             readline.parse_and_bind("tab: complete")
+            # Pinned rather than inherited. Recent GNU readline defaults
+            # this on and older builds — and libedit, which macOS links —
+            # do not, so whether a pasted block arrived as one message
+            # depended on which library the interpreter happened to find.
+            # During a turn the key layer brackets the paste itself; this
+            # is the same guarantee at the idle prompt.
+            readline.parse_and_bind("set enable-bracketed-paste on")
         except Exception:
             pass
 
