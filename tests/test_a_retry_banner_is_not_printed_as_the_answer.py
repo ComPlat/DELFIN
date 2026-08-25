@@ -184,6 +184,70 @@ def test_a_blocked_call_is_drawn_as_blocked(eng):
     assert "blocked" not in out.getvalue()
 
 
+def test_one_tool_result_draws_one_line(eng):
+    """Found by running it, not by reading it.
+
+    A tool result arrives on TWO callbacks — the head slice on
+    on_tool_result, the verdict and the true size on on_tool_result_meta —
+    and rendering each as it came drew every call twice, the second time
+    with a body it did not have (`9+ lines` then `0 lines`). Two stubs in
+    two unit tests each looked right on its own.
+    """
+    eng.client.stream_message = _stream(
+        StreamEvent(type="tool_result", tool_name="read_file",
+                    tool_output="a\nb\nc"),
+        StreamEvent(type="tool_result", tool_name="grep_file",
+                    tool_output="hit"),
+        StreamEvent(type="text_delta", text="ok"),
+    )
+    out, err = io.StringIO(), io.StringIO()
+    transcript = repl.Transcript(out, err, theme=rr.Theme(enabled=False))
+    repl.run_turn(eng, "go", sink=transcript.render)
+
+    results = [ln for ln in err.getvalue().splitlines() if "⎿" in ln]
+    assert len(results) == 2, f"expected one line per result, got {results}"
+    # And with both halves merged the count is exact, not a floor.
+    assert "+" not in results[0]
+
+
+def test_a_result_with_no_verdict_is_still_drawn():
+    """The merge must not be able to swallow a line.
+
+    If a path ever reports a result without the meta callback, holding the
+    text for a verdict that never comes would lose it entirely.
+    """
+    seen: list[repl.RenderItem] = []
+
+    class _NoMeta:
+        token_usage = {"input": 0, "output": 0}
+
+        def stream_response(self, **kw):
+            kw["on_tool_result"]("read_file", "body")
+            return "done"
+
+    repl.run_turn(_NoMeta(), "go", sink=seen.append)
+    results = [i for i in seen if i.kind == "tool_result"]
+    assert len(results) == 1
+    assert results[0].text == "body"
+
+
+def test_a_remote_tool_says_which_server_it_ran_on():
+    """mcp__delfin-docs__read_file is unreadable; the server still matters.
+
+    It is the difference between a call DELFIN gated and one that ran
+    somewhere else, outside the workspace sandbox and outside the bash
+    deny-list.
+    """
+    assert rr.short_tool_name(
+        "mcp__delfin-docs__read_file") == "delfin-docs:read_file"
+    assert rr.short_tool_name("read_file") == "read_file"
+    line = rr.tool_headline("mcp__delfin-docs__read_file",
+                            {"path": "calc.py"}, theme=rr.Theme(enabled=False))
+    assert "delfin-docs:read_file" in line
+    assert "mcp__" not in line
+    assert "calc.py" in line, "the argument lookup must survive the rename"
+
+
 def test_the_interactive_turn_reports_what_the_headless_turn_reports():
     """One JSON contract, not two.
 
