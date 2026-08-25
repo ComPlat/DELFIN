@@ -679,6 +679,28 @@ class AgentEngine:
         """KitToolPermissions instance bound to the client (None if not KIT)."""
         return getattr(self.client, "_permissions", None)
 
+    def run_gated_bash(self, command: str) -> str:
+        """Run one shell command through the AGENT's gate, for `!cmd`.
+
+        The whole point is that it is not a way around anything: the same
+        deny-list, the same secret scan, the same auto-allow list and the
+        same confirmation callback the model's own bash calls go through.
+        A shell escape that skipped them would let someone do, from the
+        agent's prompt, exactly what the agent may not — and it would look
+        like a convenience rather than a hole.
+
+        Returns the tool result string. Raises RuntimeError when this
+        backend carries no permissions object, because on those the shell
+        tool is unavailable to the model too.
+        """
+        perms = self.kit_permissions
+        if perms is None:
+            raise RuntimeError(
+                "this backend has no permission gate, so it has no shell")
+        from .api_client import _doc_executor
+        return _doc_executor.execute("bash", {"command": str(command or "")},
+                                     perms)
+
     def set_kit_confirm_callback(self, callback) -> bool:
         """Bind/unbind the KIT-Toolbox confirmation callback at runtime.
 

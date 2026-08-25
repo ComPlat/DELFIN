@@ -428,6 +428,7 @@ class TerminalAgent:
         # Typed during a turn: queued, never injected. A queued message
         # cannot be lost and cannot land in a context nobody could see.
         self.queued: list[str] = []
+        self._quit = False
 
     # -- input -----------------------------------------------------------
     def _input(self, prompt: str) -> str:
@@ -651,6 +652,150 @@ class TerminalAgent:
             return
         for line in rr.strip_control(self._last_result_text).splitlines():
             self.transcript.chrome("  " + line)
+
+    # -- what a typed line means ------------------------------------------
+    def _handle_line(self, line: str) -> str:
+        """Returns the text to send to the model, or "" when it was handled.
+
+        Order matters and is the dashboard's: a builtin, then a user
+        command, then a skill, then a subagent command, then the model.
+        The same `/deploy` has to mean the same thing on both surfaces.
+        """
+        from . import repl_commands as rc
+
+        if line.startswith(rc.SHELL_PREFIX) and len(line) > 1:
+            self._shell_out(line[1:].strip())
+            return ""
+        if line.startswith(rc.MEMORY_PREFIX) and len(line) > 1:
+            self._remember(line[1:].strip())
+            return ""
+
+        result = rc.dispatch(line, self._ctx())
+        if not result.handled:
+            return rc.expand_at_references(line, self.opts.cwd)
+        if result.output:
+            for out_line in result.output.splitlines():
+                self.transcript.chrome(out_line)
+        if result.clear:
+            self._start_fresh()
+        if result.quit:
+            self._quit = True
+        return result.prompt
+
+    def _ctx(self):
+        from . import repl_commands as rc
+        return rc.ReplContext(
+            engine=self.engine, workspace=self.opts.cwd,
+            session_id=str(getattr(self.engine, "session_id", "") or ""))
+
+    def _start_fresh(self) -> None:
+        try:
+            self.engine.messages.clear()
+        except Exception:
+            pass
+
+    def _shell_out(self, command: str) -> None:
+        """`!cmd` runs through the AGENT's gate, not around it.
+
+        A shell escape that skipped the deny-list and the approval prompt
+        would be a way to do from the agent's prompt exactly what the
+        agent may not do, which is worse than not having the affordance.
+        The output joins the session, so the model can see what happened.
+        """
+        if not command:
+            return
+        executor = getattr(self.engine, "run_gated_bash", None)
+        if not callable(executor):
+            self.transcript.chrome(self.transcript.theme.dim(
+                "! is not available on this backend — it runs through the "
+                "same gate the agent uses, and this one has none"))
+            return
+        out = self._off_thread(lambda: executor(command))
+        if isinstance(out, Exception):
+            self.transcript.chrome(
+                self.transcript.theme.red(f"[error] {out}"))
+            return
+        for line in self._shell_lines(out):
+            self.transcript.chrome("  " + line)
+
+    @staticmethod
+    def _shell_lines(out) -> list[str]:
+        """What the user asked to see, not the envelope it arrived in.
+
+        The tool returns a JSON result because that is what a MODEL needs;
+        a person typing `!git status` wants the output of git status.
+        """
+        import json
+
+        text = str(out or "")
+        try:
+            payload = json.loads(text)
+        except (TypeError, ValueError):
+            payload = None
+        if isinstance(payload, dict):
+            if payload.get("error"):
+                return [f"refused: {payload['error']}"]
+            parts = [str(payload.get("stdout", "") or ""),
+                     str(payload.get("stderr", "") or "")]
+            text = "\n".join(p for p in parts if p.strip())
+            code = payload.get("exit_code")
+            if code not in (0, None):
+                text += f"\n(exit {code})"
+        lines = rr.strip_control(text).splitlines()
+        if len(lines) > 200:
+            lines = lines[:200] + [f"… {len(lines) - 200} more lines"]
+        return lines
+
+    def _off_thread(self, work):
+        """Run something that can hit the gate, and stay able to answer it.
+
+        Anything routed through the permission gate may ask for approval,
+        and the broker parks that question for THE MAIN THREAD to answer.
+        Calling such work directly from the main thread is therefore a
+        deadlock: the asker waits for the answerer, which is itself. So it
+        runs on a worker while this thread keeps answering — the same
+        arrangement a turn already uses, for the same reason.
+        """
+        box: list = []
+
+        def _run():
+            try:
+                box.append(work())
+            except Exception as exc:      # noqa: BLE001
+                box.append(exc)
+
+        worker = threading.Thread(target=_run, name="agent-gated", daemon=True)
+        worker.start()
+        while worker.is_alive() or not box:
+            if self.broker is not None:
+                pending = self.broker.take()
+                if pending is not None:
+                    self._answer(pending, self._raw_for_prompt())
+                    continue
+            worker.join(timeout=_PUMP_TICK_S)
+            if not worker.is_alive():
+                break
+        return box[0] if box else None
+
+    def _raw_for_prompt(self):
+        """A keystroke reader for a prompt raised outside a turn."""
+        from . import repl_keys as rk
+        raw = rk.RawMode(self._stdin)
+        return raw.__enter__()
+
+    def _remember(self, text: str) -> None:
+        """`#note` writes a memory, marked as the user's own."""
+        if not text:
+            return
+        try:
+            from . import memory_store
+            memory_store.save_typed_memory(
+                text=text, kind="user", workspace=self.opts.cwd,
+                author="user")
+            self.transcript.chrome(self.transcript.theme.dim("remembered"))
+        except Exception as exc:
+            self.transcript.chrome(
+                self.transcript.theme.red(f"could not remember: {exc}"))
 
     # -- approvals --------------------------------------------------------
     def _answer(self, req, raw) -> None:
@@ -995,6 +1140,7 @@ class TerminalAgent:
     def run(self, first_prompt: str = "") -> int:
         self._install_sigint()
         self._load_history()
+        self._install_completer()
         if self.opts.banner:
             for line in self.opts.banner.splitlines():
                 self.transcript.chrome(line)
@@ -1020,8 +1166,11 @@ class TerminalAgent:
                 self._idle_interrupts = 0
                 if not pending:
                     continue
-                if pending in ("/exit", "/quit"):
+                pending = self._handle_line(pending)
+                if self._quit:
                     return 0
+                if not pending:
+                    continue
                 try:
                     self.turn(pending)
                 except KeyboardInterrupt:
@@ -1052,6 +1201,40 @@ class TerminalAgent:
     def history_path() -> Path:
         from . import state_paths
         return state_paths.ensure_dir(Path.home() / ".delfin") / HISTORY_NAME
+
+    def _install_completer(self) -> None:
+        """Tab completes commands and paths INSIDE the workspace only.
+
+        Offering paths outside it would advertise files the agent may not
+        read, which is worse than no completion: it invites a request that
+        is then refused.
+        """
+        try:
+            import readline
+        except ImportError:
+            return
+        from . import repl_commands as rc
+
+        def _complete(text: str, state: int):
+            try:
+                if text.startswith("@"):
+                    hits = ["@" + p for p in
+                            rc.complete_path(text, self.opts.cwd)]
+                elif text.startswith("/"):
+                    hits = [n for n in sorted(rc.BUILTINS)
+                            if n.startswith(text.lower())]
+                else:
+                    return None
+                return hits[state] if state < len(hits) else None
+            except Exception:
+                return None
+
+        try:
+            readline.set_completer(_complete)
+            readline.set_completer_delims(" \t\n")
+            readline.parse_and_bind("tab: complete")
+        except Exception:
+            pass
 
     def _load_history(self) -> None:
         try:
