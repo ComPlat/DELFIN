@@ -127,6 +127,22 @@ class _BaseClient:
     ) -> Generator[StreamEvent, None, None]:
         raise NotImplementedError
 
+    def narrow_tool_surface(
+        self, allowed: Any = (), denied: Any = ()
+    ) -> None:
+        """Restrict THIS session to *allowed* minus *denied*, where possible.
+
+        Default: do nothing. A backend that cannot enforce a tool list must
+        not pretend to — the caller compares what it asked for against
+        ``enforced_tool_surface`` and tells the user about the difference,
+        which is the only version of that check that cannot go stale.
+        """
+        return None
+
+    def enforced_tool_surface(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """``(allow, deny)`` this client will really enforce. Empty = none."""
+        return ((), ())
+
     def signal_stop(self) -> None:
         """Cooperative stop: nudge a running turn to end without tearing down
         the underlying connection or session. Default is no-op; backends that
@@ -186,6 +202,15 @@ class CLIClient(_BaseClient):
             )
         self._proc: subprocess.Popen | None = None
         self._session_id: str = ""
+
+    def enforced_tool_surface(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """The allow list handed to the subprocess; no deny list exists here.
+
+        The tool loop runs inside the child process, so the only lever is the
+        command line built in ``_ensure_proc``. Reporting the empty deny list
+        honestly is what lets the caller warn instead of silently dropping it.
+        """
+        return (tuple(self.allowed_tools or ()), ())
 
     def _ensure_proc(self, system: str, session_id: str = "") -> subprocess.Popen:
         """Start the persistent CLI process if not already running."""
@@ -2025,6 +2050,97 @@ def _tool_denied_for_role(role: str, name: str) -> bool:
         return False
     return base not in allow
 
+
+def _normalise_tool_names(names: Any) -> frozenset[str]:
+    """A user-supplied tool list as a frozenset of stripped, non-empty names."""
+    if not names:
+        return frozenset()
+    if isinstance(names, str):
+        names = names.split(",")
+    return frozenset(
+        s for s in (str(n).strip() for n in names) if s)
+
+
+def _session_tool_refusal(
+    name: str,
+    allowed: frozenset[str] | None = None,
+    denied: frozenset[str] | None = None,
+) -> Optional[str]:
+    """Why the SESSION's own lists refuse *name*, or None if they do not.
+
+    Pure, so the executor gate and the advertised surface can share one
+    reading of the rules instead of keeping two that drift apart.
+
+    Semantics, all three of which are load-bearing:
+      * an EMPTY allow list is "no restriction", not "nothing allowed" —
+        read the other way round it disables the agent without a word;
+      * DENY wins when a name is on both lists, because the narrower
+        intention is the one a user can state by accident least often;
+      * these NARROW only. This function is one gate among several and
+        never returns "allowed"; a tool the role forbids stays forbidden
+        because that check runs on its own. A session flag that could
+        widen a role's surface would be a privilege escalation.
+
+    ``mcp__server__tool`` is judged by its underlying tool name as well as
+    its full name, so naming ``bash`` also stops ``mcp__kit-coding__bash``
+    — an MCP backend must not be a route around the list.
+    """
+    base = name.rsplit("__", 1)[-1] if name.startswith("mcp__") else name
+    if denied and (name in denied or base in denied):
+        return (f"tool {base!r} is on this session's --disallowed-tools list")
+    if allowed and name not in allowed and base not in allowed:
+        return (f"tool {base!r} is not on this session's --allowed-tools list")
+    return None
+
+
+def _tool_denied_for_session(
+    perms: Optional["KitToolPermissions"], name: str
+) -> Optional[str]:
+    """The session-list refusal for *name* under *perms*, or None.
+
+    The executor-facing wrapper. It exempts ``_ALWAYS_ALLOWED_TOOLS`` from
+    the ALLOW list only — those are the meta calls the harness itself needs
+    to finish a turn (submitting a plan, answering a question, returning a
+    sub-agent result), and a session that lists three working tools did not
+    mean to break the machinery that reports the work. The DENY list keeps
+    its force over them: a name the user typed out is an explicit decision.
+    """
+    if perms is None:
+        return None
+    allowed = getattr(perms, "session_allowed_tools", None) or frozenset()
+    denied = getattr(perms, "session_denied_tools", None) or frozenset()
+    if not allowed and not denied:
+        return None
+    base = name.rsplit("__", 1)[-1] if name.startswith("mcp__") else name
+    is_meta = name in _ALWAYS_ALLOWED_TOOLS or base in _ALWAYS_ALLOWED_TOOLS
+    named_on_deny_list = bool(denied) and (name in denied or base in denied)
+    if is_meta and not named_on_deny_list:
+        return None
+    return _session_tool_refusal(name, allowed, denied)
+
+
+def unknown_tool_names(
+    names: Any, tools: Optional[list[dict[str, Any]]] = None
+) -> list[str]:
+    """The entries of *names* that match no tool in the catalogue.
+
+    A misspelt name is silent in both directions — on the allow list it
+    narrows the session further than anyone meant, on the deny list it
+    stops nothing — so the caller can say so at startup instead of letting
+    the user believe a rule is in force that names no tool.
+
+    ``mcp__…`` names are never reported: MCP servers are discovered inside
+    the turn, so at startup there is nothing to check them against and a
+    guess would be a false alarm.
+    """
+    catalogue = _DOC_TOOLS_OPENAI if tools is None else tools
+    known = {t.get("function", {}).get("name", "") for t in catalogue}
+    known |= set(_ALWAYS_ALLOWED_TOOLS)
+    return sorted(
+        n for n in _normalise_tool_names(names)
+        if not n.startswith("mcp__") and n not in known
+    )
+
 # Tools advertised to weak local models (gemma-7b, llama-8b, qwen-7b,
 # phi-3.5, mistral-7b, codellama-7b). 15-tool core that covers 95% of
 # real agent use without overwhelming the model's tool-routing
@@ -2356,6 +2472,22 @@ class KitToolPermissions:
     # Sub-agent nesting depth (0 = the top-level agent). _derive_perms bumps it
     # per child so a delegated agent can't recursively fan out sub-agents.
     subagent_depth: int = 0
+    # The tool surface THIS session asked for (--allowed-tools /
+    # --disallowed-tools). Kept on the permissions rather than on the client
+    # for two reasons:
+    #   * the executor is handed the permissions on every call, so a denied
+    #     tool is REFUSED when called and not merely hidden from the model.
+    #     Filtering the advertised list alone would be advertising-as-security:
+    #     anything that reaches the executor by another route (an MCP backend,
+    #     a replayed tool call, a sub-agent) would still run it.
+    #   * ``dataclasses.replace`` copies field values, so a sub-agent inherits
+    #     both lists and cannot be used as a way around them.
+    # Empty allow list means NO restriction, not "nothing allowed" — the
+    # inverse reading silently disables the whole agent. Deny wins over allow.
+    # Neither list can WIDEN anything: the role gates are evaluated
+    # independently, so a name the role forbids stays forbidden.
+    session_allowed_tools: frozenset[str] = frozenset()
+    session_denied_tools: frozenset[str] = frozenset()
     bash_deny_patterns: tuple[str, ...] = _DEFAULT_BASH_DENY_PATTERNS
     bash_auto_allow_patterns: tuple[str, ...] = _DEFAULT_BASH_AUTO_ALLOW
     path_deny_globs: tuple[str, ...] = _DEFAULT_PATH_DENY_GLOBS
@@ -2447,6 +2579,14 @@ class KitToolPermissions:
         valid = {"plan", "default", "acceptEdits", "bypassPermissions"}
         if self.mode not in valid:
             raise ValueError(f"mode must be one of {valid}, got {self.mode!r}")
+        # Normalised here so every gate downstream can assume a frozenset of
+        # stripped names, whatever a caller passed (list, tuple, comma-split
+        # leftovers with spaces). A stray " bash" that never matches is the
+        # same failure as a typo: a rule the user believes is in force.
+        self.session_allowed_tools = _normalise_tool_names(
+            self.session_allowed_tools)
+        self.session_denied_tools = _normalise_tool_names(
+            self.session_denied_tools)
         resolved_extra: list[Path] = []
         for d in self.extra_workspace_dirs or ():
             try:
@@ -5108,6 +5248,12 @@ class ToolSurfaceContext:
     # working; a set is the precise answer and is what the live surface
     # passes in.
     office_backends: Optional[frozenset] = None
+    # The lists THIS session was started with, copied off the permissions the
+    # executor is handed (see ``KitToolPermissions.session_allowed_tools``).
+    # They are here so the advertised surface FOLLOWS the executor's refusal
+    # rather than being a second policy that happens to agree with it today.
+    session_allowed: frozenset[str] = frozenset()
+    session_denied: frozenset[str] = frozenset()
 
 
 def tool_unavailable_reason(
@@ -5117,6 +5263,8 @@ def tool_unavailable_reason(
 
     Mirrors the executor's own refusals:
       * per-role execution allow-list (``_ROLE_EXEC_ALLOWLIST``),
+      * the session's own allow / deny lists (``_session_tool_refusal``,
+        the same function the executor gate calls),
       * sub-agent nesting cap (subagent / orchestrate at/above the cap),
       * missing doc / calc index (those executors refuse outright),
       * missing document backend (the office tools cannot run without it).
@@ -5130,6 +5278,11 @@ def tool_unavailable_reason(
     submission); they are deliberately not pushed into the role's advertised
     surface. Advertising therefore stays a strict subset of what may execute
     — never the other way round.
+
+    The session lists are read the same way, and for the same reason: the
+    executor exempts ``_ALWAYS_ALLOWED_TOOLS`` from a session ALLOW list so
+    the harness can still finish a turn, and that exemption deliberately
+    does not reach the advertised surface either.
     """
     ctx = ctx or ToolSurfaceContext()
     base = name.rsplit("__", 1)[-1] if name.startswith("mcp__") else name
@@ -5139,6 +5292,10 @@ def tool_unavailable_reason(
     allow = _ROLE_EXEC_ALLOWLIST.get(ctx.role or "")
     if allow is not None and base not in allow:
         return f"role {ctx.role!r} may not execute this tool"
+    session = _session_tool_refusal(
+        name, ctx.session_allowed, ctx.session_denied)
+    if session is not None:
+        return session
     if base in _SUBAGENT_SPAWN_TOOL_NAMES:
         try:
             cap = _max_subagent_depth()
@@ -7532,6 +7689,14 @@ class _DocToolExecutor:
         # allow-list holds even if the tool was advertised or mcp__-namespaced
         # by another layer, and even if a per-tool handler forgot its own gate.
         auth_role = getattr(permissions, "agent_role", "") if permissions else ""
+        # The same checkpoint for the lists THIS session was started with
+        # (--allowed-tools / --disallowed-tools). Evaluated here, at the one
+        # entry point, rather than by filtering the advertised surface: a
+        # hidden tool that still executes when something else asks for it is
+        # advertising dressed as security. The advertised list is derived
+        # from this decision (see ``tool_unavailable_reason``), never the
+        # other way round.
+        session_refusal = _tool_denied_for_session(permissions, name)
         if permissions is not None and _tool_denied_for_role(auth_role, name):
             from . import action_protocol as _action_protocol
             if (_action_protocol.role_uses_action_protocol(auth_role)
@@ -7550,6 +7715,16 @@ class _DocToolExecutor:
                     "and researches via search_docs — it does not read/edit source "
                     "or run shell commands."
                 )})
+        elif session_refusal:
+            # After the role check and before the mode check, by the same
+            # rule the mode check states: report the more permanent reason
+            # first. A role denial holds for every session; a session list
+            # holds for this whole run; the mode can change within it.
+            result = json.dumps({"error": (
+                f"Tool '{name}' was excluded from this session — "
+                f"{session_refusal}. The list was set when the session "
+                "started and cannot be changed from inside it."
+            )})
         elif (getattr(permissions, "mode", "") == "plan"
                 and _bare_tool_name(name) not in _PLAN_READONLY_TOOLS
                 and not bool((arguments or {}).get("check_only"))):
@@ -10503,6 +10678,19 @@ class _DocToolExecutor:
                     f"Tool '{name}' is not available to the '{role}' role — "
                     "its execution allow-list does not include this tool, "
                     "including via an MCP backend."
+                )
+            # (0a) The session's own lists, re-checked for the same reason:
+            # this path never reaches ``execute()``, so ``--disallowed-tools
+            # bash`` would otherwise stop the native tool and leave
+            # mcp__<server>__bash running the identical command.
+            session_refusal = _tool_denied_for_session(perms, name)
+            if session_refusal:
+                _record_security_event("session_denied_mcp", name, role,
+                                       blocked=True)
+                return (
+                    f"Tool '{name}' was excluded from this session — "
+                    f"{session_refusal}. An MCP backend is not a way "
+                    "around that."
                 )
 
         # (0b) Plan mode, deny-by-default. ``execute()`` enforces this for
@@ -14134,6 +14322,32 @@ class OpenAIClient(_BaseClient):
         self._run_notes: list[str] = []
         self._attach_subagent_runner(permissions)
 
+    def narrow_tool_surface(
+        self, allowed: Any = (), denied: Any = ()
+    ) -> None:
+        """Apply this session's tool lists to the permissions object.
+
+        The permissions travel to the executor on every call and are copied
+        into every sub-agent, so this narrows what may RUN. The advertised
+        surface is rebuilt from the same fields each turn, so the model stops
+        being offered what it would only be refused.
+
+        Without a permissions object there is no tool loop to narrow (the
+        plain OpenAI provider builds one), and nothing is stored — the caller
+        reads ``enforced_tool_surface`` back and reports the shortfall.
+        """
+        if self._permissions is None:
+            return
+        self._permissions.session_allowed_tools = _normalise_tool_names(allowed)
+        self._permissions.session_denied_tools = _normalise_tool_names(denied)
+
+    def enforced_tool_surface(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        p = self._permissions
+        if p is None:
+            return ((), ())
+        return (tuple(sorted(p.session_allowed_tools or ())),
+                tuple(sorted(p.session_denied_tools or ())))
+
     def push_run_note(self, text: str) -> None:
         """Queue a fact ABOUT THE RUN for mid-turn delivery (thread-safe).
 
@@ -14551,6 +14765,15 @@ class OpenAIClient(_BaseClient):
             has_calc_index=bool(has_calc_tools),
             has_office_libs=_office_backends_available(),
             office_backends=_office_backend_set(),
+            # Read off the SAME object the executor gate reads, so the two
+            # cannot disagree: a tool this session excluded is dropped from
+            # the surface because it would be refused, not instead of it.
+            session_allowed=(
+                getattr(self._permissions, "session_allowed_tools", None)
+                or frozenset()),
+            session_denied=(
+                getattr(self._permissions, "session_denied_tools", None)
+                or frozenset()),
         )
         advertised_tools = advertisable_tools(advertised_tools, _surface_ctx)
 

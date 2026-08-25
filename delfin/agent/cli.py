@@ -95,17 +95,54 @@ def _build_engine(args: argparse.Namespace):
         allowed_tools=_allowed_tools(args) or None,
     )
     _apply_run_budget(engine, args)
+    _apply_tool_surface(engine, args)
     return engine
 
 
 def _allowed_tools(args: argparse.Namespace) -> list[str]:
     """``--allowed-tools a,b,c`` as a list, or empty for "no restriction"."""
-    raw = getattr(args, "allowed_tools", "") or ""
+    return _tool_name_list(getattr(args, "allowed_tools", ""))
+
+
+def _disallowed_tools(args: argparse.Namespace) -> list[str]:
+    """``--disallowed-tools a,b,c`` as a list, or empty for "deny nothing"."""
+    return _tool_name_list(getattr(args, "disallowed_tools", ""))
+
+
+def _tool_name_list(raw) -> list[str]:
+    """A comma-separated flag value as a list of stripped, non-empty names."""
+    raw = raw or ""
     if isinstance(raw, (list, tuple)):
         parts = [str(p) for p in raw]
     else:
         parts = str(raw).split(",")
     return [p.strip() for p in parts if p.strip()]
+
+
+def _apply_tool_surface(engine, args: argparse.Namespace) -> None:
+    """Hand this run's tool lists to the client that can enforce them.
+
+    Applied to the constructed client rather than passed down the engine
+    constructor, because the lists live on the permissions object the
+    executor is handed on every call — that is what makes an excluded tool
+    REFUSED when called instead of merely hidden from the model. Backends
+    with no tool loop of their own store nothing; ``_bounding_notices``
+    reads back what really arrived and says so.
+
+    Nothing is written to any settings file: a bound asked for on this
+    command line bounds this session and no later one.
+    """
+    allowed = _allowed_tools(args)
+    denied = _disallowed_tools(args)
+    if not allowed and not denied:
+        return
+    client = getattr(engine, "client", None)
+    narrow = getattr(client, "narrow_tool_surface", None)
+    if callable(narrow):
+        try:
+            narrow(allowed=allowed, denied=denied)
+        except Exception:
+            pass
 
 
 def _apply_run_budget(engine, args: argparse.Namespace) -> None:
@@ -813,6 +850,24 @@ def _apply_bare(workspace: Path) -> bool:
     return took
 
 
+def _enforced_tool_surface(client) -> tuple[list[str], list[str]]:
+    """What *client* really enforces as ``(allow, deny)``.
+
+    Falls back to the ``allowed_tools`` attribute for anything that predates
+    ``enforced_tool_surface`` — a stand-in built by a caller, or a backend
+    object that only ever stored the list.
+    """
+    fn = getattr(client, "enforced_tool_surface", None)
+    if callable(fn):
+        try:
+            allow, deny = fn()
+            return ([str(t) for t in (allow or ())],
+                    [str(t) for t in (deny or ())])
+        except Exception:
+            pass
+    return ([str(t) for t in (getattr(client, "allowed_tools", None) or ())], [])
+
+
 def _bounding_notices(args: argparse.Namespace, engine) -> list[str]:
     """One line per bounding flag this run cannot actually honour.
 
@@ -842,24 +897,37 @@ def _bounding_notices(args: argparse.Namespace, engine) -> list[str]:
                  if secs > 0 else " (--max-run-seconds is measurable)")
         notes.append(line)
 
-    # An allow-list that the constructed client did not take. Asked of the
-    # client itself rather than by repeating create_client's branch here:
-    # the parameter is forwarded only to the CLI backend, which stores it
-    # and turns it into --allowedTools, and is dropped without a word for
-    # every other one. Comparing against what actually arrived is the only
-    # form of this check that cannot go stale.
-    wanted = _allowed_tools(args)
-    if wanted:
-        client = getattr(engine, "client", None)
-        got = getattr(client, "allowed_tools", None)
-        if [str(t) for t in (got or ())] != wanted:
-            provider = str(getattr(engine, "provider", "") or "?")
-            backend = str(getattr(engine, "backend", "") or "?")
+    # Tool lists the constructed client did not take. Asked of the client
+    # itself rather than by repeating create_client's branch here: each
+    # backend enforces what it can and reports it, so comparing against what
+    # actually arrived is the only form of this check that cannot go stale.
+    client = getattr(engine, "client", None)
+    got_allow, got_deny = _enforced_tool_surface(client)
+    provider = str(getattr(engine, "provider", "") or "?")
+    backend = str(getattr(engine, "backend", "") or "?")
+    for flag, wanted, got in (("--allowed-tools", _allowed_tools(args), got_allow),
+                              ("--disallowed-tools", _disallowed_tools(args), got_deny)):
+        if wanted and set(got) != set(wanted):
             notes.append(
-                f"tools      --allowed-tools REQUESTED but not applied — the "
-                f"{provider}/{backend} backend carries no tool allow-list, so "
+                f"tools      {flag} REQUESTED but not applied — the "
+                f"{provider}/{backend} backend carries no such tool list, so "
                 f"all {len(wanted)} named tools and every other one stay "
                 f"available")
+
+    # A name that matches no tool is a typo, and a typo is silent in both
+    # directions: on the allow list it narrows the session further than
+    # anyone meant, on the deny list it stops nothing. Said at startup, not
+    # discovered from a turn that could not do its work.
+    try:
+        from .api_client import unknown_tool_names
+        stray = unknown_tool_names(_allowed_tools(args) + _disallowed_tools(args))
+    except Exception:
+        stray = []
+    if stray:
+        notes.append(
+            f"tools      {', '.join(stray)} — no tool of that name exists, so "
+            f"{'these names' if len(stray) > 1 else 'this name'} narrows "
+            f"nothing and is most likely a typo")
 
     if getattr(args, "bare", False):
         took = getattr(args, "bare_mcp_skipped", False)
@@ -2028,19 +2096,26 @@ def build_parser() -> argparse.ArgumentParser:
     # Named for what it does, not for what the word suggests. The three it
     # cannot reach are named in the help itself rather than left to be
     # discovered — see _BARE_NOT_SKIPPED.
-    # Only the subprocess CLI backend has a tool allow-list: create_client
-    # forwards this to CLIClient, which spells it --allowedTools on the
-    # child command line. The API and OpenAI-compatible backends drop the
-    # parameter. A run that asks for one where there is none is told so at
-    # startup rather than left believing the surface was narrowed. There is
-    # deliberately no --disallowed-tools: no deny-list machinery exists on
-    # any backend, and a flag with nothing behind it is the defect, not the
-    # fix.
+    # Two ways to narrow the tool surface of ONE session. Both land on the
+    # permissions object the executor is handed, so a named tool is refused
+    # when called and not merely hidden from the model — hiding alone would
+    # leave every other route to the executor (an MCP backend, a sub-agent)
+    # wide open. The subprocess CLI backend takes the allow list only, as
+    # its own command line, and has no deny list; a run that asks for one
+    # where there is none is told so at startup rather than left believing
+    # the surface was narrowed.
+    #
+    # Neither list can WIDEN anything: the per-role gates are evaluated
+    # separately, so a tool the role forbids stays forbidden however it is
+    # named here. An empty allow list means no restriction. Deny wins.
     chat.add_argument("--allowed-tools", default="", dest="allowed_tools",
                       metavar="a,b,c",
-                      help="Restrict the agent to these tools (--backend cli "
-                           "only; the other backends have no allow-list and "
-                           "will say so)")
+                      help="Restrict this session to these tools (empty: no "
+                           "restriction; cannot grant what the role forbids)")
+    chat.add_argument("--disallowed-tools", default="", dest="disallowed_tools",
+                      metavar="a,b,c",
+                      help="Refuse these tools for this session — wins over "
+                           "--allowed-tools when a name is on both")
     chat.add_argument("--bare", action="store_true",
                       help="Skip MCP server discovery for this run "
                            f"({_BARE_NOT_SKIPPED} are discovered inside the "
