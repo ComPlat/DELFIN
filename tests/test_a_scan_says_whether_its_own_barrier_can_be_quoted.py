@@ -32,11 +32,24 @@ frequency, at gradient norms far from converged, so that test says nothing
 here.  A user reading the barrier off either leg alone is out by more than
 half.
 
-The null result is why this is on by default rather than a curiosity.  The
-same measurement over six other scans -- torsions of an alkane, an alcohol and
-a diol, a C-C stretch, a C-C-C angle and a stretched hydrogen bond -- gives
-gaps of 0.000 to 0.803 kcal/mol.  Those are scans worth quoting, and until now
-the editor had no way to say so.
+The null result is why this is on by default rather than a curiosity.  Eleven
+scans were walked out and back:
+
+    ethane C-C stretch                     0.000 kcal/mol apart
+    propane C-C-C angle                    0.001
+    butanol, butane, glycol torsions       0.002, 0.004, 0.006
+    SN2 Cl-/CH3Cl                          0.032
+    water dimer O-O                        0.803
+    --------------------------------------------- RT ln 10 = 1.364
+    N-methylacetamide torsion             14.2
+    Diels-Alder                           23.8
+    formate/water H transfer              60.8
+    methylcyclopropane ring opening      129.1
+
+Seven of them are scans worth quoting and the editor had no way to say so.
+And the two groups are not two kinds of coordinate: an amide torsion jumps and
+an SN2 -- one bond made as another breaks -- does not.  There is no rule to
+apply instead of walking the second leg.
 
 The threshold has a meaning rather than a round shape: RT ln 10, which at
 298 K is 1.36 kcal/mol, is the difference in barrier that is a factor of ten
