@@ -132,3 +132,98 @@ def test_the_price_question_is_asked_of_the_pricing_table(monkeypatch):
     assert agent_cli._usd_ceiling_measurable(engine) is False
     monkeypatch.setattr(pricing, "price_for", lambda m, p: (3.0, 15.0))
     assert agent_cli._usd_ceiling_measurable(engine) is True
+
+
+# ---------------------------------------------------------------------------
+# --bare: what it really skips, and what it says it does not
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def clean_registries():
+    """MCP registries are process-global and cached per workspace."""
+    from delfin.agent import mcp_client
+
+    mcp_client.reset_registry()
+    yield mcp_client
+    mcp_client.reset_registry()
+
+
+def test_bare_is_offered_on_the_command_line():
+    assert _parse("--bare").bare is True
+    assert _parse().bare is False
+
+
+def test_bare_empties_the_registry_the_tool_surface_reads(clean_registries,
+                                                          tmp_path):
+    """The assertion is on the registry, not on the namespace.
+
+    `OpenAIClient` assembles its tool surface through
+    `mcp_client.get_registry(workspace)`; a registry with no servers
+    spawns nothing and advertises nothing. The built-in servers are always
+    configured, so a non-empty "before" is guaranteed and the difference
+    means something.
+    """
+    mcp = clean_registries
+    assert mcp.get_registry(tmp_path).servers, (
+        "the built-in servers should be configured before --bare runs")
+
+    assert agent_cli._apply_bare(tmp_path) is True
+
+    assert mcp.get_registry(tmp_path).servers == {}
+    assert mcp.get_registry(tmp_path).discover_all() == []
+
+
+def test_bare_also_covers_the_backend_that_carries_no_workspace(
+        clean_registries, tmp_path):
+    """A client without a permissions object resolves to the empty key."""
+    mcp = clean_registries
+    agent_cli._apply_bare(tmp_path)
+    assert mcp.get_registry(None).servers == {}
+
+
+def test_without_bare_the_servers_stay_configured(clean_registries, tmp_path):
+    assert clean_registries.get_registry(tmp_path).servers != {}
+
+
+def test_bare_names_the_three_it_does_not_skip(clean_registries, tmp_path):
+    """The can't-deliver path: three of the four are out of reach.
+
+    Hooks, skills and project memory are all discovered inside the turn
+    from the permissions workspace, with no per-session switch — so the
+    flag has to say which of the four it actually covers instead of
+    letting the word imply all of them.
+    """
+    engine = type("E", (), {"client": type("C", (), {"model": "m"})(),
+                            "provider": "kit"})()
+    notes = agent_cli._bounding_notices(
+        _args(bare=True, bare_mcp_skipped=True), engine)
+    line = "\n".join(notes)
+    assert "MCP servers skipped" in line
+    for named in ("hooks", "skills", "project memory"):
+        assert named in line, f"--bare has to name {named} as not skipped"
+
+
+def test_a_bare_that_skipped_nothing_does_not_claim_otherwise():
+    engine = type("E", (), {"client": type("C", (), {"model": "m"})(),
+                            "provider": "kit"})()
+    notes = agent_cli._bounding_notices(
+        _args(bare=True, bare_mcp_skipped=False), engine)
+    assert any("REQUESTED but nothing was skipped" in n for n in notes)
+
+
+def test_the_help_text_carries_the_same_exclusion_as_the_banner():
+    """One source for both, so the promise cannot widen in one place."""
+    import io
+    import re
+
+    buf = io.StringIO()
+    parser = agent_cli.build_parser()
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            action.choices["chat"].print_help(buf)
+            break
+    # argparse re-wraps help text, so the sentence is compared without
+    # the line breaks it inserted.
+    text = re.sub(r"\s+", " ", buf.getvalue())
+    assert "--bare" in text
+    assert agent_cli._BARE_NOT_SKIPPED in text
