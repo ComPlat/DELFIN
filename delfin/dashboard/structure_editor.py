@@ -401,6 +401,12 @@ STRUCTURE_MEMORY_KEYS = (
     # isomers apart. Put aside with the structure being left, they are simply
     # not there for the one being shown until it has an answer of its own.
     'atom_charges', 'atom_charges_method', 'atom_charges_for',
+    # What a saddle search found here, and the Hessian that was paid for to
+    # draw and follow its mode. Both belong to one structure and to no other
+    # -- they are checked against the geometry before they are believed --
+    # and both are seconds of xtb, which is worth not spending twice because
+    # somebody stepped to the next block and back.
+    'saddle_found', 'saddle_modes',
 )
 
 
@@ -2177,6 +2183,85 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='106px', height='30px', display='none'),
         disabled=True,
     )
+    #: Which mode the two presses after this are about, when there is a choice.
+    #:
+    #: There usually is not.  A transition state has exactly one mode going the
+    #: wrong way, so on the structure the press next door is for there is
+    #: nothing to choose between and this is not on screen -- the same rule the
+    #: two boxes before it follow, that a list of one is not a choice.
+    #:
+    #: It appears where a search converged onto a saddle of higher order, and
+    #: there it is the difference between reading the verdict and acting on it:
+    #: the verdict's own advice is to move the structure along the *second* of
+    #: those modes and climb again, and until now there was no way to look at
+    #: the second of anything.
+    #:
+    #: The frequencies are the ones the verdict already reported, which is at
+    #: most the four softest -- :func:`saddle._last_modes` and
+    #: :meth:`climb.Climb.verdict` both cut their list there.  A structure with
+    #: more than four modes going the wrong way is a long way from anything
+    #: this row is for, and the four that can be named are the four offered.
+    submit_mode_dd = widgets.Dropdown(
+        options=[('the imaginary mode', 0)], value=0,
+        tooltip=('Which of the modes going the wrong way to draw and to '
+                 'follow down.'),
+        layout=widgets.Layout(width='134px', display='none'),
+        disabled=True,
+    )
+    #: Draw the imaginary mode, because the imaginary mode is the reaction.
+    #:
+    #: A saddle search reports "one mode goes the wrong way, at -394 cm-1" and
+    #: that number is the whole of what the editor could say about it.  The
+    #: mode itself is the reaction coordinate: the atoms it moves are the atoms
+    #: the reaction moves, so watching it is what tells a chemist which bonds
+    #: are forming and which are breaking, without reading a single coordinate.
+    #:
+    #: It is a picture and it never becomes a structure.  The frames go down
+    #: the same channel a trajectory goes down and are drawn by the same
+    #: player, and the coordinate box is not touched: what is in the box is
+    #: what is being worked on, and a geometry displaced along an eigenvector
+    #: is not something anybody chose.  It begins and ends on the structure,
+    #: and a hand landing on it puts the picture back before the drag can push
+    #: anything to the kernel -- see the ``home`` frame in the player.
+    #:
+    #: It costs one xtb Hessian, once: 0.41 s at sixteen atoms, 4.9 at
+    #: thirty-three, 16 at fifty, and it is kept for as long as the structure
+    #: in the box is the one it was taken at.
+    submit_mode_btn = widgets.Button(
+        description='Show the mode', icon='film', button_style='',
+        tooltip=('Draw the imaginary mode -- the reaction coordinate itself, '
+                 'so you can see which bonds are forming and which are '
+                 'breaking. Six swings and it stops on the structure it '
+                 'started from. It is a picture: the coordinates never '
+                 'change.'),
+        layout=widgets.Layout(width='142px', height='30px', display='none'),
+        disabled=True,
+    )
+    #: And where the mode leads, which is the other question about a saddle.
+    #:
+    #: One imaginary mode makes a structure *a* transition state.  Whether it
+    #: is *the* one for the reaction that was meant is a different question,
+    #: and the standard way to ask it is to push the structure a little way
+    #: down the mode each way, relax, and see which two structures come back.
+    #:
+    #: The rigorous form of that is a mass-weighted steepest descent -- an
+    #: intrinsic reaction coordinate -- and ORCA has one.  Both were measured
+    #: on the sixteen-atom Diels-Alder saddle on this machine: this route is
+    #: 1.0 s and lands on the two minima, ``! XTB2 IRC`` is 207 s and stops in
+    #: the valley above them, and the two then agree exactly.  Two hundred
+    #: seconds is longer than :func:`saddle.seconds_for` allows the saddle
+    #: search itself, on the smallest case anybody runs, on what is somebody's
+    #: login node -- so the press is the cheap one and the IRC is a job.  See
+    #: :func:`climb.follow_the_mode_down`.
+    submit_ends_btn = widgets.Button(
+        description='Follow it down', icon='code-fork', button_style='',
+        tooltip=('Push the structure a little way down the imaginary mode '
+                 'each way, relax both, and say which two structures this '
+                 'saddle joins -- what they are and what they cost against '
+                 'it. Seconds, and the box keeps the saddle.'),
+        layout=widgets.Layout(width='146px', height='30px', display='none'),
+        disabled=True,
+    )
     #: The same climb, slowed down enough to put a hand in the middle of it.
     #:
     #: ORCA's OptTS is a press and cannot be anything else: measured, a
@@ -2434,6 +2519,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # again at three widths.
             submit_path_from_btn, submit_saddle_from,
             submit_saddle_how, submit_saddle_btn, submit_shape_btn,
+            # And what there is to do with a saddle once the press has found
+            # one, immediately after it. They are absent until it has: the
+            # visible controls are the answer to "what can I do now", so a
+            # control for a structure nobody has yet is the row saying
+            # something untrue. Their arriving is how the editor says the two
+            # questions about a transition state can now be asked.
+            submit_mode_dd, submit_mode_btn, submit_ends_btn,
             submit_poly_dd, submit_poly_turn_btn,
             submit_hyb_dd, submit_hyb_auto_btn,
             submit_internal_group,
@@ -2990,6 +3082,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                        submit_thermal_relax, submit_thermal_anchor_btn,
                        submit_topology_btn, submit_saddle_btn,
                        submit_saddle_from, submit_saddle_how,
+                       submit_mode_dd, submit_mode_btn, submit_ends_btn,
                        submit_climb_btn, submit_shape_btn,
                        submit_path_from_btn):
             widget.disabled = not enabled
@@ -3230,8 +3323,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         that lost that race played at the built-in 55 ms a frame however
         the slider was set, which is what "the top of the slider is not
         the fastest it goes" was.
+
+        The slider is the *default* pace and not the only one.  A run may
+        name its own in *fields*, and one does: a normal mode has a period
+        rather than a rate, and the top of the slider -- "do not fall
+        behind the calculation" -- is the whole animation inside one screen
+        frame for a path that was finished before it was sent.  See
+        :func:`_draw_the_mode`.
         """
-        return json.dumps(dict(fields, run=run, pace=_play_pace()))
+        return json.dumps(dict(fields, run=run,
+                               pace=fields.get('pace', _play_pace())))
 
     def _frame_run_is_current(run):
         """Whether a payload prepared for *run* may still be written.
@@ -3718,8 +3819,28 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '      }\n'
             '      play.run=run; play.seen=0; play.queue=[]; play.last=null;\n'
             '      play.shown=0; play.toldStop=0; play.complete=0;\n'
-            '      play.stopped=0;\n'
+            '      play.stopped=0; play.home=null;\n'
             '    }\n'
+            '    /* Where the picture has to be put back to if this run is cut\n'
+            '       short.\n'
+            '\n'
+            '       Almost every run on this channel draws geometries somebody\n'
+            '       is going to be left with: an optimiser walks to a minimum\n'
+            '       and every frame of it is a structure that was computed, so\n'
+            '       stopping on one of them is a choice the user made.  One run\n'
+            '       is not like that.  A normal mode drawn out of a saddle is a\n'
+            '       *picture* -- the structure displaced along an eigenvector,\n'
+            '       which nobody chose and no method computed -- and the frame\n'
+            '       it happens to be showing when a hand lands must never\n'
+            '       become the structure.  A run that draws such frames sends\n'
+            '       the geometry to return to with them, and the grab below\n'
+            '       draws it before it lets go of the queue, so the coordinates\n'
+            '       the page pushes back are the ones the box already holds.\n'
+            '       Drawn here on the page and not asked of the kernel,\n'
+            '       because a round trip is tens of milliseconds and the drag\n'
+            '       pushes ten times a second: asked, the first push of every\n'
+            '       drag would carry a displaced geometry. */\n'
+            '    if(data&&data.home) play.home=data.home;\n'
             '    /* A run that was stopped stays stopped.  The kernel refuses\n'
             '       to write for it once the switch is up; this is the same\n'
             '       refusal on the page, for the write that was already in\n'
@@ -3966,6 +4087,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '           the kernel knew a hand had arrived and not where -- so\n'
             '           the geometry on screen lived only in the browser until\n'
             '           a drag happened to push it back. */\n'
+            '        /* Unless this run was drawing a picture rather than a\n'
+            '           path, and then the frame the hand landed on is exactly\n'
+            '           what must not be kept: it is the structure displaced\n'
+            '           along a mode, and the drag is about to push whatever\n'
+            '           the viewer holds back to the kernel ten times a\n'
+            '           second.  Put back first, then let go of the queue. */\n'
+            '        if(play.home) show(play.last,play.home,1);\n'
             '        play.queue=[]; play.last=null;\n'
             '      }\n'
             '      else {\n'
@@ -9723,7 +9851,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             if _carried_out(_current_xyz() or '', [{'kind': 'distance',
                                                     'atoms': indices,
                                                     'verb': verb}]):
-                named = _leg_names({'atoms': indices})
+                named = _leg_atoms_label({'atoms': indices})
                 _set_mol_status(
                     f'{named} is already '
                     + (f'bonded, at {here:.3g} A, so there is nothing to '
@@ -11391,9 +11519,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # being looked for.  A comment that says "transition
                     # state" over a second-order saddle is the one place the
                     # mistake would outlive the sentence that said so.
-                    _write_coords(xyz_document(
-                        rows, f'Optimised to {said["name"]}'))
+                    kept = xyz_document(rows, f'Optimised to {said["name"]}')
+                    _write_coords(kept)
+                    _note_the_saddle(kept, found.get('imaginary'))
                     lines.append('It is in the box; Undo takes it back.')
+                    lines.extend(_the_mode_is_offered(found.get('imaginary')))
                     if said['first_order']:
                         lines.append(
                             'Refine it with OPTTS in the ORCA Builder at a '
@@ -11461,6 +11591,352 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         else:
             submit_saddle_btn.description = 'To the saddle'
             submit_saddle_btn.icon = 'mountain'
+
+    def _note_the_saddle(xyz, shape):
+        """Write down that this structure has modes going the wrong way.
+
+        Said by whichever search found it -- the press, the chain, the climb --
+        because all three end the same way: a geometry in the box and a Hessian
+        that says what it is.  What it buys is the two presses beside them,
+        which are about a saddle and are meaningless without one.
+
+        Kept against the *geometry* and not against a flag, so nothing has to
+        remember to take it away: :func:`_saddle_here` compares what was found
+        with what is in the box, and an edit, an Undo, a relaxation or a load
+        makes them different structures and the presses go.  A flag would have
+        to be cleared in every one of those places, and the one that was
+        forgotten would leave a control offering to draw the mode of a
+        structure nobody has any more.
+
+        Said after the geometry has been written and not before, because what
+        it records is checked against the structure the box holds -- said
+        first, it would be a saddle nobody is standing on yet and the controls
+        would stay hidden.
+
+        And it asks for the row to be redrawn itself rather than leaving that
+        to the write.  A write usually redraws, and the one that does not is
+        exactly the one that matters most here: a geometry the playback has
+        already drawn is written with *drawn* raised, and a host that sees
+        that flag keeps its viewer and returns without rebuilding anything.
+        That is how the interactive climb writes its answer -- so left to the
+        write, the one route where the user watched the saddle arrive would be
+        the one route where nothing appeared to do anything with it.  Which is
+        the failure this row has already had once: a capability arrived and
+        nothing on screen said so.
+        """
+        order = int((shape or {}).get('count') or 0)
+        modes = [float(one) for one in ((shape or {}).get('modes') or [])]
+        if not xyz or order < 1 or not modes:
+            state.pop('saddle_found', None)
+        else:
+            state['saddle_found'] = {'xyz': xyz, 'order': order,
+                                     'modes': modes}
+        _refresh_saddle_controls()
+
+    def _the_mode_is_offered(shape):
+        """Say out loud that there is now something to do with this mode.
+
+        The controls arriving is the editor's own statement that a capability
+        has arrived -- the visible set of presses is the answer to "what can I
+        do now" -- but two new presses appearing in a row of twenty is a thing
+        somebody has to notice, and a saddle search ends by reading a
+        sentence.  So the sentence names them, once, at the moment they become
+        possible.  This row has already had the other failure: a capability
+        arrived and nothing said so, and the user asked where the buttons had
+        gone.
+
+        Nothing at all where there is no mode going the wrong way, because
+        then there are no presses either and a sentence about them would be
+        the report describing a row that is not on screen.
+        """
+        order = int((shape or {}).get('count') or 0)
+        if order < 1:
+            return []
+        if str(submit_ff_dd.value).lower() not in _climb.CLIMB_METHODS:
+            # A saddle ORCA reached on g-xTB is a saddle, and the shapes of
+            # its modes are not something xtb can be asked for: g-xTB is its
+            # own build and takes no ``--hess``.  So the presses are not on
+            # screen and this does not name them -- it names the method that
+            # would put them there, which is the actionable half.
+            return ['The shapes of the modes come from xtb\'s own Hessian, so '
+                    'drawing this one and following it down are offered under '
+                    'GFN2, GFN1 or GFN-FF rather than under this method.']
+        if order == 1:
+            return ['Show the mode draws it -- an imaginary mode is the '
+                    'reaction coordinate, so it says which bonds are forming '
+                    'and which are breaking -- and Follow it down says which '
+                    'two structures it joins.']
+        return ['Show the mode draws any of them and Follow it down follows '
+                'one down both ways; the box beside them says which. That is '
+                'how to look at the second mode before moving along it.']
+
+    def _saddle_here():
+        """What a search found, while the box still holds the structure it
+        found it on.
+
+        The comparison is on the coordinates rather than on the text, because
+        the two are not the same thing: what goes into the box carries a
+        comment line this editor wrote, and what comes back out of it has been
+        through a viewer.  ``largest_shift`` is the same measure the rest of
+        the editor asks "is this still that structure" with.
+
+        Absent for that reason and no other, which is the rule
+        :func:`_refresh_saddle_controls` is built on.
+        """
+        found = state.get('saddle_found')
+        here = _current_xyz()
+        if not found or not here or not found.get('xyz'):
+            return None
+        if len(_gfn.atom_lines(found['xyz'])) != len(_gfn.atom_lines(here)):
+            return None
+        if _gfn.largest_shift(found['xyz'], here) > _SAME_STRUCTURE:
+            return None
+        return found
+
+    #: How far an atom may have moved before the box is holding a different
+    #: structure, in Angstrom.  A ten-thousandth is below the four decimals a
+    #: geometry is written with, so this separates "the same coordinates,
+    #: written out and read back" from every real change.
+    _SAME_STRUCTURE = 1e-4
+
+    def _which_mode():
+        """Which mode the two presses are about, as an index from the softest.
+
+        The modes are sorted from the softest up wherever they are counted --
+        :meth:`climb.Climb.modes_from_xtb` sorts them and
+        :func:`climb.imaginary_among` reads the list in that order -- so the
+        ones going the wrong way are the first few, and the box's value is an
+        index straight into both.
+        """
+        found = _saddle_here()
+        if not found:
+            return 0
+        wanted = int(submit_mode_dd.value or 0)
+        return wanted if 0 <= wanted < int(found.get('order') or 1) else 0
+
+    def _modes_for(xyz, method, charge, uhf, wet, on_wait=None):
+        """xtb's modes and their shapes for this structure, paid for once.
+
+        Both presses need the same thing and neither needs it until it is
+        pressed, so nothing is spent by a search that finds a saddle nobody
+        looks at.  Once spent it is kept for as long as the box holds the
+        structure it was taken on and the method has not changed underneath
+        it: the frequencies are a property of both, and answering a press
+        about GFN2 with a Hessian taken under GFN-FF would be the one kind of
+        wrong that never announces itself.
+
+        Runs on a worker, so everything it needs is handed in rather than read
+        off a widget.  *on_wait* is called only where the Hessian really is
+        about to be taken, which is what keeps the line that says so off a
+        press that answers instantly -- a status that appears and vanishes
+        inside a frame is a flicker, and a user reads it as something having
+        gone wrong.
+        """
+        under = (str(method).lower(), int(charge), int(uhf), str(wet or ''))
+        kept = state.get('saddle_modes')
+        if (kept and kept.get('under') == under and kept.get('xyz')
+                and len(_gfn.atom_lines(kept['xyz'])) == len(
+                    _gfn.atom_lines(xyz))
+                and _gfn.largest_shift(kept['xyz'], xyz) <= _SAME_STRUCTURE):
+            return kept['modes']
+        if on_wait is not None:
+            on_wait()
+        # The cores every other climb this editor starts asks for, which is
+        # the module's own default: this is one xtb of the same kind, and a
+        # second opinion about how much of a login node to take would only be
+        # a second number to keep in step with the first.
+        got = _climb.modes_of(xyz, method, charge=charge, uhf=uhf, solvent=wet)
+        if got is not None:
+            state['saddle_modes'] = {'xyz': xyz, 'under': under, 'modes': got}
+        return got
+
+    def _mode_press_can_run():
+        """Whether either press has a structure and a method to work with."""
+        if not _saddle_here():
+            return False
+        if (state.get('optimize_run') is not None
+                or state.get('climb_run') is not None
+                or state.get('saddle_run') or state.get('chain_run')
+                or state.get('path_run')):
+            # The picture belongs to whatever is walking.  Both of these take
+            # the frame channel over, and a run that loses it draws nothing
+            # for the rest of its life -- so this is refused rather than
+            # allowed to quietly blank somebody's trajectory.
+            _set_mol_status('Something is walking this structure, and the '
+                            'picture belongs to it until it stops.')
+            return False
+        if str(submit_ff_dd.value).lower() not in _climb.CLIMB_METHODS:
+            _set_mol_status(
+                'The modes come from xtb\'s own Hessian, so this needs GFN2, '
+                'GFN1 or GFN-FF. A saddle reached under another method is '
+                'still in the box -- switch to one of those to draw its mode.')
+            return False
+        return True
+
+    def on_submit_show_mode(_button=None):
+        """Draw the imaginary mode, and never let it into the box.
+
+        The mode is the reaction coordinate, so this is the most informative
+        thing there is to show about a saddle: which bonds close and which
+        open, seen rather than read off a frequency.
+
+        Everything about the playback is the one that already exists -- the
+        frame channel, the run number, the player, the interpolation between
+        frames.  A mode is frames like any other path; building a second
+        playback for it would be a second set of the defects the first one has
+        already had.  Two things are its own: the pace, because a mode has a
+        period and the slider is about how fast to walk a computed path (see
+        :func:`_frame_payload`), and the ``home`` frame, because these frames
+        are a picture and not a structure.
+        """
+        if state.get('mode_run') or state.get('down_run'):
+            return
+        if not _mode_press_can_run():
+            return
+        xyz = _current_xyz()
+        method = str(submit_ff_dd.value)
+        charge = int(submit_gfn_charge.value or 0)
+        uhf = _gfn_uhf_now()
+        wet = str(submit_gfn_solvent.value or '') or None
+        chosen = _which_mode()
+        state['mode_run'] = True
+
+        def _work():
+            modes = _modes_for(
+                xyz, method, charge, uhf, wet,
+                on_wait=lambda: schedule_ui_update(
+                    _set_mol_status, 'Taking a Hessian to find the mode...',
+                    spinner=True))
+
+            def _done():
+                state['mode_run'] = False
+                if not modes:
+                    _set_mol_status(
+                        'The modes of this structure could not be computed, '
+                        'so there is nothing to draw. It needs xtb.')
+                    return
+                _draw_the_mode(modes, chosen)
+
+            schedule_ui_update(_done)
+
+        _start_background(_work, 'The mode',
+                          guards={'mode_run': False})
+
+    def _draw_the_mode(modes, chosen):
+        """Put the mode on the frame channel, once, as a whole picture.
+
+        One write and not a stream: the frames are arithmetic on a geometry
+        that is already in hand, so there is nothing to wait for and nothing
+        to watch arriving.  It is marked as the run's last write, which is
+        what stops the player throwing the queue away when it notices that no
+        Optimise switch stands behind it -- there is none, and there is
+        nothing running for one to stand behind.
+
+        The amplitude is cut to fit this molecule before anything is drawn.
+        The default is a picture that reads clearly on the case it was
+        measured on; a mode that drives two atoms together on some other
+        structure would tear it, and a torn picture is worse than a small one
+        because it looks like chemistry.
+        """
+        cm = list(modes['cm'])
+        wrong = _climb.imaginary_among(cm)
+        if not wrong:
+            _set_mol_status(
+                'No mode of the structure in the box goes the wrong way any '
+                'more, so there is no reaction coordinate to draw.')
+            # And the presses go with it: what the search reported and what a
+            # Hessian says now disagree, and the Hessian is the later of the
+            # two.
+            _note_the_saddle(None, None)
+            return
+        picked = chosen if chosen in wrong else wrong[0]
+        here = modes['angstrom']
+        way = modes['ways'][:, picked].reshape(len(modes['symbols']), 3)
+        amplitude = _climb.amplitude_that_fits(modes['symbols'], here, way)
+        frames = _climb.mode_pictures(here, way, amplitude=amplitude)
+        run = _claim_the_frame_run()
+        _ensure_manip_bootstrap()
+        schedule_ui_update(_install_gfn_frame_watcher)
+        seconds = (len(frames) * _climb.MODE_PACE_MS) / 1000.0
+        schedule_ui_update(
+            lambda text=_frame_payload(
+                run, pace=_climb.MODE_PACE_MS,
+                **{'from': 0, 'frames': frames, 'final': 1,
+                   'home': frames[-1]}),
+            r=run: setattr(submit_gfn_frame, 'value', text)
+            if _frame_run_is_current(r) else None)
+        _set_mol_status(
+            f'Drawing the mode at {float(cm[picked]):.0f} cm-1: '
+            f'{_climb.MODE_SWINGS} swings, about {seconds:.0f} s, and it '
+            'stops on the structure it started from.',
+            'The atoms it moves are the atoms the reaction moves. It is a '
+            'picture and nothing else: the coordinates in the box do not '
+            'change, and taking hold of the structure puts it straight back.'
+            + ('' if amplitude >= _climb.MODE_AMPLITUDE else
+               f' Drawn at {amplitude:.2f} A rather than the usual '
+               f'{_climb.MODE_AMPLITUDE:.2f} -- further than that and this '
+               'molecule has two atoms inside each other.'))
+
+    def on_submit_follow_down(_button=None):
+        """Push the structure down the mode both ways and say where it lands.
+
+        One imaginary mode makes a structure *a* transition state.  Whether it
+        is the one for the reaction that was meant is the other question, and
+        this is the standard way to ask it.  What comes back is described
+        rather than named -- how many separate pieces each end is, which bonds
+        it has that the saddle did not, what it costs against the saddle --
+        because every sort of system is computed here and a sentence that
+        assumed a kind of chemistry would be wrong about most of them.
+
+        The saddle stays in the box.  Two structures came out and one box
+        holds one structure, and the one being worked on is the saddle: these
+        two are what it *joins*, which is a fact about it rather than a
+        replacement for it.
+        """
+        if state.get('mode_run') or state.get('down_run'):
+            return
+        if not _mode_press_can_run():
+            return
+        xyz = _current_xyz()
+        method = str(submit_ff_dd.value)
+        charge = int(submit_gfn_charge.value or 0)
+        uhf = _gfn_uhf_now()
+        wet = str(submit_gfn_solvent.value or '') or None
+        chosen = _which_mode()
+        state['down_run'] = True
+        _set_mol_status('Following the mode down both ways...', spinner=True)
+
+        def _work():
+            modes = _modes_for(
+                xyz, method, charge, uhf, wet,
+                on_wait=lambda: schedule_ui_update(
+                    _set_mol_status, 'Taking a Hessian to find the mode...',
+                    spinner=True))
+            got = _climb.follow_the_mode_down(
+                xyz, method, mode=chosen, charge=charge, uhf=uhf,
+                solvent=wet, modes=modes,
+                # The same allowance the saddle search itself has: this is two
+                # relaxations of a structure that search has already converged
+                # on, so anything it cannot do inside that is a job.
+                timeout=_saddle.seconds_for(method),
+                on_stage=lambda said: schedule_ui_update(
+                    _set_mol_status, said, spinner=True))
+
+            def _done():
+                state['down_run'] = False
+                lines = [str(got.get('status') or 'It did not run.')]
+                lines.extend(str(one) for one in (got.get('lines') or ()))
+                lines.append(
+                    'The saddle is still in the box; these two are what it '
+                    'joins, not a replacement for it.'
+                    if got.get('ok') else
+                    'Nothing was written to the box.')
+                _set_mol_status(*lines)
+
+            schedule_ui_update(_done)
+
+        _start_background(_work, 'Following the mode down',
+                          guards={'down_run': False})
 
     def _scan_left_two_ends():
         """A scan has finished: put the press on the pair it just made.
@@ -11607,6 +12083,30 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 '' if can_run and len(ways) > 1 else 'none')
             submit_path_from_btn.layout.display = (
                 '' if _gfn.is_gfn_method(chosen) else 'none')
+            # And what there is to do with a saddle, which exists exactly when
+            # a search has found one and the box still holds it.  Not "when a
+            # transition state was found": a structure with two modes going
+            # the wrong way has two reaction coordinates to look at and the
+            # verdict's own advice is to move along the second of them, which
+            # nobody can do without seeing it.  What is *not* offered is the
+            # ordinary case, a minimum -- there is no mode going the wrong
+            # way there and both presses would have nothing to say.
+            found = _saddle_here()
+            reads_modes = str(chosen).lower() in _climb.CLIMB_METHODS
+            has_modes = bool(found) and reads_modes
+            for button in (submit_mode_btn, submit_ends_btn):
+                button.layout.display = '' if has_modes else 'none'
+            # One mode is not a choice, which is the same rule the two boxes
+            # above follow.  The frequencies are the verdict's own, so the box
+            # names what the sentence named.
+            order = int((found or {}).get('order') or 0)
+            named = [float(one) for one in ((found or {}).get('modes') or ())]
+            _keep_the_choice(
+                submit_mode_dd,
+                [(f'{one:.0f} cm-1', n) for n, one in enumerate(named)],
+                'saddle_mode_wish')
+            submit_mode_dd.layout.display = (
+                '' if has_modes and order > 1 and len(named) > 1 else 'none')
             _name_the_saddle_press()
         finally:
             state['saddle_controls_quiet'] = False
@@ -12063,10 +12563,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # was already stopped by then.
                 holding = bool(state.get('gfn_follow'))
                 if rows and not holding:
-                    _write_coords(
-                        xyz_document(rows, 'Climbed towards a transition '
-                                           'state'),
-                        drawn=_frame_run_is_current(run))
+                    kept = xyz_document(rows, 'Climbed towards a transition '
+                                              'state')
+                    _write_coords(kept, drawn=_frame_run_is_current(run))
+                    # The climb's own Hessian on what it reached, which is the
+                    # same question the press next door asks and is answered
+                    # here already: the two presses beside them read it, so a
+                    # saddle reached by hand offers exactly what a saddle
+                    # reached by pressing offers.  This is also the write that
+                    # a host does not redraw -- see :func:`_note_the_saddle`.
+                    _note_the_saddle(kept, got.get('imaginary'))
                 # The module's own sentence, whichever rung ended the press:
                 # it is the one that knows which searches were tried, what
                 # each reached and whether the mode it found is the contact
@@ -12087,6 +12593,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         'another one at it, and the climb can check what it '
                         'reaches against that contact -- and try two more '
                         'searches when the first one misses.')
+                if rows and not holding:
+                    lines.extend(_the_mode_is_offered(got.get('imaginary')))
                 lines.append(
                     'You moved the structure while it was finishing, so what '
                     'you made is what is in the box.' if holding else
@@ -12267,9 +12775,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # whole: two structures went in and one came out, and
                     # halfway back is not a place anyone asked for.
                     _remember('the path and the climb')
-                    _write_coords(xyz_document(
-                        rows, f'From a path, optimised to {said["name"]}'))
+                    kept = xyz_document(
+                        rows, f'From a path, optimised to {said["name"]}')
+                    _write_coords(kept)
+                    _note_the_saddle(kept, found.get('imaginary'))
                     lines.append('It is in the box; Undo takes it back.')
+                    lines.extend(_the_mode_is_offered(found.get('imaginary')))
                     if said['first_order']:
                         lines.append(
                             'Refine it with OPTTS in the ORCA Builder at a '
@@ -14737,6 +15248,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                names='value')
     submit_saddle_how.observe(lambda _c: _name_the_saddle_press(),
                               names='value')
+    # Which mode the two presses are about is read when one of them is
+    # pressed, so the box needs no observer of its own: nothing happens at the
+    # moment it is changed, and a Hessian is not recomputed by picking a
+    # different mode out of the one that was already taken.
+    submit_mode_btn.on_click(on_submit_show_mode)
+    submit_ends_btn.on_click(on_submit_follow_down)
     submit_climb_btn.observe(on_submit_climb, names='value')
     submit_sens_slider.observe(on_submit_sens_changed, names='value')
     submit_play_speed.observe(on_submit_play_speed, names='value')

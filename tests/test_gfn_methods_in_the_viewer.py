@@ -6604,10 +6604,20 @@ def test_the_pace_rides_with_the_frames_as_well_as_on_its_own():
     """run_js clears its output before it displays, so the write that carries
     the pace races the start-up script that builds the player -- and a page
     that lost that race played at the built-in 55 ms a frame however the
-    slider stood.  The frames carry it too, and they cannot be lost."""
+    slider stood.  The frames carry it too, and they cannot be lost.
+
+    The slider is the pace a payload gets when it does not ask for one, which
+    is every run that walks a path.  A run that names its own overrides it,
+    and one does: a normal mode drawn out of a saddle has a period rather than
+    a rate, and the top of the slider -- "do not fall behind the calculation"
+    -- would draw the whole animation inside a single screen frame for a path
+    that was finished before it was sent.
+    """
     source = SUBMIT_SOURCE
     assert "def _play_pace():" in source
-    assert "json.dumps(dict(fields, run=run, pace=_play_pace()))" in source
+    assert ("json.dumps(dict(fields, run=run,\n"
+            "                               pace=fields.get('pace', "
+            "_play_pace())))") in source
     assert "if(data&&data.pace!==undefined&&data.pace!==null)" in source
     # and the player is built already holding it
     assert "pace:' + json.dumps(_play_pace())" in source
