@@ -1921,6 +1921,27 @@ def _hook_workspace(perms) -> "Path | None":
         return None
 
 
+def _session_hooks(perms):
+    """The hook definitions in force for *perms*, as a ``HooksConfig``.
+
+    An empty one when this session reads no hooks at all.
+
+    Every hook point reaches ``hooks.load_hooks`` through here, so the
+    per-session switch is checked once and before the loader runs.
+
+    It cannot be expressed as a narrower workspace: the user's own
+    ``~/.delfin/settings.json`` is read whatever workspace is passed, so
+    ``load_hooks(None)`` still returns every hook the user configured.
+    A session that asked for no ambient configuration would have kept
+    running commands from a settings file it never named -- the silent
+    non-delivery a bounding flag exists to prevent.
+    """
+    from . import hooks as _hooks_mod
+    if getattr(perms, "skip_hook_discovery", False):
+        return _hooks_mod.HooksConfig()
+    return _hooks_mod.load_hooks(_hook_workspace(perms))
+
+
 # Tools that leave the machine. The folder lock bounds where data may be
 # WRITTEN; it never bounded where data may go. A record can leave through a
 # fetched URL without any path crossing the boundary, so these need their own
@@ -2562,6 +2583,20 @@ class KitToolPermissions:
     # rest of the session. Readable, never writable, never persisted -- see
     # ``add_session_read_dir``.
     session_read_dirs: tuple[Path, ...] = ()
+    # Ambient configuration THIS session does not read from disk (--bare).
+    # Consulted in front of the loader it names -- ``_session_hooks`` -- so
+    # the files are never opened rather than opened and then ignored, and
+    # nothing is written to any settings file: a settings file belongs to
+    # every later session, and a session flag bounds one.
+    #
+    # It sits on the permissions object, the one thing the executor is
+    # handed on every call, rather than in a module global. A global would
+    # switch discovery off for every other session in the same process --
+    # a dashboard turn beside a bare terminal run -- which no one asked
+    # for. ``dataclasses.replace`` copies field values, so a sub-agent
+    # inherits it: a child that re-read what its parent was told to skip
+    # would be a route around the flag.
+    skip_hook_discovery: bool = False
 
     def __post_init__(self) -> None:
         self.workspace = Path(self.workspace).expanduser().resolve()
@@ -7579,7 +7614,7 @@ class _DocToolExecutor:
                 pass
         try:
             from . import hooks as _hooks_mod
-            cfg = _hooks_mod.load_hooks(_hook_workspace(permissions))
+            cfg = _session_hooks(permissions)
             if not cfg.is_empty():
                 pre_results = _hooks_mod.run_hooks(
                     "PreToolUse", cfg, tool_name=name, arguments=arguments,
@@ -7608,7 +7643,7 @@ class _DocToolExecutor:
                 pass
         try:
             from . import hooks as _hooks_mod
-            cfg = _hooks_mod.load_hooks(_hook_workspace(permissions))
+            cfg = _session_hooks(permissions)
             if not cfg.is_empty():
                 _hooks_mod.run_hooks(
                     "PostToolUse", cfg, tool_name=name,
@@ -7671,7 +7706,7 @@ class _DocToolExecutor:
         if permissions is not None:
             try:
                 from . import hooks as _hooks_mod
-                cfg = _hooks_mod.load_hooks(_hook_workspace(permissions))
+                cfg = _session_hooks(permissions)
                 if not cfg.is_empty():
                     pre_results = _hooks_mod.run_hooks(
                         "PreToolUse", cfg,
@@ -7790,7 +7825,7 @@ class _DocToolExecutor:
         if permissions is not None and not block_reason:
             try:
                 from . import hooks as _hooks_mod
-                cfg = _hooks_mod.load_hooks(_hook_workspace(permissions))
+                cfg = _session_hooks(permissions)
                 if not cfg.is_empty():
                     _outcomes = _hooks_mod.run_hooks(
                         "PostToolUse", cfg,
