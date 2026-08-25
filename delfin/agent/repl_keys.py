@@ -71,20 +71,44 @@ class KeyDecoder:
     it is worth naming, because the failure mode — a fast paste that
     happens to split a sequence — reads as a spurious interrupt rather
     than as garbage.
+
+    A READ BOUNDARY IS NOT SILENCE. ``read_ready`` takes at most 1024
+    bytes, so a longer paste can be cut immediately after an ESC byte and
+    the rest of the sequence arrives in the next chunk. An ESC that ends a
+    chunk is therefore HELD rather than decided: the next ``feed`` either
+    completes the sequence or — being empty, which is what the pump feeds
+    on a read that timed out — proves nothing followed it. A chunk that is
+    nothing BUT an ESC needs no hold: the read returned one byte because
+    the terminal had one byte, which is the lone-Esc signature itself.
     """
 
     buffer: str = ""
     _seen: list[str] = field(default_factory=list, repr=False)
+    _held_esc: bool = False
 
     def feed(self, chunk: str) -> list[KeyEvent]:
-        if not chunk:
-            return []
         events: list[KeyEvent] = []
 
+        if self._held_esc:
+            self._held_esc = False
+            if chunk[:1] in ("[", "O"):
+                chunk = _ESC + chunk
+            else:
+                events.append(KeyEvent(INTERRUPT))
+
+        if not chunk:
+            return events
+
         if chunk == _ESC:
-            return [KeyEvent(INTERRUPT)]
+            events.append(KeyEvent(INTERRUPT))
+            return events
         if chunk == _SHIFT_TAB:
-            return [KeyEvent(CYCLE_MODE)]
+            events.append(KeyEvent(CYCLE_MODE))
+            return events
+
+        if chunk.endswith(_ESC):
+            self._held_esc = True
+            chunk = chunk[:-1]
 
         i = 0
         while i < len(chunk):
