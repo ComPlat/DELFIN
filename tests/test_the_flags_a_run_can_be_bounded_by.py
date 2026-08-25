@@ -117,7 +117,7 @@ def test_a_usd_ceiling_on_an_unpriced_model_says_it_cannot_fire(monkeypatch):
 def test_a_usd_ceiling_on_a_priced_model_says_nothing(monkeypatch):
     monkeypatch.setattr(agent_cli, "_usd_ceiling_measurable", lambda e: True)
     engine = type("E", (), {"client": type("C", (), {"model": "m"})(),
-                            "provider": "claude"})()
+                            "provider": "openai"})()
     assert agent_cli._bounding_notices(_args(max_budget_usd=5.0), engine) == []
 
 
@@ -268,8 +268,7 @@ def test_the_allow_list_arrives_on_the_client_that_can_enforce_it(tmp_path):
     """
     from delfin.agent.api_client import create_client
 
-    client = create_client(backend="cli", provider="claude",
-                           cwd=str(tmp_path),
+    client = create_client(backend="cli", cwd=str(tmp_path),
                            allowed_tools=["bash", "read_file"])
     assert client.allowed_tools == ["bash", "read_file"]
 
@@ -295,7 +294,7 @@ def test_a_backend_that_took_the_allow_list_says_nothing():
     engine = type("E", (), {
         "client": type("C", (), {"model": "m",
                                  "allowed_tools": ["bash", "read_file"]})(),
-        "provider": "claude", "backend": "cli"})()
+        "provider": "", "backend": "cli"})()
     assert agent_cli._bounding_notices(
         _args(allowed_tools="bash,read_file"), engine) == []
 
