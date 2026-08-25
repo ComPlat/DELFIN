@@ -34,11 +34,13 @@ from dataclasses import dataclass, field
 
 __all__ = [
     "KeyEvent", "KeyDecoder", "RawMode", "raw_mode_supported",
-    "INTERRUPT", "SUBMIT", "CYCLE_MODE", "EXPAND", "REDRAW", "TASKS", "EDIT",
+    "INTERRUPT", "SUBMIT", "STEER", "CYCLE_MODE", "EXPAND", "REDRAW",
+    "TASKS", "EDIT",
 ]
 
 INTERRUPT = "interrupt"      # Esc — end this turn
 SUBMIT = "submit"            # Enter — queue what was typed
+STEER = "steer"              # Ctrl+G — send what was typed INTO the running turn
 CYCLE_MODE = "cycle_mode"    # Shift+Tab — next approval posture
 EXPAND = "expand"            # Ctrl+O — show the last tool result in full
 REDRAW = "redraw"            # Ctrl+L
@@ -56,6 +58,7 @@ _PASTE_ON = "\x1b[?2004h"
 _PASTE_OFF = "\x1b[?2004l"
 _PASTE_START = "\x1b[200~"
 _PASTE_END = "\x1b[201~"
+_CTRL_G = "\x07"
 _CTRL_O = "\x0f"
 _CTRL_L = "\x0c"
 _CTRL_T = "\x14"
@@ -167,6 +170,19 @@ class KeyDecoder:
                 if self.buffer:
                     self.buffer = self.buffer[:-1]
                     events.append(KeyEvent(EDIT, text=self.buffer))
+                i += 1
+                continue
+
+            if ch == _CTRL_G:
+                # The same text, the other destination. Enter queues, which
+                # is never lost and always lands where the user can see it;
+                # this puts it inside the loop that is running now, where
+                # the model reads it on its next round. Two keys rather
+                # than a session flag: injection is a different promise
+                # from queueing, and a mode you can forget you are in is
+                # the wrong place to keep that difference.
+                line, self.buffer = self.buffer, ""
+                events.append(KeyEvent(STEER, text=line))
                 i += 1
                 continue
 
