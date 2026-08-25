@@ -2101,8 +2101,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: all; ORCA has one and nothing that produces an estimate to give it --
     #: and the pair is quick.  Measured on the sixteen-atom Diels-Alder, from
     #: the two ends a scan leaves: 3.6 s for the walk, 12 s for the pair, and
-    #: it arrives at -393.5 cm-1 where a nudged elastic band takes 416 s to
-    #: reach -393.6.  Seven minutes and twelve seconds, the same saddle.
+    #: it arrives at -393.5 cm-1 where a nudged elastic band on the same two
+    #: ends reaches -393.6 for about twice the gradients.  The same saddle to
+    #: a tenth of a wavenumber, which is why the band is the second entry in
+    #: the box beside this and not the first.
     #:
     #: From what is on screen it is the interactive half of the question: a
     #: structure posed by hand into something that looks like a transition

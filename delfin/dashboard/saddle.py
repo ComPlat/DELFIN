@@ -35,7 +35,10 @@ reaction, the path finder finds a way between its two ends and estimates the
 saddle, and this sharpens the estimate into a converged transition state --
 with the one imaginary frequency that says it is one.  The last two of those
 are one press in :func:`path_to_saddle`, which is twelve seconds and lands
-within a wavenumber of a nudged elastic band that takes seven minutes.
+within a tenth of a wavenumber of a nudged elastic band on the same two ends,
+for about half the gradients.  The band is here too, in
+:func:`neb_to_saddle`, as the thing to run when the chain's answer is not
+believed.
 
 And says when it is not one, which is the half that cannot be left out.  A
 saddle search does not fail when it goes wrong; it succeeds at arriving
@@ -769,9 +772,18 @@ def path_to_saddle(reactant: str, product: str, method: str = 'gfn2', *,
     ``! XTB2 NEB-TS``               416 s  -393.6
     ==========================  =========  =========================
 
-    Twelve seconds and seven minutes land on the same saddle to within a
-    wavenumber.  That is the whole argument for the chain: the expensive
-    routes are not buying a better answer here, they are buying the same one.
+    All four land on the same saddle to within a wavenumber, and that is the
+    whole argument for the chain: the expensive routes are not buying a better
+    answer here, they are buying the same one.
+
+    The band's 416 s is worth a caveat, because it is a wall time on one
+    process and wall times on this box are about the box.  Re-measured for
+    :func:`neb_to_saddle`, the same band is 272 s on one process and 39.4 s on
+    eight -- the images are independent gradients and ORCA computes them at
+    once.  What does not change with the machine is the work: 203 gradients
+    for the band against this chain's rather fewer.  So the chain is the
+    cheaper route and stays the first offered, and the band is the second,
+    but "seven minutes against twelve seconds" was never the right comparison.
 
     A press of its own rather than something a path does on its way past, and
     the reason is in the same table.  The path's own answer -- a barrier
