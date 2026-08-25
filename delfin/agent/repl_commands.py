@@ -299,15 +299,25 @@ def _mcp(ctx, _args: str) -> CommandResult:
         return CommandResult(output=f"MCP registry unavailable ({exc})")
 
 
+def _trust(ctx, args: str) -> CommandResult:
+    """Read the offers, then grant or withdraw — from here.
 
-
-def _trust(ctx, _args: str) -> CommandResult:
-    """Read the offers before granting anything.
-
-    Trusting a digest nobody has read is not consent, so this only ever
-    SHOWS. Granting goes through hooks_editor / mcp_editor, the two call
-    sites an existing test enumerates as the only ones allowed to.
+    Trusting a digest nobody has read is not consent, so the bare command
+    only ever SHOWS. The grant still goes through hooks_editor /
+    mcp_editor, the two thin wrappers an existing test enumerates as the
+    only call sites of `workspace_trust.trust_workspace`; this command
+    types the user's decision into them and adds no third one. Naming a
+    remedy the terminal cannot reach was the older failure: the text said
+    "the hooks / MCP editors" and nothing here could open either.
     """
+    action, _, kind = args.strip().lower().partition(" ")
+    kind = kind.strip()
+    if action in ("grant", "revoke"):
+        return _trust_change(ctx, action, kind)
+    if action:
+        return CommandResult(output=(
+            "usage: /trust  |  /trust grant hooks|mcp  |  "
+            "/trust revoke hooks|mcp"))
     try:
         from . import workspace_trust
         notices = workspace_trust.pending_notices(ctx.workspace)
@@ -316,10 +326,43 @@ def _trust(ctx, _args: str) -> CommandResult:
         body = "\n".join(f"  {n}" for n in notices)
         return CommandResult(output=(
             f"{body}\n"
-            "  Review them in the hooks / MCP editors before granting; "
-            "only you can."))
+            "  /trust grant hooks | /trust grant mcp — only you can, and "
+            "only for what is listed above."))
     except Exception as exc:
         return CommandResult(output=f"trust state unavailable ({exc})")
+
+
+def _trust_change(ctx, action: str, kind: str) -> CommandResult:
+    """Grant or withdraw trust through the editor wrappers.
+
+    Kept separate so the read path above stays a read: a typo in the
+    subcommand must fall out as usage text, never as a grant.
+    """
+    try:
+        if kind == "hooks":
+            from . import hooks_editor as editor
+        elif kind == "mcp":
+            from . import mcp_editor as editor
+        else:
+            return CommandResult(output="/trust grant|revoke hooks|mcp")
+    except Exception as exc:
+        return CommandResult(output=f"{kind} trust is unavailable here ({exc})")
+    try:
+        if action == "grant":
+            rec = editor.trust_this_workspace(ctx.workspace)
+            counted = (rec or {}).get("kinds", {})
+            return CommandResult(output=(
+                f"{kind} trusted for {ctx.workspace} — "
+                f"{sum(int((v or {}).get('definitions', 0)) for v in counted.values())}"
+                " definition(s). Trust covers exactly this content; a change "
+                "asks again."))
+        gone = editor.untrust_this_workspace(ctx.workspace)
+        return CommandResult(output=(
+            f"{kind} trust withdrawn for {ctx.workspace}" if gone
+            else f"{ctx.workspace} was not trusted for {kind}"))
+    except Exception as exc:
+        return CommandResult(output=f"could not change {kind} trust: {exc}")
+
 
 # ---------------------------------------------------------------------------
 # What the dashboard reaches, reached from here
@@ -1085,7 +1128,7 @@ BUILTINS: dict[str, ReplCommand] = {
         ReplCommand("/init", "setup", "Scaffold AGENTS.md and .delfin/", _init),
         ReplCommand("/mcp", "setup", "Configured MCP servers", _mcp),
         ReplCommand("/trust", "setup", "What this folder offers and withholds",
-                    _trust),
+                    _trust, True),
         ReplCommand("/tools", "setup", "Tools the model is offered",
                     _tools, True),
         ReplCommand("/hooks", "setup", "Hooks registered for this workspace",

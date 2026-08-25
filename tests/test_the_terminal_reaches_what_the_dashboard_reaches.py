@@ -34,45 +34,32 @@ from delfin.agent import repl_commands as rc
 # Every command this file added to the terminal. Adding one here and
 # forgetting the table (or the reverse) fails immediately below.
 NEW_COMMANDS = (
-    '/tools',
-    '/usage',
-    '/export',
-    '/memories',
-    '/forget',
-    '/undo',
-    '/undo-file',
-    '/pending',
-    '/approve',
-    '/reject',
-    '/git',
-    '/agents',
-    '/skills',
-    '/hooks',
-    '/bash',
-    '/attention',
-    '/plans',
-    '/commands',
-    '/trace',
+    "/tools", "/usage", "/export",
+    "/memories", "/forget",
+    "/undo", "/undo-file",
+    "/pending", "/approve", "/reject",
+    "/git", "/agents", "/skills", "/hooks", "/bash", "/attention",
+    "/plans", "/commands", "/trace",
 )
 
 # The module each command degrades through when it is missing. Used to
 # simulate an install that does not ship it.
 BACKING_MODULE = {
-    '/tools': 'delfin.agent.api_client',
-    '/memories': 'delfin.agent.memory_store',
-    '/forget': 'delfin.agent.memory_store',
-    '/undo-file': 'delfin.agent.change_journal',
-    '/pending': 'delfin.agent.pending_changes',
-    '/approve': 'delfin.agent.pending_changes',
-    '/reject': 'delfin.agent.pending_changes',
-    '/agents': 'delfin.agent.subagents',
-    '/skills': 'delfin.agent.skills',
-    '/hooks': 'delfin.agent.hooks_editor',
-    '/bash': 'delfin.agent.bash_jobs',
-    '/attention': 'delfin.agent.attention',
-    '/plans': 'delfin.agent.memory_store',
-    '/commands': 'delfin.agent.slash_commands',
-    '/trace': 'delfin.agent.tool_trace',
+    "/tools": "delfin.agent.api_client",
+    "/memories": "delfin.agent.memory_store",
+    "/forget": "delfin.agent.memory_store",
+    "/undo-file": "delfin.agent.change_journal",
+    "/pending": "delfin.agent.pending_changes",
+    "/approve": "delfin.agent.pending_changes",
+    "/reject": "delfin.agent.pending_changes",
+    "/agents": "delfin.agent.subagents",
+    "/skills": "delfin.agent.skills",
+    "/hooks": "delfin.agent.hooks_editor",
+    "/bash": "delfin.agent.bash_jobs",
+    "/attention": "delfin.agent.attention",
+    "/plans": "delfin.agent.memory_store",
+    "/commands": "delfin.agent.slash_commands",
+    "/trace": "delfin.agent.tool_trace",
 }
 
 
@@ -520,3 +507,66 @@ def test_git_does_not_park_a_question_it_cannot_answer(tmp_path):
     out = rc.BUILTINS["/git"].handler(_ctx(tmp_path, engine), "status").output
     assert engine.ran == []
     assert "!git status --short" in out
+
+
+# ---------------------------------------------------------------------------
+# /trust names a remedy that exists here
+# ---------------------------------------------------------------------------
+
+def test_trust_no_longer_points_at_an_editor_the_terminal_cannot_open(tmp_path):
+    """The old text named "the hooks / MCP editors" and nothing here
+    opened either, so the only advice it gave was unreachable."""
+    ws = tmp_path / "repo"
+    (ws / ".delfin").mkdir(parents=True)
+    (ws / ".delfin" / "settings.json").write_text(
+        '{"hooks": {"PreToolUse": [{"matcher": "Edit",'
+        ' "hooks": [{"type": "command", "command": "echo hi"}]}]}}')
+    out = rc.BUILTINS["/trust"].handler(rc.ReplContext(workspace=ws), "").output
+    assert "editors" not in out
+    assert "/trust grant" in out
+
+
+def test_trust_grants_through_the_same_wrapper_the_dashboard_uses(tmp_path,
+                                                                  monkeypatch):
+    """Trust has exactly two grant call sites and this adds no third."""
+    from delfin.agent import hooks_editor
+
+    seen: list = []
+    monkeypatch.setattr(hooks_editor, "trust_this_workspace",
+                        lambda ws: seen.append(ws) or {"kinds": {}})
+    out = rc.BUILTINS["/trust"].handler(
+        rc.ReplContext(workspace=tmp_path), "grant hooks").output
+    assert seen == [tmp_path]
+    assert "trusted" in out
+
+
+def test_trust_revokes_through_the_same_wrapper(tmp_path, monkeypatch):
+    from delfin.agent import mcp_editor
+
+    seen: list = []
+    monkeypatch.setattr(mcp_editor, "untrust_this_workspace",
+                        lambda ws: bool(seen.append(ws)) or True)
+    out = rc.BUILTINS["/trust"].handler(
+        rc.ReplContext(workspace=tmp_path), "revoke mcp").output
+    assert seen == [tmp_path]
+    assert "withdrawn" in out
+
+
+def test_a_typo_in_the_trust_subcommand_grants_nothing(tmp_path, monkeypatch):
+    from delfin.agent import hooks_editor
+
+    monkeypatch.setattr(hooks_editor, "trust_this_workspace",
+                        lambda ws: pytest.fail("a typo granted trust"))
+    for typo in ("grnt hooks", "trust hooks", "hooks"):
+        out = rc.BUILTINS["/trust"].handler(
+            rc.ReplContext(workspace=tmp_path), typo).output
+        assert "usage:" in out
+
+
+def test_the_grant_is_still_only_reachable_through_the_two_wrappers():
+    """The chokepoint test reads the source tree; keep this file out of it."""
+    import inspect
+
+    src = inspect.getsource(rc)
+    assert "trust_workspace(" not in src
+    assert "revoke_workspace(" not in src
