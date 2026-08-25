@@ -1942,6 +1942,27 @@ def _session_hooks(perms):
     return _hooks_mod.load_hooks(_hook_workspace(perms))
 
 
+def _session_skills(perms, *, domain: str = "") -> list:
+    """The skills this session may see -- or none, when discovery is off.
+
+    Both places that need the list (the ``skill`` tool description built
+    into the advertised surface, and the executor behind that tool) go
+    through here, so one switch covers the surface and the execution
+    path. Hiding the playbooks from the surface alone would leave the
+    executor reading the same directories for anything that reached it
+    by another route.
+
+    ``discover_skills`` walks the pack, user-global and project skill
+    directories, so returning early is the difference between reading
+    them and not.
+    """
+    if getattr(perms, "skip_skill_discovery", False):
+        return []
+    from .skills import discover_skills as _discover_skills
+    ws = getattr(perms, "workspace", None) if perms is not None else None
+    return _discover_skills(ws, domain=domain)
+
+
 # Tools that leave the machine. The folder lock bounds where data may be
 # WRITTEN; it never bounded where data may go. A record can leave through a
 # fetched URL without any path crossing the boundary, so these need their own
@@ -2584,19 +2605,21 @@ class KitToolPermissions:
     # ``add_session_read_dir``.
     session_read_dirs: tuple[Path, ...] = ()
     # Ambient configuration THIS session does not read from disk (--bare).
-    # Consulted in front of the loader it names -- ``_session_hooks`` -- so
-    # the files are never opened rather than opened and then ignored, and
-    # nothing is written to any settings file: a settings file belongs to
-    # every later session, and a session flag bounds one.
+    # Each is consulted in front of the loader it names -- ``_session_hooks``
+    # and ``_session_skills`` -- so the files are never opened rather than
+    # opened and then ignored, and nothing is written to any settings file:
+    # a settings file belongs to every later session, and a session flag
+    # bounds one.
     #
-    # It sits on the permissions object, the one thing the executor is
+    # They sit on the permissions object, the one thing the executor is
     # handed on every call, rather than in a module global. A global would
     # switch discovery off for every other session in the same process --
     # a dashboard turn beside a bare terminal run -- which no one asked
     # for. ``dataclasses.replace`` copies field values, so a sub-agent
-    # inherits it: a child that re-read what its parent was told to skip
+    # inherits both: a child that re-read what its parent was told to skip
     # would be a route around the flag.
     skip_hook_discovery: bool = False
+    skip_skill_discovery: bool = False
 
     def __post_init__(self) -> None:
         self.workspace = Path(self.workspace).expanduser().resolve()
@@ -13109,14 +13132,23 @@ class _DocToolExecutor:
         args = (arguments.get("args") or "").strip()
         if not name:
             return json.dumps({"error": "skill name must be non-empty"})
+        # Answered before anything is read from disk. Filtering the
+        # advertised description alone would leave this path reading the
+        # same skill directories for a name that arrived another way -- a
+        # replayed call, a sub-agent, a model that remembered a name.
+        if getattr(perms, "skip_skill_discovery", False):
+            return json.dumps({
+                "error": ("skill discovery is switched off for this session, "
+                          "so no playbook was read from disk"),
+                "available": [],
+            })
         workspace = perms.workspace if perms is not None else None
         domain = self._session_domain(perms)
         # Look it up unfiltered first: "no such skill" and "that skill does
         # not apply here" are different mistakes, and answering the second
         # with the first invites the model to retry the same name.
         sk = _skills_mod.get_skill(name, workspace)
-        available = [s.name for s in
-                     _skills_mod.discover_skills(workspace, domain=domain)]
+        available = [s.name for s in _session_skills(perms, domain=domain)]
         if sk is None:
             return json.dumps({
                 "error": f"skill '{name}' not found",
@@ -14869,13 +14901,15 @@ class OpenAIClient(_BaseClient):
         # tool but no idea what skills exist, so it never uses them. Build a
         # fresh dict — never mutate the shared _DOC_TOOLS_OPENAI.
         try:
-            from .skills import discover_skills as _disc_skills
-            _ws_sk = self._permissions.workspace if self._permissions else None
             # Only the skills this session can actually follow. Advertising
             # the others cost 125 tokens a turn to name playbooks whose
-            # first step calls a tool the role is denied.
-            _skills = _disc_skills(
-                _ws_sk, domain=self._session_domain(self._permissions))
+            # first step calls a tool the role is denied. Through
+            # _session_skills, which is also what the `skill` tool executes
+            # against, so a session with discovery switched off neither
+            # advertises a playbook nor reads one.
+            _skills = _session_skills(
+                self._permissions,
+                domain=self._session_domain(self._permissions))
             if _skills:
                 _listing = "; ".join(
                     s.name + (f" — {s.description[:70]}" if s.description else "")
