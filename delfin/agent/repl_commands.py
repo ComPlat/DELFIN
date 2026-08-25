@@ -299,6 +299,8 @@ def _mcp(ctx, _args: str) -> CommandResult:
         return CommandResult(output=f"MCP registry unavailable ({exc})")
 
 
+
+
 def _trust(ctx, _args: str) -> CommandResult:
     """Read the offers before granting anything.
 
@@ -318,6 +320,370 @@ def _trust(ctx, _args: str) -> CommandResult:
             "only you can."))
     except Exception as exc:
         return CommandResult(output=f"trust state unavailable ({exc})")
+
+# ---------------------------------------------------------------------------
+# What the dashboard reaches, reached from here
+#
+# Each handler calls the module that already implements the thing. Where
+# the dashboard's version is inline in a widget closure there is no
+# function to call, and the terminal half is written out minimally and
+# says so — importing the dashboard module would pull the notebook widget
+# stack into a terminal that has none.
+# ---------------------------------------------------------------------------
+
+def _live_session(ctx) -> str:
+    """The id the per-session stores are keyed by.
+
+    The engine keeps one id and copies it onto the tool executor's
+    permissions; reading both means a backend that only sets one still
+    finds its own records instead of silently reporting an empty store.
+    """
+    engine = getattr(ctx, "engine", None)
+    if engine is None:
+        return ""
+    sid = str(getattr(engine, "session_id", "") or "")
+    if sid:
+        return sid
+    perms = getattr(engine, "kit_permissions", None)
+    return str(getattr(perms, "task_session_id", "") or "")
+
+
+def _tools(ctx, args: str) -> CommandResult:
+    """The tool surface the model is offered, read from the catalogue.
+
+    api_client owns both the catalogue and the filter that drops what
+    this context could not execute, so both are called. The dashboard's
+    /tools is a hand-kept table that has to be edited whenever a tool is
+    added; a second copy here would drift the same way.
+    """
+    try:
+        from . import api_client as ac
+        role = ""
+        try:
+            role = str((ctx.engine.get_status() or {}).get("role", "") or "")
+        except Exception:
+            role = ""
+        tools = ac.advertisable_tools(
+            list(getattr(ac, "_DOC_TOOLS_OPENAI", None) or []),
+            ac.ToolSurfaceContext(role=role))
+    except Exception as exc:
+        return CommandResult(output=f"tool catalogue unavailable ({exc})")
+    query = args.strip().lower()
+    rows = []
+    for entry in tools:
+        fn = entry.get("function", {}) if isinstance(entry, dict) else {}
+        name = str(fn.get("name", "") or "")
+        desc = " ".join(str(fn.get("description", "") or "").split())
+        if query and query not in f"{name} {desc}".lower():
+            continue
+        rows.append(f"  {name:<24} {desc[:70]}")
+    if not rows:
+        return CommandResult(output=(
+            f"no tool matches {query!r}" if query else "no tools advertised"))
+    head = f"{len(rows)} tool(s)" + (f" matching {query!r}" if query else "")
+    return CommandResult(output="\n".join([head, *rows]))
+
+
+def _usage(ctx, _args: str) -> CommandResult:
+    """Token and cost detail: /cost plus the rate that produced it.
+
+    The rate comes from `pricing`, the one place model prices are written
+    down, so the rate quoted here cannot contradict the total printed
+    beside it. A model nobody has priced says so instead of showing a
+    zero that reads like "free".
+    """
+    try:
+        st = ctx.engine.get_status() or {}
+    except Exception:
+        return CommandResult(output="no usage recorded yet")
+    inp = int(st.get("input_tokens", 0) or 0)
+    out = int(st.get("output_tokens", 0) or 0)
+    model = str(getattr(getattr(ctx.engine, "client", None), "model", "") or "")
+    provider = str(st.get("provider", "") or "")
+    lines = [
+        f"model      {model or '?'}   provider {provider or '?'}",
+        f"input      {inp:,} tokens",
+        f"output     {out:,} tokens",
+        f"cached     {int(st.get('cached_tokens', 0) or 0):,} tokens",
+        f"messages   {len(getattr(ctx.engine, 'messages', []) or [])} in context",
+    ]
+    try:
+        from . import pricing
+        price = pricing.resolve(model, provider)
+        if price.state == pricing.PRICED:
+            lines.append(f"rate       ${price.input_per_mtok}/MTok in, "
+                         f"${price.output_per_mtok}/MTok out")
+            lines.append(
+                f"cost       ${float(st.get('cost_usd', 0.0) or 0.0):.4f}")
+        elif price.state == pricing.NON_BILLING:
+            lines.append(f"rate       no per-token USD cost ({price.reason})")
+            lines.append(f"spent      {inp + out:,} tokens")
+        else:
+            lines.append(f"rate       unmeasured — {price.reason}")
+            lines.append(f"spent      {inp + out:,} tokens "
+                         "(no rate to convert them)")
+    except Exception as exc:
+        lines.append(f"rate       unavailable ({exc})")
+    return CommandResult(output="\n".join(lines))
+
+
+def _export(ctx, _args: str) -> CommandResult:
+    """The conversation as Markdown.
+
+    The dashboard's export is inline in a closure over its own chat
+    widget, so there is no function to call and this is the minimal
+    terminal equivalent: the engine's own messages. It lands under the
+    DELFIN state directory rather than in the workspace, so an export
+    never turns up as a file the agent changed.
+    """
+    messages = getattr(getattr(ctx, "engine", None), "messages", None)
+    if not isinstance(messages, list) or not messages:
+        return CommandResult(output="nothing to export")
+    lines = ["# DELFIN agent session", ""]
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role", "") or "?")
+        lines.append(f"### {role}")
+        lines.append("")
+        lines.append(_message_text(msg.get("content")))
+        lines.append("")
+    try:
+        import time
+        from . import state_paths
+        target = (state_paths.ensure_dir(Path.home() / ".delfin" / "exports")
+                  / f"session_{time.strftime('%Y%m%d_%H%M%S')}.md")
+        state_paths.write_text(target, "\n".join(lines))
+    except Exception as exc:
+        return CommandResult(output=f"export failed: {exc}")
+    return CommandResult(output=f"exported {len(messages)} message(s) → {target}")
+
+
+def _message_text(content) -> str:
+    """One message's text, whatever shape the backend stored it in.
+
+    Content blocks arrive as a list on some backends and a plain string
+    on others; rendering the list's repr would put JSON in the export
+    where the user expects their conversation.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict):
+                parts.append(str(block.get("text", "") or ""))
+            elif isinstance(block, str):
+                parts.append(block)
+        return "\n".join(p for p in parts if p.strip())
+    return str(content or "")
+
+
+def _agents(ctx, _args: str) -> CommandResult:
+    """The subagent presets, from the registry that defines them."""
+    try:
+        from . import subagents
+        presets = subagents.list_subagents()
+    except Exception as exc:
+        return CommandResult(output=f"subagent presets unavailable ({exc})")
+    if not presets:
+        return CommandResult(output="no subagent presets registered")
+    lines = [
+        f"  {str(p.get('subagent_type') or p.get('name') or '?'):<18} "
+        f"{str(p.get('description') or '')[:60]}"
+        for p in presets
+    ]
+    try:
+        finished = subagents.list_finished(last_n=5)
+    except Exception:
+        finished = []
+    if finished:
+        lines.append("  recently finished (resume via resume_id):")
+        for rec in finished:
+            lines.append(
+                f"    {str(rec.get('sa_id', '?')):<10} "
+                f"{str(rec.get('subagent_type', '?')):<16} "
+                f"{str(rec.get('description') or '')[:40]}")
+    return CommandResult(output="\n".join(lines))
+
+
+def _skills(ctx, args: str) -> CommandResult:
+    """Discovered skills, and one skill's body on request."""
+    try:
+        from . import skills
+    except Exception as exc:
+        return CommandResult(output=f"skills unavailable ({exc})")
+    name = args.strip()
+    if name:
+        try:
+            skill = skills.get_skill(name, ctx.workspace)
+        except Exception as exc:
+            return CommandResult(output=f"could not read {name}: {exc}")
+        if skill is None:
+            return CommandResult(output=(
+                f"no skill named {name!r} — /skills lists them"))
+        return CommandResult(output=(
+            f"{skill.name} — {skill.description}\n"
+            f"source {skill.source}\n\n{skill.body}"))
+    try:
+        found = skills.discover_skills(ctx.workspace)
+    except Exception as exc:
+        return CommandResult(output=f"could not list skills ({exc})")
+    if not found:
+        return CommandResult(output=(
+            "no skills discovered — drop a SKILL.md under "
+            "~/.delfin/skills/<name>/ or <workspace>/.delfin/skills/"))
+    lines = [f"  /{s.name:<22} {(s.description or '')[:60]}" for s in found]
+    lines.append("  /skills <name> shows the body")
+    return CommandResult(output="\n".join(lines))
+
+
+def _hooks(ctx, _args: str) -> CommandResult:
+    """Which hooks are registered, and what the load could not do.
+
+    List only: adding, removing and dry-running a hook edit settings the
+    user owns, and this surface never does. The warnings are printed
+    because a hook withheld for lack of trust looks exactly like a hook
+    that had nothing to say — see /trust grant hooks.
+    """
+    try:
+        from . import hooks_editor
+        rows = hooks_editor.list_hooks(ctx.workspace)
+        warnings = hooks_editor.hook_warnings(ctx.workspace)
+    except Exception as exc:
+        return CommandResult(output=f"hooks unavailable ({exc})")
+    if not rows and not warnings:
+        return CommandResult(output="no hooks registered")
+    lines: list[str] = []
+    event = ""
+    for row in rows:
+        if row.get("event") != event:
+            event = str(row.get("event", "") or "")
+            lines.append(f"  {event}:")
+        lines.append(f"    [{row.get('index')}] matcher="
+                     f"{str(row.get('matcher', '') or ''):<20} "
+                     f"{str(row.get('command', ''))[:60]}")
+        lines.append(f"        source {row.get('source') or 'unknown'}")
+    for note in warnings:
+        lines.append(f"  ! {note}")
+    return CommandResult(output="\n".join(lines))
+
+
+def _attention(ctx, args: str) -> CommandResult:
+    """The attention inbox, rendered by the module that owns it.
+
+    Read-only here. Answering and dismissing resolve an item the agent
+    is waiting on, and those belong on the surface that parked it.
+    """
+    try:
+        from . import attention
+        kind = args.strip().lower()
+        if kind and kind not in attention.ATTENTION_KINDS:
+            return CommandResult(output=(
+                "usage: /attention [" + "|".join(
+                    sorted(attention.ATTENTION_KINDS)) + "]"))
+        return CommandResult(output=attention.render_inbox(kind or None))
+    except Exception as exc:
+        return CommandResult(output=f"attention inbox unavailable ({exc})")
+
+
+def _plans(ctx, args: str) -> CommandResult:
+    """Saved plans, and one plan's body on request."""
+    try:
+        from . import memory_store
+    except Exception as exc:
+        return CommandResult(output=f"plan store unavailable ({exc})")
+    name = args.strip()
+    if name:
+        try:
+            rec = memory_store.get_plan(ctx.workspace, name)
+        except Exception as exc:
+            return CommandResult(output=f"could not read {name}: {exc}")
+        if rec is None:
+            return CommandResult(output=(
+                f"no plan matching {name!r} — /plans lists them"))
+        return CommandResult(output=(
+            f"{rec.get('name')} — {rec.get('description', '')}\n"
+            f"source {rec.get('path')}\n\n{rec.get('body', '')}"))
+    try:
+        plans = memory_store.list_plans(ctx.workspace)
+    except Exception as exc:
+        return CommandResult(output=f"could not list plans ({exc})")
+    if not plans:
+        return CommandResult(output=(
+            "no saved plans — one is written when a plan-mode plan is "
+            "approved"))
+    import time
+    lines = []
+    for plan in plans[:25]:
+        stamp = time.strftime("%Y-%m-%d %H:%M",
+                              time.localtime(plan.get("created_at", 0) or 0))
+        lines.append(f"  {stamp}  {str(plan.get('name', '?')):<28} "
+                     f"{str(plan.get('description') or '')[:40]}")
+    lines.append("  /plans <name> shows the body")
+    return CommandResult(output="\n".join(lines))
+
+
+def _commands(ctx, args: str) -> CommandResult:
+    """User-defined slash commands, from the same discovery the router uses.
+
+    Listing them from a second source would let /commands advertise a
+    command the router does not have, or hide one it does.
+    """
+    try:
+        from . import slash_commands
+    except Exception as exc:
+        return CommandResult(output=f"command store unavailable ({exc})")
+    name = args.strip()
+    if name:
+        try:
+            tpl = slash_commands.get_command(name, ctx.workspace)
+        except Exception as exc:
+            return CommandResult(output=f"could not read {name}: {exc}")
+        if tpl is None:
+            return CommandResult(output=(
+                f"no command named {name!r} — /commands lists them"))
+        return CommandResult(output=(
+            f"/{tpl.name} — {tpl.description}\n"
+            f"source {tpl.source}\n\n{tpl.body}"))
+    try:
+        found = slash_commands.discover_commands(ctx.workspace)
+    except Exception as exc:
+        return CommandResult(output=f"could not list commands ({exc})")
+    if not found:
+        return CommandResult(output=(
+            "no custom commands — a markdown file in ~/.delfin/commands/ "
+            "or <workspace>/.delfin/commands/ becomes one"))
+    lines = []
+    for tpl in found:
+        hint = f" {tpl.argument_hint}" if tpl.argument_hint else ""
+        lines.append(f"  /{tpl.name}{hint:<20} {(tpl.description or '')[:60]}")
+    lines.append("  /commands <name> shows the body")
+    return CommandResult(output="\n".join(lines))
+
+
+def _trace(ctx, args: str) -> CommandResult:
+    """The tool calls this session made, as tool_trace records them."""
+    engine = getattr(ctx, "engine", None)
+    session = getattr(engine, "trace_session", None)
+    sid = ""
+    try:
+        sid = str(session() or "") if callable(session) else _live_session(ctx)
+    except Exception:
+        sid = _live_session(ctx)
+    if not sid:
+        return CommandResult(output="no session yet — nothing has been traced")
+    try:
+        from . import tool_trace
+        entries = tool_trace.read(sid)
+        if not entries:
+            return CommandResult(output="no tool calls recorded this session")
+        limit = int(args.strip()) if args.strip().isdigit() else 30
+        return CommandResult(output=(
+            tool_trace.format_summary(entries, limit=limit)
+            + f"\nfull trace: {tool_trace.trace_path(sid)}"))
+    except Exception as exc:
+        return CommandResult(output=f"trace unavailable ({exc})")
 
 
 def _clear(ctx, _args: str) -> CommandResult:
@@ -344,9 +710,15 @@ BUILTINS: dict[str, ReplCommand] = {
         ReplCommand("/help", "session", "List these commands", _help, True),
         ReplCommand("/status", "session", "Model, mode, tokens, cost", _status),
         ReplCommand("/cost", "session", "What this session has cost", _cost),
+        ReplCommand("/usage", "session", "Token and cost detail, with the rate",
+                    _usage),
         ReplCommand("/context", "session", "How much window is left", _context),
         ReplCommand("/compact", "session", "Summarise history to free space",
                     _compact, True),
+        ReplCommand("/export", "session", "Write this conversation as Markdown",
+                    _export),
+        ReplCommand("/trace", "session", "Tool calls made this session",
+                    _trace, True),
         ReplCommand("/clear", "session", "Start a fresh conversation", _clear),
         ReplCommand("/exit", "session", "Leave", _exit),
         ReplCommand("/quit", "session", "Leave", _exit),
@@ -362,10 +734,21 @@ BUILTINS: dict[str, ReplCommand] = {
         ReplCommand("/mcp", "setup", "Configured MCP servers", _mcp),
         ReplCommand("/trust", "setup", "What this folder offers and withholds",
                     _trust),
+        ReplCommand("/tools", "setup", "Tools the model is offered",
+                    _tools, True),
+        ReplCommand("/hooks", "setup", "Hooks registered for this workspace",
+                    _hooks),
+        ReplCommand("/agents", "setup", "Subagent presets", _agents),
+        ReplCommand("/skills", "setup", "Discovered skills", _skills, True),
+        ReplCommand("/commands", "setup", "User-defined slash commands",
+                    _commands, True),
         ReplCommand("/session", "history", "List or search past sessions",
                     _session, True),
         ReplCommand("/rewind", "history", "What the agent changed here",
                     _rewind),
+        ReplCommand("/plans", "history", "Saved plans", _plans, True),
+        ReplCommand("/attention", "workspace", "The attention inbox",
+                    _attention, True),
     ]
 }
 
