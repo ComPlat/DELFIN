@@ -21,13 +21,19 @@ hand::
 
 and after::
 
-    starts ['here', 'scan'] standing at scan   ways ['orca', 'hand', 'walk']
+    starts ['here', 'scan'] standing at scan   ways ['orca', 'neb', 'hand',
+                                                       'walk']
     one press: walk the scan's two ends, then climb through ORCA
 
 Nothing left the matrix: the combinations the two boxes can be put into
-between them are the same ones before and after -- seven under GFN-FF and
-GFN2 with a marked end and a scan's ends in hand, five under g-xTB, which has
-no by-hand climb -- and "what is on screen" is one selection away.
+between them are the same ones before and after -- nine under GFN-FF and GFN2
+with a marked end and a scan's ends in hand, seven under g-xTB, which has no
+by-hand climb -- and "what is on screen" is one selection away.
+
+(Seven and five when this was written.  A nudged elastic band arrived later
+as a fourth *how* from a two-ended start, which is what the shape of this
+control is for: another way of answering the second question is an entry in
+the box, not a fourth press beside it.)
 
 **The answer.**  The user, in the same message: "und wenn ich Scan mache, sehe
 ich am Ende nicht den Text, er verschwindet und ich sehe ``Optimised with
@@ -224,7 +230,10 @@ def test_a_finished_scan_leaves_the_next_thing_one_press_away(tab):
     # And the second box has arrived: from a pair there are three ways, and
     # from the structure on screen there was only ever one, so this box was
     # not on the toolbar at all a moment ago.
-    assert _values(refs['submit_saddle_how']) == ['orca', 'hand', 'walk']
+    # A band arrived here later, and is another way from the same pair --
+    # so the box that was not on the toolbar a moment ago now holds four.
+    assert _values(refs['submit_saddle_how']) == ['orca', 'neb', 'hand',
+                                                  'walk']
     assert _shown(refs['submit_saddle_how'])
 
     # What is on screen is not lost -- it is one selection away.
@@ -279,18 +288,18 @@ def test_the_move_costs_the_matrix_nothing():
     rather than what they hold.  Driven over each engine that can reach a
     saddle at all, with a marked end and a scan's ends in hand::
 
-        method  starts                     ways                 resting
-        gfnff   here, marked, scan         orca, hand, walk     scan
-        gfn2    here, marked, scan         orca, hand, walk     scan
-        gxtb    here, marked, scan         orca, walk           scan
+        method  starts                     ways                      resting
+        gfnff   here, marked, scan         orca, neb, hand, walk     scan
+        gfn2    here, marked, scan         orca, neb, hand, walk     scan
+        gxtb    here, marked, scan         orca, neb, walk           scan
 
     g-xTB has no by-hand climb -- there is no gradient the climb knows how to
     ask it for -- which is why its row is one shorter, and that was true
     before the move as well.
     """
-    for prefix, ways in (('gfnff', {'orca', 'hand', 'walk'}),
-                         ('gfn2', {'orca', 'hand', 'walk'}),
-                         ('gxtb', {'orca', 'walk'})):
+    for prefix, ways in (('gfnff', {'orca', 'neb', 'hand', 'walk'}),
+                         ('gfn2', {'orca', 'neb', 'hand', 'walk'}),
+                         ('gxtb', {'orca', 'neb', 'walk'})):
         part, state = _an_editor()
         method = _method(part, prefix)
         if method is None:

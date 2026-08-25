@@ -41,6 +41,7 @@ from . import gfn_optimize as _gfn
 from . import ketcher as _ketcher
 from . import mopac_optimize as _mopac
 from . import saddle as _saddle
+from . import scan_profile as _scan_profile
 from . import separate_systems as _separate
 from . import solvents as _solvents
 from .input_processing import (
@@ -71,6 +72,22 @@ LABEL_PX_MAX = 48
 #: is down-scaled by, so a larger number stays sharp instead of blurring.
 LABEL_SCALE_DEFAULT = LABEL_PX_DEFAULT / LABEL_PX_PER_SCALE
 
+#: How often the labels may be redrawn while something is running, in seconds.
+#:
+#: They travel by ``run_js``, which is the channel this editor keeps for
+#: things that happen when a user presses something -- the frames and the
+#: thermal wall each have a widget field of their own precisely because
+#: run_js clears its output before displaying, so a message sent many times a
+#: second is mostly overwritten before the page draws it.
+#:
+#: Labels can live with that where a frame cannot: each repaint is the whole
+#: state rather than one step of a sequence, so the last to land is the right
+#: one.  What is left is the cost of the script itself, and four times a
+#: second is already faster than a charge visibly changes -- measured on an
+#: ammonia borane pulled apart under GFN2, the nitrogen went -0.25, -0.26,
+#: -0.27, -0.29, -0.33, -0.40 over six answers.
+_LABEL_REPAINT_INTERVAL = 0.25
+
 
 #: One layout for every coordinate this editor writes: the element in five
 #: columns, then three fields of twenty-four with fourteen decimals.  It is
@@ -100,6 +117,26 @@ _HARTREE_TO_KCAL = 627.5094740631
 #: changed the answer far less than it cost to understand, and it was asked
 #: about twice.  An hour is a reaction set up in a flask, which is what this
 #: is for.
+#:
+#: Asked again once a refusal started answering in both directions, and the
+#: answer came out the same.  What a window control would be for is a user
+#: saying "I would wait longer than that", and the two sentences a refusal now
+#: carries answer that without anything being set: the waiting time is quoted
+#: at the temperature that *is* set, so a barrier the hour refuses already
+#: reads as "about 4 d", "about 50 years" or "longer than the universe has
+#: existed", and the temperature it wants is quoted for the window.  A knob
+#: that only moved the line between those two would be a third way of asking a
+#: question now answered twice over without it.
+#:
+#: Maeda's advice for AFIR is to run the permissive end -- the gamma he
+#: recommends is the ten-day 106.9 kJ/mol and not the one-hour 93.3 -- and it
+#: is advice about *searching*: a search that misses a path has found nothing,
+#: while one that finds too much is sorted out afterwards.  This is not a
+#: search.  It decides what stays in the box, and there the two errors are not
+#: the same size: a budget that allows what the temperature will not hands
+#: back a structure with nothing anywhere saying it is impossible, and the
+#: user goes on from it.  The strict end is right here for the same reason the
+#: permissive end is right there.
 _THERMAL_SECONDS = 3600.0
 _XYZ_ELEMENT_COLUMNS = 5
 _XYZ_NUMBER_COLUMNS = 24
@@ -168,13 +205,16 @@ _EDITOR_COMMENTS = (
     'back to the last structure that was measured and allowed',
     'kept: the bonding would have changed',
     'scanned',
+    'driven until the bonds were made and broken',
     'where the saddle search got to',
     'where the hand left it',
     'optimised to ',
     'climbed towards ',
     'where the chain got to',
+    'where the band got to',
     'climbed to ',
     'from a path, optimised to ',
+    'from a band, optimised to ',
     'optimised to a transition state',
     'estimated transition state, from the path',
     'delfin drag-end',
@@ -189,11 +229,58 @@ def _is_editor_comment(line):
     return any(text.startswith(one) for one in _EDITOR_COMMENTS)
 
 
+def fixed_atoms_note(held):
+    """What a force field running here did with the held values, in its terms.
+
+    The counterpart of :func:`gfn_optimize.held_note` and
+    :func:`mopac_optimize.freeze_note`, and it reads the same shape MOPAC's
+    does, because the two engines can do the same one thing: RDKit's UFF takes
+    ``AddFixedPoint`` and Open Babel a list of fixed atoms, and neither has a
+    restraint.  So a fix is met by holding the atoms that name it still --
+    which is more than was asked, since those atoms also stop turning and
+    moving -- and a pull cannot be said at all.
+
+    Which of the two happened has to be said, because the alternative is what
+    this branch of Optimise did before it was handed anything: measured on
+    ethane with the bonding pinned, C0-H2 pulled out to 1.700 A and held
+    exactly came back from one press at 1.1104 A, under a status line reading
+    only "Optimised with UFF."  A held value that is silently given up makes
+    the result an answer to a question nobody asked.
+    """
+    said = []
+    if held['held']:
+        said.append(
+            f"{held['held']} held value(s) kept by fixing the "
+            f"{len(held['frozen'])} atom(s) they name, where they stand -- "
+            'the force field fixes atoms, not the value between them, so '
+            'those atoms also stop turning and moving')
+    if held.get('every_atom'):
+        # A small molecule runs out of atoms quickly: an angle held on a water
+        # names all three of them.  The press then cannot move anything, and
+        # saying "Optimised" over a geometry nothing happened to would be the
+        # same silence this function exists to end, one step further along.
+        said.append('and that is every atom in the structure, so there was '
+                    'nothing left to relax -- release one of them to let the '
+                    'rest of the molecule move')
+    if held['pulls']:
+        said.append(f"{held['pulls']} pull(s) not honoured -- an atom here is "
+                    'held or free, so there is no value to negotiate with; '
+                    'hold them as fix, or optimise under a GFN method')
+    if held['dropped']:
+        said.append(f"{len(held['dropped'])} held value(s) dropped -- they "
+                    'name atoms this structure does not have')
+    return (' ' + '; '.join(said) + '.') if said else ''
+
+
 #: Boltzmann, Planck and the gas constant, in the units this file speaks:
 #: kcal/mol for energies, kelvin for temperature, seconds for time.
 _BOLTZMANN_SI = 1.380649e-23          # J/K
 _PLANCK_SI = 6.62607015e-34           # J s
 _GAS_CONSTANT = 1.987204259e-3        # kcal/(mol K)
+#: 13.8 thousand million years, in seconds.  The longest waiting time worth
+#: printing as a number: past it every barrier reads the same, and a sentence
+#: says what a mantissa and an exponent do not.
+_UNIVERSE_SECONDS = 4.35e17
 
 
 def thermal_ceiling(temperature, seconds):
@@ -276,13 +363,27 @@ def thermal_temperature(kcal, seconds=_THERMAL_SECONDS):
 #:   * While the drag leaves the structure in as many separate pieces as it
 #:     found it, dS is small.  A torsion, an angle, a ring turning over: what
 #:     is lost from the vibrations at one end is found at the other, and the
-#:     two numbers agree closely.
+#:     two numbers agree closely.  Measured here under GFN2 at 298.15 K, the
+#:     same deformation priced both ways: ethane turned to eclipsed, +2.592
+#:     electronic against +2.568 free -- 0.02 kcal/mol apart on a barrier of
+#:     2.6; a benzene ring bond stretched to 1.62 A, +17.98 against +15.71;
+#:     to 1.72 A, +30.58 against +27.68.  Under three kcal/mol on every one
+#:     of them, which is well inside what the method itself is worth, and no
+#:     verdict anywhere near the ceiling changes hands.
 #:   * Where the drag changes how many pieces there are, dS is large and it
 #:     has a sign.  Taking something apart releases translation and rotation,
 #:     so T*dS is of order ten kcal/mol at room temperature and the electronic
 #:     price is *too strict* -- the wall refuses something the temperature
 #:     would in fact pay for.  Bringing two things together is the same number
-#:     the other way round, and there it is too lenient.
+#:     the other way round, and there it is too lenient.  Measured on a
+#:     borazane with the B-N pulled out, GFN2 at 298.15 K: at 2.5 A +17.71
+#:     electronic against +12.77 free, at 3.5 A +21.20 against +14.21, and
+#:     once the two are apart at 6 A +22.51 against +12.26.  Ten and a quarter
+#:     kcal/mol at the end of it, which is the "order ten" above arrived at by
+#:     measurement, and it is the one place a verdict changes hands: against
+#:     an hour at 298 K the electronic price is past the 22.3 and the free one
+#:     is not, and where the electronic price asks for 301 K the free one asks
+#:     for 167.
 #:
 #: Nothing here corrects for it, and that is a decision rather than an
 #: oversight.  The exact answer is a Hessian, and a Hessian per drag step
@@ -298,15 +399,41 @@ def thermal_temperature(kcal, seconds=_THERMAL_SECONDS):
 #: where the method itself is least reliable.  A number invented there would
 #: be worse than the gap it papered over.
 #:
+#: There is one published prescription for exactly this case, and measured, it
+#: does not answer here.  xtb's ``--bhess`` takes a single-point Hessian for a
+#: geometry that is not a stationary point -- Spicher and Grimme, J. Chem.
+#: Theory Comput. 2021, 17, 1701 -- by optimising under an RMSD bias towards
+#: the structure it was handed, so that the soft and imaginary modes of a
+#: point nothing has relaxed do not wreck the entropy.  A dragged structure is
+#: exactly a geometry that is not a stationary point, so it reads like the
+#: answer to the paragraph above.  It is not, and the reason is that its bias
+#: is sized in RMSD -- the target is 0.10 A -- while a drag is small in RMSD
+#: and large in energy.  Measured under GFN2: a benzene ring bond stretched to
+#: 1.72 A is +30.6 kcal/mol and 0.094 A of RMSD, xtb reads that as already
+#: inside the target, prints ``final kpush: -0.000000``, optimises freely back
+#: to the ring, and reports its TOTAL FREE ENERGY for relaxed benzene --
+#: -0.0003 kcal/mol against the anchor.  Priced that way the wall would refuse
+#: nothing whatever.  Held at the coordinate the hand is holding it does keep
+#: the geometry, and then the restraint's own curvature is in the frequencies:
+#: the same case comes back at +0.4 where an unbiased Hessian says -2.9, which
+#: is the hold and not the chemistry.  What prices a dragged geometry is a
+#: plain ``--hess`` on it, and that is what a scan set to G already runs.
+#:
 #: So the gap is said rather than filled, and a scan answers it properly: with
 #: its energy set to G it takes three Hessians -- the start, the highest point
 #: and the end -- and its verdict is then a free energy against a free energy.
+#: Said to every user about every system, so it names no chemistry: what was
+#: measured is written out with its numbers in the comment above, and this is
+#: the claim without the examples.  A sentence that reaches for a familiar
+#: case to make itself clear is a sentence that is wrong for somebody.
 _THERMAL_QUANTITY_SHORT = (
     'The ceiling is a free energy; a drag is priced with an electronic '
-    'energy. The two part company where a drag changes how many separate '
-    'pieces the structure is in -- of order ten kcal/mol at room temperature, '
-    'strict for taking something apart and lenient for putting it together. '
-    'Run a scan with its energy set to G for the free-energy answer.'
+    'energy. While the structure stays in as many separate pieces as it '
+    'started in, the two agree to under 3 kcal/mol. They part company where a '
+    'drag changes how many pieces there are: about ten kcal/mol at room '
+    'temperature, strict for taking something apart and lenient for putting '
+    'it together. Run a scan with its energy set to G for the free-energy '
+    'answer.'
 )
 
 
@@ -331,15 +458,36 @@ STRUCTURE_MEMORY_KEYS = (
     'constraints', 'poly_applied', 'poly_metal', 'poly_assignment',
     'poly_arrangements', 'poly_arrangement_index', 'history', 'structure_undo',
     'pristine_coords', 'gfn_topology', 'gfn_topology_source',
+    # The charges belong to the structure they were computed on, and the tab
+    # that steps between structures is exactly the one that would get this
+    # wrong: a set of isomers has the same element column, so the fingerprint
+    # that keeps one molecule's charges off another's atoms cannot tell two
+    # isomers apart. Put aside with the structure being left, they are simply
+    # not there for the one being shown until it has an answer of its own.
+    'atom_charges', 'atom_charges_method', 'atom_charges_for',
+    # What a saddle search found here, and the Hessian that was paid for to
+    # draw and follow its mode. Both belong to one structure and to no other
+    # -- they are checked against the geometry before they are believed --
+    # and both are seconds of xtb, which is worth not spending twice because
+    # somebody stepped to the next block and back.
+    'saddle_found', 'saddle_modes',
 )
 
 
 def _atom_numbers_js():
     """The layer itself: ``window.__delfinAtomNumbers``.
 
-    ``set(viewer, on, scale)`` switches the numbers on or off, ``refresh``
-    brings them back onto the atoms after those have moved, ``setScale``
-    resizes what is already there.
+    ``set(viewer, on, scale, texts)`` switches the labels on or off,
+    ``refresh`` brings them back onto the atoms after those have moved,
+    ``setScale`` resizes what is already there.
+
+    *texts* is what each label says, one to an atom, and null means the atom's
+    number.  The layer was written for the numbers and is not about them: what
+    it really does is hold a sprite on an atom while that atom moves, hide it
+    when something is in front of it, and keep it the size the toolbar asked
+    for -- all of which is exactly as true of a partial charge as of an index.
+    A second layer for charges would have been the same six hundred lines with
+    a different string in one place, and would have drifted from this one.
     """
     return (
         "window.__delfinAtomNumbers=(function(){\n"
@@ -394,25 +542,44 @@ def _atom_numbers_js():
         "      if(typeof before==='function'){try{before();}catch(e){}}\n"
         "    };\n"
         "  }\n"
-        "  function build(v,scale){\n"
+        "  function build(v,scale,texts){\n"
         "    if(!v||typeof v.addLabel!=='function')return 0;\n"
         "    clear(v);\n"
         "    if(scale!=null&&isFinite(+scale))v.__delfinLabelScale=+scale;\n"
+        # Kept on the viewer, so a rebuild -- which happens by itself whenever
+        # the atom count changes under a running drag -- says the same thing
+        # it said before rather than falling back to the numbers.
+        "    if(texts!==undefined)v.__delfinLabelTexts=texts;\n"
+        "    var T=v.__delfinLabelTexts||null;\n"
+        # A list of values that no longer matches the structure draws nothing
+        # at all, rather than drawing the ones it still has and numbering the
+        # rest. Half a set of charges and half a set of indices, in the same
+        # typeface on the same atoms, is the one outcome worth writing code to
+        # prevent: the next answer brings a fresh list and they come back.
+        "    if(T&&T.length!==atomCount(v)){\n"
+        "      v.__delfinLabelTexts=null;v.__delfinLbls=[];v.__delfinProj=[];\n"
+        "      return 0;\n"
+        "    }\n"
         # alignment:center anchors the text box on its centre, so the number
         # stays on the atom centre at every zoom (default corner-anchoring
         # drifts aside as atoms shrink). Fall back to the string form if the
         # enum is unavailable.
         "    var al=(window.$3Dmol&&$3Dmol.SpriteAlignment&&$3Dmol.SpriteAlignment.center)\n"
         "      ?$3Dmol.SpriteAlignment.center:'center';\n"
-        "    var ms=modelsOf(v),L=[];\n"
+        "    var ms=modelsOf(v),L=[],n=0;\n"
         "    for(var mi=0;mi<ms.length;mi++){\n"
         "      var atoms=[];try{atoms=ms[mi].selectedAtoms({})||[];}catch(e){atoms=[];}\n"
-        "      for(var i=0;i<atoms.length;i++){\n"
+        "      for(var i=0;i<atoms.length;i++,n++){\n"
         # fontSize 48 is a HIGH-RES texture kept sharp; the sprite is then
         # down-scaled in refresh() so the number appears small and crisp.
         # The fourth argument tells 3Dmol not to draw a frame per label.
+        # The number is the atom's place in the model it belongs to, which is
+        # what the ORCA Builder's two-structure overlay needs; a text handed
+        # in is read off one list for the whole viewer, because whoever
+        # computed it computed it for one structure.
         "        var a=atoms[i],lab=null;\n"
-        "        try{lab=v.addLabel(String(i),{position:{x:a.x,y:a.y,z:a.z},\n"
+        "        var say=(T&&T[n]!=null)?String(T[n]):String(i);\n"
+        "        try{lab=v.addLabel(say,{position:{x:a.x,y:a.y,z:a.z},\n"
         "          fontSize:48,fontColor:'black',alignment:al,\n"
         "          showBackground:false,inFront:true},undefined,true);}catch(e){lab=null;}\n"
         "        if(lab)L.push({a:a,l:lab});\n"
@@ -500,15 +667,18 @@ def _atom_numbers_js():
         "    if(refresh(v))draw(v);\n"
         "    return true;\n"
         "  }\n"
-        "  function set(v,on,scale){\n"
+        "  function set(v,on,scale,texts){\n"
         "    if(!v)return 0;\n"
         "    if(!on){\n"
         "      var had=(v.__delfinLbls||[]).length;\n"
-        "      clear(v);if(had)draw(v);\n"
+        "      clear(v);v.__delfinLabelTexts=null;if(had)draw(v);\n"
         "      return 0;\n"
         "    }\n"
-        "    var n=build(v,scale);\n"
+        "    var n=build(v,scale,texts);\n"
         "    if(n){refresh(v);draw(v);}\n"
+        # A build that came to nothing still has to be drawn: what it cleared
+        # is on screen until something renders over it.
+        "    else draw(v);\n"
         "    return n;\n"
         "  }\n"
         "  return {set:set,build:build,clear:clear,refresh:refresh,setScale:setScale};\n"
@@ -521,19 +691,54 @@ def atom_numbers_js():
     return 'if(!window.__delfinAtomNumbers){\n' + _atom_numbers_js() + '\n}'
 
 
-def show_atom_numbers_js(var='viewer', on=True, scale=None):
-    """Number the atoms of the viewer held in the JS variable *var*.
+def show_atom_numbers_js(var='viewer', on=True, scale=None, texts=None):
+    """Label the atoms of the viewer held in the JS variable *var*.
 
-    The numbers are read off the model the viewer already has, so this is the
+    The atoms are read off the model the viewer already has, so this is the
     same call whether a molecule was just rendered or has been on screen for
     an hour, and it never needs the coordinates handed to it a second time.
+
+    With *texts* None the labels are the atom numbers, which is what this has
+    always drawn.  Given a list -- one entry per atom, in the order of the
+    coordinates -- each atom says what it was given instead.  Nothing here
+    knows or cares what the values are; see :func:`atom_charge_texts` for the
+    one thing that is drawn this way and for what it costs.
     """
     size = LABEL_SCALE_DEFAULT if scale is None else float(scale)
+    said = 'null' if texts is None else json.dumps(
+        [str(one) for one in texts])
     return (
         atom_numbers_js()
-        + '\nwindow.__delfinAtomNumbers.set(%s,%s,%.3f);'
-        % (var, 'true' if on else 'false', size)
+        + '\nwindow.__delfinAtomNumbers.set(%s,%s,%.3f,%s);'
+        % (var, 'true' if on else 'false', size, said)
     )
+
+
+#: How many decimals a partial charge is drawn to.
+#:
+#: Two.  A charge is not a measurement -- four methods give a methane carbon
+#: -0.153, -0.130, -0.359 and -0.092, so the third decimal is a property of
+#: the Hamiltonian rather than of the molecule -- and two is what fits on an
+#: atom without the numbers running into each other.
+CHARGE_DECIMALS = 2
+
+
+def atom_charge_texts(charges, decimals=CHARGE_DECIMALS):
+    """Partial charges as the strings that go on the atoms, or None.
+
+    Signed always: the sign is the whole of what a chemist reads off a
+    structure at a glance, and a charge of +0.15 written as 0.15 reads as a
+    magnitude.
+    """
+    if not charges:
+        return None
+    said = []
+    for one in charges:
+        try:
+            said.append(f'{float(one):+.{int(decimals)}f}')
+        except (TypeError, ValueError):
+            return None
+    return said
 
 
 
@@ -966,9 +1171,47 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         min=LABEL_PX_MIN,
         max=LABEL_PX_MAX,
         step=1,
-        tooltip=('How tall the numbers are, in pixels. Type one or step it; '
-                 'the numbers resize as you go.'),
+        tooltip=('How tall the labels are, in pixels. Type one or step it; '
+                 'they resize as you go.'),
         layout=widgets.Layout(width='62px', height='30px', display='none'),
+    )
+    #: What the labels say, which is not a fourth button.
+    #:
+    #: Every GFN and PM answer this editor has ever made computed the partial
+    #: charges and threw them away with its scratch directory -- xtb writes
+    #: them to a file on every single point, every optimisation cycle set and
+    #: every scan point, and MOPAC writes them into the AUX file the
+    #: trajectory is already read out of. Showing them costs no calculation at
+    #: all; see :func:`delfin.dashboard.gfn_optimize.read_charges`.
+    #:
+    #: So the question is only where they go, and the answer is: on the
+    #: control that already draws things on atoms. The toolbar is the crowded
+    #: row and the standing rule about it is that less is more, so this is not
+    #: a switch of its own -- it appears beside the size box, when the labels
+    #: are on, and goes away with them. The cost of having it at all is a
+    #: 96 px box that is invisible until somebody has already said they want
+    #: labels.
+    #:
+    #: The charge entry is only in the list under a method that computes one.
+    #: A browser force field has no charges to show, and offering the word
+    #: there would be the interface promising something it cannot do -- the
+    #: visible set of controls is meant to be the answer to "what can I do
+    #: now".
+    submit_label_what = widgets.Dropdown(
+        options=[('number', 'number')],
+        value='number',
+        tooltip=(
+            'What the labels say. "number" is the atom\'s place in the '
+            'coordinates. "charge" is the partial charge the last answer '
+            'computed -- it costs nothing, because every GFN and PM run '
+            'writes the charges out whether anybody reads them or not, and '
+            'they follow the drag as fast as the answers arrive. They are the '
+            'method\'s own definition of a charge and not a measured '
+            'quantity: the same methane carbon is -0.15 under GFN2, -0.13 '
+            'under GFN1, -0.36 under g-xTB and -0.09 under GFN-FF, so they '
+            'are read against each other and not across methods.'
+        ),
+        layout=widgets.Layout(width='84px', display='none'),
     )
     submit_manip_undo_btn = widgets.Button(
         description='Undo', button_style='info', icon='undo',
@@ -1022,15 +1265,30 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         disabled=True,
     )
     submit_ff_dd = widgets.Dropdown(
+        # GFN1 is in this list because it is in every other list: the climb
+        # takes it, the saddle search takes it, the solvent table was measured
+        # for it one solvent at a time, and three of this editor's own
+        # refusals name it as one of the methods to choose -- while the box
+        # they send the user to did not have it. A control that is missing an
+        # option the refusals point at is the interface saying two things at
+        # once, and the visible set of controls is meant to be the answer to
+        # "what can I do now".
+        #
+        # In the ladder the four xtb methods really form, which is also the
+        # order of what they cost: GFN-FF, GFN1, GFN2, g-xTB.
         options=[('UFF', 'uff'), ('MMFF94', 'mmff94'),
-                 ('GFN-FF', 'gfnff'), ('GFN2-xTB', 'gfn2'), ('g-xTB', 'gxtb'),
+                 ('GFN-FF', 'gfnff'), ('GFN1-xTB', 'gfn1'),
+                 ('GFN2-xTB', 'gfn2'), ('g-xTB', 'gxtb'),
                  ('PM6-D3H4', 'pm6d3h4'), ('PM6', 'pm6'), ('PM7', 'pm7')],
         value='uff',
         tooltip=(
             'What Optimise minimises with. UFF and MMFF94 run in the browser '
             'and also drive the live relaxation while you drag. GFN-FF, '
-            'GFN2-xTB and g-xTB run xtb on the server, and they know about the '
-            'metal where UFF guesses. g-xTB approximates wB97M-V/def2-TZVPPD '
+            'GFN1-xTB, GFN2-xTB and g-xTB run xtb on the server, and they '
+            'know about the metal where UFF guesses. GFN1 is the older '
+            'Hamiltonian and is kept because a structure GFN2 cannot converge '
+            'sometimes converges under it; GFN2 is the one to reach for '
+            'first. g-xTB approximates wB97M-V/def2-TZVPPD '
             'and needs a build of its own; Install g-xTB fetches it. '
             'PM6-D3H4, PM6 and PM7 run MOPAC on the server. Measured on '
             'twelve small organics, PM6 draws bonds closer to the literature '
@@ -1591,15 +1849,59 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: walk goes, so "further apart, to 2.40" was the same fact twice with
     #: nothing checking that the two halves agreed.  One question, three
     #: answers, and the field for the number appears under the third.
+    #:
+    #: And two more for a pair of atoms, which are the same question answered
+    #: as chemistry rather than as geometry: **form this bond** and **break
+    #: this one**.  A direction says where the coordinate goes; a verb says
+    #: what is supposed to have happened when the walk is over -- and that is
+    #: the difference, because it is what the walk stops on.  Armed one each
+    #: on two pairs and walked together, they are the instruction most
+    #: reactions actually are: make this one while breaking that one.  A
+    #: Diels-Alder is two forms, an SN2 is a form and a break.
+    #:
+    #: The shape is pyGSM's, whose driving-coordinate file is a list of atom
+    #: picks and verbs -- ``ADD 4 12``, ``BREAK 1 11`` -- and SCINE's NT2 does
+    #: the same thing with a force and stops on bond order.  Nothing new is
+    #: being invented here: a form is an armed leg driven inwards, a break is
+    #: one driven outwards, the existing ramp walks them together, and the
+    #: only addition is what it stops on.  See :func:`_carried_out` for the
+    #: stopping rule and why it is not a bond order.
+    #:
+    #: **When two instructions fight, the ramp is what settles it**, and that
+    #: was measured rather than reasoned about.  Asked to form C1-C11 -- half
+    #: a Diels-Alder, which is easy -- while breaking C1-C2, which is a
+    #: butadiene double bond and one of the strongest things in the molecule,
+    #: with both pulling on the same carbon under one shared force constant:
+    #:
+    #:     step  6   19.6 kcal/mol/A   the form is granted, -63.7 kcal/mol
+    #:     step 12   57.3              C1-C2 has reached 1.61 A, -62.4
+    #:     step 16  117.3              1.87 A, -35.1
+    #:     step 17  140.3              2.13 A, -3.8, and both now hold
+    #:
+    #: So they do not deadlock: the cheap half is granted at a low force and
+    #: the expensive half holds out until the force passes what that bond
+    #: holds against -- :data:`gfn_optimize.A_BOND_HOLDS`, 110 kcal/mol/A, and
+    #: it went at 140.  The price of the fight is the sixty kcal/mol the path
+    #: climbs back through, which is on the profile and answers to the
+    #: temperature like any other rise.  And when the ramp ends with a verb
+    #: still unsatisfied, that is an answer too -- it ends above twice what a
+    #: bond holds, so it is a statement about this method and this structure
+    #: rather than a setting to turn up.
+    #:
+    #: They are offered for a pair and not for an angle or a torsion, because
+    #: a bond is between two atoms and there is no third one to make or break.
     submit_scan_way = widgets.Dropdown(
         options=[('closer together', 'in'), ('further apart', 'out'),
+                 ('form this bond', 'form'), ('break this bond', 'break'),
                  ('to a value you give', 'to')],
         value='in',
         tooltip=(
             'Where to walk. A scan stops at the next minimum, so where it '
             'ends is the chemistry rather than a number -- which way it goes '
-            'is the one thing that cannot be read off the selection. Give a '
-            'value instead when the end is the point.'
+            'is the one thing that cannot be read off the selection. Form or '
+            'break says what is meant to have happened instead, and the walk '
+            'stops when it has: arm one on each of two pairs to make one bond '
+            'while breaking another. Give a value when the end is the point.'
         ),
         layout=widgets.Layout(width='178px', display='none'),
         disabled=True,
@@ -1688,6 +1990,55 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                  'start, the top and the end -- three Hessians, at the '
                  'temperature above.'),
         layout=widgets.Layout(width='136px', display='none'),
+        disabled=True,
+    )
+    #: Walk the same coordinate back again, and say whether the two agree.
+    #:
+    #: A driven scan holds one coordinate and relaxes everything else, and
+    #: nothing makes the rest follow continuously.  Where it does not, the
+    #: profile depends on which way the walk went, and neither direction is
+    #: the path.  Jonsson, Mills and Jacobsen said it in 1998: "the path
+    #: generated may be discontinuous and the procedure may depend on the
+    #: direction of the drag ... some atomic coordinates may slip near the
+    #: saddle point region and the saddle point configuration will then be
+    #: missed."  Bofill and Quapp give the condition it holds under: no
+    #: turning point and no valley-ridge inflection.
+    #:
+    #: There is no way to know which case a given scan is in except to walk it
+    #: back.  Measured here on butadiene and ethylene under GFN2, one forming
+    #: C-C driven from 3.40 A to 1.60 and back, 0.1 A at a time, everything
+    #: relaxed at every point:
+    #:
+    #:     forward, apparent barrier            +7.3 kcal/mol at 2.20 A
+    #:     backward, apparent barrier          +11.7 kcal/mol at 2.90 A
+    #:     ORCA's converged saddle              +6.8
+    #:     largest gap at the same coordinate   23.8 kcal/mol
+    #:
+    #: Both maxima carry exactly one imaginary frequency, so that test says
+    #: nothing here.  A user reading the barrier off either leg alone is out
+    #: by more than half, in opposite directions.
+    #:
+    #: And the null result is the reason this is on by default.  The same
+    #: measurement over ten other scans -- torsions of an alkane, an alcohol,
+    #: a diol and an amide, a C-C stretch, a C-C-C angle, a hydrogen bond, an
+    #: SN2 and a ring opening -- gave gaps under 0.1 kcal/mol.  Those scans
+    #: are worth quoting and the editor could not say so; now it can, and the
+    #: price is one more leg of the walk that was just watched.  Off is one
+    #: press for a large system where that price is felt.
+    #:
+    #: Walk mode only.  A push is a ramp of forces and not a grid of values,
+    #: so there is no "the same coordinate, backwards" to walk; it finds its
+    #: own crossing and prices it with :func:`_across` instead.
+    submit_scan_back = widgets.ToggleButton(
+        value=True, description='Walk it back', icon='rotate-left',
+        button_style='info',
+        tooltip=(
+            'After the scan, walk the same coordinate back from where it '
+            'ended and compare. A driven scan is only a path where nothing '
+            'slips sideways, and the two legs disagreeing is how that shows. '
+            'Costs a second leg of the same walk.'
+        ),
+        layout=widgets.Layout(width='138px', height='30px', display='none'),
         disabled=True,
     )
     #: Find the way between the two ends a scan has just produced.
@@ -1785,11 +2136,31 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: it is the answer on a machine with no ORCA and the fast answer on one
     #: with it -- and something a user would go looking for must be findable
     #: before they know they need it.
+    #: * A nudged elastic band.  ORCA's ``! NEB-TS``: a chain of images
+    #:   relaxed onto the way between the two ends at once, the highest of
+    #:   them climbed to the saddle.  The arbiter, and second on the list
+    #:   rather than first: measured on the same sixteen-atom Diels-Alder from
+    #:   the same two ends, it reaches the same saddle as the chain above to
+    #:   0.07 cm-1 and spends 203 gradients doing it.  What it is for is the
+    #:   case where the cheap answer is not believed, or where the two ends
+    #:   are far enough apart that a cheap interpolation cannot bridge them --
+    #:   it is a different method and not a longer run of the same one.
+    #:
+    #:   How long that is depends on the machine more than on the method, and
+    #:   the number this editor used to quote -- seven minutes -- was the
+    #:   serial one.  Measured here: the same band, same hour, 272 s on one
+    #:   process and 39.4 s on eight, because the images are independent
+    #:   gradients and ORCA computes them together.  On a box with cores it is
+    #:   a press like the others; on a small login node it is 203 gradients
+    #:   however they are arranged, which is what the timeout is for.
     submit_saddle_how = widgets.Dropdown(
         options=[('through ORCA', 'orca')], value='orca',
-        tooltip=('How it gets there. Through ORCA converges it; by hand you '
-                 'can watch it, steer it and drag in the middle of it; the '
-                 'path only stops at the structure the walk estimates.'),
+        tooltip=('How it gets there. Through ORCA converges it; NEB-TS '
+                 'relaxes a whole chain of images between the two ends and '
+                 'climbs the highest, which is slower and is what to reach '
+                 'for when the fast answer is not believed; by hand you can '
+                 'watch it, steer it and drag in the middle of it; the path '
+                 'only stops at the structure the walk estimates.'),
         layout=widgets.Layout(width='142px', display='none'),
         disabled=True,
     )
@@ -1800,8 +2171,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: all; ORCA has one and nothing that produces an estimate to give it --
     #: and the pair is quick.  Measured on the sixteen-atom Diels-Alder, from
     #: the two ends a scan leaves: 3.6 s for the walk, 12 s for the pair, and
-    #: it arrives at -393.5 cm-1 where a nudged elastic band takes 416 s to
-    #: reach -393.6.  Seven minutes and twelve seconds, the same saddle.
+    #: it arrives at -393.5 cm-1 where a nudged elastic band on the same two
+    #: ends reaches -393.6 for about twice the gradients.  The same saddle to
+    #: a tenth of a wavenumber, which is why the band is the second entry in
+    #: the box beside this and not the first.
     #:
     #: From what is on screen it is the interactive half of the question: a
     #: structure posed by hand into something that looks like a transition
@@ -1819,6 +2192,138 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         tooltip=('Optimise to the nearest transition state, from wherever the '
                  'box beside this says. Says whether what it reached is one.'),
         layout=widgets.Layout(width='140px', height='30px'),
+        disabled=True,
+    )
+    #: What the structure on screen actually is, asked of a Hessian.
+    #:
+    #: This is a press of its own, and the case for one is that nothing else
+    #: on the row means it. The whole machinery -- the Hessian, the count of
+    #: modes going the wrong way, the sentences that name a minimum, a
+    #: transition state or a saddle of higher order -- was already built and
+    #: was reachable only from inside the saddle search, the path walk and the
+    #: scan. So somebody who dragged a structure into a shape, which is what
+    #: this editor is for, could not ask whether the shape is anything. An
+    #: absence on the toolbar is a statement about what can be done, and that
+    #: one was not true.
+    #:
+    #: It stands beside "To the saddle" because it is the same question read
+    #: the other way round: that press goes looking for a stationary point,
+    #: and this one asks whether there is already one here. They share the
+    #: wording, from :func:`delfin.dashboard.saddle.verdict`, so the two can
+    #: never disagree about what a structure is called.
+    #:
+    #: Affordable, which is the other half of the case. Measured here through
+    #: the editor's own path -- which is to say with the thread count set the
+    #: way :func:`~delfin.dashboard.gfn_optimize.interactive_cores` sets it --
+    #: under GFN2 on a shared machine carrying other people's work:
+    #:
+    #:     5 atoms, methane                    0.4 s  (4 cores)
+    #:     23 atoms, heptane                   1.1 s  (4 cores)
+    #:     57 atoms, a manganese complex, +1  23.7 s  (8 cores)
+    #:
+    #: So it is a press and a short wait, never something to put in a drag.
+    #: The thread count is the whole difference at the top of that list: the
+    #: same 57-atom Hessian run without it, letting OpenMP take what it liked
+    #: on a box at a load average of 800, took 14 minutes 29 seconds of wall
+    #: clock for 13 hours of CPU. A Hessian is the one thing here that will
+    #: happily buy nothing with every core on the machine.
+    #:
+    #: The thermochemistry rides along free. A Hessian is what a free energy
+    #: costs; H, T*S and the zero-point energy are printed in the same block
+    #: as G and were being read past, and the temperature box the answer is
+    #: computed at is already on this row.
+    submit_shape_btn = widgets.Button(
+        description='What is it?', icon='question', button_style='',
+        tooltip=(
+            'Take a Hessian on the structure exactly as it stands and say '
+            'what it is: a minimum, a transition state, a saddle of higher '
+            'order -- or none of those, which is the answer for a structure '
+            'that is still on a slope. Nothing is optimised and nothing is '
+            'moved. The free energy, enthalpy, entropy and zero-point energy '
+            'come with it, at the temperature in the box on this row. '
+            'Seconds for a small structure and minutes for a large one, so '
+            'it is a press rather than something that happens by itself.'
+        ),
+        layout=widgets.Layout(width='106px', height='30px', display='none'),
+        disabled=True,
+    )
+    #: Which mode the two presses after this are about, when there is a choice.
+    #:
+    #: There usually is not.  A transition state has exactly one mode going the
+    #: wrong way, so on the structure the press next door is for there is
+    #: nothing to choose between and this is not on screen -- the same rule the
+    #: two boxes before it follow, that a list of one is not a choice.
+    #:
+    #: It appears where a search converged onto a saddle of higher order, and
+    #: there it is the difference between reading the verdict and acting on it:
+    #: the verdict's own advice is to move the structure along the *second* of
+    #: those modes and climb again, and until now there was no way to look at
+    #: the second of anything.
+    #:
+    #: The frequencies are the ones the verdict already reported, which is at
+    #: most the four softest -- :func:`saddle._last_modes` and
+    #: :meth:`climb.Climb.verdict` both cut their list there.  A structure with
+    #: more than four modes going the wrong way is a long way from anything
+    #: this row is for, and the four that can be named are the four offered.
+    submit_mode_dd = widgets.Dropdown(
+        options=[('the imaginary mode', 0)], value=0,
+        tooltip=('Which of the modes going the wrong way to draw and to '
+                 'follow down.'),
+        layout=widgets.Layout(width='134px', display='none'),
+        disabled=True,
+    )
+    #: Draw the imaginary mode, because the imaginary mode is the reaction.
+    #:
+    #: A saddle search reports "one mode goes the wrong way, at -394 cm-1" and
+    #: that number is the whole of what the editor could say about it.  The
+    #: mode itself is the reaction coordinate: the atoms it moves are the atoms
+    #: the reaction moves, so watching it is what tells a chemist which bonds
+    #: are forming and which are breaking, without reading a single coordinate.
+    #:
+    #: It is a picture and it never becomes a structure.  The frames go down
+    #: the same channel a trajectory goes down and are drawn by the same
+    #: player, and the coordinate box is not touched: what is in the box is
+    #: what is being worked on, and a geometry displaced along an eigenvector
+    #: is not something anybody chose.  It begins and ends on the structure,
+    #: and a hand landing on it puts the picture back before the drag can push
+    #: anything to the kernel -- see the ``home`` frame in the player.
+    #:
+    #: It costs one xtb Hessian, once: 0.41 s at sixteen atoms, 4.9 at
+    #: thirty-three, 16 at fifty, and it is kept for as long as the structure
+    #: in the box is the one it was taken at.
+    submit_mode_btn = widgets.Button(
+        description='Show the mode', icon='film', button_style='',
+        tooltip=('Draw the imaginary mode -- the reaction coordinate itself, '
+                 'so you can see which bonds are forming and which are '
+                 'breaking. Six swings and it stops on the structure it '
+                 'started from. It is a picture: the coordinates never '
+                 'change.'),
+        layout=widgets.Layout(width='142px', height='30px', display='none'),
+        disabled=True,
+    )
+    #: And where the mode leads, which is the other question about a saddle.
+    #:
+    #: One imaginary mode makes a structure *a* transition state.  Whether it
+    #: is *the* one for the reaction that was meant is a different question,
+    #: and the standard way to ask it is to push the structure a little way
+    #: down the mode each way, relax, and see which two structures come back.
+    #:
+    #: The rigorous form of that is a mass-weighted steepest descent -- an
+    #: intrinsic reaction coordinate -- and ORCA has one.  Both were measured
+    #: on the sixteen-atom Diels-Alder saddle on this machine: this route is
+    #: 1.0 s and lands on the two minima, ``! XTB2 IRC`` is 207 s and stops in
+    #: the valley above them, and the two then agree exactly.  Two hundred
+    #: seconds is longer than :func:`saddle.seconds_for` allows the saddle
+    #: search itself, on the smallest case anybody runs, on what is somebody's
+    #: login node -- so the press is the cheap one and the IRC is a job.  See
+    #: :func:`climb.follow_the_mode_down`.
+    submit_ends_btn = widgets.Button(
+        description='Follow it down', icon='code-fork', button_style='',
+        tooltip=('Push the structure a little way down the imaginary mode '
+                 'each way, relax both, and say which two structures this '
+                 'saddle joins -- what they are and what they cost against '
+                 'it. Seconds, and the box keeps the saddle.'),
+        layout=widgets.Layout(width='146px', height='30px', display='none'),
         disabled=True,
     )
     #: The same climb, slowed down enough to put a hand in the middle of it.
@@ -1873,6 +2378,39 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         description='Run scan', button_style='success', icon='play',
         tooltip='Walk every armed coordinate together, and say what it costs.',
         layout=widgets.Layout(width='104px', height='30px', display='none'),
+        disabled=True,
+    )
+    #: The second opinion on a finished walk, and the moment it arrives is the
+    #: whole of why it is a button.
+    #:
+    #: It appears when a scan has left a profile and goes away again when the
+    #: next one starts, in the row that already comes and goes with the scan
+    #: -- so its being there is the editor saying that something can be done
+    #: now which could not be done a minute ago, the way the two ends were
+    #: before f1be8954 folded them into a box.  There is nothing to set: the
+    #: geometries are the ones just walked, and the method is the only one in
+    #: the list better than what walked them, so a box beside it would have
+    #: one entry and be a question with one answer.
+    #:
+    #: Not a setting chosen before the scan, which is where it would cost no
+    #: pixels at all.  The question it answers -- "is that barrier really that
+    #: small" -- is one nobody has until the barrier is on screen, and by then
+    #: a setting is minutes of walking away while this is seconds: measured,
+    #: 0.40 s a point against 0.9 s a point for the walk itself, on the same
+    #: sixteen-atom complex.
+    submit_scan_price_btn = widgets.Button(
+        description='Price with g-xTB', button_style='info',
+        icon='balance-scale',
+        tooltip=(
+            'Take the geometries this scan just walked and work out their '
+            'energies again with g-xTB, which is much more accurate than the '
+            'GFN methods and nearly as quick -- seconds for a whole profile. '
+            'GFN2 systematically underestimates barriers where a bond is '
+            'being broken, by about 10 kcal/mol on published test sets. What '
+            'comes back is a screen, not a barrier to quote: the structures '
+            'are still the ones GFN2 found.'
+        ),
+        layout=widgets.Layout(width='168px', height='30px', display='none'),
         disabled=True,
     )
     submit_scan_dd = widgets.Dropdown(
@@ -1945,7 +2483,33 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
          submit_scan_btn, submit_scan_way, submit_scan_to,
          submit_scan_steps,
          submit_scan_dd, submit_scan_del, submit_scan_whole,
-         submit_scan_how, submit_scan_energy, submit_scan_run_btn],
+         submit_scan_how, submit_scan_energy, submit_scan_back,
+         submit_scan_run_btn, submit_scan_price_btn],
+        layout=widgets.Layout(
+            gap='6px', align_items='center', flex_flow='row wrap',
+            flex='0 1 auto', min_width='0', overflow='visible',
+        ),
+    )
+
+    #: The labels and their two settings, as one item of the toolbar.
+    #:
+    #: A row inside a row, the way the internal-coordinate group is, and for
+    #: the same reason: a flexbox breaks *between* its items and never inside
+    #: one, so the number of direct children is what decides where the toolbar
+    #: can wrap.  What the labels say is a setting of the labels, so it goes
+    #: where the labels are; making the three of them one item is what keeps
+    #: that from costing the row a place to wrap between.  The toolbar carries
+    #: the same number of items it did before, plus the one new press.
+    #:
+    #: Where the group sits is a separate fact and is written where it is
+    #: placed, in the toolbar's own list.
+    #:
+    #: ``flex 0 1 auto`` and ``min_width 0`` written out for the reason the
+    #: internal group writes them out: a nested row that cannot shrink takes
+    #: its whole content past the edge of the toolbar however narrow the
+    #: window is.
+    submit_label_group = widgets.HBox(
+        [submit_labels_btn, submit_label_what, submit_label_size],
         layout=widgets.Layout(
             gap='6px', align_items='center', flex_flow='row wrap',
             flex='0 1 auto', min_width='0', overflow='visible',
@@ -1969,8 +2533,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             submit_select_btn, submit_manip_btn, submit_draw_btn,
             submit_element_dd, submit_adjust_h_btn,
             submit_manip_clear_btn, submit_centre_btn,
-            submit_labels_btn, submit_label_size,
             submit_manip_undo_btn, submit_manip_redo_btn, submit_reset_btn,
+            # After Reset rather than before Undo, which is three buttons to
+            # the right of where the numbering used to sit and is a placement
+            # rather than a preference. Measured in chromium with a scan armed
+            # and every control forced visible -- the widest state the toolbar
+            # test builds -- at 1024 px embedded: an item added anywhere before
+            # the charge box pushes that box to the end of a wrapped line, and
+            # there its input paints 24 px past the 72 px container it was
+            # given, two of them past the toolbar itself. Nothing about this
+            # group causes that and nothing here can fix it; what this
+            # placement does is not provoke it. After Reset the toolbar is
+            # clear at 1024, 1280, 1536 and 1920 px, embedded and in the
+            # overlay.
+            submit_label_group,
             submit_ff_dd, submit_gfn_charge, submit_gfn_mult,
             submit_gfn_autospin, submit_gfn_solvent, submit_gfn_solv_model,
             submit_thermal_btn, submit_temperature,
@@ -2006,7 +2582,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # is 34 px taller at 1280 in the overlay; put inside it, taller
             # again at three widths.
             submit_path_from_btn, submit_saddle_from,
-            submit_saddle_how, submit_saddle_btn,
+            submit_saddle_how, submit_saddle_btn, submit_shape_btn,
+            # And what there is to do with a saddle once the press has found
+            # one, immediately after it. They are absent until it has: the
+            # visible controls are the answer to "what can I do now", so a
+            # control for a structure nobody has yet is the row saying
+            # something untrue. Their arriving is how the editor says the two
+            # questions about a transition state can now be asked.
+            submit_mode_dd, submit_mode_btn, submit_ends_btn,
             submit_poly_dd, submit_poly_turn_btn,
             submit_hyb_dd, submit_hyb_auto_btn,
             submit_internal_group,
@@ -2563,7 +3146,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                        submit_thermal_relax, submit_thermal_anchor_btn,
                        submit_topology_btn, submit_saddle_btn,
                        submit_saddle_from, submit_saddle_how,
-                       submit_climb_btn,
+                       submit_mode_dd, submit_mode_btn, submit_ends_btn,
+                       submit_climb_btn, submit_shape_btn,
                        submit_path_from_btn):
             widget.disabled = not enabled
         submit_labels_btn.disabled = not enabled
@@ -2803,8 +3387,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         that lost that race played at the built-in 55 ms a frame however
         the slider was set, which is what "the top of the slider is not
         the fastest it goes" was.
+
+        The slider is the *default* pace and not the only one.  A run may
+        name its own in *fields*, and one does: a normal mode has a period
+        rather than a rate, and the top of the slider -- "do not fall
+        behind the calculation" -- is the whole animation inside one screen
+        frame for a path that was finished before it was sent.  See
+        :func:`_draw_the_mode`.
         """
-        return json.dumps(dict(fields, run=run, pace=_play_pace()))
+        return json.dumps(dict(fields, run=run,
+                               pace=fields.get('pace', _play_pace())))
 
     def _frame_run_is_current(run):
         """Whether a payload prepared for *run* may still be written.
@@ -2831,8 +3423,30 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         write and throwing its whole path away silently and correctly.  Read
         back from the frames alone that case is indistinguishable from a
         number nobody ever took.
+
+        And it is where the scan's profile goes.  The counter moves for two
+        different reasons and only one of them ends a picture.  Something
+        starts drawing over the structure -- the follow under a hand, the
+        settle, an optimisation, a climb, a saddle search, a chain, the next
+        scan -- and then the last walk's profile is no longer about what is on
+        screen, and it goes at the moment the run starts rather than when it
+        ends, because a picture beside a structure being pulled about has
+        already stopped being true.  Or something is being *stopped* and the
+        page's player has to be given a number it has never seen: that is
+        ``press`` and ``abandoned``, claimed by Undo, Reset and the Stops, and
+        it draws nothing at all.
+
+        Measured on a twenty-four-point torsion, before that distinction was
+        made here: the walk finished, the picture stood, and one press of Undo
+        took it away over "Scanned: the highest point the walk crossed" --
+        which is the walk the picture is of.  Undo goes back through the
+        scan's own landmarks, so what arrives in the box is what decides that
+        case, a few lines later in the same press (see
+        :func:`_scan_plot_holds`).
         """
         record('run', v=int(run), by=by)
+        if by not in ('press', 'abandoned'):
+            _scan_plot_drop()
         return run
 
     def _claim_the_frame_run():
@@ -3269,8 +3883,28 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '      }\n'
             '      play.run=run; play.seen=0; play.queue=[]; play.last=null;\n'
             '      play.shown=0; play.toldStop=0; play.complete=0;\n'
-            '      play.stopped=0;\n'
+            '      play.stopped=0; play.home=null;\n'
             '    }\n'
+            '    /* Where the picture has to be put back to if this run is cut\n'
+            '       short.\n'
+            '\n'
+            '       Almost every run on this channel draws geometries somebody\n'
+            '       is going to be left with: an optimiser walks to a minimum\n'
+            '       and every frame of it is a structure that was computed, so\n'
+            '       stopping on one of them is a choice the user made.  One run\n'
+            '       is not like that.  A normal mode drawn out of a saddle is a\n'
+            '       *picture* -- the structure displaced along an eigenvector,\n'
+            '       which nobody chose and no method computed -- and the frame\n'
+            '       it happens to be showing when a hand lands must never\n'
+            '       become the structure.  A run that draws such frames sends\n'
+            '       the geometry to return to with them, and the grab below\n'
+            '       draws it before it lets go of the queue, so the coordinates\n'
+            '       the page pushes back are the ones the box already holds.\n'
+            '       Drawn here on the page and not asked of the kernel,\n'
+            '       because a round trip is tens of milliseconds and the drag\n'
+            '       pushes ten times a second: asked, the first push of every\n'
+            '       drag would carry a displaced geometry. */\n'
+            '    if(data&&data.home) play.home=data.home;\n'
             '    /* A run that was stopped stays stopped.  The kernel refuses\n'
             '       to write for it once the switch is up; this is the same\n'
             '       refusal on the page, for the write that was already in\n'
@@ -3517,6 +4151,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '           the kernel knew a hand had arrived and not where -- so\n'
             '           the geometry on screen lived only in the browser until\n'
             '           a drag happened to push it back. */\n'
+            '        /* Unless this run was drawing a picture rather than a\n'
+            '           path, and then the frame the hand landed on is exactly\n'
+            '           what must not be kept: it is the structure displaced\n'
+            '           along a mode, and the drag is about to push whatever\n'
+            '           the viewer holds back to the kernel ten times a\n'
+            '           second.  Put back first, then let go of the queue. */\n'
+            '        if(play.home) show(play.last,play.home,1);\n'
             '        play.queue=[]; play.last=null;\n'
             '      }\n'
             '      else {\n'
@@ -3785,6 +4426,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # to climb that much further than the temperature pays for.  The
         # anchor is the zero; falling below it earns no credit.
         state['thermal_peak'] = 0.0
+        # And the frontier gap this drag starts from, which is what says
+        # later whether the bond order it is reporting can still be believed.
+        # A drag that begins at a closed gap is a different statement from one
+        # that closes it, so the baseline belongs to the grab.
+        state.pop('gfn_follow_gap0', None)
         _gfn_new_generation()
         # What the molecule looked like before this drag: the bonding is read
         # from here, not from a frame that has already been pulled about.
@@ -3872,6 +4518,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state.pop('thermal_peak', None)
         state.pop('thermal_good_peak', None)
         state.pop('thermal_over', None)
+        # And what the hand was asking for when it ran out, which is the one
+        # thing here that decides whether the *next* answer runs at all.  It
+        # outlived the drag that recorded it, so a fresh grab could be met by
+        # the last one's demand and stand still for it -- and now that the
+        # question is asked before a worker is begun rather than inside one,
+        # standing still means not starting.  The first report of a new drag
+        # asks for the coordinate where it already stands, so this cleared
+        # itself on the way past; it should not depend on that.
+        state.pop('thermal_spent', None)
         _push_thermal_wall(None)
 
     def _end_gfn_follow():
@@ -4080,6 +4735,35 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         """
         if not state.get('gfn_follow') and not _begin_gfn_follow():
             return          # not following: Relax is up, or GFN is not chosen
+        # A drag the budget is already refusing is not started again.
+        #
+        # The standing-still rule lived inside the worker, so standing still
+        # cost a whole worker: the thread was begun, the ring was turned on,
+        # the rule said there was nothing to compute, and the thread ended --
+        # once per report from the page, and the page reports at the rate a
+        # mouse moves.  Measured on the user's manganese complex at 298 K with
+        # the phenolate oxygen held against the wall, thirty seconds of hand
+        # on the structure:
+        #
+        #                          budget off   budget on, refusing
+        #     reports from the page      1147                  1625
+        #     workers started               1                  1277
+        #     status lines written          9                  2555
+        #     frames drawn                  8                     1
+        #
+        # Forty-three threads a second, and the line that lies over the
+        # picture rewritten eighty-five times a second -- alternating on the
+        # ring alone, since the words do not change while nothing is being
+        # computed.  The picture is still and everything around it is not,
+        # which is what the shaking is.  With the budget off the same hand
+        # costs one worker, because xtb is genuinely busy and every report
+        # after the first is folded into gfn_follow_xyz.
+        #
+        # Asked here it costs no thread at all: it is coordinate arithmetic
+        # over the atoms the hand is on.  The worker keeps its own copy of the
+        # question, for a report that arrived while xtb was running.
+        if _still_spent(xyz, holding):
+            return
         if state.get('optimize_run') is not None:
             # An optimisation owns the structure, so the follow does not get
             # to move it as well.  Picking an atom up interrupts a run before
@@ -4320,6 +5004,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             _set_mol_status,
                             f'The molecule stopped following: {note}')
                         return
+                    # What this answer computed and used to throw away with
+                    # its scratch directory. A list assignment and, with the
+                    # labels off, nothing else at all -- see _repaint_labels.
+                    _remember_charges(outcome)
+                    if submit_labels_btn.value:
+                        # Rate-limited: see _repaint_labels for why a drag
+                        # must not put a script on the run_js channel once per
+                        # answer, and why labels are the one thing that can be
+                        # dropped there without being wrong.
+                        schedule_ui_update(_repaint_labels, False)
                     # Say it out loud, every step.  A follow that is working
                     # and a follow that is not both look like a molecule that
                     # is not moving much, and the difference is the whole
@@ -4381,6 +5075,71 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             f'step(s), '
                             f'{(time.perf_counter() - began) * 1000:.0f} ms '
                             f'each.{hand}')
+                    # The bond order of the pair the hand is driving, as a
+                    # readout and as nothing else.
+                    #
+                    # It decides nothing. This was built to be the honest
+                    # answer to "is the bond still there", on the grounds that
+                    # the editor's own watch -- :func:`gfn_optimize._is_a_bond`,
+                    # covalent radii with slack -- is a cliff at 1.94 A, and
+                    # the measurement says the opposite: an ethane C-C held at
+                    # 3.03 A with everything else relaxed still reads 1.000,
+                    # because a single closed-shell determinant keeps that pair
+                    # in one orbital however far the two carbons are taken. At
+                    # the same geometry the frontier gap has fallen from 15.3
+                    # to 0.75 eV and a separate measurement puts the fractional
+                    # occupation density at 1.73 electrons. So as a
+                    # bond-existence test the order is worse than the distance,
+                    # not better: it says everything is fine exactly where the
+                    # method has stopped working. The bond watch stays
+                    # geometric, and this is a number to read.
+                    #
+                    # It is worth reading. Where the two fragments stay closed
+                    # shells the order tracks the bond all the way -- an
+                    # ammonia borane N-B runs 0.61, 0.51, 0.40, 0.24, 0.00 from
+                    # 1.66 to 2.86 A -- and 1.9 across a C=C or 0.61 for a
+                    # dative bond at its own minimum is something a chemist can
+                    # use.
+                    #
+                    # On the pair the gesture named, not on the atoms: an
+                    # order belongs to two atoms and nothing else, and summed
+                    # onto one of them it would be a valence, which is a
+                    # different quantity answering a different question. It
+                    # goes in the line rather than into the picture for the
+                    # same reason the price does -- the drag already has the
+                    # user's eyes on the structure, and a second row of
+                    # numbers over the atoms while an atom is being aimed is
+                    # more than can be read.
+                    #
+                    # Nothing at all under GFN-FF, which computes no bond
+                    # order.
+                    driven = next((one for one in contacts
+                                   if len(one.get('atoms') or ()) == 2), None)
+                    if driven is not None:
+                        pair = [int(i) for i in driven['atoms']]
+                        order = _gfn.bond_order_between(
+                            outcome.get('bonds'), pair[0], pair[1])
+                        if order is not None:
+                            rows = _gfn.atom_lines(outcome.get('xyz') or '')
+                            names = 'The pair the hand is driving'
+                            if all(0 <= i < len(rows) for i in pair):
+                                names = (
+                                    f'{rows[pair[0]].split()[0]}{pair[0]}-'
+                                    f'{rows[pair[1]].split()[0]}{pair[1]}')
+                            # With the gap of the same answer, and the gap
+                            # this drag started from. Where the frontier gap
+                            # has closed the order is being read off a
+                            # description that has stopped working -- an
+                            # ethane pulled to 3.03 A still reads 1.00 -- and
+                            # the fall from where the drag began is what says
+                            # so soonest.
+                            note = _gfn.bond_order_note(
+                                order, names, outcome.get('gap'),
+                                state.get('gfn_follow_gap0'))
+                            if note:
+                                said = f'{said} {note}'
+                    if state.get('gfn_follow_gap0') is None:
+                        state['gfn_follow_gap0'] = outcome.get('gap')
                     # What the drag has cost so far: the energy of the
                     # relaxation that has just run, which held the drag and
                     # let everything else move.
@@ -4608,6 +5367,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         state['thermal_spent'] = (
                             [dict(one) for one in contacts]
                             if came_back is not None and contacts else None)
+                        # And the page is told, so the picture stops promising
+                        # travel the kernel is not going to deliver.
+                        _stop_the_hand_at(came_back, current, holding)
                         if came_back is not None:
                             # Three cases rather than two.  Which number the
                             # budget refused on -- where the structure is
@@ -4625,6 +5387,57 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                 if state.get('thermal_over') == 'path' else
                                 'Past the budget, so the last structure that '
                                 'was inside it is back.'))
+                            # And what the refusal is a refusal *of*, which is
+                            # narrower than it reads.  What was priced is the
+                            # way this hand went, one geometry at a time; the
+                            # cheapest way from the anchor to where the hand
+                            # was aiming is a different quantity and nothing
+                            # here has looked for it.  A hand that takes a
+                            # ligand off through the middle of a ring is
+                            # refused on a barrier the reaction does not have.
+                            # It cannot be answered by a drag at all -- a
+                            # minimum over all paths is a search -- so it is
+                            # said, once, at the moment the refusal lands, and
+                            # it names what does search.  Kept to one clause:
+                            # this row stands above the viewer and grows down
+                            # the page, and a refusal already carries the two
+                            # numbers, the retreat and the slope.
+                            #
+                            # The path finder rather than the press it is on,
+                            # which is named "Find the path" or "To the
+                            # saddle" depending on the box beside it -- see
+                            # _name_the_saddle_press.  Naming the one it is
+                            # not showing would send the user looking for a
+                            # button that is not there.
+                            if not aside:
+                                said = (f'{said} This prices the way your '
+                                        'hand went, not the cheapest way '
+                                        'there -- Scan and the path finder '
+                                        'look for that.')
+                                # And whether this is the one case where the
+                                # quantity itself is off.  A ceiling is a free
+                                # energy and a drag is priced with an
+                                # electronic one; that costs under 3 kcal/mol
+                                # while the pieces stay as they were, and
+                                # about ten once a drag has taken something
+                                # apart -- with the electronic price the
+                                # strict one, so a refusal here may be
+                                # refusing what the temperature would pay for.
+                                # Said rather than corrected: see
+                                # _THERMAL_QUANTITY_SHORT for why a number
+                                # invented off a distance threshold would be
+                                # worse than the gap it filled.
+                                began_in = state.get('thermal_pieces')
+                                now_in = _pieces_in(reached)
+                                if began_in and now_in > began_in:
+                                    said = (
+                                        f'{said} It is in {now_in} pieces '
+                                        f'here where the budget was measured '
+                                        f'on {began_in}, and an electronic '
+                                        f'price is strict by about ten '
+                                        f'kcal/mol there -- a scan with its '
+                                        f'energy set to G prices it as a free '
+                                        f'energy.')
                             # And whether this was a slope or a step.
                             #
                             # A refusal on a slope can be worked with: ease
@@ -5001,7 +5814,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # it is "longer than the age of the earth".
         if spent > ceiling:
             return (f'{spent:+.1f} kcal/mol -- past the {ceiling:.1f} this '
-                    f'structure has at {T:g} K. {_thermal_wait(spent, T)}')
+                    f'structure has at {T:g} K. {_thermal_wait(spent, T)} '
+                    f'{_thermal_wants(spent)}')
         # Cheap here, and it got here over something that was not.  The
         # refusal is about the crossing, so the crossing is the number quoted
         # and the wait is worked out from it.
@@ -5018,9 +5832,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         return (f'{spent:+.1f} of {ceiling:.1f} kcal/mol available at '
                 f'{T:g} K, but this drag went through {peak:+.1f} to reach '
                 f'it -- past the {ceiling:.1f} it has at {T:g} K. '
-                f'{_thermal_wait(peak, T)} The budget is counted from where '
-                f'it was set; if the structure has settled here, Set here '
-                f'measures from this one instead.')
+                f'{_thermal_wait(peak, T)} {_thermal_wants(peak)} '
+                f'The budget is counted from where it was set; if the '
+                f'structure has settled here, Set here measures from this '
+                f'one instead.')
 
     def _thermal_wait(kcal, temperature):
         """How long a barrier of that height takes at that temperature.
@@ -5030,6 +5845,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         s", which is a number in the wrong clothes: the answer wanted there is
         "4 microseconds", and below a picosecond there is no crossing to speak
         of anyway.
+
+        And it stops at the top for the same reason it started at the bottom.
+        A refusal on a barrier the temperature is nowhere near came out as
+        "that is about 3.56e+29 years", which is a figure nobody reads as a
+        quantity -- the sentence this was written to produce is "longer than
+        the age of the earth", and past about ten billion years every number
+        means the same thing.  Said in years up to there and in words past it.
         """
         T = max(1.0, float(temperature))
         rate = ((_BOLTZMANN_SI * T / _PLANCK_SI)
@@ -5037,6 +5859,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if rate <= 0:
             return 'It does not happen.'
         seconds = 1.0 / rate
+        if seconds > _UNIVERSE_SECONDS:
+            return 'That is longer than the universe has existed.'
         for limit, unit, name in ((1e-9, 1e-12, 'ps'), (1e-6, 1e-9, 'ns'),
                                   (1e-3, 1e-6, 'us'), (1.0, 1e-3, 'ms'),
                                   (60, 1, 's'), (3600, 60, 'min'),
@@ -5045,6 +5869,68 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             if seconds < limit:
                 return f'That is about {seconds / unit:.3g} {name}.'
         return ''
+
+    def _thermal_wants(kcal):
+        """The temperature that price wants, said as an answer not a refusal.
+
+        The ceiling is Eyring inverted, so running the same arithmetic the
+        other way turns any price already in hand into the temperature at
+        which it becomes possible.  It costs nothing -- the energy has been
+        paid for, and this is two logarithms -- and it is a strictly better
+        answer than "no": "refused at 298 K" is where a user stops, "it wants
+        about 480 K" is where they go next, and the second is the question
+        they came with.  The temperature box above is where the answer is
+        used, which is why no control was added for it: the reverse question
+        is answered in the sentence and typed into the box that was already
+        there.
+
+        Both halves are said, here and in :func:`_thermal_wait`, because they
+        are two different questions with the same arithmetic behind them: how
+        hot for the window, and how long at the temperature set.  A user who
+        cannot heat it reads the first and stops; one who can wait reads the
+        second and does not need a window control to find out.
+        """
+        needs = thermal_temperature(kcal, _THERMAL_SECONDS)
+        if needs is None:
+            return (f'No temperature under 5000 K crosses that within '
+                    f'{_timescale_label()}.')
+        return (f'It wants about {needs:.0f} K ({needs - 273.15:+.0f} C) '
+                f'within {_timescale_label()}.')
+
+    def _pieces_in(xyz):
+        """How many separate pieces that geometry is in.
+
+        Off the same bond graph the topology wall is judged by, so there is
+        one perception in this file rather than two that can disagree, and
+        asked only where a refusal has already landed -- it is a pass over
+        every pair.
+
+        What it is for is the one case where the budget is wrong by more than
+        the method is.  The ceiling is a free energy and a drag is priced with
+        an electronic one; while the pieces stay as they were the two agree to
+        under 3 kcal/mol, and where a drag takes something apart they part
+        company by about ten at room temperature, with the electronic price
+        the strict one.  See _THERMAL_QUANTITY_SHORT.  Nothing is corrected
+        here -- a number invented off a distance threshold would be worse than
+        the gap -- but a refusal can say which case it is in, and that is the
+        difference between a verdict and a verdict the user can weigh.
+        """
+        rows = _gfn.atom_lines(xyz or '')
+        if not rows:
+            return 0
+        parent = list(range(len(rows)))
+
+        def home(i):
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+
+        for i, j in _gfn.bond_graph(xyz):
+            one, two = home(i), home(j)
+            if one != two:
+                parent[one] = two
+        return len({home(i) for i in range(len(rows))})
 
     def _thermal_slope(spent, xyz, serials):
         """What an angstrom costs here, from the last two answers.
@@ -5328,6 +6214,54 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             lambda text=json.dumps(payload): setattr(
                 submit_gfn_wall, 'value', text))
 
+    def _stop_the_hand_at(came_back, asked, holding):
+        """A refused drag stops following the cursor; an allowed one follows.
+
+        *came_back* is what the wall handed back, or ``None`` when it allowed
+        the step.  *asked* is the geometry the page sent, which under a pull
+        carries the wish rather than the atom: the browser writes the held
+        atoms at the point the hand is asking for, clamped to a reach.
+
+        Nothing told the page a step had been refused.  The kernel stops --
+        _still_spent says there is nothing left to compute until the hand eases
+        -- and the page went on running the wish out with the cursor, so the
+        band grew, the coordinates the page reported went on changing, and the
+        one thing that had actually happened, that the drag had reached its
+        ceiling, was the one thing not on screen.
+
+        So the wish is marked where the budget last agreed the atom could
+        stand, and may go no further out than it had already run: an atom that
+        has come up against something.  Coming back in is never blocked --
+        thermalWallBlocks refuses only a step that is both outside the reach
+        and going further out -- and coming back in is exactly the event
+        _still_spent reads as the hand easing off.  The two sides then let the
+        same gesture through instead of holding two opinions about it.
+
+        The reach is where the wish had run to and not zero, so the band stops
+        rather than snapping back to the atom: what the hand was asking for
+        when it was refused is a true thing to leave on the screen.
+        """
+        if came_back is None:
+            if state.pop('thermal_walled', None):
+                _push_thermal_wall(None)
+            return
+        marks = {}
+        reach = 0.0
+        here = _gfn.coordinates_of(came_back)
+        wished = _gfn.coordinates_of(asked or '')
+        for one in (holding or ()):
+            index = int(one)
+            if 3 * index + 2 >= len(here) or 3 * index + 2 >= len(wished):
+                continue
+            mark = [here[3 * index + k] for k in range(3)]
+            marks[index] = mark
+            reach = max(reach, math.dist(
+                mark, [wished[3 * index + k] for k in range(3)]))
+        if not marks or reach <= 0:
+            return
+        state['thermal_walled'] = True
+        _push_thermal_wall(marks, reach)
+
     def _set_thermal_anchor(relax=None, note='Measuring from here',
                             note_after=''):
         """Take the energy of the structure on screen as the budget's zero.
@@ -5425,6 +6359,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # be measured against a geometry this anchor knows nothing
                 # about.
                 state['thermal_good'] = _current_xyz() or xyz
+                # And how many separate pieces it was measured on, so that a
+                # refusal can say when the drag has changed that.  Taken here
+                # and once: it belongs to the anchor the way the fingerprint
+                # and the method do, and a count read at the moment of a
+                # refusal would have nothing to be a change *from*.
+                state['thermal_pieces'] = _pieces_in(state['thermal_good'])
                 _, ceiling = _thermal_budget()
                 _set_mol_status(
                     f'{note}. At {float(submit_temperature.value):g} K '
@@ -5826,7 +6766,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         f'{over:+.1f} kcal/mol, past the {ceiling:.1f} this '
                         f'one has at {float(submit_temperature.value):g} K, '
                         'so it has been left as it was. '
-                        f'{_thermal_wait(over, submit_temperature.value)}')
+                        f'{_thermal_wait(over, submit_temperature.value)} '
+                        f'{_thermal_wants(over)}')
                     return
                 lines = [line for line in outcome['xyz'].splitlines()[2:]
                          if line.strip()]
@@ -6748,12 +7689,44 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             solvation_model=model,
                             on_frames=_push_frames if position == 0 else None)
                     else:
+                        # The held values, in the only terms a force field
+                        # here has.  RDKit's UFF takes AddFixedPoint and Open
+                        # Babel a list of fixed atoms; neither can restrain a
+                        # value.  So a fix is met by holding the atoms that
+                        # name it still, and a pull cannot be said at all --
+                        # the same reading MOPAC's flags get, from the same
+                        # function, so that a value one engine drops is
+                        # dropped by the other for the same reason.
+                        #
+                        # Handed nothing at all, as this branch was, the whole
+                        # list went quietly: measured on ethane with the
+                        # bonding pinned, C0-H2 pulled out to 1.700 A and held
+                        # exactly came back from one press of Optimise at
+                        # 1.1104 A, under a line that said only "Optimised
+                        # with UFF."  Fixed, it comes back at 1.7000, and a
+                        # Zn-N held at 2.600 through Open Babel likewise.
+                        atoms = len(_gfn.atom_lines(xyz))
+                        frozen = _mopac.freeze_flags(held,
+                                                     atoms=atoms or None)
+                        # Whether anything is left free.  Reaching for an
+                        # angle on a water names all three atoms, and the
+                        # minimisation then has nothing to do -- which is
+                        # worth a sentence rather than an "Optimised" over a
+                        # geometry that did not move.
+                        frozen['every_atom'] = bool(
+                            atoms and len(frozen['frozen']) >= atoms)
                         outcome = relax_xyz(
                             xyz,
+                            fixed_indices=sorted(frozen['frozen']),
                             max_steps=500,
                             perceived=_perception_for(xyz),
                             method=method,
                         )
+                        # Read by the status line below in this engine's terms,
+                        # through the same key the other two report on.  It is
+                        # cleared at the start of every press, so a reading
+                        # made under one engine cannot be read under another.
+                        outcome['held'] = frozen
                 except Exception as exc:
                     failures.append(f'frame {position + 1}: {exc}')
                     results.append(item)
@@ -6763,6 +7736,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         state['gfn_energy'] = float(outcome['energy'])
                         state['gfn_energy_unit'] = outcome.get('energy_unit')
                     if position == 0:
+                        # The charges of the structure that is about to be on
+                        # screen, out of the answer that is about to draw it.
+                        # Only the frame being looked at: a batch of isomers
+                        # optimises one after another, and the charges of the
+                        # fourth of them belong to a structure nobody is
+                        # showing.
+                        _remember_charges(outcome)
                         # Whether this run finished the job, and how far it got
                         # if it did not.  An engine that does not report either
                         # counts as finished: a run that cannot say it is
@@ -6953,18 +7933,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # asked.
                 said += _solvents.note(_solv_model(), submit_gfn_solvent.value)
                 # In the terms of whichever engine ran.  xtb restrains the
-                # value with one force constant for the whole set; MOPAC fixes
-                # the atoms that name it and cannot express a pull at all.
-                # Read out with the wrong one, a MOPAC result would claim a
-                # force constant that no MOPAC run has.
+                # value with one force constant for the whole set; MOPAC and
+                # the force fields here fix the atoms that name it and cannot
+                # express a pull at all.  Read out with the wrong one, a MOPAC
+                # result would claim a force constant that no MOPAC run has.
                 kept = state.get('gfn_held')
                 if pm:
                     said += _mopac.freeze_note(kept or {
                         'held': 0, 'pulls': 0, 'dropped': [], 'frozen': set()})
-                else:
+                elif gfn:
                     said += _gfn.held_note(kept or {
                         'held': 0, 'dropped': [], 'mixed': False,
                         'force': None})
+                else:
+                    said += fixed_atoms_note(kept or {
+                        'held': 0, 'pulls': 0, 'dropped': [], 'frozen': set()})
                 aside = int(state.pop('held_set_aside', 0) or 0)
                 if aside:
                     # Said out loud rather than done quietly: a value held on
@@ -7486,8 +8469,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return (
                 f'{str(method).upper()} runs in the browser, which pulls '
                 f'towards a held value rather than fixing it: the {fixed} '
-                'exact one(s) are held very firmly, not held still. Optimise '
-                'under a GFN method to have them met exactly.')
+                'exact one(s) are held very firmly, not held still. One press '
+                'of Optimise meets them exactly, by fixing the atoms they '
+                'name.')
         return ''
 
     def _selected_constraint():
@@ -7872,6 +8856,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                   in (state.get('poly_arrangements') or [])],
             'poly_arrangement_index': int(
                 state.get('poly_arrangement_index') or 0),
+            # And what a scan made possible, which is a thing an action can
+            # change and therefore a thing Undo has to take back.  A scan
+            # leaves two ends, the start of a saddle search moves onto them
+            # and the ways open from a pair arrive beside it; walked back
+            # past the scan, all three went on standing over a walk that no
+            # longer existed.  The user, on the rule this is: "Undo muss dann
+            # natuerlich in Teilen auch wieder Funktionen nehmen."
+            #
+            # By reference: the pair is two geometries that never change once
+            # written, so every entry after a scan shares the one tuple.
+            'scan_ends': state.get('scan_ends'),
+            # The box that names them goes back with them, or Undo restores
+            # the pair and leaves the press meaning something else.
+            'saddle_start': str(submit_saddle_from.value or 'here'),
         }
 
     def _remember_landmark(coords, what, comment):
@@ -7946,9 +8944,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # coordinate -- so Undo walked straight past it, wiped it on the way,
         # and reported whatever it did land on.  Hold, then a scan, then Undo
         # took back two actions on one press and named one of them.
+        # The saddle start is out of it: it is where a dropdown was standing
+        # and not part of the picture, so two actions that left the structure
+        # identical must not become two steps back for having been looked at
+        # from different boxes in between.
         same = last is not None and all(
             last.get(key) == value for key, value in entry.items()
-            if key not in ('what', 'gesture'))
+            if key not in ('what', 'gesture', 'saddle_start'))
         carrying_on = (gesture is not None and last is not None
                        and last.get('gesture') == gesture)
         if same or carrying_on:
@@ -8075,8 +9077,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             state['poly_quiet'] = False
         state['perceived'] = None
         state['perceived_for'] = None
+        # The pair a scan left goes back with the scan, and the box that names
+        # it goes back with the pair -- see :func:`_structure_marks`.  Through
+        # the wish rather than by writing the box, the way the scan's own move
+        # goes, so a start that this method cannot run from is left alone
+        # instead of being forced.
+        state['scan_ends'] = entry.get('scan_ends')
+        state['saddle_start_wish'] = entry.get('saddle_start') or 'here'
         _refresh_constraints()
         _refresh_poly_turn()
+        _refresh_saddle_controls()
+        # And nothing is left waiting.  A wish that could not be met is kept
+        # aside and put back the moment it can, which is right while the user
+        # is choosing methods and wrong after an Undo: "the scan's two ends"
+        # left over from a walk that has just been taken back would re-select
+        # itself the moment anything made a pair again.
+        state.pop('saddle_start_wish', None)
         _set_mol_status(note + aside)
         if submit_relax_btn.value or state.get('ff_bootstrap_done'):
             _enable_live_forcefield()
@@ -8740,15 +9756,40 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     def _scan_legs():
         return list(state.get('scan_legs') or [])
 
-    def _describe_leg(leg):
+    def _leg_atoms_label(leg):
+        """The atoms a leg drives, named the way the sentences name them.
+
+        Its own function because the profile's axis wants exactly this and
+        nothing else -- ``C0-C1`` -- while :func:`_describe_leg` wants it with
+        the walk's two ends after it.  One place, so that the picture and the
+        sentence cannot come to call the same pair of atoms different things.
+        """
         symbols = []
         perceived = state.get('perceived')
         known = getattr(perceived, 'symbols', None) or ()
+        if not known:
+            # The perception comes back from the browser, and it has not
+            # always been asked for by the time a leg is named -- an editor
+            # driven from the outside may never have had a viewer at all.  The
+            # element column of the structure in the box answers the same
+            # question and is always there, so a leg is named "C0-C10" rather
+            # than "?0-?10", on the picture and in the sentence alike.
+            known = [line.split()[0] for line in
+                     _gfn.atom_lines(_current_xyz() or '')]
         for index in leg['atoms']:
             symbol = known[index] if 0 <= index < len(known) else '?'
             symbols.append(f'{symbol}{index}')
+        return '-'.join(symbols)
+
+    def _describe_leg(leg):
+        # A leg with a verb is read as the instruction it is rather than as
+        # the pair of numbers underneath it: "form C1-C11" is what was asked
+        # for, and "3.35 -> 1.53 A" is only how the force will be pointed.
+        verb = str(leg.get('verb') or '')
+        if verb in ('form', 'break'):
+            return f'{verb} {_leg_atoms_label(leg)}'
         unit = 'A' if leg['kind'] == 'distance' else 'deg'
-        return (f"{'-'.join(symbols)} {leg['from']:.3g} -> {leg['to']:.3g} "
+        return (f"{_leg_atoms_label(leg)} {leg['from']:.3g} -> {leg['to']:.3g} "
                 f"{unit}")
 
     def _refresh_scan():
@@ -8756,10 +9797,24 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         legs = _scan_legs()
         showing = '' if legs else 'none'
         for widget in (submit_scan_dd, submit_scan_del, submit_scan_whole,
-                       submit_scan_how, submit_scan_energy,
+                       submit_scan_how, submit_scan_energy, submit_scan_back,
                        submit_scan_run_btn):
             widget.layout.display = showing
             widget.disabled = not legs
+        # Except the return leg, which belongs to walking a value and not to
+        # pushing one: a push is a ramp of forces rather than a grid of
+        # values, so there is no same-coordinate-backwards to walk.
+        if legs and str(submit_scan_how.value) == 'push':
+            submit_scan_back.layout.display = 'none'
+        # The second opinion answers to a different question from the rest of
+        # the row, and that is the point of it: everything above is here
+        # because a scan is *armed*, and this is here because one has
+        # *finished* and left a profile about the molecule on screen.  A press
+        # that appeared with the arming would be offering to price a walk that
+        # has not happened.
+        showing_price = '' if _reprice_is_possible() else 'none'
+        submit_scan_price_btn.layout.display = showing_price
+        submit_scan_price_btn.disabled = not showing_price == ''
         options = [(_describe_leg(leg), str(n)) for n, leg in enumerate(legs)]
         submit_scan_dd.options = options or [('nothing armed', '')]
         if options:
@@ -8775,9 +9830,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # Two atoms are closer or further apart; three or four are narrower or
         # wider.  The words follow what is picked, so the direction is never a
         # setting with no subject.
+        #
+        # And the two verbs are there for a pair and absent for an angle or a
+        # torsion.  That absence is a statement, which is why it is made here
+        # rather than by refusing the press afterwards: a bond is between two
+        # atoms, so there is no bond for three of them to make or break.
         kind = _CONSTRAINT_KINDS.get(picked)
         options = (
             [('closer together', 'in'), ('further apart', 'out'),
+             ('form this bond', 'form'), ('break this bond', 'break'),
              ('to a value you give', 'to')]
             if kind == 'distance'
             else [('narrower', 'in'), ('wider', 'out'),
@@ -8869,7 +9930,102 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         ends that fixes the path.
         """
         far = _SCAN_AS_FAR_AS.get(kind, 360.0)
-        return float(value) + (far if way == 'out' else -far)
+        return float(value) + (far if way in ('out', 'break') else -far)
+
+    #: How far past the graph's own threshold a break is pointed.
+    #:
+    #: :data:`gfn_optimize.BOND_STARTS_AT` is where a bond stops being drawn,
+    #: so a break aimed exactly there is aimed at the line it has to be over.
+    #: Half an Angstrom past it, which for two carbons is 2.5 A rather than
+    #: 2.0 -- and the number matters far less than it looks, because a push
+    #: never meets its target: the target only says which way the force
+    #: points, and :func:`_carried_out` is what decides the walk is finished.
+    _BREAK_CLEAR_BY = 0.5
+
+    def _verb_target(indices, verb):
+        """Where a form or a break points its force, in Angstrom.
+
+        A form is pointed at the bond those two atoms would make -- the sum of
+        their covalent radii -- and a break at something safely clear of it.
+        Neither is a value the walk is driven to: a push is a force, and where
+        the structure ends up is the structure's answer.  What the target does
+        is give the force a sign, and what it gives the user is a leg that
+        reads as the chemistry it names.
+        """
+        rows = [line.split() for line in _gfn.atom_lines(_current_xyz() or '')]
+        if any(not (0 <= i < len(rows)) for i in indices):
+            return None
+        from delfin.atom_mapping import cov_radius
+        reach = sum(cov_radius(str(rows[i][0])) for i in indices)
+        if verb == 'form':
+            return reach
+        return _gfn.BOND_STARTS_AT * reach + _BREAK_CLEAR_BY
+
+    def _carried_out(xyz, legs):
+        """Whether every instruction holds on this one geometry.
+
+        The stopping rule for a form/break walk, and the whole of it: read the
+        bond graph off what the last force actually produced and ask whether
+        every armed verb is satisfied *at the same time*.  On the same
+        geometry and not each at some point along the way, because a form can
+        be satisfied at one step and undone two steps later by the break
+        pulling the same fragment apart -- and a walk that stopped on the
+        first would report a structure that no longer has the bond it says it
+        made.
+
+        It is the geometric test -- :func:`gfn_optimize.bond_graph`, covalent
+        radii, the same one the viewer draws lines with and ``Keep bonds``
+        judges against -- so what the rule reads is what the user sees.  It is
+        deliberately **not** a bond order, and that was measured rather than
+        assumed.
+
+        SCINE's NT2 stops on Mayer bond orders: formed above 0.75, broken
+        below 0.15.  Three measurements here, all under GFN2, reading xtb's
+        own Wiberg orders.
+
+        *Forming, and the two tests agree.*  Along the converged Diels-Alder
+        band a forming C-C reads 0.000 at 2.64 A, 0.193 at 2.33, 0.524 at 2.09
+        and 0.920 at 1.70, and the bond graph flips between those last two as
+        well.  Same on the SN2's Cl-C, which is the harder case because the
+        two radii differ: 0.000 at 2.58 A and 0.921 at 1.78, and the graph
+        turns over at 2.31.
+
+        *Breaking heterolytically, and they still agree.*  The same SN2's
+        C-Br: 0.881 at 2.01 A, then 0.000 at 3.11.  The pair leaves with the
+        bromide, which a restricted determinant describes perfectly well.
+
+        *Breaking homolytically, and the order is simply wrong.*  An ethane's
+        C-C stretched rigidly from its 1.5212 A equilibrium:
+
+            1.52 A  1.030      3.00 A  0.958
+            2.00 A  0.994      3.20 A  0.954
+            2.50 A  0.973      3.50 A  0.913
+                               4.00 A  0.264
+
+        At 3.5 A -- two and a third times equilibrium, and a full Angstrom and
+        a half past where the graph gave up on it -- the order still reads
+        0.91, because a restricted single determinant cannot part an electron
+        pair.  "Broken below 0.15" would not fire until about 4.5 A.
+
+        So the rule is not "bond order is wrong"; it is that a bond order is
+        right for a heterolytic break and wrong for a homolytic one -- and
+        nothing here knows in advance which it has been asked for.  A test
+        that is sound for one reaction and silently wrong for the next is
+        worse than one that is neither, and the geometry is right in all three
+        measurements above.  It also costs nothing: the graph is already
+        computed for the topology wall, where an order would be another xtb
+        file to read on every point.  One test for both halves, and it is the
+        one the picture is drawn with.
+        """
+        graph = _gfn.bond_graph(xyz)
+        for leg in legs:
+            verb = str(leg.get('verb') or '')
+            if verb not in ('form', 'break'):
+                continue
+            pair = tuple(sorted(int(i) for i in leg['atoms']))
+            if (pair in graph) != (verb == 'form'):
+                return False
+        return True
 
     def on_submit_scan(_button=None):
         """Arm the value the selection describes as a leg of the scan."""
@@ -8898,10 +10054,52 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     'a direction and let the scan stop at the next minimum.')
                 return
             target = asked
-        legs = [one for one in _scan_legs() if one['atoms'] != indices]
+        # A verb points its own force, at the bond those two atoms would make
+        # or at somewhere clear of it -- see :func:`_verb_target`.  It is not
+        # where the walk is driven to; a push is a force, and the verb is what
+        # says when the walk is finished.
+        verb = str(submit_scan_way.value) if str(
+            submit_scan_way.value) in ('form', 'break') else ''
+        if verb:
+            aimed = _verb_target(indices, verb)
+            if aimed is None:
+                _set_mol_status('That selection names atoms this structure '
+                                'does not have.')
+                return
+            target = aimed
+            # An instruction that is already carried out is not one, and it is
+            # refused against the same test that will decide the walk is
+            # finished -- :func:`_carried_out`.  Measured with a comparison of
+            # lengths instead: an ethane's C-C is 1.521 A and the bond those
+            # two carbons make is 1.520, so "form" on a bond slipped through
+            # by a thousandth of an Angstrom and armed a walk that was over
+            # before it started.  One rule, asked once, and there is no
+            # thousandth to fall through.
+            if _carried_out(_current_xyz() or '', [{'kind': 'distance',
+                                                    'atoms': indices,
+                                                    'verb': verb}]):
+                named = _leg_atoms_label({'atoms': indices})
+                _set_mol_status(
+                    f'{named} is already '
+                    + (f'bonded, at {here:.3g} A, so there is nothing to '
+                       'form. Pick a pair that is not bonded yet.'
+                       if verb == 'form' else
+                       f'{here:.3g} A apart, which is not a bond, so there is '
+                       'nothing to break.'))
+                return
+        # Same atoms in either order.  It matters here in a way it did not
+        # before: with a verb, arming "break 11-1" over "form 1-11" would
+        # otherwise leave both on the list, and a walk cannot make and break
+        # the same bond at once.
+        pair = sorted(indices)
+        legs = [one for one in _scan_legs()
+                if sorted(one['atoms']) != pair or len(one['atoms']) != len(
+                    indices)]
         leg = {'kind': kind, 'atoms': indices, 'from': here,
                'to': target, 'steps': int(submit_scan_steps.value),
                'structure': _structure_fingerprint(_current_xyz() or '')}
+        if verb:
+            leg['verb'] = verb
         floor = _scan_floor_for(leg)
         clipped = ''
         if floor is not None and leg['to'] < floor:
@@ -8911,6 +10109,24 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         legs.append(leg)
         state['scan_legs'] = legs
         _refresh_scan()
+        # An instruction is described as one, and what it is armed with is the
+        # other half of the sentence: a form or a break is carried out by a
+        # push, so a walk cannot do it and saying so here saves a refusal at
+        # the press.
+        if verb:
+            others = [one for one in legs if one is not leg]
+            _set_mol_status(
+                f'Armed: {_describe_leg(leg)}. '
+                + ('Arm the other half on a second pair -- one bond made '
+                   'while another breaks is what most reactions are -- or '
+                   'press Run scan.' if not others else
+                   'Together: ' + ', '.join(_describe_leg(one) for one in legs)
+                   + '.')
+                + (' Set to "push with a force"; a walk drives a value and a '
+                   'verb needs a force.'
+                   if str(submit_scan_how.value) != 'push' else ''))
+            _clear_selection()
+            return
         _set_mol_status(
             f'Armed {_describe_leg(legs[-1])} in {legs[-1]["steps"]} steps. '
             + ('Arm another to walk them together, which is what a concerted '
@@ -8949,6 +10165,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             _set_mol_status('A scan needs xtb: choose a GFN method.')
             return
         pushing = str(submit_scan_how.value) == 'push'
+        # A verb is carried out by a force and cannot be carried out by a
+        # walk.  A walk drives its coordinate to a value it was told, so
+        # "break C2-Br3" as a walk is the editor pulling the bromide to 3.0 A
+        # whatever the molecule thinks -- which is not the reaction, it is a
+        # picture of one.  A push ramps until the structure gives, and what
+        # gives is the structure's answer.
+        instructed = [one for one in legs
+                      if str(one.get('verb') or '') in ('form', 'break')]
+        if instructed and not pushing:
+            _set_mol_status(
+                'Form and break are carried out by a force, so they need '
+                '"push with a force". A walk drives the distance to a number '
+                'instead, which draws the reaction rather than finding it.')
+            return
         # xtb takes one force constant for the whole $constrain block, and a
         # push is three orders of magnitude softer than a hold.  Run together,
         # the hold's stiffness would win and the push would silently become an
@@ -8970,6 +10200,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 'Arm the distance that is forming or breaking, or choose '
                 '"walk the value" for an angle or a torsion.')
             return
+        # And the one question this method has no way of answering.
+        #
+        # GFN-FF perceives its bonding once and holds it, so a scan that
+        # drives two atoms together across the line where they would be
+        # bonded is asking a force field with no term for that bond what
+        # making it costs.  Said here in the way an unparametrised solvent is
+        # -- before the run, because xtb does not refuse it: it converges, and
+        # reports repulsion as a barrier.  See :func:`_gfn.gfnff_refusal` for
+        # the measurement and for why breaking is a different case.
+        if str(method).strip().lower() == 'gfnff':
+            no = _gfn.gfnff_refusal(xyz, legs)
+            if no:
+                _set_mol_status(no)
+                return
         # From where the structure is *now*, not from where it was when the
         # leg was armed.  Left as armed, a second press walked from a value
         # the molecule no longer had: measured, a C-C at 4.012 was compressed
@@ -9007,10 +10251,38 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['scan_came_back'] = None
         state['scan_free'] = None
         state['scan_ends'] = None
+        # Why the walk ended, when it ended before it was finished.  Read by
+        # the verdict, which is the one sentence the user is left with.
+        state['scan_gave_up'] = None
         state['scan_gap_first'] = None
         state['scan_gap_least'] = None
         state['scan_depth'] = ''
         state['scan_crowded'] = None
+        state['scan_free_shaky'] = None
+        state['scan_stopped_out'] = False
+        # Whether a second leg was even on the table.  None for a push, which
+        # has no grid of values to retrace; True or False for a walk, which
+        # has.  It is what lets the verdict offer the return leg to the one
+        # person who could have had it and did not.
+        state['scan_back_wanted'] = (None if pushing
+                                     else bool(submit_scan_back.value))
+        # The two legs as they are walked, the return leg's verdict, and the
+        # step the walk fell through if it fell through one.  Kept on the
+        # state rather than only in the sentence, because a profile is a
+        # picture before it is a paragraph and both legs belong on the same
+        # axes -- see :func:`_scan_two_legs` for the shape and who reads it.
+        state['scan_there'] = []
+        state['scan_back'] = []
+        state['scan_disagree'] = None
+        state['scan_jumped'] = None
+        # The walk that is starting replaces the one that finished, and its
+        # second opinion with it.  Left standing, the press beside Run scan
+        # would offer to re-price a profile that had just been walked over.
+        state['scan_walk'] = None
+        state['scan_repriced'] = None
+        _refresh_scan()
+        state['scan_carried_out'] = None
+        state['scan_instructed'] = [_describe_leg(one) for one in instructed]
         state['scan_frame_run'] = _note_the_run(
             int(state.get('gfn_run', 0)) + 1, 'scan')
         state['gfn_run'] = state['scan_frame_run']
@@ -9049,6 +10321,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['scan_walled'] = None
 
         def _work():
+            # The path is (where the coordinate was, what it cost, the
+            # geometry) at every point.  The geometry used to be dropped the
+            # moment its frame had been drawn, which was enough for a picture
+            # and not enough for anything else: a finished walk is a set of
+            # structures somebody has just spent minutes computing, and
+            # re-pricing them with a better method is seconds of work that
+            # cannot be done at all once they are gone.  It costs what the
+            # structures cost -- about 60 KB for nineteen points of a 57-atom
+            # complex, against the 24 MB of coordinates the frame channel
+            # already holds for a walk of four hundred.
             walked, path = xyz, []
             base = None
             bottom = None
@@ -9056,11 +10338,35 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             began_at = None
             standing = None
             shown = []
+            # The values every leg was actually held at, point by point, so
+            # the walk back is the same walk and not a fresh one over the same
+            # range: a scan that stopped at the next minimum walked a part of
+            # what was armed, and it is that part the return leg has to
+            # retrace.
+            drove = []
+            # And what moved that nobody asked to move, one step at a time.
+            #
+            # Kept as a number and a pair of indices rather than a geometry:
+            # the whole reason :func:`_descent` keeps two structures and not
+            # forty is that a long walk over a large molecule cannot afford
+            # forty, and this must not undo that.  Which step jumped is only
+            # known once the walk is over, so the culprit for every step is
+            # carried along and one of them is read out at the end.
+            slipped = []
             # Where the walk was last inside the budget, and what every point
             # it kept costs against the anchor.  The structure it started from
             # is affordable by construction -- it is what the box was holding.
             affordable = xyz
             costs = {}
+            # And the two of them the profile marks, kept as the pair the path
+            # is made of rather than as geometries: where the walk started,
+            # which is the zero the free energies are quoted against, and the
+            # last point the budget could pay for, which is what the box is
+            # given when the walk ends past the ceiling.  Both are numbers the
+            # loop has already worked out; keeping them costs nothing and
+            # saves the picture having to guess which point they were.
+            began_point = None
+            kept_point = None
             force = _gfn.PUSH_FORCE_FROM
             growth = (_gfn.PUSH_FORCE_TO / _gfn.PUSH_FORCE_FROM) ** (
                 1.0 / max(1, steps - 1))
@@ -9108,9 +10414,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     if not got.get('ok') or got.get('energy') is None:
                         break
                     standing_here = got['xyz']
+                    # The geometry travels with the price.  For a push these
+                    # are the barrier: the force fell through the crossing in
+                    # one step and these are the only points on the way over
+                    # it, so a walk that threw them away had nothing to hand
+                    # to a re-pricing at the one place a re-pricing is for.
                     out.append((asked[0]['value'],
                                 (float(got['energy']) - base)
-                                * _HARTREE_TO_KCAL))
+                                * _HARTREE_TO_KCAL,
+                                standing_here))
                 return out
 
             def _free(here):
@@ -9120,6 +10432,43 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 on a biased surface has the restraint's own curvature in its
                 frequencies, and the whole point of asking for G is that the
                 number means something.
+
+                An RRHO free energy only means something at a stationary
+                point, and the top of a scan is not one.  The published answer
+                to exactly that is xtb's ``--bhess``, the single-point Hessian
+                of Spicher and Grimme (JCTC 2021, 17, 1701), which biases the
+                surface back towards the geometry it was handed.  It was tried
+                here and it does not apply to a scan point, which is worth
+                writing down so that it is not tried again:
+
+                  * The bias is sized in RMSD against a target of 0.10 A, and
+                    a scan point can be a long way up the surface without
+                    being far in RMSD.  Measured on a benzene with one ring
+                    C-C held at 1.72 A -- +30.4 kcal/mol -- the free
+                    relaxation moves it only 0.094 A, which is inside the
+                    target, so xtb settles on ``kpush = -0.000000``, applies
+                    no bias at all, relaxes freely back to the ring and
+                    reports the free energy of benzene.  The held bond came
+                    back at 1.385 A.  It prices a different structure and says
+                    nothing about having done so, which is worse than a plain
+                    Hessian, because a plain Hessian at least does not move.
+                  * Asking for a tighter target does not rescue it.  With
+                    ``$metadyn rmsd=0.02`` the same structure still slips from
+                    1.718 to 1.523 A, the restraint it settles on is
+                    thirty times stronger, the thermostatistics move the other
+                    way, and it costs 65 s against 1.25 for the plain
+                    Hessian.
+                  * Holding the coordinate during the Hessian does keep the
+                    geometry -- 0.001 A -- and puts the hold's own curvature
+                    into the frequencies: the same benzene gives G(RRHO)
+                    0.0963 Eh held against 0.0677 free, which is 18 kcal/mol
+                    of spring in the answer.
+
+                So it stays a plain Hessian, and what the scan does instead is
+                say so: where the Hessian at the top comes back with a mode
+                that goes the wrong way, that is the surface saying this point
+                is not a stationary point, and the verdict reports it rather
+                than quoting a free energy as though it were one.
                 """
                 got = _gfn.optimize_with_gfn(
                     here, method, charge=charge, uhf=uhf, timeout=None,
@@ -9127,6 +10476,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     topology=_gfn_topology_dir(here), optimise=False,
                     free_energy=True,
                     thermo_kelvin=float(submit_temperature.value or 298.15))
+                shape = got.get('imaginary') or {}
+                if int(shape.get('count') or 0) > 0:
+                    # Kept as the worst of the three, because one point that
+                    # is not stationary is enough to make the difference
+                    # between them an estimate.
+                    was = state.get('scan_free_shaky') or {}
+                    if int(shape.get('count')) >= int(was.get('count') or 0):
+                        state['scan_free_shaky'] = dict(shape)
                 return got.get('free_energy')
 
             def _unbiased(here, applied=()):
@@ -9169,12 +10526,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # that crossed on its first step showed no crossing.
                     base = _unbiased(walked)
                     if base is None:
+                        state['scan_gave_up'] = (
+                            'It never started: the push has no starting '
+                            'energy to measure from.')
                         schedule_ui_update(
                             _set_mol_status,
                             'The push has no starting energy to measure from.')
                         return
                     standing = walked
-                    path.append((_value_in(walked, legs[0]), 0.0))
+                    path.append((_value_in(walked, legs[0]), 0.0, walked))
                 for n in range(1, steps + 1):
                     if state.get('scan_stop'):
                         break
@@ -9187,6 +10547,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # C-H held at 1.60 came back at 1.080 after the scan, while
                     # the same hold under Optimise gave 1.599.  The list went
                     # on showing it throughout.
+                    #
+                    # The geometry this step starts from, kept for one step
+                    # only: it is what the next one is compared against to see
+                    # whether anything slipped, and it is the previous point
+                    # rather than a copy of the path.
+                    stood_at = walked
                     if pushing:
                         # The next force, and the same force again halfway
                         # down when the structure fell through the crossing in
@@ -9225,6 +10591,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             solvation_model=model,
                             topology=_gfn_topology_dir(walked))
                     if not outcome.get('ok') or outcome.get('energy') is None:
+                        # Written down, not only said.  The sentence scheduled
+                        # here is replaced a moment later by the verdict the
+                        # finishing block writes, so a walk that gave up at
+                        # step 4 of 8 was reported as though it had simply
+                        # been a shorter walk -- and the one thing the user
+                        # needed to know, that xtb stopped answering, was on
+                        # screen for the length of one redraw.
+                        state['scan_gave_up'] = (
+                            f'It stopped at step {n} of {steps}: '
+                            f'{outcome.get("status") or "xtb did not run"}')
                         schedule_ui_update(
                             _set_mol_status,
                             'The scan stopped at step '
@@ -9234,6 +10610,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     energy = (_priced(outcome, held) if pushing
                               else outcome['energy'])
                     if energy is None:
+                        state['scan_gave_up'] = (
+                            f'It stopped at step {n} of {steps}: the push '
+                            'could not be priced there.')
                         schedule_ui_update(
                             _set_mol_status,
                             f'The push could not be priced at step {n}.')
@@ -9279,6 +10658,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         walked = standing if standing is not None else walked
                         break
                     standing = walked
+                    # Where the coordinate *is*, not where it was asked to be.
+                    # A push does not dictate a value -- that is the whole
+                    # point of it -- so the path is read off the structure.
+                    #
+                    # Read before the two blocks below rather than after them,
+                    # because both of them name a point of the path and the
+                    # coordinate is half of what a point is.
+                    reached = (_value_in(walked, legs[0]) if pushing
+                               else held[0]['value'])
                     if budgeted:
                         # Against the budget's own anchor, not against the
                         # point the walk happened to start from: the two are
@@ -9289,17 +10677,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                          * _HARTREE_TO_KCAL)
                         if costs[walked] <= scan_ceiling:
                             affordable = walked
+                            kept_point = (reached, spent)
                     if began_at is None:
                         # The first point, which is the start relaxed at the
                         # value it already had -- a minimum in every direction
                         # but the one being walked, which is what a free
                         # energy wants.
                         began_at = walked
-                    # Where the coordinate *is*, not where it was asked to be.
-                    # A push does not dictate a value -- that is the whole
-                    # point of it -- so the path is read off the structure.
-                    reached = (_value_in(walked, legs[0]) if pushing
-                               else held[0]['value'])
+                        began_point = (reached, spent)
                     if (pushing and was_at is not None and reached is not None
                             and abs(reached - was_at) > _PUSH_JUMP):
                         # It fell through the crossing.  What the fall cost is
@@ -9308,7 +10693,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         path.extend(_across(
                             came_from, was,
                             [_value_in(walked, one) for one in legs]))
-                    path.append((reached, spent))
+                    path.append((reached, spent, walked))
+                    if not pushing:
+                        # The values this step really held, for the walk back,
+                        # and the largest thing that moved without being
+                        # asked, for naming what slipped if anything did.
+                        drove.append([one['value'] for one in held[:len(legs)]])
+                        slipped.append(_gfn.what_else_moved(
+                            stood_at, walked,
+                            [one['atoms'] for one in legs]))
                     # The lowest point *since the top*, kept with its
                     # geometry.
                     #
@@ -9323,6 +10716,30 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # see :func:`_descent`.
                     summit, bottom = _descent(
                         summit, bottom, spent, walked, reached)
+                    # The instruction, before the energy's own stop rule.
+                    #
+                    # They answer different questions and the instruction is
+                    # the one that was asked: "over a barrier and settled
+                    # again" is where a scan stops when nobody said what the
+                    # reaction was, and here somebody did.  Measured on the
+                    # Diels-Alder, both fire at the same step; measured on the
+                    # SN2 -- Cl- and CH3Br, form Cl-C while breaking C-Br --
+                    # the whole crossing is downhill from the complex and
+                    # there is no barrier for the energy rule to notice at
+                    # all, so the instruction is the only thing that could
+                    # have stopped it.
+                    #
+                    # And it is not gated on Whole profile, which is a
+                    # question about how much of a curve to draw.  An
+                    # instruction that has been carried out is finished.
+                    if instructed and _carried_out(walked, legs):
+                        state['scan_carried_out'] = (
+                            n, force,
+                            _gfn.graph_changed(
+                                _gfn.bond_graph(xyz), _gfn.bond_graph(walked),
+                                [line.split()[0]
+                                 for line in _gfn.atom_lines(walked)]))
+                        break
                     if not submit_scan_whole.value and _scan_arrived(path):
                         state['scan_arrived'] = True
                         if bottom is not None:
@@ -9359,6 +10776,124 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                          'frames': [shown[-1]]}),
                         r=scan_run: setattr(submit_gfn_frame, 'value', text)
                         if _frame_run_is_current(r) else None)
+                # The walk as a pair of numbers per point, which is what
+                # :func:`_scan_two_legs` promises and what the second leg is
+                # compared against.  The geometry each point held travels with
+                # the walk itself, not here: :func:`_keep_the_walk` is what
+                # keeps the structures, for re-pricing and for marking a point,
+                # and a leg is two axes.
+                state['scan_there'] = [(one[0], one[1]) for one in path]
+                # Whether it was the walk *out* that was interrupted.  A Stop
+                # pressed during the return leg is a different thing and must
+                # not turn the barrier into "where the walk was interrupted":
+                # the walk out finished, and what it found stands.
+                state['scan_stopped_out'] = bool(state.get('scan_stop'))
+                # Whether any step of it was a fall rather than a step.
+                #
+                # Costs nothing: it is arithmetic on the energies the walk
+                # already has and on one number per step that was worked out
+                # while the step was taken.  Walking only -- a push means to
+                # fall through its crossing and prices it afterwards with
+                # :func:`_across`, so the same test on a push would fire on
+                # the thing the push is for, and on a path whose points are
+                # not evenly spaced besides.
+                if not pushing:
+                    fell = _gfn.where_a_walk_jumped(
+                        [one[1] for one in path])
+                    if fell is not None:
+                        step = int(fell['step'])
+                        fell['at'] = path[step][0]
+                        fell['from'] = path[step - 1][0]
+                        who = slipped[step] if step < len(slipped) else None
+                        if who is not None:
+                            rows = [line.split()[0] for line
+                                    in _gfn.atom_lines(walked)]
+                            fell['named'] = _gfn.pair_named(who['pair'], rows)
+                            fell['moved'] = who['moved']
+                            fell['was'] = who['was']
+                            fell['now'] = who['now']
+                        state['scan_jumped'] = fell
+                # And the same coordinate walked back from where it ended.
+                #
+                # A driven scan is a minimum-energy path only where nothing
+                # slips sideways, and there is no way to know which case a
+                # given scan is in from one leg of it.  So the second leg is
+                # walked over the values the first one really held -- which is
+                # not the range that was armed, because a scan that stopped at
+                # the next minimum walked a part of it.
+                #
+                # From where the walk ended and not from the minimum it came
+                # back to: the question is whether retracing the same points
+                # gives the same energies, and it has to start at the far end
+                # of them.
+                #
+                # Not after a Stop, which is a user saying they have seen
+                # enough, and not after a collapse, where the forward leg has
+                # already reported that there is no path there.
+                if (not pushing and bool(submit_scan_back.value)
+                        and len(drove) > 2 and not state.get('scan_stop')
+                        and state.get('scan_crowded') is None
+                        and base is not None):
+                    here = standing if standing is not None else walked
+                    returned = [(drove[-1][0], path[-1][1])]
+                    walking = {tuple(one['atoms']) for one in legs}
+                    others = [dict(one) for one
+                              in (state.get('constraints') or [])
+                              if tuple(one.get('atoms') or ()) not in walking]
+                    for back_n, values in enumerate(
+                            reversed(drove[:-1]), start=1):
+                        if state.get('scan_stop'):
+                            break
+                        asked = [
+                            {'kind': one['kind'],
+                             'atoms': list(one['atoms']), 'mode': 'fix',
+                             'value': values[k]}
+                            for k, one in enumerate(legs)
+                        ] + others
+                        got = _gfn.optimize_with_gfn(
+                            here, method, charge=charge, uhf=uhf,
+                            max_steps=_SCAN_CYCLES, timeout=None,
+                            constraints=asked, solvent=wet,
+                            solvation_model=model,
+                            topology=_gfn_topology_dir(here))
+                        if not got.get('ok') or got.get('energy') is None:
+                            break
+                        here = got['xyz']
+                        returned.append(
+                            (values[0], (float(got['energy']) - base)
+                             * _HARTREE_TO_KCAL))
+                        schedule_ui_update(
+                            _set_mol_status,
+                            f'{label} is walking it back: step {back_n} of '
+                            f'{len(drove) - 1}, {legs[0]["kind"]} at '
+                            f'{values[0]:.3g}, {returned[-1][1]:+.1f} '
+                            'kcal/mol.', spinner=True)
+                        # Shown as it happens, like the leg before it.  A
+                        # return leg nobody can see is a number with no
+                        # picture behind it, and the picture is what makes a
+                        # jump obvious.
+                        shown.append(_gfn.coordinates_of(here))
+                        scan_run = state.get('scan_frame_run')
+                        schedule_ui_update(
+                            lambda text=_frame_payload(
+                                scan_run, **{'from': len(shown) - 1,
+                                             'follow': 1,
+                                             'frames': [shown[-1]]}),
+                            r=scan_run: setattr(submit_gfn_frame, 'value',
+                                                text)
+                            if _frame_run_is_current(r) else None)
+                    state['scan_back'] = list(returned)
+                    # Two points is not two legs.  A return leg that failed at
+                    # its first step leaves only the geometry it started
+                    # standing on, which agrees with itself by construction --
+                    # and reporting that as agreement would be the check
+                    # saying yes because it did not run.
+                    if len(returned) > 2:
+                        # The pairs, not the walk: both legs are (coordinate,
+                        # energy) on one zero, and the geometries the walk out
+                        # carries are no part of comparing two curves.
+                        state['scan_disagree'] = _gfn.paths_disagree(
+                            state['scan_there'], returned)
                 # And the free energy, at the three places it is both
                 # affordable and meaningful: where the walk started, the
                 # highest point it crossed, and the minimum it came to.
@@ -9375,17 +10910,60 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         None if None in (one, top, other) else
                         ((top - one) * _HARTREE_TO_KCAL,
                          (other - one) * _HARTREE_TO_KCAL))
+                # Whether the method could describe what it walked through,
+                # asked twice: from the frontier gap, which every point of the
+                # walk reports for nothing, and by counting the electrons that
+                # are not in a closed shell, which costs two more single
+                # points.
+                #
+                # The count is skipped on a Stop, for the same reason the free
+                # energies are: a press of Stop is somebody saying that is far
+                # enough, and answering it by starting two more calculations
+                # is the switch not working.  The gap costs nothing and is
+                # said either way.
+                #
+                # Joined rather than concatenated: either half can be empty,
+                # and the verdict puts a single space before whatever this is.
+                state['scan_depth'] = ' '.join(part for part in (
+                    _gfn.method_is_out_of_its_depth(
+                        state.get('scan_gap_least'),
+                        state.get('scan_gap_first')),
+                    '' if state.get('scan_stop') else _fod_along_the_walk(
+                        began_at, summit, method, charge, uhf, wet, model),
+                ) if part)
+            finally:
+                state['scan_run'] = False
                 # The two ends, for whoever wants to walk between them.
                 # A path finder is given two structures and finds its own way;
                 # what it cannot do is invent a product to aim at, and this is
                 # where one comes from.
-                state['scan_depth'] = _gfn.method_is_out_of_its_depth(
-                    state.get('scan_gap_least'), state.get('scan_gap_first'))
-                if began_at and path:
-                    state['scan_ends'] = (
-                        began_at, bottom[1] if bottom is not None else walked)
-            finally:
-                state['scan_run'] = False
+                #
+                # Here rather than at the end of the walk, because a walk ends
+                # in more ways than one and whether two ends exist has nothing
+                # to do with which.  The four early exits above -- xtb not
+                # answering, a push that cannot be priced, one that has no
+                # zero to measure from -- all leave through this block, and
+                # they used to leave without it: measured on a real GFN2 walk
+                # of butane's central C-C whose xtb stopped converging at step
+                # 4 of 8, the toolbar came back to "To the saddle" and the
+                # Climb switch with neither box on it, over a verdict reading
+                # "The scan walked 3 of 8 points ... the whole path is open".
+                # Three points had been walked and their two ends were in
+                # hand; nothing offered them and nothing said why not.  That
+                # is what the user was looking at: "habe ich jetzt nach so
+                # einem Scan nicht die Moeglichkeit, dafuer einen TS zu
+                # optimieren oder noch andere Methoden den Path zu
+                # untersuchen?"
+                #
+                # Before the budget clamps what goes into the box: the pair is
+                # what the walk reached, and the box gets the last point the
+                # temperature can pay for, which is a different question.
+                came_to = bottom[1] if bottom is not None else walked
+                # And two ends means two.  A walk that priced one point has
+                # its start and its end at the same geometry, and a path
+                # finder given the same structure twice has nothing to walk.
+                if began_at and path and came_to and came_to != began_at:
+                    state['scan_ends'] = (began_at, came_to)
                 # The walk is reported whole; what is handed back is not.
                 #
                 # A path that climbs past the ceiling is exactly the answer a
@@ -9398,6 +10976,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 if budgeted and costs.get(walked, 0.0) > scan_ceiling:
                     state['scan_walled'] = costs[walked]
                     walked = affordable
+                # And whether the instruction survives that.  It is the one
+                # place the budget and a form/break instruction can disagree,
+                # and they disagree by design: the ceiling prices exactly this
+                # kind of deformation, and a bond driven apart by a force the
+                # temperature cannot supply is a reaction that does not happen
+                # at that temperature.  The verdict below says which of the
+                # two the user is looking at, because the alternative is a
+                # line reading "the bond broke" over a structure where it has
+                # not.
+                state['scan_carried_out_kept'] = bool(
+                    instructed and state.get('scan_carried_out')
+                    and _carried_out(walked, legs))
 
                 def _done(final=walked):
                     submit_scan_run_btn.description = 'Run scan'
@@ -9407,6 +10997,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # over a geometry that had never moved, and then report
                     # 'The scan walked nothing' as though that were a result.
                     if not path:
+                        # Every other way out of the walk says why on the way
+                        # out.  One does not: a first point that comes back
+                        # collapsed breaks away before the point is priced, so
+                        # the row was left standing on "walking the scan: step
+                        # 1" with a spinner over a run that had finished.
+                        crowded = state.get('scan_crowded')
+                        if crowded:
+                            _set_mol_status(_scan_collapsed(crowded))
                         return
                     # There are two ends now, and the press beside them is put
                     # on the thing this walk made possible -- see
@@ -9414,6 +11012,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # is answered rather than merely allowed for.
                     if state.get('scan_ends'):
                         _scan_left_two_ends()
+                    # And the walk, kept whole with the charge, the spin and
+                    # the solvent it ran under.  Kept here rather than where
+                    # it finished, because a walk that was stopped or that
+                    # failed part way is still a set of geometries somebody
+                    # paid for: the press below prices whatever is in hand and
+                    # says how much of the walk that was.
+                    _keep_the_walk(path, method, charge, uhf, wet, model)
+                    # And the press arrives with it, which is the row saying
+                    # the profile can now be checked against something better
+                    # -- the same news the closing sentence carries in words.
+                    _refresh_scan()
                     # The places along the walk worth coming back to, put into
                     # the history in the order they were reached, so that Undo
                     # steps back through them and Redo forward again.
@@ -9449,14 +11058,339 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             'Scanned, and back to the last point the '
                             'temperature can pay for'
                             if state.get('scan_walled') is not None else
+                            'Driven until the bonds were made and broken'
+                            if state.get('scan_carried_out') else
                             'Scanned to the next minimum'
                             if state.get('scan_arrived') else 'Scanned'),
                             run=state.get('scan_frame_run'))
                     _set_mol_status(*_scan_verdict(path, steps))
 
                 schedule_ui_update(_done)
+                # And the picture of the walk, after all of that: drawn here,
+                # on the thread that did the walking, and handed to the
+                # interface in a turn of its own.
+                #
+                # After rather than before, and measured: matplotlib's first
+                # import is 0.3 s idle and over a second on a loaded machine,
+                # and drawn before this line that whole delay fell between
+                # the walk ending and the verdict reaching the screen -- six
+                # of the scan tests caught it, finding the row still saying
+                # "step 14 of 20" after the run had finished.  The answer
+                # goes first; the picture follows it.
+                #
+                # Shown rather than drawn in the turn for the same reason:
+                # a second spent in an interface callback is a second in
+                # which the dashboard does not answer.
+                schedule_ui_update(
+                    _show_scan_profile,
+                    _scan_profile_html(path, legs, pushing,
+                                       began=began_point, kept=kept_point))
 
         _start_background(_work, 'The scan')
+
+    def _fod_along_the_walk(began_at, summit, method, charge, uhf, wet, model):
+        """How much of the walk was not a closed shell, said as a change.
+
+        Two more single points on geometries the walk already produced: where
+        it started, and the highest point it crossed.  That pair and not
+        another, because the barrier is the number a scan exists to produce
+        and the top is where it comes from -- so this is measured at the place
+        the answer is quoted from, against the place it is quoted against.
+
+        Beside the frontier gap rather than instead of it.  The gap is free --
+        every point of the walk prints one -- and it is a proxy; this counts
+        the electrons that are not paired and so has a scale.  Measured under
+        GFN2 across an ethylene turned about its double bond, the two agree
+        about where the trouble is: at 60 degrees, which is where
+        :func:`~delfin.dashboard.gfn_optimize.method_is_out_of_its_depth`
+        already fires, N_FOD has just left zero at 0.251, and by 90 degrees it
+        is 2.000 with the gap shut.
+
+        What it costs is two runs on a walk of twenty optimisations, and the
+        ratio is what matters because the machine is shared.  Minimum of seven,
+        against a plain single point and against one optimisation step of the
+        same structure: 0.96 s, 0.49 s and 7.4 s for the sixteen-atom
+        Diels-Alder complex, and 10.5 s, 3.5 s and 35.6 s for the 57-atom
+        manganese complex.  So the pair of them is well under one step of a
+        walk that takes twenty, which is why it is not a thing to switch on.
+
+        Asked of GFN2 whatever walked the scan, which is the one decision in
+        here that needs defending.  It is a probe rather than a result: the
+        published one is TPSS/def2-TZVP used on everybody's geometries, and
+        what it measures is a property of the structure -- how far from a
+        closed shell it is -- not of the method that arrived at it.  Two of
+        the four methods on this toolbar cannot be asked at all: GFN-FF has no
+        electrons, and g-xTB takes ``--fod``, converges, terminates normally
+        and prints nothing, which is silence that reads as good news.
+
+        Under g-xTB that is not a corner case, it is the main one.  The
+        frontier-gap rule this stands beside was calibrated on GFN2 and does
+        not transfer: measured on an ethylene turned about its double bond,
+        where 90 degrees is a textbook diradical that no closed shell
+        describes,
+
+            twist       0     30     60     90
+            GFN2     5.47   4.37   2.32   0.00 eV
+            g-xTB   12.17  10.55   7.94   5.12 eV
+
+        so a g-xTB profile never trips
+        :data:`~delfin.dashboard.gfn_optimize.GAP_IS_SMALL` and the warning is
+        deaf under the most accurate method in the list -- which is the one a
+        barrier is most likely to be quoted from.  Handing the two geometries
+        to GFN2 gives every walk the same check for two single points, and the
+        sentence names who was asked when it was not the method that walked.
+        """
+        if not began_at or summit is None or not summit[1]:
+            return ''
+        probe = (method if _gfn.can_measure_fod(method)
+                 else _gfn.FOD_METHODS[-1])
+        borrowed = str(probe).lower() != str(method).lower()
+        schedule_ui_update(
+            _set_mol_status,
+            f'{_server_label(probe)} is measuring how much of the top is not '
+            'a closed shell...', spinner=True)
+
+        def _measure(here):
+            got = _gfn.optimize_with_gfn(
+                here, probe, charge=charge, uhf=uhf, timeout=None,
+                # The solvent only where the probe is the method that walked.
+                # GFN2 borrowed for a g-xTB walk has no solvent to inherit --
+                # that build takes none -- and putting one on would make the
+                # two points a different calculation from the walk they are
+                # about.
+                solvent=None if borrowed else wet,
+                solvation_model=model, optimise=False, fod=True,
+                # No topology, so no warm restart: the extra SCF converges at
+                # 5000 K and its wavefunction is not a guess at the ordinary
+                # one -- see :func:`optimize_with_gfn`, which refuses to store
+                # it for that reason.
+                topology=None)
+            return got.get('fod') if got.get('ok') else None
+
+        first, top = _measure(began_at), _measure(summit[1])
+        if not first or not top:
+            return ''
+        said = _gfn.fod_moved(first['total'], top['total'], top['on'])
+        if not said:
+            return ''
+        whose = (f' ({_server_label(probe)} was asked, on the geometries '
+                 f'{_server_label(method)} walked.)' if borrowed else '')
+        return f'{said}{whose}'
+
+    def _keep_the_walk(path, method, charge, uhf, wet, model):
+        """Put the finished walk where a second opinion can be taken on it.
+
+        With the conditions it was run under, because a re-pricing that used
+        a different charge or a different spin would not be a second opinion
+        about the same thing -- and with the element column of what it walked
+        on, so the press can be offered only while it is about the molecule on
+        screen.  The two ends already answer to that rule
+        (:func:`_scan_ends_here`) for the same reason: a set of geometries
+        outlives the structure it was made from, and geometries belonging to
+        another molecule are not this molecule's profile.
+        """
+        points = [one for one in path if len(one) > 2 and one[2]]
+        if not points:
+            state['scan_walk'] = None
+            return
+        state['scan_walk'] = {
+            'points': [(one[0], one[1], one[2]) for one in points],
+            'method': method, 'charge': int(charge), 'uhf': int(uhf),
+            'solvent': wet or '', 'solvation_model': model,
+            'structure': _structure_fingerprint(points[0][2]),
+        }
+
+    def _walk_here():
+        """The last walk, while it is about the molecule on screen.
+
+        Absent for that reason and no other, which is the rule every control
+        in this editor that comes and goes is built on.
+        """
+        walk = state.get('scan_walk')
+        if not walk or not walk.get('points'):
+            return None
+        if walk['structure'] != _structure_fingerprint(_current_xyz() or ''):
+            return None
+        return walk
+
+    #: What a finished profile is re-priced with.
+    #:
+    #: One method and not a box of them, because there is one answer: g-xTB is
+    #: the only thing in this editor's list that is better than what walked
+    #: the scan, and offering a choice between GFN1 and GFN2 to somebody who
+    #: has just walked with GFN2 is a box whose entries are all wrong.
+    _REPRICE_WITH = 'gxtb'
+
+    def _reprice_is_possible():
+        """Whether there is a finished walk that something better can price."""
+        walk = _walk_here()
+        if not walk:
+            return False
+        # Nothing to improve on.  A walk made with the best method in the list
+        # has no second opinion available here, and a press offering one would
+        # be the toolbar claiming something it cannot do.
+        return str(walk['method']).lower() != _REPRICE_WITH
+
+    def on_submit_scan_price(_button=None):
+        """Price the walk again with a better method, at its own geometries.
+
+        Why it is worth a press.  GFN2 has no Fock exchange at all, which puts
+        it at the far end of the self-interaction axis, and a transition state
+        is where that hurts most: stretched bonds and near-degenerate weakly
+        bound orbitals, which Bursch, Mewes, Hansen and Grimme (Angew. Chem.
+        Int. Ed. 2022, https://doi.org/10.1002/anie.202205735) say "often
+        leads to a systematic underestimation of their electronic energy and,
+        in turn, barrier heights".  The error is structured rather than
+        random: published mean absolute deviations of 10.22 kcal/mol on
+        pericyclic barriers, 8.12 on BHDIV10 and 13.05 on BH9 aggregate,
+        against 1.17 on BHROT27 -- rotations, where no bond is broken.  So a
+        torsion profile is nearly right and a bond-breaking one is not.
+
+        Measured here on a butadiene and an ethylene walked together under
+        GFN2 in nineteen points, then re-priced: the barrier went from
+        +6.31 kcal/mol to +21.67, a shift of +15.4 against a published
+        pericyclic deviation of 10.22, and the reaction energy from -63.99 to
+        -42.71.  One reaction is not a benchmark; the direction and the size
+        are what the literature says to expect.
+
+        Why it is a press on a finished scan rather than a setting before one.
+        The geometries are already in hand, so this is seconds -- measured,
+        0.40 s a point, 7.5 s for the whole nineteen -- while walking the scan
+        again under another method is minutes.  And the question only arises
+        after the barrier is on screen and looks too small to believe.
+
+        It gets cheaper as the molecule gets bigger, which is the opposite of
+        what a per-point cost usually does here.  Driven whole on a 57-atom
+        manganese complex at charge +1, its Mn-Br bond walked out over six
+        points on a loaded machine: the walk took 1097 s and pricing the same
+        six geometries again took 35.8 s -- 5.96 s a point against 183 s a
+        point, three percent of what it is checking.  A constrained
+        optimisation grows with the molecule far faster than one single point
+        does.
+        """
+        if state.get('reprice_run'):
+            state['reprice_stop'] = True
+            _set_mol_status('Stopping after this point.')
+            return
+        walk = _walk_here()
+        if not walk:
+            return
+        points = walk['points']
+        label = _server_label(_REPRICE_WITH)
+        state['reprice_run'] = True
+        state['reprice_stop'] = False
+        submit_scan_price_btn.description = 'Stop'
+        submit_scan_price_btn.icon = 'stop'
+        # g-xTB takes no implicit solvation in this build, so a walk made in a
+        # solvent is re-priced in the gas phase.  That is a different
+        # experiment and it is said in the answer rather than refused: the
+        # thing being checked is a barrier that may be ten kcal/mol too low,
+        # and a solvation shift on a barrier is not that.
+        dry = bool(walk.get('solvent'))
+
+        def _work():
+            priced, failed = [], ''
+            try:
+                for n, (value, _spent, here) in enumerate(points, start=1):
+                    if state.get('reprice_stop'):
+                        break
+                    got = _gfn.optimize_with_gfn(
+                        here, _REPRICE_WITH, charge=walk['charge'],
+                        uhf=walk['uhf'], timeout=None, optimise=False)
+                    if not got.get('ok') or got.get('energy') is None:
+                        failed = got.get('status') or 'it did not run'
+                        break
+                    priced.append((value, float(got['energy'])))
+                    schedule_ui_update(
+                        _set_mol_status,
+                        f'{label} is pricing the walk again: point {n} of '
+                        f'{len(points)}.', spinner=True)
+            finally:
+                state['reprice_run'] = False
+
+                def _done():
+                    submit_scan_price_btn.description = (
+                        f'Price with {label}')
+                    submit_scan_price_btn.icon = 'balance-scale'
+                    if not priced:
+                        _set_mol_status(
+                            f'{label} priced nothing: {failed}'
+                            if failed else
+                            f'{label} priced nothing before it was stopped.')
+                        return
+                    base = priced[0][1]
+                    profile = [(value, (energy - base) * _HARTREE_TO_KCAL)
+                               for value, energy in priced]
+                    # Kept for whoever draws the profile.  Both curves are
+                    # about the same geometries and are indexed by the same
+                    # coordinate, so they go on one pair of axes against
+                    # ``state['scan_walk']['points']``, which carries the
+                    # first one as (coordinate, kcal/mol, geometry).
+                    #
+                    # The element column travels with it for the reason the
+                    # press answers to it: a profile outlives the structure it
+                    # was walked on, and a second curve drawn over a molecule
+                    # it is not about is worse than no second curve.  Whoever
+                    # draws this checks it the way :func:`_walk_here` does.
+                    state['scan_repriced'] = {
+                        'method': _REPRICE_WITH, 'label': label,
+                        'points': profile,
+                        'walked_with': _server_label(walk['method']),
+                        'of': len(points),
+                        'gas_phase': dry,
+                        'structure': walk['structure'],
+                    }
+                    _set_mol_status(*_repriced_verdict(
+                        walk, profile, label, dry, failed))
+
+                schedule_ui_update(_done)
+
+        _start_background(_work, 'The second opinion',
+                          guards={'reprice_run': False})
+
+    def _repriced_verdict(walk, profile, label, dry, failed):
+        """Both profiles, and the three things that stop this being a barrier.
+
+        The caveats are here and not in a docstring because they are the
+        answer: a number that moved by fifteen kcal/mol is going to be quoted
+        by somebody, and what it is worth has to travel with it.  Said in
+        three sentences, in words that assume no chemistry.
+        """
+        walked = _server_label(walk['method'])
+        first = [(one[0], one[1]) for one in walk['points']][:len(profile)]
+        was_top = max(first, key=lambda one: one[1])
+        now_top = max(profile, key=lambda one: one[1])
+        moved = now_top[1] - was_top[1]
+        many = ('' if len(profile) == len(walk['points']) else
+                f' Only {len(profile)} of {len(walk["points"])} points were '
+                f'priced'
+                + (f': {failed}' if failed else ', because it was stopped.'))
+        # The top can move as well as rise, and where it moved to is a fact
+        # about the profile rather than a detail: measured on the
+        # Diels-Alder, GFN2 put its highest point at 2.289 A and g-xTB put it
+        # at 2.208 on the same nineteen geometries.
+        elsewhere = ('' if abs(now_top[0] - was_top[0]) < 1e-9 else
+                     f' -- and at {now_top[0]:.3g} rather than '
+                     f'{was_top[0]:.3g}')
+        return (
+            f'{walked} walked it and {label} priced it again at the same '
+            f'{len(profile)} geometries. The highest point goes from '
+            f'{was_top[1]:+.1f} to {now_top[1]:+.1f} kcal/mol, a change of '
+            f'{moved:+.1f}{elsewhere}, and the end from {first[-1][1]:+.1f} '
+            f'to {profile[-1][1]:+.1f}.{many}',
+            'Three things this is not. The energies are better and the '
+            f'structures are not -- they are where {walked} put them, and it '
+            'is out by about 0.2 A on a half-broken bond against 0.03 A on an '
+            'ordinary one, which is the kind of bond a barrier is made of. So '
+            'it is a screen: to report a barrier, optimise the top again with '
+            f'the method you mean to report. {label} is a preprint method and '
+            'this build says it is a development version differing from the '
+            'paper. And the points are wherever the walk left them, which '
+            'need not be anywhere in particular -- pricing changes the '
+            'energies, never the geometries.'
+            + (f' The walk ran in {walk["solvent"]} and {label} has no solvent '
+               'in this build, so these are gas-phase energies at those '
+               'geometries.' if dry else ''))
 
     def _said_modes(shape, what, advise=True):
         """What a Hessian says a structure is, in sentences.
@@ -9470,6 +11404,214 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state by the other.
         """
         return _saddle.verdict(shape, what, advise=advise)['lines']
+
+    def _said_thermochemistry(thermo):
+        """G, H, T*S and the zero-point energy, in one line, or nothing.
+
+        In kcal/mol, which is what the rest of this editor prices things in,
+        and the entropy as T*S rather than as S so that all four numbers are
+        the same quantity and can be added and subtracted by eye.  The
+        temperature is named because every one of them depends on it and the
+        box that set it is at the other end of a crowded row.
+
+        The zero-point energy is said apart from the rest: it is the only one
+        of the four that has nothing to do with the temperature, and a
+        structure with a soft mode has a small one for a reason worth
+        noticing.
+        """
+        if not thermo:
+            return []
+        warmth = float(thermo.get('kelvin') or 0.0)
+        free = thermo.get('free_energy')
+        heat = thermo.get('enthalpy')
+        ts = thermo.get('ts')
+        zpe = thermo.get('zpe')
+        if free is None and heat is None:
+            return []
+        parts = []
+        if free is not None:
+            parts.append(f'G = {float(free) * _HARTREE_TO_KCAL:.2f}')
+        if heat is not None:
+            parts.append(f'H = {float(heat) * _HARTREE_TO_KCAL:.2f}')
+        if ts is not None:
+            parts.append(f'T*S = {float(ts) * _HARTREE_TO_KCAL:.2f}')
+        said = [f'At {warmth:g} K, in kcal/mol: ' + ', '.join(parts) + '.']
+        if zpe is not None:
+            said.append('The zero-point energy is '
+                        f'{float(zpe) * _HARTREE_TO_KCAL:.2f} kcal/mol, which '
+                        'no temperature takes away.')
+        return said
+
+    def _said_curvature(shape):
+        """What the modes say where nothing is standing still.
+
+        The naming in :func:`delfin.dashboard.saddle.verdict` is about
+        stationary points -- "a minimum", "a transition state" -- and those
+        words are not available here: a Hessian on a slope is the curvature of
+        a hillside, and calling a hillside with no downward mode "a minimum"
+        is exactly the false confidence this press exists to prevent.
+        Measured on a hand-built methane with every C-H at 1.0897 A, which is
+        nobody's stationary point: xtb counts zero imaginary modes there and
+        is perfectly right to, and read through the naming it came out as "is
+        a minimum".
+
+        So on a slope the count is said as a count, and no structure is named.
+        """
+        if not shape:
+            return ['Its modes could not be checked.']
+        modes = [float(one) for one in (shape.get('modes') or [])]
+        order = shape.get('count')
+        order = len(modes) if order is None else int(order)
+        if order == 0:
+            return ['Every mode there curves upwards, which is what the '
+                    'surface looks like on the way down into a well -- but '
+                    'which well, and how far, is what Optimise answers.']
+        listed = ', '.join(f'{one:.0f}' for one in modes[:max(0, order)])
+        return [f'{order} mode(s) curve downwards there'
+                + (f' ({listed} cm-1)' if listed else '')
+                + '. On a slope that is the shape of the hillside and not a '
+                  'saddle: a transition state is a stationary point, and this '
+                  'is not one.']
+
+    def _lowest_bond_orders_said(bonds, xyz, gap=None, most=2):
+        """The lowest bond orders in this answer, named -- as a readout.
+
+        Only the pairs xtb printed an order for, and only the ones under
+        :data:`~delfin.dashboard.gfn_optimize.BOND_WORTH_SAYING`: a structure
+        whose lowest order is a proper single bond has nothing to say here,
+        and printing "the lowest is 0.98" on every press would train the
+        reader to skip the line that matters.
+
+        It says nothing about whether those bonds exist, and it is worth being
+        explicit about why, because the opposite was built here first: a
+        Wiberg order is a readout of the wavefunction, and under a closed-shell
+        Hamiltonian a homolytically broken bond still reads about one -- an
+        ethane at 3.03 A reads 1.000. The bond watch stays geometric. What
+        this is for is the ordinary reading a chemist does: a long dative bond
+        at 0.24, a partial bond in a structure being built.
+        """
+        if not bonds:
+            return []
+        rows = [line.split() for line in _gfn.atom_lines(xyz or '')]
+        if not rows:
+            return []
+        lowest = sorted(
+            (one for one in bonds if float(one[2]) < _gfn.BOND_WORTH_SAYING),
+            key=lambda one: float(one[2]))[:int(most)]
+        said = []
+        for first, second, order in lowest:
+            if not (0 <= first < len(rows) and 0 <= second < len(rows)):
+                continue
+            names = (f'{rows[first][0]}{first}-{rows[second][0]}{second}')
+            said.append(_gfn.bond_order_note(order, names, gap))
+        said = [one for one in said if one]
+        if said:
+            # Once, above them, and only where there are any to read. This is
+            # the sentence that keeps the numbers from being read as a bond
+            # watch, and it is the press that can afford it -- the drag line
+            # quotes the bare number, several times a second.
+            said.insert(0, 'The lowest bond orders here, as a readout -- an '
+                            'order is not a test of whether a bond is there, '
+                            'and under a closed shell a bond broken '
+                            'homolytically still reads about one:')
+        return said
+
+    def on_submit_shape(_button=None):
+        """One press: what is the structure on screen, and what does it cost.
+
+        A Hessian on the geometry exactly as it stands -- nothing is
+        optimised, nothing is moved, and the coordinate box is not written to.
+        That is the point: the question is about the structure the user built,
+        and a press that quietly relaxed it first would answer about a
+        different one.
+
+        What comes back is said in three parts, and the order matters.
+        Whether it is standing still comes first, because everything after it
+        is read differently if it is not: a Hessian at a geometry that is not
+        a stationary point describes a point on a slope, and the honest
+        sentence for a structure with a large gradient is that it is neither a
+        minimum nor a saddle. Then what the modes say, in the same words the
+        saddle search uses. Then what it costs at the temperature on the row.
+        """
+        if state.get('shape_run'):
+            return
+        xyz = _current_xyz()
+        method = str(submit_ff_dd.value)
+        if not xyz:
+            _set_mol_status('There is no structure to ask about.')
+            return
+        if not _gfn.is_gfn_method(method):
+            # It should not be reachable -- the press is not on the row under
+            # anything else -- but a method can change while a press is in
+            # flight, and a button that acts on the wrong engine is worse than
+            # one that says so.
+            _set_mol_status(
+                'A Hessian here is xtb\'s, so choose GFN-FF, GFN1, GFN2 or '
+                'g-xTB. Anything with a basis set is a job for the ORCA '
+                'Builder.')
+            return
+        state['shape_run'] = True
+        label = _server_label(method)
+        charge = int(submit_gfn_charge.value or 0)
+        uhf = _gfn_uhf_now()
+        wet = str(submit_gfn_solvent.value or '') or None
+        model = _solv_model()
+        warmth = float(submit_temperature.value or 298.15)
+        atoms = len(_gfn.atom_lines(xyz))
+        _set_mol_status(
+            f'{label} is taking a Hessian on the {atoms} atoms as they '
+            'stand...', spinner=True)
+
+        def _work():
+            # No cap on the clock. A Hessian grows steeply with the structure
+            # -- measured, 0.4 s for five atoms, 1.1 s for 23 and 23.7 s for
+            # 57 -- and a press that gave up at an arbitrary second would
+            # throw away exactly the answers that took long enough to be
+            # worth asking for. The ring says it is running, and the press is
+            # the user's to make.
+            found = _gfn.optimize_with_gfn(
+                xyz, method, charge=charge, uhf=uhf, timeout=None,
+                solvent=wet, solvation_model=model,
+                optimise=False, free_energy=True, thermo_kelvin=warmth)
+
+            def _done():
+                state['shape_run'] = False
+                if not found.get('ok'):
+                    _set_mol_status(str(found.get('status')
+                                        or 'The Hessian did not run.'))
+                    return
+                _remember_charges(found)
+                _repaint_labels()
+                lines = [f'{label}: {found["seconds"]:.1f} s for the Hessian '
+                         f'on {atoms} atoms, and the structure is untouched.']
+                # First, because it decides how the rest may be worded: the
+                # names a Hessian goes by -- a minimum, a transition state --
+                # all mean "stationary point of this order", and none of them
+                # is available for a structure that is still on its way
+                # somewhere.
+                slope = _gfn.not_a_stationary_point(found.get('gradient'),
+                                                    atoms)
+                if slope:
+                    lines.append(slope)
+                    lines.extend(_said_curvature(found.get('imaginary')))
+                else:
+                    lines.extend(_said_modes(
+                        found.get('imaginary'), 'The structure as it stands'))
+                lines.extend(_said_thermochemistry(found.get('thermo')))
+                # And whether the method is still able to answer at all.
+                # Before the bonds, because it is what decides whether their
+                # orders may be read as evidence at all.
+                depth = _gfn.method_is_out_of_its_depth(found.get('gap'))
+                if depth:
+                    lines.append(depth)
+                lines.extend(_lowest_bond_orders_said(
+                    found.get('bonds'), xyz, found.get('gap')))
+                _set_mol_status(*lines)
+
+            schedule_ui_update(_done)
+
+        _start_background(_work, 'The Hessian',
+                          guards={'shape_run': False})
 
     def on_submit_saddle(_button=None):
         """The one press for a transition state, and what the boxes say.
@@ -9494,6 +11636,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if state.get('chain_run'):
             state['chain_stop'] = True
             _set_mol_status('Stopping...', spinner=True)
+            return
+        if state.get('band_run'):
+            # A band is the longest thing this press starts -- minutes, not
+            # seconds -- so being able to end it matters more here than
+            # anywhere else, and ORCA writes every band it accepts to disk, so
+            # what it had reached is kept.
+            state['band_stop'] = True
+            _set_mol_status('Stopping the band...', spinner=True)
             return
         if state.get('path_run'):
             # The walk is a single call to xtb and cannot be interrupted part
@@ -9520,8 +11670,23 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         ends = _path_ends(start)
         if not ends:
             return
+        # And the one pair this method cannot walk between.
+        #
+        # All three ways from two ends go through xtb's path finder first, so
+        # all three are refused together.  Decidable here in a way it is not
+        # from a single structure: two ends say what the reaction is, and that
+        # is why climbing from what is on screen is left alone.  See
+        # :func:`_gfn.gfnff_pair_refusal` for what GFN-FF answers instead.
+        if str(submit_ff_dd.value).strip().lower() == 'gfnff':
+            no = _gfn.gfnff_pair_refusal(ends[0], ends[1])
+            if no:
+                _set_mol_status(no)
+                return
         if how == 'orca':
             _path_then_orca(ends)
+            return
+        if how == 'neb':
+            _band_between(ends)
             return
         _walk_the_path(ends, then_climb=(how == 'hand'))
 
@@ -9649,9 +11814,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # being looked for.  A comment that says "transition
                     # state" over a second-order saddle is the one place the
                     # mistake would outlive the sentence that said so.
-                    _write_coords(xyz_document(
-                        rows, f'Optimised to {said["name"]}'))
+                    kept = xyz_document(rows, f'Optimised to {said["name"]}')
+                    _write_coords(kept)
+                    _note_the_saddle(kept, found.get('imaginary'))
                     lines.append('It is in the box; Undo takes it back.')
+                    lines.extend(_the_mode_is_offered(found.get('imaginary')))
                     if said['first_order']:
                         lines.append(
                             'Refine it with OPTTS in the ORCA Builder at a '
@@ -9663,16 +11830,35 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         _start_background(_work, 'The saddle search',
                           guards={'saddle_run': False})
 
+    def _same_molecule(one, other):
+        """Whether two geometries are the same atoms in the same order.
+
+        Which is what a walk between two ends needs: xtb's path finder is
+        given two structures and matches them row by row, so the element
+        column is both the test and the reason for it.  The held values and
+        the thermal anchor are told apart the same way.
+        """
+        return _structure_fingerprint(one) == _structure_fingerprint(other)
+
     def _marked_pair():
         """The end that was marked and what is on screen, or nothing.
 
         Two structures, marked one at a time, so nothing has to hold two at
         once.  The same structure twice is not a pair.
+
+        Nor are two different molecules.  A mark outlives the structure it was
+        made on -- that is the whole point of it, the other end is loaded
+        afterwards -- and it went on being offered whatever was loaded: an
+        ethane marked with a water on screen put "the end you marked" in the
+        box, and the press behind it walks eight atoms into three.  The scan's
+        two ends were given this test in f1be8954 and the mark was left
+        without it; a start that is on screen and would be refused on the
+        press is the same defect as one that is missing when it would work.
         """
         marked = state.get('path_from')
         here = _current_xyz()
         if marked and here and marked.strip() != here.strip():
-            return (marked, here)
+            return (marked, here) if _same_molecule(marked, here) else None
         return None
 
     def _path_ends(which='marked'):
@@ -9700,6 +11886,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         pair = _marked_pair()
         if pair:
             return pair
+        marked = state.get('path_from')
+        here = _current_xyz()
+        if marked and here and not _same_molecule(marked, here):
+            _set_mol_status(
+                f'The end you marked is a different molecule from the one on '
+                f'screen ({len(_gfn.atom_lines(marked))} atoms against '
+                f'{len(_gfn.atom_lines(here))}). A walk between two ends '
+                'matches them row by row, so mark this one instead, or load '
+                'the structure the mark was made on.')
+            return None
         _set_mol_status(
             'A path needs two structures, and the one marked is the one on '
             'screen. Press Mark this end on one of them and load or build '
@@ -9719,6 +11915,352 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         else:
             submit_saddle_btn.description = 'To the saddle'
             submit_saddle_btn.icon = 'mountain'
+
+    def _note_the_saddle(xyz, shape):
+        """Write down that this structure has modes going the wrong way.
+
+        Said by whichever search found it -- the press, the chain, the climb --
+        because all three end the same way: a geometry in the box and a Hessian
+        that says what it is.  What it buys is the two presses beside them,
+        which are about a saddle and are meaningless without one.
+
+        Kept against the *geometry* and not against a flag, so nothing has to
+        remember to take it away: :func:`_saddle_here` compares what was found
+        with what is in the box, and an edit, an Undo, a relaxation or a load
+        makes them different structures and the presses go.  A flag would have
+        to be cleared in every one of those places, and the one that was
+        forgotten would leave a control offering to draw the mode of a
+        structure nobody has any more.
+
+        Said after the geometry has been written and not before, because what
+        it records is checked against the structure the box holds -- said
+        first, it would be a saddle nobody is standing on yet and the controls
+        would stay hidden.
+
+        And it asks for the row to be redrawn itself rather than leaving that
+        to the write.  A write usually redraws, and the one that does not is
+        exactly the one that matters most here: a geometry the playback has
+        already drawn is written with *drawn* raised, and a host that sees
+        that flag keeps its viewer and returns without rebuilding anything.
+        That is how the interactive climb writes its answer -- so left to the
+        write, the one route where the user watched the saddle arrive would be
+        the one route where nothing appeared to do anything with it.  Which is
+        the failure this row has already had once: a capability arrived and
+        nothing on screen said so.
+        """
+        order = int((shape or {}).get('count') or 0)
+        modes = [float(one) for one in ((shape or {}).get('modes') or [])]
+        if not xyz or order < 1 or not modes:
+            state.pop('saddle_found', None)
+        else:
+            state['saddle_found'] = {'xyz': xyz, 'order': order,
+                                     'modes': modes}
+        _refresh_saddle_controls()
+
+    def _the_mode_is_offered(shape):
+        """Say out loud that there is now something to do with this mode.
+
+        The controls arriving is the editor's own statement that a capability
+        has arrived -- the visible set of presses is the answer to "what can I
+        do now" -- but two new presses appearing in a row of twenty is a thing
+        somebody has to notice, and a saddle search ends by reading a
+        sentence.  So the sentence names them, once, at the moment they become
+        possible.  This row has already had the other failure: a capability
+        arrived and nothing said so, and the user asked where the buttons had
+        gone.
+
+        Nothing at all where there is no mode going the wrong way, because
+        then there are no presses either and a sentence about them would be
+        the report describing a row that is not on screen.
+        """
+        order = int((shape or {}).get('count') or 0)
+        if order < 1:
+            return []
+        if str(submit_ff_dd.value).lower() not in _climb.CLIMB_METHODS:
+            # A saddle ORCA reached on g-xTB is a saddle, and the shapes of
+            # its modes are not something xtb can be asked for: g-xTB is its
+            # own build and takes no ``--hess``.  So the presses are not on
+            # screen and this does not name them -- it names the method that
+            # would put them there, which is the actionable half.
+            return ['The shapes of the modes come from xtb\'s own Hessian, so '
+                    'drawing this one and following it down are offered under '
+                    'GFN2, GFN1 or GFN-FF rather than under this method.']
+        if order == 1:
+            return ['Show the mode draws it -- an imaginary mode is the '
+                    'reaction coordinate, so it says which bonds are forming '
+                    'and which are breaking -- and Follow it down says which '
+                    'two structures it joins.']
+        return ['Show the mode draws any of them and Follow it down follows '
+                'one down both ways; the box beside them says which. That is '
+                'how to look at the second mode before moving along it.']
+
+    def _saddle_here():
+        """What a search found, while the box still holds the structure it
+        found it on.
+
+        The comparison is on the coordinates rather than on the text, because
+        the two are not the same thing: what goes into the box carries a
+        comment line this editor wrote, and what comes back out of it has been
+        through a viewer.  ``largest_shift`` is the same measure the rest of
+        the editor asks "is this still that structure" with.
+
+        Absent for that reason and no other, which is the rule
+        :func:`_refresh_saddle_controls` is built on.
+        """
+        found = state.get('saddle_found')
+        here = _current_xyz()
+        if not found or not here or not found.get('xyz'):
+            return None
+        if len(_gfn.atom_lines(found['xyz'])) != len(_gfn.atom_lines(here)):
+            return None
+        if _gfn.largest_shift(found['xyz'], here) > _SAME_STRUCTURE:
+            return None
+        return found
+
+    #: How far an atom may have moved before the box is holding a different
+    #: structure, in Angstrom.  A ten-thousandth is below the four decimals a
+    #: geometry is written with, so this separates "the same coordinates,
+    #: written out and read back" from every real change.
+    _SAME_STRUCTURE = 1e-4
+
+    def _which_mode():
+        """Which mode the two presses are about, as an index from the softest.
+
+        The modes are sorted from the softest up wherever they are counted --
+        :meth:`climb.Climb.modes_from_xtb` sorts them and
+        :func:`climb.imaginary_among` reads the list in that order -- so the
+        ones going the wrong way are the first few, and the box's value is an
+        index straight into both.
+        """
+        found = _saddle_here()
+        if not found:
+            return 0
+        wanted = int(submit_mode_dd.value or 0)
+        return wanted if 0 <= wanted < int(found.get('order') or 1) else 0
+
+    def _modes_for(xyz, method, charge, uhf, wet, on_wait=None):
+        """xtb's modes and their shapes for this structure, paid for once.
+
+        Both presses need the same thing and neither needs it until it is
+        pressed, so nothing is spent by a search that finds a saddle nobody
+        looks at.  Once spent it is kept for as long as the box holds the
+        structure it was taken on and the method has not changed underneath
+        it: the frequencies are a property of both, and answering a press
+        about GFN2 with a Hessian taken under GFN-FF would be the one kind of
+        wrong that never announces itself.
+
+        Runs on a worker, so everything it needs is handed in rather than read
+        off a widget.  *on_wait* is called only where the Hessian really is
+        about to be taken, which is what keeps the line that says so off a
+        press that answers instantly -- a status that appears and vanishes
+        inside a frame is a flicker, and a user reads it as something having
+        gone wrong.
+        """
+        under = (str(method).lower(), int(charge), int(uhf), str(wet or ''))
+        kept = state.get('saddle_modes')
+        if (kept and kept.get('under') == under and kept.get('xyz')
+                and len(_gfn.atom_lines(kept['xyz'])) == len(
+                    _gfn.atom_lines(xyz))
+                and _gfn.largest_shift(kept['xyz'], xyz) <= _SAME_STRUCTURE):
+            return kept['modes']
+        if on_wait is not None:
+            on_wait()
+        # The cores every other climb this editor starts asks for, which is
+        # the module's own default: this is one xtb of the same kind, and a
+        # second opinion about how much of a login node to take would only be
+        # a second number to keep in step with the first.
+        got = _climb.modes_of(xyz, method, charge=charge, uhf=uhf, solvent=wet)
+        if got is not None:
+            state['saddle_modes'] = {'xyz': xyz, 'under': under, 'modes': got}
+        return got
+
+    def _mode_press_can_run():
+        """Whether either press has a structure and a method to work with."""
+        if not _saddle_here():
+            return False
+        if (state.get('optimize_run') is not None
+                or state.get('climb_run') is not None
+                or state.get('saddle_run') or state.get('chain_run')
+                or state.get('path_run')):
+            # The picture belongs to whatever is walking.  Both of these take
+            # the frame channel over, and a run that loses it draws nothing
+            # for the rest of its life -- so this is refused rather than
+            # allowed to quietly blank somebody's trajectory.
+            _set_mol_status('Something is walking this structure, and the '
+                            'picture belongs to it until it stops.')
+            return False
+        if str(submit_ff_dd.value).lower() not in _climb.CLIMB_METHODS:
+            _set_mol_status(
+                'The modes come from xtb\'s own Hessian, so this needs GFN2, '
+                'GFN1 or GFN-FF. A saddle reached under another method is '
+                'still in the box -- switch to one of those to draw its mode.')
+            return False
+        return True
+
+    def on_submit_show_mode(_button=None):
+        """Draw the imaginary mode, and never let it into the box.
+
+        The mode is the reaction coordinate, so this is the most informative
+        thing there is to show about a saddle: which bonds close and which
+        open, seen rather than read off a frequency.
+
+        Everything about the playback is the one that already exists -- the
+        frame channel, the run number, the player, the interpolation between
+        frames.  A mode is frames like any other path; building a second
+        playback for it would be a second set of the defects the first one has
+        already had.  Two things are its own: the pace, because a mode has a
+        period and the slider is about how fast to walk a computed path (see
+        :func:`_frame_payload`), and the ``home`` frame, because these frames
+        are a picture and not a structure.
+        """
+        if state.get('mode_run') or state.get('down_run'):
+            return
+        if not _mode_press_can_run():
+            return
+        xyz = _current_xyz()
+        method = str(submit_ff_dd.value)
+        charge = int(submit_gfn_charge.value or 0)
+        uhf = _gfn_uhf_now()
+        wet = str(submit_gfn_solvent.value or '') or None
+        chosen = _which_mode()
+        state['mode_run'] = True
+
+        def _work():
+            modes = _modes_for(
+                xyz, method, charge, uhf, wet,
+                on_wait=lambda: schedule_ui_update(
+                    _set_mol_status, 'Taking a Hessian to find the mode...',
+                    spinner=True))
+
+            def _done():
+                state['mode_run'] = False
+                if not modes:
+                    _set_mol_status(
+                        'The modes of this structure could not be computed, '
+                        'so there is nothing to draw. It needs xtb.')
+                    return
+                _draw_the_mode(modes, chosen)
+
+            schedule_ui_update(_done)
+
+        _start_background(_work, 'The mode',
+                          guards={'mode_run': False})
+
+    def _draw_the_mode(modes, chosen):
+        """Put the mode on the frame channel, once, as a whole picture.
+
+        One write and not a stream: the frames are arithmetic on a geometry
+        that is already in hand, so there is nothing to wait for and nothing
+        to watch arriving.  It is marked as the run's last write, which is
+        what stops the player throwing the queue away when it notices that no
+        Optimise switch stands behind it -- there is none, and there is
+        nothing running for one to stand behind.
+
+        The amplitude is cut to fit this molecule before anything is drawn.
+        The default is a picture that reads clearly on the case it was
+        measured on; a mode that drives two atoms together on some other
+        structure would tear it, and a torn picture is worse than a small one
+        because it looks like chemistry.
+        """
+        cm = list(modes['cm'])
+        wrong = _climb.imaginary_among(cm)
+        if not wrong:
+            _set_mol_status(
+                'No mode of the structure in the box goes the wrong way any '
+                'more, so there is no reaction coordinate to draw.')
+            # And the presses go with it: what the search reported and what a
+            # Hessian says now disagree, and the Hessian is the later of the
+            # two.
+            _note_the_saddle(None, None)
+            return
+        picked = chosen if chosen in wrong else wrong[0]
+        here = modes['angstrom']
+        way = modes['ways'][:, picked].reshape(len(modes['symbols']), 3)
+        amplitude = _climb.amplitude_that_fits(modes['symbols'], here, way)
+        frames = _climb.mode_pictures(here, way, amplitude=amplitude)
+        run = _claim_the_frame_run()
+        _ensure_manip_bootstrap()
+        schedule_ui_update(_install_gfn_frame_watcher)
+        seconds = (len(frames) * _climb.MODE_PACE_MS) / 1000.0
+        schedule_ui_update(
+            lambda text=_frame_payload(
+                run, pace=_climb.MODE_PACE_MS,
+                **{'from': 0, 'frames': frames, 'final': 1,
+                   'home': frames[-1]}),
+            r=run: setattr(submit_gfn_frame, 'value', text)
+            if _frame_run_is_current(r) else None)
+        _set_mol_status(
+            f'Drawing the mode at {float(cm[picked]):.0f} cm-1: '
+            f'{_climb.MODE_SWINGS} swings, about {seconds:.0f} s, and it '
+            'stops on the structure it started from.',
+            'The atoms it moves are the atoms the reaction moves. It is a '
+            'picture and nothing else: the coordinates in the box do not '
+            'change, and taking hold of the structure puts it straight back.'
+            + ('' if amplitude >= _climb.MODE_AMPLITUDE else
+               f' Drawn at {amplitude:.2f} A rather than the usual '
+               f'{_climb.MODE_AMPLITUDE:.2f} -- further than that and this '
+               'molecule has two atoms inside each other.'))
+
+    def on_submit_follow_down(_button=None):
+        """Push the structure down the mode both ways and say where it lands.
+
+        One imaginary mode makes a structure *a* transition state.  Whether it
+        is the one for the reaction that was meant is the other question, and
+        this is the standard way to ask it.  What comes back is described
+        rather than named -- how many separate pieces each end is, which bonds
+        it has that the saddle did not, what it costs against the saddle --
+        because every sort of system is computed here and a sentence that
+        assumed a kind of chemistry would be wrong about most of them.
+
+        The saddle stays in the box.  Two structures came out and one box
+        holds one structure, and the one being worked on is the saddle: these
+        two are what it *joins*, which is a fact about it rather than a
+        replacement for it.
+        """
+        if state.get('mode_run') or state.get('down_run'):
+            return
+        if not _mode_press_can_run():
+            return
+        xyz = _current_xyz()
+        method = str(submit_ff_dd.value)
+        charge = int(submit_gfn_charge.value or 0)
+        uhf = _gfn_uhf_now()
+        wet = str(submit_gfn_solvent.value or '') or None
+        chosen = _which_mode()
+        state['down_run'] = True
+        _set_mol_status('Following the mode down both ways...', spinner=True)
+
+        def _work():
+            modes = _modes_for(
+                xyz, method, charge, uhf, wet,
+                on_wait=lambda: schedule_ui_update(
+                    _set_mol_status, 'Taking a Hessian to find the mode...',
+                    spinner=True))
+            got = _climb.follow_the_mode_down(
+                xyz, method, mode=chosen, charge=charge, uhf=uhf,
+                solvent=wet, modes=modes,
+                # The same allowance the saddle search itself has: this is two
+                # relaxations of a structure that search has already converged
+                # on, so anything it cannot do inside that is a job.
+                timeout=_saddle.seconds_for(method),
+                on_stage=lambda said: schedule_ui_update(
+                    _set_mol_status, said, spinner=True))
+
+            def _done():
+                state['down_run'] = False
+                lines = [str(got.get('status') or 'It did not run.')]
+                lines.extend(str(one) for one in (got.get('lines') or ()))
+                lines.append(
+                    'The saddle is still in the box; these two are what it '
+                    'joins, not a replacement for it.'
+                    if got.get('ok') else
+                    'Nothing was written to the box.')
+                _set_mol_status(*lines)
+
+            schedule_ui_update(_done)
+
+        _start_background(_work, 'Following the mode down',
+                          guards={'down_run': False})
 
     def _scan_left_two_ends():
         """A scan has finished: put the press on the pair it just made.
@@ -9770,10 +12312,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         ends = state.get('scan_ends')
         if not ends:
             return None
-        here = _current_xyz() or ''
-        if _structure_fingerprint(ends[0]) != _structure_fingerprint(here):
-            return None
-        return ends
+        return ends if _same_molecule(ends[0], _current_xyz() or '') else None
 
     def _refresh_saddle_controls():
         """Offer the starts that exist and the ways that can run, and no more.
@@ -9816,6 +12355,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # as well it would be the same thing under two names in two
                 # places, which is the whole complaint this is answering.
                 if start != 'here':
+                    # A band, which is another *how* from a two-ended start
+                    # and not a button of its own: it answers the same
+                    # question ORCA and by-hand answer, from the same pair, and
+                    # a fourth press beside them would be the third time this
+                    # row learnt that lesson.
+                    #
+                    # After ORCA rather than before it, because the order of
+                    # the list is the recommendation.  Measured on the
+                    # sixteen-atom Diels-Alder from the same two ends, the two
+                    # reach the same saddle to 0.07 cm-1 and the band spends
+                    # 203 gradients doing it -- so it is what to run when the
+                    # cheap answer is not believed, or when the two ends are
+                    # too far apart for a cheap interpolation to bridge, and
+                    # it is not what to run first.
+                    if chosen.lower() in _saddle.SADDLE_METHODS:
+                        out.append(('through NEB-TS', 'neb'))
                     if chosen.lower() in _climb.CLIMB_METHODS:
                         out.append(('by hand', 'hand'))
                     if _gfn.is_gfn_method(chosen):
@@ -9849,6 +12404,30 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 '' if can_run and len(ways) > 1 else 'none')
             submit_path_from_btn.layout.display = (
                 '' if _gfn.is_gfn_method(chosen) else 'none')
+            # And what there is to do with a saddle, which exists exactly when
+            # a search has found one and the box still holds it.  Not "when a
+            # transition state was found": a structure with two modes going
+            # the wrong way has two reaction coordinates to look at and the
+            # verdict's own advice is to move along the second of them, which
+            # nobody can do without seeing it.  What is *not* offered is the
+            # ordinary case, a minimum -- there is no mode going the wrong
+            # way there and both presses would have nothing to say.
+            found = _saddle_here()
+            reads_modes = str(chosen).lower() in _climb.CLIMB_METHODS
+            has_modes = bool(found) and reads_modes
+            for button in (submit_mode_btn, submit_ends_btn):
+                button.layout.display = '' if has_modes else 'none'
+            # One mode is not a choice, which is the same rule the two boxes
+            # above follow.  The frequencies are the verdict's own, so the box
+            # names what the sentence named.
+            order = int((found or {}).get('order') or 0)
+            named = [float(one) for one in ((found or {}).get('modes') or ())]
+            _keep_the_choice(
+                submit_mode_dd,
+                [(f'{one:.0f} cm-1', n) for n, one in enumerate(named)],
+                'saddle_mode_wish')
+            submit_mode_dd.layout.display = (
+                '' if has_modes and order > 1 and len(named) > 1 else 'none')
             _name_the_saddle_press()
         finally:
             state['saddle_controls_quiet'] = False
@@ -10305,10 +12884,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # was already stopped by then.
                 holding = bool(state.get('gfn_follow'))
                 if rows and not holding:
-                    _write_coords(
-                        xyz_document(rows, 'Climbed towards a transition '
-                                           'state'),
-                        drawn=_frame_run_is_current(run))
+                    kept = xyz_document(rows, 'Climbed towards a transition '
+                                              'state')
+                    _write_coords(kept, drawn=_frame_run_is_current(run))
+                    # The climb's own Hessian on what it reached, which is the
+                    # same question the press next door asks and is answered
+                    # here already: the two presses beside them read it, so a
+                    # saddle reached by hand offers exactly what a saddle
+                    # reached by pressing offers.  This is also the write that
+                    # a host does not redraw -- see :func:`_note_the_saddle`.
+                    _note_the_saddle(kept, got.get('imaginary'))
                 # The module's own sentence, whichever rung ended the press:
                 # it is the one that knows which searches were tried, what
                 # each reached and whether the mode it found is the contact
@@ -10329,6 +12914,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         'another one at it, and the climb can check what it '
                         'reaches against that contact -- and try two more '
                         'searches when the first one misses.')
+                if rows and not holding:
+                    lines.extend(_the_mode_is_offered(got.get('imaginary')))
                 lines.append(
                     'You moved the structure while it was finishing, so what '
                     'you made is what is in the box.' if holding else
@@ -10373,7 +12960,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         estimates the top of what it crossed, and has no saddle optimiser at
         all; ORCA has one and nothing that produces an estimate to give it.
         Chained, the pair is twelve seconds on sixteen atoms -- and lands
-        within a wavenumber of a nudged elastic band that takes seven minutes.
+        within a tenth of a wavenumber of a nudged elastic band on the same
+        two ends, for about half the gradients.  Which is why the band is the
+        other entry in the box beside this and not the default in it.
 
         Watched while it climbs and stopped by the same press, like the climb
         on its own.  The walk itself is not drawn: it ends at the product and
@@ -10507,9 +13096,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # whole: two structures went in and one came out, and
                     # halfway back is not a place anyone asked for.
                     _remember('the path and the climb')
-                    _write_coords(xyz_document(
-                        rows, f'From a path, optimised to {said["name"]}'))
+                    kept = xyz_document(
+                        rows, f'From a path, optimised to {said["name"]}')
+                    _write_coords(kept)
+                    _note_the_saddle(kept, found.get('imaginary'))
                     lines.append('It is in the box; Undo takes it back.')
+                    lines.extend(_the_mode_is_offered(found.get('imaginary')))
                     if said['first_order']:
                         lines.append(
                             'Refine it with OPTTS in the ORCA Builder at a '
@@ -10520,6 +13112,149 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
         _start_background(_work, 'The walk and the climb after it',
                           guards={'chain_run': False})
+
+    def _band_between(ends):
+        """A nudged elastic band between the two ends, and the climb off it.
+
+        The arbiter.  Everything else this press does is fast, and fast is
+        exactly what makes it worth having something slower to check against:
+        the chain above walks its own way between two ends with metadynamics
+        and climbs the highest point of it, and when the answer that comes
+        back is not believable there has to be a second opinion that shares no
+        machinery with the first.  A band is that -- eight images relaxed onto
+        the way between the two ends at once, rather than one structure walked
+        along it -- and :func:`delfin.dashboard.saddle.neb_to_saddle` is where
+        the measurements live.
+
+        Two things are checked before ORCA is started, and both of them were
+        measured failing the slow way: a band between two ends whose
+        interpolation pulls a fragment off computes both ends perfectly and
+        kills every image in between, and a band between two ends whose atoms
+        are in different orders has no path at all.  Either one costs the
+        whole timeout and returns nothing, so both are refused here in the
+        second it takes to read a bond graph.
+
+        It streams, because it is the one press here that runs for minutes:
+        ORCA writes every band it accepts and then every step of the climb,
+        both with energies, and the same frame channel the climb uses plays
+        them.  The same press stops it and keeps what it had.
+        """
+        if state.get('path_run') or state.get('saddle_run') or state.get(
+                'chain_run'):
+            _set_mol_status('Something is already running on this structure; '
+                            'let it finish or stop it first.')
+            return
+        method = str(submit_ff_dd.value)
+        if method.lower() not in _saddle.SADDLE_METHODS:
+            _set_mol_status(
+                'A band is ORCA relaxing a chain of images on a semiempirical '
+                'gradient, so choose GFN2, GFN1, GFN-FF or g-xTB. Anything '
+                'with a basis set is a job for the ORCA Builder.')
+            return
+        state['band_run'] = True
+        state['band_stop'] = False
+        state['band_frame_run'] = int(state.get('gfn_run', 0)) + 1
+        state['gfn_run'] = state['band_frame_run']
+        _note_the_run(state['band_frame_run'], 'band')
+        _ensure_manip_bootstrap()
+        schedule_ui_update(_install_gfn_frame_watcher)
+        submit_saddle_btn.description = 'Stop'
+        submit_saddle_btn.icon = 'stop'
+        charge = int(submit_gfn_charge.value or 0)
+        uhf = _gfn_uhf_now()
+        wet = str(submit_gfn_solvent.value or '') or None
+        label = _server_label(method)
+        # How long to say it will be is a question about the machine and not
+        # about the method: the images are computed at once, so the same
+        # sixteen-atom band measured 39 s on eight processes and 272 on one.
+        # So the sentence says what it is doing and that the press ends it,
+        # and does not promise a time it cannot know.
+        _set_mol_status(
+            f'{label}: relaxing a band of {_saddle.NEB_IMAGES} images between '
+            'the two ends, then climbing from the highest of them. This is '
+            'the thorough route rather than the quick one; the press stops '
+            'it.', spinner=True)
+
+        def _work():
+            sent = [0]
+
+            def _watch(walked, energies):
+                """The band while it relaxes, then the climb, as they arrive.
+
+                Down the frame channel and not into the box, for the reason
+                every other watcher here gives: a write to the box rebuilds
+                the viewer, and a band is a hundred and seventy frames.
+                """
+                if state.get('gfn_run') != state.get('band_frame_run'):
+                    return
+                for n in range(sent[0], len(walked)):
+                    schedule_ui_update(
+                        lambda text=json.dumps({
+                            'run': state.get('band_frame_run'),
+                            'from': n,
+                            'follow': 1,
+                            'frames': [[round(float(v), 4)
+                                        for v in walked[n]]],
+                        }): setattr(submit_gfn_frame, 'value', text))
+                sent[0] = len(walked)
+                schedule_ui_update(
+                    _set_mol_status,
+                    f'The band is relaxing: {len(walked)} images accepted so '
+                    'far.', spinner=True)
+
+            found = _saddle.neb_to_saddle(
+                ends[0], ends[1], method, charge=charge, uhf=uhf,
+                solvent=wet, on_frame=_watch,
+                # The method's own allowance.  g-xTB is measured at 716 s on
+                # the sixteen-atom Diels-Alder, where the methods ORCA drives
+                # itself are 39 -- every gradient is a separate process --
+                # so one number for both would stop one of them short.
+                timeout=_saddle.neb_seconds_for(method),
+                should_stop=lambda: bool(state.get('band_stop')),
+                on_stage=lambda said: schedule_ui_update(
+                    _set_mol_status, said, spinner=True))
+
+            def _done():
+                state['band_run'] = False
+                state['band_stop'] = False
+                _name_the_saddle_press()
+                lines = []
+                text = found.get('xyz') or ''
+                rows = [line for line in text.splitlines()[2:] if line.strip()]
+                if not found.get('ok'):
+                    lines.append(str(found.get('status')
+                                     or 'The band did not run.'))
+                    if rows:
+                        _remember('the band')
+                        _write_coords(xyz_document(
+                            rows, 'Where the band got to'))
+                    _set_mol_status(*lines)
+                    return
+                said = _saddle.verdict(found.get('imaginary'),
+                                       'What it reached')
+                lines.append(found['status'])
+                if found.get('reaction') is not None:
+                    lines[-1] += (f' The two ends are '
+                                  f'{found["reaction"]:+.1f} kcal/mol apart '
+                                  'along it.')
+                lines.extend(said['lines'])
+                if rows:
+                    # One step for the whole band, which Undo takes back
+                    # whole: two structures went in and one came out.
+                    _remember('the band')
+                    _write_coords(xyz_document(
+                        rows, f'From a band, optimised to {said["name"]}'))
+                    lines.append('It is in the box; Undo takes it back.')
+                    if said['first_order']:
+                        lines.append(
+                            'Refine it with OPTTS in the ORCA Builder at a '
+                            'level worth quoting.')
+                _set_mol_status(*lines)
+
+            schedule_ui_update(_done)
+
+        _start_background(_work, 'The band between the two ends',
+                          guards={'band_run': False})
 
     def _walk_the_path(ends, then_climb=False):
         """Walk between two ends and keep what is found.
@@ -10680,6 +13415,144 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         _start_background(_work, 'The path search',
                           guards={'path_run': False})
 
+    def _scan_two_legs():
+        """The last scan's two legs and what they say about each other.
+
+        One call rather than four state keys, because the profile wants to be
+        drawn and a picture of it is somebody else's part: this is the shape
+        that part is written against, and the keys behind it can move without
+        the drawing having to.
+
+        Returns ``{'there', 'back', 'disagree', 'jumped'}``.
+
+        * ``there`` and ``back`` are ``[(coordinate, kcal/mol)]`` in the order
+          each leg was walked -- so ``back`` runs the other way along the
+          coordinate -- and both are against the same zero, which is the first
+          point of the walk out.  They belong on one pair of axes.
+        * ``back`` is empty when no second leg was walked: the toggle was up,
+          the walk was stopped, or it was a push.
+        * ``disagree`` is ``{'at', 'gap', 'there', 'back', 'points'}`` or
+          None -- the coordinate value where the two legs are furthest apart,
+          which is the one point a drawing should mark.
+        * ``jumped`` is None or a dict whose ``step`` indexes ``there``: the
+          point the walk landed on, so the discontinuity is the segment from
+          ``step - 1`` to ``step``.  ``named``, ``was`` and ``now`` say which
+          internal coordinate went with it, when one can be named.
+        """
+        return {'there': list(state.get('scan_there') or ()),
+                'back': list(state.get('scan_back') or ()),
+                'disagree': state.get('scan_disagree'),
+                'jumped': state.get('scan_jumped')}
+
+    def _scan_free_is_an_estimate():
+        """What a Hessian at a scan point had to say about being one.
+
+        An RRHO free energy is a sum over frequencies, and it means something
+        at a stationary point.  Two of the three places a scan takes one are
+        stationary; the top of a barrier is not, and the Hessian says so
+        itself by coming back with modes that go the wrong way.  Measured
+        under GFN2 at the top of a Diels-Alder scan: one mode at -128 cm-1,
+        with the gradient 67 times the threshold that would call the geometry
+        converged.
+
+        There is a published way of taking a free energy at a geometry like
+        that -- xtb's biased single-point Hessian -- and it is measured in
+        :func:`_free` not to apply here: it relaxes off the point it was asked
+        about.  So the mode is reported rather than removed.  A number that
+        says what it is worth is a usable number; the same number without that
+        is the one somebody quotes.
+        """
+        shape = state.get('scan_free_shaky')
+        if not shape:
+            return ''
+        many = int(shape.get('count') or 0)
+        modes = [one for one in (shape.get('modes') or ()) if one < 0]
+        worst = f' ({modes[0]:.0f} cm-1)' if modes else ''
+        return (f' One of those Hessians came back with '
+                f'{"a mode" if many == 1 else f"{many} modes"} going the '
+                f'wrong way{worst}, which is the surface saying that point is '
+                f'not a stationary point -- a barrier top is not one -- so '
+                f'the free energies are an estimate rather than the '
+                f'thermodynamics of two minima.')
+
+    def _scan_can_be_quoted(kelvin):
+        """Whether the walk's own barrier is a number to quote, and why not.
+
+        Three sentences at most, and often none: a push says nothing here
+        because it has no second leg to compare against, and a walk that
+        agreed with itself says so in one clause and stops.
+
+        The order is the order a reader needs it in.  First whether the two
+        legs of the walk are the same curve, which is the whole question.
+        Then, if a step of it was a fall rather than a step, where that was
+        and *what moved* -- because a user told only that their scan jumped
+        can do nothing about it, and a user told which coordinate slipped can
+        arm that one as well and walk both together, which is what this
+        editor's several-legs-at-once scan is for.
+
+        Wording that holds for whatever is being computed: a slipped
+        coordinate is named by its two atoms and nothing is assumed about what
+        kind of reaction it belongs to.
+        """
+        said = ''
+        gap = state.get('scan_disagree')
+        apart = _gfn.a_rate_apart(kelvin)
+        if gap is not None:
+            if gap['gap'] <= apart:
+                said += (
+                    f' Walked back over the same {gap["points"]} points, the '
+                    f'two legs agree to {gap["gap"]:.2f} kcal/mol -- inside '
+                    f'the {apart:.2f} that a factor of ten in rate is worth '
+                    f'at {float(kelvin):g} K -- so this profile is the path '
+                    f'and not the direction it was walked.')
+            else:
+                said += (
+                    f' Walked back over the same {gap["points"]} points, the '
+                    f'two legs disagree by {gap["gap"]:.1f} kcal/mol at '
+                    f'{gap["at"]:.3g}: {gap["there"]:+.1f} on the way out '
+                    f'against {gap["back"]:+.1f} on the way back. A driven '
+                    f'scan is a path only while the coordinates nobody is '
+                    f'driving follow it continuously; where one slips, each '
+                    f'direction misses the crossing on its own side, so the '
+                    f'height above is where this walk went and not the '
+                    f'barrier. Two ends and a saddle search will answer what '
+                    f'the walk cannot.')
+        elif state.get('scan_back_wanted') is False:
+            # Only where the second leg could have run and was not asked for.
+            # A push has no grid to retrace, and a walk that was stopped or
+            # that collapsed has already been told why it ended -- offering it
+            # a second leg there would be answering a question nobody is in a
+            # position to ask.
+            said += (' Nothing walked it back, so whether this profile '
+                     'depends on the direction it was walked is not known. '
+                     '"Walk it back" beside Run scan answers that, for '
+                     'another leg of the same walk.')
+        fell = state.get('scan_jumped')
+        if fell is not None:
+            said += (
+                f' It jumped between {fell["from"]:.3g} and {fell["at"]:.3g}: '
+                f'{fell["fell"]:+.1f} kcal/mol in one step, where the rest of '
+                f'the path bends by {fell["scale"]:.2f}.')
+            if fell.get('named'):
+                said += (f' What went with it was {fell["named"]}, '
+                         f'{fell["was"]:.2f} to {fell["now"]:.2f} '
+                         f'({fell["moved"]:.2f} A) -- arm that as well and '
+                         f'walk both together.')
+        return said
+
+    def _scan_collapsed(tightest):
+        """What a walk says when its very first point came back collapsed.
+
+        The floor is met before the point is priced, so there is no path to
+        report and the verdict below is never reached -- and nothing else was
+        said either, which left a spinner standing over a run that had
+        finished.  Written here beside the sentence the verdict uses for the
+        same thing, so the two cannot drift apart.
+        """
+        return ('The scan walked nothing: on the first point two atoms came '
+                f'inside {tightest:.2f} of a bond length, which is no path at '
+                'any temperature. The target is past the far side of a bond.')
+
     def _scan_verdict(path, steps):
         """What the walk found, and the temperature it would take.
 
@@ -10717,9 +13590,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         arrived = (f' It came back to the minimum it walked through, at '
                    f'{came[0]:.3g}.'
                    if state.get('scan_arrived') and came else '')
-        if state.get('scan_stop') and not state.get('scan_arrived'):
+        if state.get('scan_stopped_out') and not state.get('scan_arrived'):
             arrived = (' You stopped it there, so the highest point is where '
                        'the walk was interrupted rather than a barrier.')
+        # And the walk that ended because it could not carry on, which reads
+        # from outside exactly like one that was asked for fewer steps.  The
+        # sentence saying so was written and then replaced by this verdict --
+        # so it is said here, where the verdict is, and the number of points
+        # above stops being the only hint that anything went wrong.
+        if state.get('scan_gave_up'):
+            arrived = f' {state["scan_gave_up"]}'
         crowded = state.get('scan_crowded')
         if crowded:
             arrived = (f' It stopped: two atoms came inside {crowded:.2f} of a '
@@ -10745,9 +13625,39 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                      f'({ends:+.1f}).{arrived} The free energies are from '
                      f'three Hessians -- where it started, the top, and where '
                      f'it came to -- and they are what the temperature below '
-                     f'is worked out from.')
+                     f'is worked out from.{_scan_free_is_an_estimate()}')
+        # What was asked for, and whether it happened.  Said before the
+        # temperature, because it is the question: a walk given a verb was not
+        # asked how high the path was, it was asked to make a bond.
+        #
+        # And when it did not happen, said as a statement about the chemistry
+        # rather than as a failure.  The ramp ends at
+        # :data:`gfn_optimize.PUSH_FORCE_TO`, which is more than twice
+        # :data:`gfn_optimize.A_BOND_HOLDS` -- the force a bond holds against
+        # -- so a bond that has not formed under it is one this method will
+        # not form from here, and that is an answer.
+        instructed = list(state.get('scan_instructed') or ())
+        done = state.get('scan_carried_out')
+        if instructed and done:
+            step, force, said = done[0], done[1], (done[2] if len(done) > 2
+                                                   else '')
+            first += (f' The instruction was carried out at step {step}, '
+                      f'under {force:.0f} kcal/mol/A'
+                      + (f': it {said}.' if said else '.'))
+        elif instructed:
+            first += (f' The instruction was not carried out: '
+                      f'{", ".join(instructed)} still {"do" if len(instructed) > 1 else "does"} '
+                      f'not hold at {_gfn.PUSH_FORCE_TO:.0f} kcal/mol/A, '
+                      'which is twice what a bond holds against. From this '
+                      'structure and on this method, that is the answer '
+                      'rather than a setting to raise.')
         if state.get('scan_depth'):
             first += ' ' + state['scan_depth']
+        # And whether this profile is one path or two joined at a fall.  Said
+        # here, beside the barrier it is about, rather than on a line of its
+        # own after the temperature: a caveat that arrives after the number
+        # has been read is a caveat nobody applied.
+        first += _scan_can_be_quoted(T)
         if free is None and str(submit_scan_energy.value) == 'G':
             first += (' The free energies could not be taken, so these are '
                       'electronic.')
@@ -10772,18 +13682,39 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                      f'this structure, which is past the {ceiling:.1f} '
                      f'available at {T:g} K, so the box has the last point '
                      f'that was inside it.')
+        # Which for an instruction is the whole of it: the box now holds a
+        # structure where the bonds were not made, and the line has to say so
+        # or it is a claim about a geometry nobody has.
+        if walled is not None and done and not state.get(
+                'scan_carried_out_kept'):
+            held_back += (' So the structure you have is from before the '
+                          'bonds changed -- the budget priced the change and '
+                          'this temperature cannot pay for it. Raise the '
+                          'temperature to see what it would take, or switch '
+                          'the budget off to keep what the force reached.')
         # And what the walk has made possible, said where the walk is being
         # reported.  The two ends are an entry in a box rather than the two
         # buttons that used to appear, and a box that has gained an entry is
         # quiet -- so the sentence says what the toolbar has just done, and
         # :func:`_scan_left_two_ends` is what makes the sentence true rather
         # than a description of something the user would have to find.
-        left = ('' if not state.get('scan_ends') else
-                ' It left two ends, and the press now starts from them: one '
+        #
+        # And said the other way round when there are none, because the
+        # toolbar cannot say it: what is on screen is the whole account of
+        # what can be done, and a walk that left nothing to walk between shows
+        # exactly what a walk that left something shows before anyone looks --
+        # nothing.  Silence there is the editor claiming there was never
+        # anything to offer, which is what the user was left reading.
+        left = (' It left two ends, and the press now starts from them: one '
                 'press walks its own way between the two and climbs what it '
                 'finds, without the coordinate you chose. The box beside it '
                 'says how far to go, and the one before it goes back to the '
-                'structure on screen.')
+                'structure on screen.'
+                if state.get('scan_ends') else
+                ' It left no two ends to walk between, so there is no path to '
+                'investigate from it and the box beside the press has no pair '
+                'to offer -- what is on screen is all there is to climb. Run '
+                'a scan that gets further, or mark two structures by hand.')
         if rise <= ceiling:
             return (first,
                     f'{wants} You have {ceiling:.1f} kcal/mol at {T:g} K, so '
@@ -10793,6 +13724,164 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 f'{wants} At {T:g} K only {ceiling:.1f} kcal/mol is '
                 f'available, so the path is closed there. '
                 f'{_thermal_wait(rise, T)}' + held_back + left)
+
+    def _scan_plot_drop():
+        """Take the profile off the page.
+
+        A picture is a claim about what was measured, and it must not outlive
+        the thing it describes: a profile standing beside a structure the walk
+        never visited is the same lie as a control that offers something
+        impossible.  So it goes at the two moments that end it -- a run that
+        starts drawing over the structure (see :func:`_note_the_run`), and a
+        geometry arriving in the box that is not this scan's own (see
+        :func:`_scan_plot_holds`).
+
+        Cheap enough to call from either: nothing is drawn most of the time,
+        and then this is one dictionary lookup.
+        """
+        if not state.get('scan_plot'):
+            return
+        state['scan_plot'] = None
+        submit_scan_plot.value = ''
+        submit_scan_plot.layout.display = 'none'
+
+    def _scan_plot_holds(text):
+        """Whether the profile still describes the geometry now in the box.
+
+        Two things have to be true, and they are the two the rest of the
+        editor already tells structures apart by.  The comment line has to be
+        one the scan wrote -- ``Scanned``, and the landmarks the walk left in
+        the history, so stepping back through them with Undo keeps the picture
+        that names them -- and the element column has to be the molecule the
+        walk was made on, the way :func:`_scan_ends_here` and the thermal
+        anchor decide the same question.
+
+        Everything else takes it away: a drag ends with its own comment, an
+        optimisation with its own, Reset and a newly loaded structure with
+        theirs, and Undo past the scan lands on the entry from before it.
+        """
+        lines = str(text or '').splitlines()
+        comment = lines[1].strip().lower() if len(lines) > 1 else ''
+        if not comment.startswith('scanned'):
+            return False
+        walked_on = state.get('scan_plot_of')
+        return bool(walked_on) and _structure_fingerprint(text) == walked_on
+
+    def _on_box_for_scan_plot(change):
+        """The box has changed: is the profile still about what is in it?"""
+        if state.get('scan_plot') and not _scan_plot_holds(change.get('new')):
+            _scan_plot_drop()
+
+    def _scan_profile_html(path, legs, pushing, began=None, kept=None):
+        """Draw the walk that has just finished, and hand back the picture.
+
+        Once, here, and not a point at a time.  Measured with the interpreter
+        the dashboard runs on: 0.17 s to build the figure and encode it, and
+        40 to 66 kB of PNG depending on how many points there are.  The walks
+        it was measured against cost 6 to 10 s a point under GFN2 -- a
+        twenty-point Diels-Alder approach over sixteen atoms took 144 s, a
+        twenty-four-point torsion 238 s -- so drawing at every point would
+        cost a few per cent of the time and push a megabyte of pictures nobody
+        waits for down the channel the frame stream needs.  At the end it is
+        one write, after the last call to xtb has returned.
+
+        Nothing is computed again.  Every number here was in hand when the
+        verdict was written: the path, the free energies where they were
+        asked for, and where the walk was left.
+
+        Built here, on the scan's own worker thread, and shown by
+        :func:`_show_scan_profile` when the interface's turn comes.  The two
+        are separate because the first import of matplotlib costs 0.3 s on an
+        idle machine and a second on a loaded one, and a second spent inside
+        an interface callback is a second in which the dashboard does not
+        answer.  Nothing here touches a widget.
+
+        Wrapped, because a picture must not be able to take away the answer.
+        A scan that has walked for minutes reports its verdict whatever
+        matplotlib does with it.
+        """
+        # A point of the walk is where it was, what it cost, and the
+        # structure it held there -- the third is what the marked points
+        # and Undo are made of, and it is not drawn.  Taken by index
+        # rather than unpacked, so a point that grows a fourth thing
+        # later does not stop the picture; the pairs made here are the
+        # same shape as *began*, *kept* and the point it came back to,
+        # which everything below compares against.
+        points = [(one[0], one[1]) for one in path
+                  if one[0] is not None and one[1] is not None]
+        # Two points are a line between two numbers the sentence already
+        # gives.  A picture is worth its row when there is a shape to see.
+        if len(points) < 3:
+            return None
+        try:
+            unit = 'A' if legs[0]['kind'] == 'distance' else 'deg'
+            symbols = _leg_atoms_label(legs[0])
+            top = max(points, key=lambda one: one[1])
+            came = state.get('scan_came_back')
+            ended = came if came else points[-1]
+            if state.get('scan_crowded'):
+                ended_label = 'where it stopped: two atoms too close'
+            elif state.get('scan_arrived') and came:
+                ended_label = 'the minimum it came back to'
+            elif state.get('scan_stop'):
+                ended_label = 'where you stopped it'
+            else:
+                ended_label = 'where it ended'
+            # The free energies at the three places they were taken, on the
+            # same axis: both are kcal/mol above where the walk started, so
+            # this is one scale and not two dressed as one.
+            free = state.get('scan_free')
+            drawn_free = ()
+            if free is not None and began is not None:
+                drawn_free = ((began[0], 0.0, 'where it started'),
+                              (top[0], free[0], 'the highest point'),
+                              (ended[0], free[1], 'where it came to'))
+            # The ceiling where the verdict compares against it: over the
+            # minimum the rise is measured out of, or -- when the free
+            # energies are what the temperature is worked out from -- over
+            # where the walk started, which is their zero.
+            T = float(submit_temperature.value or 298.15)
+            ceiling = thermal_ceiling(T, _THERMAL_SECONDS)
+            _, rise = _climbed([one[1] for one in points])
+            floor = 0.0 if free is not None else top[1] - rise
+            said = []
+            if len(legs) > 1:
+                said.append('Walked together with '
+                            + ', '.join(_describe_leg(one)
+                                        for one in legs[1:]) + '.')
+            said.append('Undo steps back through the marked points.')
+            return _scan_profile.profile_html(
+                points,
+                x_label=f'{symbols} ({unit})',
+                y_label='kcal/mol above the start',
+                title=(f'{symbols}, pushed with a force' if pushing
+                       else f'{symbols}, walked')
+                + (f' and {len(legs) - 1} more together' if len(legs) > 1
+                   else ''),
+                started=began, top=top, ended=ended,
+                ended_label=ended_label,
+                free=drawn_free,
+                ceiling=floor + ceiling,
+                ceiling_label=f'{ceiling:.1f} kcal/mol at {T:g} K',
+                kept=kept if state.get('scan_walled') is not None else None,
+                note=' '.join(said))
+        except Exception as exc:                  # a picture, not the answer
+            record('note', v=f'the scan profile could not be drawn: {exc}')
+            return None
+
+    def _show_scan_profile(drawn):
+        """Put a picture that has been drawn on the page, and say what it is of.
+
+        The fingerprint is taken here rather than where the figure was built:
+        the structure the picture is a claim about is the one now in the box,
+        and the box is written a few lines before this.
+        """
+        if not drawn:
+            return
+        state['scan_plot_of'] = _structure_fingerprint(_current_xyz() or '')
+        state['scan_plot'] = True
+        submit_scan_plot.value = drawn
+        submit_scan_plot.layout.display = ''
 
     def on_submit_hold(_button=None):
         """Hold the value the selection describes while the field runs."""
@@ -11153,6 +14242,23 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         submit_scan_whole.button_style = (
             'info' if submit_scan_whole.value else '')
 
+    def on_submit_scan_back(change):
+        """The same, for the return leg."""
+        if change.get('name') != 'value':
+            return
+        submit_scan_back.button_style = (
+            'info' if submit_scan_back.value else '')
+
+    def on_submit_scan_how(change):
+        """A change of mode changes what is on the row.
+
+        The return leg is walking's, and the row is redrawn rather than left
+        showing a press that would do nothing under the mode now chosen.
+        """
+        if change.get('name') != 'value':
+            return
+        _refresh_scan()
+
     def _forget_topology_refusals(_change=None):
         """A new grab is a new question, so the count starts again."""
         state['topology_refused'] = 0
@@ -11249,14 +14355,137 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         return '(window._submitMolViewerByScope||{})[%s]' % json.dumps(
             submit_scope_id)
 
+    def _charges_here():
+        """The charges of the last answer, if they still describe this one.
+
+        Kept against the element column rather than against the coordinates:
+        a charge is a property of the geometry and changes as it is dragged,
+        so holding out for an exact match would show nothing at all during
+        the one gesture the numbers are most worth watching. What it must
+        never do is put one structure's charges on another structure's atoms,
+        and the element column is what the rest of this editor tells those
+        apart by -- the perception, the GFN-FF topology and the thermal anchor
+        are all keyed on it, for the same reason.
+        """
+        charges = state.get('atom_charges')
+        if not charges:
+            return None
+        if state.get('atom_charges_for') != _structure_fingerprint(
+                _current_xyz() or ''):
+            return None
+        return charges
+
+    def _label_texts_now():
+        """What the labels are to say, or None for the atom numbers.
+
+        An empty list where the charges are wanted and there are none yet,
+        which draws nothing at all. Falling through to the numbers would have
+        the box saying "charge" over a structure labelled with indices, and
+        the two are told apart only by which of them happens to look like a
+        charge -- atom 0 with a charge of 0 is the same sprite either way.
+        Nothing on the atoms and a line underneath saying what would put
+        something there is the honest state.
+        """
+        if str(submit_label_what.value) != 'charge':
+            return None
+        return atom_charge_texts(_charges_here()) or []
+
+    def _repaint_labels(force=True):
+        """Put the labels back on the atoms with whatever they say now.
+
+        Nothing is recomputed and the molecule is not re-rendered: the sprites
+        are rebuilt over the model the browser already holds.  A no-op with
+        the labels off, so a drag under the ordinary settings pays nothing for
+        this at all.
+
+        *force* false is the drag's way in, and it is rate-limited on purpose.
+        This travels by ``run_js``, which clears its output before displaying
+        -- the reason the frames and the thermal wall each have a widget
+        field of their own -- so a message sent twenty times a second is a
+        message mostly overwritten before the page has drawn it.  Labels
+        survive that where a frame would not, because each one is the whole
+        state rather than one step of a sequence: the last to land is the
+        right one and the ones lost in between were about geometries already
+        gone.  What is left is the cost, and a 7 KB script at the rate GFN-FF
+        answers a small molecule -- measured at 125 to 900 ms an answer on a
+        borazane, and under 40 ms on the smallest -- is crowding a channel the
+        drag has better uses for.
+
+        Four times a second, which is faster than a charge visibly changes:
+        measured on an ammonia borane pulled apart, the nitrogen went -0.25,
+        -0.26, -0.27, -0.29, -0.33, -0.40 over six answers.
+        """
+        if not submit_labels_btn.value:
+            return
+        now = time.perf_counter()
+        if not force:
+            last = float(state.get('labels_drawn_at') or 0.0)
+            if now - last < _LABEL_REPAINT_INTERVAL:
+                return
+        state['labels_drawn_at'] = now
+        _run_manip_js(
+            show_atom_numbers_js(
+                var=_submit_viewer_js(), on=True,
+                scale=scale_for_px(submit_label_size.value),
+                texts=_label_texts_now())
+        )
+
+    def _remember_charges(outcome):
+        """Keep what an answer computed, for the labels and for nothing else.
+
+        Every server answer goes through here, including the ones a drag makes
+        several times a second. It is a list assignment: the charges were read
+        off a file the engine had already written, and this is where they
+        stop being thrown away.
+        """
+        if not isinstance(outcome, dict):
+            return
+        charges = outcome.get('charges')
+        if not charges:
+            return
+        # Named by the structure they were computed for and by the method
+        # that computed them. Both matter: an answer that arrives after the
+        # molecule has been replaced would otherwise draw one structure's
+        # charges on another's atoms, and four methods give four different
+        # numbers for the same atom.
+        state['atom_charges'] = list(charges)
+        state['atom_charges_method'] = str(outcome.get('method') or '')
+        state['atom_charges_for'] = _structure_fingerprint(
+            str(outcome.get('xyz') or ''))
+
+    def _refresh_label_what():
+        """Which labels this method can actually draw.
+
+        The charge entry appears under the engines that compute one and is
+        absent under the two that run in the browser, because there it would
+        be a word for a quantity that does not exist. Absent rather than
+        greyed: a control that is there and refuses is a question the user has
+        to ask before finding out, and the answer never changes while the
+        method does not.
+        """
+        offers = _server_method()
+        entries = [('number', 'number')]
+        if offers:
+            entries.append(('charge', 'charge'))
+        was = str(submit_label_what.value)
+        state['label_what_quiet'] = True
+        try:
+            submit_label_what.options = entries
+            submit_label_what.value = (
+                was if was in {code for _name, code in entries} else 'number')
+        finally:
+            state['label_what_quiet'] = False
+        submit_label_what.layout.display = (
+            '' if submit_labels_btn.value else 'none')
+
     def on_submit_labels_toggle(change):
-        """Numbers on or off, and nothing else.
+        """Labels on or off, and nothing else.
 
         The molecule is emphatically not rendered again. Rebuilding it from
         the coordinates is how a structure loses what only the browser knows:
         the bonds as they were perceived, and the ones made or broken by hand.
         Switching the numbers off used to do exactly that, so a molecule that
-        had been optimised came back with bonds missing. The numbers are a
+        had been optimised came back with bonds missing. The labels are a
         layer of sprites over the model -- they can be added and taken away
         without the model hearing about it.
         """
@@ -11264,15 +14493,54 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return
         on = bool(submit_labels_btn.value)
         submit_label_size.layout.display = '' if on else 'none'
+        submit_label_what.layout.display = '' if on else 'none'
         submit_labels_btn.button_style = 'info' if on else ''
         _run_manip_js(
             show_atom_numbers_js(
                 var=_submit_viewer_js(), on=on,
-                scale=scale_for_px(submit_label_size.value))
+                scale=scale_for_px(submit_label_size.value),
+                texts=_label_texts_now())
         )
+        if on:
+            _say_what_the_labels_say()
+
+    def _say_what_the_labels_say():
+        """One line about charges, and only where it is worth a line.
+
+        Nothing at all for the numbers, which say what they are. For the
+        charges: which method's definition they are, because four methods give
+        four different numbers for the same atom -- or, where no answer has
+        been made yet, that there is nothing to draw and what would produce
+        one. An empty structure with the word "charge" chosen and no
+        explanation is the tool looking broken.
+        """
+        if str(submit_label_what.value) != 'charge':
+            return
+        charges = _charges_here()
+        if not charges:
+            _set_mol_status(
+                'The labels will say the partial charges as soon as there is '
+                'an answer to read them from -- press Optimise, or drag. '
+                'Nothing extra is run for them: every server method writes '
+                'them out already.')
+            return
+        method = str(state.get('atom_charges_method') or '')
+        named = _server_label(method) if method else 'the last run'
+        _set_mol_status(
+            f'The labels are {named} partial charges, at the geometry of the '
+            'last answer. Each method has its own definition of one, so they '
+            'are read against each other within a structure and not across '
+            'methods.')
+
+    def on_submit_label_what(change):
+        """Numbers or charges, on the labels that are already there."""
+        if change.get('name') != 'value' or state.get('label_what_quiet'):
+            return
+        _repaint_labels()
+        _say_what_the_labels_say()
 
     def on_submit_label_size(change):
-        """Resize them in the viewer that is already there.
+        """Resize what is there in the viewer that is already there.
 
         Nothing is re-rendered: the browser rescales the label sprites it
         holds, so the size changes as the dropdown closes.
@@ -11738,6 +15006,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         submit_gfn_autospin.layout.display = '' if xtb else 'none'
         if not xtb and submit_gfn_autospin.value:
             submit_gfn_autospin.value = False
+        # What the labels may be asked to say, and whether the press that asks
+        # what a structure is has anything to ask with. Both follow the
+        # method, and both are absent rather than refusing where it cannot
+        # answer -- see _refresh_label_what and submit_shape_btn.
+        _refresh_label_what()
+        submit_shape_btn.layout.display = '' if xtb else 'none'
+        # An anchor and a set of charges belong to the method that measured
+        # them. The budget already guards its own anchor that way; the charges
+        # are simply dropped, because a label is drawn without anything
+        # keyed on it and GFN-FF's charges on a GFN2 structure would be four
+        # hundredths of an electron wrong with nothing on screen saying so.
+        if state.get('atom_charges_method') not in ('', str(chosen), None):
+            state.pop('atom_charges', None)
+            state.pop('atom_charges_method', None)
+            state.pop('atom_charges_for', None)
+            _repaint_labels()
         # Strength is how many steps the browser's field takes per animation
         # frame, and that field does not run under a server method.
         submit_strength_slider.layout.display = 'none' if server else ''
@@ -11793,7 +15077,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             for widget in (submit_scan_way, submit_scan_to, submit_scan_steps,
                            submit_scan_dd, submit_scan_del, submit_scan_whole,
                            submit_scan_how, submit_scan_energy,
-                           submit_scan_run_btn):
+                           submit_scan_back, submit_scan_run_btn,
+                           submit_scan_price_btn):
                 widget.layout.display = 'none'
             if _scan_legs():
                 _set_mol_status(
@@ -12273,6 +15558,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     # Watching it here means the geometry's history costs nothing to collect:
     # nobody has to remember to record it at each of the places that write.
     coords_widget.observe(journal.on_box, names='value')
+    # The other half of what keeps the scan's profile honest.  A run that
+    # starts takes it away at :func:`_note_the_run`; a geometry that arrives
+    # in the box without one -- Undo, Reset, a structure someone loads, a drag
+    # writing where it ended -- is caught here, and the picture stands only
+    # while the box still holds the walk it is about.
+    coords_widget.observe(_on_box_for_scan_plot, names='value')
     journal.opening(journal.snapshot(journal_watching), coords_widget.value)
 
     submit_select_btn.observe(on_submit_select_toggle, names='value')
@@ -12297,6 +15588,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_gfn_solvent.observe(on_submit_solvent, names='value')
     submit_gfn_solv_model.observe(on_submit_solv_model, names='value')
     submit_labels_btn.observe(on_submit_labels_toggle, names='value')
+    submit_label_what.observe(on_submit_label_what, names='value')
     submit_label_size.observe(on_submit_label_size, names='value')
     submit_strength_slider.observe(on_submit_strength_changed, names='value')
     submit_pull_slider.observe(on_submit_pull_changed, names='value')
@@ -12304,8 +15596,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_scan_way.observe(on_submit_scan_way, names='value')
     submit_topology_btn.observe(on_submit_topology, names='value')
     submit_scan_whole.observe(on_submit_scan_whole, names='value')
+    submit_scan_back.observe(on_submit_scan_back, names='value')
+    submit_scan_how.observe(on_submit_scan_how, names='value')
     submit_path_from_btn.on_click(on_submit_path_from)
     submit_saddle_btn.on_click(on_submit_saddle)
+    submit_shape_btn.on_click(on_submit_shape)
     # The start decides which ways there are -- there is no walk to stop after
     # when the start is the structure on screen -- so it goes through the one
     # place that works both boxes out; the way only renames the press.
@@ -12313,6 +15608,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                names='value')
     submit_saddle_how.observe(lambda _c: _name_the_saddle_press(),
                               names='value')
+    # Which mode the two presses are about is read when one of them is
+    # pressed, so the box needs no observer of its own: nothing happens at the
+    # moment it is changed, and a Hessian is not recomputed by picking a
+    # different mode out of the one that was already taken.
+    submit_mode_btn.on_click(on_submit_show_mode)
+    submit_ends_btn.on_click(on_submit_follow_down)
     submit_climb_btn.observe(on_submit_climb, names='value')
     submit_sens_slider.observe(on_submit_sens_changed, names='value')
     submit_play_speed.observe(on_submit_play_speed, names='value')
@@ -12335,6 +15636,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_scan_btn.on_click(on_submit_scan)
     submit_scan_del.on_click(on_submit_scan_del)
     submit_scan_run_btn.on_click(on_submit_scan_run)
+    submit_scan_price_btn.on_click(on_submit_scan_price)
     submit_swap_btn.on_click(on_submit_swap)
     submit_hold_mode.observe(on_submit_hold_mode, names='value')
     submit_bond_btn.on_click(on_submit_bond)
@@ -12369,6 +15671,30 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='100%', margin='4px 0 0 0'),
     )
     submit_ff_notes.add_class('submit-ff-notes')
+
+    #: The picture of the path the last scan walked, under the structure it
+    #: was walked on.
+    #:
+    #: Under it rather than on it.  The status line lies on the picture
+    #: because it is written several times a second and a row above the viewer
+    #: made the atom under the cursor step up and down; a profile is written
+    #: once, at the end of a walk that took minutes, so it costs nothing to
+    #: give it a row -- and a row of its own takes none of the pixels the
+    #: structure is drawn in, which an overlay would.  It is ``display: none``
+    #: until there is a walk to show, so an editor that has never scanned is
+    #: laid out exactly as it was.
+    #:
+    #: It travels into fullscreen as a panel: bounded to 30vh and scrolling,
+    #: which is the shared rule for results that belong to a picture (the RMSD
+    #: pair, the Fukui numbers).  Fullscreen is still for the structure.
+    submit_scan_plot = widgets.HTML(
+        value='',
+        layout=widgets.Layout(width='100%', margin='4px 0 0 0',
+                              display='none'),
+    )
+    submit_scan_plot.add_class('submit-scan-plot')
+    submit_scan_plot.add_class('delfin-structure-fs-member')
+    submit_scan_plot.add_class('delfin-structure-fs-panel')
     # ---- where a structure comes from ------------------------------
 
     convert_smiles_button = widgets.Button(
@@ -12591,7 +15917,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if submit_labels_btn.value:
             labels = show_atom_numbers_js(
                 var='viewer_UNIQUEID',
-                scale=scale_for_px(submit_label_size.value))
+                scale=scale_for_px(submit_label_size.value),
+                texts=_label_texts_now())
         if hasattr(view, 'startjs'):
             view.startjs += registration
             if labels:
@@ -12631,6 +15958,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # here because this is the one place every host goes through when what
         # is on screen changes.
         _refresh_saddle_controls()
+        # And the finished profile is about one molecule the same way. It
+        # outlives the structure it was walked on -- loading another one does
+        # not throw it away -- so the press that prices it again has to leave
+        # when the molecule does, or it would offer a second opinion about
+        # something that is no longer on screen.
+        _refresh_scan()
         _push_hand_bonds()
 
     def _show_mol_busy(message):

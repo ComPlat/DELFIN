@@ -4,15 +4,25 @@ This module is the *Python* half of the Submit-tab live manipulation feature
 (grab an atom, drag it, the rest of the molecule follows).  The force field
 itself runs in the browser: a kernel round trip costs ~45 ms, which collapses
 a continuous drag to ~13 Hz, so no per-frame Python is possible.  Python is
-therefore called exactly twice per manipulation session:
+therefore called twice per manipulation session, and neither time is during
+the drag:
 
 * :func:`export_forcefield_terms` -- once, when manipulate mode is switched
   on.  It returns a JSON-serialisable dict of force-field terms that the
   browser engine evaluates itself, frame after frame, with zero further
   kernel traffic.
-* :func:`relax_xyz` -- once, on mouse release, for a proper constrained
-  minimisation of the dragged structure (the browser engine is deliberately
-  cheap and only does a handful of steepest-descent steps per frame).
+* :func:`relax_xyz` -- when Optimise is pressed while the method box holds a
+  browser force field, for a full minimisation of the structure on screen.
+
+  **Not on mouse release**, which is what this said until somebody went
+  looking for the call: letting go of an atom is answered by the page's own
+  ``settleAfterDrag``, which goes on running the very field it was already
+  running, and under a server method by the settle that hands the structure
+  to xtb or MOPAC.  Neither of those reaches this module.  The mistake is
+  worth naming because it is the kind that survives: the sentence described
+  a call that would need the atoms the hand had placed, and the only call
+  there really is wants nothing held at all except what the user said to
+  hold.
 
 Payload contract
 ================
@@ -46,8 +56,12 @@ Recommended call sequence::
 
     perceived = perceive_molecule(xyz)                       # switch-on
     payload   = export_forcefield_terms(xyz, perceived=perceived)
-    ...                                                      # drag: browser only
-    result    = relax_xyz(dragged_xyz, [dragged_index], perceived=perceived)
+    ...                                        # drag and release: browser only
+    result    = relax_xyz(xyz, held_atoms, perceived=perceived)   # Optimise
+
+``held_atoms`` is what the user asked to keep, not what the hand last touched:
+the editor derives it from the held internal coordinates, so a press of
+Optimise cannot walk off a value that is being held exactly.
 
 Passing the switch-on ``perceived`` into :func:`relax_xyz` is worth doing:
 it skips a second perception and, more importantly, pins the topology, so a
@@ -98,7 +112,8 @@ Deliberate omissions the consumer should know about:
 
 * No UFF *inversion* (out-of-plane) terms.  Planarity of sp2 centres is held
   by the torsion terms alone during a drag; :func:`relax_xyz` restores it
-  exactly on mouse release because it runs the full force field.
+  exactly when Optimise is pressed, because that one runs the full force
+  field.
 * No electrostatics.  UFF's QEq charges are not part of RDKit's default UFF
   either, so this matches the reference implementation.
 * Torsions whose central bond touches a metal are dropped (see below).
@@ -2696,12 +2711,18 @@ def relax_xyz(
     perceived: Optional[PerceivedMolecule] = None,
     method: Optional[str] = 'uff',
 ) -> Dict[str, Any]:
-    """Run the mouse-release clean-up minimisation.
+    """Minimise a structure properly, holding what the user asked to hold.
 
-    The browser's per-frame force field is deliberately cheap (a handful of
-    steepest-descent steps per frame, no inversion terms).  When the drag
-    ends, this restores a properly minimised geometry while holding the
-    atoms the user positioned.
+    This is what one press of Optimise runs when the method box holds a
+    browser force field.  The field the page runs under the hand is
+    deliberately cheap -- a handful of steepest-descent steps per frame, no
+    inversion terms -- so a structure that has been dragged about is near a
+    minimum rather than at one, and this is where it is taken the rest of the
+    way.
+
+    It is *not* the mouse-release clean-up the first sentence here used to
+    claim: a release is answered by the page, which goes on running the field
+    it is already running.  Nothing in this module is on that path.
 
     Engine choice mirrors :func:`export_forcefield_terms`: Open Babel UFF for
     anything containing a metal (RDKit's UFF ignores transition metals
@@ -2712,7 +2733,12 @@ def relax_xyz(
     Args:
         xyz_text: Standard XYZ text or a bare DELFIN coordinate block.
         fixed_indices: 0-based indices of atoms to hold in place, in input
-            XYZ order.  Out-of-range and duplicate entries are dropped.
+            XYZ order.  Out-of-range and duplicate entries are dropped.  The
+            editor passes the atoms named by the values held exactly, because
+            fixing those atoms is the only way an engine here can meet a held
+            value at all: measured on ethane, C0-H2 pulled to 1.700 A comes
+            back at 1.1104 A free and at 1.7000 with the pair fixed, and a
+            Zn-N held at 2.600 through Open Babel likewise.
         max_steps: Maximum minimisation steps.
         perceived: Optional pre-computed :func:`perceive_molecule` result,
             used for its **topology only** -- the coordinates always come

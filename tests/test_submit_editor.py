@@ -2968,3 +2968,98 @@ def test_a_hidden_control_stays_hidden_when_a_structure_loads(editor):
     part._set_manip_toolbar_enabled(True)
     assert not any(_visible(w) for w in hidden), (
         'a structure loading must not bring back what the method cannot use')
+
+
+_STOP_DRIVER = r"""
+// The rule as it ships, with a stand-in for the one thing it reads.
+var STATE = {s1: {thermalWall: null, thermalReach: 0}};
+function getState(key) { return STATE[key]; }
+__WALL__
+__SET__
+var scope = 's1';
+var out = {free: [], stopped: [], back: null, released: null};
+var atom = {x: 0, y: 0, z: 0};
+var step = {x: 0.2, y: 0, z: 0};
+var backwards = {x: -0.2, y: 0, z: 0};
+function move(delta) {
+  if (thermalWallBlocks(scope, atom, 0, delta)) return;
+  atom.x += delta.x; atom.y += delta.y; atom.z += delta.z;
+}
+function where() { return Math.round(atom.x * 1e6) / 1e6; }
+
+// Nothing marked: the hand takes the atom wherever it goes.
+for (var i = 0; i < 6; i++) { move(step); out.free.push(where()); }
+
+// The budget refuses.  The atom is marked where it was last allowed to
+// stand, with the reach the hand had already run past it.
+atom.x = 0;
+setThermalWall(scope, {0: [0, 0, 0]}, 0.5);
+for (var j = 0; j < 6; j++) { move(step); out.stopped.push(where()); }
+
+// Easing back is never refused, however far out it starts.
+move(backwards);
+out.back = where();
+
+// And with the stop down the hand has the structure again.
+setThermalWall(scope, null, 0);
+move(step);
+out.released = where();
+console.log(JSON.stringify(out));
+"""
+
+
+@pytest.mark.skipif(_NODE is None, reason="node not installed")
+def test_a_refused_drag_comes_up_against_a_stop_it_can_push_at():
+    """What a refusal has to do to the picture, driven in node.
+
+    The kernel stops answering a drag it has refused -- there is nothing left
+    to compute until the hand eases -- and nothing told the page.  So the page
+    went on running the wish out with the cursor: the band grew, the
+    coordinates it reported went on changing, and the one thing that had
+    happened, that the drag had reached its ceiling, was the one thing not on
+    screen.
+
+    The rule was already here and nothing ever armed it: ``_push_thermal_wall``
+    was called in one place in the whole editor, with ``None``.  A marked atom
+    may stand at most a reach from where the budget last agreed, and a step is
+    refused only when it is both outside that reach and going further out.  So
+    the hand comes up against something it can push at, and pushing harder
+    does nothing -- which is the truth about where it is.
+
+    Coming back in is never refused, however far out it starts.  That matters
+    twice over: it is the one thing a user must be able to do from a structure
+    the budget will not pay for, and it is exactly the gesture the kernel's own
+    ``_still_spent`` reads as the hand easing off.  The two sides then let the
+    same move through instead of holding two opinions about it.
+
+    Driven in node over the shipped source of the two functions, with the mark
+    at the origin, half an angstrom of reach and a hand moving a fifth of an
+    angstrom a step.
+    """
+    import json
+    import subprocess
+    import tempfile
+
+    script = (_STOP_DRIVER
+              .replace('__WALL__', _body('thermalWallBlocks'))
+              .replace('__SET__', _body('setThermalWall')))
+    with tempfile.NamedTemporaryFile('w', suffix='.js', delete=False) as fh:
+        fh.write(script)
+        path = fh.name
+    done = subprocess.run([_NODE, path], capture_output=True, text=True,
+                          timeout=120)
+    assert done.returncode == 0, done.stderr[-800:]
+    out = json.loads(done.stdout.strip().splitlines()[-1])
+
+    # Nothing marked: six steps of a fifth of an angstrom go where they are put.
+    assert out['free'] == [0.2, 0.4, 0.6, 0.8, 1.0, 1.2], out
+    # Marked: the atom walks out to the reach and stops there.  The last step
+    # inside it is taken whole -- a stop is a place, not a rounding.
+    assert out['stopped'] == [0.2, 0.4, 0.4, 0.4, 0.4, 0.4], out
+    # Pushing at it does not accumulate: four more refused steps leave the atom
+    # exactly where the first refusal found it.
+    assert out['stopped'][-1] == out['stopped'][1], out
+    # Easing back is applied.
+    assert out['back'] == pytest.approx(0.2, abs=1e-9), out
+    # With the stop down the hand has the structure again.
+    assert out['released'] == pytest.approx(0.4, abs=1e-9), out

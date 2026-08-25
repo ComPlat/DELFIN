@@ -9094,6 +9094,15 @@ def create_tab(ctx):
             # sequence of a session and can be replayed into a real editor.
             # Named here because a folder nobody is told about is a folder
             # nobody reads.
+            #
+            # A command, not a function.  This named
+            # ``editor_journal.replay``, which takes a timeline and a live
+            # editor -- so following the sentence meant building an editor,
+            # its context, its coordinate box and the host's write-back
+            # first, and getting the last of those wrong replays the gesture
+            # over the structure the session opened on while reporting the
+            # same messages.  The module's own entry point does all of that
+            # and says where the replay stopped agreeing with the recording.
             _viewer_line = ""
             try:
                 from delfin.dashboard import editor_journal as _ej
@@ -9102,7 +9111,7 @@ def create_tab(ctx):
                     _viewer_line = (
                         f"\n\n🔬 **Viewer reports** ({len(_viewer)}) in "
                         f"`{_ej.resolve_archive_dir()}` — replay one with "
-                        f"`delfin.dashboard.editor_journal.replay`:\n"
+                        f"`python -m delfin.dashboard.editor_journal <name>`:\n"
                         + "\n".join(
                             f"- `{r['name']}` — "
                             f"{(r['description'] or '—')[:60]}  "
