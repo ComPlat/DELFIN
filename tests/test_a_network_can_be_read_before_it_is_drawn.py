@@ -691,3 +691,88 @@ def test_the_panel_says_a_geometry_is_there_and_unpriced(tmp_path):
     said = tab.detail_html(graph, a.id, 'GFN2-xTB')
     assert 'geometry at' in said and 'no energy for it' in said
     assert 'what a calculation would start from' in said
+
+
+# ---------------------------------------------------------------------------
+# On to a calculation
+# ---------------------------------------------------------------------------
+
+def test_a_geometry_goes_to_the_submit_tab_with_a_folder_inside_the_graph(
+        tmp_path):
+    """The job is set up over there; every field the Submit tab has is what a
+    calculation needs and a second copy here would be a smaller, staler one.
+    What this does is give the job somewhere to come back to."""
+    graph, a, *_ = _mechanism(tmp_path)
+    ctx = _Dashboard(tmp_path)
+    ctx.submit_refs['job_name_widget'] = widgets.Text(value='')
+    ctx.tabs_widget.selected_index = 5
+    panel = tab.ReactionGraphPanel(tmp_path, ctx=ctx)
+    panel.network.value = a.id
+    panel._on_to_submit()
+
+    written = ctx.submit_refs['coords_widget'].value
+    assert written.splitlines()[0] == '3'
+    assert 'for a calculation' in written.splitlines()[1]
+    assert ctx.tabs_widget.selected_index == 0
+
+    # The folder is inside the graph, not out in a shared calculation
+    # directory: a graph whose evidence is scattered cannot be handed to
+    # anybody.
+    runs = sorted((graph.folder / rg.RUNS).iterdir())
+    assert len(runs) == 1
+    assert runs[0].parent == graph.folder / rg.RUNS
+    assert (runs[0] / 'from_graph.xyz').read_text(encoding='utf-8')
+    assert ctx.submit_refs['job_name_widget'].value == runs[0].name
+
+
+def test_sending_one_for_a_calculation_is_written_into_the_history(tmp_path):
+    graph, a, *_ = _mechanism(tmp_path)
+    ctx = _Dashboard(tmp_path)
+    panel = tab.ReactionGraphPanel(tmp_path, ctx=ctx)
+    panel.network.value = a.id
+    panel._on_to_submit()
+    line = [one for one in rg.history(rg.load(graph.folder))
+            if one['what'] == 'sent for a calculation']
+    assert line and line[0]['ref'] == a.id
+    assert line[0]['run'].startswith(rg.RUNS + '/')
+
+
+def test_two_calculations_for_the_same_thing_get_their_own_folders(tmp_path):
+    """A calculation is evidence. Two sharing a directory means neither can be
+    pointed at afterwards."""
+    graph, a, *_ = _mechanism(tmp_path)
+    ctx = _Dashboard(tmp_path)
+    panel = tab.ReactionGraphPanel(tmp_path, ctx=ctx)
+    panel.network.value = a.id
+    panel._on_to_submit()
+    panel._on_to_submit()
+    assert len(list((graph.folder / rg.RUNS).iterdir())) == 2
+
+
+def test_with_no_submit_tab_there_is_no_way_to_start_a_calculation(tmp_path):
+    _mechanism(tmp_path)
+    panel = _panel(tmp_path)
+    assert panel.to_submit_btn.layout.display == 'none'
+
+
+def test_a_state_arrives_under_a_name_you_can_read(tmp_path):
+    """A network of n01, n02, n03 cannot be read without clicking each one. A
+    formula is a fact rather than a guess about the species, and the label is
+    the user's to change the moment they know better."""
+    rg.create(tmp_path / 'fresh', name='fresh')
+    panel = _panel(tmp_path)
+    panel.take(_offer(_NH3))
+    shown = dict((ref, line) for line, ref in panel.network.options)
+    assert 'H3N' in list(shown.values())[0], shown
+
+    # And the two ends of a walk arrive named too.
+    panel.take(_offer(_HCN, ends=(_WATER, _CO), imaginary=1))
+    labels = [n.label for n in rg.load(panel.graph.folder).nodes]
+    assert labels == ['H3N', 'H2O', 'CO']
+
+
+def test_a_name_the_user_gives_wins_over_the_formula(tmp_path):
+    rg.create(tmp_path / 'fresh', name='fresh')
+    panel = _panel(tmp_path)
+    panel.take(_offer(_NH3, name='the amine'))
+    assert rg.load(panel.graph.folder).nodes[0].label == 'the amine'

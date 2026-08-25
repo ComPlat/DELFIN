@@ -545,3 +545,13 @@ def test_one_key_in_the_history_never_means_two_things(tmp_path):
     assert first_record["source"] == {"kind": "editor"}
     # And the edge itself keeps its own names: the dataclass is not the log.
     assert graph.edge(e.id).source == a.id
+
+
+def test_a_formula_is_read_off_the_atoms_in_hill_order(tmp_path):
+    """Carbon, then hydrogen, then the rest alphabetically -- the order a
+    chemist reads and every database stores."""
+    assert G.formula(_WATER) == "H2O"
+    assert G.formula(_HCN) == "CHN"
+    assert G.formula("2\nx\nC 0 0 0\nO 1 0 0\n") == "CO"
+    assert G.formula("") == ""
+    assert G.formula("nothing here") == ""

@@ -747,6 +747,31 @@ def fingerprint(xyz: Any) -> str:
     return '|'.join(out)
 
 
+def formula(xyz: Any) -> str:
+    """The molecular formula of an XYZ block, in Hill order.
+
+    Carbon first, then hydrogen, then everything else alphabetically --
+    which is the order a chemist reads and the order every database
+    stores.  Off the same element column the fingerprint uses, so it says
+    exactly as much as the document actually knows: what atoms are there.
+
+    Used as the name a state arrives under.  A network of n01, n02, n03 is
+    a network nobody can read without clicking each one, and a formula is
+    a fact rather than a guess about what the species is -- the label is
+    the user's to change the moment they know better.
+    """
+    rows = fingerprint(xyz).split('|') if fingerprint(xyz) else []
+    if not rows:
+        return ''
+    counts: Dict[str, int] = {}
+    for one in rows:
+        counts[one] = counts.get(one, 0) + 1
+    order = ([one for one in ('C', 'H') if one in counts]
+             + sorted(one for one in counts if one not in ('C', 'H')))
+    return ''.join(one + (str(counts[one]) if counts[one] > 1 else '')
+                   for one in order)
+
+
 def geometry(graph: Graph, ref: str, level: str) -> Optional[str]:
     """The XYZ text of *ref* at *level*, ready for the editor or an input."""
     record = best(graph.holder(ref), level)
