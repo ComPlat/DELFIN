@@ -4900,8 +4900,16 @@ def test_the_anchor_belongs_to_one_structure(bare_editor):
         "\n    def ")[0]
     assert "submit_temperature" not in controls
     assert "submit_thermal_btn" not in controls
-    # And the window is a constant now, not a control.
-    assert "_THERMAL_SECONDS = 3600.0" in EDITOR_SOURCE
+    # And the window is a constant now, not a control.  It sits in
+    # delfin/dashboard/thermal.py, where the reaction graph can reach the same
+    # arithmetic without importing this file -- the editor re-exports it, so
+    # every caller here reads the name it always read.
+    import pathlib
+    from delfin.dashboard import thermal as _thermal
+    thermal_source = pathlib.Path(
+        _thermal.__file__).read_text(encoding="utf-8")
+    assert "_THERMAL_SECONDS = 3600.0" in thermal_source
+    assert "_THERMAL_SECONDS," in EDITOR_SOURCE, "and it is imported by name"
     assert "submit_timescale" not in EDITOR_SOURCE
 
 
