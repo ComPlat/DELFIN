@@ -96,6 +96,11 @@ def _build_engine(args: argparse.Namespace):
     )
     _apply_run_budget(engine, args)
     _apply_tool_surface(engine, args)
+    # After the client exists, because two of the three switches live on
+    # the permissions object it carries. The MCP half runs earlier, before
+    # anything can read the registry — see ``_apply_bare``.
+    if getattr(args, "bare", False):
+        _apply_bare_discovery(engine)
     return engine
 
 
@@ -808,15 +813,89 @@ def _usd_ceiling_measurable(engine) -> bool:
         return False
 
 
-# What ``--bare`` cannot reach from this file, named once so the help text
-# and the startup line cannot drift from each other. All three are
-# discovered inside the turn, from the permissions workspace, and none has
-# a per-session switch: hooks through ``hooks.load_hooks`` at every hook
-# point, skills through ``skills.discover_skills`` while the tool surface
-# is assembled, project memory through ``PromptLoader`` while the system
-# prompt is built. A ``--bare`` that implied it covered them would be the
-# silent non-delivery the flag exists to avoid.
-_BARE_NOT_SKIPPED = "hooks, skills and project memory"
+# The discovery ``--bare`` switches off, in the order a session meets it.
+# Named once so the help text and the startup line cannot drift from each
+# other, and reported per name only when the object that took the switch
+# confirms it — see ``_bare_coverage``.
+_BARE_SKIPS = ("MCP servers", "tool hooks", "skills", "project memory")
+
+# What it still cannot reach, named the same way and for the same reason.
+# PreToolUse and PostToolUse run from the executor, which is handed the
+# permissions object carrying the switch (``api_client._session_hooks``);
+# the turn-level pair is loaded by the engine from the workspace alone,
+# never seeing that object, so it keeps running. A ``--bare`` that implied
+# it covered them would be the silent non-delivery the flag exists to
+# avoid.
+_BARE_NOT_SKIPPED = "UserPromptSubmit and Stop hooks"
+
+
+def _and_list(names) -> str:
+    """``a, b and c`` — for naming what a bound did and did not reach."""
+    names = [str(n) for n in names]
+    if len(names) <= 1:
+        return names[0] if names else ""
+    return ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def _apply_bare_discovery(engine) -> None:
+    """Switch off, for THIS session, the discovery that happens in a turn.
+
+    Three loaders read from disk once the turn is running: hook
+    definitions at every tool call, skill playbooks while the tool surface
+    is assembled, and the memory stores while the system prompt is built.
+    Each is switched at the object that does the work — the permissions
+    object the executor is handed on every call, and the prompt loader the
+    engine owns — the way ``--max-budget-usd`` and ``--max-turns`` are.
+    Nothing is written to any settings file: those belong to every later
+    session, and this bounds one.
+
+    Not a module global for either half. A global would switch discovery
+    off for a dashboard session running in the same process, which nobody
+    asked for. The permissions half IS inherited by a sub-agent, because
+    ``dataclasses.replace`` copies field values — deliberately: a child
+    that re-read what its parent was told to skip would be a route around
+    the flag.
+
+    Silent where an object is absent. A backend with no permissions object
+    ran none of this in the first place, and the startup line reports what
+    actually took rather than what was asked for.
+    """
+    perms = getattr(engine, "kit_permissions", None) or getattr(
+        getattr(engine, "client", None), "_permissions", None)
+    if perms is not None:
+        try:
+            perms.skip_hook_discovery = True
+            perms.skip_skill_discovery = True
+        except Exception:
+            pass
+    loader = getattr(engine, "loader", None)
+    if loader is not None:
+        try:
+            loader.skip_external_memory = True
+        except Exception:
+            pass
+
+
+def _bare_coverage(args: argparse.Namespace, engine) -> tuple[list[str], list[str]]:
+    """``(skipped, unreached)`` for this run, as ``_BARE_SKIPS`` names them.
+
+    Read back off the objects that took the switch, never off the parsed
+    arguments: naming something as skipped is a statement that the switch
+    arrived, and only the object holding it can say that. The MCP half is
+    the exception in form only — its registry is emptied before the engine
+    exists, so what took is recorded on the namespace at that moment.
+    """
+    perms = getattr(engine, "kit_permissions", None) or getattr(
+        getattr(engine, "client", None), "_permissions", None)
+    loader = getattr(engine, "loader", None)
+    took = {
+        "MCP servers": bool(getattr(args, "bare_mcp_skipped", False)),
+        "tool hooks": bool(getattr(perms, "skip_hook_discovery", False)),
+        "skills": bool(getattr(perms, "skip_skill_discovery", False)),
+        "project memory": bool(getattr(loader, "skip_external_memory", False)),
+    }
+    return ([n for n in _BARE_SKIPS if took.get(n)],
+            [n for n in _BARE_SKIPS if not took.get(n)])
 
 
 def _apply_bare(workspace: Path) -> bool:
@@ -825,11 +904,14 @@ def _apply_bare(workspace: Path) -> bool:
     An MCP server definition is executable configuration: it is spawned
     with the parent environment while the tool surface is being ASSEMBLED,
     before any model output, and then answers every call routed to it.
-    That is the one piece of discovery reachable from here, because the
+    This is the half that runs before the engine exists, because the
     registry is cached per workspace and loads its configuration once —
     emptying it after that load means no server is started and no MCP tool
     is advertised, for this process only. Nothing on disk is touched, so
     the next run without the flag is unchanged.
+
+    The other three ride on objects the engine builds; they are switched
+    in :func:`_apply_bare_discovery`.
     """
     try:
         from . import mcp_client as _mcp
@@ -975,14 +1057,18 @@ def _bounding_notices(args: argparse.Namespace, engine) -> list[str]:
             f"nothing and is most likely a typo")
 
     if getattr(args, "bare", False):
-        took = getattr(args, "bare_mcp_skipped", False)
-        notes.append(
-            (f"bare       MCP servers skipped — {_BARE_NOT_SKIPPED} are "
-             "discovered inside the turn and cannot be skipped from here"
-             ) if took else
-            (f"bare       REQUESTED but nothing was skipped — the MCP "
-             f"registry could not be reached, and {_BARE_NOT_SKIPPED} are "
-             "discovered inside the turn"))
+        skipped, unreached = _bare_coverage(args, engine)
+        if not skipped:
+            notes.append(
+                "bare       REQUESTED but nothing was skipped — none of "
+                f"{_and_list(_BARE_SKIPS)} could be reached here, so this "
+                "session discovers exactly what it would without the flag")
+        else:
+            line = f"bare       {_and_list(skipped)} skipped"
+            if unreached:
+                line += (f"; {_and_list(unreached)} REQUESTED but not "
+                         "reachable on this backend, so they are unchanged")
+            notes.append(f"{line}; {_BARE_NOT_SKIPPED} still run")
 
     return notes
 
@@ -2138,9 +2224,10 @@ def build_parser() -> argparse.ArgumentParser:
                            "'let it read my other repo'")
     chat.add_argument("--isolate", action="store_true",
                       help="Run shell commands under filesystem isolation")
-    # Named for what it does, not for what the word suggests. The three it
-    # cannot reach are named in the help itself rather than left to be
-    # discovered — see _BARE_NOT_SKIPPED.
+    # Named for what it does, not for what the word suggests: what it
+    # covers and the one thing it still cannot reach are both in the help
+    # itself rather than left to be discovered — see _BARE_SKIPS and
+    # _BARE_NOT_SKIPPED.
     # Two ways to narrow the tool surface of ONE session. Both land on the
     # permissions object the executor is handed, so a named tool is refused
     # when called and not merely hidden from the model — hiding alone would
@@ -2162,9 +2249,9 @@ def build_parser() -> argparse.ArgumentParser:
                       help="Refuse these tools for this session — wins over "
                            "--allowed-tools when a name is on both")
     chat.add_argument("--bare", action="store_true",
-                      help="Skip MCP server discovery for this run "
-                           f"({_BARE_NOT_SKIPPED} are discovered inside the "
-                           "turn and are NOT skipped)")
+                      help="Skip discovery for this run: "
+                           f"{_and_list(_BARE_SKIPS)} "
+                           f"({_BARE_NOT_SKIPPED} still run)")
     # Cumulative over the SESSION, not per turn — turns compose into an
     # unbounded run cost without this, which is what makes an unattended
     # run undeployable. Both land on the engine attributes _run_budget
