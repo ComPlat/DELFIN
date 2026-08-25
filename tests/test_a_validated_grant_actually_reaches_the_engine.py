@@ -149,12 +149,18 @@ def test_no_flag_grants_nothing(wired, tmp_path, capsys):
 # The banner named a remedy; the remedy has to exist
 # ---------------------------------------------------------------------------
 
-def test_isolate_forces_the_shell_sandbox_for_this_process(monkeypatch, tmp_path):
-    """The banner says isolation is off in the attended modes.
+def test_isolate_is_consulted_before_the_settings_file(monkeypatch, tmp_path):
+    """Tests the OVERRIDE, not whether this host has bubblewrap.
 
-    Stating a weakness with no way to act on it is half the truth. The
-    override is process-level rather than a settings write, because a
-    session-scoped choice must not outlive the session that made it.
+    The first version of this asserted that the resolved argv stops being
+    /bin/bash — which passed here (bubblewrap 0.9.0 installed) and failed
+    on CI, where it is not. That is a test of the runner, not of the
+    mechanism: `_bash_isolation_argv` requires shutil.which("bwrap") even
+    for an explicitly forced mode, and falling back to plain bash there is
+    the only thing it can do.
+
+    So the assertion is on what the override DECIDES, with the host's
+    capability supplied by the test rather than by the machine.
     """
     from delfin.agent import api_client
     from delfin.agent.api_client import KitToolPermissions
@@ -162,20 +168,61 @@ def test_isolate_forces_the_shell_sandbox_for_this_process(monkeypatch, tmp_path
     ws = tmp_path / "project"
     ws.mkdir()
     perms = KitToolPermissions(workspace=ws, mode="default")
+    seen: list[str] = []
 
+    # Stand in for the host: record the mode the resolver settled on, and
+    # report bwrap as absent so the real wrap is never built.
     monkeypatch.setattr(api_client, "_BASH_ISOLATION_OVERRIDE", "")
-    monkeypatch.setattr(api_client, "_bwrap_functional", lambda: True)
+    monkeypatch.setattr(api_client.shutil, "which",
+                        lambda name: seen.append(name) or None)
 
-    plain = api_client._bash_isolation_argv("echo hi", str(ws), perms)
-    assert plain[0] == "/bin/bash", "attended modes are unisolated by default"
+    api_client._bash_isolation_argv("echo hi", str(ws), perms)
+    without = list(seen)
 
+    seen.clear()
     api_client.set_bash_isolation_override("bwrap")
     try:
-        isolated = api_client._bash_isolation_argv("echo hi", str(ws), perms)
-        assert isolated[0] != "/bin/bash", (
-            "--isolate must actually change what is executed")
+        api_client._bash_isolation_argv("echo hi", str(ws), perms)
     finally:
         api_client.set_bash_isolation_override("")
+
+    assert "bwrap" not in without, (
+        "an attended mode must not even look for a sandbox by default")
+    assert "bwrap" in seen, (
+        "--isolate has to reach the branch that builds the sandbox; "
+        "whether the host can supply one is a separate question")
+
+
+def test_isolation_that_cannot_be_delivered_is_announced(tmp_path, capsys,
+                                                         monkeypatch):
+    """A flag that promises containment and gives none must say so.
+
+    `_bash_isolation_argv` falls back to plain /bin/bash when bubblewrap is
+    missing, which is the only thing it can do — but silently, that is a
+    promise the code cannot keep, which is the exact defect this wave was
+    opened to close.
+    """
+    import shutil
+    from delfin.agent import cli as c
+
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+
+    class _Report:
+        git = type("G", (), {"is_repo": False, "branch": "", "dirty": ()})()
+
+    class _Engine:
+        client = type("C", (), {"model": "m"})()
+        provider = "kit"
+        mode = "solo"
+        session_id = ""
+        kit_permissions = type("P", (), {"mode": "default"})()
+
+    banner = c._startup_banner(
+        _Engine(), _Report(), tmp_path, "",
+        "isolation  REQUESTED but unavailable — bubblewrap is not "
+        "installed here, so commands run unisolated")
+    assert "REQUESTED but unavailable" in banner
+    assert "unisolated" in banner
 
 
 def test_the_banner_points_at_the_flag_that_exists():
