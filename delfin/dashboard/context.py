@@ -89,6 +89,13 @@ class DashboardContext:
     recalc_refs: dict = field(default_factory=dict)
     calc_browser_refs: dict = field(default_factory=dict)
     remote_archive_refs: dict = field(default_factory=dict)
+    #: The Reactions tab, which registers itself rather than being one
+    #: of the hardcoded tabs -- so nothing assigns this for it and it
+    #: does so from its own factory.  Empty until that tab is built,
+    #: and every reader looks it up at the moment it is needed: the
+    #: editor is built before it and a graph is opened and closed
+    #: while other tabs stand still.
+    reaction_graph_refs: dict = field(default_factory=dict)
 
     # Templates
     default_control: str = ''
