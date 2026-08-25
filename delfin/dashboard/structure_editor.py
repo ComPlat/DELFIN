@@ -2161,6 +2161,39 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='104px', height='30px', display='none'),
         disabled=True,
     )
+    #: The second opinion on a finished walk, and the moment it arrives is the
+    #: whole of why it is a button.
+    #:
+    #: It appears when a scan has left a profile and goes away again when the
+    #: next one starts, in the row that already comes and goes with the scan
+    #: -- so its being there is the editor saying that something can be done
+    #: now which could not be done a minute ago, the way the two ends were
+    #: before f1be8954 folded them into a box.  There is nothing to set: the
+    #: geometries are the ones just walked, and the method is the only one in
+    #: the list better than what walked them, so a box beside it would have
+    #: one entry and be a question with one answer.
+    #:
+    #: Not a setting chosen before the scan, which is where it would cost no
+    #: pixels at all.  The question it answers -- "is that barrier really that
+    #: small" -- is one nobody has until the barrier is on screen, and by then
+    #: a setting is minutes of walking away while this is seconds: measured,
+    #: 0.40 s a point against 0.9 s a point for the walk itself, on the same
+    #: sixteen-atom complex.
+    submit_scan_price_btn = widgets.Button(
+        description='Price with g-xTB', button_style='info',
+        icon='balance-scale',
+        tooltip=(
+            'Take the geometries this scan just walked and work out their '
+            'energies again with g-xTB, which is much more accurate than the '
+            'GFN methods and nearly as quick -- seconds for a whole profile. '
+            'GFN2 systematically underestimates barriers where a bond is '
+            'being broken, by about 10 kcal/mol on published test sets. What '
+            'comes back is a screen, not a barrier to quote: the structures '
+            'are still the ones GFN2 found.'
+        ),
+        layout=widgets.Layout(width='168px', height='30px', display='none'),
+        disabled=True,
+    )
     submit_scan_dd = widgets.Dropdown(
         options=[('nothing armed', '')], value='',
         layout=widgets.Layout(width='230px', display='none'),
@@ -2232,7 +2265,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
          submit_scan_steps,
          submit_scan_dd, submit_scan_del, submit_scan_whole,
          submit_scan_how, submit_scan_energy, submit_scan_back,
-         submit_scan_run_btn],
+         submit_scan_run_btn, submit_scan_price_btn],
         layout=widgets.Layout(
             gap='6px', align_items='center', flex_flow='row wrap',
             flex='0 1 auto', min_width='0', overflow='visible',
@@ -9301,6 +9334,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # values, so there is no same-coordinate-backwards to walk.
         if legs and str(submit_scan_how.value) == 'push':
             submit_scan_back.layout.display = 'none'
+        # The second opinion answers to a different question from the rest of
+        # the row, and that is the point of it: everything above is here
+        # because a scan is *armed*, and this is here because one has
+        # *finished* and left a profile about the molecule on screen.  A press
+        # that appeared with the arming would be offering to price a walk that
+        # has not happened.
+        showing_price = '' if _reprice_is_possible() else 'none'
+        submit_scan_price_btn.layout.display = showing_price
+        submit_scan_price_btn.disabled = not showing_price == ''
         options = [(_describe_leg(leg), str(n)) for n, leg in enumerate(legs)]
         submit_scan_dd.options = options or [('nothing armed', '')]
         if options:
@@ -9583,6 +9625,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['scan_back'] = []
         state['scan_disagree'] = None
         state['scan_jumped'] = None
+        # The walk that is starting replaces the one that finished, and its
+        # second opinion with it.  Left standing, the press beside Run scan
+        # would offer to re-price a profile that had just been walked over.
+        state['scan_walk'] = None
+        state['scan_repriced'] = None
+        _refresh_scan()
         state['scan_frame_run'] = _note_the_run(
             int(state.get('gfn_run', 0)) + 1, 'scan')
         state['gfn_run'] = state['scan_frame_run']
@@ -9621,6 +9669,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['scan_walled'] = None
 
         def _work():
+            # The path is (where the coordinate was, what it cost, the
+            # geometry) at every point.  The geometry used to be dropped the
+            # moment its frame had been drawn, which was enough for a picture
+            # and not enough for anything else: a finished walk is a set of
+            # structures somebody has just spent minutes computing, and
+            # re-pricing them with a better method is seconds of work that
+            # cannot be done at all once they are gone.  It costs what the
+            # structures cost -- about 60 KB for nineteen points of a 57-atom
+            # complex, against the 24 MB of coordinates the frame channel
+            # already holds for a walk of four hundred.
             walked, path = xyz, []
             base = None
             bottom = None
@@ -9695,9 +9753,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     if not got.get('ok') or got.get('energy') is None:
                         break
                     standing_here = got['xyz']
+                    # The geometry travels with the price.  For a push these
+                    # are the barrier: the force fell through the crossing in
+                    # one step and these are the only points on the way over
+                    # it, so a walk that threw them away had nothing to hand
+                    # to a re-pricing at the one place a re-pricing is for.
                     out.append((asked[0]['value'],
                                 (float(got['energy']) - base)
-                                * _HARTREE_TO_KCAL))
+                                * _HARTREE_TO_KCAL,
+                                standing_here))
                 return out
 
             def _free(here):
@@ -9806,7 +9870,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             'The push has no starting energy to measure from.')
                         return
                     standing = walked
-                    path.append((_value_in(walked, legs[0]), 0.0))
+                    path.append((_value_in(walked, legs[0]), 0.0, walked))
                 for n in range(1, steps + 1):
                     if state.get('scan_stop'):
                         break
@@ -9946,15 +10010,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         path.extend(_across(
                             came_from, was,
                             [_value_in(walked, one) for one in legs]))
-                    path.append((reached, spent))
-                    if not pushing:
-                        # The values this step really held, for the walk back,
-                        # and the largest thing that moved without being
-                        # asked, for naming what slipped if anything did.
-                        drove.append([one['value'] for one in held[:len(legs)]])
-                        slipped.append(_gfn.what_else_moved(
-                            stood_at, walked,
-                            [one['atoms'] for one in legs]))
+                    path.append((reached, spent, walked))
                     # The lowest point *since the top*, kept with its
                     # geometry.
                     #
@@ -10130,12 +10186,31 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         None if None in (one, top, other) else
                         ((top - one) * _HARTREE_TO_KCAL,
                          (other - one) * _HARTREE_TO_KCAL))
+                # Whether the method could describe what it walked through,
+                # asked twice: from the frontier gap, which every point of the
+                # walk reports for nothing, and by counting the electrons that
+                # are not in a closed shell, which costs two more single
+                # points.
+                #
+                # The count is skipped on a Stop, for the same reason the free
+                # energies are: a press of Stop is somebody saying that is far
+                # enough, and answering it by starting two more calculations
+                # is the switch not working.  The gap costs nothing and is
+                # said either way.
+                #
+                # Joined rather than concatenated: either half can be empty,
+                # and the verdict puts a single space before whatever this is.
+                state['scan_depth'] = ' '.join(part for part in (
+                    _gfn.method_is_out_of_its_depth(
+                        state.get('scan_gap_least'),
+                        state.get('scan_gap_first')),
+                    '' if state.get('scan_stop') else _fod_along_the_walk(
+                        began_at, summit, method, charge, uhf, wet, model),
+                ) if part)
                 # The two ends, for whoever wants to walk between them.
                 # A path finder is given two structures and finds its own way;
                 # what it cannot do is invent a product to aim at, and this is
                 # where one comes from.
-                state['scan_depth'] = _gfn.method_is_out_of_its_depth(
-                    state.get('scan_gap_least'), state.get('scan_gap_first'))
                 if began_at and path:
                     state['scan_ends'] = (
                         began_at, bottom[1] if bottom is not None else walked)
@@ -10169,6 +10244,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # is answered rather than merely allowed for.
                     if state.get('scan_ends'):
                         _scan_left_two_ends()
+                    # And the walk, kept whole with the charge, the spin and
+                    # the solvent it ran under.  Kept here rather than where
+                    # it finished, because a walk that was stopped or that
+                    # failed part way is still a set of geometries somebody
+                    # paid for: the press below prices whatever is in hand and
+                    # says how much of the walk that was.
+                    _keep_the_walk(path, method, charge, uhf, wet, model)
+                    # And the press arrives with it, which is the row saying
+                    # the profile can now be checked against something better
+                    # -- the same news the closing sentence carries in words.
+                    _refresh_scan()
                     # The places along the walk worth coming back to, put into
                     # the history in the order they were reached, so that Undo
                     # steps back through them and Redo forward again.
@@ -10212,6 +10298,310 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 schedule_ui_update(_done)
 
         _start_background(_work, 'The scan')
+
+    def _fod_along_the_walk(began_at, summit, method, charge, uhf, wet, model):
+        """How much of the walk was not a closed shell, said as a change.
+
+        Two more single points on geometries the walk already produced: where
+        it started, and the highest point it crossed.  That pair and not
+        another, because the barrier is the number a scan exists to produce
+        and the top is where it comes from -- so this is measured at the place
+        the answer is quoted from, against the place it is quoted against.
+
+        Beside the frontier gap rather than instead of it.  The gap is free --
+        every point of the walk prints one -- and it is a proxy; this counts
+        the electrons that are not paired and so has a scale.  Measured under
+        GFN2 across an ethylene turned about its double bond, the two agree
+        about where the trouble is: at 60 degrees, which is where
+        :func:`~delfin.dashboard.gfn_optimize.method_is_out_of_its_depth`
+        already fires, N_FOD has just left zero at 0.251, and by 90 degrees it
+        is 2.000 with the gap shut.
+
+        What it costs is two runs on a walk of twenty optimisations, and the
+        ratio is what matters because the machine is shared.  Minimum of seven,
+        against a plain single point and against one optimisation step of the
+        same structure: 0.96 s, 0.49 s and 7.4 s for the sixteen-atom
+        Diels-Alder complex, and 10.5 s, 3.5 s and 35.6 s for the 57-atom
+        manganese complex.  So the pair of them is well under one step of a
+        walk that takes twenty, which is why it is not a thing to switch on.
+
+        Asked of GFN2 whatever walked the scan, which is the one decision in
+        here that needs defending.  It is a probe rather than a result: the
+        published one is TPSS/def2-TZVP used on everybody's geometries, and
+        what it measures is a property of the structure -- how far from a
+        closed shell it is -- not of the method that arrived at it.  Two of
+        the four methods on this toolbar cannot be asked at all: GFN-FF has no
+        electrons, and g-xTB takes ``--fod``, converges, terminates normally
+        and prints nothing, which is silence that reads as good news.
+
+        Under g-xTB that is not a corner case, it is the main one.  The
+        frontier-gap rule this stands beside was calibrated on GFN2 and does
+        not transfer: measured on an ethylene turned about its double bond,
+        where 90 degrees is a textbook diradical that no closed shell
+        describes,
+
+            twist       0     30     60     90
+            GFN2     5.47   4.37   2.32   0.00 eV
+            g-xTB   12.17  10.55   7.94   5.12 eV
+
+        so a g-xTB profile never trips
+        :data:`~delfin.dashboard.gfn_optimize.GAP_IS_SMALL` and the warning is
+        deaf under the most accurate method in the list -- which is the one a
+        barrier is most likely to be quoted from.  Handing the two geometries
+        to GFN2 gives every walk the same check for two single points, and the
+        sentence names who was asked when it was not the method that walked.
+        """
+        if not began_at or summit is None or not summit[1]:
+            return ''
+        probe = (method if _gfn.can_measure_fod(method)
+                 else _gfn.FOD_METHODS[-1])
+        borrowed = str(probe).lower() != str(method).lower()
+        schedule_ui_update(
+            _set_mol_status,
+            f'{_server_label(probe)} is measuring how much of the top is not '
+            'a closed shell...', spinner=True)
+
+        def _measure(here):
+            got = _gfn.optimize_with_gfn(
+                here, probe, charge=charge, uhf=uhf, timeout=None,
+                # The solvent only where the probe is the method that walked.
+                # GFN2 borrowed for a g-xTB walk has no solvent to inherit --
+                # that build takes none -- and putting one on would make the
+                # two points a different calculation from the walk they are
+                # about.
+                solvent=None if borrowed else wet,
+                solvation_model=model, optimise=False, fod=True,
+                # No topology, so no warm restart: the extra SCF converges at
+                # 5000 K and its wavefunction is not a guess at the ordinary
+                # one -- see :func:`optimize_with_gfn`, which refuses to store
+                # it for that reason.
+                topology=None)
+            return got.get('fod') if got.get('ok') else None
+
+        first, top = _measure(began_at), _measure(summit[1])
+        if not first or not top:
+            return ''
+        said = _gfn.fod_moved(first['total'], top['total'], top['on'])
+        if not said:
+            return ''
+        whose = (f' ({_server_label(probe)} was asked, on the geometries '
+                 f'{_server_label(method)} walked.)' if borrowed else '')
+        return f'{said}{whose}'
+
+    def _keep_the_walk(path, method, charge, uhf, wet, model):
+        """Put the finished walk where a second opinion can be taken on it.
+
+        With the conditions it was run under, because a re-pricing that used
+        a different charge or a different spin would not be a second opinion
+        about the same thing -- and with the element column of what it walked
+        on, so the press can be offered only while it is about the molecule on
+        screen.  The two ends already answer to that rule
+        (:func:`_scan_ends_here`) for the same reason: a set of geometries
+        outlives the structure it was made from, and geometries belonging to
+        another molecule are not this molecule's profile.
+        """
+        points = [one for one in path if len(one) > 2 and one[2]]
+        if not points:
+            state['scan_walk'] = None
+            return
+        state['scan_walk'] = {
+            'points': [(one[0], one[1], one[2]) for one in points],
+            'method': method, 'charge': int(charge), 'uhf': int(uhf),
+            'solvent': wet or '', 'solvation_model': model,
+            'structure': _structure_fingerprint(points[0][2]),
+        }
+
+    def _walk_here():
+        """The last walk, while it is about the molecule on screen.
+
+        Absent for that reason and no other, which is the rule every control
+        in this editor that comes and goes is built on.
+        """
+        walk = state.get('scan_walk')
+        if not walk or not walk.get('points'):
+            return None
+        if walk['structure'] != _structure_fingerprint(_current_xyz() or ''):
+            return None
+        return walk
+
+    #: What a finished profile is re-priced with.
+    #:
+    #: One method and not a box of them, because there is one answer: g-xTB is
+    #: the only thing in this editor's list that is better than what walked
+    #: the scan, and offering a choice between GFN1 and GFN2 to somebody who
+    #: has just walked with GFN2 is a box whose entries are all wrong.
+    _REPRICE_WITH = 'gxtb'
+
+    def _reprice_is_possible():
+        """Whether there is a finished walk that something better can price."""
+        walk = _walk_here()
+        if not walk:
+            return False
+        # Nothing to improve on.  A walk made with the best method in the list
+        # has no second opinion available here, and a press offering one would
+        # be the toolbar claiming something it cannot do.
+        return str(walk['method']).lower() != _REPRICE_WITH
+
+    def on_submit_scan_price(_button=None):
+        """Price the walk again with a better method, at its own geometries.
+
+        Why it is worth a press.  GFN2 has no Fock exchange at all, which puts
+        it at the far end of the self-interaction axis, and a transition state
+        is where that hurts most: stretched bonds and near-degenerate weakly
+        bound orbitals, which Bursch, Mewes, Hansen and Grimme (Angew. Chem.
+        Int. Ed. 2022, https://doi.org/10.1002/anie.202205735) say "often
+        leads to a systematic underestimation of their electronic energy and,
+        in turn, barrier heights".  The error is structured rather than
+        random: published mean absolute deviations of 10.22 kcal/mol on
+        pericyclic barriers, 8.12 on BHDIV10 and 13.05 on BH9 aggregate,
+        against 1.17 on BHROT27 -- rotations, where no bond is broken.  So a
+        torsion profile is nearly right and a bond-breaking one is not.
+
+        Measured here on a butadiene and an ethylene walked together under
+        GFN2 in nineteen points, then re-priced: the barrier went from
+        +6.31 kcal/mol to +21.67, a shift of +15.4 against a published
+        pericyclic deviation of 10.22, and the reaction energy from -63.99 to
+        -42.71.  One reaction is not a benchmark; the direction and the size
+        are what the literature says to expect.
+
+        Why it is a press on a finished scan rather than a setting before one.
+        The geometries are already in hand, so this is seconds -- measured,
+        0.40 s a point, 7.5 s for the whole nineteen -- while walking the scan
+        again under another method is minutes.  And the question only arises
+        after the barrier is on screen and looks too small to believe.
+
+        It gets cheaper as the molecule gets bigger, which is the opposite of
+        what a per-point cost usually does here.  Driven whole on a 57-atom
+        manganese complex at charge +1, its Mn-Br bond walked out over six
+        points on a loaded machine: the walk took 1097 s and pricing the same
+        six geometries again took 35.8 s -- 5.96 s a point against 183 s a
+        point, three percent of what it is checking.  A constrained
+        optimisation grows with the molecule far faster than one single point
+        does.
+        """
+        if state.get('reprice_run'):
+            state['reprice_stop'] = True
+            _set_mol_status('Stopping after this point.')
+            return
+        walk = _walk_here()
+        if not walk:
+            return
+        points = walk['points']
+        label = _server_label(_REPRICE_WITH)
+        state['reprice_run'] = True
+        state['reprice_stop'] = False
+        submit_scan_price_btn.description = 'Stop'
+        submit_scan_price_btn.icon = 'stop'
+        # g-xTB takes no implicit solvation in this build, so a walk made in a
+        # solvent is re-priced in the gas phase.  That is a different
+        # experiment and it is said in the answer rather than refused: the
+        # thing being checked is a barrier that may be ten kcal/mol too low,
+        # and a solvation shift on a barrier is not that.
+        dry = bool(walk.get('solvent'))
+
+        def _work():
+            priced, failed = [], ''
+            try:
+                for n, (value, _spent, here) in enumerate(points, start=1):
+                    if state.get('reprice_stop'):
+                        break
+                    got = _gfn.optimize_with_gfn(
+                        here, _REPRICE_WITH, charge=walk['charge'],
+                        uhf=walk['uhf'], timeout=None, optimise=False)
+                    if not got.get('ok') or got.get('energy') is None:
+                        failed = got.get('status') or 'it did not run'
+                        break
+                    priced.append((value, float(got['energy'])))
+                    schedule_ui_update(
+                        _set_mol_status,
+                        f'{label} is pricing the walk again: point {n} of '
+                        f'{len(points)}.', spinner=True)
+            finally:
+                state['reprice_run'] = False
+
+                def _done():
+                    submit_scan_price_btn.description = (
+                        f'Price with {label}')
+                    submit_scan_price_btn.icon = 'balance-scale'
+                    if not priced:
+                        _set_mol_status(
+                            f'{label} priced nothing: {failed}'
+                            if failed else
+                            f'{label} priced nothing before it was stopped.')
+                        return
+                    base = priced[0][1]
+                    profile = [(value, (energy - base) * _HARTREE_TO_KCAL)
+                               for value, energy in priced]
+                    # Kept for whoever draws the profile.  Both curves are
+                    # about the same geometries and are indexed by the same
+                    # coordinate, so they go on one pair of axes against
+                    # ``state['scan_walk']['points']``, which carries the
+                    # first one as (coordinate, kcal/mol, geometry).
+                    #
+                    # The element column travels with it for the reason the
+                    # press answers to it: a profile outlives the structure it
+                    # was walked on, and a second curve drawn over a molecule
+                    # it is not about is worse than no second curve.  Whoever
+                    # draws this checks it the way :func:`_walk_here` does.
+                    state['scan_repriced'] = {
+                        'method': _REPRICE_WITH, 'label': label,
+                        'points': profile,
+                        'walked_with': _server_label(walk['method']),
+                        'of': len(points),
+                        'gas_phase': dry,
+                        'structure': walk['structure'],
+                    }
+                    _set_mol_status(*_repriced_verdict(
+                        walk, profile, label, dry, failed))
+
+                schedule_ui_update(_done)
+
+        _start_background(_work, 'The second opinion',
+                          guards={'reprice_run': False})
+
+    def _repriced_verdict(walk, profile, label, dry, failed):
+        """Both profiles, and the three things that stop this being a barrier.
+
+        The caveats are here and not in a docstring because they are the
+        answer: a number that moved by fifteen kcal/mol is going to be quoted
+        by somebody, and what it is worth has to travel with it.  Said in
+        three sentences, in words that assume no chemistry.
+        """
+        walked = _server_label(walk['method'])
+        first = [(one[0], one[1]) for one in walk['points']][:len(profile)]
+        was_top = max(first, key=lambda one: one[1])
+        now_top = max(profile, key=lambda one: one[1])
+        moved = now_top[1] - was_top[1]
+        many = ('' if len(profile) == len(walk['points']) else
+                f' Only {len(profile)} of {len(walk["points"])} points were '
+                f'priced'
+                + (f': {failed}' if failed else ', because it was stopped.'))
+        # The top can move as well as rise, and where it moved to is a fact
+        # about the profile rather than a detail: measured on the
+        # Diels-Alder, GFN2 put its highest point at 2.289 A and g-xTB put it
+        # at 2.208 on the same nineteen geometries.
+        elsewhere = ('' if abs(now_top[0] - was_top[0]) < 1e-9 else
+                     f' -- and at {now_top[0]:.3g} rather than '
+                     f'{was_top[0]:.3g}')
+        return (
+            f'{walked} walked it and {label} priced it again at the same '
+            f'{len(profile)} geometries. The highest point goes from '
+            f'{was_top[1]:+.1f} to {now_top[1]:+.1f} kcal/mol, a change of '
+            f'{moved:+.1f}{elsewhere}, and the end from {first[-1][1]:+.1f} '
+            f'to {profile[-1][1]:+.1f}.{many}',
+            'Three things this is not. The energies are better and the '
+            f'structures are not -- they are where {walked} put them, and it '
+            'is out by about 0.2 A on a half-broken bond against 0.03 A on an '
+            'ordinary one, which is the kind of bond a barrier is made of. So '
+            'it is a screen: to report a barrier, optimise the top again with '
+            f'the method you mean to report. {label} is a preprint method and '
+            'this build says it is a development version differing from the '
+            'paper. And the points are wherever the walk left them, which '
+            'need not be anywhere in particular -- pricing changes the '
+            'energies, never the geometries.'
+            + (f' The walk ran in {walk["solvent"]} and {label} has no solvent '
+               'in this build, so these are gas-phase energies at those '
+               'geometries.' if dry else ''))
 
     def _said_modes(shape, what, advise=True):
         """What a Hessian says a structure is, in sentences.
@@ -13093,7 +13483,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             for widget in (submit_scan_way, submit_scan_to, submit_scan_steps,
                            submit_scan_dd, submit_scan_del, submit_scan_whole,
                            submit_scan_how, submit_scan_energy,
-                           submit_scan_back, submit_scan_run_btn):
+                           submit_scan_back, submit_scan_run_btn,
+                           submit_scan_price_btn):
                 widget.layout.display = 'none'
             if _scan_legs():
                 _set_mol_status(
@@ -13639,6 +14030,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_scan_btn.on_click(on_submit_scan)
     submit_scan_del.on_click(on_submit_scan_del)
     submit_scan_run_btn.on_click(on_submit_scan_run)
+    submit_scan_price_btn.on_click(on_submit_scan_price)
     submit_swap_btn.on_click(on_submit_swap)
     submit_hold_mode.observe(on_submit_hold_mode, names='value')
     submit_bond_btn.on_click(on_submit_bond)
@@ -13936,6 +14328,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # here because this is the one place every host goes through when what
         # is on screen changes.
         _refresh_saddle_controls()
+        # And the finished profile is about one molecule the same way. It
+        # outlives the structure it was walked on -- loading another one does
+        # not throw it away -- so the press that prices it again has to leave
+        # when the molecule does, or it would offer a second opinion about
+        # something that is no longer on screen.
+        _refresh_scan()
         _push_hand_bonds()
 
     def _show_mol_busy(message):
