@@ -622,7 +622,7 @@ class APIClient(_BaseClient):
         if not resolved_key:
             raise ValueError(
                 "No Anthropic API key found. Either set ANTHROPIC_API_KEY in "
-                "the environment, or run `python -m delfin.agent.cli "
+                "the environment, or run `delfin-agent "
                 "credentials set ANTHROPIC_API_KEY` to store it in "
                 "~/.delfin/credentials.json (chmod 0600)."
             )
@@ -13661,6 +13661,23 @@ def _announce_auto_isolation() -> None:
     )
 
 
+# Set by a front-end that wants isolation for this process only, e.g.
+# `delfin-agent --isolate`. Empty means "ask the settings file", which is
+# what every caller did before this existed.
+_BASH_ISOLATION_OVERRIDE: str = ""
+
+
+def set_bash_isolation_override(mode: str) -> None:
+    """Force the shell-isolation mode for this process.
+
+    The banner tells the user that isolation is off in the attended
+    modes; a statement of a weakness with no way to act on it is only
+    half the truth, and this is the other half.
+    """
+    global _BASH_ISOLATION_OVERRIDE
+    _BASH_ISOLATION_OVERRIDE = str(mode or "")
+
+
 def _bash_isolation_argv(
     cmd: str,
     run_cwd,
@@ -13690,6 +13707,11 @@ def _bash_isolation_argv(
     is entitled to see.
     """
     plain = ["/bin/bash", "-c", cmd]
+    if mode is None and _BASH_ISOLATION_OVERRIDE:
+        # Set once per process by `delfin-agent --isolate`. It comes before
+        # the settings file on purpose: a session-scoped choice must not
+        # have to write a setting that outlives the session making it.
+        mode = _BASH_ISOLATION_OVERRIDE
     if mode is None:
         try:
             from delfin.user_settings import load_settings
@@ -14056,7 +14078,7 @@ class OpenAIClient(_BaseClient):
         if not resolved_key:
             raise ValueError(
                 f"No API key found. Either set {key_env_var} in the "
-                "environment, or run `python -m delfin.agent.cli "
+                "environment, or run `delfin-agent "
                 f"credentials set {key_env_var}` to store it in "
                 "~/.delfin/credentials.json (chmod 0600)."
             )

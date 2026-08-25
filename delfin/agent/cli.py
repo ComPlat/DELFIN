@@ -87,6 +87,8 @@ def _build_engine(args: argparse.Namespace):
         # never forwarded: --effort parsed fine and changed nothing.
         effort=getattr(args, "effort", "") or fallback.get("effort", ""),
         permission_mode=getattr(args, "permission_mode", "") or "",
+        extra_dirs=list(getattr(args, "extra_dirs", None) or []),
+        read_only_dirs=list(getattr(args, "read_only_dirs", None) or []),
     )
 
 
@@ -491,7 +493,7 @@ def _startup_banner(engine, report, workspace: Path,
             # path checking plus a regex list.
             lines.append(
                 "isolation  off — a command the agent runs can still write "
-                "outside the workspace")
+                "outside the workspace (--isolate)")
     else:
         # Not decoration: without a permissions object the write and shell
         # tools refuse, and a user staring at a silent agent deserves the
@@ -531,7 +533,11 @@ def cmd_chat(args: argparse.Namespace) -> int:
     workspace = Path(getattr(args, "cwd", "") or os.getcwd()).expanduser().resolve()
 
     # Before anything is built: is this a directory to work in at all?
-    report = launch_guard.inspect_launch_dir(workspace)
+    report = launch_guard.inspect_launch_dir(
+        workspace,
+        add_dirs=tuple(getattr(args, "add_dirs", None) or ()),
+        read_dirs=tuple(getattr(args, "read_dirs", None) or ()),
+    )
     if report.refused:
         print(report.render(), file=sys.stderr)
         return 2
@@ -550,13 +556,30 @@ def cmd_chat(args: argparse.Namespace) -> int:
         print("Nothing on stdin, and no -p. Nothing to do.", file=sys.stderr)
         return 2
 
+    # Restored on the way out. The process usually ends right after, so
+    # this looks unnecessary — but a function that moves the process and
+    # never moves it back makes every later relative path in the caller
+    # read a different file, and that is only harmless until it is called
+    # from somewhere else.
+    _cwd_before = os.getcwd()
     os.chdir(workspace)
+    # Only the grants launch_guard accepted. It has already refused a
+    # credential directory, a parent of the workspace and a forbidden
+    # root by name, rather than letting the permissions object drop them
+    # silently the way it does.
+    args.extra_dirs = [str(p) for p in report.granted_dirs]
+    args.read_only_dirs = [str(p) for p in report.read_dirs]
+    if getattr(args, "isolate", False):
+        from .api_client import set_bash_isolation_override
+        set_bash_isolation_override("bwrap")
     try:
         engine = _build_engine(args)
     except Exception as exc:
         print(f"ERROR: engine init failed: {exc}", file=sys.stderr)
+        os.chdir(_cwd_before)
         return 3
     if not _open_session(engine, args, workspace):
+        os.chdir(_cwd_before)
         return 2
 
     posture, why = launch_guard.resolve_posture(
@@ -609,6 +632,10 @@ def cmd_chat(args: argparse.Namespace) -> int:
     finally:
         _save_session(engine, workspace,
                       title=getattr(args, "session_name", "") or "")
+        try:
+            os.chdir(_cwd_before)
+        except Exception:
+            pass
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -998,9 +1025,9 @@ def _cmd_bench_baseline(args, action: str) -> int:
 _BENCH_SCHEDULE_HINT = (
     "Scheduling is opt-in — nothing was registered automatically.\n"
     "To run this nightly via the scheduler daemon, run exactly:\n"
-    "  python -m delfin.agent.cli scheduler add-bench --model {model}"
+    "  delfin-agent scheduler add-bench --model {model}"
     "{provider}{backend} --every 24h\n"
-    "  python -m delfin.agent.cli scheduler start\n"
+    "  delfin-agent scheduler start\n"
     "Cost estimate: ~$8 per nightly run for the 48-task KIT-Qwen suite at "
     "repeats=1 (repeats multiply cost; recheck adds up to $3 more on "
     "suspect days)."
@@ -1269,7 +1296,7 @@ def cmd_credentials(args: argparse.Namespace) -> int:
             print("No credentials configured.")
             print()
             print("To store one securely (input is hidden, never echoed):")
-            print("  python -m delfin.agent.cli credentials set "
+            print("  delfin-agent credentials set "
                   "KIT_TOOLBOX_API_KEY")
             print("Other well-known names: OPENAI_API_KEY, ANTHROPIC_API_KEY")
             return 0
@@ -1426,7 +1453,7 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
         if not st["running"]:
             print("The scheduler daemon is NOT running — the entry fires "
                   "only after you start it:\n"
-                  "  python -m delfin.agent.cli scheduler start")
+                  "  delfin-agent scheduler start")
         print(f"Remove anytime: delete entry {ent.id} via the dashboard "
               "scheduler tools, or edit ~/.delfin/cron.json.")
         return 0
@@ -1584,6 +1611,16 @@ def build_parser() -> argparse.ArgumentParser:
     chat.add_argument("--unattended", action="store_true",
                       help="Required alongside --permission-mode "
                            "bypassPermissions; nothing will be asked")
+    chat.add_argument("--add-dir", action="append", default=[],
+                      dest="add_dirs", metavar="PATH",
+                      help="Also writable this session (repeatable, never "
+                           "persisted)")
+    chat.add_argument("--read-dir", action="append", default=[],
+                      dest="read_dirs", metavar="PATH",
+                      help="Readable this session — the right answer to "
+                           "'let it read my other repo'")
+    chat.add_argument("--isolate", action="store_true",
+                      help="Run shell commands under filesystem isolation")
     _add_agent_flags(chat)
     chat.add_argument("-v", "--verbose", action="store_true")
     # Only this front door inherits the dashboard's saved provider/model.
@@ -1758,9 +1795,9 @@ def build_parser() -> argparse.ArgumentParser:
             "for regressions the recheck CONFIRMED.\n\n"
             "Scheduling is strictly opt-in — this command never registers "
             "a scheduler entry. To run it nightly, run exactly:\n"
-            "  python -m delfin.agent.cli scheduler add-bench "
+            "  delfin-agent scheduler add-bench "
             "--model <model> [--provider P] [--backend B] --every 24h\n"
-            "  python -m delfin.agent.cli scheduler start\n"
+            "  delfin-agent scheduler start\n"
             "Cost estimate: ~$8 per nightly run for the 48-task KIT-Qwen "
             "suite at repeats=1 (repeats multiply cost; recheck adds up "
             "to $3 more on suspect days)."),

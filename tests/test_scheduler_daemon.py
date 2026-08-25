@@ -360,7 +360,7 @@ def test_sigterm_handler_sets_stop_and_loop_exits(cron_path):
 
 
 # ---------------------------------------------------------------------------
-# CLI surface: python -m delfin.agent.cli scheduler start|status|stop
+# CLI surface: delfin-agent scheduler start|status|stop
 # ---------------------------------------------------------------------------
 
 def test_cli_scheduler_subcommand_registered():
