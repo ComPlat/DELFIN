@@ -347,8 +347,13 @@ def cmd_run(args: argparse.Namespace) -> int:
     import time as _time
     _t0 = _time.monotonic()
     stream_json = (getattr(args, "output_format", "text") == "stream-json")
+    # Passed only when it is wanted: `emit` is a new keyword, and every
+    # caller that stands in for `_run_once` was written against the
+    # signature without it. A turn that streams nothing is called exactly
+    # as it always was.
+    _emit = {"emit": _json_line} if stream_json else {}
     out = _run_once(engine, prompt, max_tokens=args.max_tokens or 4096,
-                    emit=(_json_line if stream_json else None))
+                    **_emit)
     sid = _save_session(engine, repo)
 
     # Learning signal: record the outcome so provider profiles learn from
