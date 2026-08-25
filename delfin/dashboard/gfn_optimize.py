@@ -1722,10 +1722,10 @@ def _median(values: Any) -> float:
 #: Found on the second difference of the energy, which is what a step in a
 #: curve is: the point before the fall and the point after it both disagree
 #: with the straight line through their neighbours, and by the size of the
-#: fall.  Measured over twenty legs -- ten scans walked out and back under
-#: GFN2, relaxed at every point -- with the two thresholds together, large
-#: enough to be a different structure rather than a different geometry *and*
-#: out of line with what this path itself does:
+#: fall.  Measured over twenty-two legs -- eleven scans walked out and back
+#: under GFN2, relaxed at every point -- with the two thresholds together,
+#: large enough to be a different structure rather than a different geometry
+#: *and* out of line with what this path itself does:
 #:
 #:     kept its bonding             largest second difference   ratio
 #:       propane C-C-C angle                  0.3 kcal/mol       1.9x
@@ -1737,15 +1737,21 @@ def _median(values: Any) -> float:
 #:     jumped
 #:       Diels-Alder, backward               12.9              13.5x
 #:       formate/water H transfer            19.0, 32.9         7.9x
+#:       N-methylacetamide torsion           19.2              12.0x
 #:       Diels-Alder, forward                33.5             130.7x
 #:       ring opening                        60.6, 93.7        33.3x
 #:
-#: Six legs of six that jumped are found and none of the fourteen that did not
-#: is called one.  Neither threshold does it alone, and that is the finding:
-#: the ratios overlap -- a clean SN2 reaches 10.0x and a real hydrogen
-#: transfer only 7.9x -- while the sizes do not, and a water dimer whose two
-#: molecules turn over inside their hydrogen bond is 21 times its own median
-#: at six tenths of a kcal/mol, which is not a jump by any reading.
+#: Eight legs of eight that jumped are found and none of the fourteen that did
+#: not is called one.  Neither threshold does it alone, and that is the
+#: finding: the ratios overlap -- a clean SN2 reaches 10.0x and a real
+#: hydrogen transfer only 7.9x -- while the sizes do not, and a water dimer
+#: whose two molecules turn over inside their hydrogen bond is 21 times its
+#: own median at six tenths of a kcal/mol, which is not a jump by any reading.
+#:
+#: Nothing here is about a kind of coordinate.  An amide torsion jumps and an
+#: SN2 does not; a distance driven through a Diels-Alder jumps and the same
+#: kind of distance stretched in an ethane does not.  Which is why the second
+#: leg is walked rather than a rule applied.
 #:
 #: The alternative that suggests itself, the RMSD between consecutive points,
 #: is worse than either: measured on the Diels-Alder it is 0.536 A at the fall
@@ -1901,14 +1907,25 @@ def _pairs_of(driven: Any) -> List[tuple]:
 #:
 #: Measured against it, on eleven scans run out and back under GFN2 -- torsions
 #: of an alkane, an alcohol, a diol and an amide, a C-C stretch, a C-C-C angle,
-#: a hydrogen bond, an SN2, a ring opening and a Diels-Alder:
+#: a stretched hydrogen bond, an SN2, a ring opening, a hydrogen transfer and a
+#: Diels-Alder:
 #:
-#:     every scan that kept its bonding      under 0.1 kcal/mol
-#:     the Diels-Alder, which jumped         23.8 kcal/mol
+#:     ethane C-C stretch                     0.000 kcal/mol
+#:     propane C-C-C angle                    0.001
+#:     butanol, butane, glycol torsions       0.002, 0.004, 0.006
+#:     SN2 Cl-/CH3Cl                          0.032
+#:     water dimer O-O                        0.803
+#:     ---------------------------------------------- RT ln 10 = 1.364
+#:     N-methylacetamide torsion             14.2
+#:     Diels-Alder                           23.8
+#:     formate/water H transfer              60.8
+#:     ring opening                         129.1
 #:
-#: Two orders of magnitude of clear water between them, so the threshold is
-#: not a fitted number -- almost anything in the gap would do -- and the one
-#: with a meaning is the one worth using.
+#: A factor of eighteen of clear water between the two groups, so the
+#: threshold is not a fitted number -- almost anything in the gap would do --
+#: and the one with a meaning is the one worth using.  And nothing in the two
+#: groups is about a kind of coordinate: an amide torsion jumps and an SN2
+#: does not.
 GAS_CONSTANT_KCAL = 1.987204259e-3
 
 
