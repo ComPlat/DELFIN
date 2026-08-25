@@ -529,7 +529,16 @@ def _startup_banner(engine, report, workspace: Path,
 
     git = report.git
     if git.is_repo:
-        where = f"git {git.branch}" if git.branch else "git, detached HEAD"
+        if getattr(git, "unborn", False):
+            # `git init` and straight in is an ordinary way to start, and
+            # it is worth naming: there is a repository, so /rewind works,
+            # but nothing to diff against yet.
+            where = f"git {git.branch}, no commits yet" if git.branch \
+                else "git, no commits yet"
+        elif git.branch:
+            where = f"git {git.branch}"
+        else:
+            where = "git, detached HEAD"
         if git.dirty:
             where += f" · {len(git.dirty)} uncommitted"
     else:

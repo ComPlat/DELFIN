@@ -54,10 +54,11 @@ def test_a_sibling_of_home_is_not_shortened(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 class _Git:
-    def __init__(self, is_repo=True, branch="main", dirty=()):
+    def __init__(self, is_repo=True, branch="main", dirty=(), unborn=False):
         self.is_repo = is_repo
         self.branch = branch
         self.dirty = dirty
+        self.unborn = unborn
 
 
 class _Report:
@@ -91,6 +92,69 @@ def test_a_detached_head_is_not_reported_as_no_repository():
     text = _banner(_Git(is_repo=True, branch=""))
     assert "detached HEAD" in text
     assert "not a git repository" not in text
+
+
+# ---------------------------------------------------------------------------
+# What `git init && delfin-agent` actually reports — found by running it
+# ---------------------------------------------------------------------------
+
+def test_a_repository_with_no_commits_is_not_a_detached_head():
+    """`git init` then straight in is an ordinary way to start.
+
+    On that repository `git rev-parse --abbrev-ref HEAD` exits 128, so a
+    branch read only that way comes back empty and the banner announced
+    a detached HEAD — a different and alarming state.
+    """
+    text = _banner(_Git(branch="main", unborn=True))
+    assert "no commits yet" in text
+    assert "detached" not in text
+
+
+def _real_git_info(path):
+    from delfin.agent import launch_guard as lg
+    return lg._git_info(Path(path))
+
+
+def test_a_fresh_repository_reports_its_branch_and_its_unbornness(tmp_path):
+    import subprocess
+    subprocess.run(["git", "init", "-q", "."], cwd=tmp_path, check=True)
+    info = _real_git_info(tmp_path)
+    assert info.is_repo is True
+    assert info.branch, "an unborn branch still has a name"
+    assert info.unborn is True
+
+
+def test_a_repository_with_a_commit_is_not_unborn(tmp_path):
+    import subprocess
+    run = lambda *a: subprocess.run(a, cwd=tmp_path, check=True,
+                                    capture_output=True)
+    run("git", "init", "-q", ".")
+    run("git", "config", "user.email", "t@example.invalid")
+    run("git", "config", "user.name", "t")
+    (tmp_path / "f.txt").write_text("x")
+    run("git", "add", "f.txt")
+    run("git", "commit", "-qm", "first")
+    info = _real_git_info(tmp_path)
+    assert info.unborn is False
+    assert info.branch
+
+
+def test_the_agents_own_state_directory_is_not_the_users_loose_work(tmp_path):
+    """`.delfin/` is created by the agent, in the workspace, on turn one.
+
+    Counting it as uncommitted work told the user they had changes in a
+    directory they had never touched — and it did so in the same sentence
+    that warns their work and the agent's will be hard to tell apart.
+    """
+    import subprocess
+    subprocess.run(["git", "init", "-q", "."], cwd=tmp_path, check=True)
+    (tmp_path / ".delfin").mkdir()
+    (tmp_path / ".delfin" / "session_tasks.json").write_text("{}")
+    (tmp_path / "mine.txt").write_text("x")
+
+    info = _real_git_info(tmp_path)
+    assert "mine.txt" in info.dirty
+    assert not [p for p in info.dirty if p.startswith(".delfin")], info.dirty
 
 
 def test_the_session_id_is_shortened_to_what_a_person_types():
