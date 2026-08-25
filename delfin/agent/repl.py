@@ -392,8 +392,10 @@ class TerminalAgent:
     """
 
     def __init__(self, engine, opts: ReplOptions | None = None, *,
-                 out=None, err=None, read_line: Callable[[str], str] | None = None):
+                 out=None, err=None, read_line: Callable[[str], str] | None = None,
+                 broker=None):
         self.engine = engine
+        self.broker = broker
         self.opts = opts or ReplOptions()
         self.out = out if out is not None else sys.stdout
         self.err = err if err is not None else sys.stderr
@@ -549,6 +551,11 @@ class TerminalAgent:
         with rk.RawMode(self._stdin) as raw:
             decoder = rk.KeyDecoder()
             while True:
+                if self.broker is not None:
+                    pending = self.broker.take()
+                    if pending is not None:
+                        self._answer(pending, raw)
+                        continue
                 if raw.active:
                     for event in decoder.feed(raw.read_ready(_PUMP_TICK_S)):
                         self._on_key(event, decoder)
@@ -644,6 +651,153 @@ class TerminalAgent:
             return
         for line in rr.strip_control(self._last_result_text).splitlines():
             self.transcript.chrome("  " + line)
+
+    # -- approvals --------------------------------------------------------
+    def _answer(self, req, raw) -> None:
+        """Render one request and read the answer. Main thread only.
+
+        The worker is blocked inside the gate waiting on this, which is
+        what makes reading from stdin here safe: nothing else can be
+        writing to the terminal, and nothing else is reading from it.
+        """
+        from . import terminal_confirm as tc
+
+        self._clear_bottom()
+        if req.kind == tc.ASK:
+            self._answer_question(req, raw)
+            return
+
+        suggestion = (self.broker.suggest_pattern(req.command)
+                      if req.is_shell and req.command else "")
+        options = tc.options_for(req, suggestion=suggestion)
+        self.transcript.chrome(tc.render_request(
+            req, theme=self.transcript.theme, width=self.transcript.width,
+            options=options))
+
+        allowed = {o.key for o in options}
+        while True:
+            key = self._read_key(raw, allowed | {"\x1b"})
+            if key in ("\x1b", "n"):
+                self.broker.resolve(req, self._refuse(req))
+                self.transcript.chrome(self.transcript.theme.dim("  refused"))
+                return
+            if key == "?":
+                self.transcript.chrome(tc.render_help(req, options))
+                continue
+            if key == "a":
+                denied = self.broker.abort_all()
+                self.broker.resolve(req, self._refuse(req))
+                self._stop_engine()
+                extra = (f" and {len(denied)} other request(s) in flight"
+                         if denied else "")
+                self.transcript.chrome(self.transcript.theme.yellow(
+                    f"! aborted — this was refused{extra}, and the turn is "
+                    "ending"))
+                return
+            if key == "y":
+                self.broker.resolve(req, self._allow(req))
+                return
+            if key == "d" and req.kind == tc.PLAN:
+                self.broker.resolve(
+                    req, {"approved": True, "new_mode": "default"})
+                self.transcript.chrome(self.transcript.theme.cyan(
+                    "approval → default"))
+                return
+            if key == "e" and req.kind == tc.PLAN:
+                self.broker.resolve(
+                    req, {"approved": True, "new_mode": "acceptEdits"})
+                self.transcript.chrome(self.transcript.theme.cyan(
+                    "approval → acceptEdits"))
+                return
+            if key == "e":
+                ok, msg = self.broker.accept_edits()
+                self.transcript.chrome(self.transcript.theme.cyan(f"  {msg}"))
+                self.broker.resolve(req, self._allow(req))
+                return
+            if key in ("A", "k"):
+                pattern = (self.broker.exact_pattern(req.command) if key == "A"
+                           else suggestion)
+                if self._confirm_persist(pattern, raw):
+                    ok, msg = self.broker.persist(pattern)
+                    self.transcript.chrome(
+                        self.transcript.theme.cyan(f"  {msg}") if ok
+                        else self.transcript.theme.red(f"  {msg}"))
+                self.broker.resolve(req, self._allow(req))
+                return
+            # Unreachable in practice: _read_key only ever returns a key
+            # from `allowed`. Kept as a hard stop rather than a fallthrough
+            # so a future key added to the menu and not to this chain
+            # cannot silently mean "yes".
+            self.transcript.chrome(self.transcript.theme.dim(
+                "  that key does nothing here"))
+
+    def _confirm_persist(self, pattern: str, raw) -> bool:
+        """A second keystroke, against the consequence spelled out.
+
+        Both facts surprise people, so both are on screen: it is GLOBAL
+        (the merge rule takes allow-patterns from the user file only, and
+        ignores a repository's) and it is PERMANENT.
+        """
+        if not pattern:
+            return False
+        self.transcript.chrome(
+            f"  persist  {pattern}\n"
+            "  Every future command matching it runs without asking — in "
+            "this project and every other, in this session and every "
+            "future one.")
+        self.transcript.chrome("  [y] persist   [any other key] just this once")
+        return self._read_key(raw, {"y", "n", "\x1b"}) == "y"
+
+    def _answer_question(self, req, raw) -> None:
+        """ask_user_question: numbered options, one key."""
+        payload = req.payload or {}
+        question = str(payload.get("question", "") or "(no question given)")
+        options = [str(o) for o in (payload.get("options") or [])][:9]
+        self.transcript.chrome(self.transcript.theme.bold(f"? {question}"))
+        for i, opt in enumerate(options, 1):
+            self.transcript.chrome(f"  {i}. {rr.strip_control(opt)}")
+        if not options:
+            self.broker.resolve(req, {"answers": []})
+            return
+        allowed = {str(i) for i in range(1, len(options) + 1)} | {"\x1b"}
+        key = self._read_key(raw, allowed)
+        if key == "\x1b":
+            self.broker.resolve(req, {"answers": []})
+            return
+        self.broker.resolve(req, {"answers": [options[int(key) - 1]]})
+
+    def _read_key(self, raw, allowed: set[str]) -> str:
+        """One keystroke, from the reader the key layer already owns."""
+        if raw is not None and getattr(raw, "active", False):
+            while True:
+                chunk = raw.read_ready(0.1)
+                if not chunk:
+                    continue
+                for ch in chunk:
+                    if ch in allowed:
+                        return ch
+                if chunk[0] == "\x1b":
+                    return "\x1b"
+                # Enter, arrows, anything unclaimed: ignored, never a
+                # default. A default-yes turns approval into a rhythm, and
+                # rhythm is what this whole layer exists to break.
+        # No terminal to read from: an unanswerable prompt is a refusal,
+        # never a silent yes.
+        return "n"
+
+    @staticmethod
+    def _allow(req):
+        from . import terminal_confirm as tc
+        return True if req.kind == tc.CONFIRM else req.decision
+
+    @staticmethod
+    def _refuse(req):
+        from . import terminal_confirm as tc
+        if req.kind == tc.PLAN:
+            return {"approved": False, "new_mode": "plan"}
+        if req.kind == tc.ASK:
+            return {"answers": []}
+        return False
 
     # -- the bottom row, which has exactly one owner ----------------------
     def _can_redraw(self) -> bool:
