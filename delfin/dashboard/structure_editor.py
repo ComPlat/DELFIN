@@ -191,8 +191,10 @@ _EDITOR_COMMENTS = (
     'optimised to ',
     'climbed towards ',
     'where the chain got to',
+    'where the band got to',
     'climbed to ',
     'from a path, optimised to ',
+    'from a band, optimised to ',
     'optimised to a transition state',
     'estimated transition state, from the path',
     'delfin drag-end',
@@ -2043,11 +2045,31 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: it is the answer on a machine with no ORCA and the fast answer on one
     #: with it -- and something a user would go looking for must be findable
     #: before they know they need it.
+    #: * A nudged elastic band.  ORCA's ``! NEB-TS``: a chain of images
+    #:   relaxed onto the way between the two ends at once, the highest of
+    #:   them climbed to the saddle.  The arbiter, and second on the list
+    #:   rather than first: measured on the same sixteen-atom Diels-Alder from
+    #:   the same two ends, it reaches the same saddle as the chain above to
+    #:   0.07 cm-1 and spends 203 gradients doing it.  What it is for is the
+    #:   case where the cheap answer is not believed, or where the two ends
+    #:   are far enough apart that a cheap interpolation cannot bridge them --
+    #:   it is a different method and not a longer run of the same one.
+    #:
+    #:   How long that is depends on the machine more than on the method, and
+    #:   the number this editor used to quote -- seven minutes -- was the
+    #:   serial one.  Measured here: the same band, same hour, 272 s on one
+    #:   process and 39.4 s on eight, because the images are independent
+    #:   gradients and ORCA computes them together.  On a box with cores it is
+    #:   a press like the others; on a small login node it is 203 gradients
+    #:   however they are arranged, which is what the timeout is for.
     submit_saddle_how = widgets.Dropdown(
         options=[('through ORCA', 'orca')], value='orca',
-        tooltip=('How it gets there. Through ORCA converges it; by hand you '
-                 'can watch it, steer it and drag in the middle of it; the '
-                 'path only stops at the structure the walk estimates.'),
+        tooltip=('How it gets there. Through ORCA converges it; NEB-TS '
+                 'relaxes a whole chain of images between the two ends and '
+                 'climbs the highest, which is slower and is what to reach '
+                 'for when the fast answer is not believed; by hand you can '
+                 'watch it, steer it and drag in the middle of it; the path '
+                 'only stops at the structure the walk estimates.'),
         layout=widgets.Layout(width='142px', display='none'),
         disabled=True,
     )
@@ -11150,6 +11172,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             state['chain_stop'] = True
             _set_mol_status('Stopping...', spinner=True)
             return
+        if state.get('band_run'):
+            # A band is the longest thing this press starts -- minutes, not
+            # seconds -- so being able to end it matters more here than
+            # anywhere else, and ORCA writes every band it accepts to disk, so
+            # what it had reached is kept.
+            state['band_stop'] = True
+            _set_mol_status('Stopping the band...', spinner=True)
+            return
         if state.get('path_run'):
             # The walk is a single call to xtb and cannot be interrupted part
             # way, so this says so rather than lighting a Stop that would do
@@ -11189,6 +11219,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 return
         if how == 'orca':
             _path_then_orca(ends)
+            return
+        if how == 'neb':
+            _band_between(ends)
             return
         _walk_the_path(ends, then_climb=(how == 'hand'))
 
@@ -11483,6 +11516,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # as well it would be the same thing under two names in two
                 # places, which is the whole complaint this is answering.
                 if start != 'here':
+                    # A band, which is another *how* from a two-ended start
+                    # and not a button of its own: it answers the same
+                    # question ORCA and by-hand answer, from the same pair, and
+                    # a fourth press beside them would be the third time this
+                    # row learnt that lesson.
+                    #
+                    # After ORCA rather than before it, because the order of
+                    # the list is the recommendation.  Measured on the
+                    # sixteen-atom Diels-Alder from the same two ends, the two
+                    # reach the same saddle to 0.07 cm-1 and the band spends
+                    # 203 gradients doing it -- so it is what to run when the
+                    # cheap answer is not believed, or when the two ends are
+                    # too far apart for a cheap interpolation to bridge, and
+                    # it is not what to run first.
+                    if chosen.lower() in _saddle.SADDLE_METHODS:
+                        out.append(('through NEB-TS', 'neb'))
                     if chosen.lower() in _climb.CLIMB_METHODS:
                         out.append(('by hand', 'hand'))
                     if _gfn.is_gfn_method(chosen):
@@ -12040,7 +12089,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         estimates the top of what it crossed, and has no saddle optimiser at
         all; ORCA has one and nothing that produces an estimate to give it.
         Chained, the pair is twelve seconds on sixteen atoms -- and lands
-        within a wavenumber of a nudged elastic band that takes seven minutes.
+        within a tenth of a wavenumber of a nudged elastic band on the same
+        two ends, for about half the gradients.  Which is why the band is the
+        other entry in the box beside this and not the default in it.
 
         Watched while it climbs and stopped by the same press, like the climb
         on its own.  The walk itself is not drawn: it ends at the product and
@@ -12187,6 +12238,143 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
         _start_background(_work, 'The walk and the climb after it',
                           guards={'chain_run': False})
+
+    def _band_between(ends):
+        """A nudged elastic band between the two ends, and the climb off it.
+
+        The arbiter.  Everything else this press does is fast, and fast is
+        exactly what makes it worth having something slower to check against:
+        the chain above walks its own way between two ends with metadynamics
+        and climbs the highest point of it, and when the answer that comes
+        back is not believable there has to be a second opinion that shares no
+        machinery with the first.  A band is that -- ten images relaxed onto
+        the way between the two ends at once, rather than one structure walked
+        along it -- and :func:`delfin.dashboard.saddle.neb_to_saddle` is where
+        the measurements live.
+
+        Two things are checked before ORCA is started, and both of them were
+        measured failing the slow way: a band between two ends whose
+        interpolation pulls a fragment off computes both ends perfectly and
+        kills every image in between, and a band between two ends whose atoms
+        are in different orders has no path at all.  Either one costs the
+        whole timeout and returns nothing, so both are refused here in the
+        second it takes to read a bond graph.
+
+        It streams, because it is the one press here that runs for minutes:
+        ORCA writes every band it accepts and then every step of the climb,
+        both with energies, and the same frame channel the climb uses plays
+        them.  The same press stops it and keeps what it had.
+        """
+        if state.get('path_run') or state.get('saddle_run') or state.get(
+                'chain_run'):
+            _set_mol_status('Something is already running on this structure; '
+                            'let it finish or stop it first.')
+            return
+        method = str(submit_ff_dd.value)
+        if method.lower() not in _saddle.SADDLE_METHODS:
+            _set_mol_status(
+                'A band is ORCA relaxing a chain of images on a semiempirical '
+                'gradient, so choose GFN2, GFN1, GFN-FF or g-xTB. Anything '
+                'with a basis set is a job for the ORCA Builder.')
+            return
+        state['band_run'] = True
+        state['band_stop'] = False
+        state['band_frame_run'] = int(state.get('gfn_run', 0)) + 1
+        state['gfn_run'] = state['band_frame_run']
+        _note_the_run(state['band_frame_run'], 'band')
+        _ensure_manip_bootstrap()
+        schedule_ui_update(_install_gfn_frame_watcher)
+        submit_saddle_btn.description = 'Stop'
+        submit_saddle_btn.icon = 'stop'
+        charge = int(submit_gfn_charge.value or 0)
+        uhf = _gfn_uhf_now()
+        wet = str(submit_gfn_solvent.value or '') or None
+        label = _server_label(method)
+        _set_mol_status(
+            f'{label}: relaxing a {_saddle.NEB_IMAGES}-image band between the '
+            'two ends. This is the slow route and takes minutes; the press '
+            'stops it.', spinner=True)
+
+        def _work():
+            sent = [0]
+
+            def _watch(walked, energies):
+                """The band while it relaxes, then the climb, as they arrive.
+
+                Down the frame channel and not into the box, for the reason
+                every other watcher here gives: a write to the box rebuilds
+                the viewer, and a band is a hundred and seventy frames.
+                """
+                if state.get('gfn_run') != state.get('band_frame_run'):
+                    return
+                for n in range(sent[0], len(walked)):
+                    schedule_ui_update(
+                        lambda text=json.dumps({
+                            'run': state.get('band_frame_run'),
+                            'from': n,
+                            'follow': 1,
+                            'frames': [[round(float(v), 4)
+                                        for v in walked[n]]],
+                        }): setattr(submit_gfn_frame, 'value', text))
+                sent[0] = len(walked)
+                schedule_ui_update(
+                    _set_mol_status,
+                    f'The band is relaxing: {len(walked)} images accepted so '
+                    'far.', spinner=True)
+
+            found = _saddle.neb_to_saddle(
+                ends[0], ends[1], method, charge=charge, uhf=uhf,
+                solvent=wet, on_frame=_watch,
+                # The method's own allowance.  g-xTB is measured at 716 s on
+                # the sixteen-atom Diels-Alder, where the methods ORCA drives
+                # itself are 39 -- every gradient is a separate process --
+                # so one number for both would stop one of them short.
+                timeout=_saddle.neb_seconds_for(method),
+                should_stop=lambda: bool(state.get('band_stop')),
+                on_stage=lambda said: schedule_ui_update(
+                    _set_mol_status, said, spinner=True))
+
+            def _done():
+                state['band_run'] = False
+                state['band_stop'] = False
+                _name_the_saddle_press()
+                lines = []
+                text = found.get('xyz') or ''
+                rows = [line for line in text.splitlines()[2:] if line.strip()]
+                if not found.get('ok'):
+                    lines.append(str(found.get('status')
+                                     or 'The band did not run.'))
+                    if rows:
+                        _remember('the band')
+                        _write_coords(xyz_document(
+                            rows, 'Where the band got to'))
+                    _set_mol_status(*lines)
+                    return
+                said = _saddle.verdict(found.get('imaginary'),
+                                       'What it reached')
+                lines.append(found['status'])
+                if found.get('reaction') is not None:
+                    lines[-1] += (f' The two ends are '
+                                  f'{found["reaction"]:+.1f} kcal/mol apart '
+                                  'along it.')
+                lines.extend(said['lines'])
+                if rows:
+                    # One step for the whole band, which Undo takes back
+                    # whole: two structures went in and one came out.
+                    _remember('the band')
+                    _write_coords(xyz_document(
+                        rows, f'From a band, optimised to {said["name"]}'))
+                    lines.append('It is in the box; Undo takes it back.')
+                    if said['first_order']:
+                        lines.append(
+                            'Refine it with OPTTS in the ORCA Builder at a '
+                            'level worth quoting.')
+                _set_mol_status(*lines)
+
+            schedule_ui_update(_done)
+
+        _start_background(_work, 'The band between the two ends',
+                          guards={'band_run': False})
 
     def _walk_the_path(ends, then_climb=False):
         """Walk between two ends and keep what is found.
