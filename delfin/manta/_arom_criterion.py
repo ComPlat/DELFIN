@@ -82,7 +82,62 @@ _AROMATIC_BOND_MAX: float = 1.46
 # ein spuerbarer Anteil echter Benzolringe heraus.  Ein nicht erkannter Aromat wird
 # nicht verflacht: entgangene Verflachung, kein neuer Defekt.  Fuer S-haltige Ringe
 # ist es umgekehrt viel WEITER (1.700 statt 1.460) -- genau die Thiophen-Reparatur.
-_AROM_RATIO_MAX: float = 0.939
+# ⚠ 25.08.2026: 0.939 -> 0.963.  AUF BAU-FRAMES NEU GEEICHT, nicht auf Kristallen.
+#
+# WARUM DIE ALTE ZAHL FALSCH ANGEWANDT WAR.  0.939 ist das Optimum auf 910
+# KRISTALLEN.  `aromrad6k` hat sie am 24.08. auf BAU-Frames gemessen, und das
+# Verdikt zeigt beide Seiten der Medaille:
+#     pyramidal_sp2         15911 -> 15360 Frames   (Masse 3028 -> 2837)
+#     smiles_ccdc_regressed    35 Systeme           <- der Preis
+# Also im Mittel besser, im Einzelfall zu scharf -- genau die Unsicherheit, die in
+# der Vorregistrierung als DIE Frage des Laufs benannt war.
+#
+# DIE NEUE EICHUNG (`harness/arom_eichung_baurahmen.py`, 1500 Systeme):
+#     Schwelle   Aromat verpasst   Nicht-Ar. durch   ausgewogen
+#     0.939 alt      13,34 %            5,41 %         9,37 %
+#     0.963 neu       2,14 %           10,81 %         6,48 %
+# In Angstroem fuer C-C: 1.427 -> 1.464.  Damit liegt die Schwelle fuer reine
+# Carbocyclen wieder dort, wo die historische rohe Zahl 1.460 stand -- sie war fuer
+# Carbocyclen NIE das Problem; die Normierung hat sie versehentlich um 0.033 A
+# verschaerft.  Fuer S-haltige Ringe bleibt der Thiophen-Gewinn erhalten (C-S jetzt
+# 1.743 statt 1.700, weiterhin weit ueber 1.46).
+#
+# ⚠ NICHT ZIRKULAER GEMESSEN, und das war die eigentliche Schwierigkeit: die
+# WAHRHEIT ("dieser Ring ist aromatisch") darf nicht aus der Bindungslaenge kommen,
+# denn das ist die zu eichende Groesse.  Sie kommt aus der PLANARITAET DES RINGES
+# IM KRISTALL -- eine Groesse, die mit der Bindungslaenge nichts zu tun hat und die
+# der Bau nicht beeinflusst.  Gemessen wird dann dasselbe Ringmotiv im BAU-Frame.
+#
+# ⚠ EMPFINDLICHKEITSPROBE, weil die Flachheitsschwelle 0.08 A frei gewaehlt ist:
+#     flach< 0.04 -> Optimum 0.954     flach< 0.06 -> 0.963     flach< 0.08 -> 0.963
+#     flach< 0.12 -> 0.963             flach< 0.18 -> 0.963
+# Vier von fuenf ergeben dieselbe Zahl; nur die schaerfste weicht ab, und dort ist
+# die Nicht-Aromaten-Klasse mit n=46 am duennsten.  Die Zahl haengt also nicht an
+# der gewaehlten Flachheit.
+#
+# ⚠ WAS AN DER MESSUNG DUENN IST, ehrlich benannt: 1402 Aromaten gegen 37
+# Nicht-Aromaten.  Die Seite "Aromat verpasst" -- die den SCHADEN bestimmt -- steht
+# auf ueber 1400 Ringen und traegt.  Die Seite "Nicht-Aromat faelschlich durch"
+# steht auf 37 und ist grob; sie kostet aber nur eine unnoetige Verflachung, keinen
+# Defekt.  Deshalb ist der Fehler hier bewusst asymmetrisch gewichtet worden.
+#
+# 🔴 DER PREIS HAT EINEN NAMEN, und der Selbsttest zeigt ihn: OXAZOLIN liegt bei
+# 0.965.  Mit 0.939 wurde es mit einem Abstand von 0.026 verworfen; mit 0.963 ist
+# der Abstand nur noch **0.002**.  Die Probe 11-13 haelt (0.965 >= 0.963), aber sie
+# haelt knapp -- und sie rechnet mit einer IDEALGEOMETRIE.  Auf einem Bau-Frame
+# streut derselbe Ring, und ein etwas kuerzer geratenes Oxazolin wird jetzt
+# faelschlich verflacht.  Genau das ist die gemessene Verdopplung der falsch
+# durchgelassenen Nicht-Aromaten (5,41 % -> 10,81 %), hier an einem benannten
+# Stoff statt an einer Prozentzahl.
+# ⇒ WORAUF IM VERDIKT ZU SCHAUEN IST: `smiles_ccdc_regressed` und
+#   `pyramidal_sp2` auf Systemen mit Oxazolin/Imidazolin.  Steigt dort etwas,
+#   ist 0.963 fuer diese Ringfamilie zu weit und die Schwelle gehoert
+#   ELEMENTABHAENGIG gestaffelt (C-C anders als C-N-O), nicht global gesenkt.
+#   Das waere die naechste Verfeinerung -- eine Zahl fuer alle Ringe ist selbst
+#   eine Naeherung, und diese Messung zeigt ihre Grenze.
+#
+# Vorgabe des SCHALTERS unveraendert AUS -> byte-identisch.
+_AROM_RATIO_MAX: float = 0.963
 
 # Nur falls ein Ringatom kein Kovalenzradius hat.  Kann bei den Aufrufern nicht
 # feuern (alle drei filtern die Ringe vorher auf C/N/O/S), steht aber auf
