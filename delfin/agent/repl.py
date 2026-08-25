@@ -627,7 +627,11 @@ class TerminalAgent:
                 self.queued.append(text)
                 self.transcript.chrome(self.transcript.theme.dim(
                     f"queued ({len(self.queued)}) — goes out when this turn "
-                    "ends"))
+                    "ends, or ctrl+g to send it into this one"))
+            return
+        if event.kind == rk.STEER:
+            self._clear_input_line()
+            self._steer(event.text.strip())
             return
         if event.kind == rk.CYCLE_MODE:
             self._clear_input_line()
@@ -652,6 +656,40 @@ class TerminalAgent:
             return
         if event.kind == rk.EDIT:
             self._draw_input_line(event.text)
+
+    def _steer(self, text: str) -> None:
+        """Put what was typed into the turn that is running.
+
+        The engine already carries the whole mechanism: the client's steer
+        inbox is drained between tool rounds AND at a turn that would
+        otherwise end, so a message sent late still continues the turn
+        rather than being answered next time. What was missing was a way
+        to reach it from a keyboard.
+
+        A backend without the inbox is told about, never worked around:
+        `steer` returns False there, and the message becomes a queued one
+        with the reason on screen. Dropping it would lose something the
+        user typed, and pretending it landed would be worse.
+        """
+        # Stripped here, not only at the call site. `push_steer` drops a
+        # blank of its own accord, so an unstripped one would send nothing
+        # and still print that it had — a line on screen asserting an
+        # effect that did not happen.
+        text = (text or "").strip()
+        if not text:
+            return
+        try:
+            delivered = bool(self.engine.steer(text))
+        except Exception:
+            delivered = False
+        if delivered:
+            self.transcript.chrome(self.transcript.theme.cyan(
+                "→ sent into the running turn"))
+            return
+        self.queued.append(text)
+        self.transcript.chrome(self.transcript.theme.dim(
+            f"this backend takes no message mid-turn — queued "
+            f"({len(self.queued)}) instead"))
 
     def _cycle_mode(self) -> None:
         """Shift+Tab, one step along the ladder — never onto bypass.

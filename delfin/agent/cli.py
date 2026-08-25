@@ -77,7 +77,7 @@ def _build_engine(args: argparse.Namespace):
     provider = args.provider or fallback.get("provider", "")
     mode = getattr(args, "mode", "") or "solo"
     cwd = getattr(args, "cwd", "") or os.getcwd()
-    return AgentEngine(
+    engine = AgentEngine(
         repo_dir=Path(cwd).expanduser().resolve(),
         backend=backend,
         provider=provider,
@@ -89,7 +89,105 @@ def _build_engine(args: argparse.Namespace):
         permission_mode=getattr(args, "permission_mode", "") or "",
         extra_dirs=list(getattr(args, "extra_dirs", None) or []),
         read_only_dirs=list(getattr(args, "read_only_dirs", None) or []),
+        # None, never []: CLIClient tests the parameter for ``is not None``
+        # and an empty list would build ``--allowedTools`` with nothing
+        # after it, which restricts the session to no tools at all.
+        allowed_tools=_allowed_tools(args) or None,
     )
+    _apply_run_budget(engine, args)
+    _apply_tool_surface(engine, args)
+    return engine
+
+
+def _allowed_tools(args: argparse.Namespace) -> list[str]:
+    """``--allowed-tools a,b,c`` as a list, or empty for "no restriction"."""
+    return _tool_name_list(getattr(args, "allowed_tools", ""))
+
+
+def _disallowed_tools(args: argparse.Namespace) -> list[str]:
+    """``--disallowed-tools a,b,c`` as a list, or empty for "deny nothing"."""
+    return _tool_name_list(getattr(args, "disallowed_tools", ""))
+
+
+def _tool_name_list(raw) -> list[str]:
+    """A comma-separated flag value as a list of stripped, non-empty names."""
+    raw = raw or ""
+    if isinstance(raw, (list, tuple)):
+        parts = [str(p) for p in raw]
+    else:
+        parts = str(raw).split(",")
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _apply_tool_surface(engine, args: argparse.Namespace) -> None:
+    """Hand this run's tool lists to the client that can enforce them.
+
+    Applied to the constructed client rather than passed down the engine
+    constructor, because the lists live on the permissions object the
+    executor is handed on every call — that is what makes an excluded tool
+    REFUSED when called instead of merely hidden from the model. Backends
+    with no tool loop of their own store nothing; ``_bounding_notices``
+    reads back what really arrived and says so.
+
+    Nothing is written to any settings file: a bound asked for on this
+    command line bounds this session and no later one.
+    """
+    allowed = _allowed_tools(args)
+    denied = _disallowed_tools(args)
+    if not allowed and not denied:
+        return
+    client = getattr(engine, "client", None)
+    narrow = getattr(client, "narrow_tool_surface", None)
+    if callable(narrow):
+        try:
+            narrow(allowed=allowed, denied=denied)
+        except Exception:
+            pass
+
+
+def _apply_run_budget(engine, args: argparse.Namespace) -> None:
+    """Carry ``--max-budget-usd`` / ``--max-run-seconds`` onto the engine.
+
+    ``AgentEngine._run_budget`` reads ``run_budget_usd`` / ``run_budget_s``
+    off the instance and falls back to the settings file only when the
+    attribute is absent or zero — the precedence the scheduler daemon and
+    ``benchmark_runner`` already use to bound one entry without touching
+    anybody's configuration. Set the same way here, so a ceiling asked for
+    on the command line is a ceiling for THIS run and nothing else.
+
+    The ceiling is cumulative over the session; the per-turn cost breaker
+    is a different limit and neither replaces the other. Zero or absent
+    leaves the settings value in charge, which is what every caller that
+    predates these flags hands over.
+    """
+    try:
+        usd = float(getattr(args, "max_budget_usd", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        usd = 0.0
+    try:
+        secs = float(getattr(args, "max_run_seconds", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        secs = 0.0
+    if usd > 0:
+        engine.run_budget_usd = usd
+    if secs > 0:
+        engine.run_budget_s = secs
+
+    # `--max-turns` bounds the tool ROUNDS inside one turn, which is a
+    # different dimension from the two above: a session can be cheap and
+    # still spin, and a single turn can spin without the cumulative
+    # ceilings ever being approached. The client resolves it from the
+    # user's settings file, so the override lives on the instance — the
+    # settings file belongs to every later session, and bounding one run
+    # must not change what every run does.
+    try:
+        rounds = int(getattr(args, "max_turns", 0) or 0)
+    except (TypeError, ValueError):
+        rounds = 0
+    if rounds > 0:
+        client = getattr(engine, "client", None)
+        if client is not None:
+            client.max_tool_rounds = rounds
 
 
 def _resume_or_create(engine, args: argparse.Namespace) -> str:
@@ -145,7 +243,21 @@ def _resume_or_create(engine, args: argparse.Namespace) -> str:
     return data.get("session_id", sid)
 
 
-def _run_once(engine, prompt: str, *, max_tokens: int = 4096) -> dict[str, Any]:
+def _json_line(obj: dict) -> None:
+    """One JSON object, one line of stdout, flushed.
+
+    ``--output-format stream-json`` is consumed by a reader that parses
+    line by line as the turn runs, so a buffered write would deliver the
+    whole stream at the end and make the format pointless. ``sys.stdout``
+    is looked up per call rather than captured, because the one-shot path
+    is also driven from tests that replace it.
+    """
+    sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+
+
+def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
+              emit: Any = None) -> dict[str, Any]:
     """Stream a single turn and collect text + tool-calls + token-usage.
 
     AgentEngine's ``stream_response`` is callback-driven, not event-
@@ -154,6 +266,11 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096) -> dict[str, Any]:
     a string.  Token usage is read from ``engine.token_usage`` after
     the call (cumulative for the engine; each benchmark task gets a
     fresh engine so the cumulative IS per-turn).
+
+    ``emit`` receives one dict per event as it happens, for the callers
+    that want the turn as a stream rather than as one answer at the end.
+    The return value is unchanged either way, so the summary a streaming
+    caller prints last is the same object the JSON caller prints alone.
     """
     chunks: list[str] = []
     tool_calls: list[dict] = []
@@ -162,6 +279,8 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096) -> dict[str, Any]:
     def _on_token(text: str) -> None:
         if text:
             chunks.append(text)
+            if emit is not None:
+                emit({"type": "text", "text": text})
 
     def _on_tool_use(name: str, input_json: str) -> None:
         try:
@@ -169,6 +288,8 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096) -> dict[str, Any]:
         except (json.JSONDecodeError, TypeError):
             inp = {"raw": str(input_json)}
         tool_calls.append({"name": name, "input": inp})
+        if emit is not None:
+            emit({"type": "tool_use", "name": name, "input": inp})
 
     in_before = int((getattr(engine, "token_usage", {}) or {}).get("input", 0))
     out_before = int((getattr(engine, "token_usage", {}) or {}).get("output", 0))
@@ -271,10 +392,21 @@ def cmd_run(args: argparse.Namespace) -> int:
     except Exception as exc:
         print(f"ERROR: engine init failed: {exc}", file=sys.stderr)
         return 3
+    # The headless half has no banner, so the can't-deliver lines go to
+    # stderr — stdout carries the answer and nothing else.
+    for _note in _bounding_notices(args, engine):
+        print(_note, file=sys.stderr)
     _resume_or_create(engine, args)
     import time as _time
     _t0 = _time.monotonic()
-    out = _run_once(engine, prompt, max_tokens=args.max_tokens or 4096)
+    stream_json = (getattr(args, "output_format", "text") == "stream-json")
+    # Passed only when it is wanted: `emit` is a new keyword, and every
+    # caller that stands in for `_run_once` was written against the
+    # signature without it. A turn that streams nothing is called exactly
+    # as it always was.
+    _emit = {"emit": _json_line} if stream_json else {}
+    out = _run_once(engine, prompt, max_tokens=args.max_tokens or 4096,
+                    **_emit)
     sid = _save_session(engine, repo)
 
     # Learning signal: record the outcome so provider profiles learn from
@@ -310,7 +442,18 @@ def cmd_run(args: argparse.Namespace) -> int:
     except Exception:
         pass
 
-    if args.json:
+    if stream_json:
+        # The last line closes the stream and carries the same payload the
+        # one-object format prints, so a reader that only wants the answer
+        # can ignore everything before it. The key set comes from repl's
+        # TURN_KEYS rather than from a second list here: that frozenset is
+        # what `_run_once` returns and therefore what both formats promise,
+        # and two hand-kept lists would drift into two shapes of one answer.
+        from .repl import TURN_KEYS
+        _json_line({"type": "result",
+                    **{k: out.get(k) for k in sorted(TURN_KEYS)},
+                    "session_id": sid})
+    elif args.json:
         payload = {**out, "session_id": sid}
         print(json.dumps(payload, ensure_ascii=False))
     else:
@@ -549,7 +692,8 @@ def _launch_questions_answered(report) -> bool:
 
 
 def _startup_banner(engine, report, workspace: Path,
-                    why: str = "", isolation_note: str = "") -> str:
+                    why: str = "", isolation_note: str = "",
+                    notes: tuple[str, ...] = ()) -> str:
     """What the user is looking at, in the lines that decide safety."""
     from .repl import permission_mode as _permission_mode
 
@@ -608,9 +752,16 @@ def _startup_banner(engine, report, workspace: Path,
             "gate, so file and shell tools will refuse")
     for extra in (_grant_line("writable", getattr(report, "granted_dirs", ())),
                   _grant_line("readable", getattr(report, "read_dirs", ())),
+                  *_bounds_in_force(engine),
                   _parked_work_line(engine, workspace)):
         if extra:
             lines.append(extra)
+    # Every bound the user asked for that this run cannot impose. Beside
+    # the approval and grant lines because it belongs to the same
+    # question: what is actually stopping this session.
+    for note in notes or ():
+        if note:
+            lines.append(note)
     if sid:
         # The head is what a person types after `-r`; the rest is for the
         # store. Printing all 32 characters put the one useful field on
@@ -634,6 +785,206 @@ def _grant_line(label: str, dirs) -> str:
     if len(paths) > 3:
         shown += f", +{len(paths) - 3} more"
     return f"{label:<10} {shown}"
+
+
+def _usd_ceiling_measurable(engine) -> bool:
+    """Whether a USD ceiling can be enforced against THIS model at all.
+
+    ``cost_usd`` is a sum over turns whose price could be looked up. On a
+    model with no published rate every turn adds 0.00, so the fraction
+    spent stays at 0% for a run of any size and the ceiling never fires.
+    The engine says this itself once an unpriced turn has run
+    (``_unmeasured_budget_block``); asked here it can be said BEFORE the
+    money is spent, which is the only moment the user can still pick a
+    dimension that is measurable.
+    """
+    model = str(getattr(getattr(engine, "client", None), "model", "") or "")
+    provider = str(getattr(engine, "provider", "") or "")
+    try:
+        from .pricing import price_for
+        return price_for(model, provider) is not None
+    except Exception:
+        # A pricing table that cannot be read is not proof of a rate.
+        return False
+
+
+# What ``--bare`` cannot reach from this file, named once so the help text
+# and the startup line cannot drift from each other. All three are
+# discovered inside the turn, from the permissions workspace, and none has
+# a per-session switch: hooks through ``hooks.load_hooks`` at every hook
+# point, skills through ``skills.discover_skills`` while the tool surface
+# is assembled, project memory through ``PromptLoader`` while the system
+# prompt is built. A ``--bare`` that implied it covered them would be the
+# silent non-delivery the flag exists to avoid.
+_BARE_NOT_SKIPPED = "hooks, skills and project memory"
+
+
+def _apply_bare(workspace: Path) -> bool:
+    """Skip MCP server discovery for this run. True when it took.
+
+    An MCP server definition is executable configuration: it is spawned
+    with the parent environment while the tool surface is being ASSEMBLED,
+    before any model output, and then answers every call routed to it.
+    That is the one piece of discovery reachable from here, because the
+    registry is cached per workspace and loads its configuration once —
+    emptying it after that load means no server is started and no MCP tool
+    is advertised, for this process only. Nothing on disk is touched, so
+    the next run without the flag is unchanged.
+    """
+    try:
+        from . import mcp_client as _mcp
+    except Exception:
+        return False
+    took = False
+    # Two keys: the resolved workspace a permissions object carries, and
+    # the empty one a backend without a permissions object resolves to.
+    for ws in (workspace, None):
+        try:
+            registry = _mcp.get_registry(ws)
+            registry.servers.clear()
+            registry.sources.clear()
+            registry.trust_notice = ""
+            registry.loaded = True
+            took = True
+        except Exception:
+            continue
+    return took
+
+
+def _enforced_tool_surface(client) -> tuple[list[str], list[str]]:
+    """What *client* really enforces as ``(allow, deny)``.
+
+    Falls back to the ``allowed_tools`` attribute for anything that predates
+    ``enforced_tool_surface`` — a stand-in built by a caller, or a backend
+    object that only ever stored the list.
+    """
+    fn = getattr(client, "enforced_tool_surface", None)
+    if callable(fn):
+        try:
+            allow, deny = fn()
+            return ([str(t) for t in (allow or ())],
+                    [str(t) for t in (deny or ())])
+        except Exception:
+            pass
+    return ([str(t) for t in (getattr(client, "allowed_tools", None) or ())], [])
+
+
+def _bounds_in_force(engine) -> list[str]:
+    """One banner line per bound this session is actually running under.
+
+    The counterpart of :func:`_bounding_notices`, which says what could
+    NOT be honoured. Both are needed and neither substitutes for the
+    other: a session where a round cap, a spend ceiling and a denied tool
+    set are all in force looked identical on screen to one with no bounds
+    at all, so the banner named the approval mode — which decides what may
+    happen — and said nothing about the limits deciding what CAN.
+
+    Read off the constructed engine and client, never off the parsed
+    arguments. A line here is a statement that the bound arrived, and only
+    the object that took it can say that.
+    """
+    lines: list[str] = []
+    client = getattr(engine, "client", None)
+
+    parts: list[str] = []
+    rounds = int(getattr(client, "max_tool_rounds", 0) or 0)
+    if rounds > 0:
+        parts.append(f"{rounds} tool rounds per turn")
+    try:
+        usd = float(getattr(engine, "run_budget_usd", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        usd = 0.0
+    if usd > 0:
+        parts.append(f"${usd:.2f} for the session")
+    try:
+        secs = float(getattr(engine, "run_budget_s", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        secs = 0.0
+    if secs > 0:
+        parts.append(f"{int(secs)}s of wall clock")
+    if parts:
+        lines.append("bounds     " + " · ".join(parts))
+
+    allow, deny = _enforced_tool_surface(client)
+    if allow:
+        lines.append(f"tools      only {', '.join(sorted(allow))}")
+    if deny:
+        lines.append(f"tools      {', '.join(sorted(deny))} denied")
+    return lines
+
+
+def _bounding_notices(args: argparse.Namespace, engine) -> list[str]:
+    """One line per bounding flag this run cannot actually honour.
+
+    Same contract as the ``--isolate`` note: a flag that names a limit and
+    then does not impose it is worse than no flag, because the user stops
+    watching. Every line here is produced from what the constructed engine
+    and client really are, never from a second copy of the rules that
+    decided it.
+    """
+    notes: list[str] = []
+
+    try:
+        usd = float(getattr(args, "max_budget_usd", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        usd = 0.0
+    try:
+        secs = float(getattr(args, "max_run_seconds", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        secs = 0.0
+    if usd > 0 and not _usd_ceiling_measurable(engine):
+        model = str(getattr(getattr(engine, "client", None), "model", "")
+                    or "this model")
+        line = (f"budget     ${usd:.2f} REQUESTED but not enforceable — "
+                f"{model} has no published rate, so spend cannot be "
+                f"measured and the ceiling can never fire")
+        line += ("; the wall-clock ceiling IS in force"
+                 if secs > 0 else " (--max-run-seconds is measurable)")
+        notes.append(line)
+
+    # Tool lists the constructed client did not take. Asked of the client
+    # itself rather than by repeating create_client's branch here: each
+    # backend enforces what it can and reports it, so comparing against what
+    # actually arrived is the only form of this check that cannot go stale.
+    client = getattr(engine, "client", None)
+    got_allow, got_deny = _enforced_tool_surface(client)
+    provider = str(getattr(engine, "provider", "") or "?")
+    backend = str(getattr(engine, "backend", "") or "?")
+    for flag, wanted, got in (("--allowed-tools", _allowed_tools(args), got_allow),
+                              ("--disallowed-tools", _disallowed_tools(args), got_deny)):
+        if wanted and set(got) != set(wanted):
+            notes.append(
+                f"tools      {flag} REQUESTED but not applied — the "
+                f"{provider}/{backend} backend carries no such tool list, so "
+                f"all {len(wanted)} named tools and every other one stay "
+                f"available")
+
+    # A name that matches no tool is a typo, and a typo is silent in both
+    # directions: on the allow list it narrows the session further than
+    # anyone meant, on the deny list it stops nothing. Said at startup, not
+    # discovered from a turn that could not do its work.
+    try:
+        from .api_client import unknown_tool_names
+        stray = unknown_tool_names(_allowed_tools(args) + _disallowed_tools(args))
+    except Exception:
+        stray = []
+    if stray:
+        notes.append(
+            f"tools      {', '.join(stray)} — no tool of that name exists, so "
+            f"{'these names' if len(stray) > 1 else 'this name'} narrows "
+            f"nothing and is most likely a typo")
+
+    if getattr(args, "bare", False):
+        took = getattr(args, "bare_mcp_skipped", False)
+        notes.append(
+            (f"bare       MCP servers skipped — {_BARE_NOT_SKIPPED} are "
+             "discovered inside the turn and cannot be skipped from here"
+             ) if took else
+            (f"bare       REQUESTED but nothing was skipped — the MCP "
+             f"registry could not be reached, and {_BARE_NOT_SKIPPED} are "
+             "discovered inside the turn"))
+
+    return notes
 
 
 def cmd_chat(args: argparse.Namespace) -> int:
@@ -673,6 +1024,13 @@ def cmd_chat(args: argparse.Namespace) -> int:
     if not _launch_questions_answered(report):
         return 2
 
+    # Before the engine exists, because the tool surface is assembled on
+    # the first turn and both halves of this command run one. Recorded on
+    # the namespace so the startup line reports what actually happened
+    # rather than what was asked for.
+    if getattr(args, "bare", False):
+        args.bare_mcp_skipped = _apply_bare(workspace)
+
     # One shot, and out. Identical to `run`, because it IS `run`.
     # A positional prompt SEEDS an interactive session; it only becomes a
     # one-shot when there is no terminal to be interactive on.
@@ -691,8 +1049,9 @@ def cmd_chat(args: argparse.Namespace) -> int:
     # is accepted on this subcommand because the one-shot half lives here
     # too; taking it silently and then emitting text is the shape of a
     # promise that is not kept.
-    if getattr(args, "output_format", "text") == "json":
-        print("--output-format json describes one answer, so it needs -p "
+    _fmt = getattr(args, "output_format", "text")
+    if _fmt in ("json", "stream-json"):
+        print(f"--output-format {_fmt} describes one answer, so it needs -p "
               "or a piped prompt; this session will print text.",
               file=sys.stderr)
 
@@ -778,7 +1137,8 @@ def cmd_chat(args: argparse.Namespace) -> int:
         show_thinking=bool(getattr(args, "verbose", False)),
         color=getattr(args, "color", "auto"),
         banner=(_startup_banner(engine, report, workspace, why,
-                                isolation_note)
+                                isolation_note,
+                                tuple(_bounding_notices(args, engine)))
                 + (f"\n\n{notices}" if notices else "")),
     ))
     try:
@@ -1741,8 +2101,11 @@ def build_parser() -> argparse.ArgumentParser:
                       metavar="PROMPT",
                       help="Answer one prompt and exit (non-interactive)")
     chat.add_argument("--output-format", default="text",
-                      choices=["text", "json"], dest="output_format",
-                      help="text (default) or json")
+                      choices=["text", "json", "stream-json"],
+                      dest="output_format",
+                      help="text (default), json (one object at the end) or "
+                           "stream-json (one object per line as the turn "
+                           "runs; needs -p or a piped prompt)")
     chat.add_argument("--session", default="",
                       help="Session ID to resume, or 'latest'")
     chat.add_argument("-c", "--continue", action="store_true",
@@ -1775,6 +2138,51 @@ def build_parser() -> argparse.ArgumentParser:
                            "'let it read my other repo'")
     chat.add_argument("--isolate", action="store_true",
                       help="Run shell commands under filesystem isolation")
+    # Named for what it does, not for what the word suggests. The three it
+    # cannot reach are named in the help itself rather than left to be
+    # discovered — see _BARE_NOT_SKIPPED.
+    # Two ways to narrow the tool surface of ONE session. Both land on the
+    # permissions object the executor is handed, so a named tool is refused
+    # when called and not merely hidden from the model — hiding alone would
+    # leave every other route to the executor (an MCP backend, a sub-agent)
+    # wide open. The subprocess CLI backend takes the allow list only, as
+    # its own command line, and has no deny list; a run that asks for one
+    # where there is none is told so at startup rather than left believing
+    # the surface was narrowed.
+    #
+    # Neither list can WIDEN anything: the per-role gates are evaluated
+    # separately, so a tool the role forbids stays forbidden however it is
+    # named here. An empty allow list means no restriction. Deny wins.
+    chat.add_argument("--allowed-tools", default="", dest="allowed_tools",
+                      metavar="a,b,c",
+                      help="Restrict this session to these tools (empty: no "
+                           "restriction; cannot grant what the role forbids)")
+    chat.add_argument("--disallowed-tools", default="", dest="disallowed_tools",
+                      metavar="a,b,c",
+                      help="Refuse these tools for this session — wins over "
+                           "--allowed-tools when a name is on both")
+    chat.add_argument("--bare", action="store_true",
+                      help="Skip MCP server discovery for this run "
+                           f"({_BARE_NOT_SKIPPED} are discovered inside the "
+                           "turn and are NOT skipped)")
+    # Cumulative over the SESSION, not per turn — turns compose into an
+    # unbounded run cost without this, which is what makes an unattended
+    # run undeployable. Both land on the engine attributes _run_budget
+    # reads, so nothing is written to the user's settings file.
+    chat.add_argument("--max-turns", type=int, default=0, dest="max_turns",
+                      metavar="N",
+                      help="Stop a turn after N tool rounds (0: the "
+                           "per-model default). Bounds one turn, not the "
+                           "session — see --max-budget-usd for that")
+    chat.add_argument("--max-budget-usd", type=float, default=0.0,
+                      dest="max_budget_usd", metavar="USD",
+                      help="Stop this session once measured spend reaches "
+                           "this much (0: use the configured budget)")
+    chat.add_argument("--max-run-seconds", type=float, default=0.0,
+                      dest="max_run_seconds", metavar="SECONDS",
+                      help="Wall-clock ceiling for this session — the "
+                           "dimension that still holds on a model with no "
+                           "published rate")
     # The consumer existed without the producer: ReplOptions.color has been
     # read as getattr(args, "color", "auto") since the first version, and no
     # parser ever declared the flag — so the one setting that decides

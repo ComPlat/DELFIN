@@ -66,6 +66,7 @@ _KINDS = {
     # own kinds.
     "plan_mode_mcp":     ("📝", "Plan mode: MCP tool refused"),
     "role_denied_mcp":   ("🎭", "Role: MCP tool refused"),
+    "session_denied_mcp": ("🎭", "Session tool list: MCP tool refused"),
     "mcp_bash_no_perms": ("🔌", "MCP shell without permissions"),
     "mcp_write_no_perms": ("🔌", "MCP write without permissions"),
     "mcp_side_effect":   ("🔌", "MCP tool that is not read-only"),
