@@ -185,6 +185,7 @@ _EDITOR_COMMENTS = (
     'back to the last structure that was measured and allowed',
     'kept: the bonding would have changed',
     'scanned',
+    'driven until the bonds were made and broken',
     'where the saddle search got to',
     'where the hand left it',
     'optimised to ',
@@ -1776,15 +1777,38 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: walk goes, so "further apart, to 2.40" was the same fact twice with
     #: nothing checking that the two halves agreed.  One question, three
     #: answers, and the field for the number appears under the third.
+    #:
+    #: And two more for a pair of atoms, which are the same question answered
+    #: as chemistry rather than as geometry: **form this bond** and **break
+    #: this one**.  A direction says where the coordinate goes; a verb says
+    #: what is supposed to have happened when the walk is over -- and that is
+    #: the difference, because it is what the walk stops on.  Armed one each
+    #: on two pairs and walked together, they are the instruction most
+    #: reactions actually are: make this one while breaking that one.  A
+    #: Diels-Alder is two forms, an SN2 is a form and a break.
+    #:
+    #: The shape is pyGSM's, whose driving-coordinate file is a list of atom
+    #: picks and verbs -- ``ADD 4 12``, ``BREAK 1 11`` -- and SCINE's NT2 does
+    #: the same thing with a force and stops on bond order.  Nothing new is
+    #: being invented here: a form is an armed leg driven inwards, a break is
+    #: one driven outwards, the existing ramp walks them together, and the
+    #: only addition is what it stops on.  See :func:`_carried_out` for the
+    #: stopping rule and why it is not a bond order.
+    #:
+    #: They are offered for a pair and not for an angle or a torsion, because
+    #: a bond is between two atoms and there is no third one to make or break.
     submit_scan_way = widgets.Dropdown(
         options=[('closer together', 'in'), ('further apart', 'out'),
+                 ('form this bond', 'form'), ('break this bond', 'break'),
                  ('to a value you give', 'to')],
         value='in',
         tooltip=(
             'Where to walk. A scan stops at the next minimum, so where it '
             'ends is the chemistry rather than a number -- which way it goes '
-            'is the one thing that cannot be read off the selection. Give a '
-            'value instead when the end is the point.'
+            'is the one thing that cannot be read off the selection. Form or '
+            'break says what is meant to have happened instead, and the walk '
+            'stops when it has: arm one on each of two pairs to make one bond '
+            'while breaking another. Give a value when the end is the point.'
         ),
         layout=widgets.Layout(width='178px', display='none'),
         disabled=True,
@@ -9358,9 +9382,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         return '-'.join(symbols)
 
     def _describe_leg(leg):
+        # A leg with a verb is read as the instruction it is rather than as
+        # the pair of numbers underneath it: "form C1-C11" is what was asked
+        # for, and "3.35 -> 1.53 A" is only how the force will be pointed.
+        verb = str(leg.get('verb') or '')
+        if verb in ('form', 'break'):
+            return f'{verb} {_leg_atoms_label(leg)}'
         unit = 'A' if leg['kind'] == 'distance' else 'deg'
-        return (f"{_leg_atoms_label(leg)} {leg['from']:.3g} -> "
-                f"{leg['to']:.3g} {unit}")
+        return (f"{_leg_atoms_label(leg)} {leg['from']:.3g} -> {leg['to']:.3g} "
+                f"{unit}")
 
     def _refresh_scan():
         """Show the armed legs, or nothing at all when there are none."""
@@ -9400,9 +9430,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # Two atoms are closer or further apart; three or four are narrower or
         # wider.  The words follow what is picked, so the direction is never a
         # setting with no subject.
+        #
+        # And the two verbs are there for a pair and absent for an angle or a
+        # torsion.  That absence is a statement, which is why it is made here
+        # rather than by refusing the press afterwards: a bond is between two
+        # atoms, so there is no bond for three of them to make or break.
         kind = _CONSTRAINT_KINDS.get(picked)
         options = (
             [('closer together', 'in'), ('further apart', 'out'),
+             ('form this bond', 'form'), ('break this bond', 'break'),
              ('to a value you give', 'to')]
             if kind == 'distance'
             else [('narrower', 'in'), ('wider', 'out'),
@@ -9494,7 +9530,92 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         ends that fixes the path.
         """
         far = _SCAN_AS_FAR_AS.get(kind, 360.0)
-        return float(value) + (far if way == 'out' else -far)
+        return float(value) + (far if way in ('out', 'break') else -far)
+
+    #: How far past the graph's own threshold a break is pointed.
+    #:
+    #: :data:`gfn_optimize.BOND_STARTS_AT` is where a bond stops being drawn,
+    #: so a break aimed exactly there is aimed at the line it has to be over.
+    #: Half an Angstrom past it, which for two carbons is 2.5 A rather than
+    #: 2.0 -- and the number matters far less than it looks, because a push
+    #: never meets its target: the target only says which way the force
+    #: points, and :func:`_carried_out` is what decides the walk is finished.
+    _BREAK_CLEAR_BY = 0.5
+
+    def _verb_target(indices, verb):
+        """Where a form or a break points its force, in Angstrom.
+
+        A form is pointed at the bond those two atoms would make -- the sum of
+        their covalent radii -- and a break at something safely clear of it.
+        Neither is a value the walk is driven to: a push is a force, and where
+        the structure ends up is the structure's answer.  What the target does
+        is give the force a sign, and what it gives the user is a leg that
+        reads as the chemistry it names.
+        """
+        rows = [line.split() for line in _gfn.atom_lines(_current_xyz() or '')]
+        if any(not (0 <= i < len(rows)) for i in indices):
+            return None
+        from delfin.atom_mapping import cov_radius
+        reach = sum(cov_radius(str(rows[i][0])) for i in indices)
+        if verb == 'form':
+            return reach
+        return _gfn.BOND_STARTS_AT * reach + _BREAK_CLEAR_BY
+
+    def _carried_out(xyz, legs):
+        """Whether every instruction holds on this one geometry.
+
+        The stopping rule for a form/break walk, and the whole of it: read the
+        bond graph off what the last force actually produced and ask whether
+        every armed verb is satisfied *at the same time*.  On the same
+        geometry and not each at some point along the way, because a form can
+        be satisfied at one step and undone two steps later by the break
+        pulling the same fragment apart -- and a walk that stopped on the
+        first would report a structure that no longer has the bond it says it
+        made.
+
+        It is the geometric test -- :func:`gfn_optimize.bond_graph`, covalent
+        radii, the same one the viewer draws lines with and ``Keep bonds``
+        judges against -- so what the rule reads is what the user sees.  It is
+        deliberately **not** a bond order, and that was measured rather than
+        assumed.
+
+        SCINE's NT2 stops on Mayer bond orders: formed above 0.75, broken
+        below 0.15.  The formed half is sound and the broken half is not.
+        Measured here under GFN2, an ethane's C-C stretched rigidly from its
+        1.5212 A equilibrium, reading xtb's own Wiberg orders:
+
+            1.52 A  1.030      3.00 A  0.958
+            2.00 A  0.994      3.20 A  0.954
+            2.50 A  0.973      3.50 A  0.913
+                               4.00 A  0.264
+
+        At 3.5 A -- two and a third times equilibrium, and a full Angstrom and
+        a half past where the graph stops calling it a bond -- the order still
+        reads 0.91.  A restricted single determinant cannot break a bond
+        homolytically: the pair stays paired and the order stays near one long
+        after the fragments have gone their separate ways.  "Broken below
+        0.15" would not fire until about 4.5 A.  So a bond order is a poor
+        detector of a bond that has broken, under exactly the methods this
+        editor runs on.
+
+        The forming half is the other way round and the two tests agree.
+        Measured on the converged Diels-Alder band, image by image: the Wiberg
+        order of a forming C-C reads 0.000 at 2.64 A, 0.193 at 2.33, 0.524 at
+        2.09 and 0.920 at 1.70, and the bond graph flips between those last
+        two as well.  So where a bond order can be trusted, the geometry says
+        the same thing for nothing -- it is already computed for the topology
+        wall -- and where it cannot, the geometry is the one that is right.
+        One test for both halves, and it is this one.
+        """
+        graph = _gfn.bond_graph(xyz)
+        for leg in legs:
+            verb = str(leg.get('verb') or '')
+            if verb not in ('form', 'break'):
+                continue
+            pair = tuple(sorted(int(i) for i in leg['atoms']))
+            if (pair in graph) != (verb == 'form'):
+                return False
+        return True
 
     def on_submit_scan(_button=None):
         """Arm the value the selection describes as a leg of the scan."""
@@ -9523,10 +9644,43 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     'a direction and let the scan stop at the next minimum.')
                 return
             target = asked
-        legs = [one for one in _scan_legs() if one['atoms'] != indices]
+        # A verb points its own force, at the bond those two atoms would make
+        # or at somewhere clear of it -- see :func:`_verb_target`.  It is not
+        # where the walk is driven to; a push is a force, and the verb is what
+        # says when the walk is finished.
+        verb = str(submit_scan_way.value) if str(
+            submit_scan_way.value) in ('form', 'break') else ''
+        if verb:
+            aimed = _verb_target(indices, verb)
+            if aimed is None:
+                _set_mol_status('That selection names atoms this structure '
+                                'does not have.')
+                return
+            target = aimed
+            if verb == 'form' and here <= target:
+                _set_mol_status(
+                    f'{_describe_selection(indices)} is already at '
+                    f'{here:.3g} A, which is a bond -- there is nothing to '
+                    'form. Pick a pair that is not bonded yet.')
+                return
+            if verb == 'break' and here >= target:
+                _set_mol_status(
+                    f'{_describe_selection(indices)} is already {here:.3g} A '
+                    'apart, which is not a bond -- there is nothing to break.')
+                return
+        # Same atoms in either order.  It matters here in a way it did not
+        # before: with a verb, arming "break 11-1" over "form 1-11" would
+        # otherwise leave both on the list, and a walk cannot make and break
+        # the same bond at once.
+        pair = sorted(indices)
+        legs = [one for one in _scan_legs()
+                if sorted(one['atoms']) != pair or len(one['atoms']) != len(
+                    indices)]
         leg = {'kind': kind, 'atoms': indices, 'from': here,
                'to': target, 'steps': int(submit_scan_steps.value),
                'structure': _structure_fingerprint(_current_xyz() or '')}
+        if verb:
+            leg['verb'] = verb
         floor = _scan_floor_for(leg)
         clipped = ''
         if floor is not None and leg['to'] < floor:
@@ -9536,6 +9690,24 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         legs.append(leg)
         state['scan_legs'] = legs
         _refresh_scan()
+        # An instruction is described as one, and what it is armed with is the
+        # other half of the sentence: a form or a break is carried out by a
+        # push, so a walk cannot do it and saying so here saves a refusal at
+        # the press.
+        if verb:
+            others = [one for one in legs if one is not leg]
+            _set_mol_status(
+                f'Armed: {_describe_leg(leg)}. '
+                + ('Arm the other half on a second pair -- one bond made '
+                   'while another breaks is what most reactions are -- or '
+                   'press Run scan.' if not others else
+                   'Together: ' + ', '.join(_describe_leg(one) for one in legs)
+                   + '.')
+                + (' Set to "push with a force"; a walk drives a value and a '
+                   'verb needs a force.'
+                   if str(submit_scan_how.value) != 'push' else ''))
+            _clear_selection()
+            return
         _set_mol_status(
             f'Armed {_describe_leg(legs[-1])} in {legs[-1]["steps"]} steps. '
             + ('Arm another to walk them together, which is what a concerted '
@@ -9574,6 +9746,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             _set_mol_status('A scan needs xtb: choose a GFN method.')
             return
         pushing = str(submit_scan_how.value) == 'push'
+        # A verb is carried out by a force and cannot be carried out by a
+        # walk.  A walk drives its coordinate to a value it was told, so
+        # "break C2-Br3" as a walk is the editor pulling the bromide to 3.0 A
+        # whatever the molecule thinks -- which is not the reaction, it is a
+        # picture of one.  A push ramps until the structure gives, and what
+        # gives is the structure's answer.
+        instructed = [one for one in legs
+                      if str(one.get('verb') or '') in ('form', 'break')]
+        if instructed and not pushing:
+            _set_mol_status(
+                'Form and break are carried out by a force, so they need '
+                '"push with a force". A walk drives the distance to a number '
+                'instead, which draws the reaction rather than finding it.')
+            return
         # xtb takes one force constant for the whole $constrain block, and a
         # push is three orders of magnitude softer than a hold.  Run together,
         # the hold's stiffness would win and the push would silently become an
@@ -9673,6 +9859,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['scan_walk'] = None
         state['scan_repriced'] = None
         _refresh_scan()
+        state['scan_carried_out'] = None
+        state['scan_instructed'] = [_describe_leg(one) for one in instructed]
         state['scan_frame_run'] = _note_the_run(
             int(state.get('gfn_run', 0)) + 1, 'scan')
         state['gfn_run'] = state['scan_frame_run']
@@ -10082,6 +10270,30 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # see :func:`_descent`.
                     summit, bottom = _descent(
                         summit, bottom, spent, walked, reached)
+                    # The instruction, before the energy's own stop rule.
+                    #
+                    # They answer different questions and the instruction is
+                    # the one that was asked: "over a barrier and settled
+                    # again" is where a scan stops when nobody said what the
+                    # reaction was, and here somebody did.  Measured on the
+                    # Diels-Alder, both fire at the same step; measured on the
+                    # SN2 -- Cl- and CH3Br, form Cl-C while breaking C-Br --
+                    # the whole crossing is downhill from the complex and
+                    # there is no barrier for the energy rule to notice at
+                    # all, so the instruction is the only thing that could
+                    # have stopped it.
+                    #
+                    # And it is not gated on Whole profile, which is a
+                    # question about how much of a curve to draw.  An
+                    # instruction that has been carried out is finished.
+                    if instructed and _carried_out(walked, legs):
+                        state['scan_carried_out'] = (
+                            n, force,
+                            _gfn.graph_changed(
+                                _gfn.bond_graph(xyz), _gfn.bond_graph(walked),
+                                [line.split()[0]
+                                 for line in _gfn.atom_lines(walked)]))
+                        break
                     if not submit_scan_whole.value and _scan_arrived(path):
                         state['scan_arrived'] = True
                         if bottom is not None:
@@ -10285,6 +10497,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 if budgeted and costs.get(walked, 0.0) > scan_ceiling:
                     state['scan_walled'] = costs[walked]
                     walked = affordable
+                # And whether the instruction survives that.  It is the one
+                # place the budget and a form/break instruction can disagree,
+                # and they disagree by design: the ceiling prices exactly this
+                # kind of deformation, and a bond driven apart by a force the
+                # temperature cannot supply is a reaction that does not happen
+                # at that temperature.  The verdict below says which of the
+                # two the user is looking at, because the alternative is a
+                # line reading "the bond broke" over a structure where it has
+                # not.
+                state['scan_carried_out_kept'] = bool(
+                    instructed and state.get('scan_carried_out')
+                    and _carried_out(walked, legs))
 
                 def _done(final=walked):
                     submit_scan_run_btn.description = 'Run scan'
@@ -10347,6 +10571,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             'Scanned, and back to the last point the '
                             'temperature can pay for'
                             if state.get('scan_walled') is not None else
+                            'Driven until the bonds were made and broken'
+                            if state.get('scan_carried_out') else
                             'Scanned to the next minimum'
                             if state.get('scan_arrived') else 'Scanned'),
                             run=state.get('scan_frame_run'))
@@ -12312,6 +12538,31 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                      f'three Hessians -- where it started, the top, and where '
                      f'it came to -- and they are what the temperature below '
                      f'is worked out from.{_scan_free_is_an_estimate()}')
+        # What was asked for, and whether it happened.  Said before the
+        # temperature, because it is the question: a walk given a verb was not
+        # asked how high the path was, it was asked to make a bond.
+        #
+        # And when it did not happen, said as a statement about the chemistry
+        # rather than as a failure.  The ramp ends at
+        # :data:`gfn_optimize.PUSH_FORCE_TO`, which is more than twice
+        # :data:`gfn_optimize.A_BOND_HOLDS` -- the force a bond holds against
+        # -- so a bond that has not formed under it is one this method will
+        # not form from here, and that is an answer.
+        instructed = list(state.get('scan_instructed') or ())
+        done = state.get('scan_carried_out')
+        if instructed and done:
+            step, force, said = done[0], done[1], (done[2] if len(done) > 2
+                                                   else '')
+            first += (f' The instruction was carried out at step {step}, '
+                      f'under {force:.0f} kcal/mol/A'
+                      + (f': it {said}.' if said else '.'))
+        elif instructed:
+            first += (f' The instruction was not carried out: '
+                      f'{", ".join(instructed)} still {"do" if len(instructed) > 1 else "does"} '
+                      f'not hold at {_gfn.PUSH_FORCE_TO:.0f} kcal/mol/A, '
+                      'which is twice what a bond holds against. From this '
+                      'structure and on this method, that is the answer '
+                      'rather than a setting to raise.')
         if state.get('scan_depth'):
             first += ' ' + state['scan_depth']
         # And whether this profile is one path or two joined at a fall.  Said
@@ -12343,6 +12594,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                      f'this structure, which is past the {ceiling:.1f} '
                      f'available at {T:g} K, so the box has the last point '
                      f'that was inside it.')
+        # Which for an instruction is the whole of it: the box now holds a
+        # structure where the bonds were not made, and the line has to say so
+        # or it is a claim about a geometry nobody has.
+        if walled is not None and done and not state.get(
+                'scan_carried_out_kept'):
+            held_back += (' So the structure you have is from before the '
+                          'bonds changed -- the budget priced the change and '
+                          'this temperature cannot pay for it. Raise the '
+                          'temperature to see what it would take, or switch '
+                          'the budget off to keep what the force reached.')
         # And what the walk has made possible, said where the walk is being
         # reported.  The two ends are an entry in a box rather than the two
         # buttons that used to appear, and a box that has gained an entry is
