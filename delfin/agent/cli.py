@@ -89,9 +89,23 @@ def _build_engine(args: argparse.Namespace):
         permission_mode=getattr(args, "permission_mode", "") or "",
         extra_dirs=list(getattr(args, "extra_dirs", None) or []),
         read_only_dirs=list(getattr(args, "read_only_dirs", None) or []),
+        # None, never []: CLIClient tests the parameter for ``is not None``
+        # and an empty list would build ``--allowedTools`` with nothing
+        # after it, which restricts the session to no tools at all.
+        allowed_tools=_allowed_tools(args) or None,
     )
     _apply_run_budget(engine, args)
     return engine
+
+
+def _allowed_tools(args: argparse.Namespace) -> list[str]:
+    """``--allowed-tools a,b,c`` as a list, or empty for "no restriction"."""
+    raw = getattr(args, "allowed_tools", "") or ""
+    if isinstance(raw, (list, tuple)):
+        parts = [str(p) for p in raw]
+    else:
+        parts = str(raw).split(",")
+    return [p.strip() for p in parts if p.strip()]
 
 
 def _apply_run_budget(engine, args: argparse.Namespace) -> None:
@@ -770,6 +784,25 @@ def _bounding_notices(args: argparse.Namespace, engine) -> list[str]:
         line += ("; the wall-clock ceiling IS in force"
                  if secs > 0 else " (--max-run-seconds is measurable)")
         notes.append(line)
+
+    # An allow-list that the constructed client did not take. Asked of the
+    # client itself rather than by repeating create_client's branch here:
+    # the parameter is forwarded only to the CLI backend, which stores it
+    # and turns it into --allowedTools, and is dropped without a word for
+    # every other one. Comparing against what actually arrived is the only
+    # form of this check that cannot go stale.
+    wanted = _allowed_tools(args)
+    if wanted:
+        client = getattr(engine, "client", None)
+        got = getattr(client, "allowed_tools", None)
+        if [str(t) for t in (got or ())] != wanted:
+            provider = str(getattr(engine, "provider", "") or "?")
+            backend = str(getattr(engine, "backend", "") or "?")
+            notes.append(
+                f"tools      --allowed-tools REQUESTED but not applied — the "
+                f"{provider}/{backend} backend carries no tool allow-list, so "
+                f"all {len(wanted)} named tools and every other one stay "
+                f"available")
 
     if getattr(args, "bare", False):
         took = getattr(args, "bare_mcp_skipped", False)
@@ -1934,6 +1967,18 @@ def build_parser() -> argparse.ArgumentParser:
     # Named for what it does, not for what the word suggests. The three it
     # cannot reach are named in the help itself rather than left to be
     # discovered — see _BARE_NOT_SKIPPED.
+    # Only the claude CLI backend has a tool allow-list (create_client
+    # forwards this to CLIClient, which spells it --allowedTools); the API
+    # and OpenAI-compatible backends drop it. A run that asks for one on a
+    # backend that has none is told so at startup rather than left
+    # believing the surface was narrowed. There is deliberately no
+    # --disallowed-tools: no deny-list machinery exists on any backend,
+    # and a flag with nothing behind it is the defect, not the fix.
+    chat.add_argument("--allowed-tools", default="", dest="allowed_tools",
+                      metavar="a,b,c",
+                      help="Restrict the agent to these tools "
+                           "(claude CLI backend only; other backends have "
+                           "no allow-list and will say so)")
     chat.add_argument("--bare", action="store_true",
                       help="Skip MCP server discovery for this run "
                            f"({_BARE_NOT_SKIPPED} are discovered inside the "
