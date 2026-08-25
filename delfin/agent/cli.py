@@ -1,23 +1,30 @@
-"""Headless CLI entrypoint for the .delfin agent.
+"""CLI entrypoint for the .delfin agent — installed as ``delfin-agent``.
 
-Run a single agent turn without the dashboard, suitable for CI hooks,
-nightly summaries, scripted refactors. The session is auto-saved so a
-subsequent invocation with ``--session`` continues where this one left
-off.
+Two front doors, one parser. ``chat`` is the agent in the directory you
+are standing in and is what a bare invocation routes to; ``run`` and the
+rest are the headless commands, unchanged, and are what CI hooks, the
+scheduler daemon and the benchmark drive.
 
 Examples::
 
-    # one-shot prompt, defaults to API backend + solo mode
-    python -m delfin.agent.cli run "summarise the changes since main"
+    # the agent, here, in this directory
+    delfin-agent
 
-    # continue a previous session by id (or 'latest')
-    python -m delfin.agent.cli run --session latest "any unresolved TODOs?"
+    # one prompt, answer on stdout, exit
+    delfin-agent -p "summarise the changes since main"
+    echo "list failing tests" | delfin-agent
 
-    # machine-readable output
-    python -m delfin.agent.cli run --json "list failing tests"
+    # headless: one turn, auto-saved so --session continues it
+    delfin-agent run "summarise the changes since main"
+    delfin-agent run --session latest "any unresolved TODOs?"
+    delfin-agent run --json "list failing tests"
 
     # init a fresh project
-    python -m delfin.agent.cli init /path/to/repo
+    delfin-agent init /path/to/repo
+
+``python -m delfin.agent.cli <subcommand>`` keeps working for every
+subcommand; only the implicit-``chat`` routing is specific to the
+installed console script.
 """
 
 from __future__ import annotations
@@ -32,18 +39,42 @@ from pathlib import Path
 from typing import Any
 
 
+def _engine_defaults() -> dict[str, str]:
+    """Backend/provider/model/effort the user last chose in the dashboard.
+
+    Read from ``~/.delfin_settings.json`` the same way the dashboard reads
+    it. Without this the terminal and the dashboard talk to two different
+    models out of one settings file, and the terminal picks the constructor
+    default (Anthropic) rather than the provider the user actually
+    configured. Applied only where the CLI flag is empty.
+    """
+    try:
+        from delfin.user_settings import load_settings
+        agent = (load_settings() or {}).get("agent", {}) or {}
+    except Exception:
+        return {}
+    return {k: str(agent.get(k, "") or "")
+            for k in ("backend", "provider", "model", "effort")}
+
+
 def _build_engine(args: argparse.Namespace):
     """Construct an AgentEngine for the given CLI args.
 
     AgentEngine creates its own client internally via ``create_client``,
     so we just hand it the resolved (backend, provider, model, mode)
     tuple and let it own the lifecycle.
+
+    ``settings_defaults`` is opt-in per command: ``chat`` passes them so a
+    bare ``delfin-agent`` uses the configured provider, while ``run`` keeps
+    its historical defaults so the scheduler and the benchmark are not
+    moved under anyone's feet by a settings file.
     """
     from .engine import AgentEngine
 
-    backend = args.backend or "api"
-    model = args.model or ""
-    provider = args.provider or ""
+    fallback = _engine_defaults() if getattr(args, "settings_defaults", False) else {}
+    backend = args.backend or fallback.get("backend", "") or "api"
+    model = args.model or fallback.get("model", "")
+    provider = args.provider or fallback.get("provider", "")
     mode = getattr(args, "mode", "") or "solo"
     cwd = getattr(args, "cwd", "") or os.getcwd()
     return AgentEngine(
@@ -52,6 +83,12 @@ def _build_engine(args: argparse.Namespace):
         provider=provider,
         model=model,
         mode=mode,
+        # Declared on the parser since the first version of this file and
+        # never forwarded: --effort parsed fine and changed nothing.
+        effort=getattr(args, "effort", "") or fallback.get("effort", ""),
+        permission_mode=getattr(args, "permission_mode", "") or "",
+        extra_dirs=list(getattr(args, "extra_dirs", None) or []),
+        read_only_dirs=list(getattr(args, "read_only_dirs", None) or []),
     )
 
 
@@ -62,7 +99,13 @@ def _resume_or_create(engine, args: argparse.Namespace) -> str:
     if not sid:
         return ""
     if sid == "latest":
-        data = _ss.resume_latest()
+        # Workspace-scoped, which is what latest_session exists for:
+        # continuing a project means continuing THAT project's last
+        # conversation, not whatever ran last on the machine. resume_latest
+        # asks the whole machine, so `run --session latest` in project A
+        # could pick up project B's history and answer out of it.
+        _ws = getattr(args, "cwd", "") or os.getcwd()
+        data = _ss.latest_session(workspace=_ws) or _ss.resume_latest()
     else:
         data = _ss.load_session(sid)
     if not data:
@@ -153,7 +196,36 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096) -> dict[str, Any]:
     }
 
 
-def _save_session(engine, repo_root: Path) -> str:
+def _display_messages(engine, limit: int = 200) -> list[dict[str, str]]:
+    """A plain role/content view of the conversation, for the session file.
+
+    Two reasons it is a projection rather than the wire history. The store
+    derives a session TITLE from the first user message and searches on it,
+    so a message whose content is a list of tool blocks would break the
+    title derivation outright. And `chat_messages=[]` is what every
+    headless save has passed since this file existed, which is why every
+    session it ever wrote is called "Untitled" and invisible to
+    `session search`.
+    """
+    out: list[dict[str, str]] = []
+    for msg in list(getattr(engine, "messages", []) or [])[-limit:]:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role", "") or "")
+        if role not in ("user", "assistant"):
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            parts = [str(b.get("text", "")) for b in content
+                     if isinstance(b, dict) and b.get("type") == "text"]
+            content = " ".join(p for p in parts if p)
+        text = str(content or "").strip()
+        if text:
+            out.append({"role": role, "content": text})
+    return out
+
+
+def _save_session(engine, repo_root: Path, *, title: str = "") -> str:
     """Auto-save so the next ``--session`` resumes cleanly.
 
     The exported state is forwarded WHOLESALE. Listing the fields by hand
@@ -176,7 +248,10 @@ def _save_session(engine, repo_root: Path) -> str:
     try:
         estate = dict(engine.export_state())
         estate["session_id"] = sid
-        _ss.save_session(chat_messages=[], workspace=str(repo_root), **estate)
+        if title:
+            estate.setdefault("title", title)
+        _ss.save_session(chat_messages=_display_messages(engine),
+                         workspace=str(repo_root), **estate)
     except Exception as exc:
         print(f"WARN: session save failed: {exc}", file=sys.stderr)
     return sid
@@ -250,6 +325,331 @@ def cmd_run(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
     return 0 if not out["error"] else 1
+
+
+def _persisted_default_mode(workspace: Path) -> str:
+    """The posture a settings file actually DECLARES, or "" for none.
+
+    Read from the files rather than from ``kit_settings.load()``, and the
+    difference is the whole point: with no settings anywhere the loader
+    still returns ``default_mode="default"``, its own fallback, which is
+    indistinguishable from a user having written that word down. Asking
+    the merged view therefore reports a decision nobody made — and it
+    silently defeated the plan-first default, because resolve_posture
+    correctly honours anything a user configured.
+    """
+    import json
+
+    try:
+        from . import kit_settings
+        candidates = [kit_settings.USER_SETTINGS_PATH,
+                      kit_settings.repo_settings_path(workspace)]
+    except Exception:
+        return ""
+    for path in candidates:
+        if path is None:
+            continue
+        try:
+            if not Path(path).exists():
+                continue
+            block = json.loads(Path(path).read_text()).get("kit") or {}
+        except Exception:
+            continue
+        declared = str(block.get("default_mode", "") or "")
+        if declared:
+            return declared
+    return ""
+
+
+def _claim_session(sid: str) -> bool:
+    """Take the writer lock now, not at the first save.
+
+    save_session raises SessionLockedError when a different live process
+    holds it, and the headless saver swallows that into one WARN line —
+    correct for a scheduled run, wrong for a person, who then works for an
+    hour and finds out at the end that nothing was written. Refusing at
+    second zero costs nothing and says what to do instead.
+    """
+    if not sid:
+        return True
+    from . import session_store as _ss
+    try:
+        _ss.acquire_session_lock(sid)
+    except _ss.SessionLockedError as exc:
+        print(
+            f"Session {sid} is being written by another process "
+            f"(pid {exc.holder_pid}).\n"
+            "  It is most likely open in the dashboard.\n"
+            f"  delfin-agent --resume {sid} --fork-session   work on a copy\n"
+            "  delfin-agent --new                            start fresh here",
+            file=sys.stderr)
+        return False
+    except Exception:
+        # A lock we could not take is not a reason to refuse to start; the
+        # save path still guards the file itself.
+        return True
+    import atexit
+    atexit.register(_ss.release_session_lock, sid)
+    return True
+
+
+def _pick_session(workspace: Path) -> str:
+    """Bare --resume: choose from what this directory has done before."""
+    from . import session_store as _ss
+    rows = _ss.list_sessions(limit=20, workspace=str(workspace))
+    if not rows:
+        print("No previous sessions in this directory.", file=sys.stderr)
+        return ""
+    for i, row in enumerate(rows, 1):
+        title = str(row.get("title", "") or "(untitled)")[:60]
+        when = str(row.get("updated_at", "") or "")[:16]
+        print(f"  {i:2}. {when}  {title}", file=sys.stderr)
+    try:
+        raw = input("resume which? [1] ").strip() or "1"
+        idx = int(raw)
+    except (ValueError, EOFError, KeyboardInterrupt):
+        return ""
+    if not 1 <= idx <= len(rows):
+        return ""
+    return str(rows[idx - 1].get("session_id", "") or "")
+
+
+def _open_session(engine, args: argparse.Namespace, workspace: Path) -> bool:
+    """Resolve -c / -r / --fork-session into a restored, claimed session.
+
+    Returns False when the session could not be opened, which is a refusal
+    to start rather than a warning to ignore.
+    """
+    from . import session_store as _ss
+
+    sid = ""
+    if getattr(args, "new_session", False):
+        sid = ""
+    elif getattr(args, "continue_session", False):
+        row = _ss.latest_session(workspace=str(workspace))
+        sid = str((row or {}).get("session_id", "") or "")
+        if not sid:
+            print("No previous session in this directory; starting fresh.",
+                  file=sys.stderr)
+    elif getattr(args, "resume", None) is not None:
+        sid = str(args.resume or "").strip() or _pick_session(workspace)
+        if not sid:
+            return True                      # nothing chosen: a fresh session
+
+    if sid and getattr(args, "fork_session", False):
+        try:
+            forked = _ss.fork_session(sid)
+            sid = str((forked or {}).get("session_id", "") or sid)
+            print(f"Forked to {sid}; the original is untouched.",
+                  file=sys.stderr)
+        except Exception as exc:
+            print(f"WARN: fork failed ({exc}); resuming the original.",
+                  file=sys.stderr)
+
+    if sid:
+        args.session = sid
+        _resume_or_create(engine, args)
+        note = None
+        try:
+            note = _ss.consume_crash_recovery_note(sid)
+        except Exception:
+            note = None
+        if note:
+            print(note, file=sys.stderr)
+
+    return _claim_session(getattr(engine, "session_id", "") or sid)
+
+
+def _startup_banner(engine, report, workspace: Path,
+                    why: str = "", isolation_note: str = "") -> str:
+    """What the user is looking at, in the lines that decide safety."""
+    from .repl import permission_mode as _permission_mode
+
+    # The model lives on the client; the engine never held one.
+    model = str(getattr(getattr(engine, "client", None), "model", "") or "?")
+    provider = str(getattr(engine, "provider", "") or "?")
+    role_mode = str(getattr(engine, "mode", "") or "?")
+    perms_mode = _permission_mode(engine)
+    sid = str(getattr(engine, "session_id", "") or "")
+
+    git = report.git
+    where = f"git {git.branch}" if git.is_repo and git.branch else "no git"
+    if git.is_repo and git.dirty:
+        where += f" · {len(git.dirty)} uncommitted"
+
+    lines = [
+        f"delfin-agent · {provider}/{model} · mode {role_mode}",
+        f"workspace  {workspace}  ({where})",
+    ]
+    if perms_mode:
+        lines.append(f"approval   {perms_mode}"
+                     + (f"  [{why}]" if why else ""))
+        if isolation_note:
+            lines.append(isolation_note)
+        elif perms_mode in ("default", "acceptEdits"):
+            # Nobody has been told this. _bash_isolation_argv engages bwrap
+            # only under bypassPermissions or a locked scope; in the
+            # attended modes with the shipped "auto" setting it returns a
+            # plain /bin/bash -c. A user reading "workspace confinement"
+            # reasonably assumes a sandbox, and what is actually there is
+            # path checking plus a regex list.
+            lines.append(
+                "isolation  off — a command the agent runs can still write "
+                "outside the workspace (--isolate)")
+    else:
+        # Not decoration: without a permissions object the write and shell
+        # tools refuse, and a user staring at a silent agent deserves the
+        # reason on screen rather than in a tool result.
+        lines.append(
+            f"approval   none — the {provider} backend carries no permission "
+            "gate, so file and shell tools will refuse")
+    if sid:
+        lines.append(f"session    {sid}")
+    lines.append("Ctrl+C stops a turn · Ctrl+D or /exit leaves")
+    return "\n".join(lines)
+
+
+def cmd_chat(args: argparse.Namespace) -> int:
+    """The ``delfin-agent`` front door: a session in the current directory.
+
+    The non-interactive half (``-p/--print``, or a piped prompt) is routed
+    through ``cmd_run`` rather than reimplemented, so the JSON payload and
+    the session-save semantics stay one contract instead of two.
+    """
+    from . import launch_guard
+
+    prompt = (getattr(args, "print_prompt", "") or "").strip()
+    positional = getattr(args, "prompt", None) or []
+    if isinstance(positional, list) and positional:
+        positional = " ".join(str(p) for p in positional).strip()
+    else:
+        positional = ""
+
+    piped = not sys.stdin.isatty()
+    if not prompt and piped:
+        try:
+            prompt = sys.stdin.read().strip()
+        except Exception:
+            prompt = ""
+
+    workspace = Path(getattr(args, "cwd", "") or os.getcwd()).expanduser().resolve()
+
+    # Before anything is built: is this a directory to work in at all?
+    report = launch_guard.inspect_launch_dir(
+        workspace,
+        add_dirs=tuple(getattr(args, "add_dirs", None) or ()),
+        read_dirs=tuple(getattr(args, "read_dirs", None) or ()),
+    )
+    if report.refused:
+        print(report.render(), file=sys.stderr)
+        return 2
+
+    # One shot, and out. Identical to `run`, because it IS `run`.
+    # A positional prompt SEEDS an interactive session; it only becomes a
+    # one-shot when there is no terminal to be interactive on.
+    one_shot = prompt or (piped and positional)
+    if one_shot:
+        args.prompt = [prompt or positional]
+        args.session = getattr(args, "session", "") or ""
+        args.json = (getattr(args, "output_format", "text") == "json")
+        return cmd_run(args)
+
+    if piped:
+        print("Nothing on stdin, and no -p. Nothing to do.", file=sys.stderr)
+        return 2
+
+    # Restored on the way out. The process usually ends right after, so
+    # this looks unnecessary — but a function that moves the process and
+    # never moves it back makes every later relative path in the caller
+    # read a different file, and that is only harmless until it is called
+    # from somewhere else.
+    _cwd_before = os.getcwd()
+    os.chdir(workspace)
+    # Only the grants launch_guard accepted. It has already refused a
+    # credential directory, a parent of the workspace and a forbidden
+    # root by name, rather than letting the permissions object drop them
+    # silently the way it does.
+    args.extra_dirs = [str(p) for p in report.granted_dirs]
+    args.read_only_dirs = [str(p) for p in report.read_dirs]
+    isolation_note = ""
+    if getattr(args, "isolate", False):
+        import shutil as _shutil
+        from .api_client import set_bash_isolation_override
+        set_bash_isolation_override("bwrap")
+        # Asking for isolation the host cannot give must not be silent.
+        # _bash_isolation_argv falls back to plain /bin/bash when bwrap is
+        # missing — correct, since there is nothing else it can do — but a
+        # flag that promises containment and delivers none without saying
+        # so is the same defect this wave exists to close, one layer up.
+        if not _shutil.which("bwrap"):
+            isolation_note = (
+                "isolation  REQUESTED but unavailable — bubblewrap is not "
+                "installed here, so commands run unisolated")
+    try:
+        engine = _build_engine(args)
+    except Exception as exc:
+        print(f"ERROR: engine init failed: {exc}", file=sys.stderr)
+        os.chdir(_cwd_before)
+        return 3
+    if not _open_session(engine, args, workspace):
+        os.chdir(_cwd_before)
+        return 2
+
+    posture, why = launch_guard.resolve_posture(
+        flag_mode=getattr(args, "permission_mode", "") or "",
+        persisted_mode=_persisted_default_mode(workspace),
+        unattended_opt_in=bool(getattr(args, "unattended", False)),
+    )
+    try:
+        engine.set_kit_permission_mode(posture)
+    except Exception:
+        pass          # a backend with no gate has no posture to set
+
+    from .repl import ReplOptions, TerminalAgent
+    from .terminal_confirm import TerminalConfirmBroker
+
+    # Bound ONLY here, and only for a terminal. cmd_run, the benchmark and
+    # the scheduler must keep the behaviour they have: without a callback
+    # a write inside the workspace is allowed silently, which is right for
+    # an unattended run and exactly what this command exists to change.
+    broker = None
+    bind = getattr(engine, "set_kit_confirm_callback", None)
+    if sys.stdin.isatty() and callable(bind):
+        broker = TerminalConfirmBroker(
+            persist=lambda pat: engine.persist_kit_pattern(pat, kind="allow"),
+            set_mode=engine.set_kit_permission_mode,
+        )
+        # False means this provider carries no permissions object at all,
+        # and on that backend the file and shell tools refuse outright —
+        # so there is nothing to ask about and a broker would only add a
+        # prompt that never fires.
+        if not bind(broker.callback):
+            broker = None
+        else:
+            perms = engine.kit_permissions
+            perms.ask_user_callback = broker.ask_user
+            perms.plan_approval_callback = broker.approve_plan
+
+
+    notices = report.render()
+    agent = TerminalAgent(engine, broker=broker, opts=ReplOptions(
+        cwd=workspace,
+        max_tokens=getattr(args, "max_tokens", 0) or 0,
+        show_thinking=bool(getattr(args, "verbose", False)),
+        color=getattr(args, "color", "auto"),
+        banner=(_startup_banner(engine, report, workspace, why,
+                                isolation_note)
+                + (f"\n\n{notices}" if notices else "")),
+    ))
+    try:
+        return agent.run(positional)
+    finally:
+        _save_session(engine, workspace,
+                      title=getattr(args, "session_name", "") or "")
+        try:
+            os.chdir(_cwd_before)
+        except Exception:
+            pass
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -639,9 +1039,9 @@ def _cmd_bench_baseline(args, action: str) -> int:
 _BENCH_SCHEDULE_HINT = (
     "Scheduling is opt-in — nothing was registered automatically.\n"
     "To run this nightly via the scheduler daemon, run exactly:\n"
-    "  python -m delfin.agent.cli scheduler add-bench --model {model}"
+    "  delfin-agent scheduler add-bench --model {model}"
     "{provider}{backend} --every 24h\n"
-    "  python -m delfin.agent.cli scheduler start\n"
+    "  delfin-agent scheduler start\n"
     "Cost estimate: ~$8 per nightly run for the 48-task KIT-Qwen suite at "
     "repeats=1 (repeats multiply cost; recheck adds up to $3 more on "
     "suspect days)."
@@ -910,7 +1310,7 @@ def cmd_credentials(args: argparse.Namespace) -> int:
             print("No credentials configured.")
             print()
             print("To store one securely (input is hidden, never echoed):")
-            print("  python -m delfin.agent.cli credentials set "
+            print("  delfin-agent credentials set "
                   "KIT_TOOLBOX_API_KEY")
             print("Other well-known names: OPENAI_API_KEY, ANTHROPIC_API_KEY")
             return 0
@@ -1067,7 +1467,7 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
         if not st["running"]:
             print("The scheduler daemon is NOT running — the entry fires "
                   "only after you start it:\n"
-                  "  python -m delfin.agent.cli scheduler start")
+                  "  delfin-agent scheduler start")
         print(f"Remove anytime: delete entry {ent.id} via the dashboard "
               "scheduler tools, or edit ~/.delfin/cron.json.")
         return 0
@@ -1130,37 +1530,122 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return 1 if any(r.get("status") == "FAIL" for r in results) else 0
 
 
+def _subcommand_names(parser: argparse.ArgumentParser) -> frozenset[str]:
+    """The subcommands the parser really registers.
+
+    Derived from the parser instead of duplicated in a constant. A hand-
+    kept list is one edit away from routing a real subcommand into the
+    chat prompt, which would turn a typo'd command into a billed turn.
+    """
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return frozenset(action.choices)
+    return frozenset()
+
+
+def _route_argv(argv: list[str], known: frozenset[str]) -> list[str]:
+    """Prepend the implicit ``chat`` subcommand.
+
+    A bare invocation and anything starting with a flag is the session in
+    the current directory; a first token that names a real subcommand, or
+    asks for help, is left exactly as typed.
+    """
+    if not argv:
+        return ["chat"]
+    if argv[0] in known or argv[0] in ("-h", "--help", "--version"):
+        return list(argv)
+    return ["chat", *argv]
+
+
+def _add_agent_flags(p: argparse.ArgumentParser, *,
+                     mode_default: str = "solo",
+                     max_tokens_default: int = 4096) -> None:
+    """Engine-selection flags shared by ``chat`` and ``run``.
+
+    One definition, so the two front doors cannot drift into offering
+    different spellings of the same choice.
+    """
+    # The old help advertised `quick`, one of the pipeline modes retired
+    # from the dashboard months ago — so the CLI kept offering a mode the
+    # product had dropped, and the flag took it because there is no
+    # `choices=`. Named modes only, and an unknown one falls back to solo
+    # rather than failing, which is what the engine already does.
+    p.add_argument("--mode", default=mode_default,
+                   help="Agent mode: solo / dashboard / office / research "
+                        "(plan is a permission profile, not a mode)")
+    p.add_argument("--backend", default="", choices=["", "api", "cli"],
+                   help="api (direct Anthropic) or cli (subprocess)")
+    p.add_argument("--provider", default="",
+                   help="claude / openai / kit / ollama")
+    p.add_argument("--model", default="",
+                   help="Model name (provider-specific)")
+    p.add_argument("--effort", default="",
+                   help="low/medium/high/xhigh")
+    p.add_argument("--max-tokens", type=int, default=max_tokens_default,
+                   dest="max_tokens")
+    p.add_argument("--cwd", default="", help="Run in this directory")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="python -m delfin.agent.cli",
-        description="Headless .delfin agent runner",
+        prog="delfin-agent",
+        description="The .delfin agent, in a terminal",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    # chat — the implicit subcommand a bare `delfin-agent` routes to
+    chat = sub.add_parser("chat", help="Agent session in the current directory")
+    chat.add_argument("prompt", nargs="*",
+                      help="Opening prompt (optional)")
+    chat.add_argument("-p", "--print", default="", dest="print_prompt",
+                      metavar="PROMPT",
+                      help="Answer one prompt and exit (non-interactive)")
+    chat.add_argument("--output-format", default="text",
+                      choices=["text", "json"], dest="output_format",
+                      help="text (default) or json")
+    chat.add_argument("--session", default="",
+                      help="Session ID to resume, or 'latest'")
+    chat.add_argument("-c", "--continue", action="store_true",
+                      dest="continue_session",
+                      help="Continue this directory's last conversation")
+    chat.add_argument("-r", "--resume", nargs="?", const="", default=None,
+                      metavar="ID",
+                      help="Resume a session by id, or pick from a list")
+    chat.add_argument("--new", action="store_true", dest="new_session",
+                      help="Start a fresh session (the default)")
+    chat.add_argument("--fork-session", action="store_true",
+                      dest="fork_session",
+                      help="Work on a copy, leaving the original untouched")
+    chat.add_argument("-n", "--name", default="", dest="session_name",
+                      help="Name this session, so --resume can find it")
+    chat.add_argument("--permission-mode", default="", dest="permission_mode",
+                      choices=["", "plan", "default", "acceptEdits",
+                               "bypassPermissions"],
+                      help="Start in this approval posture (default: plan)")
+    chat.add_argument("--unattended", action="store_true",
+                      help="Required alongside --permission-mode "
+                           "bypassPermissions; nothing will be asked")
+    chat.add_argument("--add-dir", action="append", default=[],
+                      dest="add_dirs", metavar="PATH",
+                      help="Also writable this session (repeatable, never "
+                           "persisted)")
+    chat.add_argument("--read-dir", action="append", default=[],
+                      dest="read_dirs", metavar="PATH",
+                      help="Readable this session — the right answer to "
+                           "'let it read my other repo'")
+    chat.add_argument("--isolate", action="store_true",
+                      help="Run shell commands under filesystem isolation")
+    _add_agent_flags(chat)
+    chat.add_argument("-v", "--verbose", action="store_true")
+    # Only this front door inherits the dashboard's saved provider/model.
+    chat.set_defaults(func=cmd_chat, settings_defaults=True)
 
     # run
     run = sub.add_parser("run", help="Run one agent turn")
     run.add_argument("prompt", nargs="+", help="The user prompt")
     run.add_argument("--session", default="",
                      help="Session ID to resume, or 'latest'")
-    # The old help advertised `quick`, one of the pipeline modes retired
-    # from the dashboard months ago — so the CLI kept offering a mode the
-    # product had dropped, and the flag took it because there is no
-    # `choices=`. Named modes only, and an unknown one falls back to solo
-    # rather than failing, which is what the engine already does.
-    run.add_argument("--mode", default="solo",
-                     help="Agent mode: solo / dashboard / office / research "
-                          "(plan is a permission profile, not a mode)")
-    run.add_argument("--backend", default="", choices=["", "api", "cli"],
-                     help="api (direct Anthropic) or cli (subprocess)")
-    run.add_argument("--provider", default="",
-                     help="claude / openai / kit")
-    run.add_argument("--model", default="",
-                     help="Model name (provider-specific)")
-    run.add_argument("--effort", default="",
-                     help="low/medium/high/xhigh")
-    run.add_argument("--max-tokens", type=int, default=4096,
-                     dest="max_tokens")
-    run.add_argument("--cwd", default="", help="Run in this directory")
+    _add_agent_flags(run)
     run.add_argument("--json", action="store_true",
                      help="Emit JSON instead of plain text")
     run.add_argument("-v", "--verbose", action="store_true")
@@ -1324,9 +1809,9 @@ def build_parser() -> argparse.ArgumentParser:
             "for regressions the recheck CONFIRMED.\n\n"
             "Scheduling is strictly opt-in — this command never registers "
             "a scheduler entry. To run it nightly, run exactly:\n"
-            "  python -m delfin.agent.cli scheduler add-bench "
+            "  delfin-agent scheduler add-bench "
             "--model <model> [--provider P] [--backend B] --every 24h\n"
-            "  python -m delfin.agent.cli scheduler start\n"
+            "  delfin-agent scheduler start\n"
             "Cost estimate: ~$8 per nightly run for the 48-task KIT-Qwen "
             "suite at repeats=1 (repeats multiply cost; recheck adds up "
             "to $3 more on suspect days)."),
@@ -1491,7 +1976,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(_route_argv(argv, _subcommand_names(parser)))
     try:
         return int(args.func(args) or 0)
     except KeyboardInterrupt:

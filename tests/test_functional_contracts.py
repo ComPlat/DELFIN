@@ -59,6 +59,7 @@ _ENTRY_POINTS = {
     "delfin-tools-server": ("delfin.tools.mcp_server", "main"),
     "delfin-app": ("delfin.cli_app", "main"),
     "delfin-fukui": ("delfin.cli_fukui", "main"),
+    "delfin-agent": ("delfin.agent.cli", "main"),
 }
 
 

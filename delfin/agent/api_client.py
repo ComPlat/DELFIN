@@ -221,6 +221,14 @@ class CLIClient(_BaseClient):
             stderr=subprocess.PIPE,
             text=True,
             cwd=self.cwd,
+            # Its own process group, so a Ctrl+C in a terminal front-end
+            # does not reach it. This process is deliberately long-lived
+            # across turns, and signal_stop() sends it a SIGINT on purpose
+            # — one that preserves the session so the next turn can
+            # --resume. A second SIGINT arriving straight from the tty
+            # would race that controlled stop and tear down the
+            # conversation instead of pausing it. kill() still applies.
+            start_new_session=True,
         )
         return self._proc
 
@@ -614,7 +622,7 @@ class APIClient(_BaseClient):
         if not resolved_key:
             raise ValueError(
                 "No Anthropic API key found. Either set ANTHROPIC_API_KEY in "
-                "the environment, or run `python -m delfin.agent.cli "
+                "the environment, or run `delfin-agent "
                 "credentials set ANTHROPIC_API_KEY` to store it in "
                 "~/.delfin/credentials.json (chmod 0600)."
             )
@@ -1326,6 +1334,16 @@ def _kill_targets_host_process(
 
 _DEFAULT_BASH_DENY_PATTERNS: tuple[str, ...] = (
     r"\brm\s+(-[a-zA-Z]*[rR][a-zA-Z]*[fF]|-[a-zA-Z]*[fF][a-zA-Z]*[rR])\b",
+    # The same delete, spelled with the flags apart. The pattern above
+    # needs r and f in ONE token, so `rm -r -f build`, `rm -f -r build`
+    # and `rm --recursive --force build` all matched nothing — and split
+    # flags are the spelling a model produces when it is being careful.
+    # Two lookaheads, the idiom already proven on `git clean` and `find`,
+    # so a later `;` or `|` cannot smuggle the second half in from
+    # another command.
+    r"\brm\b"
+    r"(?=[^;|&]*\s-(?:[a-zA-Z]*f\b|-force\b))"
+    r"(?=[^;|&]*\s-(?:[a-zA-Z]*r\b|-recursive\b))",
     r"\brm\s+-[a-zA-Z]*\s+/(?:\s|$)",
     r"\bdd\s+if=",
     r"\bdd\s+of=/dev/",
@@ -1376,9 +1394,24 @@ _DEFAULT_BASH_DENY_PATTERNS: tuple[str, ...] = (
     r">\s*/dev/(sd|nvme|hd|xvd)",
     r">\s*/etc/",
     r"\bchmod\s+-?R?\s*777\b",
+    # `chmod 0777` and `chmod a+rwx` are the same act and neither matched.
+    # Worse than undenied: chmod is on the AUTO-ALLOW list, whose comment
+    # says "any chmod except 777 (deny-list)" — so `chmod 0777 /etc/passwd`
+    # ran with no prompt at all. Deny is checked before auto-allow, so
+    # covering the spellings here is what makes that comment true.
+    r"\bchmod\b[^;|&]*\s0?777\b",
+    r"\bchmod\b[^;|&]*\s[ugoa]*\+rwx\b",
     r":\s*\(\s*\)\s*\{",  # fork bomb
     r"\bcurl\b[^|;]*\|\s*(?:sh|bash|zsh)",
     r"\bwget\b[^|;]*\|\s*(?:sh|bash|zsh)",
+    # Fetch-and-run with anything in between. The two above require the
+    # shell to be the IMMEDIATE next stage, so `curl u | tee /tmp/x | sh`
+    # defeated them, and so did piping into an interpreter rather than a
+    # shell. It is the install idiom, the payload is remote code the rest
+    # of the stack never sees, and an arbitrary project folder is exactly
+    # where a model reaches for it.
+    r"\b(?:curl|wget)\b[^;&]*\|(?:[^;&]*\|)*"
+    r"\s*(?:sh|bash|zsh|python3?|perl|ruby|node)\b",
     r"--break-system-packages\b",
     r"\bnpm\s+publish\b",
     r"\bpip\s+install\b[^|;]*--target\s+/(?:usr|etc|bin|lib|var)",
@@ -1483,7 +1516,10 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"^\s*touch\s+(?!/)",                                    # only relative paths
     r"^\s*cp\s+(?!.*[\s/]/(?:etc|usr|bin|lib|var))",         # disallow copy to system dirs
     r"^\s*mv\s+(?!.*[\s/]/(?:etc|usr|bin|lib|var))",
-    r"^\s*chmod\s+(?:[ugoa+=-]+|[0-7]{3,4})\s+",             # any chmod except 777 (deny-list)
+    # Any chmod except the world-writable spellings, which the deny-list
+    # covers and which is checked first. The old comment claimed the same
+    # thing while the deny pattern matched only a bare `777`.
+    r"^\s*chmod\s+(?:[ugoa+=-]+|[0-7]{3,4})\s+",
     r"^\s*time\s+",
     r"^\s*timeout\s+\d",
     r"^\s*xargs\s+",
@@ -13625,6 +13661,23 @@ def _announce_auto_isolation() -> None:
     )
 
 
+# Set by a front-end that wants isolation for this process only, e.g.
+# `delfin-agent --isolate`. Empty means "ask the settings file", which is
+# what every caller did before this existed.
+_BASH_ISOLATION_OVERRIDE: str = ""
+
+
+def set_bash_isolation_override(mode: str) -> None:
+    """Force the shell-isolation mode for this process.
+
+    The banner tells the user that isolation is off in the attended
+    modes; a statement of a weakness with no way to act on it is only
+    half the truth, and this is the other half.
+    """
+    global _BASH_ISOLATION_OVERRIDE
+    _BASH_ISOLATION_OVERRIDE = str(mode or "")
+
+
 def _bash_isolation_argv(
     cmd: str,
     run_cwd,
@@ -13654,6 +13707,11 @@ def _bash_isolation_argv(
     is entitled to see.
     """
     plain = ["/bin/bash", "-c", cmd]
+    if mode is None and _BASH_ISOLATION_OVERRIDE:
+        # Set once per process by `delfin-agent --isolate`. It comes before
+        # the settings file on purpose: a session-scoped choice must not
+        # have to write a setting that outlives the session making it.
+        mode = _BASH_ISOLATION_OVERRIDE
     if mode is None:
         try:
             from delfin.user_settings import load_settings
@@ -14020,7 +14078,7 @@ class OpenAIClient(_BaseClient):
         if not resolved_key:
             raise ValueError(
                 f"No API key found. Either set {key_env_var} in the "
-                "environment, or run `python -m delfin.agent.cli "
+                "environment, or run `delfin-agent "
                 f"credentials set {key_env_var}` to store it in "
                 "~/.delfin/credentials.json (chmod 0600)."
             )
