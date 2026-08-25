@@ -770,7 +770,14 @@ class TerminalAgent:
             if self.broker is not None:
                 pending = self.broker.take()
                 if pending is not None:
-                    self._answer(pending, self._raw_for_prompt())
+                    # Entered for the prompt and released again as soon as
+                    # it is answered: the span that needs cbreak is the
+                    # keystroke, not the command that raised it.
+                    raw = self._raw_for_prompt()
+                    try:
+                        self._answer(pending, raw)
+                    finally:
+                        self._release_prompt_raw(raw)
                     continue
             worker.join(timeout=_PUMP_TICK_S)
             if not worker.is_alive():
@@ -778,10 +785,28 @@ class TerminalAgent:
         return box[0] if box else None
 
     def _raw_for_prompt(self):
-        """A keystroke reader for a prompt raised outside a turn."""
+        """A keystroke reader for a prompt raised outside a turn.
+
+        Entered here, released by ``_release_prompt_raw``, and the pairing
+        is load-bearing twice: a reader that is never left holds the
+        terminal in cbreak with echo off, so the next idle ``input()``
+        shows nothing of what is typed — and every ``RawMode.__enter__``
+        registers an atexit hook that only ``restore`` takes back, so an
+        unreleased one leaves a hook behind per approval.
+        """
         from . import repl_keys as rk
         raw = rk.RawMode(self._stdin)
         return raw.__enter__()
+
+    @staticmethod
+    def _release_prompt_raw(raw) -> None:
+        """Give the terminal back, whatever the reader turned out to be."""
+        restore = getattr(raw, "restore", None)
+        if callable(restore):
+            try:
+                restore()
+            except Exception:
+                pass
 
     def _remember(self, text: str) -> None:
         """`#note` writes a memory, marked as the user's own."""
