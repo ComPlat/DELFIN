@@ -1797,6 +1797,27 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: only addition is what it stops on.  See :func:`_carried_out` for the
     #: stopping rule and why it is not a bond order.
     #:
+    #: **When two instructions fight, the ramp is what settles it**, and that
+    #: was measured rather than reasoned about.  Asked to form C1-C11 -- half
+    #: a Diels-Alder, which is easy -- while breaking C1-C2, which is a
+    #: butadiene double bond and one of the strongest things in the molecule,
+    #: with both pulling on the same carbon under one shared force constant:
+    #:
+    #:     step  6   19.6 kcal/mol/A   the form is granted, -63.7 kcal/mol
+    #:     step 12   57.3              C1-C2 has reached 1.61 A, -62.4
+    #:     step 16  117.3              1.87 A, -35.1
+    #:     step 17  140.3              2.13 A, -3.8, and both now hold
+    #:
+    #: So they do not deadlock: the cheap half is granted at a low force and
+    #: the expensive half holds out until the force passes what that bond
+    #: holds against -- :data:`gfn_optimize.A_BOND_HOLDS`, 110 kcal/mol/A, and
+    #: it went at 140.  The price of the fight is the sixty kcal/mol the path
+    #: climbs back through, which is on the profile and answers to the
+    #: temperature like any other rise.  And when the ramp ends with a verb
+    #: still unsatisfied, that is an answer too -- it ends above twice what a
+    #: bond holds, so it is a statement about this method and this structure
+    #: rather than a setting to turn up.
+    #:
     #: They are offered for a pair and not for an angle or a torsion, because
     #: a bond is between two atoms and there is no third one to make or break.
     submit_scan_way = widgets.Dropdown(
