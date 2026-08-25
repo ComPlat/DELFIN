@@ -287,6 +287,29 @@ def _rewind(ctx, _args: str) -> CommandResult:
         return CommandResult(output=f"no change report available ({exc})")
 
 
+def _tasks(ctx, _args: str) -> CommandResult:
+    """This session's open work, on demand.
+
+    The banner counts tasks parked by earlier sessions and points here,
+    and Ctrl+T toggles the same list during a turn — both named a command
+    that did not exist, so `/tasks` fell through to the model and came
+    back as an answer about a task list instead of the task list.
+
+    Scoped to THIS session, like every other listing surface: the store
+    is workspace-wide and outlives sessions, and merging them silently is
+    the leak the scoping exists to prevent. Work parked elsewhere is
+    adopted deliberately, not listed as if it were already ours.
+    """
+    try:
+        from . import task_ticker
+        text = task_ticker.render_text(
+            ctx.workspace,
+            session_id=str(getattr(ctx.engine, "session_id", "") or ""))
+    except Exception as exc:
+        return CommandResult(output=f"task list unavailable ({exc})")
+    return CommandResult(output=text or "(no tasks)")
+
+
 def _mcp(ctx, _args: str) -> CommandResult:
     try:
         from . import mcp_client
@@ -1141,6 +1164,7 @@ BUILTINS: dict[str, ReplCommand] = {
                     _session, True),
         ReplCommand("/rewind", "history", "What the agent changed here",
                     _rewind),
+        ReplCommand("/tasks", "history", "This session's open work", _tasks),
         ReplCommand("/memories", "history", "Stored memories", _memories, True),
         ReplCommand("/forget", "history", "Delete one memory by name",
                     _forget, True),
