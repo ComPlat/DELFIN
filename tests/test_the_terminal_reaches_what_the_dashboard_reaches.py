@@ -41,9 +41,14 @@ NEW_COMMANDS = (
     '/forget',
     '/undo',
     '/undo-file',
+    '/pending',
+    '/approve',
+    '/reject',
+    '/git',
     '/agents',
     '/skills',
     '/hooks',
+    '/bash',
     '/attention',
     '/plans',
     '/commands',
@@ -57,9 +62,13 @@ BACKING_MODULE = {
     '/memories': 'delfin.agent.memory_store',
     '/forget': 'delfin.agent.memory_store',
     '/undo-file': 'delfin.agent.change_journal',
+    '/pending': 'delfin.agent.pending_changes',
+    '/approve': 'delfin.agent.pending_changes',
+    '/reject': 'delfin.agent.pending_changes',
     '/agents': 'delfin.agent.subagents',
     '/skills': 'delfin.agent.skills',
     '/hooks': 'delfin.agent.hooks_editor',
+    '/bash': 'delfin.agent.bash_jobs',
     '/attention': 'delfin.agent.attention',
     '/plans': 'delfin.agent.memory_store',
     '/commands': 'delfin.agent.slash_commands',
@@ -365,6 +374,60 @@ def test_undo_file_refuses_a_scope_it_does_not_know(tmp_path):
     assert "unknown scope" in out
 
 
+# ---------------------------------------------------------------------------
+# Staging: approve and reject act only on an id they found
+# ---------------------------------------------------------------------------
+
+def _stage_one(tmp_path, session_id="sid-pending"):
+    from delfin.agent import pending_changes
+
+    target = tmp_path / "notes.md"
+    target.write_text("before\n")
+    return pending_changes.stage(
+        session_id, tool="edit_file", path=target,
+        old_text="before\n", new_text="after\n")
+
+
+def test_pending_lists_the_staged_diff(tmp_path):
+    rec = _stage_one(tmp_path)
+    engine = _Engine(session_id="sid-pending")
+    out = rc.BUILTINS["/pending"].handler(_ctx(tmp_path, engine), "").output
+    assert "notes.md" in out
+    assert str(rec.get("id")) in out
+
+
+def test_approve_applies_the_named_change(tmp_path):
+    _stage_one(tmp_path, "sid-approve")
+    engine = _Engine(session_id="sid-approve")
+    out = rc.BUILTINS["/approve"].handler(_ctx(tmp_path, engine), "1").output
+    assert (tmp_path / "notes.md").read_text() == "after\n", out
+    assert "applied" in out
+
+
+def test_reject_discards_without_writing(tmp_path):
+    _stage_one(tmp_path, "sid-reject")
+    engine = _Engine(session_id="sid-reject")
+    out = rc.BUILTINS["/reject"].handler(_ctx(tmp_path, engine), "1").output
+    assert (tmp_path / "notes.md").read_text() == "before\n", out
+    assert "reject" in out.lower() or "1" in out
+
+
+def test_approving_an_id_that_does_not_exist_claims_nothing(tmp_path):
+    """A queue that reports work it did not do is worse than one that refuses."""
+    _stage_one(tmp_path, "sid-missing")
+    engine = _Engine(session_id="sid-missing")
+    out = rc.BUILTINS["/approve"].handler(_ctx(tmp_path, engine), "999").output
+    assert "applied" not in out
+    assert (tmp_path / "notes.md").read_text() == "before\n"
+
+
+def test_rejecting_an_id_that_does_not_exist_claims_nothing(tmp_path):
+    _stage_one(tmp_path, "sid-missing-2")
+    engine = _Engine(session_id="sid-missing-2")
+    out = rc.BUILTINS["/reject"].handler(_ctx(tmp_path, engine), "999").output
+    assert "rejected 1" not in out
+
+
 def test_forgetting_a_memory_that_is_not_there_deletes_nothing(tmp_path):
     from delfin.agent import memory_store
 
@@ -384,8 +447,76 @@ def test_forgetting_a_memory_names_what_it_deleted(tmp_path):
     assert "deleted" in out and slug in out
 
 
+# ---------------------------------------------------------------------------
+# /git: through the gate, and read-only
+# ---------------------------------------------------------------------------
+
+class _Gated(_Engine):
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.ran: list = []
+        self.kit_permissions = type(
+            "P", (), {"confirm_callback": None,
+                      "matches_bash_auto_allow": lambda self, cmd: True})()
+
+    def run_gated_bash(self, command):
+        self.ran.append(command)
+        return '{"exit_code": 0, "stdout": " M calc.py\\n", "stderr": ""}'
+
+
+def test_git_goes_through_the_agents_own_gate(tmp_path):
+    """Never around it.
+
+    A /git that shelled out directly would be a way to run a command from
+    the agent's prompt without the deny-list or the approval prompt, and
+    it would look like a convenience.
+    """
+    engine = _Gated()
+    out = rc.BUILTINS["/git"].handler(_ctx(tmp_path, engine), "status").output
+    assert engine.ran == ["git status --short"]
+    assert "M calc.py" in out
+    assert "exit_code" not in out, "the envelope is for the model, not here"
+
+
+def test_git_never_runs_a_subcommand_that_is_not_read_only(tmp_path):
+    engine = _Gated()
+    for attempt in ("push", "commit -m x", "reset --hard", "status; rm -rf /"):
+        out = rc.BUILTINS["/git"].handler(_ctx(tmp_path, engine), attempt).output
+        assert "usage:" in out, attempt
+    assert engine.ran == [], "a /git pass-through is a second shell escape"
+
+
+def test_bash_kill_acts_only_on_a_job_id_it_was_given(tmp_path):
+    """Killing "the last one" would reach a job the user is not looking at."""
+    out = rc.BUILTINS["/bash"].handler(_ctx(tmp_path), "kill").output
+    assert "usage:" in out
+    out = rc.BUILTINS["/bash"].handler(_ctx(tmp_path), "kill nope-42").output
+    assert "nope-42" in out and "unknown" in out
+
+
 @pytest.mark.parametrize("name", ["/skills", "/commands", "/plans"])
 def test_a_name_that_is_not_there_is_not_invented(tmp_path, name):
     out = rc.BUILTINS[name].handler(_ctx(tmp_path), "no-such-thing").output
     assert "no-such-thing" in out
     assert "no " in out.lower()
+
+
+def test_git_without_a_gate_says_there_is_none(tmp_path):
+    out = rc.BUILTINS["/git"].handler(_ctx(tmp_path), "status").output
+    assert "gate" in out
+
+
+def test_git_does_not_park_a_question_it_cannot_answer(tmp_path):
+    """The gate parks approvals for the MAIN thread, which is this one.
+
+    Calling into the prompt from a command handler is the asker waiting
+    for the answerer, i.e. for itself. Found by reading the same deadlock
+    the shell escape already documents.
+    """
+    engine = _Gated()
+    engine.kit_permissions = type(
+        "P", (), {"confirm_callback": lambda *a: True,
+                  "matches_bash_auto_allow": lambda self, cmd: False})()
+    out = rc.BUILTINS["/git"].handler(_ctx(tmp_path, engine), "status").output
+    assert engine.ran == []
+    assert "!git status --short" in out

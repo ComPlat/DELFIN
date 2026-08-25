@@ -664,6 +664,126 @@ def _audit_undo(res: dict, sid: str, scope: str) -> None:
         pass
 
 
+def _pending(ctx, _args: str) -> CommandResult:
+    """The diff-approval queue, rendered by pending_changes itself."""
+    sid = _live_session(ctx)
+    if not sid:
+        return CommandResult(output="no active session — nothing is pending")
+    try:
+        from . import pending_changes
+        return CommandResult(output=pending_changes.render_pending(sid))
+    except Exception as exc:
+        return CommandResult(output=f"pending queue unavailable ({exc})")
+
+
+def _approve(ctx, args: str) -> CommandResult:
+    """Apply a staged diff. Named ids only, never "the newest one"."""
+    arg = args.strip()
+    sid = _live_session(ctx)
+    if not sid or not arg:
+        return CommandResult(output="usage: /approve <id|all>  (see /pending)")
+    try:
+        from . import pending_changes
+        if arg.lower() == "all":
+            res = pending_changes.approve_all(sid, workspace=ctx.workspace)
+            lines = [f"applied {len(res.get('applied') or [])} change(s)"]
+            for conflict in res.get("conflicts") or []:
+                lines.append(f"  conflict #{conflict.get('id')} "
+                             f"{conflict.get('path')}: {conflict.get('reason')}")
+            for err in res.get("errors") or []:
+                lines.append(f"  error: {err}")
+            return CommandResult(output="\n".join(lines))
+        res = pending_changes.approve(sid, arg, workspace=ctx.workspace)
+    except Exception as exc:
+        return CommandResult(output=f"approve failed: {exc}")
+    if res.get("status") == "applied":
+        return CommandResult(output=(
+            f"applied #{res.get('id')} → {res.get('path', '')} "
+            "(covered by the undo journal)"))
+    return _change_verdict(arg, res)
+
+
+def _reject(ctx, args: str) -> CommandResult:
+    """Discard a staged diff without applying it."""
+    arg = args.strip()
+    sid = _live_session(ctx)
+    if not sid or not arg:
+        return CommandResult(output="usage: /reject <id|all>  (see /pending)")
+    try:
+        from . import pending_changes
+        if arg.lower() == "all":
+            res = pending_changes.reject_all(sid)
+            return CommandResult(output=(
+                f"rejected {len(res.get('rejected') or [])} change(s)"))
+        res = pending_changes.reject(sid, arg)
+    except Exception as exc:
+        return CommandResult(output=f"reject failed: {exc}")
+    return _change_verdict(arg, res)
+
+
+def _change_verdict(change_id: str, res: dict) -> CommandResult:
+    """The store's own word on an id it did or did not act on.
+
+    An id that was not found reads as "not found", never as success:
+    a staging queue that reports work it did not do is worse than one
+    that refuses.
+    """
+    status = str((res or {}).get("status", "") or "unknown")
+    reason = str((res or {}).get("reason", "") or "")
+    return CommandResult(output=(
+        f"#{change_id}: {status}" + (f" — {reason}" if reason else "")))
+
+
+_GIT_READ_ONLY: dict[str, str] = {
+    "status": "git status --short",
+    "diff": "git diff --stat",
+    "log": "git log --oneline -15",
+    "branch": "git branch -a --no-color",
+}
+
+
+def _git(ctx, args: str) -> CommandResult:
+    """Read-only git, through the same gate `!` uses.
+
+    The four subcommands are a fixed table, not a pass-through: a /git
+    that forwarded whatever followed it would be a second shell escape
+    wearing a familiar name, and `!git ...` already exists for the rest.
+
+    The gate is asked up front whether it would prompt. It parks its
+    question for the MAIN thread, and a command handler runs ON the main
+    thread — calling into a prompt from here would be the asker waiting
+    for the answerer, i.e. itself. `!` does not have that problem because
+    the loop runs it on a worker, so that is where this points.
+    """
+    sub = (args.strip().split() or [""])[0].lower()
+    command = _GIT_READ_ONLY.get(sub)
+    if command is None:
+        return CommandResult(output="usage: /git status | diff | log | branch")
+    run = getattr(getattr(ctx, "engine", None), "run_gated_bash", None)
+    if not callable(run):
+        return CommandResult(output=(
+            "/git runs through the same gate the agent uses, and this "
+            "backend has none"))
+    perms = getattr(ctx.engine, "kit_permissions", None)
+    try:
+        would_ask = (perms is not None
+                     and getattr(perms, "confirm_callback", None) is not None
+                     and not perms.matches_bash_auto_allow(command))
+    except Exception:
+        would_ask = False
+    if would_ask:
+        return CommandResult(output=(
+            f"the gate wants to approve this one — run `!{command}`, which "
+            "the loop runs where the approval prompt can be answered"))
+    try:
+        out = run(command)
+    except Exception as exc:
+        return CommandResult(output=f"git {sub} failed: {exc}")
+    from .repl import TerminalAgent
+    body = "\n".join(f"  {line}" for line in TerminalAgent._shell_lines(out))
+    return CommandResult(output=body or f"(no output from git {sub})")
+
+
 def _agents(ctx, _args: str) -> CommandResult:
     """The subagent presets, from the registry that defines them."""
     try:
@@ -751,6 +871,51 @@ def _hooks(ctx, _args: str) -> CommandResult:
         lines.append(f"        source {row.get('source') or 'unknown'}")
     for note in warnings:
         lines.append(f"  ! {note}")
+    return CommandResult(output="\n".join(lines))
+
+
+def _bash(ctx, args: str) -> CommandResult:
+    """Background shell jobs: list them, or kill one by id.
+
+    Kill is the only mutation, and it needs the id: a /bash that killed
+    "the last one" would reach a job the user is not looking at.
+    """
+    try:
+        from . import bash_jobs
+        registry = bash_jobs.get_registry()
+    except Exception as exc:
+        return CommandResult(output=f"job registry unavailable ({exc})")
+    parts = args.strip().split()
+    action = parts[0].lower() if parts else "ls"
+    if action == "kill":
+        if len(parts) < 2:
+            return CommandResult(output="usage: /bash kill <job_id>")
+        try:
+            ok, note = registry.kill(parts[1])
+        except Exception as exc:
+            return CommandResult(output=f"kill failed: {exc}")
+        return CommandResult(output=f"{parts[1]}: {note}" if ok
+                             else f"not killed — {note}")
+    if action not in ("ls", "jobs"):
+        return CommandResult(output="usage: /bash [ls] | /bash kill <job_id>")
+    try:
+        jobs = sorted(registry.list_jobs(), key=lambda j: j.started_at,
+                      reverse=True)
+    except Exception as exc:
+        return CommandResult(output=f"could not list jobs ({exc})")
+    if not jobs:
+        return CommandResult(output="no background bash jobs")
+    lines = []
+    for job in jobs[:20]:
+        try:
+            st = job.status_dict()
+        except Exception:
+            continue
+        flag = "run " if st.get("running") else "done"
+        lines.append(f"  {flag} {st.get('job_id')}  exit={st.get('exit_code')}  "
+                     f"{float(st.get('elapsed_s', 0.0) or 0.0):>7.1f}s  "
+                     f"{str(st.get('command', ''))[:50]}")
+    lines.append("  /bash kill <job_id>")
     return CommandResult(output="\n".join(lines))
 
 
@@ -939,6 +1104,16 @@ BUILTINS: dict[str, ReplCommand] = {
         ReplCommand("/plans", "history", "Saved plans", _plans, True),
         ReplCommand("/undo-file", "changes", "Restore files from the undo "
                     "journal", _undo_file, True),
+        ReplCommand("/pending", "changes", "Diffs waiting for approval",
+                    _pending),
+        ReplCommand("/approve", "changes", "Apply a staged diff",
+                    _approve, True),
+        ReplCommand("/reject", "changes", "Discard a staged diff",
+                    _reject, True),
+        ReplCommand("/git", "workspace", "status | diff | log | branch",
+                    _git, True),
+        ReplCommand("/bash", "workspace", "Background jobs: list or kill one",
+                    _bash, True),
         ReplCommand("/attention", "workspace", "The attention inbox",
                     _attention, True),
     ]
