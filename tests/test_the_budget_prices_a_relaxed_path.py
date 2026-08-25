@@ -1420,8 +1420,11 @@ def test_armed_legs_do_not_outlive_their_structure():
     from delfin.dashboard import tab_submit
     host = pathlib.Path(tab_submit.__file__).read_text(encoding="utf-8")
     assert "state['scan_legs'] = []" in host
-    # And describing a leg survives atoms that are gone.
-    body = EDITOR_SOURCE.split("def _describe_leg(")[1].split("\n    def ")[0]
+    # And naming the atoms of a leg survives atoms that are gone.  It is its
+    # own function now, because the scan's profile puts the same pair on an
+    # axis and the picture must not name them differently from the sentence.
+    body = (EDITOR_SOURCE.split("def _leg_atoms_label(")[1]
+            .split("\n    def ")[0])
     assert "if 0 <= index < len(known)" in body
 
 

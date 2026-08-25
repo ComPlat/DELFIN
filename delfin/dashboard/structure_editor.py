@@ -41,6 +41,7 @@ from . import gfn_optimize as _gfn
 from . import ketcher as _ketcher
 from . import mopac_optimize as _mopac
 from . import saddle as _saddle
+from . import scan_profile as _scan_profile
 from . import separate_systems as _separate
 from . import solvents as _solvents
 from .input_processing import (
@@ -3188,8 +3189,30 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         write and throwing its whole path away silently and correctly.  Read
         back from the frames alone that case is indistinguishable from a
         number nobody ever took.
+
+        And it is where the scan's profile goes.  The counter moves for two
+        different reasons and only one of them ends a picture.  Something
+        starts drawing over the structure -- the follow under a hand, the
+        settle, an optimisation, a climb, a saddle search, a chain, the next
+        scan -- and then the last walk's profile is no longer about what is on
+        screen, and it goes at the moment the run starts rather than when it
+        ends, because a picture beside a structure being pulled about has
+        already stopped being true.  Or something is being *stopped* and the
+        page's player has to be given a number it has never seen: that is
+        ``press`` and ``abandoned``, claimed by Undo, Reset and the Stops, and
+        it draws nothing at all.
+
+        Measured on a twenty-four-point torsion, before that distinction was
+        made here: the walk finished, the picture stood, and one press of Undo
+        took it away over "Scanned: the highest point the walk crossed" --
+        which is the walk the picture is of.  Undo goes back through the
+        scan's own landmarks, so what arrives in the box is what decides that
+        case, a few lines later in the same press (see
+        :func:`_scan_plot_holds`).
         """
         record('run', v=int(run), by=by)
+        if by not in ('press', 'abandoned'):
+            _scan_plot_drop()
         return run
 
     def _claim_the_frame_run():
@@ -9309,16 +9332,35 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     def _scan_legs():
         return list(state.get('scan_legs') or [])
 
-    def _describe_leg(leg):
+    def _leg_atoms_label(leg):
+        """The atoms a leg drives, named the way the sentences name them.
+
+        Its own function because the profile's axis wants exactly this and
+        nothing else -- ``C0-C1`` -- while :func:`_describe_leg` wants it with
+        the walk's two ends after it.  One place, so that the picture and the
+        sentence cannot come to call the same pair of atoms different things.
+        """
         symbols = []
         perceived = state.get('perceived')
         known = getattr(perceived, 'symbols', None) or ()
+        if not known:
+            # The perception comes back from the browser, and it has not
+            # always been asked for by the time a leg is named -- an editor
+            # driven from the outside may never have had a viewer at all.  The
+            # element column of the structure in the box answers the same
+            # question and is always there, so a leg is named "C0-C10" rather
+            # than "?0-?10", on the picture and in the sentence alike.
+            known = [line.split()[0] for line in
+                     _gfn.atom_lines(_current_xyz() or '')]
         for index in leg['atoms']:
             symbol = known[index] if 0 <= index < len(known) else '?'
             symbols.append(f'{symbol}{index}')
+        return '-'.join(symbols)
+
+    def _describe_leg(leg):
         unit = 'A' if leg['kind'] == 'distance' else 'deg'
-        return (f"{'-'.join(symbols)} {leg['from']:.3g} -> {leg['to']:.3g} "
-                f"{unit}")
+        return (f"{_leg_atoms_label(leg)} {leg['from']:.3g} -> "
+                f"{leg['to']:.3g} {unit}")
 
     def _refresh_scan():
         """Show the armed legs, or nothing at all when there are none."""
@@ -9706,6 +9748,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # is affordable by construction -- it is what the box was holding.
             affordable = xyz
             costs = {}
+            # And the two of them the profile marks, kept as the pair the path
+            # is made of rather than as geometries: where the walk started,
+            # which is the zero the free energies are quoted against, and the
+            # last point the budget could pay for, which is what the box is
+            # given when the walk ends past the ceiling.  Both are numbers the
+            # loop has already worked out; keeping them costs nothing and
+            # saves the picture having to guess which point they were.
+            began_point = None
+            kept_point = None
             force = _gfn.PUSH_FORCE_FROM
             growth = (_gfn.PUSH_FORCE_TO / _gfn.PUSH_FORCE_FROM) ** (
                 1.0 / max(1, steps - 1))
@@ -9981,6 +10032,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         walked = standing if standing is not None else walked
                         break
                     standing = walked
+                    # Where the coordinate *is*, not where it was asked to be.
+                    # A push does not dictate a value -- that is the whole
+                    # point of it -- so the path is read off the structure.
+                    #
+                    # Read before the two blocks below rather than after them,
+                    # because both of them name a point of the path and the
+                    # coordinate is half of what a point is.
+                    reached = (_value_in(walked, legs[0]) if pushing
+                               else held[0]['value'])
                     if budgeted:
                         # Against the budget's own anchor, not against the
                         # point the walk happened to start from: the two are
@@ -9991,17 +10051,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                          * _HARTREE_TO_KCAL)
                         if costs[walked] <= scan_ceiling:
                             affordable = walked
+                            kept_point = (reached, spent)
                     if began_at is None:
                         # The first point, which is the start relaxed at the
                         # value it already had -- a minimum in every direction
                         # but the one being walked, which is what a free
                         # energy wants.
                         began_at = walked
-                    # Where the coordinate *is*, not where it was asked to be.
-                    # A push does not dictate a value -- that is the whole
-                    # point of it -- so the path is read off the structure.
-                    reached = (_value_in(walked, legs[0]) if pushing
-                               else held[0]['value'])
+                        began_point = (reached, spent)
                     if (pushing and was_at is not None and reached is not None
                             and abs(reached - was_at) > _PUSH_JUMP):
                         # It fell through the crossing.  What the fall cost is
@@ -10296,6 +10353,25 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     _set_mol_status(*_scan_verdict(path, steps))
 
                 schedule_ui_update(_done)
+                # And the picture of the walk, after all of that: drawn here,
+                # on the thread that did the walking, and handed to the
+                # interface in a turn of its own.
+                #
+                # After rather than before, and measured: matplotlib's first
+                # import is 0.3 s idle and over a second on a loaded machine,
+                # and drawn before this line that whole delay fell between
+                # the walk ending and the verdict reaching the screen -- six
+                # of the scan tests caught it, finding the row still saying
+                # "step 14 of 20" after the run had finished.  The answer
+                # goes first; the picture follows it.
+                #
+                # Shown rather than drawn in the turn for the same reason:
+                # a second spent in an interface callback is a second in
+                # which the dashboard does not answer.
+                schedule_ui_update(
+                    _show_scan_profile,
+                    _scan_profile_html(path, legs, pushing,
+                                       began=began_point, kept=kept_point))
 
         _start_background(_work, 'The scan')
 
@@ -12289,6 +12365,156 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 f'available, so the path is closed there. '
                 f'{_thermal_wait(rise, T)}' + held_back + left)
 
+    def _scan_plot_drop():
+        """Take the profile off the page.
+
+        A picture is a claim about what was measured, and it must not outlive
+        the thing it describes: a profile standing beside a structure the walk
+        never visited is the same lie as a control that offers something
+        impossible.  So it goes at the two moments that end it -- a run that
+        starts drawing over the structure (see :func:`_note_the_run`), and a
+        geometry arriving in the box that is not this scan's own (see
+        :func:`_scan_plot_holds`).
+
+        Cheap enough to call from either: nothing is drawn most of the time,
+        and then this is one dictionary lookup.
+        """
+        if not state.get('scan_plot'):
+            return
+        state['scan_plot'] = None
+        submit_scan_plot.value = ''
+        submit_scan_plot.layout.display = 'none'
+
+    def _scan_plot_holds(text):
+        """Whether the profile still describes the geometry now in the box.
+
+        Two things have to be true, and they are the two the rest of the
+        editor already tells structures apart by.  The comment line has to be
+        one the scan wrote -- ``Scanned``, and the landmarks the walk left in
+        the history, so stepping back through them with Undo keeps the picture
+        that names them -- and the element column has to be the molecule the
+        walk was made on, the way :func:`_scan_ends_here` and the thermal
+        anchor decide the same question.
+
+        Everything else takes it away: a drag ends with its own comment, an
+        optimisation with its own, Reset and a newly loaded structure with
+        theirs, and Undo past the scan lands on the entry from before it.
+        """
+        lines = str(text or '').splitlines()
+        comment = lines[1].strip().lower() if len(lines) > 1 else ''
+        if not comment.startswith('scanned'):
+            return False
+        walked_on = state.get('scan_plot_of')
+        return bool(walked_on) and _structure_fingerprint(text) == walked_on
+
+    def _on_box_for_scan_plot(change):
+        """The box has changed: is the profile still about what is in it?"""
+        if state.get('scan_plot') and not _scan_plot_holds(change.get('new')):
+            _scan_plot_drop()
+
+    def _scan_profile_html(path, legs, pushing, began=None, kept=None):
+        """Draw the walk that has just finished, and hand back the picture.
+
+        Once, here, and not a point at a time.  Measured with the interpreter
+        the dashboard runs on: 0.17 s to build the figure and encode it, and
+        40 to 66 kB of PNG depending on how many points there are.  The walks
+        it was measured against cost 6 to 10 s a point under GFN2 -- a
+        twenty-point Diels-Alder approach over sixteen atoms took 144 s, a
+        twenty-four-point torsion 238 s -- so drawing at every point would
+        cost a few per cent of the time and push a megabyte of pictures nobody
+        waits for down the channel the frame stream needs.  At the end it is
+        one write, after the last call to xtb has returned.
+
+        Nothing is computed again.  Every number here was in hand when the
+        verdict was written: the path, the free energies where they were
+        asked for, and where the walk was left.
+
+        Built here, on the scan's own worker thread, and shown by
+        :func:`_show_scan_profile` when the interface's turn comes.  The two
+        are separate because the first import of matplotlib costs 0.3 s on an
+        idle machine and a second on a loaded one, and a second spent inside
+        an interface callback is a second in which the dashboard does not
+        answer.  Nothing here touches a widget.
+
+        Wrapped, because a picture must not be able to take away the answer.
+        A scan that has walked for minutes reports its verdict whatever
+        matplotlib does with it.
+        """
+        points = [(x, y) for x, y in path if x is not None and y is not None]
+        # Two points are a line between two numbers the sentence already
+        # gives.  A picture is worth its row when there is a shape to see.
+        if len(points) < 3:
+            return None
+        try:
+            unit = 'A' if legs[0]['kind'] == 'distance' else 'deg'
+            symbols = _leg_atoms_label(legs[0])
+            top = max(points, key=lambda one: one[1])
+            came = state.get('scan_came_back')
+            ended = came if came else points[-1]
+            if state.get('scan_crowded'):
+                ended_label = 'where it stopped: two atoms too close'
+            elif state.get('scan_arrived') and came:
+                ended_label = 'the minimum it came back to'
+            elif state.get('scan_stop'):
+                ended_label = 'where you stopped it'
+            else:
+                ended_label = 'where it ended'
+            # The free energies at the three places they were taken, on the
+            # same axis: both are kcal/mol above where the walk started, so
+            # this is one scale and not two dressed as one.
+            free = state.get('scan_free')
+            drawn_free = ()
+            if free is not None and began is not None:
+                drawn_free = ((began[0], 0.0, 'where it started'),
+                              (top[0], free[0], 'the highest point'),
+                              (ended[0], free[1], 'where it came to'))
+            # The ceiling where the verdict compares against it: over the
+            # minimum the rise is measured out of, or -- when the free
+            # energies are what the temperature is worked out from -- over
+            # where the walk started, which is their zero.
+            T = float(submit_temperature.value or 298.15)
+            ceiling = thermal_ceiling(T, _THERMAL_SECONDS)
+            _, rise = _climbed([one[1] for one in points])
+            floor = 0.0 if free is not None else top[1] - rise
+            said = []
+            if len(legs) > 1:
+                said.append('Walked together with '
+                            + ', '.join(_describe_leg(one)
+                                        for one in legs[1:]) + '.')
+            said.append('Undo steps back through the marked points.')
+            return _scan_profile.profile_html(
+                points,
+                x_label=f'{symbols} ({unit})',
+                y_label='kcal/mol above the start',
+                title=(f'{symbols}, pushed with a force' if pushing
+                       else f'{symbols}, walked')
+                + (f' and {len(legs) - 1} more together' if len(legs) > 1
+                   else ''),
+                started=began, top=top, ended=ended,
+                ended_label=ended_label,
+                free=drawn_free,
+                ceiling=floor + ceiling,
+                ceiling_label=f'{ceiling:.1f} kcal/mol at {T:g} K',
+                kept=kept if state.get('scan_walled') is not None else None,
+                note=' '.join(said))
+        except Exception as exc:                  # a picture, not the answer
+            record('note', v=f'the scan profile could not be drawn: {exc}')
+            return None
+
+    def _show_scan_profile(drawn):
+        """Put a picture that has been drawn on the page, and say what it is of.
+
+        The fingerprint is taken here rather than where the figure was built:
+        the structure the picture is a claim about is the one now in the box,
+        and the box is written a few lines before this.
+        """
+        if not drawn:
+            return
+        state['scan_plot_of'] = _structure_fingerprint(_current_xyz() or '')
+        state['scan_plot'] = True
+        submit_scan_plot.value = drawn
+        submit_scan_plot.layout.display = ''
+
     def on_submit_hold(_button=None):
         """Hold the value the selection describes while the field runs."""
         indices = list(state.get('picked') or [])
@@ -13964,6 +14190,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     # Watching it here means the geometry's history costs nothing to collect:
     # nobody has to remember to record it at each of the places that write.
     coords_widget.observe(journal.on_box, names='value')
+    # The other half of what keeps the scan's profile honest.  A run that
+    # starts takes it away at :func:`_note_the_run`; a geometry that arrives
+    # in the box without one -- Undo, Reset, a structure someone loads, a drag
+    # writing where it ended -- is caught here, and the picture stands only
+    # while the box still holds the walk it is about.
+    coords_widget.observe(_on_box_for_scan_plot, names='value')
     journal.opening(journal.snapshot(journal_watching), coords_widget.value)
 
     submit_select_btn.observe(on_submit_select_toggle, names='value')
@@ -14065,6 +14297,30 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='100%', margin='4px 0 0 0'),
     )
     submit_ff_notes.add_class('submit-ff-notes')
+
+    #: The picture of the path the last scan walked, under the structure it
+    #: was walked on.
+    #:
+    #: Under it rather than on it.  The status line lies on the picture
+    #: because it is written several times a second and a row above the viewer
+    #: made the atom under the cursor step up and down; a profile is written
+    #: once, at the end of a walk that took minutes, so it costs nothing to
+    #: give it a row -- and a row of its own takes none of the pixels the
+    #: structure is drawn in, which an overlay would.  It is ``display: none``
+    #: until there is a walk to show, so an editor that has never scanned is
+    #: laid out exactly as it was.
+    #:
+    #: It travels into fullscreen as a panel: bounded to 30vh and scrolling,
+    #: which is the shared rule for results that belong to a picture (the RMSD
+    #: pair, the Fukui numbers).  Fullscreen is still for the structure.
+    submit_scan_plot = widgets.HTML(
+        value='',
+        layout=widgets.Layout(width='100%', margin='4px 0 0 0',
+                              display='none'),
+    )
+    submit_scan_plot.add_class('submit-scan-plot')
+    submit_scan_plot.add_class('delfin-structure-fs-member')
+    submit_scan_plot.add_class('delfin-structure-fs-panel')
     # ---- where a structure comes from ------------------------------
 
     convert_smiles_button = widgets.Button(

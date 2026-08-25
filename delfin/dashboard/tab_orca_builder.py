@@ -2398,7 +2398,11 @@ def create_tab(ctx):
     orca_mol_stack.add_class('delfin-structure-fs-viewer')
     orca_mol_module = widgets.VBox(
         [orca_mol_header, orca_mol_nav_row, orca_editor.submit_manip_toolbar,
-         orca_mol_stack, orca_editor.submit_ff_notes],
+         # The scan's profile under the picture, the way the Submit tab has
+         # it: the editor is the same part here and a walk made in this tab is
+         # reported in the same shape.
+         orca_mol_stack, orca_editor.submit_scan_plot,
+         orca_editor.submit_ff_notes],
         layout=widgets.Layout(width='100%', min_width='0', gap='6px'),
     )
     # The editor finds its own controls by this class, and only inside it.
