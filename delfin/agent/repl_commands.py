@@ -322,15 +322,36 @@ def _tasks(ctx, _args: str) -> CommandResult:
 
 
 def _mcp(ctx, _args: str) -> CommandResult:
+    """Every server that would load, and the file each one came from.
+
+    `effective_servers` takes a WORKSPACE. It was handed a registry
+    object, so every call raised a TypeError that the except below turned
+    into "MCP registry unavailable" — a sentence that reads like a
+    diagnosis and is one, of a defect one line above it. This command has
+    never listed a server.
+
+    The rows are dicts, so they are rendered rather than printed: a raw
+    repr per line was the second half of the same never-run path.
+    """
     try:
         from . import mcp_client
-        registry = mcp_client.get_registry(ctx.workspace)
-        servers = mcp_client.effective_servers(registry)
-        if not servers:
-            return CommandResult(output="no MCP servers configured")
-        return CommandResult(output="\n".join(f"  {s}" for s in servers))
+        servers = mcp_client.effective_servers(ctx.workspace)
+        notice = mcp_client.trust_notice(ctx.workspace)
     except Exception as exc:
         return CommandResult(output=f"MCP registry unavailable ({exc})")
+    if not servers:
+        return CommandResult(output="no MCP servers configured")
+    lines = []
+    for row in servers:
+        where = row.get("url") or " ".join(
+            [str(row.get("command", ""))] + [str(a) for a in row.get("args") or []]
+        )
+        state = "" if row.get("enabled", True) else "  (disabled)"
+        lines.append(f"  {row.get('name', '?'):<18} {where[:60]}{state}")
+        lines.append(f"  {'':<18} from {row.get('source', '?')}")
+    if notice:
+        lines.append("  " + notice)
+    return CommandResult(output="\n".join(lines))
 
 
 def _trust(ctx, args: str) -> CommandResult:
