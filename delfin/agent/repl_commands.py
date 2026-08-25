@@ -429,9 +429,22 @@ def _tools(ctx, args: str) -> CommandResult:
             role = str((ctx.engine.get_status() or {}).get("role", "") or "")
         except Exception:
             role = ""
+        # The session's own narrowing travels with the role. Building the
+        # context from the role alone listed tools this session has
+        # explicitly denied — the executor refuses them, so nothing could
+        # run, but a listing that answers "what am I offered" with names
+        # that are not offered is the reader-facing half of the same
+        # defect the deny list exists to close.
+        perms = getattr(ctx.engine, "kit_permissions", None)
         tools = ac.advertisable_tools(
             list(getattr(ac, "_DOC_TOOLS_OPENAI", None) or []),
-            ac.ToolSurfaceContext(role=role))
+            ac.ToolSurfaceContext(
+                role=role,
+                session_allowed=frozenset(
+                    getattr(perms, "session_allowed_tools", None) or ()),
+                session_denied=frozenset(
+                    getattr(perms, "session_denied_tools", None) or ()),
+            ))
     except Exception as exc:
         return CommandResult(output=f"tool catalogue unavailable ({exc})")
     query = args.strip().lower()
@@ -1110,6 +1123,42 @@ def _exit(ctx, _args: str) -> CommandResult:
     return CommandResult(quit=True)
 
 
+#: Every key the decoder can produce while a turn is running, with what it
+#: does. Keyed by the constant rather than by the literal so a renamed
+#: event breaks the import instead of quietly dropping a row, and a test
+#: asserts the table covers every event `repl_keys` exports — a key layer
+#: nobody can discover is a key layer nobody uses.
+def _key_rows() -> list[tuple[str, str, str]]:
+    from . import repl_keys as rk
+    return [
+        (rk.INTERRUPT, "esc", "End this turn. A running tool call "
+                              "finishes first."),
+        (rk.SUBMIT, "enter", "Queue what you typed; it goes out when the "
+                             "turn ends."),
+        (rk.STEER, "ctrl+g", "Send what you typed INTO the running turn; "
+                             "the model reads it on its next round."),
+        (rk.CYCLE_MODE, "shift+tab", "Next approval posture (never onto "
+                                     "bypass)."),
+        (rk.EXPAND, "ctrl+o", "Show the last tool result in full."),
+        (rk.TASKS, "ctrl+t", "Show or hide the open task list."),
+        (rk.REDRAW, "ctrl+l", "Redraw the screen."),
+        (rk.EDIT, "backspace / ctrl+u", "Edit or clear the line you are "
+                                        "typing."),
+    ]
+
+
+def _keys(_ctx, _args: str) -> CommandResult:
+    """The keys that work WHILE the agent is running.
+
+    They are only reachable during a turn, which is exactly when nobody
+    is reading documentation — so they need a place to be looked up
+    afterwards.
+    """
+    width = max(len(k) for _e, k, _d in _key_rows())
+    lines = [f"  {key:<{width}}  {desc}" for _e, key, desc in _key_rows()]
+    return CommandResult(output="While a turn is running:\n" + "\n".join(lines))
+
+
 def _help(ctx, args: str) -> CommandResult:
     from . import help_gen
     return CommandResult(output=help_gen.generate_help(
@@ -1124,6 +1173,8 @@ def _mode(engine) -> str:
 BUILTINS: dict[str, ReplCommand] = {
     c.name: c for c in [
         ReplCommand("/help", "session", "List these commands", _help, True),
+        ReplCommand("/keys", "session", "Keys that work while a turn runs",
+                    _keys),
         ReplCommand("/status", "session", "Model, mode, tokens, cost", _status),
         ReplCommand("/cost", "session", "What this session has cost", _cost),
         ReplCommand("/usage", "session", "Token and cost detail, with the rate",
