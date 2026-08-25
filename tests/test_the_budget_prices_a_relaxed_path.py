@@ -1432,7 +1432,7 @@ def test_armed_legs_do_not_outlive_their_structure():
     body = (EDITOR_SOURCE.split("def _leg_atoms_label(")[1]
             .split("\n    def ")[0])
     assert "if 0 <= index < len(known)" in body
-    assert "_leg_names(leg)" in EDITOR_SOURCE.split(
+    assert "_leg_atoms_label(leg)" in EDITOR_SOURCE.split(
         "def _describe_leg(")[1].split("\n    def ")[0]
 
 

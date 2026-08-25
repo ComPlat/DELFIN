@@ -91,7 +91,7 @@ def _values(box):
     return [value for _label, value in box.options]
 
 
-def test_the_two_questions_are_asked_once_each_and_reach_all_six_answers():
+def test_the_two_questions_are_asked_once_each_and_reach_every_combination():
     """Where the search starts, and how it gets there: two boxes, one press.
 
     The three buttons covered four of the six combinations and could not say
@@ -100,6 +100,11 @@ def test_the_two_questions_are_asked_once_each_and_reach_all_six_answers():
     not be walked between at all.  Asked as two questions, every combination
     is reachable and each is reachable by saying what you want rather than by
     knowing which button means which.
+
+    Nine of them now rather than the six the three buttons could not cover:
+    three starts, with one way up from the structure on screen and four from a
+    pair of ends.  The point is that the count is free -- a way added to the
+    second box is reachable from every start it works from, without a button.
     """
     part, state = _an_editor()
     part.submit_ff_dd.value = _method(part, 'gfn2')
@@ -131,10 +136,14 @@ def test_the_two_questions_are_asked_once_each_and_reach_all_six_answers():
     assert _values(part.submit_saddle_how) == ['orca']
     assert not _shown(part.submit_saddle_how)
 
-    # From two ends there are three, and the walk alone is one of them.
+    # From two ends there are four, and the walk alone is one of them.  The
+    # order of the list is the recommendation: the interpolated search first,
+    # the band after it for when that answer is not believed, then the two
+    # that run here.
     for start in ('marked', 'scan'):
         part.submit_saddle_from.value = start
-        assert _values(part.submit_saddle_how) == ['orca', 'hand', 'walk']
+        assert _values(part.submit_saddle_how) == ['orca', 'neb', 'hand',
+                                                   'walk']
         assert _shown(part.submit_saddle_how)
 
 
@@ -359,7 +368,7 @@ def test_an_armed_scan_comes_back_with_the_method_that_can_walk_it():
     assert _shown(part.submit_scan_whole)
 
 
-def test_where_a_scan_walks_is_one_question_with_three_answers():
+def test_where_a_scan_walks_is_one_question_and_what_is_picked_answers_it():
     """A direction and a checkbox that only revealed a field were two controls
     for one question.
 
@@ -368,6 +377,11 @@ def test_where_a_scan_walks_is_one_question_with_three_answers():
     agreed.  The field for the number appears under the third answer and
     nowhere else, and it opens on what the coordinate measures rather than on
     a zero that has to be guessed at.
+
+    How many answers there are is what is picked: a pair of atoms can be asked
+    to make or break the bond between them, and three or four atoms cannot --
+    there is no bond between three atoms to form.  That absence is the list
+    saying so, rather than a press refused afterwards.
     """
     part, state = _an_editor()
     part.submit_ff_dd.value = _method(part, 'gfn2')
@@ -376,14 +390,16 @@ def test_where_a_scan_walks_is_one_question_with_three_answers():
     state['picked'] = [0, 1]
     part.submit_internal_value.value = 1.53
     part._refresh_scan()
-    assert _values(part.submit_scan_way) == ['in', 'out', 'to']
+    assert _values(part.submit_scan_way) == ['in', 'out', 'form', 'break',
+                                             'to']
     assert not _shown(part.submit_scan_to)
 
     part.submit_scan_way.value = 'to'
     assert _shown(part.submit_scan_to)
     assert part.submit_scan_to.value == pytest.approx(1.53)
 
-    # And the words follow what is picked, with the same three answers.
+    # And the words follow what is picked -- three answers for a torsion, the
+    # two verbs gone with the bond they were about.
     state['picked'] = [0, 1, 2, 3]
     part._refresh_scan()
     assert _values(part.submit_scan_way) == ['in', 'out', 'to']

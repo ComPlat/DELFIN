@@ -10448,6 +10448,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             came_from, was,
                             [_value_in(walked, one) for one in legs]))
                     path.append((reached, spent, walked))
+                    if not pushing:
+                        # The values this step really held, for the walk back,
+                        # and the largest thing that moved without being
+                        # asked, for naming what slipped if anything did.
+                        drove.append([one['value'] for one in held[:len(legs)]])
+                        slipped.append(_gfn.what_else_moved(
+                            stood_at, walked,
+                            [one['atoms'] for one in legs]))
                     # The lowest point *since the top*, kept with its
                     # geometry.
                     #
@@ -10522,7 +10530,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                          'frames': [shown[-1]]}),
                         r=scan_run: setattr(submit_gfn_frame, 'value', text)
                         if _frame_run_is_current(r) else None)
-                state['scan_there'] = list(path)
+                # The walk as a pair of numbers per point, which is what
+                # :func:`_scan_two_legs` promises and what the second leg is
+                # compared against.  The geometry each point held travels with
+                # the walk itself, not here: :func:`_keep_the_walk` is what
+                # keeps the structures, for re-pricing and for marking a point,
+                # and a leg is two axes.
+                state['scan_there'] = [(one[0], one[1]) for one in path]
                 # Whether it was the walk *out* that was interrupted.  A Stop
                 # pressed during the return leg is a different thing and must
                 # not turn the barrier into "where the walk was interrupted":
@@ -10629,8 +10643,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # and reporting that as agreement would be the check
                     # saying yes because it did not run.
                     if len(returned) > 2:
+                        # The pairs, not the walk: both legs are (coordinate,
+                        # energy) on one zero, and the geometries the walk out
+                        # carries are no part of comparing two curves.
                         state['scan_disagree'] = _gfn.paths_disagree(
-                            path, returned)
+                            state['scan_there'], returned)
                 # And the free energy, at the three places it is both
                 # affordable and meaningful: where the walk started, the
                 # highest point it crossed, and the minimum it came to.
@@ -13448,7 +13465,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         A scan that has walked for minutes reports its verdict whatever
         matplotlib does with it.
         """
-        points = [(x, y) for x, y in path if x is not None and y is not None]
+        # A point of the walk is where it was, what it cost, and the
+        # structure it held there -- the third is what the marked points
+        # and Undo are made of, and it is not drawn.  Taken by index
+        # rather than unpacked, so a point that grows a fourth thing
+        # later does not stop the picture; the pairs made here are the
+        # same shape as *began*, *kept* and the point it came back to,
+        # which everything below compares against.
+        points = [(one[0], one[1]) for one in path
+                  if one[0] is not None and one[1] is not None]
         # Two points are a line between two numbers the sentence already
         # gives.  A picture is worth its row when there is a shape to see.
         if len(points) < 3:
