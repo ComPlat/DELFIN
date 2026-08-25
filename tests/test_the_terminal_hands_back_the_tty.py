@@ -361,3 +361,30 @@ def test_a_late_plan_approval_does_not_announce_a_posture():
     text = err.getvalue()
     assert "approval → default" not in text
     assert "too late" in text
+
+
+# ---------------------------------------------------------------------------
+# A refusal has to be a key the caller offered
+# ---------------------------------------------------------------------------
+
+def test_a_prompt_with_no_terminal_refuses_with_a_key_the_caller_offered():
+    """The fallback goes straight back into the caller's own option chain.
+
+    ask_user_question allows digits and Esc and nothing else, so a
+    hardcoded "n" reaches `int(key)` there: the question raises ValueError
+    instead of being answered, and the tool thread waits on a request
+    nobody will resolve.
+    """
+    broker = tc.TerminalConfirmBroker(timeout_s=5)
+    agent, _engine, _err = _agent(broker=broker)
+
+    allowed = {"1", "2", "\x1b"}
+    assert agent._read_key(None, allowed) in allowed, (
+        "the option loop only handles keys it offered")
+
+    req = tc.ConfirmRequest(kind=tc.ASK, payload={
+        "question": "which environment?",
+        "options": ["staging", "production"]})
+    agent._answer(req, None)
+    assert req.decision == {"answers": []}, (
+        "an unanswerable question is no answer, never a crash")
