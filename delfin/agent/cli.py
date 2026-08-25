@@ -325,6 +325,40 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0 if not out["error"] else 1
 
 
+def _persisted_default_mode(workspace: Path) -> str:
+    """The posture a settings file actually DECLARES, or "" for none.
+
+    Read from the files rather than from ``kit_settings.load()``, and the
+    difference is the whole point: with no settings anywhere the loader
+    still returns ``default_mode="default"``, its own fallback, which is
+    indistinguishable from a user having written that word down. Asking
+    the merged view therefore reports a decision nobody made — and it
+    silently defeated the plan-first default, because resolve_posture
+    correctly honours anything a user configured.
+    """
+    import json
+
+    try:
+        from . import kit_settings
+        candidates = [kit_settings.USER_SETTINGS_PATH,
+                      kit_settings.repo_settings_path(workspace)]
+    except Exception:
+        return ""
+    for path in candidates:
+        if path is None:
+            continue
+        try:
+            if not Path(path).exists():
+                continue
+            block = json.loads(Path(path).read_text()).get("kit") or {}
+        except Exception:
+            continue
+        declared = str(block.get("default_mode", "") or "")
+        if declared:
+            return declared
+    return ""
+
+
 def _claim_session(sid: str) -> bool:
     """Take the writer lock now, not at the first save.
 
@@ -424,7 +458,8 @@ def _open_session(engine, args: argparse.Namespace, workspace: Path) -> bool:
     return _claim_session(getattr(engine, "session_id", "") or sid)
 
 
-def _startup_banner(engine, report, workspace: Path) -> str:
+def _startup_banner(engine, report, workspace: Path,
+                    why: str = "") -> str:
     """What the user is looking at, in the lines that decide safety."""
     from .repl import permission_mode as _permission_mode
 
@@ -445,7 +480,18 @@ def _startup_banner(engine, report, workspace: Path) -> str:
         f"workspace  {workspace}  ({where})",
     ]
     if perms_mode:
-        lines.append(f"approval   {perms_mode}")
+        lines.append(f"approval   {perms_mode}"
+                     + (f"  [{why}]" if why else ""))
+        if perms_mode in ("default", "acceptEdits"):
+            # Nobody has been told this. _bash_isolation_argv engages bwrap
+            # only under bypassPermissions or a locked scope; in the
+            # attended modes with the shipped "auto" setting it returns a
+            # plain /bin/bash -c. A user reading "workspace confinement"
+            # reasonably assumes a sandbox, and what is actually there is
+            # path checking plus a regex list.
+            lines.append(
+                "isolation  off — a command the agent runs can still write "
+                "outside the workspace")
     else:
         # Not decoration: without a permissions object the write and shell
         # tools refuse, and a user staring at a silent agent deserves the
@@ -513,15 +559,49 @@ def cmd_chat(args: argparse.Namespace) -> int:
     if not _open_session(engine, args, workspace):
         return 2
 
+    posture, why = launch_guard.resolve_posture(
+        flag_mode=getattr(args, "permission_mode", "") or "",
+        persisted_mode=_persisted_default_mode(workspace),
+        unattended_opt_in=bool(getattr(args, "unattended", False)),
+    )
+    try:
+        engine.set_kit_permission_mode(posture)
+    except Exception:
+        pass          # a backend with no gate has no posture to set
+
     from .repl import ReplOptions, TerminalAgent
+    from .terminal_confirm import TerminalConfirmBroker
+
+    # Bound ONLY here, and only for a terminal. cmd_run, the benchmark and
+    # the scheduler must keep the behaviour they have: without a callback
+    # a write inside the workspace is allowed silently, which is right for
+    # an unattended run and exactly what this command exists to change.
+    broker = None
+    bind = getattr(engine, "set_kit_confirm_callback", None)
+    if sys.stdin.isatty() and callable(bind):
+        broker = TerminalConfirmBroker(
+            persist=lambda pat: engine.persist_kit_pattern(pat, kind="allow"),
+            set_mode=engine.set_kit_permission_mode,
+        )
+        # False means this provider carries no permissions object at all,
+        # and on that backend the file and shell tools refuse outright —
+        # so there is nothing to ask about and a broker would only add a
+        # prompt that never fires.
+        if not bind(broker.callback):
+            broker = None
+        else:
+            perms = engine.kit_permissions
+            perms.ask_user_callback = broker.ask_user
+            perms.plan_approval_callback = broker.approve_plan
+
 
     notices = report.render()
-    agent = TerminalAgent(engine, ReplOptions(
+    agent = TerminalAgent(engine, broker=broker, opts=ReplOptions(
         cwd=workspace,
         max_tokens=getattr(args, "max_tokens", 0) or 0,
         show_thinking=bool(getattr(args, "verbose", False)),
         color=getattr(args, "color", "auto"),
-        banner=(_startup_banner(engine, report, workspace)
+        banner=(_startup_banner(engine, report, workspace, why)
                 + (f"\n\n{notices}" if notices else "")),
     ))
     try:
@@ -1497,6 +1577,13 @@ def build_parser() -> argparse.ArgumentParser:
                       help="Work on a copy, leaving the original untouched")
     chat.add_argument("-n", "--name", default="", dest="session_name",
                       help="Name this session, so --resume can find it")
+    chat.add_argument("--permission-mode", default="", dest="permission_mode",
+                      choices=["", "plan", "default", "acceptEdits",
+                               "bypassPermissions"],
+                      help="Start in this approval posture (default: plan)")
+    chat.add_argument("--unattended", action="store_true",
+                      help="Required alongside --permission-mode "
+                           "bypassPermissions; nothing will be asked")
     _add_agent_flags(chat)
     chat.add_argument("-v", "--verbose", action="store_true")
     # Only this front door inherits the dashboard's saved provider/model.
