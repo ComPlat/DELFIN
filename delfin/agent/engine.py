@@ -329,6 +329,12 @@ _DRAINED_STEERING_KEYS = ("finished_jobs", "finished_subagents", "answered")
 # Ceiling on mid-turn steering deliveries. A block that flaps (a task list
 # edited repeatedly) must not be able to spend a turn's context on itself.
 _MAX_STEERING_REFRESHES = 6
+# How late the open-work-from-previous-sessions notice may still arrive,
+# measured in messages present when the prompt is built (turn N sees
+# 2N-1). Seven is four user turns: enough that a session which opens with
+# a couple of greetings still gets it, few enough that it cannot surface
+# in the middle of a conversation it has nothing to do with.
+_FOREIGN_TASKS_TURN_CAP = 7
 _ROLE_TOOL_WHITELIST: dict[str, frozenset[str]] = {
     "dashboard_agent": _DASHBOARD_TOOLS,        # full analysis + research, writes restricted to workspace
     "research_agent":  _RESEARCH_TOOLS,         # web search + code reading
@@ -545,6 +551,15 @@ class AgentEngine:
         # One-shot: the open-foreign-tasks notice fires only on a session's
         # first prompt build (re-armed with the session in reset_cycle).
         self._foreign_tasks_shown: bool = False
+        # True once a saved conversation has been loaded into self.messages.
+        # The notice above used to infer this from len(self.messages) > 1,
+        # which cannot tell a restored history from the second turn of a
+        # live session — so a session that opened with a greeting burned
+        # the one shot on the greeting and the parked work was never named.
+        self._history_restored: bool = False
+        # Whether the message that opened the CURRENT turn was a greeting
+        # and nothing else. Set per turn in stream_response.
+        self._turn_is_bare_greeting: bool = False
         import uuid as _uuid_trace
         self._trace_id: str = _uuid_trace.uuid4().hex[:12]   # stable trace key
         self._trace_pending: list = []   # (tool, input, t0) awaiting its result
@@ -1435,8 +1450,8 @@ class AgentEngine:
             return ""
 
     def _build_open_foreign_tasks_block(self) -> str:
-        """One-shot notice — FIRST prompt build of a session only — of open
-        tasks left behind by PREVIOUS sessions of this workspace.
+        """One-shot notice — first SUBSTANTIVE prompt build of a session —
+        of open tasks left behind by PREVIOUS sessions of this workspace.
 
         The task store survives across sessions but every listing surface
         filters to the current session id, so a fresh session would
@@ -1444,12 +1459,26 @@ class AgentEngine:
         silently). Deliberately a summary with explicit opt-in adoption
         (task_adopt / task_list(all_sessions=true)): session scoping is a
         leak fix (bug 20260616-183359) and lists are never auto-merged.
-        Best-effort; empty string when nothing foreign is open."""
+        Best-effort; empty string when nothing foreign is open.
+
+        A greeting is not a substantive turn. The trigger used to be the
+        session's first prompt build outright, so opening with "Hallo"
+        handed the model a backlog it had no reason to act on — and the
+        model, having been given a list and nothing else to do, read it
+        out. The shot is not consumed there: the work is still parked, and
+        the first real request is when naming it helps.
+        """
         if getattr(self, "_foreign_tasks_shown", False):
             return ""
-        if len(self.messages) > 1:
-            # Not a session's first turn (e.g. a restored conversation
-            # whose history came back via load) — never show it late.
+        if getattr(self, "_turn_is_bare_greeting", False):
+            # Not consumed — deliberately. Skipping a greeting must not
+            # cost the session the one notice it gets.
+            return ""
+        if (getattr(self, "_history_restored", False)
+                or len(self.messages) > _FOREIGN_TASKS_TURN_CAP):
+            # A restored conversation already carries its own context, and
+            # a notice that arrives deep into a live session reads as a
+            # non sequitur. Either way: never show it late.
             self._foreign_tasks_shown = True
             return ""
         try:
@@ -1469,9 +1498,12 @@ class AgentEngine:
         if count <= 0:
             return ""
         oldest = int(summary.get("oldest_age_days", 0) or 0)
+        # "oldest 0 days" is what the arithmetic gives for work parked an
+        # hour ago, and it reads as a missing value rather than as recency.
+        age = f"oldest {oldest} days" if oldest else "all from today"
         lines = [
             "# Open work from previous sessions",
-            f"- {count} open task(s), oldest {oldest} days — adopt with "
+            f"- {count} open task(s), {age} — adopt with "
             "task_adopt(id) or list via task_list(all_sessions=true); "
             "ignore if obsolete.",
         ]
@@ -2071,6 +2103,12 @@ class AgentEngine:
             self._stop_requested = False
             self._stop_owner_turn = None
         _turn_id = self._turn_id
+
+        # Read once per turn, before the prompt is built: the steering
+        # blocks are assembled from engine state and never see the message
+        # that triggered them, so anything that has to know what was asked
+        # has to be captured here.
+        self._turn_is_bare_greeting = self.is_bare_greeting(user_message)
 
         self.messages.append(self._build_user_message(user_message, images))
         # Sanitize message history: ensure proper user/assistant alternation.
@@ -4780,11 +4818,26 @@ class AgentEngine:
         self._live_state = text or ""
 
     def _fresh_session_id(self) -> str:
-        """A new session id for backends that supply none. The CLI backend emits
-        its own id via the stream, so it returns "" (filled in later); the
-        OpenAI / KIT / Ollama backends get a minted UUID so each session is a
-        distinct, stable bucket for task scoping and session save/load."""
-        if (getattr(self, "backend", "") or "").lower() == "cli":
+        """A new session id for backends that supply none.
+
+        A backend that announces its own id on the stream returns "" here
+        and is filled in when the event arrives; everyone else gets a
+        minted UUID, so each session is a distinct, stable bucket for task
+        scoping and session save/load.
+
+        Asked of the CLIENT, not of the backend string. ``backend="cli"``
+        with ``provider="kit"`` builds an OpenAIClient — create_client
+        routes on the provider — and that client announces nothing. Keying
+        on the string left the id empty forever, and an empty task session
+        id means UNSCOPED: a fresh session's first turn reported every
+        earlier session's open tasks as its own unfinished work.
+        """
+        # `is True`, not truthiness: an arbitrary stand-in answers every
+        # attribute lookup with something truthy, and the failure would be
+        # silent — an empty id is not an error, it is the unscoped bucket.
+        # Anything that does not declare the capability exactly gets an id,
+        # which is the safe direction.
+        if getattr(self.client, "supplies_session_id", False) is True:
             return ""
         import uuid as _u
         return _u.uuid4().hex
@@ -5559,6 +5612,10 @@ class AgentEngine:
         if "engine_messages" in data:
             self.messages = list(data.get("engine_messages") or [])
             restored.append("engine_messages")
+            # Stated, not inferred. The cross-session task notice needs to
+            # know a conversation came off disk; a message count cannot
+            # tell that apart from a session's second turn.
+            self._history_restored = bool(self.messages)
         else:
             self.messages = []
             missing.append("engine_messages")

@@ -152,6 +152,11 @@ def test_foreign_block_suppressed_for_restored_history(tmp_path, monkeypatch):
     s.create("left behind", session_id="prev")
 
     eng = _bare_engine()
+    # A conversation that came off disk says so. This used to be inferred
+    # from len(messages) > 1, which cannot tell a restored history from a
+    # session's second turn — and that conflation is what made a greeting
+    # burn the one notice the session gets.
+    eng._history_restored = True
     eng.messages = [
         {"role": "user", "content": "old"},
         {"role": "assistant", "content": "reply"},
@@ -165,6 +170,109 @@ def test_foreign_block_suppressed_for_restored_history(tmp_path, monkeypatch):
     assert eng._build_open_foreign_tasks_block() == ""
     eng.messages = [{"role": "user", "content": "new"}]
     assert eng._build_open_foreign_tasks_block() == ""
+
+
+def test_foreign_block_arms_off_deep_into_a_live_session(tmp_path, monkeypatch):
+    """A live session that never restored anything still has a horizon.
+
+    Without one, a session whose first turns were all greetings could
+    produce the notice at turn 40, where it reads as a non sequitur.
+    """
+    s = get_store(tmp_path)
+    s.create("left behind", session_id="prev")
+
+    eng = _bare_engine()
+    eng.messages = [{"role": "user", "content": f"m{i}"} for i in range(12)]
+    monkeypatch.setattr(
+        AgentEngine, "kit_permissions",
+        property(lambda self: _perms_for(tmp_path, "cur")),
+    )
+    assert eng._build_open_foreign_tasks_block() == ""
+    eng.messages = [{"role": "user", "content": "new"}]
+    assert eng._build_open_foreign_tasks_block() == ""
+
+
+# ---------------------------------------------------------------------------
+# A greeting is not a request for a backlog
+# ---------------------------------------------------------------------------
+
+def test_a_greeting_does_not_open_the_backlog(tmp_path, monkeypatch):
+    """Observed live: the user typed "Hallo" and the answer was a list of
+    fifteen tasks from other sessions.
+
+    The block is written into the system prompt, so its only route to the
+    user is the model reading it out — which is exactly what happened,
+    because a greeting gives the model nothing else to do.
+    """
+    s = get_store(tmp_path)
+    for i in range(15):
+        s.create(f"leftover {i}", session_id="prev")
+
+    eng = _bare_engine()
+    eng._turn_is_bare_greeting = True
+    monkeypatch.setattr(
+        AgentEngine, "kit_permissions",
+        property(lambda self: _perms_for(tmp_path, "cur")),
+    )
+    assert eng._build_open_foreign_tasks_block() == ""
+
+
+def test_the_greeting_does_not_cost_the_session_its_one_notice(tmp_path,
+                                                               monkeypatch):
+    """The whole point of the block is that parked work dies silently.
+
+    Skipping it on a greeting must not consume the one shot, or opening
+    with "Hallo" would hide the backlog for the rest of the session — the
+    same silent death the mechanism exists to prevent, reached by a new
+    route.
+    """
+    s = get_store(tmp_path)
+    s.create("Finish the wrapper", session_id="prev")
+
+    eng = _bare_engine()
+    monkeypatch.setattr(
+        AgentEngine, "kit_permissions",
+        property(lambda self: _perms_for(tmp_path, "cur")),
+    )
+    eng._turn_is_bare_greeting = True
+    assert eng._build_open_foreign_tasks_block() == ""
+
+    # Turn two is a real request; the message list has grown accordingly.
+    eng._turn_is_bare_greeting = False
+    eng.messages = [
+        {"role": "user", "content": "hallo"},
+        {"role": "assistant", "content": "hi"},
+        {"role": "user", "content": "please finish the wrapper"},
+    ]
+    block = eng._build_open_foreign_tasks_block()
+    assert "Finish the wrapper" in block
+    assert eng._build_open_foreign_tasks_block() == "", "still one shot"
+
+
+def test_the_turn_records_whether_it_was_a_greeting(monkeypatch):
+    """The flag has to be set where the message is known.
+
+    _steering_blocks is built from engine state and never sees the user's
+    message, so a block that must know what was asked can only be told by
+    the turn itself.
+    """
+    import inspect
+    src = inspect.getsource(AgentEngine.stream_response)
+    assert "_turn_is_bare_greeting = self.is_bare_greeting(" in src
+
+
+def test_work_parked_an_hour_ago_is_not_zero_days_old(tmp_path, monkeypatch):
+    s = get_store(tmp_path)
+    s.create("just parked", session_id="prev")
+
+    eng = _bare_engine()
+    monkeypatch.setattr(
+        AgentEngine, "kit_permissions",
+        property(lambda self: _perms_for(tmp_path, "cur")),
+    )
+    block = eng._build_open_foreign_tasks_block()
+    assert "oldest 0 days" not in block
+    assert "all from today" in block
 
 
 def test_foreign_block_caps_listing_at_five(tmp_path, monkeypatch):
