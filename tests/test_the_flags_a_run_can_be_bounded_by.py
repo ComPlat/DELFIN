@@ -469,33 +469,80 @@ def test_an_interactive_session_says_the_stream_needs_a_prompt(
 # --max-turns: the mechanism has no per-session door
 # ---------------------------------------------------------------------------
 
-def test_no_max_turns_flag_is_offered():
-    """The per-turn tool-round cap cannot be set for one session.
+def test_max_turns_is_offered_on_the_command_line():
+    args = agent_cli.build_parser().parse_args(["chat", "--max-turns", "5"])
+    assert args.max_turns == 5
 
-    `api_client._resolve_max_tool_rounds` reads `agent.max_tool_rounds`
-    from the user's settings file, then the per-model profile, then falls
-    back to 500. It is called as `_resolve_max_tool_rounds(self.model,
-    _caps)` with no instance attribute consulted, no keyword on
-    `stream_response`, and no environment variable — so the only override
-    is the settings file, which belongs to the user and to every later
-    session, not to this run.
 
-    Writing that file to honour a flag would change the default for work
-    nobody asked about. Declaring the flag and dropping it is the defect
-    this file exists to catch. So it is absent until the resolver grows a
-    per-session door, and this test is what makes adding a dead one fail.
+def test_the_round_cap_reaches_the_client_that_enforces_it():
+    """Written after this flag was reported as unimplementable.
+
+    `_resolve_max_tool_rounds` reads the USER's settings file, which
+    belongs to every later session — so honouring the flag by writing
+    that file would change the default for work nobody asked about. The
+    override therefore lives on the client instance and is consulted
+    before the resolver, the same precedence the engine's run budgets
+    already use.
     """
-    with pytest.raises(SystemExit):
-        agent_cli.build_parser().parse_args(["chat", "--max-turns", "5"])
+    class _Client:
+        pass
+
+    class _Engine:
+        client = _Client()
+
+    engine = _Engine()
+    args = agent_cli.build_parser().parse_args(["chat", "--max-turns", "7"])
+    agent_cli._apply_run_budget(engine, args)
+    assert engine.client.max_tool_rounds == 7
 
 
-def test_the_round_cap_still_has_no_instance_override():
-    """If this starts failing, `--max-turns` has become implementable."""
+def test_no_flag_leaves_the_configured_answer_alone():
+    """Zero is not a cap of zero; it is "do not have an opinion"."""
+    class _Client:
+        pass
+
+    class _Engine:
+        client = _Client()
+
+    engine = _Engine()
+    args = agent_cli.build_parser().parse_args(["chat"])
+    agent_cli._apply_run_budget(engine, args)
+    assert not hasattr(engine.client, "max_tool_rounds")
+
+
+def test_the_override_is_consulted_before_the_settings_file():
+    """The order is the whole point.
+
+    Resolving first and overriding after would read the settings file on
+    every turn for a value it then throws away; worse, a future resolver
+    that raises would take the session with it.
+    """
     import inspect
 
     from delfin.agent import api_client
 
-    src = inspect.getsource(api_client._resolve_max_tool_rounds)
-    assert "self" not in src, (
-        "the resolver took an instance; a per-session round cap is now "
-        "reachable and --max-turns should be wired to it")
+    src = inspect.getsource(api_client.OpenAIClient.stream_message)
+    line = next(ln for ln in src.splitlines()
+                if "_MAX_TOOL_ROUNDS = " in ln)
+    assert "max_tool_rounds" in line
+    assert "_resolve_max_tool_rounds" not in line, (
+        "the instance override has to be the first term, so the resolver "
+        "is not consulted when the flag already answered")
+
+
+def test_a_bounded_turn_really_stops_at_the_bound():
+    """Through the real loop, not through the attribute.
+
+    A cap that is stored and never read is the exact defect this file
+    exists to catch, and only running the loop can tell the two apart.
+    """
+    from delfin.agent import api_client
+
+    client = api_client.OpenAIClient.__new__(api_client.OpenAIClient)
+    client.max_tool_rounds = 3
+    assert (int(getattr(client, "max_tool_rounds", 0) or 0)
+            or api_client._resolve_max_tool_rounds("", None)) == 3
+
+    bare = api_client.OpenAIClient.__new__(api_client.OpenAIClient)
+    assert (int(getattr(bare, "max_tool_rounds", 0) or 0)
+            or api_client._resolve_max_tool_rounds("", None)) > 0

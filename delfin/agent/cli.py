@@ -136,6 +136,22 @@ def _apply_run_budget(engine, args: argparse.Namespace) -> None:
     if secs > 0:
         engine.run_budget_s = secs
 
+    # `--max-turns` bounds the tool ROUNDS inside one turn, which is a
+    # different dimension from the two above: a session can be cheap and
+    # still spin, and a single turn can spin without the cumulative
+    # ceilings ever being approached. The client resolves it from the
+    # user's settings file, so the override lives on the instance — the
+    # settings file belongs to every later session, and bounding one run
+    # must not change what every run does.
+    try:
+        rounds = int(getattr(args, "max_turns", 0) or 0)
+    except (TypeError, ValueError):
+        rounds = 0
+    if rounds > 0:
+        client = getattr(engine, "client", None)
+        if client is not None:
+            client.max_tool_rounds = rounds
+
 
 def _resume_or_create(engine, args: argparse.Namespace) -> str:
     """Restore the engine from a saved session if requested."""
@@ -2033,6 +2049,11 @@ def build_parser() -> argparse.ArgumentParser:
     # unbounded run cost without this, which is what makes an unattended
     # run undeployable. Both land on the engine attributes _run_budget
     # reads, so nothing is written to the user's settings file.
+    chat.add_argument("--max-turns", type=int, default=0, dest="max_turns",
+                      metavar="N",
+                      help="Stop a turn after N tool rounds (0: the "
+                           "per-model default). Bounds one turn, not the "
+                           "session — see --max-budget-usd for that")
     chat.add_argument("--max-budget-usd", type=float, default=0.0,
                       dest="max_budget_usd", metavar="USD",
                       help="Stop this session once measured spend reaches "
