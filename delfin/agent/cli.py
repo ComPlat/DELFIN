@@ -461,7 +461,7 @@ def _open_session(engine, args: argparse.Namespace, workspace: Path) -> bool:
 
 
 def _startup_banner(engine, report, workspace: Path,
-                    why: str = "") -> str:
+                    why: str = "", isolation_note: str = "") -> str:
     """What the user is looking at, in the lines that decide safety."""
     from .repl import permission_mode as _permission_mode
 
@@ -484,7 +484,9 @@ def _startup_banner(engine, report, workspace: Path,
     if perms_mode:
         lines.append(f"approval   {perms_mode}"
                      + (f"  [{why}]" if why else ""))
-        if perms_mode in ("default", "acceptEdits"):
+        if isolation_note:
+            lines.append(isolation_note)
+        elif perms_mode in ("default", "acceptEdits"):
             # Nobody has been told this. _bash_isolation_argv engages bwrap
             # only under bypassPermissions or a locked scope; in the
             # attended modes with the shipped "auto" setting it returns a
@@ -569,9 +571,20 @@ def cmd_chat(args: argparse.Namespace) -> int:
     # silently the way it does.
     args.extra_dirs = [str(p) for p in report.granted_dirs]
     args.read_only_dirs = [str(p) for p in report.read_dirs]
+    isolation_note = ""
     if getattr(args, "isolate", False):
+        import shutil as _shutil
         from .api_client import set_bash_isolation_override
         set_bash_isolation_override("bwrap")
+        # Asking for isolation the host cannot give must not be silent.
+        # _bash_isolation_argv falls back to plain /bin/bash when bwrap is
+        # missing — correct, since there is nothing else it can do — but a
+        # flag that promises containment and delivers none without saying
+        # so is the same defect this wave exists to close, one layer up.
+        if not _shutil.which("bwrap"):
+            isolation_note = (
+                "isolation  REQUESTED but unavailable — bubblewrap is not "
+                "installed here, so commands run unisolated")
     try:
         engine = _build_engine(args)
     except Exception as exc:
@@ -624,7 +637,8 @@ def cmd_chat(args: argparse.Namespace) -> int:
         max_tokens=getattr(args, "max_tokens", 0) or 0,
         show_thinking=bool(getattr(args, "verbose", False)),
         color=getattr(args, "color", "auto"),
-        banner=(_startup_banner(engine, report, workspace, why)
+        banner=(_startup_banner(engine, report, workspace, why,
+                                isolation_note)
                 + (f"\n\n{notices}" if notices else "")),
     ))
     try:
