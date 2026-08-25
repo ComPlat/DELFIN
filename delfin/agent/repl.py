@@ -991,8 +991,17 @@ class TerminalAgent:
                 # default. A default-yes turns approval into a rhythm, and
                 # rhythm is what this whole layer exists to break.
         # No terminal to read from: an unanswerable prompt is a refusal,
-        # never a silent yes.
-        return "n"
+        # never a silent yes — and the refusal has to be a key the caller
+        # offered, because that is the chain it goes back into. A hardcoded
+        # "n" reached `int(key)` on the question path, where the keys are
+        # digits: the prompt raised instead of being answered and the
+        # asking thread waited on a request nobody would resolve.
+        for refusal in ("n", "\x1b"):
+            if refusal in allowed:
+                return refusal
+        # Every caller offers one of those two. If one ever does not, Esc
+        # still reads as "refuse" in each chain rather than as a choice.
+        return "\x1b"
 
     @staticmethod
     def _allow(req):
