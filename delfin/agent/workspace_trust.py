@@ -530,6 +530,17 @@ def gate(kind_name: str, workspace: Path | str | None) -> Decision:
                         state=STATE_NOTHING_OFFERED)
     readable = [o for o in found if not o.escapes]
     escaping = [o for o in found if o.escapes]
+    # A file that offers NOTHING withholds nothing. It was still counted as
+    # withheld, so a workspace whose settings.json merely exists — with an
+    # empty hooks block, or none — met the user with a five-line paragraph
+    # about "0 hook commands ... were NOT loaded". A warning about a risk
+    # that is not there is worse than silence: it is what teaches people to
+    # scroll past the one that matters. An escaping link still counts,
+    # because the link itself is the finding.
+    found = [o for o in found if o.count > 0 or o.escapes]
+    if not found:
+        return Decision(kind=kind_name, workspace=root,
+                        state=STATE_NOTHING_OFFERED)
 
     fingerprint = digest(kind_name, root)
     record = (_read_store().get("workspaces") or {}).get(str(root)) or {}
