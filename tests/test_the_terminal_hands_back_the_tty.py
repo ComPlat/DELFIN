@@ -241,3 +241,33 @@ def test_the_ladder_promises_only_what_the_third_interrupt_does():
     assert "leaves this session" in text, (
         "what it does is return 130 from the loop, not kill the process")
     assert "abandons the process" not in text
+
+
+# ---------------------------------------------------------------------------
+# One row stays one row
+# ---------------------------------------------------------------------------
+
+def test_the_typed_row_is_cut_to_one_screen_line():
+    """Past COLUMNS the terminal wraps and the row becomes two.
+
+    `_clear_bottom` erases with one `\\r\\x1b[K`, which reaches the last of
+    them — so the first half stays in the transcript, in the middle of
+    whatever is printed next. The status row is already cut for this
+    reason; the typed row was not.
+    """
+    agent, _engine, err = _agent()
+    agent.transcript.width = 40
+    agent._draw_input_line("x" * 200 + "the end")
+
+    row = err.getvalue().rsplit("\x1b[K", 1)[-1]
+    assert len(row) <= 39, (
+        f"the typed row is {len(row)} columns wide and wraps at 40")
+    assert row.endswith("the end"), (
+        "the END has to survive the cut: that is where the cursor is")
+
+
+def test_a_typed_row_that_fits_is_left_alone():
+    agent, _engine, err = _agent()
+    agent.transcript.width = 40
+    agent._draw_input_line("stop and check the tests")
+    assert err.getvalue().rsplit("\x1b[K", 1)[-1] == "» stop and check the tests"

@@ -1077,9 +1077,24 @@ class TerminalAgent:
             return
         self._last_paint = now
         if self._input_line:
-            self._set_bottom("» " + self._input_line)
+            self._set_bottom(self._typed_row(self._input_line))
         elif self._turn_active.is_set():
             self._set_bottom(self._status_line())
+
+    def _typed_row(self, text: str) -> str:
+        """The line being typed, cut to one screen row like the status row.
+
+        `_clear_bottom` erases with a single `\\r\\x1b[K`, which reaches one
+        line — so a row that ran past COLUMNS and wrapped left its first
+        half stranded in the transcript. The END is what survives the cut
+        here rather than the middle: that is where the cursor is, and a
+        person typing has to see the characters they are typing.
+        """
+        width = max(20, self.transcript.width - 1)
+        row = "» " + (text or "")
+        if len(row) <= width:
+            return row
+        return "…" + row[len(row) - (width - 1):]
 
     def _render_around_bottom(self, item: RenderItem) -> None:
         """Rendering must not tear whatever is on the bottom row.
