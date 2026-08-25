@@ -62,10 +62,27 @@ def test_the_loader_does_not_offer_it(mode):
 
 @pytest.mark.parametrize("mode", _RETIRED)
 def test_the_cli_help_does_not_advertise_it(mode):
-    src = (_ROOT / "delfin" / "agent" / "cli.py").read_text(encoding="utf-8")
-    start = src.index('run.add_argument("--mode"')
-    help_text = src[start:start + 400]
-    assert f"/ {mode}" not in help_text and f"{mode} /" not in help_text
+    """Asserted from the RENDERED help, not from a source-text offset.
+
+    This read `src.index('run.add_argument("--mode"')` and sliced 400
+    characters after it — so it broke the moment the flag moved into a
+    shared helper, while the property it guards was never in danger. A
+    test anchored on where code sits rather than on what it says fails on
+    a refactor and stays silent on a real regression, which is the wrong
+    way round. It now reads the help every front door actually prints.
+    """
+    from delfin.agent.cli import build_parser
+    import argparse
+
+    parser = build_parser()
+    helps = [parser.format_help()]
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            helps.extend(sub.format_help() for sub in action.choices.values())
+
+    for text in helps:
+        assert f"/ {mode}" not in text and f"{mode} /" not in text, (
+            f"a retired mode is still advertised: {mode}")
 
 
 @pytest.mark.parametrize("mode", _RETIRED)
