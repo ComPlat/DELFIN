@@ -50,7 +50,8 @@ def wired(monkeypatch, tmp_path):
     monkeypatch.setattr(agent_cli, "_build_engine", lambda args: _StubEngine())
     monkeypatch.setattr(agent_cli, "_run_once",
                         lambda engine, prompt, **kw: dict(_RESULT))
-    monkeypatch.setattr(agent_cli, "_save_session", lambda engine, root: "sid-1")
+    monkeypatch.setattr(agent_cli, "_save_session",
+                        lambda engine, root, **kw: "sid-1")
     monkeypatch.setattr(agent_cli, "_resume_or_create", lambda engine, args: "")
 
 

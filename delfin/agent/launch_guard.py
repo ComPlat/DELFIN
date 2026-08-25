@@ -130,17 +130,36 @@ def _git(workspace: Path, *args: str) -> str:
         )
     except Exception:
         return ""
-    return proc.stdout.strip() if proc.returncode == 0 else ""
+    # Only the trailing newline. `--porcelain` puts the status in columns
+    # 1-2, so stripping the whole output eats the leading space of the
+    # FIRST line and shifts its path by one character — which is exactly
+    # the kind of defect that shows up as one wrong filename in a banner
+    # and nowhere else.
+    return proc.stdout.rstrip("\n") if proc.returncode == 0 else ""
+
+
+def _porcelain_path(line: str) -> str:
+    """The path out of one `git status --porcelain` line.
+
+    Columns 1-2 are the index and worktree status, column 3 a space, and
+    the path starts at column 4. A rename reads ``R  old -> new``; the new
+    name is the one that exists.
+    """
+    path = line[3:]
+    if " -> " in path:
+        path = path.split(" -> ", 1)[1]
+    return path.strip().strip('"')
 
 
 def _git_info(workspace: Path) -> GitInfo:
-    top = _git(workspace, "rev-parse", "--show-toplevel")
+    top = _git(workspace, "rev-parse", "--show-toplevel").strip()
     if not top:
         return GitInfo(is_repo=False)
-    branch = _git(workspace, "rev-parse", "--abbrev-ref", "HEAD")
+    branch = _git(workspace, "rev-parse", "--abbrev-ref", "HEAD").strip()
     status = _git(workspace, "status", "--porcelain")
     dirty = tuple(
-        line[3:].strip() for line in status.splitlines() if len(line) > 3
+        _porcelain_path(line) for line in status.splitlines()
+        if len(line) > 3
     )
     try:
         toplevel: Path | None = Path(top).resolve()

@@ -97,7 +97,13 @@ def _resume_or_create(engine, args: argparse.Namespace) -> str:
     if not sid:
         return ""
     if sid == "latest":
-        data = _ss.resume_latest()
+        # Workspace-scoped, which is what latest_session exists for:
+        # continuing a project means continuing THAT project's last
+        # conversation, not whatever ran last on the machine. resume_latest
+        # asks the whole machine, so `run --session latest` in project A
+        # could pick up project B's history and answer out of it.
+        _ws = getattr(args, "cwd", "") or os.getcwd()
+        data = _ss.latest_session(workspace=_ws) or _ss.resume_latest()
     else:
         data = _ss.load_session(sid)
     if not data:
@@ -188,7 +194,36 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096) -> dict[str, Any]:
     }
 
 
-def _save_session(engine, repo_root: Path) -> str:
+def _display_messages(engine, limit: int = 200) -> list[dict[str, str]]:
+    """A plain role/content view of the conversation, for the session file.
+
+    Two reasons it is a projection rather than the wire history. The store
+    derives a session TITLE from the first user message and searches on it,
+    so a message whose content is a list of tool blocks would break the
+    title derivation outright. And `chat_messages=[]` is what every
+    headless save has passed since this file existed, which is why every
+    session it ever wrote is called "Untitled" and invisible to
+    `session search`.
+    """
+    out: list[dict[str, str]] = []
+    for msg in list(getattr(engine, "messages", []) or [])[-limit:]:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role", "") or "")
+        if role not in ("user", "assistant"):
+            continue
+        content = msg.get("content", "")
+        if isinstance(content, list):
+            parts = [str(b.get("text", "")) for b in content
+                     if isinstance(b, dict) and b.get("type") == "text"]
+            content = " ".join(p for p in parts if p)
+        text = str(content or "").strip()
+        if text:
+            out.append({"role": role, "content": text})
+    return out
+
+
+def _save_session(engine, repo_root: Path, *, title: str = "") -> str:
     """Auto-save so the next ``--session`` resumes cleanly.
 
     The exported state is forwarded WHOLESALE. Listing the fields by hand
@@ -211,7 +246,10 @@ def _save_session(engine, repo_root: Path) -> str:
     try:
         estate = dict(engine.export_state())
         estate["session_id"] = sid
-        _ss.save_session(chat_messages=[], workspace=str(repo_root), **estate)
+        if title:
+            estate.setdefault("title", title)
+        _ss.save_session(chat_messages=_display_messages(engine),
+                         workspace=str(repo_root), **estate)
     except Exception as exc:
         print(f"WARN: session save failed: {exc}", file=sys.stderr)
     return sid
@@ -285,6 +323,105 @@ def cmd_run(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
     return 0 if not out["error"] else 1
+
+
+def _claim_session(sid: str) -> bool:
+    """Take the writer lock now, not at the first save.
+
+    save_session raises SessionLockedError when a different live process
+    holds it, and the headless saver swallows that into one WARN line —
+    correct for a scheduled run, wrong for a person, who then works for an
+    hour and finds out at the end that nothing was written. Refusing at
+    second zero costs nothing and says what to do instead.
+    """
+    if not sid:
+        return True
+    from . import session_store as _ss
+    try:
+        _ss.acquire_session_lock(sid)
+    except _ss.SessionLockedError as exc:
+        print(
+            f"Session {sid} is being written by another process "
+            f"(pid {exc.holder_pid}).\n"
+            "  It is most likely open in the dashboard.\n"
+            f"  delfin-agent --resume {sid} --fork-session   work on a copy\n"
+            "  delfin-agent --new                            start fresh here",
+            file=sys.stderr)
+        return False
+    except Exception:
+        # A lock we could not take is not a reason to refuse to start; the
+        # save path still guards the file itself.
+        return True
+    import atexit
+    atexit.register(_ss.release_session_lock, sid)
+    return True
+
+
+def _pick_session(workspace: Path) -> str:
+    """Bare --resume: choose from what this directory has done before."""
+    from . import session_store as _ss
+    rows = _ss.list_sessions(limit=20, workspace=str(workspace))
+    if not rows:
+        print("No previous sessions in this directory.", file=sys.stderr)
+        return ""
+    for i, row in enumerate(rows, 1):
+        title = str(row.get("title", "") or "(untitled)")[:60]
+        when = str(row.get("updated_at", "") or "")[:16]
+        print(f"  {i:2}. {when}  {title}", file=sys.stderr)
+    try:
+        raw = input("resume which? [1] ").strip() or "1"
+        idx = int(raw)
+    except (ValueError, EOFError, KeyboardInterrupt):
+        return ""
+    if not 1 <= idx <= len(rows):
+        return ""
+    return str(rows[idx - 1].get("session_id", "") or "")
+
+
+def _open_session(engine, args: argparse.Namespace, workspace: Path) -> bool:
+    """Resolve -c / -r / --fork-session into a restored, claimed session.
+
+    Returns False when the session could not be opened, which is a refusal
+    to start rather than a warning to ignore.
+    """
+    from . import session_store as _ss
+
+    sid = ""
+    if getattr(args, "new_session", False):
+        sid = ""
+    elif getattr(args, "continue_session", False):
+        row = _ss.latest_session(workspace=str(workspace))
+        sid = str((row or {}).get("session_id", "") or "")
+        if not sid:
+            print("No previous session in this directory; starting fresh.",
+                  file=sys.stderr)
+    elif getattr(args, "resume", None) is not None:
+        sid = str(args.resume or "").strip() or _pick_session(workspace)
+        if not sid:
+            return True                      # nothing chosen: a fresh session
+
+    if sid and getattr(args, "fork_session", False):
+        try:
+            forked = _ss.fork_session(sid)
+            sid = str((forked or {}).get("session_id", "") or sid)
+            print(f"Forked to {sid}; the original is untouched.",
+                  file=sys.stderr)
+        except Exception as exc:
+            print(f"WARN: fork failed ({exc}); resuming the original.",
+                  file=sys.stderr)
+
+    if sid:
+        args.session = sid
+        _resume_or_create(engine, args)
+        note = None
+        try:
+            note = _ss.consume_crash_recovery_note(sid)
+        except Exception:
+            note = None
+        if note:
+            print(note, file=sys.stderr)
+
+    return _claim_session(getattr(engine, "session_id", "") or sid)
 
 
 def _startup_banner(engine, report, workspace: Path) -> str:
@@ -373,7 +510,8 @@ def cmd_chat(args: argparse.Namespace) -> int:
     except Exception as exc:
         print(f"ERROR: engine init failed: {exc}", file=sys.stderr)
         return 3
-    _resume_or_create(engine, args)
+    if not _open_session(engine, args, workspace):
+        return 2
 
     from .repl import ReplOptions, TerminalAgent
 
@@ -389,7 +527,8 @@ def cmd_chat(args: argparse.Namespace) -> int:
     try:
         return agent.run(positional)
     finally:
-        _save_session(engine, workspace)
+        _save_session(engine, workspace,
+                      title=getattr(args, "session_name", "") or "")
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -1345,6 +1484,19 @@ def build_parser() -> argparse.ArgumentParser:
                       help="text (default) or json")
     chat.add_argument("--session", default="",
                       help="Session ID to resume, or 'latest'")
+    chat.add_argument("-c", "--continue", action="store_true",
+                      dest="continue_session",
+                      help="Continue this directory's last conversation")
+    chat.add_argument("-r", "--resume", nargs="?", const="", default=None,
+                      metavar="ID",
+                      help="Resume a session by id, or pick from a list")
+    chat.add_argument("--new", action="store_true", dest="new_session",
+                      help="Start a fresh session (the default)")
+    chat.add_argument("--fork-session", action="store_true",
+                      dest="fork_session",
+                      help="Work on a copy, leaving the original untouched")
+    chat.add_argument("-n", "--name", default="", dest="session_name",
+                      help="Name this session, so --resume can find it")
     _add_agent_flags(chat)
     chat.add_argument("-v", "--verbose", action="store_true")
     # Only this front door inherits the dashboard's saved provider/model.
