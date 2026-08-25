@@ -699,6 +699,49 @@ def _usd_ceiling_measurable(engine) -> bool:
         return False
 
 
+# What ``--bare`` cannot reach from this file, named once so the help text
+# and the startup line cannot drift from each other. All three are
+# discovered inside the turn, from the permissions workspace, and none has
+# a per-session switch: hooks through ``hooks.load_hooks`` at every hook
+# point, skills through ``skills.discover_skills`` while the tool surface
+# is assembled, project memory through ``PromptLoader`` while the system
+# prompt is built. A ``--bare`` that implied it covered them would be the
+# silent non-delivery the flag exists to avoid.
+_BARE_NOT_SKIPPED = "hooks, skills and project memory"
+
+
+def _apply_bare(workspace: Path) -> bool:
+    """Skip MCP server discovery for this run. True when it took.
+
+    An MCP server definition is executable configuration: it is spawned
+    with the parent environment while the tool surface is being ASSEMBLED,
+    before any model output, and then answers every call routed to it.
+    That is the one piece of discovery reachable from here, because the
+    registry is cached per workspace and loads its configuration once —
+    emptying it after that load means no server is started and no MCP tool
+    is advertised, for this process only. Nothing on disk is touched, so
+    the next run without the flag is unchanged.
+    """
+    try:
+        from . import mcp_client as _mcp
+    except Exception:
+        return False
+    took = False
+    # Two keys: the resolved workspace a permissions object carries, and
+    # the empty one a backend without a permissions object resolves to.
+    for ws in (workspace, None):
+        try:
+            registry = _mcp.get_registry(ws)
+            registry.servers.clear()
+            registry.sources.clear()
+            registry.trust_notice = ""
+            registry.loaded = True
+            took = True
+        except Exception:
+            continue
+    return took
+
+
 def _bounding_notices(args: argparse.Namespace, engine) -> list[str]:
     """One line per bounding flag this run cannot actually honour.
 
@@ -727,6 +770,16 @@ def _bounding_notices(args: argparse.Namespace, engine) -> list[str]:
         line += ("; the wall-clock ceiling IS in force"
                  if secs > 0 else " (--max-run-seconds is measurable)")
         notes.append(line)
+
+    if getattr(args, "bare", False):
+        took = getattr(args, "bare_mcp_skipped", False)
+        notes.append(
+            (f"bare       MCP servers skipped — {_BARE_NOT_SKIPPED} are "
+             "discovered inside the turn and cannot be skipped from here"
+             ) if took else
+            (f"bare       REQUESTED but nothing was skipped — the MCP "
+             f"registry could not be reached, and {_BARE_NOT_SKIPPED} are "
+             "discovered inside the turn"))
 
     return notes
 
@@ -767,6 +820,13 @@ def cmd_chat(args: argparse.Namespace) -> int:
         return 2
     if not _launch_questions_answered(report):
         return 2
+
+    # Before the engine exists, because the tool surface is assembled on
+    # the first turn and both halves of this command run one. Recorded on
+    # the namespace so the startup line reports what actually happened
+    # rather than what was asked for.
+    if getattr(args, "bare", False):
+        args.bare_mcp_skipped = _apply_bare(workspace)
 
     # One shot, and out. Identical to `run`, because it IS `run`.
     # A positional prompt SEEDS an interactive session; it only becomes a
@@ -1871,6 +1931,13 @@ def build_parser() -> argparse.ArgumentParser:
                            "'let it read my other repo'")
     chat.add_argument("--isolate", action="store_true",
                       help="Run shell commands under filesystem isolation")
+    # Named for what it does, not for what the word suggests. The three it
+    # cannot reach are named in the help itself rather than left to be
+    # discovered — see _BARE_NOT_SKIPPED.
+    chat.add_argument("--bare", action="store_true",
+                      help="Skip MCP server discovery for this run "
+                           f"({_BARE_NOT_SKIPPED} are discovered inside the "
+                           "turn and are NOT skipped)")
     # Cumulative over the SESSION, not per turn — turns compose into an
     # unbounded run cost without this, which is what makes an unattended
     # run undeployable. Both land on the engine attributes _run_budget
