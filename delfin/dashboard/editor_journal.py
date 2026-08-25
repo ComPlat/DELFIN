@@ -204,6 +204,10 @@ _CHANNEL_WIDGETS = frozenset({
     'submit_gfn_frame', 'submit_gfn_wall', 'submit_draw_sync',
     'submit_draw_frame', 'submit_manip_status', 'submit_internal_label',
     'submit_ff_notes',
+    # The scan's profile is a rendered picture, not a control: 60 kB of
+    # base64 PNG that nobody pressed and that says nothing a report needs --
+    # the walk it was drawn from is already in the journal, point by point.
+    'submit_scan_plot',
     'submit_bug_note', 'submit_bug_btn', 'submit_bug_send',
     'submit_bug_where',
 })
