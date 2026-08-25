@@ -218,6 +218,36 @@ def test_an_sn2_is_a_form_and_a_break_and_they_do_not_fight():
 
 
 @_needs_xtb
+@pytest.mark.slow
+def test_two_instructions_that_fight_are_settled_by_the_ramp():
+    """The cheap half is granted first, the expensive one pays for itself.
+
+    Form C1-C11 -- half a Diels-Alder, which the push does easily -- while
+    breaking C1-C2, which is a butadiene double bond.  Both pull on the same
+    carbon in opposite senses under one shared force constant, so if anything
+    were going to deadlock this would.
+
+    Measured: the form is granted at step 6 under 19.6 kcal/mol/A and the path
+    falls to -63.7 kcal/mol; the double bond then stretches 1.52 -> 1.61 ->
+    1.87 -> 2.13 A as the force ramps 23 -> 140, and both hold at step 17.
+    140 is above A_BOND_HOLDS, which is what that constant is for.  The price
+    of the fight is the sixty kcal/mol the path climbs back through, and it is
+    on the profile where the temperature can be held against it.
+
+    Marked slow: it walks the whole ramp, which is seventeen relaxations.
+    """
+    legs = [{'verb': 'form', 'atoms': [0, 10]},
+            {'verb': 'break', 'atoms': [0, 1]}]
+    step, force, walked = _drive(_DIELS_ALDER, legs, steps=20)
+    assert step is not None, 'the ramp ran out; it used to finish at step 17'
+    # The expensive half needed more than a bond holds against.
+    assert force > gfn.A_BOND_HOLDS, force
+    # And both really do hold on the geometry that came back.
+    assert _carried_out(walked, legs)
+    assert _value(walked, (0, 1)) > 2.0
+
+
+@_needs_xtb
 def test_a_wiberg_order_is_no_use_for_saying_a_bond_has_broken():
     """The measurement the stopping rule was chosen against.
 
