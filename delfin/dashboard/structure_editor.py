@@ -9623,9 +9623,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         assumed.
 
         SCINE's NT2 stops on Mayer bond orders: formed above 0.75, broken
-        below 0.15.  The formed half is sound and the broken half is not.
-        Measured here under GFN2, an ethane's C-C stretched rigidly from its
-        1.5212 A equilibrium, reading xtb's own Wiberg orders:
+        below 0.15.  Three measurements here, all under GFN2, reading xtb's
+        own Wiberg orders.
+
+        *Forming, and the two tests agree.*  Along the converged Diels-Alder
+        band a forming C-C reads 0.000 at 2.64 A, 0.193 at 2.33, 0.524 at 2.09
+        and 0.920 at 1.70, and the bond graph flips between those last two as
+        well.  Same on the SN2's Cl-C, which is the harder case because the
+        two radii differ: 0.000 at 2.58 A and 0.921 at 1.78, and the graph
+        turns over at 2.31.
+
+        *Breaking heterolytically, and they still agree.*  The same SN2's
+        C-Br: 0.881 at 2.01 A, then 0.000 at 3.11.  The pair leaves with the
+        bromide, which a restricted determinant describes perfectly well.
+
+        *Breaking homolytically, and the order is simply wrong.*  An ethane's
+        C-C stretched rigidly from its 1.5212 A equilibrium:
 
             1.52 A  1.030      3.00 A  0.958
             2.00 A  0.994      3.20 A  0.954
@@ -9633,22 +9646,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                4.00 A  0.264
 
         At 3.5 A -- two and a third times equilibrium, and a full Angstrom and
-        a half past where the graph stops calling it a bond -- the order still
-        reads 0.91.  A restricted single determinant cannot break a bond
-        homolytically: the pair stays paired and the order stays near one long
-        after the fragments have gone their separate ways.  "Broken below
-        0.15" would not fire until about 4.5 A.  So a bond order is a poor
-        detector of a bond that has broken, under exactly the methods this
-        editor runs on.
+        a half past where the graph gave up on it -- the order still reads
+        0.91, because a restricted single determinant cannot part an electron
+        pair.  "Broken below 0.15" would not fire until about 4.5 A.
 
-        The forming half is the other way round and the two tests agree.
-        Measured on the converged Diels-Alder band, image by image: the Wiberg
-        order of a forming C-C reads 0.000 at 2.64 A, 0.193 at 2.33, 0.524 at
-        2.09 and 0.920 at 1.70, and the bond graph flips between those last
-        two as well.  So where a bond order can be trusted, the geometry says
-        the same thing for nothing -- it is already computed for the topology
-        wall -- and where it cannot, the geometry is the one that is right.
-        One test for both halves, and it is this one.
+        So the rule is not "bond order is wrong"; it is that a bond order is
+        right for a heterolytic break and wrong for a homolytic one -- and
+        nothing here knows in advance which it has been asked for.  A test
+        that is sound for one reaction and silently wrong for the next is
+        worse than one that is neither, and the geometry is right in all three
+        measurements above.  It also costs nothing: the graph is already
+        computed for the topology wall, where an order would be another xtb
+        file to read on every point.  One test for both halves, and it is the
+        one the picture is drawn with.
         """
         graph = _gfn.bond_graph(xyz)
         for leg in legs:
