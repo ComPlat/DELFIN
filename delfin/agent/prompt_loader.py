@@ -301,6 +301,15 @@ class PromptLoader:
         self.stateful_backend: bool = False
         # Track which sections were injected in the last build (for usage tracking)
         self._last_injected_sections: list[str] = []
+        # Per-session switch for the memory stores on disk (--bare). Read by
+        # _load_external_memory_context before it locates anything, so the
+        # stores are not opened rather than opened and dropped. It lives on
+        # THIS loader, the object that does the reading, and not in a module
+        # global: every engine builds its own loader, so a bare terminal run
+        # cannot switch memory off for a dashboard session sharing the
+        # process. Nothing is written to any settings file — a settings file
+        # belongs to every later session, and this bounds one.
+        self.skip_external_memory: bool = False
 
     def reset_session_prompt_state(self, session_key: str) -> None:
         """Forget prompt-injection state for a session.
@@ -509,7 +518,14 @@ class PromptLoader:
         Empty string if nothing is found. Failures (no home dir, missing
         files, encoding issues) degrade silently to an empty string — this
         is best-effort context.
+
+        A session that switched the memory stores off (``skip_external_
+        memory``) is answered here, in front of every path this method
+        would otherwise read, and gets the same empty string an absent
+        store gives — so no caller needs to learn about the switch.
         """
+        if self.skip_external_memory:
+            return ""
         try:
             home = Path.home()
         except Exception:

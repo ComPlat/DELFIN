@@ -270,3 +270,76 @@ def test_finish_is_idempotent():
     before = out.getvalue()
     t.finish()
     assert out.getvalue() == before
+
+
+# ---------------------------------------------------------------------------
+# And the message the model receives still has its lines
+# ---------------------------------------------------------------------------
+
+def test_a_pasted_block_keeps_its_lines_all_the_way_to_the_model():
+    """The half of bracketed paste that the decoder does not decide.
+
+    The paste arrives as ONE message — the decoder's job, done. But the
+    line then goes through `expand_at_references`, which split the whole
+    text on whitespace and re-joined it on single spaces: a pasted stack
+    trace reached the model as a paragraph, and pasted code reached it
+    without the indentation that decides what it means.
+    """
+    from pathlib import Path
+
+    from delfin.agent import repl_commands as rc
+
+    src = ('Traceback (most recent call last):\n'
+           '  File "calc.py", line 3, in add\n'
+           '    return a + b\n'
+           'TypeError: unsupported operand')
+    out = rc.expand_at_references(src, Path("/tmp"))
+    assert out == src, "every line, and every indent inside a line"
+
+
+def test_the_fence_keeps_its_lines_too():
+    """`read_block` joins a `\"\"\"` block with newlines, and the very next
+    hop discarded them — a multi-line form that could not send one."""
+    from pathlib import Path
+
+    from delfin.agent import repl_commands as rc
+
+    assert rc.expand_at_references("one\ntwo\nthree", Path("/tmp")) == \
+        "one\ntwo\nthree"
+
+
+def test_an_at_reference_is_still_annotated_inside_a_block(tmp_path):
+    (tmp_path / "calc.py").write_text("x = 1\n")
+    from delfin.agent import repl_commands as rc
+
+    out = rc.expand_at_references("look at\n  @calc.py\nplease", tmp_path)
+    assert "\n  calc.py\n" in out, "the @ goes, the layout stays"
+    assert "Files referenced: calc.py" in out
+
+
+def test_a_missing_reference_is_still_flagged(tmp_path):
+    from delfin.agent import repl_commands as rc
+
+    out = rc.expand_at_references("check\n@nope.py", tmp_path)
+    assert "not found" in out
+
+
+def test_trailing_blank_lines_go_but_interior_ones_stay():
+    from pathlib import Path
+
+    from delfin.agent import repl_commands as rc
+
+    out = rc.expand_at_references("first\n\nsecond\n\n\n", Path("/tmp"))
+    assert out == "first\n\nsecond"
+
+
+def test_the_editor_draft_and_a_typed_line_are_treated_alike():
+    """One entry point behaving differently from another is a surprise
+    with no upside; the editor route bypassed the expansion only because
+    the expansion used to destroy what the editor exists to produce."""
+    import inspect
+
+    from delfin.agent import repl_commands as rc
+
+    src = inspect.getsource(rc._editor_round_trip)
+    assert "expand_at_references" in src

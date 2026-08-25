@@ -14,6 +14,7 @@ replaces.
 
 from __future__ import annotations
 
+import re
 import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -100,6 +101,9 @@ def complete_path(fragment: str, workspace: Path) -> list[str]:
         return []
 
 
+_WS_SPLIT = re.compile(r"(\s+)")
+
+
 def expand_at_references(text: str, workspace: Path) -> str:
     """Turn `@path` into something the model can act on.
 
@@ -107,17 +111,24 @@ def expand_at_references(text: str, workspace: Path) -> str:
     contents into the conversation without going through the gate that
     decides whether they may be read at all.
     """
-    out: list[str] = []
     found: list[str] = []
-    for token in text.split():
-        if token.startswith("@") and len(token) > 1:
-            rel = token[1:]
+    out: list[str] = []
+    # Whitespace is preserved, all of it. This used to split the whole
+    # text and re-join on single spaces, which is not what annotating a
+    # path requires and cost three things that are: the `"""` fence, which
+    # exists to send several lines, delivered one; a pasted stack trace
+    # arrived as a paragraph; and pasted code lost the indentation that
+    # decides what it means. Splitting on a CAPTURING pattern keeps the
+    # separators, so only the `@` tokens are touched.
+    for piece in _WS_SPLIT.split(text):
+        if piece.startswith("@") and len(piece) > 1:
+            rel = piece[1:]
             target = workspace / rel
             found.append(rel + ("" if target.exists() else "  (not found)"))
             out.append(rel)
         else:
-            out.append(token)
-    body = " ".join(out)
+            out.append(piece)
+    body = "".join(out).rstrip()
     if found:
         body += "\n\nFiles referenced: " + ", ".join(found)
     return body
@@ -1115,6 +1126,169 @@ def _trace(ctx, args: str) -> CommandResult:
         return CommandResult(output=f"trace unavailable ({exc})")
 
 
+# ---------------------------------------------------------------------------
+# Writing the prompt somewhere other than the prompt
+# ---------------------------------------------------------------------------
+
+#: The variables a Unix program is expected to read, in the order the
+#: convention assigns them: VISUAL names the full-screen editor, EDITOR the
+#: line editor that also works on a dumb terminal. Reading only one of them
+#: would ignore half the machines that have an editor configured.
+_EDITOR_VARS = ("VISUAL", "EDITOR")
+
+_NO_EDITOR = (
+    "no editor configured — set $VISUAL or $EDITOR (for example "
+    "`export EDITOR=nano`) and run /editor again. Nothing is opened by "
+    "guess: a hard-coded fallback would drop whoever has neither set into "
+    "an editor they may not know how to leave.")
+
+
+def _editor_argv() -> tuple[list[str], str]:
+    """The configured editor as a command line, and the variable it came from.
+
+    The value is split the way a shell splits it, so `EDITOR="code -w"` and
+    `EDITOR="emacs -nw"` work — but it is never handed TO a shell, so a
+    scratch path is one argument no matter what is in it. A variable set to
+    whitespace, or to something with an unbalanced quote, counts as unset:
+    it cannot be started, and reporting "not configured" is the answer that
+    tells the user what to do next.
+    """
+    import os
+
+    for var in _EDITOR_VARS:
+        value = str(os.environ.get(var, "") or "").strip()
+        if not value:
+            continue
+        try:
+            argv = shlex.split(value)
+        except ValueError:
+            argv = []
+        if argv:
+            return argv, var
+    return [], ""
+
+
+def _scratch_prompt_file(template: str) -> Path:
+    """A private scratch file holding the draft, pre-filled with *template*.
+
+    Mode 0600: the draft is what the user is about to say to a model, and
+    the temp directory is world-readable and shared with every other
+    account on the machine. `mkstemp` already creates it that way and the
+    chmod says it a second time, so a later change to how the file is made
+    cannot widen it silently.
+
+    The `.md` suffix is not decoration: it is what makes an editor choose
+    prose wrapping and markdown highlighting instead of treating a
+    multi-paragraph prompt as an unknown blob.
+    """
+    import os
+    import tempfile
+
+    fd, name = tempfile.mkstemp(prefix="delfin-prompt-", suffix=".md")
+    os.close(fd)
+    path = Path(name)
+    os.chmod(path, 0o600)
+    path.write_text(template, encoding="utf-8")
+    return path
+
+
+def _editor(ctx, args: str) -> CommandResult:
+    """Write the next prompt in $VISUAL or $EDITOR instead of at the prompt.
+
+    WHERE THIS RUNS. At the idle prompt, and only there: the turn loop
+    calls `_handle_line` on a finished input line before it starts a turn,
+    and `dispatch` has that one call site. That moment is the only one in
+    which a full-screen editor may take the terminal — the line reader has
+    already returned it, and the renderer and the key decoder that own it
+    during a turn have not been started. Nothing here guards against being
+    called mid-turn because no such path exists; if one is ever added, this
+    handler is one of the things it has to answer for.
+
+    An optional argument pre-fills the file, so `/editor` typed after half
+    a sentence keeps the half sentence.
+
+    Cancelling is the default in every ambiguous case: a non-zero exit, an
+    empty file, and a file that came back exactly as it went in all send
+    nothing. Sending a stale draft the user backed out of would put words
+    in their mouth, and the model cannot tell the difference.
+    """
+    argv, var = _editor_argv()
+    if not argv:
+        return CommandResult(output=_NO_EDITOR)
+    template = (args + "\n") if args.strip() else ""
+    try:
+        path = _scratch_prompt_file(template)
+    except OSError as exc:
+        return CommandResult(output=f"could not create a scratch file: {exc}")
+    try:
+        return _editor_round_trip(argv, var, path, template, ctx.workspace)
+    finally:
+        # Removed here rather than on the way out of each branch: the file
+        # holds an unsent prompt, and a branch added later would otherwise
+        # leave one behind in the temp directory every time /editor failed
+        # in a new way. `finally` also covers the editor raising.
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+def _editor_round_trip(argv: list[str], var: str, path: Path,
+                       template: str, workspace: Path) -> CommandResult:
+    """Run the editor over *path* and decide what came back.
+
+    Separated from the cleanup above so that every return in here is
+    covered by it, and so the reasons to refuse read as one list.
+    """
+    import subprocess
+
+    try:
+        # stdin/stdout/stderr are inherited on purpose: a full-screen
+        # editor needs the real terminal. Capturing them would leave the
+        # user typing into a pipe with nothing on screen.
+        code = subprocess.call([*argv, str(path)])
+    except FileNotFoundError:
+        return CommandResult(output=(
+            f"${var} names {argv[0]!r}, which is not on PATH — nothing was "
+            "opened and nothing was sent"))
+    except OSError as exc:
+        return CommandResult(output=f"could not start {argv[0]!r}: {exc}")
+    except Exception as exc:                        # noqa: BLE001
+        # Every handler in this table answers with a line. An exception
+        # escaping here would end the line the user was typing, and the
+        # ways an editor can fail are not enumerable from in here.
+        # KeyboardInterrupt is BaseException and still travels: Ctrl+C
+        # during an editor belongs to the loop that installed the handler.
+        return CommandResult(output=f"{argv[0]} failed: {exc}")
+    if code != 0:
+        return CommandResult(output=(
+            f"{argv[0]} exited {code} — nothing was sent"))
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return CommandResult(output=(
+            "the draft did not come back as UTF-8 text — nothing was sent"))
+    except OSError as exc:
+        return CommandResult(output=(
+            f"could not read the draft back: {exc} — nothing was sent"))
+    if not text.strip():
+        return CommandResult(output="the draft is empty — nothing was sent")
+    if text.strip() == template.strip():
+        # An untouched template is a cancel, the same as an empty file:
+        # someone who quits without editing did not decide to send the
+        # line they started with.
+        return CommandResult(output="the draft is unchanged — nothing was sent")
+    # The same treatment a typed line gets, now that giving it costs
+    # nothing: `expand_at_references` used to re-join on single spaces,
+    # which would have flattened the paragraphs this command exists to
+    # make possible. It preserves whitespace, so `@path` works in a draft
+    # exactly as it does at the prompt — one entry point behaving
+    # differently from another is the surprise this avoids.
+    body = expand_at_references(text.strip(), workspace)
+    return CommandResult(prompt=body, output=(
+        f"sending {len(body.splitlines())} line(s) from {argv[0]}"))
+
+
 def _clear(ctx, _args: str) -> CommandResult:
     return CommandResult(output="starting a fresh conversation", clear=True)
 
@@ -1175,6 +1349,8 @@ BUILTINS: dict[str, ReplCommand] = {
         ReplCommand("/help", "session", "List these commands", _help, True),
         ReplCommand("/keys", "session", "Keys that work while a turn runs",
                     _keys),
+        ReplCommand("/editor", "session", "Write the next prompt in "
+                    "$VISUAL or $EDITOR", _editor, True),
         ReplCommand("/status", "session", "Model, mode, tokens, cost", _status),
         ReplCommand("/cost", "session", "What this session has cost", _cost),
         ReplCommand("/usage", "session", "Token and cost detail, with the rate",
