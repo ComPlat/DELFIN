@@ -42,6 +42,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from delfin.dashboard import reaction_graph as rg
+from delfin.dashboard import run_results
 
 try:
     import ipywidgets as widgets
@@ -407,6 +408,14 @@ class ReactionGraphPanel:
                                       layout=widgets.Layout(width='80px'))
         self.reload_btn = widgets.Button(description='Reload',
                                          layout=widgets.Layout(width='90px'))
+        #: Look at every calculation this graph is waiting for.  Pressed
+        #: by hand as well as run on opening, because a person who has
+        #: just watched a job leave the queue wants to ask now rather
+        #: than close the tab and open it again.
+        self.harvest_btn = widgets.Button(
+            description='Check calculations',
+            layout=widgets.Layout(width='auto', display='none'))
+        self.harvest_btn.on_click(lambda _b: self._on_harvest())
 
         self.level_dd = widgets.Dropdown(options=[], description='Level:',
                                          layout=widgets.Layout(width='300px'))
@@ -462,7 +471,7 @@ class ReactionGraphPanel:
 
         self.widget = widgets.VBox([
             widgets.HBox([self.graph_dd, self.new_name, self.new_btn,
-                          self.reload_btn],
+                          self.reload_btn, self.harvest_btn],
                          layout=widgets.Layout(flex_flow='row wrap')),
             widgets.HBox([self.level_dd, self.temperature, self.window_dd],
                          layout=widgets.Layout(flex_flow='row wrap')),
@@ -530,9 +539,21 @@ class ReactionGraphPanel:
             self.graph = None
             self._say(f'{Path(str(folder)).name} did not open: {exc}')
             return
-        self._refresh_levels()
         self.temperature.value = float(self.graph.temperature)
+        # Opening the graph is when a person finds out what came back
+        # while they were away, which is the whole point of a document
+        # that outlives the session.  Quiet when nothing was waiting.
+        #
+        # Before the level box is filled, not after: what landed is very
+        # often at a level the graph did not have until this moment -- that
+        # is what the calculation was started for -- and filled first, the
+        # box offered every level except the new one and the user had to
+        # reload to see the answer they had been waiting two days for.
+        landed = self.harvest(say=False)
+        self._refresh_levels()
         self.refresh_view()
+        if landed:
+            self._say(' '.join(landed))
 
     def _refresh_levels(self) -> None:
         """The level box, filled from the document and nowhere else."""
@@ -569,6 +590,8 @@ class ReactionGraphPanel:
                 self.network.value = lines[0][0]
         finally:
             self._building = False
+        self.harvest_btn.layout.display = ('' if self.graph.pending
+                                           else 'none')
         self.summary.value = summary_html(
             self.graph, level, window=window,
             temperature=float(self.temperature.value))
@@ -749,6 +772,90 @@ class ReactionGraphPanel:
     def _on_select(self, _change) -> None:
         if not self._building:
             self._refresh_detail()
+
+    # -- what came back while nobody was looking ---------------------------
+
+    def harvest(self, *, say: bool = True) -> List[str]:
+        """Look at every calculation this graph is waiting for.
+
+        Asked of the folders and of nothing else.  A scheduler forgets a
+        job an hour after it ends, a process is gone, and a handle in
+        memory never survived the night -- but the folder is still there,
+        and the document has been pointing at it the whole time.
+
+        A calculation that is still running is left alone.  One that
+        finished becomes a record; one that failed becomes a line in the
+        history saying so, which is a result and not a gap: a graph that
+        quietly showed nothing would invite the same two days to be spent
+        again next week by whoever read that nothing.
+        """
+        if self.graph is None:
+            return []
+        told: List[str] = []
+        for entry in list(self.graph.pending):
+            said = run_results.what_a_run_says(self.graph.path(entry.run))
+            if said['state'] in ('nothing', 'running'):
+                continue
+            if said['state'] == 'failed':
+                rg.settle_pending(self.graph, entry.id,
+                                  failed=said['why'] or 'it stopped')
+                told.append(f'{entry.on}: {entry.level} stopped. '
+                            f'{said["why"]}')
+                continue
+            xyz = said.get('xyz')
+            if not xyz:
+                # It finished and wrote no geometry.  A single point does
+                # that, and so does an optimisation that stopped at the
+                # last moment -- so the structure that went in is what the
+                # numbers are about, and that is what the record carries.
+                xyz = (rg.geometry(self.graph, entry.on, entry.level)
+                       or self._sent_geometry(entry))
+            if not xyz:
+                rg.settle_pending(
+                    self.graph, entry.id,
+                    failed='it finished and left no geometry to attach')
+                told.append(f'{entry.on}: {entry.level} finished with no '
+                            f'structure to attach.')
+                continue
+            record = rg.Record(
+                level=entry.level, method='orca',
+                energy=said.get('energy'),
+                free_energy=said.get('free_energy'),
+                imaginary=said.get('imaginary'),
+                frequency=said.get('frequency'),
+                source={'kind': 'run', 'run': entry.run,
+                        'output': said.get('output')})
+            rg.settle_pending(self.graph, entry.id, xyz=xyz, record=record)
+            told.append(f'{entry.on}: {entry.level} landed.')
+        if told:
+            try:
+                rg.save(self.graph)
+            except Exception as exc:             # noqa: BLE001
+                told.append(f'and it could not be saved: {exc}')
+        if told and say:
+            self._say(' '.join(told))
+        return told
+
+    def _sent_geometry(self, entry) -> str:
+        """The structure that was sent for this calculation, if it is there.
+
+        Written into the run folder when the job was set up, so a run that
+        produced numbers and no geometry still has something true to hang
+        them on -- which is what a single point is.
+        """
+        try:
+            return (self.graph.path(entry.run) / 'from_graph.xyz').read_text(
+                encoding='utf-8')
+        except OSError:
+            return ''
+
+    def _on_harvest(self) -> None:
+        told = self.harvest()
+        self._reopen()
+        if not told:
+            waiting = len(self.graph.pending) if self.graph else 0
+            self._say(f'Nothing has come back yet; {waiting} still '
+                      f'running.' if waiting else 'Nothing is running.')
 
     # -- back to the workbench --------------------------------------------
 
