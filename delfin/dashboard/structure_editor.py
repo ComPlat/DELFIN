@@ -9567,6 +9567,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['scan_depth'] = ''
         state['scan_crowded'] = None
         state['scan_free_shaky'] = None
+        state['scan_stopped_out'] = False
         # Whether a second leg was even on the table.  None for a push, which
         # has no grid of values to retrace; True or False for a walk, which
         # has.  It is what lets the verdict offer the return leg to the one
@@ -10005,6 +10006,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         r=scan_run: setattr(submit_gfn_frame, 'value', text)
                         if _frame_run_is_current(r) else None)
                 state['scan_there'] = list(path)
+                # Whether it was the walk *out* that was interrupted.  A Stop
+                # pressed during the return leg is a different thing and must
+                # not turn the barrier into "where the walk was interrupted":
+                # the walk out finished, and what it found stands.
+                state['scan_stopped_out'] = bool(state.get('scan_stop'))
                 # Whether any step of it was a fall rather than a step.
                 #
                 # Costs nothing: it is arithmetic on the energies the walk
@@ -10100,8 +10106,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                                 text)
                             if _frame_run_is_current(r) else None)
                     state['scan_back'] = list(returned)
-                    state['scan_disagree'] = _gfn.paths_disagree(
-                        path, returned)
+                    # Two points is not two legs.  A return leg that failed at
+                    # its first step leaves only the geometry it started
+                    # standing on, which agrees with itself by construction --
+                    # and reporting that as agreement would be the check
+                    # saying yes because it did not run.
+                    if len(returned) > 2:
+                        state['scan_disagree'] = _gfn.paths_disagree(
+                            path, returned)
                 # And the free energy, at the three places it is both
                 # affordable and meaningful: where the walk started, the
                 # highest point it crossed, and the minimum it came to.
@@ -11805,7 +11817,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         arrived = (f' It came back to the minimum it walked through, at '
                    f'{came[0]:.3g}.'
                    if state.get('scan_arrived') and came else '')
-        if state.get('scan_stop') and not state.get('scan_arrived'):
+        if state.get('scan_stopped_out') and not state.get('scan_arrived'):
             arrived = (' You stopped it there, so the highest point is where '
                        'the walk was interrupted rather than a barrier.')
         crowded = state.get('scan_crowded')

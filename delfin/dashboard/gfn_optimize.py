@@ -1826,6 +1826,11 @@ def what_else_moved(before: str, after: str,
     Diels-Alder: the undriven forming C-C went from 2.915 to 1.558 A in one
     step, 1.357 A, against a median of 0.042 A over the rest of the path --
     32 times, on a path where nothing else came near it.
+
+    Every pair of atoms is a square law, and it is still nothing beside the
+    step it is describing: measured, 0.7 ms at 50 atoms, 12.7 at the 250 GFN2
+    is offered with and 70.9 at GFN-FF's 600, against a relaxed scan point
+    that is tenths of a second at the smallest of those.
     """
     was = coordinates_of(before or '')
     now = coordinates_of(after or '')
