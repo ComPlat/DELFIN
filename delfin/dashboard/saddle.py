@@ -1336,11 +1336,17 @@ def neb_to_saddle(reactant: str, product: str, method: str = 'gfn2', *,
                         status=(f'Stopped. The band got {len(walked)} frames '
                                 'in, and what it had reached is shown.'))
         if not _NEB_DONE_RE.search(output):
-            why = _gfn.why_it_stopped(output)
+            # The line that says why, when there is one.  :func:`why_it_stopped`
+            # was written for xtb and reads ORCA well -- given the run that
+            # died on a stranded fragment it returned "ERROR: GBW-File
+            # s_im1.gbw not found." -- but its fallback names xtb, and this is
+            # ORCA, so the fallback is not borrowed.
+            why = (_gfn.why_it_stopped(output)
+                   if 'error' in output.lower() else '')
             return dict(rest, ok=False, halted=False, output=output[-4000:],
                         status=('The band did not reach a transition state'
                                 + (f': {why}' if why
-                                   else '; what it reached is shown.')))
+                                   else '. What it reached is shown.')))
         # What was reached, from a Hessian on the geometry that was reached --
         # the same argument :func:`optimise_to_saddle` makes, and the same
         # 0.3 s.
