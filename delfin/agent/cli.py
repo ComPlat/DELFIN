@@ -77,7 +77,7 @@ def _build_engine(args: argparse.Namespace):
     provider = args.provider or fallback.get("provider", "")
     mode = getattr(args, "mode", "") or "solo"
     cwd = getattr(args, "cwd", "") or os.getcwd()
-    return AgentEngine(
+    engine = AgentEngine(
         repo_dir=Path(cwd).expanduser().resolve(),
         backend=backend,
         provider=provider,
@@ -90,6 +90,37 @@ def _build_engine(args: argparse.Namespace):
         extra_dirs=list(getattr(args, "extra_dirs", None) or []),
         read_only_dirs=list(getattr(args, "read_only_dirs", None) or []),
     )
+    _apply_run_budget(engine, args)
+    return engine
+
+
+def _apply_run_budget(engine, args: argparse.Namespace) -> None:
+    """Carry ``--max-budget-usd`` / ``--max-run-seconds`` onto the engine.
+
+    ``AgentEngine._run_budget`` reads ``run_budget_usd`` / ``run_budget_s``
+    off the instance and falls back to the settings file only when the
+    attribute is absent or zero — the precedence the scheduler daemon and
+    ``benchmark_runner`` already use to bound one entry without touching
+    anybody's configuration. Set the same way here, so a ceiling asked for
+    on the command line is a ceiling for THIS run and nothing else.
+
+    The ceiling is cumulative over the session; the per-turn cost breaker
+    is a different limit and neither replaces the other. Zero or absent
+    leaves the settings value in charge, which is what every caller that
+    predates these flags hands over.
+    """
+    try:
+        usd = float(getattr(args, "max_budget_usd", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        usd = 0.0
+    try:
+        secs = float(getattr(args, "max_run_seconds", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        secs = 0.0
+    if usd > 0:
+        engine.run_budget_usd = usd
+    if secs > 0:
+        engine.run_budget_s = secs
 
 
 def _resume_or_create(engine, args: argparse.Namespace) -> str:
@@ -271,6 +302,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     except Exception as exc:
         print(f"ERROR: engine init failed: {exc}", file=sys.stderr)
         return 3
+    # The headless half has no banner, so the can't-deliver lines go to
+    # stderr — stdout carries the answer and nothing else.
+    for _note in _bounding_notices(args, engine):
+        print(_note, file=sys.stderr)
     _resume_or_create(engine, args)
     import time as _time
     _t0 = _time.monotonic()
@@ -549,7 +584,8 @@ def _launch_questions_answered(report) -> bool:
 
 
 def _startup_banner(engine, report, workspace: Path,
-                    why: str = "", isolation_note: str = "") -> str:
+                    why: str = "", isolation_note: str = "",
+                    notes: tuple[str, ...] = ()) -> str:
     """What the user is looking at, in the lines that decide safety."""
     from .repl import permission_mode as _permission_mode
 
@@ -611,6 +647,12 @@ def _startup_banner(engine, report, workspace: Path,
                   _parked_work_line(engine, workspace)):
         if extra:
             lines.append(extra)
+    # Every bound the user asked for that this run cannot impose. Beside
+    # the approval and grant lines because it belongs to the same
+    # question: what is actually stopping this session.
+    for note in notes or ():
+        if note:
+            lines.append(note)
     if sid:
         # The head is what a person types after `-r`; the rest is for the
         # store. Printing all 32 characters put the one useful field on
@@ -634,6 +676,59 @@ def _grant_line(label: str, dirs) -> str:
     if len(paths) > 3:
         shown += f", +{len(paths) - 3} more"
     return f"{label:<10} {shown}"
+
+
+def _usd_ceiling_measurable(engine) -> bool:
+    """Whether a USD ceiling can be enforced against THIS model at all.
+
+    ``cost_usd`` is a sum over turns whose price could be looked up. On a
+    model with no published rate every turn adds 0.00, so the fraction
+    spent stays at 0% for a run of any size and the ceiling never fires.
+    The engine says this itself once an unpriced turn has run
+    (``_unmeasured_budget_block``); asked here it can be said BEFORE the
+    money is spent, which is the only moment the user can still pick a
+    dimension that is measurable.
+    """
+    model = str(getattr(getattr(engine, "client", None), "model", "") or "")
+    provider = str(getattr(engine, "provider", "") or "")
+    try:
+        from .pricing import price_for
+        return price_for(model, provider) is not None
+    except Exception:
+        # A pricing table that cannot be read is not proof of a rate.
+        return False
+
+
+def _bounding_notices(args: argparse.Namespace, engine) -> list[str]:
+    """One line per bounding flag this run cannot actually honour.
+
+    Same contract as the ``--isolate`` note: a flag that names a limit and
+    then does not impose it is worse than no flag, because the user stops
+    watching. Every line here is produced from what the constructed engine
+    and client really are, never from a second copy of the rules that
+    decided it.
+    """
+    notes: list[str] = []
+
+    try:
+        usd = float(getattr(args, "max_budget_usd", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        usd = 0.0
+    try:
+        secs = float(getattr(args, "max_run_seconds", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        secs = 0.0
+    if usd > 0 and not _usd_ceiling_measurable(engine):
+        model = str(getattr(getattr(engine, "client", None), "model", "")
+                    or "this model")
+        line = (f"budget     ${usd:.2f} REQUESTED but not enforceable — "
+                f"{model} has no published rate, so spend cannot be "
+                f"measured and the ceiling can never fire")
+        line += ("; the wall-clock ceiling IS in force"
+                 if secs > 0 else " (--max-run-seconds is measurable)")
+        notes.append(line)
+
+    return notes
 
 
 def cmd_chat(args: argparse.Namespace) -> int:
@@ -778,7 +873,8 @@ def cmd_chat(args: argparse.Namespace) -> int:
         show_thinking=bool(getattr(args, "verbose", False)),
         color=getattr(args, "color", "auto"),
         banner=(_startup_banner(engine, report, workspace, why,
-                                isolation_note)
+                                isolation_note,
+                                tuple(_bounding_notices(args, engine)))
                 + (f"\n\n{notices}" if notices else "")),
     ))
     try:
@@ -1775,6 +1871,19 @@ def build_parser() -> argparse.ArgumentParser:
                            "'let it read my other repo'")
     chat.add_argument("--isolate", action="store_true",
                       help="Run shell commands under filesystem isolation")
+    # Cumulative over the SESSION, not per turn — turns compose into an
+    # unbounded run cost without this, which is what makes an unattended
+    # run undeployable. Both land on the engine attributes _run_budget
+    # reads, so nothing is written to the user's settings file.
+    chat.add_argument("--max-budget-usd", type=float, default=0.0,
+                      dest="max_budget_usd", metavar="USD",
+                      help="Stop this session once measured spend reaches "
+                           "this much (0: use the configured budget)")
+    chat.add_argument("--max-run-seconds", type=float, default=0.0,
+                      dest="max_run_seconds", metavar="SECONDS",
+                      help="Wall-clock ceiling for this session — the "
+                           "dimension that still holds on a model with no "
+                           "published rate")
     # The consumer existed without the producer: ReplOptions.color has been
     # read as getattr(args, "color", "auto") since the first version, and no
     # parser ever declared the flag — so the one setting that decides
