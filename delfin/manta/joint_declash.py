@@ -97,7 +97,48 @@ _CLASH_F = 0.75
 
 # H-H and X-H contacts kept as a LIGHT secondary tie-breaker: the self-gate
 # rejects on HEAVY-HEAVY only, so heavy-heavy must dominate the objective.
+#
+# ⚠ 25.08.2026 -- DIE BEGRUENDUNG IN DER ZEILE DARUEBER IST WIDERLEGT.  Sie sagt, das
+# Selbstgate verwerfe nur auf Schwer-Schwer, also muesse Schwer-Schwer dominieren.
+# Gemessen ueber ALLE 7631 Kollisionspaare aus `archive_aromrad6k_off`:
+#     Schwer-Schwer-Paare                          1103  (min 1,733 A, Median 2,231 A)
+#       davon unter GROSS_OVERLAP (0,60 x Sigma_kov)   0   (0,00 %)
+#       davon unter dem refine-Boden (0,78 x Sigma)    0   (0,00 %)
+#       davon unter dem Kollapsboden (0,82 x Sigma)    0   (0,00 %)
+#     H-beteiligte Paare                           6528  (Selbstgate ueberspringt H)
+#   ⇒ vom Selbstgate erreichbar: 0 von 7631.
+# Das Selbstgate verwirft also NICHT auf Schwer-Schwer -- es verwirft ueberhaupt
+# nicht.  Seine Schwellen liegen auf der BINDUNGSskala (C-C 0,92 A), der Detektor
+# auf der VDW-Skala (C-C 2,38 A).  Damit traegt die Praemisse fuer 1/20 nicht mehr.
+#
+# WAS DAS KOSTET, gemessen: 85,5 % der Kollisionspaare tragen mindestens ein H
+# (C-H 3751, H-H 1723); von den 3341 Frames mit Kollision haben 2507 = 75,0 %
+# AUSSCHLIESSLICH H-beteiligte Paare.  Auf drei Vierteln der betroffenen Frames
+# sieht dieser Declasher den ganzen Defekt mit einem Zwanzigstel Gewicht, und sein
+# Ruecknahmeboden `hdmin` (nur schwer) merkt davon gar nichts.  Poolweit sind das
+# rund 9,98 % ALLER Bau-Frames.
+# Der Kristall sagt dazu 0,00 % auf 509 sauberen Strukturen -- auch fuer die
+# H-Paare; ein H...H unter 1,68 A gibt es in echten Kristallen nicht.  Die
+# Gewichtung 1/20 ist eine Bauerannahme, keine Chemie.
+#
+# ⛔ VORGABE UNVERAENDERT 0.05 -> byte-identisch.  Scharf nur mit
+# `DELFIN_FFFREE_DECLASH_H_FULL=1`.  Grund fuer den Schalter: JOINT_DECLASH ist im
+# Champion AN und hat drei Aufrufstellen auf dem FF-freien Pfad -- eine stille
+# Aenderung waere sofort in jedem laufenden Bau und in keinem A/B trennbar.
 _H_WEIGHT = 0.05
+
+
+def _jd_h_voll() -> bool:
+    """Zaehlen H-Kontakte voll -- und zaehlt der Ruecknahmeboden sie mit?
+
+    Zur AUFRUFZEIT gelesen, nicht beim Import: ein Schalter, dessen Wirkung an der
+    Importreihenfolge haengt, ist in diesem Projekt schon zweimal als dunkler
+    Schalter geendet (zuletzt PLANAR_KEEP, zwei Laeufe mit Reichweite 0/24)."""
+    return os.environ.get("DELFIN_FFFREE_DECLASH_H_FULL", "0") == "1"
+
+
+def _jd_h_gewicht() -> float:
+    return 1.0 if _jd_h_voll() else _H_WEIGHT
 
 # Default coordinate-descent controls (env-overridable; bounded + deterministic).
 _DEF_GRID = 24          # angular grid steps per DOF
@@ -206,8 +247,14 @@ def _objective(P: np.ndarray, heavy: np.ndarray, light: np.ndarray,
     over_h = np.where(over_h > 0.0, over_h, 0.0)
     over_l = np.where(light, rsum - dist, 0.0)
     over_l = np.where(over_l > 0.0, over_l, 0.0)
-    loss = float((over_h * over_h).sum()) + _H_WEIGHT * float((over_l * over_l).sum())
-    hd = dist[heavy]
+    loss = float((over_h * over_h).sum()) + _jd_h_gewicht() * float((over_l * over_l).sum())
+    # ⚠ DER RUECKNAHMEBODEN MUSS MITZIEHEN, sonst ist die Gewichtung folgenlos.
+    # `hdmin` ist das Minimum ueber die SCHWEREN Paare; ein Schritt, der einen
+    # H-Kontakt zerdrueckt, unterschreitet diesen Boden nie und wird angenommen.
+    # Ein hoeheres H-Gewicht in der Zielfunktion, dessen Wache H nicht kennt, waere
+    # ein halber Mechanismus -- genau die Bauart, die heute schon viermal aufgeflogen
+    # ist.  Mit dem Schalter zaehlt der Boden ALLE nichtgebundenen Paare.
+    hd = dist[heavy] if not _jd_h_voll() else dist[heavy | light]
     hdmin = float(hd.min()) if hd.size else float("inf")
     return loss, hdmin
 
