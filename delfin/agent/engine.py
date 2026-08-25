@@ -2033,9 +2033,18 @@ class AgentEngine:
         # fired in the finally-block at the end of the turn.
         try:
             from . import hooks as _hooks_mod
+            from .api_client import _session_hooks
             _kperms = getattr(self, "kit_permissions", None)
             _ws = _kperms.workspace if _kperms else None
-            _hooks_cfg = _hooks_mod.load_hooks(_ws) if _ws else _hooks_mod.HooksConfig()
+            # Through the same funnel every other hook point uses. Loading
+            # from the workspace alone never sees the permissions object,
+            # so the two hook kinds fired from HERE — UserPromptSubmit and
+            # Stop — went on running under a flag that says no ambient
+            # configuration is read. A bounding flag that covers four of
+            # six hook points is the silent non-delivery it exists to
+            # prevent, one layer in.
+            _hooks_cfg = (_session_hooks(_kperms) if _kperms
+                          else _hooks_mod.HooksConfig())
             if not _hooks_cfg.is_empty():
                 _ups = _hooks_mod.run_hooks(
                     "UserPromptSubmit", _hooks_cfg,
