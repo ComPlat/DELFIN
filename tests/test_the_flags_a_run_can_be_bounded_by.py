@@ -260,18 +260,32 @@ def test_an_empty_allow_list_is_none_and_not_an_empty_list(recorded, tmp_path):
     assert _Recorder.last.get("allowed_tools") is None
 
 
-def test_the_allow_list_arrives_on_the_client_that_can_enforce_it(tmp_path):
+def test_the_allow_list_arrives_on_the_client_that_can_enforce_it(
+        tmp_path, monkeypatch):
     """The only backend with an allow-list, asserted end to end.
 
     `create_client` forwards `allowed_tools` to `CLIClient` alone, which
     stores it and spells it `--allowedTools` on the subprocess command
     line. That is the mechanism; this pins it.
+
+    The subprocess binary is supplied by the test, not by the machine.
+    Constructing this client normally requires the binary to be present,
+    and the first version of this test therefore passed on a developer
+    box and failed on a runner — asserting a host capability rather than
+    the routing it means to check. The same shape once made an --isolate
+    test depend on bubblewrap being installed.
     """
+    from delfin.agent import api_client
     from delfin.agent.api_client import create_client
 
+    monkeypatch.setattr(api_client.shutil, "which",
+                        lambda name: f"/usr/bin/{name}")
     client = create_client(backend="cli", cwd=str(tmp_path),
                            allowed_tools=["bash", "read_file"])
     assert client.allowed_tools == ["bash", "read_file"]
+    assert type(client).__name__ == "CLIClient", (
+        "the routing is the subject; a different client would pass the "
+        "assertion above for the wrong reason")
 
 
 def test_a_backend_without_an_allow_list_says_so(monkeypatch, tmp_path):
