@@ -112,8 +112,16 @@ class Kind:
     # (formatting, unrelated keys, a ``_meta`` timestamp) is excluded so
     # trust survives edits that cannot execute anything.
     extract: Callable[[dict], Any]
-    # How many definitions the extracted part contains.
+    # How many definitions the extracted part contains -- what would
+    # actually execute if the file were honoured. This is the number in the
+    # notice, so a definition that is switched off does not appear in it.
     count: Callable[[Any], int]
+    # How many the file *names*, switched off or not. A different question
+    # from ``count`` and the one that decides whether the file says anything
+    # at all: a file whose only entry disables a built-in server executes
+    # nothing and is still a statement. Defaults to ``count``, which is right
+    # wherever a kind has no way to say "do not".
+    declares: Callable[[Any], int] | None = None
 
 
 def _extract_hooks(raw: dict) -> Any:
@@ -147,6 +155,20 @@ def _count_servers(extracted: Any) -> int:
         return 0
     return sum(1 for cfg in extracted.values()
                if isinstance(cfg, dict) and cfg.get("enabled", True))
+
+
+def _declared_servers(extracted: Any) -> int:
+    """How many servers the file names, switched off or not.
+
+    Not the same number as :func:`_count_servers`, and the difference is a
+    whole feature: ``{"delfin-tools": {"enabled": false}}`` runs nothing and
+    says something -- it turns a built-in server off, which is a tightening a
+    project is entitled to. Counted as nothing, the file was dropped as
+    empty and the server it disabled came back on.
+    """
+    if not isinstance(extracted, dict):
+        return 0
+    return sum(1 for cfg in extracted.values() if isinstance(cfg, dict))
 
 
 _KINDS: dict[str, Kind] = {}
@@ -189,6 +211,7 @@ register_kind(Kind(
     grant_command="/mcp trust",
     extract=_extract_servers,
     count=_count_servers,
+    declares=_declared_servers,
 ))
 
 
@@ -294,7 +317,10 @@ class Offer:
     kind: str
     path: Path              # absolute
     relative: str           # workspace-relative, as the user sees it
-    count: int              # definitions inside it
+    count: int              # definitions inside it that would execute
+    # Definitions inside it of any kind, including ones that switch something
+    # off. Zero here, and not zero ``count``, is what makes a file silent.
+    declares: int = 0
     escapes: bool = False   # a link pointing out of the workspace
 
 
@@ -346,9 +372,10 @@ def offers(kind_name: str, workspace: Path | str | None) -> list[Offer]:
             out.append(Offer(kind=kind_name, path=path, relative=rel,
                              count=0, escapes=True))
             continue
-        count = kind.count(kind.extract(_read_json(path)))
+        extracted = kind.extract(_read_json(path))
         out.append(Offer(kind=kind_name, path=path, relative=rel,
-                         count=count))
+                         count=kind.count(extracted),
+                         declares=(kind.declares or kind.count)(extracted)))
     return out
 
 
@@ -528,19 +555,26 @@ def gate(kind_name: str, workspace: Path | str | None) -> Decision:
     if not found:
         return Decision(kind=kind_name, workspace=root,
                         state=STATE_NOTHING_OFFERED)
-    readable = [o for o in found if not o.escapes]
-    escaping = [o for o in found if o.escapes]
-    # A file that offers NOTHING withholds nothing. It was still counted as
-    # withheld, so a workspace whose settings.json merely exists — with an
-    # empty hooks block, or none — met the user with a five-line paragraph
+    # A file that says NOTHING withholds nothing. It was still counted as
+    # withheld, so a workspace whose settings.json merely exists -- with an
+    # empty hooks block, or none -- met the user with a five-line paragraph
     # about "0 hook commands ... were NOT loaded". A warning about a risk
     # that is not there is worse than silence: it is what teaches people to
     # scroll past the one that matters. An escaping link still counts,
     # because the link itself is the finding.
-    found = [o for o in found if o.count > 0 or o.escapes]
+    #
+    # On what it *declares* rather than on what would run. The two differ
+    # exactly where a file switches something off: that file runs nothing and
+    # is not silent, and dropped for having a zero count it stopped being
+    # honoured at all -- a project that disabled a built-in MCP server got it
+    # back. Asked before the two lists below are made, so the notice and the
+    # paths agree with the decision.
+    found = [o for o in found if o.declares > 0 or o.escapes]
     if not found:
         return Decision(kind=kind_name, workspace=root,
                         state=STATE_NOTHING_OFFERED)
+    readable = [o for o in found if not o.escapes]
+    escaping = [o for o in found if o.escapes]
 
     fingerprint = digest(kind_name, root)
     record = (_read_store().get("workspaces") or {}).get(str(root)) or {}
