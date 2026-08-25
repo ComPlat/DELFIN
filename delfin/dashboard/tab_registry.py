@@ -37,7 +37,10 @@ _REGISTRY: Dict[str, TabSpec] = {}
 _DISCOVERED = False
 
 # Built-in dynamic tabs that register themselves on import.
-_BUILTIN_DYNAMIC_TABS = ("delfin.dashboard.tab_application",)
+_BUILTIN_DYNAMIC_TABS = (
+    "delfin.dashboard.tab_application",
+    "delfin.dashboard.tab_reaction_graph",
+)
 
 
 def register_tab(
