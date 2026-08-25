@@ -39,6 +39,8 @@ NEW_COMMANDS = (
     '/export',
     '/memories',
     '/forget',
+    '/undo',
+    '/undo-file',
     '/agents',
     '/skills',
     '/hooks',
@@ -54,6 +56,7 @@ BACKING_MODULE = {
     '/tools': 'delfin.agent.api_client',
     '/memories': 'delfin.agent.memory_store',
     '/forget': 'delfin.agent.memory_store',
+    '/undo-file': 'delfin.agent.change_journal',
     '/agents': 'delfin.agent.subagents',
     '/skills': 'delfin.agent.skills',
     '/hooks': 'delfin.agent.hooks_editor',
@@ -289,6 +292,77 @@ def test_export_reads_content_blocks_not_their_repr(tmp_path, monkeypatch):
     text = list((tmp_path / ".delfin" / "exports").glob("*.md"))[0].read_text()
     assert "the answer" in text
     assert "'type'" not in text
+
+
+# ---------------------------------------------------------------------------
+# /undo drops context. /undo-file restores files. They are not the same.
+# ---------------------------------------------------------------------------
+
+def test_undo_drops_the_whole_last_turn(tmp_path):
+    engine = _Engine()
+    engine.messages = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "answer"},
+        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "tool call"},
+        {"role": "tool", "content": "tool result"},
+        {"role": "assistant", "content": "final"},
+    ]
+    out = rc.BUILTINS["/undo"].handler(_ctx(tmp_path, engine), "").output
+    assert [m["content"] for m in engine.messages] == ["first", "answer"], (
+        "a turn is the user message and everything the agent did after it")
+    assert "no file" in out, "the two undos must not be mistaken for each other"
+
+
+def test_undo_with_no_user_turn_does_not_empty_the_context(tmp_path):
+    """Emptying it is /clear's job, and nobody asked for that."""
+    engine = _Engine()
+    engine.messages = [{"role": "system", "content": "you are an agent"}]
+    rc.BUILTINS["/undo"].handler(_ctx(tmp_path, engine), "")
+    assert len(engine.messages) == 1
+
+
+def _record_edit(session_id, target, before, after):
+    """Journal one agent edit exactly as the executor does: write, then record.
+
+    record_change hashes the file the write produced, so the order is not
+    cosmetic — recording first would store a post-hash that never
+    existed and the revert guard would call the undo a conflict.
+    """
+    from delfin.agent import change_journal
+
+    target.write_text(before)
+    target.write_text(after)
+    return change_journal.record_change(
+        session_id, tool="edit_file", path=target,
+        old_text=before, new_text=after)
+
+
+def test_undo_file_restores_the_pre_image_from_the_journal(tmp_path):
+    target = tmp_path / "calc.py"
+    _record_edit("sid-undo", target, "original\n", "rewritten\n")
+
+    engine = _Engine(session_id="sid-undo")
+    out = rc.BUILTINS["/undo-file"].handler(_ctx(tmp_path, engine), "last").output
+    assert target.read_text() == "original\n", out
+    assert "restored" in out
+
+
+def test_undo_file_lists_before_it_touches_anything(tmp_path):
+    target = tmp_path / "calc.py"
+    _record_edit("sid-list", target, "original\n", "new\n")
+
+    engine = _Engine(session_id="sid-list")
+    out = rc.BUILTINS["/undo-file"].handler(_ctx(tmp_path, engine), "").output
+    assert "calc.py" in out
+    assert target.read_text() == "new\n", "a listing must not restore anything"
+
+
+def test_undo_file_refuses_a_scope_it_does_not_know(tmp_path):
+    engine = _Engine(session_id="sid-x")
+    out = rc.BUILTINS["/undo-file"].handler(
+        _ctx(tmp_path, engine), "everything").output
+    assert "unknown scope" in out
 
 
 def test_forgetting_a_memory_that_is_not_there_deletes_nothing(tmp_path):

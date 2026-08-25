@@ -527,6 +527,143 @@ def _forget(ctx, args: str) -> CommandResult:
     return CommandResult(output=f"deleted {name} → {path}")
 
 
+def _undo(ctx, _args: str) -> CommandResult:
+    """Drop the last turn from the context.
+
+    The dashboard's /undo is inline in a closure that also rewinds its
+    chat widget; this is the terminal half — the engine's message list
+    only. It restores NO file, and says so, because the two undos are
+    different acts: /undo-file is the one that touches the disk.
+    """
+    messages = getattr(getattr(ctx, "engine", None), "messages", None)
+    if not isinstance(messages, list) or not messages:
+        return CommandResult(output="nothing to undo")
+    start = None
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            start = i
+            break
+    if start is None:
+        # No user turn to cut back to. Popping anyway would empty the
+        # context, which is /clear's job and not what was asked for.
+        return CommandResult(output="nothing to undo")
+    removed = len(messages) - start
+    del messages[start:]
+    return CommandResult(output=(
+        f"dropped {removed} message(s) from the context — no file was "
+        "restored; /undo-file does that"))
+
+
+def _undo_file(ctx, args: str) -> CommandResult:
+    """Restore files from the undo journal — change_journal does the work.
+
+    The rendering is minimal on purpose: the dashboard's formatters live
+    in the widget module, and importing it here would pull the notebook
+    stack into a terminal.
+    """
+    sid = _live_session(ctx)
+    if not sid:
+        return CommandResult(output=(
+            "no active session — there is no change journal yet"))
+    try:
+        from . import change_journal as cj
+    except Exception as exc:
+        return CommandResult(output=f"undo journal unavailable ({exc})")
+    scope = args.strip().lower() or "list"
+    if scope in ("list", "ls"):
+        return _undo_file_listing(cj, sid)
+    if scope not in ("last", "turn", "session"):
+        return CommandResult(output=(
+            f"unknown scope {scope!r} — list | last | turn | session"))
+    turn_seqs: list = []
+    if scope == "turn":
+        try:
+            from .api_client import _doc_executor as executor
+            turn_seqs = list(executor._turn_seqs_for(sid))
+        except Exception:
+            turn_seqs = []
+        if not turn_seqs:
+            return CommandResult(output=(
+                "no file changes recorded in the current turn — try "
+                "/undo-file last or /undo-file session"))
+    try:
+        res = cj.revert(sid, scope=scope, turn_seqs=turn_seqs,
+                        workspace=Path(ctx.workspace))
+    except Exception as exc:
+        return CommandResult(output=f"undo failed: {exc}")
+    _audit_undo(res, sid, scope)
+    return CommandResult(output=_undo_file_result(scope, res))
+
+
+def _undo_file_listing(cj, sid: str) -> CommandResult:
+    """What is in the journal, and what of it can still be undone.
+
+    An entry whose pre-image is gone is marked as such: listing it like
+    any other offers an undo that cannot happen.
+    """
+    try:
+        records = cj.list_changes(sid, last_n=20)
+    except Exception as exc:
+        return CommandResult(output=f"could not read the journal ({exc})")
+    if not records:
+        return CommandResult(output="no file changes recorded this session")
+    lines = []
+    for rec in records:
+        if rec.get("dropped") or rec.get("truncated") or rec.get("lossy"):
+            kind = "no restorable pre-image — cannot undo"
+        elif rec.get("undone"):
+            kind = "already undone"
+        elif rec.get("deleted"):
+            kind = "deleted"
+        elif rec.get("created"):
+            kind = "created"
+        else:
+            kind = "edited"
+        lines.append(f"  [{rec.get('seq', '?')}] {rec.get('path', '?')} ({kind})")
+    lines.append("  /undo-file last | turn | session")
+    return CommandResult(output="\n".join(lines))
+
+
+def _undo_file_result(scope: str, res: dict) -> str:
+    """What the undo did, and for anything it did not do, why.
+
+    A conflict and a missing pre-image are different refusals — one
+    protects the user's own later edit, the other protects the file from
+    being rewritten with content the journal never stored.
+    """
+    out = [f"undo ({scope})"]
+    for key, label in (("reverted", "restored"),
+                       ("conflicts", "conflict — NOT touched"),
+                       ("skipped", "skipped")):
+        for item in (res or {}).get(key) or []:
+            if isinstance(item, dict):
+                why = str(item.get("reason", "") or "").strip()
+                out.append(f"  {label}: {item.get('path', '(no path)')}"
+                           + (f" — {why}" if why else ""))
+            else:
+                out.append(f"  {label}: {item}")
+    if len(out) == 1:
+        out.append("  nothing to undo")
+    return "\n".join(out)
+
+
+def _audit_undo(res: dict, sid: str, scope: str) -> None:
+    """An undo overwrites user files, so it belongs in /rewind's report.
+
+    Without this the restore is invisible to the change report that is
+    supposed to answer "what happened to my files".
+    """
+    try:
+        from . import audit_log
+        for path in (res or {}).get("reverted", []) or []:
+            audit_log.append(audit_log.make_record(
+                tool="undo_changes", decision="ok", path=str(path),
+                session_id=sid, extra={"scope": scope, "source": "terminal"}))
+    except Exception:
+        pass
+
+
 def _agents(ctx, _args: str) -> CommandResult:
     """The subagent presets, from the registry that defines them."""
     try:
@@ -765,6 +902,8 @@ BUILTINS: dict[str, ReplCommand] = {
                     _compact, True),
         ReplCommand("/export", "session", "Write this conversation as Markdown",
                     _export),
+        ReplCommand("/undo", "session", "Drop the last turn from the context",
+                    _undo),
         ReplCommand("/trace", "session", "Tool calls made this session",
                     _trace, True),
         ReplCommand("/clear", "session", "Start a fresh conversation", _clear),
@@ -798,6 +937,8 @@ BUILTINS: dict[str, ReplCommand] = {
         ReplCommand("/forget", "history", "Delete one memory by name",
                     _forget, True),
         ReplCommand("/plans", "history", "Saved plans", _plans, True),
+        ReplCommand("/undo-file", "changes", "Restore files from the undo "
+                    "journal", _undo_file, True),
         ReplCommand("/attention", "workspace", "The attention inbox",
                     _attention, True),
     ]
