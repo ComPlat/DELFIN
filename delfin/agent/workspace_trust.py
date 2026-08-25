@@ -537,10 +537,14 @@ def gate(kind_name: str, workspace: Path | str | None) -> Decision:
     # that is not there is worse than silence: it is what teaches people to
     # scroll past the one that matters. An escaping link still counts,
     # because the link itself is the finding.
-    found = [o for o in found if o.count > 0 or o.escapes]
-    if not found:
-        return Decision(kind=kind_name, workspace=root,
-                        state=STATE_NOTHING_OFFERED)
+    #
+    # This governs the WARNING and nothing else. The count is of
+    # definitions that would be LOADED, and a file can say something
+    # without adding one: `{"delfin-tools": {"enabled": false}}` counts
+    # zero and is a real instruction. Letting the count decide whether the
+    # file is read at all silently dropped every disable a trusted
+    # workspace had written — a tightening, refused for looking empty.
+    speaking = [o for o in found if o.count > 0 or o.escapes]
 
     fingerprint = digest(kind_name, root)
     record = (_read_store().get("workspaces") or {}).get(str(root)) or {}
@@ -553,9 +557,15 @@ def gate(kind_name: str, workspace: Path | str | None) -> Decision:
             paths=[o.path for o in readable], withheld=escaping,
         )
     else:
+        if not speaking:
+            # Untrusted, and there is nothing to withhold: no paths are
+            # handed over either way, so this is silence rather than a
+            # refusal worth reporting.
+            return Decision(kind=kind_name, workspace=root,
+                            state=STATE_NOTHING_OFFERED)
         state = STATE_CHANGED if granted else STATE_UNTRUSTED
         decision = Decision(kind=kind_name, workspace=root, state=state,
-                            paths=[], withheld=found)
+                            paths=[], withheld=speaking)
     if decision.withheld:
         decision.notice = _notice_for(kind, root, decision.state,
                                       decision.withheld, trusted_at)

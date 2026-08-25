@@ -335,11 +335,17 @@ def inspect_launch_dir(
         except Exception:
             notices = ()
         if notices:
+            # NOTICE, not ASK, and the distinction is the whole point:
+            # withholding IS the safe state. Nothing here is loaded, so
+            # there is no decision to block the session on — only a fact
+            # the user could not otherwise learn, and the way to change it
+            # if they want to. Blocking would train people to say yes.
             findings.append(LaunchFinding(
-                ASK, "untrusted_workspace",
+                NOTICE, "untrusted_workspace",
                 "This folder offers definitions that are being withheld "
                 "because it is not trusted:",
-                detail="\n".join(f"  {n}" for n in notices)))
+                detail="\n".join(f"  {n}" for n in notices)
+                       + "\n  Nothing from them runs. `/trust` loads them."))
 
     return LaunchReport(
         workspace=workspace,

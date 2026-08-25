@@ -515,6 +515,39 @@ def _parked_work_line(engine, workspace: Path) -> str:
             "(/tasks to list)")
 
 
+def _launch_questions_answered(report) -> bool:
+    """Put every ASK-level finding to the user before the session opens.
+
+    ``LaunchFinding`` has three levels and the middle one is documented as
+    "start only if the user says so" — but `LaunchReport.questions` had no
+    caller, so an ASK degraded into a paragraph that scrolled past. A
+    level whose meaning is enforced nowhere is a comment.
+
+    Bare Enter is not consent, and neither is a pipe: a question nobody
+    can answer is answered no. That is why the trust finding is a NOTICE
+    rather than an ASK — withholding is already the safe state, so there
+    is nothing to decide — but the level now works for a finding where
+    there is.
+    """
+    questions = tuple(getattr(report, "questions", ()) or ())
+    if not questions:
+        return True
+    for finding in questions:
+        print(finding.message, file=sys.stderr)
+        if finding.detail:
+            print(finding.detail, file=sys.stderr)
+    if not sys.stdin.isatty():
+        print("Not a terminal, so this cannot be answered; not starting.",
+              file=sys.stderr)
+        return False
+    try:
+        answer = input("Start anyway? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print(file=sys.stderr)
+        return False
+    return answer in ("y", "yes")
+
+
 def _startup_banner(engine, report, workspace: Path,
                     why: str = "", isolation_note: str = "") -> str:
     """What the user is looking at, in the lines that decide safety."""
@@ -636,6 +669,8 @@ def cmd_chat(args: argparse.Namespace) -> int:
     )
     if report.refused:
         print(report.render(), file=sys.stderr)
+        return 2
+    if not _launch_questions_answered(report):
         return 2
 
     # One shot, and out. Identical to `run`, because it IS `run`.
