@@ -63,8 +63,9 @@ Vorgabe AUS (``DELFIN_FFFREE_REFINE_GATE``) -> byte-identisch.
 from __future__ import annotations
 
 import logging
+import math
 import os
-from typing import Dict, List, Sequence, Set, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 
@@ -98,15 +99,111 @@ def _rg_on() -> bool:
     return os.environ.get(FLAG, "0") == "1"
 
 
-def _rg_score(xyz: str) -> Tuple[int, int]:
-    """(n_clash, n_bond_out) -- beide "kleiner ist besser".  (-1, -1) heisst unlesbar."""
+# ── DIE DRITTE KENNZAHL: sp2-Zentren, die pyramidal gebaut wurden ────────────────
+#
+# WOZU (25.08.2026).  Die Defektrangliste ueber 79 495 Frames (aromrad6k_off, 1618
+# Systeme) sagt, dass die zwei GROESSTEN Klassen dieselbe Chemie sind:
+#     smiles_hyb-angle   22,18 %   Kristall 0,00 %   Masse 3911
+#     pyramidal_sp2      20,02 %   Kristall 0,98 %   Masse 3028
+# Zusammen 6939 -- mehr als die naechsten drei Klassen zusammen, und der Kristall
+# liegt bei null: reiner Baufehler, kein Detektorrauschen.
+#
+# `_rg_score` war fuer beide BLIND: es kannte nur Kollisionen und Bindungslaengen.
+# Damit konnte das Ruecknahmetor jede Reparatur schuetzen AUSSER der an der
+# groessten Klasse.  Ein Verflacher, der 300 Zentren richtet und 30 verbiegt, wurde
+# vom Tor durchgewinkt und vom Landungstor erschlagen.
+#
+# ⚠ DIE GROESSE IST DIE DES AUGES, NICHT MEINE EIGENE.  Erst wollte ich
+# `_frame_assertions._oop` nehmen -- den Abstand des Zentrums von der Ebene seiner
+# drei Nachbarn, in ANGSTROEM.  Das Auge misst aber den WALSH-WINKEL in GRAD
+# (`find_pyramidalization.py:515`):
+#       walsh_deg = atan2(d_oop, r_mean)
+# also genau `_oop`, NORMIERT auf die mittlere Zentrum-Nachbar-Bindungslaenge.  Ein
+# Angstroem-Mass mit einer Grad-Schwelle waere wieder ein Etikett statt einer
+# Messung gewesen -- der Fehler, an dem der Atropisomer-Enumerator bis zum 23.08.
+# lahmlag.  Deshalb steht hier die Formel des Auges, Zeichen fuer Zeichen.
+#
+# ⚠ WAS HIER BEWUSST GROEBER IST ALS DAS AUGE, und warum das reicht: das Auge waehlt
+# seine Decke UMGEBUNGSABHAENGIG (`_PYR_ENV`, p99.9 aus 307k Kristallen).  Dieses
+# Tor VERGLEICHT dagegen dasselbe Frame vor und nach der Kette -- dieselben Atome,
+# dieselbe Umgebung.  Fuer ein "ist es schlechter geworden" genuegt ein KONSISTENTES
+# Mass; die absolute Eichung entscheidet nur, welche Zentren ueberhaupt mitzaehlen.
+# Der Boden 12,0 Grad ist trotzdem der des Auges (`find_graph_geometry._PYR_BUILD_MIN`),
+# damit die Zahlen anschlussfaehig bleiben.
+#
+# ⚠ mu-BRUECKEN SIND NICHT PYRAMIDAL, SONDERN VERBRUECKEND -- die R3-Regel des Auges
+# (`full_verdict.py:514-525`, auf CCDC belegt).  Ein Leichtatom an ZWEI oder mehr
+# Metallen wird uebersprungen; sonst zaehlte jede mu2-Oxo-Ecke als Defekt.
+#
+# ⚠ EIGENER SCHALTER, und das ist keine Vorsicht, sondern Pflicht: `picopgate6k` und
+# `hplacegate6k` laufen SEIT HEUTE MITTAG mit dem Zwei-Tupel, und der Bauer liest
+# seine Datei bei JEDEM System neu.  Ohne eigenen Schalter haette diese Zeile zwei
+# laufende A/B mitten im Lauf veraendert.  Vorgabe AUS -> Zwei-Tupel, byte-identisch.
+FLAG_PYR = "DELFIN_FFFREE_REFINE_GATE_PYR"
+_RG_PYR_FLOOR = 12.0                      # Grad -- find_graph_geometry._PYR_BUILD_MIN
+_RG_PYR_ELEMS = frozenset(("C", "N", "O", "S", "P"))
+
+
+def _rg_pyr_on() -> bool:
+    """DIE eine Lesestelle fuer die dritte Kennzahl."""
+    return os.environ.get(FLAG_PYR, "0") == "1"
+
+
+def _rg_walsh(P, c: int, nb: Sequence[int]) -> Optional[float]:
+    """Walsh-Winkel in Grad, Formel aus `find_pyramidalization.py:501-515`.
+    Planares sp2 -> ~0; je pyramidaler, desto groesser."""
+    a, b, d = int(nb[0]), int(nb[1]), int(nb[2])
+    nrm = np.cross(P[b] - P[a], P[d] - P[a])
+    ln = float(np.linalg.norm(nrm))
+    if ln < 1e-9:
+        return None
+    d_oop = abs(float(np.dot(P[c] - P[a], nrm / ln)))
+    r_mean = (float(np.linalg.norm(P[c] - P[a]))
+              + float(np.linalg.norm(P[c] - P[b]))
+              + float(np.linalg.norm(P[c] - P[d]))) / 3.0
+    if r_mean < 1e-6:
+        return None
+    return math.degrees(math.atan2(d_oop, r_mean))
+
+
+def _rg_pyr_count(syms: Sequence[str], P, adj) -> int:
+    """Wieviele DREIBINDIGE Leichtatom-Zentren sind ueber den Boden pyramidalisiert?
+
+    Dreibindig, weil ein sp2-Zentrum genau drei sigma-Nachbarn hat -- H zaehlt mit,
+    wie beim Auge ("including every sp2 C-H", `full_verdict.py:507`).  Ohne Bindungs-
+    ordnungen ist "drei Nachbarn an C/N/O/S/P" die beste verfuegbare sp2-Naeherung;
+    ein echtes sp3-Zentrum hat vier und faellt damit von selbst heraus."""
+    n_pyr = 0
+    for i in range(len(syms)):
+        if syms[i] not in _RG_PYR_ELEMS:
+            continue
+        nb = list(adj[i])
+        if len(nb) != 3:
+            continue
+        if sum(1 for j in nb if _hp_metal(syms[j])) >= 2:
+            continue                      # mu-Bruecke, keine Fehlplanarisierung (R3)
+        w = _rg_walsh(P, i, nb)
+        if w is not None and w > _RG_PYR_FLOOR:
+            n_pyr += 1
+    return n_pyr
+
+
+def _rg_score(xyz: str) -> Tuple[int, ...]:
+    """(n_clash, n_bond_out[, n_pyr]) -- alle "kleiner ist besser".
+
+    Die dritte Stelle kommt nur mit `DELFIN_FFFREE_REFINE_GATE_PYR=1` dazu; ohne sie
+    ist der Rueckgabewert das alte Zwei-Tupel.  Der Vergleich in `keep_better` ist
+    ein Tupelvergleich und traegt beide Laengen -- solange BEIDE Seiten aus demselben
+    Lauf stammen, und das tun sie per Konstruktion (derselbe Prozess, dieselbe
+    Umgebung).  `(-1, -1)` bzw. `(-1, -1, -1)` heisst unlesbar."""
+    _pyr = _rg_pyr_on()
     try:
         syms, P, _lines = _hp_read(xyz)
     except Exception:
-        return (-1, -1)
+        return (-1, -1, -1) if _pyr else (-1, -1)
     n = len(syms)
     if n < 2:
-        return (0, 0)
+        return (0, 0, 0) if _pyr else (0, 0)
     adj = _hp_graph(syms, P)
     n_bond_out = 0
     for i in range(n):
@@ -141,6 +238,8 @@ def _rg_score(xyz: str) -> Tuple[int, int]:
                 thr = _RG_HEAVY_HEAVY_FRAC * (_hp_vdw(si) + _hp_vdw(sj))
             if float(np.linalg.norm(P[i] - P[j])) < thr:
                 n_clash += 1
+    if _pyr:
+        return (n_clash, n_bond_out, _rg_pyr_count(syms, P, adj))
     return (n_clash, n_bond_out)
 
 
@@ -186,9 +285,18 @@ def keep_better(before: Sequence, after: Sequence):
             continue                          # neu (Enumerator) oder unveraendert -> frei
         n_geprueft += 1
         s_alt, s_neu = _rg_score(alt), _rg_score(x)
-        if s_alt == (-1, -1) or s_neu == (-1, -1):
+        # ⚠ BEIDE ZEILEN WAREN AUF DAS ZWEI-TUPEL FESTGENAGELT (bemerkt 25.08., bevor
+        # die dritte Kennzahl je lief).  `== (-1, -1)` ist fuer `(-1, -1, -1)` FALSCH,
+        # also waere ein unlesbares Frame nicht mehr uebersprungen worden; und der
+        # Vergleich las nur Index 0 und 1, also waere `n_pyr` berechnet und dann
+        # WEGGEWORFEN worden -- ein Zaehler ohne Wirkzeile, genau die Bauart, die hier
+        # schon mehrfach als "dunkler Schalter" geendet ist.  Jetzt laengenunabhaengig.
+        if -1 in s_alt or -1 in s_neu:
             continue                          # unlesbar -> nicht urteilen, durchlassen
-        if s_neu[0] > s_alt[0] or s_neu[1] > s_alt[1]:
+        if len(s_alt) != len(s_neu):
+            continue                          # kann nur bei Schalterwechsel MITTEN im
+            # Lauf passieren; dann ist kein Vergleich moeglich und Durchlassen richtig.
+        if any(b > a for a, b in zip(s_alt, s_neu)):
             try:
                 out[k] = ((alt,) + tuple(e[1:])) if isinstance(e, tuple) else ([alt] + list(e[1:]))
             except Exception:
@@ -198,3 +306,106 @@ def keep_better(before: Sequence, after: Sequence):
         _LOG.info("refine-gate: %d von %d veraenderten Frames zurueckgenommen "
                   "(Kollisionen oder Bindungslaengen wurden schlechter)", n_rueck, n_geprueft)
     return out
+
+
+def _rg_selbsttest() -> int:  # pragma: no cover - Werkzeug, kein Produktivpfad
+    """Behauptungen dieses Moduls gegen Zahlen, nicht gegen Zuversicht.
+
+        python -m delfin.manta._refine_gate
+
+    Geprueft wird, was schiefgehen KANN, nicht was bequem ist:
+      1. Vorgabe AUS  -> `_rg_score` liefert ein ZWEI-Tupel.  Ohne das waeren die
+         laufenden A/B `picopgate6k` und `hplacegate6k` mitten im Lauf veraendert.
+      2. Schalter AN  -> DREI-Tupel, und die dritte Zahl UNTERSCHEIDET flach von
+         pyramidal.  Ein Zaehler, der auf beiden Formen dasselbe sagt, ist eine
+         Tabellenkonstante und kein Detektor.
+      3. Der Walsh-Winkel trifft die Zahlen des AUGES: planares Formaldehyd ~0 Grad,
+         und die Formel ist `atan2(d_oop, r_mean)`, nicht `d_oop` allein.
+      4. `keep_better` NIMMT eine Verschlechterung der dritten Zahl ZURUECK -- sonst
+         waere sie berechnet und weggeworfen.
+    """
+    import numpy as _np
+
+    def _xyz(rows):
+        return "%d\ntest\n" % len(rows) + "\n".join(
+            f"{s} {x:.6f} {y:.6f} {z:.6f}" for s, x, y, z in rows) + "\n"
+
+    # Formaldehyd-artig: C mit drei Nachbarn, exakt planar (z = 0 fuer alle)
+    flach = _xyz([("C", 0.0, 0.0, 0.0), ("O", 0.0, 1.21, 0.0),
+                  ("H", 0.94, -0.54, 0.0), ("H", -0.94, -0.54, 0.0)])
+    # dasselbe C, aber 0.35 A aus der Ebene gezogen -> deutlich pyramidal
+    pyr = _xyz([("C", 0.0, 0.0, 0.35), ("O", 0.0, 1.21, 0.0),
+                ("H", 0.94, -0.54, 0.0), ("H", -0.94, -0.54, 0.0)])
+
+    fehler = 0
+
+    def _urteil(name, ok, zusatz=""):
+        nonlocal fehler
+        print(f"  {'OK  ' if ok else 'FEHL'} {name}{('  ' + zusatz) if zusatz else ''}")
+        if not ok:
+            fehler += 1
+
+    _alt = os.environ.get(FLAG_PYR)
+    _alt_haupt = os.environ.get(FLAG)
+    try:
+        os.environ[FLAG_PYR] = "0"
+        s_aus = _rg_score(flach)
+        _urteil("Vorgabe AUS liefert ein Zwei-Tupel", len(s_aus) == 2, f"-> {s_aus}")
+
+        os.environ[FLAG_PYR] = "1"
+        s_flach = _rg_score(flach)
+        s_pyr = _rg_score(pyr)
+        _urteil("Schalter AN liefert ein Drei-Tupel", len(s_flach) == 3, f"-> {s_flach}")
+        _urteil("flaches sp2 zaehlt NICHT als pyramidal",
+                len(s_flach) == 3 and s_flach[2] == 0, f"n_pyr={s_flach[2] if len(s_flach)>2 else '?'}")
+        _urteil("gezogenes sp2 zaehlt SEHR WOHL",
+                len(s_pyr) == 3 and s_pyr[2] >= 1, f"n_pyr={s_pyr[2] if len(s_pyr)>2 else '?'}")
+        _urteil("die beiden Formen sind UNTERSCHEIDBAR (kein konstanter Zaehler)",
+                len(s_flach) == 3 and len(s_pyr) == 3 and s_flach[2] != s_pyr[2])
+
+        # Walsh-Winkel gegen die Formel des Auges nachgerechnet
+        P = _np.array([[0.0, 0.0, 0.35], [0.0, 1.21, 0.0],
+                       [0.94, -0.54, 0.0], [-0.94, -0.54, 0.0]])
+        w = _rg_walsh(P, 0, [1, 2, 3])
+        _urteil("Walsh-Winkel liegt ueber dem Boden", w is not None and w > _RG_PYR_FLOOR,
+                f"{w:.1f} Grad, Boden {_RG_PYR_FLOOR}")
+        Pf = _np.array([[0.0, 0.0, 0.0], [0.0, 1.21, 0.0],
+                        [0.94, -0.54, 0.0], [-0.94, -0.54, 0.0]])
+        wf = _rg_walsh(Pf, 0, [1, 2, 3])
+        _urteil("planar ergibt ~0 Grad", wf is not None and wf < 1.0, f"{wf:.2f} Grad")
+
+        # keep_better muss die Verschlechterung der DRITTEN Zahl zurueckholen.
+        # ⚠ ZWEI SCHALTER, und der erste Testentwurf setzte nur EINEN -- die Probe
+        # schlug fehl und sah wie ein Codefehler aus.  `keep_better` steigt in Zeile
+        # 258 als ERSTES an `_rg_on()` aus, also am HAUPTSCHALTER; `FLAG_PYR` allein
+        # bewirkt nichts.  Das ist keine Testkosmetik: ein Lauf, der nur
+        # DELFIN_FFFREE_REFINE_GATE_PYR setzt, misst NICHTS und meldete es als
+        # "keine Wirkung".  Die Warteschlangenzeile muss BEIDE tragen.
+        os.environ[FLAG] = "1"
+        vor = [(flach, "f0")]
+        nach = [(pyr, "f0")]
+        zurueck = keep_better(vor, nach)
+        _urteil("keep_better nimmt die Pyramidalisierung ZURUECK",
+                bool(zurueck) and zurueck[0][0] == flach)
+
+        # und bei AUS darf es genau das NICHT tun (der Beweis, dass es an der
+        # dritten Zahl lag und nicht an Kollisionen oder Bindungslaengen)
+        os.environ[FLAG_PYR] = "0"
+        zurueck_aus = keep_better(vor, nach)
+        _urteil("bei Vorgabe AUS bleibt dieselbe Aenderung STEHEN",
+                bool(zurueck_aus) and zurueck_aus[0][0] == pyr,
+                "sonst kaeme die Ruecknahme woanders her")
+    finally:
+        for _f, _v in ((FLAG_PYR, _alt), (FLAG, _alt_haupt)):
+            if _v is None:
+                os.environ.pop(_f, None)
+            else:
+                os.environ[_f] = _v
+
+    print(f"\n  {'ALLE PROBEN BESTANDEN' if fehler == 0 else str(fehler) + ' PROBE(N) GESCHEITERT'}")
+    return 1 if fehler else 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    import sys as _sys
+    _sys.exit(_rg_selbsttest())
