@@ -299,17 +299,18 @@ def test_a_backend_that_took_the_allow_list_says_nothing():
         _args(allowed_tools="bash,read_file"), engine) == []
 
 
-def test_no_disallowed_tools_flag_is_offered():
-    """There is no deny-list machinery on any backend.
+def test_the_disallowed_tools_flag_is_offered_now_that_it_bites():
+    """The flag exists because there is now machinery behind it.
 
-    `_ROLE_EXEC_DENYLIST` is keyed by ROLE and defined at module level;
-    `create_client` has no `disallowed_tools` parameter and `CLIClient`
-    builds only `--allowedTools`. A flag with nothing behind it is the
-    defect this file exists to catch, so the flag is absent by decision.
+    It was absent while `_ROLE_EXEC_DENYLIST` was the only deny-list and was
+    keyed by ROLE at module level — a flag with nothing behind it is the
+    defect this file exists to catch. A per-session deny list now reaches
+    the executor, so the flag delivers what its name promises; the proof
+    that it REFUSES rather than merely hides lives in
+    tests/test_a_session_can_narrow_its_own_tool_surface.py.
     """
-    with pytest.raises(SystemExit):
-        agent_cli.build_parser().parse_args(
-            ["chat", "--disallowed-tools", "bash"])
+    args = _parse("--disallowed-tools", "bash,web_fetch")
+    assert args.disallowed_tools == "bash,web_fetch"
 
 
 # ---------------------------------------------------------------------------
