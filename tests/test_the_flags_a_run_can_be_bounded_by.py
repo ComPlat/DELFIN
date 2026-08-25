@@ -464,3 +464,39 @@ def test_an_interactive_session_says_the_stream_needs_a_prompt(
     err = capsys.readouterr().err
     assert "--output-format stream-json describes one answer" in err
     assert "-p" in err
+
+
+# ---------------------------------------------------------------------------
+# --max-turns: the mechanism has no per-session door
+# ---------------------------------------------------------------------------
+
+def test_no_max_turns_flag_is_offered():
+    """The per-turn tool-round cap cannot be set for one session.
+
+    `api_client._resolve_max_tool_rounds` reads `agent.max_tool_rounds`
+    from the user's settings file, then the per-model profile, then falls
+    back to 500. It is called as `_resolve_max_tool_rounds(self.model,
+    _caps)` with no instance attribute consulted, no keyword on
+    `stream_response`, and no environment variable — so the only override
+    is the settings file, which belongs to the user and to every later
+    session, not to this run.
+
+    Writing that file to honour a flag would change the default for work
+    nobody asked about. Declaring the flag and dropping it is the defect
+    this file exists to catch. So it is absent until the resolver grows a
+    per-session door, and this test is what makes adding a dead one fail.
+    """
+    with pytest.raises(SystemExit):
+        agent_cli.build_parser().parse_args(["chat", "--max-turns", "5"])
+
+
+def test_the_round_cap_still_has_no_instance_override():
+    """If this starts failing, `--max-turns` has become implementable."""
+    import inspect
+
+    from delfin.agent import api_client
+
+    src = inspect.getsource(api_client._resolve_max_tool_rounds)
+    assert "self" not in src, (
+        "the resolver took an instance; a per-session round cap is now "
+        "reachable and --max-turns should be wired to it")
