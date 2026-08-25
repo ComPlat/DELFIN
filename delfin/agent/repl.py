@@ -1103,9 +1103,17 @@ class TerminalAgent:
 
         Reused rather than re-derived: it already never raises, and it
         already refuses to run a workspace-supplied command.
+
+        The "if" is enforced here. `render_status_line` falls back to a
+        built-in template when nothing is configured, so this printed a
+        line after every turn whose two fields — mode and branch — the
+        banner and the live turn line already carry. A sentence in a
+        docstring is not a condition; the condition is.
         """
         try:
             from . import status_line as sl
+            if not sl.has_custom_status_line(self.opts.cwd):
+                return
             status = self.engine.get_status() or {}
             text = sl.render_status_line(sl.StatusContext(
                 workspace=self.opts.cwd,

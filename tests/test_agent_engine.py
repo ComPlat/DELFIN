@@ -423,6 +423,11 @@ def test_engine_session_persistence(agent_tree):
     client = MagicMock()
     client.stream_message = MagicMock(side_effect=stream_fn)
 
+    # This stub announces its id on the stream, which is the only reason
+    # an empty starting id is correct. The engine asks the client, not the
+    # backend string — the string was reachable by clients that announce
+    # nothing, and their id then stayed empty for the whole session.
+    client.supplies_session_id = True
     with patch("delfin.agent.engine.create_client", return_value=client):
         engine = AgentEngine(repo_dir=agent_tree, backend="cli", mode="quick", pack_dir=agent_tree)
 
@@ -449,6 +454,10 @@ def test_api_backend_mints_fresh_session_id(agent_tree):
     client = MagicMock()
     perms = MagicMock()
     client._permissions = perms
+    # Declared on the stub, because the engine asks the CLIENT and not the
+    # backend string: create_client routes on the provider, so `backend`
+    # alone never told it which object it was about to get.
+    client.supplies_session_id = False
     with patch("delfin.agent.engine.create_client", return_value=client):
         eng = AgentEngine(repo_dir=agent_tree, backend="api",
                           mode="quick", pack_dir=agent_tree)
@@ -461,8 +470,16 @@ def test_api_backend_mints_fresh_session_id(agent_tree):
 
 
 def test_cli_backend_session_id_stays_empty_until_stream(agent_tree, mock_client):
-    """CLI gets its id from the stream, so the engine must NOT mint one."""
+    """A client that announces its id gets no minted one.
+
+    The stub says so itself. Keying this on ``backend == "cli"`` was the
+    defect: with provider kit/ollama/openai, create_client returns an
+    OpenAIClient whatever the backend string says, and that client
+    announces nothing — so the id stayed empty for the whole session and
+    every task listing fell back to the whole workspace.
+    """
     from delfin.agent.engine import AgentEngine
+    mock_client.supplies_session_id = True
     with patch("delfin.agent.engine.create_client", return_value=mock_client):
         eng = AgentEngine(repo_dir=agent_tree, backend="cli",
                           mode="quick", pack_dir=agent_tree)

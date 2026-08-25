@@ -124,6 +124,34 @@ def _expand_template(tpl: str, ctx: StatusContext) -> str:
         return tpl
 
 
+def has_custom_status_line(workspace: Path | None) -> bool:
+    """True when the user actually configured one.
+
+    Callers that describe the line as the user's own need to be able to
+    tell "configured" from "the built-in default fired": the terminal
+    printed the default after every turn under a docstring saying it
+    printed nothing unless configured, and the default repeats two fields
+    the banner and the live turn line already carry.
+    """
+    return bool(_gather_status_lines(workspace))
+
+
+def _render_default(ctx: StatusContext) -> str:
+    """The built-in line, with unknown fields left out entirely.
+
+    Formatting the default template against an empty branch produced
+    ``0 tokens | mode=plan | branch=`` outside a git repository — a
+    labelled field with nothing after it, which reads as a lookup that
+    failed rather than as a directory that is not a repository. A user's
+    own template still gets the empty string, because that is the truth
+    and their template decides how to show it.
+    """
+    parts = [f"{ctx.tokens} tokens", f"mode={ctx.mode}"]
+    if ctx.branch:
+        parts.append(f"branch={ctx.branch}")
+    return " | ".join(parts)
+
+
 def render_status_line(ctx: StatusContext) -> str:
     """Render the active statusLine for the given context.
 
@@ -137,7 +165,7 @@ def render_status_line(ctx: StatusContext) -> str:
         # later (project / local) wins
         spec = specs[-1]
     else:
-        spec = {"template": _DEFAULT_TEMPLATE}
+        return _render_default(ctx)[:240]
     if "command" in spec and isinstance(spec["command"], str):
         cmd = spec["command"]
         try:
@@ -160,4 +188,4 @@ def render_status_line(ctx: StatusContext) -> str:
     return _expand_template(tpl, ctx)[:240]
 
 
-__all__ = ["StatusContext", "render_status_line"]
+__all__ = ["StatusContext", "render_status_line", "has_custom_status_line"]

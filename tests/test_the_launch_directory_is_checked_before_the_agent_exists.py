@@ -265,4 +265,6 @@ def test_an_ordinary_persisted_mode_is_honoured():
 def test_nothing_configured_starts_read_only():
     mode, why = lg.resolve_posture()
     assert mode == "plan"
-    assert why == "default"
+    # The banner prints this beside "approval plan"; the bare word
+    # "default" there reads as the name of a mode, not as the reason.
+    assert why == "nothing configured it"

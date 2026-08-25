@@ -297,10 +297,27 @@ def tool_result_line(name: str, output: str, *, meta: dict | None = None,
 
 
 def notice_line(text: str, *, theme: Theme | None = None) -> str:
-    """Harness speech. Visually apart from the answer, on purpose."""
+    """Harness speech. Visually apart from the answer, on purpose.
+
+    Line structure survives. Collapsing every run of whitespace turned the
+    end-of-turn task report — a heading plus one indented line per open
+    item — into a single wrapped paragraph where the checkbox glyphs ran
+    together and nothing could be counted at a glance. Within a line the
+    collapse stays: a notice assembled from tool output must not be able
+    to smuggle in columns of its own.
+    """
     theme = theme or Theme()
-    text = _WS_RE.sub(" ", strip_control(text or "")).strip()
-    return theme.yellow(f"! {text}") if text else ""
+    cleaned = strip_control(text or "")
+    lines = [_WS_RE.sub(" ", ln).strip() for ln in cleaned.split("\n")]
+    # Keep interior blanks out; a notice is dense by nature.
+    kept = [ln for ln in lines if ln]
+    if not kept:
+        return ""
+    # The marker introduces the notice; continuation lines are indented to
+    # its width so the block reads as one thing.
+    out = [theme.yellow(f"! {kept[0]}")]
+    out.extend(theme.yellow(f"  {ln}") for ln in kept[1:])
+    return "\n".join(out)
 
 
 def thinking_line(text: str, *, width: int = _DEFAULT_WIDTH,

@@ -209,6 +209,15 @@ _NOT_CARRIED = {
     "_cost_cap_hit", "_cost_cap_value", "_ambiguous_columns_turn",
     "_truncated_tools_turn", "_stop_requested", "_steering_delivered",
     "_steering_refreshes",
+    #    Whether THIS turn's message was a greeting and nothing else.
+    #    Read by the cross-session task notice, which must not hand a
+    #    backlog to a model that was only greeted.
+    "_turn_is_bare_greeting",
+    # -- a fact about this PROCESS, not about the conversation ------------
+    #    Set when a saved conversation is loaded. Exporting it would write
+    #    "this came off disk" into the file that IS the disk copy, and a
+    #    restore sets it again anyway.
+    "_history_restored",
     # -- the message being answered right now -----------------------------
     #    The figure guard reads it so a number the USER typed grounds
     #    itself. It is the current turn's input; carrying it across a

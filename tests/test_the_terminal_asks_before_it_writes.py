@@ -460,7 +460,7 @@ def test_an_absent_settings_file_is_not_a_decision(tmp_path, monkeypatch):
 
     monkeypatch.setattr(kit_settings, "USER_SETTINGS_PATH",
                         tmp_path / "nowhere" / "settings.json")
-    assert agent_cli._persisted_default_mode(tmp_path) == ""
+    assert agent_cli._persisted_default_mode(tmp_path) == ("", "")
 
 
 def test_a_declared_mode_is_read_from_the_file(tmp_path, monkeypatch):
@@ -473,7 +473,12 @@ def test_a_declared_mode_is_read_from_the_file(tmp_path, monkeypatch):
     (ws / ".delfin").mkdir(parents=True)
     (ws / ".delfin" / "settings.json").write_text(
         json.dumps({"kit": {"default_mode": "acceptEdits"}}))
-    assert agent_cli._persisted_default_mode(ws) == "acceptEdits"
+    mode, source = agent_cli._persisted_default_mode(ws)
+    assert mode == "acceptEdits"
+    # The file that decided it travels with the decision: the banner used
+    # to name a home-directory file for a mode a checked-out repository
+    # had set, which points the reader at the wrong thing to edit.
+    assert source.endswith("project/.delfin/settings.json"), source
 
 
 def test_a_settings_file_about_something_else_declares_no_mode(
@@ -487,7 +492,7 @@ def test_a_settings_file_about_something_else_declares_no_mode(
     (ws / ".delfin").mkdir(parents=True)
     (ws / ".delfin" / "settings.json").write_text(
         json.dumps({"kit": {"allow_patterns": ["^pytest"]}}))
-    assert agent_cli._persisted_default_mode(ws) == ""
+    assert agent_cli._persisted_default_mode(ws) == ("", "")
 
 
 def test_nothing_configured_starts_in_plan(tmp_path, monkeypatch):
@@ -496,7 +501,11 @@ def test_nothing_configured_starts_in_plan(tmp_path, monkeypatch):
 
     monkeypatch.setattr(kit_settings, "USER_SETTINGS_PATH",
                         tmp_path / "nowhere" / "settings.json")
+    declared, source = agent_cli._persisted_default_mode(tmp_path)
     mode, why = launch_guard.resolve_posture(
-        flag_mode="", persisted_mode=agent_cli._persisted_default_mode(tmp_path))
+        flag_mode="", persisted_mode=declared,
+        settings_path=source or "~/.delfin/settings.json")
     assert mode == "plan"
-    assert why == "default"
+    # Not the bare word "default", which sits next to "approval plan" in
+    # the banner and reads as a statement about the mode.
+    assert why == "nothing configured it"

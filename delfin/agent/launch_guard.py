@@ -366,4 +366,7 @@ def resolve_posture(
     if persisted_mode in _VALID_MODES:
         return persisted_mode, settings_path
 
-    return DEFAULT_MODE, "default"
+    # Not the word "default": next to "approval plan" it reads as a claim
+    # about the approval mode rather than about where the mode came from,
+    # which is the one thing this string exists to say.
+    return DEFAULT_MODE, "nothing configured it"
