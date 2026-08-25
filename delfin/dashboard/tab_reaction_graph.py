@@ -120,6 +120,34 @@ def graphs_in(folder: Any) -> List[Path]:
 # Saying what a number is, in words that do not overstate it
 # ---------------------------------------------------------------------------
 
+#: How a geometry came about, said in one word.
+#:
+#: There are two ways a structure changes in DELFIN and they are not the
+#: same kind of fact.  One is the editor: a hand on an atom, a drawing, an
+#: optimisation run from the workbench -- interactive, quick, and as good
+#: as the method in the box.  The other is a calculation: an input
+#: written, a job submitted, hours or days on a cluster, an output parsed.
+#:
+#: The document has always recorded which one (Record.source['kind']).
+#: What it did not do was *show* it, and a geometry somebody dragged into
+#: shape read exactly like one a two-day optimisation produced.  They are
+#: not interchangeable: the first is where a calculation starts, the
+#: second is what a paper quotes.
+_CAME_FROM = {
+    'editor': 'by hand',
+    'scan': 'from a scan',
+    'run': 'computed',
+    'job': 'computed',
+}
+
+
+def said_origin(record: Optional[rg.Record]) -> str:
+    """Which of the two kinds of change made this geometry."""
+    if record is None:
+        return ''
+    return _CAME_FROM.get(str((record.source or {}).get('kind') or ''), '')
+
+
 def said_energy(record: Optional[rg.Record]) -> str:
     """One record as a line, with the quantity it actually is.
 
@@ -127,6 +155,11 @@ def said_energy(record: Optional[rg.Record]) -> str:
     "energy", because which one a diagram was drawn from is the difference
     between a free-energy profile and an electronic one, and nobody can tell
     them apart from the picture afterwards.
+
+    And what nobody has asked is said as that.  ``imaginary`` is ``None``
+    until a press takes the frequencies, which is a third state and not
+    the same as zero -- a structure nobody has checked is not a minimum,
+    it is a structure.
     """
     if record is None:
         return '--'
@@ -144,27 +177,48 @@ def said_energy(record: Optional[rg.Record]) -> str:
                      + (f' {record.frequency:.0f}i' if record.frequency else ''))
     elif record.imaginary is not None and record.imaginary > 1:
         parts.append(f'{record.imaginary} imaginary')
+    else:
+        parts.append('not checked')
+    came = said_origin(record)
+    if came:
+        parts.append(came)
     if record.conformer:
         parts.append(f'conformer {record.conformer}')
     return ', '.join(parts)
 
 
 def said_gate(verdict: Optional[bool], rise: Optional[float],
-              window: str) -> str:
+              window: str, *, why: str = '') -> str:
     """Whether the temperature pays for that barrier, in three answers.
 
     The third is the one that has to be said rather than implied.  A network
     drawn with the uncomputed edges greyed out like the closed ones reports a
     conclusion about calculations nobody has run, and the reader has no way to
     tell which grey is which.
+
+    And the third answer says *which* thing is missing.  "Not at this
+    level" sent a reader off to compute the saddle when what was unpriced
+    was the state the step leaves -- an answer that is true and points the
+    wrong way.
     """
-    if verdict is None:
-        return 'not at this level'
-    if rise is None:
-        return 'not at this level'
+    if verdict is None or rise is None:
+        return why or 'nothing priced here'
     if verdict:
         return f'open within {window}'
     return f'closed within {window}'
+
+
+def why_no_barrier(graph: rg.Graph, edge: rg.Edge, level: str) -> str:
+    """Which end of a barrier is missing, named so it can be gone and got."""
+    gaps = []
+    if rg.priced(edge, level) is None:
+        gaps.append('the saddle')
+    foot = graph.node(edge.source)
+    if rg.priced(foot, level) is None:
+        gaps.append((foot.label or edge.source) if foot else edge.source)
+    if not gaps:
+        return 'nothing priced here'
+    return 'no energy yet for ' + ' and '.join(gaps)
 
 
 def network_lines(graph: rg.Graph, level: str, *,
@@ -199,7 +253,7 @@ def network_lines(graph: rg.Graph, level: str, *,
             mark = '' if edge.confirmed else '   (unconfirmed)'
             out.append((edge.id,
                         f'   {edge.id} -> {to}   {height} kcal/mol   '
-                        f'{said_gate(gates.get(edge.id), rise, window)}{mark}'))
+                        f'{said_gate(gates.get(edge.id), rise, window, why=why_no_barrier(graph, edge, level))}{mark}'))
     return out
 
 
@@ -270,6 +324,12 @@ def detail_html(graph: rg.Graph, ref: str, level: str) -> str:
     if rg.best(holder, level) is None:
         rows.append(f'<div style="margin-top:6px">Nothing at '
                     f'<b>{_escape(level)}</b> yet.</div>')
+    elif rg.priced(holder, level) is None:
+        rows.append(
+            f'<div style="margin-top:6px">There is a geometry at '
+            f'<b>{_escape(level)}</b> and no energy for it, so nothing can '
+            f'be measured against it yet. It is what a calculation would '
+            f'start from.</div>')
 
     waiting = [p for p in graph.pending if p.on == ref]
     if waiting:
@@ -313,11 +373,10 @@ def summary_html(graph: rg.Graph, level: str, *, window: str = 'an hour',
     if graph.edges:
         said.append(f'At {T:g} K within {window}: {opened} open, '
                     f'{closed} closed'
-                    + (f', {unknown} not at this level.' if unknown
-                       else '.'))
+                    + (f', {unknown} not priced yet.' if unknown else '.'))
     if missing:
         shown = ', '.join(missing[:8]) + ('...' if len(missing) > 8 else '')
-        said.append(f'Nothing at {level} for: {shown}')
+        said.append(f'No energy at {level} for: {shown}')
     if graph.pending:
         said.append(f'{_many(len(graph.pending), "calculation")} running.')
     return ('<div style="font-family:sans-serif; font-size:13px">'
@@ -808,6 +867,7 @@ except Exception:                                    # pragma: no cover
     pass
 
 
-__all__ = ['WINDOWS', 'graphs_in', 'said_energy', 'said_gate',
+__all__ = ['WINDOWS', 'graphs_in', 'said_energy', 'said_gate', 'said_origin',
+           'why_no_barrier',
            'network_lines', 'detail_html', 'summary_html',
            'ReactionGraphPanel', 'create_tab']
