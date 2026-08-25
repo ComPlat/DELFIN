@@ -1629,9 +1629,12 @@ def test_a_push_is_priced_without_its_own_force_in_the_answer():
     assert 'def _priced(got, applied):' in source
     assert "energy = (_priced(outcome, held) if pushing" in source
     # And the path records where the coordinate *got to*, because a push does
-    # not dictate a value -- that is the whole point of it.
+    # not dictate a value -- that is the whole point of it.  The geometry goes
+    # down beside the price so that the finished profile can be handed to a
+    # better method afterwards; for a push those are the only structures on
+    # the way over the crossing.
     assert 'reached = (_value_in(walked, legs[0]) if pushing' in source
-    assert 'path.append((reached, spent))' in source
+    assert 'path.append((reached, spent, walked))' in source
 
 
 def test_a_push_ramps_geometrically_and_prices_what_it_falls_through():
@@ -1665,7 +1668,9 @@ def test_a_push_ramps_geometrically_and_prices_what_it_falls_through():
     # The zero is the structure as it stands: a path that crosses on its first
     # step has to have something to have crossed from.
     assert 'base = _unbiased(walked)' in source
-    assert "path.append((_value_in(walked, legs[0]), 0.0))" in source
+    # With the structure it was measured on, which is what lets the whole
+    # profile be priced again later.
+    assert "path.append((_value_in(walked, legs[0]), 0.0, walked))" in source
 
 
 @_needs_xtb

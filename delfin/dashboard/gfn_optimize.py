@@ -44,6 +44,7 @@ __all__ = ['GFN_METHODS', 'as_pushes', 'atom_lines', 'bond_graph',
            'a_rate_apart', 'paths_disagree', 'where_a_walk_jumped',
            'what_else_moved', 'pair_named',
            'gfnff_refusal', 'gfnff_pair_refusal', 'gfnff_would_form',
+           'FOD_METHODS', 'can_measure_fod', 'fod_moved',
            'push_constant', 'turn_for',
            'restraint_energy', 'walk_the_path', 'lowest_real_modes',
            'find_xtb', 'find_binary', 'find_gxtb',
@@ -138,6 +139,57 @@ _GRADIENT_RE = re.compile(r'GRADIENT NORM\s+(-?\d+\.\d+)')
 #: That is why both are handed on: the count is the engine's own answer, and
 #: the modes are what it was counting.
 _IMAGINARY_RE = re.compile(r'#\s*imaginary freq\.\s+(\d+)')
+#: How many electrons are not in a closed shell, which is the frontier gap's
+#: question asked so that it has a number rather than a proxy.
+#:
+#: ``--fod`` runs one more SCF at 5000 K and adds up how far the occupations
+#: are from two-and-zero; Grimme and Hansen, Angew. Chem. Int. Ed. 54 (2015)
+#: 12308, https://doi.org/10.1002/anie.201501887.  Measured here under GFN2,
+#: beside the gap the same run prints:
+#:
+#:     ethane C-C at 1.54 A      N_FOD 0.000   gap 15.08 eV
+#:     ethane C-C at 3.50 A      N_FOD 1.726   gap  0.24 eV
+#:     ethylene twisted 45 deg   N_FOD 0.075   gap  3.42 eV
+#:     ethylene twisted 60 deg   N_FOD 0.251   gap  2.33 eV
+#:     ethylene twisted 90 deg   N_FOD 2.000   gap  0.00 eV
+#:
+#: The gap and this agree about where the trouble is -- 60 degrees is where
+#: :func:`method_is_out_of_its_depth` fires and where N_FOD leaves zero -- so
+#: this is not a second opinion but the same one with a scale on it.
+_NFOD_RE = re.compile(r'^\s*NFOD\s*:\s*(-?\d+\.\d+)', re.MULTILINE)
+#: And where it sits.  xtb prints a Loewdin table under the total, one row an
+#: atom, with the index and the element run together::
+#:
+#:      Loewdin FODpop      n(s)   n(p)   n(d)
+#:          1C     0.8421   0.085  0.757  0.000
+#:          8Mn    1.5533   0.001  0.002  1.550
+#:
+#: Which is the whole of "where is the trouble" for nothing: on the user's
+#: 57-atom manganese complex, 1.553 of a total of 2.603 is on the manganese
+#: and 1.550 of that is d.
+#:
+#: xtb writes a ``fod.cub`` beside it saying the same thing as a surface, and
+#: that is read here and thrown away with the scratch directory.  It was
+#: driven before it was dropped, so the next person need not: the cube is an
+#: ordinary Gaussian one, and 3Dmol -- through
+#: :func:`~delfin.dashboard.molecule_viewer.fukui_cube_isosurface_js`, which
+#: already paints one -- parses and draws it.  Measured in chromium against
+#: the 3Dmol this dashboard ships, at an isovalue of 0.005: an ethane pulled
+#: to 3.50 A gives 384 vertices in 60 ms, an ethylene turned 90 degrees 536 in
+#: 87 ms, and the manganese complex 572 in 301 ms.  Two things stand in the
+#: way of it being a picture in the editor rather than a sentence.  The
+#: manganese cube is 3.3 MB of text -- against 234 KB for the ethane -- and
+#: every byte would have to cross the widget channel; and the editor's viewer
+#: is the live one driven by ``window.__delfinSubmitManip``, which has no
+#: channel for volumetric data at all, so it is a change to that script and
+#: not a call to an existing function.  Both are worth doing and neither is
+#: free.  (3Dmol's cube reader also takes one element too many off the end --
+#: 15601 points for a 26x25x24 grid, the last of them NaN, from the file's
+#: trailing newline.  Marching cubes indexes by grid position and never reads
+#: it, so the picture is right; anything taking a minimum or a maximum over
+#: ``VolumeData.data`` gets NaN.)
+_FODPOP_HEADER = 'Loewdin FODpop'
+_FODPOP_RE = re.compile(r'^\s*(\d+)([A-Za-z]{1,2})\s+(-?\d+\.\d+)')
 #: How far apart the frontier orbitals are, which is how a single-determinant
 #: method says whether it is still able to answer.
 #:
@@ -590,6 +642,51 @@ def lowest_real_modes(output: Any, most: int = 4) -> List[float]:
         if len(seen) > 200:
             break
     return sorted(one for one in seen if one > _TRIVIAL_MODE)[:max(0, int(most))]
+
+
+def _read_fod(output: Any) -> Optional[Dict[str, Any]]:
+    """The fractional occupation this run printed, or None if it printed none.
+
+    None rather than zero, and the difference matters: a molecule with no
+    static correlation prints ``NFOD : 0.0000``, and a method that cannot be
+    asked prints nothing at all.  Both would read as "there is nothing wrong
+    here" if they came back the same, and one of them is a question that was
+    never put -- see :data:`FOD_METHODS` for the two methods that do this.
+
+    The per-atom breakdown is read out of the Loewdin table under the total,
+    as a block bounded by its header and the blank line after it rather than
+    by a pattern over the whole output: the row shape is ``8Mn 1.5533 ...``,
+    which is loose enough to match other tables xtb prints further down.
+    """
+    text = str(output or '')
+    total = _NFOD_RE.search(text)
+    if not total:
+        return None
+    try:
+        amount = float(total.group(1))
+    except ValueError:
+        return None
+    on: List[tuple] = []
+    lines = text.splitlines()
+    for n, line in enumerate(lines):
+        if _FODPOP_HEADER not in line:
+            continue
+        for row in lines[n + 1:]:
+            if not row.strip():
+                break
+            found = _FODPOP_RE.match(row)
+            if not found:
+                break
+            try:
+                # xtb counts its atoms from one and this editor counts from
+                # zero, and the two are within one line of each other
+                # everywhere this is reported.
+                on.append((found.group(2), int(found.group(1)) - 1,
+                           float(found.group(3))))
+            except ValueError:
+                break
+        break
+    return {'total': amount, 'on': on}
 
 
 def which_xtb_ran(binary: Any, output: Any = '') -> str:
@@ -1058,6 +1155,89 @@ def method_is_out_of_its_depth(gap: Any, was: Any = None) -> str:
               'is the method at the edge of what it can represent, and is '
               'worth checking open-shell.')
     return said
+
+
+#: The methods that can be asked how much of the structure is not a closed
+#: shell, which is not the same list as the methods that can be run.
+#:
+#: Both exclusions are measured, and they fail in opposite ways.  GFN-FF has
+#: no wavefunction at all: given ``--fod`` it prints ``[WARNING] Runtime
+#: exception occurred``, no NFOD and no cube, and then says ``normal
+#: termination``.  g-xTB is worse -- it takes the flag, converges, terminates
+#: normally, and prints no NFOD and writes no cube, so a caller that only
+#: looked at the exit code would report a molecule with no static correlation
+#: rather than a question that was never asked.  Silence that reads as good
+#: news is the one failure this module exists to prevent, so the list is
+#: positive: the two methods that were seen to answer.
+FOD_METHODS = ('gfn1', 'gfn2')
+
+
+def can_measure_fod(method: Any) -> bool:
+    """Whether *method* answers ``--fod`` -- see :data:`FOD_METHODS`."""
+    return str(method or '').strip().lower() in FOD_METHODS
+
+
+#: How much of a change in N_FOD is worth a sentence.
+#:
+#: Set against the walk that calibrates it rather than against a threshold
+#: from a paper.  Turning ethylene's double bond, GFN2: 0.008 flat, 0.075 at
+#: 45 degrees, 0.251 at 60 -- which is where the frontier-gap rule already
+#: fires -- and 2.000 at 90.  A tenth of an electron is the point where the
+#: two rules start saying the same thing, so it is where this starts to speak.
+FOD_HAS_MOVED = 0.10
+
+
+def fod_moved(first: Any, later: Any, on: Any = ()) -> str:
+    """What the fractional occupation did along a walk, or nothing to say.
+
+    A *change*, never a number on its own, and that is not a stylistic choice.
+    Measured against ORCA's own FOD at TPSS/def2-TZVP: benzene 0.032 against
+    0.016 and ozone 0.426 against 0.439 -- three percent on the textbook
+    diradicaloid -- but Ni(CO)4 0.335 against 0.085, a four-fold over-report
+    on a closed-shell metal carbonyl.  A fixed cutoff would therefore tell
+    somebody working on metal complexes that every one of their structures is
+    a diradical.  What survives that is the difference between two points of
+    one walk on one molecule, which is the same discipline
+    :func:`method_is_out_of_its_depth` applies to the gap.
+
+    Measured on a real one rather than only on a benchmark: a 57-atom
+    manganese complex at charge +1, closed shell, reads 2.65 before anything
+    has been moved -- a number an absolute rule would call a triradical, with
+    1.55 of it on the metal and nearly all of that d.  Walking its Mn-Br bond
+    out moves it to 3.42, and the +0.77 is the finding.  The 2.65 is what a
+    threshold would have reported instead.
+
+    *on* is the per-atom breakdown at the later point, as
+    ``[(symbol, index, value), ...]``, and is used only to name where it went.
+    """
+    try:
+        first = float(first)
+        later = float(later)
+    except (TypeError, ValueError):
+        return ''
+    if later - first < FOD_HAS_MOVED:
+        return ''
+    # Named only where the claim is true.  A bond broken symmetrically puts
+    # half on each of two atoms -- measured on the ethane homolysis, 0.842 of
+    # 1.726 on each carbon -- and "most of it on C0" about a 50/50 split is a
+    # sentence that says something false about which end of the bond is the
+    # trouble.  More than half is the bar, which is what tells that case apart
+    # from the one where naming the atom *is* the finding: on the manganese
+    # complex 1.553 of 2.603 sits on the metal, and 1.550 of that is d.
+    busiest = ''
+    ranked = sorted(
+        [one for one in (on or ()) if len(one) >= 3],
+        key=lambda one: -float(one[2]))
+    if ranked and float(ranked[0][2]) > 0.5 * later:
+        symbol, index = ranked[0][0], int(ranked[0][1])
+        busiest = f', most of it on {symbol}{index}'
+    return (
+        f'Electrons in half-filled orbitals went from {first:.2f} to '
+        f'{later:.2f} across the walk{busiest}. Near zero, one arrangement of '
+        f'the electrons is the structure; near two it takes at least two, and '
+        f'this method has one. Read the change, not the number: the same '
+        f'measurement runs four times high on a closed-shell metal complex, '
+        f'so no value of it means "bad" on its own.')
 
 
 #: A force is a slope, so this is the whole meaning of the setting: the hand
@@ -3145,6 +3325,7 @@ def optimize_with_gfn(
     optimise: bool = True,
     free_energy: bool = False,
     thermo_kelvin: float = 298.15,
+    fod: bool = False,
 ) -> Dict[str, Any]:
     """Relax *xyz_text* with xtb and say what happened.
 
@@ -3197,6 +3378,19 @@ def optimize_with_gfn(
     optimised in the gas phase and one optimised in water are different
     answers, and so are two optimised under different models, so both are
     named in the status rather than left in the operator's memory.
+
+    *fod* asks the same run how much of the structure is not a closed shell --
+    see :data:`_NFOD_RE` for what the number is and :data:`FOD_METHODS` for
+    which methods answer at all.  It is a single point by construction: the
+    extra SCF runs at 5000 K, so optimising under it would be relaxing on a
+    surface nobody wants, and the combination is refused rather than run.  The
+    result gains ``'fod'`` as ``{'total', 'on'}`` with the per-atom breakdown
+    in input order.  It is one more SCF and costs like one: measured as the
+    minimum of seven runs against the same structure run ``--sp``, so that
+    both estimates carry the same share of a shared machine, 0.96 s against
+    0.49 for sixteen atoms and 10.5 against 3.5 for a 57-atom manganese
+    complex -- two to three single points, and a small fraction of one
+    optimisation step, which was 7.4 s and 35.6 s on the same two.
     """
     key = str(method or '').strip().lower()
     if key not in GFN_METHODS:
@@ -3241,6 +3435,28 @@ def optimize_with_gfn(
                 f'it answers with the nearest multiplicity it can and says '
                 f'nothing -- so it is refused here. Try M = '
                 f'{multiplicity - 1 if multiplicity > 1 else 2}.'),
+        }
+
+    # Asked of a method that cannot answer, ``--fod`` produces silence rather
+    # than a refusal -- see :data:`FOD_METHODS` for what each of the two does
+    # -- so the refusal is made here, where it can be a sentence.
+    if fod and key not in FOD_METHODS:
+        return {
+            'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
+            'seconds': 0.0, 'frames': [],
+            'status': (
+                f'{label} cannot be asked how much of this is not a closed '
+                f'shell: it has no wavefunction to occupy fractionally, and '
+                f'it answers the question with silence rather than a refusal. '
+                f'Ask GFN2-xTB or GFN1-xTB.'),
+        }
+    if fod and optimise:
+        return {
+            'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
+            'seconds': 0.0, 'frames': [],
+            'status': ('Fractional occupation is measured at 5000 K, so a '
+                       'geometry cannot be optimised under it. Ask for it as '
+                       'a single point.'),
         }
 
     wet = str(solvent or '').strip().lower()
@@ -3296,6 +3512,7 @@ def optimize_with_gfn(
                    *(['--ohess'] if (optimise and free_energy)
                      else ['--opt'] if optimise
                      else ['--hess'] if free_energy else []),
+                   *(['--fod'] if fod else []),
                    '--chrg', str(int(charge)), '--uhf', str(max(0, int(uhf))),
                    '-P', str(cores)]
         if max_steps:
@@ -3323,7 +3540,16 @@ def optimize_with_gfn(
         # And the last wavefunction, for the methods that have one.  See
         # :func:`_restart_named` for what it is keyed by and why the key has
         # to be that and not less.
-        warm = _restart_named(topology, key, charge, uhf, wet, model)
+        #
+        # Never for a fractional-occupation run.  That one converges at
+        # 5000 K, and its wavefunction is not a guess at the ordinary one --
+        # it is the smeared answer to a different question.  Written into the
+        # store it would be handed to the next single point as its starting
+        # guess, keyed as though it belonged to the same run, and nothing
+        # downstream could tell.  So the check on this structure neither reads
+        # nor writes what the walk around it is using.
+        warm = (None if fod else
+                _restart_named(topology, key, charge, uhf, wet, model))
         if warm is not None and warm.is_file():
             try:
                 shutil.copy2(str(warm), str(folder / 'xtbrestart'))
@@ -3539,6 +3765,9 @@ def optimize_with_gfn(
                 gradient = float(told_gradient.group(1))
             except ValueError:
                 gradient = None
+        spread = None
+        if fod:
+            spread = _read_fod(output)
         free = None
         wrong_way = None
         thermo = None
@@ -3671,6 +3900,22 @@ def optimize_with_gfn(
                            f'as it was. {which_xtb_ran(binary, output)}'),
             }
 
+        # Asked for and not printed.  The list in :data:`FOD_METHODS` is the
+        # two methods that were seen to answer, and it is a list rather than a
+        # rule because the ways of not answering are silent: this is the same
+        # refusal made again against what the run actually said, so a build
+        # that stops printing it fails loudly instead of reporting a molecule
+        # with no static correlation.
+        if fod and spread is None:
+            return {
+                'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
+                'seconds': time.perf_counter() - started, 'engine': 'xtb',
+                'frames': [], 'version': version,
+                'status': (f'{label} was asked how much of this is not a '
+                           f'closed shell and printed no answer. '
+                           f'{which_xtb_ran(binary, output)}'),
+            }
+
         # A single point has no geometry to converge, and calling it
         # unconverged would put it among the runs that stopped short.
         converged = (not optimise) or 'GEOMETRY OPTIMIZATION CONVERGED' in output
@@ -3681,7 +3926,7 @@ def optimize_with_gfn(
                 'ok': True, 'xyz': relaxed, 'energy': energy, 'free_energy': free,
                 'imaginary': wrong_way, 'gap': gap, 'method': key,
                 'charges': charges, 'bonds': bonds, 'gradient': gradient,
-                'thermo': thermo,
+                'thermo': thermo, 'fod': spread,
                 'seconds': seconds, 'engine': 'xtb', 'frames': frames, 'version': version,
                 'hamiltonian': reported or wanted or label, 'held': held,
                 'converged': False, 'solvent': wet, 'solvation_model': model,
@@ -3694,7 +3939,7 @@ def optimize_with_gfn(
             'ok': True, 'xyz': relaxed, 'energy': energy, 'free_energy': free,
             'imaginary': wrong_way, 'gap': gap, 'method': key,
             'charges': charges, 'bonds': bonds, 'gradient': gradient,
-            'thermo': thermo,
+            'thermo': thermo, 'fod': spread,
             'seconds': seconds, 'engine': 'xtb', 'frames': frames, 'version': version,
             'hamiltonian': reported or wanted or label, 'held': held,
             'converged': True, 'solvent': wet, 'solvation_model': model,
