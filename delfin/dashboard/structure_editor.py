@@ -8852,6 +8852,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                   in (state.get('poly_arrangements') or [])],
             'poly_arrangement_index': int(
                 state.get('poly_arrangement_index') or 0),
+            # And what a scan made possible, which is a thing an action can
+            # change and therefore a thing Undo has to take back.  A scan
+            # leaves two ends, the start of a saddle search moves onto them
+            # and the ways open from a pair arrive beside it; walked back
+            # past the scan, all three went on standing over a walk that no
+            # longer existed.  The user, on the rule this is: "Undo muss dann
+            # natuerlich in Teilen auch wieder Funktionen nehmen."
+            #
+            # By reference: the pair is two geometries that never change once
+            # written, so every entry after a scan shares the one tuple.
+            'scan_ends': state.get('scan_ends'),
+            # The box that names them goes back with them, or Undo restores
+            # the pair and leaves the press meaning something else.
+            'saddle_start': str(submit_saddle_from.value or 'here'),
         }
 
     def _remember_landmark(coords, what, comment):
@@ -8926,9 +8940,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # coordinate -- so Undo walked straight past it, wiped it on the way,
         # and reported whatever it did land on.  Hold, then a scan, then Undo
         # took back two actions on one press and named one of them.
+        # The saddle start is out of it: it is where a dropdown was standing
+        # and not part of the picture, so two actions that left the structure
+        # identical must not become two steps back for having been looked at
+        # from different boxes in between.
         same = last is not None and all(
             last.get(key) == value for key, value in entry.items()
-            if key not in ('what', 'gesture'))
+            if key not in ('what', 'gesture', 'saddle_start'))
         carrying_on = (gesture is not None and last is not None
                        and last.get('gesture') == gesture)
         if same or carrying_on:
@@ -9055,8 +9073,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             state['poly_quiet'] = False
         state['perceived'] = None
         state['perceived_for'] = None
+        # The pair a scan left goes back with the scan, and the box that names
+        # it goes back with the pair -- see :func:`_structure_marks`.  Through
+        # the wish rather than by writing the box, the way the scan's own move
+        # goes, so a start that this method cannot run from is left alone
+        # instead of being forced.
+        state['scan_ends'] = entry.get('scan_ends')
+        state['saddle_start_wish'] = entry.get('saddle_start') or 'here'
         _refresh_constraints()
         _refresh_poly_turn()
+        _refresh_saddle_controls()
+        # And nothing is left waiting.  A wish that could not be met is kept
+        # aside and put back the moment it can, which is right while the user
+        # is choosing methods and wrong after an Undo: "the scan's two ends"
+        # left over from a walk that has just been taken back would re-select
+        # itself the moment anything made a pair again.
+        state.pop('saddle_start_wish', None)
         _set_mol_status(note + aside)
         if submit_relax_btn.value or state.get('ff_bootstrap_done'):
             _enable_live_forcefield()
@@ -10215,6 +10247,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['scan_came_back'] = None
         state['scan_free'] = None
         state['scan_ends'] = None
+        # Why the walk ended, when it ended before it was finished.  Read by
+        # the verdict, which is the one sentence the user is left with.
+        state['scan_gave_up'] = None
         state['scan_gap_first'] = None
         state['scan_gap_least'] = None
         state['scan_depth'] = ''
@@ -10487,6 +10522,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # that crossed on its first step showed no crossing.
                     base = _unbiased(walked)
                     if base is None:
+                        state['scan_gave_up'] = (
+                            'It never started: the push has no starting '
+                            'energy to measure from.')
                         schedule_ui_update(
                             _set_mol_status,
                             'The push has no starting energy to measure from.')
@@ -10549,6 +10587,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             solvation_model=model,
                             topology=_gfn_topology_dir(walked))
                     if not outcome.get('ok') or outcome.get('energy') is None:
+                        # Written down, not only said.  The sentence scheduled
+                        # here is replaced a moment later by the verdict the
+                        # finishing block writes, so a walk that gave up at
+                        # step 4 of 8 was reported as though it had simply
+                        # been a shorter walk -- and the one thing the user
+                        # needed to know, that xtb stopped answering, was on
+                        # screen for the length of one redraw.
+                        state['scan_gave_up'] = (
+                            f'It stopped at step {n} of {steps}: '
+                            f'{outcome.get("status") or "xtb did not run"}')
                         schedule_ui_update(
                             _set_mol_status,
                             'The scan stopped at step '
@@ -10558,6 +10606,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     energy = (_priced(outcome, held) if pushing
                               else outcome['energy'])
                     if energy is None:
+                        state['scan_gave_up'] = (
+                            f'It stopped at step {n} of {steps}: the push '
+                            'could not be priced there.')
                         schedule_ui_update(
                             _set_mol_status,
                             f'The push could not be priced at step {n}.')
@@ -10876,15 +10927,39 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     '' if state.get('scan_stop') else _fod_along_the_walk(
                         began_at, summit, method, charge, uhf, wet, model),
                 ) if part)
+            finally:
+                state['scan_run'] = False
                 # The two ends, for whoever wants to walk between them.
                 # A path finder is given two structures and finds its own way;
                 # what it cannot do is invent a product to aim at, and this is
                 # where one comes from.
-                if began_at and path:
-                    state['scan_ends'] = (
-                        began_at, bottom[1] if bottom is not None else walked)
-            finally:
-                state['scan_run'] = False
+                #
+                # Here rather than at the end of the walk, because a walk ends
+                # in more ways than one and whether two ends exist has nothing
+                # to do with which.  The four early exits above -- xtb not
+                # answering, a push that cannot be priced, one that has no
+                # zero to measure from -- all leave through this block, and
+                # they used to leave without it: measured on a real GFN2 walk
+                # of butane's central C-C whose xtb stopped converging at step
+                # 4 of 8, the toolbar came back to "To the saddle" and the
+                # Climb switch with neither box on it, over a verdict reading
+                # "The scan walked 3 of 8 points ... the whole path is open".
+                # Three points had been walked and their two ends were in
+                # hand; nothing offered them and nothing said why not.  That
+                # is what the user was looking at: "habe ich jetzt nach so
+                # einem Scan nicht die Moeglichkeit, dafuer einen TS zu
+                # optimieren oder noch andere Methoden den Path zu
+                # untersuchen?"
+                #
+                # Before the budget clamps what goes into the box: the pair is
+                # what the walk reached, and the box gets the last point the
+                # temperature can pay for, which is a different question.
+                came_to = bottom[1] if bottom is not None else walked
+                # And two ends means two.  A walk that priced one point has
+                # its start and its end at the same geometry, and a path
+                # finder given the same structure twice has nothing to walk.
+                if began_at and path and came_to and came_to != began_at:
+                    state['scan_ends'] = (began_at, came_to)
                 # The walk is reported whole; what is handed back is not.
                 #
                 # A path that climbs past the ceiling is exactly the answer a
@@ -10918,6 +10993,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # over a geometry that had never moved, and then report
                     # 'The scan walked nothing' as though that were a result.
                     if not path:
+                        # Every other way out of the walk says why on the way
+                        # out.  One does not: a first point that comes back
+                        # collapsed breaks away before the point is priced, so
+                        # the row was left standing on "walking the scan: step
+                        # 1" with a spinner over a run that had finished.
+                        crowded = state.get('scan_crowded')
+                        if crowded:
+                            _set_mol_status(_scan_collapsed(crowded))
                         return
                     # There are two ends now, and the press beside them is put
                     # on the thing this walk made possible -- see
@@ -11743,16 +11826,35 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         _start_background(_work, 'The saddle search',
                           guards={'saddle_run': False})
 
+    def _same_molecule(one, other):
+        """Whether two geometries are the same atoms in the same order.
+
+        Which is what a walk between two ends needs: xtb's path finder is
+        given two structures and matches them row by row, so the element
+        column is both the test and the reason for it.  The held values and
+        the thermal anchor are told apart the same way.
+        """
+        return _structure_fingerprint(one) == _structure_fingerprint(other)
+
     def _marked_pair():
         """The end that was marked and what is on screen, or nothing.
 
         Two structures, marked one at a time, so nothing has to hold two at
         once.  The same structure twice is not a pair.
+
+        Nor are two different molecules.  A mark outlives the structure it was
+        made on -- that is the whole point of it, the other end is loaded
+        afterwards -- and it went on being offered whatever was loaded: an
+        ethane marked with a water on screen put "the end you marked" in the
+        box, and the press behind it walks eight atoms into three.  The scan's
+        two ends were given this test in f1be8954 and the mark was left
+        without it; a start that is on screen and would be refused on the
+        press is the same defect as one that is missing when it would work.
         """
         marked = state.get('path_from')
         here = _current_xyz()
         if marked and here and marked.strip() != here.strip():
-            return (marked, here)
+            return (marked, here) if _same_molecule(marked, here) else None
         return None
 
     def _path_ends(which='marked'):
@@ -11780,6 +11882,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         pair = _marked_pair()
         if pair:
             return pair
+        marked = state.get('path_from')
+        here = _current_xyz()
+        if marked and here and not _same_molecule(marked, here):
+            _set_mol_status(
+                f'The end you marked is a different molecule from the one on '
+                f'screen ({len(_gfn.atom_lines(marked))} atoms against '
+                f'{len(_gfn.atom_lines(here))}). A walk between two ends '
+                'matches them row by row, so mark this one instead, or load '
+                'the structure the mark was made on.')
+            return None
         _set_mol_status(
             'A path needs two structures, and the one marked is the one on '
             'screen. Press Mark this end on one of them and load or build '
@@ -12196,10 +12308,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         ends = state.get('scan_ends')
         if not ends:
             return None
-        here = _current_xyz() or ''
-        if _structure_fingerprint(ends[0]) != _structure_fingerprint(here):
-            return None
-        return ends
+        return ends if _same_molecule(ends[0], _current_xyz() or '') else None
 
     def _refresh_saddle_controls():
         """Offer the starts that exist and the ways that can run, and no more.
@@ -13427,6 +13536,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                          f'walk both together.')
         return said
 
+    def _scan_collapsed(tightest):
+        """What a walk says when its very first point came back collapsed.
+
+        The floor is met before the point is priced, so there is no path to
+        report and the verdict below is never reached -- and nothing else was
+        said either, which left a spinner standing over a run that had
+        finished.  Written here beside the sentence the verdict uses for the
+        same thing, so the two cannot drift apart.
+        """
+        return ('The scan walked nothing: on the first point two atoms came '
+                f'inside {tightest:.2f} of a bond length, which is no path at '
+                'any temperature. The target is past the far side of a bond.')
+
     def _scan_verdict(path, steps):
         """What the walk found, and the temperature it would take.
 
@@ -13467,6 +13589,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if state.get('scan_stopped_out') and not state.get('scan_arrived'):
             arrived = (' You stopped it there, so the highest point is where '
                        'the walk was interrupted rather than a barrier.')
+        # And the walk that ended because it could not carry on, which reads
+        # from outside exactly like one that was asked for fewer steps.  The
+        # sentence saying so was written and then replaced by this verdict --
+        # so it is said here, where the verdict is, and the number of points
+        # above stops being the only hint that anything went wrong.
+        if state.get('scan_gave_up'):
+            arrived = f' {state["scan_gave_up"]}'
         crowded = state.get('scan_crowded')
         if crowded:
             arrived = (f' It stopped: two atoms came inside {crowded:.2f} of a '
@@ -13565,12 +13694,23 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # quiet -- so the sentence says what the toolbar has just done, and
         # :func:`_scan_left_two_ends` is what makes the sentence true rather
         # than a description of something the user would have to find.
-        left = ('' if not state.get('scan_ends') else
-                ' It left two ends, and the press now starts from them: one '
+        #
+        # And said the other way round when there are none, because the
+        # toolbar cannot say it: what is on screen is the whole account of
+        # what can be done, and a walk that left nothing to walk between shows
+        # exactly what a walk that left something shows before anyone looks --
+        # nothing.  Silence there is the editor claiming there was never
+        # anything to offer, which is what the user was left reading.
+        left = (' It left two ends, and the press now starts from them: one '
                 'press walks its own way between the two and climbs what it '
                 'finds, without the coordinate you chose. The box beside it '
                 'says how far to go, and the one before it goes back to the '
-                'structure on screen.')
+                'structure on screen.'
+                if state.get('scan_ends') else
+                ' It left no two ends to walk between, so there is no path to '
+                'investigate from it and the box beside the press has no pair '
+                'to offer -- what is on screen is all there is to climb. Run '
+                'a scan that gets further, or mark two structures by hand.')
         if rise <= ceiling:
             return (first,
                     f'{wants} You have {ceiling:.1f} kcal/mol at {T:g} K, so '
