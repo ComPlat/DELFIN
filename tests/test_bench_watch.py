@@ -609,7 +609,7 @@ def test_cli_bench_nightly_prints_optin_scheduling_hint(
     assert seen["last_k"] == 3
     # The exact opt-in scheduling instruction + cost estimate.
     assert ("scheduler add-bench --model " + REAL_MODEL) in out
-    assert "python -m delfin.agent.cli scheduler start" in out
+    assert "delfin-agent scheduler start" in out
     assert "~$8 per nightly run" in out
     assert "opt-in" in out
 

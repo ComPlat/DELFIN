@@ -679,6 +679,28 @@ class AgentEngine:
         """KitToolPermissions instance bound to the client (None if not KIT)."""
         return getattr(self.client, "_permissions", None)
 
+    def run_gated_bash(self, command: str) -> str:
+        """Run one shell command through the AGENT's gate, for `!cmd`.
+
+        The whole point is that it is not a way around anything: the same
+        deny-list, the same secret scan, the same auto-allow list and the
+        same confirmation callback the model's own bash calls go through.
+        A shell escape that skipped them would let someone do, from the
+        agent's prompt, exactly what the agent may not — and it would look
+        like a convenience rather than a hole.
+
+        Returns the tool result string. Raises RuntimeError when this
+        backend carries no permissions object, because on those the shell
+        tool is unavailable to the model too.
+        """
+        perms = self.kit_permissions
+        if perms is None:
+            raise RuntimeError(
+                "this backend has no permission gate, so it has no shell")
+        from .api_client import _doc_executor
+        return _doc_executor.execute("bash", {"command": str(command or "")},
+                                     perms)
+
     def set_kit_confirm_callback(self, callback) -> bool:
         """Bind/unbind the KIT-Toolbox confirmation callback at runtime.
 
@@ -1859,6 +1881,8 @@ class AgentEngine:
         thinking_budget: int = 0,
         max_tokens: int = 0,
         images: list[str] | None = None,
+        on_notice: Callable[[str], None] | None = None,
+        on_tool_result_meta: Callable[[str, dict], None] | None = None,
     ) -> str:
         """Send a user message and stream the response.
 
@@ -1882,12 +1906,44 @@ class AgentEngine:
             Extended thinking budget in tokens (0 = default/auto).
         max_tokens : int
             Max output tokens (0 = use role default).
+        on_notice : callable, optional
+            Called with harness speech — retry banners, the stop and
+            empty-turn notices, the cost ceiling, a blocking hook. When
+            omitted these go to ``on_token``, which is what every caller
+            saw before this parameter existed.
+        on_tool_result_meta : callable, optional
+            Called with (tool_name, meta) after each tool result, where
+            *meta* carries ``chars``, ``truncated``, ``notes``, ``ok`` and
+            ``error``. ``on_tool_result`` only ever gets a 2000-character
+            head slice, so without this a blocked call and a successful
+            one are indistinguishable to a UI.
 
         Returns
         -------
         str
             The complete assistant response text.
         """
+        def _notice(text: str) -> None:
+            """The harness talking about itself, kept apart from the answer.
+
+            Answer deltas and harness notices shared ``on_token`` with no
+            discriminator, and every consumer that treated a notice as
+            answer text drew a wrong conclusion: a run whose entire
+            recorded output was three retry banners was scored as a model
+            that answered badly. A UI that prints ``on_token`` verbatim
+            has the same problem one layer up — it prints machinery speech
+            in the middle of a sentence.
+
+            Falls back to ``on_token`` so callers that pass no
+            ``on_notice`` behave exactly as they did before.
+            """
+            sink = on_notice or on_token
+            if sink and text:
+                try:
+                    sink(text)
+                except Exception:
+                    pass
+
         # New user turn: re-arm the one-correction budget — unless this IS
         # a correction turn, which must not re-arm itself. Two shapes of
         # that: the engine's own nested call (guard active), and a
@@ -1956,8 +2012,7 @@ class AgentEngine:
                 _blk = _hooks_mod.first_block(_ups)
                 if _blk is not None:
                     _reason = _blk.reason or _blk.stderr or "blocked by UserPromptSubmit hook"
-                    if on_token:
-                        on_token(f"\n[hook block] {_reason}\n")
+                    _notice(f"\n[hook block] {_reason}\n")
                     return f"[hook block] {_reason}"
         except Exception:
             _hooks_cfg = None
@@ -1979,11 +2034,7 @@ class AgentEngine:
                     "hard_stop",
                     "Run stopped: budget ceiling reached",
                     _msg)
-                if on_token:
-                    try:
-                        on_token(_msg)
-                    except Exception:
-                        pass
+                _notice(_msg)
                 return _msg
         except Exception:
             pass
@@ -2002,11 +2053,7 @@ class AgentEngine:
                     "A turn is already running on this session. Stop it "
                     "first, or send this once it has finished — starting a "
                     "second turn would interleave both into one history.")
-                if on_token:
-                    try:
-                        on_token(_busy)
-                    except Exception:
-                        pass
+                _notice(_busy)
                 return _busy
             self._turn_in_flight = True
             self._turn_serial += 1
@@ -2209,7 +2256,9 @@ class AgentEngine:
                     if (event.type in ("text_delta", "notice") and event.text
                             and _stop_drain > 0):
                         _stop_drain -= 1
-                        if on_token:
+                        if event.type == "notice":
+                            _notice(event.text)
+                        elif on_token:
                             try:
                                 on_token(event.text)
                             except Exception:
@@ -2237,11 +2286,7 @@ class AgentEngine:
                     # sickest turn produced the healthiest-looking
                     # record. Not appended to `chunks`, and _turn_ttft is
                     # deliberately left alone.
-                    if on_token:
-                        try:
-                            on_token(event.text)
-                        except Exception:
-                            pass
+                    _notice(event.text)
 
                 elif event.type == "thinking_delta" and event.text:
                     # A reasoning token IS the backend starting to produce.
@@ -2379,6 +2424,24 @@ class AgentEngine:
                     self._record_tool_trace(
                         event.tool_name, _out,
                         ok=not _failed, error=_reason)
+                    # The same verdict, offered to the caller. on_tool_result
+                    # hands over a 2000-character head slice and nothing
+                    # else, so a refusal and a success look identical to a
+                    # UI -- the very confusion the trace flag above was
+                    # fixed for, one layer further out.
+                    if on_tool_result_meta:
+                        try:
+                            on_tool_result_meta(event.tool_name or "", {
+                                "chars": int(getattr(
+                                    event, "output_chars", 0) or len(_out)),
+                                "truncated": bool(getattr(
+                                    event, "output_truncated", False)),
+                                "notes": _notes,
+                                "ok": not _failed,
+                                "error": _reason or "",
+                            })
+                        except Exception:
+                            pass
                     # Crash insurance: full session saves happen only at
                     # turn boundaries, but one turn can run hundreds of
                     # tool rounds — persist a cheap checkpoint (throttled,
@@ -2498,11 +2561,7 @@ class AgentEngine:
                             "Turn stopped by the cost circuit-breaker",
                             _note.strip())
                         chunks.append(_note)
-                        if on_token:
-                            try:
-                                on_token(_note)
-                            except Exception:
-                                pass
+                        _notice(_note)
                     # Capture session ID from result event
                     if event.text and not self.session_id:
                         self.session_id = event.text
@@ -2768,11 +2827,7 @@ class AgentEngine:
                     "either — send it again to pick the question back up."
                     + self._hand_back_undelivered_steer()
                 )
-                if on_token:
-                    try:
-                        on_token(full_response)
-                    except Exception:
-                        pass
+                _notice(full_response)
         else:
             # No text, no stop, no exception. This branch did not exist,
             # and its absence destroyed the question: the user message
@@ -2821,11 +2876,7 @@ class AgentEngine:
                     start_time=_turn_t0)
             except Exception:
                 pass
-            if on_token:
-                try:
-                    on_token(full_response)
-                except Exception:
-                    pass
+            _notice(full_response)
 
         # Claim-grounding enforcement — every mode funnels through this
         # method, so the guard runs here (not in any UI layer): a final
@@ -2849,6 +2900,8 @@ class AgentEngine:
                     on_thinking=on_thinking,
                     thinking_budget=thinking_budget,
                     max_tokens=max_tokens,
+                    on_notice=on_notice,
+                    on_tool_result_meta=on_tool_result_meta,
                 )
             except Exception:
                 pass
@@ -3274,6 +3327,8 @@ class AgentEngine:
         on_thinking: Callable[[str], None] | None = None,
         thinking_budget: int = 0,
         max_tokens: int = 0,
+        on_notice: Callable[[str], None] | None = None,
+        on_tool_result_meta: Callable[[str, dict], None] | None = None,
     ) -> str:
         """Enforce evidence grounding on a finished answer (all modes).
 
@@ -3340,6 +3395,8 @@ class AgentEngine:
                 on_thinking=on_thinking,
                 thinking_budget=thinking_budget,
                 max_tokens=max_tokens,
+                on_notice=on_notice,
+                on_tool_result_meta=on_tool_result_meta,
             )
         except Exception:
             correction = ""

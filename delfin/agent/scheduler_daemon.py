@@ -15,11 +15,11 @@ Contract (cost & consent — hard requirements):
   the user explicitly created (directly or through the agent's scheduler
   tools at the user's request). It never invents work, never rewrites an
   entry's prompt, and starting it is itself an explicit user action
-  (``python -m delfin.agent.cli scheduler start``).
+  (``delfin-agent scheduler start``).
 - Strictly sequential execution: at most ONE entry runs at a time
   (global and per-entry concurrency 1).
 - Each due entry gets exactly ONE agent turn — the same headless engine
-  ``python -m delfin.agent.cli run`` uses, rooted at the entry's
+  ``delfin-agent run`` uses, rooted at the entry's
   recorded workspace. The session is saved (session_store) so the user
   can inspect/continue it, and the cycle outcome is recorded.
 - Safety: an entry whose recorded workspace is missing is skipped and
@@ -34,7 +34,7 @@ callback — avoid running both at once for the same schedule file, or an
 entry may execute twice.
 
 Run in the foreground with ``python -m delfin.agent.scheduler_daemon``,
-or detached via ``python -m delfin.agent.cli scheduler start``.
+or detached via ``delfin-agent scheduler start``.
 """
 
 from __future__ import annotations

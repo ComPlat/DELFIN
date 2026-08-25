@@ -158,7 +158,7 @@ def _check_credentials(ctx: dict) -> list[dict]:
             "credentials", FAIL,
             "no provider keys configured "
             f"(missing: {', '.join(missing)})",
-            "python -m delfin.agent.cli credentials set <NAME> "
+            "delfin-agent credentials set <NAME> "
             "(e.g. ANTHROPIC_API_KEY)",
         )]
     detail = f"set: {', '.join(have)}"
@@ -276,7 +276,7 @@ def _check_scheduler(ctx: dict) -> list[dict]:
             "scheduler daemon", WARN,
             f"not running but {st['entries']} scheduled entries exist "
             "— they will not fire",
-            "python -m delfin.agent.cli scheduler start",
+            "delfin-agent scheduler start",
         )]
     return [_row(
         "scheduler daemon", PASS, "not running (no scheduled entries)",
