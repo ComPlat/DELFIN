@@ -36,27 +36,38 @@ and both are satisfied at the same step, which is what "make this one while
 breaking that one" has to mean.
 
 **Why the stop is not a bond order.**  SCINE's NT2 stops on Mayer orders --
-formed above 0.75, broken below 0.15 -- and the formed half is sound where the
-broken half is not.  Measured here under GFN2, an ethane's C-C stretched
-rigidly from its 1.5212 A equilibrium, reading xtb's own Wiberg orders:
+formed above 0.75, broken below 0.15.  Three measurements here, all under
+GFN2, reading xtb's own Wiberg orders.
+
+*Forming, and the two tests agree.*  Along the converged Diels-Alder band a
+forming C-C reads 0.000 at 2.64 A, 0.193 at 2.33, 0.524 at 2.09 and 0.920 at
+1.70, and the covalent-radius graph flips between those last two as well.  The
+same on the SN2's Cl-C, which is the harder case because the two radii differ:
+0.000 at 2.58 A and 0.921 at 1.78, with the graph turning over at 2.31.
+
+*Breaking heterolytically, and they still agree.*  That SN2's C-Br reads 0.881
+at 2.01 A and 0.000 at 3.11.  The pair leaves with the bromide, which a
+restricted determinant describes perfectly well.
+
+*Breaking homolytically, and the order is simply wrong.*  An ethane's C-C
+stretched rigidly from its 1.5212 A equilibrium:
 
     1.52 A  1.030    2.50 A  0.973    3.20 A  0.954    4.00 A  0.264
     2.00 A  0.994    3.00 A  0.958    3.50 A  0.913    4.50 A  0.000
 
 At 3.5 A -- two and a third times equilibrium, and a full Angstrom and a half
-past where the bond graph stops calling it a bond -- the order still reads
-0.91.  A restricted single determinant cannot break a bond homolytically: the
-pair stays paired.  "Broken below 0.15" does not fire until about 4.5 A, so a
-bond order is a poor detector of a bond that has broken under exactly the
-methods this editor runs on.
+past where the graph gave up on it -- the order still reads 0.91, because a
+restricted single determinant cannot part an electron pair.  "Broken below
+0.15" does not fire until about 4.5 A.
 
-The forming half is the other way round, and there the two tests agree.
-Measured on the converged Diels-Alder band, image by image, the Wiberg order
-of a forming C-C reads 0.000 at 2.64 A, 0.193 at 2.33, 0.524 at 2.09 and 0.920
-at 1.70 -- and the covalent-radius bond graph flips between those last two as
-well.  So where a bond order can be trusted the geometry says the same thing
-for nothing, and where it cannot the geometry is the one that is right.  One
-test for both halves, and it is the graph the viewer already draws lines with.
+So the finding is not that a bond order is wrong.  It is that a bond order is
+right for a heterolytic break and wrong for a homolytic one, and nothing in
+the editor knows in advance which it has been asked for.  A test that is sound
+for one reaction and silently wrong for the next is worse than one that is
+neither, and the geometry was right in all three measurements.  It also costs
+nothing -- the graph is already computed for the topology wall, where an order
+would be another xtb file to read at every point.  One test for both halves,
+and it is the graph the viewer already draws lines with.
 """
 
 import math
@@ -248,15 +259,20 @@ def test_two_instructions_that_fight_are_settled_by_the_ramp():
 
 
 @_needs_xtb
-def test_a_wiberg_order_is_no_use_for_saying_a_bond_has_broken():
+def test_a_wiberg_order_cannot_see_a_homolytic_break():
     """The measurement the stopping rule was chosen against.
 
     An ethane's C-C stretched rigidly and read as a Wiberg order at each
     length.  At 3.5 A -- 2.3 times equilibrium -- it still reads about 0.9,
     which is a full single bond by any threshold anyone stops on; the
     covalent-radius graph gave up on it at 1.99.  A restricted single
-    determinant cannot dissociate a bond homolytically, so the order says the
-    electrons are still a pair long after the atoms have parted.
+    determinant cannot part an electron pair, so the order says the electrons
+    are still paired long after the atoms have gone their separate ways.
+
+    It is not that a bond order is a bad measure -- on the SN2 above, where
+    the pair leaves with the bromide, it goes 0.881 -> 0.000 exactly where the
+    graph does.  It is that it is right for a heterolytic break and wrong for
+    a homolytic one, and the editor is not told which it has been asked for.
 
     Run here rather than quoted, because the number is the whole reason the
     editor's rule is geometric.
