@@ -15,6 +15,7 @@ whole area exists to close.
 from __future__ import annotations
 
 import argparse
+import json
 
 import pytest
 
@@ -310,3 +311,156 @@ def test_no_disallowed_tools_flag_is_offered():
     with pytest.raises(SystemExit):
         agent_cli.build_parser().parse_args(
             ["chat", "--disallowed-tools", "bash"])
+
+
+# ---------------------------------------------------------------------------
+# --output-format stream-json: the turn as it happens, one object per line
+# ---------------------------------------------------------------------------
+
+_STREAM_RESULT = {
+    "text": "ANSWER",
+    "tool_calls": [{"name": "bash", "input": {"command": "ls"}}],
+    "input_tokens": 3,
+    "output_tokens": 4,
+    "error": "",
+}
+
+
+class _StubEngine:
+    session_id = "sid-1"
+    token_usage = {"input": 0, "output": 0}
+
+    def __init__(self, script=()):
+        self._script = tuple(script)
+
+    def stream_response(self, **kwargs):
+        on_token = kwargs.get("on_token")
+        on_tool_use = kwargs.get("on_tool_use")
+        for kind, a, b in self._script:
+            if kind == "text" and on_token:
+                on_token(a)
+            elif kind == "tool" and on_tool_use:
+                on_tool_use(a, b)
+        return "".join(a for kind, a, _ in self._script if kind == "text")
+
+    def export_state(self):
+        return {}
+
+    def record_cycle_outcome(self, *a, **k):
+        return None
+
+
+@pytest.fixture
+def one_shot(monkeypatch, tmp_path):
+    from pathlib import Path
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(agent_cli, "_build_engine", lambda args: _StubEngine())
+    monkeypatch.setattr(agent_cli, "_run_once",
+                        lambda engine, prompt, **kw: dict(_STREAM_RESULT))
+    monkeypatch.setattr(agent_cli, "_save_session",
+                        lambda engine, root, **kw: "sid-1")
+    monkeypatch.setattr(agent_cli, "_resume_or_create", lambda engine, args: "")
+
+
+def _no_tty(monkeypatch, text: str = ""):
+    import io
+
+    stream = io.StringIO(text)
+    stream.isatty = lambda: False           # type: ignore[method-assign]
+    monkeypatch.setattr("sys.stdin", stream)
+
+
+def test_stream_json_is_offered_on_the_command_line():
+    assert _parse("--output-format", "stream-json").output_format == \
+        "stream-json"
+
+
+def test_every_line_on_stdout_is_one_json_object(one_shot, monkeypatch, capsys):
+    """The format's whole contract: parse line by line, never as a whole."""
+    _no_tty(monkeypatch)
+    rc = agent_cli.main(["-p", "do it", "--output-format", "stream-json"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    lines = [ln for ln in out.splitlines() if ln.strip()]
+    assert lines, "stream-json produced nothing at all"
+    for line in lines:
+        json.loads(line)                    # each one on its own
+
+
+def test_the_last_line_carries_exactly_what_the_json_format_promises(
+        one_shot, monkeypatch, capsys):
+    """Pinned to repl.TURN_KEYS, which is what `_run_once` returns.
+
+    Two hand-kept key lists would drift into two shapes of one answer,
+    which is the reason that frozenset exists.
+    """
+    from delfin.agent.repl import TURN_KEYS
+
+    _no_tty(monkeypatch)
+    agent_cli.main(["-p", "do it", "--output-format", "stream-json"])
+    last = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert last.pop("type") == "result"
+    assert set(last) == set(TURN_KEYS) | {"session_id"}
+    assert last["session_id"] == "sid-1"
+
+
+def test_the_events_arrive_as_the_turn_runs(monkeypatch, capsys, tmp_path):
+    """The value reaches the emitter, not just the namespace.
+
+    `_run_once` is the real one here: the assertion is that a token and a
+    tool call each became a line, in the order the engine produced them.
+    """
+    from pathlib import Path
+
+    engine = _StubEngine([("text", "he", ""),
+                          ("tool", "bash", '{"command": "ls"}'),
+                          ("text", "llo", "")])
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(agent_cli, "_build_engine", lambda args: engine)
+    monkeypatch.setattr(agent_cli, "_save_session",
+                        lambda e, root, **kw: "sid-1")
+    monkeypatch.setattr(agent_cli, "_resume_or_create", lambda e, args: "")
+    _no_tty(monkeypatch)
+
+    agent_cli.main(["-p", "do it", "--output-format", "stream-json"])
+    events = [json.loads(ln) for ln in capsys.readouterr().out.splitlines()
+              if ln.strip()]
+    assert [e["type"] for e in events] == [
+        "text", "tool_use", "text", "result"]
+    assert events[1]["name"] == "bash"
+    assert events[1]["input"] == {"command": "ls"}
+    assert events[-1]["text"] == "hello"
+
+
+def test_the_plain_json_format_is_untouched(one_shot, monkeypatch, capsys):
+    _no_tty(monkeypatch)
+    agent_cli.main(["-p", "do it", "--output-format", "json"])
+    out = capsys.readouterr().out
+    assert len(out.strip().splitlines()) == 1
+    assert "type" not in json.loads(out)
+
+
+def test_an_interactive_session_says_the_stream_needs_a_prompt(
+        monkeypatch, capsys, tmp_path):
+    """The can't-deliver path.
+
+    A session is a conversation, not a document. Taking the flag silently
+    and then printing text is the shape of a promise that is not kept, so
+    the format is named in the refusal.
+    """
+    import io
+    from pathlib import Path
+
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setattr(agent_cli, "_build_engine", lambda args: _StubEngine())
+    monkeypatch.setattr(agent_cli, "_save_session",
+                        lambda e, root, **kw: "sid-1")
+    stream = io.StringIO("")
+    stream.isatty = lambda: True            # type: ignore[method-assign]
+    monkeypatch.setattr("sys.stdin", stream)
+
+    agent_cli.main(["--output-format", "stream-json"])
+    err = capsys.readouterr().err
+    assert "--output-format stream-json describes one answer" in err
+    assert "-p" in err
