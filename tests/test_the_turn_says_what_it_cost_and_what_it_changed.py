@@ -205,6 +205,12 @@ def test_the_users_own_status_line_is_reused_not_re_derived(monkeypatch):
         return "42 tokens | mode=plan"
 
     monkeypatch.setattr("delfin.agent.status_line.render_status_line", _render)
+    # THE USER'S OWN line, which is the whole subject of this test: the
+    # renderer falls back to a built-in template when nothing is
+    # configured, so without this the terminal printed a line after every
+    # turn repeating what the banner already said.
+    monkeypatch.setattr("delfin.agent.status_line.has_custom_status_line",
+                        lambda ws: True)
     agent, engine, err = _agent()
     engine.spend(30, 12, 0.02)
     agent._report_status()
@@ -212,6 +218,24 @@ def test_the_users_own_status_line_is_reused_not_re_derived(monkeypatch):
     assert "42 tokens" in err.getvalue()
     assert seen["ctx"].tokens == 42
     assert seen["ctx"].mode == "plan"
+
+
+def test_nothing_configured_means_nothing_printed(monkeypatch):
+    """The built-in fallback belongs to callers that want a line anyway.
+
+    Here the docstring already said "if they configured one" while the
+    code printed unconditionally, so every turn ended with a duplicate of
+    two fields the banner and the live turn line both carry.
+    """
+    called = []
+    monkeypatch.setattr("delfin.agent.status_line.render_status_line",
+                        lambda ctx: called.append(ctx) or "0 tokens | mode=plan")
+    monkeypatch.setattr("delfin.agent.status_line.has_custom_status_line",
+                        lambda ws: False)
+    agent, _engine, err = _agent()
+    agent._report_status()
+    assert err.getvalue() == ""
+    assert not called, "and it is not even rendered"
 
 
 def test_a_status_line_that_fails_is_simply_absent(monkeypatch):

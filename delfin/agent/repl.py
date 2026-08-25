@@ -34,6 +34,10 @@ HISTORY_NAME = "agent_repl_history"
 _HISTORY_LINES = 1000
 _PUMP_TICK_S = 0.05
 _JOIN_NOTICE_AFTER_S = 2.0
+# What leaving costs at most. The last step of the interrupt ladder unwinds
+# through the settle, so the join there has to be bounded: an unbounded one
+# waits for the tool call the interrupt exists to walk away from.
+_JOIN_ABANDON_S = 1.0
 _STATUS_TICK_S = 0.25
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
@@ -69,13 +73,20 @@ class Transcript:
 
     def __init__(self, out=None, err=None, *, theme: rr.Theme | None = None,
                  show_tools: bool = True, show_thinking: bool = False,
-                 width: int | None = None) -> None:
+                 width: int | None = None, color: str = "auto") -> None:
         self.out = out if out is not None else sys.stdout
         self.err = err if err is not None else sys.stderr
         self.theme = theme if theme is not None else rr.theme_for(self.err)
         self.show_tools = show_tools
         self.show_thinking = show_thinking
         self.width = width or rr.terminal_width()
+        # A SECOND colour decision, taken about stdout. The theme above
+        # is about stderr, where the chrome goes; the answer goes to
+        # stdout, and the two streams are redirected independently. Asking
+        # stderr about stdout is how `delfin-agent -p "..." > answer.txt`
+        # in a terminal would end up writing escape codes into the file.
+        self._answer_theme = rr.theme_for(self.out, color)
+        self._markdown = rr.MarkdownStream(self._answer_theme)
         # Two flags, because one had to answer two different questions and
         # got one of them wrong. `_out_open` is about the FILE: stdout ends
         # mid-line and needs closing before the process exits.
@@ -88,10 +99,16 @@ class Transcript:
 
     # -- primitives ------------------------------------------------------
     def answer(self, delta: str) -> None:
-        """Answer text. The only thing that ever reaches stdout."""
+        """Answer text. The only thing that ever reaches stdout.
+
+        The line-open flags follow the MODEL's text, never the styled
+        form: an SGR reset is not a newline, and a delta that ends in one
+        would otherwise be read as a closed line and let the status row
+        repaint over the sentence being written.
+        """
         if not delta:
             return
-        self.out.write(delta)
+        self.out.write(self._markdown.feed(delta))
         self._flush(self.out)
         self._out_open = not delta.endswith("\n")
         self._break_pending = self._out_open
@@ -117,6 +134,13 @@ class Transcript:
 
     def finish(self) -> None:
         """Close the answer stream, so a redirected stdout ends in a newline."""
+        tail = self._markdown.flush()
+        if tail:
+            # Held-back bytes and any style still open. Without this a
+            # two-character tail that looked like the start of a marker
+            # would never be printed at all.
+            self.out.write(tail)
+            self._flush(self.out)
         if self._out_open:
             self.out.write("\n")
             self._flush(self.out)
@@ -404,6 +428,7 @@ class TerminalAgent:
             theme=rr.theme_for(self.err, self.opts.color),
             show_tools=self.opts.show_tools,
             show_thinking=self.opts.show_thinking,
+            color=self.opts.color,
         )
         self._read_line = read_line or self._input
         self._q: queue.Queue[RenderItem] = queue.Queue()
@@ -481,9 +506,13 @@ class TerminalAgent:
                 "timeout, so this can take a moment.")))
             return
         if self._interrupts == 2:
+            # What the third one does: raise here, unwind through turn()'s
+            # finally with a bounded join, and return 130 from the loop. It
+            # cannot cancel the call, so it does not claim to.
             self._q.put(RenderItem("notice", text=(
-                "Still waiting on the running tool call. Once more abandons "
-                "the process, and anything it started keeps running.")))
+                "Still waiting on the running tool call. Once more leaves "
+                "this session without it: the call is not cancelled, and "
+                "anything it started keeps running.")))
             return
         raise KeyboardInterrupt
 
@@ -535,11 +564,17 @@ class TerminalAgent:
         self._turn_active.set()
         worker = threading.Thread(target=_worker, name="agent-turn", daemon=True)
         worker.start()
+        abandoning = False
         try:
             self._pump(worker)
+        except KeyboardInterrupt:
+            # The last step of the ladder. It travels through the finally
+            # below, so the settle there must not wait on the running call.
+            abandoning = True
+            raise
         finally:
             self._turn_active.clear()
-            self._settle(worker)
+            self._settle(worker, abandon=abandoning)
         self.transcript.finish()
         self._report_compaction(compaction_before)
         self._report_tasks()
@@ -770,7 +805,14 @@ class TerminalAgent:
             if self.broker is not None:
                 pending = self.broker.take()
                 if pending is not None:
-                    self._answer(pending, self._raw_for_prompt())
+                    # Entered for the prompt and released again as soon as
+                    # it is answered: the span that needs cbreak is the
+                    # keystroke, not the command that raised it.
+                    raw = self._raw_for_prompt()
+                    try:
+                        self._answer(pending, raw)
+                    finally:
+                        self._release_prompt_raw(raw)
                     continue
             worker.join(timeout=_PUMP_TICK_S)
             if not worker.is_alive():
@@ -778,10 +820,28 @@ class TerminalAgent:
         return box[0] if box else None
 
     def _raw_for_prompt(self):
-        """A keystroke reader for a prompt raised outside a turn."""
+        """A keystroke reader for a prompt raised outside a turn.
+
+        Entered here, released by ``_release_prompt_raw``, and the pairing
+        is load-bearing twice: a reader that is never left holds the
+        terminal in cbreak with echo off, so the next idle ``input()``
+        shows nothing of what is typed — and every ``RawMode.__enter__``
+        registers an atexit hook that only ``restore`` takes back, so an
+        unreleased one leaves a hook behind per approval.
+        """
         from . import repl_keys as rk
         raw = rk.RawMode(self._stdin)
         return raw.__enter__()
+
+    @staticmethod
+    def _release_prompt_raw(raw) -> None:
+        """Give the terminal back, whatever the reader turned out to be."""
+        restore = getattr(raw, "restore", None)
+        if callable(restore):
+            try:
+                restore()
+            except Exception:
+                pass
 
     def _remember(self, text: str) -> None:
         """`#note` writes a memory, marked as the user's own."""
@@ -823,41 +883,49 @@ class TerminalAgent:
         while True:
             key = self._read_key(raw, allowed | {"\x1b"})
             if key in ("\x1b", "n"):
-                self.broker.resolve(req, self._refuse(req))
-                self.transcript.chrome(self.transcript.theme.dim("  refused"))
+                if self._apply(req, self._refuse(req)):
+                    self.transcript.chrome(
+                        self.transcript.theme.dim("  refused"))
                 return
             if key == "?":
                 self.transcript.chrome(tc.render_help(req, options))
                 continue
             if key == "a":
+                # This one first, the rest after: abort_all resolves
+                # everything still queued, so asking it first would make
+                # the answer to THIS request late by construction and the
+                # line below would report an expiry that never happened.
+                landed = self._apply(req, self._refuse(req))
                 denied = self.broker.abort_all()
-                self.broker.resolve(req, self._refuse(req))
                 self._stop_engine()
                 extra = (f" and {len(denied)} other request(s) in flight"
                          if denied else "")
+                head = ("! aborted — this was refused" if landed
+                        else "! aborted")
                 self.transcript.chrome(self.transcript.theme.yellow(
-                    f"! aborted — this was refused{extra}, and the turn is "
-                    "ending"))
+                    f"{head}{extra}, and the turn is ending"))
                 return
             if key == "y":
-                self.broker.resolve(req, self._allow(req))
+                self._apply(req, self._allow(req))
                 return
             if key == "d" and req.kind == tc.PLAN:
-                self.broker.resolve(
-                    req, {"approved": True, "new_mode": "default"})
-                self.transcript.chrome(self.transcript.theme.cyan(
-                    "approval → default"))
+                if self._apply(req, {"approved": True, "new_mode": "default"}):
+                    self.transcript.chrome(self.transcript.theme.cyan(
+                        "approval → default"))
                 return
             if key == "e" and req.kind == tc.PLAN:
-                self.broker.resolve(
-                    req, {"approved": True, "new_mode": "acceptEdits"})
-                self.transcript.chrome(self.transcript.theme.cyan(
-                    "approval → acceptEdits"))
+                if self._apply(req,
+                               {"approved": True, "new_mode": "acceptEdits"}):
+                    self.transcript.chrome(self.transcript.theme.cyan(
+                        "approval → acceptEdits"))
                 return
             if key == "e":
+                # The mode switch is a posture for the session, so it is
+                # reported on its own terms — it happens whether or not the
+                # answer to this request still had somewhere to land.
                 ok, msg = self.broker.accept_edits()
                 self.transcript.chrome(self.transcript.theme.cyan(f"  {msg}"))
-                self.broker.resolve(req, self._allow(req))
+                self._apply(req, self._allow(req))
                 return
             if key in ("A", "k"):
                 pattern = (self.broker.exact_pattern(req.command) if key == "A"
@@ -867,7 +935,7 @@ class TerminalAgent:
                     self.transcript.chrome(
                         self.transcript.theme.cyan(f"  {msg}") if ok
                         else self.transcript.theme.red(f"  {msg}"))
-                self.broker.resolve(req, self._allow(req))
+                self._apply(req, self._allow(req))
                 return
             # Unreachable in practice: _read_key only ever returns a key
             # from `allowed`. Kept as a hard stop rather than a fallthrough
@@ -875,6 +943,23 @@ class TerminalAgent:
             # cannot silently mean "yes".
             self.transcript.chrome(self.transcript.theme.dim(
                 "  that key does nothing here"))
+
+    def _apply(self, req, decision) -> bool:
+        """Hand the answer to the broker, and say when it arrived too late.
+
+        ``resolve`` discards an answer to a request that had already
+        expired or been aborted — the gate was told "no" on the user's
+        behalf and the model has moved on. Printing "refused" or
+        "approval → default" regardless puts an effect on the screen that
+        nothing applied, so every line that describes an answer is printed
+        only when this returned True.
+        """
+        if self.broker.resolve(req, decision):
+            return True
+        self.transcript.chrome(self.transcript.theme.yellow(
+            "  too late — that request had already expired and was refused "
+            "without you, so this key changed nothing"))
+        return False
 
     def _confirm_persist(self, pattern: str, raw) -> bool:
         """A second keystroke, against the consequence spelled out.
@@ -902,14 +987,14 @@ class TerminalAgent:
         for i, opt in enumerate(options, 1):
             self.transcript.chrome(f"  {i}. {rr.strip_control(opt)}")
         if not options:
-            self.broker.resolve(req, {"answers": []})
+            self._apply(req, {"answers": []})
             return
         allowed = {str(i) for i in range(1, len(options) + 1)} | {"\x1b"}
         key = self._read_key(raw, allowed)
         if key == "\x1b":
-            self.broker.resolve(req, {"answers": []})
+            self._apply(req, {"answers": []})
             return
-        self.broker.resolve(req, {"answers": [options[int(key) - 1]]})
+        self._apply(req, {"answers": [options[int(key) - 1]]})
 
     def _read_key(self, raw, allowed: set[str]) -> str:
         """One keystroke, from the reader the key layer already owns."""
@@ -927,8 +1012,17 @@ class TerminalAgent:
                 # default. A default-yes turns approval into a rhythm, and
                 # rhythm is what this whole layer exists to break.
         # No terminal to read from: an unanswerable prompt is a refusal,
-        # never a silent yes.
-        return "n"
+        # never a silent yes — and the refusal has to be a key the caller
+        # offered, because that is the chain it goes back into. A hardcoded
+        # "n" reached `int(key)` on the question path, where the keys are
+        # digits: the prompt raised instead of being answered and the
+        # asking thread waited on a request nobody would resolve.
+        for refusal in ("n", "\x1b"):
+            if refusal in allowed:
+                return refusal
+        # Every caller offers one of those two. If one ever does not, Esc
+        # still reads as "refuse" in each chain rather than as a choice.
+        return "\x1b"
 
     @staticmethod
     def _allow(req):
@@ -1038,9 +1132,24 @@ class TerminalAgent:
             return
         self._last_paint = now
         if self._input_line:
-            self._set_bottom("» " + self._input_line)
+            self._set_bottom(self._typed_row(self._input_line))
         elif self._turn_active.is_set():
             self._set_bottom(self._status_line())
+
+    def _typed_row(self, text: str) -> str:
+        """The line being typed, cut to one screen row like the status row.
+
+        `_clear_bottom` erases with a single `\\r\\x1b[K`, which reaches one
+        line — so a row that ran past COLUMNS and wrapped left its first
+        half stranded in the transcript. The END is what survives the cut
+        here rather than the middle: that is where the cursor is, and a
+        person typing has to see the characters they are typing.
+        """
+        width = max(20, self.transcript.width - 1)
+        row = "» " + (text or "")
+        if len(row) <= width:
+            return row
+        return "…" + row[len(row) - (width - 1):]
 
     def _render_around_bottom(self, item: RenderItem) -> None:
         """Rendering must not tear whatever is on the bottom row.
@@ -1057,7 +1166,8 @@ class TerminalAgent:
         self._input_line = held_input
         self._repaint_bottom(force=True)
 
-    def _settle(self, worker: threading.Thread) -> None:
+    def _settle(self, worker: threading.Thread, *,
+                abandon: bool = False) -> None:
         """Join, THEN clear the stop. Both halves are load-bearing.
 
         The turn gate refuses a second concurrent turn by RETURNING a
@@ -1066,9 +1176,19 @@ class TerminalAgent:
         machinery speech as the model's answer. And ``clear_stop`` refuses
         while the owning turn is in flight, so clearing before the join is
         a silent no-op that leaves the brake armed for the next turn.
+
+        ``abandon`` is the last step of the interrupt ladder, and it is the
+        one case where waiting is the wrong answer: the thread being joined
+        is running the tool call the user is escaping, so the join gets a
+        bound and what is left is said out loud rather than waited out.
         """
-        worker.join(timeout=_JOIN_NOTICE_AFTER_S)
-        if worker.is_alive():
+        worker.join(timeout=_JOIN_ABANDON_S if abandon
+                    else _JOIN_NOTICE_AFTER_S)
+        if worker.is_alive() and abandon:
+            self._notice(
+                "Leaving the running tool call behind — it was asked to stop "
+                "and has not yet, and anything it started keeps running.")
+        elif worker.is_alive():
             self._notice("Waiting for the running tool call to finish…")
             worker.join()
         # Drain whatever the worker queued while we were joining.
@@ -1103,9 +1223,17 @@ class TerminalAgent:
 
         Reused rather than re-derived: it already never raises, and it
         already refuses to run a workspace-supplied command.
+
+        The "if" is enforced here. `render_status_line` falls back to a
+        built-in template when nothing is configured, so this printed a
+        line after every turn whose two fields — mode and branch — the
+        banner and the live turn line already carry. A sentence in a
+        docstring is not a condition; the condition is.
         """
         try:
             from . import status_line as sl
+            if not sl.has_custom_status_line(self.opts.cwd):
+                return
             status = self.engine.get_status() or {}
             text = sl.render_status_line(sl.StatusContext(
                 workspace=self.opts.cwd,
@@ -1233,6 +1361,13 @@ class TerminalAgent:
             readline.set_completer(_complete)
             readline.set_completer_delims(" \t\n")
             readline.parse_and_bind("tab: complete")
+            # Pinned rather than inherited. Recent GNU readline defaults
+            # this on and older builds — and libedit, which macOS links —
+            # do not, so whether a pasted block arrived as one message
+            # depended on which library the interpreter happened to find.
+            # During a turn the key layer brackets the paste itself; this
+            # is the same guarantee at the idle prompt.
+            readline.parse_and_bind("set enable-bracketed-paste on")
         except Exception:
             pass
 

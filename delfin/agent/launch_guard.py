@@ -79,6 +79,11 @@ class GitInfo:
     toplevel: Path | None = None
     branch: str = ""
     dirty: tuple[str, ...] = ()
+    #: A repository with no commit yet. `git init` then `delfin-agent` is
+    #: an ordinary way to start, and on that repository `rev-parse HEAD`
+    #: fails — which is indistinguishable from a detached HEAD unless it
+    #: is asked as its own question.
+    unborn: bool = False
 
 
 @dataclass(frozen=True)
@@ -151,21 +156,41 @@ def _porcelain_path(line: str) -> str:
     return path.strip().strip('"')
 
 
+#: The agent's own state directory. It is created by the agent, in the
+#: workspace, usually within the first second of the first session — so
+#: reporting it as work the user has not committed says "you have loose
+#: changes here" about a directory the user has never touched.
+_OWN_STATE_DIR = ".delfin/"
+
+
 def _git_info(workspace: Path) -> GitInfo:
     top = _git(workspace, "rev-parse", "--show-toplevel").strip()
     if not top:
         return GitInfo(is_repo=False)
-    branch = _git(workspace, "rev-parse", "--abbrev-ref", "HEAD").strip()
+    # `symbolic-ref` answers on a repository with no commit yet, where
+    # `rev-parse --abbrev-ref HEAD` exits 128 and yields nothing. Asking
+    # only the second one made a freshly initialised repository report
+    # itself as a detached HEAD, which is a different and alarming state.
+    branch = _git(workspace, "symbolic-ref", "--short", "HEAD").strip()
+    if not branch:
+        branch = _git(workspace, "rev-parse", "--abbrev-ref", "HEAD").strip()
+        if branch == "HEAD":
+            branch = ""              # genuinely detached
+    unborn = not _git(workspace, "rev-parse", "--verify", "HEAD").strip()
     status = _git(workspace, "status", "--porcelain")
     dirty = tuple(
-        _porcelain_path(line) for line in status.splitlines()
-        if len(line) > 3
+        path for path in (
+            _porcelain_path(line) for line in status.splitlines()
+            if len(line) > 3
+        )
+        if path and not path.startswith(_OWN_STATE_DIR)
     )
     try:
         toplevel: Path | None = Path(top).resolve()
     except Exception:
         toplevel = None
-    return GitInfo(is_repo=True, toplevel=toplevel, branch=branch, dirty=dirty)
+    return GitInfo(is_repo=True, toplevel=toplevel, branch=branch,
+                   dirty=dirty, unborn=unborn)
 
 
 def _under_ephemeral_root(path: Path) -> str:
@@ -310,11 +335,17 @@ def inspect_launch_dir(
         except Exception:
             notices = ()
         if notices:
+            # NOTICE, not ASK, and the distinction is the whole point:
+            # withholding IS the safe state. Nothing here is loaded, so
+            # there is no decision to block the session on — only a fact
+            # the user could not otherwise learn, and the way to change it
+            # if they want to. Blocking would train people to say yes.
             findings.append(LaunchFinding(
-                ASK, "untrusted_workspace",
+                NOTICE, "untrusted_workspace",
                 "This folder offers definitions that are being withheld "
                 "because it is not trusted:",
-                detail="\n".join(f"  {n}" for n in notices)))
+                detail="\n".join(f"  {n}" for n in notices)
+                       + "\n  Nothing from them runs. `/trust` loads them."))
 
     return LaunchReport(
         workspace=workspace,
@@ -366,4 +397,7 @@ def resolve_posture(
     if persisted_mode in _VALID_MODES:
         return persisted_mode, settings_path
 
-    return DEFAULT_MODE, "default"
+    # Not the word "default": next to "approval plan" it reads as a claim
+    # about the approval mode rather than about where the mode came from,
+    # which is the one thing this string exists to say.
+    return DEFAULT_MODE, "nothing configured it"

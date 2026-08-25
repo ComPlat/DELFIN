@@ -327,8 +327,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0 if not out["error"] else 1
 
 
-def _persisted_default_mode(workspace: Path) -> str:
-    """The posture a settings file actually DECLARES, or "" for none.
+def _persisted_default_mode(workspace: Path) -> tuple[str, str]:
+    """``(mode, the file that declared it)``, or ``("", "")`` for none.
 
     Read from the files rather than from ``kit_settings.load()``, and the
     difference is the whole point: with no settings anywhere the loader
@@ -337,6 +337,11 @@ def _persisted_default_mode(workspace: Path) -> str:
     the merged view therefore reports a decision nobody made — and it
     silently defeated the plan-first default, because resolve_posture
     correctly honours anything a user configured.
+
+    The path travels with the mode because the banner names it. It used
+    to be a literal in resolve_posture's signature, so a checked-out
+    repository's settings file could raise the posture and the user was
+    pointed at a file in their home directory that need not even exist.
     """
     import json
 
@@ -345,7 +350,7 @@ def _persisted_default_mode(workspace: Path) -> str:
         candidates = [kit_settings.USER_SETTINGS_PATH,
                       kit_settings.repo_settings_path(workspace)]
     except Exception:
-        return ""
+        return "", ""
     for path in candidates:
         if path is None:
             continue
@@ -357,8 +362,8 @@ def _persisted_default_mode(workspace: Path) -> str:
             continue
         declared = str(block.get("default_mode", "") or "")
         if declared:
-            return declared
-    return ""
+            return declared, _tilde(path)
+    return "", ""
 
 
 def _claim_session(sid: str) -> bool:
@@ -425,6 +430,13 @@ def _open_session(engine, args: argparse.Namespace, workspace: Path) -> bool:
     sid = ""
     if getattr(args, "new_session", False):
         sid = ""
+    elif str(getattr(args, "session", "") or "").strip():
+        # `--session <id>` is offered on this subcommand and its help says
+        # "Session ID to resume". Interactively it was only ever WRITTEN
+        # here, never read, so the flag parsed, printed nothing, and
+        # started a fresh conversation — the resume that was asked for
+        # simply did not happen.
+        sid = str(args.session).strip()
     elif getattr(args, "continue_session", False):
         row = _ss.latest_session(workspace=str(workspace))
         sid = str((row or {}).get("session_id", "") or "")
@@ -460,6 +472,82 @@ def _open_session(engine, args: argparse.Namespace, workspace: Path) -> bool:
     return _claim_session(getattr(engine, "session_id", "") or sid)
 
 
+def _tilde(path: Path | str) -> str:
+    """``/home/someone/work/thing`` as ``~/work/thing``.
+
+    The banner is read at a glance, and on this machine the absolute form
+    is long enough to push the part that identifies the directory past
+    where anyone looks.
+    """
+    text = str(path)
+    try:
+        home = str(Path.home())
+    except Exception:
+        return text
+    if home and (text == home or text.startswith(home + os.sep)):
+        return "~" + text[len(home):]
+    return text
+
+
+def _parked_work_line(engine, workspace: Path) -> str:
+    """One line for the user about open tasks left by earlier sessions.
+
+    The engine already surfaces these — into the SYSTEM PROMPT, where the
+    only way they can reach the person at the keyboard is the model
+    choosing to read them out. That is how a greeting once came back as a
+    fifteen-item backlog. The count belongs on screen, addressed to the
+    user, at the one moment it is context rather than an interruption.
+    """
+    try:
+        from .agent_tasks import open_foreign_tasks
+        perms = engine.kit_permissions
+        if perms is None:
+            return ""
+        sid = str(getattr(perms, "task_session_id", "") or "")
+        summary = open_foreign_tasks(getattr(perms, "workspace", workspace), sid)
+    except Exception:
+        return ""
+    count = int((summary or {}).get("count", 0) or 0)
+    if count <= 0:
+        return ""
+    return (f"parked     {count} open task"
+            f"{'s' if count != 1 else ''} from earlier sessions  "
+            "(/tasks to list)")
+
+
+def _launch_questions_answered(report) -> bool:
+    """Put every ASK-level finding to the user before the session opens.
+
+    ``LaunchFinding`` has three levels and the middle one is documented as
+    "start only if the user says so" — but `LaunchReport.questions` had no
+    caller, so an ASK degraded into a paragraph that scrolled past. A
+    level whose meaning is enforced nowhere is a comment.
+
+    Bare Enter is not consent, and neither is a pipe: a question nobody
+    can answer is answered no. That is why the trust finding is a NOTICE
+    rather than an ASK — withholding is already the safe state, so there
+    is nothing to decide — but the level now works for a finding where
+    there is.
+    """
+    questions = tuple(getattr(report, "questions", ()) or ())
+    if not questions:
+        return True
+    for finding in questions:
+        print(finding.message, file=sys.stderr)
+        if finding.detail:
+            print(finding.detail, file=sys.stderr)
+    if not sys.stdin.isatty():
+        print("Not a terminal, so this cannot be answered; not starting.",
+              file=sys.stderr)
+        return False
+    try:
+        answer = input("Start anyway? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print(file=sys.stderr)
+        return False
+    return answer in ("y", "yes")
+
+
 def _startup_banner(engine, report, workspace: Path,
                     why: str = "", isolation_note: str = "") -> str:
     """What the user is looking at, in the lines that decide safety."""
@@ -473,13 +561,28 @@ def _startup_banner(engine, report, workspace: Path,
     sid = str(getattr(engine, "session_id", "") or "")
 
     git = report.git
-    where = f"git {git.branch}" if git.is_repo and git.branch else "no git"
-    if git.is_repo and git.dirty:
-        where += f" · {len(git.dirty)} uncommitted"
+    if git.is_repo:
+        if getattr(git, "unborn", False):
+            # `git init` and straight in is an ordinary way to start, and
+            # it is worth naming: there is a repository, so /rewind works,
+            # but nothing to diff against yet.
+            where = f"git {git.branch}, no commits yet" if git.branch \
+                else "git, no commits yet"
+        elif git.branch:
+            where = f"git {git.branch}"
+        else:
+            where = "git, detached HEAD"
+        if git.dirty:
+            where += f" · {len(git.dirty)} uncommitted"
+    else:
+        # Said once, plainly. Elsewhere an empty branch used to be printed
+        # as a field with nothing after it, which reads as a failed lookup
+        # rather than as "this directory is not a repository".
+        where = "not a git repository"
 
     lines = [
-        f"delfin-agent · {provider}/{model} · mode {role_mode}",
-        f"workspace  {workspace}  ({where})",
+        f"delfin-agent · {provider}/{model} · {role_mode}",
+        f"workspace  {_tilde(workspace)}  ({where})",
     ]
     if perms_mode:
         lines.append(f"approval   {perms_mode}"
@@ -503,10 +606,34 @@ def _startup_banner(engine, report, workspace: Path,
         lines.append(
             f"approval   none — the {provider} backend carries no permission "
             "gate, so file and shell tools will refuse")
+    for extra in (_grant_line("writable", getattr(report, "granted_dirs", ())),
+                  _grant_line("readable", getattr(report, "read_dirs", ())),
+                  _parked_work_line(engine, workspace)):
+        if extra:
+            lines.append(extra)
     if sid:
-        lines.append(f"session    {sid}")
-    lines.append("Ctrl+C stops a turn · Ctrl+D or /exit leaves")
+        # The head is what a person types after `-r`; the rest is for the
+        # store. Printing all 32 characters put the one useful field on
+        # the widest line of the banner.
+        lines.append(f"session    {sid[:8]}   (/status for the full id)")
+    lines.append("esc interrupt · shift+tab approval mode · /help · ctrl+d exit")
     return "\n".join(lines)
+
+
+def _grant_line(label: str, dirs) -> str:
+    """The extra roots this session was given, or nothing.
+
+    A grant that only exists inside the permissions object is a grant
+    nobody can audit: `--add-dir` widens what the agent may write to, and
+    the banner is where the user finds out it took.
+    """
+    paths = [str(_tilde(p)) for p in (dirs or ())]
+    if not paths:
+        return ""
+    shown = ", ".join(paths[:3])
+    if len(paths) > 3:
+        shown += f", +{len(paths) - 3} more"
+    return f"{label:<10} {shown}"
 
 
 def cmd_chat(args: argparse.Namespace) -> int:
@@ -543,6 +670,8 @@ def cmd_chat(args: argparse.Namespace) -> int:
     if report.refused:
         print(report.render(), file=sys.stderr)
         return 2
+    if not _launch_questions_answered(report):
+        return 2
 
     # One shot, and out. Identical to `run`, because it IS `run`.
     # A positional prompt SEEDS an interactive session; it only becomes a
@@ -557,6 +686,15 @@ def cmd_chat(args: argparse.Namespace) -> int:
     if piped:
         print("Nothing on stdin, and no -p. Nothing to do.", file=sys.stderr)
         return 2
+
+    # An interactive session is a conversation, not a document. The flag
+    # is accepted on this subcommand because the one-shot half lives here
+    # too; taking it silently and then emitting text is the shape of a
+    # promise that is not kept.
+    if getattr(args, "output_format", "text") == "json":
+        print("--output-format json describes one answer, so it needs -p "
+              "or a piped prompt; this session will print text.",
+              file=sys.stderr)
 
     # Restored on the way out. The process usually ends right after, so
     # this looks unnecessary — but a function that moves the process and
@@ -595,10 +733,12 @@ def cmd_chat(args: argparse.Namespace) -> int:
         os.chdir(_cwd_before)
         return 2
 
+    persisted, persisted_from = _persisted_default_mode(workspace)
     posture, why = launch_guard.resolve_posture(
         flag_mode=getattr(args, "permission_mode", "") or "",
-        persisted_mode=_persisted_default_mode(workspace),
+        persisted_mode=persisted,
         unattended_opt_in=bool(getattr(args, "unattended", False)),
+        settings_path=persisted_from or "~/.delfin/settings.json",
     )
     try:
         engine.set_kit_permission_mode(posture)
@@ -1635,6 +1775,14 @@ def build_parser() -> argparse.ArgumentParser:
                            "'let it read my other repo'")
     chat.add_argument("--isolate", action="store_true",
                       help="Run shell commands under filesystem isolation")
+    # The consumer existed without the producer: ReplOptions.color has been
+    # read as getattr(args, "color", "auto") since the first version, and no
+    # parser ever declared the flag — so the one setting that decides
+    # whether the session emits escape codes at all could not be set.
+    chat.add_argument("--color", default="auto",
+                      choices=["auto", "always", "never"],
+                      help="Colour output (auto: only on a terminal, and "
+                           "never when NO_COLOR is set)")
     _add_agent_flags(chat)
     chat.add_argument("-v", "--verbose", action="store_true")
     # Only this front door inherits the dashboard's saved provider/model.
