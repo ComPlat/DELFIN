@@ -57,7 +57,8 @@ from typing import Any, Callable, Dict, Optional
 from . import solvents as _solvents
 
 __all__ = ['MOPAC_METHODS', 'find_mopac', 'is_mopac_method', 'mopac_available',
-           'optimize_with_mopac', 'read_aux_frames', 'frame_as_xyz']
+           'optimize_with_mopac', 'read_aux_charges', 'read_aux_frames',
+           'frame_as_xyz']
 
 #: What the dropdown offers and the keyword each one means to MOPAC.
 #:
@@ -96,6 +97,20 @@ _VERSION_RE = re.compile(r'MOPAC\s+v?([0-9][0-9.]*)')
 #: One block per optimisation cycle in the AUX file, which is what makes a
 #: MOPAC run watchable the way an xtb one is.
 _FRAME_RE = re.compile(r'ATOM_X_UPDATED:ANGSTROMS\[\s*\d+\]=\s*\n((?:\s*-?\d.*\n)+)')
+#: The partial charges, in the same file and written without being asked for.
+#:
+#: ``AUX`` is already on the keyword line -- it is what the trajectory is read
+#: out of -- and MOPAC writes ``ATOM_CHARGES`` into it whether or not anybody
+#: reads them.  Measured on a methane under PM7, the block is there after an
+#: ordinary run with no extra keyword and no second calculation.  So the
+#: editor can put charges on the atoms under PM6, PM6-D3H4 and PM7 for the
+#: same nothing they cost under xtb.
+#:
+#: There is no bond order here.  MOPAC will print one, but only for the
+#: ``BONDS`` keyword, and that is a different input -- so under MOPAC the
+#: charges are offered and the bond orders are not, which is what the two
+#: facts are.
+_CHARGES_RE = re.compile(r'ATOM_CHARGES\[\s*\d+\]=\s*\n((?:\s*[-+]?\d.*\n)+)')
 
 WATCH_INTERVAL = 0.01
 FRAME_READ_INTERVAL = 0.05
@@ -171,6 +186,30 @@ def read_aux_frames(path: Path, symbols: list) -> list:
         except ValueError:
             continue
     return frames
+
+
+def read_aux_charges(path: Path, atoms: int) -> Optional[list]:
+    """The partial charges MOPAC wrote, or None if it wrote none for *atoms*.
+
+    The last block in the file, because a run that optimised has one per
+    energy evaluation and only the final one belongs to the geometry that
+    comes back.  A block of the wrong length is refused rather than padded:
+    charges that do not line up with the atoms would be drawn on the wrong
+    ones, which is worse than not drawing them.
+    """
+    try:
+        text = path.read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return None
+    values = None
+    for match in _CHARGES_RE.finditer(text):
+        try:
+            found = [float(word) for word in match.group(1).split()]
+        except ValueError:
+            continue
+        if len(found) == int(atoms):
+            values = found
+    return values
 
 
 def frame_as_xyz(frame: list, symbols: list, comment: str = 'MOPAC') -> str:
@@ -431,6 +470,9 @@ def optimize_with_mopac(
                 pass
 
         relaxed = _final_geometry(folder, symbols)
+        # Out of the file the frames were just read from, before the folder
+        # goes.  Nothing was asked of MOPAC for it -- see :data:`_CHARGES_RE`.
+        charges = read_aux_charges(aux, len(symbols))
         found = _HEAT_RE.search(output)
         heat = float(found.group(1)) if found else None
         said = _VERSION_RE.search(output)
@@ -449,6 +491,7 @@ def optimize_with_mopac(
                 'ok': True, 'xyz': relaxed, 'energy': heat, 'held': holding,
                 'energy_unit': 'kcal/mol (heat of formation)',
                 'method': key, 'label': spec['label'], 'seconds': seconds,
+                'charges': charges, 'bonds': None,
                 'engine': 'mopac', 'version': version, 'frames': frames,
                 'hamiltonian': spec['reports'], 'converged': False,
                 'status': (f'{spec["label"]} stopped after {len(frames)} '
@@ -480,6 +523,7 @@ def optimize_with_mopac(
             'ok': True, 'xyz': relaxed, 'energy': heat, 'held': holding,
             'energy_unit': 'kcal/mol (heat of formation)',
             'method': key, 'label': spec['label'], 'seconds': seconds,
+            'charges': charges, 'bonds': None,
             'engine': 'mopac', 'version': version, 'frames': frames,
             'hamiltonian': spec['reports'], 'solvent': wet,
             'solvation_model': 'cosmo' if wet else '',

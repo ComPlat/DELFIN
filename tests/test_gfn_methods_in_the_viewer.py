@@ -127,12 +127,16 @@ def player_js(tmp_path):
 
 def test_the_methods_stand_next_to_uff(editor):
     values = [v for _label, v in editor["submit_ff_dd"].options]
-    assert values[:5] == ["uff", "mmff94", "gfnff", "gfn2", "gxtb"]
+    # The four xtb ones in the order of what they cost. GFN1 was missing from
+    # this box alone: it is in GFN_METHODS, in CLIMB_METHODS, in
+    # SADDLE_METHODS and in a hand-measured 13-solvent GBSA refusal table, and
+    # three of the editor's own refusals send the user here to choose it.
+    assert values[:6] == ["uff", "mmff94", "gfnff", "gfn1", "gfn2", "gxtb"]
     # And the MOPAC ones behind them: measured against literature bond
     # lengths, PM6 is closer than GFN2 on small organics (5.0 against
     # 11.3 mA), and PM6-D3H4 keeps that while binding the water dimer that
     # plain PM6 lets come apart.
-    assert values[5:] == ["pm6d3h4", "pm6", "pm7"]
+    assert values[6:] == ["pm6d3h4", "pm6", "pm7"]
 
 
 def test_charge_and_spin_appear_only_for_a_gfn_method(editor):

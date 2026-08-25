@@ -71,6 +71,22 @@ LABEL_PX_MAX = 48
 #: is down-scaled by, so a larger number stays sharp instead of blurring.
 LABEL_SCALE_DEFAULT = LABEL_PX_DEFAULT / LABEL_PX_PER_SCALE
 
+#: How often the labels may be redrawn while something is running, in seconds.
+#:
+#: They travel by ``run_js``, which is the channel this editor keeps for
+#: things that happen when a user presses something -- the frames and the
+#: thermal wall each have a widget field of their own precisely because
+#: run_js clears its output before displaying, so a message sent many times a
+#: second is mostly overwritten before the page draws it.
+#:
+#: Labels can live with that where a frame cannot: each repaint is the whole
+#: state rather than one step of a sequence, so the last to land is the right
+#: one.  What is left is the cost of the script itself, and four times a
+#: second is already faster than a charge visibly changes -- measured on an
+#: ammonia borane pulled apart under GFN2, the nitrogen went -0.25, -0.26,
+#: -0.27, -0.29, -0.33, -0.40 over six answers.
+_LABEL_REPAINT_INTERVAL = 0.25
+
 
 #: One layout for every coordinate this editor writes: the element in five
 #: columns, then three fields of twenty-four with fourteen decimals.  It is
@@ -374,15 +390,30 @@ STRUCTURE_MEMORY_KEYS = (
     'constraints', 'poly_applied', 'poly_metal', 'poly_assignment',
     'poly_arrangements', 'poly_arrangement_index', 'history', 'structure_undo',
     'pristine_coords', 'gfn_topology', 'gfn_topology_source',
+    # The charges belong to the structure they were computed on, and the tab
+    # that steps between structures is exactly the one that would get this
+    # wrong: a set of isomers has the same element column, so the fingerprint
+    # that keeps one molecule's charges off another's atoms cannot tell two
+    # isomers apart. Put aside with the structure being left, they are simply
+    # not there for the one being shown until it has an answer of its own.
+    'atom_charges', 'atom_charges_method', 'atom_charges_for',
 )
 
 
 def _atom_numbers_js():
     """The layer itself: ``window.__delfinAtomNumbers``.
 
-    ``set(viewer, on, scale)`` switches the numbers on or off, ``refresh``
-    brings them back onto the atoms after those have moved, ``setScale``
-    resizes what is already there.
+    ``set(viewer, on, scale, texts)`` switches the labels on or off,
+    ``refresh`` brings them back onto the atoms after those have moved,
+    ``setScale`` resizes what is already there.
+
+    *texts* is what each label says, one to an atom, and null means the atom's
+    number.  The layer was written for the numbers and is not about them: what
+    it really does is hold a sprite on an atom while that atom moves, hide it
+    when something is in front of it, and keep it the size the toolbar asked
+    for -- all of which is exactly as true of a partial charge as of an index.
+    A second layer for charges would have been the same six hundred lines with
+    a different string in one place, and would have drifted from this one.
     """
     return (
         "window.__delfinAtomNumbers=(function(){\n"
@@ -437,25 +468,44 @@ def _atom_numbers_js():
         "      if(typeof before==='function'){try{before();}catch(e){}}\n"
         "    };\n"
         "  }\n"
-        "  function build(v,scale){\n"
+        "  function build(v,scale,texts){\n"
         "    if(!v||typeof v.addLabel!=='function')return 0;\n"
         "    clear(v);\n"
         "    if(scale!=null&&isFinite(+scale))v.__delfinLabelScale=+scale;\n"
+        # Kept on the viewer, so a rebuild -- which happens by itself whenever
+        # the atom count changes under a running drag -- says the same thing
+        # it said before rather than falling back to the numbers.
+        "    if(texts!==undefined)v.__delfinLabelTexts=texts;\n"
+        "    var T=v.__delfinLabelTexts||null;\n"
+        # A list of values that no longer matches the structure draws nothing
+        # at all, rather than drawing the ones it still has and numbering the
+        # rest. Half a set of charges and half a set of indices, in the same
+        # typeface on the same atoms, is the one outcome worth writing code to
+        # prevent: the next answer brings a fresh list and they come back.
+        "    if(T&&T.length!==atomCount(v)){\n"
+        "      v.__delfinLabelTexts=null;v.__delfinLbls=[];v.__delfinProj=[];\n"
+        "      return 0;\n"
+        "    }\n"
         # alignment:center anchors the text box on its centre, so the number
         # stays on the atom centre at every zoom (default corner-anchoring
         # drifts aside as atoms shrink). Fall back to the string form if the
         # enum is unavailable.
         "    var al=(window.$3Dmol&&$3Dmol.SpriteAlignment&&$3Dmol.SpriteAlignment.center)\n"
         "      ?$3Dmol.SpriteAlignment.center:'center';\n"
-        "    var ms=modelsOf(v),L=[];\n"
+        "    var ms=modelsOf(v),L=[],n=0;\n"
         "    for(var mi=0;mi<ms.length;mi++){\n"
         "      var atoms=[];try{atoms=ms[mi].selectedAtoms({})||[];}catch(e){atoms=[];}\n"
-        "      for(var i=0;i<atoms.length;i++){\n"
+        "      for(var i=0;i<atoms.length;i++,n++){\n"
         # fontSize 48 is a HIGH-RES texture kept sharp; the sprite is then
         # down-scaled in refresh() so the number appears small and crisp.
         # The fourth argument tells 3Dmol not to draw a frame per label.
+        # The number is the atom's place in the model it belongs to, which is
+        # what the ORCA Builder's two-structure overlay needs; a text handed
+        # in is read off one list for the whole viewer, because whoever
+        # computed it computed it for one structure.
         "        var a=atoms[i],lab=null;\n"
-        "        try{lab=v.addLabel(String(i),{position:{x:a.x,y:a.y,z:a.z},\n"
+        "        var say=(T&&T[n]!=null)?String(T[n]):String(i);\n"
+        "        try{lab=v.addLabel(say,{position:{x:a.x,y:a.y,z:a.z},\n"
         "          fontSize:48,fontColor:'black',alignment:al,\n"
         "          showBackground:false,inFront:true},undefined,true);}catch(e){lab=null;}\n"
         "        if(lab)L.push({a:a,l:lab});\n"
@@ -543,15 +593,18 @@ def _atom_numbers_js():
         "    if(refresh(v))draw(v);\n"
         "    return true;\n"
         "  }\n"
-        "  function set(v,on,scale){\n"
+        "  function set(v,on,scale,texts){\n"
         "    if(!v)return 0;\n"
         "    if(!on){\n"
         "      var had=(v.__delfinLbls||[]).length;\n"
-        "      clear(v);if(had)draw(v);\n"
+        "      clear(v);v.__delfinLabelTexts=null;if(had)draw(v);\n"
         "      return 0;\n"
         "    }\n"
-        "    var n=build(v,scale);\n"
+        "    var n=build(v,scale,texts);\n"
         "    if(n){refresh(v);draw(v);}\n"
+        # A build that came to nothing still has to be drawn: what it cleared
+        # is on screen until something renders over it.
+        "    else draw(v);\n"
         "    return n;\n"
         "  }\n"
         "  return {set:set,build:build,clear:clear,refresh:refresh,setScale:setScale};\n"
@@ -564,19 +617,54 @@ def atom_numbers_js():
     return 'if(!window.__delfinAtomNumbers){\n' + _atom_numbers_js() + '\n}'
 
 
-def show_atom_numbers_js(var='viewer', on=True, scale=None):
-    """Number the atoms of the viewer held in the JS variable *var*.
+def show_atom_numbers_js(var='viewer', on=True, scale=None, texts=None):
+    """Label the atoms of the viewer held in the JS variable *var*.
 
-    The numbers are read off the model the viewer already has, so this is the
+    The atoms are read off the model the viewer already has, so this is the
     same call whether a molecule was just rendered or has been on screen for
     an hour, and it never needs the coordinates handed to it a second time.
+
+    With *texts* None the labels are the atom numbers, which is what this has
+    always drawn.  Given a list -- one entry per atom, in the order of the
+    coordinates -- each atom says what it was given instead.  Nothing here
+    knows or cares what the values are; see :func:`atom_charge_texts` for the
+    one thing that is drawn this way and for what it costs.
     """
     size = LABEL_SCALE_DEFAULT if scale is None else float(scale)
+    said = 'null' if texts is None else json.dumps(
+        [str(one) for one in texts])
     return (
         atom_numbers_js()
-        + '\nwindow.__delfinAtomNumbers.set(%s,%s,%.3f);'
-        % (var, 'true' if on else 'false', size)
+        + '\nwindow.__delfinAtomNumbers.set(%s,%s,%.3f,%s);'
+        % (var, 'true' if on else 'false', size, said)
     )
+
+
+#: How many decimals a partial charge is drawn to.
+#:
+#: Two.  A charge is not a measurement -- four methods give a methane carbon
+#: -0.153, -0.130, -0.359 and -0.092, so the third decimal is a property of
+#: the Hamiltonian rather than of the molecule -- and two is what fits on an
+#: atom without the numbers running into each other.
+CHARGE_DECIMALS = 2
+
+
+def atom_charge_texts(charges, decimals=CHARGE_DECIMALS):
+    """Partial charges as the strings that go on the atoms, or None.
+
+    Signed always: the sign is the whole of what a chemist reads off a
+    structure at a glance, and a charge of +0.15 written as 0.15 reads as a
+    magnitude.
+    """
+    if not charges:
+        return None
+    said = []
+    for one in charges:
+        try:
+            said.append(f'{float(one):+.{int(decimals)}f}')
+        except (TypeError, ValueError):
+            return None
+    return said
 
 
 
@@ -1009,9 +1097,47 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         min=LABEL_PX_MIN,
         max=LABEL_PX_MAX,
         step=1,
-        tooltip=('How tall the numbers are, in pixels. Type one or step it; '
-                 'the numbers resize as you go.'),
+        tooltip=('How tall the labels are, in pixels. Type one or step it; '
+                 'they resize as you go.'),
         layout=widgets.Layout(width='62px', height='30px', display='none'),
+    )
+    #: What the labels say, which is not a fourth button.
+    #:
+    #: Every GFN and PM answer this editor has ever made computed the partial
+    #: charges and threw them away with its scratch directory -- xtb writes
+    #: them to a file on every single point, every optimisation cycle set and
+    #: every scan point, and MOPAC writes them into the AUX file the
+    #: trajectory is already read out of. Showing them costs no calculation at
+    #: all; see :func:`delfin.dashboard.gfn_optimize.read_charges`.
+    #:
+    #: So the question is only where they go, and the answer is: on the
+    #: control that already draws things on atoms. The toolbar is the crowded
+    #: row and the standing rule about it is that less is more, so this is not
+    #: a switch of its own -- it appears beside the size box, when the labels
+    #: are on, and goes away with them. The cost of having it at all is a
+    #: 96 px box that is invisible until somebody has already said they want
+    #: labels.
+    #:
+    #: The charge entry is only in the list under a method that computes one.
+    #: A browser force field has no charges to show, and offering the word
+    #: there would be the interface promising something it cannot do -- the
+    #: visible set of controls is meant to be the answer to "what can I do
+    #: now".
+    submit_label_what = widgets.Dropdown(
+        options=[('number', 'number')],
+        value='number',
+        tooltip=(
+            'What the labels say. "number" is the atom\'s place in the '
+            'coordinates. "charge" is the partial charge the last answer '
+            'computed -- it costs nothing, because every GFN and PM run '
+            'writes the charges out whether anybody reads them or not, and '
+            'they follow the drag as fast as the answers arrive. They are the '
+            'method\'s own definition of a charge and not a measured '
+            'quantity: the same methane carbon is -0.15 under GFN2, -0.13 '
+            'under GFN1, -0.36 under g-xTB and -0.09 under GFN-FF, so they '
+            'are read against each other and not across methods.'
+        ),
+        layout=widgets.Layout(width='84px', display='none'),
     )
     submit_manip_undo_btn = widgets.Button(
         description='Undo', button_style='info', icon='undo',
@@ -1065,15 +1191,30 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         disabled=True,
     )
     submit_ff_dd = widgets.Dropdown(
+        # GFN1 is in this list because it is in every other list: the climb
+        # takes it, the saddle search takes it, the solvent table was measured
+        # for it one solvent at a time, and three of this editor's own
+        # refusals name it as one of the methods to choose -- while the box
+        # they send the user to did not have it. A control that is missing an
+        # option the refusals point at is the interface saying two things at
+        # once, and the visible set of controls is meant to be the answer to
+        # "what can I do now".
+        #
+        # In the ladder the four xtb methods really form, which is also the
+        # order of what they cost: GFN-FF, GFN1, GFN2, g-xTB.
         options=[('UFF', 'uff'), ('MMFF94', 'mmff94'),
-                 ('GFN-FF', 'gfnff'), ('GFN2-xTB', 'gfn2'), ('g-xTB', 'gxtb'),
+                 ('GFN-FF', 'gfnff'), ('GFN1-xTB', 'gfn1'),
+                 ('GFN2-xTB', 'gfn2'), ('g-xTB', 'gxtb'),
                  ('PM6-D3H4', 'pm6d3h4'), ('PM6', 'pm6'), ('PM7', 'pm7')],
         value='uff',
         tooltip=(
             'What Optimise minimises with. UFF and MMFF94 run in the browser '
             'and also drive the live relaxation while you drag. GFN-FF, '
-            'GFN2-xTB and g-xTB run xtb on the server, and they know about the '
-            'metal where UFF guesses. g-xTB approximates wB97M-V/def2-TZVPPD '
+            'GFN1-xTB, GFN2-xTB and g-xTB run xtb on the server, and they '
+            'know about the metal where UFF guesses. GFN1 is the older '
+            'Hamiltonian and is kept because a structure GFN2 cannot converge '
+            'sometimes converges under it; GFN2 is the one to reach for '
+            'first. g-xTB approximates wB97M-V/def2-TZVPPD '
             'and needs a build of its own; Install g-xTB fetches it. '
             'PM6-D3H4, PM6 and PM7 run MOPAC on the server. Measured on '
             'twelve small organics, PM6 draws bonds closer to the literature '
@@ -1864,6 +2005,59 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='140px', height='30px'),
         disabled=True,
     )
+    #: What the structure on screen actually is, asked of a Hessian.
+    #:
+    #: This is a press of its own, and the case for one is that nothing else
+    #: on the row means it. The whole machinery -- the Hessian, the count of
+    #: modes going the wrong way, the sentences that name a minimum, a
+    #: transition state or a saddle of higher order -- was already built and
+    #: was reachable only from inside the saddle search, the path walk and the
+    #: scan. So somebody who dragged a structure into a shape, which is what
+    #: this editor is for, could not ask whether the shape is anything. An
+    #: absence on the toolbar is a statement about what can be done, and that
+    #: one was not true.
+    #:
+    #: It stands beside "To the saddle" because it is the same question read
+    #: the other way round: that press goes looking for a stationary point,
+    #: and this one asks whether there is already one here. They share the
+    #: wording, from :func:`delfin.dashboard.saddle.verdict`, so the two can
+    #: never disagree about what a structure is called.
+    #:
+    #: Affordable, which is the other half of the case. Measured here through
+    #: the editor's own path -- which is to say with the thread count set the
+    #: way :func:`~delfin.dashboard.gfn_optimize.interactive_cores` sets it --
+    #: under GFN2 on a shared machine carrying other people's work:
+    #:
+    #:     5 atoms, methane                    0.4 s  (4 cores)
+    #:     23 atoms, heptane                   1.1 s  (4 cores)
+    #:     57 atoms, a manganese complex, +1  23.7 s  (8 cores)
+    #:
+    #: So it is a press and a short wait, never something to put in a drag.
+    #: The thread count is the whole difference at the top of that list: the
+    #: same 57-atom Hessian run without it, letting OpenMP take what it liked
+    #: on a box at a load average of 800, took 14 minutes 29 seconds of wall
+    #: clock for 13 hours of CPU. A Hessian is the one thing here that will
+    #: happily buy nothing with every core on the machine.
+    #:
+    #: The thermochemistry rides along free. A Hessian is what a free energy
+    #: costs; H, T*S and the zero-point energy are printed in the same block
+    #: as G and were being read past, and the temperature box the answer is
+    #: computed at is already on this row.
+    submit_shape_btn = widgets.Button(
+        description='What is it?', icon='question', button_style='',
+        tooltip=(
+            'Take a Hessian on the structure exactly as it stands and say '
+            'what it is: a minimum, a transition state, a saddle of higher '
+            'order -- or none of those, which is the answer for a structure '
+            'that is still on a slope. Nothing is optimised and nothing is '
+            'moved. The free energy, enthalpy, entropy and zero-point energy '
+            'come with it, at the temperature in the box on this row. '
+            'Seconds for a small structure and minutes for a large one, so '
+            'it is a press rather than something that happens by itself.'
+        ),
+        layout=widgets.Layout(width='106px', height='30px', display='none'),
+        disabled=True,
+    )
     #: The same climb, slowed down enough to put a hand in the middle of it.
     #:
     #: ORCA's OptTS is a press and cannot be anything else: measured, a
@@ -1995,6 +2189,31 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         ),
     )
 
+    #: The labels and their two settings, as one item of the toolbar.
+    #:
+    #: A row inside a row, the way the internal-coordinate group is, and for
+    #: the same reason: a flexbox breaks *between* its items and never inside
+    #: one, so the number of direct children is what decides where the toolbar
+    #: can wrap.  What the labels say is a setting of the labels, so it goes
+    #: where the labels are; making the three of them one item is what keeps
+    #: that from costing the row a place to wrap between.  The toolbar carries
+    #: the same number of items it did before, plus the one new press.
+    #:
+    #: Where the group sits is a separate fact and is written where it is
+    #: placed, in the toolbar's own list.
+    #:
+    #: ``flex 0 1 auto`` and ``min_width 0`` written out for the reason the
+    #: internal group writes them out: a nested row that cannot shrink takes
+    #: its whole content past the edge of the toolbar however narrow the
+    #: window is.
+    submit_label_group = widgets.HBox(
+        [submit_labels_btn, submit_label_what, submit_label_size],
+        layout=widgets.Layout(
+            gap='6px', align_items='center', flex_flow='row wrap',
+            flex='0 1 auto', min_width='0', overflow='visible',
+        ),
+    )
+
     #: A line break for a wrapping toolbar.  Flexbox has no "break here", so
     #: the break is an element: nothing wide, taking a whole line, which
     #: pushes everything after it onto the next row.  It is inert in the
@@ -2012,8 +2231,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             submit_select_btn, submit_manip_btn, submit_draw_btn,
             submit_element_dd, submit_adjust_h_btn,
             submit_manip_clear_btn, submit_centre_btn,
-            submit_labels_btn, submit_label_size,
             submit_manip_undo_btn, submit_manip_redo_btn, submit_reset_btn,
+            # After Reset rather than before Undo, which is three buttons to
+            # the right of where the numbering used to sit and is a placement
+            # rather than a preference. Measured in chromium with a scan armed
+            # and every control forced visible -- the widest state the toolbar
+            # test builds -- at 1024 px embedded: an item added anywhere before
+            # the charge box pushes that box to the end of a wrapped line, and
+            # there its input paints 24 px past the 72 px container it was
+            # given, two of them past the toolbar itself. Nothing about this
+            # group causes that and nothing here can fix it; what this
+            # placement does is not provoke it. After Reset the toolbar is
+            # clear at 1024, 1280, 1536 and 1920 px, embedded and in the
+            # overlay.
+            submit_label_group,
             submit_ff_dd, submit_gfn_charge, submit_gfn_mult,
             submit_gfn_autospin, submit_gfn_solvent, submit_gfn_solv_model,
             submit_thermal_btn, submit_temperature,
@@ -2049,7 +2280,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # is 34 px taller at 1280 in the overlay; put inside it, taller
             # again at three widths.
             submit_path_from_btn, submit_saddle_from,
-            submit_saddle_how, submit_saddle_btn,
+            submit_saddle_how, submit_saddle_btn, submit_shape_btn,
             submit_poly_dd, submit_poly_turn_btn,
             submit_hyb_dd, submit_hyb_auto_btn,
             submit_internal_group,
@@ -2606,7 +2837,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                        submit_thermal_relax, submit_thermal_anchor_btn,
                        submit_topology_btn, submit_saddle_btn,
                        submit_saddle_from, submit_saddle_how,
-                       submit_climb_btn,
+                       submit_climb_btn, submit_shape_btn,
                        submit_path_from_btn):
             widget.disabled = not enabled
         submit_labels_btn.disabled = not enabled
@@ -3828,6 +4059,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # to climb that much further than the temperature pays for.  The
         # anchor is the zero; falling below it earns no credit.
         state['thermal_peak'] = 0.0
+        # And the frontier gap this drag starts from, which is what says
+        # later whether the bond order it is reporting can still be believed.
+        # A drag that begins at a closed gap is a different statement from one
+        # that closes it, so the baseline belongs to the grab.
+        state.pop('gfn_follow_gap0', None)
         _gfn_new_generation()
         # What the molecule looked like before this drag: the bonding is read
         # from here, not from a frame that has already been pulled about.
@@ -4401,6 +4637,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             _set_mol_status,
                             f'The molecule stopped following: {note}')
                         return
+                    # What this answer computed and used to throw away with
+                    # its scratch directory. A list assignment and, with the
+                    # labels off, nothing else at all -- see _repaint_labels.
+                    _remember_charges(outcome)
+                    if submit_labels_btn.value:
+                        # Rate-limited: see _repaint_labels for why a drag
+                        # must not put a script on the run_js channel once per
+                        # answer, and why labels are the one thing that can be
+                        # dropped there without being wrong.
+                        schedule_ui_update(_repaint_labels, False)
                     # Say it out loud, every step.  A follow that is working
                     # and a follow that is not both look like a molecule that
                     # is not moving much, and the difference is the whole
@@ -4462,6 +4708,71 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             f'step(s), '
                             f'{(time.perf_counter() - began) * 1000:.0f} ms '
                             f'each.{hand}')
+                    # The bond order of the pair the hand is driving, as a
+                    # readout and as nothing else.
+                    #
+                    # It decides nothing. This was built to be the honest
+                    # answer to "is the bond still there", on the grounds that
+                    # the editor's own watch -- :func:`gfn_optimize._is_a_bond`,
+                    # covalent radii with slack -- is a cliff at 1.94 A, and
+                    # the measurement says the opposite: an ethane C-C held at
+                    # 3.03 A with everything else relaxed still reads 1.000,
+                    # because a single closed-shell determinant keeps that pair
+                    # in one orbital however far the two carbons are taken. At
+                    # the same geometry the frontier gap has fallen from 15.3
+                    # to 0.75 eV and a separate measurement puts the fractional
+                    # occupation density at 1.73 electrons. So as a
+                    # bond-existence test the order is worse than the distance,
+                    # not better: it says everything is fine exactly where the
+                    # method has stopped working. The bond watch stays
+                    # geometric, and this is a number to read.
+                    #
+                    # It is worth reading. Where the two fragments stay closed
+                    # shells the order tracks the bond all the way -- an
+                    # ammonia borane N-B runs 0.61, 0.51, 0.40, 0.24, 0.00 from
+                    # 1.66 to 2.86 A -- and 1.9 across a C=C or 0.61 for a
+                    # dative bond at its own minimum is something a chemist can
+                    # use.
+                    #
+                    # On the pair the gesture named, not on the atoms: an
+                    # order belongs to two atoms and nothing else, and summed
+                    # onto one of them it would be a valence, which is a
+                    # different quantity answering a different question. It
+                    # goes in the line rather than into the picture for the
+                    # same reason the price does -- the drag already has the
+                    # user's eyes on the structure, and a second row of
+                    # numbers over the atoms while an atom is being aimed is
+                    # more than can be read.
+                    #
+                    # Nothing at all under GFN-FF, which computes no bond
+                    # order.
+                    driven = next((one for one in contacts
+                                   if len(one.get('atoms') or ()) == 2), None)
+                    if driven is not None:
+                        pair = [int(i) for i in driven['atoms']]
+                        order = _gfn.bond_order_between(
+                            outcome.get('bonds'), pair[0], pair[1])
+                        if order is not None:
+                            rows = _gfn.atom_lines(outcome.get('xyz') or '')
+                            names = 'The pair the hand is driving'
+                            if all(0 <= i < len(rows) for i in pair):
+                                names = (
+                                    f'{rows[pair[0]].split()[0]}{pair[0]}-'
+                                    f'{rows[pair[1]].split()[0]}{pair[1]}')
+                            # With the gap of the same answer, and the gap
+                            # this drag started from. Where the frontier gap
+                            # has closed the order is being read off a
+                            # description that has stopped working -- an
+                            # ethane pulled to 3.03 A still reads 1.00 -- and
+                            # the fall from where the drag began is what says
+                            # so soonest.
+                            note = _gfn.bond_order_note(
+                                order, names, outcome.get('gap'),
+                                state.get('gfn_follow_gap0'))
+                            if note:
+                                said = f'{said} {note}'
+                    if state.get('gfn_follow_gap0') is None:
+                        state['gfn_follow_gap0'] = outcome.get('gap')
                     # What the drag has cost so far: the energy of the
                     # relaxation that has just run, which held the drag and
                     # let everything else move.
@@ -6927,6 +7238,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         state['gfn_energy'] = float(outcome['energy'])
                         state['gfn_energy_unit'] = outcome.get('energy_unit')
                     if position == 0:
+                        # The charges of the structure that is about to be on
+                        # screen, out of the answer that is about to draw it.
+                        # Only the frame being looked at: a batch of isomers
+                        # optimises one after another, and the charges of the
+                        # fourth of them belong to a structure nobody is
+                        # showing.
+                        _remember_charges(outcome)
                         # Whether this run finished the job, and how far it got
                         # if it did not.  An engine that does not report either
                         # counts as finished: a run that cannot say it is
@@ -9639,6 +9957,214 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         """
         return _saddle.verdict(shape, what, advise=advise)['lines']
 
+    def _said_thermochemistry(thermo):
+        """G, H, T*S and the zero-point energy, in one line, or nothing.
+
+        In kcal/mol, which is what the rest of this editor prices things in,
+        and the entropy as T*S rather than as S so that all four numbers are
+        the same quantity and can be added and subtracted by eye.  The
+        temperature is named because every one of them depends on it and the
+        box that set it is at the other end of a crowded row.
+
+        The zero-point energy is said apart from the rest: it is the only one
+        of the four that has nothing to do with the temperature, and a
+        structure with a soft mode has a small one for a reason worth
+        noticing.
+        """
+        if not thermo:
+            return []
+        warmth = float(thermo.get('kelvin') or 0.0)
+        free = thermo.get('free_energy')
+        heat = thermo.get('enthalpy')
+        ts = thermo.get('ts')
+        zpe = thermo.get('zpe')
+        if free is None and heat is None:
+            return []
+        parts = []
+        if free is not None:
+            parts.append(f'G = {float(free) * _HARTREE_TO_KCAL:.2f}')
+        if heat is not None:
+            parts.append(f'H = {float(heat) * _HARTREE_TO_KCAL:.2f}')
+        if ts is not None:
+            parts.append(f'T*S = {float(ts) * _HARTREE_TO_KCAL:.2f}')
+        said = [f'At {warmth:g} K, in kcal/mol: ' + ', '.join(parts) + '.']
+        if zpe is not None:
+            said.append('The zero-point energy is '
+                        f'{float(zpe) * _HARTREE_TO_KCAL:.2f} kcal/mol, which '
+                        'no temperature takes away.')
+        return said
+
+    def _said_curvature(shape):
+        """What the modes say where nothing is standing still.
+
+        The naming in :func:`delfin.dashboard.saddle.verdict` is about
+        stationary points -- "a minimum", "a transition state" -- and those
+        words are not available here: a Hessian on a slope is the curvature of
+        a hillside, and calling a hillside with no downward mode "a minimum"
+        is exactly the false confidence this press exists to prevent.
+        Measured on a hand-built methane with every C-H at 1.0897 A, which is
+        nobody's stationary point: xtb counts zero imaginary modes there and
+        is perfectly right to, and read through the naming it came out as "is
+        a minimum".
+
+        So on a slope the count is said as a count, and no structure is named.
+        """
+        if not shape:
+            return ['Its modes could not be checked.']
+        modes = [float(one) for one in (shape.get('modes') or [])]
+        order = shape.get('count')
+        order = len(modes) if order is None else int(order)
+        if order == 0:
+            return ['Every mode there curves upwards, which is what the '
+                    'surface looks like on the way down into a well -- but '
+                    'which well, and how far, is what Optimise answers.']
+        listed = ', '.join(f'{one:.0f}' for one in modes[:max(0, order)])
+        return [f'{order} mode(s) curve downwards there'
+                + (f' ({listed} cm-1)' if listed else '')
+                + '. On a slope that is the shape of the hillside and not a '
+                  'saddle: a transition state is a stationary point, and this '
+                  'is not one.']
+
+    def _lowest_bond_orders_said(bonds, xyz, gap=None, most=2):
+        """The lowest bond orders in this answer, named -- as a readout.
+
+        Only the pairs xtb printed an order for, and only the ones under
+        :data:`~delfin.dashboard.gfn_optimize.BOND_WORTH_SAYING`: a structure
+        whose lowest order is a proper single bond has nothing to say here,
+        and printing "the lowest is 0.98" on every press would train the
+        reader to skip the line that matters.
+
+        It says nothing about whether those bonds exist, and it is worth being
+        explicit about why, because the opposite was built here first: a
+        Wiberg order is a readout of the wavefunction, and under a closed-shell
+        Hamiltonian a homolytically broken bond still reads about one -- an
+        ethane at 3.03 A reads 1.000. The bond watch stays geometric. What
+        this is for is the ordinary reading a chemist does: a long dative bond
+        at 0.24, a partial bond in a structure being built.
+        """
+        if not bonds:
+            return []
+        rows = [line.split() for line in _gfn.atom_lines(xyz or '')]
+        if not rows:
+            return []
+        lowest = sorted(
+            (one for one in bonds if float(one[2]) < _gfn.BOND_WORTH_SAYING),
+            key=lambda one: float(one[2]))[:int(most)]
+        said = []
+        for first, second, order in lowest:
+            if not (0 <= first < len(rows) and 0 <= second < len(rows)):
+                continue
+            names = (f'{rows[first][0]}{first}-{rows[second][0]}{second}')
+            said.append(_gfn.bond_order_note(order, names, gap))
+        said = [one for one in said if one]
+        if said:
+            # Once, above them, and only where there are any to read. This is
+            # the sentence that keeps the numbers from being read as a bond
+            # watch, and it is the press that can afford it -- the drag line
+            # quotes the bare number, several times a second.
+            said.insert(0, 'The lowest bond orders here, as a readout -- an '
+                            'order is not a test of whether a bond is there, '
+                            'and under a closed shell a bond broken '
+                            'homolytically still reads about one:')
+        return said
+
+    def on_submit_shape(_button=None):
+        """One press: what is the structure on screen, and what does it cost.
+
+        A Hessian on the geometry exactly as it stands -- nothing is
+        optimised, nothing is moved, and the coordinate box is not written to.
+        That is the point: the question is about the structure the user built,
+        and a press that quietly relaxed it first would answer about a
+        different one.
+
+        What comes back is said in three parts, and the order matters.
+        Whether it is standing still comes first, because everything after it
+        is read differently if it is not: a Hessian at a geometry that is not
+        a stationary point describes a point on a slope, and the honest
+        sentence for a structure with a large gradient is that it is neither a
+        minimum nor a saddle. Then what the modes say, in the same words the
+        saddle search uses. Then what it costs at the temperature on the row.
+        """
+        if state.get('shape_run'):
+            return
+        xyz = _current_xyz()
+        method = str(submit_ff_dd.value)
+        if not xyz:
+            _set_mol_status('There is no structure to ask about.')
+            return
+        if not _gfn.is_gfn_method(method):
+            # It should not be reachable -- the press is not on the row under
+            # anything else -- but a method can change while a press is in
+            # flight, and a button that acts on the wrong engine is worse than
+            # one that says so.
+            _set_mol_status(
+                'A Hessian here is xtb\'s, so choose GFN-FF, GFN1, GFN2 or '
+                'g-xTB. Anything with a basis set is a job for the ORCA '
+                'Builder.')
+            return
+        state['shape_run'] = True
+        label = _server_label(method)
+        charge = int(submit_gfn_charge.value or 0)
+        uhf = _gfn_uhf_now()
+        wet = str(submit_gfn_solvent.value or '') or None
+        model = _solv_model()
+        warmth = float(submit_temperature.value or 298.15)
+        atoms = len(_gfn.atom_lines(xyz))
+        _set_mol_status(
+            f'{label} is taking a Hessian on the {atoms} atoms as they '
+            'stand...', spinner=True)
+
+        def _work():
+            # No cap on the clock. A Hessian grows steeply with the structure
+            # -- measured, 0.4 s for five atoms, 1.1 s for 23 and 23.7 s for
+            # 57 -- and a press that gave up at an arbitrary second would
+            # throw away exactly the answers that took long enough to be
+            # worth asking for. The ring says it is running, and the press is
+            # the user's to make.
+            found = _gfn.optimize_with_gfn(
+                xyz, method, charge=charge, uhf=uhf, timeout=None,
+                solvent=wet, solvation_model=model,
+                optimise=False, free_energy=True, thermo_kelvin=warmth)
+
+            def _done():
+                state['shape_run'] = False
+                if not found.get('ok'):
+                    _set_mol_status(str(found.get('status')
+                                        or 'The Hessian did not run.'))
+                    return
+                _remember_charges(found)
+                _repaint_labels()
+                lines = [f'{label}: {found["seconds"]:.1f} s for the Hessian '
+                         f'on {atoms} atoms, and the structure is untouched.']
+                # First, because it decides how the rest may be worded: the
+                # names a Hessian goes by -- a minimum, a transition state --
+                # all mean "stationary point of this order", and none of them
+                # is available for a structure that is still on its way
+                # somewhere.
+                slope = _gfn.not_a_stationary_point(found.get('gradient'),
+                                                    atoms)
+                if slope:
+                    lines.append(slope)
+                    lines.extend(_said_curvature(found.get('imaginary')))
+                else:
+                    lines.extend(_said_modes(
+                        found.get('imaginary'), 'The structure as it stands'))
+                lines.extend(_said_thermochemistry(found.get('thermo')))
+                # And whether the method is still able to answer at all.
+                # Before the bonds, because it is what decides whether their
+                # orders may be read as evidence at all.
+                depth = _gfn.method_is_out_of_its_depth(found.get('gap'))
+                if depth:
+                    lines.append(depth)
+                lines.extend(_lowest_bond_orders_said(
+                    found.get('bonds'), xyz, found.get('gap')))
+                _set_mol_status(*lines)
+
+            schedule_ui_update(_done)
+
+        _start_background(_work, 'The Hessian',
+                          guards={'shape_run': False})
+
     def on_submit_saddle(_button=None):
         """The one press for a transition state, and what the boxes say.
 
@@ -11417,14 +11943,137 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         return '(window._submitMolViewerByScope||{})[%s]' % json.dumps(
             submit_scope_id)
 
+    def _charges_here():
+        """The charges of the last answer, if they still describe this one.
+
+        Kept against the element column rather than against the coordinates:
+        a charge is a property of the geometry and changes as it is dragged,
+        so holding out for an exact match would show nothing at all during
+        the one gesture the numbers are most worth watching. What it must
+        never do is put one structure's charges on another structure's atoms,
+        and the element column is what the rest of this editor tells those
+        apart by -- the perception, the GFN-FF topology and the thermal anchor
+        are all keyed on it, for the same reason.
+        """
+        charges = state.get('atom_charges')
+        if not charges:
+            return None
+        if state.get('atom_charges_for') != _structure_fingerprint(
+                _current_xyz() or ''):
+            return None
+        return charges
+
+    def _label_texts_now():
+        """What the labels are to say, or None for the atom numbers.
+
+        An empty list where the charges are wanted and there are none yet,
+        which draws nothing at all. Falling through to the numbers would have
+        the box saying "charge" over a structure labelled with indices, and
+        the two are told apart only by which of them happens to look like a
+        charge -- atom 0 with a charge of 0 is the same sprite either way.
+        Nothing on the atoms and a line underneath saying what would put
+        something there is the honest state.
+        """
+        if str(submit_label_what.value) != 'charge':
+            return None
+        return atom_charge_texts(_charges_here()) or []
+
+    def _repaint_labels(force=True):
+        """Put the labels back on the atoms with whatever they say now.
+
+        Nothing is recomputed and the molecule is not re-rendered: the sprites
+        are rebuilt over the model the browser already holds.  A no-op with
+        the labels off, so a drag under the ordinary settings pays nothing for
+        this at all.
+
+        *force* false is the drag's way in, and it is rate-limited on purpose.
+        This travels by ``run_js``, which clears its output before displaying
+        -- the reason the frames and the thermal wall each have a widget
+        field of their own -- so a message sent twenty times a second is a
+        message mostly overwritten before the page has drawn it.  Labels
+        survive that where a frame would not, because each one is the whole
+        state rather than one step of a sequence: the last to land is the
+        right one and the ones lost in between were about geometries already
+        gone.  What is left is the cost, and a 7 KB script at the rate GFN-FF
+        answers a small molecule -- measured at 125 to 900 ms an answer on a
+        borazane, and under 40 ms on the smallest -- is crowding a channel the
+        drag has better uses for.
+
+        Four times a second, which is faster than a charge visibly changes:
+        measured on an ammonia borane pulled apart, the nitrogen went -0.25,
+        -0.26, -0.27, -0.29, -0.33, -0.40 over six answers.
+        """
+        if not submit_labels_btn.value:
+            return
+        now = time.perf_counter()
+        if not force:
+            last = float(state.get('labels_drawn_at') or 0.0)
+            if now - last < _LABEL_REPAINT_INTERVAL:
+                return
+        state['labels_drawn_at'] = now
+        _run_manip_js(
+            show_atom_numbers_js(
+                var=_submit_viewer_js(), on=True,
+                scale=scale_for_px(submit_label_size.value),
+                texts=_label_texts_now())
+        )
+
+    def _remember_charges(outcome):
+        """Keep what an answer computed, for the labels and for nothing else.
+
+        Every server answer goes through here, including the ones a drag makes
+        several times a second. It is a list assignment: the charges were read
+        off a file the engine had already written, and this is where they
+        stop being thrown away.
+        """
+        if not isinstance(outcome, dict):
+            return
+        charges = outcome.get('charges')
+        if not charges:
+            return
+        # Named by the structure they were computed for and by the method
+        # that computed them. Both matter: an answer that arrives after the
+        # molecule has been replaced would otherwise draw one structure's
+        # charges on another's atoms, and four methods give four different
+        # numbers for the same atom.
+        state['atom_charges'] = list(charges)
+        state['atom_charges_method'] = str(outcome.get('method') or '')
+        state['atom_charges_for'] = _structure_fingerprint(
+            str(outcome.get('xyz') or ''))
+
+    def _refresh_label_what():
+        """Which labels this method can actually draw.
+
+        The charge entry appears under the engines that compute one and is
+        absent under the two that run in the browser, because there it would
+        be a word for a quantity that does not exist. Absent rather than
+        greyed: a control that is there and refuses is a question the user has
+        to ask before finding out, and the answer never changes while the
+        method does not.
+        """
+        offers = _server_method()
+        entries = [('number', 'number')]
+        if offers:
+            entries.append(('charge', 'charge'))
+        was = str(submit_label_what.value)
+        state['label_what_quiet'] = True
+        try:
+            submit_label_what.options = entries
+            submit_label_what.value = (
+                was if was in {code for _name, code in entries} else 'number')
+        finally:
+            state['label_what_quiet'] = False
+        submit_label_what.layout.display = (
+            '' if submit_labels_btn.value else 'none')
+
     def on_submit_labels_toggle(change):
-        """Numbers on or off, and nothing else.
+        """Labels on or off, and nothing else.
 
         The molecule is emphatically not rendered again. Rebuilding it from
         the coordinates is how a structure loses what only the browser knows:
         the bonds as they were perceived, and the ones made or broken by hand.
         Switching the numbers off used to do exactly that, so a molecule that
-        had been optimised came back with bonds missing. The numbers are a
+        had been optimised came back with bonds missing. The labels are a
         layer of sprites over the model -- they can be added and taken away
         without the model hearing about it.
         """
@@ -11432,15 +12081,54 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return
         on = bool(submit_labels_btn.value)
         submit_label_size.layout.display = '' if on else 'none'
+        submit_label_what.layout.display = '' if on else 'none'
         submit_labels_btn.button_style = 'info' if on else ''
         _run_manip_js(
             show_atom_numbers_js(
                 var=_submit_viewer_js(), on=on,
-                scale=scale_for_px(submit_label_size.value))
+                scale=scale_for_px(submit_label_size.value),
+                texts=_label_texts_now())
         )
+        if on:
+            _say_what_the_labels_say()
+
+    def _say_what_the_labels_say():
+        """One line about charges, and only where it is worth a line.
+
+        Nothing at all for the numbers, which say what they are. For the
+        charges: which method's definition they are, because four methods give
+        four different numbers for the same atom -- or, where no answer has
+        been made yet, that there is nothing to draw and what would produce
+        one. An empty structure with the word "charge" chosen and no
+        explanation is the tool looking broken.
+        """
+        if str(submit_label_what.value) != 'charge':
+            return
+        charges = _charges_here()
+        if not charges:
+            _set_mol_status(
+                'The labels will say the partial charges as soon as there is '
+                'an answer to read them from -- press Optimise, or drag. '
+                'Nothing extra is run for them: every server method writes '
+                'them out already.')
+            return
+        method = str(state.get('atom_charges_method') or '')
+        named = _server_label(method) if method else 'the last run'
+        _set_mol_status(
+            f'The labels are {named} partial charges, at the geometry of the '
+            'last answer. Each method has its own definition of one, so they '
+            'are read against each other within a structure and not across '
+            'methods.')
+
+    def on_submit_label_what(change):
+        """Numbers or charges, on the labels that are already there."""
+        if change.get('name') != 'value' or state.get('label_what_quiet'):
+            return
+        _repaint_labels()
+        _say_what_the_labels_say()
 
     def on_submit_label_size(change):
-        """Resize them in the viewer that is already there.
+        """Resize what is there in the viewer that is already there.
 
         Nothing is re-rendered: the browser rescales the label sprites it
         holds, so the size changes as the dropdown closes.
@@ -11906,6 +12594,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         submit_gfn_autospin.layout.display = '' if xtb else 'none'
         if not xtb and submit_gfn_autospin.value:
             submit_gfn_autospin.value = False
+        # What the labels may be asked to say, and whether the press that asks
+        # what a structure is has anything to ask with. Both follow the
+        # method, and both are absent rather than refusing where it cannot
+        # answer -- see _refresh_label_what and submit_shape_btn.
+        _refresh_label_what()
+        submit_shape_btn.layout.display = '' if xtb else 'none'
+        # An anchor and a set of charges belong to the method that measured
+        # them. The budget already guards its own anchor that way; the charges
+        # are simply dropped, because a label is drawn without anything
+        # keyed on it and GFN-FF's charges on a GFN2 structure would be four
+        # hundredths of an electron wrong with nothing on screen saying so.
+        if state.get('atom_charges_method') not in ('', str(chosen), None):
+            state.pop('atom_charges', None)
+            state.pop('atom_charges_method', None)
+            state.pop('atom_charges_for', None)
+            _repaint_labels()
         # Strength is how many steps the browser's field takes per animation
         # frame, and that field does not run under a server method.
         submit_strength_slider.layout.display = 'none' if server else ''
@@ -12465,6 +13169,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_gfn_solvent.observe(on_submit_solvent, names='value')
     submit_gfn_solv_model.observe(on_submit_solv_model, names='value')
     submit_labels_btn.observe(on_submit_labels_toggle, names='value')
+    submit_label_what.observe(on_submit_label_what, names='value')
     submit_label_size.observe(on_submit_label_size, names='value')
     submit_strength_slider.observe(on_submit_strength_changed, names='value')
     submit_pull_slider.observe(on_submit_pull_changed, names='value')
@@ -12474,6 +13179,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_scan_whole.observe(on_submit_scan_whole, names='value')
     submit_path_from_btn.on_click(on_submit_path_from)
     submit_saddle_btn.on_click(on_submit_saddle)
+    submit_shape_btn.on_click(on_submit_shape)
     # The start decides which ways there are -- there is no walk to stop after
     # when the start is the structure on screen -- so it goes through the one
     # place that works both boxes out; the way only renames the press.
@@ -12759,7 +13465,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if submit_labels_btn.value:
             labels = show_atom_numbers_js(
                 var='viewer_UNIQUEID',
-                scale=scale_for_px(submit_label_size.value))
+                scale=scale_for_px(submit_label_size.value),
+                texts=_label_texts_now())
         if hasattr(view, 'startjs'):
             view.startjs += registration
             if labels:
