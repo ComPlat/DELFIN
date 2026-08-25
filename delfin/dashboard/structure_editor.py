@@ -189,6 +189,49 @@ def _is_editor_comment(line):
     return any(text.startswith(one) for one in _EDITOR_COMMENTS)
 
 
+def fixed_atoms_note(held):
+    """What a force field running here did with the held values, in its terms.
+
+    The counterpart of :func:`gfn_optimize.held_note` and
+    :func:`mopac_optimize.freeze_note`, and it reads the same shape MOPAC's
+    does, because the two engines can do the same one thing: RDKit's UFF takes
+    ``AddFixedPoint`` and Open Babel a list of fixed atoms, and neither has a
+    restraint.  So a fix is met by holding the atoms that name it still --
+    which is more than was asked, since those atoms also stop turning and
+    moving -- and a pull cannot be said at all.
+
+    Which of the two happened has to be said, because the alternative is what
+    this branch of Optimise did before it was handed anything: measured on
+    ethane with the bonding pinned, C0-H2 pulled out to 1.700 A and held
+    exactly came back from one press at 1.1104 A, under a status line reading
+    only "Optimised with UFF."  A held value that is silently given up makes
+    the result an answer to a question nobody asked.
+    """
+    said = []
+    if held['held']:
+        said.append(
+            f"{held['held']} held value(s) kept by fixing the "
+            f"{len(held['frozen'])} atom(s) they name, where they stand -- "
+            'the force field fixes atoms, not the value between them, so '
+            'those atoms also stop turning and moving')
+    if held.get('every_atom'):
+        # A small molecule runs out of atoms quickly: an angle held on a water
+        # names all three of them.  The press then cannot move anything, and
+        # saying "Optimised" over a geometry nothing happened to would be the
+        # same silence this function exists to end, one step further along.
+        said.append('and that is every atom in the structure, so there was '
+                    'nothing left to relax -- release one of them to let the '
+                    'rest of the molecule move')
+    if held['pulls']:
+        said.append(f"{held['pulls']} pull(s) not honoured -- an atom here is "
+                    'held or free, so there is no value to negotiate with; '
+                    'hold them as fix, or optimise under a GFN method')
+    if held['dropped']:
+        said.append(f"{len(held['dropped'])} held value(s) dropped -- they "
+                    'name atoms this structure does not have')
+    return (' ' + '; '.join(said) + '.') if said else ''
+
+
 #: Boltzmann, Planck and the gas constant, in the units this file speaks:
 #: kcal/mol for energies, kelvin for temperature, seconds for time.
 _BOLTZMANN_SI = 1.380649e-23          # J/K
@@ -6837,12 +6880,44 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             solvation_model=model,
                             on_frames=_push_frames if position == 0 else None)
                     else:
+                        # The held values, in the only terms a force field
+                        # here has.  RDKit's UFF takes AddFixedPoint and Open
+                        # Babel a list of fixed atoms; neither can restrain a
+                        # value.  So a fix is met by holding the atoms that
+                        # name it still, and a pull cannot be said at all --
+                        # the same reading MOPAC's flags get, from the same
+                        # function, so that a value one engine drops is
+                        # dropped by the other for the same reason.
+                        #
+                        # Handed nothing at all, as this branch was, the whole
+                        # list went quietly: measured on ethane with the
+                        # bonding pinned, C0-H2 pulled out to 1.700 A and held
+                        # exactly came back from one press of Optimise at
+                        # 1.1104 A, under a line that said only "Optimised
+                        # with UFF."  Fixed, it comes back at 1.7000, and a
+                        # Zn-N held at 2.600 through Open Babel likewise.
+                        atoms = len(_gfn.atom_lines(xyz))
+                        frozen = _mopac.freeze_flags(held,
+                                                     atoms=atoms or None)
+                        # Whether anything is left free.  Reaching for an
+                        # angle on a water names all three atoms, and the
+                        # minimisation then has nothing to do -- which is
+                        # worth a sentence rather than an "Optimised" over a
+                        # geometry that did not move.
+                        frozen['every_atom'] = bool(
+                            atoms and len(frozen['frozen']) >= atoms)
                         outcome = relax_xyz(
                             xyz,
+                            fixed_indices=sorted(frozen['frozen']),
                             max_steps=500,
                             perceived=_perception_for(xyz),
                             method=method,
                         )
+                        # Read by the status line below in this engine's terms,
+                        # through the same key the other two report on.  It is
+                        # cleared at the start of every press, so a reading
+                        # made under one engine cannot be read under another.
+                        outcome['held'] = frozen
                 except Exception as exc:
                     failures.append(f'frame {position + 1}: {exc}')
                     results.append(item)
@@ -7042,18 +7117,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # asked.
                 said += _solvents.note(_solv_model(), submit_gfn_solvent.value)
                 # In the terms of whichever engine ran.  xtb restrains the
-                # value with one force constant for the whole set; MOPAC fixes
-                # the atoms that name it and cannot express a pull at all.
-                # Read out with the wrong one, a MOPAC result would claim a
-                # force constant that no MOPAC run has.
+                # value with one force constant for the whole set; MOPAC and
+                # the force fields here fix the atoms that name it and cannot
+                # express a pull at all.  Read out with the wrong one, a MOPAC
+                # result would claim a force constant that no MOPAC run has.
                 kept = state.get('gfn_held')
                 if pm:
                     said += _mopac.freeze_note(kept or {
                         'held': 0, 'pulls': 0, 'dropped': [], 'frozen': set()})
-                else:
+                elif gfn:
                     said += _gfn.held_note(kept or {
                         'held': 0, 'dropped': [], 'mixed': False,
                         'force': None})
+                else:
+                    said += fixed_atoms_note(kept or {
+                        'held': 0, 'pulls': 0, 'dropped': [], 'frozen': set()})
                 aside = int(state.pop('held_set_aside', 0) or 0)
                 if aside:
                     # Said out loud rather than done quietly: a value held on
@@ -7575,8 +7653,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return (
                 f'{str(method).upper()} runs in the browser, which pulls '
                 f'towards a held value rather than fixing it: the {fixed} '
-                'exact one(s) are held very firmly, not held still. Optimise '
-                'under a GFN method to have them met exactly.')
+                'exact one(s) are held very firmly, not held still. One press '
+                'of Optimise meets them exactly, by fixing the atoms they '
+                'name.')
         return ''
 
     def _selected_constraint():
