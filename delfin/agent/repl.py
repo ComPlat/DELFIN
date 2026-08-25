@@ -862,41 +862,49 @@ class TerminalAgent:
         while True:
             key = self._read_key(raw, allowed | {"\x1b"})
             if key in ("\x1b", "n"):
-                self.broker.resolve(req, self._refuse(req))
-                self.transcript.chrome(self.transcript.theme.dim("  refused"))
+                if self._apply(req, self._refuse(req)):
+                    self.transcript.chrome(
+                        self.transcript.theme.dim("  refused"))
                 return
             if key == "?":
                 self.transcript.chrome(tc.render_help(req, options))
                 continue
             if key == "a":
+                # This one first, the rest after: abort_all resolves
+                # everything still queued, so asking it first would make
+                # the answer to THIS request late by construction and the
+                # line below would report an expiry that never happened.
+                landed = self._apply(req, self._refuse(req))
                 denied = self.broker.abort_all()
-                self.broker.resolve(req, self._refuse(req))
                 self._stop_engine()
                 extra = (f" and {len(denied)} other request(s) in flight"
                          if denied else "")
+                head = ("! aborted — this was refused" if landed
+                        else "! aborted")
                 self.transcript.chrome(self.transcript.theme.yellow(
-                    f"! aborted — this was refused{extra}, and the turn is "
-                    "ending"))
+                    f"{head}{extra}, and the turn is ending"))
                 return
             if key == "y":
-                self.broker.resolve(req, self._allow(req))
+                self._apply(req, self._allow(req))
                 return
             if key == "d" and req.kind == tc.PLAN:
-                self.broker.resolve(
-                    req, {"approved": True, "new_mode": "default"})
-                self.transcript.chrome(self.transcript.theme.cyan(
-                    "approval → default"))
+                if self._apply(req, {"approved": True, "new_mode": "default"}):
+                    self.transcript.chrome(self.transcript.theme.cyan(
+                        "approval → default"))
                 return
             if key == "e" and req.kind == tc.PLAN:
-                self.broker.resolve(
-                    req, {"approved": True, "new_mode": "acceptEdits"})
-                self.transcript.chrome(self.transcript.theme.cyan(
-                    "approval → acceptEdits"))
+                if self._apply(req,
+                               {"approved": True, "new_mode": "acceptEdits"}):
+                    self.transcript.chrome(self.transcript.theme.cyan(
+                        "approval → acceptEdits"))
                 return
             if key == "e":
+                # The mode switch is a posture for the session, so it is
+                # reported on its own terms — it happens whether or not the
+                # answer to this request still had somewhere to land.
                 ok, msg = self.broker.accept_edits()
                 self.transcript.chrome(self.transcript.theme.cyan(f"  {msg}"))
-                self.broker.resolve(req, self._allow(req))
+                self._apply(req, self._allow(req))
                 return
             if key in ("A", "k"):
                 pattern = (self.broker.exact_pattern(req.command) if key == "A"
@@ -906,7 +914,7 @@ class TerminalAgent:
                     self.transcript.chrome(
                         self.transcript.theme.cyan(f"  {msg}") if ok
                         else self.transcript.theme.red(f"  {msg}"))
-                self.broker.resolve(req, self._allow(req))
+                self._apply(req, self._allow(req))
                 return
             # Unreachable in practice: _read_key only ever returns a key
             # from `allowed`. Kept as a hard stop rather than a fallthrough
@@ -914,6 +922,23 @@ class TerminalAgent:
             # cannot silently mean "yes".
             self.transcript.chrome(self.transcript.theme.dim(
                 "  that key does nothing here"))
+
+    def _apply(self, req, decision) -> bool:
+        """Hand the answer to the broker, and say when it arrived too late.
+
+        ``resolve`` discards an answer to a request that had already
+        expired or been aborted — the gate was told "no" on the user's
+        behalf and the model has moved on. Printing "refused" or
+        "approval → default" regardless puts an effect on the screen that
+        nothing applied, so every line that describes an answer is printed
+        only when this returned True.
+        """
+        if self.broker.resolve(req, decision):
+            return True
+        self.transcript.chrome(self.transcript.theme.yellow(
+            "  too late — that request had already expired and was refused "
+            "without you, so this key changed nothing"))
+        return False
 
     def _confirm_persist(self, pattern: str, raw) -> bool:
         """A second keystroke, against the consequence spelled out.
@@ -941,14 +966,14 @@ class TerminalAgent:
         for i, opt in enumerate(options, 1):
             self.transcript.chrome(f"  {i}. {rr.strip_control(opt)}")
         if not options:
-            self.broker.resolve(req, {"answers": []})
+            self._apply(req, {"answers": []})
             return
         allowed = {str(i) for i in range(1, len(options) + 1)} | {"\x1b"}
         key = self._read_key(raw, allowed)
         if key == "\x1b":
-            self.broker.resolve(req, {"answers": []})
+            self._apply(req, {"answers": []})
             return
-        self.broker.resolve(req, {"answers": [options[int(key) - 1]]})
+        self._apply(req, {"answers": [options[int(key) - 1]]})
 
     def _read_key(self, raw, allowed: set[str]) -> str:
         """One keystroke, from the reader the key layer already owns."""

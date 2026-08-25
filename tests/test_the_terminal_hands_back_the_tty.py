@@ -314,3 +314,50 @@ def test_an_escape_with_nothing_behind_it_still_ends_the_turn():
     assert decoder.feed("") == [rk.KeyEvent(rk.INTERRUPT)], (
         "the pump feeds every read, empty ones included — that is the "
         "deadline that says nothing followed the ESC")
+
+
+# ---------------------------------------------------------------------------
+# The screen states effects that happened
+# ---------------------------------------------------------------------------
+
+def _expired(req):
+    """A request in the state a timeout leaves it in."""
+    req.expired = True
+    req.resolved = True
+    req.decision = tc.TerminalConfirmBroker._refusal_for(req)
+    return req
+
+
+def test_a_keystroke_that_lands_after_the_request_expired_says_so():
+    """`resolve` discards a late answer and returns False saying it did.
+
+    Printing "refused" anyway credits this keystroke with an effect the
+    broker did not apply: the refusal was the timeout's, and the model has
+    already been told.
+    """
+    broker = tc.TerminalConfirmBroker(timeout_s=5)
+    agent, _engine, err = _agent(broker=broker)
+
+    req = _expired(tc.ConfirmRequest(
+        kind=tc.CONFIRM, tool="write_file", args={"path": "x.py"},
+        preview="--- a/x.py\n+++ b/x.py\n+x = 1\n"))
+    agent._answer(req, _Keys(["n"]))
+
+    text = err.getvalue()
+    assert "too late" in text
+    assert "  refused" not in text, (
+        "that refusal belonged to the timeout, not to this keystroke")
+
+
+def test_a_late_plan_approval_does_not_announce_a_posture():
+    broker = tc.TerminalConfirmBroker(timeout_s=5)
+    agent, _engine, err = _agent(broker=broker)
+
+    req = _expired(tc.ConfirmRequest(kind=tc.PLAN, preview="1. read\n2. edit"))
+    agent._answer(req, _Keys(["d"]))
+
+    assert req.decision == {"approved": False, "new_mode": "plan"}, (
+        "the expiry already answered it; the key must not overwrite that")
+    text = err.getvalue()
+    assert "approval → default" not in text
+    assert "too late" in text
