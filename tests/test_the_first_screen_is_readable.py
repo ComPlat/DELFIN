@@ -300,3 +300,78 @@ def test_the_repl_reads_the_flag_the_parser_declares():
     from delfin.agent import repl
     assert "color" in inspect.signature(repl.ReplOptions).parameters or \
         "color" in repl.ReplOptions.__dataclass_fields__
+
+
+# ---------------------------------------------------------------------------
+# A pointer to a command that does not exist
+# ---------------------------------------------------------------------------
+
+def test_every_command_the_banner_names_exists():
+    """Found by running it: the parked-work line said `/tasks to list`,
+    `/tasks` was in no table, and the text fell through to the model —
+    which answered with prose about a task list instead of listing it.
+
+    A hint that names a command nobody registered is worse than no hint:
+    it costs a turn and reads as the agent misunderstanding.
+    """
+    import inspect
+    import re
+    from delfin.agent import repl_commands as rc
+
+    sources = "\n".join(
+        inspect.getsource(fn) for fn in
+        (agent_cli._startup_banner, agent_cli._parked_work_line)
+    )
+    # Not preceded or followed by a path separator, so `/bin/bash` in the
+    # isolation note is a path and not two commands.
+    named = set(re.findall(r"(?<![\w/])(/[a-z][a-z-]{1,15})(?![\w/])", sources))
+    missing = sorted(n for n in named if n not in rc.BUILTINS)
+    assert not missing, f"the banner points at {missing}"
+
+
+def test_the_key_layer_and_the_command_agree_about_tasks():
+    """Ctrl+T toggles the same list the command prints.
+
+    Two entry points to one thing is fine; one of them being unreachable
+    is what this checks against.
+    """
+    from delfin.agent import repl_commands as rc
+    from delfin.agent import repl_keys as rk
+
+    assert "/tasks" in rc.BUILTINS
+    assert rk.TASKS
+
+
+def test_the_task_list_names_no_other_session(tmp_path, monkeypatch):
+    """Scoped, like every other listing surface.
+
+    The store is workspace-wide and outlives sessions; merging silently
+    is the leak the scoping exists to prevent.
+    """
+    from delfin.agent import agent_tasks as at
+    from delfin.agent import repl_commands as rc
+
+    store = at.get_store(tmp_path)
+    store.create(subject="belongs to someone else", session_id="earlier")
+
+    class _Ctx:
+        workspace = tmp_path
+        engine = type("E", (), {"session_id": "mine"})()
+
+    out = rc.BUILTINS["/tasks"].handler(_Ctx(), "").output
+    assert "belongs to someone else" not in out
+
+
+def test_the_task_list_never_raises(tmp_path, monkeypatch):
+    from delfin.agent import repl_commands as rc
+
+    def _boom(ws, **kw):
+        raise RuntimeError("task store is corrupt")
+
+    monkeypatch.setattr("delfin.agent.task_ticker.render_text", _boom)
+
+    class _Ctx:
+        workspace = tmp_path
+        engine = type("E", (), {"session_id": "mine"})()
+
+    assert "unavailable" in rc.BUILTINS["/tasks"].handler(_Ctx(), "").output
