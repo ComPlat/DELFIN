@@ -271,3 +271,46 @@ def test_a_typed_row_that_fits_is_left_alone():
     agent.transcript.width = 40
     agent._draw_input_line("stop and check the tests")
     assert err.getvalue().rsplit("\x1b[K", 1)[-1] == "» stop and check the tests"
+
+
+# ---------------------------------------------------------------------------
+# A chunk boundary is not a keypress
+# ---------------------------------------------------------------------------
+
+def _interrupts(events) -> list:
+    return [e for e in events if e.kind == rk.INTERRUPT]
+
+
+def test_a_paste_cut_after_an_escape_does_not_end_the_turn():
+    """read_ready takes at most 1024 bytes, and a paste is longer than that.
+
+    Cut exactly after an ESC byte, the sequence's own head becomes the last
+    byte of the chunk — and reading that as Escape ends the turn because of
+    a buffer size and nothing else.
+    """
+    decoder = rk.KeyDecoder()
+    head = "paste " + "x" * 1017 + "\x1b"
+    assert len(head) == 1024, "the read size is what makes the cut land here"
+
+    assert _interrupts(decoder.feed(head)) == [], (
+        "an ESC at a read boundary may still be the head of a sequence")
+    assert _interrupts(decoder.feed("[Bmore text")) == []
+    assert decoder.buffer.endswith("more text"), (
+        "the rest of the paste still has to reach the line")
+
+
+def test_a_posture_key_split_across_two_reads_is_still_one_key():
+    decoder = rk.KeyDecoder()
+    assert _interrupts(decoder.feed("typed\x1b")) == []
+    assert decoder.feed("[Z") == [rk.KeyEvent(rk.CYCLE_MODE)]
+
+
+def test_an_escape_with_nothing_behind_it_still_ends_the_turn():
+    """The behaviour the hold must not cost: Esc alone interrupts."""
+    assert rk.KeyDecoder().feed("\x1b") == [rk.KeyEvent(rk.INTERRUPT)]
+
+    decoder = rk.KeyDecoder()
+    assert _interrupts(decoder.feed("stop\x1b")) == []
+    assert decoder.feed("") == [rk.KeyEvent(rk.INTERRUPT)], (
+        "the pump feeds every read, empty ones included — that is the "
+        "deadline that says nothing followed the ESC")
