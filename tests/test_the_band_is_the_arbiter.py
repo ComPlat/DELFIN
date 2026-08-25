@@ -240,6 +240,30 @@ def test_the_barrier_is_read_from_the_last_table_and_from_the_right_column():
     assert read['gradients'] == 203
 
 
+def test_one_keyword_is_offered_out_of_the_nine_that_work():
+    """Probed against this ORCA rather than recalled, and then not used.
+
+    NEB, NEB-CI, NEB-TS, FAST-NEB-TS, LOOSE-NEB-TS, TIGHT-NEB-TS, ZOOM-NEB,
+    ZOOM-NEB-CI, ZOOM-NEB-TS and NEB-IDPP are all accepted by 6.1.1 and all
+    open a band; a made-up keyword is refused, so the probe was measuring
+    something.  Only NEB-TS is offered, because the others ask the same
+    question at other tolerances and the editor has one press for it -- a
+    dropdown of nine keywords would be the tool describing ORCA rather than
+    answering "what can I do now".
+
+    And the defaults ORCA reports for it are the ones this wants: energy
+    weighted springs 0.01 to 0.10 Eh/Bohr, an improved tangent, and an initial
+    path from the image-dependent pair potential.  So none of them is set.
+    """
+    source = open(saddle.__file__, encoding='utf-8').read()
+    assert "f'! {keyword} NEB-TS{wet}\\n'" in source
+    # The two %neb settings that are made, and no more.
+    assert "f'  NImages {band}\\n'" in source
+    assert '  NEB_End_XYZFile "to.xyz"' in source
+    assert 'Energy_Weighted' not in source
+    assert 'Interpolation' not in source
+
+
 def test_a_band_asks_for_no_more_processes_than_it_has_images():
     """``NProcs <= NImages``, because past that there is nothing to compute.
 

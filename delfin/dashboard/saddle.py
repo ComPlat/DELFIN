@@ -1140,6 +1140,17 @@ def neb_to_saddle(reactant: str, product: str, method: str = 'gfn2', *,
     ``NProcs`` above ``NImages`` is the one setting that cannot help, because
     there is nothing left to give a ninth process.
 
+    One keyword, out of nine that work.  Probed against this ORCA rather than
+    recalled -- ``NEB``, ``NEB-CI``, ``NEB-TS``, ``FAST-NEB-TS``,
+    ``LOOSE-NEB-TS``, ``TIGHT-NEB-TS``, ``ZOOM-NEB``, ``ZOOM-NEB-CI``,
+    ``ZOOM-NEB-TS`` and ``NEB-IDPP`` are all accepted by 6.1.1 and all open a
+    band, where a made-up keyword is refused.  ``NEB-TS`` is the only one
+    offered, because the others are the same question asked at other
+    tolerances and the editor has one press for it.  The defaults ORCA reports
+    for that keyword are the ones this wants anyway: energy-weighted springs
+    between 0.01 and 0.10 Eh/Bohr, an improved tangent, and an initial path
+    from the image-dependent pair potential.
+
     Two things are checked before anything is submitted, because both fail in
     the way that costs the whole timeout and returns nothing:
 
