@@ -357,3 +357,64 @@ def test_whitespace_only_lists_are_no_restriction(tmp_path):
     perms = _perms(tmp_path, session_allowed_tools=" , ")
     assert perms.session_allowed_tools == frozenset()
     assert _tool_denied_for_session(perms, "bash") is None
+
+
+# ---------------------------------------------------------------------------
+# The listing the user reads
+# ---------------------------------------------------------------------------
+
+def test_the_tools_listing_follows_the_session_narrowing(workspace):
+    """`/tools` answers "what am I offered".
+
+    Built from the role alone it named tools the session had explicitly
+    denied. Nothing could run — the executor refuses regardless — but a
+    listing that reports a surface wider than the real one is the
+    reader-facing half of the defect the deny list exists to close, and
+    it is the surface a person checks BEFORE deciding to trust a run.
+    """
+    from delfin.agent import repl_commands as rc
+
+    class _Ctx:
+        def __init__(self, perms):
+            self.workspace = workspace
+            self.engine = type("E", (), {
+                "kit_permissions": perms,
+                "get_status": staticmethod(lambda: {}),
+            })()
+
+    def _names(text: str) -> set[str]:
+        # The NAME column only. Several descriptions mention other tools
+        # by name — `read_document` names `read_file` in its own — so a
+        # substring test over the whole listing answers a different
+        # question and passes either way.
+        out = set()
+        for line in text.splitlines():
+            if line.startswith("  ") and line.strip():
+                out.add(line.split()[0])
+        return out
+
+    wide = _names(rc.BUILTINS["/tools"].handler(
+        _Ctx(_perms(workspace)), "").output)
+    assert "read_file" in wide
+
+    narrowed = _names(rc.BUILTINS["/tools"].handler(
+        _Ctx(_perms(workspace,
+                    session_denied_tools=frozenset({"read_file"}))), "").output)
+    assert "read_file" not in narrowed
+    assert "write_file" in narrowed, "only the denied one goes"
+
+
+def test_the_tools_listing_survives_a_backend_with_no_permissions(workspace):
+    """Every provider that is not kit or ollama carries no permissions
+    object at all; the listing must still answer."""
+    from delfin.agent import repl_commands as rc
+
+    class _Ctx:
+        workspace = None
+        engine = type("E", (), {
+            "kit_permissions": None,
+            "get_status": staticmethod(lambda: {}),
+        })()
+
+    out = rc.BUILTINS["/tools"].handler(_Ctx(), "").output
+    assert "read_file " in out
