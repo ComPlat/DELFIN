@@ -479,6 +479,54 @@ def _message_text(content) -> str:
     return str(content or "")
 
 
+def _memories(ctx, args: str) -> CommandResult:
+    """The memory store, through memory_store's own reader."""
+    scope = {"": "project", "global": "user", "all": "all"}.get(
+        args.strip().lower())
+    if scope is None:
+        return CommandResult(output="usage: /memories [global|all]")
+    try:
+        from .memory_store import list_typed_memories
+        mems = list_typed_memories(ctx.workspace, scope=scope)
+    except Exception as exc:
+        return CommandResult(output=f"memory store unavailable ({exc})")
+    if not mems:
+        return CommandResult(output=(
+            "no memories stored — a line starting with # writes one"))
+    lines: list[str] = []
+    last_type = None
+    for mem in mems:
+        if mem.get("type") != last_type:
+            last_type = mem.get("type")
+            lines.append(f"  [{last_type}]")
+        tag = " (global)" if mem.get("scope") == "user" else ""
+        desc = str(mem.get("description") or (mem.get("body") or "")[:80] or "")
+        lines.append(f"    {mem.get('name', '?')}{tag} — {desc.strip()}")
+    lines.append("  /forget <name> deletes one")
+    return CommandResult(output="\n".join(lines))
+
+
+def _forget(ctx, args: str) -> CommandResult:
+    """Delete one memory, by name.
+
+    Both stores are searched and the deletion is reported with the path
+    it removed: a "done" that names nothing cannot be told apart from a
+    no-op, and this one deletes a file.
+    """
+    name = args.strip()
+    if not name:
+        return CommandResult(output="usage: /forget <name>  (see /memories)")
+    try:
+        from .memory_store import delete_typed_memory
+        path = delete_typed_memory(ctx.workspace, name, scope="all")
+    except Exception as exc:
+        return CommandResult(output=f"could not delete: {exc}")
+    if path is None:
+        return CommandResult(output=(
+            f"no memory named {name!r} — /memories lists them"))
+    return CommandResult(output=f"deleted {name} → {path}")
+
+
 def _agents(ctx, _args: str) -> CommandResult:
     """The subagent presets, from the registry that defines them."""
     try:
@@ -746,6 +794,9 @@ BUILTINS: dict[str, ReplCommand] = {
                     _session, True),
         ReplCommand("/rewind", "history", "What the agent changed here",
                     _rewind),
+        ReplCommand("/memories", "history", "Stored memories", _memories, True),
+        ReplCommand("/forget", "history", "Delete one memory by name",
+                    _forget, True),
         ReplCommand("/plans", "history", "Saved plans", _plans, True),
         ReplCommand("/attention", "workspace", "The attention inbox",
                     _attention, True),
