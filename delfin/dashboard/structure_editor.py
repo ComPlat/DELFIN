@@ -422,14 +422,18 @@ def thermal_temperature(kcal, seconds=_THERMAL_SECONDS):
 #: So the gap is said rather than filled, and a scan answers it properly: with
 #: its energy set to G it takes three Hessians -- the start, the highest point
 #: and the end -- and its verdict is then a free energy against a free energy.
+#: Said to every user about every system, so it names no chemistry: what was
+#: measured is written out with its numbers in the comment above, and this is
+#: the claim without the examples.  A sentence that reaches for a familiar
+#: case to make itself clear is a sentence that is wrong for somebody.
 _THERMAL_QUANTITY_SHORT = (
     'The ceiling is a free energy; a drag is priced with an electronic '
-    'energy. While the structure stays in as many pieces as it started in the '
-    'two agree to under 3 kcal/mol -- measured on a torsion and on stretched '
-    'ring bonds. They part company where a drag changes how many separate '
-    'pieces there are: about ten kcal/mol at room temperature, strict for '
-    'taking something apart and lenient for putting it together. Run a scan '
-    'with its energy set to G for the free-energy answer.'
+    'energy. While the structure stays in as many separate pieces as it '
+    'started in, the two agree to under 3 kcal/mol. They part company where a '
+    'drag changes how many pieces there are: about ten kcal/mol at room '
+    'temperature, strict for taking something apart and lenient for putting '
+    'it together. Run a scan with its energy set to G for the free-energy '
+    'answer.'
 )
 
 
