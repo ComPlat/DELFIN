@@ -15,15 +15,20 @@ under GFN2 with one forming C-C driven from 3.40 A to 1.60 and back, 0.1 A at
 a time, everything relaxed at every point:
 
                                  forward   backward   ORCA's converged saddle
-    apparent barrier               +7.25     +11.72         +6.78 kcal/mol
-    where the maximum is            2.20 A     2.90 A
+    apparent barrier               +7.25     +11.72         +6.74 kcal/mol
+    where the maximum is            2.20 A     2.90 A         2.315 A
     the *undriven* forming C-C
        at that maximum              2.92 A     1.76 A         2.315 A
+    the mode that goes the
+       wrong way                 -128 cm-1  -267 cm-1      -394 cm-1
 
     largest gap at the same coordinate:  23.77 kcal/mol, at 2.20 A
 
-Neither maximum is near the transition state and each misses it on its own
-side.  Both carry exactly one imaginary frequency, so that test says nothing
+The saddle is symmetric -- both forming bonds at 2.315 A -- and neither leg of
+the scan is anywhere near it: one arrives with the undriven bond a whole
+Angstrom too long and the other with it half an Angstrom too short, and each
+misses the crossing on its own side.  Both maxima carry exactly one imaginary
+frequency, at gradient norms far from converged, so that test says nothing
 here.  A user reading the barrier off either leg alone is out by more than
 half.
 
