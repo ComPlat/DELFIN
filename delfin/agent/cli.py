@@ -190,7 +190,21 @@ def _resume_or_create(engine, args: argparse.Namespace) -> str:
     return data.get("session_id", sid)
 
 
-def _run_once(engine, prompt: str, *, max_tokens: int = 4096) -> dict[str, Any]:
+def _json_line(obj: dict) -> None:
+    """One JSON object, one line of stdout, flushed.
+
+    ``--output-format stream-json`` is consumed by a reader that parses
+    line by line as the turn runs, so a buffered write would deliver the
+    whole stream at the end and make the format pointless. ``sys.stdout``
+    is looked up per call rather than captured, because the one-shot path
+    is also driven from tests that replace it.
+    """
+    sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+
+
+def _run_once(engine, prompt: str, *, max_tokens: int = 4096,
+              emit: Any = None) -> dict[str, Any]:
     """Stream a single turn and collect text + tool-calls + token-usage.
 
     AgentEngine's ``stream_response`` is callback-driven, not event-
@@ -199,6 +213,11 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096) -> dict[str, Any]:
     a string.  Token usage is read from ``engine.token_usage`` after
     the call (cumulative for the engine; each benchmark task gets a
     fresh engine so the cumulative IS per-turn).
+
+    ``emit`` receives one dict per event as it happens, for the callers
+    that want the turn as a stream rather than as one answer at the end.
+    The return value is unchanged either way, so the summary a streaming
+    caller prints last is the same object the JSON caller prints alone.
     """
     chunks: list[str] = []
     tool_calls: list[dict] = []
@@ -207,6 +226,8 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096) -> dict[str, Any]:
     def _on_token(text: str) -> None:
         if text:
             chunks.append(text)
+            if emit is not None:
+                emit({"type": "text", "text": text})
 
     def _on_tool_use(name: str, input_json: str) -> None:
         try:
@@ -214,6 +235,8 @@ def _run_once(engine, prompt: str, *, max_tokens: int = 4096) -> dict[str, Any]:
         except (json.JSONDecodeError, TypeError):
             inp = {"raw": str(input_json)}
         tool_calls.append({"name": name, "input": inp})
+        if emit is not None:
+            emit({"type": "tool_use", "name": name, "input": inp})
 
     in_before = int((getattr(engine, "token_usage", {}) or {}).get("input", 0))
     out_before = int((getattr(engine, "token_usage", {}) or {}).get("output", 0))
@@ -323,7 +346,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     _resume_or_create(engine, args)
     import time as _time
     _t0 = _time.monotonic()
-    out = _run_once(engine, prompt, max_tokens=args.max_tokens or 4096)
+    stream_json = (getattr(args, "output_format", "text") == "stream-json")
+    out = _run_once(engine, prompt, max_tokens=args.max_tokens or 4096,
+                    emit=(_json_line if stream_json else None))
     sid = _save_session(engine, repo)
 
     # Learning signal: record the outcome so provider profiles learn from
@@ -359,7 +384,18 @@ def cmd_run(args: argparse.Namespace) -> int:
     except Exception:
         pass
 
-    if args.json:
+    if stream_json:
+        # The last line closes the stream and carries the same payload the
+        # one-object format prints, so a reader that only wants the answer
+        # can ignore everything before it. The key set comes from repl's
+        # TURN_KEYS rather than from a second list here: that frozenset is
+        # what `_run_once` returns and therefore what both formats promise,
+        # and two hand-kept lists would drift into two shapes of one answer.
+        from .repl import TURN_KEYS
+        _json_line({"type": "result",
+                    **{k: out.get(k) for k in sorted(TURN_KEYS)},
+                    "session_id": sid})
+    elif args.json:
         payload = {**out, "session_id": sid}
         print(json.dumps(payload, ensure_ascii=False))
     else:
@@ -879,8 +915,9 @@ def cmd_chat(args: argparse.Namespace) -> int:
     # is accepted on this subcommand because the one-shot half lives here
     # too; taking it silently and then emitting text is the shape of a
     # promise that is not kept.
-    if getattr(args, "output_format", "text") == "json":
-        print("--output-format json describes one answer, so it needs -p "
+    _fmt = getattr(args, "output_format", "text")
+    if _fmt in ("json", "stream-json"):
+        print(f"--output-format {_fmt} describes one answer, so it needs -p "
               "or a piped prompt; this session will print text.",
               file=sys.stderr)
 
@@ -1930,8 +1967,11 @@ def build_parser() -> argparse.ArgumentParser:
                       metavar="PROMPT",
                       help="Answer one prompt and exit (non-interactive)")
     chat.add_argument("--output-format", default="text",
-                      choices=["text", "json"], dest="output_format",
-                      help="text (default) or json")
+                      choices=["text", "json", "stream-json"],
+                      dest="output_format",
+                      help="text (default), json (one object at the end) or "
+                           "stream-json (one object per line as the turn "
+                           "runs; needs -p or a piped prompt)")
     chat.add_argument("--session", default="",
                       help="Session ID to resume, or 'latest'")
     chat.add_argument("-c", "--continue", action="store_true",
