@@ -34,6 +34,10 @@ HISTORY_NAME = "agent_repl_history"
 _HISTORY_LINES = 1000
 _PUMP_TICK_S = 0.05
 _JOIN_NOTICE_AFTER_S = 2.0
+# What leaving costs at most. The last step of the interrupt ladder unwinds
+# through the settle, so the join there has to be bounded: an unbounded one
+# waits for the tool call the interrupt exists to walk away from.
+_JOIN_ABANDON_S = 1.0
 _STATUS_TICK_S = 0.25
 _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
@@ -481,9 +485,13 @@ class TerminalAgent:
                 "timeout, so this can take a moment.")))
             return
         if self._interrupts == 2:
+            # What the third one does: raise here, unwind through turn()'s
+            # finally with a bounded join, and return 130 from the loop. It
+            # cannot cancel the call, so it does not claim to.
             self._q.put(RenderItem("notice", text=(
-                "Still waiting on the running tool call. Once more abandons "
-                "the process, and anything it started keeps running.")))
+                "Still waiting on the running tool call. Once more leaves "
+                "this session without it: the call is not cancelled, and "
+                "anything it started keeps running.")))
             return
         raise KeyboardInterrupt
 
@@ -535,11 +543,17 @@ class TerminalAgent:
         self._turn_active.set()
         worker = threading.Thread(target=_worker, name="agent-turn", daemon=True)
         worker.start()
+        abandoning = False
         try:
             self._pump(worker)
+        except KeyboardInterrupt:
+            # The last step of the ladder. It travels through the finally
+            # below, so the settle there must not wait on the running call.
+            abandoning = True
+            raise
         finally:
             self._turn_active.clear()
-            self._settle(worker)
+            self._settle(worker, abandon=abandoning)
         self.transcript.finish()
         self._report_compaction(compaction_before)
         self._report_tasks()
@@ -1082,7 +1096,8 @@ class TerminalAgent:
         self._input_line = held_input
         self._repaint_bottom(force=True)
 
-    def _settle(self, worker: threading.Thread) -> None:
+    def _settle(self, worker: threading.Thread, *,
+                abandon: bool = False) -> None:
         """Join, THEN clear the stop. Both halves are load-bearing.
 
         The turn gate refuses a second concurrent turn by RETURNING a
@@ -1091,9 +1106,19 @@ class TerminalAgent:
         machinery speech as the model's answer. And ``clear_stop`` refuses
         while the owning turn is in flight, so clearing before the join is
         a silent no-op that leaves the brake armed for the next turn.
+
+        ``abandon`` is the last step of the interrupt ladder, and it is the
+        one case where waiting is the wrong answer: the thread being joined
+        is running the tool call the user is escaping, so the join gets a
+        bound and what is left is said out loud rather than waited out.
         """
-        worker.join(timeout=_JOIN_NOTICE_AFTER_S)
-        if worker.is_alive():
+        worker.join(timeout=_JOIN_ABANDON_S if abandon
+                    else _JOIN_NOTICE_AFTER_S)
+        if worker.is_alive() and abandon:
+            self._notice(
+                "Leaving the running tool call behind — it was asked to stop "
+                "and has not yet, and anything it started keeps running.")
+        elif worker.is_alive():
             self._notice("Waiting for the running tool call to finish…")
             worker.join()
         # Drain whatever the worker queued while we were joining.

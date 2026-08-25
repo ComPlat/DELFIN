@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import io
 import os
+import signal
 import threading
 import time
 
@@ -164,3 +165,79 @@ def test_an_approval_outside_a_turn_gives_the_terminal_back(
     assert hooks.live == [], (
         "every __enter__ registers a hook that only restore() takes back, so "
         "an unreleased reader leaves one behind per approval")
+
+
+# ---------------------------------------------------------------------------
+# The last step of the interrupt ladder
+# ---------------------------------------------------------------------------
+
+class _StuckEngine(_Engine):
+    """A turn that does not come back until the test lets it."""
+
+    def __init__(self, release: threading.Event):
+        super().__init__()
+        self._release = release
+        self.entered = threading.Event()
+
+    def stream_response(self, **kwargs):
+        self.entered.set()
+        self._release.wait(timeout=30)
+        return "late answer"
+
+
+def test_the_third_interrupt_does_not_wait_on_the_call_it_escapes():
+    """It raises KeyboardInterrupt, which unwinds through turn()'s finally.
+
+    That finally settles the worker, and an unbounded join there waits for
+    the tool call the interrupt exists to walk away from.
+    """
+    release = threading.Event()
+    engine = _StuckEngine(release)
+    agent, _engine, _err = _agent(engine)
+
+    def _interrupted_pump(worker):
+        engine.entered.wait(timeout=5)
+        raise KeyboardInterrupt
+
+    agent._pump = _interrupted_pump
+    raised: list = []
+
+    def _drive():
+        try:
+            agent.turn("the long one")
+        except KeyboardInterrupt:
+            raised.append("interrupt")
+        except BaseException as exc:                # noqa: BLE001
+            raised.append(exc)
+
+    driver = threading.Thread(target=_drive, daemon=True)
+    began = time.monotonic()
+    driver.start()
+    driver.join(timeout=5)
+    took = time.monotonic() - began
+    stuck = driver.is_alive()
+    release.set()
+    driver.join(timeout=10)
+
+    assert not stuck, (
+        "the settle joined with no timeout, so leaving waited on exactly the "
+        "call being left")
+    assert took < 4, f"the escape took {took:.1f}s"
+    assert raised == ["interrupt"]
+
+
+def test_the_ladder_promises_only_what_the_third_interrupt_does():
+    """The step before it describes the step after it, so it has to be true."""
+    agent, _engine, _err = _agent()
+    agent._turn_active.set()
+    agent._on_sigint(signal.SIGINT, None)
+    agent._on_sigint(signal.SIGINT, None)
+
+    said = []
+    while not agent._q.empty():
+        said.append(agent._q.get_nowait().text)
+    text = " ".join(said).lower()
+
+    assert "leaves this session" in text, (
+        "what it does is return 130 from the loop, not kill the process")
+    assert "abandons the process" not in text
