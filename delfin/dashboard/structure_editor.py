@@ -9679,16 +9679,25 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                 'does not have.')
                 return
             target = aimed
-            if verb == 'form' and here <= target:
+            # An instruction that is already carried out is not one, and it is
+            # refused against the same test that will decide the walk is
+            # finished -- :func:`_carried_out`.  Measured with a comparison of
+            # lengths instead: an ethane's C-C is 1.521 A and the bond those
+            # two carbons make is 1.520, so "form" on a bond slipped through
+            # by a thousandth of an Angstrom and armed a walk that was over
+            # before it started.  One rule, asked once, and there is no
+            # thousandth to fall through.
+            if _carried_out(_current_xyz() or '', [{'kind': 'distance',
+                                                    'atoms': indices,
+                                                    'verb': verb}]):
+                named = _leg_names({'atoms': indices})
                 _set_mol_status(
-                    f'{_describe_selection(indices)} is already at '
-                    f'{here:.3g} A, which is a bond -- there is nothing to '
-                    'form. Pick a pair that is not bonded yet.')
-                return
-            if verb == 'break' and here >= target:
-                _set_mol_status(
-                    f'{_describe_selection(indices)} is already {here:.3g} A '
-                    'apart, which is not a bond -- there is nothing to break.')
+                    f'{named} is already '
+                    + (f'bonded, at {here:.3g} A, so there is nothing to '
+                       'form. Pick a pair that is not bonded yet.'
+                       if verb == 'form' else
+                       f'{here:.3g} A apart, which is not a bond, so there is '
+                       'nothing to break.'))
                 return
         # Same atoms in either order.  It matters here in a way it did not
         # before: with a verb, arming "break 11-1" over "form 1-11" would

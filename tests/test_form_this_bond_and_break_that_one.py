@@ -281,6 +281,26 @@ def test_the_two_verbs_are_offered_for_a_pair_and_not_for_an_angle():
             "                  ('to a value you give', 'to')]") in source
 
 
+def test_an_instruction_that_is_already_carried_out_is_refused_at_arming():
+    """Asked against the rule that will end the walk, not against a length.
+
+    Found by driving the real widgets: arming ``form`` on an ethane's own C-C
+    was allowed, because the guard compared 1.521 A against the 1.520 A those
+    two carbons bond at and a thousandth of an Angstrom fell through.  What
+    was armed was a walk that had already finished, and it would have stopped
+    at step 1 having done nothing.
+
+    So the arming asks :func:`_carried_out` -- the same question, on the same
+    graph, that decides the walk is over.  One rule, asked twice, with no
+    threshold of its own to disagree with.
+    """
+    source = EDITOR_SOURCE
+    assert ("            if _carried_out(_current_xyz() or '', "
+            "[{'kind': 'distance',") in source
+    assert 'is already ' in source
+    assert 'there is nothing to ' in source
+
+
 def test_a_verb_is_carried_out_by_a_force_and_not_by_a_walk():
     """A walk drives a value; a verb needs the structure to decide.
 
