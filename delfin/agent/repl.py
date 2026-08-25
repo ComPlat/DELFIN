@@ -379,6 +379,14 @@ class TerminalAgent:
         self._interrupts = 0
         self._idle_interrupts = 0
         self._prev_sigint = None
+        self._stdin = sys.stdin
+        # What the user is typing WHILE a turn runs, and the last tool
+        # result, so Ctrl+O has something to expand.
+        self._input_line = ""
+        self._last_result_text = ""
+        # Typed during a turn: queued, never injected. A queued message
+        # cannot be lost and cannot land in a context nobody could see.
+        self.queued: list[str] = []
 
     # -- input -----------------------------------------------------------
     def _input(self, prompt: str) -> str:
@@ -478,16 +486,144 @@ class TerminalAgent:
         return result_box[0] if result_box else TurnResult(error="turn produced nothing")
 
     def _pump(self, worker: threading.Thread) -> None:
-        while True:
-            try:
-                item = self._q.get(timeout=_PUMP_TICK_S)
-            except queue.Empty:
-                if not worker.is_alive() and self._q.empty():
+        from . import repl_keys as rk
+
+        with rk.RawMode(self._stdin) as raw:
+            decoder = rk.KeyDecoder()
+            while True:
+                if raw.active:
+                    for event in decoder.feed(raw.read_ready(_PUMP_TICK_S)):
+                        self._on_key(event, decoder)
+                try:
+                    item = self._q.get(
+                        timeout=0.0 if raw.active else _PUMP_TICK_S)
+                except queue.Empty:
+                    if not worker.is_alive() and self._q.empty():
+                        self._clear_input_line()
+                        return
+                    continue
+                if item.kind == "done":
+                    self._clear_input_line()
                     return
-                continue
-            if item.kind == "done":
-                return
-            self.transcript.render(item)
+                self._render_around_input(item)
+
+    # -- keys during a turn ----------------------------------------------
+    def _on_key(self, event, decoder) -> None:
+        from . import repl_keys as rk
+
+        if event.kind == rk.INTERRUPT:
+            self._stop_engine()
+            self._clear_input_line()
+            self.transcript.chrome(self.transcript.theme.yellow(
+                "! Esc — ending this turn. A running tool call finishes "
+                "first."))
+            return
+        if event.kind == rk.SUBMIT:
+            text = event.text.strip()
+            self._clear_input_line()
+            if text:
+                self.queued.append(text)
+                self.transcript.chrome(self.transcript.theme.dim(
+                    f"queued ({len(self.queued)}) — goes out when this turn "
+                    "ends"))
+            return
+        if event.kind == rk.CYCLE_MODE:
+            self._clear_input_line()
+            self._cycle_mode()
+            self._draw_input_line(decoder.buffer)
+            return
+        if event.kind == rk.EXPAND:
+            self._clear_input_line()
+            self._expand_last_result()
+            self._draw_input_line(decoder.buffer)
+            return
+        if event.kind == rk.REDRAW:
+            self._clear_input_line()
+            self._draw_input_line(decoder.buffer)
+            return
+        if event.kind == rk.EDIT:
+            self._draw_input_line(event.text)
+
+    def _cycle_mode(self) -> None:
+        """Shift+Tab, one step along the ladder — never onto bypass.
+
+        Reaching unattended execution must stay a thing someone types on
+        purpose, not a thing a key lands on while a turn is running.
+        """
+        order = ["plan", "default", "acceptEdits"]
+        try:
+            current = str(getattr(self.engine.kit_permissions, "mode", "")
+                          or "default")
+        except Exception:
+            self.transcript.chrome(self.transcript.theme.dim(
+                "this backend carries no permission gate"))
+            return
+        try:
+            nxt = order[(order.index(current) + 1) % len(order)]
+        except ValueError:
+            nxt = "default"
+        try:
+            self.engine.set_kit_permission_mode(nxt)
+        except Exception as exc:
+            self.transcript.chrome(self.transcript.theme.red(
+                f"could not switch mode: {exc}"))
+            return
+        self.transcript.chrome(self.transcript.theme.cyan(
+            f"approval → {nxt}"))
+
+    def _expand_last_result(self) -> None:
+        if not self._last_result_text:
+            self.transcript.chrome(self.transcript.theme.dim(
+                "nothing to expand yet"))
+            return
+        for line in rr.strip_control(self._last_result_text).splitlines():
+            self.transcript.chrome("  " + line)
+
+    # -- the line being typed under a running turn ------------------------
+    def _can_redraw(self) -> bool:
+        """Only a terminal gets cursor control.
+
+        Redrawing needs \\r and an erase sequence, and those are exactly
+        the characters this codebase strips out of tool output before
+        printing it. Writing them into a redirected stderr would put
+        control codes in a log file for a line nobody can see anyway.
+        """
+        try:
+            return bool(self.err.isatty())
+        except Exception:
+            return False
+
+    def _draw_input_line(self, text: str) -> None:
+        self._input_line = text or ""
+        if not text or not self._can_redraw():
+            return
+        self.err.write("\r\x1b[K» " + text)
+        self._flush_err()
+
+    def _clear_input_line(self) -> None:
+        if not self._input_line:
+            return
+        self._input_line = ""
+        if not self._can_redraw():
+            return
+        self.err.write("\r\x1b[K")
+        self._flush_err()
+
+    def _render_around_input(self, item: RenderItem) -> None:
+        """Rendering must not tear the line the user is typing.
+
+        Erase it, write the transcript line, put it back — the classic
+        bottom-line problem, and the reason typing during a turn is worth
+        having rather than merely possible.
+        """
+        held = self._input_line
+        if held:
+            self._clear_input_line()
+        if item.kind == "tool_result" and item.text:
+            self._last_result_text = item.text
+        self.transcript.render(item)
+        if held:
+            self._draw_input_line(held)
 
     def _settle(self, worker: threading.Thread) -> None:
         """Join, THEN clear the stop. Both halves are load-bearing.
@@ -526,6 +662,8 @@ class TerminalAgent:
         pending = first_prompt.strip()
         try:
             while True:
+                if not pending and self.queued:
+                    pending = self.queued.pop(0)
                 if not pending:
                     try:
                         pending = read_block(self._read_line).strip()
