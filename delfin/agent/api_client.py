@@ -14827,7 +14827,13 @@ class OpenAIClient(_BaseClient):
         # below remain the real safety nets. 0 → uncapped. If a turn still
         # exhausts the budget, the message_delta below surfaces
         # "max_tool_rounds" and the user can resume with a "continue".
-        _MAX_TOOL_ROUNDS = _resolve_max_tool_rounds(self.model, _caps)
+        # A per-session override, consulted before the resolver. The
+        # resolver reads the USER's settings file, which belongs to every
+        # later session too — so without a door here, bounding one run
+        # meant changing what every run does. Set from outside like the
+        # engine's run budgets, and 0 leaves the configured answer alone.
+        _MAX_TOOL_ROUNDS = (int(getattr(self, "max_tool_rounds", 0) or 0)
+                            or _resolve_max_tool_rounds(self.model, _caps))
         # Context-bound tool-result cap, per model (weak models get less).
         _tool_result_cap = _resolve_tool_result_cap(self.model, _caps)
         # Per-turn OUTPUT-token backstop, independent of _MAX_TOOL_ROUNDS: a
