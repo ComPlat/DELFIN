@@ -2012,18 +2012,19 @@ def build_parser() -> argparse.ArgumentParser:
     # Named for what it does, not for what the word suggests. The three it
     # cannot reach are named in the help itself rather than left to be
     # discovered — see _BARE_NOT_SKIPPED.
-    # Only the claude CLI backend has a tool allow-list (create_client
-    # forwards this to CLIClient, which spells it --allowedTools); the API
-    # and OpenAI-compatible backends drop it. A run that asks for one on a
-    # backend that has none is told so at startup rather than left
-    # believing the surface was narrowed. There is deliberately no
-    # --disallowed-tools: no deny-list machinery exists on any backend,
-    # and a flag with nothing behind it is the defect, not the fix.
+    # Only the subprocess CLI backend has a tool allow-list: create_client
+    # forwards this to CLIClient, which spells it --allowedTools on the
+    # child command line. The API and OpenAI-compatible backends drop the
+    # parameter. A run that asks for one where there is none is told so at
+    # startup rather than left believing the surface was narrowed. There is
+    # deliberately no --disallowed-tools: no deny-list machinery exists on
+    # any backend, and a flag with nothing behind it is the defect, not the
+    # fix.
     chat.add_argument("--allowed-tools", default="", dest="allowed_tools",
                       metavar="a,b,c",
-                      help="Restrict the agent to these tools "
-                           "(claude CLI backend only; other backends have "
-                           "no allow-list and will say so)")
+                      help="Restrict the agent to these tools (--backend cli "
+                           "only; the other backends have no allow-list and "
+                           "will say so)")
     chat.add_argument("--bare", action="store_true",
                       help="Skip MCP server discovery for this run "
                            f"({_BARE_NOT_SKIPPED} are discovered inside the "
