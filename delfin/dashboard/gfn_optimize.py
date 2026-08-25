@@ -2022,6 +2022,45 @@ def gfnff_would_form(xyz_text: str, legs: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
+def gfnff_pair_refusal(first: str, second: str) -> str:
+    """Why GFN-FF cannot walk between these two structures, or ''.
+
+    The same boundary as :func:`gfnff_would_form`, asked of a pair instead of
+    a leg: when the second end has a bond the first has not, the path between
+    them makes one, and a force field whose bonding was perceived at the first
+    end has no term for it.
+
+    Decidable here in a way it is not from a single structure, which is why
+    this is refused and climbing from what is on screen is not: two ends say
+    what the reaction is, and one geometry does not.
+
+    Measured on the Diels-Alder, xtb's own path finder given the separated
+    pair and cyclohexene:
+
+        GFN2      a barrier of 20.8 kcal/mol and a reaction energy of -68.0
+        GFN-FF    a barrier of 34.5 and a reaction energy of **+34.3**
+
+    The sign is the whole of it.  GFN-FF never sees the product as a molecule,
+    so it prices cyclohexene as a strained contact between the two things it
+    still believes are there, and reports a reaction that goes uphill.
+    """
+    was, now = bond_graph(first or ''), bond_graph(second or '')
+    made = sorted(set(now) - set(was))
+    if not made:
+        return ''
+    rows = [line.split()[0] for line in atom_lines(second or '')]
+    named = ', '.join(pair_named(one, rows) for one in made[:3])
+    return (
+        f'GFN-FF cannot walk between these two. The second end has bonds the '
+        f'first has not -- {named} -- and GFN-FF perceives its bonding once '
+        f'and then holds it, so it can break a bond and cannot make one. '
+        f'Measured on a Diels-Alder: given the same two ends, GFN2 reports '
+        f'the product 68 kcal/mol below the start and GFN-FF reports it 34 '
+        f'above, because it never sees the product as a molecule. Choose '
+        f'GFN2, GFN1 or g-xTB, or mark the two ends the other way round, '
+        f'which is a reaction it can do.')
+
+
 def gfnff_refusal(xyz_text: str, legs: Any) -> str:
     """Why GFN-FF cannot walk this scan, or '' when it can.
 
