@@ -221,6 +221,14 @@ class CLIClient(_BaseClient):
             stderr=subprocess.PIPE,
             text=True,
             cwd=self.cwd,
+            # Its own process group, so a Ctrl+C in a terminal front-end
+            # does not reach it. This process is deliberately long-lived
+            # across turns, and signal_stop() sends it a SIGINT on purpose
+            # — one that preserves the session so the next turn can
+            # --resume. A second SIGINT arriving straight from the tty
+            # would race that controlled stop and tear down the
+            # conversation instead of pausing it. kill() still applies.
+            start_new_session=True,
         )
         return self._proc
 

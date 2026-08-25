@@ -287,34 +287,123 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0 if not out["error"] else 1
 
 
+def _permission_mode(engine) -> str:
+    """The posture, or "" when this backend carries no permissions object.
+
+    create_client builds KitToolPermissions only for the kit and ollama
+    providers. On the others the file and shell tools refuse outright, so
+    an empty answer here is a fact the banner has to state rather than
+    paper over with a plausible-looking default.
+    """
+    try:
+        perms = engine.kit_permissions
+    except Exception:
+        return ""
+    mode = getattr(perms, "mode", "") if perms is not None else ""
+    return mode if isinstance(mode, str) else ""
+
+
+def _startup_banner(engine, report, workspace: Path) -> str:
+    """What the user is looking at, in the lines that decide safety."""
+    # The model lives on the client; the engine never held one.
+    model = str(getattr(getattr(engine, "client", None), "model", "") or "?")
+    provider = str(getattr(engine, "provider", "") or "?")
+    role_mode = str(getattr(engine, "mode", "") or "?")
+    perms_mode = _permission_mode(engine)
+    sid = str(getattr(engine, "session_id", "") or "")
+
+    git = report.git
+    where = f"git {git.branch}" if git.is_repo and git.branch else "no git"
+    if git.is_repo and git.dirty:
+        where += f" · {len(git.dirty)} uncommitted"
+
+    lines = [
+        f"delfin-agent · {provider}/{model} · mode {role_mode}",
+        f"workspace  {workspace}  ({where})",
+    ]
+    if perms_mode:
+        lines.append(f"approval   {perms_mode}")
+    else:
+        # Not decoration: without a permissions object the write and shell
+        # tools refuse, and a user staring at a silent agent deserves the
+        # reason on screen rather than in a tool result.
+        lines.append(
+            f"approval   none — the {provider} backend carries no permission "
+            "gate, so file and shell tools will refuse")
+    if sid:
+        lines.append(f"session    {sid}")
+    lines.append("Ctrl+C stops a turn · Ctrl+D or /exit leaves")
+    return "\n".join(lines)
+
+
 def cmd_chat(args: argparse.Namespace) -> int:
     """The ``delfin-agent`` front door: a session in the current directory.
 
-    Interactive mode lands in a later wave. What works today is the
-    non-interactive half — ``-p/--print`` and a piped prompt — and it is
-    deliberately routed through ``cmd_run`` rather than reimplemented, so
-    the JSON payload and the session-save semantics are the same code and
-    cannot drift into a second contract.
+    The non-interactive half (``-p/--print``, or a piped prompt) is routed
+    through ``cmd_run`` rather than reimplemented, so the JSON payload and
+    the session-save semantics stay one contract instead of two.
     """
+    from . import launch_guard
+
     prompt = (getattr(args, "print_prompt", "") or "").strip()
-    if not prompt and not sys.stdin.isatty():
+    positional = getattr(args, "prompt", None) or []
+    if isinstance(positional, list) and positional:
+        positional = " ".join(str(p) for p in positional).strip()
+    else:
+        positional = ""
+
+    piped = not sys.stdin.isatty()
+    if not prompt and piped:
         try:
             prompt = sys.stdin.read().strip()
         except Exception:
             prompt = ""
-    if not prompt:
-        print(
-            "The interactive session is not wired up yet.\n"
-            "  delfin-agent -p \"...\"      one prompt, answer on stdout\n"
-            "  echo \"...\" | delfin-agent  the same, from a pipe",
-            file=sys.stderr,
-        )
+
+    workspace = Path(getattr(args, "cwd", "") or os.getcwd()).expanduser().resolve()
+
+    # Before anything is built: is this a directory to work in at all?
+    report = launch_guard.inspect_launch_dir(workspace)
+    if report.refused:
+        print(report.render(), file=sys.stderr)
         return 2
 
-    args.prompt = [prompt]
-    args.session = getattr(args, "session", "") or ""
-    args.json = (getattr(args, "output_format", "text") == "json")
-    return cmd_run(args)
+    # One shot, and out. Identical to `run`, because it IS `run`.
+    # A positional prompt SEEDS an interactive session; it only becomes a
+    # one-shot when there is no terminal to be interactive on.
+    one_shot = prompt or (piped and positional)
+    if one_shot:
+        args.prompt = [prompt or positional]
+        args.session = getattr(args, "session", "") or ""
+        args.json = (getattr(args, "output_format", "text") == "json")
+        return cmd_run(args)
+
+    if piped:
+        print("Nothing on stdin, and no -p. Nothing to do.", file=sys.stderr)
+        return 2
+
+    os.chdir(workspace)
+    try:
+        engine = _build_engine(args)
+    except Exception as exc:
+        print(f"ERROR: engine init failed: {exc}", file=sys.stderr)
+        return 3
+    _resume_or_create(engine, args)
+
+    from .repl import ReplOptions, TerminalAgent
+
+    notices = report.render()
+    agent = TerminalAgent(engine, ReplOptions(
+        cwd=workspace,
+        max_tokens=getattr(args, "max_tokens", 0) or 0,
+        show_thinking=bool(getattr(args, "verbose", False)),
+        color=getattr(args, "color", "auto"),
+        banner=(_startup_banner(engine, report, workspace)
+                + (f"\n\n{notices}" if notices else "")),
+    ))
+    try:
+        return agent.run(positional)
+    finally:
+        _save_session(engine, workspace)
 
 
 def cmd_init(args: argparse.Namespace) -> int:

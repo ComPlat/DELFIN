@@ -22,6 +22,7 @@ from dataclasses import dataclass
 __all__ = [
     "Theme", "theme_for", "strip_control", "truncate_middle",
     "tool_headline", "tool_result_line", "notice_line", "thinking_line",
+    "short_tool_name",
     "denied_line", "terminal_width", "human_size",
 ]
 
@@ -200,8 +201,30 @@ def _as_dict(tool_input) -> dict:
     return loaded if isinstance(loaded, dict) else {}
 
 
+def short_tool_name(name: str) -> str:
+    """``mcp__delfin-docs__read_file`` -> ``delfin-docs:read_file``.
+
+    The server stays in the name on purpose. It is the difference between
+    a call DELFIN gated and a call that ran somewhere else, outside the
+    workspace sandbox and outside the bash deny-list — so it belongs on
+    screen, just not as eleven characters of scaffolding.
+    """
+    name = str(name or "")
+    if name.startswith("mcp__"):
+        parts = name.split("__", 2)
+        if len(parts) == 3 and parts[1] and parts[2]:
+            return f"{parts[1]}:{parts[2]}"
+    return name
+
+
+def _bare_name(name: str) -> str:
+    """The tool's own name, for looking up which argument matters."""
+    short = short_tool_name(name)
+    return short.split(":", 1)[-1] if ":" in short else short
+
+
 def _headline_value(name: str, args: dict) -> str:
-    for key in _HEADLINE_ARG.get(name, ()) + _FALLBACK_KEYS:
+    for key in _HEADLINE_ARG.get(_bare_name(name), ()) + _FALLBACK_KEYS:
         value = args.get(key)
         if isinstance(value, (str, int, float)) and str(value).strip():
             return str(value)
@@ -217,9 +240,10 @@ def tool_headline(name: str, tool_input, *, width: int = _DEFAULT_WIDTH,
     it is supposed to describe.
     """
     theme = theme or Theme()
-    name = strip_control(str(name or "tool")).strip() or "tool"
+    raw = strip_control(str(name or "tool")).strip() or "tool"
+    name = short_tool_name(raw)
     args = _as_dict(tool_input)
-    value = _headline_value(name, args)
+    value = _headline_value(raw, args)
     if value:
         value = _WS_RE.sub(" ", strip_control(value)).strip()
     elif args:
@@ -290,5 +314,5 @@ def thinking_line(text: str, *, width: int = _DEFAULT_WIDTH,
 
 def denied_line(name: str, *, theme: Theme | None = None) -> str:
     theme = theme or Theme()
-    name = strip_control(str(name or "a tool")).strip() or "a tool"
+    name = short_tool_name(strip_control(str(name or "a tool")).strip()) or "a tool"
     return theme.red(f"⏺ {name}  refused")

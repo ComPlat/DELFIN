@@ -376,6 +376,15 @@ class MCPServer:
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     env=env, text=True, bufsize=1,
+                    # Its own process group. A stdio server is long-lived
+                    # across turns, and under a terminal front-end it would
+                    # otherwise sit in the foreground group and take every
+                    # Ctrl+C the user aims at the agent — so interrupting
+                    # one turn would tear down every configured server for
+                    # the rest of the session. The dashboard never had a
+                    # controlling terminal, so nothing surfaced this.
+                    # stop() still terminates it explicitly.
+                    start_new_session=True,
                 )
                 self._closed_reason = ""
                 self._reader_proc = None

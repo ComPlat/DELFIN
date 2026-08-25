@@ -108,6 +108,25 @@ def test_the_two_front_doors_report_the_same_thing(wired, monkeypatch, capsys):
     )
 
 
+def test_the_prompt_itself_never_lands_in_the_answer(monkeypatch):
+    """`input(prompt)` writes the prompt to STDOUT.
+
+    So an interactive session with a redirected stdout collected a `> ` for
+    every turn, in the one stream that is supposed to carry the answer and
+    nothing else. When stdout is a terminal the prompt still goes through
+    input(), because readline needs it to redraw a wrapped line correctly.
+    """
+    from delfin.agent import repl
+
+    out, err = io.StringIO(), io.StringIO()          # neither is a tty
+    agent = repl.TerminalAgent(_StubEngine(), out=out, err=err)
+    monkeypatch.setattr("builtins.input", lambda *a: "typed")
+
+    assert agent._input("> ") == "typed"
+    assert out.getvalue() == ""
+    assert err.getvalue() == "> "
+
+
 def test_one_turn_reports_the_keys_the_json_contract_promises(monkeypatch):
     """Pins `_run_once` itself, not just what main() does with it."""
     keys = agent_cli._run_once(_StubEngine(), "hello")
@@ -115,12 +134,27 @@ def test_one_turn_reports_the_keys_the_json_contract_promises(monkeypatch):
         "text", "tool_calls", "input_tokens", "output_tokens", "error"}
 
 
-def test_an_empty_interactive_invocation_says_what_works_today(monkeypatch, capsys):
+def test_a_pipe_with_nothing_in_it_is_refused(wired, monkeypatch, capsys):
+    _no_tty(monkeypatch, "")
+    rc = agent_cli.main([])
+    out, err = capsys.readouterr()
+    assert rc == 2
+    assert out == "", "the refusal belongs on stderr, stdout is the answer"
+    assert "stdin" in err
+
+
+def test_an_interactive_invocation_starts_the_session(wired, monkeypatch, capsys):
+    """A terminal with nothing typed opens the loop and leaves on EOF.
+
+    The banner belongs on stderr like every other piece of chrome, so a
+    session that answers nothing still writes nothing to stdout.
+    """
     stream = io.StringIO("")
     stream.isatty = lambda: True            # type: ignore[method-assign]
     monkeypatch.setattr("sys.stdin", stream)
     rc = agent_cli.main([])
     out, err = capsys.readouterr()
-    assert rc == 2
-    assert out == "", "the refusal belongs on stderr, stdout is the answer"
-    assert "-p" in err
+    assert rc == 0
+    assert out == ""
+    assert "delfin-agent" in err, "the banner says what you are looking at"
+    assert "workspace" in err
