@@ -37,12 +37,28 @@ plain one at a geometry that is visibly not a minimum.  So the plain Hessian
 stays, and what changed is that the scan now *reports* the imaginary mode
 instead of quoting a free energy as though the point were a minimum.
 
-The failure is not particular to benzene: it is what happens whenever a scan
-point is worth a lot of energy and little RMSD, which is most of them.  Along
-a real Diels-Alder scan the free relaxation from each held point moves 0.000 A
-at 3.40 and 3.20 A -- where the constrained point simply is a free minimum --
-and 0.130 A at 3.00, where xtb's restraint comes out at -0.0007 and the held
-bond slides from 3.00 to 3.29.
+The failure is not particular to benzene.  Along a real Diels-Alder scan --
+the free relaxation from each held point, which is the quantity xtb sizes its
+bias against, beside where ``--bhess`` actually left the bond that was held:
+
+    held at   a free relaxation moves   kpush      it left the bond at
+      3.40 A          0.000 A          -0.0000            3.400 A
+      3.20            0.000            -0.0000            3.200
+      3.00            0.130            -0.0007            3.288
+      2.80            0.206            -0.0064            3.086
+      2.60            0.258            -0.0142            2.916
+      2.40            0.340            -0.0313            2.759
+      2.20            0.369            -0.0597            2.611
+      1.80            0.118            -0.0007            1.541
+      1.60            0.017            -0.0000            1.542
+
+The first two come to no harm: those points happen to *be* free minima, the
+pair being far enough apart that the hold does no work.  Everywhere the hold
+is doing work the held bond slides, by 0.06 to 0.39 A.  The last two are the
+benzene's failure happening on a real scan: at 1.80 A the point is worth 13.0
+kcal/mol and is 0.118 A from where it relaxes to, so the restraint comes out
+at seven ten-thousandths and the structure falls into the product at 1.54.
+There is no point on this scan that ``--bhess`` holds.
 """
 
 from __future__ import annotations

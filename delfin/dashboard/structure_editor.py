@@ -9567,6 +9567,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['scan_depth'] = ''
         state['scan_crowded'] = None
         state['scan_free_shaky'] = None
+        # Whether a second leg was even on the table.  None for a push, which
+        # has no grid of values to retrace; True or False for a walk, which
+        # has.  It is what lets the verdict offer the return leg to the one
+        # person who could have had it and did not.
+        state['scan_back_wanted'] = (None if pushing
+                                     else bool(submit_scan_back.value))
         # The two legs as they are walked, the return leg's verdict, and the
         # step the walk fell through if it fell through one.  Kept on the
         # state rather than only in the sentence, because a profile is a
@@ -10465,6 +10471,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         ends = _path_ends(start)
         if not ends:
             return
+        # And the one pair this method cannot walk between.
+        #
+        # All three ways from two ends go through xtb's path finder first, so
+        # all three are refused together.  Decidable here in a way it is not
+        # from a single structure: two ends say what the reaction is, and that
+        # is why climbing from what is on screen is left alone.  See
+        # :func:`_gfn.gfnff_pair_refusal` for what GFN-FF answers instead.
+        if str(submit_ff_dd.value).strip().lower() == 'gfnff':
+            no = _gfn.gfnff_pair_refusal(ends[0], ends[1])
+            if no:
+                _set_mol_status(no)
+                return
         if how == 'orca':
             _path_then_orca(ends)
             return
@@ -11727,7 +11745,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     f'height above is where this walk went and not the '
                     f'barrier. Two ends and a saddle search will answer what '
                     f'the walk cannot.')
-        elif not state.get('scan_back'):
+        elif state.get('scan_back_wanted') is False:
+            # Only where the second leg could have run and was not asked for.
+            # A push has no grid to retrace, and a walk that was stopped or
+            # that collapsed has already been told why it ended -- offering it
+            # a second leg there would be answering a question nobody is in a
+            # position to ask.
             said += (' Nothing walked it back, so whether this profile '
                      'depends on the direction it was walked is not known. '
                      '"Walk it back" beside Run scan answers that, for '

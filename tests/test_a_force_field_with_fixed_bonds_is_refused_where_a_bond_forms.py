@@ -134,6 +134,45 @@ def test_the_scan_asks_before_it_starts_and_only_of_gfnff():
     assert '_gfn.gfnff_refusal(xyz, legs)' in EDITOR_SOURCE
 
 
+# ---------------------------------------------------------------------------
+# and the other route where the question is decidable
+# ---------------------------------------------------------------------------
+
+
+def test_a_pair_of_ends_that_makes_a_bond_is_refused_too():
+    """Two ends say what the reaction is; one geometry does not.
+
+    Measured with xtb's own path finder given the separated pair and
+    cyclohexene: GFN2 reports the product 68.0 kcal/mol below the start and
+    GFN-FF reports it 34.3 *above*, because it never sees the product as a
+    molecule -- it prices cyclohexene as a strained contact between the two
+    things it still believes are there.  The sign of a reaction energy is not
+    a detail.
+    """
+    ethene = ('6\nethene\nC 0 0 0\nC 1.33 0 0\n'
+              'H -0.57 0.94 0\nH -0.57 -0.94 0\n'
+              'H 1.90 0.94 0\nH 1.90 -0.94 0\n')
+    ethane = ethene.replace('C 1.33 0 0', 'C 1.53 0 0')
+    apart = ethene.replace('C 1.33 0 0', 'C 3.60 0 0')
+    # A bond that appears between the first end and the second.
+    said = gfn.gfnff_pair_refusal(apart, ethene)
+    assert said and 'C1-C2' in said and 'cannot make one' in said
+    # The same pair the other way round breaks one, and is left alone.
+    assert gfn.gfnff_pair_refusal(ethene, apart) == ''
+    # And two ends of the same molecule ask nothing of the topology.
+    assert gfn.gfnff_pair_refusal(ethene, ethane) == ''
+
+
+def test_the_two_ends_press_asks_before_it_walks():
+    """All three ways from a pair go through the path finder, so all three
+    are refused together."""
+    assert '_gfn.gfnff_pair_refusal(ends[0], ends[1])' in EDITOR_SOURCE
+    where = EDITOR_SOURCE.index('_gfn.gfnff_pair_refusal(')
+    # Before the branch that chooses between them.
+    assert EDITOR_SOURCE.index("if how == 'orca':\n            _path_then_orca") \
+        > where
+
+
 @_needs_xtb
 def test_it_really_does_answer_the_wrong_question(tmp_path):
     """The measurement the refusal is made of, run again.
