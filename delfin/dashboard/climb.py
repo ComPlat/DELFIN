@@ -120,6 +120,17 @@ takes every core for a sixteen-atom molecule and one gradient costs **1.66 s**
 either way); ``omp_set_num_threads`` through the loaded OpenMP library works
 (measured: 7.2 ms).  So that is what happens here, around each call and put
 back afterwards.
+
+And then what to do with the saddle once there is one, which is the last
+section of this file rather than a module of its own for one reason: it is
+:meth:`Climb.modes_from_xtb` that makes it possible, and that is here.  The
+mode *shapes* are read out of xtb's ``hessian`` file, and a shape is what both
+of the two questions about a transition state need -- what reaction is this,
+which is the imaginary mode drawn (:func:`mode_pictures`), and does it join
+what it was meant to join, which is that mode followed down both ways
+(:func:`follow_the_mode_down`).  Measured against the rigorous form of the
+second on the sixteen-atom Diels-Alder saddle: 1.0 s here against 207 s for
+ORCA's own ``! XTB2 IRC``, and the same two ends.
 """
 
 from __future__ import annotations
@@ -133,7 +144,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 import numpy as np
 
@@ -145,6 +156,10 @@ BOHR = _gfn.BOHR_IN_ANGSTROM
 
 #: A square root of a Hartree per Bohr squared per electron mass, in cm-1.
 HARTREE_IN_CM = 219474.6313702
+
+#: Kilocalories per mole in a Hartree, which is what an energy difference is
+#: said in everywhere in this editor.
+HARTREE_IN_KCAL = 627.5094740631
 
 #: Electron masses in an atomic mass unit.
 ELECTRON_MASSES_PER_AMU = 1822.888486209
@@ -1780,3 +1795,556 @@ def _closest(tried: Sequence[Dict[str, Any]]) -> Dict[str, Any]:
         if got.get('xyz') and rank(got) > rank(best):
             best = got
     return best
+
+
+# -- what to do with the saddle once you have one ----------------------
+#
+# A converged first-order saddle is a geometry and a number, and neither of
+# those answers the two questions a chemist has about it.  What reaction is
+# this -- the imaginary mode *is* the reaction coordinate, so drawing it says
+# which bonds are forming and which are breaking, directly, without anybody
+# having to read coordinates off a box.  And does it join what it was meant to
+# join -- a different question, and the standard way to ask it is to push the
+# structure a little way down that mode in each direction and see where it
+# settles.
+#
+# Both start from :meth:`Climb.modes_from_xtb`, which is here already: xtb's
+# own Hessian read out of the ``hessian`` file rather than off the printout,
+# because the file carries the *shapes* of the modes and the printout carries
+# only their numbers.  A shape is exactly what both of these need.  One xtb
+# either way, measured at 0.41 s on sixteen atoms.
+
+
+#: How far along a mode the picture is drawn, in Angstrom of the largest
+#: single-atom displacement.
+#:
+#: It sits between two bounds, both measured on the same structure.  It has to
+#: be big enough that the chemistry is unmistakable: on the sixteen-atom
+#: Diels-Alder saddle, whose two forming bonds stand at 2.315 A, this
+#: amplitude swings both of them between 1.63 A -- a formed C-C bond -- and
+#: 3.01 A, which is no bond at all.  Nobody has to be told what that picture
+#: is of.
+#:
+#: And it has to be small enough not to tear the molecule, which is the
+#: question :data:`gfn_optimize._TOO_CLOSE` already answers for a hand: two
+#: atoms inside two thirds of the bond they would make are not on any path at
+#: any temperature.  On that same saddle the tightest contact anywhere in the
+#: swing is 0.81 of a bond at this amplitude, and first drops under the 0.65
+#: that counts as squeezed at an amplitude of 0.70.  So the default is half of
+#: where this molecule first tears.
+#:
+#: Which is a fact about that molecule rather than about amplitudes, so it is
+#: a starting point and not a rule: :func:`amplitude_that_fits` cuts it down
+#: on a structure whose mode drives two atoms together sooner.  At the other
+#: extreme, measured on planar ammonia at its inversion saddle -- where the
+#: mode is three hydrogens swinging through the plane -- nothing is tight at
+#: any amplitude up to 1.0 A, and this is nowhere near the limit.
+MODE_AMPLITUDE = 0.35
+
+#: Below this an amplitude is no longer a picture of anything, so the cutting
+#: down stops rather than converging on nought.  A twentieth of an Angstrom is
+#: under a twentieth of a bond, which no screen shows as motion.
+LEAST_AMPLITUDE = 0.05
+
+#: How many pictures make one swing: out one way, back through the structure,
+#: out the other and back.
+#:
+#: Twenty-four of them at :data:`MODE_PACE_MS` is about a swing a second --
+#: slow enough that the eye can follow one bond through it, fast enough that
+#: it reads as motion rather than as a slide show.  The player interpolates
+#: between pictures at the screen's own rate, so this is how many geometries
+#: are computed and not how many are drawn.
+MODE_PICTURES = 24
+
+#: And how many swings one press draws before the picture is back where it
+#: started.
+#:
+#: Six is about six seconds, which is long enough to watch the same motion
+#: three or four times over and decide what it is.  Bounded on purpose: a
+#: picture that runs until it is switched off is a second thing to remember to
+#: switch off, and this one cannot be left running by accident.  Pressing
+#: again is one press.
+MODE_SWINGS = 6
+
+#: How long one picture stands, in milliseconds.
+#:
+#: Named here rather than taken from the editor's playback slider, and the
+#: difference between the two is the whole reason: the slider says how fast to
+#: walk a path that was computed step by step, and at its top it means "do not
+#: fall behind the calculation" -- which, for a path that is already finished,
+#: is the whole animation inside one screen frame.  A mode is not a path being
+#: walked.  It has a period, and the period is what makes it legible.
+MODE_PACE_MS = 40
+
+#: How far the structure is pushed down the mode before it is let go, in
+#: Angstrom of the largest single-atom displacement.
+#:
+#: A saddle is a stationary point, so this only has to be enough to leave one;
+#: the relaxation does the rest.  Measured on the Diels-Alder saddle at 0.1,
+#: 0.2, 0.3 and 0.5 A, the two ends come back the same to two decimals every
+#: time -- -70.64 kcal/mol with the ring closed at 1.54 A one way, -6.75 with
+#: the two fragments 3.3 A apart the other -- so the answer does not depend on
+#: it anywhere over that range.  ORCA's own IRC, asked for its default 2 mEh
+#: drop on the same structure, chose 0.287 along its normalised mode, which is
+#: the same size written in a different unit.
+#:
+#: 0.3 rather than 0.1 because a displacement that barely leaves a stationary
+#: point leaves the optimiser to find its own way off one, and on a flat
+#: saddle that is where it crawls or comes back.
+DESCENT_STEP = 0.30
+
+
+def modes_of(xyz_text: str, method: str = 'gfn2', *,
+             charge: int = 0, uhf: int = 0, solvent: Optional[str] = None,
+             cores: int = 4) -> Optional[Dict[str, Any]]:
+    """The modes at this geometry, with shapes something can be drawn from.
+
+    ``{'cm', 'ways', 'symbols', 'angstrom'}``.  *cm* are the frequencies in
+    cm-1, sorted from softest; *ways* has one column per mode, in **Cartesian**
+    Angstrom and scaled so that the atom moving furthest in it moves exactly
+    one -- so an amplitude in Angstrom multiplies straight into a column and
+    means what it says.  ``None`` when there is no xtb to ask.
+
+    :meth:`Climb.modes_from_xtb` hands its shapes over mass-weighted, which is
+    the metric the eigenvalues live in and not the one a picture is drawn in.
+    Left that way a hydrogen moves a third of what it really does, and a proton
+    transfer looks like the heavy atoms doing the work.  Dividing by the root
+    mass puts it back.
+    """
+    walk = Climb(xyz_text, method, charge=charge, uhf=uhf, solvent=solvent,
+                 cores=cores)
+    try:
+        got = walk.modes_from_xtb()
+        if got is None:
+            return None
+        ways = np.asarray(got['shape'], dtype=float) / walk.weight[:, None]
+        for column in range(ways.shape[1]):
+            furthest = float(np.linalg.norm(
+                ways[:, column].reshape(-1, 3), axis=1).max())
+            if furthest > 1e-12:
+                ways[:, column] /= furthest
+        return {'cm': np.asarray(got['cm'], dtype=float), 'ways': ways,
+                'symbols': list(walk.symbols),
+                'angstrom': np.asarray(walk.angstrom, dtype=float)}
+    finally:
+        walk.close()
+
+
+def imaginary_among(cm: Any) -> List[int]:
+    """Which of these modes go the wrong way, softest first.
+
+    Counted against the same :data:`IMAGINARY_BELOW` as everything else here,
+    so a mode a verdict called imaginary is one that can be drawn and followed
+    and no other is.
+    """
+    return [n for n, one in enumerate(np.asarray(cm, dtype=float))
+            if float(one) < IMAGINARY_BELOW]
+
+
+def displaced_along(angstrom: Any, way: Any, amplitude: float) -> np.ndarray:
+    """This geometry moved *amplitude* Angstrom along *way*."""
+    rows = np.asarray(angstrom, dtype=float)
+    return rows + float(amplitude) * np.asarray(
+        way, dtype=float).reshape(rows.shape)
+
+
+def amplitude_that_fits(symbols: Sequence[str], angstrom: Any, way: Any,
+                        wanted: float = MODE_AMPLITUDE) -> float:
+    """The largest amplitude at or below *wanted* that tears nothing.
+
+    Asked at both ends of the swing, because a mode is symmetric in the
+    arithmetic and not in the molecule: one direction closes a contact and the
+    other opens it, and only one of the two can be the one that squeezes.
+
+    "Tears" is not a new idea here.  It is
+    :func:`gfn_optimize.closest_contact` against
+    :data:`gfn_optimize._TOO_CLOSE`, which is the floor a drag is already held
+    to.  A bond graph would be the wrong test, and it is worth saying why: the
+    whole point of this picture is that bonds appear and disappear in it, so a
+    rule that refused a changed graph would refuse every mode worth looking
+    at.  Measured on the Diels-Alder saddle, the graph changes at an amplitude
+    of 0.2 A and nothing is tight until 0.70.
+
+    Returns *wanted* unchanged where nothing is tight, which is the ordinary
+    case; something smaller where it is; and never below
+    :data:`LEAST_AMPLITUDE`, under which there is no picture left to protect.
+    """
+    rows = np.asarray(angstrom, dtype=float)
+    names = list(symbols)
+    amplitude = float(wanted)
+    while amplitude > LEAST_AMPLITUDE:
+        worst = None
+        for sign in (1.0, -1.0):
+            text = xyz_document(
+                names, displaced_along(rows, way, sign * amplitude),
+                'along a mode')
+            tight = _gfn.closest_contact(text)[0]
+            if tight is not None and (worst is None or tight < worst):
+                worst = tight
+        if worst is None or worst >= _gfn._TOO_CLOSE:
+            return amplitude
+        amplitude *= 0.8
+    return LEAST_AMPLITUDE
+
+
+def mode_pictures(angstrom: Any, way: Any, *, amplitude: float,
+                  pictures: int = MODE_PICTURES,
+                  swings: int = MODE_SWINGS) -> List[List[float]]:
+    """The frames that show one mode, flat, the way the frame channel wants.
+
+    ``x0 + A sin(phase)``: it begins at the structure, goes out one way, back
+    through it, out the other, and **ends on the structure exactly**, because
+    the last picture is a whole number of swings and the sine of that is
+    nought.
+
+    That last part is not a detail.  A geometry displaced along a mode is a
+    picture and not a structure anybody chose, so the one thing this must
+    never do is leave the viewer standing on one: whatever cuts the animation
+    short, the frame it comes to rest on has to be the geometry the coordinate
+    box holds.  Ending on it is how that is true when the animation runs out
+    by itself, and the run's ``home`` frame is how it is true when a hand
+    arrives in the middle of one.
+    """
+    rows = np.asarray(angstrom, dtype=float)
+    step = np.asarray(way, dtype=float).reshape(rows.shape)
+    out: List[List[float]] = []
+    many = max(2, int(pictures))
+    for n in range(many * max(1, int(swings)) + 1):
+        far = float(amplitude) * math.sin(2.0 * math.pi * n / many)
+        out.append([round(float(one), 4)
+                    for one in (rows + far * step).reshape(-1)])
+    return out
+
+
+#: Two ends count as the same energy when they are within this, in kcal/mol.
+#:
+#: A tenth of a kcal/mol is under what a semiempirical method means by a
+#: number, and well under what separates two conformers of anything.  It is
+#: here to answer one question -- did both directions come back to the same
+#: place -- and not to grade anything.
+SAME_ENERGY = 0.1
+
+#: And the same geometry when they are within this, in Angstrom of RMSD after
+#: the best rotation.
+#:
+#: A twentieth of an Angstrom is a hundredth of a bond: two relaxations of the
+#: same minimum from different starting points land inside it, and two
+#: genuinely different arrangements never do.
+SAME_PLACE = 0.05
+
+
+def pieces_in(xyz_text: str) -> int:
+    """How many separate structures this geometry is.
+
+    By :func:`gfn_optimize.bond_graph`, so it is the same bonding the viewer
+    draws lines with and the same one the topology wall compares.  It is the
+    one thing about a relaxed structure that can be said without knowing any
+    chemistry at all: two fragments 3 A apart are two pieces whatever they are
+    made of.
+    """
+    rows = _gfn.atom_lines(xyz_text)
+    if not rows:
+        return 0
+    home = list(range(len(rows)))
+
+    def root(one: int) -> int:
+        while home[one] != one:
+            home[one] = home[home[one]]
+            one = home[one]
+        return one
+
+    for left, right in _gfn.bond_graph(xyz_text):
+        a, b = root(int(left)), root(int(right))
+        if a != b:
+            home[a] = b
+    return len({root(one) for one in range(len(rows))})
+
+
+def turned_onto(here: Any, there: Any) -> float:
+    """RMSD between two geometries once one is turned onto the other.
+
+    Kabsch, with the reflection taken back out: two structures that are mirror
+    images are *not* the same structure, and an alignment that is allowed to
+    invert would report them as one.  That case is not exotic -- an umbrella
+    inversion has it at both ends of its own mode.
+    """
+    one = np.asarray(here, dtype=float)
+    two = np.asarray(there, dtype=float)
+    if one.shape != two.shape or one.size == 0:
+        return float('nan')
+    one = one - one.mean(0)
+    two = two - two.mean(0)
+    left, _, right = np.linalg.svd(one.T @ two)
+    mirror = np.diag([1.0, 1.0, float(np.sign(np.linalg.det(left @ right)))])
+    turn = left @ mirror @ right
+    return float(np.sqrt(((one @ turn - two) ** 2).sum() / len(one)))
+
+
+def _pair_named(symbols: Sequence[str], pair: Sequence[int],
+                angstrom: Any) -> str:
+    """One bond, named the way the viewer numbers its atoms and measured.
+
+    Zero-based, for the reason :func:`_contact` gives: the ``#`` button draws
+    the index on the atom counting from nought, and a sentence that numbers
+    them differently from the picture is worse than one that does not number
+    them at all.
+    """
+    one, two = int(pair[0]), int(pair[1])
+    rows = np.asarray(angstrom, dtype=float)
+    apart = float(np.linalg.norm(rows[one] - rows[two]))
+    return f'{symbols[one]}{one}-{symbols[two]}{two} at {apart:.2f} A'
+
+
+def _bonds_said(symbols: Sequence[str], changed: Sequence[Sequence[int]],
+                angstrom: Any, most: int = 3) -> str:
+    """A list of bonds, as a phrase, with the long tail counted rather than
+    printed."""
+    listed = [_pair_named(symbols, pair, angstrom)
+              for pair in list(changed)[:most]]
+    rest = len(list(changed)) - len(listed)
+    return ', '.join(listed) + (f' and {rest} more' if rest > 0 else '')
+
+
+#: Small counts written out, because a sentence with a digit in the middle of
+#: it reads as a measurement and these are not measurements.
+_SPELT = ('no', 'one', 'two', 'three', 'four', 'five', 'six', 'seven',
+          'eight', 'nine', 'ten')
+
+
+def _many(count: int) -> str:
+    """A small number in words, and a large one as itself."""
+    return _SPELT[count] if 0 <= int(count) < len(_SPELT) else str(int(count))
+
+
+def _pieces_said(count: int) -> str:
+    """How many separate structures this is, as a phrase."""
+    return 'one piece' if int(count) == 1 else f'{_many(count)} separate pieces'
+
+
+def _end_said(end: Dict[str, Any], symbols: Sequence[str], which: str) -> str:
+    """What one end of the descent is, in a sentence that assumes no chemistry.
+
+    Everything in it is a measurement: how many separate pieces the structure
+    is, which bonds it has that the saddle did not and which the saddle had
+    that it does not, and what it costs against the saddle.  No word here
+    names a kind of reaction or a role -- there is no reactant and no product,
+    because which end of a mode is which is not a question about the saddle,
+    and this editor is used on every sort of system.
+    """
+    if not end.get('ok'):
+        return (f'{which} the relaxation did not finish: '
+                + str(end.get('status') or 'it gave no answer.'))
+    parts = []
+    kcal = end.get('kcal')
+    if kcal is not None:
+        parts.append(f'{abs(kcal):.1f} kcal/mol '
+                     + ('below' if kcal <= 0 else 'above') + ' the saddle')
+    parts.append(_pieces_said(int(end.get('pieces') or 0)))
+    if end.get('made'):
+        parts.append('with ' + _bonds_said(symbols, end['made'], end['there'])
+                     + ' that the saddle did not have')
+    if end.get('broke'):
+        parts.append('without ' + _bonds_said(symbols, end['broke'],
+                                              end['here'])
+                     + ' that the saddle had')
+    if not end.get('made') and not end.get('broke'):
+        parts.append('with the same bonds the saddle has')
+    moved = end.get('moved')
+    if moved is not None and moved == moved:
+        parts.append(f'{moved:.2f} A RMSD from the saddle')
+    return f'{which} it relaxed to a structure ' + ', '.join(parts) + '.'
+
+
+def _modes_belong_to(modes: Dict[str, Any], xyz_text: str) -> bool:
+    """Whether a kept Hessian is about this geometry.
+
+    A tenth of a milliangstrom, which is under the four decimals a geometry is
+    written out with: it separates "these coordinates, written and read back"
+    from every real change.
+    """
+    found = _elements(xyz_text)
+    here = np.asarray((modes or {}).get('angstrom'), dtype=float)
+    if found is None or here.size == 0:
+        return False
+    there = np.asarray(found['angstrom'], dtype=float)
+    if here.shape != there.shape:
+        return False
+    return float(np.abs(here - there).max()) <= 1e-4
+
+
+def follow_the_mode_down(xyz_text: str, method: str = 'gfn2', *,
+                         mode: int = 0, step: float = DESCENT_STEP,
+                         charge: int = 0, uhf: int = 0,
+                         solvent: Optional[str] = None, cores: int = 4,
+                         timeout: Optional[float] = 120.0,
+                         modes: Optional[Dict[str, Any]] = None,
+                         on_stage: Optional[Callable[[str], None]] = None,
+                         ) -> Dict[str, Any]:
+    """Push the structure down one mode both ways, and say where it lands.
+
+    Returns ``{'ok', 'status', 'lines', 'ends', 'seconds', 'cm', 'order'}``.
+    *ends* is the two directions, each with the structure it reached, what it
+    costs against the saddle, how many pieces it is and which bonds it has
+    that the saddle did not.
+
+    This is the cheap confirmation and it is called one on purpose.  The
+    rigorous version is a mass-weighted steepest descent -- an intrinsic
+    reaction coordinate -- and ORCA has one; both were measured on the same
+    sixteen-atom Diels-Alder saddle on this machine, and the numbers are the
+    reason this is what the editor offers:
+
+    * this, one Hessian and two relaxations: **1.0 s**, and it lands on the
+      two minima themselves -- one piece with the ring closed at 1.54 A and
+      -70.6 kcal/mol one way, two pieces 3.3 A apart at -6.7 the other.
+    * ``! XTB2 IRC``, both directions, its own numerical Hessian: **207 s**,
+      and it converges in the valley rather than at the bottom of it -- 2.83 A
+      and -5.3 kcal/mol on the one side, 1.54 A and -70.0 on the other.  So it
+      needs the same two relaxations afterwards to name what it reached, and
+      then it agrees with this exactly.
+
+    Two hundred seconds is not a press.  It is over the three minutes
+    :func:`saddle.seconds_for` allows a saddle search itself, on the smallest
+    case anybody would run, on a machine that is somebody's login node -- and
+    it answers the same question.  An IRC is worth submitting as a job when
+    the path itself is the result; it is not worth pressing to find out which
+    two structures a saddle joins.
+
+    It does work over ``ExtOpt``, which is how :data:`saddle.SADDLE_METHODS`
+    drives g-xTB, and that was checked rather than assumed because there is a
+    published interface between ORCA and a program of ours and nothing says an
+    IRC uses it the way an optimiser does.  Measured on the same saddle,
+    ``! ExtOpt IRC`` with ``InitHess calc_numfreq``: ORCA terminated normally
+    and both directions converged, onto the same two ends -- 3.09 A and two
+    pieces one way, 1.53 A and one piece the other.  It took **960 s**, 77 per
+    cent of it in the external gradients, which makes the same point louder.
+
+    *modes* is what :func:`modes_of` returned, for a caller that already paid
+    for the Hessian; without it this pays for one.  They are checked against
+    *xyz_text* before they are used and recomputed if they are about some
+    other geometry -- a mode shape belongs to the structure it was taken at,
+    and a kept Hessian outliving the structure it was taken on is the one way
+    this could quietly answer about something else.
+    """
+    began = time.perf_counter()
+
+    def _say(sentence: str) -> None:
+        if on_stage is None:
+            return
+        try:
+            on_stage(sentence)
+        except Exception:                                   # noqa: BLE001
+            # A page that cannot draw a sentence is not a reason to stop.
+            pass
+
+    if modes is not None and not _modes_belong_to(modes, xyz_text):
+        modes = None
+    if modes is None:
+        _say('Taking a Hessian to find the mode...')
+        modes = modes_of(xyz_text, method, charge=charge, uhf=uhf,
+                         solvent=solvent, cores=cores)
+    if not modes:
+        return {'ok': False, 'lines': [], 'ends': [], 'cm': [], 'order': None,
+                'seconds': time.perf_counter() - began,
+                'status': ('The modes of this structure could not be '
+                           'computed, so there is nothing to follow down. '
+                           'It needs xtb.')}
+    wrong = imaginary_among(modes['cm'])
+    if not wrong:
+        return {'ok': False, 'lines': [], 'ends': [], 'cm': list(modes['cm']),
+                'order': 0, 'seconds': time.perf_counter() - began,
+                'status': ('No mode of this structure goes the wrong way, so '
+                           'there is no reaction coordinate to follow: it is '
+                           'a minimum, and both directions would come '
+                           'straight back to it.')}
+    chosen = int(mode) if int(mode) in wrong else wrong[0]
+    symbols = list(modes['symbols'])
+    here = np.asarray(modes['angstrom'], dtype=float)
+    way = np.asarray(modes['ways'], dtype=float)[:, chosen].reshape(here.shape)
+    saddle_graph = _gfn.bond_graph(
+        xyz_document(symbols, here, 'the structure the mode was taken at'))
+    top = _gfn.optimize_with_gfn(
+        xyz_document(symbols, here, 'the saddle'), method, charge=charge,
+        uhf=uhf, solvent=solvent, optimise=False, timeout=timeout)
+    summit = top.get('energy') if top.get('ok') else None
+
+    ends: List[Dict[str, Any]] = []
+    for sign, which in ((1.0, 'One way'), (-1.0, 'The other way')):
+        _say(f'Pushing {which.lower()} down the mode, and relaxing...')
+        pushed = xyz_document(
+            symbols, displaced_along(here, way, sign * float(step)),
+            'pushed down the imaginary mode')
+        got = _gfn.optimize_with_gfn(
+            pushed, method, charge=charge, uhf=uhf, solvent=solvent,
+            optimise=True, timeout=timeout)
+        end: Dict[str, Any] = {'which': which, 'ok': bool(got.get('ok')),
+                               'status': got.get('status'),
+                               'xyz': got.get('xyz'), 'here': here}
+        if end['ok'] and got.get('xyz'):
+            there = np.asarray(_elements(got['xyz'])['angstrom'], dtype=float)
+            graph = _gfn.bond_graph(got['xyz'])
+            end.update({
+                'there': there,
+                'graph': graph,
+                'energy': got.get('energy'),
+                'kcal': (None if (summit is None or got.get('energy') is None)
+                         else (float(got['energy']) - float(summit))
+                         * HARTREE_IN_KCAL),
+                'pieces': pieces_in(got['xyz']),
+                'made': sorted(graph - saddle_graph),
+                'broke': sorted(saddle_graph - graph),
+                'moved': turned_onto(here, there),
+            })
+        ends.append(end)
+
+    lines = [_end_said(end, symbols, end['which']) for end in ends]
+    both = [end for end in ends if end.get('ok')]
+    same = None
+    if len(both) == 2:
+        first, second = both
+        apart = turned_onto(first['there'], second['there'])
+        cost = (None if None in (first.get('kcal'), second.get('kcal'))
+                else abs(float(first['kcal']) - float(second['kcal'])))
+        alike = first['graph'] == second['graph']
+        same = bool(alike and apart == apart and apart < SAME_PLACE)
+        if not alike:
+            lines.append('The two ends do not have the same bonds, so this '
+                         'mode goes between two different arrangements. '
+                         'Which of them is which way round is not something '
+                         'the saddle says.')
+        elif same:
+            lines.append(
+                'Both ways came back to the same structure -- the same bonds '
+                f'and {apart:.2f} A RMSD apart. Either nothing was crossed, '
+                'or the push was too small to leave the saddle. Nothing here '
+                'says a reaction was found.')
+        elif cost is not None and cost < SAME_ENERGY:
+            lines.append(
+                'The two ends have the same bonds and the same energy to '
+                f'within {cost:.2f} kcal/mol, and stand {apart:.2f} A RMSD '
+                'apart: two arrangements of one structure rather than two '
+                'different ones, which is what a passage between equivalent '
+                'forms looks like.')
+        else:
+            lines.append(
+                'The two ends have the same bonds but stand '
+                f'{apart:.2f} A RMSD and '
+                + ('' if cost is None else f'{cost:.1f} kcal/mol ')
+                + 'apart, so the mode moves the structure without making or '
+                  'breaking anything.')
+    elif not both:
+        lines.append('Neither direction relaxed to anything, so nothing is '
+                     'claimed about what this saddle joins.')
+    else:
+        lines.append('Only one direction relaxed, so what this saddle joins '
+                     'is half answered.')
+    if len(wrong) > 1:
+        lines.insert(0, (
+            f'This structure has {_many(len(wrong))} modes going the wrong '
+            'way, so it is not a transition state and the two ends below are '
+            'only the two ways along one of them.'))
+    seconds = time.perf_counter() - began
+    return {'ok': bool(both), 'lines': lines, 'ends': ends, 'same': same,
+            'cm': [float(one) for one in modes['cm']], 'order': len(wrong),
+            'mode': chosen, 'seconds': seconds,
+            'status': (f'Followed the mode at {float(modes["cm"][chosen]):.0f} '
+                       f'cm-1 down both ways in {seconds:.1f} s.')}

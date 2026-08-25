@@ -49,6 +49,17 @@ a transition state, a second-order saddle -- against thresholds taken from
 searches that have had to make this judgement at scale, each cited where it is
 defined.
 
+What the verdict makes possible lives next door, in :mod:`climb`: a structure
+with a mode going the wrong way can have that mode *drawn*, which is the
+reaction coordinate itself and says which bonds are forming and which are
+breaking, and it can be followed down both ways to the two structures it
+joins.  Both start from :meth:`climb.Climb.modes_from_xtb`, which is why they
+are there and not here -- it is the mode shapes they need, and only the file
+that reads xtb's Hessian file has those.  See
+:func:`climb.follow_the_mode_down` for why the editor offers a
+displace-and-relax rather than ORCA's ``! IRC``: measured on the Diels-Alder
+saddle, 1.0 s against 207, for the same two ends.
+
 The climb is watched while it happens rather than reported at the end.  ORCA
 appends every accepted step to ``<base>_trj.xyz`` with its energy on the
 comment line, so the path is readable as it is walked: the viewer can show
