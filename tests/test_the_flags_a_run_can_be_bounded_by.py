@@ -187,22 +187,24 @@ def test_without_bare_the_servers_stay_configured(clean_registries, tmp_path):
     assert clean_registries.get_registry(tmp_path).servers != {}
 
 
-def test_bare_names_the_three_it_does_not_skip(clean_registries, tmp_path):
-    """The can't-deliver path: three of the four are out of reach.
+def test_bare_names_what_it_covers_and_what_it_leaves(clean_registries,
+                                                     tmp_path):
+    """Both halves, on one line.
 
-    Hooks, skills and project memory are all discovered inside the turn
-    from the permissions workspace, with no per-session switch — so the
-    flag has to say which of the four it actually covers instead of
-    letting the word imply all of them.
+    This test used to assert the opposite — that hooks, skills and
+    project memory were named as NOT skipped, because none of the three
+    had a per-session switch. All three have one now, so the assertion is
+    inverted and the name goes with it: a test whose docstring describes
+    a world that no longer exists is worse than no test, because it reads
+    as a decision someone made.
     """
     engine = type("E", (), {"client": type("C", (), {"model": "m"})(),
                             "provider": "kit"})()
     notes = agent_cli._bounding_notices(
         _args(bare=True, bare_mcp_skipped=True), engine)
     line = "\n".join(notes)
-    assert "MCP servers skipped" in line
-    for named in ("hooks", "skills", "project memory"):
-        assert named in line, f"--bare has to name {named} as not skipped"
+    for covered in ("MCP servers", "hooks", "skills", "project memory"):
+        assert covered in line, f"--bare has to name {covered}"
 
 
 def test_a_bare_that_skipped_nothing_does_not_claim_otherwise():
