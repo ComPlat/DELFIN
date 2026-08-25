@@ -37,6 +37,8 @@ NEW_COMMANDS = (
     '/tools',
     '/usage',
     '/export',
+    '/memories',
+    '/forget',
     '/agents',
     '/skills',
     '/hooks',
@@ -50,6 +52,8 @@ NEW_COMMANDS = (
 # simulate an install that does not ship it.
 BACKING_MODULE = {
     '/tools': 'delfin.agent.api_client',
+    '/memories': 'delfin.agent.memory_store',
+    '/forget': 'delfin.agent.memory_store',
     '/agents': 'delfin.agent.subagents',
     '/skills': 'delfin.agent.skills',
     '/hooks': 'delfin.agent.hooks_editor',
@@ -215,6 +219,15 @@ def test_an_unpriced_model_says_so_instead_of_printing_zero(tmp_path):
     assert "$0.0000" not in out or "unmeasured" in out or "no per-token" in out
 
 
+def test_memories_lists_what_the_store_holds(tmp_path):
+    from delfin.agent import memory_store
+
+    memory_store.save_typed_memory(
+        "the build needs python 3.11", repo_root=tmp_path)
+    out = rc.BUILTINS["/memories"].handler(_ctx(tmp_path), "").output
+    assert "python 3.11" in out or "build" in out
+
+
 def test_hooks_is_read_only(tmp_path):
     """Listing a hook must not be able to write one.
 
@@ -276,6 +289,25 @@ def test_export_reads_content_blocks_not_their_repr(tmp_path, monkeypatch):
     text = list((tmp_path / ".delfin" / "exports").glob("*.md"))[0].read_text()
     assert "the answer" in text
     assert "'type'" not in text
+
+
+def test_forgetting_a_memory_that_is_not_there_deletes_nothing(tmp_path):
+    from delfin.agent import memory_store
+
+    memory_store.save_typed_memory("keep this one", repo_root=tmp_path)
+    before = sorted(p.name for p in tmp_path.rglob("*.md"))
+    out = rc.BUILTINS["/forget"].handler(_ctx(tmp_path), "no-such-memory").output
+    assert "no memory named" in out
+    assert sorted(p.name for p in tmp_path.rglob("*.md")) == before
+
+
+def test_forgetting_a_memory_names_what_it_deleted(tmp_path):
+    from delfin.agent import memory_store
+
+    _path, slug, _type = memory_store.save_typed_memory(
+        "the parser is in code_nav", repo_root=tmp_path)
+    out = rc.BUILTINS["/forget"].handler(_ctx(tmp_path), slug).output
+    assert "deleted" in out and slug in out
 
 
 @pytest.mark.parametrize("name", ["/skills", "/commands", "/plans"])
