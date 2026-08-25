@@ -42,6 +42,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from delfin.dashboard import reaction_graph as rg
+from delfin.dashboard import reaction_profile
+from delfin.dashboard.thermal import thermal_ceiling
 from delfin.dashboard import run_results
 
 try:
@@ -68,6 +70,11 @@ WINDOWS: Tuple[Tuple[str, float], ...] = (
     ('a week', 604800.0),
     ('a year', 31557600.0),
 )
+
+#: Where a drawn profile is kept, inside the graph beside the calculations
+#: it was made from.  A figure a person can only look at is one they will
+#: redraw by hand for the paper.
+FIGURES = 'figures'
 
 #: Enough of a geometry to recognise it, and not enough to fill the panel.
 _PREVIEW_ROWS = 12
@@ -431,6 +438,24 @@ class ReactionGraphPanel:
         self.detail = widgets.HTML(value='<i>nothing selected</i>')
         self.summary = widgets.HTML(value='')
         self.status = widgets.HTML(value='')
+        #: The profile of one route, and the boxes that choose it.  Two
+        #: ends and then which way between them, because a network with a
+        #: branch in it has several and the one a person means is the one
+        #: they are arguing about.
+        self.from_dd = widgets.Dropdown(options=[], description='From:',
+                                        layout=widgets.Layout(width='260px'))
+        self.to_dd = widgets.Dropdown(options=[], description='to:',
+                                      layout=widgets.Layout(width='240px'))
+        self.route_dd = widgets.Dropdown(
+            options=[], description='via:',
+            layout=widgets.Layout(width='420px', display='none'))
+        self.draw_btn = widgets.Button(
+            description='Draw the profile', button_style='info',
+            layout=widgets.Layout(width='auto', display='none'))
+        self.picture = widgets.HTML(value='')
+        self.from_dd.observe(self._on_ends, names='value')
+        self.to_dd.observe(self._on_ends, names='value')
+        self.draw_btn.on_click(lambda _b: self._on_draw())
 
         self.label_box = widgets.Text(placeholder='name',
                                       layout=widgets.Layout(width='220px'))
@@ -476,6 +501,10 @@ class ReactionGraphPanel:
             widgets.HBox([self.level_dd, self.temperature, self.window_dd],
                          layout=widgets.Layout(flex_flow='row wrap')),
             self.summary,
+            widgets.HBox([self.from_dd, self.to_dd, self.route_dd,
+                          self.draw_btn],
+                         layout=widgets.Layout(flex_flow='row wrap')),
+            self.picture,
             widgets.HBox([
                 widgets.VBox([self.network],
                              layout=widgets.Layout(width='52%')),
@@ -592,6 +621,7 @@ class ReactionGraphPanel:
             self._building = False
         self.harvest_btn.layout.display = ('' if self.graph.pending
                                            else 'none')
+        self._refresh_ends()
         self.summary.value = summary_html(
             self.graph, level, window=window,
             temperature=float(self.temperature.value))
@@ -772,6 +802,104 @@ class ReactionGraphPanel:
     def _on_select(self, _change) -> None:
         if not self._building:
             self._refresh_detail()
+
+    # -- the profile of one route -----------------------------------------
+
+    def _refresh_ends(self) -> None:
+        """The two end boxes, from the states the network actually has."""
+        if self.graph is None:
+            return
+        names = [(f'{n.label or n.id} ({n.id})', n.id)
+                 for n in self.graph.nodes]
+        self._building = True
+        try:
+            for box in (self.from_dd, self.to_dd):
+                want = box.value
+                box.options = names
+                if want in [one for _label, one in names]:
+                    box.value = want
+        finally:
+            self._building = False
+        self._on_ends(None)
+
+    def _on_ends(self, _change) -> None:
+        """Which ways there are between the two ends that are chosen.
+
+        A branch is the ordinary case here, so the third box appears when
+        there is more than one way and stays away when there is one -- the
+        rule the rest of this dashboard follows.  Where there is no way at
+        all the press goes too, because a profile of nothing is not a
+        picture a person should be offered.
+        """
+        if self._building or self.graph is None:
+            return
+        start, end = str(self.from_dd.value or ''), str(self.to_dd.value or '')
+        found = (rg.routes_between(self.graph, start, end)
+                 if start and end and start != end else [])
+        self._routes = found
+        self._building = True
+        try:
+            self.route_dd.options = [
+                (' -> '.join((self.graph.node(one).label or one)
+                             for one in way), n)
+                for n, way in enumerate(found)]
+        finally:
+            self._building = False
+        self.route_dd.layout.display = '' if len(found) > 1 else 'none'
+        self.draw_btn.layout.display = '' if found else 'none'
+
+    def _on_draw(self) -> None:
+        """Draw the chosen route, and keep the picture with the evidence.
+
+        Written into the graph's own folder as well as shown.  A figure a
+        person can only look at is a figure they will redraw by hand for
+        the paper; one that is beside the calculations it was made from,
+        under a name saying which route and which level, is one they can
+        take -- and it travels with the folder, like everything else here.
+        """
+        if self.graph is None or not getattr(self, '_routes', None):
+            return
+        which = int(self.route_dd.value or 0)
+        way = self._routes[min(which, len(self._routes) - 1)]
+        level = str(self.level_dd.value or '')
+        found = rg.profile(self.graph, way, level)
+        if not [one for one in found['points'] if one['kcal'] is not None]:
+            self.picture.value = ''
+            self._say(f'Nothing on that route is priced at {level} yet.')
+            return
+        window = str(self.window_dd.value)
+        T = float(self.temperature.value)
+        ceiling = thermal_ceiling(T, self.window_seconds)
+        title = (f'{self.graph.name}: '
+                 + ' -> '.join((self.graph.node(one).label or one)
+                               for one in way)
+                 + f'  at {level}')
+        note = reaction_profile.said_about(
+            found['points'], missing=found['missing'], ceiling=ceiling,
+            window=window)
+        drawn = dict(level=level, title=title, ceiling=ceiling,
+                     ceiling_label=f'{T:g} K, {window}',
+                     missing=found['missing'])
+        self.picture.value = reaction_profile.profile_html(
+            found['points'], note=note, **drawn)
+        kept = self._keep_the_picture(way, level, found, drawn)
+        self._say(note + (f' Kept as {kept}.' if kept else ''))
+
+    def _keep_the_picture(self, way, level, found, drawn) -> str:
+        """The PNG into the graph folder, and a line in the history."""
+        stem = rg.safe_name('-'.join(way) + '-' + level)
+        relative = f'{FIGURES}/{stem}.png'
+        try:
+            (self.graph.folder / FIGURES).mkdir(parents=True, exist_ok=True)
+            self.graph.path(relative).write_bytes(
+                reaction_profile.profile_png(found['points'], **drawn))
+        except Exception as exc:                 # noqa: BLE001
+            self._say(f'The picture could not be kept: {exc}')
+            return ''
+        rg.remember(self.graph, 'profile drawn', route=list(way),
+                    level=level, figure=relative,
+                    missing=list(found['missing']))
+        return relative
 
     # -- what came back while nobody was looking ---------------------------
 

@@ -783,6 +783,86 @@ def geometry(graph: Graph, ref: str, level: str) -> Optional[str]:
         return None
 
 
+def routes_between(graph: Graph, start: str, end: str, *,
+                   limit: int = 24) -> List[List[str]]:
+    """Every simple route from *start* to *end*, as lists of state ids.
+
+    Simple, meaning no state twice.  A network with a reversible step in it
+    has infinitely many walks between two points and exactly one of them is
+    a mechanism; going round a loop and coming back is not a route, it is
+    the same route with a detour nobody proposed.
+
+    Bounded, because a wide network has combinatorially many routes and a
+    box offering four hundred of them is a box offering none.  What is
+    dropped is said by the caller rather than swallowed here -- see the
+    tab, which reports the count.
+    """
+    if graph.node(start) is None or graph.node(end) is None:
+        return []
+    out: List[List[str]] = []
+
+    def walk(here: str, seen: List[str]) -> None:
+        if len(out) >= limit:
+            return
+        if here == end and len(seen) > 1:
+            out.append(list(seen))
+            return
+        for edge in graph.edges_from(here):
+            if edge.target in seen:
+                continue
+            walk(edge.target, seen + [edge.target])
+
+    walk(start, [start])
+    return sorted(out, key=len)
+
+
+def profile(graph: Graph, node_ids: Iterable[str],
+            level: str) -> Dict[str, Any]:
+    """The energies along a route, and what is missing from it.
+
+    Returns ``{'points', 'missing', 'zero', 'level'}``.  ``points`` are
+    ``{'ref', 'label', 'kind', 'kcal'}`` in reading order -- state, saddle,
+    state, saddle, state -- with ``kcal`` measured against the first state
+    of the route, which is the zero every reaction profile is drawn on.
+
+    ``missing`` is every point of the route with no priced record at this
+    level, and it is returned rather than raised because it is the useful
+    half: "this profile is four points and you have three" is what a
+    person acts on, while a refusal with no list is a dead end.  A point in
+    ``missing`` carries ``kcal = None`` and nothing draws it.
+
+    Every number comes from one level.  There is no fallback to another
+    when one is absent, and that is the whole discipline of the thing:
+    a profile with one point quietly taken from a cheaper method is a
+    picture of no reaction at all, and it looks exactly like a good one.
+    """
+    ids = [str(one) for one in node_ids]
+    edges = route(graph, ids)
+    zero = _value(priced(graph.node(ids[0]), level)) if ids else None
+    points: List[Dict[str, Any]] = []
+    missing: List[str] = []
+
+    def add(holder, kind: str) -> None:
+        record = priced(holder, level)
+        value = _value(record)
+        if value is None or zero is None:
+            missing.append(holder.id)
+        points.append({
+            'ref': holder.id,
+            'label': getattr(holder, 'label', '') or holder.id,
+            'kind': kind,
+            'kcal': (None if value is None or zero is None
+                     else (value - zero) * HARTREE_TO_KCAL),
+        })
+
+    for n, one in enumerate(ids):
+        add(graph.node(one), 'state')
+        if n < len(edges):
+            add(edges[n], 'saddle')
+    return {'points': points, 'missing': missing, 'zero': ids[0] if ids
+            else None, 'level': level}
+
+
 def route(graph: Graph, node_ids: Iterable[str]) -> List[Edge]:
     """The edges joining those states in order, for a diagram along one path.
 
