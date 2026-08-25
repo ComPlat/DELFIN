@@ -1143,3 +1143,196 @@ def test_two_presses_and_a_viewer_nobody_touched(tmp_path, monkeypatch):
     # It still carries the molecule, which is the whole of such a complaint.
     assert (fresh / 'structure_at_start.xyz').read_text(
         encoding='utf-8').splitlines()[0] == '16'
+
+
+_ETHANE = """8
+ethane
+C -0.7560  0.0000  0.0000
+C  0.7560  0.0000  0.0000
+H -1.1404  0.6586  0.7845
+H -1.1404  0.3501 -0.9626
+H -1.1404 -1.0087  0.1781
+H  1.1404 -0.6586 -0.7845
+H  1.1404 -0.3501  0.9626
+H  1.1404  1.0087 -0.1781
+"""
+
+#: The same ethane with H2 pulled off C0 to 1.700 A, as the page sends a
+#: release: the comment line is what tells the kernel a drag ended.
+_ETHANE_PLACED = """8
+DELFIN drag-end
+C  -0.7560  0.0000  0.0000
+C  0.7560  0.0000  0.0000
+H  -1.3533  1.0242  1.2199
+H  -1.1404  0.3501 -0.9626
+H  -1.1404  -1.0087  0.1781
+H  1.1404  -0.6586  -0.7845
+H  1.1404  -0.3501  0.9626
+H  1.1404  1.0087  -0.1781
+"""
+
+
+def _a_small_gesture(room):
+    """Drag, hold the value, press Optimise -- on a force field, so no xtb.
+
+    Recorded through the editor's own controls and channels rather than by
+    calling its handlers: a handler called directly is not a press, nothing
+    about it reaches the journal, and a report recorded that way replays into
+    a session in which the button was never pushed.  That is not a hypothesis
+    -- it is what the first recording made for this test did, and the replay
+    correctly reported that the two had parted at the run the press claimed.
+    """
+    part, state, box = ej.an_editor_to_replay_into(room)
+    box.value = _ETHANE
+    ej.press(part.submit_ff_dd, 'uff')
+    part.submit_relax_btn.unobserve_all()
+    ej.press(part.submit_relax_btn, True)
+    part._enable_live_forcefield()
+
+    part.submit_cmd_sync.value = 'grabbed:1:'
+    part.submit_manip_sync.value = _ETHANE_PLACED
+    part.submit_pick_sync.value = '0,2'
+    ej.press(part.submit_hold_mode, 'fix')
+    ej.press(part.submit_internal_value, 1.700)
+    part.submit_hold_btn.click()
+    ej.press(part.submit_optimize_btn, True)
+    _quiet(part, state, seconds=120.0)
+    return part, state, box
+
+
+def test_a_written_report_replays_from_a_shell(tmp_path, capsys):
+    """The front door the editor advertises, walked through end to end.
+
+    The sentence a user is shown when a report is written named
+    ``editor_journal.replay``, which takes a timeline and a *live editor* --
+    so following it meant building an editor, a dashboard context, a
+    coordinate box and the host's write-back first.  The last of those is the
+    trap: without it every optimiser in the replay starts from the structure
+    the session opened on rather than from the one the replayed hand just
+    made, and the replay then walks a different molecule while reporting the
+    very same messages, which is the failure that looks most like success.
+
+    So the module has an entry point, and this drives it the way a maintainer
+    would: record a gesture, write the report, and run the command over the
+    archive it landed in.  Measured on this machine with a UFF gesture --
+    drag, hold C0-H2 at 1.700 A, one press of Optimise -- the report holds 7
+    page-to-kernel messages, the replay writes the same 7, and the two runs
+    answer the same all the way through.
+    """
+    pytest.importorskip('ipywidgets')
+    pytest.importorskip('rdkit')
+
+    part, state, _box = _a_small_gesture(tmp_path / 'live')
+    archive = tmp_path / 'bugs'
+    folder = ej.write_report(state['editor_journal'],
+                             description='the held C-H does not stay',
+                             widgets={}, tab='Submit', archive_dir=archive)
+    assert (Path(folder) / 'journal.jsonl.gz').is_file()
+
+    # Listing first, because that is where a person gets the name to type.
+    assert ej.main(['--archive', str(archive)]) == 0
+    listed = capsys.readouterr().out
+    assert Path(folder).name in listed
+    assert 'python -m delfin.dashboard.editor_journal' in listed
+
+    # And then the replay itself, by as much of the name as is unambiguous.
+    code = ej.main(['--archive', str(archive), '--room', str(tmp_path / 'again'),
+                    '--pace', '0', Path(folder).name[-4:]])
+    said = capsys.readouterr().out
+    assert code == 0, said
+    assert 'identical' in said and 'NOT identical' not in said, said
+    assert 'answered the same all the way through' in said, said
+
+
+def test_the_replay_is_read_after_the_editor_has_finished_answering(tmp_path):
+    """A replay is over when the messages have been written; the editor is not.
+
+    The optimisers run on threads of their own, so the answers a replay is
+    judged on -- the structures written to the box, the run numbers claimed --
+    are still arriving after :func:`replay` returns.  Read straight away, the
+    recorded side of this very gesture had a run claim the replayed side did
+    not, and the two were reported as having parted at step 2 while in fact
+    they agree.  The wait is therefore part of the path rather than a nicety.
+    """
+    pytest.importorskip('ipywidgets')
+    pytest.importorskip('rdkit')
+
+    part, state, _box = _a_small_gesture(tmp_path / 'live')
+    archive = tmp_path / 'bugs'
+    folder = ej.write_report(state['editor_journal'], description='held value',
+                             widgets={}, tab='Submit', archive_dir=archive)
+
+    outcome = ej.replay_report(folder, room=tmp_path / 'again', pace=0)
+    assert outcome['quiet'], 'the editor was still working when it was judged'
+    assert outcome['same_messages']
+    assert outcome['parted'] is None, outcome['parted']
+    # The run the press claimed is on both sides -- that is the half a
+    # too-early reading loses.
+    second = outcome['state']['editor_journal'].timeline()
+    assert [e['by'] for e in second if e['k'] == 'run'] == ['press']
+    # And the replay arrived at the molecule the recording did: the value that
+    # was held is still held.  Against the placed geometry rather than against
+    # the 1.700 that was typed, because a fix holds the atoms where they stand
+    # and the coordinates on the wire carry four decimals -- 1.7011 here.
+    placed = _where(_ETHANE_PLACED)
+    ended = _where(outcome['xyz'])
+    assert np.linalg.norm(ended[0] - ended[2]) == pytest.approx(
+        float(np.linalg.norm(placed[0] - placed[2])), abs=1e-4)
+
+
+def test_the_report_a_person_meant_is_the_one_that_is_found(tmp_path):
+    """A path, a full name, part of one, or nothing for the newest.
+
+    The listing prints names; a name printed has to be a name that can be
+    handed straight back, and a maintainer who has cd'd into the report
+    directory should be able to pass ``.`` and be understood.
+    """
+    archive = tmp_path / 'bugs'
+    made = []
+    for note in ('the first one', 'the second one'):
+        part, state, _box = _a_small_gesture(tmp_path / f'live-{len(made)}')
+        made.append(Path(ej.write_report(state['editor_journal'],
+                                         description=note, widgets={},
+                                         tab='Submit', archive_dir=archive)))
+        time.sleep(1.1)     # the directory name carries a UTC second
+
+    newest = made[-1]
+    assert ej.find_report(None, archive) == newest
+    assert ej.find_report(newest.name, archive) == newest
+    assert ej.find_report(newest.name[-4:], archive) == newest
+    assert ej.find_report(str(newest), archive) == newest
+    assert ej.find_report(str(newest / 'report.json'), archive) == newest
+    assert ej.find_report('no such report', archive) is None
+
+
+def test_the_sentence_the_user_is_shown_leads_somewhere():
+    """``/bugs`` names the viewer archive and how to replay one of its reports.
+
+    It named ``delfin.dashboard.editor_journal.replay``, which is a function
+    taking a timeline and a live editor: not a thing a person can run, and
+    worse than no sentence, because it reads as though the capability had a
+    front door.  What a user is shown has to work as it is written, so this
+    reads the sentence out of the source and then runs what it names.
+    """
+    import os
+    import subprocess
+    import sys
+
+    root = Path(__file__).resolve().parents[1]
+    src = (root / 'delfin' / 'dashboard' / 'tab_agent.py').read_text(
+        encoding='utf-8')
+    start = src.index('**Viewer reports**')
+    # The sentence is a run of adjacent string literals across several source
+    # lines, so it is read as a block rather than a line.
+    sentence = src[start:src.index('+ "\\n".join(', start)]
+    assert 'python -m delfin.dashboard.editor_journal' in sentence, sentence
+    assert 'editor_journal.replay`' not in sentence, (
+        'a function is not something a person can run')
+
+    # And the command it names answers for itself.
+    done = subprocess.run(
+        [sys.executable, '-m', 'delfin.dashboard.editor_journal', '--help'],
+        capture_output=True, text=True, timeout=300,
+        env={**os.environ, 'PYTHONPATH': str(root)})
+    assert done.returncode == 0, done.stderr
+    assert 'replay' in done.stdout.lower(), done.stdout
