@@ -574,6 +574,17 @@ def run_folder(graph: Graph, ref: str, level: str) -> Tuple[str, Path]:
 # Asking it things
 # ---------------------------------------------------------------------------
 
+def _value(record: Optional[Record]) -> Optional[float]:
+    """What a record is worth, in Hartree: free energy if it has one."""
+    if record is None:
+        return None
+    if record.free_energy is not None:
+        return float(record.free_energy)
+    if record.energy is not None:
+        return float(record.energy)
+    return None
+
+
 def best(holder, level: str) -> Optional[Record]:
     """The record of *holder* at *level* to quote, or None.
 
@@ -595,17 +606,6 @@ def best(holder, level: str) -> Optional[Record]:
     if priced:
         return min(priced, key=lambda r: r.energy)
     return same[0]
-
-
-def _value(record: Optional[Record]) -> Optional[float]:
-    """What a record is worth, in Hartree: free energy if it has one."""
-    if record is None:
-        return None
-    if record.free_energy is not None:
-        return float(record.free_energy)
-    if record.energy is not None:
-        return float(record.energy)
-    return None
 
 
 def barrier(graph: Graph, edge_id: str, level: str) -> Optional[float]:
@@ -661,15 +661,38 @@ def open_at(graph: Graph, level: str, *, temperature: Optional[float] = None,
     return out
 
 
+def priced(holder, level: str) -> Optional[Record]:
+    """The record at *level* that can actually contribute a number, or None.
+
+    Not the same question as :func:`best`, and the difference is the whole of
+    what a hand-made geometry is.  A structure dragged into shape and put
+    straight into the network *is* at this level -- it was made under this
+    method and it is a perfectly good starting point for a calculation -- and
+    it has no energy, so nothing can be drawn from it and no barrier measured
+    against it.
+
+    Told apart, the document can say "this is here and nobody has priced it",
+    which is a sentence a user acts on.  Run together, the summary counted it
+    as present while every arithmetic function refused it, and one screen said
+    both things at once.
+    """
+    record = best(holder, level)
+    return record if _value(record) is not None else None
+
+
 def missing_at(graph: Graph, level: str) -> List[str]:
-    """Everything in the network with no record at *level*, by id.
+    """Everything the network cannot get a number out of at *level*, by id.
 
     What makes an energy diagram honest.  The question a network is drawn to
     answer is comparative, so the useful statement is not "here is the diagram"
     but "here is the diagram, and these four points are not at this level yet".
+
+    A geometry with no energy counts as missing.  It is not nothing -- it is
+    what a calculation will be started from -- but it is nothing a diagram can
+    use, and this list is read to decide what to compute next.
     """
     return [holder.id for holder in (*graph.nodes, *graph.edges)
-            if best(holder, level) is None]
+            if priced(holder, level) is None]
 
 
 def looks_like(graph: Graph, xyz: str, *, charge: Optional[int] = None,

@@ -131,7 +131,7 @@ def test_choosing_a_level_nothing_is_complete_at_names_what_is_missing(
     panel = _panel(tmp_path)
     panel.level_dd.value = 'r2SCAN-3c'
     said = panel.summary.value
-    assert 'Nothing at r2SCAN-3c for' in said
+    assert 'No energy at r2SCAN-3c for' in said
     assert a.id not in said.split('for:')[1], 'the one that has it is not listed'
 
 
@@ -194,7 +194,7 @@ def test_a_barrier_nobody_has_computed_says_that_and_not_closed(tmp_path):
     rg.save(graph)
     lines = dict(tab.network_lines(graph, 'g-xTB'))
     assert 'open' in lines[easy.id] or 'closed' in lines[easy.id]
-    assert 'not at this level' in lines[hard.id]
+    assert 'no energy yet for' in lines[hard.id]
     assert 'closed' not in lines[hard.id]
 
 
@@ -612,3 +612,82 @@ def test_the_tab_hands_itself_to_the_dashboard_so_the_editor_can_find_it(
     assert 'reaction_graph' in ctx.reaction_graph_refs
     assert isinstance(ctx.reaction_graph_refs['reaction_graph'],
                       tab.ReactionGraphPanel)
+
+
+# ---------------------------------------------------------------------------
+# The two kinds of structure change
+# ---------------------------------------------------------------------------
+
+def test_a_geometry_says_which_of_the_two_kinds_made_it(tmp_path):
+    """A structure dragged into shape and one a two-day optimisation produced
+    are not interchangeable: the first is where a calculation starts, the
+    second is what a paper quotes. Read the same, they were confusable."""
+    by_hand = rg.Record(level='x', energy=-1.0, imaginary=0,
+                        source={'kind': 'editor', 'gesture': 'dragged'})
+    computed = rg.Record(level='x', energy=-1.0, imaginary=0,
+                         source={'kind': 'run', 'run': 'runs/n01_r2scan'})
+    scanned = rg.Record(level='x', energy=-1.0, source={'kind': 'scan'})
+    assert tab.said_origin(by_hand) == 'by hand'
+    assert tab.said_origin(computed) == 'computed'
+    assert tab.said_origin(scanned) == 'from a scan'
+    assert 'by hand' in tab.said_energy(by_hand)
+    assert 'computed' in tab.said_energy(computed)
+
+
+def test_a_structure_nobody_has_checked_is_not_called_a_minimum(tmp_path):
+    """None is a third state and not the same as zero."""
+    assert 'not checked' in tab.said_energy(rg.Record(level='x', energy=-1.0))
+    assert 'minimum' in tab.said_energy(rg.Record(level='x', energy=-1.0,
+                                                  imaginary=0))
+    assert 'not checked' not in tab.said_energy(
+        rg.Record(level='x', energy=-1.0, imaginary=0))
+
+
+def test_a_geometry_with_no_energy_counts_as_missing(tmp_path):
+    """It is not nothing -- it is what a calculation starts from -- and it is
+    nothing a diagram can use. Counted as present, the summary said one thing
+    while every arithmetic function said another, on one screen."""
+    graph = rg.create(tmp_path / 'one', name='one')
+    a = rg.add_state(graph, _WATER,
+                     rg.Record(level='GFN2-xTB', method='gfn2',
+                               source={'kind': 'editor', 'gesture': 'dragged'}))
+    b = rg.add_state(graph, _CO, rg.Record(level='GFN2-xTB', free_energy=-5.03))
+    assert rg.best(graph.node(a.id), 'GFN2-xTB') is not None, 'it is there'
+    assert rg.priced(graph.node(a.id), 'GFN2-xTB') is None, 'and unusable'
+    assert rg.missing_at(graph, 'GFN2-xTB') == [a.id]
+    assert 'No energy at GFN2-xTB for: ' + a.id in tab.summary_html(
+        graph, 'GFN2-xTB')
+
+
+def test_an_unpriced_step_says_which_end_is_missing(tmp_path):
+    """"Not at this level" sent a reader off to compute the saddle when what
+    was unpriced was the state the step leaves."""
+    graph = rg.create(tmp_path / 'one', name='one')
+    a = rg.add_state(graph, _WATER, rg.Record(level='x', method='gfn2'),
+                     label='educt')
+    b = rg.add_state(graph, _CO, rg.Record(level='x', free_energy=-5.03))
+    e = rg.add_transition(graph, _HCN,
+                          rg.Record(level='x', free_energy=-4.9, imaginary=1),
+                          source=a.id, target=b.id)
+    said = dict(tab.network_lines(graph, 'x'))[e.id]
+    assert 'no energy yet for educt' in said
+    assert 'the saddle' not in said, 'the saddle is priced; the educt is not'
+
+    # And the other way round.
+    graph2 = rg.create(tmp_path / 'two', name='two')
+    c = rg.add_state(graph2, _WATER, rg.Record(level='x', free_energy=-5.0))
+    d = rg.add_state(graph2, _CO, rg.Record(level='x', free_energy=-5.03))
+    f = rg.add_transition(graph2, _HCN, rg.Record(level='x', imaginary=1),
+                          source=c.id, target=d.id)
+    assert 'no energy yet for the saddle' in dict(
+        tab.network_lines(graph2, 'x'))[f.id]
+
+
+def test_the_panel_says_a_geometry_is_there_and_unpriced(tmp_path):
+    """Which is a different sentence from "nothing here", and a different
+    next action."""
+    graph = rg.create(tmp_path / 'one', name='one')
+    a = rg.add_state(graph, _WATER, rg.Record(level='GFN2-xTB', method='gfn2'))
+    said = tab.detail_html(graph, a.id, 'GFN2-xTB')
+    assert 'geometry at' in said and 'no energy for it' in said
+    assert 'what a calculation would start from' in said
