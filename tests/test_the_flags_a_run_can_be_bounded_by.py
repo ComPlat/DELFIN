@@ -227,3 +227,86 @@ def test_the_help_text_carries_the_same_exclusion_as_the_banner():
     text = re.sub(r"\s+", " ", buf.getvalue())
     assert "--bare" in text
     assert agent_cli._BARE_NOT_SKIPPED in text
+
+
+# ---------------------------------------------------------------------------
+# --allowed-tools: the one backend that has an allow-list, and the rest
+# ---------------------------------------------------------------------------
+
+def test_allowed_tools_is_offered_on_the_command_line():
+    args = _parse("--allowed-tools", "bash,read_file")
+    assert args.allowed_tools == "bash,read_file"
+
+
+def test_allowed_tools_reaches_the_engine_constructor(recorded, tmp_path):
+    agent_cli._build_engine(
+        _args(cwd=str(tmp_path), allowed_tools="bash, read_file ,grep_file"))
+    assert _Recorder.last.get("allowed_tools") == [
+        "bash", "read_file", "grep_file"]
+
+
+def test_an_empty_allow_list_is_none_and_not_an_empty_list(recorded, tmp_path):
+    """`CLIClient` tests the parameter for `is not None`.
+
+    An empty list would build `--allowedTools` with nothing after it, which
+    restricts the session to no tools at all — the opposite of "the user
+    did not ask for a restriction".
+    """
+    agent_cli._build_engine(_args(cwd=str(tmp_path)))
+    assert _Recorder.last.get("allowed_tools") is None
+    agent_cli._build_engine(_args(cwd=str(tmp_path), allowed_tools=" , "))
+    assert _Recorder.last.get("allowed_tools") is None
+
+
+def test_the_allow_list_arrives_on_the_client_that_can_enforce_it(tmp_path):
+    """The only backend with an allow-list, asserted end to end.
+
+    `create_client` forwards `allowed_tools` to `CLIClient` alone, which
+    stores it and spells it `--allowedTools` on the subprocess command
+    line. That is the mechanism; this pins it.
+    """
+    from delfin.agent.api_client import create_client
+
+    client = create_client(backend="cli", provider="claude",
+                           cwd=str(tmp_path),
+                           allowed_tools=["bash", "read_file"])
+    assert client.allowed_tools == ["bash", "read_file"]
+
+
+def test_a_backend_without_an_allow_list_says_so(monkeypatch, tmp_path):
+    """The can't-deliver path.
+
+    `create_client` drops `allowed_tools` for the API and the
+    OpenAI-compatible backends without a word, so the flag would narrow
+    nothing and report nothing.
+    """
+    engine = type("E", (), {
+        "client": type("C", (), {"model": "kit.qwen3-coder-480b"})(),
+        "provider": "kit", "backend": "api"})()
+    notes = agent_cli._bounding_notices(
+        _args(allowed_tools="bash,read_file"), engine)
+    line = "\n".join(notes)
+    assert "--allowed-tools REQUESTED but not applied" in line
+    assert "kit/api" in line
+
+
+def test_a_backend_that_took_the_allow_list_says_nothing():
+    engine = type("E", (), {
+        "client": type("C", (), {"model": "m",
+                                 "allowed_tools": ["bash", "read_file"]})(),
+        "provider": "claude", "backend": "cli"})()
+    assert agent_cli._bounding_notices(
+        _args(allowed_tools="bash,read_file"), engine) == []
+
+
+def test_no_disallowed_tools_flag_is_offered():
+    """There is no deny-list machinery on any backend.
+
+    `_ROLE_EXEC_DENYLIST` is keyed by ROLE and defined at module level;
+    `create_client` has no `disallowed_tools` parameter and `CLIClient`
+    builds only `--allowedTools`. A flag with nothing behind it is the
+    defect this file exists to catch, so the flag is absent by decision.
+    """
+    with pytest.raises(SystemExit):
+        agent_cli.build_parser().parse_args(
+            ["chat", "--disallowed-tools", "bash"])
