@@ -290,8 +290,11 @@ def test_the_band_reaches_the_same_saddle_the_fast_chain_does():
     the work -- which is the argument for keeping it as the second entry in
     the box and not the first.
 
-    Marked slow because it is minutes: 39.4 s on an eight-process run on an
-    idle-ish box, and 106 to 156 s at a load average of 909 on 384 cores.
+    Marked slow because it is minutes, and how many is about the machine: on
+    eight processes it took 39.4 s at a load average of 740 on 384 cores, and
+    106 and 156 s at 909 and 912.  The gradient count is the number to hold it
+    to; the seconds are the number to hold the box to.  The assertions below
+    are on the answer and not on either.
     """
     seen = []
     got = saddle.neb_to_saddle(_REACTANT, _PRODUCT, 'gfn2', cores=8,
