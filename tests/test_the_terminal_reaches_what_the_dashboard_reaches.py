@@ -570,3 +570,60 @@ def test_the_grant_is_still_only_reachable_through_the_two_wrappers():
     src = inspect.getsource(rc)
     assert "trust_workspace(" not in src
     assert "revoke_workspace(" not in src
+
+
+# ---------------------------------------------------------------------------
+# A command that never once did what it says
+# ---------------------------------------------------------------------------
+
+def test_mcp_lists_the_servers_that_would_load(tmp_path):
+    """Found by running it: `/mcp` had never listed a server.
+
+    `effective_servers` takes a WORKSPACE and was handed a registry
+    object, so every call raised a TypeError — which the handler's broad
+    except turned into "MCP registry unavailable", a sentence that reads
+    like a diagnosis of the environment and was a diagnosis of the line
+    above it. The built-in servers are always configured, so an empty
+    listing here can only mean the call failed.
+    """
+    from delfin.agent import repl_commands as rc
+
+    class _Ctx:
+        workspace = tmp_path
+        engine = None
+
+    out = rc.BUILTINS["/mcp"].handler(_Ctx(), "").output
+    assert "unavailable" not in out, out
+    assert "delfin-tools" in out, "the built-ins are always configured"
+    assert "built-in" in out, "and each row says where it came from"
+
+
+def test_mcp_renders_rows_rather_than_printing_them(tmp_path):
+    """`effective_servers` returns dicts. The old code interpolated each
+    one straight into a line, so even with the right argument the output
+    would have been a repr per server."""
+    from delfin.agent import repl_commands as rc
+
+    class _Ctx:
+        workspace = tmp_path
+        engine = None
+
+    out = rc.BUILTINS["/mcp"].handler(_Ctx(), "").output
+    assert "{'name'" not in out and "'command':" not in out
+
+
+def test_mcp_still_answers_when_the_registry_cannot_be_read(monkeypatch,
+                                                            tmp_path):
+    from delfin.agent import mcp_client
+    from delfin.agent import repl_commands as rc
+
+    def _boom(_ws):
+        raise RuntimeError("config is corrupt")
+
+    monkeypatch.setattr(mcp_client, "effective_servers", _boom)
+
+    class _Ctx:
+        workspace = tmp_path
+        engine = None
+
+    assert "unavailable" in rc.BUILTINS["/mcp"].handler(_Ctx(), "").output
