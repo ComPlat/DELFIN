@@ -118,8 +118,49 @@ def _walsh_sums(syms, P, adj):
     for i, nb in enumerate(adj):
         if syms[i] == "H" or bd._is_metal(syms[i]):
             continue
-        h = [k for k in nb if syms[k] != "H" and not bd._is_metal(syms[k])]
-        if len(h) != 3:
+        # ⚠ 25.08.2026 -- HIER STAND "GENAU DREI SCHWERE NACHBARN, H HINAUS", UND DAS
+        # HAT DAS GANZE VERBOT BLIND GEMACHT.  Ein sp2-C-H (aromatisch, Imin, Vinyl,
+        # Aldehyd) hat ZWEI schwere Nachbarn und EIN H -- es fiel damit durch dieses
+        # Tor, und in dieser Ligandenchemie ist das die MEHRHEIT der sp2-Zentren.
+        # Bewacht wurden nur voll substituierte Zentren.
+        #
+        # DASSELBE TOR IST AUF DER DETEKTORSEITE SCHON EINMAL GEFUNDEN UND BEHOBEN
+        # WORDEN, im Klartext (`find_pyramidalization.py:427-430`):
+        #     "An sp2 C-H ... has 2 HEAVY + 1 H neighbours, so the OLD 3-HEAVY-only
+        #      candidate gate made EVERY sp2 C-H INVISIBLE (NAYKOQ C36 N=CH-C: 2 heavy
+        #      nbrs -> skipped, Walsh 19 unseen)."
+        # Der Bauer trug es noch.  Beide Detektoren, die diese Defektklasse zaehlen,
+        # rechnen H als vollen sigma-Nachbarn (`find_pyramidalization.py:457`,
+        # `smiles_geometry_check.py:191-193`) -- der Waechter tat es nicht.  Ein Verbot,
+        # das eine andere Menge bewacht als die, die gemessen wird, kann per
+        # Konstruktion nichts verhindern.
+        #
+        # BELEG, DASS DIES DER VERBLEIBENDE GRUND IST: `results/reach_history.jsonl`
+        # Zeilen 35/36 zeigen PLANAR_KEEP zweimal mit 0/24 Reichweite -- der zweite
+        # Lauf (delfin_commit be0bf462) lief BEREITS mit der Reparatur "Schalter zur
+        # Aufrufzeit lesen".  Die dort notierte Erklaerung ist damit verbraucht.
+        #
+        # Jetzt: genau DREI sigma-Nachbarn (schwer + H), davon mindestens EIN schwerer.
+        # Die Verbotssemantik bleibt unveraendert -- Bezug ist weiter der eigene
+        # Eingangswert, echte sp3-Zentren (vier Nachbarn) bleiben unangetastet.
+        # ⚠ ERSTER ANLAUF WAR EINE VERENGUNG STATT EINER ERWEITERUNG, und die eigene
+        # Gegenprobe hat es gefangen (`harness/walsh_wachpopulation.py`): mit
+        # "genau 3 sigma" fielen 468 Zentren HERAUS, die vorher bewacht waren --
+        # jedes mit 3 SCHWEREN Nachbarn PLUS einem H, also vier sigma.  Das sind
+        # sp3-Zentren, deren Schweratom-Geruest der alte Term sehr wohl bewachte.
+        # Ein Verbot enger zu machen, waehrend man es zu erweitern glaubt, ist genau
+        # die Sorte stille Verschlechterung, gegen die dieses Projekt Gegenproben hat.
+        #
+        # Jetzt eine echte OBERMENGE: das Dreieck wird nach Vorrang gewaehlt --
+        #   3 schwere Nachbarn  -> die schweren (wie bisher, sp3-Geruest bleibt bewacht)
+        #   sonst 3 sigma, >=1 schwer -> alle drei (das sp2-C-H, das bisher fehlte)
+        _schwer = [k for k in nb if syms[k] != "H" and not bd._is_metal(syms[k])]
+        _sigma = [k for k in nb if not bd._is_metal(syms[k])]
+        if len(_schwer) == 3:
+            h = _schwer
+        elif len(_sigma) == 3 and len(_schwer) >= 1:
+            h = _sigma
+        else:
             continue
         s = 0.0
         ok = True
@@ -236,8 +277,23 @@ def _violations(syms, P, bonded, adj, arom_targets=None, planar_ref=None):
     # gewinnt weiter, die Planaritaet entscheidet nur zwischen sonst gleichwertigen Schritten.
     if planar_ref:
         for i, ref in planar_ref.items():
-            nb = [k for k in adj[i] if syms[k] != "H" and not bd._is_metal(syms[k])]
-            if len(nb) != 3:
+            # ⚠ DIESELBE BEDINGUNG WIE IN `_walsh_sums` -- sie MUSS mitgezogen werden.
+            # Haette ich nur dort H zugelassen, waere die Referenz fuer jedes sp2-C-H
+            # zwar berechnet, hier aber wieder verworfen worden: ein Wert ohne Wirkzeile,
+            # dieselbe Bauart, die heute schon dreimal aufgeflogen ist (Ruecknahmetor,
+            # kappa3-Werkzeug, _pk_gefiltert).  Eine Bedingung an ZWEI Stellen ist eine
+            # Bedingung -- sie auseinanderlaufen zu lassen ist der Fehler.
+            # WORTGLEICH dieselbe Vorrangwahl wie in `_walsh_sums` -- laufen die beiden
+            # auseinander, waere die Referenz fuer eine Atomsorte berechnet und fuer eine
+            # andere abgefragt, und das Verbot urteilte ueber ein anderes Dreieck als das,
+            # das es gemessen hat.
+            _s = [k for k in adj[i] if syms[k] != "H" and not bd._is_metal(syms[k])]
+            _g = [k for k in adj[i] if not bd._is_metal(syms[k])]
+            if len(_s) == 3:
+                nb = _s
+            elif len(_g) == 3 and len(_s) >= 1:
+                nb = _g
+            else:
                 continue                      # Bindungsbild hat sich geaendert -> nicht vergleichbar
             cur = 0.0
             ok = True
