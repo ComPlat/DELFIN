@@ -287,24 +287,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0 if not out["error"] else 1
 
 
-def _permission_mode(engine) -> str:
-    """The posture, or "" when this backend carries no permissions object.
-
-    create_client builds KitToolPermissions only for the kit and ollama
-    providers. On the others the file and shell tools refuse outright, so
-    an empty answer here is a fact the banner has to state rather than
-    paper over with a plausible-looking default.
-    """
-    try:
-        perms = engine.kit_permissions
-    except Exception:
-        return ""
-    mode = getattr(perms, "mode", "") if perms is not None else ""
-    return mode if isinstance(mode, str) else ""
-
-
 def _startup_banner(engine, report, workspace: Path) -> str:
     """What the user is looking at, in the lines that decide safety."""
+    from .repl import permission_mode as _permission_mode
+
     # The model lives on the client; the engine never held one.
     model = str(getattr(getattr(engine, "client", None), "model", "") or "?")
     provider = str(getattr(engine, "provider", "") or "?")

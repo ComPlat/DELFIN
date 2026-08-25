@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 
 __all__ = [
     "KeyEvent", "KeyDecoder", "RawMode", "raw_mode_supported",
-    "INTERRUPT", "SUBMIT", "CYCLE_MODE", "EXPAND", "REDRAW", "EDIT",
+    "INTERRUPT", "SUBMIT", "CYCLE_MODE", "EXPAND", "REDRAW", "TASKS", "EDIT",
 ]
 
 INTERRUPT = "interrupt"      # Esc — end this turn
@@ -42,12 +42,14 @@ SUBMIT = "submit"            # Enter — queue what was typed
 CYCLE_MODE = "cycle_mode"    # Shift+Tab — next approval posture
 EXPAND = "expand"            # Ctrl+O — show the last tool result in full
 REDRAW = "redraw"            # Ctrl+L
+TASKS = "tasks"              # Ctrl+T — show or hide the open task list
 EDIT = "edit"                # the buffer changed; redraw the input line
 
 _ESC = "\x1b"
 _SHIFT_TAB = "\x1b[Z"
 _CTRL_O = "\x0f"
 _CTRL_L = "\x0c"
+_CTRL_T = "\x14"
 _BACKSPACE = ("\x7f", "\x08")
 _ENTER = ("\r", "\n")
 
@@ -125,6 +127,11 @@ class KeyDecoder:
 
             if ch == _CTRL_L:
                 events.append(KeyEvent(REDRAW))
+                i += 1
+                continue
+
+            if ch == _CTRL_T:
+                events.append(KeyEvent(TASKS))
                 i += 1
                 continue
 
