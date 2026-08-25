@@ -24,6 +24,7 @@ __all__ = [
     "tool_headline", "tool_result_line", "notice_line", "thinking_line",
     "short_tool_name",
     "denied_line", "terminal_width", "human_size",
+    "MarkdownStream",
 ]
 
 # CSI sequences, OSC strings (both BEL- and ST-terminated), and the C0
@@ -333,3 +334,192 @@ def denied_line(name: str, *, theme: Theme | None = None) -> str:
     theme = theme or Theme()
     name = short_tool_name(strip_control(str(name or "a tool")).strip()) or "a tool"
     return theme.red(f"⏺ {name}  refused")
+
+
+# ---------------------------------------------------------------------------
+# Markdown, in a stream that can never be taken back
+# ---------------------------------------------------------------------------
+
+_SGR_RESET = "\x1b[0m"
+_SGR_BOLD = "\x1b[1m"
+_SGR_DIM = "\x1b[2m"
+_SGR_CYAN = "\x1b[36m"
+
+
+class MarkdownStream:
+    """Style a model's answer as it arrives, one delta at a time.
+
+    Two hard constraints shape every decision here.
+
+    A terminal cannot un-print. The renderer sees the answer in whatever
+    chunks the provider sends — a fence marker can be split across three
+    of them — and by the time the closing marker arrives the opening text
+    is already on screen. So this styles only what can be DECIDED at the
+    moment a character is emitted: a construct is opened on its opening
+    marker and closed on its closing one, never by looking ahead.
+
+    The consequence is stated rather than hidden: an unmatched ``**``
+    styles the rest of its line, and the style is dropped at the newline.
+    That is the honest failure for a stream, and it is bounded to one
+    line. Repainting the block instead would mean owning the region above
+    the cursor, which the transcript deliberately does not do — tool
+    lines, notices and the status row all write there too.
+
+    Second constraint: the answer on stdout is the deliverable. Nothing
+    here runs when colour is off, so ``delfin-agent -p '…' > answer.txt``
+    keeps producing exactly the bytes the model produced.
+
+    Handled: fenced code blocks, ATX headings, bullet markers, ``**bold**``
+    and ``` `code` ```. Not handled, deliberately: tables, links, nested
+    emphasis, block quotes — each needs either lookahead or a width the
+    stream does not have.
+    """
+
+    __slots__ = ("theme", "_at_line_start", "_in_fence", "_pending",
+                 "_bold_open", "_code_open", "_line_styled")
+
+    #: A marker is only recognised whole. Holding at most this many
+    #: characters back is what lets a fence split across deltas still be
+    #: recognised; it also bounds how long a character can be withheld
+    #: from the screen, which is the cost side of the same mechanism.
+    _MAX_HOLD = 3
+
+    def __init__(self, theme: Theme | None = None) -> None:
+        self.theme = theme or Theme()
+        self._at_line_start = True
+        self._in_fence = False
+        self._pending = ""
+        self._bold_open = False
+        self._code_open = False
+        self._line_styled = False
+
+    # -- public ----------------------------------------------------------
+
+    def feed(self, delta: str) -> str:
+        """The styled form of *delta*, ready to write."""
+        if not self.theme.enabled:
+            return delta or ""
+        if not delta:
+            return ""
+        self._pending += delta
+        out: list[str] = []
+        while self._pending:
+            consumed = self._step(out)
+            if not consumed:
+                break
+        return "".join(out)
+
+    def flush(self) -> str:
+        """Whatever is still held back, plus any style still open.
+
+        Called when the answer ends. Without it a two-character tail that
+        looked like the start of a marker would simply never be printed.
+        """
+        if not self.theme.enabled:
+            tail, self._pending = self._pending, ""
+            return tail
+        out = [self._pending]
+        self._pending = ""
+        if self._line_styled or self._bold_open or self._code_open \
+                or self._in_fence:
+            out.append(_SGR_RESET)
+        self._bold_open = self._code_open = False
+        self._line_styled = self._in_fence = False
+        return "".join(out)
+
+    # -- one decision ----------------------------------------------------
+
+    def _step(self, out: list[str]) -> bool:
+        """Emit what can be decided now. False when more input is needed."""
+        buf = self._pending
+
+        if self._at_line_start:
+            decided = self._line_opening(out)
+            if decided is None:
+                return False            # need more to tell a fence apart
+            if decided:
+                return True
+            buf = self._pending
+
+        ch = buf[0]
+
+        if ch == "\n":
+            self._pending = buf[1:]
+            # Every span this renderer opens is line-scoped, so the
+            # newline is where an unmatched marker stops costing anything.
+            if self._line_styled or self._bold_open or self._code_open:
+                out.append(_SGR_RESET)
+                self._bold_open = self._code_open = self._line_styled = False
+            out.append("\n")
+            self._at_line_start = True
+            return True
+
+        if self._in_fence:
+            self._pending = buf[1:]
+            out.append(ch)
+            return True
+
+        if buf.startswith("**"):
+            self._pending = buf[2:]
+            out.append(_SGR_RESET if self._bold_open else _SGR_BOLD)
+            self._bold_open = not self._bold_open
+            self._line_styled = self._bold_open or self._code_open
+            return True
+        if ch == "*" and len(buf) < 2:
+            return False                # might be the first half of `**`
+
+        if ch == "`":
+            self._pending = buf[1:]
+            out.append(_SGR_RESET if self._code_open else _SGR_CYAN)
+            self._code_open = not self._code_open
+            self._line_styled = self._bold_open or self._code_open
+            return True
+
+        self._pending = buf[1:]
+        out.append(ch)
+        return True
+
+    def _line_opening(self, out: list[str]) -> bool | None:
+        """Decide the start of a line. None means "hand me more input"."""
+        buf = self._pending
+
+        # A fence can arrive as "`", "``" then "`" — a decision taken on
+        # the first backtick would style a whole block as inline code.
+        if buf[0] == "`" and len(buf) < self._MAX_HOLD and "\n" not in buf:
+            return None
+        if buf.startswith("```"):
+            self._pending = buf[3:]
+            self._in_fence = not self._in_fence
+            out.append(_SGR_DIM if self._in_fence else _SGR_RESET)
+            self._at_line_start = False
+            self._line_styled = self._in_fence
+            return True
+
+        if self._in_fence:
+            self._at_line_start = False
+            return False
+
+        if buf[0] == "#":
+            hashes = len(buf) - len(buf.lstrip("#"))
+            if hashes >= len(buf) and "\n" not in buf:
+                return None             # the run may continue
+            if 1 <= hashes <= 6 and buf[hashes:hashes + 1] == " ":
+                self._pending = buf[hashes + 1:]
+                out.append(_SGR_BOLD)
+                self._line_styled = True
+                self._at_line_start = False
+                return True
+
+        if buf[0] in "-*+":
+            if len(buf) < 2 and "\n" not in buf:
+                return None
+            if buf[1:2] == " ":
+                # The glyph, not the punctuation: a list marker is the one
+                # thing a reader scans for, and `-` is also a minus sign.
+                self._pending = buf[2:]
+                out.append(f"{_SGR_DIM}•{_SGR_RESET} ")
+                self._at_line_start = False
+                return True
+
+        self._at_line_start = False
+        return False
