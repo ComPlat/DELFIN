@@ -429,9 +429,22 @@ def _tools(ctx, args: str) -> CommandResult:
             role = str((ctx.engine.get_status() or {}).get("role", "") or "")
         except Exception:
             role = ""
+        # The session's own narrowing travels with the role. Building the
+        # context from the role alone listed tools this session has
+        # explicitly denied — the executor refuses them, so nothing could
+        # run, but a listing that answers "what am I offered" with names
+        # that are not offered is the reader-facing half of the same
+        # defect the deny list exists to close.
+        perms = getattr(ctx.engine, "kit_permissions", None)
         tools = ac.advertisable_tools(
             list(getattr(ac, "_DOC_TOOLS_OPENAI", None) or []),
-            ac.ToolSurfaceContext(role=role))
+            ac.ToolSurfaceContext(
+                role=role,
+                session_allowed=frozenset(
+                    getattr(perms, "session_allowed_tools", None) or ()),
+                session_denied=frozenset(
+                    getattr(perms, "session_denied_tools", None) or ()),
+            ))
     except Exception as exc:
         return CommandResult(output=f"tool catalogue unavailable ({exc})")
     query = args.strip().lower()
