@@ -752,6 +752,7 @@ def _startup_banner(engine, report, workspace: Path,
             "gate, so file and shell tools will refuse")
     for extra in (_grant_line("writable", getattr(report, "granted_dirs", ())),
                   _grant_line("readable", getattr(report, "read_dirs", ())),
+                  *_bounds_in_force(engine),
                   _parked_work_line(engine, workspace)):
         if extra:
             lines.append(extra)
@@ -866,6 +867,50 @@ def _enforced_tool_surface(client) -> tuple[list[str], list[str]]:
         except Exception:
             pass
     return ([str(t) for t in (getattr(client, "allowed_tools", None) or ())], [])
+
+
+def _bounds_in_force(engine) -> list[str]:
+    """One banner line per bound this session is actually running under.
+
+    The counterpart of :func:`_bounding_notices`, which says what could
+    NOT be honoured. Both are needed and neither substitutes for the
+    other: a session where a round cap, a spend ceiling and a denied tool
+    set are all in force looked identical on screen to one with no bounds
+    at all, so the banner named the approval mode — which decides what may
+    happen — and said nothing about the limits deciding what CAN.
+
+    Read off the constructed engine and client, never off the parsed
+    arguments. A line here is a statement that the bound arrived, and only
+    the object that took it can say that.
+    """
+    lines: list[str] = []
+    client = getattr(engine, "client", None)
+
+    parts: list[str] = []
+    rounds = int(getattr(client, "max_tool_rounds", 0) or 0)
+    if rounds > 0:
+        parts.append(f"{rounds} tool rounds per turn")
+    try:
+        usd = float(getattr(engine, "run_budget_usd", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        usd = 0.0
+    if usd > 0:
+        parts.append(f"${usd:.2f} for the session")
+    try:
+        secs = float(getattr(engine, "run_budget_s", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        secs = 0.0
+    if secs > 0:
+        parts.append(f"{int(secs)}s of wall clock")
+    if parts:
+        lines.append("bounds     " + " · ".join(parts))
+
+    allow, deny = _enforced_tool_surface(client)
+    if allow:
+        lines.append(f"tools      only {', '.join(sorted(allow))}")
+    if deny:
+        lines.append(f"tools      {', '.join(sorted(deny))} denied")
+    return lines
 
 
 def _bounding_notices(args: argparse.Namespace, engine) -> list[str]:

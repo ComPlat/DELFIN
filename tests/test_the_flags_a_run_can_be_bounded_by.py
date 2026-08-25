@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 
 import pytest
 
@@ -547,3 +548,89 @@ def test_a_bounded_turn_really_stops_at_the_bound():
     bare = api_client.OpenAIClient.__new__(api_client.OpenAIClient)
     assert (int(getattr(bare, "max_tool_rounds", 0) or 0)
             or api_client._resolve_max_tool_rounds("", None)) > 0
+
+
+# ---------------------------------------------------------------------------
+# A bound nobody can see
+# ---------------------------------------------------------------------------
+
+class _BoundClient:
+    model = "kit.qwen3.5-397b-A17b"
+
+    def __init__(self, rounds=0, allow=(), deny=()):
+        if rounds:
+            self.max_tool_rounds = rounds
+        self._allow, self._deny = tuple(allow), tuple(deny)
+
+    def enforced_tool_surface(self):
+        return self._allow, self._deny
+
+
+class _BoundEngine:
+    provider = "kit"
+    backend = "api"
+    mode = "solo"
+    session_id = "s" * 32
+    kit_permissions = None
+
+    def __init__(self, client, usd=0.0, secs=0.0):
+        self.client = client
+        if usd:
+            self.run_budget_usd = usd
+        if secs:
+            self.run_budget_s = secs
+
+
+def test_an_unbounded_session_says_nothing_about_bounds():
+    """Silence is correct here, and is what makes the lines below mean
+    something when they do appear."""
+    assert agent_cli._bounds_in_force(_BoundEngine(_BoundClient())) == []
+
+
+def test_every_bound_in_force_is_on_one_line():
+    lines = agent_cli._bounds_in_force(
+        _BoundEngine(_BoundClient(rounds=4), usd=0.5, secs=900))
+    joined = "\n".join(lines)
+    assert "4 tool rounds per turn" in joined
+    assert "$0.50 for the session" in joined
+    assert "900s of wall clock" in joined
+
+
+def test_a_narrowed_tool_surface_is_named():
+    deny = agent_cli._bounds_in_force(
+        _BoundEngine(_BoundClient(deny=("bash", "write_file"))))
+    assert any("bash, write_file denied" in ln for ln in deny)
+
+    allow = agent_cli._bounds_in_force(
+        _BoundEngine(_BoundClient(allow=("read_file",))))
+    assert any("only read_file" in ln for ln in allow)
+
+
+def test_the_bounds_come_from_the_engine_and_not_from_the_arguments():
+    """A line here asserts the bound ARRIVED.
+
+    Reading the parsed namespace would print the request, which is the
+    thing `_bounding_notices` exists to distinguish from: a flag the
+    backend silently dropped would then be reported as in force.
+    """
+    import inspect
+    src = inspect.getsource(agent_cli._bounds_in_force)
+    assert "args" not in inspect.signature(agent_cli._bounds_in_force).parameters
+    assert "_enforced_tool_surface" in src
+
+
+def test_the_banner_carries_them(monkeypatch):
+    """Found live: a session bounded three ways looked exactly like an
+    unbounded one on screen."""
+    class _Git:
+        is_repo, branch, dirty, unborn = True, "main", (), False
+
+    class _Report:
+        git = _Git()
+        granted_dirs = read_dirs = ()
+
+    engine = _BoundEngine(_BoundClient(rounds=4, deny=("bash",)), usd=0.5)
+    text = agent_cli._startup_banner(engine, _Report(), Path("/tmp/p"))
+    assert "4 tool rounds per turn" in text
+    assert "$0.50" in text
+    assert "bash denied" in text
