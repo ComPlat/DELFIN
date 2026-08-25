@@ -301,3 +301,39 @@ def test_only_the_editor_s_own_comment_counts_as_an_account():
         '3\nOptimised to a transition state\n'
         'O 0.000 0.000 0.000\nH 0.957 0.000 0.000\nH -0.240 0.927 0.000\n')
     assert part._graph_offer()['gesture'] == 'Optimised to a transition state'
+
+
+def test_a_structure_arriving_any_way_at_all_offers_itself_to_the_network():
+    """Including one drawn in Ketcher, and that is why there is no second path
+    for drawings.
+
+    Ketcher hands back a molfile, the editor turns it into a SMILES and writes
+    it into the input box, and Convert turns that into coordinates -- the same
+    chain every other conversion goes through. What makes the network reachable
+    from a drawing is that ``_replace_mol_output_view`` refreshes the row when
+    a structure is placed, and every route into the editor goes through it. A
+    drawing-shaped shortcut into the graph would be a second way to do this one
+    thing, and the second way is the one that goes stale.
+    """
+    from editor_source import EDITOR_SOURCE
+
+    drawing = EDITOR_SOURCE.split('def _replace_mol_output_view(', 1)[1].split(
+        '\n    def ', 1)[0]
+    assert '_refresh_saddle_controls()' in drawing
+
+    saddle = EDITOR_SOURCE.split('def _refresh_saddle_controls(', 1)[1].split(
+        '\n    def ', 1)[0]
+    assert '_refresh_graph_button()' in saddle
+
+    # And on a real editor: a structure placed the way every conversion places
+    # one brings the press with it.
+    graph = _Graph('Put in one as a new state')
+    part, _state = _an_editor(graph=graph)
+    part.coords_widget.value = ''
+    part._refresh_graph_button()
+    assert not _shown(part.submit_graph_btn)
+
+    part.coords_widget.value = _WATER
+    part._replace_mol_output_view(_WATER)
+    assert _shown(part.submit_graph_btn)
+    assert part.submit_graph_btn.description == 'Put in one as a new state'

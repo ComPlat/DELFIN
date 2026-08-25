@@ -439,6 +439,16 @@ class ReactionGraphPanel:
             tooltip='Put this geometry in the Submit tab and go there',
             layout=widgets.Layout(width='auto', display='none'))
         self.to_editor_btn.on_click(self._on_to_editor)
+        #: And on to a calculation.  The Submit tab is where a job is set
+        #: up -- every field it has, every workflow it knows -- and this
+        #: does not reproduce any of that.  It carries the geometry and a
+        #: name across and notes in the graph that it went, so what comes
+        #: back has somewhere to come back to.
+        self.to_submit_btn = widgets.Button(
+            description='Set up a calculation',
+            tooltip='Take this geometry to the Submit tab and note it here',
+            layout=widgets.Layout(width='auto', display='none'))
+        self.to_submit_btn.on_click(self._on_to_submit)
 
         self.graph_dd.observe(self._on_graph, names='value')
         self.level_dd.observe(self._on_view, names='value')
@@ -467,7 +477,8 @@ class ReactionGraphPanel:
                               widgets.HBox([self.note_box, self.note_btn],
                                            layout=widgets.Layout(
                                                flex_flow='row wrap')),
-                              widgets.HBox([self.to_editor_btn],
+                              widgets.HBox([self.to_editor_btn,
+                                            self.to_submit_btn],
                                            layout=widgets.Layout(
                                                flex_flow='row wrap'))],
                              layout=widgets.Layout(width='46%'))],
@@ -580,6 +591,7 @@ class ReactionGraphPanel:
         can = bool(rg.geometry(self.graph, ref, str(self.level_dd.value or ''))
                    and self._submit_refs())
         self.to_editor_btn.layout.display = '' if can else 'none'
+        self.to_submit_btn.layout.display = '' if can else 'none'
 
     # -- what the editor may hand over ------------------------------------
 
@@ -663,7 +675,8 @@ class ReactionGraphPanel:
             else:
                 node = rg.add_state(
                     graph, str(offer['xyz']), _record(),
-                    label=str(offer.get('name') or ''),
+                    label=str(offer.get('name') or
+                              rg.formula(offer['xyz'])),
                     charge=int(offer.get('charge') or 0),
                     multiplicity=int(offer.get('multiplicity') or 1))
                 said = f'{node.id} is in {graph.name}.'
@@ -695,7 +708,7 @@ class ReactionGraphPanel:
                         free_energy=None,
                         source={'kind': 'editor',
                                 'gesture': f'{offer.get("gesture")}, {what}'}),
-                label='', charge=int(offer.get('charge') or 0),
+                label=rg.formula(xyz), charge=int(offer.get('charge') or 0),
                 multiplicity=int(offer.get('multiplicity') or 1))
             made.append(node.id)
             return node.id
@@ -779,6 +792,59 @@ class ReactionGraphPanel:
         box.value = (f'{len(rg.fingerprint(text).split("|"))}\n'
                      f'{name} at {level}, from the reaction graph\n{body}\n')
         self._say(f'{ref} is in the Submit tab at {level}.')
+        self._go_to_tab('Submit Job')
+
+    def _on_to_submit(self, _button=None) -> None:
+        """This geometry into the Submit tab, and the graph notes that it went.
+
+        The job is set up over there.  Every field the Submit tab has, and
+        every workflow it knows, is what a calculation needs; a second
+        copy of that here would be a smaller, staler one.  So this carries
+        across what the graph knows -- the geometry, the charge, the spin
+        and a name saying what the job is for -- and stops.
+
+        What it does do is write the run folder into the graph before
+        anything is submitted, so the job has somewhere to come back to.
+        The folder is inside the graph: a calculation belongs to the
+        reaction it was run for, and a graph whose evidence is scattered
+        through a shared calculation directory cannot be handed to anyone.
+        """
+        if self.graph is None or not self.network.value:
+            return
+        ref = str(self.network.value)
+        level = str(self.level_dd.value or '')
+        text = rg.geometry(self.graph, ref, level)
+        refs = self._submit_refs()
+        box = refs.get('coords_widget')
+        if not text or box is None:
+            self._say('There is no geometry at this level to send.')
+            return
+        holder = self.graph.holder(ref)
+        name = (getattr(holder, 'label', '') or ref) if holder else ref
+        relative, real = rg.run_folder(self.graph, ref, level)
+        rows = text.splitlines()
+        body = chr(10).join(rows[2:]) if len(rows) > 2 else ''
+        atoms = len(rg.fingerprint(text).split('|'))
+        box.value = (f'{atoms}' + chr(10) +
+                     f'{name}, for a calculation from the reaction graph'
+                     + chr(10) + body + chr(10))
+        # The name the job will carry, where the tab has a box for it.
+        job_box = refs.get('job_name_widget')
+        if job_box is not None:
+            try:
+                job_box.value = Path(relative).name
+            except Exception:                    # noqa: BLE001
+                pass
+        try:
+            real.mkdir(parents=True, exist_ok=True)
+            (real / 'from_graph.xyz').write_text(text, encoding='utf-8')
+            rg.remember(self.graph, 'sent for a calculation', ref=ref,
+                        run=relative, level=level)
+        except OSError as exc:
+            self._say(f'The run folder could not be made: {exc}')
+            return
+        self._say(f'{ref} is in the Submit tab. Its run folder is '
+                  f'{relative}, inside this graph.')
         self._go_to_tab('Submit Job')
 
     def _go_to_tab(self, title: str) -> None:
