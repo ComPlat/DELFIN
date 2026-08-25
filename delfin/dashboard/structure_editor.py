@@ -12256,7 +12256,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         the chain above walks its own way between two ends with metadynamics
         and climbs the highest point of it, and when the answer that comes
         back is not believable there has to be a second opinion that shares no
-        machinery with the first.  A band is that -- ten images relaxed onto
+        machinery with the first.  A band is that -- eight images relaxed onto
         the way between the two ends at once, rather than one structure walked
         along it -- and :func:`delfin.dashboard.saddle.neb_to_saddle` is where
         the measurements live.
@@ -12299,10 +12299,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         uhf = _gfn_uhf_now()
         wet = str(submit_gfn_solvent.value or '') or None
         label = _server_label(method)
+        # How long to say it will be is a question about the machine and not
+        # about the method: the images are computed at once, so the same
+        # sixteen-atom band measured 39 s on eight processes and 272 on one.
+        # So the sentence says what it is doing and that the press ends it,
+        # and does not promise a time it cannot know.
         _set_mol_status(
-            f'{label}: relaxing a {_saddle.NEB_IMAGES}-image band between the '
-            'two ends. This is the slow route and takes minutes; the press '
-            'stops it.', spinner=True)
+            f'{label}: relaxing a band of {_saddle.NEB_IMAGES} images between '
+            'the two ends, then climbing from the highest of them. This is '
+            'the thorough route rather than the quick one; the press stops '
+            'it.', spinner=True)
 
         def _work():
             sent = [0]
