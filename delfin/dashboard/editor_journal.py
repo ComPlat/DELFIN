@@ -204,6 +204,10 @@ _CHANNEL_WIDGETS = frozenset({
     'submit_gfn_frame', 'submit_gfn_wall', 'submit_draw_sync',
     'submit_draw_frame', 'submit_manip_status', 'submit_internal_label',
     'submit_ff_notes',
+    # The scan's profile is a rendered picture, not a control: 60 kB of
+    # base64 PNG that nobody pressed and that says nothing a report needs --
+    # the walk it was drawn from is already in the journal, point by point.
+    'submit_scan_plot',
     'submit_bug_note', 'submit_bug_btn', 'submit_bug_send',
     'submit_bug_where',
 })
@@ -1256,3 +1260,262 @@ def list_reports(archive_dir=None):
         })
     out.sort(key=lambda row: row['name'], reverse=True)
     return out
+
+
+def find_report(target=None, archive_dir=None):
+    """The report a person meant, from whatever they had to hand.
+
+    A path to a report directory, either file inside one, part of a directory
+    name, or nothing at all for the newest one in the archive.  It is the
+    lookup ``/bugs`` already does over the agent's reports, done here for the
+    viewer's own archive, so the name printed in a listing is a name that can
+    be handed straight back.
+    """
+    if target:
+        path = Path(str(target)).expanduser()
+        if path.is_file():
+            path = path.parent
+        if (path / 'report.json').is_file():
+            return path
+    rows = list_reports(archive_dir)
+    if not rows:
+        return None
+    if not target:
+        return Path(rows[0]['path'])
+    wanted = str(target)
+    for row in rows:
+        if row['name'] == wanted:
+            return Path(row['path'])
+    for row in rows:
+        if wanted in row['name']:
+            return Path(row['path'])
+    return None
+
+
+def an_editor_to_replay_into(room):
+    """A real editor, headless, with the host behaviour a replay depends on.
+
+    The editor is a part over a tab's coordinate box, and the tab is not
+    merely a frame around it: a write to the box has to come back as the
+    structure the editor reads next.  Without that, every optimiser in the
+    replay starts from the geometry the session opened on rather than from
+    the one the replayed hand has just made, and the replay walks a different
+    molecule while reporting the same messages -- which is the failure mode
+    that looks most like success.
+
+    This is here rather than in the caller because it is the part a person
+    following "replay one" cannot be expected to know, and it is exactly what
+    the test that proves the replay works builds for itself.
+    """
+    import ipywidgets as widgets
+
+    from . import structure_editor
+    from .context import DashboardContext
+
+    room = Path(room)
+    room.mkdir(parents=True, exist_ok=True)
+    for name in ('calc', 'archive', 'office'):
+        (room / name).mkdir(exist_ok=True)
+    ctx = DashboardContext(calc_dir=room / 'calc', archive_dir=room / 'archive',
+                           office_dir=room / 'office')
+    # No page to run it in, and no page is needed: everything a replay drives
+    # arrives on the widgets, and the scripts the editor writes out are for a
+    # browser that is not here.
+    ctx.run_js = lambda _script: None
+    state = {'editor_host': 'Submit'}
+    box = widgets.Textarea(value='')
+
+    def update_view(*_a, **_k):
+        raw = (box.value or '').strip()
+        if not raw:
+            return
+        rows = [one for one in raw.split('\n') if one.strip()]
+        body = rows[2:] if rows and rows[0].strip().isdigit() else rows
+        state['current_xyz_for_copy'] = {
+            'content': f'{len(body)}\nEdited in DELFIN viewer\n'
+                       + '\n'.join(body)}
+        state['manip_inflight'] = False
+
+    editor = structure_editor.build(
+        ctx, state=state, coords_widget=box, viewer_height=560,
+        schedule_ui_update=lambda call, *a, **k: call(*a, **k),
+        update_view=update_view,
+        get_smiles_charge=lambda *a, **k: None)
+    box.observe(lambda _change: update_view(), names='value')
+    return editor, state, box
+
+
+def wait_until_quiet(editor, state, seconds=300.0):
+    """Wait for the editor to finish answering the last message it was given.
+
+    A replay is over when the messages have been written; the *editor* is not.
+    The optimisers run on threads of their own and the settle after a release
+    is armed to fire a moment later, so the answers the replay is judged on --
+    the structures written to the box, the run numbers claimed -- are still
+    arriving after :func:`replay` has returned.  Measured on a UFF gesture
+    replayed with ``--pace 0``: read straight away, the recorded side had a
+    run claim the replayed side did not, and the two were reported as having
+    parted at step 2 when in fact they agree.
+
+    So this is part of the path and not a nicety, and it is the same wait the
+    test that proves the replay works performs before it compares anything.
+    """
+    began = time.monotonic()
+    while time.monotonic() - began < seconds:
+        busy = (state.get('climb_run') is not None
+                or state.get('optimize_run') is not None
+                or state.get('scan_run')
+                or state.get('gfn_settle_busy')
+                or state.get('gfn_restart_armed')
+                or state.get('gfn_minimise_armed')
+                or state.get('gfn_settle_armed')
+                or bool(getattr(editor, 'submit_optimize_btn', None)
+                        and editor.submit_optimize_btn.value))
+        if not busy:
+            return True
+        time.sleep(0.15)
+    return False
+
+
+def replay_report(where, *, room=None, pace=1.0, max_gap=2.0, on_event=None,
+                  settle=300.0):
+    """Play a written report back into an editor built for it, and judge it.
+
+    The front door of this module.  :func:`replay` needs a timeline and a
+    live editor, which is the right shape for a test and the wrong shape for
+    a person holding a report directory -- so this is the whole path in one
+    call: read the report, build the editor, drive it, and compare what came
+    out with what was recorded.
+
+    *room* is where the editor's working directories go; a temporary one is
+    made and left behind when none is given, because a replay that runs xtb
+    writes into it and a maintainer often wants to look afterwards.
+
+    Returns the meta, the two message sequences (see :func:`page_messages`),
+    whether they are equal, and where the two runs stopped being the same
+    molecule (see :func:`first_difference`) -- which is the sentence worth
+    having, because past a bifurcation the answer is "they parted at step N"
+    rather than yes or no.
+    """
+    import tempfile
+
+    folder = Path(where)
+    meta, timeline = load_report(folder)
+    if room is None:
+        room = tempfile.mkdtemp(prefix='delfin-replay-')
+    editor, state, box = an_editor_to_replay_into(room)
+    wrote = replay(timeline, editor, pace=pace, max_gap=max_gap,
+                   on_event=on_event)
+    quiet = wait_until_quiet(editor, state, settle)
+    second = state['editor_journal'].timeline()
+    recorded = page_messages(timeline)
+    replayed = page_messages(second)
+    return {
+        'meta': meta,
+        'report': str(folder),
+        'room': str(room),
+        'recorded': recorded,
+        'written': wrote,
+        'replayed': replayed,
+        'same_messages': replayed == recorded,
+        'parted': first_difference(timeline, second),
+        'quiet': quiet,
+        'xyz': box.value,
+        'editor': editor,
+        'state': state,
+    }
+
+
+def main(argv=None):
+    """``python -m delfin.dashboard.editor_journal`` -- list, or replay one.
+
+    The sentence the editor shows when a report is written names this module,
+    and it named a function that only a maintainer with an editor already
+    built could call: everything a replay needs -- ipywidgets, a context, a
+    coordinate box, the host's write-back -- had to be assembled by whoever
+    read the sentence, and getting the last of those wrong silently replays
+    the gesture over the wrong molecule.  So the sentence now names a command,
+    and this is it.
+
+    With no arguments it lists the archive.  With a report -- a path, or as
+    much of the name as is unambiguous -- it replays it and prints where the
+    replay stopped agreeing with the session it was made from.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog='python -m delfin.dashboard.editor_journal',
+        description='List viewer bug reports, or replay one into an editor.',
+        epilog='Exits 0 when the replay wrote the same messages as the '
+               'recording, 2 when it did not, and 1 when there was no report '
+               'to replay.')
+    parser.add_argument('report', nargs='?',
+                        help='a report directory, or part of its name; '
+                             'listed rather than replayed when left out')
+    parser.add_argument('--archive', default=None,
+                        help='where the reports are (default: the configured '
+                             'viewer archive)')
+    parser.add_argument('--list', action='store_true',
+                        help='list the archive and stop')
+    parser.add_argument('--pace', type=float, default=1.0,
+                        help='how fast, as a multiple of the recorded gaps: '
+                             '1.0 is the speed the user worked, 0 as fast as '
+                             'the kernel will take it (default: 1.0)')
+    parser.add_argument('--max-gap', type=float, default=2.0,
+                        help='longest single wait, in seconds (default: 2.0)')
+    parser.add_argument('--room', default=None,
+                        help='where the editor works; a temporary directory '
+                             'by default')
+    args = parser.parse_args(list(sys.argv[1:] if argv is None else argv))
+
+    rows = list_reports(args.archive)
+    # A bare invocation lists.  It could replay the newest, and that is one
+    # keystroke shorter and the wrong default: a replay runs the user's whole
+    # session again at the speed it was worked at, and starting one nobody
+    # asked for is a surprise measured in minutes.
+    if args.list or not args.report:
+        where = (Path(args.archive).expanduser() if args.archive
+                 else resolve_archive_dir())
+        print(f'{len(rows)} report(s) in {where}')
+        for row in rows:
+            print(f"  {row['name']}  {row['events']} events  "
+                  f"{row['tab'] or '?'}  {row['description'] or '-'}")
+        if not rows:
+            print('Press the bug button in the structure editor to make one.')
+        else:
+            print('Replay one by name, or by as much of it as is unambiguous: '
+                  f"python -m delfin.dashboard.editor_journal {rows[0]['name']}")
+        return 0 if rows else 1
+
+    folder = find_report(args.report, args.archive)
+    if folder is None:
+        print(f'No report matching {args.report!r}. '
+              'Run with --list to see what there is.', file=sys.stderr)
+        return 1
+
+    # Said before it starts, because a replay runs at the speed of the session
+    # it is a recording of: a five-minute gesture takes five minutes, and a
+    # silence that long reads as a hang.  --pace 0 is the way out of that.
+    print(f'Replaying {folder}')
+    outcome = replay_report(folder, room=args.room, pace=args.pace,
+                            max_gap=args.max_gap)
+    said = outcome['meta'].get('description') or '-'
+    print(f'  {said}')
+    print(f"  messages: {len(outcome['recorded'])} recorded, "
+          f"{len(outcome['replayed'])} replayed -- "
+          + ('identical' if outcome['same_messages'] else 'NOT identical'))
+    parted = outcome['parted']
+    if not outcome['quiet']:
+        # Said, not hidden: everything below was read while the editor was
+        # still working, so a difference here may be nothing but the clock.
+        print('  the editor was still busy when the wait ran out')
+    if parted is None:
+        print('  the two runs answered the same all the way through')
+    else:
+        print(f"  they parted at step {parted['at']}: {parted['said']}")
+    print(f"  the editor worked in {outcome['room']}")
+    return 0 if outcome['same_messages'] else 2
+
+
+if __name__ == '__main__':                  # pragma: no cover - entry point
+    raise SystemExit(main())

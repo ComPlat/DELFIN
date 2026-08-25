@@ -13,7 +13,12 @@ hours and belongs in the ORCA Builder, where OPTTS is now a job type.
 
 Chained to the path finder it is a button that takes two structures and hands
 back a converged saddle: twelve seconds on sixteen atoms, and the same saddle
-a nudged elastic band reaches in seven minutes.  And it says what was reached,
+a nudged elastic band reaches -- to 0.07 cm-1, for about twice the gradients.
+(Seven minutes was written here for the band, and that was the serial number:
+measured since, the same band is 272 s on one process and 39.4 s on eight,
+because ORCA computes the images at once.  The band is the second entry in the
+box beside this press because it costs more work, not because it takes longer
+on a machine with cores.)  And it says what was reached,
 which is not optional -- a saddle search does not fail when it goes wrong, it
 succeeds at arriving somewhere, and a structure that is a maximum in two
 directions at once is named here rather than reported as done.
@@ -521,10 +526,16 @@ def test_two_structures_become_a_converged_saddle_at_one_press():
 
     Twelve seconds for the pair.  The routes that do the same job inside ORCA
     alone were measured on the same system: ``ScanTS`` 98 s and -394.1,
-    ``NEB-TS`` 416 s and -393.6.  Seven minutes and twelve seconds land on the
-    same saddle to within a wavenumber, which is the whole argument for
-    chaining the two engines rather than paying either of them to do both
-    halves.
+    ``NEB-TS`` 416 s and -393.6.  All of them land on the same saddle to
+    within a wavenumber, which is the whole argument for chaining the two
+    engines rather than paying either of them to do both halves.
+
+    The band's 416 s was a one-process wall time, and re-measured for
+    ``neb_to_saddle`` the same band is 272 s on one process and 39.4 s on
+    eight -- ORCA computes the images at once.  So the comparison that stands
+    is the work: 203 gradients for the band, and rather fewer for this chain.
+    The chain is offered first because it is cheaper, not because a band is
+    slow on a machine with cores.
     """
     import math
 
@@ -748,8 +759,12 @@ def test_one_press_of_the_real_button_walks_climbs_and_draws_it_once():
     assert 'marked' in [value for _label, value
                         in part.submit_saddle_from.options]
     part.submit_saddle_from.value = 'marked'
+    # A nudged elastic band arrived here later as a fourth way from the same
+    # pair.  Second on the list, because the order is the recommendation: it
+    # reaches the same saddle as the chain and spends about twice the
+    # gradients doing it.
     assert [value for _label, value in part.submit_saddle_how.options] == \
-        ['orca', 'hand', 'walk']
+        ['orca', 'neb', 'hand', 'walk']
 
     frames = []
     part.submit_gfn_frame.observe(

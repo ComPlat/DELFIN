@@ -538,6 +538,7 @@ def create_tab(ctx):
     submit_scope_id = _editor.submit_scope_id
     submit_manip_toolbar = _editor.submit_manip_toolbar
     submit_ff_notes = _editor.submit_ff_notes
+    submit_scan_plot = _editor.submit_scan_plot
     submit_labels_btn = _editor.submit_labels_btn
     submit_label_size = _editor.submit_label_size
     _set_mol_status = _editor._set_mol_status
@@ -2398,6 +2399,13 @@ def create_tab(ctx):
     submit_right = widgets.VBox([
         widgets.HTML('<b>Molecule Preview:</b>'),
         submit_manip_toolbar, mol_viewer_stack, isomer_nav_row, xyz_copy_row,
+        # The profile of the last scan, under the picture it was walked on and
+        # the strips that belong to it, and nothing at all until there is a
+        # walk to show. Under the structure rather than over it: it is written
+        # once, at the end of a walk that took minutes, so it can afford a row
+        # -- and a row takes none of the pixels the structure is drawn in,
+        # which an overlay would.
+        submit_scan_plot,
         submit_ff_notes,
         spacer_large,
         widgets.HTML('<b>GOAT:</b>'),

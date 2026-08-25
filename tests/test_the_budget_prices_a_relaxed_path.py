@@ -1233,7 +1233,11 @@ def test_a_scan_is_told_a_direction_rather_than_an_end():
     """
     assert "submit_scan_way" in EDITOR_SOURCE
     body = EDITOR_SOURCE.split("def _suggest_scan_target(")[1].split("def ")[0]
-    assert "way == 'out'" in body
+    # Outwards has two names now: the direction, and the verb "break" that
+    # points the same way and carries a stopping rule with it.  Both walk to
+    # the far end when nobody has said where to stop, which is what this is
+    # about.
+    assert "way in ('out', 'break')" in body
     assert "_SCAN_AS_FAR_AS" in body
 
     # The far end is only the brake for a walk with no next minimum -- two
@@ -1420,9 +1424,16 @@ def test_armed_legs_do_not_outlive_their_structure():
     from delfin.dashboard import tab_submit
     host = pathlib.Path(tab_submit.__file__).read_text(encoding="utf-8")
     assert "state['scan_legs'] = []" in host
-    # And describing a leg survives atoms that are gone.
-    body = EDITOR_SOURCE.split("def _describe_leg(")[1].split("\n    def ")[0]
+    # And naming the atoms of a leg survives atoms that are gone.  One
+    # function does it, because the profile puts the same pair on an axis,
+    # the sentence names it, and the refusals about forming and breaking
+    # name it too -- one place that names atoms, so one place that
+    # survives their going.
+    body = (EDITOR_SOURCE.split("def _leg_atoms_label(")[1]
+            .split("\n    def ")[0])
     assert "if 0 <= index < len(known)" in body
+    assert "_leg_atoms_label(leg)" in EDITOR_SOURCE.split(
+        "def _describe_leg(")[1].split("\n    def ")[0]
 
 
 def test_stop_comes_before_the_method_check():
@@ -1629,9 +1640,12 @@ def test_a_push_is_priced_without_its_own_force_in_the_answer():
     assert 'def _priced(got, applied):' in source
     assert "energy = (_priced(outcome, held) if pushing" in source
     # And the path records where the coordinate *got to*, because a push does
-    # not dictate a value -- that is the whole point of it.
+    # not dictate a value -- that is the whole point of it.  The geometry goes
+    # down beside the price so that the finished profile can be handed to a
+    # better method afterwards; for a push those are the only structures on
+    # the way over the crossing.
     assert 'reached = (_value_in(walked, legs[0]) if pushing' in source
-    assert 'path.append((reached, spent))' in source
+    assert 'path.append((reached, spent, walked))' in source
 
 
 def test_a_push_ramps_geometrically_and_prices_what_it_falls_through():
@@ -1665,7 +1679,9 @@ def test_a_push_ramps_geometrically_and_prices_what_it_falls_through():
     # The zero is the structure as it stands: a path that crosses on its first
     # step has to have something to have crossed from.
     assert 'base = _unbiased(walked)' in source
-    assert "path.append((_value_in(walked, legs[0]), 0.0))" in source
+    # With the structure it was measured on, which is what lets the whole
+    # profile be priced again later.
+    assert "path.append((_value_in(walked, legs[0]), 0.0, walked))" in source
 
 
 @_needs_xtb
@@ -4197,3 +4213,426 @@ def test_a_second_grab_carries_on_from_where_the_structure_is():
     assert second[0] < first[-1], (first[-1], second[0])
     for before, after in zip([first[-1]] + second, second):
         assert after <= before + 1e-6, (first, second)
+
+
+# --- what a refused drag costs, and what it says ---------------------------
+
+
+def _drag_block(part, rows, note):
+    """A geometry as the page sends one, with the reason on the comment line."""
+    symbols = [line.split()[0] for line
+               in gfn.atom_lines(part.coords_widget.value)]
+    body = "\n".join(
+        f"{symbols[i]} {rows[3*i]:.8f} {rows[3*i+1]:.8f} {rows[3*i+2]:.8f}"
+        for i in range(len(symbols)))
+    return f"{len(symbols)}\n{note}\n{body}"
+
+
+def _pull_into_the_wall(part, held, grabbed, root, step=0.80, tries=14):
+    """Drag *grabbed* straight out of *root* until the budget refuses.
+
+    The cursor is put *step* ahead of where the atom actually is, which is what
+    the browser sends: under a pull it writes the held atom at the point the
+    hand is asking for, clamped to a reach ahead of the atom itself.
+    """
+    part.submit_cmd_sync.value = f"gfngrab:{id(held) % 9973}:0"
+    for turn in range(tries):
+        rows = list(held["rows"])
+        here = rows[3 * grabbed:3 * grabbed + 3]
+        stem = rows[3 * root:3 * root + 3]
+        arm = [a - b for a, b in zip(here, stem)]
+        far = math.sqrt(sum(one * one for one in arm)) or 1.0
+        for n in range(3):
+            rows[3 * grabbed + n] = here[n] + arm[n] / far * step
+        part.submit_manip_sync.value = _drag_block(
+            part, rows, f"DELFIN drag-follow held={grabbed} n={turn}")
+        _quiet(part.state)
+        if part.state.get("thermal_spent"):
+            return True
+    return False
+
+
+@_needs_xtb
+def test_a_refused_drag_starts_no_work_and_writes_no_line():
+    """Standing still must not cost a worker and a redraw per mouse move.
+
+    The rule that stops the kernel fighting a hand it has already refused --
+    :func:`_still_spent` -- was asked inside the worker, so standing still
+    meant beginning a thread, turning the ring on, finding there was nothing
+    to compute and ending the thread again.  Once for every report the page
+    sends, and the page reports at the rate a mouse moves.
+
+    Measured on the user's manganese complex under GFN2 at charge +1, 298 K
+    and a 22.3 kcal/mol ceiling, the phenolate oxygen pulled off the metal and
+    then held against the wall for thirty seconds, driven through the page's
+    own messages -- gfngrab, one drag-follow per mouse move, no release:
+
+                               budget off   budget on, refusing
+        reports from the page        1147                  1625
+        workers started                 1                  1277
+        status lines written            9                  2555
+        frames drawn                    8                     1
+
+    Forty-three threads a second, and the line that lies over the picture
+    rewritten eighty-five times a second.  It alternated between exactly two
+    values -- the same words with the ring and without it, 179 of each in
+    eight seconds -- because nothing was being computed for the words to
+    change.  So the picture stood perfectly still and the ring on top of it
+    blinked twenty times a second, which is the shaking the budget adds.
+
+    With the budget off the same hand costs one worker: xtb is genuinely busy,
+    and every report after the first is folded into ``gfn_follow_xyz`` instead
+    of starting anything.
+
+    Asked before the worker is begun the rule costs no thread at all -- it is
+    arithmetic over the atoms the hand is on.  Measured again over the same
+    thirty seconds: 1698 reports, one worker, three status lines.
+    """
+    part = _budgeted(_ETHANE, kelvin=100.0)
+    part.submit_pull_slider.value = 1.2
+    held = _page_model(part)
+    assert _pull_into_the_wall(part, held, 2, 0), "the wall never refused"
+
+    writes = []
+    part.mol_status.observe(lambda _c: writes.append(1), names="value")
+    frames = []
+    part.submit_gfn_frame.observe(lambda _c: frames.append(1), names="value")
+
+    # The hand goes on pulling and the mouse goes on reporting, which is what
+    # a hand that has met a wall does.  A real one never repeats a pixel, so
+    # every message is a different geometry and none of them is dropped by
+    # traitlets for being the same text.
+    here = held["rows"][6:9]
+    stem = held["rows"][0:3]
+    arm = [a - b for a, b in zip(here, stem)]
+    far = math.sqrt(sum(one * one for one in arm)) or 1.0
+    for turn in range(30):
+        rows = list(held["rows"])
+        for n in range(3):
+            rows[6 + n] = here[n] + arm[n] / far * (0.80 + 0.002 * turn)
+        part.submit_manip_sync.value = _drag_block(
+            part, rows, f"DELFIN drag-follow held=2 n={100 + turn}")
+    _quiet(part.state)
+
+    assert not writes, (
+        f"a refused drag rewrote the status line {len(writes)} times")
+    assert not frames, "a refused drag drew a frame"
+
+
+@_needs_xtb
+def test_a_refusal_reaches_the_page_as_a_stop_the_hand_can_feel():
+    """The kernel stops answering, so the picture must stop promising.
+
+    Nothing told the page a step had been refused.  The kernel stands still --
+    there is nothing left to compute until the hand eases -- while the page
+    went on running the wish out with the cursor: the band grew, the
+    coordinates it reported went on changing, and the one thing that had
+    actually happened, that the drag had reached its ceiling, was the one
+    thing not on screen.
+
+    So the held atom is marked where the budget last agreed it could stand and
+    may go no further out than the hand had already run.  The page has had the
+    rule for this all along -- ``thermalWallBlocks`` refuses a step only when
+    it is both outside the reach and going further out -- and nothing ever
+    armed it: ``_push_thermal_wall`` was called in one place in the whole
+    editor, with ``None``.
+
+    Coming back in is never blocked, and coming back in is exactly the event
+    ``_still_spent`` reads as the hand easing off, so the two sides let the
+    same gesture through instead of holding two opinions about it.
+    """
+    import json
+
+    part = _budgeted(_ETHANE, kelvin=100.0)
+    part.submit_pull_slider.value = 1.2
+    held = _page_model(part)
+    walls = []
+    part.submit_gfn_wall.observe(
+        lambda change: walls.append(json.loads(str(change["new"]))),
+        names="value")
+    assert _pull_into_the_wall(part, held, 2, 0), "the wall never refused"
+
+    armed = [one for one in walls if one.get("wall")]
+    assert armed, "the refusal never reached the page"
+    stop = armed[-1]
+    # The atom the hand is on, and nothing else: a mark on an atom nobody is
+    # moving would hold back a hand that is not being refused.
+    assert list(stop["wall"]) == ["2"], stop
+    assert stop["reach"] > 0, stop
+    # And the mark is where the budget agreed the atom could stand, which is
+    # the structure the wall handed back.
+    good = gfn.coordinates_of(part.state["thermal_good"])
+    assert stop["wall"]["2"] == pytest.approx(good[6:9], abs=1e-9), stop
+    # The reach is where the wish had run to, so the band stops rather than
+    # snapping back to the atom: what the hand was asking for when it was
+    # refused is a true thing to leave on the screen.
+    assert stop["reach"] == pytest.approx(0.80, abs=0.05), stop
+
+
+def test_the_standing_still_rule_is_asked_before_a_worker_is_spent():
+    """And the worker keeps its own copy, for a report that beat the answer.
+
+    Two places, one rule.  The page reports at the rate a mouse moves and xtb
+    answers seconds later, so a report can arrive while a run is going -- that
+    one is folded into ``gfn_follow_xyz`` and the worker meets it on its next
+    turn, which is why the check inside the loop stays.  What must not happen
+    is a *thread* per report, which is what asking only inside the loop meant
+    once the answer was instant.
+    """
+    follow = EDITOR_SOURCE.split("def _gfn_follow_step(", 1)[1].split(
+        "_start_background(_work, 'The relaxation under the hand')", 1)[0]
+    head, inside = follow.split("def _work():", 1)
+    assert "if _still_spent(xyz, holding):" in head
+    # Before the report is taken in at all, so a refused drag does not even
+    # queue a geometry for a run that is not going to happen.
+    assert head.index("_still_spent") < head.index("state['gfn_follow_xyz']")
+    assert "if _still_spent(current, holding):" in inside
+
+
+def test_the_page_is_told_when_the_wall_refuses_and_when_it_stops():
+    """One place decides, and it decides both ways.
+
+    A stop that is armed and never taken down is worse than no stop: the next
+    step the budget allows would be held back by the last one it refused, and
+    nothing on screen would say why.  So the same call answers the allowed
+    case, and it answers it by taking the stop away.
+    """
+    follow = EDITOR_SOURCE.split("def _gfn_follow_step(", 1)[1].split(
+        "_start_background(_work, 'The relaxation under the hand')", 1)[0]
+    assert "_stop_the_hand_at(came_back, current, holding)" in follow
+
+    stop = EDITOR_SOURCE.split("def _stop_the_hand_at(", 1)[1].split(
+        "\n    def ", 1)[0]
+    # Allowed: the stop comes down, and only when one was up -- a widget
+    # written on every answer is a message a second the page has to read.
+    assert "if came_back is None:" in stop
+    assert "_push_thermal_wall(None)" in stop
+    # Refused: marks for the atoms the hand is on, and the reach the wish had
+    # run to.  Never coordinates -- the wall is not a frame writer.
+    assert "_push_thermal_wall(marks, reach)" in stop
+    assert "submit_gfn_frame" not in stop
+    assert "_write_coords" not in stop
+
+
+def test_a_refusal_says_how_hot_and_not_only_how_long():
+    """The ceiling is an inverted rate, so the same arithmetic run the other
+    way turns a price already in hand into the temperature that pays for it.
+
+    It costs nothing -- the energy is the expensive half of that sum and it
+    has been paid for -- and it is a better answer than a refusal: "past the
+    budget at 298 K" is where a user stops, "it wants about 406 K" is where
+    they go next, and the second is the question they came with.  Measured
+    against the hour: +11 kcal/mol wants 150 K, +30.6 wants 406, +45 wants
+    591, +68 wants 883, and past about 402 nothing under 5000 K does it.
+    """
+    part, state = _editor(_NITROSAMINE)
+    _armed(part, state, _NITROSAMINE, -17.172582)
+
+    assert "about 150 K (-123 C)" in part._thermal_wants(11.0)
+    assert "about 406 K (+133 C)" in part._thermal_wants(30.6)
+    assert "about 591 K (+318 C)" in part._thermal_wants(45.0)
+    assert "about 883 K (+610 C)" in part._thermal_wants(68.0)
+    # And where there is no answer, that is said rather than a number printed.
+    said = part._thermal_wants(500.0)
+    assert "No temperature under 5000 K" in said, said
+    # The window is named, because a temperature without one is not an answer:
+    # 22.3 kcal/mol is 298 K for an hour and 250 K for a year.
+    assert "within an hour" in part._thermal_wants(45.0)
+
+
+def test_both_refusals_say_the_temperature_they_want():
+    """The one about where the structure is standing, and the one about what
+    the drag went through to put it there.
+
+    Two different numbers refuse, so two different temperatures answer, and a
+    line that quoted the wrong one would send the user to a temperature that
+    does not open the way they came.
+    """
+    part, state = _editor(_NITROSAMINE)
+    _armed(part, state, _NITROSAMINE, -17.172582)
+
+    def at(kcal):
+        return -17.172582 + kcal / 627.5094740631
+
+    # Standing past the ceiling: the temperature is worked out from where the
+    # structure stands, which is the number being refused.
+    said = part._thermal_note(at(45.0))
+    assert "+45.0 kcal/mol -- past the 22.3" in said, said
+    assert "about 591 K (+318 C)" in said, said
+
+    # Standing somewhere cheap, having crossed something that was not: the
+    # crossing is what is refused, so the crossing is what is answered.
+    state["thermal_peak"] = 25.0
+    said = part._thermal_note(at(0.0))
+    assert "went through +25.0" in said, said
+    assert "about 333 K (+60 C)" in said, said
+    # And the waiting time stands beside it, because they are two questions:
+    # how hot within the window, and how long at the temperature that is set.
+    # +25 is four days at 298 K and inside the hour at 333, which is the pair
+    # of answers a chemist chooses between.
+    assert "That is about 3.94 d" in said, said
+
+
+def test_a_waiting_time_nobody_reads_is_said_in_words():
+    """A refusal came out as "that is about 3.56e+29 years", which is a
+    number in the wrong clothes.
+
+    The same fault the fast end of this was fixed for, at the other end: the
+    sentence it was written to produce is "longer than the age of the earth",
+    and past about ten thousand million years every barrier reads the same.
+    Measured at 298.15 K: +25 kcal/mol is about 4 days, +30 about 50 years,
+    and +45 is past anything worth printing as a figure.
+    """
+    part, state = _editor(_NITROSAMINE)
+    _armed(part, state, _NITROSAMINE, -17.172582)
+
+    assert "3.94 d" in part._thermal_wait(25.0, 298.15)
+    assert "49.9 years" in part._thermal_wait(30.0, 298.15)
+    assert "longer than the universe" in part._thermal_wait(45.0, 298.15)
+    # And the fast end is where it was: an open path answers in picoseconds.
+    assert "ps" in part._thermal_wait(0.0, 298.15)
+
+
+def test_a_refusal_says_it_priced_the_way_the_hand_went():
+    """Which is narrower than a refusal reads, and cannot be answered here.
+
+    What was priced is the path this hand took, one geometry at a time; the
+    cheapest way from the anchor to where the hand was aiming is a different
+    quantity, and a minimum over all paths is a search rather than a drag.  So
+    it is said once, where the refusal lands, and it names what does search.
+    """
+    assert "This prices the way your " in EDITOR_SOURCE
+    assert "not the cheapest way " in EDITOR_SOURCE
+    # Named, so the sentence is a next move rather than a disclaimer -- and
+    # named as the path finder rather than as the press it sits on, which
+    # reads "Find the path" or "To the saddle" depending on the box beside it.
+    assert "Scan and the path finder " in EDITOR_SOURCE
+    assert "look for that." in EDITOR_SOURCE
+    # Only where the temperature refused.  A hold that slipped, or two atoms
+    # inside each other, is not a barrier -- and telling the user to look for
+    # a cheaper way round would be advice about something else.
+    body = EDITOR_SOURCE.split("state.get('thermal_over') == 'path' else")[1]
+    body = body.split("# And whether this was a slope or a step.")[0]
+    assert "if not aside:" in body, body
+
+
+def test_a_refusal_says_when_the_drag_changed_how_many_pieces_there_are():
+    """The one case where the budget is wrong by more than the method is.
+
+    A ceiling is a free energy and a drag is priced with an electronic one.
+    While the structure stays in as many pieces as it started in, the two
+    agree to under 3 kcal/mol -- ethane turned to eclipsed is +2.592 against
+    +2.568 -- and where a drag takes something apart they part company by
+    about ten: a borazane pulled to 6 A is +22.5 electronic and +12.3 free,
+    which at 298 K is the difference between past the 22.3 and comfortably
+    inside it.  Nothing is corrected, because a number invented off a distance
+    threshold would be worse than the gap; but the refusal can say which case
+    it is in, and that is the difference between a verdict and a verdict the
+    user can weigh.
+    """
+    part, state = _editor(_NITROSAMINE)
+
+    assert part._pieces_in(_NITROSAMINE) == 1
+    assert part._pieces_in(_DIELS_ALDER) == 2
+    # One atom taken right out is a piece of its own, which is the thing being
+    # detected: what a drag does when it finally lets go of something.  Five
+    # rather than two, because the carbon that was pulled took nothing with
+    # it and left its three hydrogens stranded one apiece -- which is the
+    # honest answer about that geometry, and why the sentence quotes the count
+    # rather than saying "it has come apart".
+    assert part._pieces_in(_pulled(_NITROSAMINE, 5.0)) == 5
+    # And nothing at all is nothing, rather than one.
+    assert part._pieces_in("") == 0
+
+    # Counted where the anchor is taken, because a count read at the moment of
+    # a refusal has nothing to be a change from.
+    assert "state['thermal_pieces'] = _pieces_in(" in EDITOR_SOURCE
+    assert "began_in = state.get('thermal_pieces')" in EDITOR_SOURCE
+    assert "if began_in and now_in > began_in:" in EDITOR_SOURCE
+    # And what it says: which way the price is wrong, and what gives the
+    # right one.
+    assert "here where the budget was measured " in EDITOR_SOURCE
+    assert "price is strict by about ten " in EDITOR_SOURCE
+    assert "energy set to G prices it as a free " in EDITOR_SOURCE
+
+
+def test_the_window_the_ceiling_is_quoted_over_stays_an_hour():
+    """A control for it was weighed again and not built.
+
+    Between a second and a year the ceiling moves ten kcal/mol while the
+    distance between chemistry and nonsense is twenty against a hundred, and
+    what a refusal now says covers the ground the knob would have: the waiting
+    time is quoted at the temperature that is set, so how much longer it would
+    take is already on the line, and the temperature it wants is quoted for
+    the window.  Maeda's advice to run the permissive end is advice about
+    searching, where missing a path finds nothing; this decides what stays in
+    the box, where allowing what the temperature will not is the worse error.
+    """
+    from delfin.dashboard.structure_editor import _THERMAL_SECONDS
+
+    assert _THERMAL_SECONDS == 3600.0
+    assert "an hour" in EDITOR_SOURCE.split("def _timescale_label(")[1][:400]
+
+
+@_needs_xtb
+def test_the_free_energy_parts_company_where_the_pieces_change():
+    """Why the budget prices an electronic energy against a free ceiling, in
+    numbers rather than as an assurance.
+
+    A borazane with its B-N pulled out is the case where the two disagree
+    most: one molecule becoming two releases translation and rotation, so the
+    electronic price is too strict by whatever T*dS is.  Measured under GFN2 at
+    298.15 K against the relaxed adduct: at 3.5 A it costs +21.2 kcal/mol
+    electronic and +14.2 free; once the two are apart at 6 A, +22.5 against
+    +12.3.  Ten and a quarter kcal/mol at the end of it -- and it is the one
+    place a verdict changes hands, since the hour at 298 K buys 22.3.
+
+    The other way, a drag that leaves the structure in as many pieces as it
+    found it, they agree: ethane turned to eclipsed is +2.592 electronic and
+    +2.568 free, 0.02 apart on a barrier of 2.6.
+    """
+    from delfin.dashboard.structure_editor import (
+        _HARTREE_TO_KCAL, thermal_ceiling)
+
+    adduct = """8
+borazane
+B   0.000000  0.000000  0.830000
+N   0.000000  0.000000 -0.830000
+H   1.100000  0.000000  1.230000
+H  -0.550000 -0.953000  1.230000
+H  -0.550000  0.953000  1.230000
+H  -0.950000  0.000000 -1.180000
+H   0.475000  0.823000 -1.180000
+H   0.475000 -0.823000 -1.180000
+"""
+    at_rest = gfn.optimize_with_gfn(adduct, "gfn2", timeout=600)
+    assert at_rest.get("ok"), at_rest.get("status")
+
+    def priced(xyz):
+        got = gfn.optimize_with_gfn(
+            xyz, "gfn2", timeout=600, optimise=False, free_energy=True,
+            thermo_kelvin=298.15)
+        assert got.get("energy") is not None, got.get("status")
+        assert got.get("free_energy") is not None, got.get("status")
+        return float(got["energy"]), float(got["free_energy"])
+
+    e0, g0 = priced(at_rest["xyz"])
+    pulled = gfn.optimize_with_gfn(
+        at_rest["xyz"], "gfn2", timeout=600,
+        constraints=[{"kind": "distance", "atoms": [0, 1], "value": 6.0,
+                      "mode": "fix"}])
+    assert pulled.get("ok"), pulled.get("status")
+    e1, g1 = priced(pulled["xyz"])
+
+    electronic = (e1 - e0) * _HARTREE_TO_KCAL
+    free = (g1 - g0) * _HARTREE_TO_KCAL
+    # xtb is not bit-reproducible under threading, so this is asserted with
+    # room: what is claimed is "of order ten kcal/mol and in this direction",
+    # not a decimal.
+    assert 20.0 < electronic < 25.0, electronic
+    assert 9.0 < free < 16.0, free
+    assert electronic - free > 6.0, (electronic, free)
+    # And the verdict really does change hands there, which is the whole
+    # reason the size of the gap is written where the user can read it.
+    ceiling = thermal_ceiling(298.15, 3600.0)
+    assert electronic > ceiling > free, (electronic, ceiling, free)

@@ -37,8 +37,14 @@ from typing import Any, Callable, Dict, List, Optional
 from . import solvents as _solvents
 
 __all__ = ['GFN_METHODS', 'as_pushes', 'atom_lines', 'bond_graph',
+           'bond_order_between', 'bond_order_note', 'read_bond_orders',
+           'read_charges', 'not_a_stationary_point', 'rms_gradient',
            'constraint_input', 'contacts_holding', 'graph_changed',
            'bonds_to_freeze', 'graph_holds', 'method_is_out_of_its_depth',
+           'a_rate_apart', 'paths_disagree', 'where_a_walk_jumped',
+           'what_else_moved', 'pair_named',
+           'gfnff_refusal', 'gfnff_pair_refusal', 'gfnff_would_form',
+           'FOD_METHODS', 'can_measure_fod', 'fod_moved',
            'push_constant', 'turn_for',
            'restraint_energy', 'walk_the_path', 'lowest_real_modes',
            'find_xtb', 'find_binary', 'find_gxtb',
@@ -105,6 +111,25 @@ _ENERGY_RE = re.compile(r'TOTAL ENERGY\s+(-?\d+\.\d+)')
 #: What xtb prints when it has been given a Hessian to work from.  The msRRHO
 #: free energy at whatever temperature the $thermo block asked for.
 _FREE_ENERGY_RE = re.compile(r'TOTAL FREE ENERGY\s+(-?\d+\.\d+)')
+#: The rest of the same block, which was being thrown away.
+#:
+#: A Hessian is what a free energy costs, and once it has been paid for the
+#: enthalpy and the zero-point energy are printed beside G in the same summary
+#: -- reading three lines instead of one is free.  The entropy is not printed
+#: as a total anywhere useful (xtb writes it per contribution, in cal/K/mol,
+#: in a table whose columns move), so it is taken as ``T*S = H - G``: measured
+#: on a methane at 298.15 K, H - G is 0.021114216337 Eh against the
+#: 0.211142E-01 the table prints for T*S -- the same number to every digit
+#: xtb gives.
+_ENTHALPY_RE = re.compile(r'TOTAL ENTHALPY\s+(-?\d+\.\d+)')
+_ZPE_RE = re.compile(r'zero point energy\s+(-?\d+\.\d+)')
+#: How steep it is where the answer was taken, in Hartree per Bohr.
+#:
+#: This is what says whether a Hessian describes a stationary point or a point
+#: on a slope.  Printed by every run, and never read until a Hessian could be
+#: asked for on a structure somebody had dragged into shape -- which is
+#: precisely the geometry where it is not safe to assume.
+_GRADIENT_RE = re.compile(r'GRADIENT NORM\s+(-?\d+\.\d+)')
 #: How many modes go the wrong way, which is what says whether a structure is
 #: a minimum, a transition state, or neither.  xtb counts them itself, against
 #: a cutoff of its own, so this is read rather than worked out again.
@@ -114,6 +139,57 @@ _FREE_ENERGY_RE = re.compile(r'TOTAL FREE ENERGY\s+(-?\d+\.\d+)')
 #: That is why both are handed on: the count is the engine's own answer, and
 #: the modes are what it was counting.
 _IMAGINARY_RE = re.compile(r'#\s*imaginary freq\.\s+(\d+)')
+#: How many electrons are not in a closed shell, which is the frontier gap's
+#: question asked so that it has a number rather than a proxy.
+#:
+#: ``--fod`` runs one more SCF at 5000 K and adds up how far the occupations
+#: are from two-and-zero; Grimme and Hansen, Angew. Chem. Int. Ed. 54 (2015)
+#: 12308, https://doi.org/10.1002/anie.201501887.  Measured here under GFN2,
+#: beside the gap the same run prints:
+#:
+#:     ethane C-C at 1.54 A      N_FOD 0.000   gap 15.08 eV
+#:     ethane C-C at 3.50 A      N_FOD 1.726   gap  0.24 eV
+#:     ethylene twisted 45 deg   N_FOD 0.075   gap  3.42 eV
+#:     ethylene twisted 60 deg   N_FOD 0.251   gap  2.33 eV
+#:     ethylene twisted 90 deg   N_FOD 2.000   gap  0.00 eV
+#:
+#: The gap and this agree about where the trouble is -- 60 degrees is where
+#: :func:`method_is_out_of_its_depth` fires and where N_FOD leaves zero -- so
+#: this is not a second opinion but the same one with a scale on it.
+_NFOD_RE = re.compile(r'^\s*NFOD\s*:\s*(-?\d+\.\d+)', re.MULTILINE)
+#: And where it sits.  xtb prints a Loewdin table under the total, one row an
+#: atom, with the index and the element run together::
+#:
+#:      Loewdin FODpop      n(s)   n(p)   n(d)
+#:          1C     0.8421   0.085  0.757  0.000
+#:          8Mn    1.5533   0.001  0.002  1.550
+#:
+#: Which is the whole of "where is the trouble" for nothing: on the user's
+#: 57-atom manganese complex, 1.553 of a total of 2.603 is on the manganese
+#: and 1.550 of that is d.
+#:
+#: xtb writes a ``fod.cub`` beside it saying the same thing as a surface, and
+#: that is read here and thrown away with the scratch directory.  It was
+#: driven before it was dropped, so the next person need not: the cube is an
+#: ordinary Gaussian one, and 3Dmol -- through
+#: :func:`~delfin.dashboard.molecule_viewer.fukui_cube_isosurface_js`, which
+#: already paints one -- parses and draws it.  Measured in chromium against
+#: the 3Dmol this dashboard ships, at an isovalue of 0.005: an ethane pulled
+#: to 3.50 A gives 384 vertices in 60 ms, an ethylene turned 90 degrees 536 in
+#: 87 ms, and the manganese complex 572 in 301 ms.  Two things stand in the
+#: way of it being a picture in the editor rather than a sentence.  The
+#: manganese cube is 3.3 MB of text -- against 234 KB for the ethane -- and
+#: every byte would have to cross the widget channel; and the editor's viewer
+#: is the live one driven by ``window.__delfinSubmitManip``, which has no
+#: channel for volumetric data at all, so it is a change to that script and
+#: not a call to an existing function.  Both are worth doing and neither is
+#: free.  (3Dmol's cube reader also takes one element too many off the end --
+#: 15601 points for a 26x25x24 grid, the last of them NaN, from the file's
+#: trailing newline.  Marching cubes indexes by grid position and never reads
+#: it, so the picture is right; anything taking a minimum or a maximum over
+#: ``VolumeData.data`` gets NaN.)
+_FODPOP_HEADER = 'Loewdin FODpop'
+_FODPOP_RE = re.compile(r'^\s*(\d+)([A-Za-z]{1,2})\s+(-?\d+\.\d+)')
 #: How far apart the frontier orbitals are, which is how a single-determinant
 #: method says whether it is still able to answer.
 #:
@@ -566,6 +642,51 @@ def lowest_real_modes(output: Any, most: int = 4) -> List[float]:
         if len(seen) > 200:
             break
     return sorted(one for one in seen if one > _TRIVIAL_MODE)[:max(0, int(most))]
+
+
+def _read_fod(output: Any) -> Optional[Dict[str, Any]]:
+    """The fractional occupation this run printed, or None if it printed none.
+
+    None rather than zero, and the difference matters: a molecule with no
+    static correlation prints ``NFOD : 0.0000``, and a method that cannot be
+    asked prints nothing at all.  Both would read as "there is nothing wrong
+    here" if they came back the same, and one of them is a question that was
+    never put -- see :data:`FOD_METHODS` for the two methods that do this.
+
+    The per-atom breakdown is read out of the Loewdin table under the total,
+    as a block bounded by its header and the blank line after it rather than
+    by a pattern over the whole output: the row shape is ``8Mn 1.5533 ...``,
+    which is loose enough to match other tables xtb prints further down.
+    """
+    text = str(output or '')
+    total = _NFOD_RE.search(text)
+    if not total:
+        return None
+    try:
+        amount = float(total.group(1))
+    except ValueError:
+        return None
+    on: List[tuple] = []
+    lines = text.splitlines()
+    for n, line in enumerate(lines):
+        if _FODPOP_HEADER not in line:
+            continue
+        for row in lines[n + 1:]:
+            if not row.strip():
+                break
+            found = _FODPOP_RE.match(row)
+            if not found:
+                break
+            try:
+                # xtb counts its atoms from one and this editor counts from
+                # zero, and the two are within one line of each other
+                # everywhere this is reported.
+                on.append((found.group(2), int(found.group(1)) - 1,
+                           float(found.group(3))))
+            except ValueError:
+                break
+        break
+    return {'total': amount, 'on': on}
 
 
 def which_xtb_ran(binary: Any, output: Any = '') -> str:
@@ -1034,6 +1155,89 @@ def method_is_out_of_its_depth(gap: Any, was: Any = None) -> str:
               'is the method at the edge of what it can represent, and is '
               'worth checking open-shell.')
     return said
+
+
+#: The methods that can be asked how much of the structure is not a closed
+#: shell, which is not the same list as the methods that can be run.
+#:
+#: Both exclusions are measured, and they fail in opposite ways.  GFN-FF has
+#: no wavefunction at all: given ``--fod`` it prints ``[WARNING] Runtime
+#: exception occurred``, no NFOD and no cube, and then says ``normal
+#: termination``.  g-xTB is worse -- it takes the flag, converges, terminates
+#: normally, and prints no NFOD and writes no cube, so a caller that only
+#: looked at the exit code would report a molecule with no static correlation
+#: rather than a question that was never asked.  Silence that reads as good
+#: news is the one failure this module exists to prevent, so the list is
+#: positive: the two methods that were seen to answer.
+FOD_METHODS = ('gfn1', 'gfn2')
+
+
+def can_measure_fod(method: Any) -> bool:
+    """Whether *method* answers ``--fod`` -- see :data:`FOD_METHODS`."""
+    return str(method or '').strip().lower() in FOD_METHODS
+
+
+#: How much of a change in N_FOD is worth a sentence.
+#:
+#: Set against the walk that calibrates it rather than against a threshold
+#: from a paper.  Turning ethylene's double bond, GFN2: 0.008 flat, 0.075 at
+#: 45 degrees, 0.251 at 60 -- which is where the frontier-gap rule already
+#: fires -- and 2.000 at 90.  A tenth of an electron is the point where the
+#: two rules start saying the same thing, so it is where this starts to speak.
+FOD_HAS_MOVED = 0.10
+
+
+def fod_moved(first: Any, later: Any, on: Any = ()) -> str:
+    """What the fractional occupation did along a walk, or nothing to say.
+
+    A *change*, never a number on its own, and that is not a stylistic choice.
+    Measured against ORCA's own FOD at TPSS/def2-TZVP: benzene 0.032 against
+    0.016 and ozone 0.426 against 0.439 -- three percent on the textbook
+    diradicaloid -- but Ni(CO)4 0.335 against 0.085, a four-fold over-report
+    on a closed-shell metal carbonyl.  A fixed cutoff would therefore tell
+    somebody working on metal complexes that every one of their structures is
+    a diradical.  What survives that is the difference between two points of
+    one walk on one molecule, which is the same discipline
+    :func:`method_is_out_of_its_depth` applies to the gap.
+
+    Measured on a real one rather than only on a benchmark: a 57-atom
+    manganese complex at charge +1, closed shell, reads 2.65 before anything
+    has been moved -- a number an absolute rule would call a triradical, with
+    1.55 of it on the metal and nearly all of that d.  Walking its Mn-Br bond
+    out moves it to 3.42, and the +0.77 is the finding.  The 2.65 is what a
+    threshold would have reported instead.
+
+    *on* is the per-atom breakdown at the later point, as
+    ``[(symbol, index, value), ...]``, and is used only to name where it went.
+    """
+    try:
+        first = float(first)
+        later = float(later)
+    except (TypeError, ValueError):
+        return ''
+    if later - first < FOD_HAS_MOVED:
+        return ''
+    # Named only where the claim is true.  A bond broken symmetrically puts
+    # half on each of two atoms -- measured on the ethane homolysis, 0.842 of
+    # 1.726 on each carbon -- and "most of it on C0" about a 50/50 split is a
+    # sentence that says something false about which end of the bond is the
+    # trouble.  More than half is the bar, which is what tells that case apart
+    # from the one where naming the atom *is* the finding: on the manganese
+    # complex 1.553 of 2.603 sits on the metal, and 1.550 of that is d.
+    busiest = ''
+    ranked = sorted(
+        [one for one in (on or ()) if len(one) >= 3],
+        key=lambda one: -float(one[2]))
+    if ranked and float(ranked[0][2]) > 0.5 * later:
+        symbol, index = ranked[0][0], int(ranked[0][1])
+        busiest = f', most of it on {symbol}{index}'
+    return (
+        f'Electrons in half-filled orbitals went from {first:.2f} to '
+        f'{later:.2f} across the walk{busiest}. Near zero, one arrangement of '
+        f'the electrons is the structure; near two it takes at least two, and '
+        f'this method has one. Read the change, not the number: the same '
+        f'measurement runs four times high on a closed-shell metal complex, '
+        f'so no value of it means "bad" on its own.')
 
 
 #: A force is a slope, so this is the whole meaning of the setting: the hand
@@ -1656,6 +1860,436 @@ def graph_changed(before: Any, after: Any, symbols: Any = None) -> str:
     return ' and '.join(said)
 
 
+def pair_named(pair: Any, symbols: Any = None) -> str:
+    """Two atoms, as a chemist writes them: ``C3-Br4``.
+
+    Counted from one, because that is what the picture and the atom list show
+    and an index counted from zero in a sentence is a defect report waiting to
+    be filed.  The same naming :func:`graph_changed` uses, out here where the
+    rest of the file can reach it.
+    """
+    pair = tuple(int(n) for n in (pair or ()))
+    if not symbols:
+        return '-'.join(str(n + 1) for n in pair)
+    return '-'.join(f'{symbols[n]}{n + 1}' for n in pair
+                    if 0 <= n < len(symbols))
+
+
+def _median(values: Any) -> float:
+    """The middle of these numbers, or 0.0 when there are none."""
+    kept = sorted(float(one) for one in values)
+    if not kept:
+        return 0.0
+    middle = len(kept) // 2
+    if len(kept) % 2:
+        return kept[middle]
+    return 0.5 * (kept[middle - 1] + kept[middle])
+
+
+#: How far out of line a point has to be before a walk is said to have jumped.
+#:
+#: A driven scan holds one coordinate and relaxes everything else, and there
+#: is no rule that the rest has to follow continuously.  When it does not --
+#: some other coordinate slips over its own barrier between one point and the
+#: next -- the profile has a step in it, and everything read off that profile
+#: is about two different paths joined at a discontinuity.  Jonsson, Mills and
+#: Jacobsen named it in 1998: "the path generated may be discontinuous ... some
+#: atomic coordinates may slip near the saddle point region and the saddle
+#: point configuration will then be missed."
+#:
+#: This is not the test for whether a scan can be quoted -- walking the second
+#: leg and comparing is, and it separates cleanly (see :func:`paths_disagree`).
+#: This is what *names the step*, so that the culprit can be named with it,
+#: and its thresholds are set so that it never contradicts the second leg.
+#:
+#: Found on the second difference of the energy, which is what a step in a
+#: curve is: the point before the fall and the point after it both disagree
+#: with the straight line through their neighbours, and by the size of the
+#: fall.  Measured over twenty-two legs -- eleven scans walked out and back
+#: under GFN2, relaxed at every point -- with the two thresholds together,
+#: large enough to be a different structure rather than a different geometry
+#: *and* out of line with what this path itself does:
+#:
+#:     kept its bonding             largest second difference   ratio
+#:       propane C-C-C angle                  0.3 kcal/mol       1.9x
+#:       water dimer O-O                      0.6              20.6x
+#:       glycol OCCO torsion                  1.1               1.8x
+#:       ethane C-C stretch                   1.4               6.9x
+#:       butanol, butane torsions             1.8, 2.1          2.3x
+#:       SN2 Cl-/CH3Cl                        5.2              10.0x
+#:     jumped
+#:       Diels-Alder, backward               12.9              13.5x
+#:       formate/water H transfer            19.0, 32.9         7.9x
+#:       N-methylacetamide torsion           19.2              12.0x
+#:       Diels-Alder, forward                33.5             130.7x
+#:       ring opening                        60.6, 93.7        33.3x
+#:
+#: Eight legs of eight that jumped are found and none of the fourteen that did
+#: not is called one.  Neither threshold does it alone, and that is the
+#: finding: the ratios overlap -- a clean SN2 reaches 10.0x and a real
+#: hydrogen transfer only 7.9x -- while the sizes do not, and a water dimer
+#: whose two molecules turn over inside their hydrogen bond is 21 times its
+#: own median at six tenths of a kcal/mol, which is not a jump by any reading.
+#:
+#: Nothing here is about a kind of coordinate.  An amide torsion jumps and an
+#: SN2 does not; a distance driven through a Diels-Alder jumps and the same
+#: kind of distance stretched in an ethane does not.  Which is why the second
+#: leg is walked rather than a rule applied.
+#:
+#: The alternative that suggests itself, the RMSD between consecutive points,
+#: is worse than either: measured on the Diels-Alder it is 0.536 A at the fall
+#: and 0.685 A at a point where nothing happened, so it names the wrong step.
+WALK_JUMPED_TIMES = 4.0
+WALK_JUMPED_AT_LEAST = 10.0   # kcal/mol
+
+
+def where_a_walk_jumped(spent: Any) -> Optional[Dict[str, Any]]:
+    """Which step of a driven scan is a fall rather than a walk, or None.
+
+    *spent* is the energy at each point in kcal/mol, in the order they were
+    walked.  Returned as ``{'step', 'second', 'scale', 'times', 'fell'}``:
+    *step* is the index of the point the walk landed on, so the discontinuity
+    is between ``step - 1`` and ``step``; *fell* is how far the energy moved in
+    that one step.
+
+    Arithmetic on numbers the scan already has, and no geometry: a walk of
+    forty points over a large structure cannot keep forty geometries, and it
+    does not have to.
+    """
+    energies = []
+    for one in (spent or ()):
+        try:
+            energies.append(float(one))
+        except (TypeError, ValueError):
+            return None
+    if len(energies) < 4:
+        # Three points make one second difference, which is its own median:
+        # every path would then be exactly at its own scale and nothing could
+        # ever stand out from it.
+        return None
+    second = [abs(energies[i + 1] - 2.0 * energies[i] + energies[i - 1])
+              for i in range(1, len(energies) - 1)]
+    scale = _median(second)
+    worst = max(range(len(second)), key=lambda i: second[i])
+    height = second[worst]
+    if height < WALK_JUMPED_AT_LEAST:
+        return None
+    if scale > 0.0 and height < WALK_JUMPED_TIMES * scale:
+        return None
+    # A step shows in the second difference at both of its ends, so which of
+    # the two steps around this point was the fall is decided by the plain
+    # difference: the fall is the larger one.
+    here = worst + 1                       # back into the energies' own index
+    before = abs(energies[here] - energies[here - 1])
+    after = (abs(energies[here + 1] - energies[here])
+             if here + 1 < len(energies) else 0.0)
+    step = here if before >= after else here + 1
+    return {'step': step, 'second': height, 'scale': scale,
+            'times': (height / scale) if scale > 0 else float('inf'),
+            'fell': energies[step] - energies[step - 1]}
+
+
+#: How near two atoms have to be, in either of two geometries, for the
+#: distance between them to be worth watching.
+#:
+#: A jump is a bond made or broken, and neither happens at ten Angstrom.  The
+#: bound is what keeps this arithmetic rather than a cost: every pair of atoms
+#: is a square law, and at the 250-atom ceiling GFN2 is offered with that is
+#: 31 000 pairs a step.  Six Angstrom is twice the longest contact the editor
+#: draws and well past any bond.
+_WORTH_WATCHING = 6.0
+
+
+def what_else_moved(before: str, after: str,
+                    driven: Any = ()) -> Optional[Dict[str, Any]]:
+    """The internal coordinate that changed most between two points.
+
+    Everything except the one the scan is driving, which is held and is
+    supposed to change.  Returned as ``{'pair', 'was', 'now', 'moved'}``, or
+    None when there is nothing to compare.
+
+    This is what names the culprit.  A user told that a scan jumped can do
+    nothing with that on its own; told *which* coordinate slipped, they can
+    arm that one too and walk both together, which is what the editor's
+    several-legs-at-once scan is for.  Measured at the fall of the
+    Diels-Alder: the undriven forming C-C went from 2.915 to 1.558 A in one
+    step, 1.357 A, against a median of 0.042 A over the rest of the path --
+    32 times, on a path where nothing else came near it.
+
+    Every pair of atoms is a square law, and it is still nothing beside the
+    step it is describing: measured, 0.7 ms at 50 atoms, 12.7 at the 250 GFN2
+    is offered with and 70.9 at GFN-FF's 600, against a relaxed scan point
+    that is tenths of a second at the smallest of those.
+    """
+    was = coordinates_of(before or '')
+    now = coordinates_of(after or '')
+    if not was or len(was) != len(now):
+        return None
+    count = len(was) // 3
+    keep = {tuple(sorted((int(a), int(b))))
+            for a, b in _pairs_of(driven)}
+    here = [(was[3 * i], was[3 * i + 1], was[3 * i + 2]) for i in range(count)]
+    there = [(now[3 * i], now[3 * i + 1], now[3 * i + 2])
+             for i in range(count)]
+    best = None
+    for i in range(count):
+        for j in range(i + 1, count):
+            if (i, j) in keep:
+                continue
+            one = math.dist(here[i], here[j])
+            two = math.dist(there[i], there[j])
+            if one > _WORTH_WATCHING and two > _WORTH_WATCHING:
+                continue
+            moved = abs(two - one)
+            if best is None or moved > best['moved']:
+                best = {'pair': (i, j), 'was': one, 'now': two, 'moved': moved}
+    return best
+
+
+def _pairs_of(driven: Any) -> List[tuple]:
+    """Every pair of atoms the caller says is being driven.
+
+    A leg of a scan is two atoms for a distance, three for an angle and four
+    for a torsion, and in all three cases the atoms named are the ones the
+    walk is dictating -- so every pair among them is a coordinate that is
+    meant to change and is not evidence of anything.
+
+    Given a list of legs or a single leg, because both readings of "the atoms
+    being driven" are natural at the call site and getting the wrong one would
+    quietly leave the driven coordinate in the comparison, where it is the
+    largest change on every step of every scan.
+    """
+    legs = list(driven or ())
+    if legs and all(isinstance(one, int) for one in legs):
+        legs = [legs]
+    out = []
+    for leg in legs:
+        try:
+            numbers = [int(one) for one in leg]
+        except (TypeError, ValueError):
+            continue
+        for a in range(len(numbers)):
+            for b in range(a + 1, len(numbers)):
+                out.append((numbers[a], numbers[b]))
+    return out
+
+
+#: How far two legs of the same walk may disagree and still be one path.
+#:
+#: A driven scan is a minimum-energy path only where the coordinate it is not
+#: driving follows continuously; Bofill and Quapp (Mol. Phys. 2019) give the
+#: condition exactly -- no turning point and no valley-ridge inflection.  Where
+#: it fails the answer depends on which way the walk went, and the way to find
+#: that out is to walk it back and compare.
+#:
+#: The number is what a difference in a barrier does to a rate.  At 298 K,
+#: RT ln 10 is 1.36 kcal/mol: two barriers further apart than that are two
+#: rates an order of magnitude apart, and two barriers nearer than it are the
+#: same answer to any use a barrier is put to.  It is a temperature, so it is
+#: worked out at the temperature the editor is set to rather than fixed here.
+#:
+#: Measured against it, on eleven scans run out and back under GFN2 -- torsions
+#: of an alkane, an alcohol, a diol and an amide, a C-C stretch, a C-C-C angle,
+#: a stretched hydrogen bond, an SN2, a ring opening, a hydrogen transfer and a
+#: Diels-Alder:
+#:
+#:     ethane C-C stretch                     0.000 kcal/mol
+#:     propane C-C-C angle                    0.001
+#:     butanol, butane, glycol torsions       0.002, 0.004, 0.006
+#:     SN2 Cl-/CH3Cl                          0.032
+#:     water dimer O-O                        0.803
+#:     ---------------------------------------------- RT ln 10 = 1.364
+#:     N-methylacetamide torsion             14.2
+#:     Diels-Alder                           23.8
+#:     formate/water H transfer              60.8
+#:     ring opening                         129.1
+#:
+#: A factor of eighteen of clear water between the two groups, so the
+#: threshold is not a fitted number -- almost anything in the gap would do --
+#: and the one with a meaning is the one worth using.  And nothing in the two
+#: groups is about a kind of coordinate: an amide torsion jumps and an SN2
+#: does not.
+GAS_CONSTANT_KCAL = 1.987204259e-3
+
+
+def a_rate_apart(kelvin: Any = 298.15) -> float:
+    """How far apart two barriers have to be to be two different answers.
+
+    A factor of ten in rate, which is where a difference stops being rounding
+    and starts being chemistry.  Returned in kcal/mol at the temperature
+    given, so a scan run hot is judged at the temperature it was run.
+    """
+    try:
+        T = float(kelvin)
+    except (TypeError, ValueError):
+        T = 298.15
+    return GAS_CONSTANT_KCAL * max(1.0, T) * math.log(10.0)
+
+
+def paths_disagree(there: Any, back: Any) -> Optional[Dict[str, Any]]:
+    """The largest gap between a walk and the same walk taken backwards.
+
+    Both are ``[(value, energy)]`` on one zero, in the order they were walked;
+    the second is the return leg, so its values run the other way.  Returned
+    as ``{'at', 'gap', 'there', 'back', 'points'}`` over the coordinate values
+    the two have in common, or None when they have none.
+
+    Compared at the coordinate rather than at the top, because the top is
+    exactly where the two legs are least likely to be about the same place.
+    Measured on the Diels-Alder: forward puts its highest point at 2.20 A with
+    the undriven forming bond at 2.92, backward at 2.90 A with the same bond
+    at 1.76 -- two maxima 0.7 A apart on the driven coordinate and 1.2 A apart
+    on the one nobody was driving.  Comparing the two heights would be
+    comparing two different geometries; comparing them where the driven
+    coordinate agrees is comparing the path with itself.
+    """
+    ours = [(float(v), float(e)) for v, e in (there or ())]
+    theirs = [(float(v), float(e)) for v, e in (back or ())]
+    if len(ours) < 2 or not theirs:
+        return None
+    spacing = _median([abs(b[0] - a[0]) for a, b in zip(ours, ours[1:])])
+    near = 0.25 * spacing if spacing > 0 else 1e-6
+    found = None
+    for value, energy in ours:
+        mate = min(theirs, key=lambda one: abs(one[0] - value))
+        if abs(mate[0] - value) > near:
+            continue
+        gap = abs(energy - mate[1])
+        if found is None or gap > found['gap']:
+            found = {'at': value, 'gap': gap, 'there': energy,
+                     'back': mate[1]}
+    if found is None:
+        return None
+    found['points'] = sum(
+        1 for value, _ in ours
+        if abs(min(theirs, key=lambda one: abs(one[0] - value))[0]
+               - value) <= near)
+    return found
+
+
+def gfnff_would_form(xyz_text: str, legs: Any) -> Optional[Dict[str, Any]]:
+    """The leg of a scan that asks a fixed topology to grow a bond, or None.
+
+    GFN-FF works its bonding out once, from the geometry it is first handed,
+    and then holds the molecule together with it.  xtb's own documentation is
+    blunt about what follows: "GFN-FF can only break bonds, dissociation
+    reactions will therefore usually work fine, while association reactions
+    are likely to fail."  ORCA's GOAT bars it from uphill steps for the same
+    reason.
+
+    So the boundary is a direction, not a method.  A distance that starts
+    outside bonding range and is driven inside it is asking for a bond the
+    force field has no term for; the same distance driven the other way is
+    asking for one it has, and is exactly what a fast force field is good for.
+    :data:`BOND_STARTS_AT` is where the editor already puts that line.
+
+    Measured on butadiene and ethylene, one forming C-C driven from 3.40 A to
+    1.60 in 0.1 A steps, everything relaxed at each point:
+
+        GFN2       crosses at +7.3 kcal/mol at 2.20 A, ends -63.0 in the
+                   product, and the *other* forming bond closes to 1.53 A
+                   without being asked
+        GFN-FF     climbs to +94.1 kcal/mol without crossing anything, and
+                   the other forming bond ends at 3.39 A -- no reaction, and
+                   87 kcal/mol of error in the one number a scan is for
+
+    And the editor's topology cache makes that worse rather than better.  The
+    cache exists so a drag cannot fall apart between one frame and the next,
+    and it works: with the topology pinned the false profile is smooth and
+    monotonic, which is what a wall of repulsion looks like when it is drawn
+    carefully.  Unpinned, the same scan gives +108.6 with its maximum in a
+    different place -- visibly wrong, and therefore less dangerous.
+    """
+    rows = [line.split() for line in atom_lines(xyz_text or '')]
+    if not rows:
+        return None
+    from delfin.atom_mapping import cov_radius
+
+    where = [(float(r[1]), float(r[2]), float(r[3])) for r in rows]
+    radius = [cov_radius(str(r[0])) for r in rows]
+    for leg in (legs or ()):
+        if str(leg.get('kind') or '') != 'distance':
+            continue
+        try:
+            atoms = [int(one) for one in (leg.get('atoms') or ())]
+            target = float(leg.get('to'))
+        except (TypeError, ValueError):
+            continue
+        if len(atoms) != 2 or any(not (0 <= i < len(rows)) for i in atoms):
+            continue
+        i, j = atoms
+        bonds_at = BOND_STARTS_AT * (radius[i] + radius[j])
+        now = math.dist(where[i], where[j])
+        if now >= bonds_at > target:
+            return {'atoms': (i, j), 'now': now, 'to': target,
+                    'bonds_at': bonds_at,
+                    'symbols': [str(r[0]) for r in rows]}
+    return None
+
+
+def gfnff_pair_refusal(first: str, second: str) -> str:
+    """Why GFN-FF cannot walk between these two structures, or ''.
+
+    The same boundary as :func:`gfnff_would_form`, asked of a pair instead of
+    a leg: when the second end has a bond the first has not, the path between
+    them makes one, and a force field whose bonding was perceived at the first
+    end has no term for it.
+
+    Decidable here in a way it is not from a single structure, which is why
+    this is refused and climbing from what is on screen is not: two ends say
+    what the reaction is, and one geometry does not.
+
+    Measured on the Diels-Alder, xtb's own path finder given the separated
+    pair and cyclohexene:
+
+        GFN2      a barrier of 20.8 kcal/mol and a reaction energy of -68.0
+        GFN-FF    a barrier of 34.5 and a reaction energy of **+34.3**
+
+    The sign is the whole of it.  GFN-FF never sees the product as a molecule,
+    so it prices cyclohexene as a strained contact between the two things it
+    still believes are there, and reports a reaction that goes uphill.
+    """
+    was, now = bond_graph(first or ''), bond_graph(second or '')
+    made = sorted(set(now) - set(was))
+    if not made:
+        return ''
+    rows = [line.split()[0] for line in atom_lines(second or '')]
+    named = ', '.join(pair_named(one, rows) for one in made[:3])
+    return (
+        f'GFN-FF cannot walk between these two. The second end has bonds the '
+        f'first has not -- {named} -- and GFN-FF perceives its bonding once '
+        f'and then holds it, so it can break a bond and cannot make one. '
+        f'Measured on a Diels-Alder: given the same two ends, GFN2 reports '
+        f'the product 68 kcal/mol below the start and GFN-FF reports it 34 '
+        f'above, because it never sees the product as a molecule. Choose '
+        f'GFN2, GFN1 or g-xTB, or mark the two ends the other way round, '
+        f'which is a reaction it can do.')
+
+
+def gfnff_refusal(xyz_text: str, legs: Any) -> str:
+    """Why GFN-FF cannot walk this scan, or '' when it can.
+
+    Said before the run in the way an unparametrised solvent is (see
+    :func:`delfin.dashboard.solvents.refusal`), and for the same reason: xtb
+    does not refuse it.  It runs, it converges, it reports a number, and the
+    number is a force field being squeezed.
+    """
+    found = gfnff_would_form(xyz_text, legs)
+    if not found:
+        return ''
+    named = pair_named(found['atoms'], found['symbols'])
+    return (
+        f'GFN-FF cannot walk this one. It works its bonding out once and then '
+        f'holds it, so it can break a bond and cannot make one -- xtb says so '
+        f'itself: association reactions are likely to fail. This scan drives '
+        f'{named} from {found["now"]:.2f} to {found["to"]:.2f} A, past the '
+        f'{found["bonds_at"]:.2f} where those two would be bonded, and what '
+        f'it would report is repulsion rather than a reaction. Measured on a '
+        f'Diels-Alder: GFN2 crosses at +7.3 kcal/mol and lands 63 below the '
+        f'start, GFN-FF climbs to +94 and crosses nothing. Choose GFN2, GFN1 '
+        f'or g-xTB, or drive the bond that is breaking instead.')
+
+
 def _occluded(where, radius, i, j) -> bool:
     """Whether a third atom sits between these two, so they are not in contact.
 
@@ -2143,6 +2777,257 @@ def _read_optimised(folder: Path, fallback: str) -> Optional[str]:
     return None if fallback is None else None
 
 
+#: What xtb writes the atomic charges to, per Hamiltonian.
+#:
+#: Every run writes one of these into its own scratch directory and the
+#: directory is then removed, so the numbers were computed and deleted on
+#: every drag answer, every optimisation and every scan point.  The two names
+#: are not two spellings of one thing: ``charges`` holds the Mulliken-like
+#: partial charges of a wavefunction, and ``gfnff_charges`` holds the
+#: electronegativity-equilibration charges GFN-FF is parametrised with, which
+#: is what that method has instead of a wavefunction.  Both are per atom, in
+#: the input order, one to a line -- measured on a methane, GFN2 gives the
+#: carbon -0.153, GFN1 -0.130, g-xTB -0.359 and GFN-FF -0.092, which is the
+#: spread of four different definitions of the same idea and the reason the
+#: method is named wherever they are shown.
+_CHARGE_FILES = ('charges', 'gfnff_charges')
+
+
+def read_charges(folder: Path) -> Optional[List[float]]:
+    """The partial charges of the run in *folder*, or None if it wrote none.
+
+    Free: the file is already on disk when this is called and is one short
+    line per atom -- 57 atoms is a 913-byte read.  Nothing here asks xtb for
+    anything, and if it ever had to, this would be the wrong place for it.
+    """
+    for name in _CHARGE_FILES:
+        found = folder / name
+        if not found.is_file():
+            continue
+        values: List[float] = []
+        try:
+            text = found.read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            return None
+        for line in text.splitlines():
+            word = line.strip()
+            if not word:
+                continue
+            try:
+                values.append(float(word))
+            except ValueError:
+                return None
+        return values or None
+    return None
+
+
+def read_bond_orders(folder: Path) -> Optional[List[tuple]]:
+    """Wiberg bond orders from the run in *folder*, as ``(i, j, order)``.
+
+    Counted from zero, because everything else in this editor counts atoms
+    from zero and xtb's ``wbo`` counts from one.
+
+    None where the method has none.  Only the Hamiltonians have them: GFN1,
+    GFN2 and g-xTB each write a ``wbo``, and GFN-FF writes none at all --
+    measured, its scratch directory holds ``gfnff_charges`` and ``gfnff_topo``
+    and nothing else.  Nothing is worked around there: GFN-FF's bonding is a
+    topology perceived once and then held fixed, so it has no order of its own
+    to report.
+
+    These are a readout and nothing decides on them.  See
+    :data:`BOND_WORTH_SAYING` for the measurement that settles why -- a
+    closed-shell order does not fall when a bond breaks homolytically.
+
+    Only pairs xtb actually printed are in the list; it prints nothing for
+    pairs it found no bond order for, so an absent pair reads as zero.
+    """
+    found = folder / 'wbo'
+    if not found.is_file():
+        return None
+    pairs: List[tuple] = []
+    try:
+        text = found.read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return None
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        try:
+            first, second, order = int(parts[0]), int(parts[1]), float(parts[2])
+        except ValueError:
+            continue
+        if first < 1 or second < 1:
+            continue
+        pairs.append((first - 1, second - 1, order))
+    return pairs or None
+
+
+def bond_order_between(bonds: Any, i: Any, j: Any) -> Optional[float]:
+    """What *bonds* says about this pair, or None when nothing was computed.
+
+    Zero rather than None for a pair that is missing from a list that exists:
+    xtb prints the pairs it found a bond order for, so a pair it left out has
+    an order below what it prints.  Zero is the order, not a verdict about the
+    bond -- see :data:`BOND_WORTH_SAYING` for why the two are not the same.
+    """
+    if bonds is None:
+        return None
+    try:
+        first, second = int(i), int(j)
+    except (TypeError, ValueError):
+        return None
+    for one, two, order in bonds:
+        if (one, two) == (first, second) or (one, two) == (second, first):
+            return float(order)
+    return 0.0
+
+
+#: How low a bond order has to be before it is worth putting in a sentence.
+#:
+#: A cut for *which* orders to mention, and nothing more than that.  It is
+#: emphatically not a threshold for whether a bond exists, and the reason is
+#: measured: a Wiberg order is a readout of the wavefunction and it is not a
+#: test of whether two atoms are still bonded.
+#:
+#: Measured here under GFN2, the coordinate held and everything else relaxed
+#: at each length:
+#:
+#:     ammonia borane, N-B          ethane, C-C
+#:     d/A   order   gap/eV         d/A   order   gap/eV
+#:     1.66  0.609    9.05          1.53  1.030   15.26
+#:     1.86  0.511    7.69          1.73  1.010   10.39
+#:     2.06  0.403    6.33          1.93  1.001    6.96
+#:     2.36  0.244    5.11          2.03  0.999    5.73
+#:     2.86  0.000    3.64          2.53  0.998    2.16
+#:     3.36  0.000    3.08          3.03  1.000    0.75
+#:
+#: The right-hand column is the one to remember.  An ethane pulled to twice
+#: its bond length still reads 1.00, because a single closed-shell determinant
+#: holds that pair in one orbital however far the two carbons are taken; a
+#: separate measurement on the same homolysis has the fractional occupation
+#: density at 1.73 electrons -- a whole pair already come apart -- where the
+#: order still reads 0.96.  So against the editor's geometric watch, which
+#: calls the bond gone from 1.94 A, the order is not the more honest of the
+#: two: it is the one that says everything is fine exactly where the method
+#: has stopped describing the system.
+#:
+#: Which is why nothing here decides anything on a bond order.  The bond watch
+#: stays :func:`_is_a_bond` and :func:`bond_graph`, on distances, and the order
+#: is offered as what it is: a number a chemist can read, true and useful where
+#: it is read as one -- 1.9 across a C=C, 0.61 for a dative N-B at its own
+#: minimum, which is worth knowing and is not "a weak bond".
+#:
+#: The signal that does work for a bond coming apart is the fractional
+#: occupation density, ``xtb --fod``: 0.000 at a C-C of 1.54 A, 1.727 at
+#: 3.50 A, and exactly 2.000 on a ninety-degree-twisted ethylene.  It is not
+#: built here -- it costs a further single point and has caveats of its own,
+#: over-reporting by about fourfold on a closed-shell metal complex -- and it
+#: is named so that nobody reaches for the bond order to do its job.
+BOND_WORTH_SAYING = 0.7
+
+
+def bond_order_note(order: Any, names: str = 'the pair',
+                    gap: Any = None, was: Any = None) -> str:
+    """A bond order as a readout, in a clause for the status line.
+
+    Empty when there is no order to say anything about -- a force field, a
+    method with no wavefunction, or an answer that has not arrived yet.
+
+    It states the number and, where the number itself is a statement, what it
+    is a statement of: an order well above one is multiple-bond character.  It
+    never says a bond is there or gone, because a Wiberg order does not answer
+    that question -- see :data:`BOND_WORTH_SAYING` for the two series that
+    settle it.
+
+    *gap* is the frontier gap of the same answer.  Where it has closed, the
+    determinant the order was computed from has stopped describing the system,
+    and the number should not be read at all; given one, this says so.
+    """
+    try:
+        value = float(order)
+    except (TypeError, ValueError):
+        return ''
+    if method_is_out_of_its_depth(gap, was):
+        # Said with the gap in it rather than by calling that function's
+        # sentence, which is about the energy and is said in its own right
+        # wherever it belongs.  This one is about the number in this clause.
+        try:
+            said_gap = f'{float(gap):.1f} eV'
+        except (TypeError, ValueError):
+            said_gap = 'a gap this small'
+        return (f'{names} reads {value:.2f}, which is not worth reading at a '
+                f'frontier gap of {said_gap}: a closed-shell bond order holds '
+                'a pair in one orbital however far the two are pulled, so a '
+                'bond coming apart still reads about one -- measured on an '
+                'ethane, 1.00 at a C-C of 3.03 A.')
+    if value >= 1.4:
+        return (f'{names} is at {value:.2f}, which is multiple-bond '
+                'character.')
+    # The bare number, because this clause is written onto the status line
+    # several times a second while a drag is running, and the caveat that
+    # belongs with it -- that an order is not a bond-existence test -- is a
+    # sentence about the quantity rather than about this answer. It is said
+    # once, where it can be read: on the control's own tooltip, and in the
+    # line the "What is it?" press writes above the orders it lists.
+    return f'{names} is at {value:.2f}.'
+
+
+#: How steep a structure may be and still be a place rather than a slope, in
+#: Hartree per Bohr per degree of freedom.
+#:
+#: The RMS gradient rather than the norm, so it means the same thing for five
+#: atoms and for five hundred: xtb prints the norm, and the norm of a
+#: converged structure grows with the square root of the number of atoms.
+#:
+#: The number is ORCA's ``TolRMSG`` and Gaussian's, which is also what
+#: :mod:`delfin.dashboard.climb` converges its own walks on -- one number for
+#: "this has stopped moving", wherever the question is asked here.  Ten times
+#: it is where a Hessian stops being a statement about a stationary point:
+#: measured on a hand-built methane with every C-H at 1.0897 A, the RMS
+#: gradient is 2.6e-3 and xtb happily reports zero imaginary modes -- a
+#: perfectly true statement about a geometry that is not a minimum.
+GRADIENT_IS_STILL = 1.0e-4
+GRADIENT_IS_A_SLOPE = 1.0e-3
+
+
+def rms_gradient(norm: Any, atoms: Any) -> Optional[float]:
+    """xtb's gradient norm as a per-coordinate RMS, or None."""
+    try:
+        count = int(atoms)
+        return float(norm) / math.sqrt(3.0 * count) if count > 0 else None
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def not_a_stationary_point(norm: Any, atoms: Any) -> str:
+    """What to say when a Hessian was taken somewhere nothing is resting.
+
+    Empty when the structure is standing still, which is when the modes mean
+    what a chemist reads them as meaning.
+
+    A Hessian is the curvature at a point, and it is defined everywhere.  What
+    is *not* defined everywhere is the reading: "one mode goes the wrong way,
+    so this is a transition state" is a statement about a stationary point,
+    and on a slope the same Hessian describes the side of a hill.  The
+    frequencies are not wrong there -- they are simply not about a structure
+    anything sits at, and a count of zero imaginary modes on a geometry with a
+    large gradient says "downhill from here in every direction", which is true
+    of most of the surface.
+
+    So the honest answer for a structure that is still on a slope is that it
+    is neither a minimum nor a saddle, and that is what this says.
+    """
+    rms = rms_gradient(norm, atoms)
+    if rms is None or rms < GRADIENT_IS_A_SLOPE:
+        return ''
+    return (f'It is not standing still: the gradient is {rms:.1e} Hartree '
+            f'per Bohr per coordinate, against the {GRADIENT_IS_STILL:.0e} an '
+            'optimiser converges on. A Hessian here describes a point on a '
+            'slope, so this structure is neither a minimum nor a saddle -- '
+            'relax it first, and ask again about what it settles on.')
+
+
 def solvent_note(solvent: Any, model: Any = 'alpb') -> str:
     """Which solvent a result is about, and under which model.
 
@@ -2440,6 +3325,7 @@ def optimize_with_gfn(
     optimise: bool = True,
     free_energy: bool = False,
     thermo_kelvin: float = 298.15,
+    fod: bool = False,
 ) -> Dict[str, Any]:
     """Relax *xyz_text* with xtb and say what happened.
 
@@ -2455,6 +3341,14 @@ def optimize_with_gfn(
     failure ``ok`` is False, ``xyz`` is the input unchanged and ``status`` says
     why in a sentence a chemist can act on -- a structure that silently comes
     back unrelaxed is worse than one that says it did not converge.
+
+    A successful run also carries what it computed on the way and used to
+    throw away with its scratch directory: ``charges`` per atom, ``bonds`` as
+    Wiberg orders for the pairs that have one, and ``gradient`` as the norm at
+    the geometry it ended on.  None of the three costs a calculation -- see
+    :func:`read_charges` and :func:`read_bond_orders` -- and with
+    *free_energy* on, ``thermo`` carries H, T*S and the zero-point energy out
+    of the same block the free energy was already being read from.
 
     *constraints* are the values the editor is holding, in its own shape --
     ``{'kind', 'atoms', 'value', 'mode'}`` with atoms counted from zero; see
@@ -2484,6 +3378,19 @@ def optimize_with_gfn(
     optimised in the gas phase and one optimised in water are different
     answers, and so are two optimised under different models, so both are
     named in the status rather than left in the operator's memory.
+
+    *fod* asks the same run how much of the structure is not a closed shell --
+    see :data:`_NFOD_RE` for what the number is and :data:`FOD_METHODS` for
+    which methods answer at all.  It is a single point by construction: the
+    extra SCF runs at 5000 K, so optimising under it would be relaxing on a
+    surface nobody wants, and the combination is refused rather than run.  The
+    result gains ``'fod'`` as ``{'total', 'on'}`` with the per-atom breakdown
+    in input order.  It is one more SCF and costs like one: measured as the
+    minimum of seven runs against the same structure run ``--sp``, so that
+    both estimates carry the same share of a shared machine, 0.96 s against
+    0.49 for sixteen atoms and 10.5 against 3.5 for a 57-atom manganese
+    complex -- two to three single points, and a small fraction of one
+    optimisation step, which was 7.4 s and 35.6 s on the same two.
     """
     key = str(method or '').strip().lower()
     if key not in GFN_METHODS:
@@ -2528,6 +3435,28 @@ def optimize_with_gfn(
                 f'it answers with the nearest multiplicity it can and says '
                 f'nothing -- so it is refused here. Try M = '
                 f'{multiplicity - 1 if multiplicity > 1 else 2}.'),
+        }
+
+    # Asked of a method that cannot answer, ``--fod`` produces silence rather
+    # than a refusal -- see :data:`FOD_METHODS` for what each of the two does
+    # -- so the refusal is made here, where it can be a sentence.
+    if fod and key not in FOD_METHODS:
+        return {
+            'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
+            'seconds': 0.0, 'frames': [],
+            'status': (
+                f'{label} cannot be asked how much of this is not a closed '
+                f'shell: it has no wavefunction to occupy fractionally, and '
+                f'it answers the question with silence rather than a refusal. '
+                f'Ask GFN2-xTB or GFN1-xTB.'),
+        }
+    if fod and optimise:
+        return {
+            'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
+            'seconds': 0.0, 'frames': [],
+            'status': ('Fractional occupation is measured at 5000 K, so a '
+                       'geometry cannot be optimised under it. Ask for it as '
+                       'a single point.'),
         }
 
     wet = str(solvent or '').strip().lower()
@@ -2583,6 +3512,7 @@ def optimize_with_gfn(
                    *(['--ohess'] if (optimise and free_energy)
                      else ['--opt'] if optimise
                      else ['--hess'] if free_energy else []),
+                   *(['--fod'] if fod else []),
                    '--chrg', str(int(charge)), '--uhf', str(max(0, int(uhf))),
                    '-P', str(cores)]
         if max_steps:
@@ -2610,7 +3540,16 @@ def optimize_with_gfn(
         # And the last wavefunction, for the methods that have one.  See
         # :func:`_restart_named` for what it is keyed by and why the key has
         # to be that and not less.
-        warm = _restart_named(topology, key, charge, uhf, wet, model)
+        #
+        # Never for a fractional-occupation run.  That one converges at
+        # 5000 K, and its wavefunction is not a guess at the ordinary one --
+        # it is the smeared answer to a different question.  Written into the
+        # store it would be handed to the next single point as its starting
+        # guess, keyed as though it belonged to the same run, and nothing
+        # downstream could tell.  So the check on this structure neither reads
+        # nor writes what the walk around it is using.
+        warm = (None if fod else
+                _restart_named(topology, key, charge, uhf, wet, model))
         if warm is not None and warm.is_file():
             try:
                 shutil.copy2(str(warm), str(folder / 'xtbrestart'))
@@ -2764,6 +3703,24 @@ def optimize_with_gfn(
         output = record.read_text(encoding='utf-8', errors='replace')
         if warm is not None:
             _keep_restart(folder, warm, output)
+        # The two things this run computed and this directory was about to
+        # take to the grave.  Read here, before the ``finally`` below removes
+        # the folder, and read unconditionally: they are already written, they
+        # are one line per atom and one line per bond, and nothing is asked of
+        # xtb to get them.
+        #
+        # Measured: reading both is 0.053 ms for a methane and 0.158 ms for
+        # the 57-atom manganese complex, against drag answers of 175 ms and
+        # 2.28 s -- three hundredths of a percent and seven thousandths of
+        # one.  The same drag timed with and without the two reads, alternated
+        # so a shared machine could not favour either half, does not separate
+        # them at all: 25 rounds on the methane gave 175.1 ms against 181.7,
+        # and four rounds on the manganese complex gave 4.107 s against 4.053
+        # -- the read is smaller than the noise it would have to be measured
+        # in.  Which is the whole design: if reading these ever cost a
+        # calculation, this would be the wrong place for it.
+        charges = read_charges(folder)
+        bonds = read_bond_orders(folder)
         # A single point writes no xtbopt.xyz and no path: the geometry that
         # went in is the geometry that comes back, and there is nothing to
         # play.  Reading them anyway would find the leftovers of whatever ran
@@ -2798,8 +3755,22 @@ def optimize_with_gfn(
                 gap = float(told_gap.group(1))
             except ValueError:
                 gap = None
+        # How steep it is where the run ended.  The last one for the same
+        # reason the gap takes the last one: an optimisation prints the
+        # summary at every geometry it passes through, and only the final one
+        # is about the structure that comes back.
+        gradient = None
+        for told_gradient in _GRADIENT_RE.finditer(output):
+            try:
+                gradient = float(told_gradient.group(1))
+            except ValueError:
+                gradient = None
+        spread = None
+        if fod:
+            spread = _read_fod(output)
         free = None
         wrong_way = None
+        thermo = None
         if free_energy:
             told = _FREE_ENERGY_RE.search(output)
             if told:
@@ -2807,6 +3778,38 @@ def optimize_with_gfn(
                     free = float(told.group(1))
                 except ValueError:
                     free = None
+            # And the rest of what the Hessian paid for.  H and the
+            # zero-point energy are printed in the same block as G and were
+            # being read past; T*S is the difference of the two totals, which
+            # is what it is by definition and what xtb's own table agrees
+            # with to every digit it prints.
+            told_enthalpy = _ENTHALPY_RE.search(output)
+            told_zpe = _ZPE_RE.search(output)
+            enthalpy = zpe = None
+            try:
+                enthalpy = float(told_enthalpy.group(1)) if told_enthalpy else None
+            except ValueError:
+                enthalpy = None
+            try:
+                zpe = float(told_zpe.group(1)) if told_zpe else None
+            except ValueError:
+                zpe = None
+            if free is not None or enthalpy is not None or zpe is not None:
+                warmth = float(thermo_kelvin) if thermo_kelvin else 0.0
+                ts = (enthalpy - free
+                      if (enthalpy is not None and free is not None) else None)
+                thermo = {
+                    'kelvin': warmth,
+                    'free_energy': free,
+                    'enthalpy': enthalpy,
+                    'zpe': zpe,
+                    'ts': ts,
+                    # In Hartree per Kelvin, so every energy this module hands
+                    # back is in one unit and whoever shows it decides what a
+                    # chemist reads.
+                    'entropy': (ts / warmth if (ts is not None and warmth > 0)
+                                else None),
+                }
             counted = _IMAGINARY_RE.search(output)
             if counted:
                 # And the modes themselves, most negative first: "one
@@ -2897,6 +3900,22 @@ def optimize_with_gfn(
                            f'as it was. {which_xtb_ran(binary, output)}'),
             }
 
+        # Asked for and not printed.  The list in :data:`FOD_METHODS` is the
+        # two methods that were seen to answer, and it is a list rather than a
+        # rule because the ways of not answering are silent: this is the same
+        # refusal made again against what the run actually said, so a build
+        # that stops printing it fails loudly instead of reporting a molecule
+        # with no static correlation.
+        if fod and spread is None:
+            return {
+                'ok': False, 'xyz': xyz_text, 'energy': None, 'method': key,
+                'seconds': time.perf_counter() - started, 'engine': 'xtb',
+                'frames': [], 'version': version,
+                'status': (f'{label} was asked how much of this is not a '
+                           f'closed shell and printed no answer. '
+                           f'{which_xtb_ran(binary, output)}'),
+            }
+
         # A single point has no geometry to converge, and calling it
         # unconverged would put it among the runs that stopped short.
         converged = (not optimise) or 'GEOMETRY OPTIMIZATION CONVERGED' in output
@@ -2905,7 +3924,9 @@ def optimize_with_gfn(
             # handed back -- but not as though it were finished.
             return {
                 'ok': True, 'xyz': relaxed, 'energy': energy, 'free_energy': free,
-            'imaginary': wrong_way, 'gap': gap, 'method': key,
+                'imaginary': wrong_way, 'gap': gap, 'method': key,
+                'charges': charges, 'bonds': bonds, 'gradient': gradient,
+                'thermo': thermo, 'fod': spread,
                 'seconds': seconds, 'engine': 'xtb', 'frames': frames, 'version': version,
                 'hamiltonian': reported or wanted or label, 'held': held,
                 'converged': False, 'solvent': wet, 'solvation_model': model,
@@ -2917,6 +3938,8 @@ def optimize_with_gfn(
         return {
             'ok': True, 'xyz': relaxed, 'energy': energy, 'free_energy': free,
             'imaginary': wrong_way, 'gap': gap, 'method': key,
+            'charges': charges, 'bonds': bonds, 'gradient': gradient,
+            'thermo': thermo, 'fod': spread,
             'seconds': seconds, 'engine': 'xtb', 'frames': frames, 'version': version,
             'hamiltonian': reported or wanted or label, 'held': held,
             'converged': True, 'solvent': wet, 'solvation_model': model,
