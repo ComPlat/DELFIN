@@ -1233,7 +1233,11 @@ def test_a_scan_is_told_a_direction_rather_than_an_end():
     """
     assert "submit_scan_way" in EDITOR_SOURCE
     body = EDITOR_SOURCE.split("def _suggest_scan_target(")[1].split("def ")[0]
-    assert "way == 'out'" in body
+    # Outwards has two names now: the direction, and the verb "break" that
+    # points the same way and carries a stopping rule with it.  Both walk to
+    # the far end when nobody has said where to stop, which is what this is
+    # about.
+    assert "way in ('out', 'break')" in body
     assert "_SCAN_AS_FAR_AS" in body
 
     # The far end is only the brake for a walk with no next minimum -- two
@@ -1420,12 +1424,16 @@ def test_armed_legs_do_not_outlive_their_structure():
     from delfin.dashboard import tab_submit
     host = pathlib.Path(tab_submit.__file__).read_text(encoding="utf-8")
     assert "state['scan_legs'] = []" in host
-    # And naming the atoms of a leg survives atoms that are gone.  It is its
-    # own function now, because the scan's profile puts the same pair on an
-    # axis and the picture must not name them differently from the sentence.
+    # And naming the atoms of a leg survives atoms that are gone.  One
+    # function does it, because the profile puts the same pair on an axis,
+    # the sentence names it, and the refusals about forming and breaking
+    # name it too -- one place that names atoms, so one place that
+    # survives their going.
     body = (EDITOR_SOURCE.split("def _leg_atoms_label(")[1]
             .split("\n    def ")[0])
     assert "if 0 <= index < len(known)" in body
+    assert "_leg_names(leg)" in EDITOR_SOURCE.split(
+        "def _describe_leg(")[1].split("\n    def ")[0]
 
 
 def test_stop_comes_before_the_method_check():
