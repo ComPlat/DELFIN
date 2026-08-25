@@ -117,6 +117,26 @@ _HARTREE_TO_KCAL = 627.5094740631
 #: changed the answer far less than it cost to understand, and it was asked
 #: about twice.  An hour is a reaction set up in a flask, which is what this
 #: is for.
+#:
+#: Asked again once a refusal started answering in both directions, and the
+#: answer came out the same.  What a window control would be for is a user
+#: saying "I would wait longer than that", and the two sentences a refusal now
+#: carries answer that without anything being set: the waiting time is quoted
+#: at the temperature that *is* set, so a barrier the hour refuses already
+#: reads as "about 4 d", "about 50 years" or "longer than the universe has
+#: existed", and the temperature it wants is quoted for the window.  A knob
+#: that only moved the line between those two would be a third way of asking a
+#: question now answered twice over without it.
+#:
+#: Maeda's advice for AFIR is to run the permissive end -- the gamma he
+#: recommends is the ten-day 106.9 kJ/mol and not the one-hour 93.3 -- and it
+#: is advice about *searching*: a search that misses a path has found nothing,
+#: while one that finds too much is sorted out afterwards.  This is not a
+#: search.  It decides what stays in the box, and there the two errors are not
+#: the same size: a budget that allows what the temperature will not hands
+#: back a structure with nothing anywhere saying it is impossible, and the
+#: user goes on from it.  The strict end is right here for the same reason the
+#: permissive end is right there.
 _THERMAL_SECONDS = 3600.0
 _XYZ_ELEMENT_COLUMNS = 5
 _XYZ_NUMBER_COLUMNS = 24
@@ -257,6 +277,10 @@ def fixed_atoms_note(held):
 _BOLTZMANN_SI = 1.380649e-23          # J/K
 _PLANCK_SI = 6.62607015e-34           # J s
 _GAS_CONSTANT = 1.987204259e-3        # kcal/(mol K)
+#: 13.8 thousand million years, in seconds.  The longest waiting time worth
+#: printing as a number: past it every barrier reads the same, and a sentence
+#: says what a mantissa and an exponent do not.
+_UNIVERSE_SECONDS = 4.35e17
 
 
 def thermal_ceiling(temperature, seconds):
@@ -339,13 +363,27 @@ def thermal_temperature(kcal, seconds=_THERMAL_SECONDS):
 #:   * While the drag leaves the structure in as many separate pieces as it
 #:     found it, dS is small.  A torsion, an angle, a ring turning over: what
 #:     is lost from the vibrations at one end is found at the other, and the
-#:     two numbers agree closely.
+#:     two numbers agree closely.  Measured here under GFN2 at 298.15 K, the
+#:     same deformation priced both ways: ethane turned to eclipsed, +2.592
+#:     electronic against +2.568 free -- 0.02 kcal/mol apart on a barrier of
+#:     2.6; a benzene ring bond stretched to 1.62 A, +17.98 against +15.71;
+#:     to 1.72 A, +30.58 against +27.68.  Under three kcal/mol on every one
+#:     of them, which is well inside what the method itself is worth, and no
+#:     verdict anywhere near the ceiling changes hands.
 #:   * Where the drag changes how many pieces there are, dS is large and it
 #:     has a sign.  Taking something apart releases translation and rotation,
 #:     so T*dS is of order ten kcal/mol at room temperature and the electronic
 #:     price is *too strict* -- the wall refuses something the temperature
 #:     would in fact pay for.  Bringing two things together is the same number
-#:     the other way round, and there it is too lenient.
+#:     the other way round, and there it is too lenient.  Measured on a
+#:     borazane with the B-N pulled out, GFN2 at 298.15 K: at 2.5 A +17.71
+#:     electronic against +12.77 free, at 3.5 A +21.20 against +14.21, and
+#:     once the two are apart at 6 A +22.51 against +12.26.  Ten and a quarter
+#:     kcal/mol at the end of it, which is the "order ten" above arrived at by
+#:     measurement, and it is the one place a verdict changes hands: against
+#:     an hour at 298 K the electronic price is past the 22.3 and the free one
+#:     is not, and where the electronic price asks for 301 K the free one asks
+#:     for 167.
 #:
 #: Nothing here corrects for it, and that is a decision rather than an
 #: oversight.  The exact answer is a Hessian, and a Hessian per drag step
@@ -361,15 +399,37 @@ def thermal_temperature(kcal, seconds=_THERMAL_SECONDS):
 #: where the method itself is least reliable.  A number invented there would
 #: be worse than the gap it papered over.
 #:
+#: There is one published prescription for exactly this case, and measured, it
+#: does not answer here.  xtb's ``--bhess`` takes a single-point Hessian for a
+#: geometry that is not a stationary point -- Spicher and Grimme, J. Chem.
+#: Theory Comput. 2021, 17, 1701 -- by optimising under an RMSD bias towards
+#: the structure it was handed, so that the soft and imaginary modes of a
+#: point nothing has relaxed do not wreck the entropy.  A dragged structure is
+#: exactly a geometry that is not a stationary point, so it reads like the
+#: answer to the paragraph above.  It is not, and the reason is that its bias
+#: is sized in RMSD -- the target is 0.10 A -- while a drag is small in RMSD
+#: and large in energy.  Measured under GFN2: a benzene ring bond stretched to
+#: 1.72 A is +30.6 kcal/mol and 0.094 A of RMSD, xtb reads that as already
+#: inside the target, prints ``final kpush: -0.000000``, optimises freely back
+#: to the ring, and reports its TOTAL FREE ENERGY for relaxed benzene --
+#: -0.0003 kcal/mol against the anchor.  Priced that way the wall would refuse
+#: nothing whatever.  Held at the coordinate the hand is holding it does keep
+#: the geometry, and then the restraint's own curvature is in the frequencies:
+#: the same case comes back at +0.4 where an unbiased Hessian says -2.9, which
+#: is the hold and not the chemistry.  What prices a dragged geometry is a
+#: plain ``--hess`` on it, and that is what a scan set to G already runs.
+#:
 #: So the gap is said rather than filled, and a scan answers it properly: with
 #: its energy set to G it takes three Hessians -- the start, the highest point
 #: and the end -- and its verdict is then a free energy against a free energy.
 _THERMAL_QUANTITY_SHORT = (
     'The ceiling is a free energy; a drag is priced with an electronic '
-    'energy. The two part company where a drag changes how many separate '
-    'pieces the structure is in -- of order ten kcal/mol at room temperature, '
-    'strict for taking something apart and lenient for putting it together. '
-    'Run a scan with its energy set to G for the free-energy answer.'
+    'energy. While the structure stays in as many pieces as it started in the '
+    'two agree to under 3 kcal/mol -- measured on a torsion and on stretched '
+    'ring bonds. They part company where a drag changes how many separate '
+    'pieces there are: about ten kcal/mol at room temperature, strict for '
+    'taking something apart and lenient for putting it together. Run a scan '
+    'with its energy set to G for the free-energy answer.'
 )
 
 
@@ -5323,6 +5383,57 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                 if state.get('thermal_over') == 'path' else
                                 'Past the budget, so the last structure that '
                                 'was inside it is back.'))
+                            # And what the refusal is a refusal *of*, which is
+                            # narrower than it reads.  What was priced is the
+                            # way this hand went, one geometry at a time; the
+                            # cheapest way from the anchor to where the hand
+                            # was aiming is a different quantity and nothing
+                            # here has looked for it.  A hand that takes a
+                            # ligand off through the middle of a ring is
+                            # refused on a barrier the reaction does not have.
+                            # It cannot be answered by a drag at all -- a
+                            # minimum over all paths is a search -- so it is
+                            # said, once, at the moment the refusal lands, and
+                            # it names what does search.  Kept to one clause:
+                            # this row stands above the viewer and grows down
+                            # the page, and a refusal already carries the two
+                            # numbers, the retreat and the slope.
+                            #
+                            # The path finder rather than the press it is on,
+                            # which is named "Find the path" or "To the
+                            # saddle" depending on the box beside it -- see
+                            # _name_the_saddle_press.  Naming the one it is
+                            # not showing would send the user looking for a
+                            # button that is not there.
+                            if not aside:
+                                said = (f'{said} This prices the way your '
+                                        'hand went, not the cheapest way '
+                                        'there -- Scan and the path finder '
+                                        'look for that.')
+                                # And whether this is the one case where the
+                                # quantity itself is off.  A ceiling is a free
+                                # energy and a drag is priced with an
+                                # electronic one; that costs under 3 kcal/mol
+                                # while the pieces stay as they were, and
+                                # about ten once a drag has taken something
+                                # apart -- with the electronic price the
+                                # strict one, so a refusal here may be
+                                # refusing what the temperature would pay for.
+                                # Said rather than corrected: see
+                                # _THERMAL_QUANTITY_SHORT for why a number
+                                # invented off a distance threshold would be
+                                # worse than the gap it filled.
+                                began_in = state.get('thermal_pieces')
+                                now_in = _pieces_in(reached)
+                                if began_in and now_in > began_in:
+                                    said = (
+                                        f'{said} It is in {now_in} pieces '
+                                        f'here where the budget was measured '
+                                        f'on {began_in}, and an electronic '
+                                        f'price is strict by about ten '
+                                        f'kcal/mol there -- a scan with its '
+                                        f'energy set to G prices it as a free '
+                                        f'energy.')
                             # And whether this was a slope or a step.
                             #
                             # A refusal on a slope can be worked with: ease
@@ -5699,7 +5810,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # it is "longer than the age of the earth".
         if spent > ceiling:
             return (f'{spent:+.1f} kcal/mol -- past the {ceiling:.1f} this '
-                    f'structure has at {T:g} K. {_thermal_wait(spent, T)}')
+                    f'structure has at {T:g} K. {_thermal_wait(spent, T)} '
+                    f'{_thermal_wants(spent)}')
         # Cheap here, and it got here over something that was not.  The
         # refusal is about the crossing, so the crossing is the number quoted
         # and the wait is worked out from it.
@@ -5716,9 +5828,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         return (f'{spent:+.1f} of {ceiling:.1f} kcal/mol available at '
                 f'{T:g} K, but this drag went through {peak:+.1f} to reach '
                 f'it -- past the {ceiling:.1f} it has at {T:g} K. '
-                f'{_thermal_wait(peak, T)} The budget is counted from where '
-                f'it was set; if the structure has settled here, Set here '
-                f'measures from this one instead.')
+                f'{_thermal_wait(peak, T)} {_thermal_wants(peak)} '
+                f'The budget is counted from where it was set; if the '
+                f'structure has settled here, Set here measures from this '
+                f'one instead.')
 
     def _thermal_wait(kcal, temperature):
         """How long a barrier of that height takes at that temperature.
@@ -5728,6 +5841,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         s", which is a number in the wrong clothes: the answer wanted there is
         "4 microseconds", and below a picosecond there is no crossing to speak
         of anyway.
+
+        And it stops at the top for the same reason it started at the bottom.
+        A refusal on a barrier the temperature is nowhere near came out as
+        "that is about 3.56e+29 years", which is a figure nobody reads as a
+        quantity -- the sentence this was written to produce is "longer than
+        the age of the earth", and past about ten billion years every number
+        means the same thing.  Said in years up to there and in words past it.
         """
         T = max(1.0, float(temperature))
         rate = ((_BOLTZMANN_SI * T / _PLANCK_SI)
@@ -5735,6 +5855,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if rate <= 0:
             return 'It does not happen.'
         seconds = 1.0 / rate
+        if seconds > _UNIVERSE_SECONDS:
+            return 'That is longer than the universe has existed.'
         for limit, unit, name in ((1e-9, 1e-12, 'ps'), (1e-6, 1e-9, 'ns'),
                                   (1e-3, 1e-6, 'us'), (1.0, 1e-3, 'ms'),
                                   (60, 1, 's'), (3600, 60, 'min'),
@@ -5743,6 +5865,68 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             if seconds < limit:
                 return f'That is about {seconds / unit:.3g} {name}.'
         return ''
+
+    def _thermal_wants(kcal):
+        """The temperature that price wants, said as an answer not a refusal.
+
+        The ceiling is Eyring inverted, so running the same arithmetic the
+        other way turns any price already in hand into the temperature at
+        which it becomes possible.  It costs nothing -- the energy has been
+        paid for, and this is two logarithms -- and it is a strictly better
+        answer than "no": "refused at 298 K" is where a user stops, "it wants
+        about 480 K" is where they go next, and the second is the question
+        they came with.  The temperature box above is where the answer is
+        used, which is why no control was added for it: the reverse question
+        is answered in the sentence and typed into the box that was already
+        there.
+
+        Both halves are said, here and in :func:`_thermal_wait`, because they
+        are two different questions with the same arithmetic behind them: how
+        hot for the window, and how long at the temperature set.  A user who
+        cannot heat it reads the first and stops; one who can wait reads the
+        second and does not need a window control to find out.
+        """
+        needs = thermal_temperature(kcal, _THERMAL_SECONDS)
+        if needs is None:
+            return (f'No temperature under 5000 K crosses that within '
+                    f'{_timescale_label()}.')
+        return (f'It wants about {needs:.0f} K ({needs - 273.15:+.0f} C) '
+                f'within {_timescale_label()}.')
+
+    def _pieces_in(xyz):
+        """How many separate pieces that geometry is in.
+
+        Off the same bond graph the topology wall is judged by, so there is
+        one perception in this file rather than two that can disagree, and
+        asked only where a refusal has already landed -- it is a pass over
+        every pair.
+
+        What it is for is the one case where the budget is wrong by more than
+        the method is.  The ceiling is a free energy and a drag is priced with
+        an electronic one; while the pieces stay as they were the two agree to
+        under 3 kcal/mol, and where a drag takes something apart they part
+        company by about ten at room temperature, with the electronic price
+        the strict one.  See _THERMAL_QUANTITY_SHORT.  Nothing is corrected
+        here -- a number invented off a distance threshold would be worse than
+        the gap -- but a refusal can say which case it is in, and that is the
+        difference between a verdict and a verdict the user can weigh.
+        """
+        rows = _gfn.atom_lines(xyz or '')
+        if not rows:
+            return 0
+        parent = list(range(len(rows)))
+
+        def home(i):
+            while parent[i] != i:
+                parent[i] = parent[parent[i]]
+                i = parent[i]
+            return i
+
+        for i, j in _gfn.bond_graph(xyz):
+            one, two = home(i), home(j)
+            if one != two:
+                parent[one] = two
+        return len({home(i) for i in range(len(rows))})
 
     def _thermal_slope(spent, xyz, serials):
         """What an angstrom costs here, from the last two answers.
@@ -6171,6 +6355,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # be measured against a geometry this anchor knows nothing
                 # about.
                 state['thermal_good'] = _current_xyz() or xyz
+                # And how many separate pieces it was measured on, so that a
+                # refusal can say when the drag has changed that.  Taken here
+                # and once: it belongs to the anchor the way the fingerprint
+                # and the method do, and a count read at the moment of a
+                # refusal would have nothing to be a change *from*.
+                state['thermal_pieces'] = _pieces_in(state['thermal_good'])
                 _, ceiling = _thermal_budget()
                 _set_mol_status(
                     f'{note}. At {float(submit_temperature.value):g} K '
@@ -6572,7 +6762,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         f'{over:+.1f} kcal/mol, past the {ceiling:.1f} this '
                         f'one has at {float(submit_temperature.value):g} K, '
                         'so it has been left as it was. '
-                        f'{_thermal_wait(over, submit_temperature.value)}')
+                        f'{_thermal_wait(over, submit_temperature.value)} '
+                        f'{_thermal_wants(over)}')
                     return
                 lines = [line for line in outcome['xyz'].splitlines()[2:]
                          if line.strip()]

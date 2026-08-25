@@ -4412,3 +4412,227 @@ def test_the_page_is_told_when_the_wall_refuses_and_when_it_stops():
     assert "_push_thermal_wall(marks, reach)" in stop
     assert "submit_gfn_frame" not in stop
     assert "_write_coords" not in stop
+
+
+def test_a_refusal_says_how_hot_and_not_only_how_long():
+    """The ceiling is an inverted rate, so the same arithmetic run the other
+    way turns a price already in hand into the temperature that pays for it.
+
+    It costs nothing -- the energy is the expensive half of that sum and it
+    has been paid for -- and it is a better answer than a refusal: "past the
+    budget at 298 K" is where a user stops, "it wants about 406 K" is where
+    they go next, and the second is the question they came with.  Measured
+    against the hour: +11 kcal/mol wants 150 K, +30.6 wants 406, +45 wants
+    591, +68 wants 883, and past about 402 nothing under 5000 K does it.
+    """
+    part, state = _editor(_NITROSAMINE)
+    _armed(part, state, _NITROSAMINE, -17.172582)
+
+    assert "about 150 K (-123 C)" in part._thermal_wants(11.0)
+    assert "about 406 K (+133 C)" in part._thermal_wants(30.6)
+    assert "about 591 K (+318 C)" in part._thermal_wants(45.0)
+    assert "about 883 K (+610 C)" in part._thermal_wants(68.0)
+    # And where there is no answer, that is said rather than a number printed.
+    said = part._thermal_wants(500.0)
+    assert "No temperature under 5000 K" in said, said
+    # The window is named, because a temperature without one is not an answer:
+    # 22.3 kcal/mol is 298 K for an hour and 250 K for a year.
+    assert "within an hour" in part._thermal_wants(45.0)
+
+
+def test_both_refusals_say_the_temperature_they_want():
+    """The one about where the structure is standing, and the one about what
+    the drag went through to put it there.
+
+    Two different numbers refuse, so two different temperatures answer, and a
+    line that quoted the wrong one would send the user to a temperature that
+    does not open the way they came.
+    """
+    part, state = _editor(_NITROSAMINE)
+    _armed(part, state, _NITROSAMINE, -17.172582)
+
+    def at(kcal):
+        return -17.172582 + kcal / 627.5094740631
+
+    # Standing past the ceiling: the temperature is worked out from where the
+    # structure stands, which is the number being refused.
+    said = part._thermal_note(at(45.0))
+    assert "+45.0 kcal/mol -- past the 22.3" in said, said
+    assert "about 591 K (+318 C)" in said, said
+
+    # Standing somewhere cheap, having crossed something that was not: the
+    # crossing is what is refused, so the crossing is what is answered.
+    state["thermal_peak"] = 25.0
+    said = part._thermal_note(at(0.0))
+    assert "went through +25.0" in said, said
+    assert "about 333 K (+60 C)" in said, said
+    # And the waiting time stands beside it, because they are two questions:
+    # how hot within the window, and how long at the temperature that is set.
+    # +25 is four days at 298 K and inside the hour at 333, which is the pair
+    # of answers a chemist chooses between.
+    assert "That is about 3.94 d" in said, said
+
+
+def test_a_waiting_time_nobody_reads_is_said_in_words():
+    """A refusal came out as "that is about 3.56e+29 years", which is a
+    number in the wrong clothes.
+
+    The same fault the fast end of this was fixed for, at the other end: the
+    sentence it was written to produce is "longer than the age of the earth",
+    and past about ten thousand million years every barrier reads the same.
+    Measured at 298.15 K: +25 kcal/mol is about 4 days, +30 about 50 years,
+    and +45 is past anything worth printing as a figure.
+    """
+    part, state = _editor(_NITROSAMINE)
+    _armed(part, state, _NITROSAMINE, -17.172582)
+
+    assert "3.94 d" in part._thermal_wait(25.0, 298.15)
+    assert "49.9 years" in part._thermal_wait(30.0, 298.15)
+    assert "longer than the universe" in part._thermal_wait(45.0, 298.15)
+    # And the fast end is where it was: an open path answers in picoseconds.
+    assert "ps" in part._thermal_wait(0.0, 298.15)
+
+
+def test_a_refusal_says_it_priced_the_way_the_hand_went():
+    """Which is narrower than a refusal reads, and cannot be answered here.
+
+    What was priced is the path this hand took, one geometry at a time; the
+    cheapest way from the anchor to where the hand was aiming is a different
+    quantity, and a minimum over all paths is a search rather than a drag.  So
+    it is said once, where the refusal lands, and it names what does search.
+    """
+    assert "This prices the way your " in EDITOR_SOURCE
+    assert "not the cheapest way " in EDITOR_SOURCE
+    # Named, so the sentence is a next move rather than a disclaimer -- and
+    # named as the path finder rather than as the press it sits on, which
+    # reads "Find the path" or "To the saddle" depending on the box beside it.
+    assert "Scan and the path finder " in EDITOR_SOURCE
+    assert "look for that." in EDITOR_SOURCE
+    # Only where the temperature refused.  A hold that slipped, or two atoms
+    # inside each other, is not a barrier -- and telling the user to look for
+    # a cheaper way round would be advice about something else.
+    body = EDITOR_SOURCE.split("state.get('thermal_over') == 'path' else")[1]
+    body = body.split("# And whether this was a slope or a step.")[0]
+    assert "if not aside:" in body, body
+
+
+def test_a_refusal_says_when_the_drag_changed_how_many_pieces_there_are():
+    """The one case where the budget is wrong by more than the method is.
+
+    A ceiling is a free energy and a drag is priced with an electronic one.
+    While the structure stays in as many pieces as it started in, the two
+    agree to under 3 kcal/mol -- ethane turned to eclipsed is +2.592 against
+    +2.568 -- and where a drag takes something apart they part company by
+    about ten: a borazane pulled to 6 A is +22.5 electronic and +12.3 free,
+    which at 298 K is the difference between past the 22.3 and comfortably
+    inside it.  Nothing is corrected, because a number invented off a distance
+    threshold would be worse than the gap; but the refusal can say which case
+    it is in, and that is the difference between a verdict and a verdict the
+    user can weigh.
+    """
+    part, state = _editor(_NITROSAMINE)
+
+    assert part._pieces_in(_NITROSAMINE) == 1
+    assert part._pieces_in(_DIELS_ALDER) == 2
+    # One atom taken right out is a piece of its own, which is the thing being
+    # detected: what a drag does when it finally lets go of something.  Five
+    # rather than two, because the carbon that was pulled took nothing with
+    # it and left its three hydrogens stranded one apiece -- which is the
+    # honest answer about that geometry, and why the sentence quotes the count
+    # rather than saying "it has come apart".
+    assert part._pieces_in(_pulled(_NITROSAMINE, 5.0)) == 5
+    # And nothing at all is nothing, rather than one.
+    assert part._pieces_in("") == 0
+
+    # Counted where the anchor is taken, because a count read at the moment of
+    # a refusal has nothing to be a change from.
+    assert "state['thermal_pieces'] = _pieces_in(" in EDITOR_SOURCE
+    assert "began_in = state.get('thermal_pieces')" in EDITOR_SOURCE
+    assert "if began_in and now_in > began_in:" in EDITOR_SOURCE
+    # And what it says: which way the price is wrong, and what gives the
+    # right one.
+    assert "here where the budget was measured " in EDITOR_SOURCE
+    assert "price is strict by about ten " in EDITOR_SOURCE
+    assert "energy set to G prices it as a free " in EDITOR_SOURCE
+
+
+def test_the_window_the_ceiling_is_quoted_over_stays_an_hour():
+    """A control for it was weighed again and not built.
+
+    Between a second and a year the ceiling moves ten kcal/mol while the
+    distance between chemistry and nonsense is twenty against a hundred, and
+    what a refusal now says covers the ground the knob would have: the waiting
+    time is quoted at the temperature that is set, so how much longer it would
+    take is already on the line, and the temperature it wants is quoted for
+    the window.  Maeda's advice to run the permissive end is advice about
+    searching, where missing a path finds nothing; this decides what stays in
+    the box, where allowing what the temperature will not is the worse error.
+    """
+    from delfin.dashboard.structure_editor import _THERMAL_SECONDS
+
+    assert _THERMAL_SECONDS == 3600.0
+    assert "an hour" in EDITOR_SOURCE.split("def _timescale_label(")[1][:400]
+
+
+@_needs_xtb
+def test_the_free_energy_parts_company_where_the_pieces_change():
+    """Why the budget prices an electronic energy against a free ceiling, in
+    numbers rather than as an assurance.
+
+    A borazane with its B-N pulled out is the case where the two disagree
+    most: one molecule becoming two releases translation and rotation, so the
+    electronic price is too strict by whatever T*dS is.  Measured under GFN2 at
+    298.15 K against the relaxed adduct: at 3.5 A it costs +21.2 kcal/mol
+    electronic and +14.2 free; once the two are apart at 6 A, +22.5 against
+    +12.3.  Ten and a quarter kcal/mol at the end of it -- and it is the one
+    place a verdict changes hands, since the hour at 298 K buys 22.3.
+
+    The other way, a drag that leaves the structure in as many pieces as it
+    found it, they agree: ethane turned to eclipsed is +2.592 electronic and
+    +2.568 free, 0.02 apart on a barrier of 2.6.
+    """
+    from delfin.dashboard.structure_editor import (
+        _HARTREE_TO_KCAL, thermal_ceiling)
+
+    adduct = """8
+borazane
+B   0.000000  0.000000  0.830000
+N   0.000000  0.000000 -0.830000
+H   1.100000  0.000000  1.230000
+H  -0.550000 -0.953000  1.230000
+H  -0.550000  0.953000  1.230000
+H  -0.950000  0.000000 -1.180000
+H   0.475000  0.823000 -1.180000
+H   0.475000 -0.823000 -1.180000
+"""
+    at_rest = gfn.optimize_with_gfn(adduct, "gfn2", timeout=600)
+    assert at_rest.get("ok"), at_rest.get("status")
+
+    def priced(xyz):
+        got = gfn.optimize_with_gfn(
+            xyz, "gfn2", timeout=600, optimise=False, free_energy=True,
+            thermo_kelvin=298.15)
+        assert got.get("energy") is not None, got.get("status")
+        assert got.get("free_energy") is not None, got.get("status")
+        return float(got["energy"]), float(got["free_energy"])
+
+    e0, g0 = priced(at_rest["xyz"])
+    pulled = gfn.optimize_with_gfn(
+        at_rest["xyz"], "gfn2", timeout=600,
+        constraints=[{"kind": "distance", "atoms": [0, 1], "value": 6.0,
+                      "mode": "fix"}])
+    assert pulled.get("ok"), pulled.get("status")
+    e1, g1 = priced(pulled["xyz"])
+
+    electronic = (e1 - e0) * _HARTREE_TO_KCAL
+    free = (g1 - g0) * _HARTREE_TO_KCAL
+    # xtb is not bit-reproducible under threading, so this is asserted with
+    # room: what is claimed is "of order ten kcal/mol and in this direction",
+    # not a decimal.
+    assert 20.0 < electronic < 25.0, electronic
+    assert 9.0 < free < 16.0, free
+    assert electronic - free > 6.0, (electronic, free)
+    # And the verdict really does change hands there, which is the whole
+    # reason the size of the gap is written where the user can read it.
+    ceiling = thermal_ceiling(298.15, 3600.0)
+    assert electronic > ceiling > free, (electronic, ceiling, free)
