@@ -49,6 +49,16 @@ EDIT = "edit"                # the buffer changed; redraw the input line
 
 _ESC = "\x1b"
 _SHIFT_TAB = "\x1b[Z"
+# Cursor movement. Both spellings of each: applications-cursor mode sends
+# the O form, normal mode the [ form, and which one a terminal is in is
+# not something this layer gets to decide.
+_LEFT = ("\x1b[D", "\x1bOD")
+_RIGHT = ("\x1b[C", "\x1bOC")
+_HOME = ("\x1b[H", "\x1bOH", "\x1b[1~")
+_END = ("\x1b[F", "\x1bOF", "\x1b[4~")
+# Alt+B / Alt+F — one word left, one word right.
+_WORD_LEFT = "\x1bb"
+_WORD_RIGHT = "\x1bf"
 # Bracketed paste. The terminal wraps pasted text in these two sequences,
 # which is the ONLY way to tell a paste from someone typing very fast —
 # and the difference matters, because every newline inside a paste is a
@@ -58,6 +68,10 @@ _PASTE_ON = "\x1b[?2004h"
 _PASTE_OFF = "\x1b[?2004l"
 _PASTE_START = "\x1b[200~"
 _PASTE_END = "\x1b[201~"
+_CTRL_A = "\x01"            # start of line
+_CTRL_E = "\x05"            # end of line
+_CTRL_W = "\x17"            # delete the word behind the cursor
+_CTRL_K = "\x0b"            # delete to end of line
 _CTRL_G = "\x07"
 _CTRL_O = "\x0f"
 _CTRL_L = "\x0c"
@@ -99,6 +113,11 @@ class KeyDecoder:
     _held_esc: bool = False
     #: Inside a bracketed paste. Everything up to the end marker is
     #: content — newlines included — and none of it is a key.
+    #: Where the next character goes, as an offset into ``buffer``. The
+    #: decoder had a buffer and no cursor, so every edit was at the end:
+    #: a typo four words back meant deleting four words. Left/Right,
+    #: Home/End and the word keys all move this and nothing else.
+    cursor: int = 0
     _pasting: bool = False
     #: A partial marker held back across a read boundary. The start and
     #: end markers are six bytes and a 1024-byte read can cut either one.
@@ -144,16 +163,41 @@ class KeyDecoder:
             ch = chunk[i]
 
             if ch == _ESC:
-                # An escape sequence inside a larger chunk: swallow it
-                # rather than let its letters land in the buffer. Arrow
-                # keys and function keys are not editing during a turn.
+                # Alt+letter is ESC then the letter, with no bracket. It
+                # has to be tested before the CSI branch, which would
+                # otherwise take the letter for the start of a sequence.
+                nxt = chunk[i + 1:i + 2]
+                if nxt in ("b", "f"):
+                    self.cursor = (self._word_left() if nxt == "b"
+                                   else self._word_right())
+                    events.append(KeyEvent(EDIT, text=self.buffer))
+                    i += 2
+                    continue
+                # A CSI or SS3 sequence. What it MEANS is decided here;
+                # anything unrecognised is still swallowed, because its
+                # letters landing in the buffer is the one outcome that is
+                # certainly wrong.
                 j = i + 1
-                if j < len(chunk) and chunk[j] in "[O":
+                if nxt in ("[", "O"):
                     j += 1
-                    while j < len(chunk) and not chunk[j].isalpha() and chunk[j] != "~":
+                    while (j < len(chunk) and not chunk[j].isalpha()
+                           and chunk[j] != "~"):
                         j += 1
-                    if chunk[i:j + 1] == _SHIFT_TAB:
+                    seq = chunk[i:j + 1]
+                    if seq == _SHIFT_TAB:
                         events.append(KeyEvent(CYCLE_MODE))
+                    elif seq in _LEFT:
+                        self.cursor = max(0, self.cursor - 1)
+                        events.append(KeyEvent(EDIT, text=self.buffer))
+                    elif seq in _RIGHT:
+                        self.cursor = min(len(self.buffer), self.cursor + 1)
+                        events.append(KeyEvent(EDIT, text=self.buffer))
+                    elif seq in _HOME:
+                        self.cursor = 0
+                        events.append(KeyEvent(EDIT, text=self.buffer))
+                    elif seq in _END:
+                        self.cursor = len(self.buffer)
+                        events.append(KeyEvent(EDIT, text=self.buffer))
                     i = j + 1
                     continue
                 events.append(KeyEvent(INTERRUPT))
@@ -162,14 +206,49 @@ class KeyDecoder:
 
             if ch in _ENTER:
                 line, self.buffer = self.buffer, ""
+                self.cursor = 0
                 events.append(KeyEvent(SUBMIT, text=line))
                 i += 1
                 continue
 
             if ch in _BACKSPACE:
-                if self.buffer:
-                    self.buffer = self.buffer[:-1]
+                if self.cursor > 0:
+                    self.buffer = (self.buffer[:self.cursor - 1]
+                                   + self.buffer[self.cursor:])
+                    self.cursor -= 1
                     events.append(KeyEvent(EDIT, text=self.buffer))
+                i += 1
+                continue
+
+            if ch == _CTRL_W:
+                # Back over the whitespace, then back over the word. Both
+                # halves matter: stopping at the first space would take a
+                # keystroke to delete nothing when the cursor sits after
+                # one, which is where it usually sits.
+                left = self.buffer[:self.cursor]
+                trimmed = left.rstrip()
+                cut = trimmed.rfind(" ") + 1
+                self.buffer = self.buffer[:cut] + self.buffer[self.cursor:]
+                self.cursor = cut
+                events.append(KeyEvent(EDIT, text=self.buffer))
+                i += 1
+                continue
+
+            if ch == _CTRL_K:
+                self.buffer = self.buffer[:self.cursor]
+                events.append(KeyEvent(EDIT, text=self.buffer))
+                i += 1
+                continue
+
+            if ch == _CTRL_A:
+                self.cursor = 0
+                events.append(KeyEvent(EDIT, text=self.buffer))
+                i += 1
+                continue
+
+            if ch == _CTRL_E:
+                self.cursor = len(self.buffer)
+                events.append(KeyEvent(EDIT, text=self.buffer))
                 i += 1
                 continue
 
@@ -182,6 +261,7 @@ class KeyDecoder:
                 # from queueing, and a mode you can forget you are in is
                 # the wrong place to keep that difference.
                 line, self.buffer = self.buffer, ""
+                self.cursor = 0
                 events.append(KeyEvent(STEER, text=line))
                 i += 1
                 continue
@@ -203,18 +283,54 @@ class KeyDecoder:
 
             if ch == "\x15":                      # Ctrl+U — clear the line
                 self.buffer = ""
+                self.cursor = 0
                 events.append(KeyEvent(EDIT, text=""))
                 i += 1
                 continue
 
             if ch.isprintable():
-                self.buffer += ch
+                self.buffer = (self.buffer[:self.cursor] + ch
+                               + self.buffer[self.cursor:])
+                self.cursor += 1
                 events.append(KeyEvent(EDIT, text=self.buffer))
             # Everything else (Ctrl+C among them) is left to the terminal:
             # cbreak keeps ISIG, so Ctrl+C is a signal and never a byte.
             i += 1
 
         return events
+
+    def _insert(self, text: str) -> None:
+        """Put *text* where the cursor is, and leave the cursor after it.
+
+        Pasting appended to the end regardless of where the cursor was,
+        so moving back to fix a word and then pasting put the text
+        somewhere the user was not looking.
+        """
+        if not text:
+            return
+        self.buffer = (self.buffer[:self.cursor] + text
+                       + self.buffer[self.cursor:])
+        self.cursor += len(text)
+
+    # -- cursor ----------------------------------------------------------
+
+    def _word_left(self) -> int:
+        """The start of the word behind the cursor.
+
+        Whitespace first, then the word — the same two steps Ctrl+W
+        deletes, so moving and deleting agree about where a word begins.
+        """
+        left = self.buffer[:self.cursor].rstrip()
+        return left.rfind(" ") + 1
+
+    def _word_right(self) -> int:
+        """The start of the word after the cursor, or the end of the line."""
+        rest = self.buffer[self.cursor:]
+        skipped = len(rest) - len(rest.lstrip())
+        nxt = rest.lstrip().find(" ")
+        if nxt < 0:
+            return len(self.buffer)
+        return self.cursor + skipped + nxt + 1
 
     # -- bracketed paste -------------------------------------------------
 
@@ -281,11 +397,11 @@ class KeyDecoder:
                 if hold:
                     self._partial = chunk[-hold:]
                     chunk = chunk[:-hold]
-                self.buffer += chunk
+                self._insert(chunk)
                 if chunk:
                     events.append(KeyEvent(EDIT, text=self.buffer))
                 return events
-            self.buffer += chunk[:end]
+            self._insert(chunk[:end])
             self._pasting = False
             chunk = chunk[end + len(_PASTE_END):]
             events.append(KeyEvent(EDIT, text=self.buffer))

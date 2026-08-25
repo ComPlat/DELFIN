@@ -79,7 +79,13 @@ class Transcript:
         self.theme = theme if theme is not None else rr.theme_for(self.err)
         self.show_tools = show_tools
         self.show_thinking = show_thinking
-        self.width = width or rr.terminal_width()
+        # A fixed width or a live one. Read once, a terminal resized after
+        # launch went on truncating to the size it had at startup — every
+        # tool line and every status row cut at the wrong column for the
+        # rest of the session. The fixed form stays available because the
+        # tests need a stable width to assert against.
+        self._fixed_width = int(width) if width else 0
+        self._width_cache = self._fixed_width or rr.terminal_width()
         # A SECOND colour decision, taken about stdout. The theme above
         # is about stderr, where the chrome goes; the answer goes to
         # stdout, and the two streams are redirected independently. Asking
@@ -96,6 +102,24 @@ class Transcript:
         # its final newline.
         self._out_open = False
         self._break_pending = False
+
+    @property
+    def width(self) -> int:
+        return self._fixed_width or self._width_cache
+
+    @width.setter
+    def width(self, value: int) -> None:
+        """Assigning a width PINS it, which is what assigning one meant
+        before this became a property. Callers that set it are saying
+        "this is the width", not "start following the terminal from
+        here", and a resize must not undo that."""
+        self._fixed_width = int(value or 0)
+
+    def refresh_width(self) -> int:
+        """Re-ask the terminal. Called from the resize handler."""
+        if not self._fixed_width:
+            self._width_cache = rr.terminal_width()
+        return self.width
 
     # -- primitives ------------------------------------------------------
     def answer(self, delta: str) -> None:
@@ -436,6 +460,13 @@ class TerminalAgent:
         self._interrupts = 0
         self._idle_interrupts = 0
         self._prev_sigint = None
+        self._prev_sigwinch = None
+        # How much history was already on disk when this session started.
+        self._hist_base = 0
+        # Set by the resize handler, acted on by the loop. A signal handler
+        # runs between bytecodes of whatever the main thread was doing, so
+        # it records and the loop repaints.
+        self._width_dirty = False
         self._stdin = sys.stdin
         # What the user is typing WHILE a turn runs, and the last tool
         # result, so Ctrl+O has something to expand.
@@ -592,6 +623,12 @@ class TerminalAgent:
                     if pending is not None:
                         self._answer(pending, raw)
                         continue
+                if self._width_dirty:
+                    # The handler recorded the new size; the repaint
+                    # happens here, on the thread that owns the terminal.
+                    self._width_dirty = False
+                    self._clear_bottom()
+                    self._repaint_bottom(force=True)
                 if raw.active:
                     for event in decoder.feed(raw.read_ready(_PUMP_TICK_S)):
                         self._on_key(event, decoder)
@@ -625,6 +662,7 @@ class TerminalAgent:
             self._clear_input_line()
             if text:
                 self.queued.append(text)
+                self._recall_later(text)
                 self.transcript.chrome(self.transcript.theme.dim(
                     f"queued ({len(self.queued)}) — goes out when this turn "
                     "ends, or ctrl+g to send it into this one"))
@@ -682,6 +720,7 @@ class TerminalAgent:
             delivered = bool(self.engine.steer(text))
         except Exception:
             delivered = False
+        self._recall_later(text)
         if delivered:
             self.transcript.chrome(self.transcript.theme.cyan(
                 "→ sent into the running turn"))
@@ -1346,6 +1385,7 @@ class TerminalAgent:
         finally:
             self._save_history()
             self._restore_sigint()
+            self._restore_sigwinch()
 
     # -- plumbing --------------------------------------------------------
     def _install_sigint(self) -> None:
@@ -1355,6 +1395,47 @@ class TerminalAgent:
             # Not the main thread, or no signal support. The loop still
             # works; Ctrl+C simply behaves as the default.
             self._prev_sigint = None
+        self._install_sigwinch()
+
+    def _install_sigwinch(self) -> None:
+        """Notice the window changing size.
+
+        SIGWINCH does not exist on every platform, and the signal cannot
+        be installed off the main thread — both are ordinary, so both are
+        silent. What is not silent is the consequence of ignoring it: the
+        width is read once at startup and everything truncates to it
+        forever, so widening the window gains nothing and narrowing it
+        wraps every tool line.
+        """
+        sig = getattr(signal, "SIGWINCH", None)
+        if sig is None:
+            self._prev_sigwinch = None
+            return
+        try:
+            self._prev_sigwinch = signal.signal(sig, self._on_sigwinch)
+        except (ValueError, OSError):
+            self._prev_sigwinch = None
+
+    def _on_sigwinch(self, _signum, _frame) -> None:
+        """Record the new size. Never paint from a signal handler.
+
+        A handler runs between bytecodes of whatever the main thread was
+        doing — including halfway through a write to the same terminal —
+        so drawing here interleaves with the write it interrupted. Same
+        rule the interrupt handler follows: set state, let the loop act.
+        """
+        self.transcript.refresh_width()
+        self._width_dirty = True
+
+    def _restore_sigwinch(self) -> None:
+        sig = getattr(signal, "SIGWINCH", None)
+        if sig is None or self._prev_sigwinch is None:
+            return
+        try:
+            signal.signal(sig, self._prev_sigwinch)
+        except (ValueError, OSError):
+            pass
+        self._prev_sigwinch = None
 
     def _restore_sigint(self) -> None:
         if self._prev_sigint is not None:
@@ -1409,6 +1490,27 @@ class TerminalAgent:
         except Exception:
             pass
 
+    def _recall_later(self, text: str) -> None:
+        """Put a line typed DURING a turn into the recallable history.
+
+        Deliberately not called `_remember`: that name is taken by the
+        `#note` handler, which writes a durable MEMORY. Two things a user
+        might call remembering, and conflating them would have turned
+        every queued line into a stored memory.
+
+        Only the idle prompt goes through readline, so everything typed
+        while the agent worked — most of what gets typed in a busy
+        session — was absent from the up-arrow afterwards. Retyping it is
+        what a history exists to prevent.
+        """
+        if not text:
+            return
+        try:
+            import readline
+            readline.add_history(text)
+        except Exception:
+            pass                     # no readline: the queue still works
+
     def _load_history(self) -> None:
         try:
             import readline
@@ -1419,6 +1521,10 @@ class TerminalAgent:
             readline.set_history_length(_HISTORY_LINES)
             if path.exists():
                 readline.read_history_file(str(path))
+            # Where this session's own lines begin. Everything above it
+            # came off disk and is already in the file; appending it again
+            # would grow the file by its own length on every exit.
+            self._hist_base = readline.get_current_history_length()
         except Exception:
             # libedit behaves differently, and a missing file is normal on
             # a first run. Neither is worth refusing to start over.
@@ -1429,7 +1535,28 @@ class TerminalAgent:
             import readline
             from . import state_paths
             path = self.history_path()
-            readline.write_history_file(str(path))
+            # Append only what THIS session added. Writing the whole
+            # in-memory buffer means two terminals open in two projects
+            # each load the file at start and write their own copy at
+            # exit, so whichever quits last erases the other's session.
+            # libedit carries no append_history_file, and there the whole
+            # write is the only option — losing the merge beats losing
+            # the file.
+            added = 0
+            try:
+                added = max(
+                    0, readline.get_current_history_length() - self._hist_base)
+            except Exception:
+                added = 0
+            appended = False
+            if added and hasattr(readline, "append_history_file"):
+                try:
+                    readline.append_history_file(added, str(path))
+                    appended = True
+                except Exception:
+                    appended = False
+            if not appended:
+                readline.write_history_file(str(path))
             # Prompts describe the user's project, so the file is theirs
             # alone -- the same 0600 every other state file here gets.
             state_paths.secure_file(path)
