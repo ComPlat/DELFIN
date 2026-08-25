@@ -71,6 +71,27 @@ WINDOWS: Tuple[Tuple[str, float], ...] = (
 #: Enough of a geometry to recognise it, and not enough to fill the panel.
 _PREVIEW_ROWS = 12
 
+#: What the editor hands over, as a plain dict.
+#:
+#: The editor is a workbench and knows nothing about networks; it knows what is
+#: on screen, what made it, and what the last press left lying about.  So the
+#: hand-over is one-way and untyped: the editor describes what it has, and this
+#: side decides what -- if anything -- can be done with it.  Anything else puts
+#: the graph's rules inside a 15,000-line module that has no business holding
+#: them, and puts a second copy of them there to drift.
+#:
+#:     {'xyz':          the structure on screen,
+#:      'level':        what a caption would call the method, e.g. 'GFN2-xTB',
+#:      'method':       the short machine word, 'gfn2',
+#:      'charge':       int,        'multiplicity': int,
+#:      'energy':       Hartree or None,
+#:      'free_energy':  Hartree or None,
+#:      'imaginary':    int or None,   'frequency': cm-1 or None,
+#:      'ends':         (xyz, xyz) or None -- the two a walk left,
+#:      'gesture':      what produced it, for the history}
+OFFER_KEYS = ('xyz', 'level', 'method', 'charge', 'multiplicity', 'energy',
+              'free_energy', 'imaginary', 'frequency', 'ends', 'gesture')
+
 
 def graphs_in(folder: Any) -> List[Path]:
     """Every reaction graph directly inside *folder*, by name.
@@ -310,8 +331,9 @@ def summary_html(graph: rg.Graph, level: str, *, window: str = 'an hour',
 class ReactionGraphPanel:
     """One Reactions tab, over the graphs in a calculation directory."""
 
-    def __init__(self, calc_dir: Any = None):
+    def __init__(self, calc_dir: Any = None, ctx: Any = None):
         self.calc_dir = Path(calc_dir) if calc_dir else Path.home() / 'calc'
+        self.ctx = ctx
         self.graph: Optional[rg.Graph] = None
         self._building = False
         if not HAS_WIDGETS:                          # pragma: no cover
@@ -350,6 +372,14 @@ class ReactionGraphPanel:
                                      layout=widgets.Layout(width='320px'))
         self.note_btn = widgets.Button(description='Save note',
                                        layout=widgets.Layout(width='110px'))
+        #: Back to the workbench.  Absent where there is no workbench to go to
+        #: -- this tab is usable on its own, and a button that would reach a
+        #: tab that is not there is the row claiming something untrue.
+        self.to_editor_btn = widgets.Button(
+            description='Open in the editor', button_style='info',
+            tooltip='Put this geometry in the Submit tab and go there',
+            layout=widgets.Layout(width='auto', display='none'))
+        self.to_editor_btn.on_click(self._on_to_editor)
 
         self.graph_dd.observe(self._on_graph, names='value')
         self.level_dd.observe(self._on_view, names='value')
@@ -376,6 +406,9 @@ class ReactionGraphPanel:
                                            layout=widgets.Layout(
                                                flex_flow='row wrap')),
                               widgets.HBox([self.note_box, self.note_btn],
+                                           layout=widgets.Layout(
+                                               flex_flow='row wrap')),
+                              widgets.HBox([self.to_editor_btn],
                                            layout=widgets.Layout(
                                                flex_flow='row wrap'))],
                              layout=widgets.Layout(width='46%'))],
@@ -482,6 +515,154 @@ class ReactionGraphPanel:
         if holder is not None:
             self.label_box.value = getattr(holder, 'label', '') or ''
             self.note_box.value = getattr(holder, 'note', '') or ''
+        # There has to be a geometry at the chosen level to send, and a Submit
+        # tab to send it to.  Either missing and the press would be a promise
+        # this tab cannot keep.
+        can = bool(rg.geometry(self.graph, ref, str(self.level_dd.value or ''))
+                   and self._submit_refs())
+        self.to_editor_btn.layout.display = '' if can else 'none'
+
+    # -- what the editor may hand over ------------------------------------
+
+    def offer_label(self, offer: Dict[str, Any]) -> Optional[str]:
+        """What pressing "Put in graph" would do, or None for nothing.
+
+        The editor asks this to decide whether to show the button at all, and
+        what to write on it.  Three answers and a silence:
+
+        * A walk left **two ends**, so the press lays down two states and the
+          step between them.  That is the shape a scan produces and it is the
+          most valuable hand-over there is -- a barrier arrives with both the
+          structures it is a barrier between.
+        * The structure **matches exactly one state** already in the graph, so
+          it is another geometry of that species at this level.
+        * Otherwise it is a **new state**.
+
+        The silence is a saddle with no two ends.  A transition is an edge, and
+        an edge needs the two states it joins; a saddle put in as a state would
+        be a minimum in the document that is not one.  There is nothing correct
+        to do yet, so there is no button -- and standing right beside it is
+        ``Down to both ends``, which appears exactly when there is a saddle and
+        is what produces the ends.  The absence is the instruction.
+        """
+        if self.graph is None:
+            return None
+        xyz = str(offer.get('xyz') or '')
+        if not rg.fingerprint(xyz):
+            return None
+        name = self.graph.name or Path(self.graph.folder).name
+        ends = offer.get('ends')
+        if ends and len(ends) == 2 and all(rg.fingerprint(one) for one in ends):
+            return f'Put both ends and the step in {name}'
+        if offer.get('imaginary') == 1:
+            return None
+        same = rg.looks_like(self.graph, xyz,
+                             charge=offer.get('charge'),
+                             multiplicity=offer.get('multiplicity'))
+        level = str(offer.get('level') or 'this method')
+        if len(same) == 1:
+            return f'Add as a {level} record on {same[0].label or same[0].id}'
+        return f'Put in {name} as a new state'
+
+    def take(self, offer: Dict[str, Any]) -> str:
+        """Do it, and hand back the sentence the editor puts on its status row.
+
+        Everything that goes in carries where it came from, because a record
+        that cannot say what produced it is a number in a document with no
+        account behind it -- and the account is the whole reason the graph is
+        on disk rather than in a notebook.
+        """
+        label = self.offer_label(offer)
+        if label is None or self.graph is None:
+            return ''
+        graph = self.graph
+        gesture = str(offer.get('gesture') or 'the editor')
+        source = {'kind': 'editor', 'gesture': gesture}
+
+        def _record(**over):
+            fields = dict(
+                level=str(offer.get('level') or 'unnamed method'),
+                method=str(offer.get('method') or ''),
+                charge=offer.get('charge'), multiplicity=offer.get('multiplicity'),
+                energy=offer.get('energy'), free_energy=offer.get('free_energy'),
+                imaginary=offer.get('imaginary'), frequency=offer.get('frequency'),
+                source=source)
+            fields.update(over)
+            return rg.Record(**fields)
+
+        ends = offer.get('ends')
+        try:
+            if ends and len(ends) == 2:
+                said = self._take_a_step(offer, ends, _record)
+            elif label.startswith('Add as a'):
+                same = rg.looks_like(graph, str(offer['xyz']),
+                                     charge=offer.get('charge'),
+                                     multiplicity=offer.get('multiplicity'))
+                rg.add_record(graph, same[0].id, str(offer['xyz']), _record())
+                said = (f'{same[0].label or same[0].id} now has a '
+                        f'{offer.get("level")} geometry as well.')
+            else:
+                node = rg.add_state(
+                    graph, str(offer['xyz']), _record(),
+                    label=str(offer.get('name') or ''),
+                    charge=int(offer.get('charge') or 0),
+                    multiplicity=int(offer.get('multiplicity') or 1))
+                said = f'{node.id} is in {graph.name}.'
+            rg.save(graph)
+        except Exception as exc:                     # noqa: BLE001
+            return f'It did not go into the graph: {exc}'
+        self._reopen()
+        return said
+
+    def _take_a_step(self, offer, ends, _record) -> str:
+        """Two ends and the structure between them, as two states and an edge.
+
+        The two ends go in as states only where they are not already there --
+        a walk run twice from the same educt must not put that educt in twice,
+        or the network grows a duplicate whose energies quietly disagree with
+        its twin.
+        """
+        graph = self.graph
+        made: List[str] = []
+
+        def _end(xyz, what):
+            same = rg.looks_like(graph, xyz, charge=offer.get('charge'),
+                                 multiplicity=offer.get('multiplicity'))
+            if len(same) == 1:
+                return same[0].id
+            node = rg.add_state(
+                graph, xyz,
+                _record(imaginary=None, frequency=None, energy=None,
+                        free_energy=None,
+                        source={'kind': 'editor',
+                                'gesture': f'{offer.get("gesture")}, {what}'}),
+                label='', charge=int(offer.get('charge') or 0),
+                multiplicity=int(offer.get('multiplicity') or 1))
+            made.append(node.id)
+            return node.id
+
+        first = _end(ends[0], 'where it started')
+        second = _end(ends[1], 'where it came to')
+        if first == second:
+            raise ValueError('both ends are the same structure, so there is '
+                             'nothing between them')
+        edge = rg.add_transition(graph, str(offer['xyz']), _record(),
+                                 source=first, target=second,
+                                 confirmed=offer.get('confirmed'))
+        grew = (f' ({", ".join(made)} '
+                f'{"is" if len(made) == 1 else "are"} new)') if made else ''
+        return f'{edge.id} joins {first} to {second}{grew}.'
+
+    def _reopen(self) -> None:
+        """Read the document back and redraw, so the tab shows what landed."""
+        if self.graph is None:
+            return
+        try:
+            self.graph = rg.load(self.graph.folder)
+        except Exception:                            # noqa: BLE001
+            return
+        self._refresh_levels()
+        self.refresh_view()
 
     # -- what the presses do ---------------------------------------------
 
@@ -496,6 +677,60 @@ class ReactionGraphPanel:
     def _on_select(self, _change) -> None:
         if not self._building:
             self._refresh_detail()
+
+    # -- back to the workbench --------------------------------------------
+
+    def _submit_refs(self) -> Dict[str, Any]:
+        """The Submit tab's widgets, or an empty dict when there is no tab.
+
+        Asked each time.  This panel is built while the dashboard is being
+        assembled and is also used on its own in tests, so "the Submit tab"
+        is a thing that may or may not exist and the answer is allowed to be
+        no.
+        """
+        return (getattr(self.ctx, 'submit_refs', None) or {})
+
+    def _on_to_editor(self, _button=None) -> None:
+        """This geometry into the Submit tab's box, and go and look at it.
+
+        Written rather than handed over: the editor reads the box, and every
+        other route into it -- a conversion, a drawing, a file -- writes there
+        too, so a structure arriving from the graph is a structure like any
+        other and the editor needs to know nothing about where it came from.
+
+        The graph is not told.  What comes back later comes back through the
+        hand-over the other way, with whatever the editor did to it, and a
+        document that recorded "sent to the editor" would be recording an
+        intention rather than a result.
+        """
+        if self.graph is None or not self.network.value:
+            return
+        ref = str(self.network.value)
+        level = str(self.level_dd.value or '')
+        text = rg.geometry(self.graph, ref, level)
+        refs = self._submit_refs()
+        box = refs.get('coords_widget')
+        if not text or box is None:
+            self._say('There is no geometry at this level to open.')
+            return
+        holder = self.graph.holder(ref)
+        name = (getattr(holder, 'label', '') or ref) if holder else ref
+        rows = text.splitlines()
+        body = '\n'.join(rows[2:]) if len(rows) > 2 else ''
+        box.value = (f'{len(rg.fingerprint(text).split("|"))}\n'
+                     f'{name} at {level}, from the reaction graph\n{body}\n')
+        self._say(f'{ref} is in the Submit tab at {level}.')
+        self._go_to_tab('Submit Job')
+
+    def _go_to_tab(self, title: str) -> None:
+        """Show that tab, where there is one to show."""
+        tabs = getattr(self.ctx, 'tabs_widget', None)
+        where = (getattr(self.ctx, 'tab_indices', None) or {}).get(title)
+        if tabs is not None and where is not None:
+            try:
+                tabs.selected_index = where
+            except Exception:                        # noqa: BLE001
+                pass
 
     def _on_new(self, _button=None) -> None:
         name = str(self.new_name.value or '').strip()
@@ -544,10 +779,22 @@ class ReactionGraphPanel:
 
 
 def create_tab(ctx: Any):
-    """Build the Reactions tab.  Returns ``(widget, refs)``."""
+    """Build the Reactions tab.  Returns ``(widget, refs)``.
+
+    The refs are published onto *ctx* here rather than by the dashboard.  The
+    hardcoded tabs are assigned by ``create_dashboard`` after it builds them;
+    a registered tab goes through the registry, which keeps the widget and
+    drops the refs -- so a tab that wants to be reachable from another one has
+    to hand itself over, and this is where.
+    """
     calc_dir = getattr(ctx, 'calc_dir', None) or (Path.home() / 'calc')
-    panel = ReactionGraphPanel(calc_dir)
-    return panel.widget, {'reaction_graph': panel}
+    panel = ReactionGraphPanel(calc_dir, ctx=ctx)
+    refs = {'reaction_graph': panel}
+    try:
+        ctx.reaction_graph_refs = refs
+    except Exception:                                # noqa: BLE001
+        pass
+    return panel.widget, refs
 
 
 # Registered additively, so nothing built in changes and a tab that fails to

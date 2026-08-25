@@ -27,6 +27,7 @@ widgets = pytest.importorskip('ipywidgets')
 _WATER = "3\nwater\nO 0.000 0.000 0.000\nH 0.957 0.000 0.000\nH -0.240 0.927 0.000\n"
 _CO = "2\ncarbon monoxide\nC 0.000 0.000 0.000\nO 1.128 0.000 0.000\n"
 _HCN = "3\nhydrogen cyanide\nH 0.000 0.000 0.000\nC 1.070 0.000 0.000\nN 2.226 0.000 0.000\n"
+_NH3 = ("4\nammonia\nN 0.000 0.000 0.000\nH 1.012 0.000 0.000\nH -0.337 0.954 0.000\nH -0.337 -0.477 0.826\n")
 
 #: Two barriers either side of what an hour at room temperature pays for, which
 #: is 22.3 kcal/mol -- see :func:`thermal.thermal_ceiling`.
@@ -407,3 +408,207 @@ def test_no_button_is_offered_for_something_that_is_not_built_yet(tmp_path):
     assert named == ['New', 'Reload', 'Rename', 'Save note']
     assert not hasattr(panel, 'open_in_editor_btn')
     assert not hasattr(panel, 'send_to_builder_btn')
+
+
+# ---------------------------------------------------------------------------
+# What the editor may hand over
+# ---------------------------------------------------------------------------
+
+def _offer(xyz, **over):
+    got = dict(xyz=xyz, level='GFN2-xTB', method='gfn2', charge=0,
+               multiplicity=1, energy=-5.0, free_energy=None, imaginary=0,
+               frequency=None, ends=None, gesture='optimise')
+    got.update(over)
+    return got
+
+
+def test_with_no_graph_open_there_is_nothing_to_offer(tmp_path):
+    panel = _panel(tmp_path)
+    assert panel.offer_label(_offer(_WATER)) is None
+
+
+def test_a_structure_nobody_has_goes_in_as_a_new_state(tmp_path):
+    _mechanism(tmp_path)
+    panel = _panel(tmp_path)
+    said = panel.offer_label(_offer(_NH3))
+    assert said is not None and 'new state' in said
+    grew = panel.take(_offer(_NH3, name='the new one'))
+    assert 'is in' in grew
+    again = rg.load(panel.graph.folder)
+    assert [n.label for n in again.nodes][-1] == 'the new one'
+
+
+def test_a_structure_the_graph_already_has_is_offered_as_another_geometry(
+        tmp_path):
+    """A GFN2 and a DFT structure are two geometries of one species, and this
+    is where the second one arrives."""
+    graph, a, *_ = _mechanism(tmp_path)
+    panel = _panel(tmp_path)
+    said = panel.offer_label(_offer(_WATER, level='r2SCAN-3c', method='orca'))
+    assert said == 'Add as a r2SCAN-3c record on educt'
+    panel.take(_offer(_WATER, level='r2SCAN-3c', method='orca', energy=-76.4))
+    again = rg.load(graph.folder)
+    assert rg.best(again.node(a.id), 'r2SCAN-3c').energy == -76.4
+    assert len(again.nodes) == 3, 'and no fourth state was invented'
+
+
+def test_a_walk_that_left_two_ends_lays_down_the_whole_step(tmp_path):
+    """The shape a scan produces, and the most valuable hand-over there is: a
+    barrier arrives with both the structures it is a barrier between."""
+    graph = rg.create(tmp_path / 'fresh', name='fresh')
+    panel = _panel(tmp_path)
+    said = panel.offer_label(_offer(_HCN, ends=(_WATER, _CO), imaginary=1))
+    assert said == 'Put both ends and the step in fresh'
+
+    grew = panel.take(_offer(_HCN, ends=(_WATER, _CO), imaginary=1,
+                             frequency=-412.0, gesture='to the saddle'))
+    again = rg.load(graph.folder)
+    assert len(again.nodes) == 2 and len(again.edges) == 1
+    edge = again.edges[0]
+    assert edge.source == again.nodes[0].id
+    assert edge.target == again.nodes[1].id
+    assert edge.records[0].frequency == -412.0
+    assert 'joins' in grew
+
+
+def test_the_same_walk_twice_does_not_put_its_educt_in_twice(tmp_path):
+    """A duplicate state is a twin whose energies quietly disagree."""
+    graph = rg.create(tmp_path / 'fresh', name='fresh')
+    panel = _panel(tmp_path)
+    panel.take(_offer(_HCN, ends=(_WATER, _CO), imaginary=1))
+    panel.take(_offer(_HCN, ends=(_WATER, _HCN), imaginary=1))
+    again = rg.load(graph.folder)
+    assert len(again.nodes) == 3, [n.id for n in again.nodes]
+    assert len(again.edges) == 2
+    assert again.edges[0].source == again.edges[1].source, 'one educt'
+
+
+def test_two_ends_that_are_the_same_structure_are_refused(tmp_path):
+    rg.create(tmp_path / 'fresh', name='fresh')
+    panel = _panel(tmp_path)
+    said = panel.take(_offer(_HCN, ends=(_WATER, _WATER), imaginary=1))
+    assert 'did not go into the graph' in said
+    assert 'nothing between them' in said
+
+
+def test_a_saddle_with_no_two_ends_is_not_offered_at_all(tmp_path):
+    """A transition is an edge and an edge needs the two states it joins. Put
+    in as a state it would be a minimum in the document that is not one.
+
+    Standing beside the missing button is ``Down to both ends``, which appears
+    exactly when there is a saddle and is what produces the ends.
+    """
+    _mechanism(tmp_path)
+    panel = _panel(tmp_path)
+    assert panel.offer_label(_offer(_NH3, imaginary=1)) is None
+    assert panel.offer_label(_offer(_NH3, imaginary=0)) is not None
+
+
+def test_what_went_in_says_what_produced_it(tmp_path):
+    graph = rg.create(tmp_path / 'fresh', name='fresh')
+    panel = _panel(tmp_path)
+    panel.take(_offer(_WATER, gesture='climbed to a saddle'))
+    again = rg.load(graph.folder)
+    record = again.nodes[0].records[0]
+    assert record.source['kind'] == 'editor'
+    assert record.source['gesture'] == 'climbed to a saddle'
+    assert 'record added' in [one['what'] for one in rg.history(again)]
+
+
+def test_the_tab_shows_what_just_landed(tmp_path):
+    graph = rg.create(tmp_path / 'fresh', name='fresh')
+    panel = _panel(tmp_path)
+    assert panel.network.options == ()
+    panel.take(_offer(_WATER, name='educt'))
+    shown = [ref for _line, ref in panel.network.options]
+    assert shown == [rg.load(graph.folder).nodes[0].id]
+
+
+def test_something_that_is_not_a_structure_is_not_offered(tmp_path):
+    _mechanism(tmp_path)
+    panel = _panel(tmp_path)
+    assert panel.offer_label(_offer('')) is None
+    assert panel.offer_label(_offer('nothing at all')) is None
+
+
+# ---------------------------------------------------------------------------
+# Back to the workbench
+# ---------------------------------------------------------------------------
+
+class _Tabs:
+    def __init__(self):
+        self.selected_index = 0
+
+
+class _Dashboard:
+    """Enough of a dashboard for the panel to find its way back to one."""
+
+    def __init__(self, calc_dir):
+        self.calc_dir = calc_dir
+        self.submit_refs = {'coords_widget': widgets.Textarea(value='')}
+        self.tabs_widget = _Tabs()
+        self.tab_indices = {'Submit Job': 0, 'Reactions': 5}
+        self.reaction_graph_refs = {}
+
+
+def test_with_no_submit_tab_there_is_no_button_to_send_it_to_one(tmp_path):
+    """This tab is usable on its own, and a press that would reach a tab that
+    is not there is the row claiming something untrue."""
+    _mechanism(tmp_path)
+    panel = _panel(tmp_path)
+    assert panel.to_editor_btn.layout.display == 'none'
+
+
+def test_a_geometry_goes_into_the_submit_box_and_the_tab_is_shown(tmp_path):
+    graph, a, *_ = _mechanism(tmp_path)
+    ctx = _Dashboard(tmp_path)
+    ctx.tabs_widget.selected_index = 5
+    panel = tab.ReactionGraphPanel(tmp_path, ctx=ctx)
+    panel.network.value = a.id
+    assert panel.to_editor_btn.layout.display == ''
+
+    panel._on_to_editor()
+    written = ctx.submit_refs['coords_widget'].value
+    assert written.splitlines()[0] == '3', 'the atom count is the real one'
+    assert 'educt at GFN2-xTB' in written.splitlines()[1]
+    assert 'O ' in written and 'H ' in written
+    assert ctx.tabs_widget.selected_index == 0, 'and it went there'
+
+
+def test_a_level_with_no_geometry_offers_no_way_to_open_it(tmp_path):
+    graph, a, b, *_ = _mechanism(tmp_path)
+    rg.add_record(graph, a.id, _WATER,
+                  rg.Record(level='r2SCAN-3c', method='orca', energy=-76.4))
+    rg.save(graph)
+    ctx = _Dashboard(tmp_path)
+    panel = tab.ReactionGraphPanel(tmp_path, ctx=ctx)
+    panel.level_dd.value = 'r2SCAN-3c'
+    panel.network.value = a.id
+    assert panel.to_editor_btn.layout.display == ''
+    panel.network.value = b.id
+    assert panel.to_editor_btn.layout.display == 'none'
+
+
+def test_sending_a_structure_to_the_editor_is_not_written_into_the_document(
+        tmp_path):
+    """A document that recorded "sent to the editor" would be recording an
+    intention. What comes back comes back through the hand-over the other way,
+    with whatever was done to it."""
+    graph, a, *_ = _mechanism(tmp_path)
+    before = len(rg.history(graph))
+    ctx = _Dashboard(tmp_path)
+    panel = tab.ReactionGraphPanel(tmp_path, ctx=ctx)
+    panel.network.value = a.id
+    panel._on_to_editor()
+    assert len(rg.history(rg.load(graph.folder))) == before
+
+
+def test_the_tab_hands_itself_to_the_dashboard_so_the_editor_can_find_it(
+        tmp_path):
+    """The registry keeps the widget and drops the refs, so a registered tab
+    that wants to be reachable has to publish itself."""
+    ctx = _Dashboard(tmp_path)
+    tab.create_tab(ctx)
+    assert 'reaction_graph' in ctx.reaction_graph_refs
+    assert isinstance(ctx.reaction_graph_refs['reaction_graph'],
+                      tab.ReactionGraphPanel)

@@ -478,8 +478,14 @@ def add_transition(graph: Graph, xyz: str, record: Record, *,
                 note=str(note or ''))
     graph.edges.append(edge)
     add_record(graph, edge.id, xyz, record)
-    remember(graph, 'transition added', ref=edge.id, source=source,
-             target=target, level=record.level,
+    # ``from_state`` and ``to_state`` rather than ``source`` and ``target``.
+    # A record's line already uses ``source`` for where the number came from,
+    # and one key meaning provenance on one line and a node id on the next is
+    # how a log stops being readable -- which is the only thing this file is
+    # for.  The dataclass keeps its own names; the history is a different
+    # document with a different reader.
+    remember(graph, 'transition added', ref=edge.id, from_state=source,
+             to_state=target, level=record.level,
              confirmed=bool(confirmed))
     return edge
 

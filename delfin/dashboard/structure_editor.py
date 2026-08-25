@@ -819,7 +819,8 @@ class Editor:
 def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
           update_view, get_smiles_charge, set_buttons_disabled=None,
           offer_structures=None, read_input=None, write_input=None,
-          list_structures=None, show_output=None):
+          list_structures=None, show_output=None,
+          graph_offer=None, put_in_graph=None):
     """Make one structure editor over the coordinates a tab keeps.
 
     *state* is the tab's own dictionary -- the editor keeps its history, its
@@ -2134,6 +2135,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: costs; H, T*S and the zero-point energy are printed in the same block
     #: as G and were being read past, and the temperature box the answer is
     #: computed at is already on this row.
+    #: What is on screen, into the reaction network the Reactions tab has
+    #: open.  Two callbacks and one button, and the editor holds neither end of
+    #: the decision: it says what it has, the graph side says what can be done
+    #: with it and writes the name on the press.  A workbench that knew the
+    #: network's rules would be holding a second copy of them, and two copies
+    #: of a rule is one rule that will disagree with itself.
+    #:
+    #: Absent when there is no graph open, and absent when there is nothing
+    #: correct to do -- which is the same rule every control in this row obeys.
+    submit_graph_btn = widgets.Button(
+        description='Put in graph',
+        tooltip=('Put what is on screen into the reaction network that is '
+                 'open in the Reactions tab'),
+        layout=widgets.Layout(width='auto', display='none'),
+    )
+
     submit_shape_btn = widgets.Button(
         description='What is it?', icon='question', button_style='',
         tooltip=(
@@ -2492,6 +2509,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # something untrue. Their arriving is how the editor says the two
             # questions about a transition state can now be asked.
             submit_mode_dd, submit_mode_btn, submit_ends_btn,
+            # And what a network can take, last of the group: everything
+            # before it makes a structure or says what one is, and this is
+            # where the answer stops being about the workbench.
+            submit_graph_btn,
             submit_poly_dd, submit_poly_turn_btn,
             submit_hyb_dd, submit_hyb_auto_btn,
             submit_internal_group,
@@ -3050,6 +3071,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                        submit_saddle_from, submit_saddle_how,
                        submit_mode_dd, submit_mode_btn, submit_ends_btn,
                        submit_climb_btn, submit_shape_btn,
+                       submit_graph_btn,
                        submit_path_from_btn):
             widget.disabled = not enabled
         submit_labels_btn.disabled = not enabled
@@ -7455,6 +7477,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             schedule_ui_update(_install_gfn_frame_watcher)
         played = [False]
         state['gfn_energy'] = None
+        state['gfn_energy_for'] = None
         state['gfn_held'] = None
         state['gfn_halt_sent'] = False
         run_id = _claim_the_frame_run()
@@ -7637,6 +7660,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     if outcome.get('energy') is not None and position == 0:
                         state['gfn_energy'] = float(outcome['energy'])
                         state['gfn_energy_unit'] = outcome.get('energy_unit')
+                        # And the geometry it belongs to.  An energy carried
+                        # over quietly onto the next structure is the
+                        # difference between two unrelated numbers -- the same
+                        # defect the thermal anchor was given this exact test
+                        # for -- and here it would be written into a document
+                        # as a fact about a species.
+                        state['gfn_energy_for'] = _structure_fingerprint(
+                            outcome.get('xyz') or '')
                     if position == 0:
                         # The charges of the structure that is about to be on
                         # screen, out of the answer that is about to draw it.
@@ -12331,8 +12362,119 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             submit_mode_dd.layout.display = (
                 '' if has_modes and order > 1 and len(named) > 1 else 'none')
             _name_the_saddle_press()
+            # And whether any of that can go into a network.  Here because
+            # this is what runs when the structure, the method or what the
+            # last press left has changed -- which is exactly when the answer
+            # moves.
+            _refresh_graph_button()
         finally:
             state['saddle_controls_quiet'] = False
+
+    def _graph_offer():
+        """What there is to hand over, or None when there is nothing.
+
+        Read off the boxes the user is working in rather than out of a store,
+        so what goes into the document is what the screen was saying: the
+        method, the charge and the spin as set, the energy the last answer
+        reported for *this* geometry, and whether anything has said what the
+        structure is.
+
+        The level is written out the way a caption would carry it -- the method
+        as it is named in the box, with the solvent where one is set -- because
+        that string is what a diagram is drawn *at*, and a network drawn from
+        two records whose levels differ only in a solvent nobody wrote down is
+        a network that cannot be defended.
+        """
+        xyz = _current_xyz() or ''
+        if not _gfn.atom_lines(xyz):
+            return None
+        method = str(submit_ff_dd.value or '')
+        named = dict((value, label) for label, value in submit_ff_dd.options)
+        wet = str(submit_gfn_solvent.value or '')
+        level = named.get(method, method) + (f'/{wet}' if wet else '')
+        # The energy belongs to the geometry it was measured on and to no
+        # other, told apart the way everything else in this file tells
+        # structures apart.  Carried over quietly it would be the difference
+        # between two unrelated numbers, written into a document as a fact.
+        energy = None
+        if state.get('gfn_energy_for') == _structure_fingerprint(xyz):
+            energy = state.get('gfn_energy')
+        # And what it is, if a press has asked.  The shape answer names the
+        # structure it was taken on for the same reason.
+        shape = state.get('saddle_modes') or {}
+        imaginary = frequency = None
+        if shape.get('xyz') and _structure_fingerprint(shape['xyz']) == \
+                _structure_fingerprint(xyz):
+            found = shape.get('modes') or {}
+            imaginary = found.get('count')
+            modes = found.get('modes') or []
+            frequency = float(modes[0]) if modes else None
+        return {
+            'xyz': xyz, 'level': level, 'method': method,
+            'charge': int(submit_gfn_charge.value or 0),
+            'multiplicity': _gfn_uhf_now() + 1,
+            'energy': energy, 'free_energy': None,
+            'imaginary': imaginary, 'frequency': frequency,
+            'ends': state.get('scan_ends'),
+            'gesture': _last_comment_of(xyz),
+        }
+
+    def _last_comment_of(xyz):
+        """The editor's own claim about this geometry, for the history.
+
+        The comment line is where every press in this file writes what it did
+        -- "optimised to a transition state", "scanned", "where the hand left
+        it" -- so it is already an account of how the structure came about, and
+        copying it costs nothing and is truer than a label chosen here.
+
+        Only when it *is* one of those claims.  An XYZ comment is free text and
+        xtb writes its own there: measured on a real optimisation, the line
+        reads ``energy: -5.504066183163 gnorm: 0.000283898985 xtb: 6.7.1``,
+        and copied into a document as the account of how a species came about
+        that is noise wearing the shape of provenance.  :func:`_is_editor_comment`
+        is the same test the undo history and the scan's own picture use to
+        decide whether a comment line is this editor speaking.
+        """
+        rows = str(xyz or '').splitlines()
+        said = rows[1].strip() if len(rows) > 1 else ''
+        return said if _is_editor_comment(said) else 'the editor'
+
+    def _refresh_graph_button():
+        """Whether there is a network to put this in, and what pressing does.
+
+        Asked of the graph side every time, rather than cached: a graph is
+        opened and closed in another tab while this one is standing still, and
+        a button that remembers an answer from before that is a button that
+        writes into a document nobody has open.
+        """
+        if graph_offer is None:
+            submit_graph_btn.layout.display = 'none'
+            return
+        try:
+            offer = _graph_offer()
+            said = graph_offer(offer) if offer else None
+        except Exception:                            # noqa: BLE001
+            said = None
+        if not said:
+            submit_graph_btn.layout.display = 'none'
+            return
+        submit_graph_btn.description = said
+        submit_graph_btn.layout.display = ''
+
+    def on_submit_graph(_button=None):
+        """Hand it over, and say what happened on the row that is already there."""
+        if put_in_graph is None:
+            return
+        offer = _graph_offer()
+        if not offer:
+            return
+        try:
+            said = put_in_graph(offer)
+        except Exception as exc:                     # noqa: BLE001
+            said = f'It did not go into the graph: {exc}'
+        if said:
+            _set_mol_status(said)
+        _refresh_graph_button()
 
     def _keep_the_choice(box, options, wish):
         """Rewrite a box's entries without throwing away what was chosen.
@@ -15503,6 +15645,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_path_from_btn.on_click(on_submit_path_from)
     submit_saddle_btn.on_click(on_submit_saddle)
     submit_shape_btn.on_click(on_submit_shape)
+    submit_graph_btn.on_click(on_submit_graph)
     # The start decides which ways there are -- there is no walk to stop after
     # when the start is the structure on screen -- so it goes through the one
     # place that works both boxes out; the way only renames the press.

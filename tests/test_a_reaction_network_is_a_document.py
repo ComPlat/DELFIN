@@ -522,3 +522,26 @@ def test_a_folder_name_cannot_escape_or_be_empty(tmp_path):
     assert "/" not in G.safe_name("../../etc/passwd")
     assert G.safe_name("   ") == "graph"
     assert G.safe_name("r2SCAN-3c/CPCM(THF)") == "r2SCAN-3c_CPCM_THF"
+
+
+def test_one_key_in_the_history_never_means_two_things(tmp_path):
+    """``source`` on a record's line is where the number came from. If an
+    edge's line used it for the state it leaves, one word would mean
+    provenance on one line and a node id on the next -- and a log that cannot
+    be read is the only thing this file is for."""
+    graph = _graph(tmp_path)
+    a = G.add_state(graph, _WATER,
+                    G.Record(level="GFN2-xTB", free_energy=-5.0,
+                             source={"kind": "editor"}))
+    b = G.add_state(graph, _CO, _record("GFN2-xTB", free=-5.0))
+    e = G.add_transition(graph, _HCN, _record("GFN2-xTB", free=-4.9),
+                         source=a.id, target=b.id)
+    lines = G.history(graph)
+    edge_line = next(one for one in lines if one["what"] == "transition added")
+    assert edge_line["from_state"] == a.id
+    assert edge_line["to_state"] == b.id
+    assert "source" not in edge_line
+    first_record = next(one for one in lines if one["what"] == "record added")
+    assert first_record["source"] == {"kind": "editor"}
+    # And the edge itself keeps its own names: the dataclass is not the log.
+    assert graph.edge(e.id).source == a.id
