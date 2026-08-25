@@ -1,23 +1,30 @@
-"""Headless CLI entrypoint for the .delfin agent.
+"""CLI entrypoint for the .delfin agent — installed as ``delfin-agent``.
 
-Run a single agent turn without the dashboard, suitable for CI hooks,
-nightly summaries, scripted refactors. The session is auto-saved so a
-subsequent invocation with ``--session`` continues where this one left
-off.
+Two front doors, one parser. ``chat`` is the agent in the directory you
+are standing in and is what a bare invocation routes to; ``run`` and the
+rest are the headless commands, unchanged, and are what CI hooks, the
+scheduler daemon and the benchmark drive.
 
 Examples::
 
-    # one-shot prompt, defaults to API backend + solo mode
-    python -m delfin.agent.cli run "summarise the changes since main"
+    # the agent, here, in this directory
+    delfin-agent
 
-    # continue a previous session by id (or 'latest')
-    python -m delfin.agent.cli run --session latest "any unresolved TODOs?"
+    # one prompt, answer on stdout, exit
+    delfin-agent -p "summarise the changes since main"
+    echo "list failing tests" | delfin-agent
 
-    # machine-readable output
-    python -m delfin.agent.cli run --json "list failing tests"
+    # headless: one turn, auto-saved so --session continues it
+    delfin-agent run "summarise the changes since main"
+    delfin-agent run --session latest "any unresolved TODOs?"
+    delfin-agent run --json "list failing tests"
 
     # init a fresh project
-    python -m delfin.agent.cli init /path/to/repo
+    delfin-agent init /path/to/repo
+
+``python -m delfin.agent.cli <subcommand>`` keeps working for every
+subcommand; only the implicit-``chat`` routing is specific to the
+installed console script.
 """
 
 from __future__ import annotations
@@ -32,18 +39,42 @@ from pathlib import Path
 from typing import Any
 
 
+def _engine_defaults() -> dict[str, str]:
+    """Backend/provider/model/effort the user last chose in the dashboard.
+
+    Read from ``~/.delfin_settings.json`` the same way the dashboard reads
+    it. Without this the terminal and the dashboard talk to two different
+    models out of one settings file, and the terminal picks the constructor
+    default (Anthropic) rather than the provider the user actually
+    configured. Applied only where the CLI flag is empty.
+    """
+    try:
+        from delfin.user_settings import load_settings
+        agent = (load_settings() or {}).get("agent", {}) or {}
+    except Exception:
+        return {}
+    return {k: str(agent.get(k, "") or "")
+            for k in ("backend", "provider", "model", "effort")}
+
+
 def _build_engine(args: argparse.Namespace):
     """Construct an AgentEngine for the given CLI args.
 
     AgentEngine creates its own client internally via ``create_client``,
     so we just hand it the resolved (backend, provider, model, mode)
     tuple and let it own the lifecycle.
+
+    ``settings_defaults`` is opt-in per command: ``chat`` passes them so a
+    bare ``delfin-agent`` uses the configured provider, while ``run`` keeps
+    its historical defaults so the scheduler and the benchmark are not
+    moved under anyone's feet by a settings file.
     """
     from .engine import AgentEngine
 
-    backend = args.backend or "api"
-    model = args.model or ""
-    provider = args.provider or ""
+    fallback = _engine_defaults() if getattr(args, "settings_defaults", False) else {}
+    backend = args.backend or fallback.get("backend", "") or "api"
+    model = args.model or fallback.get("model", "")
+    provider = args.provider or fallback.get("provider", "")
     mode = getattr(args, "mode", "") or "solo"
     cwd = getattr(args, "cwd", "") or os.getcwd()
     return AgentEngine(
@@ -52,6 +83,10 @@ def _build_engine(args: argparse.Namespace):
         provider=provider,
         model=model,
         mode=mode,
+        # Declared on the parser since the first version of this file and
+        # never forwarded: --effort parsed fine and changed nothing.
+        effort=getattr(args, "effort", "") or fallback.get("effort", ""),
+        permission_mode=getattr(args, "permission_mode", "") or "",
     )
 
 
@@ -250,6 +285,36 @@ def cmd_run(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
     return 0 if not out["error"] else 1
+
+
+def cmd_chat(args: argparse.Namespace) -> int:
+    """The ``delfin-agent`` front door: a session in the current directory.
+
+    Interactive mode lands in a later wave. What works today is the
+    non-interactive half — ``-p/--print`` and a piped prompt — and it is
+    deliberately routed through ``cmd_run`` rather than reimplemented, so
+    the JSON payload and the session-save semantics are the same code and
+    cannot drift into a second contract.
+    """
+    prompt = (getattr(args, "print_prompt", "") or "").strip()
+    if not prompt and not sys.stdin.isatty():
+        try:
+            prompt = sys.stdin.read().strip()
+        except Exception:
+            prompt = ""
+    if not prompt:
+        print(
+            "The interactive session is not wired up yet.\n"
+            "  delfin-agent -p \"...\"      one prompt, answer on stdout\n"
+            "  echo \"...\" | delfin-agent  the same, from a pipe",
+            file=sys.stderr,
+        )
+        return 2
+
+    args.prompt = [prompt]
+    args.session = getattr(args, "session", "") or ""
+    args.json = (getattr(args, "output_format", "text") == "json")
+    return cmd_run(args)
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -1130,37 +1195,92 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     return 1 if any(r.get("status") == "FAIL" for r in results) else 0
 
 
+def _subcommand_names(parser: argparse.ArgumentParser) -> frozenset[str]:
+    """The subcommands the parser really registers.
+
+    Derived from the parser instead of duplicated in a constant. A hand-
+    kept list is one edit away from routing a real subcommand into the
+    chat prompt, which would turn a typo'd command into a billed turn.
+    """
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return frozenset(action.choices)
+    return frozenset()
+
+
+def _route_argv(argv: list[str], known: frozenset[str]) -> list[str]:
+    """Prepend the implicit ``chat`` subcommand.
+
+    A bare invocation and anything starting with a flag is the session in
+    the current directory; a first token that names a real subcommand, or
+    asks for help, is left exactly as typed.
+    """
+    if not argv:
+        return ["chat"]
+    if argv[0] in known or argv[0] in ("-h", "--help", "--version"):
+        return list(argv)
+    return ["chat", *argv]
+
+
+def _add_agent_flags(p: argparse.ArgumentParser, *,
+                     mode_default: str = "solo",
+                     max_tokens_default: int = 4096) -> None:
+    """Engine-selection flags shared by ``chat`` and ``run``.
+
+    One definition, so the two front doors cannot drift into offering
+    different spellings of the same choice.
+    """
+    # The old help advertised `quick`, one of the pipeline modes retired
+    # from the dashboard months ago — so the CLI kept offering a mode the
+    # product had dropped, and the flag took it because there is no
+    # `choices=`. Named modes only, and an unknown one falls back to solo
+    # rather than failing, which is what the engine already does.
+    p.add_argument("--mode", default=mode_default,
+                   help="Agent mode: solo / dashboard / office / research "
+                        "(plan is a permission profile, not a mode)")
+    p.add_argument("--backend", default="", choices=["", "api", "cli"],
+                   help="api (direct Anthropic) or cli (subprocess)")
+    p.add_argument("--provider", default="",
+                   help="claude / openai / kit / ollama")
+    p.add_argument("--model", default="",
+                   help="Model name (provider-specific)")
+    p.add_argument("--effort", default="",
+                   help="low/medium/high/xhigh")
+    p.add_argument("--max-tokens", type=int, default=max_tokens_default,
+                   dest="max_tokens")
+    p.add_argument("--cwd", default="", help="Run in this directory")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="python -m delfin.agent.cli",
-        description="Headless .delfin agent runner",
+        prog="delfin-agent",
+        description="The .delfin agent, in a terminal",
     )
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    # chat — the implicit subcommand a bare `delfin-agent` routes to
+    chat = sub.add_parser("chat", help="Agent session in the current directory")
+    chat.add_argument("prompt", nargs="*",
+                      help="Opening prompt (optional)")
+    chat.add_argument("-p", "--print", default="", dest="print_prompt",
+                      metavar="PROMPT",
+                      help="Answer one prompt and exit (non-interactive)")
+    chat.add_argument("--output-format", default="text",
+                      choices=["text", "json"], dest="output_format",
+                      help="text (default) or json")
+    chat.add_argument("--session", default="",
+                      help="Session ID to resume, or 'latest'")
+    _add_agent_flags(chat)
+    chat.add_argument("-v", "--verbose", action="store_true")
+    # Only this front door inherits the dashboard's saved provider/model.
+    chat.set_defaults(func=cmd_chat, settings_defaults=True)
 
     # run
     run = sub.add_parser("run", help="Run one agent turn")
     run.add_argument("prompt", nargs="+", help="The user prompt")
     run.add_argument("--session", default="",
                      help="Session ID to resume, or 'latest'")
-    # The old help advertised `quick`, one of the pipeline modes retired
-    # from the dashboard months ago — so the CLI kept offering a mode the
-    # product had dropped, and the flag took it because there is no
-    # `choices=`. Named modes only, and an unknown one falls back to solo
-    # rather than failing, which is what the engine already does.
-    run.add_argument("--mode", default="solo",
-                     help="Agent mode: solo / dashboard / office / research "
-                          "(plan is a permission profile, not a mode)")
-    run.add_argument("--backend", default="", choices=["", "api", "cli"],
-                     help="api (direct Anthropic) or cli (subprocess)")
-    run.add_argument("--provider", default="",
-                     help="claude / openai / kit")
-    run.add_argument("--model", default="",
-                     help="Model name (provider-specific)")
-    run.add_argument("--effort", default="",
-                     help="low/medium/high/xhigh")
-    run.add_argument("--max-tokens", type=int, default=4096,
-                     dest="max_tokens")
-    run.add_argument("--cwd", default="", help="Run in this directory")
+    _add_agent_flags(run)
     run.add_argument("--json", action="store_true",
                      help="Emit JSON instead of plain text")
     run.add_argument("-v", "--verbose", action="store_true")
@@ -1491,7 +1611,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    args = parser.parse_args(_route_argv(argv, _subcommand_names(parser)))
     try:
         return int(args.func(args) or 0)
     except KeyboardInterrupt:
