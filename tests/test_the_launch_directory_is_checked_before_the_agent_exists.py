@@ -189,7 +189,18 @@ def test_an_ephemeral_workspace_says_the_write_gate_is_inert(monkeypatch, tmp_pa
         f"{scratch} is under /tmp, where writes skip the path gate")
 
 
-def test_untrusted_definitions_are_reported_and_asked_about(monkeypatch, tmp_path):
+def test_untrusted_definitions_are_reported_but_not_asked_about(monkeypatch,
+                                                                tmp_path):
+    """Withholding IS the safe state, so there is nothing to decide.
+
+    This began as an ASK — "start only if the user says so" — and the
+    only two outcomes it offers are start anyway and quit. Neither loads
+    the definitions, so the question changes nothing about the session
+    and its whole effect is a keystroke that teaches people to answer
+    yes. What the user cannot otherwise learn is that the folder offers
+    something and that nothing from it runs; that is a notice, and it
+    names the way to change it.
+    """
     fake_home = tmp_path / "home"
     project = fake_home / "project"
     project.mkdir(parents=True)
@@ -200,9 +211,63 @@ def test_untrusted_definitions_are_reported_and_asked_about(monkeypatch, tmp_pat
 
     report = lg.inspect_launch_dir(project)
     assert report.trust_notices == ("2 hook commands are withheld",)
-    asked = {f.code for f in report.questions}
-    assert "untrusted_workspace" in asked
-    assert "withheld" in report.render()
+    assert "untrusted_workspace" in {f.code for f in report.findings}
+    assert not report.questions, "nothing here blocks the session"
+    rendered = report.render()
+    assert "withheld" in rendered
+    assert "Nothing from them runs" in rendered
+    assert "/trust" in rendered, "name the remedy, not only the state"
+
+
+def test_an_ask_level_finding_actually_stops_the_session(monkeypatch, tmp_path):
+    """The level had no consumer, so its meaning was a sentence only.
+
+    `LaunchReport.questions` was never read by anything; an ASK became a
+    paragraph that scrolled past and the session opened regardless. The
+    finding above no longer uses the level — but the level has to work,
+    or the next one to use it inherits the same silence.
+    """
+    import io
+    from delfin.agent import cli as agent_cli
+
+    report = lg.LaunchReport(
+        workspace=tmp_path,
+        findings=(lg.LaunchFinding(lg.ASK, "made_up", "Something to decide"),),
+    )
+
+    stream = io.StringIO("n\n")
+    stream.isatty = lambda: True        # type: ignore[method-assign]
+    monkeypatch.setattr("sys.stdin", stream)
+    monkeypatch.setattr("builtins.input", lambda *a: "n")
+    assert agent_cli._launch_questions_answered(report) is False
+
+    monkeypatch.setattr("builtins.input", lambda *a: "y")
+    assert agent_cli._launch_questions_answered(report) is True
+
+
+def test_a_question_nobody_can_answer_is_answered_no(monkeypatch, tmp_path):
+    """A pipe cannot consent. Neither can a bare Enter."""
+    import io
+    from delfin.agent import cli as agent_cli
+
+    report = lg.LaunchReport(
+        workspace=tmp_path,
+        findings=(lg.LaunchFinding(lg.ASK, "made_up", "Something to decide"),),
+    )
+    stream = io.StringIO("")
+    stream.isatty = lambda: False       # type: ignore[method-assign]
+    monkeypatch.setattr("sys.stdin", stream)
+    assert agent_cli._launch_questions_answered(report) is False
+
+    stream.isatty = lambda: True        # type: ignore[method-assign]
+    monkeypatch.setattr("builtins.input", lambda *a: "")
+    assert agent_cli._launch_questions_answered(report) is False
+
+
+def test_no_questions_means_no_prompt(tmp_path):
+    from delfin.agent import cli as agent_cli
+    report = lg.LaunchReport(workspace=tmp_path, findings=())
+    assert agent_cli._launch_questions_answered(report) is True
 
 
 def test_a_broken_trust_store_does_not_stop_the_agent(monkeypatch, tmp_path):

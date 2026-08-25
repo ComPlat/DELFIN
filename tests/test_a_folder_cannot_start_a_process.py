@@ -128,3 +128,39 @@ def test_a_project_may_disable_a_builtin(tmp_path):
     ws = tmp_path / "proj"
     _write_cfg(ws, {"delfin-tools": {"enabled": False}}, trusted=True)
     assert "delfin-tools" not in M._load_configs(ws)
+
+
+def test_a_disable_only_config_is_not_mistaken_for_an_empty_one(tmp_path):
+    """A count of what would be LOADED is not a count of what was SAID.
+
+    The trust gate stopped reporting files that offer nothing, so a
+    workspace whose settings file merely exists no longer meets the user
+    with a paragraph about zero withheld definitions. The predicate it
+    used was the number of ENABLED definitions — and a file that only
+    disables one has none of those while still being an instruction.
+
+    Reading it as empty meant the file was never handed to the loader, so
+    every disable a trusted workspace had written was dropped: a
+    tightening refused for looking like silence.
+    """
+    from delfin.agent import workspace_trust as WT
+
+    ws = tmp_path / "proj"
+    _write_cfg(ws, {"delfin-tools": {"enabled": False}}, trusted=True)
+
+    decision = WT.gate(WT.KIND_MCP_SERVERS, ws)
+    assert decision.paths, (
+        "a trusted workspace's file has to reach the loader even when "
+        "everything in it is switched off")
+    assert "delfin-tools" not in M._load_configs(ws)
+
+
+def test_a_file_with_nothing_in_it_still_says_nothing(tmp_path):
+    """The control: the original fix must survive the one above."""
+    from delfin.agent import workspace_trust as WT
+
+    ws = tmp_path / "quiet"
+    _write_cfg(ws, {})
+    decision = WT.gate(WT.KIND_MCP_SERVERS, ws)
+    assert decision.notice == ""
+    assert decision.short_notice == ""
