@@ -105,6 +105,17 @@ class StreamEvent:
 class _BaseClient:
     """Common interface for both backends."""
 
+    #: True only for a backend that mints the session id itself and
+    #: announces it on the stream. The engine leaves ``session_id`` empty
+    #: for those and fills it in from the event; for everyone else an
+    #: empty id is not "not known yet", it is a bucket every session in
+    #: the workspace shares — which is how one session's task list ends up
+    #: reported as another's. Declared here so the question is answered by
+    #: the object that was actually built, not by the backend string that
+    #: was asked for: ``create_client`` returns an OpenAIClient for
+    #: provider kit/ollama/openai whatever ``backend`` says.
+    supplies_session_id: bool = False
+
     def stream_message(
         self,
         system: str,
@@ -150,6 +161,7 @@ class CLIClient(_BaseClient):
     """
 
     DEFAULT_MODEL = "sonnet"
+    supplies_session_id = True          # emits a session_init event
 
     def __init__(self, model: str = "", claude_path: str = "",
                  permission_mode: str = "", cwd: str = "",
@@ -16190,6 +16202,8 @@ class CodexCLIClient(_BaseClient):
         "auto":                ["--full-auto", "--sandbox", "danger-full-access"],
         "bypassPermissions":   ["--full-auto", "--sandbox", "danger-full-access"],
     }
+
+    supplies_session_id = True          # emits a session_init event
 
     def __init__(self, model: str = "", codex_path: str = "",
                  cwd: str = "", permission_mode: str = ""):
