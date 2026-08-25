@@ -215,7 +215,7 @@ def test_the_typed_line_survives_a_tool_line_landing_on_top_of_it():
     """The bottom-line problem, and the reason typing is worth having."""
     agent, _out, err = _agent(_Engine())
     agent._draw_input_line("half a sen")
-    agent._render_around_input(
+    agent._render_around_bottom(
         repl.RenderItem("tool_use", name="bash", text='{"command": "ls"}'))
 
     text = err.getvalue()
@@ -229,7 +229,7 @@ def test_ctrl_o_expands_the_last_result_and_says_when_there_is_none():
     agent._expand_last_result()
     assert "nothing to expand" in err.getvalue()
 
-    agent._render_around_input(
+    agent._render_around_bottom(
         repl.RenderItem("tool_result", name="read_file", text="alpha\nbeta"))
     agent._expand_last_result()
     assert "alpha" in err.getvalue() and "beta" in err.getvalue()
@@ -237,7 +237,7 @@ def test_ctrl_o_expands_the_last_result_and_says_when_there_is_none():
 
 def test_an_expanded_result_cannot_repaint_the_terminal():
     agent, _out, err = _agent(_Engine())
-    agent._render_around_input(
+    agent._render_around_bottom(
         repl.RenderItem("tool_result", name="read_file",
                         text="ok\x1b[2J\x1b]0;pwned\x07"))
     agent._expand_last_result()

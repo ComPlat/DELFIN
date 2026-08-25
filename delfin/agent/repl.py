@@ -27,12 +27,15 @@ from . import repl_render as rr
 __all__ = [
     "RenderItem", "Transcript", "TurnResult", "run_turn", "TURN_KEYS",
     "ReplOptions", "TerminalAgent", "read_block", "HISTORY_NAME",
+    "permission_mode",
 ]
 
 HISTORY_NAME = "agent_repl_history"
 _HISTORY_LINES = 1000
 _PUMP_TICK_S = 0.05
 _JOIN_NOTICE_AFTER_S = 2.0
+_STATUS_TICK_S = 0.25
+_SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 
 # The keys `cli._run_once` returns, and therefore what --output-format json
@@ -120,6 +123,17 @@ class Transcript:
             self._out_open = False
             self._break_pending = False
 
+    @property
+    def answer_open(self) -> bool:
+        """True while the cursor sits inside a half-streamed answer line.
+
+        Both streams share one cursor. Anything that erases the current
+        line — a status repaint, an input redraw — erases the answer being
+        written into it, so the bottom row has to stand down until the
+        answer closes its line.
+        """
+        return self._out_open
+
     @staticmethod
     def _flush(stream) -> None:
         try:
@@ -169,6 +183,22 @@ class TurnResult:
             "output_tokens": self.output_tokens,
             "error": self.error,
         }
+
+
+def permission_mode(engine) -> str:
+    """The posture, or "" when this backend carries no permissions object.
+
+    create_client builds KitToolPermissions only for the kit and ollama
+    providers. On the others the file and shell tools refuse outright, so
+    an empty answer here is a fact the banner has to state rather than
+    paper over with a plausible-looking default.
+    """
+    try:
+        perms = engine.kit_permissions
+    except Exception:
+        return ""
+    mode = getattr(perms, "mode", "") if perms is not None else ""
+    return mode if isinstance(mode, str) else ""
 
 
 def _usage(engine) -> tuple[int, int]:
@@ -384,6 +414,15 @@ class TerminalAgent:
         # result, so Ctrl+O has something to expand.
         self._input_line = ""
         self._last_result_text = ""
+        # The bottom row has exactly one owner. Two things want it — the
+        # line being typed and the live status — so they go through one
+        # place rather than overwriting each other at 4 Hz.
+        self._bottom = ""
+        self._show_tasks = False
+        self._turn_t0 = 0.0
+        self._turn_base = (0, 0, 0.0)
+        self._spin = 0
+        self._last_paint = 0.0
         # Typed during a turn: queued, never injected. A queued message
         # cannot be lost and cannot land in a context nobody could see.
         self.queued: list[str] = []
@@ -473,7 +512,23 @@ class TerminalAgent:
                 self._q.put(RenderItem("error", text=str(exc)))
                 self._q.put(RenderItem("done"))
 
+        import time as _time
+
         self._interrupts = 0
+        self._turn_t0 = _time.monotonic()
+        self._last_paint = 0.0
+        # The engine's counters are cumulative for the SESSION, so the live
+        # line differences against this baseline. Without it the first turn
+        # looks right and every later one reports the whole conversation.
+        try:
+            _st = self.engine.get_status() or {}
+            self._turn_base = (int(_st.get("input_tokens", 0) or 0),
+                               int(_st.get("output_tokens", 0) or 0),
+                               float(_st.get("cost_usd", 0.0) or 0.0))
+        except Exception:
+            self._turn_base = (0, 0, 0.0)
+        compaction_before = getattr(self.engine, "last_compaction_info", None)
+
         self._turn_active.set()
         worker = threading.Thread(target=_worker, name="agent-turn", daemon=True)
         worker.start()
@@ -483,6 +538,9 @@ class TerminalAgent:
             self._turn_active.clear()
             self._settle(worker)
         self.transcript.finish()
+        self._report_compaction(compaction_before)
+        self._report_tasks()
+        self._report_status()
         return result_box[0] if result_box else TurnResult(error="turn produced nothing")
 
     def _pump(self, worker: threading.Thread) -> None:
@@ -494,18 +552,19 @@ class TerminalAgent:
                 if raw.active:
                     for event in decoder.feed(raw.read_ready(_PUMP_TICK_S)):
                         self._on_key(event, decoder)
+                    self._repaint_bottom()
                 try:
                     item = self._q.get(
                         timeout=0.0 if raw.active else _PUMP_TICK_S)
                 except queue.Empty:
                     if not worker.is_alive() and self._q.empty():
-                        self._clear_input_line()
+                        self._clear_bottom()
                         return
                     continue
                 if item.kind == "done":
-                    self._clear_input_line()
+                    self._clear_bottom()
                     return
-                self._render_around_input(item)
+                self._render_around_bottom(item)
 
     # -- keys during a turn ----------------------------------------------
     def _on_key(self, event, decoder) -> None:
@@ -537,9 +596,16 @@ class TerminalAgent:
             self._expand_last_result()
             self._draw_input_line(decoder.buffer)
             return
+        if event.kind == rk.TASKS:
+            self._show_tasks = not self._show_tasks
+            self._clear_bottom()
+            self.transcript.chrome(self.transcript.theme.dim(
+                f"task list {'on' if self._show_tasks else 'off'}"))
+            self._repaint_bottom(force=True)
+            return
         if event.kind == rk.REDRAW:
-            self._clear_input_line()
-            self._draw_input_line(decoder.buffer)
+            self._clear_bottom()
+            self._repaint_bottom(force=True)
             return
         if event.kind == rk.EDIT:
             self._draw_input_line(event.text)
@@ -579,11 +645,11 @@ class TerminalAgent:
         for line in rr.strip_control(self._last_result_text).splitlines():
             self.transcript.chrome("  " + line)
 
-    # -- the line being typed under a running turn ------------------------
+    # -- the bottom row, which has exactly one owner ----------------------
     def _can_redraw(self) -> bool:
         """Only a terminal gets cursor control.
 
-        Redrawing needs \\r and an erase sequence, and those are exactly
+        Redrawing needs \r and an erase sequence, and those are exactly
         the characters this codebase strips out of tool output before
         printing it. Writing them into a redirected stderr would put
         control codes in a log file for a line nobody can see anyway.
@@ -593,37 +659,104 @@ class TerminalAgent:
         except Exception:
             return False
 
-    def _draw_input_line(self, text: str) -> None:
-        self._input_line = text or ""
-        if not text or not self._can_redraw():
+    def _set_bottom(self, text: str) -> None:
+        if text == self._bottom:
             return
-        self.err.write("\r\x1b[K» " + text)
+        self._bottom = text
+        if not self._can_redraw():
+            return
+        self.err.write("\r\x1b[K" + text)
         self._flush_err()
 
-    def _clear_input_line(self) -> None:
-        if not self._input_line:
+    def _clear_bottom(self) -> None:
+        if not self._bottom:
             return
-        self._input_line = ""
+        self._bottom = ""
         if not self._can_redraw():
             return
         self.err.write("\r\x1b[K")
         self._flush_err()
 
-    def _render_around_input(self, item: RenderItem) -> None:
-        """Rendering must not tear the line the user is typing.
+    def _draw_input_line(self, text: str) -> None:
+        """The typed line always wins the row: it is what the user is doing."""
+        self._input_line = text or ""
+        self._repaint_bottom(force=True)
+
+    def _clear_input_line(self) -> None:
+        self._input_line = ""
+        self._clear_bottom()
+
+    def _status_line(self) -> str:
+        """Elapsed, model, posture, what this turn has cost so far.
+
+        Read from get_status() and differenced against a baseline taken at
+        turn start, because the engine's counters are cumulative for the
+        session — reporting them raw would show the whole conversation's
+        cost as this turn's.
+        """
+        import time as _time
+
+        self._spin = (self._spin + 1) % len(_SPINNER)
+        elapsed = max(0.0, _time.monotonic() - self._turn_t0)
+        try:
+            status = self.engine.get_status() or {}
+        except Exception:
+            status = {}
+        base_in, base_out, base_cost = self._turn_base
+        tin = max(0, int(status.get("input_tokens", 0) or 0) - base_in)
+        tout = max(0, int(status.get("output_tokens", 0) or 0) - base_out)
+        cost = max(0.0, float(status.get("cost_usd", 0.0) or 0.0) - base_cost)
+        model = str(getattr(getattr(self.engine, "client", None), "model", "")
+                    or "?")
+        mode = permission_mode(self.engine) or str(status.get("mode", "") or "")
+
+        bits = [f"{_SPINNER[self._spin]} {elapsed:4.0f}s", model]
+        if mode:
+            bits.append(mode)
+        bits.append(f"↑{tin} ↓{tout}")
+        if cost > 0:
+            bits.append(f"${cost:.4f}")
+        bits.append("esc to interrupt")
+        line = "  ".join(bits)
+        return self.transcript.theme.dim(
+            rr.truncate_middle(line, max(20, self.transcript.width - 1)))
+
+    def _repaint_bottom(self, *, force: bool = False) -> None:
+        """One row, one owner: what is being typed, else the live status."""
+        import time as _time
+
+        if not self._can_redraw():
+            return
+        if self.transcript.answer_open:
+            # The model is mid-sentence on the shared cursor line. Painting
+            # here would erase the answer as it streams — the same shared-
+            # cursor hazard as the break that closes a tool line, one step
+            # further along. The row comes back when the answer does.
+            self._clear_bottom()
+            return
+        now = _time.monotonic()
+        if not force and (now - self._last_paint) < _STATUS_TICK_S:
+            return
+        self._last_paint = now
+        if self._input_line:
+            self._set_bottom("» " + self._input_line)
+        elif self._turn_active.is_set():
+            self._set_bottom(self._status_line())
+
+    def _render_around_bottom(self, item: RenderItem) -> None:
+        """Rendering must not tear whatever is on the bottom row.
 
         Erase it, write the transcript line, put it back — the classic
         bottom-line problem, and the reason typing during a turn is worth
         having rather than merely possible.
         """
-        held = self._input_line
-        if held:
-            self._clear_input_line()
+        held_input = self._input_line
+        self._clear_bottom()
         if item.kind == "tool_result" and item.text:
             self._last_result_text = item.text
         self.transcript.render(item)
-        if held:
-            self._draw_input_line(held)
+        self._input_line = held_input
+        self._repaint_bottom(force=True)
 
     def _settle(self, worker: threading.Thread) -> None:
         """Join, THEN clear the stop. Both halves are load-bearing.
@@ -651,6 +784,58 @@ class TerminalAgent:
             self.engine.clear_stop()
         except Exception:
             pass
+
+    # -- what a finished turn has to say ----------------------------------
+    def _report_compaction(self, before) -> None:
+        """A long session silently losing its early history is worth a line."""
+        after = getattr(self.engine, "last_compaction_info", None)
+        if not after or after == before:
+            return
+        try:
+            line = self.engine._compaction_status_line()
+        except Exception:
+            return
+        if line:
+            self.transcript.chrome(self.transcript.theme.dim(
+                line.lstrip("- ")))
+
+    def _report_status(self) -> None:
+        """The user's own status line, if they configured one.
+
+        Reused rather than re-derived: it already never raises, and it
+        already refuses to run a workspace-supplied command.
+        """
+        try:
+            from . import status_line as sl
+            status = self.engine.get_status() or {}
+            text = sl.render_status_line(sl.StatusContext(
+                workspace=self.opts.cwd,
+                mode=permission_mode(self.engine) or str(status.get("mode", "")),
+                model=str(getattr(getattr(self.engine, "client", None),
+                                  "model", "") or ""),
+                tokens=int(status.get("input_tokens", 0) or 0)
+                + int(status.get("output_tokens", 0) or 0),
+                cost_usd=float(status.get("cost_usd", 0.0) or 0.0),
+            ))
+        except Exception:
+            return
+        if text:
+            self.transcript.chrome(self.transcript.theme.dim(text))
+
+    def _report_tasks(self) -> None:
+        """Open work, when the agent left some and the user wants to see it."""
+        if not self._show_tasks:
+            return
+        try:
+            from . import task_ticker
+            text = task_ticker.render_text(
+                self.opts.cwd,
+                session_id=str(getattr(self.engine, "session_id", "") or ""))
+        except Exception:
+            return
+        if text and text != "(no tasks)":
+            for line in text.splitlines():
+                self.transcript.chrome(self.transcript.theme.dim(line))
 
     # -- the loop --------------------------------------------------------
     def run(self, first_prompt: str = "") -> int:
