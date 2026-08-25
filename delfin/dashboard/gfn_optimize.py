@@ -1677,6 +1677,375 @@ def graph_changed(before: Any, after: Any, symbols: Any = None) -> str:
     return ' and '.join(said)
 
 
+def pair_named(pair: Any, symbols: Any = None) -> str:
+    """Two atoms, as a chemist writes them: ``C3-Br4``.
+
+    Counted from one, because that is what the picture and the atom list show
+    and an index counted from zero in a sentence is a defect report waiting to
+    be filed.  The same naming :func:`graph_changed` uses, out here where the
+    rest of the file can reach it.
+    """
+    pair = tuple(int(n) for n in (pair or ()))
+    if not symbols:
+        return '-'.join(str(n + 1) for n in pair)
+    return '-'.join(f'{symbols[n]}{n + 1}' for n in pair
+                    if 0 <= n < len(symbols))
+
+
+def _median(values: Any) -> float:
+    """The middle of these numbers, or 0.0 when there are none."""
+    kept = sorted(float(one) for one in values)
+    if not kept:
+        return 0.0
+    middle = len(kept) // 2
+    if len(kept) % 2:
+        return kept[middle]
+    return 0.5 * (kept[middle - 1] + kept[middle])
+
+
+#: How far out of line a point has to be before a walk is said to have jumped.
+#:
+#: A driven scan holds one coordinate and relaxes everything else, and there
+#: is no rule that the rest has to follow continuously.  When it does not --
+#: some other coordinate slips over its own barrier between one point and the
+#: next -- the profile has a step in it, and everything read off that profile
+#: is about two different paths joined at a discontinuity.  Jonsson, Mills and
+#: Jacobsen named it in 1998: "the path generated may be discontinuous ... some
+#: atomic coordinates may slip near the saddle point region and the saddle
+#: point configuration will then be missed."
+#:
+#: This is not the test for whether a scan can be quoted -- walking the second
+#: leg and comparing is, and it separates cleanly (see :func:`paths_disagree`).
+#: This is what *names the step*, so that the culprit can be named with it,
+#: and its thresholds are set so that it never contradicts the second leg.
+#:
+#: Found on the second difference of the energy, which is what a step in a
+#: curve is: the point before the fall and the point after it both disagree
+#: with the straight line through their neighbours, and by the size of the
+#: fall.  Measured over twenty legs -- ten scans walked out and back under
+#: GFN2, relaxed at every point -- with the two thresholds together, large
+#: enough to be a different structure rather than a different geometry *and*
+#: out of line with what this path itself does:
+#:
+#:     kept its bonding             largest second difference   ratio
+#:       propane C-C-C angle                  0.3 kcal/mol       1.9x
+#:       water dimer O-O                      0.6              20.6x
+#:       glycol OCCO torsion                  1.1               1.8x
+#:       ethane C-C stretch                   1.4               6.9x
+#:       butanol, butane torsions             1.8, 2.1          2.3x
+#:       SN2 Cl-/CH3Cl                        5.2              10.0x
+#:     jumped
+#:       Diels-Alder, backward               12.9              13.5x
+#:       formate/water H transfer            19.0, 32.9         7.9x
+#:       Diels-Alder, forward                33.5             130.7x
+#:       ring opening                        60.6, 93.7        33.3x
+#:
+#: Six legs of six that jumped are found and none of the fourteen that did not
+#: is called one.  Neither threshold does it alone, and that is the finding:
+#: the ratios overlap -- a clean SN2 reaches 10.0x and a real hydrogen
+#: transfer only 7.9x -- while the sizes do not, and a water dimer whose two
+#: molecules turn over inside their hydrogen bond is 21 times its own median
+#: at six tenths of a kcal/mol, which is not a jump by any reading.
+#:
+#: The alternative that suggests itself, the RMSD between consecutive points,
+#: is worse than either: measured on the Diels-Alder it is 0.536 A at the fall
+#: and 0.685 A at a point where nothing happened, so it names the wrong step.
+WALK_JUMPED_TIMES = 4.0
+WALK_JUMPED_AT_LEAST = 10.0   # kcal/mol
+
+
+def where_a_walk_jumped(spent: Any) -> Optional[Dict[str, Any]]:
+    """Which step of a driven scan is a fall rather than a walk, or None.
+
+    *spent* is the energy at each point in kcal/mol, in the order they were
+    walked.  Returned as ``{'step', 'second', 'scale', 'times', 'fell'}``:
+    *step* is the index of the point the walk landed on, so the discontinuity
+    is between ``step - 1`` and ``step``; *fell* is how far the energy moved in
+    that one step.
+
+    Arithmetic on numbers the scan already has, and no geometry: a walk of
+    forty points over a large structure cannot keep forty geometries, and it
+    does not have to.
+    """
+    energies = []
+    for one in (spent or ()):
+        try:
+            energies.append(float(one))
+        except (TypeError, ValueError):
+            return None
+    if len(energies) < 4:
+        # Three points make one second difference, which is its own median:
+        # every path would then be exactly at its own scale and nothing could
+        # ever stand out from it.
+        return None
+    second = [abs(energies[i + 1] - 2.0 * energies[i] + energies[i - 1])
+              for i in range(1, len(energies) - 1)]
+    scale = _median(second)
+    worst = max(range(len(second)), key=lambda i: second[i])
+    height = second[worst]
+    if height < WALK_JUMPED_AT_LEAST:
+        return None
+    if scale > 0.0 and height < WALK_JUMPED_TIMES * scale:
+        return None
+    # A step shows in the second difference at both of its ends, so which of
+    # the two steps around this point was the fall is decided by the plain
+    # difference: the fall is the larger one.
+    here = worst + 1                       # back into the energies' own index
+    before = abs(energies[here] - energies[here - 1])
+    after = (abs(energies[here + 1] - energies[here])
+             if here + 1 < len(energies) else 0.0)
+    step = here if before >= after else here + 1
+    return {'step': step, 'second': height, 'scale': scale,
+            'times': (height / scale) if scale > 0 else float('inf'),
+            'fell': energies[step] - energies[step - 1]}
+
+
+#: How near two atoms have to be, in either of two geometries, for the
+#: distance between them to be worth watching.
+#:
+#: A jump is a bond made or broken, and neither happens at ten Angstrom.  The
+#: bound is what keeps this arithmetic rather than a cost: every pair of atoms
+#: is a square law, and at the 250-atom ceiling GFN2 is offered with that is
+#: 31 000 pairs a step.  Six Angstrom is twice the longest contact the editor
+#: draws and well past any bond.
+_WORTH_WATCHING = 6.0
+
+
+def what_else_moved(before: str, after: str,
+                    driven: Any = ()) -> Optional[Dict[str, Any]]:
+    """The internal coordinate that changed most between two points.
+
+    Everything except the one the scan is driving, which is held and is
+    supposed to change.  Returned as ``{'pair', 'was', 'now', 'moved'}``, or
+    None when there is nothing to compare.
+
+    This is what names the culprit.  A user told that a scan jumped can do
+    nothing with that on its own; told *which* coordinate slipped, they can
+    arm that one too and walk both together, which is what the editor's
+    several-legs-at-once scan is for.  Measured at the fall of the
+    Diels-Alder: the undriven forming C-C went from 2.915 to 1.558 A in one
+    step, 1.357 A, against a median of 0.042 A over the rest of the path --
+    32 times, on a path where nothing else came near it.
+    """
+    was = coordinates_of(before or '')
+    now = coordinates_of(after or '')
+    if not was or len(was) != len(now):
+        return None
+    count = len(was) // 3
+    keep = {tuple(sorted((int(a), int(b))))
+            for a, b in _pairs_of(driven)}
+    here = [(was[3 * i], was[3 * i + 1], was[3 * i + 2]) for i in range(count)]
+    there = [(now[3 * i], now[3 * i + 1], now[3 * i + 2])
+             for i in range(count)]
+    best = None
+    for i in range(count):
+        for j in range(i + 1, count):
+            if (i, j) in keep:
+                continue
+            one = math.dist(here[i], here[j])
+            two = math.dist(there[i], there[j])
+            if one > _WORTH_WATCHING and two > _WORTH_WATCHING:
+                continue
+            moved = abs(two - one)
+            if best is None or moved > best['moved']:
+                best = {'pair': (i, j), 'was': one, 'now': two, 'moved': moved}
+    return best
+
+
+def _pairs_of(driven: Any) -> List[tuple]:
+    """Every pair of atoms the caller says is being driven.
+
+    A leg of a scan is two atoms for a distance, three for an angle and four
+    for a torsion, and in all three cases the atoms named are the ones the
+    walk is dictating -- so every pair among them is a coordinate that is
+    meant to change and is not evidence of anything.
+
+    Given a list of legs or a single leg, because both readings of "the atoms
+    being driven" are natural at the call site and getting the wrong one would
+    quietly leave the driven coordinate in the comparison, where it is the
+    largest change on every step of every scan.
+    """
+    legs = list(driven or ())
+    if legs and all(isinstance(one, int) for one in legs):
+        legs = [legs]
+    out = []
+    for leg in legs:
+        try:
+            numbers = [int(one) for one in leg]
+        except (TypeError, ValueError):
+            continue
+        for a in range(len(numbers)):
+            for b in range(a + 1, len(numbers)):
+                out.append((numbers[a], numbers[b]))
+    return out
+
+
+#: How far two legs of the same walk may disagree and still be one path.
+#:
+#: A driven scan is a minimum-energy path only where the coordinate it is not
+#: driving follows continuously; Bofill and Quapp (Mol. Phys. 2019) give the
+#: condition exactly -- no turning point and no valley-ridge inflection.  Where
+#: it fails the answer depends on which way the walk went, and the way to find
+#: that out is to walk it back and compare.
+#:
+#: The number is what a difference in a barrier does to a rate.  At 298 K,
+#: RT ln 10 is 1.36 kcal/mol: two barriers further apart than that are two
+#: rates an order of magnitude apart, and two barriers nearer than it are the
+#: same answer to any use a barrier is put to.  It is a temperature, so it is
+#: worked out at the temperature the editor is set to rather than fixed here.
+#:
+#: Measured against it, on eleven scans run out and back under GFN2 -- torsions
+#: of an alkane, an alcohol, a diol and an amide, a C-C stretch, a C-C-C angle,
+#: a hydrogen bond, an SN2, a ring opening and a Diels-Alder:
+#:
+#:     every scan that kept its bonding      under 0.1 kcal/mol
+#:     the Diels-Alder, which jumped         23.8 kcal/mol
+#:
+#: Two orders of magnitude of clear water between them, so the threshold is
+#: not a fitted number -- almost anything in the gap would do -- and the one
+#: with a meaning is the one worth using.
+GAS_CONSTANT_KCAL = 1.987204259e-3
+
+
+def a_rate_apart(kelvin: Any = 298.15) -> float:
+    """How far apart two barriers have to be to be two different answers.
+
+    A factor of ten in rate, which is where a difference stops being rounding
+    and starts being chemistry.  Returned in kcal/mol at the temperature
+    given, so a scan run hot is judged at the temperature it was run.
+    """
+    try:
+        T = float(kelvin)
+    except (TypeError, ValueError):
+        T = 298.15
+    return GAS_CONSTANT_KCAL * max(1.0, T) * math.log(10.0)
+
+
+def paths_disagree(there: Any, back: Any) -> Optional[Dict[str, Any]]:
+    """The largest gap between a walk and the same walk taken backwards.
+
+    Both are ``[(value, energy)]`` on one zero, in the order they were walked;
+    the second is the return leg, so its values run the other way.  Returned
+    as ``{'at', 'gap', 'there', 'back', 'points'}`` over the coordinate values
+    the two have in common, or None when they have none.
+
+    Compared at the coordinate rather than at the top, because the top is
+    exactly where the two legs are least likely to be about the same place.
+    Measured on the Diels-Alder: forward puts its highest point at 2.20 A with
+    the undriven forming bond at 2.92, backward at 2.90 A with the same bond
+    at 1.76 -- two maxima 0.7 A apart on the driven coordinate and 1.2 A apart
+    on the one nobody was driving.  Comparing the two heights would be
+    comparing two different geometries; comparing them where the driven
+    coordinate agrees is comparing the path with itself.
+    """
+    ours = [(float(v), float(e)) for v, e in (there or ())]
+    theirs = [(float(v), float(e)) for v, e in (back or ())]
+    if len(ours) < 2 or not theirs:
+        return None
+    spacing = _median([abs(b[0] - a[0]) for a, b in zip(ours, ours[1:])])
+    near = 0.25 * spacing if spacing > 0 else 1e-6
+    found = None
+    for value, energy in ours:
+        mate = min(theirs, key=lambda one: abs(one[0] - value))
+        if abs(mate[0] - value) > near:
+            continue
+        gap = abs(energy - mate[1])
+        if found is None or gap > found['gap']:
+            found = {'at': value, 'gap': gap, 'there': energy,
+                     'back': mate[1]}
+    if found is None:
+        return None
+    found['points'] = sum(
+        1 for value, _ in ours
+        if abs(min(theirs, key=lambda one: abs(one[0] - value))[0]
+               - value) <= near)
+    return found
+
+
+def gfnff_would_form(xyz_text: str, legs: Any) -> Optional[Dict[str, Any]]:
+    """The leg of a scan that asks a fixed topology to grow a bond, or None.
+
+    GFN-FF works its bonding out once, from the geometry it is first handed,
+    and then holds the molecule together with it.  xtb's own documentation is
+    blunt about what follows: "GFN-FF can only break bonds, dissociation
+    reactions will therefore usually work fine, while association reactions
+    are likely to fail."  ORCA's GOAT bars it from uphill steps for the same
+    reason.
+
+    So the boundary is a direction, not a method.  A distance that starts
+    outside bonding range and is driven inside it is asking for a bond the
+    force field has no term for; the same distance driven the other way is
+    asking for one it has, and is exactly what a fast force field is good for.
+    :data:`BOND_STARTS_AT` is where the editor already puts that line.
+
+    Measured on butadiene and ethylene, one forming C-C driven from 3.40 A to
+    1.60 in 0.1 A steps, everything relaxed at each point:
+
+        GFN2       crosses at +7.3 kcal/mol at 2.20 A, ends -63.0 in the
+                   product, and the *other* forming bond closes to 1.53 A
+                   without being asked
+        GFN-FF     climbs to +94.1 kcal/mol without crossing anything, and
+                   the other forming bond ends at 3.39 A -- no reaction, and
+                   87 kcal/mol of error in the one number a scan is for
+
+    And the editor's topology cache makes that worse rather than better.  The
+    cache exists so a drag cannot fall apart between one frame and the next,
+    and it works: with the topology pinned the false profile is smooth and
+    monotonic, which is what a wall of repulsion looks like when it is drawn
+    carefully.  Unpinned, the same scan gives +108.6 with its maximum in a
+    different place -- visibly wrong, and therefore less dangerous.
+    """
+    rows = [line.split() for line in atom_lines(xyz_text or '')]
+    if not rows:
+        return None
+    from delfin.atom_mapping import cov_radius
+
+    where = [(float(r[1]), float(r[2]), float(r[3])) for r in rows]
+    radius = [cov_radius(str(r[0])) for r in rows]
+    for leg in (legs or ()):
+        if str(leg.get('kind') or '') != 'distance':
+            continue
+        try:
+            atoms = [int(one) for one in (leg.get('atoms') or ())]
+            target = float(leg.get('to'))
+        except (TypeError, ValueError):
+            continue
+        if len(atoms) != 2 or any(not (0 <= i < len(rows)) for i in atoms):
+            continue
+        i, j = atoms
+        bonds_at = BOND_STARTS_AT * (radius[i] + radius[j])
+        now = math.dist(where[i], where[j])
+        if now >= bonds_at > target:
+            return {'atoms': (i, j), 'now': now, 'to': target,
+                    'bonds_at': bonds_at,
+                    'symbols': [str(r[0]) for r in rows]}
+    return None
+
+
+def gfnff_refusal(xyz_text: str, legs: Any) -> str:
+    """Why GFN-FF cannot walk this scan, or '' when it can.
+
+    Said before the run in the way an unparametrised solvent is (see
+    :func:`delfin.dashboard.solvents.refusal`), and for the same reason: xtb
+    does not refuse it.  It runs, it converges, it reports a number, and the
+    number is a force field being squeezed.
+    """
+    found = gfnff_would_form(xyz_text, legs)
+    if not found:
+        return ''
+    named = pair_named(found['atoms'], found['symbols'])
+    return (
+        f'GFN-FF cannot walk this one. It works its bonding out once and then '
+        f'holds it, so it can break a bond and cannot make one -- xtb says so '
+        f'itself: association reactions are likely to fail. This scan drives '
+        f'{named} from {found["now"]:.2f} to {found["to"]:.2f} A, past the '
+        f'{found["bonds_at"]:.2f} where those two would be bonded, and what '
+        f'it would report is repulsion rather than a reaction. Measured on a '
+        f'Diels-Alder: GFN2 crosses at +7.3 kcal/mol and lands 63 below the '
+        f'start, GFN-FF climbs to +94 and crosses nothing. Choose GFN2, GFN1 '
+        f'or g-xTB, or drive the bond that is breaking instead.')
+
+
 def _occluded(where, radius, i, j) -> bool:
     """Whether a third atom sits between these two, so they are not in contact.
 
