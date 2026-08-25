@@ -14,6 +14,7 @@ replaces.
 
 from __future__ import annotations
 
+import re
 import shlex
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -100,6 +101,9 @@ def complete_path(fragment: str, workspace: Path) -> list[str]:
         return []
 
 
+_WS_SPLIT = re.compile(r"(\s+)")
+
+
 def expand_at_references(text: str, workspace: Path) -> str:
     """Turn `@path` into something the model can act on.
 
@@ -107,17 +111,24 @@ def expand_at_references(text: str, workspace: Path) -> str:
     contents into the conversation without going through the gate that
     decides whether they may be read at all.
     """
-    out: list[str] = []
     found: list[str] = []
-    for token in text.split():
-        if token.startswith("@") and len(token) > 1:
-            rel = token[1:]
+    out: list[str] = []
+    # Whitespace is preserved, all of it. This used to split the whole
+    # text and re-join on single spaces, which is not what annotating a
+    # path requires and cost three things that are: the `"""` fence, which
+    # exists to send several lines, delivered one; a pasted stack trace
+    # arrived as a paragraph; and pasted code lost the indentation that
+    # decides what it means. Splitting on a CAPTURING pattern keeps the
+    # separators, so only the `@` tokens are touched.
+    for piece in _WS_SPLIT.split(text):
+        if piece.startswith("@") and len(piece) > 1:
+            rel = piece[1:]
             target = workspace / rel
             found.append(rel + ("" if target.exists() else "  (not found)"))
             out.append(rel)
         else:
-            out.append(token)
-    body = " ".join(out)
+            out.append(piece)
+    body = "".join(out).rstrip()
     if found:
         body += "\n\nFiles referenced: " + ", ".join(found)
     return body
@@ -1210,7 +1221,7 @@ def _editor(ctx, args: str) -> CommandResult:
     except OSError as exc:
         return CommandResult(output=f"could not create a scratch file: {exc}")
     try:
-        return _editor_round_trip(argv, var, path, template)
+        return _editor_round_trip(argv, var, path, template, ctx.workspace)
     finally:
         # Removed here rather than on the way out of each branch: the file
         # holds an unsent prompt, and a branch added later would otherwise
@@ -1223,7 +1234,7 @@ def _editor(ctx, args: str) -> CommandResult:
 
 
 def _editor_round_trip(argv: list[str], var: str, path: Path,
-                       template: str) -> CommandResult:
+                       template: str, workspace: Path) -> CommandResult:
     """Run the editor over *path* and decide what came back.
 
     Separated from the cleanup above so that every return in here is
@@ -1267,11 +1278,13 @@ def _editor_round_trip(argv: list[str], var: str, path: Path,
         # someone who quits without editing did not decide to send the
         # line they started with.
         return CommandResult(output="the draft is unchanged — nothing was sent")
-    # `.strip()` matches what the loop does to a typed line, and no more.
-    # `expand_at_references` is deliberately NOT applied: it re-joins on
-    # single spaces, which would flatten the paragraphs this command
-    # exists to make possible.
-    body = text.strip()
+    # The same treatment a typed line gets, now that giving it costs
+    # nothing: `expand_at_references` used to re-join on single spaces,
+    # which would have flattened the paragraphs this command exists to
+    # make possible. It preserves whitespace, so `@path` works in a draft
+    # exactly as it does at the prompt — one entry point behaving
+    # differently from another is the surprise this avoids.
+    body = expand_at_references(text.strip(), workspace)
     return CommandResult(prompt=body, output=(
         f"sending {len(body.splitlines())} line(s) from {argv[0]}"))
 
