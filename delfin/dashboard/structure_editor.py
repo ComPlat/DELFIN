@@ -3872,6 +3872,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state.pop('thermal_peak', None)
         state.pop('thermal_good_peak', None)
         state.pop('thermal_over', None)
+        # And what the hand was asking for when it ran out, which is the one
+        # thing here that decides whether the *next* answer runs at all.  It
+        # outlived the drag that recorded it, so a fresh grab could be met by
+        # the last one's demand and stand still for it -- and now that the
+        # question is asked before a worker is begun rather than inside one,
+        # standing still means not starting.  The first report of a new drag
+        # asks for the coordinate where it already stands, so this cleared
+        # itself on the way past; it should not depend on that.
+        state.pop('thermal_spent', None)
         _push_thermal_wall(None)
 
     def _end_gfn_follow():
@@ -4080,6 +4089,35 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         """
         if not state.get('gfn_follow') and not _begin_gfn_follow():
             return          # not following: Relax is up, or GFN is not chosen
+        # A drag the budget is already refusing is not started again.
+        #
+        # The standing-still rule lived inside the worker, so standing still
+        # cost a whole worker: the thread was begun, the ring was turned on,
+        # the rule said there was nothing to compute, and the thread ended --
+        # once per report from the page, and the page reports at the rate a
+        # mouse moves.  Measured on the user's manganese complex at 298 K with
+        # the phenolate oxygen held against the wall, thirty seconds of hand
+        # on the structure:
+        #
+        #                          budget off   budget on, refusing
+        #     reports from the page      1147                  1625
+        #     workers started               1                  1277
+        #     status lines written          9                  2555
+        #     frames drawn                  8                     1
+        #
+        # Forty-three threads a second, and the line that lies over the
+        # picture rewritten eighty-five times a second -- alternating on the
+        # ring alone, since the words do not change while nothing is being
+        # computed.  The picture is still and everything around it is not,
+        # which is what the shaking is.  With the budget off the same hand
+        # costs one worker, because xtb is genuinely busy and every report
+        # after the first is folded into gfn_follow_xyz.
+        #
+        # Asked here it costs no thread at all: it is coordinate arithmetic
+        # over the atoms the hand is on.  The worker keeps its own copy of the
+        # question, for a report that arrived while xtb was running.
+        if _still_spent(xyz, holding):
+            return
         if state.get('optimize_run') is not None:
             # An optimisation owns the structure, so the follow does not get
             # to move it as well.  Picking an atom up interrupts a run before
@@ -4608,6 +4646,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         state['thermal_spent'] = (
                             [dict(one) for one in contacts]
                             if came_back is not None and contacts else None)
+                        # And the page is told, so the picture stops promising
+                        # travel the kernel is not going to deliver.
+                        _stop_the_hand_at(came_back, current, holding)
                         if came_back is not None:
                             # Three cases rather than two.  Which number the
                             # budget refused on -- where the structure is
@@ -5327,6 +5368,54 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         schedule_ui_update(
             lambda text=json.dumps(payload): setattr(
                 submit_gfn_wall, 'value', text))
+
+    def _stop_the_hand_at(came_back, asked, holding):
+        """A refused drag stops following the cursor; an allowed one follows.
+
+        *came_back* is what the wall handed back, or ``None`` when it allowed
+        the step.  *asked* is the geometry the page sent, which under a pull
+        carries the wish rather than the atom: the browser writes the held
+        atoms at the point the hand is asking for, clamped to a reach.
+
+        Nothing told the page a step had been refused.  The kernel stops --
+        _still_spent says there is nothing left to compute until the hand eases
+        -- and the page went on running the wish out with the cursor, so the
+        band grew, the coordinates the page reported went on changing, and the
+        one thing that had actually happened, that the drag had reached its
+        ceiling, was the one thing not on screen.
+
+        So the wish is marked where the budget last agreed the atom could
+        stand, and may go no further out than it had already run: an atom that
+        has come up against something.  Coming back in is never blocked --
+        thermalWallBlocks refuses only a step that is both outside the reach
+        and going further out -- and coming back in is exactly the event
+        _still_spent reads as the hand easing off.  The two sides then let the
+        same gesture through instead of holding two opinions about it.
+
+        The reach is where the wish had run to and not zero, so the band stops
+        rather than snapping back to the atom: what the hand was asking for
+        when it was refused is a true thing to leave on the screen.
+        """
+        if came_back is None:
+            if state.pop('thermal_walled', None):
+                _push_thermal_wall(None)
+            return
+        marks = {}
+        reach = 0.0
+        here = _gfn.coordinates_of(came_back)
+        wished = _gfn.coordinates_of(asked or '')
+        for one in (holding or ()):
+            index = int(one)
+            if 3 * index + 2 >= len(here) or 3 * index + 2 >= len(wished):
+                continue
+            mark = [here[3 * index + k] for k in range(3)]
+            marks[index] = mark
+            reach = max(reach, math.dist(
+                mark, [wished[3 * index + k] for k in range(3)]))
+        if not marks or reach <= 0:
+            return
+        state['thermal_walled'] = True
+        _push_thermal_wall(marks, reach)
 
     def _set_thermal_anchor(relax=None, note='Measuring from here',
                             note_after=''):
