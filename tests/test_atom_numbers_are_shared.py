@@ -148,11 +148,20 @@ def test_nothing_is_numbered_until_it_is_asked_for():
 
 
 def test_every_structure_in_the_viewer_is_numbered_from_its_own_zero():
-    """The ORCA Builder overlays two structures in one viewer."""
+    """The ORCA Builder overlays two structures in one viewer.
+
+    ``i`` is the atom's place in the model it belongs to, so each structure is
+    numbered from its own zero. That is still what a label says when nothing
+    has been handed in for it to say instead -- the layer takes a list of
+    texts now, for the partial charges, and a text is read off one list for
+    the whole viewer because whoever computed it computed it for one
+    structure.
+    """
     assert 'function modelsOf(v)' in LAYER
-    build = LAYER.split('function build(v,scale){')[1].split('\n  }')[0]
+    build = LAYER.split('function build(v,scale,texts){')[1].split('\n  }')[0]
     assert 'for(var mi=0;mi<ms.length;mi++)' in build
-    assert "v.addLabel(String(i)" in build
+    assert ':String(i);' in build, 'the per-model index is the fallback'
+    assert 'v.addLabel(say,' in build
 
 
 def test_atoms_coming_or_going_are_numbered_again():

@@ -84,7 +84,14 @@ def test_the_toolbar_is_there_with_everything_on_it(builder):
     toolbar = refs['submit_manip_toolbar']
 
     assert toolbar.layout.display == 'flex'
-    on_it = set(toolbar.children)
+    # Nested rows count as being on it: a group is one item of the toolbar and
+    # its members are controls of the toolbar, which is what the question here
+    # is about. The numbering trio became one such group so that adding a
+    # setting to it cost the row no place to wrap between.
+    on_it = set()
+    for kid in toolbar.children:
+        on_it.add(kid)
+        on_it.update(getattr(kid, 'children', ()) or ())
     for name in ('submit_select_btn', 'submit_manip_btn', 'submit_draw_btn',
                  'submit_ff_dd', 'submit_optimize_btn', 'submit_optimize_all_btn',
                  'submit_relax_btn', 'submit_settle_btn', 'submit_bond_btn',
@@ -93,9 +100,12 @@ def test_the_toolbar_is_there_with_everything_on_it(builder):
                  'submit_gfn_charge', 'submit_gfn_mult', 'submit_gfn_solvent',
                  'submit_labels_btn', 'submit_reset_btn', 'submit_manip_undo_btn'):
         assert refs[name] in on_it, name
-    # The whole ladder of methods, browser and server alike.
-    assert [value for _label, value in refs['submit_ff_dd'].options][:5] == [
-        'uff', 'mmff94', 'gfnff', 'gfn2', 'gxtb']
+    # The whole ladder of methods, browser and server alike -- and the four
+    # xtb ones in the order of what they cost, GFN1 among them: it is
+    # implemented in every module the editor drives and three of the editor's
+    # own refusals tell the user to choose it.
+    assert [value for _label, value in refs['submit_ff_dd'].options][:6] == [
+        'uff', 'mmff94', 'gfnff', 'gfn1', 'gfn2', 'gxtb']
 
 
 def test_the_viewer_tells_the_editor_it_is_there(builder):
@@ -1457,8 +1467,12 @@ def test_the_atom_numbers_can_be_resized_while_comparing(builder):
     refs['orca_mol_next_btn'].click()          # the aligned reference
 
     def drawn():
-        found = re.findall(r'__delfinAtomNumbers\.set\([^,]+,(\w+),([0-9.]+)\)',
-                           _picture(refs))
+        # The fourth argument is what the labels say -- null for the atom
+        # numbers, a list of values for anything else -- so the match ends at
+        # whatever follows the size rather than at a closing bracket.
+        found = re.findall(
+            r'__delfinAtomNumbers\.set\([^,]+,(\w+),([0-9.]+)[,)]',
+            _picture(refs))
         return found[-1] if found else None
 
     assert drawn() is None, 'numbers are off until asked for'

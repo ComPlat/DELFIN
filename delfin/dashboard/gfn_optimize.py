@@ -37,6 +37,8 @@ from typing import Any, Callable, Dict, List, Optional
 from . import solvents as _solvents
 
 __all__ = ['GFN_METHODS', 'as_pushes', 'atom_lines', 'bond_graph',
+           'bond_order_between', 'bond_order_note', 'read_bond_orders',
+           'read_charges', 'not_a_stationary_point', 'rms_gradient',
            'constraint_input', 'contacts_holding', 'graph_changed',
            'bonds_to_freeze', 'graph_holds', 'method_is_out_of_its_depth',
            'push_constant', 'turn_for',
@@ -105,6 +107,25 @@ _ENERGY_RE = re.compile(r'TOTAL ENERGY\s+(-?\d+\.\d+)')
 #: What xtb prints when it has been given a Hessian to work from.  The msRRHO
 #: free energy at whatever temperature the $thermo block asked for.
 _FREE_ENERGY_RE = re.compile(r'TOTAL FREE ENERGY\s+(-?\d+\.\d+)')
+#: The rest of the same block, which was being thrown away.
+#:
+#: A Hessian is what a free energy costs, and once it has been paid for the
+#: enthalpy and the zero-point energy are printed beside G in the same summary
+#: -- reading three lines instead of one is free.  The entropy is not printed
+#: as a total anywhere useful (xtb writes it per contribution, in cal/K/mol,
+#: in a table whose columns move), so it is taken as ``T*S = H - G``: measured
+#: on a methane at 298.15 K, H - G is 0.021114216337 Eh against the
+#: 0.211142E-01 the table prints for T*S -- the same number to every digit
+#: xtb gives.
+_ENTHALPY_RE = re.compile(r'TOTAL ENTHALPY\s+(-?\d+\.\d+)')
+_ZPE_RE = re.compile(r'zero point energy\s+(-?\d+\.\d+)')
+#: How steep it is where the answer was taken, in Hartree per Bohr.
+#:
+#: This is what says whether a Hessian describes a stationary point or a point
+#: on a slope.  Printed by every run, and never read until a Hessian could be
+#: asked for on a structure somebody had dragged into shape -- which is
+#: precisely the geometry where it is not safe to assume.
+_GRADIENT_RE = re.compile(r'GRADIENT NORM\s+(-?\d+\.\d+)')
 #: How many modes go the wrong way, which is what says whether a structure is
 #: a minimum, a transition state, or neither.  xtb counts them itself, against
 #: a cutoff of its own, so this is read rather than worked out again.
@@ -2143,6 +2164,257 @@ def _read_optimised(folder: Path, fallback: str) -> Optional[str]:
     return None if fallback is None else None
 
 
+#: What xtb writes the atomic charges to, per Hamiltonian.
+#:
+#: Every run writes one of these into its own scratch directory and the
+#: directory is then removed, so the numbers were computed and deleted on
+#: every drag answer, every optimisation and every scan point.  The two names
+#: are not two spellings of one thing: ``charges`` holds the Mulliken-like
+#: partial charges of a wavefunction, and ``gfnff_charges`` holds the
+#: electronegativity-equilibration charges GFN-FF is parametrised with, which
+#: is what that method has instead of a wavefunction.  Both are per atom, in
+#: the input order, one to a line -- measured on a methane, GFN2 gives the
+#: carbon -0.153, GFN1 -0.130, g-xTB -0.359 and GFN-FF -0.092, which is the
+#: spread of four different definitions of the same idea and the reason the
+#: method is named wherever they are shown.
+_CHARGE_FILES = ('charges', 'gfnff_charges')
+
+
+def read_charges(folder: Path) -> Optional[List[float]]:
+    """The partial charges of the run in *folder*, or None if it wrote none.
+
+    Free: the file is already on disk when this is called and is one short
+    line per atom -- 57 atoms is a 913-byte read.  Nothing here asks xtb for
+    anything, and if it ever had to, this would be the wrong place for it.
+    """
+    for name in _CHARGE_FILES:
+        found = folder / name
+        if not found.is_file():
+            continue
+        values: List[float] = []
+        try:
+            text = found.read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            return None
+        for line in text.splitlines():
+            word = line.strip()
+            if not word:
+                continue
+            try:
+                values.append(float(word))
+            except ValueError:
+                return None
+        return values or None
+    return None
+
+
+def read_bond_orders(folder: Path) -> Optional[List[tuple]]:
+    """Wiberg bond orders from the run in *folder*, as ``(i, j, order)``.
+
+    Counted from zero, because everything else in this editor counts atoms
+    from zero and xtb's ``wbo`` counts from one.
+
+    None where the method has none.  Only the Hamiltonians have them: GFN1,
+    GFN2 and g-xTB each write a ``wbo``, and GFN-FF writes none at all --
+    measured, its scratch directory holds ``gfnff_charges`` and ``gfnff_topo``
+    and nothing else.  Nothing is worked around there: GFN-FF's bonding is a
+    topology perceived once and then held fixed, so it has no order of its own
+    to report.
+
+    These are a readout and nothing decides on them.  See
+    :data:`BOND_WORTH_SAYING` for the measurement that settles why -- a
+    closed-shell order does not fall when a bond breaks homolytically.
+
+    Only pairs xtb actually printed are in the list; it prints nothing for
+    pairs it found no bond order for, so an absent pair reads as zero.
+    """
+    found = folder / 'wbo'
+    if not found.is_file():
+        return None
+    pairs: List[tuple] = []
+    try:
+        text = found.read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return None
+    for line in text.splitlines():
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        try:
+            first, second, order = int(parts[0]), int(parts[1]), float(parts[2])
+        except ValueError:
+            continue
+        if first < 1 or second < 1:
+            continue
+        pairs.append((first - 1, second - 1, order))
+    return pairs or None
+
+
+def bond_order_between(bonds: Any, i: Any, j: Any) -> Optional[float]:
+    """What *bonds* says about this pair, or None when nothing was computed.
+
+    Zero rather than None for a pair that is missing from a list that exists:
+    xtb prints the pairs it found a bond order for, so a pair it left out has
+    an order below what it prints.  Zero is the order, not a verdict about the
+    bond -- see :data:`BOND_WORTH_SAYING` for why the two are not the same.
+    """
+    if bonds is None:
+        return None
+    try:
+        first, second = int(i), int(j)
+    except (TypeError, ValueError):
+        return None
+    for one, two, order in bonds:
+        if (one, two) == (first, second) or (one, two) == (second, first):
+            return float(order)
+    return 0.0
+
+
+#: How low a bond order has to be before it is worth putting in a sentence.
+#:
+#: A cut for *which* orders to mention, and nothing more than that.  It is
+#: emphatically not a threshold for whether a bond exists, and the reason is
+#: measured: a Wiberg order is a readout of the wavefunction and it is not a
+#: test of whether two atoms are still bonded.
+#:
+#: Measured here under GFN2, the coordinate held and everything else relaxed
+#: at each length:
+#:
+#:     ammonia borane, N-B          ethane, C-C
+#:     d/A   order   gap/eV         d/A   order   gap/eV
+#:     1.66  0.609    9.05          1.53  1.030   15.26
+#:     1.86  0.511    7.69          1.73  1.010   10.39
+#:     2.06  0.403    6.33          1.93  1.001    6.96
+#:     2.36  0.244    5.11          2.03  0.999    5.73
+#:     2.86  0.000    3.64          2.53  0.998    2.16
+#:     3.36  0.000    3.08          3.03  1.000    0.75
+#:
+#: The right-hand column is the one to remember.  An ethane pulled to twice
+#: its bond length still reads 1.00, because a single closed-shell determinant
+#: holds that pair in one orbital however far the two carbons are taken; a
+#: separate measurement on the same homolysis has the fractional occupation
+#: density at 1.73 electrons -- a whole pair already come apart -- where the
+#: order still reads 0.96.  So against the editor's geometric watch, which
+#: calls the bond gone from 1.94 A, the order is not the more honest of the
+#: two: it is the one that says everything is fine exactly where the method
+#: has stopped describing the system.
+#:
+#: Which is why nothing here decides anything on a bond order.  The bond watch
+#: stays :func:`_is_a_bond` and :func:`bond_graph`, on distances, and the order
+#: is offered as what it is: a number a chemist can read, true and useful where
+#: it is read as one -- 1.9 across a C=C, 0.61 for a dative N-B at its own
+#: minimum, which is worth knowing and is not "a weak bond".
+#:
+#: The signal that does work for a bond coming apart is the fractional
+#: occupation density, ``xtb --fod``: 0.000 at a C-C of 1.54 A, 1.727 at
+#: 3.50 A, and exactly 2.000 on a ninety-degree-twisted ethylene.  It is not
+#: built here -- it costs a further single point and has caveats of its own,
+#: over-reporting by about fourfold on a closed-shell metal complex -- and it
+#: is named so that nobody reaches for the bond order to do its job.
+BOND_WORTH_SAYING = 0.7
+
+
+def bond_order_note(order: Any, names: str = 'the pair',
+                    gap: Any = None, was: Any = None) -> str:
+    """A bond order as a readout, in a clause for the status line.
+
+    Empty when there is no order to say anything about -- a force field, a
+    method with no wavefunction, or an answer that has not arrived yet.
+
+    It states the number and, where the number itself is a statement, what it
+    is a statement of: an order well above one is multiple-bond character.  It
+    never says a bond is there or gone, because a Wiberg order does not answer
+    that question -- see :data:`BOND_WORTH_SAYING` for the two series that
+    settle it.
+
+    *gap* is the frontier gap of the same answer.  Where it has closed, the
+    determinant the order was computed from has stopped describing the system,
+    and the number should not be read at all; given one, this says so.
+    """
+    try:
+        value = float(order)
+    except (TypeError, ValueError):
+        return ''
+    if method_is_out_of_its_depth(gap, was):
+        # Said with the gap in it rather than by calling that function's
+        # sentence, which is about the energy and is said in its own right
+        # wherever it belongs.  This one is about the number in this clause.
+        try:
+            said_gap = f'{float(gap):.1f} eV'
+        except (TypeError, ValueError):
+            said_gap = 'a gap this small'
+        return (f'{names} reads {value:.2f}, which is not worth reading at a '
+                f'frontier gap of {said_gap}: a closed-shell bond order holds '
+                'a pair in one orbital however far the two are pulled, so a '
+                'bond coming apart still reads about one -- measured on an '
+                'ethane, 1.00 at a C-C of 3.03 A.')
+    if value >= 1.4:
+        return (f'{names} is at {value:.2f}, which is multiple-bond '
+                'character.')
+    # The bare number, because this clause is written onto the status line
+    # several times a second while a drag is running, and the caveat that
+    # belongs with it -- that an order is not a bond-existence test -- is a
+    # sentence about the quantity rather than about this answer. It is said
+    # once, where it can be read: on the control's own tooltip, and in the
+    # line the "What is it?" press writes above the orders it lists.
+    return f'{names} is at {value:.2f}.'
+
+
+#: How steep a structure may be and still be a place rather than a slope, in
+#: Hartree per Bohr per degree of freedom.
+#:
+#: The RMS gradient rather than the norm, so it means the same thing for five
+#: atoms and for five hundred: xtb prints the norm, and the norm of a
+#: converged structure grows with the square root of the number of atoms.
+#:
+#: The number is ORCA's ``TolRMSG`` and Gaussian's, which is also what
+#: :mod:`delfin.dashboard.climb` converges its own walks on -- one number for
+#: "this has stopped moving", wherever the question is asked here.  Ten times
+#: it is where a Hessian stops being a statement about a stationary point:
+#: measured on a hand-built methane with every C-H at 1.0897 A, the RMS
+#: gradient is 2.6e-3 and xtb happily reports zero imaginary modes -- a
+#: perfectly true statement about a geometry that is not a minimum.
+GRADIENT_IS_STILL = 1.0e-4
+GRADIENT_IS_A_SLOPE = 1.0e-3
+
+
+def rms_gradient(norm: Any, atoms: Any) -> Optional[float]:
+    """xtb's gradient norm as a per-coordinate RMS, or None."""
+    try:
+        count = int(atoms)
+        return float(norm) / math.sqrt(3.0 * count) if count > 0 else None
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def not_a_stationary_point(norm: Any, atoms: Any) -> str:
+    """What to say when a Hessian was taken somewhere nothing is resting.
+
+    Empty when the structure is standing still, which is when the modes mean
+    what a chemist reads them as meaning.
+
+    A Hessian is the curvature at a point, and it is defined everywhere.  What
+    is *not* defined everywhere is the reading: "one mode goes the wrong way,
+    so this is a transition state" is a statement about a stationary point,
+    and on a slope the same Hessian describes the side of a hill.  The
+    frequencies are not wrong there -- they are simply not about a structure
+    anything sits at, and a count of zero imaginary modes on a geometry with a
+    large gradient says "downhill from here in every direction", which is true
+    of most of the surface.
+
+    So the honest answer for a structure that is still on a slope is that it
+    is neither a minimum nor a saddle, and that is what this says.
+    """
+    rms = rms_gradient(norm, atoms)
+    if rms is None or rms < GRADIENT_IS_A_SLOPE:
+        return ''
+    return (f'It is not standing still: the gradient is {rms:.1e} Hartree '
+            f'per Bohr per coordinate, against the {GRADIENT_IS_STILL:.0e} an '
+            'optimiser converges on. A Hessian here describes a point on a '
+            'slope, so this structure is neither a minimum nor a saddle -- '
+            'relax it first, and ask again about what it settles on.')
+
+
 def solvent_note(solvent: Any, model: Any = 'alpb') -> str:
     """Which solvent a result is about, and under which model.
 
@@ -2456,6 +2728,14 @@ def optimize_with_gfn(
     why in a sentence a chemist can act on -- a structure that silently comes
     back unrelaxed is worse than one that says it did not converge.
 
+    A successful run also carries what it computed on the way and used to
+    throw away with its scratch directory: ``charges`` per atom, ``bonds`` as
+    Wiberg orders for the pairs that have one, and ``gradient`` as the norm at
+    the geometry it ended on.  None of the three costs a calculation -- see
+    :func:`read_charges` and :func:`read_bond_orders` -- and with
+    *free_energy* on, ``thermo`` carries H, T*S and the zero-point energy out
+    of the same block the free energy was already being read from.
+
     *constraints* are the values the editor is holding, in its own shape --
     ``{'kind', 'atoms', 'value', 'mode'}`` with atoms counted from zero; see
     :func:`constraint_input` for what each mode becomes.
@@ -2764,6 +3044,24 @@ def optimize_with_gfn(
         output = record.read_text(encoding='utf-8', errors='replace')
         if warm is not None:
             _keep_restart(folder, warm, output)
+        # The two things this run computed and this directory was about to
+        # take to the grave.  Read here, before the ``finally`` below removes
+        # the folder, and read unconditionally: they are already written, they
+        # are one line per atom and one line per bond, and nothing is asked of
+        # xtb to get them.
+        #
+        # Measured: reading both is 0.053 ms for a methane and 0.158 ms for
+        # the 57-atom manganese complex, against drag answers of 175 ms and
+        # 2.28 s -- three hundredths of a percent and seven thousandths of
+        # one.  The same drag timed with and without the two reads, alternated
+        # so a shared machine could not favour either half, does not separate
+        # them at all: 25 rounds on the methane gave 175.1 ms against 181.7,
+        # and four rounds on the manganese complex gave 4.107 s against 4.053
+        # -- the read is smaller than the noise it would have to be measured
+        # in.  Which is the whole design: if reading these ever cost a
+        # calculation, this would be the wrong place for it.
+        charges = read_charges(folder)
+        bonds = read_bond_orders(folder)
         # A single point writes no xtbopt.xyz and no path: the geometry that
         # went in is the geometry that comes back, and there is nothing to
         # play.  Reading them anyway would find the leftovers of whatever ran
@@ -2798,8 +3096,19 @@ def optimize_with_gfn(
                 gap = float(told_gap.group(1))
             except ValueError:
                 gap = None
+        # How steep it is where the run ended.  The last one for the same
+        # reason the gap takes the last one: an optimisation prints the
+        # summary at every geometry it passes through, and only the final one
+        # is about the structure that comes back.
+        gradient = None
+        for told_gradient in _GRADIENT_RE.finditer(output):
+            try:
+                gradient = float(told_gradient.group(1))
+            except ValueError:
+                gradient = None
         free = None
         wrong_way = None
+        thermo = None
         if free_energy:
             told = _FREE_ENERGY_RE.search(output)
             if told:
@@ -2807,6 +3116,38 @@ def optimize_with_gfn(
                     free = float(told.group(1))
                 except ValueError:
                     free = None
+            # And the rest of what the Hessian paid for.  H and the
+            # zero-point energy are printed in the same block as G and were
+            # being read past; T*S is the difference of the two totals, which
+            # is what it is by definition and what xtb's own table agrees
+            # with to every digit it prints.
+            told_enthalpy = _ENTHALPY_RE.search(output)
+            told_zpe = _ZPE_RE.search(output)
+            enthalpy = zpe = None
+            try:
+                enthalpy = float(told_enthalpy.group(1)) if told_enthalpy else None
+            except ValueError:
+                enthalpy = None
+            try:
+                zpe = float(told_zpe.group(1)) if told_zpe else None
+            except ValueError:
+                zpe = None
+            if free is not None or enthalpy is not None or zpe is not None:
+                warmth = float(thermo_kelvin) if thermo_kelvin else 0.0
+                ts = (enthalpy - free
+                      if (enthalpy is not None and free is not None) else None)
+                thermo = {
+                    'kelvin': warmth,
+                    'free_energy': free,
+                    'enthalpy': enthalpy,
+                    'zpe': zpe,
+                    'ts': ts,
+                    # In Hartree per Kelvin, so every energy this module hands
+                    # back is in one unit and whoever shows it decides what a
+                    # chemist reads.
+                    'entropy': (ts / warmth if (ts is not None and warmth > 0)
+                                else None),
+                }
             counted = _IMAGINARY_RE.search(output)
             if counted:
                 # And the modes themselves, most negative first: "one
@@ -2905,7 +3246,9 @@ def optimize_with_gfn(
             # handed back -- but not as though it were finished.
             return {
                 'ok': True, 'xyz': relaxed, 'energy': energy, 'free_energy': free,
-            'imaginary': wrong_way, 'gap': gap, 'method': key,
+                'imaginary': wrong_way, 'gap': gap, 'method': key,
+                'charges': charges, 'bonds': bonds, 'gradient': gradient,
+                'thermo': thermo,
                 'seconds': seconds, 'engine': 'xtb', 'frames': frames, 'version': version,
                 'hamiltonian': reported or wanted or label, 'held': held,
                 'converged': False, 'solvent': wet, 'solvation_model': model,
@@ -2917,6 +3260,8 @@ def optimize_with_gfn(
         return {
             'ok': True, 'xyz': relaxed, 'energy': energy, 'free_energy': free,
             'imaginary': wrong_way, 'gap': gap, 'method': key,
+            'charges': charges, 'bonds': bonds, 'gradient': gradient,
+            'thermo': thermo,
             'seconds': seconds, 'engine': 'xtb', 'frames': frames, 'version': version,
             'hamiltonian': reported or wanted or label, 'held': held,
             'converged': True, 'solvent': wet, 'solvation_model': model,
