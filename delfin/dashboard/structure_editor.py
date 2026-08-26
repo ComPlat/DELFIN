@@ -11250,13 +11250,34 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         _start_background(_work, 'The second opinion',
                           guards={'reprice_run': False})
 
-    def _repriced_verdict(walk, profile, label, dry, failed):
-        """Both profiles, and the three things that stop this being a barrier.
+    #: How far two methods may put the same barrier apart and still be
+    #: telling the same story, in kcal/mol.
+    #:
+    #: Below it the second opinion has confirmed the first and there is
+    #: nothing to do.  Above it the walk's own number is not one to quote
+    #: and the top has to be optimised again with the method being
+    #: quoted.  Three, because that is about what either method is worth
+    #: on a barrier and because a shift of three moves a barrier across
+    #: the room-temperature ceiling from one side to the other -- 22.3
+    #: kcal/mol at 298 K over an hour.  Measured on the sixteen-atom
+    #: Diels-Alder the two are 15 apart, which is the case this is for.
+    _SECOND_OPINION_AGREES = 3.0
 
-        The caveats are here and not in a docstring because they are the
-        answer: a number that moved by fifteen kcal/mol is going to be quoted
-        by somebody, and what it is worth has to travel with it.  Said in
-        three sentences, in words that assume no chemistry.
+    def _repriced_verdict(walk, profile, label, dry, failed):
+        """The two numbers, and what to do about the difference.
+
+        A second opinion is not a barrier and it is not meant to be: the
+        geometries are still the walk's, and a method that is out by 0.2 A
+        on a half-broken bond has put them somewhere its own energies do
+        not belong.  What it is, is cheap -- single points on structures
+        already in hand -- and it answers one question: does the better
+        method tell the same story?
+
+        So the answer is the verdict, not the caveats.  Agreeing, the
+        walk's own number stands and there is nothing to do.  Disagreeing,
+        the number is not one to quote and the top has to be optimised
+        again.  Everything that was true of both cases and changed neither
+        was an essay under the picture and is gone.
         """
         walked = _server_label(walk['method'])
         first = [(one[0], one[1]) for one in walk['points']][:len(profile)]
@@ -11264,35 +11285,24 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         now_top = max(profile, key=lambda one: one[1])
         moved = now_top[1] - was_top[1]
         many = ('' if len(profile) == len(walk['points']) else
-                f' Only {len(profile)} of {len(walk["points"])} points were '
-                f'priced'
-                + (f': {failed}' if failed else ', because it was stopped.'))
-        # The top can move as well as rise, and where it moved to is a fact
-        # about the profile rather than a detail: measured on the
-        # Diels-Alder, GFN2 put its highest point at 2.289 A and g-xTB put it
-        # at 2.208 on the same nineteen geometries.
-        elsewhere = ('' if abs(now_top[0] - was_top[0]) < 1e-9 else
-                     f' -- and at {now_top[0]:.3g} rather than '
-                     f'{was_top[0]:.3g}')
+                f' {len(profile)} of {len(walk["points"])} points'
+                + (f' ({failed})' if failed else ', stopped early') + '.')
+        agrees = abs(moved) <= _SECOND_OPINION_AGREES
+        # The solvent is said only where it changes the reading: a walk
+        # run wet and priced dry has had one of its two differences
+        # introduced by the pricing rather than by the method.
+        gas = (f' These are gas-phase energies; the walk ran in '
+               f'{walk["solvent"]}.' if dry else '')
         return (
-            f'{walked} walked it and {label} priced it again at the same '
-            f'{len(profile)} geometries. The highest point goes from '
-            f'{was_top[1]:+.1f} to {now_top[1]:+.1f} kcal/mol, a change of '
-            f'{moved:+.1f}{elsewhere}, and the end from {first[-1][1]:+.1f} '
-            f'to {profile[-1][1]:+.1f}.{many}',
-            'Three things this is not. The energies are better and the '
-            f'structures are not -- they are where {walked} put them, and it '
-            'is out by about 0.2 A on a half-broken bond against 0.03 A on an '
-            'ordinary one, which is the kind of bond a barrier is made of. So '
-            'it is a screen: to report a barrier, optimise the top again with '
-            f'the method you mean to report. {label} is a preprint method and '
-            'this build says it is a development version differing from the '
-            'paper. And the points are wherever the walk left them, which '
-            'need not be anywhere in particular -- pricing changes the '
-            'energies, never the geometries.'
-            + (f' The walk ran in {walk["solvent"]} and {label} has no solvent '
-               'in this build, so these are gas-phase energies at those '
-               'geometries.' if dry else ''))
+            f'{label} prices the same {len(profile)} points: the top goes '
+            f'{was_top[1]:+.1f} to {now_top[1]:+.1f} kcal/mol '
+            f'({moved:+.1f}), the end {first[-1][1]:+.1f} to '
+            f'{profile[-1][1]:+.1f}.{many}',
+            (f'The two agree to {abs(moved):.1f} kcal/mol, so the walk'
+             f"'s own number stands." if agrees else
+             f'That is more than {walked} is worth here, so the barrier is '
+             f'not one to quote: optimise the top again with {label}.')
+            + gas)
 
     def _said_modes(shape, what, advise=True):
         """What a Hessian says a structure is, in sentences.
