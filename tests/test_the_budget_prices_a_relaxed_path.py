@@ -4636,3 +4636,29 @@ H   0.475000 -0.823000 -1.180000
     # reason the size of the gap is written where the user can read it.
     ceiling = thermal_ceiling(298.15, 3600.0)
     assert electronic > ceiling > free, (electronic, ceiling, free)
+
+
+def test_an_answer_that_arrives_after_the_release_marks_nothing():
+    """"warum wird die force nicht mehr entfernt ich seh immer noch die
+    orangenen kugeln im viewer?"
+
+    An xtb round outlives the gesture that asked for it. From the journal that
+    came with the report::
+
+        1425.260s  wall  {"reach": 0.0, "wall": null}   the release clears
+        1425.264s  page  DELFIN drag-end
+        1425.610s        Optimise starts
+        1425.977s  said  "following the drag: 3 step(s)..."   <- late
+
+    The third answer of a drag arrived after the release had already cleared
+    the marks. Drawing them again there leaves them on the page for good: the
+    release has run, and only the *next* grab clears them.
+    """
+    from editor_source import EDITOR_SOURCE
+
+    body = EDITOR_SOURCE.split('def _stop_the_hand_at(', 1)[1].split(
+        '\n    def ', 1)[0]
+    before = body.split('marks = {}', 1)[0]
+    assert "if not state.get('gfn_follow'):" in before, before
+    assert before.rstrip().endswith('return'), (
+        'the late answer leaves before it marks anything')

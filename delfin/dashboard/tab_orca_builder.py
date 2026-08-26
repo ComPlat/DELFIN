@@ -2390,7 +2390,10 @@ def create_tab(ctx):
     # Submit tab has it: above the picture a message of a different length
     # moved the structure being aimed at, and here it costs no layout at all.
     orca_mol_stack = widgets.Box(
-        [orca_mol_output, orca_editor.mol_status],
+        # The profile swaps with the structure in this box -- see the
+        # same list in tab_submit.
+        [orca_mol_output, orca_editor.submit_scan_plot,
+         orca_editor.mol_status],
         layout=widgets.Layout(width='100%', min_width='0'),
     )
     orca_mol_stack.add_class('delfin-structure-viewer-stack')
@@ -2401,7 +2404,7 @@ def create_tab(ctx):
          # The scan's profile under the picture, the way the Submit tab has
          # it: the editor is the same part here and a walk made in this tab is
          # reported in the same shape.
-         orca_mol_stack, orca_editor.submit_scan_plot,
+         orca_mol_stack,
          orca_editor.submit_ff_notes],
         layout=widgets.Layout(width='100%', min_width='0', gap='6px'),
     )

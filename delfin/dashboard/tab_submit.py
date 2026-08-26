@@ -521,17 +521,6 @@ def create_tab(ctx):
     # on the structure. It is one part rather than this tab's own so that a
     # second tab can have the same editor over its own coordinates -- the ORCA
     # Builder over the block it is showing, and later the TURBOMOLE one.
-    def _graph_panel():
-        """The Reactions tab's panel, or None when that tab is not there.
-
-        Never cached. The tab registers itself and is built after this one, a
-        user may never open it, and the graph inside it changes without this
-        tab hearing about it -- so the question is asked again every time, and
-        the answer being None is an ordinary answer rather than a failure.
-        """
-        return (getattr(ctx, 'reaction_graph_refs', None) or {}).get(
-            'reaction_graph')
-
     _editor = _structure_editor.build(
         ctx,
         state=state,
@@ -542,14 +531,6 @@ def create_tab(ctx):
         update_view=lambda *a, **k: update_molecule_view(*a, **k),
         get_smiles_charge=lambda *a, **k: _get_smiles_charge(*a, **k),
         set_buttons_disabled=lambda *a, **k: _set_buttons_disabled(*a, **k),
-        # And the reaction network, if one is open. Looked up at the moment it
-        # is asked and never held: this tab is built before the Reactions tab
-        # exists, and a graph is opened, closed and swapped over there while
-        # this one stands still.
-        graph_offer=lambda offer: _graph_panel().offer_label(offer)
-        if _graph_panel() else None,
-        put_in_graph=lambda offer: (_graph_panel().take(offer)
-                                    if _graph_panel() else ''),
     )
     mol_status = _editor.mol_status
     mol_status_fs = _editor.mol_status_fs
@@ -2395,7 +2376,12 @@ def create_tab(ctx):
     # cannot move anything. Both copies live in the stack -- the ordinary one
     # shows in this view, the other is taken by fullscreen and shows there.
     mol_viewer_stack = widgets.Box(
-        [mol_output, mol_status],
+        # The profile of the last walk shares this box with the
+        # structure and swaps with it: one or the other, in the same
+        # place, so nothing above or below moves. In a row of its own
+        # under the panel it was a second panel that pushed the page
+        # down and landed off the bottom of the screen.
+        [mol_output, _editor.submit_scan_plot, mol_status],
         layout=widgets.Layout(width='100%', min_width='0'),
     )
     mol_viewer_stack.add_class('delfin-structure-viewer-stack')
@@ -2418,13 +2404,6 @@ def create_tab(ctx):
     submit_right = widgets.VBox([
         widgets.HTML('<b>Molecule Preview:</b>'),
         submit_manip_toolbar, mol_viewer_stack, isomer_nav_row, xyz_copy_row,
-        # The profile of the last scan, under the picture it was walked on and
-        # the strips that belong to it, and nothing at all until there is a
-        # walk to show. Under the structure rather than over it: it is written
-        # once, at the end of a walk that took minutes, so it can afford a row
-        # -- and a row takes none of the pixels the structure is drawn in,
-        # which an overlay would.
-        submit_scan_plot,
         submit_ff_notes,
         spacer_large,
         widgets.HTML('<b>GOAT:</b>'),
