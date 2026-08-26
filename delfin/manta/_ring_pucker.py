@@ -209,6 +209,29 @@ def _set_pucker(conf, ring, Q, theta, phi, frozen: Optional[Set[int]] = None):
         conf.SetAtomPosition(int(idx), (float(newp[0]), float(newp[1]), float(newp[2])))
 
 
+def _cp_abstand(a, b) -> float:
+    """Winkelabstand zweier Faltungszustaende AUF der Cremer-Pople-Kugel (Grad).
+
+    a, b sind (Q, theta, phi).  Benutzt wird die Grosskreisdistanz
+
+        cos d = cos(th_a) cos(th_b) + sin(th_a) sin(th_b) cos(ph_a - ph_b)
+
+    ⚠ WARUM NICHT EINFACH |dtheta| + |dphi|.  Am POL (theta = 0 oder 180) ist phi
+      BEDEUTUNGSLOS -- ein Ring im Sessel hat keine Phase.  Eine naive Metrik haelt
+      zwei Sessel mit phi = 136 und phi = 339 fuer 200 Grad auseinander, obwohl sie
+      DERSELBE Zustand sind.  Genau das steht in der Messung vom 26.08.:
+          theta=180,0  phi=136,4
+          theta=180,0  phi=338,6      <- identisch, nur die Phase ist Rauschen
+      Die Grosskreisdistanz erledigt das von selbst: bei sin(theta) = 0 faellt der
+      phi-Term heraus.  Die Geometrie loest das Problem, nicht eine Sonderregel.
+    """
+    ta, pa = _np.radians(a[1]), _np.radians(a[2])
+    tb, pb = _np.radians(b[1]), _np.radians(b[2])
+    c = (_np.cos(ta) * _np.cos(tb)
+         + _np.sin(ta) * _np.sin(tb) * _np.cos(pa - pb))
+    return float(_np.degrees(_np.arccos(max(-1.0, min(1.0, float(c))))))
+
+
 def _set_pucker_general(conf, ring, qs, phis, frozen: Optional[Set[int]] = None):
     """Cremer-Pople-Umkehr in VOLLER Allgemeinheit -- fuer JEDE Ringgroesse.
 
@@ -637,6 +660,33 @@ def _ring_pucker_states(mol_with_conf, ring, frozen: Set[int],
     acc = Chem.Mol(mol_with_conf)
     kept_ids = [acc.GetConformer().GetId()]
     n = len(ring)
+    # ===== ENTDOPPELN IN CP STATT IN TFD (26.08.2026) ================================
+    #
+    # GEMESSEN am eigenen Konvergenztest.  Die TFD-Schwelle 0,05 splittet ueber:
+    #     n=6, NPHASE=16 -> 10 Zustaende, kleinste paarweise CP-Distanz  5,0 Grad
+    #     n=7, NPHASE=16 -> 12 Zustaende, kleinste paarweise CP-Distanz  1,8 Grad
+    # Zwei Faltungen, die 1,8 Grad auseinanderliegen, sind DIESELBE.  Und zwei
+    # Eintraege standen bei theta = 180 mit phi = 136 und phi = 339 -- am Pol ist phi
+    # bedeutungslos, also beweisbar derselbe Zustand.
+    #
+    # ⚠️ DAS IST KEINE KOSMETIK.  Die Zustandszahl JE RING ist die Basis des
+    #    Kreuzprodukts ueber alle Ringe (gemessen: 4,3 Ringe je System):
+    #         3 Zustaende, 4 Ringe ->      81 Kombinationen   rechenbar
+    #        10 Zustaende, 4 Ringe ->  10 000                 nicht rechenbar
+    #    Uebersplittung macht die VOLLSTAENDIGE Kombinatorik unbezahlbar.  Wer den
+    #    ganzen Faltungsraum will, muss zuerst aufhoeren, Rauschen als Mulde zu
+    #    zaehlen -- sonst kommt die Kappe durch die Hintertuer zurueck.
+    #
+    # Chemischer Massstab: Cyclohexan hat Sessel + Twist-Boat-Familie, nach
+    # Symmetriefaltung 2-3 Klassen.  Der Fuenfring konvergiert von selbst auf 3.
+    #
+    # Entdoppelt wird darum auf der KUGEL, mit der Grosskreisdistanz -- die
+    # Pol-Entartung loest sich dort von selbst (siehe `_cp_abstand`).
+    # ⛔ Vorgabe AUS -> TFD wie bisher -> byte-identisch.
+    _cpd = _os.environ.get("DELFIN_FFFREE_PUCKER_CPDEDUP", "0") == "1"
+    _cp_tol = float(_os.environ.get("DELFIN_FFFREE_PUCKER_CPTOL", "15") or 15.0)
+    _cp_qtol = float(_os.environ.get("DELFIN_FFFREE_PUCKER_CPQTOL", "0.15") or 0.15)
+    _cp_kept: List[Tuple[float, float, float]] = []
     # ===== DER GANZE FALTUNGSRAUM STATT DREI STELLEN DARAUF (26.08.2026) ============
     #
     # Die alte Kandidatenliste tastet die Cremer-Pople-Kugel an genau drei Orten ab:
@@ -681,6 +731,17 @@ def _ring_pucker_states(mol_with_conf, ring, frozen: Set[int],
                 _qs, theta, phi = _cand
                 _set_pucker(m2.GetConformer(), ring, _qs * _amp(n), theta, phi, frozen)
             if not _relax_hold_pucker(m2, ring, frozen):
+                continue
+            if _cpd:
+                # NACH dem Relax messen, nicht die SOLL-Werte vergleichen: der Relax
+                # zieht den Startpunkt in die naechste echte Mulde, und genau deren
+                # Lage entscheidet, ob es eine neue ist.
+                _cp = _cp_theta_phi(m2.GetConformer().GetPositions(), ring)
+                if any(_cp_abstand(_cp, _k) < _cp_tol and abs(_cp[0] - _k[0]) < _cp_qtol
+                       for _k in _cp_kept):
+                    continue
+                _cp_kept.append(_cp)
+                states.append(_cand if _raum else (_qs, theta, phi))
                 continue
             cid = _add_conf(acc, m2)
             if _tfd_distinct(acc, cid, kept_ids, tfd_thr):
@@ -976,6 +1037,12 @@ def selbsttest_konvergenz(sizes=(5, 6, 7)) -> int:
         _os.environ["DELFIN_FFFREE_PUCKER_SPACE"] = "1"
         _os.environ["DELFIN_FFFREE_PUCKER_NAMP"] = "2"
         _os.environ["DELFIN_FFFREE_PUCKER_TRACE"] = "0"
+        # Mit CP-Entdopplung gegenrechnen, wenn der Aufrufer sie gesetzt hat --
+        # sonst misst der Test die alte Uebersplittung nach.
+        if _os.environ.get("DELFIN_FFFREE_PUCKER_CPDEDUP") == "1":
+            print("    (CP-Entdopplung AN, Toleranz %s Grad / %s A)"
+                  % (_os.environ.get("DELFIN_FFFREE_PUCKER_CPTOL", "15"),
+                     _os.environ.get("DELFIN_FFFREE_PUCKER_CPQTOL", "0.15")))
         for n in sizes:
             smi = "C1" + "C" * (n - 1) + "1"
             try:
@@ -1000,9 +1067,69 @@ def selbsttest_konvergenz(sizes=(5, 6, 7)) -> int:
             ok = (len(zahlen) == 3 and zahlen[1] > 0 and zahlen[2] <= zahlen[1])
             print("    n=%-3d  %8d %3d %4d      %s"
                   % (n, zahlen[0], zahlen[1], zahlen[2],
-                     "JA" if ok else "NEIN -- feiner abtasten"))
+                     "JA" if ok else "NEIN -- siehe CP-Streuung"))
             if not ok:
                 fehler += 1
+                # ---- WARUM waechst die Zahl?  Zwei Ursachen, ENTGEGENGESETZTE Fixes --
+                # (1) Raum noch nicht ueberdeckt -> die Zustaende liegen in CP-
+                #     Koordinaten WEIT auseinander -> feiner abtasten.
+                # (2) TFD-Schwelle trennt chemisch GLEICHE Zustaende -> sie liegen
+                #     DICHT beieinander -> die Lupe ist zu fein, nicht das Gitter grob.
+                #
+                # ⚠️ DAS IST KEINE AKADEMISCHE FRAGE.  Die Zahl der Zustaende JE RING
+                #    geht als Basis in das Kreuzprodukt ueber alle Ringe ein:
+                #        3 Zustaende, 4 Ringe ->      81 Kombinationen  (rechenbar)
+                #       10 Zustaende, 4 Ringe ->  10 000                (nicht rechenbar)
+                #    Gemessen sind 4,3 Ringe je System.  Uebersplittung macht die
+                #    VOLLSTAENDIGE Kombinatorik unbezahlbar -- Konvergenzanomalie und
+                #    Rechenbarkeit sind dasselbe Problem.
+                # Chemischer Massstab: Cyclohexan hat Sessel + Twist-Boat-Familie,
+                # nach Symmetriefaltung 2-3 Klassen.  Der Fuenfring konvergiert auf 3.
+                _os.environ["DELFIN_FFFREE_PUCKER_NPHASE"] = "16"
+                try:
+                    cps = []
+                    for _s in _ring_pucker_states(m, ring, set(), 0.05):
+                        if _s is None or not (isinstance(_s, tuple) and len(_s) == 2
+                                              and isinstance(_s[0], dict)):
+                            continue
+                        m3 = Chem.Mol(m)
+                        _set_pucker_general(m3.GetConformer(), ring, _s[0], _s[1], set())
+                        _relax_hold_pucker(m3, ring, set())
+                        cps.append(_cp_theta_phi(m3.GetConformer().GetPositions(), ring))
+                    cps.sort(key=lambda t: (round(t[1], 0), round(t[2], 0)))
+                    print("        CP der ueberlebenden Zustaende (Q, theta, phi):")
+                    for _Q, _th, _ph in cps:
+                        print("          Q=%.3f  theta=%6.1f  phi=%6.1f" % (_Q, _th, _ph))
+                    dmin = None
+                    for _i in range(len(cps)):
+                        for _j in range(_i + 1, len(cps)):
+                            _, ti, pi_ = cps[_i]
+                            _, tj, pj = cps[_j]
+                            dph = min(abs(pi_ - pj), 360.0 - abs(pi_ - pj))
+                            d = ((ti - tj) ** 2 + dph ** 2) ** 0.5
+                            dmin = d if dmin is None else min(dmin, d)
+                    if dmin is not None:
+                        print("        kleinste paarweise CP-Distanz: %.1f Grad" % dmin)
+                        # ⚠ DAS URTEIL MUSS WISSEN, WELCHER MODUS LIEF.  Erste Fassung
+                        #   war fest an `dmin` gekoppelt und behauptete "TFD zu fein"
+                        #   auch dann, wenn die CP-Entdopplung lief -- also ein Urteil
+                        #   ueber ein Instrument, das gar nicht im Einsatz war.
+                        if _cpd_an:
+                            print("        URTEIL: CP-Entdopplung laeuft und liefert MEHR"
+                                  " Zustaende als TFD.  Grund: TFD faltet die MOLEKUEL-"
+                                  "SYMMETRIE mit, die CP-Distanz nicht.  phi haengt an der"
+                                  " Ringnummerierung -- bei einem unsubstituierten Ring"
+                                  " sind alle phi bei gleichem (Q, theta) DERSELBE"
+                                  " Konformer.  CP allein ist KEIN Ersatz fuer TFD.")
+                        else:
+                            print("        URTEIL: %s" % (
+                                "ECHTE Mulden -- Gitter zu grob, feiner abtasten"
+                                if dmin > 20.0 else
+                                "Zustaende liegen dicht -- Uebersplittung moeglich; "
+                                "PRUEFEN durch TFD-Schwellensweep, NICHT durch Ersetzen "
+                                "von TFD (siehe CP-Modus)"))
+                except Exception as _e:
+                    print("        CP-Streuung nicht messbar: %s" % type(_e).__name__)
     finally:
         for k, v in _alt.items():
             if v is None:

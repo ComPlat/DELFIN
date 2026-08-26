@@ -2771,6 +2771,38 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50, union: bool = False
                 except Exception:
                     continue                # cannot prove equivalence -> do not add
                 results.append((_exyz, f"{base_label}-conf{_efi+1}"))
+        # ===== DER FALTER SAH DEN MONODENTATEN PFAD NIE =========================
+        # `_append_ffree_ring_puckers` hatte genau ZWEI Aufrufstellen, beide in
+        # `_fffree_chelate_isomers`.  Ein Komplex ohne Chelatring bekam damit NULL
+        # Ringfaltung -- obwohl sein Ligand sehr wohl Ringe traegt (Cyclohexyl,
+        # Piperidin, Zucker); "kein Chelatring" heisst nicht "kein Ring".
+        #
+        # Alle neun Groessen liegen hier vor: `_lg` (Zeile 2693) ist genau das
+        # lig_groups-Layout, das `_config_template_mol` erwartet -- Metall auf 0,
+        # dann AddHs(frag)-Bloecke in vertex_specs-Reihenfolge --, und die Donoren
+        # folgen daraus deterministisch (Blockanfang + donor_local), dieselbe
+        # Rechnung, die der Ensemble-Zweig oben als `_hdons` inline fuehrt.
+        #
+        # ⚠ KEIN graph_bonds, mit Absicht: der Primaerframe dieses Rumpfes wird
+        # ebenfalls ohne geprueft (:2694).  Ein Geschwister an einer SCHAERFEREN
+        # Latte zu messen als das Frame, an dem es haengt, waere kein additiver
+        # Test, sondern ein zweiter -- und der wuerde als "keine Reichweite"
+        # ablesen, was in Wahrheit ein ungleicher Massstab ist.
+        # ⚠ Der Falter liest zusaetzlich DELFIN_FFFREE_RING_PUCKER; ist der aus,
+        # passiert auch hier nichts.  Doppelt getort ist Absicht: der eine Schalter
+        # sagt "der Falter laeuft", der neue sagt "auf welchen Pfaden".
+        #
+        # DELFIN_FFFREE_PUCKER_ALLPATHS (Vorgabe 0 -> byte-identisch).
+        if os.environ.get("DELFIN_FFFREE_PUCKER_ALLPATHS", "0") == "1":
+            try:
+                _pdon = sorted(int(_g["global_idxs"][0]) + int(_dl)
+                               for _g in (_lg or []) for _dl in _g["donor_local"])
+                _append_ffree_ring_puckers(results, d["metal"], _lg, syms, P, label,
+                                           cn=d.get("cn"), geom=d.get("geometry"),
+                                           donors=_pdon, exempt_pairs=_ex,
+                                           max_isomers=max_isomers)
+            except Exception:
+                pass
         # Backbone re-embed (env DELFIN_FFFREE_BACKBONE_REEMBED, default OFF): add
         # core-preserving global-fold variants of THIS accepted native frame.
         _append_reembed(results, d["metal"], _lg, syms, P, label,
@@ -3047,6 +3079,33 @@ def _enumerate_geometry(d, geom_key, geom_name, lig_ref, lab_elem, spec, max_iso
                 except Exception:
                     continue
                 out.append((_exyz, "%s-conf%d" % (label, _ei + 1)))
+        # ===== DIESELBE AUSLASSUNG, ZWEITE ACHSE: DIE FALTUNG ===================
+        # Der Konformer-Block direkt darueber schloss die eine Luecke dieser
+        # Funktion; die Ringfaltung hatte sie genauso.  `_append_ffree_ring_puckers`
+        # wird an genau zwei Stellen gerufen, beide im Chelatpfad -- also trugen
+        # SPY-5, TPR-6, T-3 und SP-3 NULL Faltung, und TPR-6 ist Champion.
+        #
+        # ⚠ geom_name, NICHT d["geometry"] -- aus demselben Grund, der beim
+        # Konformer-Block oben schon steht: diese Funktion baut ein ANDERES
+        # Polyeder als das des Systems, und der Selbstgate im Falter wuerde ein
+        # Prisma gegen das Oktaeder messen und jede Faltung verwerfen.
+        # ⚠ `_gb` und `_ex` sind DIESELBEN wie beim Primaerframe (:2905), die Latte
+        # ist also gleich; `_bb` kann der Falter nicht entgegennehmen, und ein
+        # neuer Parameter waere hier eine Aenderung an einer fremden Signatur.
+        # ⚠ Der Falter liest zusaetzlich DELFIN_FFFREE_RING_PUCKER.
+        #
+        # DELFIN_FFFREE_PUCKER_ALLPATHS (Vorgabe 0 -> byte-identisch).
+        if os.environ.get("DELFIN_FFFREE_PUCKER_ALLPATHS", "0") == "1":
+            try:
+                _plg = _lig_groups_from_vertex_specs(vertex_specs)
+                _pdon = sorted(int(_g["global_idxs"][0]) + int(_dl)
+                               for _g in (_plg or []) for _dl in _g["donor_local"])
+                _append_ffree_ring_puckers(out, d["metal"], _plg, syms, P, label,
+                                           cn=d.get("cn"), geom=geom_name,
+                                           donors=_pdon, exempt_pairs=_ex,
+                                           graph_bonds=_gb, max_isomers=max_isomers)
+            except Exception:
+                pass
     return out
 
 
