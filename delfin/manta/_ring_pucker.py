@@ -792,7 +792,136 @@ def _tfd(acc_mol, id_a: int, id_b: int) -> float:
         return 1.0     # no torsions / failure -> treat as distinct (keep)
 
 
-def _tfd_distinct(acc_mol, cid: int, kept_ids, thr: float) -> bool:
+# ===== DIE RINGLOKALE TFD (26.08.2026) =============================================
+#
+# GEMESSEN (`selbsttest_trennschaerfe`, Verduennungsreihe): derselbe Cyclohexanring an
+# einem wachsenden starren Acen, Zustaende JE RING --
+#     Cyclohexylbenzol      Ringanteil 50,0 %   TFD 0,05 -> 11   TFD 0,005 -> 62
+#     Cyclohexylnaphthalin             37,5 %                6                49
+#     Cyclohexylanthracen              30,0 %                1                23
+#     Cyclohexyltetracen               25,0 %                1                10
+# Die Faltungen sind DA -- bei 0,005 kommen sie zurueck.  TFD verschmilzt sie.
+#
+# DIE URSACHE STEHT IN RDKITS EIGENER FORMEL, und sie ist SCHAERFER als "mittelt".
+# `CalculateTFD` bildet sum(d_i * w_i) / sum(w_i) ueber ALLE Torsionen des Molekuels.
+# Bewegt sich nur der eine Ring, ist d_i = 0 fuer jede andere Torsion, und es bleibt
+#     TFD_global = d_Ring * w_Ring / sum(w)
+# `CalculateTorsionWeights` setzt w = exp(-beta * d^2) mit d = topologischer Abstand zur
+# ZENTRALSTEN Bindung des Molekuels.  Ein angehaengter Cyclohexylring rutscht mit jedem
+# weiteren Acenring weiter an den Rand -- sein Gewichtsanteil faellt EXPONENTIELL, nicht
+# wie 1/N.  Gemessen an denselben vier MMFF-optimierten Proben (w_Ring / sum(w)):
+#     Cyclohexylbenzol      0,1875   ->   5,3-fache Verduennung
+#     Cyclohexylnaphthalin  0,0548   ->  18,3-fache
+#     Cyclohexylanthracen   0,0166   ->  60,2-fache
+#     Cyclohexyltetracen    0,0069   -> 146,0-fache
+# 0,05 / 146 = 0,00034 ist damit die Schwelle, die der Ring im Tetracen EFFEKTIV sieht.
+# Genau deshalb kommen die Zustaende erst bei 0,005 zurueck, und genau deshalb faellt
+# die Zahl monoton mit der Geruestgroesse.
+#
+# ⇒ Wort fuer Wort der RMSD-Fehler eine Ebene hoeher -- und der Effekt WAECHST mit der
+#   Ligandgroesse, trifft also am haertesten die Systeme, um die es geht.
+#
+# DIE REPARATUR NIMMT RDKITS EIGENEN WEG, keinen Nachbau: `CalculateTorsionLists` gibt
+# Nichtring- und Ringtorsionen GETRENNT zurueck, `CalculateTorsionAngles` und
+# `CalculateTFD` nehmen genau solche Listen entgegen.  Es wird also nur GEFILTERT: der
+# Eintrag des betrachteten Rings bleibt, alles andere faellt weg.
+#
+# ⚠ DIE SYMMETRIEFALTUNG UEBERLEBT -- der Punkt, an dem der Versuch vom 26.08. gestorben
+#   ist, TFD durch eine reine CP-Distanz zu ERSETZEN (n=5 ging von 3,3,3 auf 9,13,14,
+#   weil phi an der Atomnummerierung haengt).  Hier wird nichts nachgebaut: RDKits
+#   Ringeintrag ist der MITTELWERT von |Torsion| ueber den ganzen Ring, also eine Zahl,
+#   die unter Drehung UND Spiegelung der Ringnummerierung invariant ist.  Diese
+#   Invarianz IST die Faltung.  Gemessen: unsubstituierter Fuenfring liefert ringlokal
+#   3 Zustaende -- exakt wie global.
+#
+# ⚠ DIE SCHWELLE BLEIBT 0,05, und das ist keine Setzung, sondern eine IDENTITAET.  Ein
+#   unsubstituierter Einringer hat KEINE Nichtringtorsion und GENAU EINEN Ringeintrag;
+#   sum(w) ist dann w_Ring, der Bruch kuerzt sich, und global TFD = ringlokal TFD auf
+#   jedem Konformerpaar.  GEMESSEN, Nenner 760 Konformerpaare (n=5,6,7,8 zu je 190):
+#   groesste Differenz 5,6e-17 -- das ist Fliesskommarauschen, nicht ein kleiner
+#   Unterschied.  Auf der Kalibrierprobe sind die beiden Masse also nicht aehnlich
+#   geeicht, sondern DASSELBE; die Bedeutung von 0,05 aendert sich dort um exakt null.
+#   Die Zustandszahlen bestaetigen es Zeile fuer Zeile (3/9/11/16 bei 0,05 und
+#   6/22/64/103 bei 0,005, global wie ringlokal).  `selbsttest_tfd_lokal` misst beides.
+#
+# ⚠ WAS DIESE FASSUNG DAFUER BEZAHLT, und es steht hier, damit es niemand spaeter als
+#   Ueberraschung findet: RDKits Ringeintrag ist EINE Zahl je Ring.  Dieselbe
+#   Invarianz, die die Symmetrie faltet, macht das Mass eindimensional -- zwei
+#   wirklich verschiedene Faltungen mit demselben Mittelwert von |Torsion| werden
+#   zusammengezogen.  Die Faltungsachse selbst (theta, phi) sieht das Mass NICHT.
+#   ⇒ Ringlokale TFD ist eine schaerfere Entdopplung, KEIN vollstaendiger
+#     Faltungsdeskriptor.  Wer die Achse braucht, braucht `_cp_theta_phi` dazu -- und
+#     die faltet die Symmetrie NICHT (Messung 26.08.), taugt also nur als ZWEITES
+#     Instrument neben diesem, nie als Ersatz.
+# ⚠ OHNE GEWICHTE, wenn mehrere Ringe ausgewaehlt sind.  Die Gewichte SIND der
+#   Verduennungsmechanismus (Abstand zur zentralsten Bindung); sie ringlokal wieder
+#   hereinzuholen holte den Effekt zurueck, den diese Fassung entfernt.  Bei EINEM Ring
+#   ist es ohnehin gleichgueltig -- ein Gewicht kuerzt sich gegen sich selbst.
+# ⛔ Vorgabe AUS -> `_tfd_distinct` laeuft die alte Zeile -> byte-identisch.
+
+
+def _tfd_lokal_listen(mol, ringe):
+    """RDKits Ringtorsionsliste, GEFILTERT auf die uebergebenen Ringe.
+
+    ⚠ ZUGEORDNET WIRD UEBER DIE ATOMMENGE, nicht ueber den Listenindex.
+      `tors_list_rings` kommt aus `Chem.GetSymmSSSR`, die Ringe des Aufrufers aus
+      `RingInfo.AtomRings()`.  Beide liefern dieselben Ringe -- sich auf ihre
+      Indexgleichheit zu VERLASSEN waere aber eine Annahme, und ein falsch
+      zugeordneter Ring waere hier nicht als Fehler zu erkennen, sondern nur als
+      "der andere Ring hat sich eben nicht bewegt".  Der Aufrufer prueft darum die
+      LAENGE der Rueckgabe gegen die Zahl der gewuenschten Ringe.
+    """
+    from rdkit.Chem import TorsionFingerprints as _TF
+    _tl, _tlr = _TF.CalculateTorsionLists(mol)
+    ziel = {frozenset(int(a) for a in r) for r in ringe}
+    # Ringeintrag k besteht aus den N aufeinanderfolgenden Vierergruppen des Rings; die
+    # ERSTEN Atome dieser Gruppen sind genau die N Ringatome (RDKit baut sie so).
+    return [(q, d) for q, d in _tlr if frozenset(int(t[0]) for t in q) in ziel]
+
+
+def _tfd_lokal(acc_mol, listen, id_a: int, id_b: int) -> float:
+    """TFD ueber NUR die uebergebenen Torsionseintraege -- kein Geruest im Nenner."""
+    from rdkit.Chem import TorsionFingerprints as _TF
+    t_a = _TF.CalculateTorsionAngles(acc_mol, [], listen, confId=id_a)
+    t_b = _TF.CalculateTorsionAngles(acc_mol, [], listen, confId=id_b)
+    return float(_TF.CalculateTFD(t_a, t_b, weights=None))
+
+
+# ⚠ ZWEI SCHALTER FUER EIN MASS, und das ist keine Knopfvermehrung.  Dasselbe Mass
+#   bewegt die Zahl an den beiden Aufrufstellen in ENTGEGENGESETZTE Richtungen:
+#     `_ring_pucker_states` (je Ring)   Cyclohexyltetracen  1 -> 11 Zustaende
+#     `generate` (je Kombination)       Decalin            22 ->  8 Frames
+#   Haengen beide an EINEM Schalter, misst ein A/B ihre SUMME und niemand kann sagen,
+#   welcher Anteil woher kam -- genau die Bauform, an der in diesem Projekt schon
+#   Verdikte gescheitert sind.  Getrennt geschaltet sind es zwei Messungen.
+# ⚠ DER BEFUND HAENGT AM ERSTEN.  Gemessen wurde die Verduennung an den Zustaenden JE
+#   RING; die Kombinationsebene ist eine EXTRAPOLATION davon und steht darum unter
+#   ihrem eigenen, ebenfalls ausgeschalteten Schalter.
+def _tfd_distinct(acc_mol, cid: int, kept_ids, thr: float, ringe=None,
+                  schalter: str = "DELFIN_FFFREE_PUCKER_TFD_LOCAL") -> bool:
+    if ringe and _os.environ.get(schalter, "0") == "1":
+        try:
+            _listen = _tfd_lokal_listen(acc_mol, ringe)
+            # ⚠ ALLE ODER KEINER.  Findet die Zuordnung nur EINEN Teil der Ringe
+            #   wieder, misst der ringlokale Vergleich stillschweigend weniger Ringe
+            #   als der Aufrufer gemeint hat -- und die fehlenden faenden nirgends
+            #   statt.  Eine halbe Messung sieht von aussen aus wie eine ganze; das ist
+            #   genau die Bauform, die in diesem Projekt schon mehrfach als Befund
+            #   durchgegangen ist.  Lieber ganz zurueck auf das globale Mass.
+            if len(_listen) == len({frozenset(int(a) for a in r) for r in ringe}):
+                # ⚠ EIGENE SCHWELLE NUR, WENN JEMAND SIE SETZT.  Die Messung sagt: auf
+                #   dem unsubstituierten Ring sind beide Masse identisch, 0,05 behaelt
+                #   also seine Bedeutung.  Der Knopf ist zum NACHMESSEN da, nicht zum
+                #   Nachjustieren -- leer heisst "unveraendert".
+                _s = _os.environ.get("DELFIN_FFFREE_PUCKER_TFD_LOCAL_THR", "")
+                _thr = float(_s) if _s.strip() else thr
+                # Die Liste EINMAL je Kandidat, nicht je Paar: `GetTFDBetweenConformers`
+                # baut sie im globalen Pfad bei JEDEM Aufruf neu -- ringlokal ist damit
+                # auch billiger, nicht nur schaerfer.
+                return all(_tfd_lokal(acc_mol, _listen, k, cid) >= _thr
+                           for k in kept_ids)
+        except Exception:
+            pass          # Rueckfall auf das globale Mass -- nie stillschweigend leer
     return all(_tfd(acc_mol, k, cid) >= thr for k in kept_ids)
 
 
@@ -1021,7 +1150,11 @@ def _ring_pucker_states(mol_with_conf, ring, frozen: Set[int],
                 states.append(_cand if _raum else (_qs, theta, phi))
                 continue
             cid = _add_conf(acc, m2)
-            if _tfd_distinct(acc, cid, kept_ids, tfd_thr):
+            # ⚠ HIER IST DIE MESSSTELLE DES BEFUNDS.  `ringe` benennt den EINEN Ring,
+            #   der hier gefaltet wird; mit dem Schalter AN zaehlt nur noch seine
+            #   Torsion, das Geruest steht nicht mehr im Nenner.  Schalter AUS -> das
+            #   Argument wird in `_tfd_distinct` gar nicht angesehen.
+            if _tfd_distinct(acc, cid, kept_ids, tfd_thr, ringe=(ring,)):
                 kept_ids.append(cid)
                 if _xrd_r and _Pr is not None:
                     _xrd_r_kept.append(_Pr)
@@ -1356,7 +1489,17 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
                 except Exception:
                     _Pk = None
             cid = _add_conf(acc, m2)
-            if not _tfd_distinct(acc, cid, kept_ids, tfd_thr):
+            # Auf der Kombinationsebene falten MEHRERE Ringe gleichzeitig -- ringlokal
+            # heisst hier "alle gefalteten Ringe, aber nur sie".  ⚠ Das ist eine
+            # ANDERE Aussage als eine Stufe hoeher: hier faellt auch die exocyclische
+            # Torsion aus dem Vergleich, zwei Kombinationen, die sich NUR in ihr
+            # unterscheiden, werden also zusammengezogen.  Das ist gewollt (dieses
+            # Modul faltet Ringe) und steht hier, damit es niemand spaeter als
+            # Nebenwirkung entdeckt.
+            # ⚠ EIGENER SCHALTER, weil die Wirkung hier das andere Vorzeichen hat als
+            #   eine Stufe hoeher -- s. den Block bei `_tfd_distinct`.
+            if not _tfd_distinct(acc, cid, kept_ids, tfd_thr, ringe=rings,
+                                 schalter="DELFIN_FFFREE_PUCKER_TFD_LOCAL_KOMBI"):
                 acc.RemoveConformer(cid)
                 if _zaehler is not None:
                     _zaehler["tfd_doppelt"] = _zaehler.get("tfd_doppelt", 0) + 1
@@ -2875,6 +3018,382 @@ def selbsttest_trennschaerfe(proben=None, tol: float = 0.15,
     return 1 if fehler else 0
 
 
+# Die unsubstituierten Kalibrierringe.  Sie sind der EINZIGE Ort, an dem sich die
+# Bedeutung der Schwelle pruefen laesst: dort hat das Molekuel kein Geruest, das
+# verduennen koennte, und beide Masse muessen deshalb DASSELBE sagen.  Faellt das aus,
+# ist die ringlokale Fassung nicht "anders geeicht", sondern ein anderes Instrument.
+_LOKAL_KALIBER = (("Cyclopentan", "C1CCCC1"), ("Cyclohexan", "C1CCCCC1"),
+                  ("Cycloheptan", "C1CCCCCC1"), ("Cyclooctan", "C1CCCCCCC1"))
+
+
+def _lokal_ringlage(mol):
+    """(erster faltbarer Ring in Ringreihenfolge, Ringatome, eingefrorenes Geruest).
+
+    Dieselbe Vorbereitung wie in der Verduennungsreihe von `selbsttest_trennschaerfe`
+    -- ⚠ und das ist der Zweck: die Reparatur muss an DERSELBEN Messung geprueft
+    werden, die den Fehler gezeigt hat.  Eine zweite, leicht andere Vorbereitung
+    vergliche zwei Messungen statt zweier Masse.
+    """
+    ring_at, ring_ord = set(), []
+    for r in mol.GetRingInfo().AtomRings():
+        if _is_puckerable(mol, r):
+            ring_at |= {int(x) for x in r}
+            if not ring_ord:
+                ring_ord = _ring_order(mol, set(r))
+    if not ring_ord:
+        return None, None, None
+    frei = set(ring_at)
+    for i in list(ring_at):
+        for nb in mol.GetAtomWithIdx(int(i)).GetNeighbors():
+            if nb.GetSymbol() == "H":
+                frei.add(int(nb.GetIdx()))
+    return ring_ord, ring_at, set(range(mol.GetNumAtoms())) - frei
+
+
+def selbsttest_tfd_lokal() -> int:
+    """FAEHRT DIE VERDUENNUNGSTABELLE NACH -- global gegen ringlokal, dieselben Proben.
+
+    VORGESCHICHTE.  `selbsttest_trennschaerfe` hat beim Bauen einen Befund abgeworfen,
+    den es gar nicht gesucht hatte: derselbe Cyclohexanring liefert an wachsendem
+    starrem Acen immer weniger Zustaende (11 -> 6 -> 1 -> 1 bei TFD 0,05), und bei
+    0,005 kommen sie zurueck (62 -> 49 -> 23 -> 10).  Die Faltungen sind also DA und
+    werden vom Entdopplungsmass verschmolzen.
+
+    DIESER TEST BEANTWORTET VIER FRAGEN, und zwar in dieser Reihenfolge, weil jede
+    naechste sinnlos waere, wenn die davor ausfaellt:
+        0  Ist der Vorgabepfad unveraendert?          (Gitter, Decalin)
+        1  WORAN liegt die Verduennung genau?         (RDKits Gewichte, gerechnet)
+        2  Ueberlebt die Symmetriefaltung?            (unsubstituierter Ring)
+        3  Verschwindet der Gradient?                 (die vier Acene)
+
+    ⚠ SCHRITT 2 IST DAS ABBRUCHKRITERIUM, nicht Schritt 3.  Am 26.08. ist schon ein
+      Ersatz fuer TFD daran gestorben, dass er die Molekuelsymmetrie nicht mitfaltete
+      -- n=5 ging von 3,3,3 auf 9,13,14.  Eine Fassung, die den Gradienten beseitigt
+      und dabei den Fuenfring aufsplittet, ist KEINE Reparatur, sondern derselbe
+      Fehlschluss mit einem anderen Vorzeichen.
+
+    Aufruf:  python -m delfin.manta._ring_pucker tfdlokal
+    """
+    if not (_RDKIT and _np is not None):
+        print("=== Ringlokale TFD: RDKit fehlt, uebersprungen ==="); return 0
+    from rdkit.Chem import TorsionFingerprints as _TF
+    fehler = 0
+    # ⚠ VOR dem `try`, nicht darin.  Platzt Schritt 0, liefe sonst das Urteil unten in
+    #   einen NameError -- ein Absturz, der wie "kein Befund" aussieht.
+    _reihe = []
+    print("=== Selbsttest: die ringlokale TFD ===")
+    _alt = {k: _os.environ.get(k) for k in
+            ("DELFIN_FFFREE_PUCKER_SPACE", "DELFIN_FFFREE_PUCKER_NAMP",
+             "DELFIN_FFFREE_PUCKER_NPHASE", "DELFIN_FFFREE_PUCKER_FULL",
+             "DELFIN_FFFREE_PUCKER_TRACE", "DELFIN_FFFREE_PUCKER_DEFEKT",
+             "DELFIN_FFFREE_PUCKER_XRD", "DELFIN_FFFREE_PUCKER_CPDEDUP",
+             "DELFIN_FFFREE_PUCKER_TFD_LOCAL", "DELFIN_FFFREE_PUCKER_TFD_LOCAL_KOMBI",
+             "DELFIN_FFFREE_PUCKER_TFD_LOCAL_THR")}
+    try:
+        # ===== 0 VORGABE AUS -> BYTE-IDENTISCH =======================================
+        for _k in _alt:
+            _os.environ[_k] = "0"
+        _os.environ["DELFIN_FFFREE_PUCKER_TFD_LOCAL_THR"] = ""
+        for _n, _soll in sorted(_REF_GITTER.items()):
+            _ist = len(_pucker_space_grid(_n, 2, 6))
+            if _ist != _soll:
+                print("  ✗ 0 GITTER n=%d: %d Kandidaten statt %d" % (_n, _ist, _soll))
+                fehler += 1
+        if not fehler:
+            print("  ✓ 0 GITTER unveraendert: n=5,6,7,8 -> %s"
+                  % ", ".join(str(_REF_GITTER[k]) for k in (5, 6, 7, 8)))
+        _mv = Chem.AddHs(Chem.MolFromSmiles("C1CCC2CCCCC2C1"))        # Decalin
+        if AllChem.EmbedMolecule(_mv, randomSeed=42) != 0:
+            print("  ? 0 VORGABE: Decalin nicht einbettbar, NICHT gemessen"); fehler += 1
+        else:
+            AllChem.MMFFOptimizeMolecule(_mv)
+            _aus = generate(_mv, budget=48)
+            if len(_aus) != _REF_DECALIN_FRAMES:
+                print("  ✗ 0 VORGABE VERAENDERT: Decalin liefert %d Frames statt %d -- "
+                      "der Vorgabepfad ist NICHT mehr byte-identisch"
+                      % (len(_aus), _REF_DECALIN_FRAMES))
+                fehler += 1
+            else:
+                print("  ✓ 0 VORGABE UNVERAENDERT: Decalin %d Frames (Referenz %d)"
+                      % (len(_aus), _REF_DECALIN_FRAMES))
+            # ⚠ EIN SCHALTER OHNE REICHWEITE IST VON EINEM UNVERDRAHTETEN NICHT ZU
+            #   UNTERSCHEIDEN.  In diesem Projekt fuenfmal an einem Tag passiert --
+            #   darum steht die Gegenprobe direkt neben der Identitaet.
+            # ⚠ DIE BEIDEN SCHALTER EINZELN, nie zusammen.  Ihre Wirkungen haben
+            #   entgegengesetztes Vorzeichen; gemeinsam gemessen ergaebe die Summe eine
+            #   Zahl, aus der sich kein Anteil mehr zurueckrechnen laesst.
+            _za = _neuer_zaehler()
+            generate(_mv, budget=48, _zaehler=_za)
+            _os.environ["DELFIN_FFFREE_PUCKER_TFD_LOCAL"] = "1"
+            _zm = _neuer_zaehler()
+            _mit = generate(_mv, budget=48, _zaehler=_zm)
+            _os.environ["DELFIN_FFFREE_PUCKER_TFD_LOCAL"] = "0"
+            _os.environ["DELFIN_FFFREE_PUCKER_TFD_LOCAL_KOMBI"] = "1"
+            _zk = _neuer_zaehler()
+            _kom = generate(_mv, budget=48, _zaehler=_zk)
+            _os.environ["DELFIN_FFFREE_PUCKER_TFD_LOCAL_KOMBI"] = "0"
+            _zur = generate(_mv, budget=48)
+            print("  %s 0 REICHWEITE (Decalin, budget=48), die Schalter EINZELN:"
+                  % ("✓" if (len(_mit) != len(_aus) or len(_kom) != len(_aus)) else "⚠"))
+            print("      AUS                %2d Frames, Zustaende je Ring %s"
+                  % (len(_aus), _za["zustaende_je_ring"]))
+            print("      nur je RING        %2d Frames, Zustaende je Ring %s"
+                  % (len(_mit), _zm["zustaende_je_ring"]))
+            print("      nur je KOMBINATION %2d Frames, Zustaende je Ring %s"
+                  % (len(_kom), _zk["zustaende_je_ring"]))
+            print("      zurueck auf AUS    %2d Frames" % len(_zur))
+            if len(_zur) != len(_aus):
+                print("      ✗ NICHT ZURUECKSCHALTBAR -- ein Schalter hinterlaesst Zustand")
+                fehler += 1
+            if len(_kom) == len(_aus):
+                # ⚠ EIN SCHALTER OHNE GEMESSENE WIRKUNG WIRD ALS SOLCHER BENANNT.  Auf
+                #   Decalin ist die Null sogar VORHERSAGBAR -- zwei gleichwertige Ringe,
+                #   keine acyclische Torsion, Gewichte 1:1: global und ringlokal rechnen
+                #   dort buchstaeblich dieselbe Zahl.  Das erklaert die Null, es belegt
+                #   den Schalter aber nicht.  Wer ihn benutzt, misst ihn zuerst.
+                print("      ⚠ DER KOMBINATIONSSCHALTER ist auf Decalin wirkungslos, und "
+                      "das ist vorhersagbar: zwei gleichwertige Ringe, keine acyclische "
+                      "Torsion, Gewichte 1:1 -- beide Masse rechnen dieselbe Zahl.  Er "
+                      "ist damit in dieser Datei NICHT BELEGT; kein Test zeigt bisher "
+                      "eine Wirkung von ihm.")
+            if len(_mit) == len(_aus) and len(_kom) == len(_aus):
+                print("      ⚠ BEIDE ohne Wirkung -- die Reichweite muss dann aus "
+                      "Schritt 3 kommen.")
+            else:
+                # ⚠ HIER FAELLT DIE ZAHL, WAEHREND SIE IN SCHRITT 3 STEIGT, und das ist
+                #   kein Widerspruch, sondern DIESELBE Aussage von zwei Seiten.
+                #   Ringlokal heisst "nur die Torsion DIESES Rings" -- und das entfernt
+                #   ZWEI Verunreinigungen auf einmal:
+                #     (a) das starre Geruest im NENNER  -> Acene, Zustaende STEIGEN
+                #     (b) die Bewegung des NACHBARRINGS -> Decalin, Zustaende FALLEN
+                #   Bei (b) zaehlte der globale Vergleich Zustaende von Ring 1 als
+                #   Zustaende von Ring 0 mit; das Kreuzprodukt zaehlt sie DANACH noch
+                #   einmal.  Decalin hat kein Geruest zum Verduennen (Ringanteil 100 %,
+                #   keine acyclische Torsion, Gewichte 1:1), also bleibt hier nur (b).
+                # ⚠ NICHT BEWIESEN ist damit, dass die entfallenen Frames Doppelgaenger
+                #   WAREN -- gezeigt ist nur, WO die Zahl sich aendert.  Wer das Urteil
+                #   will, braucht das Auge, nicht diesen Test.
+                print("      ⚠ HIER FAELLT die Zahl, in Schritt 3 STEIGT sie.  Dieselbe "
+                      "Aussage von zwei Seiten: ringlokal entfernt das Geruest aus dem "
+                      "Nenner (Acene: mehr Zustaende) UND die Bewegung des Nachbarrings "
+                      "aus der Zustandszahl eines Rings (Decalin: weniger).  Decalin hat "
+                      "kein Geruest -- Ringanteil 100 %, keine acyclische Torsion, "
+                      "Gewichte 1:1 -- also bleibt hier nur der zweite Anteil.")
+
+        # ===== 1 WORAN DIE VERDUENNUNG LIEGT -- RDKITS EIGENE GEWICHTE ================
+        # ⚠ GERECHNET, NICHT GESCHAETZT.  `CalculateTFD` bildet sum(d_i*w_i)/sum(w_i).
+        #   Bewegt sich nur EIN Ring, bleibt d_Ring * w_Ring / sum(w) -- der Quotient
+        #   w_Ring/sum(w) IST also der Verduennungsfaktor, ohne jede Modellannahme.
+        print()
+        print("  ===== 1 DER VERDUENNUNGSFAKTOR STEHT IN RDKITS GEWICHTEN =====")
+        print("    %-24s %7s %6s %6s %10s %12s"
+              % ("Molekuel", "Anteil", "nring", "ring", "w_R/sum(w)", "Verduennung"))
+        _wfak = {}
+        for _name, _smi in _LOKAL_KALIBER + _VERD_PROBEN:
+            try:
+                _m = Chem.AddHs(Chem.MolFromSmiles(_smi))
+                if AllChem.EmbedMolecule(_m, randomSeed=42) != 0:
+                    print("    %-24s Einbettung fehlgeschlagen" % _name); continue
+                AllChem.MMFFOptimizeMolecule(_m)
+                _ro, _rat, _fr = _lokal_ringlage(_m)
+                if not _ro:
+                    print("    %-24s kein faltbarer Ring" % _name); continue
+                _tl, _tlr = _TF.CalculateTorsionLists(_m)
+                _w = _TF.CalculateTorsionWeights(_m)
+                _ziel = frozenset(int(a) for a in _ro)
+                _k = next((i for i, (_q, _d) in enumerate(_tlr)
+                           if frozenset(int(t[0]) for t in _q) == _ziel), None)
+                if _k is None:
+                    print("    %-24s Ring NICHT in RDKits Ringliste -- "
+                          "die Zuordnung ueber die Atommenge greift nicht" % _name)
+                    fehler += 1
+                    continue
+                _hv = [i for i in range(_m.GetNumAtoms())
+                       if _m.GetAtomWithIdx(i).GetSymbol() != "H"]
+                _wr = _w[len(_tl) + _k] / sum(_w)
+                _wfak[_name] = _wr
+                print("    %-24s %6.1f%% %6d %6d %10.4f %11.1fx"
+                      % (_name, 100.0 * len(_rat) / len(_hv), len(_tl), len(_tlr),
+                         _wr, 1.0 / _wr))
+            except Exception as _e:
+                print("    %-24s ausgefallen: %s" % (_name, type(_e).__name__))
+                fehler += 1
+        for _name, _ in _LOKAL_KALIBER:
+            if _name in _wfak and abs(_wfak[_name] - 1.0) > 1e-9:
+                print("    ✗ 1 KALIBER %s hat Gewichtsanteil %.6f statt 1 -- die "
+                      "Schwellenherleitung in Schritt 2 traegt dann nicht"
+                      % (_name, _wfak[_name]))
+                fehler += 1
+        if all(abs(_wfak.get(n, 1.0) - 1.0) <= 1e-9 for n, _ in _LOKAL_KALIBER):
+            print("    ✓ 1 KALIBER: unsubstituierter Einringer hat GENAU EINEN "
+                  "Torsionseintrag, Gewichtsanteil 1,0000 -- dort gibt es per "
+                  "Konstruktion nichts zu verduennen.")
+
+        # ===== 2 SYMMETRIEFALTUNG UND SCHWELLE AUF DEM KALIBERRING ====================
+        # (2a) DIE ZAHLEN SELBST: sind global und ringlokal auf dem unsubstituierten
+        #      Ring DASSELBE?  Nicht "aehnlich" -- die Herleitung behauptet Gleichheit,
+        #      also wird Gleichheit gemessen, mit Nenner.
+        print()
+        print("  ===== 2 SYMMETRIEFALTUNG UND SCHWELLE (unsubstituierte Ringe) =====")
+        _paare_ges, _dmax_ges = 0, 0.0
+        for _name, _smi in _LOKAL_KALIBER:
+            try:
+                _m = Chem.AddHs(Chem.MolFromSmiles(_smi))
+                _ids = list(AllChem.EmbedMultipleConfs(_m, numConfs=20, randomSeed=42))
+                if len(_ids) < 2:
+                    print("    %-14s nur %d Konformer -- nicht messbar"
+                          % (_name, len(_ids))); continue
+                AllChem.MMFFOptimizeMoleculeConfs(_m)
+                _ro, _rat, _fr = _lokal_ringlage(_m)
+                _li = _tfd_lokal_listen(_m, (_ro,))
+                _d, _np_ = 0.0, 0
+                for _i in range(len(_ids)):
+                    for _j in range(_i + 1, len(_ids)):
+                        _g = _tfd(_m, _ids[_i], _ids[_j])
+                        _l = _tfd_lokal(_m, _li, _ids[_i], _ids[_j])
+                        _d = max(_d, abs(_g - _l)); _np_ += 1
+                _paare_ges += _np_; _dmax_ges = max(_dmax_ges, _d)
+                print("    %-14s %4d Konformerpaare, groesste Differenz "
+                      "|global - ringlokal| = %.3e" % (_name, _np_, _d))
+            except Exception as _e:
+                print("    %-14s ausgefallen: %s" % (_name, type(_e).__name__))
+                fehler += 1
+        if _paare_ges and _dmax_ges <= 1e-9:
+            print("    ✓ 2a IDENTISCH auf %d Konformerpaaren (groesste Differenz %.1e). "
+                  "⇒ DIE SCHWELLE BLEIBT 0,05: auf dem Kaliberring sind die beiden "
+                  "Masse nicht aehnlich geeicht, sondern DASSELBE." % (_paare_ges, _dmax_ges))
+        elif _paare_ges:
+            print("    ✗ 2a NICHT identisch: groesste Differenz %.3e ueber %d Paare -- "
+                  "die Schwelle muesste dann neu geeicht werden, und die Herleitung "
+                  "in Schritt 1 ist falsch." % (_dmax_ges, _paare_ges))
+            fehler += 1
+
+        # (2b) DIE ZUSTANDSZAHL -- der Test, an dem der CP-Ersatz gestorben ist.
+        _os.environ["DELFIN_FFFREE_PUCKER_SPACE"] = "1"
+        _os.environ["DELFIN_FFFREE_PUCKER_NAMP"] = "2"
+        _os.environ["DELFIN_FFFREE_PUCKER_NPHASE"] = "8"
+        print("    Zustaende je Ring, Raumgitter NAMP=2 NPHASE=8:")
+        print("    %-14s %8s %8s %9s %9s" % ("Ring", "gl 0,05", "lo 0,05",
+                                             "gl 0,005", "lo 0,005"))
+        _n5 = None
+        for _name, _smi in _LOKAL_KALIBER:
+            try:
+                _m = Chem.AddHs(Chem.MolFromSmiles(_smi))
+                if AllChem.EmbedMolecule(_m, randomSeed=42) != 0:
+                    continue
+                AllChem.MMFFOptimizeMolecule(_m)
+                _ro, _rat, _fr = _lokal_ringlage(_m)
+                _os.environ["DELFIN_FFFREE_PUCKER_TFD_LOCAL"] = "0"
+                _g05 = len(_ring_pucker_states(_m, _ro, _fr, 0.05))
+                _g005 = len(_ring_pucker_states(_m, _ro, _fr, 0.005))
+                _os.environ["DELFIN_FFFREE_PUCKER_TFD_LOCAL"] = "1"
+                _l05 = len(_ring_pucker_states(_m, _ro, _fr, 0.05))
+                _l005 = len(_ring_pucker_states(_m, _ro, _fr, 0.005))
+                _os.environ["DELFIN_FFFREE_PUCKER_TFD_LOCAL"] = "0"
+                print("    %-14s %8d %8d %9d %9d" % (_name, _g05, _l05, _g005, _l005))
+                if (_g05, _g005) != (_l05, _l005):
+                    print("      ✗ 2b %s: ringlokal weicht auf dem KALIBERRING ab -- "
+                          "0,05 bedeutet dort dann nicht mehr dasselbe" % _name)
+                    fehler += 1
+                if len(_ro) == 5:
+                    _n5 = _l05
+            except Exception as _e:
+                print("    %-14s ausgefallen: %s" % (_name, type(_e).__name__))
+                fehler += 1
+        if _n5 is None:
+            print("    ✗ 2b FUENFRING nicht gemessen -- die Symmetrieprobe fehlt")
+            fehler += 1
+        elif _n5 == 3:
+            print("    ✓ 2b SYMMETRIEFALTUNG: unsubstituierter Fuenfring gibt ringlokal "
+                  "3 Zustaende.  Der CP-Ersatz vom 26.08. gab hier 9/13/14 -- die "
+                  "Faltung ueberlebt, weil RDKits Ringeintrag der MITTELWERT von "
+                  "|Torsion| ueber den Ring ist und damit nummerierungsinvariant.")
+        else:
+            print("    ✗ 2b SYMMETRIEFALTUNG ZERSTOERT: Fuenfring gibt %d statt 3 "
+                  "Zustaende -- derselbe Fehlschluss wie beim CP-Ersatz." % _n5)
+            fehler += 1
+
+        # ===== 3 DIE VERDUENNUNGSREIHE NACHGEFAHREN ==================================
+        print()
+        print("  ===== 3 DIESELBE TABELLE, GLOBAL GEGEN RINGLOKAL =====")
+        print("    Geruest EINGEFROREN, Raumgitter NAMP=2 NPHASE=8 -- exakt die "
+              "Vorbereitung der Verduennungsreihe in `selbsttest_trennschaerfe`.")
+        print("    %-24s %7s %10s %8s %9s %10s"
+              % ("Molekuel", "Anteil", "w_R/sum(w)", "gl 0,05", "gl 0,005", "lo 0,05"))
+        _reihe = []
+        for _name, _smi in _VERD_PROBEN:
+            try:
+                _m = Chem.AddHs(Chem.MolFromSmiles(_smi))
+                if AllChem.EmbedMolecule(_m, randomSeed=42) != 0:
+                    print("    %-24s Einbettung fehlgeschlagen" % _name); continue
+                AllChem.MMFFOptimizeMolecule(_m)
+                _ro, _rat, _fr = _lokal_ringlage(_m)
+                if not _ro:
+                    print("    %-24s kein faltbarer Ring" % _name); continue
+                _hv = [i for i in range(_m.GetNumAtoms())
+                       if _m.GetAtomWithIdx(i).GetSymbol() != "H"]
+                _os.environ["DELFIN_FFFREE_PUCKER_TFD_LOCAL"] = "0"
+                _g05 = len(_ring_pucker_states(_m, _ro, _fr, 0.05))
+                _g005 = len(_ring_pucker_states(_m, _ro, _fr, 0.005))
+                _os.environ["DELFIN_FFFREE_PUCKER_TFD_LOCAL"] = "1"
+                _l05 = len(_ring_pucker_states(_m, _ro, _fr, 0.05))
+                _os.environ["DELFIN_FFFREE_PUCKER_TFD_LOCAL"] = "0"
+                print("    %-24s %6.1f%% %10.4f %8d %9d %10d"
+                      % (_name, 100.0 * len(_rat) / len(_hv), _wfak.get(_name, 0.0),
+                         _g05, _g005, _l05))
+                _reihe.append({"name": _name, "g05": _g05, "g005": _g005, "l05": _l05,
+                               "anteil": len(_rat) / float(len(_hv))})
+            except Exception as _e:
+                print("    %-24s ausgefallen: %s" % (_name, type(_e).__name__))
+                fehler += 1
+    finally:
+        for _k, _v in _alt.items():
+            if _v is None:
+                _os.environ.pop(_k, None)
+            else:
+                _os.environ[_k] = _v
+
+    # ---- DAS URTEIL.  ⚠ ES DARF AUCH GEGEN DIE REPARATUR AUSFALLEN -- eine ringlokale
+    #      Fassung, die den Gradienten NICHT beseitigt, ist ein Befund und kein Fehler.
+    if len(_reihe) >= 2:
+        _g = [r["g05"] for r in _reihe]
+        _l = [r["l05"] for r in _reihe]
+        _gf = _g[-1] < _g[0]                       # global faellt ueber die Reihe
+        _lf = _l[-1] < _l[0]                       # ringlokal auch?
+        print()
+        if not _gf:
+            print("  ⇒ KEIN GRADIENT IN DER GLOBALEN SPALTE (%s) -- der Befund, den "
+                  "dieser Test pruefen soll, tritt auf dieser Reihe gar nicht auf.  "
+                  "Das Urteil ueber die Reparatur haengt in der Luft."
+                  % " -> ".join(str(x) for x in _g))
+            fehler += 1
+        elif _lf:
+            print("  ⇒ RINGLOKAL HILFT NICHT.  global %s, ringlokal %s -- der Abfall "
+                  "bleibt.  Die Verduennung war dann nicht (oder nicht allein) die "
+                  "Ursache; der naechste Verdaechtige ist der Relax, nicht das Mass."
+                  % (" -> ".join(str(x) for x in _g), " -> ".join(str(x) for x in _l)))
+        else:
+            print("  ⇒ DER GRADIENT IST WEG.  global %s (Ringanteil %.0f -> %.0f %%), "
+                  "ringlokal %s -- DERSELBE Ring, DIESELBEN Kandidaten, DIESELBE "
+                  "Schwelle 0,05."
+                  % (" -> ".join(str(x) for x in _g), 100.0 * _reihe[0]["anteil"],
+                     100.0 * _reihe[-1]["anteil"], " -> ".join(str(x) for x in _l)))
+            print("    Das kleinste Glied der Reihe gewinnt %d -> %d Zustaende je Ring. "
+                  "⚠ ZUSTAENDE JE RING GEHEN POTENZIERT ins Kreuzprodukt ein "
+                  "(gemessen 4,3 Ringe je System) -- das ist der Hebel, nicht die "
+                  "Kombinatorik dahinter." % (_g[-1], _l[-1]))
+            print("    ⚠ WAS DAMIT NICHT BEWIESEN IST: dass diese Zustaende das "
+                  "Realismustor ueberleben.  Diese Reihe misst (a), die Zustaende JE "
+                  "RING -- Kollision, Winkel und Bindungstor sitzen dahinter.")
+            print("    Getragen wird dieser Befund von DELFIN_FFFREE_PUCKER_TFD_LOCAL "
+                  "allein.  DELFIN_FFFREE_PUCKER_TFD_LOCAL_KOMBI steht in dieser Reihe "
+                  "NICHT im Spiel und ist mit ihr auch nicht belegt -- seine einzige "
+                  "Messung ist die Decalinzeile in Schritt 0.")
+    print("=== Ringlokale TFD: %s ==="
+          % ("gemessen" if fehler == 0 else "%d Pruefung(en) FEHLGESCHLAGEN" % fehler))
+    return 1 if fehler else 0
+
+
 if __name__ == "__main__":
     # ⚠ AM DATEIENDE, und das ist keine Kosmetik.  Auf MODULEBENE zaehlt die
     #   Reihenfolge: steht dieser Block vor einer der Testfunktionen, ist ihr Name
@@ -2895,6 +3414,12 @@ if __name__ == "__main__":
               # Mass die Kombinatorik ueberhaupt entdoppeln soll.  Ein Kostenurteil mit
               # dem falschen Entdopplungsmass waere ein Urteil ueber das Instrument.
               ("trennschaerfe", selbsttest_trennschaerfe),
+              # Direkt DAHINTER, weil die Trennschaerfe den Befund abwirft, den dieser
+              # Test repariert: sie misst, dass derselbe Ring an wachsendem Geruest
+              # immer weniger Zustaende bekommt, er misst dieselbe Reihe noch einmal
+              # mit ringlokaler TFD.  Getrennt gelaufen waeren es zwei Messungen; so
+              # ist es eine Messung und ihre Gegenprobe.
+              ("tfdlokal", selbsttest_tfd_lokal),
               # Zuletzt die Kombinatorik: sie baut Relax + Tor JE Kombination und ist
               # damit der teuerste der vier.  Sie beantwortet, was die drei davor
               # aufwerfen -- die Zustandszahl je Ring ist nur interessant, weil sie
