@@ -103,6 +103,32 @@ _LABEL_REPAINT_INTERVAL = 0.25
 #: something a user should have to do.
 _HARTREE_TO_KCAL = 627.5094740631
 
+#: How much of a change in the hand's force is taken on one answer.
+#:
+#: The hand gets stronger the further the structure has fallen behind the
+#: cursor, which is what pulling on something is like -- see
+#: :func:`gfn_optimize.as_pushes`, where the force carries the excess so
+#: that the target never runs ahead.  With no delay that is a spring.
+#: With one it is an oscillator: the structure lags, the force rises, the
+#: answer overshoots, the lag inverts, the force drops, and the next
+#: answer falls back.  One round of that is one answer long, and an answer
+#: on a sixty-eight-atom system in solvent is 1.7 seconds.
+#:
+#: Measured on a real session -- a hydronium dragged onto a substrate, the
+#: same atom throughout and the same coordinate held for all 52 answers --
+#: the force alternated between the 44 kcal/mol/A the slider was set to and
+#: 87, and it did so with the mouse standing still.  The user's words:
+#: "ich kann die maus halten an einer stelle es zappelt".
+#:
+#: A half taken per answer is the cure and the cost.  Replayed through
+#: that same recorded sequence it cuts the step-to-step swing to 39% of
+#: what it was, and a sustained drag still reaches seven eighths of its
+#: force in three answers -- which is a second on a small molecule and a
+#: few on a large one, where nothing was going to be quick anyway.  Less
+#: damping leaves a visible shake (0.7 keeps 59% of it); more makes the
+#: hand feel dead (0.25 wants seven answers to pull properly).
+_HAND_FOLLOWS = 0.5
+
 #: Eyring, both ways, and the four numbers behind it -- see
 #: :mod:`delfin.dashboard.thermal`.  Moved out when the reaction graph
 #: came to ask the same question of a whole network that this asks of one
@@ -4868,6 +4894,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         contacts = _gfn.as_pushes(
                             contacts, state.get('thermal_was') or current,
                             pull, value_of=_value_in, most=_pull_most())
+                        contacts = _steady_hand(contacts)
                     if _mopac.is_mopac_method(method):
                         # MOPAC takes no held internals and no topology file,
                         # so it is given what it does take. A few cycles, the
@@ -12343,6 +12370,52 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             _name_the_saddle_press()
         finally:
             state['saddle_controls_quiet'] = False
+
+    def _steady_hand(pushes):
+        """The same forces, but not free to double and halve every answer.
+
+        Each force is moved a fraction of the way towards what this answer
+        asked for rather than set to it -- see :data:`_HAND_FOLLOWS` for
+        the fraction and the session it was measured on.  What that removes
+        is a loop with a delay in it: the force follows how far the
+        structure has fallen behind, the structure is only re-drawn once an
+        answer, and an answer here is seconds.  Followed exactly, the hand
+        pulls hard because the structure is behind, the answer overshoots,
+        the hand goes slack, the structure falls back, and the picture
+        shakes without anybody moving the mouse.
+
+        Kept per coordinate.  A force smoothed across two different pairs
+        of atoms is a force about neither of them, and the coordinate the
+        hand drives does change while a fragment is walked past a
+        molecule.  A pair that has not been driven before starts at what
+        this answer asked for, so beginning a drag is immediate; it is
+        only carrying on that is damped.
+
+        Tied to the run.  Every press that draws over this structure takes
+        a new run number, and a force left over from the drag before it
+        would be about a geometry nobody has any more.
+        """
+        run = state.get('gfn_follow_run')
+        remembered = state.get('gfn_hand_force') or {}
+        if state.get('gfn_hand_force_run') != run:
+            remembered = {}
+        keeping, out = {}, []
+        for one in (pushes or ()):
+            try:
+                asked = float(one.get('force'))
+            except (TypeError, ValueError):
+                out.append(one)
+                continue
+            key = (str(one.get('kind') or ''),
+                   tuple(int(i) for i in (one.get('atoms') or ())))
+            before = remembered.get(key)
+            steady = (asked if before is None else
+                      before + _HAND_FOLLOWS * (asked - before))
+            keeping[key] = steady
+            out.append(dict(one, force=steady))
+        state['gfn_hand_force'] = keeping
+        state['gfn_hand_force_run'] = run
+        return out
 
     def _keep_the_choice(box, options, wish):
         """Rewrite a box's entries without throwing away what was chosen.
