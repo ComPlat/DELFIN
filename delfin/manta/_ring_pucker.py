@@ -330,11 +330,51 @@ def _is_puckerable(mol, ring) -> bool:
         P = mol.GetConformer().GetPositions()
     except Exception:
         P = None
+    # ===== DER METALLACYCLUS FAELLT AN EINEM KRITERIUM, DAS NICHT FUER IHN GILT =====
+    #
+    # GEMESSEN 26.08. auf 400 Systemen (`find_conformer_coverage`):
+    #     Ringe gesamt 1707 · METALL uebersprungen 352 = 20,6 %
+    #     Sechsringe 176, erreichen den Sessel 57  ->  67,6 % NIE
+    #
+    # Die beiden Bedingungen unten sind fuer einen ORGANISCHEN Ring richtig und fuer
+    # einen METALLACYCLUS falsch, und zwar aus demselben Grund: sie suchen die
+    # Weichheit an den RINGATOMEN.  Bei einem Chelatring sitzt sie in den M-D-BINDUNGEN
+    # -- 2,0 bis 2,4 A lang, weich, mit niedriger Torsionsbarriere.  Ein Salen-Ring
+    # M-N=C-C(ar)-C(ar)-O faltet real an genau diesen beiden Bindungen (die "Stufe"
+    # bzw. Umbrella-Faltung), obwohl sein organischer Teil starr und aromatisch ist.
+    #
+    #   * `GetIsAromatic() -> return False` kippt den GANZEN Ring, sobald EIN Atom
+    #     aromatisch ist.  Beim fusionierten Salen-Metallacyclus sind das die
+    #     Phenolat-Kohlenstoffe -> sofortiger Ausschluss.
+    #   * `n_sat >= 3` verlangt drei sp3-Ringatome.  Ein konjugierter Chelatring hat
+    #     sie nicht und braucht sie auch nicht.
+    #
+    # ⇒ Fuer einen Ring MIT Metall gilt: aromatisch ist nur dann ein Ausschluss, wenn
+    #   ALLE Nicht-Metall-Ringatome aromatisch sind (dann ist der Ring wirklich
+    #   planar-starr, z.B. ein Metallabenzol).  Und die sp3-Schwelle faellt auf 1,
+    #   weil das Metall selbst das Scharnier stellt, nicht ein sp3-Zentrum.
+    # ⚠ Die Koordinationssphaere bleibt unberuehrt: `frozen` haelt Metall UND Donoren
+    #   fest, es bewegen sich nur die Ringatome dazwischen.  Reiner Erzeuger.
+    # ⛔ Vorgabe AUS -> Ringmenge unveraendert -> byte-identisch.
+    _mc = False
+    if _os.environ.get("DELFIN_FFFREE_PUCKER_MC", "0") == "1":
+        try:
+            from delfin.manta import _elements as _EL
+            _mc = any(_EL.is_metal(mol.GetAtomWithIdx(int(i)).GetSymbol()) for i in ring)
+        except Exception:
+            _mc = False
+        if _mc:
+            _nonmetal = [int(i) for i in ring
+                         if not _EL.is_metal(mol.GetAtomWithIdx(int(i)).GetSymbol())]
+            if _nonmetal and all(mol.GetAtomWithIdx(i).GetIsAromatic() for i in _nonmetal):
+                return False          # vollstaendig aromatischer Metallacyclus: starr
     n_sat = 0
     for idx in ring:
         a = mol.GetAtomWithIdx(int(idx))
         if a.GetIsAromatic():
-            return False
+            if not _mc:
+                return False
+            continue
         hyb = a.GetHybridization()
         if hyb == Chem.HybridizationType.SP3:
             n_sat += 1
@@ -354,7 +394,9 @@ def _is_puckerable(mol, ring) -> bool:
             ln = float(_np.linalg.norm(nrm))
             if ln > 1e-9 and abs(float(_np.dot(c - q0, nrm / ln))) > 0.25:
                 n_sat += 1   # pyramidal -> sp3-like
-    return n_sat >= 3
+    # ⚠ Beim Metallacyclus stellt das METALL das Scharnier, nicht ein sp3-Zentrum --
+    #   die Schwelle 3 ist dort ein organisches Kriterium am falschen Objekt.
+    return n_sat >= (1 if _mc else 3)
 
 
 def _ring_order(mol, ring_set):
@@ -541,7 +583,38 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
     combos = [c for c in _it.product(*[range(len(s)) for s in per_ring_states])
               if any(c)]
     combos.sort(key=lambda c: (sum(1 for x in c if x), c))
-    combos = combos[:max(0, int(budget))]
+    # ===== DIE ABSCHNEIDUNG WAR DER SCHADEN, NICHT DER DECKEL (26.08.2026) ==========
+    #
+    # `combos[:budget]` nimmt die ERSTEN 48 einer Liste, die nach "wie viele Ringe
+    # weichen vom Grundzustand ab" sortiert ist.  Das heisst: erst ALLE
+    # Ein-Ring-Aenderungen, dann alle Zwei-Ring-Kombinationen -- und dann ist Schluss.
+    # Der Zustand, in dem ALLE Ringe gleichzeitig gefaltet sind, wird bei mehr als
+    # zwei flexiblen Ringen NIE gebaut.  Vier Ringe zu je drei Mulden sind 80
+    # Kombinationen; 48 davon decken Tiefe 1 und 2 ab, Tiefe 3 und 4 fallen weg.
+    #
+    # GEMESSEN 26.08. auf 400 Systemen -- die Verteilung ist genau die eines
+    # abgeschnittenen Produkts:
+    #     realisierte Konformere je System: 1:25 · 2:57 · 3:26 · 4:7 · 5:4 · 6:2 · 7:1 · 9:1
+    #     82 von 123 Systemen haben EIN ODER ZWEI Konformere, bei 2,18 Mulden je Ring.
+    #
+    # ⇒ Mit `DELFIN_FFFREE_PUCKER_FULL=1` wird NICHT abgeschnitten: das vollstaendige
+    #   Produkt wird gebaut, jede Faltungstiefe entsteht.  Der Deckel bleibt als
+    #   Vorgabe erhalten (byte-identisch), aber er ist ab jetzt NIE STILL -- was er
+    #   wegwirft, steht unter der Spur.  Eine stillschweigend gekappte Abdeckung liest
+    #   sich wie Vollstaendigkeit und ist keine.
+    # ⚠ PREIS, ehrlich: das Produkt waechst exponentiell mit der Ringzahl (8 Ringe zu
+    #   je 3 Mulden = 6561 Kombinationen, jede mit Relax und Clash-Tor).  Darum steht
+    #   die Vollversion hinter einem Schalter und nicht in der Vorgabe.
+    _n_voll = len(combos)
+    if _os.environ.get("DELFIN_FFFREE_PUCKER_FULL", "0") == "1":
+        pass                                    # alle Faltungen, keine Kappe
+    else:
+        combos = combos[:max(0, int(budget))]
+    if len(combos) < _n_voll and _os.environ.get("DELFIN_FFFREE_PUCKER_TRACE", "0") == "1":
+        print("[pucker] KOMBINATIONEN GEKAPPT: %d von %d gebaut, %d verworfen "
+              "(%d Ringe, Mulden %s) -- DELFIN_FFFREE_PUCKER_FULL=1 baut alle"
+              % (len(combos), _n_voll, _n_voll - len(combos), len(rings),
+                 "x".join(str(len(s)) for s in per_ring_states)))
 
     acc = Chem.Mol(mol_with_conf)
     kept_ids = [acc.GetConformer().GetId()]
