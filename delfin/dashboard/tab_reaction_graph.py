@@ -922,6 +922,14 @@ class ReactionGraphPanel:
         told: List[str] = []
         for entry in list(self.graph.pending):
             said = run_results.what_a_run_says(self.graph.path(entry.run))
+            if said['state'] == 'nothing':
+                # Not there yet -- and the commonest reason is that it ran
+                # somewhere else.  The Submit tab writes every job into the
+                # calculation directory under its own name, which is where
+                # the whole rest of DELFIN looks for it; the graph asked
+                # for a folder of its own and got the name.  So the name is
+                # followed, and what is found is brought in.
+                said = self._where_it_ran(entry)
             if said['state'] in ('nothing', 'running'):
                 continue
             if said['state'] == 'failed':
@@ -952,7 +960,11 @@ class ReactionGraphPanel:
                 imaginary=said.get('imaginary'),
                 frequency=said.get('frequency'),
                 source={'kind': 'run', 'run': entry.run,
-                        'output': said.get('output')})
+                        'output': said.get('output'),
+                        # Where it really ran, when that is not where the
+                        # graph asked for it. The record has to be able to
+                        # point at the folder its numbers came out of.
+                        'ran_in': said.get('ran_in') or ''})
             rg.settle_pending(self.graph, entry.id, xyz=xyz, record=record)
             told.append(f'{entry.on}: {entry.level} landed.')
         if told:
@@ -963,6 +975,35 @@ class ReactionGraphPanel:
         if told and say:
             self._say(' '.join(told))
         return told
+
+    def _where_it_ran(self, entry) -> Dict[str, Any]:
+        """Follow the job's name into the calculation directory, and read it there.
+
+        The graph asks for a run folder of its own, and the Submit tab puts
+        every job in the calculation directory under its own name -- which
+        is where the whole rest of DELFIN looks for one.  So the graph
+        follows the name.
+
+        And it touches nothing.  Moving a finished job into the graph
+        would make the folder self-contained, which is what a document for
+        reproducibility wants -- and it would take that job out of the
+        calculations browser and out of Job Status, where it has always
+        been and where somebody may be looking for it.  Changing what
+        already works to suit something new is the wrong trade, so the
+        record carries the path it really ran at instead, and bringing a
+        run inside the graph stays something a person asks for.
+        """
+        blank = {'state': 'nothing', 'why': '', 'output': None,
+                 'energy': None, 'free_energy': None, 'zpe': None,
+                 'imaginary': None, 'frequency': None, 'xyz': None}
+        name = str(entry.job_name or '').strip()
+        if not name or self.graph is None:
+            return blank
+        elsewhere = Path(self.calc_dir) / name
+        said = run_results.what_a_run_says(elsewhere)
+        if said['state'] not in ('nothing', 'running'):
+            said = dict(said, ran_in=str(elsewhere))
+        return said
 
     def _sent_geometry(self, entry) -> str:
         """The structure that was sent for this calculation, if it is there.
