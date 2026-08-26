@@ -289,13 +289,19 @@ def test_the_second_profile_prices_the_walk_and_does_not_move_it():
 
 @_needs_xtb
 @_needs_gxtb
-def test_the_three_things_it_is_not_are_said_where_they_are_read():
-    """The caveats travel with the number, not with the source code.
+def test_the_verdict_says_what_to_do_and_the_tooltip_says_what_it_is():
+    """Two different readers, two different moments, two different texts.
 
-    A barrier that moved by fifteen kcal/mol will be quoted by somebody, so
-    what it is worth has to be in the sentence the user reads: the geometries
-    are the old method's, g-xTB is a preprint whose build differs from the
-    paper, and the points are wherever the walk left them.
+    What a second opinion *is* -- a screen and not a barrier, taken on
+    structures the first method found -- is true of every press and changes
+    nothing about any of them. It belongs on the button, which is what
+    somebody deciding whether to press it is looking at.
+
+    What comes back is a decision, and it is different every time: either
+    the two methods agree and the walk's own number stands, or they do not
+    and the top has to be optimised again. That is the sentence under the
+    picture, and putting the unchanging half there as well turned a verdict
+    into five paragraphs that were read past.
     """
     part, state = _an_editor()
     _walk_the_ethane(part, state)
@@ -306,14 +312,20 @@ def test_the_three_things_it_is_not_are_said_where_they_are_read():
     time.sleep(0.2)
 
     said = ' '.join(state.get('mol_status_lines') or ())
-    assert 'screen' in said
-    assert 'optimise the top again' in said
-    assert 'preprint' in said and 'development version' in said
-    assert 'never the geometries' in said
-    # And the tooltip says the same before the press, which is where somebody
-    # deciding whether to press it is looking.
+    # The numbers, and then what they mean for the walk.
+    assert 'prices the same' in said
+    assert 'kcal/mol' in said
+    assert ('optimise the top again' in said
+            or "walk's own number stands" in said), said
+    # And none of the standing caveats, which changed no decision.
+    for essay in ('preprint', 'development version', 'never the geometries',
+                  'Three things this is not'):
+        assert essay not in said, essay
+    # They are on the button instead, read before the press rather than
+    # after it.
     tip = part.submit_scan_price_btn.tooltip
     assert 'screen, not a barrier to quote' in tip
+    assert 'still the ones GFN2 found' in tip
 
 
 # -- how much of it was never a closed shell ---------------------------------
