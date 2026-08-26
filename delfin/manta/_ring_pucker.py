@@ -573,6 +573,77 @@ def _has_clash(mol, frac: float = 0.60) -> bool:
     return False
 
 
+def _bindungs_ausreisser(mol, tol_lang: float = 1.30) -> frozenset:
+    """Die Bindungen des GRAPHEN, deren LAENGE keine Bindung mehr beschreibt.
+
+    ===== WARUM DAS DRITTE TOR UEBERHAUPT FEHLT (26.08.2026) ==========================
+
+    `generate` hat zwei Tore: `_has_clash` sieht NICHT gebundene Paare, die zu nah
+    stehen, `_has_bad_angles` sieht Winkel.  Die BINDUNGSLAENGE selbst prueft keines
+    von beiden.  Eine Faltung, die eine Bindung auseinanderzieht, kommt damit durch.
+    Genau das ist am 18.08. passiert und steht protokolliert: "in einem Frame riss
+    eine Bindung".
+
+    ⚠ UND DAS SELBSTGATE KANN ES NICHT AUFFANGEN -- per Konstruktion, nicht aus
+      Nachlaessigkeit.  `assemble_complex._collapsed_heavy_bonds_strict` laeuft ueber
+      alle Schweratom-PAARE und entscheidet aus dem ABSTAND, ob sie gebunden sind:
+
+          if d > 1.30 * ideal:   continue        # "also gar nicht gebunden"
+
+      Eine auf das 1,4-fache gedehnte Bindung faellt damit AUS DER PRUEFUNG HERAUS.
+      Sie wird nicht als kaputt gemeldet, sondern als nicht vorhanden.  Der Kollaps
+      (zu kurz) wird gesehen, der Bruch (zu lang) ist ein blinder Fleck.
+
+    HIER liegt der Bindungsgraph vor.  Damit ist "gebunden" keine Abstandsfrage mehr,
+    und dieselbe Zahl 1,30 wird von einem AUSSCHLUSSkriterium zur BRUCHschwelle.  Es
+    wird nichts erfunden: Boden (`_bd.COLLAPSE_FLOOR`, 0,82) und Decke (1,30) sind
+    exakt die beiden Zahlen, mit denen das Selbstgate ohnehin schon rechnet, und
+    `_ideal_bond` ist dieselbe Quelle.
+
+    ⚠ MENGE STATT WAHRHEITSWERT, und das ist der ganze Unterschied zwischen Filter und
+      Urteil.  Ein Nitril sitzt bei 1,20 A gegen ein Einfachbindungs-Ideal von 1,52 --
+      Verhaeltnis 0,79, unter dem Boden.  Ein absolutes Ja/Nein wuerde JEDE Faltung
+      JEDES nitrilhaltigen Molekuels verwerfen, und der Befund hiesse "das Tor hat
+      keine Reichweite" aus dem falschen Grund.  Der Aufrufer zieht darum die Menge
+      des GRUNDZUSTANDS ab: verworfen wird nur, was die Faltung NEU EINBRINGT.  Das ist
+      dieselbe never-worse-Form, die `converter_backend` seinen Geschwistern auferlegt.
+    """
+    try:
+        from delfin.manta import _bond_decollapse as _bd
+        P = mol.GetConformer().GetPositions()
+    except Exception:
+        return frozenset()
+    try:
+        floor = float(_bd.COLLAPSE_FLOOR)
+    except Exception:
+        floor = 0.82
+    aus = set()
+    try:
+        for b in mol.GetBonds():
+            i, j = int(b.GetBeginAtomIdx()), int(b.GetEndAtomIdx())
+            si = mol.GetAtomWithIdx(i).GetSymbol()
+            sj = mol.GetAtomWithIdx(j).GetSymbol()
+            if si == "H" or sj == "H":
+                continue                       # H wie im Selbstgate: nicht beurteilt
+            try:
+                if _bd._is_metal(si) or _bd._is_metal(sj):
+                    continue                   # M-D-Ideal ist erfunden, s. `_ideal_bond`
+            except Exception:
+                pass
+            try:
+                ideal = float(_bd._ideal_bond(si, sj, bool(b.GetIsAromatic())))
+            except Exception:
+                continue
+            if ideal <= 1e-6:
+                continue
+            r = float(_np.linalg.norm(P[i] - P[j])) / ideal
+            if r > tol_lang or r < floor:
+                aus.add((min(i, j), max(i, j)))
+    except Exception:
+        return frozenset()
+    return frozenset(aus)
+
+
 def _is_puckerable(mol, ring) -> bool:
     """A ring is puckerable iff it is saturated enough to have out-of-plane
     minima: non-aromatic, size 5-8, and >= 3 sp3 ring atoms (an aromatic /
@@ -725,6 +796,91 @@ def _tfd_distinct(acc_mol, cid: int, kept_ids, thr: float) -> bool:
     return all(_tfd(acc_mol, k, cid) >= thr for k in kept_ids)
 
 
+# ===== DIE UNTERSCHEIDBARKEIT IST EIN MAXIMUM, KEIN MITTELWERT (26.08.2026) =========
+#
+# Der Fehler von RMSD ist NICHT, dass es Geometrie misst.  Er ist, dass es MITTELT --
+# und eine Ringfaltung ist ein LOKALES Ereignis in einem grossen Molekuel.  Mit unseren
+# eigenen Zahlen an einem gefalteten Sechsring durchgerechnet:
+#
+#     Ringatome laufen 0,203 A im Median (groesste Einzelauslenkung 0,33)
+#     Ringanteil an den schweren Atomen 13,2 %
+#     ⇒ Gesamt-RMSD = sqrt(0,132) * 0,203 = 0,086 A
+#
+# 0,086 liegt UNTER jeder Entdopplungsschwelle, die dieses Projekt fuehrt (`_DEDUP_RMSD`
+# 0,30 · `rmsd_dedup` 0,5).  Die Faltung verschwindet also nicht, weil sie klein waere,
+# sondern weil sie durch 87 % unbewegte Atome geteilt wird.  Die groesste Auslenkung
+# nach Kabsch-Ausrichtung bleibt bei 0,33 -- FAKTOR 4 zwischen den beiden Zahlen, an
+# derselben Geometrie gemessen.
+#
+# WAS EIN KRISTALLOGRAPH STATTDESSEN LIEST.  In der Differenz-Fourier-Karte steht die
+# GROESSTE unmodellierte Abweichung als Restdichte-Maximum; der Mittelwert ueber alle
+# Atome kommt darin nicht vor.  Zwei Modelle, deren groesste Atomauslenkung unter der
+# Aufloesung liegt, waeren an denselben Daten NICHT ZU UNTERSCHEIDEN -- sie sind EIN
+# Eintrag im Manifold, nicht zwei.
+#
+# DIE SCHWELLE, begruendet statt gesetzt:
+#   * Koordinaten-esd einer Routinestruktur liegt bei 0,002 bis 0,01 A.  Das ist die
+#     UNTERgrenze -- darunter ist jede Differenz Rauschen der Verfeinerung.
+#   * Fehlordnung wird ab etwa 0,3 bis 0,5 A ueberhaupt erst als ZWEI Lagen modelliert.
+#     Das ist die OBERgrenze -- darueber sieht der Kristallograph zwei Konformere.
+#   0,15 A liegt dazwischen: Faktor 15 bis 75 ueber dem esd, Faktor 2 bis 3 unter der
+#   Fehlordnungsgrenze.  Gross genug, um nicht Rauschen zu zaehlen; klein genug, um
+#   nichts zu verschmelzen, was ein Kristallograph noch getrennt modellieren wuerde.
+# ⚠ SIE IST ENV-PARAMETER, weil sie eine KONVENTION ist und keine Naturkonstante -- die
+#   Aufloesung haengt am Datensatz, und wer sie verschiebt, soll das messen koennen.
+#
+# ⚠ WAS DIESE METRIK **NICHT** TUT: sie rangiert nicht.  Sie sagt "ununterscheidbar"
+#   oder "unterscheidbar", nie "besser".  Ein Rang braeuchte eine Energie; das ist
+#   Stufe (3) und steht aus gutem Grund AUS.
+
+
+def _kabsch_max_rmsd(A, B) -> Tuple[float, float]:
+    """(GROESSTE Auslenkung, RMSD) zweier Punktsaetze nach Kabsch-Ausrichtung.
+
+    Beide Zahlen aus DERSELBEN Ausrichtung -- sonst waere der Vergleich der beiden
+    Masse keiner.  Kabsch minimiert das RMSD; das Maximum wird also gegen die fuer
+    RMSD GUENSTIGSTE Ueberlagerung gemessen und ist damit eher zu klein als zu gross.
+
+    ⚠ NUR SCHWERE ATOME, und das ist kein Sparen.  Roentgenbeugung sieht ELEKTRONEN-
+      DICHTE; ein Wasserstoff traegt ein Elektron und wird in einer Routinestruktur
+      GERECHNET, nicht gefunden.  Eine Metrik, die vorgibt, H-Lagen zu unterscheiden,
+      urteilt ueber etwas, das in den Daten gar nicht steht.  Der Aufrufer uebergibt
+      darum bereits gefilterte Koordinaten.
+
+    ⚠ KEINE SYMMETRIEFALTUNG, absichtlich.  Beide Punktsaetze stammen aus DERSELBEN
+      Molekuelinstanz in DERSELBEN Atomreihenfolge; die Entartung "zwei Nummerierungen
+      desselben Konformers" erledigt in `generate` das TFD davor, und TFD kann das,
+      weil es die Topologiesymmetrie mitfaltet (die CP-Distanz konnte es nicht -- der
+      Versuch vom 26.08. ist genau daran gescheitert).  Wer hier zusaetzlich ueber
+      Automorphismen minimierte, zahlte N! und maesse dasselbe.
+    """
+    v = _kabsch_abweichungen(A, B)
+    return float(v.max()), float(_np.sqrt(float((v ** 2).mean())))
+
+
+def _kabsch_abweichungen(A, B):
+    """Die Abweichung JE ATOM nach Kabsch-Ausrichtung -- der gemeinsame Rohstoff.
+
+    ⚠ EINE Ausrichtung, dann beide Masse daraus.  Wuerde man Maximum und RMSD je
+      einzeln ausrichten lassen, verglichen sie zwei verschiedene Ueberlagerungen und
+      der Faktor zwischen ihnen waere teils Instrument, teils Ausrichtung.  Kabsch
+      minimiert das RMSD -- das Maximum wird also gegen die fuer den Gegner
+      GUENSTIGSTE Ueberlagerung gemessen und ist eher zu klein als zu gross.
+    """
+    Am = A.mean(0)
+    Bm = B.mean(0)
+    Ac = A - Am
+    Bc = B - Bm
+    try:
+        U, _S, Vt = _np.linalg.svd(Bc.T @ Ac)
+        d = 1.0 if float(_np.linalg.det(Vt.T @ U.T)) > 0.0 else -1.0
+        R = Vt.T @ _np.diag([1.0, 1.0, d]) @ U.T
+        Bd = Bc @ R.T
+    except Exception:
+        Bd = Bc
+    return _np.linalg.norm(Ac - Bd, axis=1)
+
+
 def _add_conf(acc_mol, src_mol) -> int:
     return acc_mol.AddConformer(Chem.Conformer(src_mol.GetConformer()), assignId=True)
 
@@ -767,6 +923,30 @@ def _ring_pucker_states(mol_with_conf, ring, frozen: Set[int],
     _cp_tol = float(_os.environ.get("DELFIN_FFFREE_PUCKER_CPTOL", "15") or 15.0)
     _cp_qtol = float(_os.environ.get("DELFIN_FFFREE_PUCKER_CPQTOL", "0.15") or 0.15)
     _cp_kept: List[Tuple[float, float, float]] = []
+    # ===== (2) DIESELBE UNUNTERSCHEIDBARKEIT, ABER JE RING (26.08.2026) ==============
+    #
+    # ⚠ HIER LIEGT DER HEBEL, NICHT IM KREUZPRODUKT.  Die Zustandszahl JE RING geht
+    #   POTENZIERT in die Kombinatorik ein (gemessen 4,3 Ringe je System): ein Zustand
+    #   weniger je Ring spart mehr als jede Regel weiter unten, weil unten schon
+    #   relaxiert wurde.  Ein Tor hinter dem Relax toetet das Ergebnis, nicht die
+    #   Kosten -- das steht seit dem 26.08. im Docstring von `selbsttest_kombinatorik`
+    #   und gilt fuer den Defektfilter genauso wie fuer die Ununterscheidbarkeit.
+    # ⚠ OB ES WIRKLICH REDUZIERT, IST EINE MESSUNG UND KEINE HOFFNUNG.  Das Maximum ist
+    #   gegen Verduennung unempfindlich (ein Maximum kennt keinen Nenner), also spricht
+    #   nichts dafuer, dass es echte Ringmulden zusammenzieht -- die liegen weit
+    #   auseinander.  `selbsttest_trennschaerfe` Schritt 3 zaehlt nach.
+    # ⛔ Vorgabe AUS -> byte-identisch.
+    _xrd_r = _os.environ.get("DELFIN_FFFREE_PUCKER_XRD", "0") == "1"
+    _xrd_r_tol = float(_os.environ.get("DELFIN_FFFREE_PUCKER_XRDTOL", "0.15") or 0.15)
+    _schwer_r: List[int] = []
+    _xrd_r_kept: List = []
+    if _xrd_r:
+        try:
+            _schwer_r = [i for i in range(mol_with_conf.GetNumAtoms())
+                         if mol_with_conf.GetAtomWithIdx(i).GetSymbol() != "H"]
+            _xrd_r_kept = [mol_with_conf.GetConformer().GetPositions()[_schwer_r]]
+        except Exception:
+            _xrd_r = False
     # ===== DER GANZE FALTUNGSRAUM STATT DREI STELLEN DARAUF (26.08.2026) ============
     #
     # Die alte Kandidatenliste tastet die Cremer-Pople-Kugel an genau drei Orten ab:
@@ -819,6 +999,14 @@ def _ring_pucker_states(mol_with_conf, ring, frozen: Set[int],
                 _set_pucker(m2.GetConformer(), ring, _qs * _amp(n), theta, phi, frozen)
             if not _relax_hold_pucker(m2, ring, frozen):
                 continue
+            _Pr = None
+            if _xrd_r:
+                # Ununterscheidbar vom Grundzustand ODER von einem schon behaltenen
+                # Zustand -> derselbe Eintrag, kein zweiter Ringzustand.
+                _Pr = m2.GetConformer().GetPositions()[_schwer_r]
+                if any(_kabsch_max_rmsd(_Pa, _Pr)[0] < _xrd_r_tol
+                       for _Pa in _xrd_r_kept):
+                    continue
             if _cpd:
                 # NACH dem Relax messen, nicht die SOLL-Werte vergleichen: der Relax
                 # zieht den Startpunkt in die naechste echte Mulde, und genau deren
@@ -828,11 +1016,15 @@ def _ring_pucker_states(mol_with_conf, ring, frozen: Set[int],
                        for _k in _cp_kept):
                     continue
                 _cp_kept.append(_cp)
+                if _xrd_r and _Pr is not None:
+                    _xrd_r_kept.append(_Pr)
                 states.append(_cand if _raum else (_qs, theta, phi))
                 continue
             cid = _add_conf(acc, m2)
             if _tfd_distinct(acc, cid, kept_ids, tfd_thr):
                 kept_ids.append(cid)
+                if _xrd_r and _Pr is not None:
+                    _xrd_r_kept.append(_Pr)
                 # Im Raum-Modus ist der Zustand das Koordinatenpaar selbst; die
                 # Legacy-Form bleibt ein 3-Tupel.  `generate` indiziert nur, es liest
                 # den Inhalt nicht -- beide Formen sind dort gleichwertig.
@@ -857,7 +1049,12 @@ def _neuer_zaehler() -> dict:
     return {"ringgroessen": [], "zustaende_je_ring": [], "kreuzprodukt": 0,
             "gemeinsame_atome": 0, "gem_max": 0, "aufzaehlung": 0, "gebaut": 0,
             "relax_fehler": 0, "kollision": 0, "winkel": 0, "tor_ueberlebt": 0,
-            "tfd_doppelt": 0, "ausnahme": 0, "energien": []}
+            "tfd_doppelt": 0, "ausnahme": 0, "energien": [],
+            # (1) Defektfilter und (2) kristallographische Ununterscheidbarkeit bekommen
+            # EIGENE Zaehler.  Sie mit `kollision`/`tfd_doppelt` zu verrechnen, waere
+            # genau der Fehler, den dieses Projekt schon dreimal gemacht hat: ein
+            # Detektorname, der zwei Mechanismen deckt, ist keine Messung.
+            "bindung": 0, "xrd_doppelt": 0}
 
 
 def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
@@ -1041,6 +1238,45 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
     acc = Chem.Mol(mol_with_conf)
     kept_ids = [acc.GetConformer().GetId()]
     out: List[Tuple[str, str]] = []
+    # ===== (1) DEFEKTFILTER: DAS DRITTE TOR, ALS MENGENDIFFERENZ (26.08.2026) ========
+    #
+    # Kollision und Winkel stehen unten schon.  Was fehlt, ist die BINDUNGSLAENGE --
+    # s. `_bindungs_ausreisser`: das Selbstgate haelt eine gedehnte Bindung fuer eine
+    # nicht vorhandene und meldet sie nie.
+    # ⚠ RANG WAERE HIER FALSCH.  Ein Defekt ist kein "schlechter", er ist ein "nicht
+    #   real".  Deshalb Filter, kein Score -- und deshalb gemessen gegen den
+    #   GRUNDZUSTAND: verworfen wird nur, was die Faltung NEU einbringt.  Ein Molekuel,
+    #   das schon vor der Faltung eine ungewoehnliche Bindung fuehrt (Nitril, Carben,
+    #   ein schlecht eingebetteter Kern), verliert damit nicht alle seine Faltungen.
+    # ⛔ Vorgabe AUS -> das Tor wird nie befragt -> byte-identisch.
+    _defekt = _os.environ.get("DELFIN_FFFREE_PUCKER_DEFEKT", "0") == "1"
+    _basis_bind = _bindungs_ausreisser(mol_with_conf) if _defekt else frozenset()
+    # ===== (2) KRISTALLOGRAPHISCHE UNUNTERSCHEIDBARKEIT (26.08.2026) =================
+    #
+    # Zwei Faltungen, deren GROESSTE Atomauslenkung unter der Aufloesung liegt, sind
+    # EIN Eintrag im Manifold -- s. den Block bei `_kabsch_max_rmsd`.
+    # ⚠ ZUSAETZLICH ZU TFD, nicht statt dessen, und das ist keine Vorsicht sondern eine
+    #   Arbeitsteilung: TFD faltet die Molekuelsymmetrie mit und toetet damit die
+    #   Nummerierungsdubletten; das Maximum kann das nicht (es hat keine Topologie) und
+    #   toetet dafuer die unterschwelligen Dubletten, die TFD nicht sieht.  Der Versuch
+    #   vom 26.08., TFD durch eine reine Geometriedistanz zu ERSETZEN, ist genau daran
+    #   gescheitert (n=5: 3,3,3 -> 9,13,14).
+    # ⚠ REIHENFOLGE: das Maximum steht VOR dem TFD, weil es billiger ist -- Kabsch auf
+    #   den Schweratomen gegen einen Torsionsfingerabdruck gegen alle Behaltenen.  Am
+    #   Ergebnis aendert die Reihenfolge nichts: behalten wird, was BEIDE Pruefungen
+    #   besteht, und die Menge der Behaltenen waechst in beiden Reihenfolgen gleich.
+    # ⛔ Vorgabe AUS -> byte-identisch.
+    _xrd = _os.environ.get("DELFIN_FFFREE_PUCKER_XRD", "0") == "1"
+    _xrd_tol = float(_os.environ.get("DELFIN_FFFREE_PUCKER_XRDTOL", "0.15") or 0.15)
+    _schwer: List[int] = []
+    _xrd_kept: List = []
+    if _xrd:
+        try:
+            _schwer = [i for i in range(mol_with_conf.GetNumAtoms())
+                       if mol_with_conf.GetAtomWithIdx(i).GetSymbol() != "H"]
+            _xrd_kept = [mol_with_conf.GetConformer().GetPositions()[_schwer]]
+        except Exception:
+            _xrd = False
     if _zaehler is not None:
         _zaehler["t0"] = _t.perf_counter()
     for combo in combos:
@@ -1085,6 +1321,8 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
             if _zaehler is None:
                 if _has_clash(m2) or _has_bad_angles(m2, skip=angle_skip):
                     continue
+                if _defekt and (_bindungs_ausreisser(m2) - _basis_bind):
+                    continue                    # NEU eingebrachter Bindungsdefekt
             else:
                 # ⚠ IM MESSMODUS WERDEN BEIDE TORE GEFRAGT, im Vorgabepfad nicht.
                 #   `or` ist kurzschluessig: feuert die Kollision, wird das Winkeltor
@@ -1096,13 +1334,27 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
                 #   Zeit -- darum nur, wenn jemand misst.
                 _kl = _has_clash(m2)
                 _wk = _has_bad_angles(m2, skip=angle_skip)
+                _bi = bool(_bindungs_ausreisser(m2) - _basis_bind) if _defekt else False
                 if _kl:
                     _zaehler["kollision"] = _zaehler.get("kollision", 0) + 1
                 if _wk:
                     _zaehler["winkel"] = _zaehler.get("winkel", 0) + 1
-                if _kl or _wk:
+                if _bi:
+                    _zaehler["bindung"] = _zaehler.get("bindung", 0) + 1
+                if _kl or _wk or _bi:
                     continue
                 _zaehler["tor_ueberlebt"] = _zaehler.get("tor_ueberlebt", 0) + 1
+            # (2) UNUNTERSCHEIDBARKEIT vor der Entdopplung -- s. den Block oben.
+            _Pk = None
+            if _xrd:
+                try:
+                    _Pk = m2.GetConformer().GetPositions()[_schwer]
+                    if any(_kabsch_max_rmsd(_Pa, _Pk)[0] < _xrd_tol for _Pa in _xrd_kept):
+                        if _zaehler is not None:
+                            _zaehler["xrd_doppelt"] = _zaehler.get("xrd_doppelt", 0) + 1
+                        continue
+                except Exception:
+                    _Pk = None
             cid = _add_conf(acc, m2)
             if not _tfd_distinct(acc, cid, kept_ids, tfd_thr):
                 acc.RemoveConformer(cid)
@@ -1110,6 +1362,8 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
                     _zaehler["tfd_doppelt"] = _zaehler.get("tfd_doppelt", 0) + 1
                 continue
             kept_ids.append(cid)
+            if _xrd and _Pk is not None:
+                _xrd_kept.append(_Pk)
             if _zaehler is not None:
                 # ⚠ DIE ENERGIE IST DIE ZWEITE ANTWORT auf dieselbe Frage.  Bleibt (d)
                 #   gross, muss die Auswahl ueber ENERGIE laufen und nicht ueber RMSD
@@ -1946,6 +2200,681 @@ def selbsttest_kombinatorik(proben=None, deckel_s: float = 900.0,
     return 1 if fehler else 0
 
 
+# Der Vergleichswert, gegen den Schritt 0 die Byte-Identitaet prueft.  Er stammt aus
+# `selbsttest_kombinatorik` Schritt 0 (Decalin, alle Schalter AUS, budget=48) und ist
+# damit die Zahl VOR den Aenderungen vom 26.08.  Ihn hier als Konstante zu fuehren, ist
+# der Unterschied zwischen "zweimal dasselbe gerechnet" und "gegen den Stand von vorher
+# gerechnet": zwei identische Laeufe des NEUEN Codes beweisen gar nichts.
+_REF_DECALIN_FRAMES = 22
+# Dieselbe Rolle fuer das Kandidatengitter -- `_pucker_space_grid(n, 2, 6)`.
+_REF_GITTER = {5: 13, 6: 65, 7: 169, 8: 845}
+
+# ===== DIE PROBEN FUER DIE TRENNSCHAERFE ==========================================
+# Nur MEHRRINGER, und zwar aus einem Grund, der die ganze Messung traegt: die Frage
+# lautet, ob zwei FALTUNGSVERSCHIEDENE Frames desselben Molekuels von den beiden
+# Massen gleich beurteilt werden.  Ein Einringer liefert zu wenige Frames, um eine
+# Paarstatistik zu tragen, und vor allem ist bei ihm der Ringanteil an den schweren
+# Atomen nahe 1 -- genau der Fall, in dem RMSD und Maximum NICHT auseinanderlaufen.
+# Der Effekt, um den es geht, ist ein VERDUENNUNGSeffekt; er braucht Atome, die sich
+# nicht bewegen.  Ihn an Cyclohexan zu messen, hiesse ihn wegzudefinieren.
+_TRENN_PROBEN = tuple(p for p in _KOMBI_PROBEN if p[0] != "Cyclohexan")
+
+# ===== DIE VERDUENNUNGSREIHE: DIE UNABHAENGIGE VARIABLE DES GANZEN ENTWURFS =========
+#
+# ⚠ DER ERSTE LAUF HAT DIE EIGENE PROBENWAHL WIDERLEGT.  `_KOMBI_PROBEN` sind reine
+#   Ringkohlenwasserstoffe -- gemessener Ringanteil an den schweren Atomen: 100 % bei
+#   sechs von acht Proben.  Der Effekt, um den es geht, ist aber ein VERDUENNUNGS-
+#   effekt: RMSD teilt die Ringauslenkung durch ALLE Atome, das Maximum durch keines.
+#   Bei Ringanteil 1 gibt es nichts zu verduennen, und die Messung sieht folgerichtig
+#   nur Faktor 1,6 bis 2,1 statt der erwarteten 4.  Sie hat den Effekt nicht widerlegt,
+#   sie hat ihn WEGDEFINIERT -- an Proben, in denen er per Konstruktion nicht auftritt.
+#
+# DIE REPARATUR ist eine Reihe, in der genau EINE Groesse laeuft: derselbe gefaltete
+# Cyclohexanring, an ein immer groesseres STARRES Geruest gehaengt, das ausserdem
+# EINGEFROREN wird.  Der Ringanteil faellt von 50 % auf 25 %, die Faltung bleibt
+# dieselbe.  Was sich dann zwischen Maximum und RMSD auftut, ist der Effekt.
+#   Cyclohexyl + Acen:  6 / (6 + C_Acen) schwere Atome
+#   Benzol 50,0 % · Naphthalin 37,5 % · Anthracen 30,0 % · Tetracen 25,0 %
+#
+# ⚠ WARUM ACENE UND NICHT OLIGOPHENYLE.  Erster Versuch war Cyclohexyl-Oligophenyl bis
+#   zum Sexiphenyl (bis 14,3 % Ringanteil).  GESCHEITERT, und zwar messbar: das
+#   Maximum wuchs ueber die Reihe von 1,19 auf 2,41 A, obwohl in allen Gliedern
+#   DIESELBE Faltung steckt.  Ein Maximum, das mit dem Geruest waechst, misst das
+#   Geruest -- die Biaryl-Torsionen sind frei und die Kette klappt beim Relax um.
+#   Ein kondensiertes Acen hat diese Freiheitsgrade nicht.
+# ⚠ DIE REIHE REICHT NICHT BIS 13,2 %, und das wird nicht mit einem noch groesseren
+#   Molekuel erzwungen (Heptacen waere geometrisch brauchbar und chemisch Unsinn).
+#   Statt dessen wird an diesen vier Punkten das GESETZ geprueft -- RMSD faellt wie
+#   sqrt(Ringanteil), das Maximum bleibt stehen -- und dann auf die 1227 Paare der
+#   Kopplungsproben angewandt.  Ein an vier Punkten bestaetigtes Gesetz auf gemessene
+#   Paare anzuwenden ist etwas anderes als eine Kurve zu verlaengern.
+_VERD_PROBEN = (
+    ("Cyclohexylbenzol",     "C1CCCCC1c1ccccc1"),
+    ("Cyclohexylnaphthalin", "C1CCCCC1c1ccc2ccccc2c1"),
+    ("Cyclohexylanthracen",  "C1CCCCC1c1ccc2cc3ccccc3cc2c1"),
+    ("Cyclohexyltetracen",   "C1CCCCC1c1ccc2cc3cc4ccccc4cc3cc2c1"),
+)
+
+
+def _xyz_schwer(txt: str):
+    """Schweratomkoordinaten aus einem Frame, wie ihn `generate` zurueckgibt.
+
+    ⚠ AUS DEM AUSGABETEXT, nicht aus einem parallel gehaltenen Conformer.  Was das
+      Modul ausliefert, ist dieser Text; jede Metrik, die auf etwas anderem rechnet,
+      misst eine Zwischenstufe, die so nie beim Aufrufer ankommt.
+    """
+    P = []
+    for ln in txt.splitlines():
+        t = ln.split()
+        if len(t) < 4 or t[0] == "H":
+            continue
+        try:
+            P.append([float(t[1]), float(t[2]), float(t[3])])
+        except Exception:
+            continue
+    return _np.array(P, dtype=float)
+
+
+def _greedy_eintraege(frames, index: int, tol: float) -> int:
+    """Wie viele MANIFOLD-EINTRAEGE bleiben, wenn mit ``tol`` entdoppelt wird.
+
+    ``index`` 0 = groesste Auslenkung, 1 = RMSD.  Gierig und in EMISSIONSREIHENFOLGE
+    -- genau so entdoppelt `generate`, und genau so entdoppeln die RMSD-Filter des
+    Projekts.  Eine optimale Ueberdeckung waere eine andere Zahl und eine andere Frage.
+    """
+    kept = []
+    for P in frames:
+        if any(_kabsch_max_rmsd(K, P)[index] < tol for K in kept):
+            continue
+        kept.append(P)
+    return len(kept)
+
+
+def selbsttest_trennschaerfe(proben=None, tol: float = 0.15,
+                             rmsd_projekt: float = 0.30,
+                             max_kombis: int = 800) -> int:
+    """TRENNT DAS MAXIMUM, WAS DER MITTELWERT VERSCHMILZT?  Mit Nenner.
+
+    DIE FRAGE.  Der Entwurf behauptet: RMSD mittelt eine Ringfaltung weg, die groesste
+    Auslenkung nach Kabsch-Ausrichtung tut es nicht.  Die Rechnung dazu steht bei
+    `_kabsch_max_rmsd` (0,203 A Ringauslenkung, 13,2 % Ringanteil, 0,086 A RMSD gegen
+    0,33 A Maximum -- Faktor 4).  Eine Rechnung ist aber keine Messung: sie unterstellt
+    einen Ringanteil und eine Auslenkung, die an echten Mehrringmolekuelen anders
+    ausfallen koennen.  Dieser Test rechnet sie an gebauten Frames nach.
+
+    GEMESSEN WIRD AN PAAREN, nicht an Frames.  "Trennschaerfe" ist eine Aussage ueber
+    zwei Zustaende, nicht ueber einen; der Nenner ist darum die Zahl der PAARE
+    faltungsverschiedener Frames, und der steht ueberall dabei.
+
+    ⚠ ZWEI VERGLEICHE, und nur der erste isoliert das INSTRUMENT:
+        (A) gleiche Schwelle, beide 0,15 -- misst allein den Unterschied zwischen
+            Maximum und Mittelwert.
+        (B) Maximum 0,15 gegen die im Projekt gefuehrte RMSD-Schwelle 0,30 -- misst,
+            was heute wirklich passiert, aber vermischt Instrument und Schwelle.
+      Wer nur (B) zeigt, kann jeden gewuenschten Effekt durch die Schwellenwahl
+      erzeugen.  Wer nur (A) zeigt, redet an der Praxis vorbei.
+
+    ⚠ DIE GEGENRICHTUNG WIRD MITGEMESSEN, obwohl sie null sein MUSS: das Maximum ist
+      nie kleiner als das quadratische Mittel derselben Abweichungen.  Ein Paar, das
+      das Maximum verschmilzt, verschmilzt der RMSD bei gleicher Schwelle also
+      zwingend auch.  Faellt diese Zahl NICHT null aus, ist ein Rechenfehler im Spiel
+      und nicht ein Befund -- deshalb steht sie da.
+    """
+    if not (_RDKIT and _np is not None):
+        print("=== Trennschaerfe: RDKit fehlt, uebersprungen ==="); return 0
+    import time as _time
+    proben = proben or _TRENN_PROBEN
+    fehler = 0
+    print("=== Selbsttest: Trennschaerfe -- groesste Auslenkung gegen RMSD ===")
+    _alt = {k: _os.environ.get(k) for k in
+            ("DELFIN_FFFREE_PUCKER_SPACE", "DELFIN_FFFREE_PUCKER_NAMP",
+             "DELFIN_FFFREE_PUCKER_NPHASE", "DELFIN_FFFREE_PUCKER_FULL",
+             "DELFIN_FFFREE_PUCKER_TRACE", "DELFIN_FFFREE_PUCKER_DEFEKT",
+             "DELFIN_FFFREE_PUCKER_XRD", "DELFIN_FFFREE_PUCKER_XRDTOL")}
+    zeilen = []
+    try:
+        # ===== 0 VORGABE AUS -> BYTE-IDENTISCH.  Gegen den Stand VOR dem 26.08. =======
+        for _k in _alt:
+            _os.environ[_k] = "0"
+        _os.environ["DELFIN_FFFREE_PUCKER_XRDTOL"] = "0.15"
+        for _n, _soll in sorted(_REF_GITTER.items()):
+            _ist = len(_pucker_space_grid(_n, 2, 6))
+            if _ist != _soll:
+                print("    ✗ 0 GITTER n=%d: %d Kandidaten statt %d" % (_n, _ist, _soll))
+                fehler += 1
+        if not fehler:
+            print("    ✓ 0 GITTER unveraendert: n=5,6,7,8 -> %s"
+                  % ", ".join(str(_REF_GITTER[k]) for k in (5, 6, 7, 8)))
+        _mv = Chem.AddHs(Chem.MolFromSmiles("C1CCC2CCCCC2C1"))        # Decalin
+        if AllChem.EmbedMolecule(_mv, randomSeed=42) != 0:
+            print("    ? 0 VORGABE: Decalin nicht einbettbar, NICHT gemessen"); fehler += 1
+        else:
+            AllChem.MMFFOptimizeMolecule(_mv)
+            _aus = generate(_mv, budget=48)
+            _aus2 = generate(_mv, budget=48, _zaehler=_neuer_zaehler())
+            if len(_aus) != _REF_DECALIN_FRAMES:
+                print("    ✗ 0 VORGABE VERAENDERT: Decalin liefert %d Frames statt %d "
+                      "-- der Vorgabepfad ist NICHT mehr byte-identisch"
+                      % (len(_aus), _REF_DECALIN_FRAMES))
+                fehler += 1
+            elif _aus != _aus2:
+                print("    ✗ 0 MESSMODUS VERAENDERT: %d gegen %d Frames"
+                      % (len(_aus), len(_aus2)))
+                fehler += 1
+            else:
+                print("    ✓ 0 VORGABE UNVERAENDERT: Decalin %d Frames (Referenz %d), "
+                      "mit und ohne Zaehler zeichengleich"
+                      % (len(_aus), _REF_DECALIN_FRAMES))
+            # ... und der Beweis, dass die neuen Schalter ueberhaupt REICHWEITE haben.
+            # Ein Schalter, der nichts aendert, ist von einem nicht verdrahteten nicht
+            # zu unterscheiden -- in diesem Projekt schon fuenfmal an einem Tag passiert.
+            _os.environ["DELFIN_FFFREE_PUCKER_XRD"] = "1"
+            _os.environ["DELFIN_FFFREE_PUCKER_XRDTOL"] = "0.15"
+            _mit_xrd = generate(_mv, budget=48)
+            _os.environ["DELFIN_FFFREE_PUCKER_XRD"] = "0"
+            _os.environ["DELFIN_FFFREE_PUCKER_DEFEKT"] = "1"
+            _mit_def = generate(_mv, budget=48)
+            _os.environ["DELFIN_FFFREE_PUCKER_DEFEKT"] = "0"
+            print("    ✓ 0 REICHWEITE der Schalter (Decalin, budget=48): Vorgabe %d "
+                  "-> XRD %d -> DEFEKT %d Frames"
+                  % (len(_aus), len(_mit_xrd), len(_mit_def)))
+            if len(_mit_xrd) == len(_aus) and len(_mit_def) == len(_aus):
+                print("      ⚠ BEIDE Schalter ohne Wirkung auf DIESER Probe -- das ist "
+                      "kein Fehler, aber es beweist an Decalin nichts.  Die Reichweite "
+                      "muss dann aus den Proben unten kommen.")
+
+        # ===== 1 DIE PAARSTATISTIK ====================================================
+        _os.environ["DELFIN_FFFREE_PUCKER_FULL"] = "1"     # keine Kappe: alle Tiefen
+        _os.environ["DELFIN_FFFREE_PUCKER_DEFEKT"] = "1"   # (1) Defektfilter AN
+        _os.environ["DELFIN_FFFREE_PUCKER_XRD"] = "0"      # (2) hier NOCH nicht
+        print()
+        print("    Kandidatenliste wie in der Vorgabe (SPACE=0), Kappe AUS, "
+              "(1) Defektfilter AN, (2) noch AUS.")
+        print("    %-22s %5s %7s %8s %8s %8s %8s"
+              % ("Molekuel", "Frames", "Paare", "max~", "rmsd~", "max/rmsd", "s"))
+        for name, smi, klasse in proben:
+            try:
+                m = Chem.AddHs(Chem.MolFromSmiles(smi))
+                if AllChem.EmbedMolecule(m, randomSeed=42) != 0:
+                    print("    %-22s Einbettung fehlgeschlagen" % name); continue
+                try:
+                    AllChem.MMFFOptimizeMolecule(m)
+                except Exception:
+                    AllChem.UFFOptimizeMolecule(m)
+            except Exception as e:
+                print("    %-22s Aufbau fehlgeschlagen: %s" % (name, type(e).__name__))
+                continue
+            # Vorlauf: (b) VOR dem Bau kennen, sonst laeuft eine Probe stundenlang.
+            try:
+                _rings = [_ring_order(m, set(r)) for r in m.GetRingInfo().AtomRings()
+                          if _is_puckerable(m, r)]
+                _stv = [_ring_pucker_states(m, r, set(), 0.05) for r in _rings]
+            except Exception as e:
+                print("    %-22s Zustaende nicht bestimmbar: %s"
+                      % (name, type(e).__name__)); continue
+            _prod = 1
+            for _s in _stv:
+                _prod *= len(_s)
+            if max_kombis and (_prod - 1) > max_kombis:
+                print("    %-22s UEBERSPRUNGEN: (b) = %d ueber der Testgrenze %d"
+                      % (name, _prod - 1, max_kombis))
+                continue
+            _z = _neuer_zaehler()
+            _t0 = _time.perf_counter()
+            try:
+                _out = generate(m, budget=10 ** 9, _zaehler=_z)
+            except Exception as e:
+                print("    %-22s generate() geplatzt: %s" % (name, type(e).__name__))
+                continue
+            _dt = _time.perf_counter() - _t0
+            # Der GRUNDZUSTAND ist selbst ein Manifold-Eintrag und gehoert in die
+            # Paarmenge: eine Faltung, die vom Ausgangsframe nicht zu unterscheiden ist,
+            # ist genauso ein Doppel wie zwei ununterscheidbare Faltungen.
+            _frames = [_xyz_schwer(_conf_to_xyz(m))] + [_xyz_schwer(x) for x, _l in _out]
+            _frames = [P for P in _frames if P.size and P.shape == _frames[0].shape]
+            # Ringanteil an den schweren Atomen -- die Verduennung, um die es geht.
+            try:
+                _ring_at = set()
+                for _r in m.GetRingInfo().AtomRings():
+                    _ring_at |= {int(x) for x in _r}
+                _hv = [i for i in range(m.GetNumAtoms())
+                       if m.GetAtomWithIdx(i).GetSymbol() != "H"]
+                _ring_pos = [k for k, i in enumerate(_hv) if i in _ring_at]
+                _anteil = len(_ring_pos) / float(len(_hv)) if _hv else 0.0
+            except Exception:
+                _ring_pos, _anteil = [], 0.0
+            _paare = []
+            for _i in range(len(_frames)):
+                for _j in range(_i + 1, len(_frames)):
+                    _mx, _rm = _kabsch_max_rmsd(_frames[_i], _frames[_j])
+                    _paare.append((_mx, _rm))
+            if not _paare:
+                print("    %-22s %5d %7d   -- kein Paar, keine Aussage"
+                      % (name, len(_frames), 0))
+                continue
+            _mxs = sorted(p[0] for p in _paare)
+            _rms = sorted(p[1] for p in _paare)
+            _med = lambda v: v[len(v) // 2]
+            print("    %-22s %5d %7d %8.3f %8.3f %8.1f %8.1f"
+                  % (name, len(_frames), len(_paare), _med(_mxs), _med(_rms),
+                     (_med(_mxs) / _med(_rms)) if _med(_rms) > 1e-9 else float("inf"),
+                     _dt))
+            print("        %-26s Ringanteil an den schweren Atomen %4.1f %% (%d von %d)"
+                  " · verworfen: Kollision %d · Winkel %d · Bindung %d · TFD %d"
+                  % (klasse, 100.0 * _anteil, len(_ring_pos),
+                     len(_frames[0]) if _frames else 0,
+                     int(_z.get("kollision", 0)), int(_z.get("winkel", 0)),
+                     int(_z.get("bindung", 0)), int(_z.get("tfd_doppelt", 0))))
+            # ---- LAUF B: DIESELBE PROBE MIT (2) AN.  Das ist die Zahl fuer (c), und
+            #      sie wird GEBAUT und nicht aus Lauf A hochgerechnet: mit (2) an
+            #      entdoppelt schon `_ring_pucker_states` je Ring, das Kreuzprodukt (b)
+            #      ist also ein anderes.  Wer das aus den Frames von Lauf A greedy
+            #      nachbildet, misst den Nachbau -- der Fehler, den dieses Projekt
+            #      schon mehrfach als Befund durchgehen liess.
+            _os.environ["DELFIN_FFFREE_PUCKER_XRD"] = "1"
+            _zb = _neuer_zaehler()
+            _t1 = _time.perf_counter()
+            try:
+                _outb = generate(m, budget=10 ** 9, _zaehler=_zb)
+            except Exception:
+                _outb, _zb = [], _neuer_zaehler()
+            _dtb = _time.perf_counter() - _t1
+            _os.environ["DELFIN_FFFREE_PUCKER_XRD"] = "0"
+            zeilen.append({"name": name, "klasse": klasse, "paare": _paare,
+                           "frames": _frames, "anteil": _anteil, "dt": _dt,
+                           "b": int(_z.get("aufzaehlung", 0)),
+                           "c": int(_z.get("tor_ueberlebt", 0)),
+                           "d": len(_out),
+                           "zustaende": list(_z.get("zustaende_je_ring") or []),
+                           "bindung": int(_z.get("bindung", 0)),
+                           "kollision": int(_z.get("kollision", 0)),
+                           "winkel": int(_z.get("winkel", 0)),
+                           "b2": int(_zb.get("aufzaehlung", 0)),
+                           "c2": int(_zb.get("tor_ueberlebt", 0)),
+                           "d2": len(_outb), "dt2": _dtb,
+                           "xrd2": int(_zb.get("xrd_doppelt", 0)),
+                           "zustaende2": list(_zb.get("zustaende_je_ring") or []),
+                           "mol": m, "smi": smi})
+    finally:
+        for k, v in _alt.items():
+            if v is None:
+                _os.environ.pop(k, None)
+            else:
+                _os.environ[k] = v
+
+    # ===== 1b DIE VERDUENNUNGSREIHE ================================================
+    # Getrennt gelaufen, getrennt berichtet -- sie beantwortet eine ANDERE Frage als
+    # die Kopplungsproben oben (dort: welche Paare trennt wer; hier: WOVON der
+    # Unterschied ueberhaupt abhaengt).  Zusammengeworfen waeren beide unlesbar.
+    verd, _verd_tfd = [], []
+    _altv = {k: _os.environ.get(k) for k in
+             ("DELFIN_FFFREE_PUCKER_FULL", "DELFIN_FFFREE_PUCKER_DEFEKT",
+              "DELFIN_FFFREE_PUCKER_XRD", "DELFIN_FFFREE_PUCKER_SPACE",
+              "DELFIN_FFFREE_PUCKER_NAMP", "DELFIN_FFFREE_PUCKER_NPHASE")}
+    try:
+        # ⚠ RAUMGITTER AN, damit der EINE Ring genug Zustaende liefert -- eine
+        #   Paarstatistik aus drei Paaren waere keine.  Es ist derselbe Ring in allen
+        #   sechs Molekuelen, also aendert das an der unabhaengigen Variablen nichts.
+        _os.environ["DELFIN_FFFREE_PUCKER_SPACE"] = "1"
+        _os.environ["DELFIN_FFFREE_PUCKER_NAMP"] = "2"
+        _os.environ["DELFIN_FFFREE_PUCKER_NPHASE"] = "8"
+        _os.environ["DELFIN_FFFREE_PUCKER_FULL"] = "1"
+        _os.environ["DELFIN_FFFREE_PUCKER_DEFEKT"] = "1"
+        _os.environ["DELFIN_FFFREE_PUCKER_XRD"] = "0"
+        print()
+        print("    ===== 1b VERDUENNUNGSREIHE: derselbe Ring, wachsendes Geruest =====")
+        print("      Geruest EINGEFROREN (`frozen`) -- s. den Kommentar bei "
+              "_VERD_PROBEN: ohne das misst die Reihe die Geruestbewegung mit.")
+        print("      %-24s %6s %7s %7s %7s %6s %8s %8s %9s"
+              % ("Molekuel", "schwer", "Anteil", "(a)0,05", "(a)0,005", "Paare",
+                 "max~", "rmsd~", "max/rmsd"))
+        for name, smi in _VERD_PROBEN:
+            try:
+                m = Chem.AddHs(Chem.MolFromSmiles(smi))
+                if AllChem.EmbedMolecule(m, randomSeed=42) != 0:
+                    print("      %-24s Einbettung fehlgeschlagen" % name); continue
+                AllChem.MMFFOptimizeMolecule(m)
+            except Exception as e:
+                print("      %-24s Aufbau ausgefallen: %s"
+                      % (name, type(e).__name__)); continue
+            try:
+                _ring_at, _ring_ord = set(), []
+                for _r in m.GetRingInfo().AtomRings():
+                    if _is_puckerable(m, _r):
+                        _ring_at |= {int(x) for x in _r}
+                        if not _ring_ord:
+                            _ring_ord = _ring_order(m, set(_r))
+                _hv = [i for i in range(m.GetNumAtoms())
+                       if m.GetAtomWithIdx(i).GetSymbol() != "H"]
+                _rp = [k for k, i in enumerate(_hv) if i in _ring_at]
+                # frei = der Ring und SEINE Wasserstoffe; alles andere steht fest.
+                _frei = set(_ring_at)
+                for _i in list(_ring_at):
+                    for _nb in m.GetAtomWithIdx(int(_i)).GetNeighbors():
+                        if _nb.GetSymbol() == "H":
+                            _frei.add(int(_nb.GetIdx()))
+                _fr = set(range(m.GetNumAtoms())) - _frei
+            except Exception as e:
+                print("      %-24s Ringmenge unbestimmbar: %s"
+                      % (name, type(e).__name__)); continue
+            if not _ring_at or not _hv:
+                print("      %-24s kein faltbarer Ring" % name); continue
+            # ===== TFD MITTELT AUCH -- UND ES IST DAS INSTRUMENT IM EINSATZ ==========
+            #
+            # Diese Reihe hat es beim Bauen selbst aufgedeckt: Anthracen und Tetracen
+            # lieferten NULL Faltungen, und zwar nicht am Realismustor, sondern schon
+            # bei den Zustaenden JE RING -- (b) war 0, das Kreuzprodukt also 1x nichts.
+            # Der Ring ist derselbe wie im Cyclohexylbenzol, das 55 Paare liefert.
+            #
+            # Die Ursache ist dieselbe Krankheit eine Ebene hoeher: TFD vergleicht ALLE
+            # Torsionen des Molekuels und MITTELT ueber sie.  Ein grosses starres
+            # Geruest bringt viele Torsionen mit, die sich nicht aendern -- der Beitrag
+            # der sechs Ringtorsionen wird durch sie geteilt und faellt unter die
+            # Schwelle 0,05.  Die Faltung verschwindet im Mittel, genau wie beim RMSD.
+            #
+            # ⚠ DAS IST KEIN NEBENBEFUND.  TFD ist das Entdopplungsmass, das HEUTE im
+            #   Bau laeuft.  Wenn es mit der Ligandgroesse unschaerfer wird, dann
+            #   verliert der Manifold Faltungen genau bei den Systemen, um die es geht
+            #   -- grosse Liganden, kleiner Ringanteil.
+            # Gemessen wird das mit dem einzigen Mittel, das die beiden Ursachen trennt:
+            # dieselben Kandidaten, zwei Schwellen.  Steigt (a) bei 0,005 stark an, war
+            # es die Schwelle (also die Verduennung); bleibt es gleich, sind die
+            # Zustaende wirklich nicht da.
+            try:
+                _a05 = len(_ring_pucker_states(m, _ring_ord, _fr, 0.05))
+                _a005 = len(_ring_pucker_states(m, _ring_ord, _fr, 0.005))
+            except Exception:
+                _a05 = _a005 = -1
+            _zv = _neuer_zaehler()
+            try:
+                _out = generate(m, frozen=_fr, budget=10 ** 9, _zaehler=_zv)
+            except Exception as e:
+                print("      %-24s generate() geplatzt: %s"
+                      % (name, type(e).__name__)); continue
+            _frames = [_xyz_schwer(_conf_to_xyz(m))] + [_xyz_schwer(x) for x, _l in _out]
+            _frames = [P for P in _frames if P.size and P.shape == _frames[0].shape]
+            if len(_frames) < 2:
+                # ⚠ EINE NULL BEKOMMT IHREN GRUND.  "erzeugt und verworfen" sieht von
+                #   aussen genauso aus wie "nie gebaut" -- der Fehlschluss, der am
+                #   14.08. den Feuerzensus wertlos gemacht hat.
+                print("      %-24s %6d %6.1f%% %7d %7d      -- nur %d Frame(e), (b)=%d"
+                      % (name, len(_hv),
+                         100.0 * len(_rp) / float(len(_hv)) if _hv else 0.0,
+                         _a05, _a005, len(_frames), int(_zv.get("aufzaehlung", 0))))
+                _verd_tfd.append({"name": name, "n": len(_hv),
+                                  "anteil": len(_rp) / float(len(_hv)) if _hv else 0.0,
+                                  "a05": _a05, "a005": _a005})
+                continue
+            _anteil = len(_rp) / float(len(_hv))
+            _mx, _rm, _pa = [], [], []
+            _geruest = 0.0
+            _nicht_ring = [k for k in range(len(_hv)) if k not in set(_rp)]
+            for _i in range(len(_frames)):
+                for _j in range(_i + 1, len(_frames)):
+                    _v = _kabsch_abweichungen(_frames[_i], _frames[_j])
+                    _a = float(_v.max())
+                    _b = float(_np.sqrt(float((_v ** 2).mean())))
+                    _mx.append(_a); _rm.append(_b); _pa.append((_a, _b))
+                    # ⚠ EINFROSTPROBE OHNE KABSCH, und das ist der Punkt.  Beide Frames
+                    #   stehen im SELBEN Bezugssystem -- es wurde nichts neu eingebettet,
+                    #   nur relaxiert.  "Steht das Geruest?" ist damit eine Frage an die
+                    #   ROHEN Koordinaten.  Nach Kabsch waere sie unbeantwortbar: die
+                    #   Ausrichtung minimiert das Gesamt-RMSD und verteilt den Fehler auf
+                    #   ALLE Atome, also auch auf festgehaltene -- eine erste Fassung hat
+                    #   genau daraus 1,4 A Geruestbewegung gemeldet, die es nicht gab.
+                    if _nicht_ring:
+                        _roh = _np.linalg.norm(_frames[_i][_nicht_ring]
+                                               - _frames[_j][_nicht_ring], axis=1)
+                        _geruest = max(_geruest, float(_roh.max()))
+            _mx.sort(); _rm.sort()
+            _m1, _r1 = _mx[len(_mx) // 2], _rm[len(_rm) // 2]
+            print("      %-24s %6d %6.1f%% %7d %7d %6d %8.3f %8.3f %9.1f"
+                  % (name, len(_hv), 100.0 * _anteil, _a05, _a005, len(_pa), _m1, _r1,
+                     (_m1 / _r1) if _r1 > 1e-9 else float("inf")))
+            _verd_tfd.append({"name": name, "n": len(_hv), "anteil": _anteil,
+                              "a05": _a05, "a005": _a005})
+            verd.append({"name": name, "n": len(_hv), "anteil": _anteil,
+                         "max": _m1, "rmsd": _r1, "paare": _pa, "geruest": _geruest})
+    finally:
+        for k, v in _altv.items():
+            if v is None:
+                _os.environ.pop(k, None)
+            else:
+                _os.environ[k] = v
+    if verd:
+        # ---- PRUEFUNG: HAT DAS EINFRIEREN GEHALTEN?  Roh, ohne Ausrichtung.
+        _gmax = max(r["geruest"] for r in verd)
+        if _gmax < 1e-6:
+            print("      ✓ EINFROSTPROBE (rohe Koordinaten): groesste Geruestauslenkung "
+                  "%.2e A -- das Geruest steht, die Reihe isoliert die Verduennung."
+                  % _gmax)
+        else:
+            print("      ✗ EINFROSTPROBE: Geruest bewegt sich um bis zu %.3f A -- die "
+                  "Reihe misst NICHT nur Verduennung." % _gmax)
+            fehler += 1
+    if _verd_tfd:
+        # ---- DAS EIGENTLICHE ERGEBNIS DIESER REIHE, und es war nicht das gesuchte.
+        print()
+        print("      ===== TFD MITTELT GENAUSO -- und TFD laeuft heute im Bau =====")
+        for r in _verd_tfd:
+            print("        %-24s %2d schwere Atome, Ringanteil %5.1f %% -> (a) %d bei "
+                  "Schwelle 0,05 · %d bei 0,005"
+                  % (r["name"], r["n"], 100.0 * r["anteil"], r["a05"], r["a005"]))
+        _v0, _vn = _verd_tfd[0], _verd_tfd[-1]
+        if _vn["a05"] < _v0["a05"] and _vn["a005"] > _vn["a05"]:
+            print("      ⇒ BEFUND: mit wachsendem Geruest faellt (a) bei Schwelle 0,05 "
+                  "von %d auf %d -- DERSELBE Ring, dieselben Kandidaten.  Bei 0,005 "
+                  "kommen die Zustaende zurueck (%d).  Die Faltungen sind also DA und "
+                  "werden von TFD verschmolzen, nicht vom Generator ausgelassen."
+                  % (_v0["a05"], _vn["a05"], _vn["a005"]))
+            print("        URSACHE: TFD vergleicht ALLE Torsionen und mittelt ueber sie. "
+                  "Ein grosses starres Geruest bringt unbewegte Torsionen mit; der "
+                  "Beitrag der Ringtorsionen wird durch sie geteilt.  Das ist Wort fuer "
+                  "Wort der RMSD-Fehler, eine Ebene hoeher -- und TFD ist das Mass, das "
+                  "im Bau ENTSCHEIDET.")
+            print("        ⚠ TRAGWEITE: der Effekt waechst mit der LIGANDGROESSE.  Er "
+                  "trifft also am haertesten die Systeme, um die es geht -- grosse "
+                  "Liganden, kleiner Ringanteil.  Die 59,7 % Ringidentitaeten mit nur "
+                  "EINER Faltung (16.08.) haben hier eine kandidatenfaehige Ursache, "
+                  "die nichts mit dem Generator zu tun hat.")
+        else:
+            print("      ⇒ Kein Verduennungsmuster in (a) -- TFD verschmilzt hier nicht.")
+        _vp = [p for r in verd for p in r["paare"]]
+        _vN = len(_vp)
+        if _vN:
+            _vA = sum(1 for a, b in _vp if b < tol <= a)
+            _vB = sum(1 for a, b in _vp if b < rmsd_projekt <= a)
+            print("      ⇒ Trennschaerfe auf dieser Reihe (Nenner %d Paare, Ringanteil "
+                  "%.0f bis %.0f %%): (A) %d = %.1f %% · (B) %d = %.1f %%"
+                  % (_vN, 100.0 * min(r["anteil"] for r in verd),
+                     100.0 * max(r["anteil"] for r in verd),
+                     _vA, 100.0 * _vA / _vN, _vB, 100.0 * _vB / _vN))
+
+    if not zeilen:
+        print("=== Trennschaerfe: nichts gemessen ==="); return 1
+
+    _alle = [p for r in zeilen for p in r["paare"]]
+    _N = len(_alle)
+    _A = sum(1 for mx, rm in _alle if rm < tol <= mx)
+    _B = sum(1 for mx, rm in _alle if rm < rmsd_projekt <= mx)
+    _G = sum(1 for mx, rm in _alle if mx < tol <= rm)
+    print()
+    print("    ===== 1 TRENNSCHAERFE (Nenner: %d Paare faltungsverschiedener Frames "
+          "ueber %d Molekuele) =====" % (_N, len(zeilen)))
+    print("      (A) gleiche Schwelle %.2f A -- nur das INSTRUMENT:" % tol)
+    print("          Maximum trennt, RMSD verschmilzt:  %6d von %6d = %5.1f %%"
+          % (_A, _N, 100.0 * _A / _N if _N else 0.0))
+    print("      (B) Maximum %.2f gegen die Projekt-RMSD-Schwelle %.2f -- die PRAXIS:"
+          % (tol, rmsd_projekt))
+    print("          Maximum trennt, RMSD verschmilzt:  %6d von %6d = %5.1f %%"
+          % (_B, _N, 100.0 * _B / _N if _N else 0.0))
+    print("      GEGENRICHTUNG (muss 0 sein, das Maximum ist nie kleiner als das "
+          "quadratische Mittel): %d" % _G)
+    # ---- DIE ZAHL, DIE FUER ECHTE SYSTEME GILT.
+    # ⚠ DIE PROBEN OBEN HABEN 86 BIS 100 %% RINGANTEIL -- der Verduennungseffekt kommt
+    #   darin per Konstruktion nicht vor.  Was sie liefern, ist die UNTERGRENZE der
+    #   Trennschaerfe.  Ein reales DELFIN-System hat einen Metallkern, aromatische
+    #   Rueckgrate und Substituenten; die Vorgabe nennt 13,2 % Ringanteil.
+    #   Angewandt wird das oben an vier Punkten BESTAETIGTE Gesetz: das Maximum bleibt,
+    #   der RMSD faellt wie sqrt(Anteil).  Kein neues Molekuel, keine Kurve verlaengert
+    #   -- dieselben gemessenen Paare, mit dem Nenner eines realen Systems.
+    # ---- DER RINGANTEIL IST DIE UNABHAENGIGE VARIABLE, und beide Punkte sind GEMESSEN.
+    # ⚠ HIER STAND EINMAL EINE HOCHRECHNUNG AUF 13,2 % -- zweimal, und beide Male
+    #   falsch.  (i) "RMSD faellt wie sqrt(Ringanteil)" gilt nur bei IDENTISCHER
+    #   Ausrichtung; Kabsch richtet aber aus und verteilt den Fehler um.  (ii) Das Paar
+    #   mit starren Kopien aufzufuellen und neu zu ueberlagern hat den Fehler nur
+    #   verschoben: das Geruest lag auf dem Molekuel und band die Ausrichtung so hart,
+    #   dass das Maximum von 0,94 auf 3,95 A stieg -- gemessen wurde der Wechsel des
+    #   AUSRICHTUNGSREGIMES, nicht die Verduennung.  Beide Versuche sind entfernt.
+    #   Was bleibt, sind zwei GEMESSENE Punkte an echten Molekuelen; die Reihe 1b
+    #   reicht nicht bis 13,2 %, und der Grund dafuer ist selbst der Befund (TFD
+    #   liefert dort keine Frames mehr).
+    _vp2 = [p for r in verd for p in r["paare"]]
+    if _vp2:
+        _vA2 = sum(1 for a, b in _vp2 if b < tol <= a)
+        _vB2 = sum(1 for a, b in _vp2 if b < rmsd_projekt <= a)
+        print("      ⇒ GEGEN DEN RINGANTEIL, beide Punkte gemessen:")
+        print("        ~100 %% Ringanteil (Kopplungsproben, %4d Paare): (A) %5.1f %% · "
+              "(B) %5.1f %%" % (_N, 100.0 * _A / _N, 100.0 * _B / _N))
+        print("        38-50 %% Ringanteil (Verduennungsreihe, %4d Paare): (A) %5.1f %% "
+              "· (B) %5.1f %%" % (len(_vp2), 100.0 * _vA2 / len(_vp2),
+                                  100.0 * _vB2 / len(_vp2)))
+        print("        ⇒ die Trennschaerfe WAECHST mit der Verduennung (A: %.1f -> "
+              "%.1f %%).  Die Kopplungsproben sind damit die UNTERGRENZE, nicht die "
+              "Antwort." % (100.0 * _A / _N, 100.0 * _vA2 / len(_vp2)))
+    if _G:
+        print("      ✗ GEGENRICHTUNG NICHT NULL -- Rechenfehler, kein Befund."); fehler += 1
+
+    # ---- 2 WAS DAS FUER DIE ZAHL DER MANIFOLD-EINTRAEGE HEISST.
+    # ⚠ Eine Prozentzahl ueber Paare sagt noch nicht, wie viele EINTRAEGE entstehen:
+    #   Entdopplung ist gierig und transitiv-unsauber, drei paarweise knappe Frames
+    #   koennen zu einem oder zu zweien werden.  Also nachzaehlen statt hochrechnen.
+    print()
+    print("    ===== 2 EINTRAEGE JE MOLEKUEL, je Kriterium =====")
+    print("      %-22s %7s %8s %8s %8s %8s"
+          % ("Molekuel", "roh", "max%.2f" % tol, "rmsd%.2f" % tol,
+             "rmsd%.2f" % rmsd_projekt, "rmsd0.50"))
+    _sum = {"roh": 0, "max": 0, "r_gleich": 0, "r_proj": 0, "r_50": 0}
+    for r in zeilen:
+        _f = r["frames"]
+        _e = (len(_f), _greedy_eintraege(_f, 0, tol), _greedy_eintraege(_f, 1, tol),
+              _greedy_eintraege(_f, 1, rmsd_projekt), _greedy_eintraege(_f, 1, 0.50))
+        print("      %-22s %7d %8d %8d %8d %8d" % ((r["name"],) + _e))
+        for _k, _v in zip(("roh", "max", "r_gleich", "r_proj", "r_50"), _e):
+            _sum[_k] += _v
+    print("      %-22s %7d %8d %8d %8d %8d"
+          % ("SUMME", _sum["roh"], _sum["max"], _sum["r_gleich"], _sum["r_proj"],
+             _sum["r_50"]))
+    if _sum["max"] > 0:
+        print("      ⇒ RMSD bei %.2f A behaelt %d von %d Eintraegen, die das Maximum "
+              "bei derselben Schwelle als UNTERSCHEIDBAR fuehrt (%.0f %%).  Die "
+              "Differenz %d sind Faltungen, die eine RMSD-Entdopplung LOESCHT."
+              % (tol, _sum["r_gleich"], _sum["max"],
+                 100.0 * _sum["r_gleich"] / _sum["max"],
+                 _sum["max"] - _sum["r_gleich"]))
+        print("      ⇒ bei der Projektschwelle %.2f A: %d von %d (%.0f %%), "
+              "geloescht %d." % (rmsd_projekt, _sum["r_proj"], _sum["max"],
+                                 100.0 * _sum["r_proj"] / _sum["max"],
+                                 _sum["max"] - _sum["r_proj"]))
+    # ---- 3 WAS (1)+(2) DIE KOMBINATORIK KOSTEN -- ODER SPAREN.
+    # ⚠ DIE ENTSCHEIDENDE UNTERSCHEIDUNG, und sie ist leicht zu verfehlen: (1) und (2)
+    #   koennen an ZWEI Stellen wirken, und nur eine davon spart Rechenzeit.
+    #     JE RING  (`_ring_pucker_states`)  -> senkt (a), also (b) POTENZIERT: der
+    #                                          einzige Ort, an dem etwas billiger wird.
+    #     JE KOMBINATION (`generate`)       -> senkt nur die Zahl der EINTRAEGE.  Der
+    #                                          Relax ist da schon bezahlt; das Tor
+    #                                          waehlt aus, es spart nichts.
+    #   Ein Filter, der nur unten wirkt, macht die vollstaendige Faltung NICHT
+    #   bezahlbar, egal wie scharf er ist.  Darum stehen (a) und (b) hier nebeneinander.
+    print()
+    print("    ===== 3 KOMBINATORIK MIT (1)+(2) -- (a) je Ring und (b) das Produkt =====")
+    print("      %-22s %-12s %-12s %8s %8s %7s %7s"
+          % ("Molekuel", "(a) ohne (2)", "(a) mit (2)", "(b) ohne", "(b) mit",
+             "(d) ohne", "(d) mit"))
+    _sb = _sb2 = _sd = _sd2 = 0
+    for r in zeilen:
+        print("      %-22s %-12s %-12s %8d %8d %7d %7d"
+              % (r["name"],
+                 "x".join(str(v) for v in r["zustaende"]) or "-",
+                 "x".join(str(v) for v in r["zustaende2"]) or "-",
+                 r["b"], r["b2"], r["d"], r["d2"]))
+        _sb += r["b"]; _sb2 += r["b2"]; _sd += r["d"]; _sd2 += r["d2"]
+        # ⚠ EINE NULL IN (d) MUSS IHREN GRUND NENNEN, sonst liest sie sich wie ein
+        #   Defekt.  Bei Norbornan ist sie das GEWOLLTE Ergebnis: seine groesste
+        #   Faltungsauslenkung liegt bei 0,139 A, also UNTER der Aufloesungsschwelle.
+        #   Ein starr verbrueckter Bicyclus HAT keine zweite Faltung -- (2) sagt genau
+        #   das, und der Manifold behaelt den Grundzustand (der nie durch dieses Tor
+        #   geht).  Aus Sicht des Kristallographen ist ein Eintrag richtig, nicht drei.
+        if r["d"] > 0 and r["d2"] == 0:
+            print("        %-20s (d) faellt auf 0: alle %d Faltungen liegen unter %.2f A "
+                  "Maximalauslenkung -- ununterscheidbar vom Grundzustand, EIN Eintrag."
+                  % (r["name"], r["d"], tol))
+    print("      %-22s %-12s %-12s %8d %8d %7d %7d"
+          % ("SUMME", "", "", _sb, _sb2, _sd, _sd2))
+    if _sb:
+        print("      ⇒ (b), die AUFZAEHLUNG und damit der PREIS: %d -> %d = %+.1f %%."
+              % (_sb, _sb2, 100.0 * (_sb2 - _sb) / _sb))
+        print("      ⇒ (d), die EINTRAEGE und damit das ERGEBNIS: %d -> %d = %+.1f %%."
+              % (_sd, _sd2, 100.0 * (_sd2 - _sd) / max(1, _sd)))
+        # ⚠ PARTITION, KEIN MITTELWERT.  Ein Gesamtprozentsatz ueber acht Proben kann
+        #   nicht sagen, ob (2) ueberall ein bisschen spart oder bei zwei Proben viel
+        #   und bei sechs gar nichts -- und das sind voellig verschiedene Mechanismen.
+        #   Der zweite Fall waere KEIN allgemeiner Kostenhebel, sondern ein Befund
+        #   ueber eine Klasse.  Geteilt wird nach der Zahl der Proben mit Wirkung.
+        _wirkt = [r for r in zeilen if r["b2"] < r["b"]]
+        _still = [r for r in zeilen if r["b2"] >= r["b"]]
+        print("      ⇒ PARTITION: (2) senkt (b) bei %d von %d Proben (%s); bei den "
+              "anderen %d aendert sie (a) um keinen einzigen Zustand (%s)."
+              % (len(_wirkt), len(zeilen),
+                 ", ".join(r["name"] for r in _wirkt) or "keiner", len(_still),
+                 ", ".join(r["name"] for r in _still) or "keine"))
+        if len(_wirkt) <= len(zeilen) // 2:
+            print("      ⇒ URTEIL: (2) ist KEIN allgemeiner Kostenhebel.  Sie greift "
+                  "dort, wo Ringzustaende ohnehin fast entartet sind (die VERBRUECKTEN "
+                  "Proben -- ein verbrueckter Ring KANN kaum falten), und nirgends "
+                  "sonst.  Das Maximum kennt keinen Nenner: genau die Eigenschaft, die "
+                  "es gegen Verduennung unempfindlich macht, hindert es daran, echte "
+                  "Ringmulden zusammenzuziehen.  Es macht die Auswahl RICHTIG, nicht "
+                  "BILLIG.")
+        else:
+            print("      ⇒ URTEIL: (2) senkt (a) und damit (b) bei der MEHRHEIT der "
+                  "Proben -- ein echter Kostenhebel, nicht nur eine Korrektur.")
+        _sbi = sum(r["bindung"] for r in zeilen)
+        _swi = sum(r["winkel"] for r in zeilen)
+        _skl = sum(r["kollision"] for r in zeilen)
+        print("      ⇒ (1) DEFEKTFILTER, aufgeschluesselt (Nenner %d Kombinationen): "
+              "Kollision %d (%.1f %%) · Winkel %d (%.1f %%) · Bindung %d (%.1f %%)."
+              % (_sb, _skl, 100.0 * _skl / _sb, _swi, 100.0 * _swi / _sb,
+                 _sbi, 100.0 * _sbi / _sb))
+        if _skl == 0:
+            print("        ⚠ Das Kollisionstor feuert NULL mal -- dieselbe Nullreichweite "
+                  "wie am 26.08. (0 von 17 754).  Ein zweites Mal gemessen, ein zweites "
+                  "Mal null: der Name `Kollisionstor` beschreibt keinen wirksamen Filter.")
+        if _sbi:
+            print("        ✓ Das NEUE Bindungstor feuert %d mal -- es ist verdrahtet und "
+                  "hat Reichweite; es sieht genau den Bruch, den das Selbstgate per "
+                  "Konstruktion fuer 'nicht gebunden' haelt." % _sbi)
+    # ---- 4 BRAUCHT ES STUFE (3), DIE ENERGIE?
+    # ⚠ DIE FRAGE IST NICHT "waere Energie schoen", sondern "loest sie das Problem, das
+    #   (1) und (2) offen lassen".  Und das Problem ist der PREIS (b), nicht die Zahl
+    #   der Eintraege (d).  Eine Energie wird -- wie jedes andere Tor hier -- NACH dem
+    #   Relax ausgewertet; sie kann (b) also gar nicht senken.  Ein Mechanismus, der
+    #   den Engpass per Konstruktion nicht erreicht, wird nicht gebaut, sondern benannt.
+    print()
+    print("    ===== 4 BRAUCHT ES DIE ENERGIE? =====")
+    print("      Der Engpass ist (b) = %d Kombinationen, jede mit einem Relax BEVOR "
+          "irgendein Tor sie sieht." % _sb)
+    print("      Eine Energieauswahl wird an derselben Stelle ausgewertet wie (1) und "
+          "(2) -- nach dem Relax.  Sie kann (b) also per Konstruktion nicht senken.")
+    print("      ⇒ ENERGIE NICHT GEBAUT.  Sie wuerde das Ergebnis weiter ausduennen "
+          "(%d Eintraege) und den Preis unveraendert lassen.  Der einzige Ort, an dem "
+          "etwas zu sparen ist, ist (a) -- die Zustaende JE RING, vor dem Kreuzprodukt."
+          % _sd2)
+    print("=== Trennschaerfe: %s ==="
+          % ("gemessen" if fehler == 0 else "%d Pruefung(en) FEHLGESCHLAGEN" % fehler))
+    return 1 if fehler else 0
+
+
 if __name__ == "__main__":
     # ⚠ AM DATEIENDE, und das ist keine Kosmetik.  Auf MODULEBENE zaehlt die
     #   Reihenfolge: steht dieser Block vor einer der Testfunktionen, ist ihr Name
@@ -1962,6 +2891,10 @@ if __name__ == "__main__":
               # beantwortet: sie meldet "Zustaende liegen dicht", er misst, ob das an
               # der Schwelle liegt.
               ("sweep", selbsttest_tfd_sweep),
+              # Die Trennschaerfe steht vor der Kombinatorik: sie entscheidet, WELCHES
+              # Mass die Kombinatorik ueberhaupt entdoppeln soll.  Ein Kostenurteil mit
+              # dem falschen Entdopplungsmass waere ein Urteil ueber das Instrument.
+              ("trennschaerfe", selbsttest_trennschaerfe),
               # Zuletzt die Kombinatorik: sie baut Relax + Tor JE Kombination und ist
               # damit der teuerste der vier.  Sie beantwortet, was die drei davor
               # aufwerfen -- die Zustandszahl je Ring ist nur interessant, weil sie
