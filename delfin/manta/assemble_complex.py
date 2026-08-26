@@ -3193,6 +3193,112 @@ def _fold_fp(P, rings):
     return out
 
 
+# ===== DIE DRITTE ACHSE DER KUGEL: DIE AMPLITUDE (26.08.2026) =====================
+#
+# Der Fingerabdruck oben las (Q, theta, phi) und verglich davon NUR (theta, phi).
+# Q stand im Tupel und wurde ausschliesslich gegen den Boden gehalten -- die
+# RICHTUNG der Falte entschied alles, ihre TIEFE nichts.  Zwei Luecken folgen
+# daraus, und beide sind gemessen, nicht vermutet
+# (`harness/faltung_fp_rettung_metallacyclus.py`, `archive_gkfam6kb_on`, Seed 11,
+#  500 Systeme -- dieselbe Ziehung wie alle Zahlen dieses Blocks):
+#
+#   (1) FLACH GEGEN GEFALTET.  Liegt EIN Ring unter dem Boden und der andere
+#       darueber, urteilt die Grosskreisdistanz ueber das theta/phi des flachen --
+#       und das ist die Phase einer verschwindenden Auslenkung, also Rauschen.
+#       Gemessen 1191 solcher Paare, davon 146 (12,26 %) als GLEICH geurteilt.
+#       Das ist der `5M:planar`-Zustand, den das Auge als eigene Mulde zaehlt:
+#       ein flacher und ein gefalteter Ring gingen als dieselbe Faltung durch.
+#   (2) FLACH GEGEN TIEF.  Zwei Ringe mit derselben Faltungsrichtung, aber
+#       Q = 0,15 gegen Q = 0,60, haben Grosskreisdistanz NULL -- eine angedeutete
+#       und eine ausgepraegte Wanne galten als derselbe Zustand.
+#
+# ⚖ DIE TOLERANZ IST HERGELEITET, NICHT GEWAEHLT -- nach DEM Gesetz, nach dem die
+#   beiden schon vorhandenen Zahlen dieses Instruments gebaut sind:
+#
+#       TOLERANZ = DIE HALBE ABTASTWEITE DES ERZEUGERS AUF DIESER ACHSE.
+#
+#   * Winkel: `_pucker_candidates` zieht K = max(8, 2n) Phasen um den Aequator,
+#     Weite 360/K, halbe Weite 180/max(8,2n)  -- exakt die Zeile unten.
+#   * Boden:  die kleinste Amplitude, die der Bau ueberhaupt setzt, ist 0,15 A
+#     (`_cp_pucker_amps` fuer eta-Flaechen); die beiden benachbarten Zustaende dort
+#     sind 0 und 0,15, halbe Weite 0,075  -- exakt `_FOLD_FP_QMIN`.
+#   * Amplitude: `_pucker_candidates` gibt `q_scale` aus {0.0, 1.0} (die Null unter
+#     DELFIN_FFFREE_PUCKER_PLANAR) und multipliziert mit `_ring_pucker._amp(n)`.
+#     Die Leiter ist also {0, _amp(n)}, ihre Weite _amp(n), die halbe Weite
+#
+#         Q_TOL(n) = _amp(n) / 2      n=4 0,175 · n=5 0,200 · n=6 0,315
+#                                     n=7 0,360 · n=8 0,400 · n=12 0,49
+#
+#   ⇒ Der Boden ist damit kein zweiter Parameter mehr, sondern derselbe Ausdruck
+#     fuer die eta-Leiter: 0,15/2.  Zwei Konstanten, EIN Gesetz, KEIN freier Knopf.
+#
+# 🔬 DAS ZWEITE INSTRUMENT, und es sagt fast dasselbe.  Eine hergeleitete Zahl ohne
+#   zweite Messung waere eine Behauptung -- also die Gegenprobe:  `_ring_pucker`
+#   entdoppelt seine EIGENEN Faltungskandidaten laengst auf BEIDEN Achsen,
+#
+#       `_cp_abstand(_cp,_k) < _cp_tol  UND  |Q_cp - Q_k| < _cp_qtol`   (:1144)
+#
+#   mit `_cp_tol` = 15 Grad und `_cp_qtol` = 0,15 A -- letzteres NICHT aus dem
+#   Gitter, sondern kristallographisch begruendet (Koordinaten-esd 0,002..0,01 A
+#   als Unter-, die Fehlordnungsgrenze 0,3..0,5 A als Obergrenze).
+#   ⇒ Zwei unabhaengige Wege, EINE Praedikatsform.  Der Fingerabdruck hier war
+#     bis heute die SCHWAECHERE Haelfte davon: er forderte nur den Winkel.
+#   ⇒ Auf dem Winkel treffen sich beide sogar exakt: 180/max(8,2*6) = 15,0 Grad.
+#     Auf der Amplitude ist die hier hergeleitete Zahl um Faktor 1,17 (n=4) bis
+#     2,67 (n=8) GROBER als die kristallographische.  Die Richtung dieser
+#     Abweichung ist die sichere (s.u.); ihre Groesse ist die Rettung, die dieser
+#     Entwurf bewusst liegenlaesst.
+#
+# ⚠ WARUM DIE GROBE LEITER UND NICHT DIE FEINE.  `_pucker_space_grid` teilt
+#   dieselbe Strecke in `n_amp` Stufen (Vorgabe 2) und gaebe _amp(n)/4.  Genommen
+#   wird die GROESSERE Toleranz, und zwar aus demselben Grund, aus dem oben die
+#   grobe Winkeltoleranz stehenbleibt: `_fold_same` gibt bei "innerhalb der
+#   Toleranz" True zurueck, und True heisst DOPPELGAENGER -- das alte Verhalten.
+#   Eine zu grobe Toleranz kann nur Rettung liegenlassen, nie faelschlich einen
+#   Frame halten.  Die gemessenen Rettungszahlen sind damit UNTERGRENZEN.
+#
+# ⚠ (1) BRAUCHT GAR KEINE TOLERANZ, und darum bekommt es keine.  Der Boden selbst
+#   sagt bereits, was ein Ring unter ihm IST: flach, ohne Faltungsachse.  Ein
+#   flacher und ein gefalteter Ring sind nach genau dieser Definition nicht
+#   dieselbe Faltung -- das ist keine neue Zahl, sondern die fehlende Haelfte
+#   einer Fallunterscheidung, die bisher nur ihren symmetrischen Zweig hatte
+#   ("BEIDE flach -> gleich").
+#
+# ⚠ DIE AENDERUNG IST MONOTON, und das ist ihre wichtigste Eigenschaft.  Jedes
+#   Paar, das vorher VERSCHIEDEN hiess, heisst weiter verschieden; nur Paare, die
+#   GLEICH hiessen, koennen kippen.  Es geht also keine Rettung verloren, und der
+#   Byte-Beweis bei Vorgabe AUS bleibt derselbe (`_fold_same` ist unerreichbar,
+#   solange `fold_rings is None` -- alle drei Aufrufstellen brechen vorher ab).
+#   ⚠ Nicht nur argumentiert, sondern NACHGEZAEHLT: in der Neumessung steigt die
+#     Rettung in JEDEM Eimer beider Achsen oder bleibt gleich, in keinem faellt sie
+#     -- organisch n=4..7 plus Sessel-gegen-Gegensessel, Metallacyclus n=4..12
+#     plus Sessel-gegen-Gegensessel, dazu die drei Gesamttafeln.
+#
+# 🎯 DASS ES KEIN RAUSCHEN IST, ZEIGT DER VIERRING -- und zwar analytisch, nicht
+#   statistisch.  Ein N-Ring hat N-3 Faltungsfreiheitsgrade; beim VIERRING ist das
+#   GENAU EINER, und der ist die Amplitude.  In `_cp_theta_phi` faellt fuer n=4 der
+#   Term `q2s = -sqrt(2/n) * sum z_j sin(pi j)` identisch auf null (sin(pi j) = 0
+#   fuer ganzzahliges j), also ist phi konstant 0 oder 180, und q2/q3 stehen in
+#   festem Verhaeltnis, also nimmt auch theta nur zwei Werte an.
+#   ⇒ Fuer einen Vierring trug (theta, phi) NIE Information ueber die Falte, nur
+#     ihr VORZEICHEN.  Der alte Fingerabdruck war dort per Konstruktion blind.
+#   ⇒ Und genau dort ist der Sprung am groessten -- gemessen, nicht erwartet:
+#         organisch  n=4   32 -> 78 von 94 gefressenen   34,04 % -> 82,98 %
+#         MC         n=4   67 -> 205 von 356             18,82 % -> 57,58 %
+#     waehrend der Sechsring, wo die Richtung wirklich zwei Freiheitsgrade traegt,
+#     kaum zulegt (organisch 3083 -> 3111 von 3136, 98,31 % -> 99,20 %).
+#   Ein Rauschterm haette gleichmaessig ueber alle Ringgroessen gestreut.  Dieser
+#   trifft die Klasse, von der vorher bekannt war, dass sie blind sein MUSS.
+#
+# ⚠ IN WELCHE RICHTUNG DIESER ENTWURF IRRT, wenn er irrt: er SPALTET ZU VIEL.
+#   Zwei Ringe knapp beiderseits des Bodens (0,074 gegen 0,076) sind praktisch
+#   beide flach und heissen trotzdem verschieden -- eine Scheinvariante, ein Frame
+#   zu viel.  Das ist die teurere, aber die richtige Fehlerrichtung: ein
+#   ueberzaehliger Konformer kostet Rechenzeit, ein gefressener Zustand ist
+#   unwiederbringlich, und der Nordstern heisst Vollstaendigkeit.  Der Fehler in
+#   der Gegenrichtung bleibt ohnehin bestehen (grobe Toleranz, s.o.).
+
+
 def _fold_same(fa, fb):
     """True = DIESELBE Faltung (oder kein Urteil moeglich -> altes Verhalten).
 
@@ -3200,11 +3306,15 @@ def _fold_same(fa, fb):
     (``_ring_pucker._cp_abstand``), nicht mit |dtheta|+|dphi|.  Am Pol (theta 0
     oder 180 -- Sessel und Gegensessel) ist phi bedeutungslos; die naive Metrik
     haelt zwei identische Sessel mit phi=136 und phi=339 fuer 200 Grad
-    auseinander.  Die Grosskreisdistanz loest das geometrisch, ohne Sonderregel."""
+    auseinander.  Die Grosskreisdistanz loest das geometrisch, ohne Sonderregel.
+
+    Die AMPLITUDE geht mit ein -- Herleitung im Block darueber.  Reihenfolge der
+    Tore: erst der Boden (ist die Kugel ueberhaupt zustaendig?), dann die
+    Amplitude (wie TIEF), dann die Richtung (wohin)."""
     if not fa or not fb or len(fa) != len(fb):
         return True
     try:
-        from delfin.manta._ring_pucker import _cp_abstand       # verzoegert, s.o.
+        from delfin.manta._ring_pucker import _cp_abstand, _amp   # verzoegert, s.o.
     except Exception:
         return True
     for a, b in zip(fa, fb):
@@ -3213,6 +3323,12 @@ def _fold_same(fa, fb):
             return True                          # Ringlisten passen nicht: kein Urteil
         if max(a[1], b[1]) < _FOLD_FP_QMIN:
             continue                             # beide flach -> keine Faltungsachse
+        if min(a[1], b[1]) < _FOLD_FP_QMIN:
+            return False                         # EINER flach, EINER gefaltet: der
+                                                 # Boden selbst nennt das zwei Zustaende
+        if abs(a[1] - b[1]) > 0.5 * _amp(n):
+            return False                         # Tiefe: halbe Amplitudenstufe des
+                                                 # Erzeugers ({0, _amp(n)})
         if _cp_abstand(a[1:], b[1:]) > 180.0 / max(8, 2 * n):
             return False
     return True
@@ -3241,6 +3357,18 @@ def _fold_same(fa, fb):
 #     6621 gerettet.  Die 110 herausgefallenen Ringe sind die Bipyridin-Klasse
 #     (ausser dem Metall vollstaendig aromatisch); sie stehen hier NICHT in der
 #     Hauptzahl, weil der Erzeuger sie gar nicht erst faltet -- s.u.
+#   ⚠ DIESE VIER ZAHLEN SIND DER STAND VOR DER AMPLITUDE.  Der Q-Term im Block
+#     ueber `_fold_same` hat sie noch am selben Tag angehoben; dieselben Werkzeuge,
+#     dasselbe Archiv, derselbe Seed 11, dieselben 500 Systeme -- nur das Praedikat
+#     ist schaerfer (`results/FALTUNG_FP_Q_2026_08_26/`):
+#         Metallacyclus  3630 -> 3913 von 5550   65,41 % -> 70,50 %
+#         dasselbe ohne Aromatenregel
+#                        4445 -> 4780 von 6621   67,13 % -> 72,19 %
+#         organisch      4257 -> 4433 von 4539   93,79 % -> 97,66 %
+#         Sessel gegen Gegensessel am Metallacyclus
+#                          60 ->   79 von   80   75,00 % -> 98,75 %
+#     Die Nenner stehen still, weil sie die RMSD messen und nicht das Urteil --
+#     genau daran ist die Aenderung als reine Praedikatschaerfung zu erkennen.
 #
 # ⚠ WARUM DIE RINGLISTE UND NICHT DIE MATHEMATIK DAS PROBLEM WAR.  Cremer-Pople
 #   braucht nur eine zyklische Ordnung; das Metall ist ein Ringatom wie jedes
@@ -3273,14 +3401,17 @@ def _fold_same(fa, fb):
 #     waere dagegen ein gefitteter Knopf ohne Herleitung -- und die 4445 oben sind
 #     mit der groben Toleranz gemessen, also eine UNTERGRENZE.
 #
-# ⚠ WAS DIESER TERM NICHT KANN, benannt statt verschwiegen: ``_fold_same``
-#   vergleicht Q ueberhaupt nicht, nur (theta, phi).  Liegt EIN Ring unter dem
-#   Amplitudenboden und der andere darueber, urteilt die Grosskreisdistanz ueber
-#   ein bedeutungsloses phi.  Gemessen 1191 solcher Paare, davon 146 (12,26 %) als
-#   GLEICH geurteilt -- das ist der planare Chelatring-Zustand (`5M:planar`), den
-#   das Auge als eigene Mulde zaehlt.  Das zu schliessen hiesse ``_fold_same``
-#   selbst anfassen, und das traefe die organische Achse mit; es bleibt darum als
-#   benannte naechste Luecke stehen und nicht als stille Aenderung.
+# ✅ WAS DIESER TERM NICHT KONNTE -- GESCHLOSSEN, NICHT STEHENGELASSEN.  Hier stand
+#   bis heute: ``_fold_same`` vergleicht Q ueberhaupt nicht, nur (theta, phi); liegt
+#   EIN Ring unter dem Amplitudenboden und der andere darueber, urteilt die
+#   Grosskreisdistanz ueber ein bedeutungsloses phi.  Gemessen waren 1191 solcher
+#   Paare, davon 146 (12,26 %) als GLEICH geurteilt -- der planare Chelatringzustand
+#   (`5M:planar`), den das Auge als eigene Mulde zaehlt.
+#   Der Amplitudenblock ueber ``_fold_same`` schliesst das: NACHGEMESSEN mit
+#   demselben Werkzeug, Archiv, Seed und Ziehung stehen jetzt **0 von 1191** (0,00 %)
+#   auf GLEICH.  Es traf, wie hier vorhergesagt, die organische Achse mit -- darum
+#   ist es keine stille Aenderung, sondern eine mit neu erhobenen Zahlen auf BEIDEN
+#   Achsen (s. den Block ueber ``_fold_same`` und die Zahlen oben).
 #
 # ⛔ UND JETZT DIE UNBEQUEME REICHWEITENFRAGE, GEPRUEFT STATT ANGENOMMEN.
 #   Der Anlass fuer diesen Term war: "DELFIN_FFFREE_PUCKER_MC erzeugt
@@ -3317,7 +3448,10 @@ def _fold_same(fa, fb):
 #
 # Schalter: DELFIN_FFFREE_DEDUP_FOLD_FP_MC (Vorgabe 0).  EIGENER Schalter, obwohl
 # der Elternschalter ohnehin AUS ist -- nur so bleiben die beiden Befunde
-# (organisch 73,98 % / Metallacyclus 65,41 %) getrennt messbar.
+# (organisch / Metallacyclus) getrennt messbar.  ⚠ Die beiden Prozentsaetze, die
+# hier standen -- 73,98 und 65,41 --, sind seit dem Q-Term ueberholt; die gueltigen
+# Zahlen mit ihren Nennern stehen oben in EINEM Block, damit sie nicht an drei
+# Stellen auseinanderlaufen koennen.
 
 _FOLD_FP_MCMAX = 8           # Kostendeckel: Metallacyclen je Frame (deterministisch
                              # sortiert).  Gemessen 816/314 = 2,6 je System.
@@ -3480,7 +3614,7 @@ def _fold_rings_with_mc(blocks, syms, metal_idx=0):
     ``blocks`` = ``(offset, mol, donor_locals)``; ``donor_locals=None`` schaltet
     den Metallacyclus fuer diesen Block ab.  ⛔ MC-Schalter AUS -> der Rueckgabe-
     wert ist buchstaeblich ``_fold_rings_from_blocks(...)``, also byte-identisch
-    zu dem Zustand, in dem die 73,98 % gemessen wurden."""
+    zu dem Zustand, in dem das organische Mass erhoben wurde."""
     org = _fold_rings_from_blocks([(o, m) for (o, m, _d) in blocks], syms)
     if not _fold_fp_mc_enabled():
         return org
