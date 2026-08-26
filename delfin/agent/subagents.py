@@ -955,6 +955,89 @@ class SubagentPreset:
     description: str
     system_prompt: str
     mode: str = "default"          # "plan" / "default" / "acceptEdits" / "bypassPermissions"
+    # The tool surface this ROLE has, intersected into the child's
+    # ``session_allowed_tools`` by ``_derive_perms``. Stated here rather than
+    # in the system prompt because a prompt is a request: the model may
+    # ignore it, and nothing below the model reads it at all. This list is
+    # read by the executor gate, so a tool outside it is REFUSED when
+    # called — including by a route the model never took (an MCP backend, a
+    # replayed call, a nested sub-agent).
+    #
+    # EMPTY MEANS NO PRESET-LEVEL RESTRICTION, not "no tools". The inverse
+    # reading would disable every preset that does not declare a list, which
+    # is the failure mode that makes the empty case worth spelling out.
+    # ``mode`` still applies on top: a "plan" preset refuses writes whatever
+    # this list says, and this list binds in the modes where "plan" does not.
+    tools: tuple[str, ...] = ()
+
+
+# Tools that cannot mutate anything: they read files, code, documents,
+# history and the web, and return. This is the surface of the presets whose
+# job is to look and report.
+#
+# Measured, not guessed. 111 recorded ``explore`` runs
+# (~/.delfin/subagent_sessions) called read_file 276x, grep_file 117x,
+# list_files 63x, find_references 50x, exit_plan_mode 11x, find_definition
+# 5x and read_document 1x. Four of those seven the preset's own prompt never
+# named — a list copied from that prose would have refused 67 calls that
+# worked, which is exactly the breakage a tool list has to avoid to be worth
+# having. The three bash calls in the same record were already refused (by
+# plan mode), so nothing in the record wanted a tool this list withholds.
+#
+# The entries beyond the measured seven are the read-only siblings of the
+# measured ones — same executors, no mutation. The list is defined by what
+# it EXCLUDES: everything that writes (edit_file, write_file, multi_edit,
+# apply_patch, notebook_edit, the document creators), everything that
+# executes (bash*, run_tests, skill, remote_trigger), everything that fans
+# out or persists (subagent, orchestrate, cron_create, remember, task_create,
+# publish_report, the worktree moves). A reader reaching for read_section
+# instead of read_file is not the failure this guards against.
+_READ_ONLY_TOOLS: tuple[str, ...] = (
+    "calc_summary",
+    "check_environment",
+    "compare_tables",
+    "cron_list",
+    "find_definition",
+    "find_references",
+    "get_calc_info",
+    "grep_file",
+    "history_get",
+    "history_search",
+    "list_changes_made",
+    "list_docs",
+    "list_files",
+    "list_sections",
+    "notebook_read",
+    "project_introspect",
+    "read_document",
+    "read_file",
+    "read_section",
+    "search_calcs",
+    "search_docs",
+    "sum_column",
+    "task_get",
+    "task_list",
+    "view_image",
+    "web_fetch",
+    "web_search",
+)
+
+# The calls the harness itself needs to finish a turn: submit a plan, ask,
+# return the delegate's result, record a verdict. The executor exempts these
+# from an allow list anyway (``_ALWAYS_ALLOWED_TOOLS``), but the ADVERTISED
+# surface deliberately carries no such exemption — so without them here a
+# narrowed preset would stop being offered the tool it must call to report.
+# ``exit_plan_mode`` is not hypothetical: the recorded explore runs called it
+# 11 times.
+_REPORTING_TOOLS: tuple[str, ...] = (
+    "ask_user_question",
+    "exit_plan_mode",
+    "report_verdict",
+    "subagent_result",
+)
+
+_READ_ONLY_PRESET_TOOLS: tuple[str, ...] = tuple(
+    sorted(set(_READ_ONLY_TOOLS) | set(_REPORTING_TOOLS)))
 
 
 _BUILTIN_PRESETS: dict[str, SubagentPreset] = {
@@ -968,13 +1051,12 @@ _BUILTIN_PRESETS: dict[str, SubagentPreset] = {
         system_prompt=(
             "You are a read-only Explore sub-agent. Your job is to "
             "find code, summarise findings, and return concise "
-            "results. You may use read_file, grep_file, list_files, "
-            "web_search, web_fetch, notebook_read. You may NOT edit, "
-            "write, or run bash. Report back in 2-5 short bullets, "
+            "results. Report back in 2-5 short bullets, "
             "each with a path:line reference where possible. Do not "
             "speculate; if a thing is not found, say so."
         ),
         mode="plan",
+        tools=_READ_ONLY_PRESET_TOOLS,
     ),
     "plan": SubagentPreset(
         name="plan",
@@ -984,12 +1066,13 @@ _BUILTIN_PRESETS: dict[str, SubagentPreset] = {
         ),
         system_prompt=(
             "You are a Plan sub-agent. Read the relevant files, then "
-            "draft a step-by-step implementation plan. Do NOT edit, "
-            "write, or run bash. Return a numbered Markdown plan "
+            "draft a step-by-step implementation plan. Return a "
+            "numbered Markdown plan "
             "with: (1) files to change, (2) order of changes, "
             "(3) anything risky or irreversible. Be terse."
         ),
         mode="plan",
+        tools=_READ_ONLY_PRESET_TOOLS,
     ),
     "code-reviewer": SubagentPreset(
         name="code-reviewer",
@@ -1000,11 +1083,12 @@ _BUILTIN_PRESETS: dict[str, SubagentPreset] = {
         system_prompt=(
             "You are a code-review sub-agent. Read the targeted "
             "files / diff and report concrete issues: bugs, security, "
-            "missing validation, dead code. Do NOT edit. Format your "
+            "missing validation, dead code. Format your "
             "answer as a checklist; lead with the highest-severity "
             "issue. If nothing concerning is found, say so explicitly."
         ),
         mode="plan",
+        tools=_READ_ONLY_PRESET_TOOLS,
     ),
     "general-purpose": SubagentPreset(
         name="general-purpose",
@@ -1018,8 +1102,34 @@ _BUILTIN_PRESETS: dict[str, SubagentPreset] = {
             "what you did and the final state."
         ),
         mode="default",
+        # Deliberately empty: this preset IS "the full tool surface", so a
+        # list here could only ever be a stale copy of the catalogue that
+        # silently drops each newly added tool. Empty means no preset-level
+        # restriction — the session's own lists, the role gates and the mode
+        # remain in force, which is the whole of what constrains it today.
+        tools=(),
     ),
 }
+
+
+def _parse_preset_tools(raw: object) -> tuple[str, ...]:
+    """Read a ``tools:`` frontmatter value as a tuple of tool names.
+
+    Accepts both shapes people write: ``read_file, grep_file`` and the
+    inline YAML list ``[read_file, grep_file]``. Case is preserved — an MCP
+    tool is named ``mcp__server__tool`` and lowercasing it would stop it
+    matching.
+
+    Anything unreadable becomes an EMPTY tuple, i.e. no preset-level
+    restriction. The opposite default would let a typo in a markdown file
+    silently reduce a preset to no tools at all, and a sub-agent that can
+    call nothing fails in a way nobody traces back to a frontmatter line.
+    """
+    if not isinstance(raw, str):
+        return ()
+    text = raw.strip().strip("[]")
+    parts = (p.strip().strip("\"'") for p in text.replace(";", ",").split(","))
+    return tuple(p for p in parts if p)
 
 
 def _md_preset_search_dirs() -> list[Path]:
@@ -1034,7 +1144,7 @@ def _load_md_presets() -> dict[str, SubagentPreset]:
     """Discover ``*_subagent.md`` presets with YAML frontmatter.
 
     Frontmatter fields accepted: ``name`` (required, kebab-case),
-    ``description``, ``mode``. The body of the markdown file becomes
+    ``description``, ``mode``, ``tools``. The body of the markdown file becomes
     the sub-agent's system_prompt. Built-in presets keep precedence —
     user-supplied files can extend but not silently override unless the
     user explicitly drops a file under ``~/.delfin/subagents/``.
@@ -1070,6 +1180,7 @@ def _load_md_presets() -> dict[str, SubagentPreset]:
                 description=description or f"Custom subagent '{name}'",
                 system_prompt=system_prompt,
                 mode=mode,
+                tools=_parse_preset_tools(meta.get("tools")),
             )
     return discovered
 
@@ -1115,6 +1226,7 @@ def _build_preset_registry() -> dict[str, SubagentPreset]:
                 description=description or f"Custom subagent '{name}'",
                 system_prompt=system_prompt,
                 mode=mode,
+                tools=_parse_preset_tools(meta.get("tools")),
             )
     return registry
 
@@ -1147,6 +1259,40 @@ def list_subagents() -> list[dict]:
         }
         for p in SUBAGENT_PRESETS.values()
     ]
+
+
+def mark_delegate_text(text: str) -> str:
+    """Mark a delegate's own prose as untrusted before the parent reads it.
+
+    A sub-agent reads whatever its task points it at — a checked-out
+    repository's README, a fetched page, a tool result from an MCP server
+    someone else configured. Its report is a MODEL's summary of that
+    material, so any instruction inside the material can reach the parent
+    through it. The same boundary is already drawn for web_search,
+    web_fetch and MCP results in ``api_client._wrap_untrusted``; the
+    delegation path was the one consumer that never called it, and it is
+    the one whose text arrives with a colleague's authority rather than a
+    stranger's.
+
+    Only the PROSE is marked. The envelope around it — the id, the token
+    counts, the tool-call names, the verification verdict — is built by
+    this file from its own records, and marking that too would say the
+    harness does not trust itself.
+
+    The remaining surface, named rather than implied: ``structured_output``
+    is not marked. Its shape is constrained by a schema the PARENT wrote,
+    which is narrower, and stringifying it would destroy the one thing it
+    exists to provide. A free-text field inside such a schema is still a
+    route, and this is where that is written down.
+    """
+    body = (text or "").strip()
+    if not body:
+        return text or ""
+    try:
+        from .api_client import _wrap_untrusted
+    except Exception:
+        return body
+    return _wrap_untrusted(body)
 
 
 @dataclass
@@ -1201,11 +1347,18 @@ class SubagentResult:
         # parent ever reads it. The full trace (with tool outputs) is passed
         # explicitly — the payload copy above carries names/inputs only.
         # Defined below; never raises, and leaves ``result`` untouched.
-        return attach_verification(
+        payload = attach_verification(
             payload,
             tool_calls=self.tool_calls,
             repo_root=self.workspace or None,
         )
+        # Marked LAST, and the order is load-bearing. The verifier scans
+        # this field for claims and matches them against the run's own
+        # tool trace; marking first would have it reading the wrapper's
+        # own words as part of the delegate's report. So: verify the text
+        # the delegate wrote, then hand the parent a marked copy of it.
+        payload["result"] = mark_delegate_text(payload.get("result", ""))
+        return payload
 
 
 # ---------------------------------------------------------------------------
@@ -2303,12 +2456,62 @@ def _clamp_child_mode(parent_mode: str, preset_mode: str) -> str:
     return preset_mode
 
 
-def _derive_perms(parent_perms, mode: str, workspace=None):
+# A preset list that survives no intersection with the parent's must leave the
+# child able to call NOTHING. It cannot be the empty frozenset: empty means
+# "no restriction" at every gate downstream, so the one child that earned the
+# least freedom would be handed the most. This name matches no tool in the
+# catalogue, so the ordinary allow-list rule refuses every call against it.
+_PRESET_ALLOWS_NOTHING = "__preset_allows_no_tool__"
+
+
+def _narrow_allowed_tools(parent_perms, preset_tools) -> Optional[frozenset]:
+    """The child's ``session_allowed_tools`` once a preset's list applies.
+
+    Returns None when nothing changes — no preset list, i.e. no
+    preset-level restriction (NOT "no tools"; see ``SubagentPreset.tools``).
+
+    Only ever NARROWS. Each name the preset asks for is kept only if the
+    PARENT's own session lists would already have permitted it, so a preset
+    cannot hand a child a tool the session denied or left off its allow
+    list. That direction matters because presets are loaded from markdown
+    files on disk: a preset able to widen its parent would turn dropping a
+    file into ``~/.delfin/subagents/`` into a privilege escalation.
+
+    Matching is delegated to the same pure function the executor gate and
+    the advertised surface call, so an ``mcp__server__tool`` name is judged
+    by its underlying tool name here exactly as it is there — one reading of
+    the rules, not three that agree until they don't.
+    """
+    from .api_client import _normalise_tool_names, _session_tool_refusal
+    tools = _normalise_tool_names(preset_tools)
+    if not tools:
+        return None
+    parent_allowed = (
+        getattr(parent_perms, "session_allowed_tools", None) or frozenset())
+    parent_denied = (
+        getattr(parent_perms, "session_denied_tools", None) or frozenset())
+    kept = frozenset(
+        t for t in tools
+        if _session_tool_refusal(t, parent_allowed, parent_denied) is None
+    )
+    return kept or frozenset({_PRESET_ALLOWS_NOTHING})
+
+
+def _derive_perms(parent_perms, mode: str, workspace=None, preset_tools=()):
     """Clone parent_perms with the sub-agent's mode + optional workspace.
 
     Both fields are optional — the caller passes ``workspace=None`` when
     no isolation is requested and the parent's workspace inherits. The child's
     mode is clamped so it is never more permissive than the parent's.
+
+    ``preset_tools`` is the role's tool list (``SubagentPreset.tools``),
+    intersected into the child's ``session_allowed_tools``. It lands on the
+    permissions object because that is what the executor is handed on every
+    call: a tool outside the list is REFUSED when called, not merely left
+    out of the schema the model sees. Filtering the advertised list alone
+    would be advertising dressed as security — anything reaching the
+    executor by another route would still run. The advertised surface
+    narrows too, because it is built from these same fields.
     """
     if parent_perms is None:
         return None
@@ -2323,8 +2526,19 @@ def _derive_perms(parent_perms, mode: str, workspace=None):
     # depth cap is hit (anti-recursion). Falls back gracefully if the perms
     # type predates the field.
     depth = int(getattr(parent_perms, "subagent_depth", 0)) + 1
+    # Computed before the replace attempts so both of them can apply it: a
+    # fallback that quietly dropped the narrowing would hand the child the
+    # parent's full tool surface, which is the one direction this must never
+    # fail in.
+    narrowed = None
+    try:
+        narrowed = _narrow_allowed_tools(parent_perms, preset_tools)
+    except Exception:
+        narrowed = None
     try:
         extra = {"subagent_depth": depth}
+        if narrowed is not None:
+            extra["session_allowed_tools"] = narrowed
         # dataclasses.replace copies field VALUES, so a mutable one is
         # shared by reference. read_tracker is the stale-write guard's
         # memory of "this file was read at this mtime, so overwriting it is
@@ -2345,6 +2559,19 @@ def _derive_perms(parent_perms, mode: str, workspace=None):
                 parent_perms, mode=mode, workspace=workspace, **extra)
         return dataclasses.replace(parent_perms, mode=mode, **extra)
     except Exception:
+        # Retry without the fields a pre-existing perms type may not carry,
+        # but KEEP the tool narrowing: it is a restriction, and dropping a
+        # restriction to recover from an error is how a fallback becomes a
+        # hole.
+        reduced = (
+            {"session_allowed_tools": narrowed} if narrowed is not None else {})
+        try:
+            if workspace is not None:
+                return dataclasses.replace(
+                    parent_perms, mode=mode, workspace=workspace, **reduced)
+            return dataclasses.replace(parent_perms, mode=mode, **reduced)
+        except Exception:
+            pass
         try:
             if workspace is not None:
                 return dataclasses.replace(
@@ -2541,7 +2768,9 @@ def run_subagent(
             worktree_info = None
 
     sub_workspace = worktree_info.path if worktree_info else None
-    sub_perms = _derive_perms(parent_perms, preset.mode, workspace=sub_workspace)
+    sub_perms = _derive_perms(
+        parent_perms, preset.mode, workspace=sub_workspace,
+        preset_tools=getattr(preset, "tools", ()) or ())
 
     # Run against an isolated SHALLOW COPY of the parent client: it shares the
     # same underlying OpenAI client (endpoint/key/model — thread-safe to share)
@@ -2684,10 +2913,35 @@ def run_subagent(
     })
 
     try:
+        # The effort the user asked for is about the WORK, and delegating a
+        # piece of it is not a decision to think less about that piece. The
+        # budget is a per-CALL argument the delegate cannot see, so without
+        # this it took the parameter default — zero, which the request
+        # shaper reads as the lowest reasoning effort. It reaches the wire
+        # only on the model families that accept `reasoning_effort`;
+        # elsewhere it is inert, which is why it was invisible.
+        #
+        # Passed only to a client whose signature has it. The same rule the
+        # engine already follows for `no_tools`, and for the same reason: a
+        # new keyword handed to a caller built against the older signature
+        # raises, and here the raise was swallowed into an empty report —
+        # five orchestration tests went from a finding to "".
+        _sub_kwargs = {}
+        _budget = int(getattr(parent_client, "_turn_thinking_budget", 0) or 0)
+        if _budget > 0:
+            try:
+                import inspect as _inspect
+                if "thinking_budget" in _inspect.signature(
+                        sub_client.stream_message).parameters:
+                    _sub_kwargs["thinking_budget"] = _budget
+            except (TypeError, ValueError):
+                pass
+
         for event in sub_client.stream_message(
             messages=messages,
             system=system_prompt,
             max_tokens=max_output_tokens,
+            **_sub_kwargs,
         ):
             if time.monotonic() - t0 > max_wall_s:
                 truncated = True
