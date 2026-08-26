@@ -2122,6 +2122,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='140px', height='30px'),
         disabled=True,
     )
+    #: The switch between the two.  A press rather than a second panel,
+    #: and absent until there is a walk to show -- the same rule the rest
+    #: of this row follows.
+    submit_scan_plot_btn = widgets.ToggleButton(
+        value=False,
+        description='Show the profile',
+        icon='chart-line',
+        tooltip='Swap the structure for the profile of the last walk',
+        layout=widgets.Layout(width='auto', display='none'),
+    )
+
     #: What the structure on screen actually is, asked of a Hessian.
     #:
     #: This is a press of its own, and the case for one is that nothing else
@@ -2518,6 +2529,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # something untrue. Their arriving is how the editor says the two
             # questions about a transition state can now be asked.
             submit_mode_dd, submit_mode_btn, submit_ends_btn,
+            # And the switch between the structure and the profile of the
+            # walk that has just finished. On the row above the picture
+            # the two share, because that row is always on screen: put
+            # with the picture instead it went below the fold with it, and
+            # there was no way back to the structure at all.
+            submit_scan_plot_btn,
             submit_poly_dd, submit_poly_turn_btn,
             submit_hyb_dd, submit_hyb_auto_btn,
             submit_internal_group,
@@ -13727,8 +13744,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if not state.get('scan_plot'):
             return
         state['scan_plot'] = None
-        submit_scan_plot_html.value = ''
-        submit_scan_plot.layout.display = 'none'
+        submit_scan_plot.value = ''
+        submit_scan_plot_btn.layout.display = 'none'
         # And the structure comes back, whichever way the switch was left.
         # A picture that has been dropped must not leave the viewer hidden
         # behind it.
@@ -13760,16 +13777,23 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     def _show_the_profile(showing):
         """Swap the structure for the profile, or swap it back.
 
-        One or the other, never both.  The viewer is a fixed height and
-        the profile is a full-width picture; side by side they made the
-        panel twice as tall and the structure half as useful, which is the
-        wrong trade for something written once at the end of a walk.
+        One or the other, never both, and in the same place.  They swap
+        inside the viewer's own box, so nothing above or below moves and
+        the eye does not go looking: the picture appears where the
+        structure was.
+
+        A row of its own under the panel is where this began, and it was
+        wrong twice over.  The panel became two panels and the structure
+        shrank to make room; and on a real screen the second one landed
+        below the fold, which took the switch down with it -- so there was
+        no way back to the structure at all.  The switch is on the toolbar
+        above the picture for that reason: that row is always in view.
 
         The status line is not touched.  It lies on the picture and says
         what the walk found, and that sentence is worth reading whichever
         of the two is on screen.
         """
-        submit_scan_plot_html.layout.display = '' if showing else 'none'
+        submit_scan_plot.layout.display = '' if showing else 'none'
         mol_output.layout.display = 'none' if showing else ''
         submit_scan_plot_btn.description = ('Back to the structure'
                                             if showing
@@ -13893,11 +13917,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return
         state['scan_plot_of'] = _structure_fingerprint(_current_xyz() or '')
         state['scan_plot'] = True
-        submit_scan_plot_html.value = drawn
+        submit_scan_plot.value = drawn
         # The switch arrives, the picture does not.  A walk ends with the
         # structure it reached on screen, which is what the user goes on
         # working with; the profile is there for the asking.
-        submit_scan_plot.layout.display = ''
+        submit_scan_plot_btn.layout.display = ''
         _show_the_profile(bool(submit_scan_plot_btn.value))
 
     def on_submit_hold(_button=None):
@@ -15712,29 +15736,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: shrank to make room, and a user who wanted to go on manipulating
     #: the molecule had a graph in the way. Both are full-width things
     #: about the same walk, and only one of them is wanted at a time.
-    submit_scan_plot_html = widgets.HTML(
+    submit_scan_plot = widgets.HTML(
         value='',
-        layout=widgets.Layout(width='100%', margin='0', display='none'),
+        layout=widgets.Layout(width='100%', height=f'{viewer_height}px',
+                              margin='0', display='none'),
     )
-    submit_scan_plot_html.add_class('submit-scan-plot')
+    submit_scan_plot.add_class('submit-scan-plot')
 
-    #: The switch between the two.  A press rather than a second panel,
-    #: and absent until there is a walk to show -- the same rule the rest
-    #: of this row follows.
-    submit_scan_plot_btn = widgets.ToggleButton(
-        value=False,
-        description='Show the profile',
-        icon='chart-line',
-        tooltip='Swap the structure for the profile of the last walk',
-        layout=widgets.Layout(width='auto', margin='4px 0 0 0'),
-    )
 
-    submit_scan_plot = widgets.VBox(
-        [submit_scan_plot_btn, submit_scan_plot_html],
-        layout=widgets.Layout(width='100%', margin='0', display='none'),
-    )
-    submit_scan_plot.add_class('delfin-structure-fs-member')
-    submit_scan_plot.add_class('delfin-structure-fs-panel')
     # ---- where a structure comes from ------------------------------
 
     convert_smiles_button = widgets.Button(

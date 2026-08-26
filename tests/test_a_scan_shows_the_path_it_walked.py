@@ -319,27 +319,30 @@ def test_the_profile_takes_the_structure_s_place_rather_than_a_row_of_its_own():
     An editor that has never scanned is laid out exactly as it was.
     """
     part, _state = _an_editor()
-    assert not _shown(part.submit_scan_plot)
-    assert part.submit_scan_plot_html.value == ''
+    assert not _shown(part.submit_scan_plot_btn)
+    assert part.submit_scan_plot.value == ''
     assert _shown(part.mol_output), 'the structure is what is on screen'
-    classes = part.submit_scan_plot._dom_classes
-    # It travels into fullscreen with the picture it is about, as a panel:
-    # bounded and scrolling, because fullscreen is still for the structure.
-    assert 'delfin-structure-fs-member' in classes
-    assert 'delfin-structure-fs-panel' in classes
+    # It travels into fullscreen without being told to: it is inside the
+    # viewer's own box, which is what fullscreen takes, so the picture that
+    # replaces the structure goes wherever the structure goes.
+    assert 'submit-scan-plot' in part.submit_scan_plot._dom_classes
 
     from delfin.dashboard import tab_submit
     source = pathlib.Path(tab_submit.__file__).read_text(encoding='utf-8')
-    children = source.split('submit_right = widgets.VBox([')[1].split('])')[0]
-    order = ['mol_viewer_stack', 'submit_scan_plot', 'submit_ff_notes']
-    assert [children.index(name) for name in order] == sorted(
-        children.index(name) for name in order), children
+    stack = source.split('mol_viewer_stack = widgets.Box(')[1].split(')')[0]
+    assert 'submit_scan_plot' in stack, stack
+    assert 'mol_output' in stack
 
     from delfin.dashboard import tab_orca_builder
     builder = pathlib.Path(
         tab_orca_builder.__file__).read_text(encoding='utf-8')
-    module = builder.split('orca_mol_module = widgets.VBox(')[1].split('],')[0]
-    assert module.index('orca_mol_stack') < module.index('submit_scan_plot')
+    other = builder.split('orca_mol_stack = widgets.Box(')[1].split(')')[0]
+    assert 'submit_scan_plot' in other, other
+
+    # And the switch is on the toolbar rather than with the picture, because
+    # that row is always in view: put with the picture it went below the fold
+    # with it, and there was no way back to the structure at all.
+    assert part.submit_scan_plot_btn in part.submit_manip_toolbar.children
 
 
 def test_a_run_over_the_structure_takes_the_picture_away():
@@ -361,18 +364,18 @@ def test_a_run_over_the_structure_takes_the_picture_away():
                    'chain'):
         part, state = _an_editor()
         _draw_one(part)
-        assert _shown(part.submit_scan_plot)
-        assert 'base64' in part.submit_scan_plot_html.value
+        assert _shown(part.submit_scan_plot_btn)
+        assert 'base64' in part.submit_scan_plot.value
         part._note_the_run(int(state.get('gfn_run', 0)) + 1, walker)
-        assert not _shown(part.submit_scan_plot), walker
-        assert part.submit_scan_plot_html.value == '', walker
+        assert not _shown(part.submit_scan_plot_btn), walker
+        assert part.submit_scan_plot.value == '', walker
         assert not state.get('scan_plot'), walker
 
     for stopping in ('press', 'abandoned'):
         part, state = _an_editor()
         _draw_one(part)
         part._note_the_run(int(state.get('gfn_run', 0)) + 1, stopping)
-        assert _shown(part.submit_scan_plot), stopping
+        assert _shown(part.submit_scan_plot_btn), stopping
         assert state.get('scan_plot'), stopping
 
 
@@ -393,18 +396,18 @@ def test_the_picture_stands_only_while_the_box_holds_the_walk():
     # The landmark Undo reaches for: the same molecule, the scan's own claim.
     box.value = xyz_document(
         rows, 'Scanned: the highest point the walk crossed')
-    assert _shown(part.submit_scan_plot), ('Undo took away the picture of '
+    assert _shown(part.submit_scan_plot_btn), ('Undo took away the picture of '
                                            'the walk it was stepping through')
 
     box.value = xyz_document(rows, 'Edited in DELFIN viewer')
-    assert not _shown(part.submit_scan_plot)
+    assert not _shown(part.submit_scan_plot_btn)
 
     # And another molecule wearing the scan's comment is not this walk either.
     _draw_one(part)
-    assert _shown(part.submit_scan_plot)
+    assert _shown(part.submit_scan_plot_btn)
     box.value = xyz_document(['O 0.0 0.0 0.0', 'H 0.76 0.59 0.0',
                               'H -0.76 0.59 0.0'], 'Scanned')
-    assert not _shown(part.submit_scan_plot)
+    assert not _shown(part.submit_scan_plot_btn)
 
 
 def test_undo_walks_the_scans_own_landmarks_without_taking_the_picture():
@@ -436,17 +439,17 @@ def test_undo_walks_the_scans_own_landmarks_without_taking_the_picture():
     part.coords_widget.value = xyz_document(
         rows, 'Scanned to the next minimum')
     _draw_one(part)
-    assert _shown(part.submit_scan_plot)
+    assert _shown(part.submit_scan_plot_btn)
 
     part.submit_manip_undo_btn.click()          # to the highest point crossed
     assert part.coords_widget.value.splitlines()[1].startswith('Scanned')
-    assert _shown(part.submit_scan_plot), 'Undo took away the picture of the '\
+    assert _shown(part.submit_scan_plot_btn), 'Undo took away the picture of the '\
                                           'walk it was stepping through'
     part.submit_manip_undo_btn.click()          # to where the walk started
-    assert _shown(part.submit_scan_plot)
+    assert _shown(part.submit_scan_plot_btn)
     part.submit_manip_undo_btn.click()          # out of the scan altogether
     assert not part.coords_widget.value.splitlines()[1].startswith('Scanned')
-    assert not _shown(part.submit_scan_plot)
+    assert not _shown(part.submit_scan_plot_btn)
 
 
 def test_the_picture_is_drawn_once_off_the_turn_and_shown_after_the_answer():
@@ -511,7 +514,7 @@ def test_a_real_scan_leaves_its_profile_on_the_page():
     part.submit_scan_steps.value = 8
     part.submit_scan_whole.value = True
     part.submit_scan_btn.click()
-    assert not _shown(part.submit_scan_plot)
+    assert not _shown(part.submit_scan_plot_btn)
 
     part.submit_scan_run_btn.click()
     began = time.time()
@@ -521,21 +524,21 @@ def test_a_real_scan_leaves_its_profile_on_the_page():
 
     said = ' '.join(state.get('mol_status_lines') or ())
     assert 'The scan walked' in said, said
-    assert _shown(part.submit_scan_plot), said
+    assert _shown(part.submit_scan_plot_btn), said
     # The walk ends with the structure it reached on screen, which is what
     # the user goes on working with. The profile is there for the asking.
     assert _shown(part.mol_output)
-    assert not _shown(part.submit_scan_plot_html)
+    assert not _shown(part.submit_scan_plot)
     assert part.submit_scan_plot_btn.description == 'Show the profile'
 
     part.submit_scan_plot_btn.value = True
-    assert _shown(part.submit_scan_plot_html)
+    assert _shown(part.submit_scan_plot)
     assert not _shown(part.mol_output), 'one or the other, never both'
     assert part.submit_scan_plot_btn.description == 'Back to the structure'
 
     match = re.search(r"base64,([A-Za-z0-9+/=]+)'",
-                      part.submit_scan_plot_html.value)
-    assert match, part.submit_scan_plot_html.value[:300]
+                      part.submit_scan_plot.value)
+    assert match, part.submit_scan_plot.value[:300]
     assert base64.b64decode(match.group(1))[:8] == b'\x89PNG\r\n\x1a\n'
 
 
@@ -593,11 +596,11 @@ def test_the_profile_lays_out_in_the_structure_s_place_in_a_browser(width):
     exports['submit_manip_toolbar'].layout.display = 'flex'
     # The state a finished scan leaves with the switch pressed: the picture
     # on screen and the structure out of the way.
-    exports['submit_scan_plot_html'].value = scan_profile.profile_html(
+    exports['submit_scan_plot'].value = scan_profile.profile_html(
         _CLOSING, x_label='C0-C10 (A)', y_label='kcal/mol above the start',
         title='C0-C10, walked', top=(2.27, 6.0), ended=(1.55, -63.8))
     exports['submit_scan_plot'].layout.display = ''
-    exports['submit_scan_plot_html'].layout.display = ''
+    exports['submit_scan_plot'].layout.display = ''
     exports['mol_output'].layout.display = 'none'
 
     from delfin.dashboard.molecule_viewer import (
