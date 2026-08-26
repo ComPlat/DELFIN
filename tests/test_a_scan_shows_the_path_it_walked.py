@@ -534,6 +534,12 @@ def test_a_real_scan_leaves_its_profile_on_the_page():
     part.submit_scan_plot_btn.value = True
     assert _shown(part.submit_scan_plot)
     assert not _shown(part.mol_output), 'one or the other, never both'
+    # And the line that lies on the picture goes with the structure. It costs a
+    # molecule nothing -- there are empty corners -- but a profile has none:
+    # its bottom edge is the axis, the numbers and the caption, and a line over
+    # that hides the part drawn to be read.
+    assert not _shown(part.mol_status)
+    assert not _shown(part.mol_status_fs)
     assert part.submit_scan_plot_btn.description == 'Back to the structure'
 
     match = re.search(r"base64,([A-Za-z0-9+/=]+)'",
@@ -644,3 +650,22 @@ def test_the_profile_lays_out_in_the_structure_s_place_in_a_browser(width):
 
     assert 'error' not in enlarged, enlarged
     assert enlarged['inOverlay'], 'the profile stayed on the page'
+
+
+def test_the_line_comes_back_with_the_structure():
+    """Nothing is lost by taking it away: what it was saying is the verdict of
+    the walk the profile is of, and the profile carries its own caption."""
+    part, _state = _an_editor()
+    part._show_scan_profile("<img src='x'/>")
+    assert _shown(part.mol_status), 'a finished walk still reports'
+
+    part.submit_scan_plot_btn.value = True
+    assert not _shown(part.mol_status)
+    part.submit_scan_plot_btn.value = False
+    assert _shown(part.mol_status), 'and it is back, unchanged'
+
+    # And a picture that is dropped while it is showing must not leave the
+    # panel with neither of them in it.
+    part.submit_scan_plot_btn.value = True
+    part._scan_plot_drop()
+    assert _shown(part.mol_output) and _shown(part.mol_status)

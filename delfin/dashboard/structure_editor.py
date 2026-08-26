@@ -13820,12 +13820,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         no way back to the structure at all.  The switch is on the toolbar
         above the picture for that reason: that row is always in view.
 
-        The status line is not touched.  It lies on the picture and says
-        what the walk found, and that sentence is worth reading whichever
-        of the two is on screen.
+        The status line goes with the structure.  It lies *on* the picture,
+        along its bottom edge -- which costs the structure nothing, because
+        a molecule has empty corners and the line has somewhere to sit.  A
+        profile has no empty corner: its bottom edge is the axis, the
+        numbers under it and the sentence about the walk, and a line laid
+        over that hides the part of the picture that was drawn to be read.
+
+        Nothing is lost by it.  What the line was saying is the verdict of
+        the walk the profile is *of*, and the profile carries its own
+        caption; the line comes back with the structure, unchanged, on the
+        press that brings it back.
         """
         submit_scan_plot.layout.display = '' if showing else 'none'
         mol_output.layout.display = 'none' if showing else ''
+        for line in (mol_status, mol_status_fs):
+            line.layout.display = 'none' if showing else ''
         submit_scan_plot_btn.description = ('Back to the structure'
                                             if showing
                                             else 'Show the profile')
