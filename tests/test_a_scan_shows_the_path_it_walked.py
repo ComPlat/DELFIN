@@ -305,19 +305,23 @@ def test_the_picture_is_a_png_the_page_can_show_on_its_own():
     assert 'Undo steps back through the marked points.' in drawn
 
 
-def test_the_profile_has_a_row_of_its_own_under_the_structure():
-    """Under the picture, and nothing at all until there is a walk to show.
+def test_the_profile_takes_the_structure_s_place_rather_than_a_row_of_its_own():
+    """One or the other, never both, and nothing until there is a walk.
 
-    The status line lies *on* the picture because it is written several times
-    a second and a row above the viewer made the atom under the cursor step up
-    and down.  A profile is written once, at the end of a walk that took
-    minutes, so it can afford a row -- and a row takes none of the pixels the
-    structure is drawn in, which an overlay would.  An editor that has never
-    scanned is laid out exactly as it was.
+    It had a row under the viewer, and that was wrong in the one way that
+    matters: after a scan the panel was two panels, the structure shrank to
+    make room, and a user who wanted to go on manipulating the molecule had a
+    graph in the way.  The viewer is a fixed height and the profile is a
+    full-width picture; side by side they made the panel twice as tall and the
+    structure half as useful.  Both are about the same walk and only one of
+    them is wanted at a time, so there is a switch.
+
+    An editor that has never scanned is laid out exactly as it was.
     """
     part, _state = _an_editor()
     assert not _shown(part.submit_scan_plot)
-    assert part.submit_scan_plot.value == ''
+    assert part.submit_scan_plot_html.value == ''
+    assert _shown(part.mol_output), 'the structure is what is on screen'
     classes = part.submit_scan_plot._dom_classes
     # It travels into fullscreen with the picture it is about, as a panel:
     # bounded and scrolling, because fullscreen is still for the structure.
@@ -358,10 +362,10 @@ def test_a_run_over_the_structure_takes_the_picture_away():
         part, state = _an_editor()
         _draw_one(part)
         assert _shown(part.submit_scan_plot)
-        assert 'base64' in part.submit_scan_plot.value
+        assert 'base64' in part.submit_scan_plot_html.value
         part._note_the_run(int(state.get('gfn_run', 0)) + 1, walker)
         assert not _shown(part.submit_scan_plot), walker
-        assert part.submit_scan_plot.value == '', walker
+        assert part.submit_scan_plot_html.value == '', walker
         assert not state.get('scan_plot'), walker
 
     for stopping in ('press', 'abandoned'):
@@ -493,9 +497,9 @@ def test_a_real_scan_leaves_its_profile_on_the_page():
     """The whole path, on the real editor: arm a leg, press, get a picture.
 
     Butane's central C-C under GFN-FF in eight points, which is seconds.  What
-    is asserted is what the user sees: a row that was not there before the
-    press is there after it, carrying a PNG of the walk, and the sentence is
-    still the sentence.
+    is asserted is what the user sees: a switch that was not there before the
+    press is there after it, the structure is still on screen, and pressing
+    the switch puts a PNG of the walk in its place.
     """
     part, state = _an_editor()
     part.submit_ff_dd.value = 'gfnff'
@@ -518,9 +522,20 @@ def test_a_real_scan_leaves_its_profile_on_the_page():
     said = ' '.join(state.get('mol_status_lines') or ())
     assert 'The scan walked' in said, said
     assert _shown(part.submit_scan_plot), said
+    # The walk ends with the structure it reached on screen, which is what
+    # the user goes on working with. The profile is there for the asking.
+    assert _shown(part.mol_output)
+    assert not _shown(part.submit_scan_plot_html)
+    assert part.submit_scan_plot_btn.description == 'Show the profile'
+
+    part.submit_scan_plot_btn.value = True
+    assert _shown(part.submit_scan_plot_html)
+    assert not _shown(part.mol_output), 'one or the other, never both'
+    assert part.submit_scan_plot_btn.description == 'Back to the structure'
+
     match = re.search(r"base64,([A-Za-z0-9+/=]+)'",
-                      part.submit_scan_plot.value)
-    assert match, part.submit_scan_plot.value[:300]
+                      part.submit_scan_plot_html.value)
+    assert match, part.submit_scan_plot_html.value[:300]
     assert base64.b64decode(match.group(1))[:8] == b'\x89PNG\r\n\x1a\n'
 
 
@@ -534,9 +549,11 @@ _MEASURE_JS = r"""
   const view = stack.getBoundingClientRect();
   const picture = img ? img.getBoundingClientRect() : null;
   const column = plot.parentElement.getBoundingClientRect();
+  const viewer = document.querySelector('.submit-mol-output');
   return {
     shown: getComputedStyle(plot).display !== 'none',
-    under: box.top >= view.bottom - 1,
+    viewerShown: viewer
+        ? getComputedStyle(viewer).display !== 'none' : null,
     overflows: picture ? picture.right > column.right + 0.5 : null,
     wider: picture ? picture.width > column.width + 0.5 : null,
     viewer: Math.round(view.height),
@@ -550,15 +567,15 @@ _MEASURE_JS = r"""
 
 
 @pytest.mark.parametrize('width', (1920, 1280))
-def test_the_profile_lays_out_under_the_picture_in_a_browser(width):
+def test_the_profile_lays_out_in_the_structure_s_place_in_a_browser(width):
     """Measured in chromium, because no source says where a box ends up.
 
-    Two things the row has to be: under the picture rather than over it, and
-    inside its column -- the image is 936 px wide as it is drawn and the
+    Two things it has to be: in the structure's place rather than under it,
+    and inside its column -- the image is 936 px wide as it is drawn and the
     column in the Submit tab is narrower than that at every window width, so
     it is the ``width: 100%`` on the image that keeps the page from scrolling
     sideways.  And in the fullscreen overlay it has to travel with the
-    structure and still leave the picture the floor the shared sheet gives it.
+    structure it is about.
     """
     pytest.importorskip('ipywidgets')
     playwright = pytest.importorskip(
@@ -574,11 +591,14 @@ def test_the_profile_lays_out_under_the_picture_in_a_browser(width):
     stylesheet = toolbar_test._widget_stylesheet()
     tab_widget, exports = toolbar_test._build_tab()
     exports['submit_manip_toolbar'].layout.display = 'flex'
-    # The state a finished scan leaves: the row carrying a real picture.
-    exports['submit_scan_plot'].value = scan_profile.profile_html(
+    # The state a finished scan leaves with the switch pressed: the picture
+    # on screen and the structure out of the way.
+    exports['submit_scan_plot_html'].value = scan_profile.profile_html(
         _CLOSING, x_label='C0-C10 (A)', y_label='kcal/mol above the start',
         title='C0-C10, walked', top=(2.27, 6.0), ended=(1.55, -63.8))
     exports['submit_scan_plot'].layout.display = ''
+    exports['submit_scan_plot_html'].layout.display = ''
+    exports['mol_output'].layout.display = 'none'
 
     from delfin.dashboard.molecule_viewer import (
         STRUCTURE_VIEWER_FULLSCREEN_CSS,
@@ -612,14 +632,12 @@ def test_the_profile_lays_out_under_the_picture_in_a_browser(width):
             browser.close()
 
     assert 'error' not in embedded, embedded
-    assert embedded['shown'] and embedded['under'], embedded
+    assert embedded['shown'], embedded
+    assert embedded['viewerShown'] is False, (
+        'one or the other, never both')
     assert not embedded['overflows'] and not embedded['wider'], embedded
     assert not embedded['pageScrollsSideways'], embedded
     assert embedded['plotHeight'] > 40, embedded
 
     assert 'error' not in enlarged, enlarged
     assert enlarged['inOverlay'], 'the profile stayed on the page'
-    # Fullscreen is still for the structure: the shared sheet gives the
-    # picture a floor of 45vh and bounds a panel like this one to 30vh.
-    assert enlarged['viewer'] >= 0.45 * 900 - 1, enlarged
-    assert enlarged['plotHeight'] <= 0.30 * 900 + 1, enlarged

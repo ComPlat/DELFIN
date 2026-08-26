@@ -13644,8 +13644,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if not state.get('scan_plot'):
             return
         state['scan_plot'] = None
-        submit_scan_plot.value = ''
+        submit_scan_plot_html.value = ''
         submit_scan_plot.layout.display = 'none'
+        # And the structure comes back, whichever way the switch was left.
+        # A picture that has been dropped must not leave the viewer hidden
+        # behind it.
+        _show_the_profile(False)
+        submit_scan_plot_btn.value = False
 
     def _scan_plot_holds(text):
         """Whether the profile still describes the geometry now in the box.
@@ -13668,6 +13673,29 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return False
         walked_on = state.get('scan_plot_of')
         return bool(walked_on) and _structure_fingerprint(text) == walked_on
+
+    def _show_the_profile(showing):
+        """Swap the structure for the profile, or swap it back.
+
+        One or the other, never both.  The viewer is a fixed height and
+        the profile is a full-width picture; side by side they made the
+        panel twice as tall and the structure half as useful, which is the
+        wrong trade for something written once at the end of a walk.
+
+        The status line is not touched.  It lies on the picture and says
+        what the walk found, and that sentence is worth reading whichever
+        of the two is on screen.
+        """
+        submit_scan_plot_html.layout.display = '' if showing else 'none'
+        mol_output.layout.display = 'none' if showing else ''
+        submit_scan_plot_btn.description = ('Back to the structure'
+                                            if showing
+                                            else 'Show the profile')
+        submit_scan_plot_btn.icon = 'cube' if showing else 'chart-line'
+
+    def on_submit_scan_plot_btn(change):
+        if change.get('name') == 'value':
+            _show_the_profile(bool(change.get('new')))
 
     def _on_box_for_scan_plot(change):
         """The box has changed: is the profile still about what is in it?"""
@@ -13782,8 +13810,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return
         state['scan_plot_of'] = _structure_fingerprint(_current_xyz() or '')
         state['scan_plot'] = True
-        submit_scan_plot.value = drawn
+        submit_scan_plot_html.value = drawn
+        # The switch arrives, the picture does not.  A walk ends with the
+        # structure it reached on screen, which is what the user goes on
+        # working with; the profile is there for the asking.
         submit_scan_plot.layout.display = ''
+        _show_the_profile(bool(submit_scan_plot_btn.value))
 
     def on_submit_hold(_button=None):
         """Hold the value the selection describes while the field runs."""
@@ -15589,12 +15621,35 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: It travels into fullscreen as a panel: bounded to 30vh and scrolling,
     #: which is the shared rule for results that belong to a picture (the RMSD
     #: pair, the Fukui numbers).  Fullscreen is still for the structure.
-    submit_scan_plot = widgets.HTML(
+    #: The picture itself, which is shown *instead of* the structure and
+    #: never beside it.
+    #:
+    #: It was a row under the viewer, and that was wrong in the one way
+    #: that matters: after a scan the panel was two panels, the structure
+    #: shrank to make room, and a user who wanted to go on manipulating
+    #: the molecule had a graph in the way. Both are full-width things
+    #: about the same walk, and only one of them is wanted at a time.
+    submit_scan_plot_html = widgets.HTML(
         value='',
-        layout=widgets.Layout(width='100%', margin='4px 0 0 0',
-                              display='none'),
+        layout=widgets.Layout(width='100%', margin='0', display='none'),
     )
-    submit_scan_plot.add_class('submit-scan-plot')
+    submit_scan_plot_html.add_class('submit-scan-plot')
+
+    #: The switch between the two.  A press rather than a second panel,
+    #: and absent until there is a walk to show -- the same rule the rest
+    #: of this row follows.
+    submit_scan_plot_btn = widgets.ToggleButton(
+        value=False,
+        description='Show the profile',
+        icon='chart-line',
+        tooltip='Swap the structure for the profile of the last walk',
+        layout=widgets.Layout(width='auto', margin='4px 0 0 0'),
+    )
+
+    submit_scan_plot = widgets.VBox(
+        [submit_scan_plot_btn, submit_scan_plot_html],
+        layout=widgets.Layout(width='100%', margin='0', display='none'),
+    )
     submit_scan_plot.add_class('delfin-structure-fs-member')
     submit_scan_plot.add_class('delfin-structure-fs-panel')
     # ---- where a structure comes from ------------------------------
@@ -16820,4 +16875,5 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_draw_get_btn.on_click(on_submit_draw_get)
     submit_draw_update_btn.on_click(on_submit_draw_update)
     submit_draw_sync.observe(on_submit_draw_sync, names='value')
+    submit_scan_plot_btn.observe(on_submit_scan_plot_btn, names='value')
     return Editor(locals())
