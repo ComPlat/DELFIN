@@ -14713,6 +14713,12 @@ class OpenAIClient(_BaseClient):
         model calls a doc tool, the result is executed locally and fed
         back in a tool-call loop (up to 5 rounds).
         """
+        # What this turn was told to think with. Recorded on the client so
+        # a delegate spawned from inside the turn can inherit it: the
+        # budget is a per-CALL argument, and a sub-agent that cannot see
+        # the call gets the parameter's default — which reads as the
+        # lowest effort on a reasoning model. Nobody chose that.
+        self._turn_thinking_budget = int(thinking_budget or 0)
         api_messages: list[dict[str, Any]] = []
         # Detect reasoning models. Two families today:
         # - o-series (o1, o3, o4-mini, azure.o3, azure.o4-mini)
