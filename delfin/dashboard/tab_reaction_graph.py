@@ -1182,20 +1182,15 @@ class ReactionGraphPanel:
 def create_tab(ctx: Any):
     """Build the Reactions tab.  Returns ``(widget, refs)``.
 
-    The refs are published onto *ctx* here rather than by the dashboard.  The
-    hardcoded tabs are assigned by ``create_dashboard`` after it builds them;
-    a registered tab goes through the registry, which keeps the widget and
-    drops the refs -- so a tab that wants to be reachable from another one has
-    to hand itself over, and this is where.
+    Nothing is published onto *ctx*.  A registered tab goes through the
+    registry, which keeps the widget and drops the refs, so a tab that wanted
+    to be reachable from another one would have to hand itself over -- and
+    until there is a reader for that, handing it over is a change to a file
+    every other tab shares, for nobody.
     """
     calc_dir = getattr(ctx, 'calc_dir', None) or (Path.home() / 'calc')
     panel = ReactionGraphPanel(calc_dir, ctx=ctx)
-    refs = {'reaction_graph': panel}
-    try:
-        ctx.reaction_graph_refs = refs
-    except Exception:                                # noqa: BLE001
-        pass
-    return panel.widget, refs
+    return panel.widget, {'reaction_graph': panel}
 
 
 # Registered additively, so nothing built in changes and a tab that fails to
