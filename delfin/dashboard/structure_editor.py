@@ -3416,6 +3416,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         record('run', v=int(run), by=by)
         if by not in ('press', 'abandoned'):
             _scan_plot_drop()
+        # Who has the row.  A run that finishes after another has taken
+        # its number must know whether it was *stopped* -- in which case
+        # its goodbye is the answer the user is waiting for -- or whether
+        # something else started and is now speaking for itself.  Only the
+        # name tells the two apart: a Stop and an Undo claim a number to
+        # make the page drop what it was playing, and claim it as a press
+        # or as abandoned; a walker claims one under its own name.
+        state['gfn_run_by'] = by
         return run
 
     def _claim_the_frame_run():
@@ -12509,13 +12517,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if len(points) < 2:
             submit_walk_at.layout.display = 'none'
             return
+        # A walk that has just arrived puts the slider at its *last* point.
+        #
+        # That is where the box is: a finished walk leaves the structure it
+        # reached on screen, so a slider reading "point 1" while the viewer
+        # shows point twenty is the row contradicting the picture. Stepping
+        # back from the end is also the way a path is read -- what did it go
+        # through to get here -- rather than replaying it from the start.
+        fresh = state.get('walk_look_of') != id(points)
         state['walk_look_quiet'] = True
         try:
             submit_walk_at.max = len(points) - 1
-            if submit_walk_at.value > len(points) - 1:
+            if fresh or submit_walk_at.value > len(points) - 1:
                 submit_walk_at.value = len(points) - 1
         finally:
             state['walk_look_quiet'] = False
+        state['walk_look_of'] = id(points)
         submit_walk_at.layout.display = ''
 
     def on_submit_walk_at(change):
@@ -12963,7 +12980,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             f'at, {steps} step(s) in ({seconds:.1f} s). Press '
                             f'Climb to TS again to carry on from there.')
                     state['gfn_last_status'] = said
-                    # Only while the row is still this run's to write on.
+                    # Unless something else is now speaking for itself.
                     #
                     # A climb runs in rounds and takes a fresh run number for
                     # each, so between two of them its own switch reads as
@@ -12975,10 +12992,25 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # asked what the band was supposed to be doing -- it was
                     # doing it, and the row said otherwise.
                     #
-                    # The rule is the one the frame channel already follows:
-                    # what has been superseded says nothing. It is not this
-                    # run's row any more.
-                    if _frame_run_is_current(run):
+                    # Being superseded is not enough to be silent, and that
+                    # was the first attempt at this: a Stop moves the run
+                    # number too -- deliberately, so the page drops what it
+                    # was playing -- and the goodbye of a climb the user just
+                    # stopped is exactly the answer they are waiting for. So
+                    # it is *who* has the number that decides. A Stop and an
+                    # Undo claim theirs as a press or as abandoned; a walker
+                    # claims one under its own name, and a walker speaking is
+                    # the only case where this must not.
+                    # A climb takes a fresh number for every round, so it
+                    # supersedes *itself* all the time and its own successor
+                    # must not silence it -- that was the second attempt, and
+                    # it silenced every Stop the user pressed. What has to be
+                    # different is the walker: a band, a chain, a scan.
+                    took_over = (not _frame_run_is_current(run)
+                                 and str(state.get('gfn_run_by') or '')
+                                 not in ('press', 'abandoned', 'look',
+                                         'climb'))
+                    if not took_over:
                         _set_mol_status(*walked_said, said)
                     return
                 if got is None:
