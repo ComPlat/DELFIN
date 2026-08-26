@@ -3218,6 +3218,283 @@ def _fold_same(fa, fb):
     return True
 
 
+# ===== DIE LUECKE DES FINGERABDRUCKS: DER RING UM DAS METALL (26.08.2026) ==========
+#
+# Der Fingerabdruck oben nimmt seine Ringe aus ``mol.GetRingInfo()`` des LIGANDMOLS.
+# Dort gibt es kein Metall, also gibt es dort auch keinen CHELATRING.  Die Faltung
+# eines Metallacyclus -- die "Stufe" eines Salen-Rings, der Umschlag eines
+# Ethylendiamin-Fuenfrings -- lief bisher ungehindert in dieselbe Komplex-RMSD und
+# wurde dort als Doppelgaenger gefressen.
+#
+# ⚠ DAS IST KEIN RANDFALL, UND DIE ZAHL IST GEMESSEN, NICHT GESCHAETZT
+#   (`harness/faltung_fp_rettung_metallacyclus.py`, `archive_gkfam6kb_on`,
+#    Seed 11, dieselben 500 gezogenen Systeme wie beim organischen Mass):
+#       Reichweite   314 von 500 Systemen tragen einen Metallacyclus (62,8 %)
+#       Ringe        816 gefunden, davon 706 nach der Aromatenregel unten
+#                    (n=5: 336 · n=6: 307 · n=4: 33 · n>=7: 30)
+#       Kandidaten   8520  -- MEHR als die 5754 organischen des Vorgaengermasses
+#       gefressen    5550 von 8520 liegen unter 0,50 A Komplex-Schwer-RMSD
+#       GERETTET     3630 von 5550 (65,41 %) = 42,61 % aller 8520
+#   Zum Vergleich das organische Mass vom selben Tag: 4257 von 4539 (93,79 %).
+#   Der Metallacyclus wird also SELTENER gerettet, aber es sind mehr Kandidaten.
+#   ⚠ Ohne die Aromatenregel waeren es 816 Ringe / 9620 Kandidaten / 4445 von
+#     6621 gerettet.  Die 110 herausgefallenen Ringe sind die Bipyridin-Klasse
+#     (ausser dem Metall vollstaendig aromatisch); sie stehen hier NICHT in der
+#     Hauptzahl, weil der Erzeuger sie gar nicht erst faltet -- s.u.
+#
+# ⚠ WARUM DIE RINGLISTE UND NICHT DIE MATHEMATIK DAS PROBLEM WAR.  Cremer-Pople
+#   braucht nur eine zyklische Ordnung; das Metall ist ein Ringatom wie jedes
+#   andere, und ``_cp_theta_phi`` ist rein geometrisch.  Das ist geprueft, nicht
+#   angenommen (Ruecklesetest ueber 9620 Setzungen: die Formel liefert fuer jeden
+#   Chelatring ein wohldefiniertes (Q, theta, phi)).
+#   ⚠ Was der Ruecklesetest AUSSERDEM zeigt und was man wissen muss: die GESETZTE
+#     Amplitude wird nicht erreicht -- |Q_abgelesen - Q_gesetzt| im Median 0,155 A
+#     gegen ein gesetztes ``_amp(5)`` = 0,40.  Das ist KEIN Metall-Effekt in der
+#     CP-Rechnung, sondern die eingefrorene Koordinationssphaere: bei einem
+#     Fuenfring M-D-X-Y-D stehen DREI der fuenf Ringatome in ``frozen``, es
+#     bewegen sich nur X und Y.  Fuer den Fingerabdruck ist das egal -- er liest
+#     die ERREICHTE Geometrie, nicht die gewuenschte.
+#
+# ⚠ DIE TOLERANZ BLEIBT 180/max(8,2n), UND ZWAR NACH EINER MESSUNG, DIE GEGEN SIE
+#   SPRICHT.  Ihre Herleitung ist die halbe Abtastweite des Aequators, den
+#   ``_pucker_candidates`` zieht (K = max(8,2n) Phasen).  Das unterstellt, dass der
+#   Erzeuger die angeforderte Phasenweite auch ERREICHT.  Am Metallacyclus tut er
+#   das nicht -- gemessen der CP-Abstand BENACHBARTER Aequatorkandidaten,
+#   rueckgelesen:
+#       n=5  Median 11,5 Grad gegen Toleranz 18,0  ->  2678 von 3969 darunter
+#       n=6  Median 18,6 Grad gegen Toleranz 15,0  ->   879 von 3377 darunter
+#   Die Weichheit sitzt eben in den M-D-Bindungen, und die sind eingefroren; der
+#   Erzeuger tastet enger ab, als er glaubt.
+#   ⇒ Die Toleranz ist fuer den Metallacyclus zu GROB.  Sie wird trotzdem NICHT
+#     nachgezogen, und der Grund ist die RICHTUNG des Fehlers: ``_fold_same`` gibt
+#     bei "innerhalb der Toleranz" True zurueck, und True heisst DOPPELGAENGER,
+#     also genau das alte Verhalten.  Eine zu grobe Toleranz kann nur RETTUNG
+#     liegenlassen, nie faelschlich einen Frame halten.  Eine nachgezogene Zahl
+#     waere dagegen ein gefitteter Knopf ohne Herleitung -- und die 4445 oben sind
+#     mit der groben Toleranz gemessen, also eine UNTERGRENZE.
+#
+# ⚠ WAS DIESER TERM NICHT KANN, benannt statt verschwiegen: ``_fold_same``
+#   vergleicht Q ueberhaupt nicht, nur (theta, phi).  Liegt EIN Ring unter dem
+#   Amplitudenboden und der andere darueber, urteilt die Grosskreisdistanz ueber
+#   ein bedeutungsloses phi.  Gemessen 1191 solcher Paare, davon 146 (12,26 %) als
+#   GLEICH geurteilt -- das ist der planare Chelatring-Zustand (`5M:planar`), den
+#   das Auge als eigene Mulde zaehlt.  Das zu schliessen hiesse ``_fold_same``
+#   selbst anfassen, und das traefe die organische Achse mit; es bleibt darum als
+#   benannte naechste Luecke stehen und nicht als stille Aenderung.
+#
+# ⛔ UND JETZT DIE UNBEQUEME REICHWEITENFRAGE, GEPRUEFT STATT ANGENOMMEN.
+#   Der Anlass fuer diesen Term war: "DELFIN_FFFREE_PUCKER_MC erzeugt
+#   Metallacyclus-Faltungen, die anschliessend in dieselbe Komplex-RMSD laufen."
+#   DAS STIMMT NICHT.  Nachgesehen im Emitter statt geglaubt:
+#     `converter_backend._append_ffree_ring_puckers` ruft `_ring_pucker.generate`
+#     (dort sitzt PUCKER_MC) und haengt jede ueberlebende Faltung mit
+#     `results.append(...)` DIREKT an -- :537.  Diese Frames sehen keine der drei
+#     Entdopplungen; die einzige Entdopplung ueber `results` ist ein EXAKTER
+#     Zeichenkettenvergleich gegen den Primaerframe (:2066/:2740/:3065).  Und die
+#     Aufrufstellen (:2098/:2160/:2800/:3103) stehen NACH dem Bau, also nach der
+#     Entdopplung.
+#   ⇒ Dieser Term schuetzt NICHT die Faltungen des Faltungs-Emitters.  Er schuetzt
+#     die Metallacyclus-Faltungen, die SCHON VOR der Entdopplung da sind: die aus
+#     dem Konformerpool je Ligand (`_ligand_confs_from_mol` -> das Kombinations-
+#     produkt in `assemble_from_config`) und die eta-Varianten in `_dedup_builds`.
+#     Das ist eine echte Achse -- die 8520 Kandidaten oben liegen auf ihr --, aber
+#     es ist NICHT die Achse, die den Auftrag ausgeloest hat.
+#   ⚠ Und auf der kleinen Byte-Batterie ist die Wirkung NULL, ehrlich gezaehlt
+#     (`harness/faltung_fp_mc_vergleich.sh`, Zensus beider Laeufe):
+#         MC=0   Ringe je Bau  12,  eine Ringliste ohne Urteil (None)
+#         MC=1   Ringe je Bau  26,  keine Ringliste mehr ohne Urteil
+#                14 Chelatringe in 7 Ringlisten, alle n=5
+#         `_fold_same` in BEIDEN Laeufen: 15 GLEICH / 2 VERSCHIEDEN
+#     Der Schalter ist also nicht dunkel -- er verdoppelt die Ringmenge und gibt
+#     einem Bau ueberhaupt erst ein Urteil --, aber KEIN Frame aendert sich und
+#     kein einziges `_fold_same`-Urteil kippt.  Auf jenen vier Chelatsystemen
+#     variiert das Konformerprodukt die Ligandperipherie, nicht die
+#     Chelatringfaltung -- was zu der P3-Messung oben passt: mit festgenagelten
+#     Donoren bleibt die erreichte Faltungsspreizung am Metallacyclus klein.
+#   ⇒ WER DIESEN SCHALTER EINSCHALTEN WILL, muss ihn auf einem 5000er-A/B messen,
+#     nicht auf einer Batterie -- und die Zahl, die er erwarten darf, ist die aus
+#     der Archivmessung, nicht die aus dem Byte-Lauf.
+#
+# Schalter: DELFIN_FFFREE_DEDUP_FOLD_FP_MC (Vorgabe 0).  EIGENER Schalter, obwohl
+# der Elternschalter ohnehin AUS ist -- nur so bleiben die beiden Befunde
+# (organisch 73,98 % / Metallacyclus 65,41 %) getrennt messbar.
+
+_FOLD_FP_MCMAX = 8           # Kostendeckel: Metallacyclen je Frame (deterministisch
+                             # sortiert).  Gemessen 816/314 = 2,6 je System.
+
+
+def _fold_fp_mc_enabled():
+    return (_fold_fp_enabled()
+            and os.environ.get("DELFIN_FFFREE_DEDUP_FOLD_FP_MC", "0") == "1")
+
+
+def _fold_mc_arms(lg):
+    """Die Donoren, mit denen DIESER Ligand einen Chelatring aufspannt -- oder
+    ``None``, wenn er keinen aufspannt.
+
+    ⚠ eta-Liganden sind AUSGESCHLOSSEN, und das ist kein Vorbehalt, sondern
+      Geometrie: eine eta-Flaeche ist keine Folge von sigma-Donoren, sondern EINE
+      pi-Bindung.  ``assemble_hapto`` friert dort auch die ganze Ringmenge ein
+      (``fixed.update(...eta_local_idxs)``) und meldet nur EINEN Vertreter als
+      Donor (:3902).  Ein "Ring" M-C1-C2-C3 waere der zerschnittene Cp-Ring, kein
+      Metallacyclus -- und sein mittleres Atom ist selbst metallgebunden, was der
+      Minimalitaetstest in ``_fold_mc_rings`` ohnehin faengt.
+    ⚠ ``_canonical_arm_order`` statt ``donor_local_idxs``: das ist die Liste, die
+      der Bauer TATSAECHLICH auf Vertices setzt (:3954 im hapto-Zweig, :5340 im
+      Konfigurationszweig).  ``donor_local_idxs`` kann laenger als die Zahnigkeit
+      sein -- daraus entstuenden Ringe, die niemand koordiniert hat."""
+    try:
+        if lg.get("is_eta"):
+            return None
+        dent = int(lg.get("denticity") or 0)
+        if dent < 2:
+            return None                          # ein Donor spannt keinen Ring auf
+        arms = [int(x) for x in _canonical_arm_order(lg, dent)]
+        return arms if len(arms) >= 2 else None
+    except Exception:
+        return None
+
+
+def _lig_path(mol, a, b, maxlen):
+    """Kuerzester Weg ``a`` -> ``b`` IM LIGANDGRAPHEN, als Liste lokaler Indizes.
+
+    Der Ligandmol traegt kein Metall, der Weg kann also nicht ueber das Metall
+    abkuerzen -- genau die Eigenschaft, die einen Chelatring definiert.  Nachbarn
+    aufsteigend besucht -> bei gleich langen Wegen deterministisch.  H wird als
+    Zwischenatom uebersprungen (es ist endstaendig und kann nie auf einem
+    kuerzesten Weg zwischen zwei Schweratomen liegen)."""
+    a, b = int(a), int(b)
+    if a == b:
+        return None
+    vor = {a: None}
+    dq = [(a, 1)]
+    head = 0
+    while head < len(dq):
+        cur, tiefe = dq[head]
+        head += 1
+        if tiefe >= maxlen:
+            continue
+        for nb in sorted(int(x.GetIdx()) for x in mol.GetAtomWithIdx(cur).GetNeighbors()):
+            if nb in vor:
+                continue
+            if nb != b and mol.GetAtomWithIdx(nb).GetSymbol() == "H":
+                continue
+            vor[nb] = cur
+            if nb == b:
+                weg = [nb]
+                while vor[weg[-1]] is not None:
+                    weg.append(vor[weg[-1]])
+                weg.reverse()
+                return weg
+            dq.append((nb, tiefe + 1))
+    return None
+
+
+def _fold_mc_rings(blocks, syms, metal_idx=0):
+    """Globale Ringindexlisten der CHELATRINGE, in zyklischer Ordnung.
+
+    ``blocks`` = Folge von ``(global_offset, mol, donor_locals)``.  Der Ring ist
+    ``[metal_idx] + kuerzester Ligandweg(d1 -> d2)`` -- das ist zyklische Ordnung
+    per Konstruktion (M-d1, die Wegbindungen, d2-M), also genau das, was
+    ``_cp_theta_phi`` verlangt.
+
+    ⚠ MINIMALITAET STATT ALLER PAARE.  Bei einem Tridentaten gibt es drei
+      Donorpaare, aber nur zwei Chelatringe: das dritte Paar laeuft ueber den
+      mittleren Donor und ist die VERKETTUNG der beiden.  Ein Weg, der einen
+      dritten Donor desselben Liganden beruehrt, wird darum verworfen.
+
+    ⚠ DER METALLINDEX WIRD GEPRUEFT, NICHT GEGLAUBT.  Alle Aufrufer schreiben das
+      Metall auf Index 0 (``out_syms = [metal]`` :3262/:5042, ``off = 1`` in
+      ``_hapto_fold_rings``), aber ein Versatzmodell ist eine Annahme -- also
+      steht hier ``_elements.is_metal`` davor, und jedes Ringatom wird wie in
+      ``_fold_rings_from_blocks`` gegen sein Elementsymbol im Frame geprueft.
+      Passt etwas nicht: ``None``, und das Praedikat faellt auf die reine RMSD
+      zurueck.
+
+    ⚠ AROMATISCH IST HIER EIN ANDERES KRITERIUM ALS AM ORGANISCHEN RING.  Dort
+      kippt EIN aromatisches Ringatom den ganzen Ring (flache, starre Flaeche).
+      Ein Salen-Chelatring hat aromatische Phenolat-Kohlenstoffe und faltet
+      trotzdem -- an den M-D-Bindungen.  Ausgeschlossen wird darum nur, was
+      GANZ aromatisch ist ausser dem Metall -- Bipyridin, Terpyridin,
+      Metallabenzol.  Das ist buchstaeblich die Regel, die
+      ``_ring_pucker._is_puckerable`` unter DELFIN_FFFREE_PUCKER_MC anwendet,
+      nicht eine zweite Meinung dazu, und sie ist HIER RICHTIG HERUM: der
+      Erzeuger faltet solche Ringe nie, also gibt es dort auch nichts zu retten.
+      Ein Fingerabdruck, der sie traegt, waere strenger als der Erzeuger und
+      hielte Frames, die sich in nichts unterscheiden.
+      GEMESSEN, was die Regel kostet (`harness/faltung_fp_mc_selbsttest.py` und
+      die 500er-Messung): 110 von 816 Chelatringen fallen weg, alle vom
+      Bipyridin-Typ; Salicylaldiminat (M-O-C(ar)-C(ar)-C=N) bleibt drin, weil N
+      und O nicht aromatisch sind -- genau der Fall, den der `_ring_pucker`-
+      Kommentar als "Stufe bzw. Umbrella-Faltung" nennt."""
+    try:
+        from delfin.manta import _elements as _EL
+    except Exception:
+        return None
+    try:
+        mi = int(metal_idx)
+        if mi < 0 or mi >= len(syms) or not _EL.is_metal(syms[mi]):
+            return None                          # kein Metall dort: kein Urteil
+        ringe = []
+        gesehen = set()
+        for off, mol, dons in blocks:
+            if mol is None or not dons or len(dons) < 2:
+                continue
+            off = int(off)
+            dset = {int(d) for d in dons}
+            arme = sorted(dset)
+            for ai in range(len(arme)):
+                for bi in range(ai + 1, len(arme)):
+                    weg = _lig_path(mol, arme[ai], arme[bi], _FOLD_FP_RINGMAX)
+                    if not weg or len(weg) < 3:
+                        continue                 # kein Weg / Ringgroesse < 4
+                    if len(weg) + 1 > _FOLD_FP_RINGMAX:
+                        continue
+                    if any(j in dset for j in weg[1:-1]):
+                        continue                 # dritter Donor: nicht minimal
+                    if all(mol.GetAtomWithIdx(int(j)).GetIsAromatic() for j in weg):
+                        continue                 # Metallabenzol: planar-starr
+                    g = [mi] + [off + int(j) for j in weg]
+                    if min(g) < 0 or max(g) >= len(syms):
+                        return None
+                    for j, gj in zip(weg, g[1:]):
+                        if syms[gj] != mol.GetAtomWithIdx(int(j)).GetSymbol():
+                            return None
+                    schl = frozenset(g)
+                    if schl in gesehen:
+                        continue
+                    gesehen.add(schl)
+                    ringe.append(tuple(g))
+    except Exception:
+        return None
+    if not ringe:
+        return None
+    ringe.sort()                                 # deterministisch
+    return ringe[:_FOLD_FP_MCMAX]
+
+
+def _fold_rings_with_mc(blocks, syms, metal_idx=0):
+    """Die Ringmenge des Fingerabdrucks: organische Ringe wie bisher, plus die
+    Chelatringe, wenn ``DELFIN_FFFREE_DEDUP_FOLD_FP_MC`` an ist.
+
+    ``blocks`` = ``(offset, mol, donor_locals)``; ``donor_locals=None`` schaltet
+    den Metallacyclus fuer diesen Block ab.  ⛔ MC-Schalter AUS -> der Rueckgabe-
+    wert ist buchstaeblich ``_fold_rings_from_blocks(...)``, also byte-identisch
+    zu dem Zustand, in dem die 73,98 % gemessen wurden."""
+    org = _fold_rings_from_blocks([(o, m) for (o, m, _d) in blocks], syms)
+    if not _fold_fp_mc_enabled():
+        return org
+    mc = _fold_mc_rings(blocks, syms, metal_idx)
+    if not mc:
+        return org
+    if org is None:
+        return mc
+    # ⚠ ANGEHAENGT, NICHT EINSORTIERT.  `_fold_same` laeuft mit `zip` ueber zwei
+    #   Fingerabdruecke, die aus DERSELBEN Ringliste stammen; jede stabile
+    #   Reihenfolge tut es, aber sie muss zwischen den Frames dieselbe sein.
+    return org + mc
+
+
 def _complex_rmsd(syms, Pa, Pb):
     """Heavy-atom RMSD between two SAME-topology complex frames (identity
     correspondence; both built from the same atom ordering).  Translation-only
@@ -3444,6 +3721,23 @@ def assemble_heteroleptic_ensemble(metal: str, geometry: str, vertex_specs,
     # FALTUNGS-FINGERABDRUCK (s. Block bei `_fold_fp_enabled`).  Vorgabe AUS ->
     # `_fold_rings` bleibt None -> das Praedikat unten ist buchstaeblich das alte.
     # `block_specs` traegt hier bereits (globaler Versatz, lmol, Donor-lokal).
+    #
+    # ⛔ HIER WIRD DER METALLACYCLUS-FINGERABDRUCK (DELFIN_FFFREE_DEDUP_FOLD_FP_MC)
+    #    BEWUSST NICHT VERDRAHTET, und der Grund ist strukturell, nicht Vorsicht:
+    #    das Metall STEHT auf Index 0 (`out_syms = [metal]` :3262), es fehlt also
+    #    nicht.  Was fehlt, ist der ZWEITE Donor.  `vertex_specs` ist eine Folge
+    #    von `(frag, di)` mit GENAU EINEM Donorindex je Vertex (:3270/:3276), und
+    #    beide Aufrufer bauen sie aus `lig_ref[lab] = (lg["mol"],
+    #    lg["donor_local_idx"])` -- Einzahl -- im MONODENTAT-Zweig von
+    #    `converter_backend` (:2615, Aufrufe :2727/:3050).  Chelate erreichen
+    #    diesen Zweig nicht, sie gehen vorher nach `assemble_from_config`.
+    #    Ein Chelatring braucht zwei Donoren AUS DEMSELBEN Block; zwei Vertices
+    #    sind zwei getrennte Bloecke ohne Bindung zwischeneinander.
+    #    ⇒ Eine Verdrahtung hier koennte nie feuern.  Sie waere genau der Fehler,
+    #      den diese Kampagne seit dem 19.08. fuenfmal an einem Tag gefunden hat:
+    #      ein Mechanismus, der eingebaut ist und dessen Reichweite null ist.
+    #      Wird `vertex_specs` je mehrzaehnig, gehoert `_fold_rings_with_mc` hier
+    #      hin -- vorher nicht.
     _fold_rings = (_fold_rings_from_blocks([(o, m) for (o, m, _dl) in block_specs],
                                            out_syms)
                    if _fold_fp_enabled() else None)
@@ -4179,11 +4473,14 @@ def _hapto_fold_rings(d, syms):
         off = 1                                    # Index 0 ist das Metall
         for i in order:
             m = Chem.AddHs(ligs[i]["mol"])
-            blocks.append((off, m))
+            # dritter Eintrag = die Chelatarme fuer den Metallacyclus-Fingerabdruck
+            # (``None`` bei eta und bei Zahnigkeit 1 -> kein Ring).  MC-Schalter AUS
+            # -> `_fold_rings_with_mc` liest ihn nie an.
+            blocks.append((off, m, _fold_mc_arms(ligs[i])))
             off += m.GetNumAtoms()
         if off != len(syms):
             return None                            # Versatzmodell passt nicht: kein Urteil
-        return _fold_rings_from_blocks(blocks, syms)
+        return _fold_rings_with_mc(blocks, syms, 0)
     except Exception:
         return None
 
@@ -5609,9 +5906,19 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
     # `relax_frags` traegt (AddHs(lg.mol), LIGANDEN-ONLY-Versatz); global ist der
     # Block ab `lig_offset + 1`, weil Index 0 das Metall ist -- dieselbe Konvention,
     # die `_collect_exempt` und `_finish_config_frame` schon benutzen.
-    _fold_rings = (_fold_rings_from_blocks([(int(o) + 1, m) for (m, o) in relax_frags],
-                                           out_syms)
-                   if _fold_fp_enabled() else None)
+    # DRITTER EINTRAG = die Chelatarme fuer den Metallacyclus (Schalter s.o.).  Der
+    # Ligand dazu steht in `ligands[_lig_order[i][0]]`: die Schleife oben haengt je
+    # Durchlauf GENAU EINEN `relax_frags`-Eintrag an (:5550, kein `continue`
+    # davor), Index i ist also derselbe.  ⚠ Das ist eine Annahme ueber die
+    # Schleife, darum wird sie GEPRUEFT -- passt die Laenge nicht, gibt es keine
+    # Chelatarme und der Fingerabdruck ist genau der organische von vorher.
+    _fold_rings = None
+    if _fold_fp_enabled():
+        _fb = [(int(o) + 1, m, None) for (m, o) in relax_frags]
+        if len(relax_frags) == len(_lig_order):
+            _fb = [(int(o) + 1, m, _fold_mc_arms(ligands[_lig_order[i][0]]))
+                   for i, (m, o) in enumerate(relax_frags)]
+        _fold_rings = _fold_rings_with_mc(_fb, out_syms, 0)
     _fold_kept = []                                # Fingerabdruck je gehaltenem Frame
     for cb in combos[:MAX_EVAL]:
         blocks = [np.zeros((1, 3))]
