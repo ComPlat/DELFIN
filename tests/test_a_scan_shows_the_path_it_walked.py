@@ -669,3 +669,71 @@ def test_the_line_comes_back_with_the_structure():
     part.submit_scan_plot_btn.value = True
     part._scan_plot_drop()
     assert _shown(part.mol_output) and _shown(part.mol_status)
+
+
+def _a_walk_of(part, count=7):
+    """A finished walk on the structure that is on screen."""
+    here = part.coords_widget.value
+    def geo(d):
+        return f"2\nstep\nC 0.000 0.000 0.000\nO {d:.3f} 0.000 0.000\n"
+    part.coords_widget.value = geo(1.13)
+    points = [(1.13 + 0.1 * i, i * 3.4, geo(1.13 + 0.1 * i))
+              for i in range(count)]
+    part.state['scan_walk'] = {
+        'points': points, 'method': 'gfn2', 'charge': 0, 'uhf': 0,
+        'solvent': '', 'solvation_model': '',
+        'structure': part._structure_fingerprint(part.coords_widget.value)}
+    part._refresh_the_walk_points()
+    return points
+
+
+def test_the_points_of_a_walk_can_be_stepped_through():
+    """A scan keeps every geometry it computed and only the two ends could be
+    reached. The steps between them are where the chemistry is -- the bond
+    half broken, the point the profile marks as the top -- and they cost
+    minutes to compute and nothing to look at."""
+    part, _state = _an_editor()
+    assert not _shown(part.submit_walk_at), 'nothing walked yet'
+
+    points = _a_walk_of(part)
+    assert _shown(part.submit_walk_at)
+    assert part.submit_walk_at.max == len(points) - 1
+
+    part.submit_walk_at.value = 3
+    said = ' '.join(part.state.get('mol_status_lines') or ())
+    assert 'Point 4 of 7' in said, said
+    assert '1.43' in said and '+10.2' in said
+
+
+def test_stepping_through_a_walk_never_writes_the_box():
+    """Looking must not be able to lose the structure the user is standing
+    on, so it goes down the frame channel and takes no undo step."""
+    part, _state = _an_editor()
+    _a_walk_of(part)
+    before = part.coords_widget.value
+    steps = len(part.state.get('undo_stack') or ())
+
+    for n in (1, 4, 2, 6):
+        part.submit_walk_at.value = n
+        assert part.coords_widget.value == before, n
+
+    assert len(part.state.get('undo_stack') or ()) == steps
+
+
+def test_the_points_belong_to_the_molecule_they_were_walked_on():
+    part, _state = _an_editor()
+    _a_walk_of(part)
+    assert _shown(part.submit_walk_at)
+    part.coords_widget.value = "3\nother\nO 0 0 0\nH 1 0 0\nH 0 1 0\n"
+    part._refresh_the_walk_points()
+    assert not _shown(part.submit_walk_at)
+
+
+def test_the_slider_stands_beside_the_profile_switch():
+    """The two are one question asked twice: the profile is the walk as a
+    shape, the slider is the walk as structures."""
+    part, _state = _an_editor()
+    row = list(part.submit_manip_toolbar.children)
+    assert part.submit_walk_at in row
+    assert row.index(part.submit_walk_at) == row.index(
+        part.submit_scan_plot_btn) + 1
