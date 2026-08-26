@@ -2125,6 +2125,30 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: The switch between the two.  A press rather than a second panel,
     #: and absent until there is a walk to show -- the same rule the rest
     #: of this row follows.
+    #: The points a finished walk went through, to be stepped through.
+    #:
+    #: A scan keeps every geometry it computed -- see :func:`_keep_the_walk`
+    #: -- and the only ones reachable were the two ends.  The steps between
+    #: them are where the chemistry is: the bond half broken, the ring on
+    #: its way over, the point the profile marks as the top.  They cost
+    #: minutes to compute and nothing to look at, and until now the user
+    #: only ever saw where the walk stopped.
+    #:
+    #: Beside the profile switch, because the two are one question asked
+    #: twice: the profile is the walk as a shape and this is the walk as
+    #: structures, and a point on the one is a point on the other.
+    #:
+    #: It looks and does not change.  The geometry goes down the frame
+    #: channel, the box is never written and no step is taken in the undo
+    #: history -- so walking the path cannot lose the structure the user is
+    #: standing on.
+    submit_walk_at = widgets.IntSlider(
+        value=0, min=0, max=1, step=1, description='Point',
+        continuous_update=False, readout=True, readout_format='d',
+        style={'description_width': '40px'},
+        layout=widgets.Layout(width='200px', display='none'),
+    )
+
     submit_scan_plot_btn = widgets.ToggleButton(
         value=False,
         description='Show the profile',
@@ -2534,7 +2558,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # the two share, because that row is always on screen: put
             # with the picture instead it went below the fold with it, and
             # there was no way back to the structure at all.
-            submit_scan_plot_btn,
+            submit_scan_plot_btn, submit_walk_at,
             submit_poly_dd, submit_poly_turn_btn,
             submit_hyb_dd, submit_hyb_auto_btn,
             submit_internal_group,
@@ -12400,6 +12424,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             submit_mode_dd.layout.display = (
                 '' if has_modes and order > 1 and len(named) > 1 else 'none')
             _name_the_saddle_press()
+            # And whether there is a walk to step through, which comes and
+            # goes with the structure exactly as the two ends do.
+            _refresh_the_walk_points()
         finally:
             state['saddle_controls_quiet'] = False
 
@@ -12448,6 +12475,62 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['gfn_hand_force'] = keeping
         state['gfn_hand_force_run'] = run
         return out
+
+    def _look_at(xyz, said):
+        """Put one geometry on the viewer, and say what it is.
+
+        Down the frame channel, which is how every structure this editor
+        draws gets there.  The box is not written and no undo step is
+        taken: this is looking at something a run already computed, and
+        looking must not be able to lose what the user is standing on.
+
+        Its own run number, because the page drops what it was playing
+        when the number moves -- which is right here: the one frame handed
+        over is the whole of what there is to show.
+        """
+        rows = _gfn.coordinates_of(xyz or '')
+        if not rows:
+            return
+        run = _note_the_run(int(state.get('gfn_run', 0)) + 1, 'look')
+        state['gfn_run'] = run
+        submit_gfn_frame.value = _frame_payload(
+            run, **{'from': 0, 'follow': 1, 'frames': [rows], 'final': 1})
+        _set_mol_status(said)
+
+    def _refresh_the_walk_points():
+        """Whether there is a walk to step through, and how long it is.
+
+        The same rule as everything else on this row: a control that can do
+        nothing is not there.  A walk belongs to the molecule it was walked
+        on -- :func:`_walk_here` -- so it stops being offered the moment the
+        structure on screen is a different one.
+        """
+        points = (_walk_here() or {}).get('points') or []
+        if len(points) < 2:
+            submit_walk_at.layout.display = 'none'
+            return
+        state['walk_look_quiet'] = True
+        try:
+            submit_walk_at.max = len(points) - 1
+            if submit_walk_at.value > len(points) - 1:
+                submit_walk_at.value = len(points) - 1
+        finally:
+            state['walk_look_quiet'] = False
+        submit_walk_at.layout.display = ''
+
+    def on_submit_walk_at(change):
+        if change.get('name') != 'value' or state.get('walk_look_quiet'):
+            return
+        points = (_walk_here() or {}).get('points') or []
+        n = int(change.get('new') or 0)
+        if not (0 <= n < len(points)):
+            return
+        where, spent, xyz = points[n][0], points[n][1], points[n][2]
+        _look_at(xyz,
+                 f'Point {n + 1} of {len(points)} of the walk: the '
+                 f'coordinate at {where:.3g}, {spent:+.1f} kcal/mol from '
+                 f'the start. Looking only -- the box still holds the '
+                 f'structure you were on.')
 
     def _keep_the_choice(box, options, wish):
         """Rewrite a box's entries without throwing away what was chosen.
@@ -17009,4 +17092,5 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_draw_update_btn.on_click(on_submit_draw_update)
     submit_draw_sync.observe(on_submit_draw_sync, names='value')
     submit_scan_plot_btn.observe(on_submit_scan_plot_btn, names='value')
+    submit_walk_at.observe(on_submit_walk_at, names='value')
     return Editor(locals())
