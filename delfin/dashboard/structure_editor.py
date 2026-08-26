@@ -12865,7 +12865,23 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             f'at, {steps} step(s) in ({seconds:.1f} s). Press '
                             f'Climb to TS again to carry on from there.')
                     state['gfn_last_status'] = said
-                    _set_mol_status(*walked_said, said)
+                    # Only while the row is still this run's to write on.
+                    #
+                    # A climb runs in rounds and takes a fresh run number for
+                    # each, so between two of them its own switch reads as
+                    # free and another press may start something else. That is
+                    # what happened, reported from a real session: a band was
+                    # started while a climb was between rounds, the band said
+                    # what it was doing, and a moment later the finished round
+                    # of the climb wrote "the climb stopped" over it. The user
+                    # asked what the band was supposed to be doing -- it was
+                    # doing it, and the row said otherwise.
+                    #
+                    # The rule is the one the frame channel already follows:
+                    # what has been superseded says nothing. It is not this
+                    # run's row any more.
+                    if _frame_run_is_current(run):
+                        _set_mol_status(*walked_said, said)
                     return
                 if got is None:
                     _set_mol_status('The climb could not run: '

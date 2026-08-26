@@ -836,3 +836,35 @@ def test_a_hand_on_an_animation_puts_the_picture_back_before_it_pushes(browser):
         assert sent.startswith('gfngrab:'), sent
     finally:
         page.close()
+
+
+def test_a_climb_that_has_been_superseded_says_nothing():
+    """Reported from a real session: "Was soll NEB-TS hier jetzt machen?"
+
+    The journal answers it. A hand-climb runs in rounds and takes a fresh run
+    number for each one, so between two rounds its own switch reads as free
+    and another press may start something else -- which is what happened::
+
+         969.2s  run 47 claimed by climb
+        1001.7s  run 48 claimed by climb
+        1005.0s  press To the saddle
+        1005.0s  run 49 claimed by band
+                 "relaxing a band of 8 images between the two ends..."
+        1010.8s  "The climb stopped at the frame you were looking at,
+                  0 step(s) in (41.6 s). Press Climb to TS again"
+
+    The band was started and was doing exactly what it said. Then the finished
+    round of the climb wrote its goodbye over the band's line, and from the
+    user's seat NEB-TS had announced itself and immediately reported a climb
+    stopping. It is not the band that was wrong; it is the row.
+
+    The rule is the one the frame channel has always followed: what has been
+    superseded says nothing.
+    """
+    from editor_source import EDITOR_SOURCE
+
+    stopped = EDITOR_SOURCE.split(
+        'The climb stopped at the frame you were looking ', 1)[1].split(
+        'return', 1)[0]
+    assert '_frame_run_is_current(run)' in stopped, stopped
+    assert '_set_mol_status(*walked_said, said)' in stopped
