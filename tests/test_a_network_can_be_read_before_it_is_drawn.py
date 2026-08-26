@@ -603,15 +603,21 @@ def test_sending_a_structure_to_the_editor_is_not_written_into_the_document(
     assert len(rg.history(rg.load(graph.folder))) == before
 
 
-def test_the_tab_hands_itself_to_the_dashboard_so_the_editor_can_find_it(
+def test_the_tab_writes_nothing_into_the_file_every_other_tab_shares(
         tmp_path):
-    """The registry keeps the widget and drops the refs, so a registered tab
-    that wants to be reachable has to publish itself."""
+    """The registry keeps the widget and drops the refs, so a tab that wanted
+    to be reachable from another one would have to publish itself onto the
+    shared context -- and until something reads it, that is a change to a
+    file every other tab uses, made for nobody.
+
+    The door from the workbench into the network has still to be designed.
+    It will need a way across; it does not need one built in advance.
+    """
     ctx = _Dashboard(tmp_path)
-    tab.create_tab(ctx)
-    assert 'reaction_graph' in ctx.reaction_graph_refs
-    assert isinstance(ctx.reaction_graph_refs['reaction_graph'],
-                      tab.ReactionGraphPanel)
+    widget, refs = tab.create_tab(ctx)
+    assert widget is not None
+    assert isinstance(refs['reaction_graph'], tab.ReactionGraphPanel)
+    assert ctx.reaction_graph_refs == {}, 'nothing was published'
 
 
 # ---------------------------------------------------------------------------

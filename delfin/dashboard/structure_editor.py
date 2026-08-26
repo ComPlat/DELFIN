@@ -103,6 +103,32 @@ _LABEL_REPAINT_INTERVAL = 0.25
 #: something a user should have to do.
 _HARTREE_TO_KCAL = 627.5094740631
 
+#: How much of a change in the hand's force is taken on one answer.
+#:
+#: The hand gets stronger the further the structure has fallen behind the
+#: cursor, which is what pulling on something is like -- see
+#: :func:`gfn_optimize.as_pushes`, where the force carries the excess so
+#: that the target never runs ahead.  With no delay that is a spring.
+#: With one it is an oscillator: the structure lags, the force rises, the
+#: answer overshoots, the lag inverts, the force drops, and the next
+#: answer falls back.  One round of that is one answer long, and an answer
+#: on a sixty-eight-atom system in solvent is 1.7 seconds.
+#:
+#: Measured on a real session -- a hydronium dragged onto a substrate, the
+#: same atom throughout and the same coordinate held for all 52 answers --
+#: the force alternated between the 44 kcal/mol/A the slider was set to and
+#: 87, and it did so with the mouse standing still.  The user's words:
+#: "ich kann die maus halten an einer stelle es zappelt".
+#:
+#: A half taken per answer is the cure and the cost.  Replayed through
+#: that same recorded sequence it cuts the step-to-step swing to 39% of
+#: what it was, and a sustained drag still reaches seven eighths of its
+#: force in three answers -- which is a second on a small molecule and a
+#: few on a large one, where nothing was going to be quick anyway.  Less
+#: damping leaves a visible shake (0.7 keeps 59% of it); more makes the
+#: hand feel dead (0.25 wants seven answers to pull properly).
+_HAND_FOLLOWS = 0.5
+
 #: Eyring, both ways, and the four numbers behind it -- see
 #: :mod:`delfin.dashboard.thermal`.  Moved out when the reaction graph
 #: came to ask the same question of a whole network that this asks of one
@@ -196,6 +222,7 @@ _EDITOR_COMMENTS = (
     'from a band, optimised to ',
     'optimised to a transition state',
     'estimated transition state, from the path',
+    'followed down the mode',
     'delfin drag-end',
     'delfin drag-follow',
     'from the delfin viewer',
@@ -819,8 +846,7 @@ class Editor:
 def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
           update_view, get_smiles_charge, set_buttons_disabled=None,
           offer_structures=None, read_input=None, write_input=None,
-          list_structures=None, show_output=None,
-          graph_offer=None, put_in_graph=None):
+          list_structures=None, show_output=None):
     """Make one structure editor over the coordinates a tab keeps.
 
     *state* is the tab's own dictionary -- the editor keeps its history, its
@@ -2097,6 +2123,60 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='140px', height='30px'),
         disabled=True,
     )
+    #: The switch between the two.  A press rather than a second panel,
+    #: and absent until there is a walk to show -- the same rule the rest
+    #: of this row follows.
+    #: The points a finished walk went through, to be stepped through.
+    #:
+    #: A scan keeps every geometry it computed -- see :func:`_keep_the_walk`
+    #: -- and the only ones reachable were the two ends.  The steps between
+    #: them are where the chemistry is: the bond half broken, the ring on
+    #: its way over, the point the profile marks as the top.  They cost
+    #: minutes to compute and nothing to look at, and until now the user
+    #: only ever saw where the walk stopped.
+    #:
+    #: Beside the profile switch, because the two are one question asked
+    #: twice: the profile is the walk as a shape and this is the walk as
+    #: structures, and a point on the one is a point on the other.
+    #:
+    #: It looks and does not change.  The geometry goes down the frame
+    #: channel, the box is never written and no step is taken in the undo
+    #: history -- so walking the path cannot lose the structure the user is
+    #: standing on.
+    submit_walk_at = widgets.IntSlider(
+        value=0, min=0, max=1, step=1, description='Point',
+        continuous_update=False, readout=True, readout_format='d',
+        style={'description_width': '40px'},
+        layout=widgets.Layout(width='200px', display='none'),
+    )
+
+    #: Which of the two ends a Follow it down reached, on screen.
+    #:
+    #: The press finds them and describes them, and used to leave it at that:
+    #: two structures came out and the box holds one, so the saddle kept the
+    #: box and the two ends existed only as sentences.  Asked for twice --
+    #: "bei Follow it down will ich natürlich auch beide enden im viewer sehen
+    #: koennen" -- and it is the same want the walk's points answered: the
+    #: numbers say what the two ends *are*, and only the picture says what
+    #: they look like.
+    #:
+    #: The saddle is the first entry rather than something to find again.  It
+    #: is what the user was working on, the two ends are a fact about it, and
+    #: coming back must not depend on remembering how far Undo goes.
+    submit_down_dd = widgets.Dropdown(
+        options=[('the saddle it came from', 'top')], value='top',
+        description='Ends', style={'description_width': '34px'},
+        layout=widgets.Layout(width='300px', display='none'),
+    )
+
+    submit_scan_plot_btn = widgets.ToggleButton(
+        value=False,
+        description='Show the profile',
+        icon='chart-line',
+        tooltip='Swap the structure for the profile of the last walk',
+        layout=widgets.Layout(width='auto', display='none'),
+    )
+
     #: What the structure on screen actually is, asked of a Hessian.
     #:
     #: This is a press of its own, and the case for one is that nothing else
@@ -2135,22 +2215,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: costs; H, T*S and the zero-point energy are printed in the same block
     #: as G and were being read past, and the temperature box the answer is
     #: computed at is already on this row.
-    #: What is on screen, into the reaction network the Reactions tab has
-    #: open.  Two callbacks and one button, and the editor holds neither end of
-    #: the decision: it says what it has, the graph side says what can be done
-    #: with it and writes the name on the press.  A workbench that knew the
-    #: network's rules would be holding a second copy of them, and two copies
-    #: of a rule is one rule that will disagree with itself.
-    #:
-    #: Absent when there is no graph open, and absent when there is nothing
-    #: correct to do -- which is the same rule every control in this row obeys.
-    submit_graph_btn = widgets.Button(
-        description='Put in graph',
-        tooltip=('Put what is on screen into the reaction network that is '
-                 'open in the Reactions tab'),
-        layout=widgets.Layout(width='auto', display='none'),
-    )
-
     submit_shape_btn = widgets.Button(
         description='What is it?', icon='question', button_style='',
         tooltip=(
@@ -2509,10 +2573,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # something untrue. Their arriving is how the editor says the two
             # questions about a transition state can now be asked.
             submit_mode_dd, submit_mode_btn, submit_ends_btn,
-            # And what a network can take, last of the group: everything
-            # before it makes a structure or says what one is, and this is
-            # where the answer stops being about the workbench.
-            submit_graph_btn,
+            # And the two structures that press reached, once it has.
+            submit_down_dd,
+            # And the switch between the structure and the profile of the
+            # walk that has just finished. On the row above the picture
+            # the two share, because that row is always on screen: put
+            # with the picture instead it went below the fold with it, and
+            # there was no way back to the structure at all.
+            submit_scan_plot_btn, submit_walk_at,
             submit_poly_dd, submit_poly_turn_btn,
             submit_hyb_dd, submit_hyb_auto_btn,
             submit_internal_group,
@@ -3070,8 +3138,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                        submit_topology_btn, submit_saddle_btn,
                        submit_saddle_from, submit_saddle_how,
                        submit_mode_dd, submit_mode_btn, submit_ends_btn,
+                       submit_down_dd,
                        submit_climb_btn, submit_shape_btn,
-                       submit_graph_btn,
                        submit_path_from_btn):
             widget.disabled = not enabled
         submit_labels_btn.disabled = not enabled
@@ -3360,6 +3428,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         ``press`` and ``abandoned``, claimed by Undo, Reset and the Stops, and
         it draws nothing at all.
 
+        ``look`` is the third of that kind and the least obvious one.  Stepping
+        through the points of a finished walk puts one of that walk's own
+        geometries on the screen and in the box -- so the picture beside it is
+        still a picture of the walk the structure belongs to.  Counted as
+        drawing, it took the switch away on the first nudge of the slider
+        standing next to it, and the two are one walk shown two ways, as a
+        shape and as structures.  Reading one must not end the other.
+
+        The picture is not simply waved through: the run number stops being a
+        reason to drop it, and the geometry that arrives in the box a moment
+        later is checked like any other (:func:`_scan_plot_holds`), which is
+        what a point of this walk passes and a structure from anywhere else
+        does not.
+
         Measured on a twenty-four-point torsion, before that distinction was
         made here: the walk finished, the picture stood, and one press of Undo
         took it away over "Scanned: the highest point the walk crossed" --
@@ -3369,8 +3451,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         :func:`_scan_plot_holds`).
         """
         record('run', v=int(run), by=by)
-        if by not in ('press', 'abandoned'):
+        if by not in ('press', 'abandoned', 'look'):
             _scan_plot_drop()
+        # Who has the row.  A run that finishes after another has taken
+        # its number must know whether it was *stopped* -- in which case
+        # its goodbye is the answer the user is waiting for -- or whether
+        # something else started and is now speaking for itself.  Only the
+        # name tells the two apart: a Stop and an Undo claim a number to
+        # make the page drop what it was playing, and claim it as a press
+        # or as abandoned; a walker claims one under its own name.
+        state['gfn_run_by'] = by
         return run
 
     def _claim_the_frame_run():
@@ -4890,6 +4980,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         contacts = _gfn.as_pushes(
                             contacts, state.get('thermal_was') or current,
                             pull, value_of=_value_in, most=_pull_most())
+                        contacts = _steady_hand(contacts)
                     if _mopac.is_mopac_method(method):
                         # MOPAC takes no held internals and no topology file,
                         # so it is given what it does take. A few cycles, the
@@ -6168,6 +6259,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if came_back is None:
             if state.pop('thermal_walled', None):
                 _push_thermal_wall(None)
+            return
+        if not state.get('gfn_follow'):
+            # The drag is over and this answer is late.
+            #
+            # An xtb round outlives the gesture that asked for it: the last
+            # answer of a drag regularly arrives after the release, and one
+            # arriving here would put marks on the page that nothing will
+            # take off again -- the release has already run, and only the
+            # *next* grab clears them. Reported from a real session, with the
+            # journal showing the release at 1425.264 s and the answer that
+            # drew over it at 1425.977: "warum wird die force nicht mehr
+            # entfernt ich seh immer noch die orangenen kugeln im viewer?"
+            #
+            # Nothing is marked and nothing is cleared: the release already
+            # cleared, and this answer has no standing to say otherwise.
             return
         marks = {}
         reach = 0.0
@@ -7477,7 +7583,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             schedule_ui_update(_install_gfn_frame_watcher)
         played = [False]
         state['gfn_energy'] = None
-        state['gfn_energy_for'] = None
         state['gfn_held'] = None
         state['gfn_halt_sent'] = False
         run_id = _claim_the_frame_run()
@@ -7660,14 +7765,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     if outcome.get('energy') is not None and position == 0:
                         state['gfn_energy'] = float(outcome['energy'])
                         state['gfn_energy_unit'] = outcome.get('energy_unit')
-                        # And the geometry it belongs to.  An energy carried
-                        # over quietly onto the next structure is the
-                        # difference between two unrelated numbers -- the same
-                        # defect the thermal anchor was given this exact test
-                        # for -- and here it would be written into a document
-                        # as a fact about a species.
-                        state['gfn_energy_for'] = _structure_fingerprint(
-                            outcome.get('xyz') or '')
                     if position == 0:
                         # The charges of the structure that is about to be on
                         # screen, out of the answer that is about to draw it.
@@ -11126,6 +11223,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if not points:
             state['scan_walk'] = None
             return
+        # This walk has not been drawn over: the run that made it is the last
+        # one there was.  Said here because the walk's own start marked the
+        # points before it stale, along with the profile of the walk before
+        # this one (see :func:`_scan_plot_drop`).
+        state['walk_points_stale'] = False
         state['scan_walk'] = {
             'points': [(one[0], one[1], one[2]) for one in points],
             'method': method, 'charge': int(charge), 'uhf': int(uhf),
@@ -11145,6 +11247,57 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if walk['structure'] != _structure_fingerprint(_current_xyz() or ''):
             return None
         return walk
+
+    def _geometry_key(xyz):
+        """What makes two geometries the same one.
+
+        The element column and the places, to four decimals -- further than
+        anything here writes and far closer than any two points of a walk
+        ever are.  Rounded rather than compared as text because one geometry
+        travels through the box, the frame channel and the walk's own record,
+        and each of those writes it out in its own way.
+        """
+        out = []
+        for line in str(xyz or '').splitlines():
+            row = line.split()
+            if len(row) < 4:
+                continue
+            try:
+                place = (round(float(row[1]), 4), round(float(row[2]), 4),
+                         round(float(row[3]), 4))
+            except ValueError:
+                continue
+            out.append((row[0],) + place)
+        return tuple(out)
+
+    def _walk_point_on_screen():
+        """Which point of the walk is in the box, or ``None`` for none of them.
+
+        This is the whole question behind the slider.  A walk can be stepped
+        through while the user is still standing *in* it -- on the point it
+        left, or on one of the landmarks Undo steps back through, which are
+        the walk's own geometries too.  The moment the box holds something
+        the walk never computed, because an optimisation ran or a bond was
+        dragged or another structure was loaded, there is no trajectory under
+        what is on screen and nothing to step through.
+
+        Told apart by geometry and not by the comment line.  The comment would
+        have been cheaper, and it is what the picture is kept honest by, but a
+        walk does not sign the box the same way every time: a driven scan ends
+        on "Driven until the bonds were made and broken", and reading for
+        "Scanned" alone would take the points away from exactly the walks that
+        cost the most to compute.
+        """
+        walk = _walk_here()
+        if not walk:
+            return None
+        here = _geometry_key(_current_xyz() or '')
+        if not here:
+            return None
+        for at, one in enumerate(walk['points']):
+            if _geometry_key(one[2]) == here:
+                return at
+        return None
 
     #: What a finished profile is re-priced with.
     #:
@@ -11281,13 +11434,34 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         _start_background(_work, 'The second opinion',
                           guards={'reprice_run': False})
 
-    def _repriced_verdict(walk, profile, label, dry, failed):
-        """Both profiles, and the three things that stop this being a barrier.
+    #: How far two methods may put the same barrier apart and still be
+    #: telling the same story, in kcal/mol.
+    #:
+    #: Below it the second opinion has confirmed the first and there is
+    #: nothing to do.  Above it the walk's own number is not one to quote
+    #: and the top has to be optimised again with the method being
+    #: quoted.  Three, because that is about what either method is worth
+    #: on a barrier and because a shift of three moves a barrier across
+    #: the room-temperature ceiling from one side to the other -- 22.3
+    #: kcal/mol at 298 K over an hour.  Measured on the sixteen-atom
+    #: Diels-Alder the two are 15 apart, which is the case this is for.
+    _SECOND_OPINION_AGREES = 3.0
 
-        The caveats are here and not in a docstring because they are the
-        answer: a number that moved by fifteen kcal/mol is going to be quoted
-        by somebody, and what it is worth has to travel with it.  Said in
-        three sentences, in words that assume no chemistry.
+    def _repriced_verdict(walk, profile, label, dry, failed):
+        """The two numbers, and what to do about the difference.
+
+        A second opinion is not a barrier and it is not meant to be: the
+        geometries are still the walk's, and a method that is out by 0.2 A
+        on a half-broken bond has put them somewhere its own energies do
+        not belong.  What it is, is cheap -- single points on structures
+        already in hand -- and it answers one question: does the better
+        method tell the same story?
+
+        So the answer is the verdict, not the caveats.  Agreeing, the
+        walk's own number stands and there is nothing to do.  Disagreeing,
+        the number is not one to quote and the top has to be optimised
+        again.  Everything that was true of both cases and changed neither
+        was an essay under the picture and is gone.
         """
         walked = _server_label(walk['method'])
         first = [(one[0], one[1]) for one in walk['points']][:len(profile)]
@@ -11295,35 +11469,24 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         now_top = max(profile, key=lambda one: one[1])
         moved = now_top[1] - was_top[1]
         many = ('' if len(profile) == len(walk['points']) else
-                f' Only {len(profile)} of {len(walk["points"])} points were '
-                f'priced'
-                + (f': {failed}' if failed else ', because it was stopped.'))
-        # The top can move as well as rise, and where it moved to is a fact
-        # about the profile rather than a detail: measured on the
-        # Diels-Alder, GFN2 put its highest point at 2.289 A and g-xTB put it
-        # at 2.208 on the same nineteen geometries.
-        elsewhere = ('' if abs(now_top[0] - was_top[0]) < 1e-9 else
-                     f' -- and at {now_top[0]:.3g} rather than '
-                     f'{was_top[0]:.3g}')
+                f' {len(profile)} of {len(walk["points"])} points'
+                + (f' ({failed})' if failed else ', stopped early') + '.')
+        agrees = abs(moved) <= _SECOND_OPINION_AGREES
+        # The solvent is said only where it changes the reading: a walk
+        # run wet and priced dry has had one of its two differences
+        # introduced by the pricing rather than by the method.
+        gas = (f' These are gas-phase energies; the walk ran in '
+               f'{walk["solvent"]}.' if dry else '')
         return (
-            f'{walked} walked it and {label} priced it again at the same '
-            f'{len(profile)} geometries. The highest point goes from '
-            f'{was_top[1]:+.1f} to {now_top[1]:+.1f} kcal/mol, a change of '
-            f'{moved:+.1f}{elsewhere}, and the end from {first[-1][1]:+.1f} '
-            f'to {profile[-1][1]:+.1f}.{many}',
-            'Three things this is not. The energies are better and the '
-            f'structures are not -- they are where {walked} put them, and it '
-            'is out by about 0.2 A on a half-broken bond against 0.03 A on an '
-            'ordinary one, which is the kind of bond a barrier is made of. So '
-            'it is a screen: to report a barrier, optimise the top again with '
-            f'the method you mean to report. {label} is a preprint method and '
-            'this build says it is a development version differing from the '
-            'paper. And the points are wherever the walk left them, which '
-            'need not be anywhere in particular -- pricing changes the '
-            'energies, never the geometries.'
-            + (f' The walk ran in {walk["solvent"]} and {label} has no solvent '
-               'in this build, so these are gas-phase energies at those '
-               'geometries.' if dry else ''))
+            f'{label} prices the same {len(profile)} points: the top goes '
+            f'{was_top[1]:+.1f} to {now_top[1]:+.1f} kcal/mol '
+            f'({moved:+.1f}), the end {first[-1][1]:+.1f} to '
+            f'{profile[-1][1]:+.1f}.{many}',
+            (f'The two agree to {abs(moved):.1f} kcal/mol, so the walk'
+             f"'s own number stands." if agrees else
+             f'That is more than {walked} is worth here, so the barrier is '
+             f'not one to quote: optimise the top again with {label}.')
+            + gas)
 
     def _said_modes(shape, what, advise=True):
         """What a Hessian says a structure is, in sentences.
@@ -12149,6 +12312,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         holds one structure, and the one being worked on is the saddle: these
         two are what it *joins*, which is a fact about it rather than a
         replacement for it.
+
+        But they are kept, and the box beside the press puts either of them on
+        screen and comes back to the saddle -- because the sentences say what
+        the two ends *are* and only the picture says what they look like,
+        which is the reason anybody follows a mode down.  Going there is a
+        move like any other: one step in the history, and Undo comes back.
         """
         if state.get('mode_run') or state.get('down_run'):
             return
@@ -12181,14 +12350,29 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
             def _done():
                 state['down_run'] = False
+                # The two structures, kept rather than described and dropped.
+                # What is kept is what a picture needs and nothing else: the
+                # geometry, which way it went and what it cost.  The bond
+                # graphs and the mode vectors the press reasoned with have
+                # said what they had to say in the sentences below.
+                kept = [{'which': one.get('which'), 'xyz': one.get('xyz'),
+                         'kcal': one.get('kcal')}
+                        for one in (got.get('ends') or ())
+                        if one.get('ok') and one.get('xyz')]
+                state['down_ends'] = kept
+                state['down_saddle'] = xyz if kept else None
                 lines = [str(got.get('status') or 'It did not run.')]
                 lines.extend(str(one) for one in (got.get('lines') or ()))
                 lines.append(
+                    'The saddle is still in the box. The box beside the press '
+                    'puts either end on screen and comes back to it.'
+                    if kept else
                     'The saddle is still in the box; these two are what it '
                     'joins, not a replacement for it.'
                     if got.get('ok') else
                     'Nothing was written to the box.')
                 _set_mol_status(*lines)
+                _refresh_saddle_controls()
 
             schedule_ui_update(_done)
 
@@ -12362,119 +12546,261 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             submit_mode_dd.layout.display = (
                 '' if has_modes and order > 1 and len(named) > 1 else 'none')
             _name_the_saddle_press()
-            # And whether any of that can go into a network.  Here because
-            # this is what runs when the structure, the method or what the
-            # last press left has changed -- which is exactly when the answer
-            # moves.
-            _refresh_graph_button()
+            # And whether there is a walk to step through, which comes and
+            # goes with the structure exactly as the two ends do.
+            _refresh_the_walk_points()
+            # And the two structures a Follow it down reached, which belong
+            # to the saddle on screen rather than to the molecule.
+            _refresh_the_down_ends()
         finally:
             state['saddle_controls_quiet'] = False
 
-    def _graph_offer():
-        """What there is to hand over, or None when there is nothing.
+    def _steady_hand(pushes):
+        """The same forces, but not free to double and halve every answer.
 
-        Read off the boxes the user is working in rather than out of a store,
-        so what goes into the document is what the screen was saying: the
-        method, the charge and the spin as set, the energy the last answer
-        reported for *this* geometry, and whether anything has said what the
-        structure is.
+        Each force is moved a fraction of the way towards what this answer
+        asked for rather than set to it -- see :data:`_HAND_FOLLOWS` for
+        the fraction and the session it was measured on.  What that removes
+        is a loop with a delay in it: the force follows how far the
+        structure has fallen behind, the structure is only re-drawn once an
+        answer, and an answer here is seconds.  Followed exactly, the hand
+        pulls hard because the structure is behind, the answer overshoots,
+        the hand goes slack, the structure falls back, and the picture
+        shakes without anybody moving the mouse.
 
-        The level is written out the way a caption would carry it -- the method
-        as it is named in the box, with the solvent where one is set -- because
-        that string is what a diagram is drawn *at*, and a network drawn from
-        two records whose levels differ only in a solvent nobody wrote down is
-        a network that cannot be defended.
+        Kept per coordinate.  A force smoothed across two different pairs
+        of atoms is a force about neither of them, and the coordinate the
+        hand drives does change while a fragment is walked past a
+        molecule.  A pair that has not been driven before starts at what
+        this answer asked for, so beginning a drag is immediate; it is
+        only carrying on that is damped.
+
+        Tied to the run.  Every press that draws over this structure takes
+        a new run number, and a force left over from the drag before it
+        would be about a geometry nobody has any more.
         """
-        xyz = _current_xyz() or ''
-        if not _gfn.atom_lines(xyz):
+        run = state.get('gfn_follow_run')
+        remembered = state.get('gfn_hand_force') or {}
+        if state.get('gfn_hand_force_run') != run:
+            remembered = {}
+        keeping, out = {}, []
+        for one in (pushes or ()):
+            try:
+                asked = float(one.get('force'))
+            except (TypeError, ValueError):
+                out.append(one)
+                continue
+            key = (str(one.get('kind') or ''),
+                   tuple(int(i) for i in (one.get('atoms') or ())))
+            before = remembered.get(key)
+            steady = (asked if before is None else
+                      before + _HAND_FOLLOWS * (asked - before))
+            keeping[key] = steady
+            out.append(dict(one, force=steady))
+        state['gfn_hand_force'] = keeping
+        state['gfn_hand_force_run'] = run
+        return out
+
+    def _stand_on(xyz, said, comment, what, gesture='walk-point'):
+        """Go to one of the walk's own geometries: on screen and in the box.
+
+        Both, and that is the whole of this.  It was written as looking only
+        -- the frame channel alone, the box left holding whatever the user
+        was standing on -- and the line even said so.  Measured from a real
+        session, on a 64-atom system: a scan was walked, the slider stepped
+        to point 10 near the top of the barrier, and Show the shape pressed.
+        The answer was "the structure as it stands is a minimum, not a
+        transition state".  Then point 11, the same press, and the same free
+        energy to the second decimal -- G = -55083.20 both times, for two
+        different structures on screen.  Both Hessians had run on what was in
+        the box, which was the minimum the scan ended on.  The user read it as
+        his own mistake and wrote so.
+
+        It was not.  Every press in this editor acts on the box, and a
+        structure on screen that the presses do not act on is worse than
+        showing nothing: there is no way to see it is happening, and the
+        answer that comes back is about a molecule that is not on the screen.
+        So stepping through a walk goes there, and what you look at is what
+        you press on.
+
+        Nothing is lost by it.  One step in the history first, under a
+        gesture, so a run of stepping is a single press of Undo back to where
+        the user was standing -- the way a sweep of an arrow key is one step
+        rather than two hundred.
+
+        The frame carries the picture and the box is written behind it, marked
+        as drawn: the page has the geometry already, and redrawing it would
+        tear the viewer down and build it again for a structure it is looking
+        at.
+        """
+        rows = _gfn.coordinates_of(xyz or '')
+        lines = [line for line in str(xyz or '').splitlines()[2:] if line.strip()]
+        if not rows or not lines:
+            return
+        _remember(what, gesture=gesture)
+        run = _note_the_run(int(state.get('gfn_run', 0)) + 1, 'look')
+        state['gfn_run'] = run
+        submit_gfn_frame.value = _frame_payload(
+            run, **{'from': 0, 'follow': 1, 'frames': [rows], 'final': 1})
+        _write_coords(xyz_document(lines, comment), drawn=True, run=run)
+        _set_mol_status(said)
+
+    def _refresh_the_walk_points():
+        """Whether there is a walk to step through, and where it stands.
+
+        The same rule as everything else on this row: a control that can do
+        nothing is not there.  A walk belongs to the molecule it was walked on
+        *and* to the geometry on screen -- see :func:`_walk_point_on_screen` --
+        so it stops being offered the moment the user goes on from one of its
+        points, which is the moment the trajectory stops describing what is in
+        the box.
+
+        Where the slider stands is that same answer.  A finished walk leaves
+        the point it reached on screen, so it opens at the *end*: a row
+        reading "point 1" beside a viewer showing point twenty is the control
+        contradicting the picture, and stepping back from where you are is how
+        a path is read -- what did it go through to get here -- rather than
+        replaying it from the start.  Undo to the highest point the walk
+        crossed puts that geometry in the box, and the slider follows it
+        there.
+
+        Gone for good once something has drawn over the structure.  A run
+        writes the box only when it finishes, so between the press and the
+        answer the geometry in the box is still the walk's own while the
+        structure on screen is no longer -- and the geometry is all this can
+        see.  The run marks the points stale as it starts, the same line and
+        the same moment the profile goes (:func:`_scan_plot_drop`), and only
+        a walk that finishes clears the mark.
+
+        Re-seated only when the box moves, which while somebody is stepping
+        through the walk means: to the point they have just stepped to, where
+        it already is.
+        """
+        points = (_walk_here() or {}).get('points') or []
+        # The two cheap questions before the one that reads every geometry.
+        at = (None if len(points) < 2 or state.get('walk_points_stale')
+              else _walk_point_on_screen())
+        if at is None:
+            submit_walk_at.layout.display = 'none'
+            state['walk_look_at'] = None
+            return
+        was = state.get('walk_look_at') or (None, None)
+        moved = was[0] is not points or was[1] != at
+        state['walk_look_quiet'] = True
+        try:
+            submit_walk_at.max = len(points) - 1
+            if moved or submit_walk_at.value > len(points) - 1:
+                submit_walk_at.value = at
+        finally:
+            state['walk_look_quiet'] = False
+        # The list itself and not its id: an id is only unique while the
+        # object it belongs to is alive, and the walk before this one is
+        # dropped the moment a new one is kept.
+        state['walk_look_at'] = (points, at)
+        submit_walk_at.layout.display = ''
+
+    def _down_here():
+        """The two ends of the last Follow it down, while they are in reach.
+
+        In reach means: the box holds the saddle they came from, or one of
+        the ends themselves.  Not the element column, which is the rule the
+        walk and the scan's two ends answer to -- those describe a *molecule*
+        and outlive any one geometry of it, and these describe one saddle.
+        Optimise an end, drag it, load something else, and there is no longer
+        a stationary point on screen for two ends to be the ends *of*.
+        """
+        kept = state.get('down_ends') or []
+        if len(kept) < 2:
             return None
-        method = str(submit_ff_dd.value or '')
-        named = dict((value, label) for label, value in submit_ff_dd.options)
-        wet = str(submit_gfn_solvent.value or '')
-        level = named.get(method, method) + (f'/{wet}' if wet else '')
-        # The energy belongs to the geometry it was measured on and to no
-        # other, told apart the way everything else in this file tells
-        # structures apart.  Carried over quietly it would be the difference
-        # between two unrelated numbers, written into a document as a fact.
-        energy = None
-        if state.get('gfn_energy_for') == _structure_fingerprint(xyz):
-            energy = state.get('gfn_energy')
-        # And what it is, if a press has asked.  The shape answer names the
-        # structure it was taken on for the same reason.
-        shape = state.get('saddle_modes') or {}
-        imaginary = frequency = None
-        if shape.get('xyz') and _structure_fingerprint(shape['xyz']) == \
-                _structure_fingerprint(xyz):
-            found = shape.get('modes') or {}
-            imaginary = found.get('count')
-            modes = found.get('modes') or []
-            frequency = float(modes[0]) if modes else None
-        return {
-            'xyz': xyz, 'level': level, 'method': method,
-            'charge': int(submit_gfn_charge.value or 0),
-            'multiplicity': _gfn_uhf_now() + 1,
-            'energy': energy, 'free_energy': None,
-            'imaginary': imaginary, 'frequency': frequency,
-            'ends': state.get('scan_ends'),
-            'gesture': _last_comment_of(xyz),
-        }
+        here = _geometry_key(_current_xyz() or '')
+        if not here:
+            return None
+        if _geometry_key(state.get('down_saddle') or '') == here:
+            return kept
+        for one in kept:
+            if _geometry_key(one.get('xyz') or '') == here:
+                return kept
+        return None
 
-    def _last_comment_of(xyz):
-        """The editor's own claim about this geometry, for the history.
+    def _refresh_the_down_ends():
+        """Offer the two ends and the saddle, and say which one is on screen.
 
-        The comment line is where every press in this file writes what it did
-        -- "optimised to a transition state", "scanned", "where the hand left
-        it" -- so it is already an account of how the structure came about, and
-        copying it costs nothing and is truer than a label chosen here.
-
-        Only when it *is* one of those claims.  An XYZ comment is free text and
-        xtb writes its own there: measured on a real optimisation, the line
-        reads ``energy: -5.504066183163 gnorm: 0.000283898985 xtb: 6.7.1``,
-        and copied into a document as the account of how a species came about
-        that is noise wearing the shape of provenance.  :func:`_is_editor_comment`
-        is the same test the undo history and the scan's own picture use to
-        decide whether a comment line is this editor speaking.
+        The box follows the structure rather than leading it, the way the
+        walk's slider does: whichever of the three is in the box is what the
+        box reads, so the row cannot say "one way" over a picture of the
+        saddle.
         """
-        rows = str(xyz or '').splitlines()
-        said = rows[1].strip() if len(rows) > 1 else ''
-        return said if _is_editor_comment(said) else 'the editor'
+        kept = _down_here()
+        if not kept:
+            submit_down_dd.layout.display = 'none'
+            return
+        here = _geometry_key(_current_xyz() or '')
+        options = [('the saddle it came from', 'top')]
+        standing = 'top'
+        for at, one in enumerate(kept):
+            cost = one.get('kcal')
+            says = '' if cost is None else f', {float(cost):+.1f} kcal/mol'
+            options.append((f"{one.get('which') or 'an end'}{says}", str(at)))
+            if _geometry_key(one.get('xyz') or '') == here:
+                standing = str(at)
+        state['down_look_quiet'] = True
+        try:
+            submit_down_dd.options = options
+            submit_down_dd.value = standing
+        finally:
+            state['down_look_quiet'] = False
+        submit_down_dd.layout.display = ''
 
-    def _refresh_graph_button():
-        """Whether there is a network to put this in, and what pressing does.
-
-        Asked of the graph side every time, rather than cached: a graph is
-        opened and closed in another tab while this one is standing still, and
-        a button that remembers an answer from before that is a button that
-        writes into a document nobody has open.
-        """
-        if graph_offer is None:
-            submit_graph_btn.layout.display = 'none'
+    def on_submit_down_dd(change):
+        if change.get('name') != 'value' or state.get('down_look_quiet'):
+            return
+        kept = _down_here()
+        if not kept:
+            return
+        pick = str(change.get('new') or '')
+        if pick == 'top':
+            _stand_on(state.get('down_saddle') or '',
+                      'Back on the saddle the two ends came from. Every '
+                      'press works on it again.',
+                      'Where the saddle search got to',
+                      'the two ends, back to the saddle', gesture='down-end')
             return
         try:
-            offer = _graph_offer()
-            said = graph_offer(offer) if offer else None
-        except Exception:                            # noqa: BLE001
-            said = None
-        if not said:
-            submit_graph_btn.layout.display = 'none'
+            one = kept[int(pick)]
+        except (ValueError, IndexError):
             return
-        submit_graph_btn.description = said
-        submit_graph_btn.layout.display = ''
+        which = str(one.get('which') or 'An end')
+        cost = one.get('kcal')
+        says = ('' if cost is None else
+                f' It sits {float(cost):+.1f} kcal/mol against the saddle.')
+        _stand_on(one.get('xyz') or '',
+                  f'{which} down the mode.{says} This is the structure now -- '
+                  f'every press works on it, and the box goes back to the '
+                  f'saddle.',
+                  f'Followed down the mode, {which.lower()}',
+                  'the two ends of the mode', gesture='down-end')
 
-    def on_submit_graph(_button=None):
-        """Hand it over, and say what happened on the row that is already there."""
-        if put_in_graph is None:
+    def on_submit_walk_at(change):
+        if change.get('name') != 'value' or state.get('walk_look_quiet'):
             return
-        offer = _graph_offer()
-        if not offer:
+        points = (_walk_here() or {}).get('points') or []
+        n = int(change.get('new') or 0)
+        if not (0 <= n < len(points)):
             return
-        try:
-            said = put_in_graph(offer)
-        except Exception as exc:                     # noqa: BLE001
-            said = f'It did not go into the graph: {exc}'
-        if said:
-            _set_mol_status(said)
-        _refresh_graph_button()
+        # The structure comes forward if the profile was standing over it.
+        # They share this corner of the panel and only one of them is in it
+        # at a time, so asking to see a geometry while the picture is up
+        # would otherwise send it to a viewer nobody can see.
+        if submit_scan_plot_btn.value:
+            submit_scan_plot_btn.value = False
+        where, spent, xyz = points[n][0], points[n][1], points[n][2]
+        _stand_on(xyz,
+                  f'Point {n + 1} of {len(points)} of the walk: the '
+                  f'coordinate at {where:.3g}, {spent:+.1f} kcal/mol from '
+                  f'the start. This is the structure now -- every press works '
+                  f'on it, and Undo goes back to where you were.',
+                  f'Scanned: point {n + 1} of the walk',
+                  f'the walk, on from point {n + 1}')
 
     def _keep_the_choice(box, options, wish):
         """Rewrite a box's entries without throwing away what was chosen.
@@ -12907,7 +13233,38 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             f'at, {steps} step(s) in ({seconds:.1f} s). Press '
                             f'Climb to TS again to carry on from there.')
                     state['gfn_last_status'] = said
-                    _set_mol_status(*walked_said, said)
+                    # Unless something else is now speaking for itself.
+                    #
+                    # A climb runs in rounds and takes a fresh run number for
+                    # each, so between two of them its own switch reads as
+                    # free and another press may start something else. That is
+                    # what happened, reported from a real session: a band was
+                    # started while a climb was between rounds, the band said
+                    # what it was doing, and a moment later the finished round
+                    # of the climb wrote "the climb stopped" over it. The user
+                    # asked what the band was supposed to be doing -- it was
+                    # doing it, and the row said otherwise.
+                    #
+                    # Being superseded is not enough to be silent, and that
+                    # was the first attempt at this: a Stop moves the run
+                    # number too -- deliberately, so the page drops what it
+                    # was playing -- and the goodbye of a climb the user just
+                    # stopped is exactly the answer they are waiting for. So
+                    # it is *who* has the number that decides. A Stop and an
+                    # Undo claim theirs as a press or as abandoned; a walker
+                    # claims one under its own name, and a walker speaking is
+                    # the only case where this must not.
+                    # A climb takes a fresh number for every round, so it
+                    # supersedes *itself* all the time and its own successor
+                    # must not silence it -- that was the second attempt, and
+                    # it silenced every Stop the user pressed. What has to be
+                    # different is the walker: a band, a chain, a scan.
+                    took_over = (not _frame_run_is_current(run)
+                                 and str(state.get('gfn_run_by') or '')
+                                 not in ('press', 'abandoned', 'look',
+                                         'climb'))
+                    if not took_over:
+                        _set_mol_status(*walked_said, said)
                     return
                 if got is None:
                     _set_mol_status('The climb could not run: '
@@ -13782,12 +14139,26 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
         Cheap enough to call from either: nothing is drawn most of the time,
         and then this is one dictionary lookup.
+
+        The walk's own points go the same way, and above the line below rather
+        than under it, so that they leave even where no picture could be
+        drawn.  A profile and a slider through the trajectory are the same
+        walk asked about twice; a slider left standing over a structure the
+        walk never reached is the control this whole rule exists to remove.
         """
+        submit_walk_at.layout.display = 'none'
+        state['walk_look_at'] = None
+        state['walk_points_stale'] = True
         if not state.get('scan_plot'):
             return
         state['scan_plot'] = None
         submit_scan_plot.value = ''
-        submit_scan_plot.layout.display = 'none'
+        submit_scan_plot_btn.layout.display = 'none'
+        # And the structure comes back, whichever way the switch was left.
+        # A picture that has been dropped must not leave the viewer hidden
+        # behind it.
+        _show_the_profile(False)
+        submit_scan_plot_btn.value = False
 
     def _scan_plot_holds(text):
         """Whether the profile still describes the geometry now in the box.
@@ -13810,6 +14181,46 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return False
         walked_on = state.get('scan_plot_of')
         return bool(walked_on) and _structure_fingerprint(text) == walked_on
+
+    def _show_the_profile(showing):
+        """Swap the structure for the profile, or swap it back.
+
+        One or the other, never both, and in the same place.  They swap
+        inside the viewer's own box, so nothing above or below moves and
+        the eye does not go looking: the picture appears where the
+        structure was.
+
+        A row of its own under the panel is where this began, and it was
+        wrong twice over.  The panel became two panels and the structure
+        shrank to make room; and on a real screen the second one landed
+        below the fold, which took the switch down with it -- so there was
+        no way back to the structure at all.  The switch is on the toolbar
+        above the picture for that reason: that row is always in view.
+
+        The status line goes with the structure.  It lies *on* the picture,
+        along its bottom edge -- which costs the structure nothing, because
+        a molecule has empty corners and the line has somewhere to sit.  A
+        profile has no empty corner: its bottom edge is the axis, the
+        numbers under it and the sentence about the walk, and a line laid
+        over that hides the part of the picture that was drawn to be read.
+
+        Nothing is lost by it.  What the line was saying is the verdict of
+        the walk the profile is *of*, and the profile carries its own
+        caption; the line comes back with the structure, unchanged, on the
+        press that brings it back.
+        """
+        submit_scan_plot.layout.display = '' if showing else 'none'
+        mol_output.layout.display = 'none' if showing else ''
+        for line in (mol_status, mol_status_fs):
+            line.layout.display = 'none' if showing else ''
+        submit_scan_plot_btn.description = ('Back to the structure'
+                                            if showing
+                                            else 'Show the profile')
+        submit_scan_plot_btn.icon = 'cube' if showing else 'chart-line'
+
+    def on_submit_scan_plot_btn(change):
+        if change.get('name') == 'value':
+            _show_the_profile(bool(change.get('new')))
 
     def _on_box_for_scan_plot(change):
         """The box has changed: is the profile still about what is in it?"""
@@ -13925,7 +14336,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['scan_plot_of'] = _structure_fingerprint(_current_xyz() or '')
         state['scan_plot'] = True
         submit_scan_plot.value = drawn
-        submit_scan_plot.layout.display = ''
+        # The switch arrives, the picture does not.  A walk ends with the
+        # structure it reached on screen, which is what the user goes on
+        # working with; the profile is there for the asking.
+        submit_scan_plot_btn.layout.display = ''
+        _show_the_profile(bool(submit_scan_plot_btn.value))
 
     def on_submit_hold(_button=None):
         """Hold the value the selection describes while the field runs."""
@@ -15645,7 +16060,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_path_from_btn.on_click(on_submit_path_from)
     submit_saddle_btn.on_click(on_submit_saddle)
     submit_shape_btn.on_click(on_submit_shape)
-    submit_graph_btn.on_click(on_submit_graph)
     # The start decides which ways there are -- there is no walk to stop after
     # when the start is the structure on screen -- so it goes through the one
     # place that works both boxes out; the way only renames the press.
@@ -15732,14 +16146,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: It travels into fullscreen as a panel: bounded to 30vh and scrolling,
     #: which is the shared rule for results that belong to a picture (the RMSD
     #: pair, the Fukui numbers).  Fullscreen is still for the structure.
+    #: The picture itself, which is shown *instead of* the structure and
+    #: never beside it.
+    #:
+    #: It was a row under the viewer, and that was wrong in the one way
+    #: that matters: after a scan the panel was two panels, the structure
+    #: shrank to make room, and a user who wanted to go on manipulating
+    #: the molecule had a graph in the way. Both are full-width things
+    #: about the same walk, and only one of them is wanted at a time.
     submit_scan_plot = widgets.HTML(
         value='',
-        layout=widgets.Layout(width='100%', margin='4px 0 0 0',
-                              display='none'),
+        layout=widgets.Layout(width='100%', height=f'{viewer_height}px',
+                              margin='0', display='none'),
     )
     submit_scan_plot.add_class('submit-scan-plot')
-    submit_scan_plot.add_class('delfin-structure-fs-member')
-    submit_scan_plot.add_class('delfin-structure-fs-panel')
+
+
     # ---- where a structure comes from ------------------------------
 
     convert_smiles_button = widgets.Button(
@@ -16963,4 +17385,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_draw_get_btn.on_click(on_submit_draw_get)
     submit_draw_update_btn.on_click(on_submit_draw_update)
     submit_draw_sync.observe(on_submit_draw_sync, names='value')
+    submit_scan_plot_btn.observe(on_submit_scan_plot_btn, names='value')
+    submit_down_dd.observe(on_submit_down_dd, names='value')
+    submit_walk_at.observe(on_submit_walk_at, names='value')
     return Editor(locals())

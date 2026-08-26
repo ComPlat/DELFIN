@@ -305,37 +305,44 @@ def test_the_picture_is_a_png_the_page_can_show_on_its_own():
     assert 'Undo steps back through the marked points.' in drawn
 
 
-def test_the_profile_has_a_row_of_its_own_under_the_structure():
-    """Under the picture, and nothing at all until there is a walk to show.
+def test_the_profile_takes_the_structure_s_place_rather_than_a_row_of_its_own():
+    """One or the other, never both, and nothing until there is a walk.
 
-    The status line lies *on* the picture because it is written several times
-    a second and a row above the viewer made the atom under the cursor step up
-    and down.  A profile is written once, at the end of a walk that took
-    minutes, so it can afford a row -- and a row takes none of the pixels the
-    structure is drawn in, which an overlay would.  An editor that has never
-    scanned is laid out exactly as it was.
+    It had a row under the viewer, and that was wrong in the one way that
+    matters: after a scan the panel was two panels, the structure shrank to
+    make room, and a user who wanted to go on manipulating the molecule had a
+    graph in the way.  The viewer is a fixed height and the profile is a
+    full-width picture; side by side they made the panel twice as tall and the
+    structure half as useful.  Both are about the same walk and only one of
+    them is wanted at a time, so there is a switch.
+
+    An editor that has never scanned is laid out exactly as it was.
     """
     part, _state = _an_editor()
-    assert not _shown(part.submit_scan_plot)
+    assert not _shown(part.submit_scan_plot_btn)
     assert part.submit_scan_plot.value == ''
-    classes = part.submit_scan_plot._dom_classes
-    # It travels into fullscreen with the picture it is about, as a panel:
-    # bounded and scrolling, because fullscreen is still for the structure.
-    assert 'delfin-structure-fs-member' in classes
-    assert 'delfin-structure-fs-panel' in classes
+    assert _shown(part.mol_output), 'the structure is what is on screen'
+    # It travels into fullscreen without being told to: it is inside the
+    # viewer's own box, which is what fullscreen takes, so the picture that
+    # replaces the structure goes wherever the structure goes.
+    assert 'submit-scan-plot' in part.submit_scan_plot._dom_classes
 
     from delfin.dashboard import tab_submit
     source = pathlib.Path(tab_submit.__file__).read_text(encoding='utf-8')
-    children = source.split('submit_right = widgets.VBox([')[1].split('])')[0]
-    order = ['mol_viewer_stack', 'submit_scan_plot', 'submit_ff_notes']
-    assert [children.index(name) for name in order] == sorted(
-        children.index(name) for name in order), children
+    stack = source.split('mol_viewer_stack = widgets.Box(')[1].split(')')[0]
+    assert 'submit_scan_plot' in stack, stack
+    assert 'mol_output' in stack
 
     from delfin.dashboard import tab_orca_builder
     builder = pathlib.Path(
         tab_orca_builder.__file__).read_text(encoding='utf-8')
-    module = builder.split('orca_mol_module = widgets.VBox(')[1].split('],')[0]
-    assert module.index('orca_mol_stack') < module.index('submit_scan_plot')
+    other = builder.split('orca_mol_stack = widgets.Box(')[1].split(')')[0]
+    assert 'submit_scan_plot' in other, other
+
+    # And the switch is on the toolbar rather than with the picture, because
+    # that row is always in view: put with the picture it went below the fold
+    # with it, and there was no way back to the structure at all.
+    assert part.submit_scan_plot_btn in part.submit_manip_toolbar.children
 
 
 def test_a_run_over_the_structure_takes_the_picture_away():
@@ -357,10 +364,10 @@ def test_a_run_over_the_structure_takes_the_picture_away():
                    'chain'):
         part, state = _an_editor()
         _draw_one(part)
-        assert _shown(part.submit_scan_plot)
+        assert _shown(part.submit_scan_plot_btn)
         assert 'base64' in part.submit_scan_plot.value
         part._note_the_run(int(state.get('gfn_run', 0)) + 1, walker)
-        assert not _shown(part.submit_scan_plot), walker
+        assert not _shown(part.submit_scan_plot_btn), walker
         assert part.submit_scan_plot.value == '', walker
         assert not state.get('scan_plot'), walker
 
@@ -368,7 +375,7 @@ def test_a_run_over_the_structure_takes_the_picture_away():
         part, state = _an_editor()
         _draw_one(part)
         part._note_the_run(int(state.get('gfn_run', 0)) + 1, stopping)
-        assert _shown(part.submit_scan_plot), stopping
+        assert _shown(part.submit_scan_plot_btn), stopping
         assert state.get('scan_plot'), stopping
 
 
@@ -389,18 +396,18 @@ def test_the_picture_stands_only_while_the_box_holds_the_walk():
     # The landmark Undo reaches for: the same molecule, the scan's own claim.
     box.value = xyz_document(
         rows, 'Scanned: the highest point the walk crossed')
-    assert _shown(part.submit_scan_plot), ('Undo took away the picture of '
+    assert _shown(part.submit_scan_plot_btn), ('Undo took away the picture of '
                                            'the walk it was stepping through')
 
     box.value = xyz_document(rows, 'Edited in DELFIN viewer')
-    assert not _shown(part.submit_scan_plot)
+    assert not _shown(part.submit_scan_plot_btn)
 
     # And another molecule wearing the scan's comment is not this walk either.
     _draw_one(part)
-    assert _shown(part.submit_scan_plot)
+    assert _shown(part.submit_scan_plot_btn)
     box.value = xyz_document(['O 0.0 0.0 0.0', 'H 0.76 0.59 0.0',
                               'H -0.76 0.59 0.0'], 'Scanned')
-    assert not _shown(part.submit_scan_plot)
+    assert not _shown(part.submit_scan_plot_btn)
 
 
 def test_undo_walks_the_scans_own_landmarks_without_taking_the_picture():
@@ -432,17 +439,17 @@ def test_undo_walks_the_scans_own_landmarks_without_taking_the_picture():
     part.coords_widget.value = xyz_document(
         rows, 'Scanned to the next minimum')
     _draw_one(part)
-    assert _shown(part.submit_scan_plot)
+    assert _shown(part.submit_scan_plot_btn)
 
     part.submit_manip_undo_btn.click()          # to the highest point crossed
     assert part.coords_widget.value.splitlines()[1].startswith('Scanned')
-    assert _shown(part.submit_scan_plot), 'Undo took away the picture of the '\
+    assert _shown(part.submit_scan_plot_btn), 'Undo took away the picture of the '\
                                           'walk it was stepping through'
     part.submit_manip_undo_btn.click()          # to where the walk started
-    assert _shown(part.submit_scan_plot)
+    assert _shown(part.submit_scan_plot_btn)
     part.submit_manip_undo_btn.click()          # out of the scan altogether
     assert not part.coords_widget.value.splitlines()[1].startswith('Scanned')
-    assert not _shown(part.submit_scan_plot)
+    assert not _shown(part.submit_scan_plot_btn)
 
 
 def test_the_picture_is_drawn_once_off_the_turn_and_shown_after_the_answer():
@@ -493,9 +500,9 @@ def test_a_real_scan_leaves_its_profile_on_the_page():
     """The whole path, on the real editor: arm a leg, press, get a picture.
 
     Butane's central C-C under GFN-FF in eight points, which is seconds.  What
-    is asserted is what the user sees: a row that was not there before the
-    press is there after it, carrying a PNG of the walk, and the sentence is
-    still the sentence.
+    is asserted is what the user sees: a switch that was not there before the
+    press is there after it, the structure is still on screen, and pressing
+    the switch puts a PNG of the walk in its place.
     """
     part, state = _an_editor()
     part.submit_ff_dd.value = 'gfnff'
@@ -507,7 +514,7 @@ def test_a_real_scan_leaves_its_profile_on_the_page():
     part.submit_scan_steps.value = 8
     part.submit_scan_whole.value = True
     part.submit_scan_btn.click()
-    assert not _shown(part.submit_scan_plot)
+    assert not _shown(part.submit_scan_plot_btn)
 
     part.submit_scan_run_btn.click()
     began = time.time()
@@ -517,7 +524,24 @@ def test_a_real_scan_leaves_its_profile_on_the_page():
 
     said = ' '.join(state.get('mol_status_lines') or ())
     assert 'The scan walked' in said, said
-    assert _shown(part.submit_scan_plot), said
+    assert _shown(part.submit_scan_plot_btn), said
+    # The walk ends with the structure it reached on screen, which is what
+    # the user goes on working with. The profile is there for the asking.
+    assert _shown(part.mol_output)
+    assert not _shown(part.submit_scan_plot)
+    assert part.submit_scan_plot_btn.description == 'Show the profile'
+
+    part.submit_scan_plot_btn.value = True
+    assert _shown(part.submit_scan_plot)
+    assert not _shown(part.mol_output), 'one or the other, never both'
+    # And the line that lies on the picture goes with the structure. It costs a
+    # molecule nothing -- there are empty corners -- but a profile has none:
+    # its bottom edge is the axis, the numbers and the caption, and a line over
+    # that hides the part drawn to be read.
+    assert not _shown(part.mol_status)
+    assert not _shown(part.mol_status_fs)
+    assert part.submit_scan_plot_btn.description == 'Back to the structure'
+
     match = re.search(r"base64,([A-Za-z0-9+/=]+)'",
                       part.submit_scan_plot.value)
     assert match, part.submit_scan_plot.value[:300]
@@ -534,9 +558,11 @@ _MEASURE_JS = r"""
   const view = stack.getBoundingClientRect();
   const picture = img ? img.getBoundingClientRect() : null;
   const column = plot.parentElement.getBoundingClientRect();
+  const viewer = document.querySelector('.submit-mol-output');
   return {
     shown: getComputedStyle(plot).display !== 'none',
-    under: box.top >= view.bottom - 1,
+    viewerShown: viewer
+        ? getComputedStyle(viewer).display !== 'none' : null,
     overflows: picture ? picture.right > column.right + 0.5 : null,
     wider: picture ? picture.width > column.width + 0.5 : null,
     viewer: Math.round(view.height),
@@ -550,15 +576,15 @@ _MEASURE_JS = r"""
 
 
 @pytest.mark.parametrize('width', (1920, 1280))
-def test_the_profile_lays_out_under_the_picture_in_a_browser(width):
+def test_the_profile_lays_out_in_the_structure_s_place_in_a_browser(width):
     """Measured in chromium, because no source says where a box ends up.
 
-    Two things the row has to be: under the picture rather than over it, and
-    inside its column -- the image is 936 px wide as it is drawn and the
+    Two things it has to be: in the structure's place rather than under it,
+    and inside its column -- the image is 936 px wide as it is drawn and the
     column in the Submit tab is narrower than that at every window width, so
     it is the ``width: 100%`` on the image that keeps the page from scrolling
     sideways.  And in the fullscreen overlay it has to travel with the
-    structure and still leave the picture the floor the shared sheet gives it.
+    structure it is about.
     """
     pytest.importorskip('ipywidgets')
     playwright = pytest.importorskip(
@@ -574,11 +600,14 @@ def test_the_profile_lays_out_under_the_picture_in_a_browser(width):
     stylesheet = toolbar_test._widget_stylesheet()
     tab_widget, exports = toolbar_test._build_tab()
     exports['submit_manip_toolbar'].layout.display = 'flex'
-    # The state a finished scan leaves: the row carrying a real picture.
+    # The state a finished scan leaves with the switch pressed: the picture
+    # on screen and the structure out of the way.
     exports['submit_scan_plot'].value = scan_profile.profile_html(
         _CLOSING, x_label='C0-C10 (A)', y_label='kcal/mol above the start',
         title='C0-C10, walked', top=(2.27, 6.0), ended=(1.55, -63.8))
     exports['submit_scan_plot'].layout.display = ''
+    exports['submit_scan_plot'].layout.display = ''
+    exports['mol_output'].layout.display = 'none'
 
     from delfin.dashboard.molecule_viewer import (
         STRUCTURE_VIEWER_FULLSCREEN_CSS,
@@ -612,14 +641,255 @@ def test_the_profile_lays_out_under_the_picture_in_a_browser(width):
             browser.close()
 
     assert 'error' not in embedded, embedded
-    assert embedded['shown'] and embedded['under'], embedded
+    assert embedded['shown'], embedded
+    assert embedded['viewerShown'] is False, (
+        'one or the other, never both')
     assert not embedded['overflows'] and not embedded['wider'], embedded
     assert not embedded['pageScrollsSideways'], embedded
     assert embedded['plotHeight'] > 40, embedded
 
     assert 'error' not in enlarged, enlarged
     assert enlarged['inOverlay'], 'the profile stayed on the page'
-    # Fullscreen is still for the structure: the shared sheet gives the
-    # picture a floor of 45vh and bounds a panel like this one to 30vh.
-    assert enlarged['viewer'] >= 0.45 * 900 - 1, enlarged
-    assert enlarged['plotHeight'] <= 0.30 * 900 + 1, enlarged
+
+
+def test_the_line_comes_back_with_the_structure():
+    """Nothing is lost by taking it away: what it was saying is the verdict of
+    the walk the profile is of, and the profile carries its own caption."""
+    part, _state = _an_editor()
+    part._show_scan_profile("<img src='x'/>")
+    assert _shown(part.mol_status), 'a finished walk still reports'
+
+    part.submit_scan_plot_btn.value = True
+    assert not _shown(part.mol_status)
+    part.submit_scan_plot_btn.value = False
+    assert _shown(part.mol_status), 'and it is back, unchanged'
+
+    # And a picture that is dropped while it is showing must not leave the
+    # panel with neither of them in it.
+    part.submit_scan_plot_btn.value = True
+    part._scan_plot_drop()
+    assert _shown(part.mol_output) and _shown(part.mol_status)
+
+
+def _a_walk_of(part, count=7):
+    """A finished walk, left the way a real one leaves itself.
+
+    On its last point.  That matters to every test below it: a walk ends by
+    writing the structure it reached into the box, and the slider's whole
+    rule is which of the walk's points the box is holding.
+    """
+    def geo(d):
+        return f"2\nstep\nC 0.000 0.000 0.000\nO {d:.3f} 0.000 0.000\n"
+    points = [(1.13 + 0.1 * i, i * 3.4, geo(1.13 + 0.1 * i))
+              for i in range(count)]
+    part.coords_widget.value = points[-1][2]
+    part.state['scan_walk'] = {
+        'points': points, 'method': 'gfn2', 'charge': 0, 'uhf': 0,
+        'solvent': '', 'solvation_model': '',
+        'structure': part._structure_fingerprint(part.coords_widget.value)}
+    part.state['walk_points_stale'] = False
+    part._refresh_the_walk_points()
+    return points
+
+
+def test_the_points_of_a_walk_can_be_stepped_through():
+    """A scan keeps every geometry it computed and only the two ends could be
+    reached. The steps between them are where the chemistry is -- the bond
+    half broken, the point the profile marks as the top -- and they cost
+    minutes to compute and nothing to look at."""
+    part, _state = _an_editor()
+    assert not _shown(part.submit_walk_at), 'nothing walked yet'
+
+    points = _a_walk_of(part)
+    assert _shown(part.submit_walk_at)
+    assert part.submit_walk_at.max == len(points) - 1
+
+    part.submit_walk_at.value = 3
+    said = ' '.join(part.state.get('mol_status_lines') or ())
+    assert 'Point 4 of 7' in said, said
+    assert '1.43' in said and '+10.2' in said
+
+
+def test_stepping_through_a_walk_goes_to_the_point():
+    """What is on screen is what the presses act on. Anything else is a
+    structure nobody can compute anything about.
+
+    Measured from a real session on a 64-atom system: the slider was stepped
+    to point 10 near the top of a barrier and Show the shape pressed, and the
+    answer was "a minimum, not a transition state"; then point 11, the same
+    press, and the same free energy to the second decimal for a different
+    structure. Both Hessians had run on what was in the box, which was the
+    minimum the scan ended on.
+    """
+    part, _state = _an_editor()
+    points = _a_walk_of(part)
+
+    for n in (1, 4, 2, 6):
+        part.submit_walk_at.value = n
+        assert (part._geometry_key(part.coords_widget.value)
+                == part._geometry_key(points[n][2])), n
+        assert part.coords_widget.value.splitlines()[1].lower().startswith(
+            'scanned'), 'and it is still the walk the profile is of'
+
+
+def test_a_run_of_stepping_is_one_press_of_undo():
+    """Nothing is lost by going there, and going back is not twelve presses:
+    a run of stepping is one step in the history, the way a sweep of an arrow
+    key is one rather than two hundred."""
+    part, state = _an_editor()
+    _a_walk_of(part)
+    before = part.coords_widget.value
+    depth = len(state.get('history') or ())
+
+    for n in (1, 4, 2, 6):
+        part.submit_walk_at.value = n
+    assert len(state.get('history') or ()) == depth + 1
+
+    part.on_submit_manip_undo()
+    assert part.coords_widget.value == before
+
+
+def test_the_points_belong_to_the_molecule_they_were_walked_on():
+    part, _state = _an_editor()
+    _a_walk_of(part)
+    assert _shown(part.submit_walk_at)
+    part.coords_widget.value = "3\nother\nO 0 0 0\nH 1 0 0\nH 0 1 0\n"
+    part._refresh_the_walk_points()
+    assert not _shown(part.submit_walk_at)
+
+
+def test_the_slider_opens_on_the_point_the_box_is_holding():
+    """Which is the end, for a walk that has just finished: it leaves the
+    structure it reached on screen, and a row reading "point 1" beside a
+    viewer showing point twenty is the control contradicting the picture.
+
+    Undo steps back through the walk's own landmarks -- where it started, the
+    highest point it crossed -- and those are geometries of the walk too, so
+    the slider follows the box to them.
+    """
+    part, _state = _an_editor()
+    points = _a_walk_of(part)
+    assert part.submit_walk_at.value == len(points) - 1
+
+    part.coords_widget.value = points[2][2]
+    part._refresh_the_walk_points()
+    assert part.submit_walk_at.value == 2
+
+
+def test_stepping_leaves_the_slider_where_the_user_put_it():
+    """Looking at a point deliberately does not write the box, so a refresh
+    that happens while somebody is reading the walk must not pull the slider
+    back to the point the box is standing on."""
+    part, _state = _an_editor()
+    _a_walk_of(part)
+    part.submit_walk_at.value = 1
+    part._refresh_the_walk_points()
+    assert part.submit_walk_at.value == 1
+
+
+def test_reading_the_walk_does_not_end_the_picture_of_it():
+    """Reported from a real session: the slider moved one notch and the
+    switch standing next to it vanished.
+
+    The two are one walk shown two ways -- as a shape and as structures.
+    Looking at a point hands the page one geometry that walk itself computed;
+    it writes no box and takes no undo step, so the structure the profile is
+    a claim about has not moved, and the claim is still true.
+    """
+    part, state = _an_editor()
+    _a_walk_of(part)
+    _draw_one(part)
+    assert _shown(part.submit_scan_plot_btn) and _shown(part.submit_walk_at)
+
+    part.submit_walk_at.value = 3
+    assert _shown(part.submit_scan_plot_btn), (
+        'one nudge of the slider took the profile away')
+    assert state.get('scan_plot')
+    assert 'base64' in part.submit_scan_plot.value
+
+
+def test_going_on_from_a_point_takes_the_walk_off_the_row():
+    """A trajectory describes the structure it was walked on. Once something
+    has drawn over that structure there is nothing under what is on screen to
+    step through, and the slider goes the way the picture does.
+
+    It has to go at the moment the run *starts*, not when it writes: a run
+    writes the box only when it finishes, so in between the geometry in the
+    box is still the walk's own while the structure on screen is already
+    somewhere else. That is why a refresh must not bring it back.
+    """
+    part, state = _an_editor()
+    _a_walk_of(part)
+    assert _shown(part.submit_walk_at)
+
+    part._note_the_run(int(state.get('gfn_run', 0)) + 1, 'settle')
+    assert not _shown(part.submit_walk_at)
+    part._refresh_the_walk_points()
+    assert not _shown(part.submit_walk_at), (
+        'the box still holds the walk, but the structure has moved on')
+
+
+def test_a_geometry_the_walk_never_computed_takes_it_off_too():
+    part, _state = _an_editor()
+    points = _a_walk_of(part)
+    part.coords_widget.value = "2\nedited\nC 0.000 0.000 0.000\nO 1.421 0.000 0.000\n"
+    part._refresh_the_walk_points()
+    assert not _shown(part.submit_walk_at), points[0]
+
+
+def test_the_presses_that_draw_nothing_leave_the_walk_alone():
+    """Undo, Reset and the Stops claim a run number so that the page drops
+    what it was playing; looking at a point claims one so the page shows the
+    one frame handed to it. None of the three draws over the structure."""
+    for name in ('press', 'abandoned', 'look'):
+        part, state = _an_editor()
+        _a_walk_of(part)
+        part._note_the_run(int(state.get('gfn_run', 0)) + 1, name)
+        assert _shown(part.submit_walk_at), name
+
+
+def test_a_driven_walk_keeps_the_points_it_paid_for():
+    """Which is why the box is read as geometry rather than as a comment.
+
+    The comment would have been cheaper, and it is what the picture is kept
+    honest by, but a walk does not sign the box the same way every time: a
+    driven scan ends on "Driven until the bonds were made and broken", and a
+    rule reading for "Scanned" alone would take the points away from exactly
+    the walks that cost the most to compute.
+    """
+    from delfin.dashboard.structure_editor import xyz_document
+
+    part, _state = _an_editor()
+    points = _a_walk_of(part)
+    rows = [line for line in points[-1][2].splitlines()[2:] if line.strip()]
+    part.coords_widget.value = xyz_document(
+        rows, 'Driven until the bonds were made and broken')
+    part._refresh_the_walk_points()
+    assert _shown(part.submit_walk_at)
+    assert part.submit_walk_at.value == len(points) - 1
+
+
+def test_a_point_asked_for_brings_the_structure_back_in_front():
+    """The profile and the structure share one corner of the panel and only
+    one of them is in it at a time, so a geometry asked for while the picture
+    is up would otherwise be sent to a viewer nobody can see."""
+    part, _state = _an_editor()
+    _a_walk_of(part)
+    _draw_one(part)
+    part.submit_scan_plot_btn.value = True
+    assert not _shown(part.mol_output)
+
+    part.submit_walk_at.value = 2
+    assert part.submit_scan_plot_btn.value is False
+    assert _shown(part.mol_output), 'the structure is in front again'
+    assert _shown(part.submit_scan_plot_btn), 'and the picture is still there'
+
+
+def test_the_slider_stands_beside_the_profile_switch():
+    """The two are one question asked twice: the profile is the walk as a
+    shape, the slider is the walk as structures."""
+    part, _state = _an_editor()
+    row = list(part.submit_manip_toolbar.children)
+    assert part.submit_walk_at in row
+    assert row.index(part.submit_walk_at) == row.index(
+        part.submit_scan_plot_btn) + 1
