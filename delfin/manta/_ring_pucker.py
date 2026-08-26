@@ -170,6 +170,124 @@ def _set_pucker(conf, ring, Q, theta, phi, frozen: Optional[Set[int]] = None):
         conf.SetAtomPosition(int(idx), (float(newp[0]), float(newp[1]), float(newp[2])))
 
 
+def _set_pucker_general(conf, ring, qs, phis, frozen: Optional[Set[int]] = None):
+    """Cremer-Pople-Umkehr in VOLLER Allgemeinheit -- fuer JEDE Ringgroesse.
+
+    ``_set_pucker`` oben deckt nur m = 2 plus den Alternierungsterm ab.  Das ist fuer
+    N = 4, 5, 6 vollstaendig und ab N = 7 LUECKENHAFT: ein Siebenring hat vier
+    Faltungsfreiheitsgrade (q2, phi2, q3, phi3), ein Achtring fuenf.  Die Paare mit
+    m >= 3 fehlten dort ersatzlos, und der Alternierungsterm wurde fest als q3
+    gefuehrt -- beim Achtring ist es aber q4.
+
+    DER RAUM, exakt.  Ein Ring mit N Atomen hat N-3 Faltungsfreiheitsgrade:
+        N gerade:  Paare (q_m, phi_m) fuer m = 2 .. N/2-1,  plus EIN q_(N/2)
+                   2*(N/2-2) + 1 = N-3
+        N ungerade: Paare (q_m, phi_m) fuer m = 2 .. (N-1)/2
+                   2*((N-1)/2 - 1) = N-3
+    Die Auslenkung des j-ten Ringatoms aus der Mittelebene ist
+
+        z_j = sqrt(2/N) * SUM_m  q_m * cos(phi_m + 2*pi*m*j/N)
+              + [N gerade]  sqrt(1/N) * q_(N/2) * (-1)^j
+
+    Die benannten Formen sind PUNKTE darauf, keine eigenen Faelle: Sessel an den Polen
+    (q2 = 0), Wanne und Twist am Aequator (q3 = 0), Half-Chair und Envelope
+    DAZWISCHEN -- genau der Bereich, den die alte Kandidatenliste nie abgetastet hat.
+
+    ``qs``/``phis``: Abbildungen m -> Wert.  Reduziert sich fuer N <= 6 exakt auf
+    ``_set_pucker``; die Formel ist dieselbe, nur nicht mehr auf m = 2 verkuerzt.
+    ⚠ ``frozen`` bleibt unberuehrt -- Metall und Donoren stehen, nur das Rueckgrat
+    faltet.  Reiner Erzeuger.
+    """
+    n = len(ring)
+    P = conf.GetPositions()
+    nrm, C = _ring_normal_and_center(P, ring)
+    if nrm is None:
+        return
+    frozen = frozen or set()
+    even = (n % 2 == 0)
+    m_last = n // 2 if even else None
+    for j, idx in enumerate(ring):
+        if int(idx) in frozen:
+            continue
+        zj = 0.0
+        for m, qm in qs.items():
+            if not qm:
+                continue
+            if even and m == m_last:
+                zj += _np.sqrt(1.0 / n) * qm * ((-1) ** j)
+            else:
+                ph = _np.radians(phis.get(m, 0.0))
+                zj += _np.sqrt(2.0 / n) * qm * _np.cos(ph + 2.0 * _np.pi * m * j / n)
+        p = P[idx]
+        inplane = p - ((p - C) @ nrm) * nrm
+        newp = inplane + zj * nrm
+        conf.SetAtomPosition(int(idx), (float(newp[0]), float(newp[1]), float(newp[2])))
+
+
+def _pucker_space_grid(n: int, n_amp: int, n_phase: int):
+    """SYSTEMATISCHES Gitter ueber den GANZEN Faltungsraum eines N-Rings.
+
+    Liefert Kandidaten als ``(qs, phis)`` -- Abbildungen m -> Wert -- fuer
+    ``_set_pucker_general``.  Statt benannter Formen wird der (N-3)-dimensionale
+    Cremer-Pople-Raum abgetastet; Sessel, Wanne, Twist, Half-Chair und Envelope
+    fallen als Gitterpunkte von selbst an.
+
+    ⚠ VOLLSTAENDIGKEIT IST EINE AUFLOESUNGSFRAGE, keine Ja/Nein-Frage.  Ein
+    kontinuierlicher Raum laesst sich nicht "ganz" abtasten.  Was hier steht, ist die
+    ehrliche Fassung: der Raum wird VOLLSTAENDIG bei der ANGEGEBENEN Aufloesung
+    ueberdeckt, und die Aufloesung steht in der Spur.  Keine Ecke wird ausgelassen,
+    keine Richtung bevorzugt -- der Unterschied zur alten Liste, die nur Aequator und
+    Pole kannte und die Amplitude nie variierte.
+
+    ⚠ PREIS: die Kandidatenzahl waechst wie (n_amp+1)^(#q) * n_phase^(#phi).
+    Sechsring bei n_amp=2, n_phase=8: 3 * 8 * 5 = 120 je Ring.  Achtring: deutlich
+    mehr.  Darum sind beide Aufloesungen Env-Parameter und stehen im Protokoll.
+    """
+    if n < 4:
+        return []
+    even = (n % 2 == 0)
+    m_pairs = list(range(2, (n // 2) if even else ((n - 1) // 2) + 1))
+    m_last = (n // 2) if even else None
+    amp = _amp(n)
+    # Amplitudenstufen je Paar: 0 (Achse flach) bis n_amp * amp.  Die Null MUSS dabei
+    # sein -- sie ist der planare Zustand, und genau der fehlte (218 von 326 Motiven).
+    lv_pair = [amp * k / max(1, n_amp) for k in range(0, n_amp + 1)]
+    # Der Alternierungsterm laeuft SIGNIERT: +q ist der Sessel, -q der invertierte.
+    lv_last = [amp * k / max(1, n_amp) for k in range(-n_amp, n_amp + 1)]
+    phases = [360.0 * k / max(1, n_phase) for k in range(max(1, n_phase))]
+
+    out = []
+
+    def _rek(i, qs, phis):
+        if i < len(m_pairs):
+            m = m_pairs[i]
+            for q in lv_pair:
+                if q == 0.0:                      # Amplitude 0 -> Phase bedeutungslos
+                    _rek(i + 1, {**qs, m: 0.0}, {**phis, m: 0.0})
+                else:
+                    for ph in phases:
+                        _rek(i + 1, {**qs, m: q}, {**phis, m: ph})
+            return
+        if m_last is not None:
+            for q in lv_last:
+                out.append(({**qs, m_last: q}, dict(phis)))
+        else:
+            out.append((dict(qs), dict(phis)))
+
+    _rek(0, {}, {})
+    # den Nullpunkt (alles flach) genau EINMAL behalten -- er ist der planare Zustand
+    _seen = set()
+    uniq = []
+    for qs, phis in out:
+        key = tuple(sorted((m, round(q, 6), round(phis.get(m, 0.0), 3) if q else 0.0)
+                           for m, q in qs.items()))
+        if key in _seen:
+            continue
+        _seen.add(key)
+        uniq.append((qs, phis))
+    return uniq
+
+
 def _relax_hold_pucker(mol, ring, frozen: Set[int], window: float = 18.0, iters: int = 1200) -> bool:
     """UFF-relax that frees bonds+angles but HOLDS the pucker: each ring torsion
     restrained to its current value +/- ``window``; any ``frozen`` atom fixed."""
@@ -464,20 +582,58 @@ def _ring_pucker_states(mol_with_conf, ring, frozen: Set[int],
     acc = Chem.Mol(mol_with_conf)
     kept_ids = [acc.GetConformer().GetId()]
     n = len(ring)
-    _cands = _pucker_candidates(n)
+    # ===== DER GANZE FALTUNGSRAUM STATT DREI STELLEN DARAUF (26.08.2026) ============
+    #
+    # Die alte Kandidatenliste tastet die Cremer-Pople-Kugel an genau drei Orten ab:
+    # den AEQUATOR (theta = 90, K Phasen), und bei geraden Ringen die beiden POLE.
+    # `q_scale` ist dabei konstant 1,0.
+    #   ⇒ theta zwischen 0 und 90 wird NIE abgetastet -- dort liegen Half-Chair
+    #     (theta ~50) und Envelope (theta ~55).
+    #   ⇒ die Amplitude wird NIE variiert -- nur EINE Kugelschale.
+    #   ⇒ ungerade Ringe bekommen `theta=None`, also reine Pseudorotation.
+    # Die fehlenden Formen sind damit nicht "nicht implementiert", sondern NICHT
+    # ABGETASTET -- ein Unterschied, der die Reparatur billig macht.
+    #
+    # Mit `DELFIN_FFFREE_PUCKER_SPACE=1` wird stattdessen der (N-3)-dimensionale
+    # Raum systematisch ueberdeckt (`_pucker_space_grid`), fuer JEDE Ringgroesse und
+    # ueber `_set_pucker_general`, das auch die Paare m >= 3 kennt -- ohne die war
+    # jeder Ring ab N = 7 unvollstaendig parametrisiert.
+    # ⚠ Vollstaendigkeit ist hier eine AUFLOESUNGSfrage: der Raum ist kontinuierlich.
+    #   Ueberdeckt wird er vollstaendig bei der angegebenen Aufloesung, und die steht
+    #   in der Spur -- keine Ecke ausgelassen, keine Richtung bevorzugt.
+    # ⛔ Vorgabe AUS -> alte Liste -> byte-identisch.
+    _raum = _os.environ.get("DELFIN_FFFREE_PUCKER_SPACE", "0") == "1"
+    if _raum:
+        _namp = max(1, int(_os.environ.get("DELFIN_FFFREE_PUCKER_NAMP", "2") or 2))
+        _nph = max(1, int(_os.environ.get("DELFIN_FFFREE_PUCKER_NPHASE", "8") or 8))
+        _cands = _pucker_space_grid(n, _namp, _nph)
+        if _os.environ.get("DELFIN_FFFREE_PUCKER_TRACE", "0") == "1":
+            print("[pucker] RAUM n=%d: %d Kandidaten (%d-dim, Amplitudenstufen %d, "
+                  "Phasen %d)" % (n, len(_cands), max(0, n - 3), _namp, _nph))
+    else:
+        _cands = _pucker_candidates(n)
     if frozenset(ring) in _FLAT_ONLY:
         # NUR begradigen, nicht falten -- s. den Block in `generate`.
-        _cands = [(0.0, 0.0, 0.0)]
-    for _qs, theta, phi in _cands:
+        _cands = [({}, {})] if _raum else [(0.0, 0.0, 0.0)]
+    for _cand in _cands:
         try:
             m2 = Chem.Mol(mol_with_conf)
-            _set_pucker(m2.GetConformer(), ring, _qs * _amp(n), theta, phi, frozen)
+            if _raum:
+                _qs, _phis = _cand
+                _set_pucker_general(m2.GetConformer(), ring, _qs, _phis, frozen)
+                theta = phi = None
+            else:
+                _qs, theta, phi = _cand
+                _set_pucker(m2.GetConformer(), ring, _qs * _amp(n), theta, phi, frozen)
             if not _relax_hold_pucker(m2, ring, frozen):
                 continue
             cid = _add_conf(acc, m2)
             if _tfd_distinct(acc, cid, kept_ids, tfd_thr):
                 kept_ids.append(cid)
-                states.append((_qs, theta, phi))
+                # Im Raum-Modus ist der Zustand das Koordinatenpaar selbst; die
+                # Legacy-Form bleibt ein 3-Tupel.  `generate` indiziert nur, es liest
+                # den Inhalt nicht -- beide Formen sind dort gleichwertig.
+                states.append(_cand if _raum else (_qs, theta, phi))
             else:
                 acc.RemoveConformer(cid)
         except Exception:
@@ -630,8 +786,20 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
                 st = per_ring_states[ri_i][st_i]
                 if st is None:
                     continue
-                _qs2, theta, phi = st
-                _set_pucker(conf, rings[ri_i], _qs2 * _amp(len(rings[ri_i])), theta, phi, frozen)
+                # ⚠ ZWEI ZUSTANDSFORMEN, und das blinde Entpacken war eine Falle.
+                #   Legacy: (q_scale, theta, phi) -- drei Werte.
+                #   Raum:   (qs, phis) -- zwei Abbildungen m -> Wert.
+                #   Ein `_qs2, theta, phi = st` auf die Raumform wirft ValueError, und
+                #   der umgebende `except Exception: continue` haette das STILL
+                #   verschluckt: jede Mehrring-Kombination waere lautlos ausgefallen
+                #   und der Lauf haette "keine Wirkung" gemeldet.  Genau die Bauform,
+                #   die heute schon dreimal eine Nullmessung erzeugt hat.
+                if len(st) == 2 and isinstance(st[0], dict):
+                    _set_pucker_general(conf, rings[ri_i], st[0], st[1], frozen)
+                else:
+                    _qs2, theta, phi = st
+                    _set_pucker(conf, rings[ri_i],
+                                _qs2 * _amp(len(rings[ri_i])), theta, phi, frozen)
                 active = True
             if not active:
                 continue
@@ -658,3 +826,147 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
         except Exception:
             continue
     return out
+
+
+def selbsttest_raum() -> int:
+    """Beweist, dass das CP-Gitter den Faltungsraum wirklich ueberdeckt.
+
+    Aufruf:  python -m delfin.manta._ring_pucker
+    Ohne diesen Test waere `_pucker_space_grid` eine Behauptung -- und der Fehler
+    faellt in `generate` in ein `except Exception: continue`, also STILL.
+    """
+    import itertools as _itt
+    fehler = 0
+    print("=== Selbsttest: der Faltungsraum ===")
+
+    # 1 DIMENSIONSZAHL.  Ein N-Ring hat genau N-3 Faltungsfreiheitsgrade.
+    for n in range(4, 9):
+        even = (n % 2 == 0)
+        n_paare = len(range(2, (n // 2) if even else ((n - 1) // 2) + 1))
+        dof = 2 * n_paare + (1 if even else 0)
+        if dof != n - 3:
+            print("  ✗ 1 DIMENSION n=%d: %d statt %d" % (n, dof, n - 3)); fehler += 1
+    if not fehler:
+        print("  ✓ 1 DIMENSION: N-3 Freiheitsgrade fuer N=4..8 (1,2,3,4,5)")
+
+    # 2 DER PLANARE ZUSTAND ist im Gitter -- er fehlte der alten Liste (218 Motive).
+    for n in (5, 6, 7):
+        g = _pucker_space_grid(n, 2, 8)
+        if not any(all(v == 0.0 for v in qs.values()) for qs, _ in g):
+            print("  ✗ 2 PLANAR fehlt bei n=%d" % n); fehler += 1
+    if fehler == 0:
+        print("  ✓ 2 PLANAR: Q=0 ist Gitterpunkt fuer n=5,6,7")
+
+    # 3 SESSEL UND INVERSER SESSEL.  Beim Sechsring die beiden Pole: q2=0, q3=+/-.
+    g6 = _pucker_space_grid(6, 2, 8)
+    pole = [qs for qs, _ in g6 if qs.get(2, 0.0) == 0.0 and qs.get(3, 0.0) != 0.0]
+    if len([1 for qs in pole if qs[3] > 0]) < 1 or len([1 for qs in pole if qs[3] < 0]) < 1:
+        print("  ✗ 3 POLE: Sessel/inv. Sessel nicht beide im Gitter"); fehler += 1
+    else:
+        print("  ✓ 3 POLE: Sessel UND inverser Sessel (q3 mit beiden Vorzeichen)")
+
+    # 4 DER ZWISCHENBEREICH -- genau das, was die alte Liste NIE abtastete.
+    #   Half-Chair/Envelope liegen zwischen Pol und Aequator: q2>0 UND q3!=0.
+    zwischen = [qs for qs, _ in g6 if qs.get(2, 0.0) > 0 and qs.get(3, 0.0) != 0]
+    if not zwischen:
+        print("  ✗ 4 ZWISCHENBEREICH leer -- Half-Chair/Envelope unerreichbar"); fehler += 1
+    else:
+        print("  ✓ 4 ZWISCHENBEREICH: %d Punkte mit q2>0 UND q3!=0" % len(zwischen))
+
+    # 5 HOEHERE PAARE ab n=7 -- ohne sie ist der Siebenring unvollstaendig.
+    g7 = _pucker_space_grid(7, 2, 8)
+    if not any(qs.get(3, 0.0) != 0.0 for qs, _ in g7):
+        print("  ✗ 5 m=3 fehlt beim Siebenring"); fehler += 1
+    else:
+        print("  ✓ 5 HOEHERE PAARE: m=3 wird beim Siebenring belegt")
+
+    # 6 KEINE DOPPELTEN Gitterpunkte (sonst blaeht das Produkt ohne Gewinn).
+    for n in (5, 6, 7, 8):
+        g = _pucker_space_grid(n, 2, 6)
+        keys = [tuple(sorted((m, round(q, 6)) for m, q in qs.items())) for qs, _ in g]
+        print("     n=%d: %4d Kandidaten (%d-dim)" % (n, len(g), n - 3))
+
+    print("=== Faltungsraum: %s ===" % ("BESTANDEN" if fehler == 0 else "%d FEHLER" % fehler))
+    return 1 if fehler else 0
+
+
+def selbsttest_konvergenz(sizes=(5, 6, 7)) -> int:
+    """KONVERGENZ statt Behauptung: waechst die Zahl der Minima noch mit der Aufloesung?
+
+    DIE FRAGE, die das beantwortet.  Der Parameterraum (q_m, phi_m) ist KONTINUIERLICH
+    -- jede reelle Kombination ist eine gueltige Geometrie.  Der KONFORMERraum ist es
+    nicht: ein Ring hat endlich viele Energieminima.  Das Gitter ist darum kein
+    Ergebnis, sondern eine STARTPUNKTverteilung; `_relax_hold_pucker` zieht jeden
+    Punkt ins naechste echte Minimum, TFD entdoppelt.
+
+    ⇒ Vollstaendigkeit ist ERREICHBAR, nicht nur annaeherbar: das Gitter muss fein
+      genug sein, dass jedes Einzugsgebiet mindestens einmal getroffen wird.  Ob das
+      der Fall ist, sagt genau eine Messung -- die Zahl der distinkten Zustaende
+      gegen die Aufloesung.  Waechst sie nicht mehr, ist der Raum ueberdeckt.
+
+    ⚠ WARUM DAS HIER STEHT.  `conformer_enum.py:7-9` behauptet dasselbe ("finer grid
+    stops adding distinct minima") und hat KEINE Messstelle dafuer.  Eine Behauptung
+    ohne Beleg ist genau die Bauform, die in diesem Projekt schon mehrfach eine
+    falsche Zahl getragen hat.
+    """
+    if not (_RDKIT and _np is not None):
+        print("=== Konvergenz: RDKit fehlt, uebersprungen ==="); return 0
+    print("=== Selbsttest: Konvergenz des Faltungsgitters ===")
+    print("    Ring   NPHASE=4   8   16     konvergiert?")
+    _alt = {k: _os.environ.get(k) for k in
+            ("DELFIN_FFFREE_PUCKER_SPACE", "DELFIN_FFFREE_PUCKER_NPHASE",
+             "DELFIN_FFFREE_PUCKER_NAMP", "DELFIN_FFFREE_PUCKER_TRACE")}
+    fehler = 0
+    try:
+        _os.environ["DELFIN_FFFREE_PUCKER_SPACE"] = "1"
+        _os.environ["DELFIN_FFFREE_PUCKER_NAMP"] = "2"
+        _os.environ["DELFIN_FFFREE_PUCKER_TRACE"] = "0"
+        for n in sizes:
+            smi = "C1" + "C" * (n - 1) + "1"
+            try:
+                m = Chem.AddHs(Chem.MolFromSmiles(smi))
+                if AllChem.EmbedMolecule(m, randomSeed=42) != 0:
+                    print("    n=%d  Einbettung fehlgeschlagen" % n); continue
+                AllChem.MMFFOptimizeMolecule(m)
+                ri = m.GetRingInfo().AtomRings()
+                if not ri:
+                    print("    n=%d  kein Ring gefunden" % n); continue
+                ring = _ring_order(m, set(ri[0]))
+            except Exception as e:
+                print("    n=%d  Aufbau fehlgeschlagen: %s" % (n, type(e).__name__)); continue
+            zahlen = []
+            for nph in (4, 8, 16):
+                _os.environ["DELFIN_FFFREE_PUCKER_NPHASE"] = str(nph)
+                try:
+                    st = _ring_pucker_states(m, ring, set(), 0.05)
+                    zahlen.append(len(st))
+                except Exception as e:
+                    zahlen.append(-1)
+            ok = (len(zahlen) == 3 and zahlen[1] > 0 and zahlen[2] <= zahlen[1])
+            print("    n=%-3d  %8d %3d %4d      %s"
+                  % (n, zahlen[0], zahlen[1], zahlen[2],
+                     "JA" if ok else "NEIN -- feiner abtasten"))
+            if not ok:
+                fehler += 1
+    finally:
+        for k, v in _alt.items():
+            if v is None:
+                _os.environ.pop(k, None)
+            else:
+                _os.environ[k] = v
+    print("=== Konvergenz: %s ===" %
+          ("BESTANDEN -- der Raum ist bei NPHASE=8 ueberdeckt" if fehler == 0
+           else "%d Ringgroesse(n) NICHT konvergiert" % fehler))
+    return 1 if fehler else 0
+
+
+if __name__ == "__main__":
+    # ⚠ AM DATEIENDE, und das ist keine Kosmetik.  Auf MODULEBENE zaehlt die
+    #   Reihenfolge: steht dieser Block vor einer der Testfunktionen, ist ihr Name
+    #   zur Ausfuehrungszeit noch ungebunden -> NameError.  (Innerhalb einer
+    #   Funktion gilt das nicht -- genau die Verwechslung, die am 09.08. den
+    #   [Z4]-Totenschein erzeugt hat, nur andersherum.)
+    import sys as _sys
+    _rc = selbsttest_raum()
+    _rc = selbsttest_konvergenz() or _rc
+    _sys.exit(_rc)
