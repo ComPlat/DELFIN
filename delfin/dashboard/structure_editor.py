@@ -3405,6 +3405,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         ``press`` and ``abandoned``, claimed by Undo, Reset and the Stops, and
         it draws nothing at all.
 
+        ``look`` is the third of that kind and the least obvious one.  Stepping
+        through the points of a finished walk hands the page one geometry that
+        walk itself computed; it writes no box and takes no undo step, so the
+        structure the profile is a claim about is exactly where it was.
+        Counted as drawing, it took the switch away on the first nudge of the
+        slider standing next to it -- and the two are one walk shown two ways,
+        as a shape and as structures.  Reading one must not end the other.
+
         Measured on a twenty-four-point torsion, before that distinction was
         made here: the walk finished, the picture stood, and one press of Undo
         took it away over "Scanned: the highest point the walk crossed" --
@@ -3414,7 +3422,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         :func:`_scan_plot_holds`).
         """
         record('run', v=int(run), by=by)
-        if by not in ('press', 'abandoned'):
+        if by not in ('press', 'abandoned', 'look'):
             _scan_plot_drop()
         # Who has the row.  A run that finishes after another has taken
         # its number must know whether it was *stopped* -- in which case
@@ -11186,6 +11194,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if not points:
             state['scan_walk'] = None
             return
+        # This walk has not been drawn over: the run that made it is the last
+        # one there was.  Said here because the walk's own start marked the
+        # points before it stale, along with the profile of the walk before
+        # this one (see :func:`_scan_plot_drop`).
+        state['walk_points_stale'] = False
         state['scan_walk'] = {
             'points': [(one[0], one[1], one[2]) for one in points],
             'method': method, 'charge': int(charge), 'uhf': int(uhf),
@@ -11205,6 +11218,57 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if walk['structure'] != _structure_fingerprint(_current_xyz() or ''):
             return None
         return walk
+
+    def _geometry_key(xyz):
+        """What makes two geometries the same one.
+
+        The element column and the places, to four decimals -- further than
+        anything here writes and far closer than any two points of a walk
+        ever are.  Rounded rather than compared as text because one geometry
+        travels through the box, the frame channel and the walk's own record,
+        and each of those writes it out in its own way.
+        """
+        out = []
+        for line in str(xyz or '').splitlines():
+            row = line.split()
+            if len(row) < 4:
+                continue
+            try:
+                place = (round(float(row[1]), 4), round(float(row[2]), 4),
+                         round(float(row[3]), 4))
+            except ValueError:
+                continue
+            out.append((row[0],) + place)
+        return tuple(out)
+
+    def _walk_point_on_screen():
+        """Which point of the walk is in the box, or ``None`` for none of them.
+
+        This is the whole question behind the slider.  A walk can be stepped
+        through while the user is still standing *in* it -- on the point it
+        left, or on one of the landmarks Undo steps back through, which are
+        the walk's own geometries too.  The moment the box holds something
+        the walk never computed, because an optimisation ran or a bond was
+        dragged or another structure was loaded, there is no trajectory under
+        what is on screen and nothing to step through.
+
+        Told apart by geometry and not by the comment line.  The comment would
+        have been cheaper, and it is what the picture is kept honest by, but a
+        walk does not sign the box the same way every time: a driven scan ends
+        on "Driven until the bonds were made and broken", and reading for
+        "Scanned" alone would take the points away from exactly the walks that
+        cost the most to compute.
+        """
+        walk = _walk_here()
+        if not walk:
+            return None
+        here = _geometry_key(_current_xyz() or '')
+        if not here:
+            return None
+        for at, one in enumerate(walk['points']):
+            if _geometry_key(one[2]) == here:
+                return at
+        return None
 
     #: What a finished profile is re-priced with.
     #:
@@ -12506,33 +12570,57 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         _set_mol_status(said)
 
     def _refresh_the_walk_points():
-        """Whether there is a walk to step through, and how long it is.
+        """Whether there is a walk to step through, and where it stands.
 
         The same rule as everything else on this row: a control that can do
-        nothing is not there.  A walk belongs to the molecule it was walked
-        on -- :func:`_walk_here` -- so it stops being offered the moment the
-        structure on screen is a different one.
+        nothing is not there.  A walk belongs to the molecule it was walked on
+        *and* to the geometry on screen -- see :func:`_walk_point_on_screen` --
+        so it stops being offered the moment the user goes on from one of its
+        points, which is the moment the trajectory stops describing what is in
+        the box.
+
+        Where the slider stands is that same answer.  A finished walk leaves
+        the point it reached on screen, so it opens at the *end*: a row
+        reading "point 1" beside a viewer showing point twenty is the control
+        contradicting the picture, and stepping back from where you are is how
+        a path is read -- what did it go through to get here -- rather than
+        replaying it from the start.  Undo to the highest point the walk
+        crossed puts that geometry in the box, and the slider follows it
+        there.
+
+        Gone for good once something has drawn over the structure.  A run
+        writes the box only when it finishes, so between the press and the
+        answer the geometry in the box is still the walk's own while the
+        structure on screen is no longer -- and the geometry is all this can
+        see.  The run marks the points stale as it starts, the same line and
+        the same moment the profile goes (:func:`_scan_plot_drop`), and only
+        a walk that finishes clears the mark.
+
+        Re-seated only when the box moves.  Looking at a point deliberately
+        does not write the box, so the slider stays where the user put it
+        while they step through the walk.
         """
         points = (_walk_here() or {}).get('points') or []
-        if len(points) < 2:
+        # The two cheap questions before the one that reads every geometry.
+        at = (None if len(points) < 2 or state.get('walk_points_stale')
+              else _walk_point_on_screen())
+        if at is None:
             submit_walk_at.layout.display = 'none'
+            state['walk_look_at'] = None
             return
-        # A walk that has just arrived puts the slider at its *last* point.
-        #
-        # That is where the box is: a finished walk leaves the structure it
-        # reached on screen, so a slider reading "point 1" while the viewer
-        # shows point twenty is the row contradicting the picture. Stepping
-        # back from the end is also the way a path is read -- what did it go
-        # through to get here -- rather than replaying it from the start.
-        fresh = state.get('walk_look_of') != id(points)
+        was = state.get('walk_look_at') or (None, None)
+        moved = was[0] is not points or was[1] != at
         state['walk_look_quiet'] = True
         try:
             submit_walk_at.max = len(points) - 1
-            if fresh or submit_walk_at.value > len(points) - 1:
-                submit_walk_at.value = len(points) - 1
+            if moved or submit_walk_at.value > len(points) - 1:
+                submit_walk_at.value = at
         finally:
             state['walk_look_quiet'] = False
-        state['walk_look_of'] = id(points)
+        # The list itself and not its id: an id is only unique while the
+        # object it belongs to is alive, and the walk before this one is
+        # dropped the moment a new one is kept.
+        state['walk_look_at'] = (points, at)
         submit_walk_at.layout.display = ''
 
     def on_submit_walk_at(change):
@@ -12542,6 +12630,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         n = int(change.get('new') or 0)
         if not (0 <= n < len(points)):
             return
+        # The structure comes forward if the profile was standing over it.
+        # They share this corner of the panel and only one of them is in it
+        # at a time, so asking to see a geometry while the picture is up
+        # would otherwise send it to a viewer nobody can see.
+        if submit_scan_plot_btn.value:
+            submit_scan_plot_btn.value = False
         where, spent, xyz = points[n][0], points[n][1], points[n][2]
         _look_at(xyz,
                  f'Point {n + 1} of {len(points)} of the walk: the '
@@ -13886,7 +13980,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
         Cheap enough to call from either: nothing is drawn most of the time,
         and then this is one dictionary lookup.
+
+        The walk's own points go the same way, and above the line below rather
+        than under it, so that they leave even where no picture could be
+        drawn.  A profile and a slider through the trajectory are the same
+        walk asked about twice; a slider left standing over a structure the
+        walk never reached is the control this whole rule exists to remove.
         """
+        submit_walk_at.layout.display = 'none'
+        state['walk_look_at'] = None
+        state['walk_points_stale'] = True
         if not state.get('scan_plot'):
             return
         state['scan_plot'] = None
