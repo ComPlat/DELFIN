@@ -6191,6 +6191,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             if state.pop('thermal_walled', None):
                 _push_thermal_wall(None)
             return
+        if not state.get('gfn_follow'):
+            # The drag is over and this answer is late.
+            #
+            # An xtb round outlives the gesture that asked for it: the last
+            # answer of a drag regularly arrives after the release, and one
+            # arriving here would put marks on the page that nothing will
+            # take off again -- the release has already run, and only the
+            # *next* grab clears them. Reported from a real session, with the
+            # journal showing the release at 1425.264 s and the answer that
+            # drew over it at 1425.977: "warum wird die force nicht mehr
+            # entfernt ich seh immer noch die orangenen kugeln im viewer?"
+            #
+            # Nothing is marked and nothing is cleared: the release already
+            # cleared, and this answer has no standing to say otherwise.
+            return
         marks = {}
         reach = 0.0
         here = _gfn.coordinates_of(came_back)
