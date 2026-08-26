@@ -295,3 +295,81 @@ def test_a_landed_calculation_makes_the_barrier_measurable(tmp_path):
     rise = rg.barrier(again, e.id, 'DFT')
     assert rise == pytest.approx(0.05 * rg.HARTREE_TO_KCAL, rel=1e-6)
     assert rg.missing_at(again, 'DFT') == []
+
+
+# ---------------------------------------------------------------------------
+# The job runs where the Submit tab puts it, and stays there
+# ---------------------------------------------------------------------------
+
+def test_a_job_that_ran_in_the_calculation_directory_is_found_by_its_name(
+        tmp_path):
+    """The graph asks for a run folder of its own; the Submit tab puts every
+    job in the calculation directory under its own name, which is where the
+    rest of DELFIN looks for one. So the graph follows the name."""
+    graph, node, entry, real = _waiting(tmp_path)
+    panel = _panel(tmp_path)
+    assert panel.graph.pending, 'nothing has arrived yet'
+
+    elsewhere = tmp_path / entry.job_name
+    _run(elsewhere, 'n01', body=_ENERGY + _GIBBS + _DONE, xyz=_TIGHTER)
+    (elsewhere / 'n01.gbw').write_bytes(b'restart data')
+
+    told = panel.harvest()
+    assert told and 'landed' in told[0]
+
+    again = rg.load(graph.folder)
+    landed = rg.best(again.node(node.id), 'r2SCAN-3c')
+    assert landed.free_energy == pytest.approx(-76.398765432)
+    assert rg.geometry(again, node.id, 'r2SCAN-3c') == _TIGHTER
+
+
+def test_nothing_is_moved_out_from_under_the_rest_of_delfin(tmp_path):
+    """Bringing a finished job inside the graph would make the folder
+    self-contained -- and would take that job out of the calculations browser
+    and out of Job Status, where it has always been and where somebody may be
+    looking for it. Changing what already works to suit something new is the
+    wrong trade."""
+    graph, node, entry, real = _waiting(tmp_path)
+    panel = _panel(tmp_path)
+    elsewhere = tmp_path / entry.job_name
+    _run(elsewhere, 'n01', body=_ENERGY + _DONE, xyz=_TIGHTER)
+    before = sorted(p.name for p in elsewhere.iterdir())
+
+    panel.harvest()
+
+    assert elsewhere.is_dir(), 'the job is where it ran'
+    assert sorted(p.name for p in elsewhere.iterdir()) == before
+    assert not (graph.folder / entry.run / 'n01.out').exists()
+
+
+def test_the_record_says_which_folder_its_numbers_came_out_of(tmp_path):
+    """A record has to be able to point at the calculation behind it, and
+    that is not always the folder the graph asked for."""
+    graph, node, entry, real = _waiting(tmp_path)
+    panel = _panel(tmp_path)
+    elsewhere = tmp_path / entry.job_name
+    _run(elsewhere, 'n01', body=_ENERGY + _DONE, xyz=_TIGHTER)
+    panel.harvest()
+    landed = rg.best(rg.load(graph.folder).node(node.id), 'r2SCAN-3c')
+    assert landed.source['ran_in'] == str(elsewhere)
+    assert landed.source['kind'] == 'run'
+
+
+def test_a_job_still_running_elsewhere_is_left_alone(tmp_path):
+    graph, node, entry, real = _waiting(tmp_path)
+    panel = _panel(tmp_path)
+    elsewhere = tmp_path / entry.job_name
+    _run(elsewhere, 'n01', body='GEOMETRY OPTIMIZATION CYCLE 3\n')
+    assert panel.harvest() == []
+    assert len(rg.load(graph.folder).pending) == 1
+
+
+def test_a_pending_with_no_job_name_looks_only_where_it_was_told(tmp_path):
+    graph = rg.create(tmp_path / 'plain', name='plain')
+    node = rg.add_state(graph, _WATER, rg.Record(level='GFN2-xTB',
+                                                 free_energy=-5.0))
+    rg.add_pending(graph, node.id, run='runs/nowhere', level='DFT')
+    rg.save(graph)
+    panel = _panel(tmp_path)
+    assert panel.harvest() == []
+    assert len(rg.load(graph.folder).pending) == 1
