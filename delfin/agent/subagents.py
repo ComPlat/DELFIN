@@ -2913,10 +2913,35 @@ def run_subagent(
     })
 
     try:
+        # The effort the user asked for is about the WORK, and delegating a
+        # piece of it is not a decision to think less about that piece. The
+        # budget is a per-CALL argument the delegate cannot see, so without
+        # this it took the parameter default — zero, which the request
+        # shaper reads as the lowest reasoning effort. It reaches the wire
+        # only on the model families that accept `reasoning_effort`;
+        # elsewhere it is inert, which is why it was invisible.
+        #
+        # Passed only to a client whose signature has it. The same rule the
+        # engine already follows for `no_tools`, and for the same reason: a
+        # new keyword handed to a caller built against the older signature
+        # raises, and here the raise was swallowed into an empty report —
+        # five orchestration tests went from a finding to "".
+        _sub_kwargs = {}
+        _budget = int(getattr(parent_client, "_turn_thinking_budget", 0) or 0)
+        if _budget > 0:
+            try:
+                import inspect as _inspect
+                if "thinking_budget" in _inspect.signature(
+                        sub_client.stream_message).parameters:
+                    _sub_kwargs["thinking_budget"] = _budget
+            except (TypeError, ValueError):
+                pass
+
         for event in sub_client.stream_message(
             messages=messages,
             system=system_prompt,
             max_tokens=max_output_tokens,
+            **_sub_kwargs,
         ):
             if time.monotonic() - t0 > max_wall_s:
                 truncated = True
