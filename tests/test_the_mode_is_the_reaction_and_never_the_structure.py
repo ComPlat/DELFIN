@@ -876,3 +876,134 @@ def test_a_climb_that_has_been_superseded_says_nothing():
     # different one.
     for allowed in ('press', 'abandoned', 'climb'):
         assert repr(allowed) in stopped, allowed
+
+
+# ---------------------------------------------------------------------------
+# The two structures the press reached, on screen
+# ---------------------------------------------------------------------------
+#
+# Follow it down finds two minima, describes them in sentences, and used to
+# throw the geometries away: two structures came out, one box holds one, and
+# the one being worked on is the saddle.  What the sentences cannot say is
+# what the two ends look like, and that is the reason anybody follows a mode
+# down -- "bei Follow it down will ich natuerlich auch beide enden im viewer
+# sehen koennen", said twice.
+#
+# The saddle is the first entry in the box rather than something to find
+# again with Undo, because it is what the user was working on and the two
+# ends are a fact about it.
+
+
+def _put(part, text):
+    """Put a structure where the editor reads it from.
+
+    Both places, the way the tab does it: the box, and the key the Submit tab
+    keeps the current structure in and every force field here reads
+    (``_current_xyz``).  A test that wrote only one of them would be driving
+    an editor no host produces.
+    """
+    part.coords_widget.value = text
+    part.state['current_xyz_for_copy'] = {'content': text}
+
+
+def _two_ends(part, saddle=None):
+    """What a Follow it down leaves behind when it has reached both ends."""
+    saddle = saddle or part.coords_widget.value
+    rows = [line for line in saddle.splitlines()[2:] if line.strip()]
+
+    def moved(by):
+        out = []
+        for line in rows:
+            bits = line.split()
+            out.append(f'{bits[0]} {float(bits[1]) + by:.6f} '
+                       f'{bits[2]} {bits[3]}')
+        return '{}\nan end\n'.format(len(out)) + '\n'.join(out)
+
+    part.state['down_ends'] = [
+        {'which': 'One way', 'xyz': moved(-0.4), 'kcal': -70.6},
+        {'which': 'The other way', 'xyz': moved(0.4), 'kcal': -6.7},
+    ]
+    part.state['down_saddle'] = saddle
+    part._refresh_the_down_ends()
+    return part.state['down_ends']
+
+
+def test_the_ends_box_is_absent_until_a_press_has_reached_them(editor):
+    part = editor(_SADDLE)
+    assert not _visible(part.submit_down_dd), 'nothing has been followed down'
+    _two_ends(part)
+    assert _visible(part.submit_down_dd)
+    assert [value for _label, value in part.submit_down_dd.options] == [
+        'top', '0', '1']
+
+
+def test_either_end_goes_on_screen_and_the_saddle_comes_back(editor):
+    """Which is the whole of the ask. The numbers say what the two ends are;
+    only the picture says what they look like."""
+    part = editor(_SADDLE)
+    ends = _two_ends(part)
+    saddle = part.coords_widget.value
+
+    part.submit_down_dd.value = '0'
+    assert (part._geometry_key(part.coords_widget.value)
+            == part._geometry_key(ends[0]['xyz']))
+    assert 'One way' in _said(part) and '-70.6' in _said(part)
+
+    part.submit_down_dd.value = '1'
+    assert (part._geometry_key(part.coords_widget.value)
+            == part._geometry_key(ends[1]['xyz']))
+
+    part.submit_down_dd.value = 'top'
+    assert part._geometry_key(part.coords_widget.value) == part._geometry_key(
+        saddle), 'the saddle is one press away, not a count of Undos'
+
+
+def test_the_box_reads_whichever_of_the_three_is_on_screen(editor):
+    """It follows the structure rather than leading it, so the row cannot say
+    "one way" over a picture of the saddle."""
+    part = editor(_SADDLE)
+    ends = _two_ends(part)
+
+    _put(part, ends[1]['xyz'])
+    part._refresh_the_down_ends()
+    assert part.submit_down_dd.value == '1'
+
+    _put(part, part.state['down_saddle'])
+    part._refresh_the_down_ends()
+    assert part.submit_down_dd.value == 'top'
+
+
+def test_looking_at_both_ends_is_one_press_of_undo(editor):
+    """Nothing is lost by going there. A run of looking is one step in the
+    history, the way a sweep of an arrow key is one rather than two hundred."""
+    part = editor(_SADDLE)
+    _two_ends(part)
+    saddle = part.coords_widget.value
+    depth = len(part.state.get('history') or ())
+
+    part.submit_down_dd.value = '0'
+    part.submit_down_dd.value = '1'
+    part.submit_down_dd.value = '0'
+    assert len(part.state.get('history') or ()) == depth + 1
+
+    part.on_submit_manip_undo()
+    assert part._geometry_key(part.coords_widget.value) == part._geometry_key(
+        saddle)
+
+
+def test_the_ends_belong_to_the_saddle_and_not_to_the_molecule(editor):
+    """The walk and the scan's two ends answer to the element column: they
+    describe a molecule and outlive any one geometry of it. These describe one
+    stationary point. Optimise an end or drag it, and there is no longer a
+    saddle on screen for two ends to be the ends of."""
+    part = editor(_SADDLE)
+    _two_ends(part)
+    assert _visible(part.submit_down_dd)
+
+    rows = [line for line in _SADDLE.splitlines()[2:] if line.strip()]
+    bits = rows[0].split()
+    rows[0] = f'{bits[0]} {float(bits[1]) + 0.9:.6f} {bits[2]} {bits[3]}'
+    _put(part, '{}\nEdited in DELFIN viewer\n'.format(
+        len(rows)) + '\n'.join(rows))
+    part._refresh_the_down_ends()
+    assert not _visible(part.submit_down_dd)

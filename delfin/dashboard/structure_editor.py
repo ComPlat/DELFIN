@@ -222,6 +222,7 @@ _EDITOR_COMMENTS = (
     'from a band, optimised to ',
     'optimised to a transition state',
     'estimated transition state, from the path',
+    'followed down the mode',
     'delfin drag-end',
     'delfin drag-follow',
     'from the delfin viewer',
@@ -2149,6 +2150,25 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='200px', display='none'),
     )
 
+    #: Which of the two ends a Follow it down reached, on screen.
+    #:
+    #: The press finds them and describes them, and used to leave it at that:
+    #: two structures came out and the box holds one, so the saddle kept the
+    #: box and the two ends existed only as sentences.  Asked for twice --
+    #: "bei Follow it down will ich natürlich auch beide enden im viewer sehen
+    #: koennen" -- and it is the same want the walk's points answered: the
+    #: numbers say what the two ends *are*, and only the picture says what
+    #: they look like.
+    #:
+    #: The saddle is the first entry rather than something to find again.  It
+    #: is what the user was working on, the two ends are a fact about it, and
+    #: coming back must not depend on remembering how far Undo goes.
+    submit_down_dd = widgets.Dropdown(
+        options=[('the saddle it came from', 'top')], value='top',
+        description='Ends', style={'description_width': '34px'},
+        layout=widgets.Layout(width='300px', display='none'),
+    )
+
     submit_scan_plot_btn = widgets.ToggleButton(
         value=False,
         description='Show the profile',
@@ -2553,6 +2573,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # something untrue. Their arriving is how the editor says the two
             # questions about a transition state can now be asked.
             submit_mode_dd, submit_mode_btn, submit_ends_btn,
+            # And the two structures that press reached, once it has.
+            submit_down_dd,
             # And the switch between the structure and the profile of the
             # walk that has just finished. On the row above the picture
             # the two share, because that row is always on screen: put
@@ -3116,6 +3138,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                        submit_topology_btn, submit_saddle_btn,
                        submit_saddle_from, submit_saddle_how,
                        submit_mode_dd, submit_mode_btn, submit_ends_btn,
+                       submit_down_dd,
                        submit_climb_btn, submit_shape_btn,
                        submit_path_from_btn):
             widget.disabled = not enabled
@@ -3406,12 +3429,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         it draws nothing at all.
 
         ``look`` is the third of that kind and the least obvious one.  Stepping
-        through the points of a finished walk hands the page one geometry that
-        walk itself computed; it writes no box and takes no undo step, so the
-        structure the profile is a claim about is exactly where it was.
-        Counted as drawing, it took the switch away on the first nudge of the
-        slider standing next to it -- and the two are one walk shown two ways,
-        as a shape and as structures.  Reading one must not end the other.
+        through the points of a finished walk puts one of that walk's own
+        geometries on the screen and in the box -- so the picture beside it is
+        still a picture of the walk the structure belongs to.  Counted as
+        drawing, it took the switch away on the first nudge of the slider
+        standing next to it, and the two are one walk shown two ways, as a
+        shape and as structures.  Reading one must not end the other.
+
+        The picture is not simply waved through: the run number stops being a
+        reason to drop it, and the geometry that arrives in the box a moment
+        later is checked like any other (:func:`_scan_plot_holds`), which is
+        what a point of this walk passes and a structure from anywhere else
+        does not.
 
         Measured on a twenty-four-point torsion, before that distinction was
         made here: the walk finished, the picture stood, and one press of Undo
@@ -12283,6 +12312,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         holds one structure, and the one being worked on is the saddle: these
         two are what it *joins*, which is a fact about it rather than a
         replacement for it.
+
+        But they are kept, and the box beside the press puts either of them on
+        screen and comes back to the saddle -- because the sentences say what
+        the two ends *are* and only the picture says what they look like,
+        which is the reason anybody follows a mode down.  Going there is a
+        move like any other: one step in the history, and Undo comes back.
         """
         if state.get('mode_run') or state.get('down_run'):
             return
@@ -12315,14 +12350,29 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
             def _done():
                 state['down_run'] = False
+                # The two structures, kept rather than described and dropped.
+                # What is kept is what a picture needs and nothing else: the
+                # geometry, which way it went and what it cost.  The bond
+                # graphs and the mode vectors the press reasoned with have
+                # said what they had to say in the sentences below.
+                kept = [{'which': one.get('which'), 'xyz': one.get('xyz'),
+                         'kcal': one.get('kcal')}
+                        for one in (got.get('ends') or ())
+                        if one.get('ok') and one.get('xyz')]
+                state['down_ends'] = kept
+                state['down_saddle'] = xyz if kept else None
                 lines = [str(got.get('status') or 'It did not run.')]
                 lines.extend(str(one) for one in (got.get('lines') or ()))
                 lines.append(
+                    'The saddle is still in the box. The box beside the press '
+                    'puts either end on screen and comes back to it.'
+                    if kept else
                     'The saddle is still in the box; these two are what it '
                     'joins, not a replacement for it.'
                     if got.get('ok') else
                     'Nothing was written to the box.')
                 _set_mol_status(*lines)
+                _refresh_saddle_controls()
 
             schedule_ui_update(_done)
 
@@ -12499,6 +12549,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # And whether there is a walk to step through, which comes and
             # goes with the structure exactly as the two ends do.
             _refresh_the_walk_points()
+            # And the two structures a Follow it down reached, which belong
+            # to the saddle on screen rather than to the molecule.
+            _refresh_the_down_ends()
         finally:
             state['saddle_controls_quiet'] = False
 
@@ -12548,25 +12601,48 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['gfn_hand_force_run'] = run
         return out
 
-    def _look_at(xyz, said):
-        """Put one geometry on the viewer, and say what it is.
+    def _stand_on(xyz, said, comment, what, gesture='walk-point'):
+        """Go to one of the walk's own geometries: on screen and in the box.
 
-        Down the frame channel, which is how every structure this editor
-        draws gets there.  The box is not written and no undo step is
-        taken: this is looking at something a run already computed, and
-        looking must not be able to lose what the user is standing on.
+        Both, and that is the whole of this.  It was written as looking only
+        -- the frame channel alone, the box left holding whatever the user
+        was standing on -- and the line even said so.  Measured from a real
+        session, on a 64-atom system: a scan was walked, the slider stepped
+        to point 10 near the top of the barrier, and Show the shape pressed.
+        The answer was "the structure as it stands is a minimum, not a
+        transition state".  Then point 11, the same press, and the same free
+        energy to the second decimal -- G = -55083.20 both times, for two
+        different structures on screen.  Both Hessians had run on what was in
+        the box, which was the minimum the scan ended on.  The user read it as
+        his own mistake and wrote so.
 
-        Its own run number, because the page drops what it was playing
-        when the number moves -- which is right here: the one frame handed
-        over is the whole of what there is to show.
+        It was not.  Every press in this editor acts on the box, and a
+        structure on screen that the presses do not act on is worse than
+        showing nothing: there is no way to see it is happening, and the
+        answer that comes back is about a molecule that is not on the screen.
+        So stepping through a walk goes there, and what you look at is what
+        you press on.
+
+        Nothing is lost by it.  One step in the history first, under a
+        gesture, so a run of stepping is a single press of Undo back to where
+        the user was standing -- the way a sweep of an arrow key is one step
+        rather than two hundred.
+
+        The frame carries the picture and the box is written behind it, marked
+        as drawn: the page has the geometry already, and redrawing it would
+        tear the viewer down and build it again for a structure it is looking
+        at.
         """
         rows = _gfn.coordinates_of(xyz or '')
-        if not rows:
+        lines = [line for line in str(xyz or '').splitlines()[2:] if line.strip()]
+        if not rows or not lines:
             return
+        _remember(what, gesture=gesture)
         run = _note_the_run(int(state.get('gfn_run', 0)) + 1, 'look')
         state['gfn_run'] = run
         submit_gfn_frame.value = _frame_payload(
             run, **{'from': 0, 'follow': 1, 'frames': [rows], 'final': 1})
+        _write_coords(xyz_document(lines, comment), drawn=True, run=run)
         _set_mol_status(said)
 
     def _refresh_the_walk_points():
@@ -12596,9 +12672,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         the same moment the profile goes (:func:`_scan_plot_drop`), and only
         a walk that finishes clears the mark.
 
-        Re-seated only when the box moves.  Looking at a point deliberately
-        does not write the box, so the slider stays where the user put it
-        while they step through the walk.
+        Re-seated only when the box moves, which while somebody is stepping
+        through the walk means: to the point they have just stepped to, where
+        it already is.
         """
         points = (_walk_here() or {}).get('points') or []
         # The two cheap questions before the one that reads every geometry.
@@ -12623,6 +12699,87 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['walk_look_at'] = (points, at)
         submit_walk_at.layout.display = ''
 
+    def _down_here():
+        """The two ends of the last Follow it down, while they are in reach.
+
+        In reach means: the box holds the saddle they came from, or one of
+        the ends themselves.  Not the element column, which is the rule the
+        walk and the scan's two ends answer to -- those describe a *molecule*
+        and outlive any one geometry of it, and these describe one saddle.
+        Optimise an end, drag it, load something else, and there is no longer
+        a stationary point on screen for two ends to be the ends *of*.
+        """
+        kept = state.get('down_ends') or []
+        if len(kept) < 2:
+            return None
+        here = _geometry_key(_current_xyz() or '')
+        if not here:
+            return None
+        if _geometry_key(state.get('down_saddle') or '') == here:
+            return kept
+        for one in kept:
+            if _geometry_key(one.get('xyz') or '') == here:
+                return kept
+        return None
+
+    def _refresh_the_down_ends():
+        """Offer the two ends and the saddle, and say which one is on screen.
+
+        The box follows the structure rather than leading it, the way the
+        walk's slider does: whichever of the three is in the box is what the
+        box reads, so the row cannot say "one way" over a picture of the
+        saddle.
+        """
+        kept = _down_here()
+        if not kept:
+            submit_down_dd.layout.display = 'none'
+            return
+        here = _geometry_key(_current_xyz() or '')
+        options = [('the saddle it came from', 'top')]
+        standing = 'top'
+        for at, one in enumerate(kept):
+            cost = one.get('kcal')
+            says = '' if cost is None else f', {float(cost):+.1f} kcal/mol'
+            options.append((f"{one.get('which') or 'an end'}{says}", str(at)))
+            if _geometry_key(one.get('xyz') or '') == here:
+                standing = str(at)
+        state['down_look_quiet'] = True
+        try:
+            submit_down_dd.options = options
+            submit_down_dd.value = standing
+        finally:
+            state['down_look_quiet'] = False
+        submit_down_dd.layout.display = ''
+
+    def on_submit_down_dd(change):
+        if change.get('name') != 'value' or state.get('down_look_quiet'):
+            return
+        kept = _down_here()
+        if not kept:
+            return
+        pick = str(change.get('new') or '')
+        if pick == 'top':
+            _stand_on(state.get('down_saddle') or '',
+                      'Back on the saddle the two ends came from. Every '
+                      'press works on it again.',
+                      'Where the saddle search got to',
+                      'the two ends, back to the saddle', gesture='down-end')
+            return
+        try:
+            one = kept[int(pick)]
+        except (ValueError, IndexError):
+            return
+        which = str(one.get('which') or 'An end')
+        cost = one.get('kcal')
+        says = ('' if cost is None else
+                f' It sits {float(cost):+.1f} kcal/mol against the saddle.')
+        _stand_on(one.get('xyz') or '',
+                  f'{which} down the mode.{says} This is the structure now -- '
+                  f'every press works on it, and the box goes back to the '
+                  f'saddle.',
+                  f'Followed down the mode, {which.lower()}',
+                  'the two ends of the mode', gesture='down-end')
+
     def on_submit_walk_at(change):
         if change.get('name') != 'value' or state.get('walk_look_quiet'):
             return
@@ -12637,11 +12794,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if submit_scan_plot_btn.value:
             submit_scan_plot_btn.value = False
         where, spent, xyz = points[n][0], points[n][1], points[n][2]
-        _look_at(xyz,
-                 f'Point {n + 1} of {len(points)} of the walk: the '
-                 f'coordinate at {where:.3g}, {spent:+.1f} kcal/mol from '
-                 f'the start. Looking only -- the box still holds the '
-                 f'structure you were on.')
+        _stand_on(xyz,
+                  f'Point {n + 1} of {len(points)} of the walk: the '
+                  f'coordinate at {where:.3g}, {spent:+.1f} kcal/mol from '
+                  f'the start. This is the structure now -- every press works '
+                  f'on it, and Undo goes back to where you were.',
+                  f'Scanned: point {n + 1} of the walk',
+                  f'the walk, on from point {n + 1}')
 
     def _keep_the_choice(box, options, wish):
         """Rewrite a box's entries without throwing away what was chosen.
@@ -17227,5 +17386,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_draw_update_btn.on_click(on_submit_draw_update)
     submit_draw_sync.observe(on_submit_draw_sync, names='value')
     submit_scan_plot_btn.observe(on_submit_scan_plot_btn, names='value')
+    submit_down_dd.observe(on_submit_down_dd, names='value')
     submit_walk_at.observe(on_submit_walk_at, names='value')
     return Editor(locals())
