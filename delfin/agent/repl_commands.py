@@ -159,14 +159,47 @@ def _status(ctx, _args: str) -> CommandResult:
 
 
 def _cost(ctx, _args: str) -> CommandResult:
+    """What the session spent, and how much of it was delegated.
+
+    The first line is the parent model's own spend and means exactly what
+    it always did. The delegated half is added as its own quantity rather
+    than folded into it: a session that is expensive because it delegates
+    and one that is expensive because its own model is are different
+    facts calling for different changes, and a single total cannot say
+    which. A session that delegated nothing prints the one line it always
+    printed -- a "+ $0.0000 delegated" row on every reading is noise.
+    """
     try:
         st = ctx.engine.get_status() or {}
     except Exception:
         return CommandResult(output="no cost recorded")
-    return CommandResult(output=(
-        f"${float(st.get('cost_usd', 0.0) or 0.0):.4f}  "
+    direct = float(st.get("cost_usd", 0.0) or 0.0)
+    lines = [
+        f"${direct:.4f}  "
         f"↑{st.get('input_tokens', 0)} ↓{st.get('output_tokens', 0)} "
-        f"cached {st.get('cached_tokens', 0)}"))
+        f"cached {st.get('cached_tokens', 0)}"
+    ]
+    delegates = int(st.get("delegate_count", 0) or 0)
+    if delegates:
+        delegated = float(st.get("delegated_cost_usd", 0.0) or 0.0)
+        lines.append(
+            f"+ ${delegated:.4f}  delegated to {delegates} sub-agent(s)  "
+            f"↑{int(st.get('delegated_input_tokens', 0) or 0)} "
+            f"↓{int(st.get('delegated_output_tokens', 0) or 0)}")
+        background = float(
+            st.get("background_delegated_cost_usd", 0.0) or 0.0)
+        if background > 0:
+            lines.append(
+                f"   of which ${background:.4f} ran in the background and "
+                f"finished after the turn that started it — session spend, "
+                f"charged to no turn")
+        unpriced = int(st.get("delegates_unpriced", 0) or 0)
+        if unpriced:
+            lines.append(
+                f"   {unpriced} delegate(s) ran on a model with no published "
+                f"rate and are NOT in the figure above")
+        lines.append(f"= ${direct + delegated:.4f}  this session")
+    return CommandResult(output="\n".join(lines))
 
 
 def _context(ctx, _args: str) -> CommandResult:
@@ -535,6 +568,27 @@ def _usage(ctx, _args: str) -> CommandResult:
                          "(no rate to convert them)")
     except Exception as exc:
         lines.append(f"rate       unavailable ({exc})")
+    # The tokens above are the parent model's alone. Delegated runs are
+    # billed separately and were reported nowhere a user of this command
+    # would look, so a session whose work was done by sub-agents read as
+    # a nearly idle one. Absent entirely when nothing was delegated.
+    delegates = int(st.get("delegate_count", 0) or 0)
+    if delegates:
+        lines.append(
+            f"delegated  {delegates} sub-agent(s)  "
+            f"↑{int(st.get('delegated_input_tokens', 0) or 0):,} "
+            f"↓{int(st.get('delegated_output_tokens', 0) or 0):,} tokens")
+        delegated_usd = float(st.get("delegated_cost_usd", 0.0) or 0.0)
+        if delegated_usd > 0:
+            direct = float(st.get("cost_usd", 0.0) or 0.0)
+            lines.append(
+                f"total      ${direct:.4f} direct + ${delegated_usd:.4f} "
+                f"delegated = ${direct + delegated_usd:.4f}")
+        unpriced = int(st.get("delegates_unpriced", 0) or 0)
+        if unpriced:
+            lines.append(
+                f"           {unpriced} delegate(s) on a model with no "
+                f"published rate — not in the figures above")
     return CommandResult(output="\n".join(lines))
 
 
