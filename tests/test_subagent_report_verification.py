@@ -267,8 +267,12 @@ def test_to_payload_carries_the_verdict_inline():
         sa_id="ab12cd34",
     )
     payload = res.to_payload()
-    # The delegate's own text survives verbatim ...
-    assert payload["result"] == res.final_text
+    # The delegate's own text survives in full — inside the untrusted
+    # marker it now travels in. A sub-agent's report is a model's summary
+    # of material it did not write, so the parent reads it as data; the
+    # verdict below is the harness speaking and stays unmarked.
+    assert res.final_text in payload["result"]
+    assert "UNTRUSTED" in payload["result"]
     # ... and the notice heads the JSON the parent reads.
     serialized = json.dumps(payload, ensure_ascii=False)
     assert serialized.startswith('{"verification_notice":')

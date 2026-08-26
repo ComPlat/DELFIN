@@ -1321,6 +1321,15 @@ class AgentEngine:
                 report = (report[:self._SUBAGENT_REPORT_CHARS]
                           + f"\n  […] full report: subagent_result(sa_id="
                             f"'{sa_id}')")
+            if report:
+                # The second route the same prose takes into this context.
+                # A background delegate's report is pushed here rather than
+                # returned through the tool result, so marking only the
+                # tool path would leave the push unmarked — and the push is
+                # the one that arrives unasked, between rounds, while the
+                # parent is in the middle of something else.
+                from .subagents import mark_delegate_text
+                report = mark_delegate_text(report)
             err = str(ev.get("error") or "").strip()
             lines.append(head + (f" — run error: {err[:160]}" if err else ""))
             if report:

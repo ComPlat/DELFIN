@@ -1149,6 +1149,40 @@ def list_subagents() -> list[dict]:
     ]
 
 
+def mark_delegate_text(text: str) -> str:
+    """Mark a delegate's own prose as untrusted before the parent reads it.
+
+    A sub-agent reads whatever its task points it at — a checked-out
+    repository's README, a fetched page, a tool result from an MCP server
+    someone else configured. Its report is a MODEL's summary of that
+    material, so any instruction inside the material can reach the parent
+    through it. The same boundary is already drawn for web_search,
+    web_fetch and MCP results in ``api_client._wrap_untrusted``; the
+    delegation path was the one consumer that never called it, and it is
+    the one whose text arrives with a colleague's authority rather than a
+    stranger's.
+
+    Only the PROSE is marked. The envelope around it — the id, the token
+    counts, the tool-call names, the verification verdict — is built by
+    this file from its own records, and marking that too would say the
+    harness does not trust itself.
+
+    The remaining surface, named rather than implied: ``structured_output``
+    is not marked. Its shape is constrained by a schema the PARENT wrote,
+    which is narrower, and stringifying it would destroy the one thing it
+    exists to provide. A free-text field inside such a schema is still a
+    route, and this is where that is written down.
+    """
+    body = (text or "").strip()
+    if not body:
+        return text or ""
+    try:
+        from .api_client import _wrap_untrusted
+    except Exception:
+        return body
+    return _wrap_untrusted(body)
+
+
 @dataclass
 class SubagentResult:
     subagent_type: str
@@ -1201,11 +1235,18 @@ class SubagentResult:
         # parent ever reads it. The full trace (with tool outputs) is passed
         # explicitly — the payload copy above carries names/inputs only.
         # Defined below; never raises, and leaves ``result`` untouched.
-        return attach_verification(
+        payload = attach_verification(
             payload,
             tool_calls=self.tool_calls,
             repo_root=self.workspace or None,
         )
+        # Marked LAST, and the order is load-bearing. The verifier scans
+        # this field for claims and matches them against the run's own
+        # tool trace; marking first would have it reading the wrapper's
+        # own words as part of the delegate's report. So: verify the text
+        # the delegate wrote, then hand the parent a marked copy of it.
+        payload["result"] = mark_delegate_text(payload.get("result", ""))
+        return payload
 
 
 # ---------------------------------------------------------------------------
