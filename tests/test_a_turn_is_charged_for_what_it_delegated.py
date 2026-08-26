@@ -559,3 +559,54 @@ def test_the_ledger_is_declared_session_state():
     not in it comes back missing after every resume."""
     declared = {spec.attr for spec in AgentEngine._SESSION_FIELDS}
     assert "_delegate_spend" in declared
+
+
+# ---------------------------------------------------------------------------
+# The one writer of the record
+# ---------------------------------------------------------------------------
+
+def test_the_only_writer_of_turnmetrics_fills_the_delegation_fields():
+    """`TurnMetrics` has exactly one call site.
+
+    Adding five columns and not passing them there is the shape this
+    whole area keeps producing: the mechanism exists, one hop drops it,
+    and the record carries the fields with no figure in them — a turn
+    that delegated five agents reading as though it spent only what it
+    spent itself.
+    """
+    import inspect
+
+    from delfin.dashboard import tab_agent
+
+    src = inspect.getsource(tab_agent)
+    assert src.count("record_turn(TurnMetrics(") == 1, (
+        "a second writer needs the same fields, and this test to be widened")
+    assert "_delegation_fields(engine)" in src
+
+
+def test_the_dashboard_handover_reads_the_turn_bucket_not_the_session():
+    """Session spend accumulates; a per-turn record needs the per-turn
+    bucket, or every row after the first over-reports."""
+    import inspect
+
+    from delfin.dashboard import tab_agent
+
+    src = inspect.getsource(tab_agent)
+    start = src.index("def _delegation_fields")
+    body = src[start:start + 900]
+    assert "delegate_spend().turn" in body
+    assert ".session" not in body
+
+
+def test_a_missing_ledger_costs_the_row_nothing():
+    """Best-effort, like the rest of that block: a metrics record is worth
+    less than the turn it describes."""
+    import inspect
+
+    from delfin.dashboard import tab_agent
+
+    src = inspect.getsource(tab_agent)
+    start = src.index("def _delegation_fields")
+    body = src[start:start + 900]
+    assert "except Exception" in body
+    assert "return {}" in body
