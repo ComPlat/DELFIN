@@ -104,9 +104,48 @@ def _pucker_candidates(n: int) -> List[Tuple[float, Optional[float], float]]:
 
 
 def _amp(n: int) -> float:
-    # typical Cremer-Pople puckering amplitude (Angstrom); grows gently with
-    # ring size (larger rings pucker deeper).  Generic for any N.
-    return {5: 0.40, 6: 0.63, 7: 0.72, 8: 0.80}.get(n, 0.45 + 0.06 * n)
+    """Cremer-Pople-Faltungsamplitude (Angstrom) als GESETZ statt Tabelle.
+
+    ⚠ DIE ALTE FASSUNG WIDERSPRACH SICH SELBST.  Sie fuehrte eine kalibrierte Tabelle
+    fuer 5..8 UND einen linearen Fallback `0.45 + 0.06*n` fuer alles andere -- und der
+    Fallback liegt UEBERALL ueber der Tabelle:
+
+        n     Tabelle   Fallback
+        5      0,40      0,75      <- fast doppelt
+        6      0,63      0,81
+        7      0,72      0,87
+        8      0,80      0,93
+
+    Aufgefallen ist das nie, weil `_is_puckerable` jeden Ring ausserhalb 5..8 abwies:
+    der Fallback ist NIE GELAUFEN.  Ein dunkler Zweig mit einer falschen Zahl darin.
+
+    Die Tabellenwerte saettigen (Zuwaechse 0,23 / 0,09 / 0,08) -- ein grosser Ring
+    faltet nicht beliebig tief, die Amplitude laeuft gegen eine Schranke.  Ein
+    linearer Fallback ist damit qualitativ falsch, nicht nur numerisch daneben.
+
+    Ersatz: EIN saettigendes Gesetz fuer alle N, das die kalibrierten Werte
+    reproduziert (max. Abweichung 0,04 A):
+
+        Q_max(N) = 1,15 * (N-4) / (N-4+1,6)
+        N=5 0,44 · N=6 0,64 · N=7 0,75 · N=8 0,82 · N=12 0,98 · N=24 1,07
+
+    ⚠ Ab N=9 ist das EXTRAPOLATION, keine Kalibrierung -- ehrlich gesagt, nicht
+      versteckt.  Und es ist ohnehin nur die OBERGRENZE: `_pucker_space_grid` tastet
+      die Amplitude von 0 bis hierher ab, der Relax entscheidet, was ueberlebt.
+
+    ⛔ DIE KALIBRIERTEN WERTE BLEIBEN EXAKT STEHEN.  `_amp` wird auch vom LEGACY-Pfad
+      gelesen (`_set_pucker(..., _qs * _amp(n), ...)`).  Wuerde das Gesetz sie
+      ersetzen, waere die Vorgabe NICHT byte-identisch -- bei N=5 stuende 0,44 statt
+      0,40.  Das Gesetz greift darum nur dort, wo bisher der falsche Fallback stand:
+      ausserhalb 5..8.  Byte-Identitaet ist keine Formsache, sie ist die Bedingung
+      dafuer, dass ein A/B den Mechanismus misst und nicht das Instrument.
+    """
+    _kal = {5: 0.40, 6: 0.63, 7: 0.72, 8: 0.80}
+    if n in _kal:
+        return _kal[n]
+    if n <= 4:
+        return 0.35
+    return 1.15 * (n - 4.0) / (n - 4.0 + 1.6)
 
 
 def _ring_normal_and_center(P, ring):
@@ -442,7 +481,23 @@ def _is_puckerable(mol, ring) -> bool:
     a saturated centre is 4-coordinate tetrahedral or 3-coordinate pyramidal,
     an aromatic/sp2 centre is 3-coordinate planar)."""
     n = len(ring)
-    if n < 5 or n > 8:
+    # ===== DAS GROESSENFENSTER 5..8 IST EINE FESSEL, KEIN GESETZ (26.08.2026) =======
+    #
+    # Cremer-Pople gilt fuer JEDEN Ring ab N = 4: die Zahl der Faltungsfreiheitsgrade
+    # ist N-3, und `_set_pucker_general` traegt sie inzwischen alle.  Das Fenster hier
+    # schnitt trotzdem bei 8 ab -- ein Vierring (1 DOF, echte Schmetterlingsfaltung)
+    # und JEDER Makrozyklus ab 9 waren damit per Konstruktion unfaltbar.
+    # Porphyrine, Calixarene, Kronenether, grosse Chelatringe: null Faltung, nicht
+    # weil die Mathematik fehlt, sondern weil eine Zahl im Weg stand.
+    # ⚠ Nebenbefund: `_amp` fuehrt eine Tabelle fuer 5..8 UND einen Fallback fuer den
+    #   Rest -- und der Fallback liegt UEBERALL ueber der Tabelle (n=5: 0,75 gegen
+    #   0,40, fast doppelt).  Weil dieses Fenster jeden anderen Ring abwies, ist der
+    #   Fallback NIE gelaufen.  Er wird mit dem Fenster zusammen korrigiert.
+    # ⛔ Vorgabe AUS -> altes Fenster -> byte-identisch.
+    if _os.environ.get("DELFIN_FFFREE_PUCKER_SPACE", "0") == "1":
+        if n < 4:
+            return False
+    elif n < 5 or n > 8:
         return False
     try:
         P = mol.GetConformer().GetPositions()
