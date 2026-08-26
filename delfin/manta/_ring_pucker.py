@@ -304,6 +304,35 @@ def _pucker_space_grid(n: int, n_amp: int, n_phase: int):
     ⚠ PREIS: die Kandidatenzahl waechst wie (n_amp+1)^(#q) * n_phase^(#phi).
     Sechsring bei n_amp=2, n_phase=8: 3 * 8 * 5 = 120 je Ring.  Achtring: deutlich
     mehr.  Darum sind beide Aufloesungen Env-Parameter und stehen im Protokoll.
+
+    ===== DIE AUFLOESUNG MUSS MIT DER DIMENSION FALLEN (26.08.2026) ================
+
+    GERECHNET, nicht geschaetzt.  Die Zahl der Kandidaten ist
+
+        prod ueber m_pairs von (1 + n_amp * n_phase)   mal   (2*n_amp+1) bei geradem n
+
+    und damit bei n_amp=2, n_phase=8:
+
+        n= 8    845          n=10   24 565        n=12     417 605
+        n= 9  4 913          n=11   83 521        n=16  120 687 845
+
+    Ein 16-Ring haette also 1,2e8 Kandidaten je Ring bekommen, jeden mit Relax und
+    Kollisionstor.  Das ist kein langsamer Lauf, das ist ein Lauf, der stirbt und
+    NULL Faltungen liefert.  Genau so war `foldspace6k` eingereiht (NAMP=2 NPHASE=8).
+    ⇒ Unendliche Feinheit ist nicht Vollstaendigkeit, sie ist Undurchfuehrbarkeit.
+
+    WAS HIER **NICHT** PASSIERT: es wird kein Ergebnis abgeschnitten.  Die Liste
+    bleibt das VOLLSTAENDIGE Produkt der gewaehlten Aufloesung -- reduziert wird die
+    ABTASTDICHTE, und zwar zuerst dort, wo sie physikalisch am wenigsten traegt.
+    Cremer-Pople-Amplituden q_m fallen mit m: die hohen m sind die feine Kraeuselung
+    mit kleiner Auslenkung, m=2 ist die dominante Falte.  Darum wird die Phasenzahl
+    beim GROESSTEN m zuerst halbiert und m=2 zuletzt angetastet.
+
+    ⚠ Und es geschieht NICHT still: `_grid_res` traegt die je-m gewaehlte Aufloesung,
+      der Aufrufer schreibt sie unter DELFIN_FFFREE_PUCKER_TRACE ins Protokoll.  Ob
+      die gewaehlte Dichte reicht, sagt nicht dieser Code, sondern
+      `selbsttest_konvergenz` -- die Zahl der UNTERSCHEIDBAREN Zustaende, nicht die
+      Zahl der Gitterpunkte, ist das Mass.
     """
     if n < 4:
         return []
@@ -311,12 +340,63 @@ def _pucker_space_grid(n: int, n_amp: int, n_phase: int):
     m_pairs = list(range(2, (n // 2) if even else ((n - 1) // 2) + 1))
     m_last = (n // 2) if even else None
     amp = _amp(n)
+    _budget = max(1, int(_os.environ.get("DELFIN_FFFREE_PUCKER_BUDGET", "50000") or 50000))
+    # ===== WELCHE MODEN SIND UEBERHAUPT ANGEREGT?  (26.08.2026) =====================
+    #
+    # Der Selbsttest hat die Sparstelle selbst gefunden: beim 21-Ring (Kronenether,
+    # z.B. VEDCOA) reichte das Budget nur, wenn auch m=2 heruntergerechnet wurde --
+    # und m=2 ist die DOMINANTE Falte.  Am falschen Ende gespart.
+    #
+    # Die Ursache ist nicht die Phasenzahl, sondern die ZAHL DER PAARE: sie waechst
+    # wie N/2, und schon die blosse Amplitudenauswahl kostet 3^(N/2-1).  Bei N=30
+    # sind das 8 Millionen Punkte, BEVOR eine einzige Phase abgetastet ist.
+    #
+    # Cremer-Pople-Amplituden realer Ringe fallen scharf mit m: die niedrigen Moden
+    # tragen die Faltung, die hohen sind feine Kraeuselung nahe null.  Grosse Ringe
+    # werden in der Literatur genau darum durch wenige niedrige Moden beschrieben.
+    # ⇒ Moden oberhalb M_MAX werden auf Amplitude 0 gesetzt -- die Aussage ist
+    #   "diese Mode ist NICHT ANGEREGT", nicht "diese Mode wurde uebersprungen".
+    #   Der Freiheitsgrad bleibt in der Parametrisierung, er steht nur auf null.
+    #
+    # ⚠ DAS IST EINE MODELLANNAHME, KEINE MESSUNG.  Sie ist pruefbar und MUSS geprueft
+    #   werden: M_MAX erhoehen und `selbsttest_konvergenz` fragen, ob die Zahl der
+    #   UNTERSCHEIDBAREN Zustaende sich aendert.  Aendert sie sich, ist M_MAX zu klein.
+    #   Bis dahin steht sie in der Spur und traegt ihren Namen.
+    _mmax = max(2, int(_os.environ.get("DELFIN_FFFREE_PUCKER_MMAX", "4") or 4))
+    _aktiv = [m for m in m_pairs if m <= _mmax]
+    _ruhend = [m for m in m_pairs if m > _mmax]
+    # Phasenzahl je m; Start ueberall gleich, dann von oben herunter halbieren.
+    _ph_m = {m: max(1, int(n_phase)) for m in _aktiv}
+    m_pairs = _aktiv
+
+    def _zahl():
+        t = (2 * n_amp + 1) if m_last is not None else 1
+        for _m in m_pairs:
+            t *= (1 + n_amp * _ph_m[_m])
+        return t
+
+    while _zahl() > _budget:
+        _kand = [m for m in m_pairs if _ph_m[m] > 1]
+        if not _kand:
+            break                                  # schon bei Phase 1 -- nichts mehr zu holen
+        _hoch = max(_kand)                         # groesstes m zuerst: kleinste Amplitude
+        _ph_m[_hoch] = max(1, _ph_m[_hoch] // 2)
+    # ⚠ `m_last` (der Alternierungsterm q_{N/2}) bleibt IMMER aktiv und wird nie
+    #   ruhend gestellt: beim Sechsring IST er der Sessel.  Er kostet auch nichts --
+    #   ein einzelner signierter Amplitudenfaktor (2*n_amp+1), nicht exponentiell.
+    _pucker_space_grid._grid_res = {"n": n, "n_amp": n_amp, "n_phase_je_m": dict(_ph_m),
+                                    "kandidaten": _zahl(), "budget": _budget,
+                                    "m_max": _mmax, "ruhende_moden": list(_ruhend),
+                                    "m_last": m_last,
+                                    "reduziert": (any(v < n_phase for v in _ph_m.values())
+                                                  or bool(_ruhend))}
     # Amplitudenstufen je Paar: 0 (Achse flach) bis n_amp * amp.  Die Null MUSS dabei
     # sein -- sie ist der planare Zustand, und genau der fehlte (218 von 326 Motiven).
     lv_pair = [amp * k / max(1, n_amp) for k in range(0, n_amp + 1)]
     # Der Alternierungsterm laeuft SIGNIERT: +q ist der Sessel, -q der invertierte.
     lv_last = [amp * k / max(1, n_amp) for k in range(-n_amp, n_amp + 1)]
-    phases = [360.0 * k / max(1, n_phase) for k in range(max(1, n_phase))]
+    # Phasen JE m -- gleiche Formel, nur mit der fuer dieses m gewaehlten Dichte.
+    _phasen = {m: [360.0 * k / _ph_m[m] for k in range(_ph_m[m])] for m in m_pairs}
 
     out = []
 
@@ -327,7 +407,7 @@ def _pucker_space_grid(n: int, n_amp: int, n_phase: int):
                 if q == 0.0:                      # Amplitude 0 -> Phase bedeutungslos
                     _rek(i + 1, {**qs, m: 0.0}, {**phis, m: 0.0})
                 else:
-                    for ph in phases:
+                    for ph in _phasen[m]:
                         _rek(i + 1, {**qs, m: q}, {**phis, m: ph})
             return
         if m_last is not None:
@@ -713,8 +793,15 @@ def _ring_pucker_states(mol_with_conf, ring, frozen: Set[int],
         _nph = max(1, int(_os.environ.get("DELFIN_FFFREE_PUCKER_NPHASE", "8") or 8))
         _cands = _pucker_space_grid(n, _namp, _nph)
         if _os.environ.get("DELFIN_FFFREE_PUCKER_TRACE", "0") == "1":
+            # ⚠ DIE ABTASTDICHTE STEHT MIT IM PROTOKOLL.  Ohne sie liesse sich eine
+            # reduzierte Aufloesung spaeter nicht von einer vollen unterscheiden --
+            # und genau das waere eine stille Kappe.
+            _res = getattr(_pucker_space_grid, "_grid_res", None)
             print("[pucker] RAUM n=%d: %d Kandidaten (%d-dim, Amplitudenstufen %d, "
                   "Phasen %d)" % (n, len(_cands), max(0, n - 3), _namp, _nph))
+            if isinstance(_res, dict) and _res.get("n") == n and _res.get("reduziert"):
+                print("[pucker] RAUM n=%d: Dichte REDUZIERT auf Budget %d -- Phasen je m %s"
+                      % (n, _res.get("budget"), _res.get("n_phase_je_m")))
     else:
         _cands = _pucker_candidates(n)
     if frozenset(ring) in _FLAT_ONLY:
@@ -1002,8 +1089,155 @@ def selbsttest_raum() -> int:
         keys = [tuple(sorted((m, round(q, 6)) for m, q in qs.items())) for qs, _ in g]
         print("     n=%d: %4d Kandidaten (%d-dim)" % (n, len(g), n - 3))
 
+    # 7 DER MAKROZYKLUS DARF DEN ZWEIG NICHT ZUM STEHEN BRINGEN.
+    #   Ohne Budget waeren es bei n=16 rund 1,2e8 Kandidaten JE RING, jeder mit Relax
+    #   und Kollisionstor -- der Lauf stirbt und liefert NULL Faltungen.  Undurchfuehr-
+    #   barkeit ist das Gegenteil von Vollstaendigkeit.  Geprueft wird zweierlei:
+    #   die Zahl bleibt unter dem Budget, UND der Ring wird trotzdem gefaltet
+    #   (m=2 behaelt volle Phasenaufloesung, es faellt nur die feine Kraeuselung).
+    print("     -- Makrozyklen (Budget %s) --"
+          % _os.environ.get("DELFIN_FFFREE_PUCKER_BUDGET", "50000"))
+    _budget_soll = max(1, int(_os.environ.get("DELFIN_FFFREE_PUCKER_BUDGET", "50000") or 50000))
+    for n in (12, 16, 21):
+        g = _pucker_space_grid(n, 2, 8)
+        res = getattr(_pucker_space_grid, "_grid_res", {}) or {}
+        if len(g) > _budget_soll:
+            print("  ✗ 7 n=%d: %d Kandidaten UEBER Budget %d" % (n, len(g), _budget_soll))
+            fehler += 1
+            continue
+        # m=2 ist die dominante Falte und muss ihre volle Phasenzahl behalten
+        if res.get("n_phase_je_m", {}).get(2) != 8:
+            print("  ✗ 7 n=%d: m=2 wurde reduziert (%s) -- die dominante Falte"
+                  % (n, res.get("n_phase_je_m", {}).get(2)))
+            fehler += 1
+            continue
+        if not any(qs.get(2, 0.0) > 0 for qs, _ in g):
+            print("  ✗ 7 n=%d: keine einzige gefaltete Konfiguration" % n)
+            fehler += 1
+            continue
+        # der Alternierungsterm ist beim geraden Ring der Sessel -- er darf nie fehlen
+        if n % 2 == 0 and not any(qs.get(n // 2, 0.0) != 0 for qs, _ in g):
+            print("  ✗ 7 n=%d: Alternierungsterm q_%d fehlt -- kein Sessel" % (n, n // 2))
+            fehler += 1
+            continue
+        print("     n=%2d: %6d Kandidaten (%2d-dim), Phasen je m %s, ruhend %s"
+              % (n, len(g), n - 3, res.get("n_phase_je_m"),
+                 res.get("ruhende_moden") or "keine"))
+    if fehler == 0:
+        print("  ✓ 7 MAKROZYKLEN: unter Budget, m=2 voll aufgeloest, Faltung erreichbar")
+
     print("=== Faltungsraum: %s ===" % ("BESTANDEN" if fehler == 0 else "%d FEHLER" % fehler))
     return 1 if fehler else 0
+
+
+def selbsttest_tfd_sweep(sizes=(5, 6, 7, 8)) -> int:
+    """DIE SCHWELLE, NICHT DAS INSTRUMENT.  Splittet TFD bei 0,05 ueber?
+
+    VORGESCHICHTE.  `selbsttest_konvergenz` meldet fuer n=6 und n=7, dass die Zahl
+    der Zustaende mit der Aufloesung weiter waechst (8->9->10 bzw. 11->11->12), bei
+    kleinsten CP-Abstaenden von 5,0 und 1,8 Grad.  Zwei Ursachen sind moeglich und
+    haben ENTGEGENGESETZTE Reparaturen:
+        (a) echte Mulden, Gitter zu grob   -> feiner abtasten
+        (b) Uebersplittung durch TFD       -> Schwelle anheben
+    Der erste Versuch, das ueber CP-Entdopplung zu klaeren, ist GESCHEITERT und die
+    Messung steht: n=5 ging von 3,3,3 auf 9,13,14.  TFD faltet die MOLEKUELSYMMETRIE
+    mit, die CP-Distanz nicht -- phi haengt an der Ringnummerierung.  CP ist kein
+    Ersatz.  Also bleibt genau dieser Weg: dasselbe Instrument, andere Schwelle.
+
+    WARUM DAS UEBER DIE KOMBINATORIK ENTSCHEIDET.  Gemessen 4,3 Ringe je System.
+    Das Kreuzprodukt ueber die Ringe waechst wie (Zustaende je Ring)^(Ringe):
+        3 Zustaende, 4 Ringe  ->      81 Kombinationen   rechenbar
+       10 Zustaende, 4 Ringe  ->  10 000                 nicht rechenbar
+    Ist 0,05 zu fein, wird die vollstaendige Kombinatorik dadurch bezahlbar -- ohne
+    dass irgendwo abgeschnitten wird.  Ist sie richtig, ist der Preis echt und die
+    Kappe kaeme sonst durch die Hintertuer zurueck.
+
+    ⚠ DIESER TEST URTEILT NICHT UEBER CHEMIE.  Er misst an UNSUBSTITUIERTEN Ringen,
+      deren Symmetrie hoch ist; ein substituierter Ring hat legitim mehr Zustaende.
+      Was er zeigt, ist die OBERGRENZE der Uebersplittung, nicht die Produktionszahl.
+    """
+    if not (_RDKIT and _np is not None):
+        print("=== TFD-Sweep: RDKit fehlt, uebersprungen ==="); return 0
+    print("=== Selbsttest: TFD-Schwellensweep (NPHASE=8, unsubstituierte Ringe) ===")
+    schwellen = (0.02, 0.05, 0.10, 0.15, 0.20, 0.30)
+    print("    Ring  " + "".join("%7.2f" % t for t in schwellen))
+    _alt = {k: _os.environ.get(k) for k in
+            ("DELFIN_FFFREE_PUCKER_SPACE", "DELFIN_FFFREE_PUCKER_NPHASE",
+             "DELFIN_FFFREE_PUCKER_NAMP", "DELFIN_FFFREE_PUCKER_TRACE",
+             "DELFIN_FFFREE_PUCKER_CPDEDUP")}
+    tabelle = {}
+    try:
+        _os.environ["DELFIN_FFFREE_PUCKER_SPACE"] = "1"
+        _os.environ["DELFIN_FFFREE_PUCKER_NAMP"] = "2"
+        _os.environ["DELFIN_FFFREE_PUCKER_NPHASE"] = "8"
+        _os.environ["DELFIN_FFFREE_PUCKER_TRACE"] = "0"
+        _os.environ.pop("DELFIN_FFFREE_PUCKER_CPDEDUP", None)   # reines TFD messen
+        for n in sizes:
+            try:
+                m = Chem.AddHs(Chem.MolFromSmiles("C1" + "C" * (n - 1) + "1"))
+                if AllChem.EmbedMolecule(m, randomSeed=42) != 0:
+                    print("    n=%d  Einbettung fehlgeschlagen" % n); continue
+                AllChem.MMFFOptimizeMolecule(m)
+                ri = m.GetRingInfo().AtomRings()
+                if not ri:
+                    print("    n=%d  kein Ring gefunden" % n); continue
+                ring = _ring_order(m, set(ri[0]))
+            except Exception as e:
+                print("    n=%d  Aufbau fehlgeschlagen: %s" % (n, type(e).__name__)); continue
+            zeile = []
+            for thr in schwellen:
+                try:
+                    zeile.append(len(_ring_pucker_states(m, ring, set(), thr)))
+                except Exception:
+                    zeile.append(-1)
+            tabelle[n] = zeile
+            print("    n=%-3d " % n + "".join("%7d" % z for z in zeile))
+    finally:
+        for k, v in _alt.items():
+            if v is None:
+                _os.environ.pop(k, None)
+            else:
+                _os.environ[k] = v
+
+    if not tabelle:
+        print("=== TFD-Sweep: nichts gemessen ==="); return 1
+
+    # ---- WAS DAS KOSTET.  4,3 Ringe je System, gemessen auf 400 Systemen.
+    print()
+    print("    Kreuzprodukt bei 4 Ringen je System (Zustaende^4):")
+    i05 = schwellen.index(0.05)
+    for n, zeile in sorted(tabelle.items()):
+        s05, s10 = zeile[i05], zeile[schwellen.index(0.10)]
+        print("      n=%-3d  Schwelle 0,05 -> %8d      Schwelle 0,10 -> %8d"
+              % (n, max(0, s05) ** 4, max(0, s10) ** 4))
+
+    # ---- URTEIL.  Ueber-Splittung heisst: die Zahl faellt stark und BLEIBT dann flach.
+    #      Faellt sie gleichmaessig weiter, verschmilzt die hoehere Schwelle echte
+    #      Mulden -- dann ist nicht 0,05 zu fein, sondern die Schwelle das falsche
+    #      Werkzeug.  Genau diese Unterscheidung ist der Sinn des Sweeps.
+    print()
+    print("    URTEIL je Ringgroesse:")
+    verdacht = 0
+    for n, zeile in sorted(tabelle.items()):
+        if min(zeile) < 0 or zeile[i05] <= 0:
+            print("      n=%-3d  nicht messbar" % n); continue
+        _sturz = 1.0 - (zeile[i05 + 1] / float(zeile[i05]))       # 0,05 -> 0,10
+        _rest = 1.0 - (zeile[-1] / float(max(1, zeile[i05 + 1])))  # 0,10 -> 0,30
+        if _sturz >= 0.34 and _rest <= _sturz:
+            print("      n=%-3d  UEBERSPLITTUNG: %d -> %d bei 0,05 -> 0,10 (%.0f %%), "
+                  "danach nur noch %.0f %% -- der Sturz sitzt AN der Schwelle"
+                  % (n, zeile[i05], zeile[i05 + 1], 100 * _sturz, 100 * _rest))
+            verdacht += 1
+        elif _sturz < 0.15:
+            print("      n=%-3d  STABIL: %d -> %d (%.0f %%) -- 0,05 splittet NICHT ueber"
+                  % (n, zeile[i05], zeile[i05 + 1], 100 * _sturz))
+        else:
+            print("      n=%-3d  GLEITEND: %.0f %% dann %.0f %% -- die Schwelle verschmilzt "
+                  "fortlaufend, also auch ECHTE Mulden.  Kein sauberer Schnittpunkt."
+                  % (n, 100 * _sturz, 100 * _rest))
+    print("=== TFD-Sweep: %d von %d Ringgroesse(n) mit Uebersplittungsverdacht ==="
+          % (verdacht, len(tabelle)))
+    return 0
 
 
 def selbsttest_konvergenz(sizes=(5, 6, 7)) -> int:
@@ -1039,7 +1273,14 @@ def selbsttest_konvergenz(sizes=(5, 6, 7)) -> int:
         _os.environ["DELFIN_FFFREE_PUCKER_TRACE"] = "0"
         # Mit CP-Entdopplung gegenrechnen, wenn der Aufrufer sie gesetzt hat --
         # sonst misst der Test die alte Uebersplittung nach.
-        if _os.environ.get("DELFIN_FFFREE_PUCKER_CPDEDUP") == "1":
+        # ⚠ EINMAL LESEN, EINMAL BENENNEN.  Die erste Fassung las den Schalter hier
+        #   und nannte ihn unten `_cpd_an` -- ein Name, den es nie gab.  Der
+        #   NameError fiel in das `except Exception` der CP-Streuung und wurde als
+        #   "nicht messbar" gedruckt: das moduskorrigierte Urteil lief damit KEIN
+        #   einziges Mal, und der Test meldete trotzdem etwas.  Ein verschluckter
+        #   Fehler ist eine Nullmessung, die wie ein Befund aussieht.
+        _cpd_an = _os.environ.get("DELFIN_FFFREE_PUCKER_CPDEDUP") == "1"
+        if _cpd_an:
             print("    (CP-Entdopplung AN, Toleranz %s Grad / %s A)"
                   % (_os.environ.get("DELFIN_FFFREE_PUCKER_CPTOL", "15"),
                      _os.environ.get("DELFIN_FFFREE_PUCKER_CPQTOL", "0.15")))
@@ -1151,4 +1392,7 @@ if __name__ == "__main__":
     import sys as _sys
     _rc = selbsttest_raum()
     _rc = selbsttest_konvergenz() or _rc
+    # Der Sweep steht NACH der Konvergenz, weil er ihre offene Frage beantwortet:
+    # sie meldet "Zustaende liegen dicht", er misst, ob das an der Schwelle liegt.
+    _rc = selbsttest_tfd_sweep() or _rc
     _sys.exit(_rc)
