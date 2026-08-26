@@ -526,7 +526,15 @@ def md_distance(metal: str, donor: str, atom=None, mol=None, cn=None) -> float:
     # our own frames FIVE TIMES BETTER than reality (ratio 0.20); swapping it for the
     # measured band took the crystal force from 52833 to 67.39, a factor of 784.  Here the
     # same number is used one step earlier, where it costs nothing to be right.
-    if os.environ.get("DELFIN_FFREE_MD_MEASURED", "0") == "1":
+    # ⚠ BEIDE SCHREIBWEISEN LESEN (26.08.2026).  `cli_manta.py:293` setzt den Champion
+    #   als DELFIN_FFFREE_ mit DREI F; dieser Schalter wurde als DELFIN_FFREE_ mit ZWEI
+    #   geschrieben und konnte damit per Konstruktion NIE in den Champion, bei
+    #   gemessenen 19,9 Prozent Reichweite.  Der alte Name bleibt lesbar, weil 31 von
+    #   1286 Achsendateien ihn setzen -- ein Umbenennen machte diese Archive
+    #   unreproduzierbar.  Vorgabe unter BEIDEN Namen AUS -> byte-identisch.
+    #   Gleiche Reparatur wie `assemble_complex._ffree_flag`, dort steht die Herleitung.
+    if (os.environ.get("DELFIN_FFFREE_MD_MEASURED", "0") == "1"
+            or os.environ.get("DELFIN_FFREE_MD_MEASURED", "0") == "1"):
         _m = _measured_md(metal, donor, cn=(cn if cn else _CURRENT_CN))
         if _m is not None:
             return float(min(4.0, max(0.8, _m)))

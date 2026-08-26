@@ -1109,9 +1109,50 @@ def _donor_plane_relax(Q, syms, donor_idxs, tgt, tmu):
 _TRILAT_RESCUE = False
 
 
+def _ffree_flag(name: str) -> bool:
+    """EIN SCHALTER, ZWEI SCHREIBWEISEN -- und nur eine davon kann je landen.
+
+    ===== DER BUCHSTABE, AN DEM 50,8 PROZENT HAENGEN (26.08.2026) =================
+
+    `cli_manta.py:293` setzt den Champion so:
+
+        os.environ["DELFIN_FFFREE_" + f] = "1"        # DREI F
+
+    Es gibt aber eine ganze Klasse von Schaltern, die als `DELFIN_FFREE_` gelesen
+    wird -- ZWEI F.  Kein Schalter dieser Klasse kann je in den Champion gelangen,
+    egal wie gut sein Verdikt ausfaellt.  Betroffen mit GEMESSENER Reichweite:
+
+        TRILATERATE     50,8 %      MD_MEASURED   19,9 %      H_FOLLOW  6,4 %
+        CONF_RELAX       4,0 %      TRILAT_RESCUE  3,7 %
+
+    🔑 Und `TRILAT_RESCUE` ist nicht irgendeiner: er ist die LETZTE SPROSSE der
+       Rettungsleiter unter dem Chelat-Selbstgate, das 2822 von 3597 Chelat-Configs
+       verwirft (78,5 %).  Zeile 1 von `_trilat_rescue` ist ein Return auf genau
+       diesen Schalter -- und er wird an EINER Stelle gelesen und an NULL gesetzt.
+
+    WARUM NICHT EINFACH UMBENENNEN.  Gemessen: 31 von 1286 Achsendateien setzen den
+    ALTEN Namen.  Ein Umbenennen machte diese 31 Archive unreproduzierbar -- sie
+    waeren mit einem Namen gemessen, den der Code nicht mehr liest.  Das ist genau
+    die Klasse stillen Versagens, gegen die diese Kampagne gebaut ist.
+
+    ⇒ Also BEIDE lesen.  Der Baum tut das an anderer Stelle laengst: `_mirror_enum`
+      liest `DELFIN_FFFREE_MIRROR_ENUM` oder `DELFIN_MIRROR_ENUM` in einer Zeile.
+
+    ⛔ DAS IST KEINE LANDUNG, SONDERN IHRE VORBEDINGUNG.  Vorher war der Mechanismus
+      unlandbar; jetzt ist er landFAEHIG.  Reichweite ist nicht Nutzen -- er braucht
+      weiterhin sein eigenes Verdikt.
+    ⛔ Vorgabe bleibt AUS unter BEIDEN Namen -> byte-identisch.
+    """
+    return (os.environ.get("DELFIN_FFFREE_" + name, "0") == "1"
+            or os.environ.get("DELFIN_FFREE_" + name, "0") == "1")
+
+
 def trilat_rescue_enabled() -> bool:
-    """THE one place DELFIN_FFREE_TRILAT_RESCUE is read (default OFF -> byte-identical)."""
-    return os.environ.get("DELFIN_FFREE_TRILAT_RESCUE", "0") == "1"
+    """THE one place TRILAT_RESCUE is read (default OFF -> byte-identical).
+
+    Liest beide Schreibweisen, siehe `_ffree_flag`.  Ohne das kann diese Sprosse
+    der Rettungsleiter nie in den Champion, weil der Setzer drei F schreibt."""
+    return _ffree_flag("TRILAT_RESCUE")
 
 
 class trilaterate_rescue:
@@ -1131,7 +1172,7 @@ class trilaterate_rescue:
 
 def _trilat_targets_on() -> bool:
     """Primary-path flag (legacy A/B, default OFF) OR an active rescue re-build."""
-    return _TRILAT_RESCUE or os.environ.get("DELFIN_FFREE_TRILATERATE", "0") == "1"
+    return _TRILAT_RESCUE or _ffree_flag("TRILATERATE")
 
 
 def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True, rigid=False, lsyms=None):
@@ -1319,7 +1360,7 @@ def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True, rigid=False,
             # QEBLOC/FEKZON) have no donor below threshold -> untouched.
             _nfix = 0
             _hf = (lsyms is not None
-                   and os.environ.get("DELFIN_FFREE_H_FOLLOW", "0") == "1")
+                   and _ffree_flag("H_FOLLOW"))
             for _i, _d in enumerate(donor_idxs):
                 _r = float(np.linalg.norm(Qr[_d]))
                 _idl = float(tgt_md[perm[_i]])
@@ -1365,7 +1406,7 @@ def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True, rigid=False,
     # This is additive in the strict sense: it invents no geometry, it preserves the X-H
     # geometry the embed already had.  Nothing about heavy-atom placement changes.
     _hfollow = (lsyms is not None
-                and os.environ.get("DELFIN_FFREE_H_FOLLOW", "0") == "1")
+                and _ffree_flag("H_FOLLOW"))
     # LET THE NEIGHBOURHOOD FOLLOW (DELFIN_FFFREE_DONOR_FOLLOW, default OFF -> byte-identical).
     # The weights are read off the geometry BEFORE any donor moves, so the graph is the one
     # the embed produced; see _donor_follow_weights for why a decay and not a repair.
@@ -2571,7 +2612,7 @@ def _ligand_confs_from_mol(frag_mol, k=10):
     # k_topology = 0, k_A = 0, and bond / signature-angle / torsion / clash / symmetry
     # carry the geometry.  ETKDG above is NOT touched: it is distance geometry, not a
     # force field, and it stays the generator.
-    if os.environ.get("DELFIN_FFREE_CONF_RELAX", "0") == "1":
+    if _ffree_flag("CONF_RELAX"):
         _relax_confs_ffree(m, cids)
     else:
         try:

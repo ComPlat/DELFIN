@@ -844,10 +844,33 @@ def _ring_pucker_states(mol_with_conf, ring, frozen: Set[int],
     return states
 
 
+def _neuer_zaehler() -> dict:
+    """Frischer Zaehlersatz fuer ``generate(..., _zaehler=...)``.
+
+    ⚠ WARUM DIE MESSSTELLE IN `generate` SITZT UND NICHT IN EINER KOPIE.  Die Frage,
+      wie gross das Kreuzprodukt NACH der Physik ist, laesst sich nur an dem Code
+      beantworten, der die Frames auch wirklich baut.  Eine nachgebaute Schleife misst
+      den Nachbau -- in diesem Projekt ist genau das schon mehrfach als Befund
+      durchgegangen und war keiner.  Der Preis ist ein `if _zaehler is not None`
+      an sechs Stellen; der Vorgabepfad (`_zaehler is None`) laeuft unveraendert.
+    """
+    return {"ringgroessen": [], "zustaende_je_ring": [], "kreuzprodukt": 0,
+            "gemeinsame_atome": 0, "gem_max": 0, "aufzaehlung": 0, "gebaut": 0,
+            "relax_fehler": 0, "kollision": 0, "winkel": 0, "tor_ueberlebt": 0,
+            "tfd_doppelt": 0, "ausnahme": 0, "energien": []}
+
+
 def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
              budget: int = 64, tfd_thr: float = 0.05,
-             angle_skip: Optional[Set[int]] = None) -> List[Tuple[str, str]]:
+             angle_skip: Optional[Set[int]] = None,
+             _zaehler: Optional[dict] = None) -> List[Tuple[str, str]]:
     """Construct the COMBINATORIAL ring-pucker conformers from a base conformer.
+
+    ``_zaehler``: optionaler Zaehlersatz (`_neuer_zaehler()`).  Ist er gesetzt, traegt
+    dieser Lauf mit, wie viele Kombinationen aufgezaehlt, gebaut, am Kollisions- bzw.
+    Winkeltor verworfen und von TFD zusammengezogen wurden -- die Messung, die
+    `selbsttest_kombinatorik` auswertet.  ``None`` (Vorgabe) = kein einziger Zaehler
+    wird angefasst, der Bau ist byte-identisch zu vorher.
 
     ``mol_with_conf`` carries ONE embedded conformer (a chain/rotamer pose whose
     rings sit at their base pucker).  Every puckerable ring's distinct pucker
@@ -933,8 +956,40 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
         return []
     # per-ring distinct pucker states (index 0 == base pucker for every ring),
     # TFD-deduped so an unsubstituted ring yields only its genuine minima.
+    if _zaehler is not None:
+        import time as _t
+        _zaehler["t0"] = _t.perf_counter()
     per_ring_states = [_ring_pucker_states(mol_with_conf, ring, frozen, tfd_thr)
                        for ring in rings]
+    if _zaehler is not None:
+        # ⚠ DIE ZEIT IST DIE EIGENTLICHE ANTWORT auf "bezahlbar?".  Sie zerfaellt in
+        #   zwei Posten, die sich voellig verschieden skalieren: die Zustaende je Ring
+        #   kosten LINEAR in der Ringzahl, das Kreuzprodukt kostet EXPONENTIELL.  Wer
+        #   nur die Gesamtzeit misst, sieht den Unterschied nicht.
+        _zaehler["t_zustaende"] = _t.perf_counter() - _zaehler["t0"]
+        # (a) und (b) der Messung -- und die KOPPLUNGSZAHL dazu.  Gemeinsame Atome
+        # zwischen zwei Ringen sind die unabhaengige Variable des ganzen Tests:
+        # kondensiert = 2, spiro = 1, unabhaengig = 0.  Sie wird hier aus DERSELBEN
+        # Ringliste gezaehlt, die der Bau benutzt -- nicht aus dem SMILES nachgeschaut.
+        _zaehler["ringgroessen"] = [len(r) for r in rings]
+        _zaehler["zustaende_je_ring"] = [len(s) for s in per_ring_states]
+        _p = 1
+        for _s in per_ring_states:
+            _p *= len(_s)
+        _zaehler["kreuzprodukt"] = _p
+        # ⚠ SUMME UND MAXIMUM SIND ZWEI VERSCHIEDENE AUSSAGEN, und nur das MAXIMUM
+        #   benennt die KopplungsART.  Ein Paar teilt 0 Atome (getrennt), 1 (spiro),
+        #   2 (kondensiert, eine gemeinsame Bindung) oder >= 3 (verbrueckt).  Die Summe
+        #   ueber alle Paare waechst dagegen einfach mit der Ringzahl und verwechselt
+        #   drei lose Ringe mit einem Kaefig.
+        _gem, _gmax = 0, 0
+        for _i in range(len(rings)):
+            for _j in range(_i + 1, len(rings)):
+                _n_ij = len(set(rings[_i]) & set(rings[_j]))
+                _gem += _n_ij
+                _gmax = max(_gmax, _n_ij)
+        _zaehler["gemeinsame_atome"] = _gem
+        _zaehler["gem_max"] = _gmax
 
     # cartesian product of state indices, deterministic order, budget-capped;
     # skip the all-base (identity) combination; fewest-changed rings first.
@@ -969,6 +1024,14 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
         pass                                    # alle Faltungen, keine Kappe
     else:
         combos = combos[:max(0, int(budget))]
+    if _zaehler is not None:
+        # ⚠ ZWEI VERSCHIEDENE ZAHLEN, und die Verwechslung waere der ganze Irrtum.
+        #   `aufzaehlung` ist das Kreuzprodukt OHNE den Grundzustand -- was aufgezaehlt
+        #   werden MUESSTE.  `gebaut` ist, was nach der Kappe wirklich durch Relax und
+        #   Tor geht.  Nur die zweite Zahl kostet Rechenzeit, nur die erste ist die
+        #   Vollstaendigkeitsfrage.
+        _zaehler["aufzaehlung"] = _n_voll
+        _zaehler["gebaut"] = len(combos)
     if len(combos) < _n_voll and _os.environ.get("DELFIN_FFFREE_PUCKER_TRACE", "0") == "1":
         print("[pucker] KOMBINATIONEN GEKAPPT: %d von %d gebaut, %d verworfen "
               "(%d Ringe, Mulden %s) -- DELFIN_FFFREE_PUCKER_FULL=1 baut alle"
@@ -978,6 +1041,8 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
     acc = Chem.Mol(mol_with_conf)
     kept_ids = [acc.GetConformer().GetId()]
     out: List[Tuple[str, str]] = []
+    if _zaehler is not None:
+        _zaehler["t0"] = _t.perf_counter()
     for combo in combos:
         try:
             m2 = Chem.Mol(mol_with_conf)
@@ -1010,24 +1075,68 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
             # a clash between two puckered rings is relieved without collapsing
             # the puckers.
             if not _relax_hold_pucker_multi(m2, rings, frozen):
+                if _zaehler is not None:
+                    _zaehler["relax_fehler"] = _zaehler.get("relax_fehler", 0) + 1
                 continue
             # realism gate: a combination that stayed clashed OR left any VSEPR
             # body distorted (fused/bridged rings strain their shared atoms) is
             # not a physical ensemble member -> drop it.  Everything must be
             # right, or the frame is unrealistic.
-            if _has_clash(m2) or _has_bad_angles(m2, skip=angle_skip):
-                continue
+            if _zaehler is None:
+                if _has_clash(m2) or _has_bad_angles(m2, skip=angle_skip):
+                    continue
+            else:
+                # ⚠ IM MESSMODUS WERDEN BEIDE TORE GEFRAGT, im Vorgabepfad nicht.
+                #   `or` ist kurzschluessig: feuert die Kollision, wird das Winkeltor
+                #   NIE befragt -- die beiden Ursachen liessen sich dann nicht trennen.
+                #   Genau ihre Trennung ist bei kondensierten Ringen der ganze Befund:
+                #   dort teilen zwei Ringe Atome, das Winkeltor sieht die Spannung an
+                #   den Fusionszentren, und das Kollisionstor ist per Konstruktion
+                #   blind dafuer (s. `_has_bad_angles`).  Ein zweiter Toraufruf kostet
+                #   Zeit -- darum nur, wenn jemand misst.
+                _kl = _has_clash(m2)
+                _wk = _has_bad_angles(m2, skip=angle_skip)
+                if _kl:
+                    _zaehler["kollision"] = _zaehler.get("kollision", 0) + 1
+                if _wk:
+                    _zaehler["winkel"] = _zaehler.get("winkel", 0) + 1
+                if _kl or _wk:
+                    continue
+                _zaehler["tor_ueberlebt"] = _zaehler.get("tor_ueberlebt", 0) + 1
             cid = _add_conf(acc, m2)
             if not _tfd_distinct(acc, cid, kept_ids, tfd_thr):
                 acc.RemoveConformer(cid)
+                if _zaehler is not None:
+                    _zaehler["tfd_doppelt"] = _zaehler.get("tfd_doppelt", 0) + 1
                 continue
             kept_ids.append(cid)
+            if _zaehler is not None:
+                # ⚠ DIE ENERGIE IST DIE ZWEITE ANTWORT auf dieselbe Frage.  Bleibt (d)
+                #   gross, muss die Auswahl ueber ENERGIE laufen und nicht ueber RMSD
+                #   (Nutzerregel).  Damit dieser Satz nicht nur eine Absicht ist, steht
+                #   hier die Zahl: UFF-Energie des fertigen Frames, in kcal/mol, in der
+                #   Reihenfolge der behaltenen Konformere.
+                #   ⚠ UFF ist hier eine ORDNUNG, keine Thermochemie -- dieselbe Kraft,
+                #     die auch relaxiert hat, also wenigstens in sich konsistent.  Wer
+                #     daraus Populationen macht, ueberdehnt sie.
+                try:
+                    _zaehler.setdefault("energien", []).append(
+                        float(AllChem.UFFGetMoleculeForceField(m2).CalcEnergy()))
+                except Exception:
+                    pass
             label = "pucker " + "+".join(
                 f"r{ri_i}:{'base' if combo[ri_i] == 0 else combo[ri_i]}"
                 for ri_i in range(len(rings)))
             out.append((_conf_to_xyz(m2), label))
         except Exception:
+            if _zaehler is not None:
+                # Der stille Ausfall bekommt eine Zahl.  Ohne sie liesse sich
+                # "das Tor hat verworfen" nicht von "es ist etwas geplatzt"
+                # unterscheiden -- zwei voellig verschiedene Befunde.
+                _zaehler["ausnahme"] = _zaehler.get("ausnahme", 0) + 1
             continue
+    if _zaehler is not None:
+        _zaehler["t_kombis"] = _t.perf_counter() - _zaehler["t0"]
     return out
 
 
@@ -1383,6 +1492,460 @@ def selbsttest_konvergenz(sizes=(5, 6, 7)) -> int:
     return 1 if fehler else 0
 
 
+# ===== DIE PROBEN: EIN KOPPLUNGSGRADIENT, KEINE SAMMLUNG ==========================
+#
+# Die Frage ist nicht "wie viele Faltungen hat Molekuel X", sondern WOVON es abhaengt,
+# wie viel vom Kreuzprodukt uebrig bleibt.  Das kann nur eine VARIABLE beantworten, die
+# von Probe zu Probe systematisch anders steht -- hier die Zahl der GEMEINSAMEN ATOME
+# zwischen zwei Ringen.  Sie laeuft ueber die Liste von 2 nach 0:
+#
+#   2 gemeinsame Atome, drei Bruecken   verbrueckt (Bicyclo[2.2.2]octan, Norbornan)
+#                                       -- der steifste Fall, den es gibt
+#   2 gemeinsame Atome, eine Bindung    kondensiert (Decalin, Perhydroanthracen)
+#   1 gemeinsames Atom                  spiro (Spiro[5.5]undecan)
+#   0, direkte Ring-Ring-Bindung        nur STERISCH gekoppelt (Bicyclohexyl)
+#   0, zwei CH2 dazwischen              praktisch unabhaengig (1,2-Dicyclohexylethan)
+#   0, drei Ringe an einem P            Tricyclohexylphosphin -- der Fall, den der
+#                                       `generate`-Docstring selbst als Beispiel
+#                                       fuehrt, und ein echter Ligand
+#
+# Cyclohexan steht als NULLPUNKT dabei: EIN Ring, also gar kein Kreuzprodukt.  Ohne ihn
+# waere nicht zu trennen, was die KOPPLUNG kostet und was schon der einzelne Ring kostet.
+# Perhydroanthracen und das Phosphin sind die einzigen DREIringigen Proben -- erst bei
+# drei Ringen zeigt sich, ob die Kurve exponentiell oder gedeckelt laeuft.
+_KOMBI_PROBEN = (
+    ("Cyclohexan",            "C1CCCCC1",                      "1 Ring -- Nullpunkt"),
+    ("Bicyclo[2.2.2]octan",   "C1CC2CCC1CC2",                  "verbrueckt, 3 Bruecken"),
+    ("Norbornan",             "C1CC2CCC1C2",                   "verbrueckt, 1 Bruecke"),
+    ("Decalin",               "C1CCC2CCCCC2C1",                "kondensiert, 1 Bindung"),
+    ("Perhydroanthracen",     "C1CCC2CC3CCCCC3CC2C1",          "3 Ringe, kondensiert"),
+    ("Spiro[5.5]undecan",     "C1CCC2(CC1)CCCCC2",             "spiro, 1 Atom"),
+    ("Bicyclohexyl",          "C1CCCCC1C1CCCCC1",              "0 Atome, 1 Bindung"),
+    ("1,2-Dicyclohexylethan", "C1CCCCC1CCC1CCCCC1",            "0 Atome, 2 CH2"),
+    ("Tricyclohexylphosphin", "P(C1CCCCC1)(C1CCCCC1)C1CCCCC1", "3 Ringe, unabhaengig"),
+)
+
+
+def selbsttest_kombinatorik(proben=None, deckel_s: float = 900.0,
+                            max_kombis: int = 4000) -> int:
+    """WIE GROSS IST DAS KREUZPRODUKT **NACH** DER PHYSIK?
+
+    DIE FRAGE, die ueber die vollstaendige Ringfaltung entscheidet.  Gemessen sind 4,3
+    Ringe je System und -- mit dem CP-Raumgitter -- 9 bis 16 Faltungszustaende je Ring
+    (`selbsttest_tfd_sweep`, Schwelle 0,05).  Das naive Kreuzprodukt ist damit 6500 bis
+    65000 Kombinationen je System.  Aber Ringe eines Molekuels sind NICHT unabhaengig:
+    kondensierte und verbrueckte Ringe teilen Atome, faltet man den einen, ist der
+    andere festgelegt.  Das Kreuzprodukt ist eine Obergrenze der AUFZAEHLUNG -- die
+    Frage ist, was davon das Realismustor ueberlebt.
+
+    ⚠ DER ENTSCHEIDENDE UNTERSCHIED, den dieser Test sichtbar macht: das Tor toetet das
+      ERGEBNIS, aber nicht die KOSTEN.  Jede Kombination wird erst gesetzt, dann mit
+      gehaltenen Faltungen relaxiert und ERST DANN verworfen.  Wer "(c) ist klein, also
+      billig" liest, hat die Reihenfolge verwechselt.  Darum stehen hier ZWEI Zahlen
+      nebeneinander: (b) ist der Preis, (d) ist die Ausbeute.
+
+    ⚠ ZWEI TORE, NICHT EINS.  `_has_clash` sieht nur ueberlappende vdW-Kugeln.  Bei
+      KONDENSIERTEN Ringen entsteht der Widerspruch aber an den geteilten Atomen, und
+      dort stimmt der VSEPR-Winkel nicht mehr, ohne dass irgendetwas kollidiert --
+      genau dafuer existiert `_has_bad_angles`.  Welches der beiden Tore feuert, ist
+      deshalb selbst ein Befund und wird getrennt gezaehlt.
+
+    ⚠ WAS DIESER TEST NICHT MISST.  Er laeuft auf METALLFREIEN Kohlenwasserstoffen mit
+      hoher Symmetrie.  Ein substituierter Ring hat legitim mehr Zustaende, ein echtes
+      DELFIN-System ist groesser und damit je Kombination teurer.  Die Zeiten hier sind
+      eine UNTERGRENZE der Kosten, nicht die Produktionszahl.
+
+    ``max_kombis``: Testgrenze.  (a) und (b) werden IMMER bestimmt -- sie kosten nur den
+    linearen Posten.  Liegt (b) darueber, werden (c) und (d) NICHT gemessen und genau
+    das wird gedruckt, statt eine gekappte Zahl auszugeben.  ⚠ Eine Kappe waere hier
+    besonders heimtueckisch: `combos` ist nach FALTUNGSTIEFE sortiert, ein Praefix davon
+    enthaelt nur flache Kombinationen und haette systematisch zu hohe Ueberlebensquoten.
+    ``0`` = keine Grenze (dann kann ein einzelner Mehrringer Stunden laufen).
+    """
+    if not (_RDKIT and _np is not None):
+        print("=== Kombinatorik: RDKit fehlt, uebersprungen ==="); return 0
+    import time as _time
+    proben = proben or _KOMBI_PROBEN
+    print("=== Selbsttest: das Kreuzprodukt NACH dem Realismustor ===")
+    print("    Raumgitter AN (NAMP=2, NPHASE=8), Kappe AUS -- die VOLLE Kombinatorik.")
+    print("    (a) Zustaende je Ring · (b) Kreuzprodukt · (c) ueberlebt das Tor"
+          " · (d) davon TFD-distinkt")
+    _alt = {k: _os.environ.get(k) for k in
+            ("DELFIN_FFFREE_PUCKER_SPACE", "DELFIN_FFFREE_PUCKER_NAMP",
+             "DELFIN_FFFREE_PUCKER_NPHASE", "DELFIN_FFFREE_PUCKER_FULL",
+             "DELFIN_FFFREE_PUCKER_TRACE")}
+    zeilen = []
+    fehler = 0
+    try:
+        # ===== 0 DER VORGABEPFAD MUSS UNVERAENDERT BLEIBEN -- GEMESSEN, NICHT BEHAUPTET
+        #
+        # `generate` traegt jetzt einen optionalen Zaehlersatz.  Die Behauptung "bei
+        # `_zaehler=None` aendert sich nichts" ist genau die Sorte Behauptung, die in
+        # diesem Projekt schon mehrfach falsch war.  Also wird sie gemessen: dasselbe
+        # Molekuel, derselbe Vorgabepfad (alle Schalter AUS, Kappe AN), einmal ohne und
+        # einmal mit Zaehler -- die zurueckgegebenen Frames muessen ZEICHENGLEICH sein.
+        # ⚠ Im Messmodus werden beide Tore gefragt statt kurzschluessig eines; wuerde
+        #   `_has_bad_angles` etwas veraendern, faellt es genau hier auf.
+        for _k in _alt:
+            _os.environ[_k] = "0"
+        _mv = Chem.AddHs(Chem.MolFromSmiles("C1CCC2CCCCC2C1"))    # Decalin
+        if AllChem.EmbedMolecule(_mv, randomSeed=42) == 0:
+            AllChem.MMFFOptimizeMolecule(_mv)
+            _ohne = generate(_mv, budget=48)
+            _mit = generate(_mv, budget=48, _zaehler=_neuer_zaehler())
+            if _ohne == _mit:
+                print("    ✓ 0 VORGABE UNVERAENDERT: Decalin, Schalter AUS, %d Frames "
+                      "mit und ohne Zaehler identisch" % len(_ohne))
+            else:
+                print("    ✗ 0 VORGABE VERAENDERT: %d Frames ohne Zaehler, %d mit -- "
+                      "die Messstelle ist nicht folgenlos" % (len(_ohne), len(_mit)))
+                fehler += 1
+        else:
+            print("    ? 0 VORGABE: Decalin nicht einbettbar, Identitaet NICHT gemessen")
+            fehler += 1
+
+        _os.environ["DELFIN_FFFREE_PUCKER_SPACE"] = "1"
+        _os.environ["DELFIN_FFFREE_PUCKER_NAMP"] = "2"
+        _os.environ["DELFIN_FFFREE_PUCKER_NPHASE"] = "8"
+        _os.environ["DELFIN_FFFREE_PUCKER_FULL"] = "1"     # keine Kappe -- ganzes Produkt
+        _os.environ["DELFIN_FFFREE_PUCKER_TRACE"] = "0"
+        print()
+        print("    %-22s %2s %4s  %-14s %8s %7s %7s %7s %8s"
+              % ("Molekuel", "R", "gmax", "(a) je Ring", "(b)", "(c)", "(d)",
+                 "c/b", "Zeit/s"))
+        print("    (gmax = Atome, die sich das ENGSTE Ringpaar teilt: 0 getrennt · "
+              "1 spiro · 2 kondensiert · >=3 verbrueckt)")
+        for name, smi, klasse in proben:
+            try:
+                m = Chem.AddHs(Chem.MolFromSmiles(smi))
+                if AllChem.EmbedMolecule(m, randomSeed=42) != 0:
+                    print("    %-22s Einbettung fehlgeschlagen" % name); continue
+                try:
+                    AllChem.MMFFOptimizeMolecule(m)
+                except Exception:
+                    AllChem.UFFOptimizeMolecule(m)
+            except Exception as e:
+                print("    %-22s Aufbau fehlgeschlagen: %s" % (name, type(e).__name__))
+                continue
+            # ---- DIE TESTGRENZE: (a) und (b) ZUERST, getrennt vom Bau.  Der Bau kostet
+            #      JE Kombination einen Relax plus zwei Tore; ob er bezahlbar ist,
+            #      entscheidet (b) -- also muss (b) bekannt sein, BEVOR gebaut wird.
+            #      ⚠ Der Vorlauf bestimmt die Zustaende ein zweites Mal (`generate` tut
+            #        es gleich nochmal).  Das ist der LINEARE Posten, also der billige --
+            #        aber bezahlt wird er trotzdem, darum laeuft er NUR, wenn die Grenze
+            #        ueberhaupt gesetzt ist.  Bei `max_kombis=0` gibt es keinen Vorlauf
+            #        und damit auch keine doppelte Arbeit in der Zeitmessung.
+            if max_kombis:
+                _t_vor = _time.perf_counter()
+                try:
+                    _rings = [_ring_order(m, set(r)) for r in m.GetRingInfo().AtomRings()
+                              if _is_puckerable(m, r)]
+                    _stv = [_ring_pucker_states(m, r, set(), 0.05) for r in _rings]
+                except Exception as e:
+                    print("    %-22s Zustaende nicht bestimmbar: %s"
+                          % (name, type(e).__name__))
+                    continue
+                _prod = 1
+                for _s in _stv:
+                    _prod *= len(_s)
+                _b_vor = max(0, _prod - 1)
+                _gem_vor = max([len(set(_rings[i]) & set(_rings[j]))
+                                for i in range(len(_rings))
+                                for j in range(i + 1, len(_rings))] or [0])
+                if _b_vor > max_kombis:
+                    print("    %-22s %2d %4d  %-14s %8d %7s %7s %7s %8.1f"
+                          % (name, len(_rings), _gem_vor,
+                             "x".join(str(len(s)) for s in _stv), _b_vor,
+                             "-", "-", "-", _time.perf_counter() - _t_vor))
+                    print("        %-28s (c) und (d) NICHT GEMESSEN: (b) = %d ueber der "
+                          "Testgrenze %d.  Kein gekappter Ersatzwert -- `combos` ist nach "
+                          "Faltungstiefe sortiert, ein Praefix waere systematisch zu flach."
+                          % (klasse, _b_vor, max_kombis))
+                    zeilen.append({"name": name, "klasse": klasse, "ringe": len(_rings),
+                                   "gem": _gem_vor, "gmax": _gem_vor,
+                                   "b": 0, "c": 0, "d": 0, "dt": 0.0,
+                                   "zustaende": [len(s) for s in _stv],
+                                   "t_kombis": 0.0, "t_zust": 0.0,
+                                   "kollision": 0, "winkel": 0, "energien": [],
+                                   "ungemessen": _b_vor})
+                    continue
+            z = _neuer_zaehler()
+            _t0 = _time.perf_counter()
+            try:
+                out = generate(m, budget=10 ** 9, _zaehler=z)
+            except Exception as e:
+                print("    %-22s generate() geplatzt: %s" % (name, type(e).__name__))
+                continue
+            _dt = _time.perf_counter() - _t0
+            _b = int(z.get("aufzaehlung", 0))
+            _c = int(z.get("tor_ueberlebt", 0))
+            _d = len(out)
+            # ⚠ NIE EIN PROZENTSATZ OHNE NENNER.  Der Nenner ist hier (b), die Zahl der
+            #   aufgezaehlten Kombinationen ohne den Grundzustand -- nicht das
+            #   Kreuzprodukt selbst, denn der Grundzustand wird nie gebaut.
+            _cb = ("%6.1f%%" % (100.0 * _c / _b)) if _b else "   n/a"
+            print("    %-22s %2d %4d  %-14s %8d %7d %7d %7s %8.1f"
+                  % (name, len(z.get("ringgroessen") or []),
+                     int(z.get("gem_max", 0)),
+                     "x".join(str(v) for v in (z.get("zustaende_je_ring") or [])) or "-",
+                     _b, _c, _d, _cb, _dt))
+            print("        %-28s verworfen: Kollision %d · Winkel %d · TFD %d · "
+                  "Relax %d · Ausnahme %d"
+                  % (klasse, int(z.get("kollision", 0)), int(z.get("winkel", 0)),
+                     int(z.get("tfd_doppelt", 0)), int(z.get("relax_fehler", 0)),
+                     int(z.get("ausnahme", 0))))
+            _en = sorted(z.get("energien") or [])
+            if len(_en) >= 2:
+                _e0 = _en[0]
+                _in10 = sum(1 for e in _en if e - _e0 <= 10.0)
+                print("        UFF-Energie der (d): Spanne %.1f kcal/mol · "
+                      "innerhalb 10 kcal/mol %d von %d"
+                      % (_en[-1] - _e0, _in10, len(_en)))
+            zeilen.append({"name": name, "klasse": klasse,
+                           "ringe": len(z.get("ringgroessen") or []),
+                           "gem": int(z.get("gemeinsame_atome", 0)),
+                           "gmax": int(z.get("gem_max", 0)),
+                           "b": _b, "c": _c, "d": _d, "dt": _dt,
+                           "zustaende": list(z.get("zustaende_je_ring") or []),
+                           "t_kombis": float(z.get("t_kombis", 0.0)),
+                           "t_zust": float(z.get("t_zustaende", 0.0)),
+                           "kollision": int(z.get("kollision", 0)),
+                           "winkel": int(z.get("winkel", 0)),
+                           "energien": _en})
+    finally:
+        for k, v in _alt.items():
+            if v is None:
+                _os.environ.pop(k, None)
+            else:
+                _os.environ[k] = v
+
+    if not zeilen:
+        print("=== Kombinatorik: nichts gemessen ==="); return 1
+
+    # ---- 1 KOPPLUNG GEGEN UEBERLEBEN.
+    # ⚠ PARTITION, KEIN MITTELWERT.  "gekoppelt gegen unabhaengig" waere die falsche
+    #   Zweiteilung: sie wirft ein kondensiertes Ringpaar (eine gemeinsame BINDUNG) mit
+    #   einem Kaefig (vier gemeinsame Atome) in einen Topf, und deren Ueberlebensquoten
+    #   liegen zwei Groessenordnungen auseinander.  Ein Mittelwert kann eine tote Klasse
+    #   nicht sehen -- nur eine Partition kann das.  Geteilt wird darum nach der Zahl der
+    #   Atome, die sich das ENGSTE Ringpaar teilt; das ist zugleich der chemische Name
+    #   der Kopplung.
+    mehr = [r for r in zeilen if r["ringe"] >= 2 and r["b"] > 0]
+
+    def _klasse(r):
+        g = r.get("gmax", 0)
+        return 0 if g == 0 else (1 if g == 1 else (2 if g == 2 else 3))
+
+    _NAMEN = {0: "0 Atome  getrennt", 1: "1 Atom   spiro",
+              2: "2 Atome  kondensiert", 3: ">=3      verbrueckt"}
+
+    def _quote(gruppe):
+        _b = sum(r["b"] for r in gruppe)
+        _c = sum(r["c"] for r in gruppe)
+        return _b, _c, (100.0 * _c / _b if _b else 0.0)
+
+    print()
+    print("    ===== 1 KOPPLUNG GEGEN UEBERLEBEN (nur Mehrringer) =====")
+    print("      engstes Ringpaar teilt ...")
+    _quoten = {}
+    for _kl in (0, 1, 2, 3):
+        _g = [r for r in mehr if _klasse(r) == _kl]
+        if not _g:
+            print("      %-22s keine Probe" % _NAMEN[_kl]); continue
+        _b, _c, _q = _quote(_g)
+        _quoten[_kl] = _q
+        # ⚠ (a) MUSS MIT DASTEHEN, sonst ist c/b nicht interpretierbar.  Ein verbrueckter
+        #   Ring kann schon WENIGER Zustaende haben -- dann ist (b) klein, weil die
+        #   Kopplung frueher gewirkt hat, und nicht, weil das Tor mehr toetet.  Zwei
+        #   verschiedene Wege zum selben kleinen Produkt, und nur beide zusammen sagen,
+        #   welcher es war.
+        _zust = [v for r in _g for v in r["zustaende"]]
+        print("      %-22s %d Probe(n) · %6d von %6d ueberleben = %5.1f %% · (a) im "
+              "Mittel %.1f je Ring (%d Ringe) · %s"
+              % (_NAMEN[_kl], len(_g), _c, _b, _q,
+                 (sum(_zust) / float(len(_zust))) if _zust else 0.0, len(_zust),
+                 ", ".join(r["name"] for r in _g)))
+    if len(_quoten) >= 2:
+        _hi = max(_quoten.values())
+        _lo = min(_quoten.values())
+        # ⚠ Der Befund ist die SPANNE ueber die Partition, nicht ein Gruppenmittel.
+        print("      ⇒ Spanne ueber die Kopplungsklassen: %.1f %% bis %.1f %% -- %s"
+              % (_lo, _hi,
+                 "die Kopplungsart entscheidet, nicht die Kopplung an sich"
+                 if _hi - _lo > 20.0 else
+                 "die Kopplungsart macht kaum einen Unterschied"))
+
+    # ---- 2 WELCHES TOR FEUERT.  Kollision und Winkel getrennt, sonst ist "das Tor"
+    #      ein Name fuer zwei verschiedene Mechanismen (Detektorname != Messung).
+    print()
+    print("    ===== 2 WELCHES TOR TOETET =====")
+    for _kl in (0, 1, 2, 3):
+        _g = [r for r in mehr if _klasse(r) == _kl]
+        if not _g:
+            continue
+        _b = sum(r["b"] for r in _g)
+        _k = sum(r["kollision"] for r in _g)
+        _w = sum(r["winkel"] for r in _g)
+        print("      %-22s von %6d Kombinationen: Kollision %6d (%5.1f %%) · "
+              "Winkel %6d (%5.1f %%)"
+              % (_NAMEN[_kl], _b, _k, 100.0 * _k / _b if _b else 0.0,
+                 _w, 100.0 * _w / _b if _b else 0.0))
+    # ⚠ EIN TORNAME IST KEINE MESSUNG.  Wenn "das Kollisionstor" in Wahrheit nie feuert
+    #   und die ganze Selektion vom Winkeltor kommt, dann steht jede Aussage ueber "die
+    #   Sterik schneidet das Produkt" auf dem falschen Mechanismus -- und eine Reparatur
+    #   am Kollisionstor waere wirkungslos, bevor sie geschrieben ist.
+    _kges = sum(r["kollision"] for r in mehr)
+    _wges = sum(r["winkel"] for r in mehr)
+    _bges = sum(r["b"] for r in mehr)
+    if _bges:
+        if _kges == 0 and _wges > 0:
+            print("      ⇒ DAS KOLLISIONSTOR HAT NULL REICHWEITE: 0 von %d Kombinationen."
+                  % _bges)
+            print("        Der Filter ist AUSSCHLIESSLICH das WINKELTOR (%d von %d = "
+                  "%.1f %%).  Wer die Kombinatorik am Kollisionstor beschneiden will, "
+                  "greift den Mechanismus an, der gar nicht feuert."
+                  % (_wges, _bges, 100.0 * _wges / _bges))
+        else:
+            print("      ⇒ Kollision %d von %d (%.1f %%) · Winkel %d von %d (%.1f %%) "
+                  "-- beide Tore tragen."
+                  % (_kges, _bges, 100.0 * _kges / _bges,
+                     _wges, _bges, 100.0 * _wges / _bges))
+
+    # ---- 3 BEZAHLBARKEIT.  Die Kosten haengen an (b), nicht an (d).
+    _sum_b = sum(r["b"] for r in zeilen)
+    _sum_t = sum(r["t_kombis"] for r in zeilen)
+    print()
+    print("    ===== 3 BEZAHLBARKEIT =====")
+    if _sum_b <= 0 or _sum_t <= 0.0:
+        print("      Kosten je Kombination NICHT MESSBAR (b=%d, t=%.3f s)"
+              % (_sum_b, _sum_t))
+        print("=== Kombinatorik: unvollstaendig ==="); return 1
+    _ms = 1000.0 * _sum_t / _sum_b
+    print("      Jede der (b) Kombinationen wird GEBAUT und RELAXIERT, bevor das Tor")
+    print("      sie verwirft -- das Tor spart nichts, es waehlt nur aus.")
+    print("      Gemessen: %.1f ms je Kombination (Nenner: %d Kombinationen ueber %d "
+          "Proben, %.1f s gesamt)" % (_ms, _sum_b, len(zeilen), _sum_t))
+    print("      ⚠ UNTERGRENZE: metallfreie Kohlenwasserstoffe, 7 bis 21 Schweratome. "
+          "Ein echtes System ist groesser und je Kombination teurer.")
+    # ⚠ DIE KOSTEN JE KOMBINATION SIND KEINE KONSTANTE, und die Streuung gehoert
+    #   dazugesagt.  Sie steigt mit der UEBERLEBENSQUOTE: was das Tor passiert, wird
+    #   gegen JEDEN bereits behaltenen Konformer per TFD geprueft, also quadratisch.
+    #   Ein Molekuel, dessen Kombinationen alle ueberleben, ist damit doppelt teuer --
+    #   mehr Kandidaten UND teurere Pruefung je Kandidat.
+    _je = sorted((1000.0 * r["t_kombis"] / r["b"], r["name"])
+                 for r in zeilen if r["b"] > 0 and r["t_kombis"] > 0.0)
+    if len(_je) >= 2:
+        print("      Streuung je Kombination: %.1f ms (%s) bis %.1f ms (%s) -- sie "
+              "steigt mit der Ueberlebensquote, weil TFD gegen alle Behaltenen prueft."
+              % (_je[0][0], _je[0][1], _je[-1][0], _je[-1][1]))
+    # ⚠ ZWEI KOSTENPOSTEN MIT VERSCHIEDENEM WACHSTUM.  Die Zustaende je Ring kosten
+    #   LINEAR in der Ringzahl (jeder Ring einmal), das Kreuzprodukt EXPONENTIELL.  Steht
+    #   der Aufzaehlungsposten heute noch klein da, heisst das nichts fuer 6 Ringe --
+    #   der andere ist der, der explodiert.
+    _t_zust = sum(r["t_zust"] for r in zeilen)
+    print("      Aufteilung: Zustaende je Ring %.1f s (linear in der Ringzahl) · "
+          "Kreuzprodukt %.1f s (exponentiell) -- Summe %.1f s ueber %d Proben"
+          % (_t_zust, _sum_t, _t_zust + _sum_t, len(zeilen)))
+    # ⚠ DIE HOCHRECHNUNG DARF NICHT MIT EINER ERFUNDENEN ZUSTANDSZAHL LAUFEN.  Was hier
+    #   gemessen wurde, steht daneben -- und die gemessene Spanne reicht ueber das
+    #   hinaus, was die Sweep-Tabelle an UNSUBSTITUIERTEN Ringen findet: ein Ring in
+    #   einem Kaefig ist symmetriearm und splittet weiter auf.
+    _az = [v for r in zeilen for v in r["zustaende"]]
+    if _az:
+        print("      Gemessene (a): %d bis %d Zustaende je Ring, Mittel %.1f (Nenner: "
+              "%d Ringe ueber %d Proben)"
+              % (min(_az), max(_az), sum(_az) / float(len(_az)), len(_az), len(zeilen)))
+    print()
+    print("      Hochrechnung auf 4,3 Ringe je System (gemessen) -- EIN Kern, EIN System:")
+    _stufen = sorted({3, 9, 16} | ({max(_az)} if _az else set()))
+    for _z in _stufen:
+        _n = _z ** 4.3
+        _s = _n * _ms / 1000.0
+        # ⚠ DER DECKEL GEHOERT NICHT DIESEM MECHANISMUS ALLEIN.  `deckel_s` ist die
+        #   Frist fuer den GANZEN Bau eines Systems; die Ringfaltung ist einer von
+        #   vielen Schritten darin.  "Unter dem Deckel" ist deshalb noch kein "geht" --
+        #   erst der ANTEIL sagt, ob daneben noch etwas Platz hat.
+        print("        %2d Zustaende je Ring -> %10.0f Kombinationen -> %10.0f s "
+              "= %6.1f h  = %6.1f %% des Arm-Deckels (%.0f s)%s"
+              % (_z, _n, _s, _s / 3600.0, 100.0 * _s / deckel_s, deckel_s,
+                 "" if _s <= deckel_s else "   UEBER dem Deckel"))
+
+    # ---- 4 URTEIL.  Zwei Seiten, und sie fallen verschieden aus.
+    # ⚠ DAS URTEIL RECHNET MIT DER GEMESSENEN ZUSTANDSZAHL, nicht mit der angenommenen.
+    #   Die Annahme, aus der diese Messung hervorging, war "9 bis 16 Zustaende je Ring"
+    #   -- eine Zahl vom SWEEP an UNSUBSTITUIERTEN Ringen.  In echten Mehrringern misst
+    #   dieser Test 4 bis 26 mit Mittel um 14: die Umgebung bricht die Ringsymmetrie,
+    #   und TFD trennt dann mehr.  Mit der angenommenen Zahl zu urteilen, waehrend die
+    #   eigene daneben steht, waere die Schoenrechnung in Reinform.
+    _zmit = (sum(_az) / float(len(_az))) if _az else 9.0
+    _smess = (_zmit ** 4.3) * _ms / 1000.0
+    _s3 = (3 ** 4.3) * _ms / 1000.0
+    _dmax = max(r["d"] for r in zeilen)
+    print()
+    print("    ===== 4 URTEIL =====")
+    if _smess <= deckel_s:
+        print("      AUFZAEHLUNG: BEZAHLBAR -- bei der GEMESSENEN Zustandszahl %.1f je "
+              "Ring und 4,3 Ringen %.0f s je System = %.0f %% des Arm-Deckels (%.0f s), "
+              "den sich die Ringfaltung mit jedem anderen Bauschritt teilt."
+              % (_zmit, _smess, 100.0 * _smess / deckel_s, deckel_s))
+    elif _s3 <= deckel_s:
+        print("      AUFZAEHLUNG: NICHT BEZAHLBAR bei der GEMESSENEN Aufloesung -- %.1f "
+              "Zustaende je Ring, 4,3 Ringe: %.0f s je System = %.0f %% des Arm-Deckels "
+              "(%.0f s)." % (_zmit, _smess, 100.0 * _smess / deckel_s, deckel_s))
+        print("        Bezahlbar wird es erst weit darunter: bei 3 Zustaenden je Ring "
+              "%.0f s = %.0f %% des Deckels.  Der Weg dahin ist WENIGER ZUSTAENDE JE "
+              "RING (groebere Entdopplung), nicht eine Kappe auf dem Produkt -- eine "
+              "Kappe schneidet nach Faltungstiefe und laesst die tiefen Faltungen weg."
+              % (_s3, 100.0 * _s3 / deckel_s))
+    else:
+        print("      AUFZAEHLUNG: NICHT BEZAHLBAR -- selbst bei 3 Zustaenden je Ring "
+              "%.0f s je System gegen einen Deckel von %.0f s." % (_s3, deckel_s))
+    print("      ERGEBNIS: groesste gemessene Ausbeute (d) einer einzelnen Probe: %d "
+          "Konformere." % _dmax)
+    # ⚠ WAS NICHT GEMESSEN WURDE, MUSS IM URTEIL STEHEN.  Eine Probe, die wegen ihrer
+    #   Groesse uebersprungen wurde, ist der staerkste Fall gegen die Bezahlbarkeit --
+    #   sie stillschweigend aus der Bilanz zu lassen, waere genau die Schoenrechnung,
+    #   gegen die dieser Test gebaut ist.
+    _uv = [r for r in zeilen if r.get("ungemessen")]
+    if _uv:
+        print("      ⚠ %d von %d Proben UNGEMESSEN, weil (b) ueber der Testgrenze %d "
+              "lag: %s" % (len(_uv), len(zeilen), max_kombis,
+                           " · ".join("%s (b=%d)" % (r["name"], r["ungemessen"])
+                                      for r in _uv)))
+        print("        Das ist selbst ein Befund: bei diesen Systemen ist das volle "
+              "Produkt schon zu gross, um es ueberhaupt einmal zu bauen.")
+    # ---- DIE DREI FILTER HINTEREINANDER, jeder mit seinem eigenen Nenner.
+    # ⚠ Das ist die Kernaussage des ganzen Tests, und sie ist erst als KETTE lesbar:
+    #   welcher der drei Filter das Produkt tatsaechlich klein macht, ist eine Messung
+    #   und keine Vermutung -- und die Vermutung war, es sei der erste.
+    _sum_c = sum(r["c"] for r in zeilen)
+    _sum_d = sum(r["d"] for r in zeilen)
+    _alle_en = [r for r in zeilen if len(r["energien"]) >= 2]
+    _ges = sum(len(r["energien"]) for r in _alle_en)
+    _in10 = sum(sum(1 for e in r["energien"] if e - r["energien"][0] <= 10.0)
+                for r in _alle_en)
+    print()
+    print("      DREI FILTER HINTEREINANDER (alle Proben zusammen, jeder mit Nenner):")
+    print("        1 PHYSIK  (Kollision + Winkel)  (b)->(c)  %6d von %6d = %5.1f %%"
+          % (_sum_c, _sum_b, 100.0 * _sum_c / _sum_b if _sum_b else 0.0))
+    print("        2 TFD     (Entdopplung)         (c)->(d)  %6d von %6d = %5.1f %%"
+          % (_sum_d, _sum_c, 100.0 * _sum_d / _sum_c if _sum_c else 0.0))
+    if _ges:
+        print("        3 ENERGIE (<= 10 kcal/mol)      (d)->(e)  %6d von %6d = %5.1f %%"
+              % (_in10, _ges, 100.0 * _in10 / _ges))
+        # Der schaerfste Filter ist der mit der KLEINSTEN Durchlassquote.
+        _kette = (("die PHYSIK", 100.0 * _sum_c / max(1, _sum_b)),
+                  ("die TFD-Entdopplung", 100.0 * _sum_d / max(1, _sum_c)),
+                  ("die ENERGIE", 100.0 * _in10 / _ges))
+        _eng = min(_kette, key=lambda t: t[1])
+        print("      ⇒ Der schaerfste Filter ist %s (%.1f %% Durchlass)."
+              % (_eng[0], _eng[1]))
+    print("=== Kombinatorik: %s ==="
+          % ("gemessen" if fehler == 0 else "gemessen, aber %d Pruefung(en) FEHLGESCHLAGEN"
+             % fehler))
+    return 1 if fehler else 0
+
+
 if __name__ == "__main__":
     # ⚠ AM DATEIENDE, und das ist keine Kosmetik.  Auf MODULEBENE zaehlt die
     #   Reihenfolge: steht dieser Block vor einer der Testfunktionen, ist ihr Name
@@ -1390,9 +1953,34 @@ if __name__ == "__main__":
     #   Funktion gilt das nicht -- genau die Verwechslung, die am 09.08. den
     #   [Z4]-Totenschein erzeugt hat, nur andersherum.)
     import sys as _sys
-    _rc = selbsttest_raum()
-    _rc = selbsttest_konvergenz() or _rc
-    # Der Sweep steht NACH der Konvergenz, weil er ihre offene Frage beantwortet:
-    # sie meldet "Zustaende liegen dicht", er misst, ob das an der Schwelle liegt.
-    _rc = selbsttest_tfd_sweep() or _rc
+    # Ohne Argument laeuft alles -- ein Name laesst genau einen Test laufen.  Das ist
+    # keine Bequemlichkeit: `selbsttest_kombinatorik` BAUT, und wer sie waehrend einer
+    # Aenderung nachmessen will, soll dafuer nicht dreimal den TFD-Sweep bezahlen.
+    _TESTS = (("raum", selbsttest_raum),
+              ("konvergenz", selbsttest_konvergenz),
+              # Der Sweep steht NACH der Konvergenz, weil er ihre offene Frage
+              # beantwortet: sie meldet "Zustaende liegen dicht", er misst, ob das an
+              # der Schwelle liegt.
+              ("sweep", selbsttest_tfd_sweep),
+              # Zuletzt die Kombinatorik: sie baut Relax + Tor JE Kombination und ist
+              # damit der teuerste der vier.  Sie beantwortet, was die drei davor
+              # aufwerfen -- die Zustandszahl je Ring ist nur interessant, weil sie
+              # potenziert wird.
+              ("kombinatorik", selbsttest_kombinatorik))
+    _wahl = [a for a in _sys.argv[1:] if not a.startswith("-")]
+    _unbekannt = [a for a in _wahl if a not in dict(_TESTS)]
+    if _unbekannt:
+        print("unbekannter Test: %s -- bekannt: %s"
+              % (", ".join(_unbekannt), ", ".join(n for n, _ in _TESTS)))
+        _sys.exit(2)
+    # `--ohne-grenze` hebt die Testgrenze der Kombinatorik auf.  Dann wird JEDE Probe
+    # vollstaendig gebaut -- auch die, deren Kreuzprodukt fuenfstellig ist.  Das ist die
+    # Messung, keine Vorgabe: sie laeuft Stunden und gehoert nicht in einen Regellauf.
+    _ohne_grenze = "--ohne-grenze" in _sys.argv[1:]
+    _rc = 0
+    for _name, _fn in _TESTS:
+        if _wahl and _name not in _wahl:
+            continue
+        _rc = (_fn(max_kombis=0) if (_name == "kombinatorik" and _ohne_grenze)
+               else _fn()) or _rc
     _sys.exit(_rc)
