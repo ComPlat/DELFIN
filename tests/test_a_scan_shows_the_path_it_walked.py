@@ -893,3 +893,83 @@ def test_the_slider_stands_beside_the_profile_switch():
     assert part.submit_walk_at in row
     assert row.index(part.submit_walk_at) == row.index(
         part.submit_scan_plot_btn) + 1
+
+
+# ---------------------------------------------------------------------------
+# The end of the stream
+# ---------------------------------------------------------------------------
+#
+# Reported three times in one afternoon, from two installs and two Python
+# versions, with the same twelve numbers each time: "the scan result jumps
+# when I grab it".  The journal says why.  A walk of sixteen atoms delivers
+# its fifteenth and last frame at 7.88 s and the box holds the structure it
+# ended on at 8.04 s -- and at 11.05 s the picture is still standing on frame
+# 3, because a walk is paced to be watched and the calculation was faster
+# than the watching.
+#
+# That lag is not the defect; it is the point of pacing.  The defect is that
+# the page was never told the run had ended.  Both optimisers say so through
+# the final write of _stream_frames; the scan writes its own payloads, one
+# per point, and every one of the fifteen carried final: null -- against the
+# optimisation two seconds earlier in the same journal, whose last write
+# carried final: 1.  Without it the player cannot tell a run that finished
+# from one that stopped, and those mean opposite things about a queue.
+
+
+def _payload_of(part):
+    import json
+    return json.loads(part.submit_gfn_frame.value or '{}')
+
+
+def test_a_walk_that_has_ended_says_so_on_the_channel():
+    part, state = _an_editor()
+    run = part._note_the_run(int(state.get('gfn_run', 0)) + 1, 'scan')
+    state['gfn_run'] = run
+
+    part._close_the_frames(run)
+    said = _payload_of(part)
+    assert said.get('final') == 1, said
+    assert said.get('run') == run
+
+
+def test_the_marker_carries_nothing_and_moves_nothing():
+    """A write that also claimed to deliver the tail would tell the page it
+    had shown frames it has not, and the rest of the walk would be skipped --
+    which is the opposite of what this is for."""
+    part, state = _an_editor()
+    run = part._note_the_run(int(state.get('gfn_run', 0)) + 1, 'scan')
+    state['gfn_run'] = run
+
+    part._close_the_frames(run)
+    said = _payload_of(part)
+    assert said.get('frames') == []
+    assert said.get('from') == 0
+    assert said.get('follow') == 1, (
+        'the scan streams as a follow, and the marker must not say otherwise')
+
+
+def test_a_walk_that_was_superseded_closes_nothing():
+    """The same rule every write on this channel answers to. A scan whose run
+    was taken over while its last point was being priced would otherwise
+    close a stream belonging to whatever replaced it."""
+    part, state = _an_editor()
+    run = part._note_the_run(int(state.get('gfn_run', 0)) + 1, 'scan')
+    state['gfn_run'] = run
+    part.submit_gfn_frame.value = ''
+
+    part._note_the_run(run + 1, 'optimise')
+    state['gfn_run'] = run + 1
+    part._close_the_frames(run)
+    assert part.submit_gfn_frame.value == ''
+
+
+def test_every_way_out_of_a_walk_closes_its_stream():
+    """Including the one that walked nothing: what this closes is the run,
+    not the result."""
+    from editor_source import EDITOR_SOURCE
+
+    body = EDITOR_SOURCE.split('def _done(final=walked):', 1)[1]
+    closes = body.index('_close_the_frames(')
+    walked_nothing = body.index('if not path:')
+    assert closes < walked_nothing, (
+        'a walk that ended early left its run open on the page')

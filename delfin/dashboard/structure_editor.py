@@ -3582,6 +3582,50 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
         schedule_ui_update(_write)
 
+    def _close_the_frames(run_id):
+        """Say that a run's stream has ended, without adding to it.
+
+        The channel carries no end of its own.  The last frame of a walk
+        looks exactly like the one before it, so the page cannot tell a run
+        that *finished* from one that simply stopped being written to -- and
+        the two mean opposite things where the picture is behind the
+        calculation, which is the normal case for a walk paced to be watched.
+        A finished run's queue is a replay of something already decided and
+        has to be played out to the end; a stopped run's queue is frames
+        nobody chose to be left on.  The player has that rule and says so in
+        its own comment: "a run that finished is not a run that was stopped
+        ... the kernel says which it is".
+
+        Both optimisers say it, through the *final* write of
+        :func:`_stream_frames`.  The scan writes its own payloads -- it hands
+        over one point at a time as it walks -- and said it nowhere, so its
+        run stayed open on the page after its answer was in the box.
+        Measured, three times over, on a sixteen-atom approach: the last of
+        fifteen frames at 7.88 s, the box holding the walk's end at 8.04 s,
+        and the picture still standing on frame 3 at 11.05 s.
+
+        No frames, and *from* at nought, so this cannot move the count of
+        what has been seen.  A marker that also claimed to deliver the tail
+        would tell the page it had shown frames it has not, and the rest of
+        the walk would be skipped -- which is the opposite of what this is
+        for.
+        """
+        if run_id is None:
+            return
+
+        def _write(run=int(run_id)):
+            # Asked at the write, like every other write on this channel: a
+            # scan that was superseded while its last point was being priced
+            # would otherwise close a stream belonging to whatever replaced
+            # it, and a run closed by somebody else's marker plays out a
+            # queue that is being drawn over.
+            if not _frame_run_is_current(run):
+                return
+            submit_gfn_frame.value = _frame_payload(
+                run, **{'from': 0, 'follow': 1, 'frames': [], 'final': 1})
+
+        schedule_ui_update(_write)
+
     def _halt_the_frames(run_id):
         """Tell the page the run it is playing has been switched off.
 
@@ -11020,6 +11064,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     and _carried_out(walked, legs))
 
                 def _done(final=walked):
+                    # The stream is over, whichever way the walk ended.  Said
+                    # before anything else here, and for every way out --
+                    # including the one that walked nothing -- because what
+                    # this closes is the run, not the result.
+                    _close_the_frames(state.get('scan_frame_run'))
                     submit_scan_run_btn.description = 'Run scan'
                     submit_scan_run_btn.icon = 'play'
                     # A run that walked nothing writes nothing and says only
