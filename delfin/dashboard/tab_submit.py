@@ -2376,7 +2376,12 @@ def create_tab(ctx):
     # cannot move anything. Both copies live in the stack -- the ordinary one
     # shows in this view, the other is taken by fullscreen and shows there.
     mol_viewer_stack = widgets.Box(
-        [mol_output, mol_status],
+        # The profile of the last walk shares this box with the
+        # structure and swaps with it: one or the other, in the same
+        # place, so nothing above or below moves. In a row of its own
+        # under the panel it was a second panel that pushed the page
+        # down and landed off the bottom of the screen.
+        [mol_output, _editor.submit_scan_plot, mol_status],
         layout=widgets.Layout(width='100%', min_width='0'),
     )
     mol_viewer_stack.add_class('delfin-structure-viewer-stack')
@@ -2399,13 +2404,6 @@ def create_tab(ctx):
     submit_right = widgets.VBox([
         widgets.HTML('<b>Molecule Preview:</b>'),
         submit_manip_toolbar, mol_viewer_stack, isomer_nav_row, xyz_copy_row,
-        # The profile of the last scan, under the picture it was walked on and
-        # the strips that belong to it, and nothing at all until there is a
-        # walk to show. Under the structure rather than over it: it is written
-        # once, at the end of a walk that took minutes, so it can afford a row
-        # -- and a row takes none of the pixels the structure is drawn in,
-        # which an overlay would.
-        submit_scan_plot,
         submit_ff_notes,
         spacer_large,
         widgets.HTML('<b>GOAT:</b>'),
