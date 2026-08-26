@@ -98,8 +98,12 @@ def test_stages_run_in_order_with_barrier_and_substitution(
     assert len(out["stages"]["synthesis"]) == 1
     # Deterministic ordering: payloads come back in submission order.
     assert out["stages"]["research"][0]["description"] == "alpha"
-    assert out["stages"]["research"][0]["result"] == "ALPHA-FINDING"
-    assert out["stages"]["research"][1]["result"] == "BETA-FINDING"
+    # `in`, not `==`: a delegate's report now travels inside the untrusted
+    # marker, so the text is intact and the envelope around it is not the
+    # delegate's. The substitution assertions below are the ones that
+    # matter here, and they still find the findings.
+    assert "ALPHA-FINDING" in out["stages"]["research"][0]["result"]
+    assert "BETA-FINDING" in out["stages"]["research"][1]["result"]
     # Barrier: the synthesis child ran LAST, after both research children.
     assert len(client.calls) == 3
     assert "Combine these findings" in client.calls[-1]["prompt"]

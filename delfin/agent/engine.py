@@ -11,6 +11,7 @@ import time as _time
 from pathlib import Path
 from typing import Any, Callable
 
+from . import agent_metrics as _agent_metrics
 from .api_client import StreamEvent, create_client
 from .prompt_loader import AVAILABLE_ON_DEMAND, PromptLoader
 
@@ -467,6 +468,14 @@ class AgentEngine:
         self._last_test_evidence: list = []
         self.token_usage = {"input": 0, "output": 0, "cached": 0}
         self.cost_usd: float = 0.0
+        # What this session's turns DELEGATED, kept apart from what they
+        # spent themselves. cost_usd above has only ever counted the
+        # parent model's own tokens; a delegated run is billed separately
+        # and is written to a telemetry file that carries no parent,
+        # session or turn identifier, so nothing joined the two and a turn
+        # that handed the work to five sub-agents reported a few cents.
+        # See _meter_delegate_spend for where the join is made instead.
+        self._delegate_spend = _agent_metrics.DelegateLedger()
         # Whether that number could be measured at all, per turn. cost_usd
         # is a sum of MEASURED spend only: a turn on a model with no
         # published rate adds 0.0, which no USD gate can tell from a cheap
@@ -716,6 +725,100 @@ class AgentEngine:
         return _doc_executor.execute("bash", {"command": str(command or "")},
                                      perms)
 
+    # -- what a turn delegated ---------------------------------------------
+
+    def delegate_spend(self) -> "_agent_metrics.DelegateLedger":
+        """This session's delegated spend: per turn, per session, and the
+        background part that belongs to no turn.
+
+        Handed out as the ledger rather than as three numbers so a caller
+        cannot read the per-turn bucket where it meant the session's.
+        """
+        ledger = getattr(self, "_delegate_spend", None)
+        if not isinstance(ledger, _agent_metrics.DelegateLedger):
+            ledger = _agent_metrics.DelegateLedger()
+            self._delegate_spend = ledger
+        return ledger
+
+    def _meter_delegate_spend(self) -> bool:
+        """Route every delegated run through a counter that knows which
+        turn asked for it.
+
+        The delegate's own telemetry file records tokens and duration but
+        carries no parent, session or turn field, so nothing in that file
+        can say which turn a delegate belonged to and a timestamp window
+        over it would be a guess -- worse, a shared home directory means
+        the guess would also pick up another session's delegates. The
+        runner the tool executor calls is the one place where a delegate
+        and the turn that started it are the same call, so the join is
+        made HERE, in memory, and the file is not consulted at all.
+
+        Re-installed at the start of every turn because the client
+        re-binds ``subagent_runner`` on every ``set_permissions``. It
+        unwraps an existing meter before wrapping, so re-installing can
+        never stack two counters over one runner and bill each delegate
+        twice.
+
+        Returns True when a meter is in place. False means this backend
+        has no permissions object or no runner, i.e. it cannot delegate.
+        """
+        perms = self.kit_permissions
+        if perms is None:
+            return False
+        runner = getattr(perms, "subagent_runner", None)
+        if runner is None:
+            return False
+        inner = getattr(runner, "_delegate_meter_inner", None) or runner
+
+        def _metered(*args, **kwargs):
+            # Read at ENTRY, not at return: a background delegate comes
+            # back long after the turn that started it, and the turn
+            # running by then is exactly the one it must NOT be charged
+            # to.
+            started = self._turn_id if self._turn_in_flight else 0
+            payload = inner(*args, **kwargs)
+            try:
+                self._book_delegate_spend(payload, started_turn=started)
+            except Exception:
+                pass
+            return payload
+
+        _metered._delegate_meter_inner = inner
+        try:
+            perms.subagent_runner = _metered
+        except Exception:
+            return False
+        return True
+
+    def _book_delegate_spend(self, payload, *, started_turn: int) -> None:
+        """Charge one finished delegate, to exactly one place.
+
+        The turn is identified by the pair (a turn is in flight, its id),
+        read at the runner's entry and again at its return. Turn ids
+        strictly increase and the turn gate allows only one turn in flight
+        at a time, so an unchanged pair proves the SAME turn has been
+        running throughout -- which is what makes a foreground delegate
+        this turn's, and a background one, which returns after its turn
+        ended, nobody's.
+
+        Every delegate is booked into the session total and into exactly
+        one of the per-turn or the background bucket, so no delegate can
+        be counted twice however often the numbers are read afterwards.
+        """
+        ledger = self.delegate_spend()
+        one = _agent_metrics.DelegateSpend()
+        if not one.add_payload(payload,
+                               provider=str(getattr(self, "provider", "")
+                                            or "")):
+            return
+        with self._lock:
+            same_turn = bool(
+                started_turn
+                and getattr(self, "_turn_in_flight", False)
+                and getattr(self, "_turn_id", 0) == started_turn)
+            (ledger.turn if same_turn else ledger.background).merge(one)
+            ledger.session.merge(one)
+
     def set_kit_confirm_callback(self, callback) -> bool:
         """Bind/unbind the KIT-Toolbox confirmation callback at runtime.
 
@@ -939,7 +1042,16 @@ class AgentEngine:
         return self.current_role_index >= len(self.route)
 
     def get_status(self) -> dict[str, Any]:
-        """Return current engine status for the UI."""
+        """Return current engine status for the UI.
+
+        ``cost_usd`` keeps its meaning exactly: the parent model's own
+        measured spend, cumulative for the session. What it never
+        included -- the runs this session handed to sub-agents -- is
+        reported beside it under its own names, plus a total that says so
+        in its own. Folding the delegated half into ``cost_usd`` would
+        make every existing reader silently start meaning something else.
+        """
+        _dl = self.delegate_spend()
         return {
             "mode": self.mode,
             "backend": self.backend,
@@ -951,6 +1063,23 @@ class AgentEngine:
             "output_tokens": self.token_usage.get("output", 0),
             "cached_tokens": self.token_usage.get("cached", 0),
             "cost_usd": self.cost_usd,
+            # Cumulative for the session, like cost_usd above, so a caller
+            # that already differences against a turn-start baseline gets
+            # the turn's share of the delegated spend the same way.
+            "delegated_cost_usd": _dl.session.cost_usd,
+            "delegated_input_tokens": _dl.session.input_tokens,
+            "delegated_output_tokens": _dl.session.output_tokens,
+            "delegate_count": _dl.session.count,
+            # Delegates whose model has no published rate. They are NOT in
+            # delegated_cost_usd; a reader that shows the figure without
+            # this count is reporting an unpriced run as a free one.
+            "delegates_unpriced": _dl.session.unpriced,
+            # The part of the delegated total that belongs to no single
+            # turn: a backgrounded delegate finishes after the turn that
+            # started it, so charging it to a turn would charge whichever
+            # turn happened to be running when the thread came back.
+            "background_delegated_cost_usd": _dl.background.cost_usd,
+            "total_cost_usd": self.cost_usd + _dl.session.cost_usd,
             "cycle_complete": self.is_cycle_complete,
             "session_id": self.session_id,
         }
@@ -1321,6 +1450,15 @@ class AgentEngine:
                 report = (report[:self._SUBAGENT_REPORT_CHARS]
                           + f"\n  […] full report: subagent_result(sa_id="
                             f"'{sa_id}')")
+            if report:
+                # The second route the same prose takes into this context.
+                # A background delegate's report is pushed here rather than
+                # returned through the tool result, so marking only the
+                # tool path would leave the push unmarked — and the push is
+                # the one that arrives unasked, between rounds, while the
+                # parent is in the middle of something else.
+                from .subagents import mark_delegate_text
+                report = mark_delegate_text(report)
             err = str(ev.get("error") or "").strip()
             lines.append(head + (f" — run error: {err[:160]}" if err else ""))
             if report:
@@ -2113,6 +2251,18 @@ class AgentEngine:
             self._stop_owner_turn = None
         _turn_id = self._turn_id
 
+        # This turn's delegated spend starts at zero, and every delegated
+        # run from here is routed through a counter that knows which turn
+        # asked for it. Installed per turn rather than once, because the
+        # client re-binds the runner whenever permissions change; the
+        # installer unwraps an existing meter first, so repeating it
+        # cannot stack two counters over one runner.
+        try:
+            self.delegate_spend().turn = _agent_metrics.DelegateSpend()
+            self._meter_delegate_spend()
+        except Exception:
+            pass
+
         # Read once per turn, before the prompt is built: the steering
         # blocks are assembled from engine state and never see the message
         # that triggered them, so anything that has to know what was asked
@@ -2714,6 +2864,21 @@ class AgentEngine:
                         0, int(self.token_usage.get("cached", 0))
                         - int(_usage_before.get("cached", 0))),
                 )
+            except Exception:
+                pass
+            # What the turn delegated, said once, by the turn that paid
+            # for it. The figure every other surface shows for a turn is
+            # the parent model's own tokens, so a turn that handed the
+            # work to five sub-agents read as one of the cheapest of the
+            # session. Nothing is printed when nothing was delegated: a
+            # "delegated $0.00" line after every turn is noise that trains
+            # a reader to skip the line the real number appears on.
+            try:
+                _deleg_line = _agent_metrics.format_turn_delegation(
+                    float(self.cost_usd) - float(self._turn_start_cost),
+                    self.delegate_spend().turn)
+                if _deleg_line:
+                    _notice("\n" + _deleg_line)
             except Exception:
                 pass
             # Whether this turn's spend could be measured at all. The USD
@@ -5398,6 +5563,20 @@ class AgentEngine:
             "_last_outcome_cost", "last_outcome_cost", "state",
             lambda v: float(v or 0.0), lambda v: float(v or 0.0),
             lambda: 0.0),
+        # What this session's turns delegated. Carried for the same reason
+        # the price-state counters are: a resumed run's spend figure means
+        # nothing without the half of it that was delegated, and dropping
+        # it would report a resumed session as cheaper than it was --
+        # under a budget gate that reads the same figure. The per-TURN
+        # bucket inside it is deliberately not carried; DelegateLedger's
+        # loader zeroes it, because a resumed session has no turn in
+        # flight for a previous process's delegates to be charged to.
+        _SessionField(
+            "_delegate_spend", "delegate_spend", "state",
+            lambda v: (v if isinstance(v, _agent_metrics.DelegateLedger)
+                       else _agent_metrics.DelegateLedger()).as_dict(),
+            _agent_metrics.DelegateLedger.from_dict,
+            _agent_metrics.DelegateLedger),
     )
 
     def _dump_field(self, spec: "AgentEngine._SessionField") -> Any:

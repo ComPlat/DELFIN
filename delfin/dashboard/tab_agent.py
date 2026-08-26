@@ -16322,6 +16322,28 @@ def create_tab(ctx):
                                 or ""
                             )
                             _profile = get_profile(_model_name)
+
+                            def _delegation_fields(eng) -> dict:
+                                """What this turn delegated, or nothing.
+
+                                Best-effort by the same rule as the rest of
+                                this block: a metrics record is worth less
+                                than the turn it describes, so a missing
+                                ledger records zeros rather than losing the
+                                row.
+                                """
+                                try:
+                                    sp = eng.delegate_spend().turn
+                                except Exception:
+                                    return {}
+                                return {
+                                    "delegate_count": sp.count,
+                                    "delegated_input_tokens": sp.input_tokens,
+                                    "delegated_output_tokens": sp.output_tokens,
+                                    "delegated_cost_usd": sp.cost_usd,
+                                    "delegates_unpriced": sp.unpriced,
+                                }
+
                             record_turn(TurnMetrics(
                                 session_id=getattr(engine, "session_id", "") or "",
                                 model=_model_name,
@@ -16345,6 +16367,15 @@ def create_tab(ctx):
                                 cooperative_stop=bool(
                                     state.get("_last_cooperative_stop")
                                 ),
+                                # The only writer of TurnMetrics. The engine
+                                # meters delegated spend per turn, and without
+                                # these five the record would carry the fields
+                                # and never a figure — a turn that delegated
+                                # five agents reading as though it had spent
+                                # only what it spent itself. Read AFTER the
+                                # turn returns, which is when the ledger for
+                                # that turn is complete.
+                                **_delegation_fields(engine),
                             ))
                             state["_turn_tool_errors"] = 0
                             state["_last_cooperative_stop"] = False
