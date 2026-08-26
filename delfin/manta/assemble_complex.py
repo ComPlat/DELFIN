@@ -3039,6 +3039,185 @@ def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs,
     return out_syms, P
 
 
+# ===== DAS FEHLENDE AUGE DER ENTDOPPLUNG: DER FALTUNGS-FINGERABDRUCK ==============
+#
+# WAS GEMESSEN WURDE (26.08.2026, harness/faltung_dedup_schwelle.py, Rohdaten unter
+# results/FALTUNG_DEDUP_2026_08_26/).  Jede Entdopplung im Bau rechnet RMSD ueber
+# ALLE schweren Atome.  Eine Ringfaltung bewegt aber nur die RINGATOME -- ihr
+# Median-Anteil an den Schweratomen ist 0,1316.  Gegenfaktisch gemessen, an echten
+# Archivframes mit dem Erzeuger des Baus selbst gefaltet (`_ring_pucker._set_pucker`
+# ueber `_pucker_candidates`, Substituenten reiten starr mit):
+#
+#   Archiv gkfam6kb_on (5681 Dateien, 500 gezogen, 199 auswertbar, 459 Ringe)
+#       4539 von 5754 Faltungskandidaten unter 0,50 A Gesamt-RMSD   =  78,88 %
+#       3311 von 5754                    unter 0,30 A               =  57,54 %
+#       2672 von 5754                    unter 0,25 A               =  46,44 %
+#   Archiv hplacegate6k_on (4313 Dateien, 136 auswertbar, 327 Ringe)
+#       3117 von 4206 Faltungskandidaten unter 0,50 A               =  74,11 %
+#   Sessel gegen GEGENsessel, der klassischste Umschlag ueberhaupt:
+#         94 von  294 geraden Ringen     unter 0,50 A               =  31,97 %
+#
+# ⛔ NICHT DIE SCHWELLE SENKEN.  Das waere ein Knopf, gamebar, und es traefe JEDE
+#    andere Achse mit -- Rotamere, Setzungsvarianten, Kombinationen.  Verschaerft
+#    wird stattdessen das PRAEDIKAT selbst:
+#
+#        rmsd < thr        ->        rmsd < thr  UND  gleiche Faltung
+#
+# ⚠ WARUM DAS HIER NICHT EXPLODIEREN KANN, obwohl eine CP-Entdopplung am 26.08. in
+#   `_ring_pucker` GENAU DARAN gescheitert ist.  Dort war gemessen worden: ohne CP
+#   konvergiert n=5 bei 3/3/3 Zustaenden, mit CP explodiert es auf 9/13/14 -- alle
+#   dreizehn bei theta=90 und Q=0,300, unterschieden NUR durch phi.  Das ist die
+#   Pseudorotation eines unsubstituierten Rings; phi haengt an der ATOMNUMMERIERUNG,
+#   nicht an der Chemie.  TFD faltet die topologische Symmetrie mit, CP kann das
+#   nicht.  CP ALLEIN ist kein Ersatz fuer TFD.
+#     Der Unterschied hier ist die KONJUNKTION.  Dort stand CP allein und ENTSCHIED;
+#   hier steht es HINTER der RMSD und kann nur Paare RETTEN, die schon unter der
+#   RMSD-Schwelle liegen -- also atomweise fast deckungsgleich sind.  Zwei
+#   Pseudorotamere 60 Grad auseinander sind das gerade NICHT: die halbe Ringmenge
+#   wechselt die Seite, die RMSD trennt sie ohnehin.  Der Explosionsmodus liegt per
+#   Konstruktion ausserhalb der Reichweite dieses Terms, und die Zahl der zusaetzlich
+#   gehaltenen Frames ist nach oben durch `n_frames` / `max_builds` gedeckelt.
+#
+# AUFLOESUNG NICHT GERATEN, SONDERN VOM ERZEUGER GENOMMEN.  `_pucker_candidates`
+# tastet den CP-Aequator mit K = max(8, 2n) Phasen ab; die feinste Weite, die der
+# Generator selbst zieht, ist also 360/K Grad.  Die Toleranz unten ist die HALBE
+# Abtastweite, 180/K: darunter liegen zwei Zustaende innerhalb der Koernung des
+# Generators, darueber sind es fuer ihn selbst zwei verschiedene Kandidaten.
+#     n=4  22,5   n=5  18,0   n=6  15,0   n=7  12,86   n=8  11,25 Grad
+# Kein freier Parameter, kein gedrehter Knopf.
+#
+# ⚠ KOSTEN, GEMESSEN statt angenommen (harness/faltung_fp_kosten.py):
+#       _cp_theta_phi   n=5 75,2 us · n=6 85,9 us · n=7 87,9 us   je Ring und Frame
+#       _cp_abstand      6,9 us                                   je Ring und PAAR
+#       _tfd          1435,8 us                                   je PAAR (35 Atome)
+#   Daraus drei Konsequenzen:
+#     1. TFD scheidet an dieser Stelle aus.  Es ist per Konstruktion eine PAAR-
+#        groesse und nicht je Frame zwischenspeicherbar; bei `_dedup_builds` mit
+#        bis zu 180 Kandidaten gegen bis zu 60 Gehaltene sind das 10 800 Paare
+#        = 15,5 s je Komplex.  Das ist kein Instrumentenurteil, das ist ein Preis.
+#     2. Der Fingerabdruck wird JE FRAME berechnet und gemerkt, nie je Paar.  Naiv
+#        je Paar waeren es an derselben Stelle 21 600 CP-Auswertungen statt 180 --
+#        genau die quadratische Falle.
+#     3. Er wird ausserdem VERZOEGERT berechnet: erst wenn eine RMSD-Naehe
+#        ueberhaupt auftritt.  Wo nichts entdoppelt wird, kostet er null.
+#   Obergrenze damit: 16 Ringe x 86 us = 1,4 ms je Frame, x 180 Frames = 0,25 s je
+#   Komplex im schlimmsten Fall; gemessen wurden im Mittel 459/199 = 2,31 faltbare
+#   Ringe je System, der Deckel beisst also praktisch nie.
+#
+# ⚠ VERZOEGERTER IMPORT, und der Grund ist NICHT Zirkularitaet.  Gemessen (beide
+#   Ladereihenfolgen in je einem frischen Interpreter): `_ring_pucker` zieht beim
+#   Laden nur `delfin`, `delfin.manta`, `delfin.manta._ring_pucker` nach -- KEIN
+#   `assemble_complex`.  Ein Import auf Modulebene waere also erlaubt.  Er bleibt
+#   trotzdem in der Funktion, weil er sonst eine LADEZEIT-Kopplung waere: ein
+#   momentan defektes `_ring_pucker` risse dann den ganzen Bauer mit, auch mit
+#   abgeschaltetem Fingerabdruck.  Bei Vorgabe AUS laeuft der Import nie.
+#
+# Schalter: DELFIN_FFFREE_DEDUP_FOLD_FP (Vorgabe 0 -> Praedikat byte-identisch).
+
+_FOLD_FP_QMIN = 0.075        # A -- halbe kleinste Amplitude, die der Bau erzeugt
+                             # (`_cp_pucker_amps` gibt +/-0,15 A fuer eta-Flaechen).
+                             # Darunter ist der Ring flach und theta/phi sind Rauschen.
+_FOLD_FP_RINGMAX = 12        # groesste beruecksichtigte Ringgroesse
+_FOLD_FP_MAXRING = 16        # Kostendeckel: Ringe je Frame (deterministisch sortiert)
+
+
+def _fold_fp_enabled():
+    return os.environ.get("DELFIN_FFFREE_DEDUP_FOLD_FP", "0") == "1"
+
+
+def _fold_rings_from_blocks(blocks, syms):
+    """Globale Ringindexlisten der potentiell FALTBAREN Ringe.
+
+    ``blocks`` ist eine Folge von ``(global_offset, mol)``, wobei
+    ``global_offset + local_index`` der Index im Frame ist -- die Konvention, die
+    der Bauer selbst schreibt (``_collect_exempt``: "the AddHs ligand block starts
+    at lig_offset+1 in the assembled coords").
+
+    Der Filter ist bewusst GROB: nicht vollstaendig aromatisch, Groesse 4..12.  Das
+    eigentliche Tor ist der Amplitudenboden zur Laufzeit -- ein starrer, flacher
+    Ring hat in BEIDEN Frames Q ~ 0 und gilt damit ohnehin als gleich gefaltet.
+    Der Filter spart nur Rechenzeit, er entscheidet nichts.
+
+    ⚠ GIBT ``None`` ZURUECK, SOBALD DAS VERSATZMODELL NICHT AUFGEHT.  Kein Urteil
+      ist besser als ein falsches: mit ``None`` faellt das Praedikat auf die alte,
+      reine RMSD zurueck.  Geprueft wird jedes Ringatom gegen sein Elementsymbol
+      im Frame.  ⚠ Was das NICHT faengt: ``_ligand_confs_from_mol`` merkt sich
+      seine Konformerpools nach kanonischem SMILES; zwei konstitutionsgleiche
+      Liganden mit verschiedener interner Atomreihenfolge bekommen denselben Pool,
+      und dann kann lokal j ein ANDERES gleichnamiges Atom sein.  Das ist ein
+      vorbestehender Zug des Bauers (Zeilen 3705/3722/3744 mischen dieselben beiden
+      Indexraeume); hier waere die Folge hoechstens ein zusaetzlich gehaltener
+      Fastdoppelgaenger, nie ein verlorener Frame."""
+    rings = []
+    try:
+        for off, mol in blocks:
+            if mol is None:
+                continue
+            off = int(off)
+            for r in mol.GetRingInfo().AtomRings():
+                n = len(r)
+                if n < 4 or n > _FOLD_FP_RINGMAX:
+                    continue
+                if all(mol.GetAtomWithIdx(int(j)).GetIsAromatic() for j in r):
+                    continue                     # flache, starre Flaeche: keine Achse
+                g = [off + int(j) for j in r]
+                if min(g) < 0 or max(g) >= len(syms):
+                    return None
+                for j, gj in zip(r, g):
+                    if syms[gj] != mol.GetAtomWithIdx(int(j)).GetSymbol():
+                        return None
+                rings.append(tuple(g))
+    except Exception:
+        return None
+    if not rings:
+        return None
+    rings.sort()                                 # deterministisch, unabhaengig von SSSR
+    return rings[:_FOLD_FP_MAXRING]
+
+
+def _fold_fp(P, rings):
+    """Der Cremer-Pople-Zustand je Ring, gerechnet mit dem Instrument des
+    FALTUNGSERZEUGERS selbst (``_ring_pucker._cp_theta_phi``) statt nachgebaut.
+    Je Eintrag ``(n, Q, theta, phi)``.  ``None`` = kein Urteil moeglich."""
+    try:
+        from delfin.manta._ring_pucker import _cp_theta_phi     # verzoegert, s.o.
+    except Exception:
+        return None
+    out = []
+    try:
+        for r in rings:
+            Q, th, ph = _cp_theta_phi(P, list(r))
+            out.append((len(r), float(Q), float(th), float(ph)))
+    except Exception:
+        return None
+    return out
+
+
+def _fold_same(fa, fb):
+    """True = DIESELBE Faltung (oder kein Urteil moeglich -> altes Verhalten).
+
+    Verglichen wird mit der GROSSKREISDISTANZ auf der CP-Kugel
+    (``_ring_pucker._cp_abstand``), nicht mit |dtheta|+|dphi|.  Am Pol (theta 0
+    oder 180 -- Sessel und Gegensessel) ist phi bedeutungslos; die naive Metrik
+    haelt zwei identische Sessel mit phi=136 und phi=339 fuer 200 Grad
+    auseinander.  Die Grosskreisdistanz loest das geometrisch, ohne Sonderregel."""
+    if not fa or not fb or len(fa) != len(fb):
+        return True
+    try:
+        from delfin.manta._ring_pucker import _cp_abstand       # verzoegert, s.o.
+    except Exception:
+        return True
+    for a, b in zip(fa, fb):
+        n = int(a[0])
+        if int(b[0]) != n:
+            return True                          # Ringlisten passen nicht: kein Urteil
+        if max(a[1], b[1]) < _FOLD_FP_QMIN:
+            continue                             # beide flach -> keine Faltungsachse
+        if _cp_abstand(a[1:], b[1:]) > 180.0 / max(8, 2 * n):
+            return False
+    return True
+
+
 def _complex_rmsd(syms, Pa, Pb):
     """Heavy-atom RMSD between two SAME-topology complex frames (identity
     correspondence; both built from the same atom ordering).  Translation-only
@@ -3262,6 +3441,13 @@ def assemble_heteroleptic_ensemble(metal: str, geometry: str, vertex_specs,
         eval_order = combos[:MAX_EVAL]
 
     frames = []                                      # (syms, P) kept (deduped)
+    # FALTUNGS-FINGERABDRUCK (s. Block bei `_fold_fp_enabled`).  Vorgabe AUS ->
+    # `_fold_rings` bleibt None -> das Praedikat unten ist buchstaeblich das alte.
+    # `block_specs` traegt hier bereits (globaler Versatz, lmol, Donor-lokal).
+    _fold_rings = (_fold_rings_from_blocks([(o, m) for (o, m, _dl) in block_specs],
+                                           out_syms)
+                   if _fold_fp_enabled() else None)
+    _fold_kept = []                                  # Fingerabdruck je gehaltenem Frame
     for cb in eval_order:
         blocks = [np.zeros((1, 3))]
         placed_P = [np.zeros(3)]; placed_syms = [metal]
@@ -3290,13 +3476,23 @@ def assemble_heteroleptic_ensemble(metal: str, geometry: str, vertex_specs,
             continue
         # complex-level RMSD dedup vs already-kept frames
         dup = False
-        for _, Pk in frames:
+        _fp = None                                   # verzoegert: erst bei RMSD-Naehe
+        for _ki, (_, Pk) in enumerate(frames):
             if Pk.shape == P.shape and _complex_rmsd(out_syms, P, Pk) < rmsd_dedup:
-                dup = True
-                break
+                if _fold_rings is None:
+                    dup = True                       # Schalter AUS -> altes Praedikat
+                    break
+                if _fp is None:
+                    _fp = _fold_fp(P, _fold_rings)
+                if _fold_kept[_ki] is None:
+                    _fold_kept[_ki] = _fold_fp(Pk, _fold_rings)
+                if _fold_same(_fold_kept[_ki], _fp):
+                    dup = True
+                    break
         if dup:
             continue
         frames.append((list(out_syms), P))
+        _fold_kept.append(None)                      # gleiche Laenge wie `frames`
         if len(frames) >= n_frames:
             break
     if not frames:
@@ -3956,22 +4152,77 @@ def _rmsd_aligned(A, B):
     return float(np.sqrt((D * D).sum() / len(A)))
 
 
-def _dedup_builds(builds, rmsd_tol=0.25):
+def _hapto_fold_rings(d, syms):
+    """Globale Ringindexlisten fuer die eta-Bauten -- die Versatzrechnung von
+    ``assemble_hapto`` NACHVOLLZOGEN und dann an der Wirklichkeit GEPRUEFT.
+
+    ``assemble_hapto`` gibt nur ``(syms, P, donors, exempt)`` zurueck; die Versaetze
+    bleiben dort lokal.  Nachgerechnet wird darum genau so, wie sie dort entstehen:
+      * Emissionsreihenfolge ist NICHT die Listenreihenfolge von ``d["ligands"]``,
+        sondern eta-Liganden zuerst, dann der Rest, je aufsteigend (Zeile 3621).
+      * Blockgroesse ist ``Chem.AddHs(lg["mol"]).GetNumAtoms()``, NICHT
+        ``lg["mol"].GetNumAtoms()`` -- die Ring-H stehen in ``lg["mol"]`` nur als
+        NumExplicitHs-Eigenschaft und werden erst durch AddHs zu Atomen.
+      * Index 0 ist das Metall, der erste Ligand beginnt also bei 1.
+
+    ⚠ NACHRECHNEN IST EINE ANNAHME, ALSO WIRD SIE GEPRUEFT.  Stimmt die Gesamtzahl
+      der Atome nicht, gibt es KEIN Urteil (``None``) und das Praedikat faellt auf
+      die reine RMSD zurueck -- genau der Fall, den der Kekulize-Umweg
+      (DELFIN_FFFREE_KEKULIZE_SPLIT) erzeugen kann, wenn er ein aromatisches N+
+      neutralisiert und damit die H-Zahl aendert.  ``_fold_rings_from_blocks``
+      prueft danach noch jedes einzelne Ringatom gegen sein Elementsymbol."""
+    try:
+        ligs = d["ligands"]
+        order = sorted(range(len(ligs)),
+                       key=lambda i: (0 if ligs[i].get("is_eta") else 1, i))
+        blocks = []
+        off = 1                                    # Index 0 ist das Metall
+        for i in order:
+            m = Chem.AddHs(ligs[i]["mol"])
+            blocks.append((off, m))
+            off += m.GetNumAtoms()
+        if off != len(syms):
+            return None                            # Versatzmodell passt nicht: kein Urteil
+        return _fold_rings_from_blocks(blocks, syms)
+    except Exception:
+        return None
+
+
+def _dedup_builds(builds, rmsd_tol=0.25, fold_rings=None):
     """RMSD-deduplicate a list of (syms, P, donors, exempt) builds (same complex, so
     identical atom ordering).  Keeps the FIRST occurrence (emission order = canonical
     build first), dropping any later build within ``rmsd_tol`` Å of a kept one.
     Deterministic.  Distinct-by-atom-count builds (ring-slip changes nothing in the
-    atom list, so counts always match) are compared directly."""
+    atom list, so counts always match) are compared directly.
+
+    ⚠ WARUM HIER EIN FALTUNGS-FINGERABDRUCK NOETIG IST.  Die Variantenliste, die in
+      diese Funktion laeuft, enthaelt ``_cp_pucker_amps``: die Cremer-Pople-Faltung
+      der eta-Flaeche mit einer Amplitude von nur +/-0,15 A, verglichen ueber ALLE
+      Atome des Komplexes.  Das liegt sicher unter ``rmsd_tol`` = 0,25 -- die
+      eta-Faltungsachse wurde an dieser Stelle vollstaendig gefressen, und beide
+      Aufrufer (RIGID_HAPTO, HAPTO_AXIS_ROT) sind Champion-Schalter.
+      ``fold_rings=None`` (Vorgabe) -> Praedikat byte-identisch zu vorher."""
     kept = []
+    fps = []                                       # Fingerabdruck je Gehaltenem
     for b in builds:
         P = b[1]
         dup = False
-        for kb in kept:
+        fp = None                                  # verzoegert: erst bei RMSD-Naehe
+        for ki, kb in enumerate(kept):
             if kb[1].shape == P.shape and _rmsd_aligned(kb[1], P) < rmsd_tol:
-                dup = True
-                break
+                if fold_rings is None:
+                    dup = True                     # Schalter AUS -> altes Praedikat
+                    break
+                if fp is None:
+                    fp = _fold_fp(P, fold_rings)
+                if fps[ki] is None:
+                    fps[ki] = _fold_fp(kb[1], fold_rings)
+                if _fold_same(fps[ki], fp):
+                    dup = True
+                    break
         if not dup:
             kept.append(b)
+            fps.append(None)
     return kept
 
 
@@ -4035,7 +4286,10 @@ def assemble_hapto_ensemble(metal, geometry, d, max_builds=30):
         builds.append(b)
     if not builds:
         return None
-    builds = _dedup_builds(builds)
+    # Vorgabe AUS -> `fold_rings` bleibt None -> Entdopplung byte-identisch.
+    builds = _dedup_builds(
+        builds,
+        fold_rings=(_hapto_fold_rings(d, builds[0][0]) if _fold_fp_enabled() else None))
     return builds[:max_builds] if builds else None
 
 
@@ -4073,7 +4327,10 @@ def assemble_hapto_axis_rotants(metal, geometry, d, n_axis=8, max_builds=60):
                 break
     if not builds:
         return []
-    builds = _dedup_builds(builds)
+    # Vorgabe AUS -> `fold_rings` bleibt None -> Entdopplung byte-identisch.
+    builds = _dedup_builds(
+        builds,
+        fold_rings=(_hapto_fold_rings(d, builds[0][0]) if _fold_fp_enabled() else None))
     return builds[:max_builds]
 
 
@@ -5347,6 +5604,15 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
     combos.sort(key=lambda cb: (sum(cb), cb))      # deterministic; frame 0 = all-best
     MAX_EVAL = 64
     frames = []                                    # (syms, P) kept (deduped)
+    # FALTUNGS-FINGERABDRUCK (s. Block bei `_fold_fp_enabled`).  Vorgabe AUS ->
+    # `_fold_rings` bleibt None -> das Praedikat unten ist buchstaeblich das alte.
+    # `relax_frags` traegt (AddHs(lg.mol), LIGANDEN-ONLY-Versatz); global ist der
+    # Block ab `lig_offset + 1`, weil Index 0 das Metall ist -- dieselbe Konvention,
+    # die `_collect_exempt` und `_finish_config_frame` schon benutzen.
+    _fold_rings = (_fold_rings_from_blocks([(int(o) + 1, m) for (m, o) in relax_frags],
+                                           out_syms)
+                   if _fold_fp_enabled() else None)
+    _fold_kept = []                                # Fingerabdruck je gehaltenem Frame
     for cb in combos[:MAX_EVAL]:
         blocks = [np.zeros((1, 3))]
         ok = True
@@ -5373,13 +5639,23 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
         if not np.all(np.isfinite(Pc)):
             continue
         dup = False
-        for _, Pk in frames:
+        _fp = None                                 # verzoegert: erst bei RMSD-Naehe
+        for _ki, (_, Pk) in enumerate(frames):
             if Pk.shape == Pc.shape and _complex_rmsd(out_syms, Pc, Pk) < rmsd_dedup:
-                dup = True
-                break
+                if _fold_rings is None:
+                    dup = True                     # Schalter AUS -> altes Praedikat
+                    break
+                if _fp is None:
+                    _fp = _fold_fp(Pc, _fold_rings)
+                if _fold_kept[_ki] is None:
+                    _fold_kept[_ki] = _fold_fp(Pk, _fold_rings)
+                if _fold_same(_fold_kept[_ki], _fp):
+                    dup = True
+                    break
         if dup:
             continue
         frames.append((list(out_syms), Pc))
+        _fold_kept.append(None)                    # gleiche Laenge wie `frames`
         if len(frames) >= int(n_frames):
             break
     if not frames:
