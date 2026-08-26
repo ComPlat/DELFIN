@@ -710,19 +710,43 @@ def test_the_points_of_a_walk_can_be_stepped_through():
     assert '1.43' in said and '+10.2' in said
 
 
-def test_stepping_through_a_walk_never_writes_the_box():
-    """Looking must not be able to lose the structure the user is standing
-    on, so it goes down the frame channel and takes no undo step."""
+def test_stepping_through_a_walk_goes_to_the_point():
+    """What is on screen is what the presses act on. Anything else is a
+    structure nobody can compute anything about.
+
+    Measured from a real session on a 64-atom system: the slider was stepped
+    to point 10 near the top of a barrier and Show the shape pressed, and the
+    answer was "a minimum, not a transition state"; then point 11, the same
+    press, and the same free energy to the second decimal for a different
+    structure. Both Hessians had run on what was in the box, which was the
+    minimum the scan ended on.
+    """
     part, _state = _an_editor()
-    _a_walk_of(part)
-    before = part.coords_widget.value
-    steps = len(part.state.get('undo_stack') or ())
+    points = _a_walk_of(part)
 
     for n in (1, 4, 2, 6):
         part.submit_walk_at.value = n
-        assert part.coords_widget.value == before, n
+        assert (part._geometry_key(part.coords_widget.value)
+                == part._geometry_key(points[n][2])), n
+        assert part.coords_widget.value.splitlines()[1].lower().startswith(
+            'scanned'), 'and it is still the walk the profile is of'
 
-    assert len(part.state.get('undo_stack') or ()) == steps
+
+def test_a_run_of_stepping_is_one_press_of_undo():
+    """Nothing is lost by going there, and going back is not twelve presses:
+    a run of stepping is one step in the history, the way a sweep of an arrow
+    key is one rather than two hundred."""
+    part, state = _an_editor()
+    _a_walk_of(part)
+    before = part.coords_widget.value
+    depth = len(state.get('history') or ())
+
+    for n in (1, 4, 2, 6):
+        part.submit_walk_at.value = n
+    assert len(state.get('history') or ()) == depth + 1
+
+    part.on_submit_manip_undo()
+    assert part.coords_widget.value == before
 
 
 def test_the_points_belong_to_the_molecule_they_were_walked_on():
