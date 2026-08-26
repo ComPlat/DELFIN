@@ -672,17 +672,22 @@ def test_the_line_comes_back_with_the_structure():
 
 
 def _a_walk_of(part, count=7):
-    """A finished walk on the structure that is on screen."""
-    here = part.coords_widget.value
+    """A finished walk, left the way a real one leaves itself.
+
+    On its last point.  That matters to every test below it: a walk ends by
+    writing the structure it reached into the box, and the slider's whole
+    rule is which of the walk's points the box is holding.
+    """
     def geo(d):
         return f"2\nstep\nC 0.000 0.000 0.000\nO {d:.3f} 0.000 0.000\n"
-    part.coords_widget.value = geo(1.13)
     points = [(1.13 + 0.1 * i, i * 3.4, geo(1.13 + 0.1 * i))
               for i in range(count)]
+    part.coords_widget.value = points[-1][2]
     part.state['scan_walk'] = {
         'points': points, 'method': 'gfn2', 'charge': 0, 'uhf': 0,
         'solvent': '', 'solvation_model': '',
         'structure': part._structure_fingerprint(part.coords_widget.value)}
+    part.state['walk_points_stale'] = False
     part._refresh_the_walk_points()
     return points
 
@@ -727,6 +732,133 @@ def test_the_points_belong_to_the_molecule_they_were_walked_on():
     part.coords_widget.value = "3\nother\nO 0 0 0\nH 1 0 0\nH 0 1 0\n"
     part._refresh_the_walk_points()
     assert not _shown(part.submit_walk_at)
+
+
+def test_the_slider_opens_on_the_point_the_box_is_holding():
+    """Which is the end, for a walk that has just finished: it leaves the
+    structure it reached on screen, and a row reading "point 1" beside a
+    viewer showing point twenty is the control contradicting the picture.
+
+    Undo steps back through the walk's own landmarks -- where it started, the
+    highest point it crossed -- and those are geometries of the walk too, so
+    the slider follows the box to them.
+    """
+    part, _state = _an_editor()
+    points = _a_walk_of(part)
+    assert part.submit_walk_at.value == len(points) - 1
+
+    part.coords_widget.value = points[2][2]
+    part._refresh_the_walk_points()
+    assert part.submit_walk_at.value == 2
+
+
+def test_stepping_leaves_the_slider_where_the_user_put_it():
+    """Looking at a point deliberately does not write the box, so a refresh
+    that happens while somebody is reading the walk must not pull the slider
+    back to the point the box is standing on."""
+    part, _state = _an_editor()
+    _a_walk_of(part)
+    part.submit_walk_at.value = 1
+    part._refresh_the_walk_points()
+    assert part.submit_walk_at.value == 1
+
+
+def test_reading_the_walk_does_not_end_the_picture_of_it():
+    """Reported from a real session: the slider moved one notch and the
+    switch standing next to it vanished.
+
+    The two are one walk shown two ways -- as a shape and as structures.
+    Looking at a point hands the page one geometry that walk itself computed;
+    it writes no box and takes no undo step, so the structure the profile is
+    a claim about has not moved, and the claim is still true.
+    """
+    part, state = _an_editor()
+    _a_walk_of(part)
+    _draw_one(part)
+    assert _shown(part.submit_scan_plot_btn) and _shown(part.submit_walk_at)
+
+    part.submit_walk_at.value = 3
+    assert _shown(part.submit_scan_plot_btn), (
+        'one nudge of the slider took the profile away')
+    assert state.get('scan_plot')
+    assert 'base64' in part.submit_scan_plot.value
+
+
+def test_going_on_from_a_point_takes_the_walk_off_the_row():
+    """A trajectory describes the structure it was walked on. Once something
+    has drawn over that structure there is nothing under what is on screen to
+    step through, and the slider goes the way the picture does.
+
+    It has to go at the moment the run *starts*, not when it writes: a run
+    writes the box only when it finishes, so in between the geometry in the
+    box is still the walk's own while the structure on screen is already
+    somewhere else. That is why a refresh must not bring it back.
+    """
+    part, state = _an_editor()
+    _a_walk_of(part)
+    assert _shown(part.submit_walk_at)
+
+    part._note_the_run(int(state.get('gfn_run', 0)) + 1, 'settle')
+    assert not _shown(part.submit_walk_at)
+    part._refresh_the_walk_points()
+    assert not _shown(part.submit_walk_at), (
+        'the box still holds the walk, but the structure has moved on')
+
+
+def test_a_geometry_the_walk_never_computed_takes_it_off_too():
+    part, _state = _an_editor()
+    points = _a_walk_of(part)
+    part.coords_widget.value = "2\nedited\nC 0.000 0.000 0.000\nO 1.421 0.000 0.000\n"
+    part._refresh_the_walk_points()
+    assert not _shown(part.submit_walk_at), points[0]
+
+
+def test_the_presses_that_draw_nothing_leave_the_walk_alone():
+    """Undo, Reset and the Stops claim a run number so that the page drops
+    what it was playing; looking at a point claims one so the page shows the
+    one frame handed to it. None of the three draws over the structure."""
+    for name in ('press', 'abandoned', 'look'):
+        part, state = _an_editor()
+        _a_walk_of(part)
+        part._note_the_run(int(state.get('gfn_run', 0)) + 1, name)
+        assert _shown(part.submit_walk_at), name
+
+
+def test_a_driven_walk_keeps_the_points_it_paid_for():
+    """Which is why the box is read as geometry rather than as a comment.
+
+    The comment would have been cheaper, and it is what the picture is kept
+    honest by, but a walk does not sign the box the same way every time: a
+    driven scan ends on "Driven until the bonds were made and broken", and a
+    rule reading for "Scanned" alone would take the points away from exactly
+    the walks that cost the most to compute.
+    """
+    from delfin.dashboard.structure_editor import xyz_document
+
+    part, _state = _an_editor()
+    points = _a_walk_of(part)
+    rows = [line for line in points[-1][2].splitlines()[2:] if line.strip()]
+    part.coords_widget.value = xyz_document(
+        rows, 'Driven until the bonds were made and broken')
+    part._refresh_the_walk_points()
+    assert _shown(part.submit_walk_at)
+    assert part.submit_walk_at.value == len(points) - 1
+
+
+def test_a_point_asked_for_brings_the_structure_back_in_front():
+    """The profile and the structure share one corner of the panel and only
+    one of them is in it at a time, so a geometry asked for while the picture
+    is up would otherwise be sent to a viewer nobody can see."""
+    part, _state = _an_editor()
+    _a_walk_of(part)
+    _draw_one(part)
+    part.submit_scan_plot_btn.value = True
+    assert not _shown(part.mol_output)
+
+    part.submit_walk_at.value = 2
+    assert part.submit_scan_plot_btn.value is False
+    assert _shown(part.mol_output), 'the structure is in front again'
+    assert _shown(part.submit_scan_plot_btn), 'and the picture is still there'
 
 
 def test_the_slider_stands_beside_the_profile_switch():
