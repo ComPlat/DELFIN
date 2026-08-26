@@ -865,6 +865,14 @@ def test_a_climb_that_has_been_superseded_says_nothing():
 
     stopped = EDITOR_SOURCE.split(
         'The climb stopped at the frame you were looking ', 1)[1].split(
-        'return', 1)[0]
+        '\n                    return', 1)[0]
     assert '_frame_run_is_current(run)' in stopped, stopped
     assert '_set_mol_status(*walked_said, said)' in stopped
+    # But being superseded is not enough on its own, and getting that wrong
+    # cost a red CI: a Stop moves the run number too -- deliberately, so the
+    # page drops what it was playing -- and a climb takes a fresh number for
+    # every round, so it supersedes itself constantly. Silencing on that
+    # silenced every Stop the user pressed. It is the walker that has to be a
+    # different one.
+    for allowed in ('press', 'abandoned', 'climb'):
+        assert repr(allowed) in stopped, allowed
