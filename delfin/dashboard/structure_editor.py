@@ -2191,6 +2191,27 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='auto', display='none'),
     )
 
+    #: The other questions this molecule has been asked, each with its own
+    #: best.
+    #:
+    #: A total energy is an answer to a question, and changing the method or
+    #: the charge changes the question rather than spoiling the answer: the
+    #: neutral's best arrangement is still the neutral's best arrangement once
+    #: you go on to the cation.  So they are kept side by side instead of one
+    #: replacing the other, and this box is how the others are reached.
+    #:
+    #: Absent until there is more than one, which is the rule every box on
+    #: this row follows: a list with one entry is not a choice.
+    #:
+    #: No energies on it.  Two numbers from two different questions are not
+    #: comparable, and putting them one under the other is an invitation to
+    #: subtract them.  What is on it is the question each one answers.
+    submit_best_dd = widgets.Dropdown(
+        options=[('this question', 'here')], value='here',
+        description='Also', style={'description_width': '34px'},
+        layout=widgets.Layout(width='320px', display='none'),
+    )
+
     submit_scan_plot_btn = widgets.ToggleButton(
         value=False,
         description='Show the profile',
@@ -2597,8 +2618,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             submit_mode_dd, submit_mode_btn, submit_ends_btn,
             # And the two structures that press reached, once it has.
             submit_down_dd,
-            # And the lowest one the search has been through.
-            submit_best_btn,
+            # And the lowest one the search has been through, with the
+            # other questions it has been asked beside it.
+            submit_best_btn, submit_best_dd,
             # And the switch between the structure and the profile of the
             # walk that has just finished. On the row above the picture
             # the two share, because that row is always on screen: put
@@ -3162,7 +3184,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                        submit_topology_btn, submit_saddle_btn,
                        submit_saddle_from, submit_saddle_how,
                        submit_mode_dd, submit_mode_btn, submit_ends_btn,
-                       submit_down_dd, submit_best_btn,
+                       submit_down_dd, submit_best_btn, submit_best_dd,
                        submit_climb_btn, submit_shape_btn,
                        submit_path_from_btn):
             widget.disabled = not enabled
@@ -6890,7 +6912,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # host's short path and never reaches the refresh that decides
                 # what is on the toolbar.  So the press that had just become
                 # possible did not appear until something else happened to ask.
-                _keep_the_best(outcome['xyz'], priced, 'settle')
+                _keep_a_point(outcome['xyz'], priced, 'minimum', 'settle')
                 _refresh_the_best()
                 if over is not None:
                     state['thermal_good'] = outcome['xyz']
@@ -7872,11 +7894,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         # the whole run rather than to that frame -- a pair
                         # that describes no structure at all.
                         if not _stopped():
-                            _keep_the_best(
+                            _keep_a_point(
                                 outcome['xyz'],
                                 _settle_price(outcome,
                                               state.get('constraints')),
-                                'optimisation')
+                                'minimum', 'optimisation')
                             # On the interface's own turn: this runs on the
                             # worker, and the row belongs to the other thread.
                             schedule_ui_update(_refresh_the_best)
@@ -12171,6 +12193,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         else:
             state['saddle_found'] = {'xyz': xyz, 'order': order,
                                      'modes': modes}
+            # And the search hears about it.  One mode going the wrong way is
+            # a transition state, which is an extremum of the surface and
+            # belongs in the list beside the minima.  Without an energy: none
+            # is in hand where a search reports what it reached, and pricing
+            # it here would be a single point nobody asked for.  So it is
+            # listed as what it is and carries no number, rather than
+            # borrowing one that is about something else.
+            if order == 1:
+                _keep_a_point(xyz, None, 'transition state',
+                              'a saddle search')
         _refresh_saddle_controls()
 
     def _the_mode_is_offered(shape):
@@ -12822,19 +12854,44 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['walk_look_at'] = (points, at)
         submit_walk_at.layout.display = ''
 
+    #: Two stationary points count as one when the bonding, the energy and
+    #: the geometry all say so.
+    #:
+    #: A search by hand falls back into the same minimum again and again --
+    #: that is what searching *is* -- and a list where eighteen of twenty
+    #: entries are three conformers is worse than no list.  Three tests
+    #: because no one of them is enough: energy alone folds two genuinely
+    #: different arrangements that happen to be degenerate, bonding alone
+    #: folds every conformer of one molecule into one, and geometry alone is
+    #: fooled by the same structure written from a different origin -- which
+    #: :func:`gfn_optimize.largest_shift` is not, being the measure the rest
+    #: of this editor asks "is this still that structure" with.
+    _SAME_POINT_KCAL = 0.10
+    _SAME_POINT_SHIFT = 0.25
+
+    #: How many are kept before the highest start falling off the end.
+    #:
+    #: A session is not bounded and this list must be.  Twenty-five is more
+    #: conformers than a hand search produces in an afternoon and small enough
+    #: that the box stays readable; what matters more is that dropping one is
+    #: *said* rather than done quietly, because a list that silently forgets
+    #: reads exactly like a search that never found anything.
+    _POINTS_KEPT = 25
+
     def _best_conditions():
-        """What has to be the same for two energies to be one comparison.
+        """The question a total energy is the answer to.
 
-        A total energy is an answer to a question, and the question is the
-        method, the charge, the spin, the solvent -- and any value being held,
-        because a structure relaxed with a bond pinned at 2.5 A is a minimum
-        of a different surface from the same molecule left free.  Change any
-        of them and the lowest number so far stops meaning "the best
-        arrangement" and starts meaning "the cheapest question asked".
+        The method, the charge, the multiplicity, the solvent, and any value
+        being held.  UFF is not GFN2 is not g-xTB; a cation is not a neutral;
+        and per charge the spin state is its own question -- "pro charge ist M
+        interessant, das zaehlt da am besten mit rein".  A value held at 2.5 A
+        makes it a minimum of a different surface again.
 
-        So the best carries its conditions and is only offered under them.
-        Change the method and the search begins again, which the row says by
-        the press going away.
+        Change any of them and what was found does not become wrong -- it
+        becomes the answer to a question you are no longer asking, and the
+        neutral's best arrangement is still the neutral's best arrangement
+        once you have gone on to the cation.  So each question keeps its own
+        list, side by side, and this tuple is what tells them apart.
         """
         holds = tuple(sorted(
             (str(one.get('kind') or ''),
@@ -12843,112 +12900,314 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             for one in (state.get('constraints') or ())))
         return (str(submit_ff_dd.value).lower(),
                 int(submit_gfn_charge.value or 0),
-                int(_gfn_uhf_now() or 0),
+                int(submit_gfn_mult.value or 1),
                 str(submit_gfn_solvent.value or ''),
                 str(submit_gfn_solv_model.value or ''),
                 holds)
 
-    def _keep_the_best(xyz, energy, how):
-        """Remember the lowest structure the search has been through.
+    def _the_question_reads(under):
+        """One question, in the words the boxes above it use."""
+        method, charge, mult, wet, model, holds = under
+        said = [_server_label(method) if _gfn.is_gfn_method(method)
+                else str(method).upper()]
+        said.append(f'q {charge:+d}' if charge else 'neutral')
+        said.append(f'M {mult}')
+        if wet:
+            said.append(f'{_solvents.label_of(wet)} '
+                        f'({_solvents.model_label(model)})')
+        if holds:
+            said.append(f'{len(holds)} held')
+        return ', '.join(said)
 
-        Free relaxations only, and that is the whole of the judgement here.
-        A geometry standing under a hand or under a push carries the
-        restraint's own energy in its total: it is a number about the hand as
-        much as about the structure, and kept as a best it would claim
-        something it is not.  What comes here is what a release settled to
-        and what Optimise reached -- minima, priced the way the budget prices
-        them, with any held value's own energy taken back out
-        (:func:`_settle_price`).
-
-        Costs nothing.  Every number here was in hand when the answer was
-        written, so a search that never presses this button is not paying for
-        it.
-        """
+    def _is_the_same_point(one, xyz, energy):
+        """Whether a structure is a stationary point already in the list."""
+        if one.get('kind') != 'minimum' and energy is None:
+            pass
+        both = (one.get('energy'), energy)
+        if None not in both:
+            if abs(float(both[0]) - float(both[1])) * _HARTREE_TO_KCAL \
+                    > _SAME_POINT_KCAL:
+                return False
         try:
-            value = float(energy)
-        except (TypeError, ValueError):
-            return
+            if _gfn.bond_graph(one['xyz']) != _gfn.bond_graph(xyz):
+                return False
+            return _gfn.largest_shift(one['xyz'], xyz) <= _SAME_POINT_SHIFT
+        except Exception:                          # noqa: BLE001  a guess only
+            return False
+
+    def _keep_a_point(xyz, energy, kind, how):
+        """Remember a stationary point this question has been through.
+
+        Extrema and nothing else -- "nur minimum TS nicht zwischendinger also
+        nur extrema auf der PES".  A minimum is what a release settled to and
+        what Optimise reached; a transition state is what a search reported
+        one imaginary mode for.  Everything between them is a geometry on the
+        way somewhere, and a list of those is a recording rather than a set of
+        conformers.
+
+        Nothing standing under a hand or a push, either, whatever it looks
+        like: its total carries the restraint's own energy, so it is a number
+        about the hand as much as about the structure.
+
+        Costs no calculation.  Every number here was in hand when the answer
+        was written.
+        """
         rows = [line for line in str(xyz or '').splitlines()[2:] if line.strip()]
         here = _structure_fingerprint(xyz or '')
         if not rows or not here:
             return
+        try:
+            value = None if energy is None else float(energy)
+        except (TypeError, ValueError):
+            value = None
         under = _best_conditions()
-        kept = state.get('best_kept') or {}
-        fresh = (kept.get('structure') != here or kept.get('under') != under)
-        # What the box is standing on, so the row can say how far below it the
-        # best one is.  Kept whether or not this answer is an improvement:
-        # the gap is measured against where the user *is*, not against the
-        # record.
-        state['best_last'] = {'key': _geometry_key(xyz), 'energy': value}
-        state['best_seen'] = 1 if fresh else int(kept.get('seen') or 0) + 1
-        if not fresh and float(kept.get('energy')) <= value:
-            kept['seen'] = state['best_seen']
-            state['best_kept'] = kept
-            return
-        state['best_kept'] = {
-            'xyz': xyz_document(rows, 'The lowest structure of this search'),
-            'energy': value, 'structure': here, 'under': under,
-            'how': str(how or ''), 'seen': state['best_seen'],
-        }
+        found = dict(state.get('points_by') or {})
+        book = found.get(under)
+        if not book or book.get('structure') != here:
+            book = {'structure': here, 'points': []}
+        points = list(book['points'])
+        if value is not None:
+            state['best_last'] = {'key': _geometry_key(xyz), 'energy': value}
+        for at, one in enumerate(points):
+            if one.get('kind') == kind and _is_the_same_point(one, xyz, value):
+                one = dict(one, seen=int(one.get('seen') or 1) + 1)
+                # The lower of two readings of one point, because a
+                # relaxation that ran further is the better answer about it.
+                if (value is not None
+                        and (one.get('energy') is None
+                             or value < float(one['energy']))):
+                    one['energy'] = value
+                    one['xyz'] = xyz_document(rows, one['comment'])
+                points[at] = one
+                break
+        else:
+            comment = ('The lowest structure of this search'
+                       if kind == 'minimum' else
+                       'A transition state this search found')
+            points.append({'xyz': xyz_document(rows, comment),
+                           'comment': comment, 'energy': value, 'kind': kind,
+                           'how': str(how or ''), 'seen': 1})
+        points.sort(key=lambda one: (one.get('energy') is None,
+                                     one.get('energy') or 0.0))
+        book['dropped'] = int(book.get('dropped') or 0) + max(
+            0, len(points) - _POINTS_KEPT)
+        book['points'] = points[:_POINTS_KEPT]
+        found[under] = book
+        state['points_by'] = found
+
+    def _points_here():
+        """The stationary points of the question being asked, lowest first."""
+        under = _best_conditions()
+        book = (state.get('points_by') or {}).get(under)
+        if not book:
+            return []
+        if book.get('structure') != _structure_fingerprint(_current_xyz() or ''):
+            return []
+        return list(book.get('points') or [])
+
+    def _other_bests():
+        """The best of every other question this molecule has been asked."""
+        here = _structure_fingerprint(_current_xyz() or '')
+        now = _best_conditions()
+        out = []
+        for under, book in (state.get('points_by') or {}).items():
+            if under == now or book.get('structure') != here:
+                continue
+            lowest = [one for one in (book.get('points') or ())
+                      if one.get('kind') == 'minimum']
+            if lowest:
+                out.append((under, lowest[0]))
+        out.sort(key=lambda pair: _the_question_reads(pair[0]))
+        return out
 
     def _best_here():
-        """The kept best, while it is an answer to the question being asked.
-
-        The molecule, by its element column, the way everything in this editor
-        that comes and goes is; and the conditions, because a number measured
-        under another method is not this search's record.
-        """
-        kept = state.get('best_kept')
-        if not kept or not kept.get('xyz'):
-            return None
-        if kept.get('structure') != _structure_fingerprint(_current_xyz() or ''):
-            return None
-        if kept.get('under') != _best_conditions():
-            return None
-        return kept
+        """The lowest minimum of the question being asked, if there is one."""
+        for one in _points_here():
+            if one.get('kind') == 'minimum':
+                return one
+        return None
 
     def _refresh_the_best():
         """Say what the search has found, and how far below it stands.
 
         The gap is against the geometry in the box and not against the worst
         thing ever seen: what a person wants to know here is whether going
-        back is worth it from where they are.  It can only be said when the
-        box is still holding a structure this search priced -- drag it since
-        and there is no number for what is on screen, so the press says what
-        it has and no more.
+        back is worth it from where they are.  It can only be said while the
+        box still holds a structure this search priced.
         """
         kept = _best_here()
         if not kept:
             submit_best_btn.layout.display = 'none'
-            return
-        seen = int(kept.get('seen') or 1)
-        of = f'Best of {seen}' if seen > 1 else 'Best so far'
-        last = state.get('best_last') or {}
-        here = _geometry_key(_current_xyz() or '')
-        if here and here == _geometry_key(kept.get('xyz') or ''):
-            submit_best_btn.description = f'{of}: you are on it'
-            submit_best_btn.disabled = True
+            state.pop('best_came_from', None)
         else:
-            gap = (None if last.get('key') != here or last.get('energy') is None
-                   else (float(kept['energy']) - float(last['energy']))
-                   * _HARTREE_TO_KCAL)
-            submit_best_btn.description = (
-                of if gap is None else f'{of}: {gap:+.1f} kcal/mol')
-            submit_best_btn.disabled = False
-        submit_best_btn.layout.display = ''
+            seen = len([one for one in _points_here()
+                        if one.get('kind') == 'minimum'])
+            of = f'Best of {seen}' if seen > 1 else 'Best so far'
+            last = state.get('best_last') or {}
+            here = _geometry_key(_current_xyz() or '')
+            standing = bool(here) and here == _geometry_key(kept.get('xyz') or '')
+            if not standing:
+                # Where you came from is remembered only while you are there.
+                # Work on from the best and it is no longer one press behind
+                # you: offering to go back to it then would be the row
+                # pointing at a place the user has left.
+                state.pop('best_came_from', None)
+            if standing and state.get('best_came_from'):
+                submit_best_btn.description = 'Back to where you were'
+                submit_best_btn.icon = 'undo'
+                submit_best_btn.disabled = False
+            elif standing:
+                submit_best_btn.description = f'{of}: you are on it'
+                submit_best_btn.icon = 'star'
+                submit_best_btn.disabled = True
+            else:
+                gap = (None
+                       if last.get('key') != here or last.get('energy') is None
+                       or kept.get('energy') is None
+                       else (float(kept['energy']) - float(last['energy']))
+                       * _HARTREE_TO_KCAL)
+                submit_best_btn.description = (
+                    of if gap is None else f'{of}: {gap:+.1f} kcal/mol')
+                submit_best_btn.icon = 'star'
+                submit_best_btn.disabled = False
+            submit_best_btn.layout.display = ''
+        _refresh_the_points_list()
+
+    def _refresh_the_points_list():
+        """Every extremum this molecule has given up, in one box.
+
+        Sorted by energy within the question being asked, because there they
+        are one comparison and the difference is the whole of what a conformer
+        set is for.  The other questions come after, by name and *without* a
+        number: two totals from two different questions are not comparable,
+        and putting them one under the other is an invitation to subtract
+        them.
+        """
+        points = _points_here()
+        others = _other_bests()
+        if len(points) + len(others) < 2:
+            submit_best_dd.layout.display = 'none'
+            return
+        floor = next((one['energy'] for one in points
+                      if one.get('kind') == 'minimum'
+                      and one.get('energy') is not None), None)
+        options = [('where you are', 'here')]
+        for at, one in enumerate(points):
+            if one.get('energy') is None or floor is None:
+                cost = 'no energy in hand'
+            else:
+                cost = (f'{(float(one["energy"]) - float(floor)) * _HARTREE_TO_KCAL:+.2f}'
+                        ' kcal/mol')
+            twice = '' if int(one.get('seen') or 1) < 2 else \
+                f", reached {int(one['seen'])}x"
+            options.append((f'{one["kind"]}, {cost}{twice}', f'p{at}'))
+        for at, (under, one) in enumerate(others):
+            options.append((f'{_the_question_reads(under)} -- its own best',
+                            f'q{at}'))
+        state['best_dd_quiet'] = True
+        try:
+            submit_best_dd.options = options
+            submit_best_dd.value = 'here'
+        finally:
+            state['best_dd_quiet'] = False
+        submit_best_dd.layout.display = ''
+
+    def on_submit_best_dd(change):
+        """Put one of the points on screen, and say what it is.
+
+        A point of another question never changes the question.  Bringing a
+        structure back is one thing; switching the method, the charge or the
+        spin under the user is another, and doing the second silently in order
+        to do the first would answer a question nobody asked, with the boxes
+        above still showing what they showed.  So the geometry arrives, and
+        the line says what it was computed with.
+        """
+        if change.get('name') != 'value' or state.get('best_dd_quiet'):
+            return
+        pick = str(change.get('new') or '')
+        state['best_dd_quiet'] = True
+        try:
+            submit_best_dd.value = 'here'
+        finally:
+            state['best_dd_quiet'] = False
+        if pick == 'here' or len(pick) < 2:
+            return
+        which, at = pick[0], pick[1:]
+        try:
+            at = int(at)
+        except ValueError:
+            return
+        if which == 'p':
+            points = _points_here()
+            if not (0 <= at < len(points)):
+                return
+            one = points[at]
+            floor = next((p['energy'] for p in points
+                          if p.get('kind') == 'minimum'
+                          and p.get('energy') is not None), None)
+            cost = ('' if one.get('energy') is None or floor is None else
+                    f' It stands {(float(one["energy"]) - float(floor)) * _HARTREE_TO_KCAL:+.2f} '
+                    f'kcal/mol against the lowest one found.')
+            _stand_on(one['xyz'],
+                      f'A {one["kind"]} this search has been through.{cost} '
+                      f'Every press works on it now, and Undo goes back.',
+                      one.get('comment') or 'The lowest structure of this search',
+                      'one of the points this search found',
+                      gesture='best-so-far')
+            return
+        others = _other_bests()
+        if not (0 <= at < len(others)):
+            return
+        under, one = others[at]
+        _stand_on(one['xyz'],
+                  f'The lowest structure of a different question: '
+                  f'{_the_question_reads(under)}. Nothing above has been '
+                  f'changed -- this is that geometry, not that setting, and '
+                  f'its energy is not comparable with the one you are asking '
+                  f'now.',
+                  one.get('comment') or 'The lowest structure of this search',
+                  'the best of another question', gesture='best-so-far')
 
     def on_submit_best(_button=None):
-        """Go to the lowest structure the search has been through."""
+        """Go to the lowest structure this question has reached, and back.
+
+        There and back on one press each, rather than there on a press and
+        back on however many presses of Undo the user has done something in
+        between.  Undo is a stack: standing on the best and doing anything at
+        all puts that thing on top of it, and the way back is then as many
+        presses as there were actions, counted by the user.  What this
+        remembers is one place -- the one they left -- which is exactly the
+        question "let me look at that and come back" asks.
+
+        It is a shortcut and not a replacement: Undo still walks everything,
+        including both of these moves.
+        """
         kept = _best_here()
         if not kept:
             return
-        seen = int(kept.get('seen') or 1)
+        here = _geometry_key(_current_xyz() or '')
+        back = state.get('best_came_from')
+        if back and here == _geometry_key(kept.get('xyz') or ''):
+            state.pop('best_came_from', None)
+            rows = str(back).splitlines()
+            said = (rows[1] if len(rows) > 1 and _is_editor_comment(rows[1])
+                    else 'Edited in DELFIN viewer')
+            _stand_on(back,
+                      'Back where you were before you looked at the best one. '
+                      'The record is still kept, and the press goes there '
+                      'again.',
+                      said, 'back from the best structure',
+                      gesture='best-so-far')
+            return
+        state['best_came_from'] = _current_xyz() or ''
+        seen = len([one for one in _points_here()
+                    if one.get('kind') == 'minimum'])
         many = 'minimum' if seen == 1 else 'minima'
         _stand_on(kept['xyz'],
                   f'The lowest structure of this search, out of {seen} '
                   f'{many} reached so far. Every press works on it now, and '
                   f'Undo goes back to where you were.',
-                  'The lowest structure of this search',
+                  kept.get('comment') or 'The lowest structure of this search',
                   'the best structure so far', gesture='best-so-far')
 
     def _down_here():
@@ -17664,5 +17923,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_scan_plot_btn.observe(on_submit_scan_plot_btn, names='value')
     submit_down_dd.observe(on_submit_down_dd, names='value')
     submit_best_btn.on_click(on_submit_best)
+    submit_best_dd.observe(on_submit_best_dd, names='value')
     submit_walk_at.observe(on_submit_walk_at, names='value')
     return Editor(locals())

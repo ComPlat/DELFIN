@@ -59,7 +59,7 @@ def _a_search(part, walk=((1.20, -100.0000), (1.15, -100.0050),
                           (1.30, -100.0010))):
     """A hand-search: three releases, three minima, the best in the middle."""
     for where, energy in walk:
-        part._keep_the_best(_geo(where), energy, 'settle')
+        part._keep_a_point(_geo(where), energy, 'minimum', 'settle')
         part.coords_widget.value = _geo(where)
     part._refresh_the_best()
     return walk
@@ -76,8 +76,9 @@ def test_the_lowest_is_the_one_kept_and_not_the_last():
     part, state = _an_editor(_geo(1.20, 'start'))
     _a_search(part)
     assert _shown(part.submit_best_btn)
-    assert state['best_kept']['energy'] == pytest.approx(-100.0050)
-    assert state['best_kept']['seen'] == 3
+    assert part._best_here()['energy'] == pytest.approx(-100.0050)
+    assert len(part._points_here()) == 3, 'three distinct minima'
+    assert state
 
 
 def test_the_press_says_how_far_below_you_it_is():
@@ -165,17 +166,166 @@ def test_only_a_free_relaxation_is_collected():
     """
     from editor_source import EDITOR_SOURCE
 
-    assert EDITOR_SOURCE.count('_keep_the_best(') == 3     # two calls, one def
+    assert EDITOR_SOURCE.count('_keep_a_point(') == 4   # three calls, one def
     # Sliced to the next thing that happens rather than to a count of
     # characters: comments grow, and a window measured in bytes turns a rule
     # about *where* the collecting happens into a rule about how much is
     # written around it.
     settle = EDITOR_SOURCE.split("f'Settled with {label}'", 1)[1].split(
         'def ', 1)[0]
-    assert '_keep_the_best(' in settle, 'a release does not reach the search'
+    assert '_keep_a_point(' in settle, 'a release does not reach the search'
     press = EDITOR_SOURCE.split("state['gfn_energy_unit']", 1)[1].split(
         'results.append', 1)[0]
-    assert '_keep_the_best(' in press and '_settle_price(' in press
+    assert '_keep_a_point(' in press and '_settle_price(' in press
     assert 'if not _stopped():' in press, (
         'a stopped run keeps the frame on screen, and the energy in hand is '
         'about the whole run rather than that frame')
+
+
+# ---------------------------------------------------------------------------
+# All of them, not only the lowest
+# ---------------------------------------------------------------------------
+#
+# "vielleicht kann man nicht nur best so far gehen sondern wir merken uns alle
+# und man hat da eine liste ... sind dort quasi sortiert", and then the line
+# that makes it a set rather than a recording: "also nur minimum TS nicht
+# zwischendinger also nur extrema auf der PES".
+
+
+def test_the_same_minimum_reached_again_is_one_entry():
+    """A search by hand falls back into the same minimum again and again --
+    that is what searching is -- and a list where eighteen of twenty entries
+    are three conformers is worse than no list."""
+    part, _state = _an_editor(_geo(1.20, 'start'))
+    _a_search(part, walk=((1.20, -100.0000), (1.15, -100.0050),
+                          (1.20, -100.0000), (1.30, -100.0010),
+                          (1.20, -100.0000)))
+    points = part._points_here()
+    assert len(points) == 3, [one['energy'] for one in points]
+    again = [one for one in points if one['seen'] > 1]
+    assert len(again) == 1 and again[0]['seen'] == 3
+
+
+def test_the_list_is_sorted_and_says_how_far_up_each_one_is():
+    """Within one question the energies are one comparison, and the
+    difference is the whole of what a conformer set is for."""
+    part, _state = _an_editor(_geo(1.20, 'start'))
+    _a_search(part)
+    assert _shown(part.submit_best_dd)
+    labels = [label for label, _value in part.submit_best_dd.options][1:]
+    assert labels[0].startswith('minimum, +0.00'), labels
+    costs = [float(one.split(', ')[1].split()[0]) for one in labels]
+    assert costs == sorted(costs), costs
+    assert costs[-1] > 0, costs
+
+
+def test_a_transition_state_joins_the_list_and_carries_no_number():
+    """It is an extremum and belongs beside the minima. Without an energy:
+    none is in hand where a search reports what it reached, and pricing it
+    there would be a single point nobody asked for -- so it is listed as what
+    it is rather than borrowing a number about something else."""
+    part, _state = _an_editor(_geo(1.20, 'start'))
+    _a_search(part)
+    part._keep_a_point(_geo(1.55, 'Optimised to a transition state'), None,
+                       'transition state', 'a saddle search')
+    part._refresh_the_best()
+    labels = [label for label, _value in part.submit_best_dd.options]
+    saddles = [one for one in labels if one.startswith('transition state')]
+    assert len(saddles) == 1, labels
+    assert 'no energy in hand' in saddles[0]
+    assert labels[-1] == saddles[0], 'and it sorts after the priced minima'
+
+
+def test_a_saddle_search_is_what_puts_one_there():
+    """One mode going the wrong way, reported by a search, and not a guess:
+    a second-order saddle is not a transition state and does not go in."""
+    from editor_source import EDITOR_SOURCE
+
+    noted = EDITOR_SOURCE.split('def _note_the_saddle', 1)[1].split(
+        'def ', 1)[0]
+    assert 'if order == 1:' in noted, noted[-400:]
+    assert "'transition state'" in noted
+
+
+def test_another_question_keeps_its_own_list_beside_this_one():
+    """Change the method or the charge and what was found does not become
+    wrong -- it becomes the answer to a question you are no longer asking, and
+    the neutral's best arrangement is still the neutral's best arrangement
+    once you have gone on to the cation."""
+    part, _state = _an_editor(_geo(1.20, 'start'))
+    _a_search(part)
+    part.submit_gfn_charge.value = 1
+    part._keep_a_point(_geo(1.25), -99.5000, 'minimum', 'settle')
+    part.coords_widget.value = _geo(1.25)
+    part._refresh_the_best()
+    assert len(part._points_here()) == 1, 'the cation has its own list'
+
+    part.submit_gfn_charge.value = 0
+    part.coords_widget.value = _geo(1.30)
+    part._refresh_the_best()
+    assert len(part._points_here()) == 3, 'and the neutral still has its own'
+    labels = [label for label, _value in part.submit_best_dd.options]
+    other = [one for one in labels if 'its own best' in one]
+    assert len(other) == 1 and 'q +1' in other[0], labels
+
+
+def test_the_other_questions_carry_no_number():
+    """Two totals from two different questions are not comparable, and
+    putting them one under the other is an invitation to subtract them."""
+    part, _state = _an_editor(_geo(1.20, 'start'))
+    _a_search(part)
+    part.submit_gfn_charge.value = 1
+    part._keep_a_point(_geo(1.25), -99.5000, 'minimum', 'settle')
+    part.submit_gfn_charge.value = 0
+    part.coords_widget.value = _geo(1.30)
+    part._refresh_the_best()
+    other = [label for label, _v in part.submit_best_dd.options
+             if 'its own best' in label][0]
+    assert 'kcal/mol' not in other, other
+
+
+def test_the_multiplicity_is_part_of_the_question():
+    """Per charge the spin state is its own question, which is where the user
+    put it: "pro charge ist M interessant, das zaehlt da am besten mit rein"."""
+    part, _state = _an_editor(_geo(1.20, 'start'))
+    _a_search(part)
+    part.submit_gfn_mult.value = 3
+    assert part._points_here() == [], 'a triplet is not the singlet"s search'
+    part.submit_gfn_mult.value = 1
+    assert len(part._points_here()) == 3
+
+
+def test_going_to_another_question_changes_nothing_above():
+    """Bringing a structure back is one thing; switching the method, the
+    charge or the spin under the user is another, and doing the second
+    silently in order to do the first would answer a question nobody asked."""
+    part, _state = _an_editor(_geo(1.20, 'start'))
+    _a_search(part)
+    part.submit_gfn_charge.value = 1
+    part._keep_a_point(_geo(1.25), -99.5000, 'minimum', 'settle')
+    part.submit_gfn_charge.value = 0
+    part.coords_widget.value = _geo(1.30)
+    part._refresh_the_best()
+
+    which = [value for label, value in part.submit_best_dd.options
+             if 'its own best' in label][0]
+    part.submit_best_dd.value = which
+    assert part.submit_gfn_charge.value == 0, 'the charge was changed under us'
+    said = ' '.join(part.state.get('mol_status_lines') or ())
+    assert 'not comparable' in said, said
+    assert (part._geometry_key(part.coords_widget.value)
+            == part._geometry_key(_geo(1.25)))
+
+
+def test_the_list_is_bounded_and_says_when_it_drops_one():
+    """A session is not bounded and this list must be. What matters more than
+    the number is that dropping one is recorded rather than done quietly."""
+    part, state = _an_editor(_geo(1.20, 'start'))
+    for n in range(part._POINTS_KEPT + 5):
+        part._keep_a_point(_geo(1.10 + 0.05 * n), -100.0 + 0.01 * n,
+                           'minimum', 'settle')
+    part.coords_widget.value = _geo(1.10)
+    part._refresh_the_best()
+    assert len(part._points_here()) == part._POINTS_KEPT
+    book = state['points_by'][part._best_conditions()]
+    assert book['dropped'] == 5, book['dropped']
