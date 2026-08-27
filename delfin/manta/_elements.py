@@ -273,13 +273,55 @@ def md_unified_enabled() -> bool:
 MD_FACTOR_UNIFIED = 1.30    # derselbe Wert wie weddell/detectors/_bond_criterion.py:46
 
 
-def md_factor(legacy: float) -> float:
+def md_factor(legacy: float, name: str = "") -> float:
     """Der Faktor fuer die M-D-Frage: EINER, sobald die Radien echt sind.
 
     `legacy` ist der historische Wert des jeweiligen Moduls und wird unveraendert
     zurueckgegeben, solange der Schalter aus ist -- die Aufrufstelle bleibt damit
     byte-identisch und behaelt ihre eigene Zahl im Quelltext sichtbar.
+
+    ===== JE DETEKTOR EIN SCHALTER (aufgetrennt 27.08.2026) =====================
+    Der Sammelschalter bewegt SECHS Detektoren auf einmal, und sie starten von
+    DREI verschiedenen Zahlen:
+        1,40  metric_md_direction
+        1,45  metric_md_angle_realism . metric_h_axis . metric_donor_collapse
+        1,65  metric_coord_shape . metric_coord_geom
+    Ein Verdikt ueber den Sammelschalter waere die Summe aus sechs Aenderungen
+    und sagte nicht, welche gewirkt hat -- genau der Fehler, der weiter unten in
+    DIESER Datei fuer die drei Geometrien schon einmal nachgewiesen und
+    aufgetrennt wurde ("DREI GEOMETRIEN, DREI SCHALTER", 16.08.2026).  Dort war
+    die Summe aus Sieg, Niederlage und No-op zusammengesetzt.  Hier ist der
+    Sprung von 1,65 auf 1,30 eine deutliche VERSCHAERFUNG und der von 1,40 auf
+    1,30 eine kleine -- die beiden koennen unmoeglich dasselbe messen.
+
+    `name` gibt der Aufrufstelle ihren eigenen Schalter
+    ``DELFIN_EYE_MD_FACTOR_<NAME>``:
+        1              -> vereinheitlicht, auch wenn der Sammelschalter aus ist
+        0              -> bleibt beim Altwert, auch wenn der Sammelschalter AN
+                          ist -- so laesst sich EINER aus einem Sammellauf
+                          herausnehmen, eine Ablation ohne zweiten Baum
+        nicht gesetzt  -> der Sammelschalter entscheidet, wie bisher
+    Ohne `name` ist die Funktion buchstaeblich die alte -> byte-identisch.
+
+    WARUM DER NEUE NAME IM AUGEN-NAMENSRAUM STEHT.  Alle sechs Leser sind
+    Detektoren unter ``weddell/detectors/``; der Sammelschalter traegt trotzdem
+    den Bauer-Praefix.  Das ist die Falle aus Aufgabe #81 -- ein Schalter im
+    falschen Namensraum kommt in keine Champion-Liste und kann per Konstruktion
+    nicht landen.  Der Sammelschalter behaelt seinen historischen Namen, damit
+    alte Laeufe lesbar bleiben; jeder NEUE Schalter hier heisst DELFIN_EYE_.
+
+    IMPORTZEIT.  Alle sechs Aufrufstellen sind Modulkonstanten, werden also
+    genau EINMAL beim Import gelesen.  Ein ``os.environ``-Setzen mitten im Lauf
+    wirkt NICHT und saehe wie "Reichweite 0" aus -- die Variable gehoert in die
+    Prozessumgebung, vor den Start.  Gemessen wird mit ``--revalidate SRC
+    --label DST`` auf einem fertigen Archiv, nie mit ``--ab``.
     """
+    if name:
+        v = os.environ.get("DELFIN_EYE_MD_FACTOR_" + name.upper(), "")
+        if v == "1":
+            return MD_FACTOR_UNIFIED
+        if v == "0":
+            return float(legacy)
     return MD_FACTOR_UNIFIED if md_unified_enabled() else float(legacy)
 
 
