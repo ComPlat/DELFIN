@@ -798,7 +798,11 @@ def test_a_tap_does_not_grab_and_so_cuts_nothing_that_is_running():
 
     watcher = EDITOR_SOURCE.split("function grabbed()", 1)[1].split(
         "function heldSerials()", 1)[0]
-    assert 'drag.kind==="translate"||drag.kind==="rotate")' in watcher
+    # Every gesture that moves the structure, and a turn is one of them: a
+    # right-drag under the field is a torque on a bond, and a press on an atom
+    # that has not moved is as much a tap there as anywhere else.
+    for kind in ('translate', 'rotate', 'turn'):
+        assert 'drag.kind==="%s"' % kind in watcher, kind
     assert "return !!drag.movedEnough;" in watcher
     # And draw still counts whether or not it moved.
     assert 'return drag.kind==="draw";' in watcher

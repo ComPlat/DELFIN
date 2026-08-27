@@ -1261,6 +1261,11 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     var PIVOT_COLOR = '#e53935';
     var UNDO_LIMIT = 50;
     var ROT_RAD_PER_PX = 0.01;
+    // Degrees of torsion per pixel of a right-drag under the field.  A
+    // hundred pixels is sixty degrees, which is the step between one
+    // staggered arrangement and the next: the gesture that says "turn this
+    // round to the next one" is about the height of the picture.
+    var TURN_DEG_PER_PX = 0.6;
     //: When a press stops being a tap and becomes a drag.
     //
     //: Stated in Angstrom, because that is the unit the gesture is
@@ -1672,6 +1677,14 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         if (note && targets && targets.length) {
             var indices = ffIndicesOf(viewer, targets);
             if (indices.length) note += ' held=' + indices.join(',');
+        }
+        // And the torsion, when the hand is turning one.  Named rather than
+        // worked out again on the other side: which coordinate a hand is
+        // driving is a decision, and a decision the user made by choosing a
+        // bond must not be re-taken from the geometry a frame later.
+        if (note && held && held.drag && held.drag.kind === 'turn'
+                && held.drag.idx) {
+            note += ' turn=' + held.drag.idx.join(',');
         }
         var xyz = serializeXyz(viewer, note,
                                note ? pullWishes(scopeKey, viewer) : null);
@@ -2611,6 +2624,78 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         }
         return {atoms: out, seen: seen};
     }
+    // The torsion a right hand on this atom would turn, and what moves with
+    // it.  The axis is the bond the atom hangs on: take hold of an atom and
+    // turn what is beyond it, which is what "rotate this bond" means at a
+    // bench.
+    //
+    // A different question from the one the left hand asks.  There the axis
+    // is a bond one further in, so that the grabbed atom itself swings
+    // through an arc and follows the cursor; here the grabbed atom names the
+    // axis and stays on it.  Both are torsions and both are driven as a
+    // force -- bond lengths hold and the torsion reacts -- and which one the
+    // user means is now theirs to say rather than something to be inferred
+    // from the direction they happen to drag.
+    function turnAbout(viewer, serial) {
+        var atoms = getAtoms(viewer);
+        var adj = bondAdjacency(viewer);
+        // A model that arrived without bonds has them worked out once, here.
+        // Only when there are none at all: perception rewrites the whole
+        // list, and a structure whose bond orders somebody has edited must
+        // not have them taken away by a gesture that only wanted to know
+        // what hangs on what.
+        var any = false;
+        for (var q = 0; q < adj.length && !any; q++) any = adj[q].length > 0;
+        if (!any) { perceiveBonds(viewer); adj = bondAdjacency(viewer); }
+        var g = indexOfSerial(atoms, serial);
+        if (g < 0) return {error: 'that atom is not in the picture'};
+        var deg = function(i) { return (adj[i] || []).length; };
+        var best = function(i, notThis) {
+            var list = adj[i] || [], out = -1;
+            for (var t = 0; t < list.length; t++) {
+                var c = list[t];
+                if (c === notThis) continue;
+                if (out < 0 || deg(c) > deg(out)) out = c;
+            }
+            return out;
+        };
+        // An atom on one bond has nothing hanging off it to turn, so the
+        // hand means the group it belongs to: step one atom inwards and use
+        // the bond that group hangs on.  Grabbing a methyl's hydrogen then
+        // spins the methyl, which is what the gesture looks like it should
+        // do.
+        var b = (deg(g) >= 2) ? g : ((adj[g] || [])[0]);
+        if (b === undefined || b === null || b < 0) {
+            return {error: 'that atom has no bonds to turn about'};
+        }
+        var c = best(b, (b === g) ? -1 : g);
+        if (c === undefined || c === null || c < 0) {
+            return {error: 'there is no bond here to turn about'};
+        }
+        var a = best(b, c), d = best(c, b);
+        if (a === undefined || a < 0 || d === undefined || d < 0) {
+            return {error: 'a turn needs an atom on each side of the bond'};
+        }
+        // A torsion about a ring bond turns nothing: both ends stay joined
+        // the other way round, and driving it fights the ring.  Said here
+        // rather than after the drag has been started, so the refusal costs
+        // no gesture.
+        var beyond = fragmentFrom(adj, c, b, c);
+        if (beyond.seen[b]) {
+            return {error: 'that bond is in a ring, and a ring bond does not '
+                           + 'turn -- both ends stay joined the other way'};
+        }
+        var near = fragmentFrom(adj, b, b, c);
+        var moving = (near.atoms.length <= beyond.atoms.length)
+            ? near.atoms : beyond.atoms;
+        var serials = [];
+        for (var t = 0; t < moving.length; t++) {
+            serials.push(atoms[moving[t]].serial);
+        }
+        return {idx: [a, b, c, d], serials: serials,
+                bond: [atoms[b], atoms[c]]};
+    }
+
     function pickedIndices(scopeKey) {
         var viewer = getViewer(scopeKey);
         if (!viewer) return null;
@@ -4296,9 +4381,43 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
 
             if (state.mode === 'manipulate') {
                 if (e.button === 2) {
-                    // Pivot picking is off while the field runs -- the right
-                    // button pans the scene then, so let the event through.
-                    if (state.autoOpt) return;
+                    // While the field runs the right button is a torque.
+                    //
+                    // Asked for: "mit rechter maus taste eine drehkraft
+                    // ansetzen ... um beispielsweise einfach bindungen zu
+                    // rotieren", turning left or right by dragging up or
+                    // down.  xtb has no torque to give, but a turn is a
+                    // torsion -- which is what the left hand has always
+                    // driven, only choosing the torsion itself.  So this is
+                    // the same force on the same kind of coordinate, with
+                    // the user naming the bond.
+                    //
+                    // The button was free here: pivot picking is off while
+                    // the field runs, and it fell through to the scene pan.
+                    // Empty space still pans, so nothing is taken away.
+                    if (state.autoOpt) {
+                        var turning = probeClickAtom(scopeKey, e.clientX,
+                                                     e.clientY);
+                        if (!turning) return;
+                        var about = turnAbout(getViewer(scopeKey),
+                                              turning.serial);
+                        if (about.error) {
+                            var el = getStatusEl(scopeKey);
+                            if (el) el.innerHTML = 'No turn here: '
+                                + about.error + '.';
+                            e.preventDefault(); e.stopPropagation();
+                            return;
+                        }
+                        e.preventDefault(); e.stopPropagation();
+                        state.drag = {
+                            kind: 'turn', idx: about.idx,
+                            targets: about.serials,
+                            startX: e.clientX, startY: e.clientY,
+                            lastX: e.clientX, lastY: e.clientY,
+                            movedEnough: false, snapshotted: false
+                        };
+                        return;
+                    }
                     var picked = probeClickAtom(scopeKey, e.clientX, e.clientY);
                     // Empty space belongs to the viewer, which pans there.
                     if (!picked) return;
@@ -4474,6 +4593,27 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 ffRelaxAsync(scopeKey, function(moved) {
                     if (moved) redrawHighlights(scopeKey);
                 });
+            } else if (d.kind === 'turn' && d.movedEnough) {
+                // Up and down, and nothing else.  A torsion has one number
+                // and one sign, so sideways would have to mean something
+                // too, and there is nothing left for it to mean.  Up turns
+                // one way, down the other.
+                e.preventDefault();
+                if (!d.snapshotted) { snapshotForUndo(scopeKey); d.snapshotted = true; }
+                var by = -dy * TURN_DEG_PER_PX * (state2.dragSensitivity || 1);
+                var atomsNow = getAtoms(viewer);
+                var stood = dihedralV(atomsNow[d.idx[0]], atomsNow[d.idx[1]],
+                                      atomsNow[d.idx[2]], atomsNow[d.idx[3]]);
+                // Each answer turns on from where the last one left it,
+                // rather than from where the press began: the field is
+                // pushing back between two frames, and a target measured
+                // from the start would undo whatever it had won.
+                applyInternalValue(scopeKey, 'dihedral', d.idx,
+                                   stood + by, stood);
+                redrawHighlights(scopeKey);
+                ffRelaxAsync(scopeKey, function(moved) {
+                    if (moved) redrawHighlights(scopeKey);
+                });
             } else if (d.kind === 'rotate' && d.movedEnough) {
                 e.preventDefault();
                 if (!d.snapshotted) { snapshotForUndo(scopeKey); d.snapshotted = true; }
@@ -4493,7 +4633,8 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             if (!state2 || !state2.drag) return;
             var d = state2.drag;
             state2.drag = null;
-            if (d.kind === 'translate' || d.kind === 'rotate') {
+            if (d.kind === 'translate' || d.kind === 'rotate'
+                    || d.kind === 'turn') {
                 // Nothing was moved, so there is nothing to keep where it
                 // was put: with settling-on-release switched off ffEndDrag
                 // pins whatever it is handed, and a tap that pinned the
