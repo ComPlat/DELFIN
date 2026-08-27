@@ -504,9 +504,16 @@ def test_empty_space_belongs_to_the_viewer_for_both_buttons():
     # The manipulate branch specifically: draw mode has its own right button
     # now, and it means something else there.
     manipulate = overlay.split("if (state.mode === 'manipulate') {")[1]
-    right = manipulate.split('if (e.button === 2) {')[1][:900]
+    right = manipulate.split('if (e.button === 2) {')[1][:3000]
     assert right.index('probeClickAtom') < right.index('e.preventDefault();')
+    # Two branches now: with the field running the right button is a torque on
+    # a bond, and without it the pivot it always was. Both probe for an atom
+    # first and both hand the press back when there is none, because empty
+    # space belongs to the viewer whatever the button does on atoms.
     assert 'if (!picked) return;' in right
+    assert 'if (!turning) return;' in right
+    turning = right.split('if (state.autoOpt) {')[1]
+    assert turning.index('probeClickAtom') < turning.index('e.preventDefault()')
 
 
 def test_bonding_is_perceived_once_and_not_re_read_from_a_dragged_geometry():

@@ -223,6 +223,7 @@ _EDITOR_COMMENTS = (
     'optimised to a transition state',
     'estimated transition state, from the path',
     'followed down the mode',
+    'the lowest structure of this search',
     'delfin drag-end',
     'delfin drag-follow',
     'from the delfin viewer',
@@ -1001,7 +1002,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             'Grab any atom and drag it; grabbing a selected atom moves the '
             'whole selection. Drag empty space to turn the view. Right-click '
             'an atom to set the pivot, right-drag to rotate the selection '
-            'about it.'
+            'about it. With Dynamik Opt on, right-drag an atom up or down '
+            'instead: that turns the bond it hangs on, one way or the other, '
+            'as a force the structure answers.'
         ),
         layout=widgets.Layout(width='112px', height='30px'),
         disabled=True,
@@ -2169,6 +2172,25 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='300px', display='none'),
     )
 
+    #: The lowest structure this search has been through, to go back to.
+    #:
+    #: Asked for: "ich brauch ein button mit dem man immer die struktur mit
+    #: der niedrigsten energie sammeln kann ... wenn ich eigenstaendig den
+    #: konformationsraum abtaste", and to be able to bring it back.
+    #:
+    #: Searching a conformer space by hand is a walk through minima, and the
+    #: one that matters is usually not the last one reached: you drag, let
+    #: go, watch it settle, and go on -- and the good one is three gestures
+    #: back, in a history that also holds every gesture in between.  Every
+    #: number needed is already in hand, so keeping it costs no calculation
+    #: at all; what it costs is this button, and only once there is something
+    #: to go back to.
+    submit_best_btn = widgets.Button(
+        description='Best so far', icon='star',
+        tooltip='Go to the lowest structure this search has reached',
+        layout=widgets.Layout(width='auto', display='none'),
+    )
+
     submit_scan_plot_btn = widgets.ToggleButton(
         value=False,
         description='Show the profile',
@@ -2575,6 +2597,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             submit_mode_dd, submit_mode_btn, submit_ends_btn,
             # And the two structures that press reached, once it has.
             submit_down_dd,
+            # And the lowest one the search has been through.
+            submit_best_btn,
             # And the switch between the structure and the profile of the
             # walk that has just finished. On the row above the picture
             # the two share, because that row is always on screen: put
@@ -3138,7 +3162,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                        submit_topology_btn, submit_saddle_btn,
                        submit_saddle_from, submit_saddle_how,
                        submit_mode_dd, submit_mode_btn, submit_ends_btn,
-                       submit_down_dd,
+                       submit_down_dd, submit_best_btn,
                        submit_climb_btn, submit_shape_btn,
                        submit_path_from_btn):
             widget.disabled = not enabled
@@ -4125,7 +4149,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '       And neither does a tap.  A press that has not passed the\n'
             '       slop is a press that has moved nothing: translate and\n'
             '       rotate both do their work under movedEnough, so the\n'
-            '       structure is untouched until it flips.  Counted as a grab\n'
+            '       structure is untouched until it flips.  A turn is held to\n'
+            '       the same rule, and for the same reason: it is a press on\n'
+            '       an atom until it has moved.\n'
+            '\n'
+            '       Counted as a grab\n'
             '       anyway, a tap sent gfngrab and gfnfree a tenth of a second\n'
             '       apart -- and a grab interrupts whatever is running and the\n'
             '       release arms it again, so a running relaxation or climb\n'
@@ -4138,7 +4166,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '    var held=(window._submitManipStateByScope||{})[scope];\n'
             '    var drag=held&&held.drag;\n'
             '    if(!drag) return false;\n'
-            '    if(drag.kind==="translate"||drag.kind==="rotate")\n'
+            '    if(drag.kind==="translate"||drag.kind==="rotate"\n'
+            '       ||drag.kind==="turn")\n'
             '      return !!drag.movedEnough;\n'
             '    return drag.kind==="draw";\n'
             '  }\n'
@@ -6851,6 +6880,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # frame happened to land.
                     _write_coords(xyz_document(lines, f'Settled with {label}'),
                                   drawn=True, run=run)
+                # And the search hears about it.  A release that settles is
+                # one minimum of a conformer space somebody is walking
+                # through by hand, and this is where they arrive.
+                _keep_the_best(outcome['xyz'], priced, 'settle')
                 if over is not None:
                     state['thermal_good'] = outcome['xyz']
                 # Not converged and the switch is still down: keep going.  That
@@ -7809,6 +7842,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     if outcome.get('energy') is not None and position == 0:
                         state['gfn_energy'] = float(outcome['energy'])
                         state['gfn_energy_unit'] = outcome.get('energy_unit')
+                        # The other place a free relaxation lands.  Not a run
+                        # that was stopped: what a Stop keeps is the frame the
+                        # picture stood on, and the energy in hand belongs to
+                        # the whole run rather than to that frame -- a pair
+                        # that describes no structure at all.
+                        if not _stopped():
+                            _keep_the_best(
+                                outcome['xyz'],
+                                _settle_price(outcome,
+                                              state.get('constraints')),
+                                'optimisation')
                     if position == 0:
                         # The charges of the structure that is about to be on
                         # screen, out of the answer that is about to draw it.
@@ -12601,6 +12645,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # And the two structures a Follow it down reached, which belong
             # to the saddle on screen rather than to the molecule.
             _refresh_the_down_ends()
+            # And the lowest structure the search has been through, which
+            # belongs to the molecule and to the question being asked of it.
+            _refresh_the_best()
         finally:
             state['saddle_controls_quiet'] = False
 
@@ -12747,6 +12794,135 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # dropped the moment a new one is kept.
         state['walk_look_at'] = (points, at)
         submit_walk_at.layout.display = ''
+
+    def _best_conditions():
+        """What has to be the same for two energies to be one comparison.
+
+        A total energy is an answer to a question, and the question is the
+        method, the charge, the spin, the solvent -- and any value being held,
+        because a structure relaxed with a bond pinned at 2.5 A is a minimum
+        of a different surface from the same molecule left free.  Change any
+        of them and the lowest number so far stops meaning "the best
+        arrangement" and starts meaning "the cheapest question asked".
+
+        So the best carries its conditions and is only offered under them.
+        Change the method and the search begins again, which the row says by
+        the press going away.
+        """
+        holds = tuple(sorted(
+            (str(one.get('kind') or ''),
+             tuple(int(i) for i in (one.get('atoms') or ())),
+             None if one.get('value') is None else round(float(one['value']), 3))
+            for one in (state.get('constraints') or ())))
+        return (str(submit_ff_dd.value).lower(),
+                int(submit_gfn_charge.value or 0),
+                int(_gfn_uhf_now() or 0),
+                str(submit_gfn_solvent.value or ''),
+                str(submit_gfn_solv_model.value or ''),
+                holds)
+
+    def _keep_the_best(xyz, energy, how):
+        """Remember the lowest structure the search has been through.
+
+        Free relaxations only, and that is the whole of the judgement here.
+        A geometry standing under a hand or under a push carries the
+        restraint's own energy in its total: it is a number about the hand as
+        much as about the structure, and kept as a best it would claim
+        something it is not.  What comes here is what a release settled to
+        and what Optimise reached -- minima, priced the way the budget prices
+        them, with any held value's own energy taken back out
+        (:func:`_settle_price`).
+
+        Costs nothing.  Every number here was in hand when the answer was
+        written, so a search that never presses this button is not paying for
+        it.
+        """
+        try:
+            value = float(energy)
+        except (TypeError, ValueError):
+            return
+        rows = [line for line in str(xyz or '').splitlines()[2:] if line.strip()]
+        here = _structure_fingerprint(xyz or '')
+        if not rows or not here:
+            return
+        under = _best_conditions()
+        kept = state.get('best_kept') or {}
+        fresh = (kept.get('structure') != here or kept.get('under') != under)
+        # What the box is standing on, so the row can say how far below it the
+        # best one is.  Kept whether or not this answer is an improvement:
+        # the gap is measured against where the user *is*, not against the
+        # record.
+        state['best_last'] = {'key': _geometry_key(xyz), 'energy': value}
+        state['best_seen'] = 1 if fresh else int(kept.get('seen') or 0) + 1
+        if not fresh and float(kept.get('energy')) <= value:
+            kept['seen'] = state['best_seen']
+            state['best_kept'] = kept
+            return
+        state['best_kept'] = {
+            'xyz': xyz_document(rows, 'The lowest structure of this search'),
+            'energy': value, 'structure': here, 'under': under,
+            'how': str(how or ''), 'seen': state['best_seen'],
+        }
+
+    def _best_here():
+        """The kept best, while it is an answer to the question being asked.
+
+        The molecule, by its element column, the way everything in this editor
+        that comes and goes is; and the conditions, because a number measured
+        under another method is not this search's record.
+        """
+        kept = state.get('best_kept')
+        if not kept or not kept.get('xyz'):
+            return None
+        if kept.get('structure') != _structure_fingerprint(_current_xyz() or ''):
+            return None
+        if kept.get('under') != _best_conditions():
+            return None
+        return kept
+
+    def _refresh_the_best():
+        """Say what the search has found, and how far below it stands.
+
+        The gap is against the geometry in the box and not against the worst
+        thing ever seen: what a person wants to know here is whether going
+        back is worth it from where they are.  It can only be said when the
+        box is still holding a structure this search priced -- drag it since
+        and there is no number for what is on screen, so the press says what
+        it has and no more.
+        """
+        kept = _best_here()
+        if not kept:
+            submit_best_btn.layout.display = 'none'
+            return
+        seen = int(kept.get('seen') or 1)
+        of = f'Best of {seen}' if seen > 1 else 'Best so far'
+        last = state.get('best_last') or {}
+        here = _geometry_key(_current_xyz() or '')
+        if here and here == _geometry_key(kept.get('xyz') or ''):
+            submit_best_btn.description = f'{of}: you are on it'
+            submit_best_btn.disabled = True
+        else:
+            gap = (None if last.get('key') != here or last.get('energy') is None
+                   else (float(kept['energy']) - float(last['energy']))
+                   * _HARTREE_TO_KCAL)
+            submit_best_btn.description = (
+                of if gap is None else f'{of}: {gap:+.1f} kcal/mol')
+            submit_best_btn.disabled = False
+        submit_best_btn.layout.display = ''
+
+    def on_submit_best(_button=None):
+        """Go to the lowest structure the search has been through."""
+        kept = _best_here()
+        if not kept:
+            return
+        seen = int(kept.get('seen') or 1)
+        many = 'minimum' if seen == 1 else 'minima'
+        _stand_on(kept['xyz'],
+                  f'The lowest structure of this search, out of {seen} '
+                  f'{many} reached so far. Every press works on it now, and '
+                  f'Undo goes back to where you were.',
+                  'The lowest structure of this search',
+                  'the best structure so far', gesture='best-so-far')
 
     def _down_here():
         """The two ends of the last Follow it down, while they are in reach.
@@ -15907,6 +16083,30 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 if word.startswith('held='):
                     holding = [int(n) for n in word[5:].split(',')
                                if n.strip().lstrip('-').isdigit()]
+                elif word.startswith('turn='):
+                    # A right hand on an atom, turning about the bond it
+                    # hangs on.  The four atoms come from the page because
+                    # the page is where the bond was chosen: worked out
+                    # again here they would be whatever the geometry looked
+                    # most like a frame later, and the user's choice of
+                    # which bond to turn would quietly become a guess.
+                    #
+                    # It goes in as the sticky turn -- the same slot a left
+                    # hand's own decision lands in -- so
+                    # :func:`gfn_optimize.contacts_holding` holds this
+                    # torsion and nothing else, and
+                    # :func:`gfn_optimize.as_pushes` makes a force of it
+                    # under the slider and the thermal ceiling like any
+                    # other hand.
+                    turn = [int(n) for n in word[5:].split(',')
+                            if n.strip().lstrip('-').isdigit()]
+                    if len(turn) == 4:
+                        state['thermal_turn'] = turn
+                        # Not the first answer of a drag any more: the
+                        # opening asks what each coordinate *can* do, and
+                        # there is nothing left to ask once the hand has
+                        # said which one it is on.
+                        state.pop('gfn_follow_opening', None)
             _gfn_follow_step(new_xyz, holding)
             # A climb does not fight a hand: the grab stopped whatever was
             # walking, and this is the second way of hearing that a hand is
@@ -17436,5 +17636,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_draw_sync.observe(on_submit_draw_sync, names='value')
     submit_scan_plot_btn.observe(on_submit_scan_plot_btn, names='value')
     submit_down_dd.observe(on_submit_down_dd, names='value')
+    submit_best_btn.on_click(on_submit_best)
     submit_walk_at.observe(on_submit_walk_at, names='value')
     return Editor(locals())
