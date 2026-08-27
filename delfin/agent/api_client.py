@@ -2611,6 +2611,13 @@ class KitToolPermissions:
     # to "default" mode silently — useful for tests/headless runs.
     plan_approval_callback: Optional[Callable[[str], dict]] = None
     last_approved_plan: str = ""
+    # A plan this session submitted that the user has not answered yet.
+    # Set when the approval wait expires, cleared on approve, on reject and
+    # whenever the session is no longer in plan mode. It exists so a SECOND
+    # exit_plan_mode does not block for another full approval window: the
+    # wait is minutes long, and the instruction not to resubmit is a
+    # sentence the model is free to ignore -- and did.
+    plan_awaiting_approval: str = ""
     # Sub-agent runner: set by OpenAIClient on attach so the
     # ``subagent`` tool can fire a child loop without _DocToolExecutor
     # holding a back-reference to the client. Signature:
@@ -13267,10 +13274,46 @@ class _DocToolExecutor:
         if not plan:
             return json.dumps({"error": "plan must be non-empty"})
         if perms.mode != "plan":
+            # Out of plan mode, so whatever was pending has been settled --
+            # approved in the UI, or the mode was changed by hand. Clear it
+            # here rather than only on the approval path, or a session that
+            # re-enters plan mode later starts with a stale block.
+            perms.plan_awaiting_approval = ""
             return json.dumps({"error": (
                 f"exit_plan_mode is only valid while in 'plan' mode "
                 f"(current mode: {perms.mode!r})"
             )})
+        # A plan is already on screen and unanswered. Return NOW, without
+        # touching the approval callback -- that callback blocks for the
+        # whole approval window, and this is the second time through.
+        #
+        # The previous fix for this (2026-06-25) changed the timeout reply
+        # from "rejected" to "stop here and wait; do NOT resubmit". That is
+        # a sentence, and on 2026-08-27 a recorded session ignored it: two
+        # exit_plan_mode calls, 180.3 s and 180.5 s, six minutes spent
+        # waiting on a click that had already not come once. A rule the
+        # mechanism does not enforce is a suggestion; this is the mechanism.
+        pending = getattr(perms, "plan_awaiting_approval", "") or ""
+        if pending:
+            same = pending.strip() == plan
+            return json.dumps({
+                "status": "awaiting_approval",
+                "resubmitted": True,
+                "message": (
+                    "A plan from this session is ALREADY awaiting the user's "
+                    "approval — it is on their screen. This call returned "
+                    "immediately instead of waiting again, and it did not "
+                    + ("replace that plan (the text was identical). "
+                       if same else
+                       "replace that plan; the earlier one is still the one "
+                       "shown. ")
+                    + "Nothing you can call will approve it. End your turn "
+                    "and say what you are waiting for; the user approving in "
+                    "the UI resumes execution on a fresh turn. If the plan "
+                    "needs to change, say so in prose and let them reject "
+                    "the one on screen first."
+                ),
+            })
         if perms.plan_approval_callback is None:
             # No approval channel (headless / non-interactive). Plan mode is a
             # HARD human gate: NEVER self-approve. Submit the plan, keep
@@ -13308,13 +13351,18 @@ class _DocToolExecutor:
             # Tell it plainly to STOP and wait instead — the user can still
             # approve in the UI, which resumes execution on a fresh turn.
             if not approved and resp.get("timed_out"):
+                # Remember it, so a second submission is answered from here
+                # instead of blocking on the callback again.
+                perms.plan_awaiting_approval = plan
                 return json.dumps({
                     "status": "awaiting_approval",
                     "message": (
                         "Plan submitted — still awaiting the user's approval "
                         "in the dashboard. This is NOT a rejection. Stop here "
-                        "and wait; do NOT resubmit the plan. The user will "
-                        "approve in the UI, which resumes execution."
+                        "and wait; do NOT resubmit the plan — a second "
+                        "submission now returns immediately and changes "
+                        "nothing. The user will approve in the UI, which "
+                        "resumes execution on a fresh turn."
                     ),
                 })
             requested_mode = (resp.get("new_mode") or "default")
@@ -13331,6 +13379,7 @@ class _DocToolExecutor:
             # decided by the new mode from here on.
             repin_permission_mode(new_mode)
             perms.last_approved_plan = plan
+            perms.plan_awaiting_approval = ""
             # Bridge the approved plan into durable state: persist it to the
             # plans store on EVERY approval path (previously dashboard-only —
             # a headless-approved plan survived nowhere and died at the next
@@ -13381,6 +13430,9 @@ class _DocToolExecutor:
                     + _anchor
                 ),
             })
+        # An explicit rejection settles the pending plan: the next
+        # submission is a fresh proposal and must reach the user.
+        perms.plan_awaiting_approval = ""
         return json.dumps({
             "status": "rejected",
             "mode": perms.mode,
