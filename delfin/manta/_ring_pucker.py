@@ -209,6 +209,81 @@ def _set_pucker(conf, ring, Q, theta, phi, frozen: Optional[Set[int]] = None):
         conf.SetAtomPosition(int(idx), (float(newp[0]), float(newp[1]), float(newp[2])))
 
 
+def _prod_laenge(per_ring_states) -> int:
+    """Groesse des vollen Kreuzprodukts (inkl. Grundzustand)."""
+    n = 1
+    for s in per_ring_states:
+        n *= max(1, len(s))
+    return n
+
+
+def _ring_bahnen(mol, rings, max_aut: int = 20000):
+    """Zerlege die Ringe in BAHNEN unter der Automorphismengruppe des Molekuels.
+
+    Zwei Ringe liegen in derselben Bahn, wenn ein Automorphismus den einen als
+    ATOMMENGE auf den anderen abbildet.  Nur dann sind sie ununterscheidbar, und
+    nur dann darf ihre Zustandsreihenfolge zusammengelegt werden.
+
+    ⛔ WARUM NICHT DIE RANGMULTIMENGE, die viel billiger waere.  Gleiche
+    kanonische Raenge sind NOTWENDIG fuer Aequivalenz, aber nicht HINREICHEND.
+    Am 27.08. von Hand nachgerechnet: von 27 Ringpaaren mit gleicher Rangmenge
+    waren 26 echte Bahn und EINES nicht (3,7 %).  Ueber die Rangmenge zu
+    reduzieren haette bei diesem einen Paar einen REALEN Zustand geloescht.  Ein
+    Doppelgaenger zuviel kostet Rechenzeit; ein fehlender Zustand kostet
+    Vollstaendigkeit -- und die ist der Nordstern.
+
+    ⚠ DECKEL.  `GetSubstructMatches(mol, mol)` kann bei hochsymmetrischen
+    Molekuelen explodieren (am 27.08. lief CONPUS in 200 000 Treffer).  Wird der
+    Deckel erreicht, liefert die Funktion None -> KEINE Reduktion, volles
+    Produkt.  Der Rueckfall ist immer die GROESSERE Menge, nie die kleinere.
+
+    Rueckgabe: Liste von Listen von Ringindizes, oder None (nicht reduzieren).
+    """
+    try:
+        treffer = mol.GetSubstructMatches(mol, uniquify=False,
+                                          useChirality=False,
+                                          maxMatches=max_aut)
+    except Exception:
+        return None
+    if not treffer or len(treffer) >= max_aut:
+        return None                      # Deckel erreicht -> nicht reduzieren
+    if len(treffer) == 1:
+        return None                      # nur die Identitaet -> nichts zu holen
+
+    ring_mengen = [frozenset(int(i) for i in r) for r in rings]
+    index_von = {m: i for i, m in enumerate(ring_mengen)}
+    if len(index_von) != len(ring_mengen):
+        return None                      # doppelte Ringmengen -> Haende weg
+
+    eltern = list(range(len(rings)))
+
+    def _wurzel(x):
+        while eltern[x] != x:
+            eltern[x] = eltern[eltern[x]]
+            x = eltern[x]
+        return x
+
+    for abb in treffer:
+        for i, menge in enumerate(ring_mengen):
+            try:
+                bild = frozenset(int(abb[a]) for a in menge)
+            except Exception:
+                return None
+            j = index_von.get(bild)
+            if j is None or j == i:
+                continue
+            ri, rj = _wurzel(i), _wurzel(j)
+            if ri != rj:
+                eltern[ri] = rj
+
+    gruppen = {}
+    for i in range(len(rings)):
+        gruppen.setdefault(_wurzel(i), []).append(i)
+    # Deterministische Reihenfolge -- sonst haengt die Aufzaehlung an der
+    # Hash-Reihenfolge und der Lauf ist nicht reproduzierbar.
+    return [sorted(v) for _k, v in sorted(gruppen.items())]
+
+
 def _cp_abstand(a, b) -> float:
     """Winkelabstand zweier Faltungszustaende AUF der Cremer-Pople-Kugel (Grad).
 
@@ -1324,8 +1399,72 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
     # cartesian product of state indices, deterministic order, budget-capped;
     # skip the all-base (identity) combination; fewest-changed rings first.
     import itertools as _it
-    combos = [c for c in _it.product(*[range(len(s)) for s in per_ring_states])
-              if any(c)]
+    # ===== SYMMETRIEREDUKTION (27.08.2026, DELFIN_FFFREE_PUCKER_SYMM) ==============
+    #
+    # WARUM HIER.  Zwei Ringe, die unter der Automorphismengruppe des Molekuels in
+    # EINER Bahn liegen, sind ununterscheidbar.  Dann ist (s1,s2) DIESELBE STRUKTUR
+    # wie (s2,s1) -- das Kreuzprodukt erzeugt dort Doppelgaenger, die spaeter die
+    # RMSD-Entdopplung wieder wegwirft, nachdem sie Relax und Clash-Tor bezahlt haben.
+    #
+    # GEMESSEN 27.08. mit ZWEI unabhaengigen Instrumenten:
+    #   bauseitig     534 Systeme mit >=2 faltbaren Ringen -> 371 (69,5 %) mit Bahn
+    #   kristallseitig (CCDC clean_v2, DELFIN-unabhaengig)
+    #                1757 mit >=2 gefalteten Ringen -> 1393 (79,3 %) mit Bahn
+    #
+    # DER EIGENTLICHE GEWINN IST NICHT RECHENZEIT, SONDERN ABDECKUNG.  Der Deckel
+    # dreissig Zeilen weiter unten (`combos[:budget]`) schneidet nach Faltungstiefe
+    # ab -- bei >2 flexiblen Ringen wird der Zustand "alle gleichzeitig gefaltet" NIE
+    # gebaut.  Schrumpft das Produkt unter das Budget, hoert die Kappe auf zu beissen,
+    # und genau die tiefen Zustaende entstehen wieder.  Die Reduktion nimmt also
+    # Doppelgaenger weg und gibt dafuer ECHTE Zustaende zurueck.
+    #
+    # ⛔ NIE-SCHLECHTER, UND ZWAR STRENG.  Zusammengelegt wird nur, was ein ECHTER
+    # Automorphismus aufeinander abbildet -- nicht, was nur dieselbe Rangmultimenge
+    # traegt.  Der Unterschied ist gemessen: von 27 handgepruften Ringpaaren waren
+    # 26 echte Bahn und EINES nur ranggleich (3,7 %).  Haette ich die Rangmenge
+    # genommen, waere dieses eine Paar zusammengelegt worden und ein realer Zustand
+    # HAETTE GEFEHLT.  Bei Vollstaendigkeit als Nordstern ist das der schlimmere
+    # Fehler von beiden.
+    # ⛔ UND WENN DIE AUTOMORPHISMENSUCHE NICHT TRAEGT, wird NICHT reduziert (voller
+    # Produktzweig).  Fallback ist immer die groessere Menge, nie die kleinere.
+    # ⛔ Vorgabe AUS -> byte-identisch.
+    _symm = _os.environ.get("DELFIN_FFFREE_PUCKER_SYMM", "0") == "1"
+    _bahnen = None
+    if _symm and len(rings) > 1:
+        _bahnen = _ring_bahnen(mol_with_conf, rings)
+    if _bahnen and any(len(b) > 1 for b in _bahnen):
+        # Je Bahn MULTIMENGEN statt geordneter Tupel: aus n^k wird C(n+k-1, k).
+        # Die Zustandslisten einer Bahn sind gleich lang (gleiche Ringgroesse,
+        # gleiche Umgebung) -- geprueft, sonst faellt die Bahn zurueck auf Produkt.
+        _pro_bahn = []
+        for _b in _bahnen:
+            _n = len(per_ring_states[_b[0]])
+            if any(len(per_ring_states[i]) != _n for i in _b):
+                _pro_bahn.append(list(_it.product(*[range(len(per_ring_states[i]))
+                                                    for i in _b])))
+            else:
+                _pro_bahn.append(list(_it.combinations_with_replacement(
+                    range(_n), len(_b))))
+        combos = []
+        for _wahl in _it.product(*_pro_bahn):
+            _c = [0] * len(rings)
+            for _b, _w in zip(_bahnen, _wahl):
+                for _ri, _st in zip(_b, _w):
+                    _c[_ri] = _st
+            if any(_c):
+                combos.append(tuple(_c))
+        if _zaehler is not None:
+            _zaehler["symm_bahnen"] = [len(b) for b in _bahnen]
+            _zaehler["symm_voll"] = _prod_laenge(per_ring_states)
+            _zaehler["symm_reduziert"] = len(combos)
+        if _os.environ.get("DELFIN_FFFREE_PUCKER_TRACE", "0") == "1":
+            print("[pucker] SYMMETRIE: %d Ringe in %d Bahnen %s -- "
+                  "Kombinationen %d statt %d"
+                  % (len(rings), len(_bahnen), [len(b) for b in _bahnen],
+                     len(combos), _prod_laenge(per_ring_states) - 1))
+    else:
+        combos = [c for c in _it.product(*[range(len(s)) for s in per_ring_states])
+                  if any(c)]
     combos.sort(key=lambda c: (sum(1 for x in c if x), c))
     # ===== DIE ABSCHNEIDUNG WAR DER SCHADEN, NICHT DER DECKEL (26.08.2026) ==========
     #
