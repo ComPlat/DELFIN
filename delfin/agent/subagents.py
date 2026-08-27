@@ -2554,6 +2554,11 @@ def _derive_perms(parent_perms, mode: str, workspace=None, preset_tools=()):
                 extra["read_tracker"] = dict(_tracker)
         except Exception:
             pass
+        # Same reasoning one field along: a plan the PARENT submitted and is
+        # waiting on says nothing about the child, and inheriting it would
+        # answer the child's own first exit_plan_mode from the parent's
+        # pending state -- a plan the user never saw.
+        extra["plan_awaiting_approval"] = ""
         if workspace is not None:
             return dataclasses.replace(
                 parent_perms, mode=mode, workspace=workspace, **extra)
