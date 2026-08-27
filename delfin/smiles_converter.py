@@ -32795,6 +32795,47 @@ def _smiles_to_xyz_isomers_impl(
                 # HH-Kontakte 225->142, Methylverstoesse in 133->103 Dateien.
                 _ff = _apply_h_placement_if_enabled(_ff)
                 _ff = _apply_mirror_enum_if_enabled(_ff)
+                # --- TORSIONSAUFZAEHLUNG, jetzt AUCH auf dem FF-freien Pfad (27.08.) ---
+                # GEZAEHLT, nicht vermutet: `_rotamer_diversity.apply_if_enabled` hatte
+                # GENAU EINE Aufrufstelle, und die liegt bei :35799 im LEGACY-Schwanz.
+                # Der FF-freie Komplexpfad bekam NULL Torsionsaufzaehlung -- dieselbe
+                # Bauform wie am 10.08. ("drei additive Module laufen nur auf Legacy"),
+                # nur diesmal in dieser Richtung.
+                #
+                # ⚠ UND ES IST DER MECHANISMUS, DEN AUFGABE #17 SUCHT.  Der Setzer in
+                # `conformer_enum.py` (0 Aufrufstellen, kappt still bei 7, baut
+                # homoleptisch) ist NICHT der richtige -- dieser hier ist es:
+                #   * DOFs aus dem MOLEKUELGRAPHEN, nie aus SMILES
+                #   * Koordinationsbindungen (M-Donor) ausgeschlossen
+                #   * M-D-INVARIANTE mit Toleranz DELFIN_5L_T6_ROTAMER_MD_TOL (0,05 A)
+                #   * arbeitet auf dem FERTIGEN Frame, also der echten Bauvorlage
+                #
+                # REICHWEITE: 4411 von 6000 = 73,5 % haben >=1 rotierbare Bindung
+                # (gemessen 27.08., `_rotatable_bonds` selbst benutzt).  FF-frei sind
+                # davon ~1190 von 1616 -- weit ueber der 100er-Schranke.
+                #
+                # ⚠ DIE KAPPEN SIND ECHT UND GEHOEREN IN DIE MESSUNG: K=3 Frames je
+                # Isomer, MAX_DOFS=6, GRID_CAP=64.  K=3 heisst AUSWAEHLEN nach Energie,
+                # nicht aufzaehlen -- und was WAEHLT, hat in dieser Kampagne noch nie
+                # gelandet.  Beim Verdikt darauf achten, ob die Kappe bindet.
+                # ⛔ Vorgabe AUS (DELFIN_5L_T6_ROTAMER_DIVERSITY) -> byte-identisch.
+                try:
+                    from delfin.manta import _rotamer_diversity as _rot_ff
+                    if _rot_ff._is_enabled() and _ff:
+                        _erw = []
+                        for (_rx, _rl) in _ff:
+                            _fr = _rot_ff.apply_if_enabled(_rx)
+                            if not _fr:
+                                _erw.append((_rx, _rl))
+                                continue
+                            _erw.append((_fr[0], _rl))
+                            for _ki, _fx in enumerate(_fr[1:], start=1):
+                                _erw.append((_fx, f"{_rl}_rotamer-{_ki}" if _rl
+                                             else f"rotamer-{_ki}"))
+                        _ff = _erw
+                except Exception as _rot_ff_exc:
+                    logger.debug("FF-frei Rotamer-Erweiterung fehlgeschlagen: %s",
+                                 _rot_ff_exc)
                 # RUECKNAHMETOR fuer die FF-freie Kette (Schnappschuss oben bei
                 # `_rg_before_ff`).  Deckt pi_coplanar_m, baustein6 und h_placement ab --
                 # die Enumeratoren dazwischen (Stereozentren, Atropisomer, Spiegel) haengen
