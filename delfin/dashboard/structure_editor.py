@@ -6883,7 +6883,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # And the search hears about it.  A release that settles is
                 # one minimum of a conformer space somebody is walking
                 # through by hand, and this is where they arrive.
+                #
+                # The row is asked again here rather than left to the host.
+                # A write marked as already drawn -- which every one of these
+                # is, because the playback has the geometry -- takes the
+                # host's short path and never reaches the refresh that decides
+                # what is on the toolbar.  So the press that had just become
+                # possible did not appear until something else happened to ask.
                 _keep_the_best(outcome['xyz'], priced, 'settle')
+                _refresh_the_best()
                 if over is not None:
                     state['thermal_good'] = outcome['xyz']
                 # Not converged and the switch is still down: keep going.  That
@@ -7054,6 +7062,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # to before I switched it on".
             _remember('switching the continuous relaxation on')
         submit_relax_btn.button_style = 'info' if active else ''
+        # The page needs this switch, not the one it can see for itself.  Its
+        # own ``autoOpt`` is the *browser's* field, and the branch below
+        # switches that off deliberately under a server method -- so a page
+        # asking "is the field running" is told no in exactly the mode most of
+        # this editor is used in.  The right button reads it to know whether a
+        # hand on an atom will be answered, and read that way the torque was
+        # unreachable: the press fell through to the pivot, which turns the
+        # *selection*, and the user reported it as working only with the whole
+        # arm selected.
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip&&'
+            'window.__delfinSubmitManip.setLiveHand)'
+            'window.__delfinSubmitManip.setLiveHand('
+            f'{json.dumps(submit_scope_id)},{json.dumps(bool(active))});'
+        )
         if _server_method():
             # There is no GFN engine in the browser to run per frame, so this
             # switch means something else here: while it is on, the molecule
@@ -7853,6 +7877,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                 _settle_price(outcome,
                                               state.get('constraints')),
                                 'optimisation')
+                            # On the interface's own turn: this runs on the
+                            # worker, and the row belongs to the other thread.
+                            schedule_ui_update(_refresh_the_best)
                     if position == 0:
                         # The charges of the structure that is about to be on
                         # screen, out of the answer that is about to draw it.
