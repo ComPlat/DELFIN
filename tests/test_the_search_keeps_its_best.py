@@ -166,9 +166,15 @@ def test_only_a_free_relaxation_is_collected():
     from editor_source import EDITOR_SOURCE
 
     assert EDITOR_SOURCE.count('_keep_the_best(') == 3     # two calls, one def
-    settle = EDITOR_SOURCE.split("f'Settled with {label}'", 1)[1][:600]
+    # Sliced to the next thing that happens rather than to a count of
+    # characters: comments grow, and a window measured in bytes turns a rule
+    # about *where* the collecting happens into a rule about how much is
+    # written around it.
+    settle = EDITOR_SOURCE.split("f'Settled with {label}'", 1)[1].split(
+        'def ', 1)[0]
     assert '_keep_the_best(' in settle, 'a release does not reach the search'
-    press = EDITOR_SOURCE.split("state['gfn_energy_unit']", 1)[1][:800]
+    press = EDITOR_SOURCE.split("state['gfn_energy_unit']", 1)[1].split(
+        'results.append', 1)[0]
     assert '_keep_the_best(' in press and '_settle_price(' in press
     assert 'if not _stopped():' in press, (
         'a stopped run keeps the frame on screen, and the energy in hand is '

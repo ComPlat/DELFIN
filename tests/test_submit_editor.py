@@ -512,7 +512,11 @@ def test_empty_space_belongs_to_the_viewer_for_both_buttons():
     # space belongs to the viewer whatever the button does on atoms.
     assert 'if (!picked) return;' in right
     assert 'if (!turning) return;' in right
-    turning = right.split('if (state.autoOpt) {')[1]
+    # Asked of the switch that means "a hand here will be answered", which
+    # is not the browser field's own flag: under every server method Dynamik
+    # Opt switches that one off, so a right button reading it fell through to
+    # the pivot in the mode the editor is mostly used in.
+    turning = right.split('if (handIsLive(state)) {')[1]
     assert turning.index('probeClickAtom') < turning.index('e.preventDefault()')
 
 
