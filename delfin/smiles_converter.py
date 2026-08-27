@@ -1042,9 +1042,35 @@ def _get_ml_bond_length(metal_symbol: str, donor_symbol: str,
     # und nicht ein pauschal gestrichener Offset -- ein pauschaler Eingriff waere
     # derselbe Fehler wie der, den er behebt.
     # Vorgabe AUS -> byte-identisch.  EINE Lesestelle.
+    # ── DIE TABELLE LAESST SICH AUF EINE METALLLISTE BESCHRAENKEN ────────────────
+    # ANLASS (27.08.2026 abends).  `mclen6k` ist geborgen und beantwortet seine
+    # Vorregistrierung GESPALTEN: `topo_correct_frame` NETTO **+40** (46 gewonnen
+    # gegen 6 verloren) -- die Kette M-C-Laenge -> Donorschnitt -> CN -> Topologie-
+    # tor ist damit BEWIESEN, H0 widerlegt.  Aber der Lauf landet nicht: 2 harte
+    # `ccdc_isomer_lost` (ECOZUV, WIKBOJ, Abdruck in beiden Armen IDENTISCH, also
+    # ECHTE Verluste), 5 Polyeder, 7 isomers_lost.
+    #
+    # 🔑 UND DIE VERLUSTE SITZEN NICHT UEBERALL.  Je Metall gezaehlt:
+    #        GEWINNER 46   Re 22 · Mn 14 · Os 6 · Tc 3 · Ti 1
+    #        VERLIERER 6   Os  3 · Cr  1 · Mn 1 · Zr 1
+    #    Re steht 22 : 0, Mn 14 : 1 -- Os dagegen 6 : 3, und Os hat die STAERKSTE
+    #    Kristallevidenz (n=2834).  Vorwissen und A/B widersprechen sich dort.
+    #
+    # ⚠️ DIESE AUSWAHL IST NACHTRAEGLICH.  Sie stammt aus dem Ergebnis desselben
+    #    Laufs, den sie verbessern soll -- das ist Selektion auf dem Testsatz und
+    #    waere als Befund wertlos.  Der Schalter existiert deshalb NUR, damit ein
+    #    NEUER, vorregistrierter Lauf sie bestaetigen oder widerlegen kann.
+    #    Solange der nicht durch ist, ist "Re+Mn ist besser" eine HYPOTHESE.
+    #
+    # Vorgabe: leer -> ALLE Metalle der Tabelle -> byte-identisch zu vorher.
     if (donor_symbol in ("C", "Si")
             and os.environ.get("DELFIN_FFFREE_MC_LEN_CRYSTAL", "0") == "1"):
         _mc = _MC_LEN_CRYSTAL_MEDIAN.get(metal_symbol)
+        _only = os.environ.get("DELFIN_FFFREE_MC_LEN_METALS", "").strip()
+        if _mc is not None and _only:
+            _erlaubt = {_s.strip() for _s in _only.split(",") if _s.strip()}
+            if metal_symbol not in _erlaubt:
+                _mc = None                 # nicht in der Liste -> alter Weg
         if _mc is not None:
             return float(_mc)
     key = (metal_symbol, donor_symbol)
