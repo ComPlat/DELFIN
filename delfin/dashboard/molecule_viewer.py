@@ -3957,6 +3957,27 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     // It scales the drag only. Where a *new* atom is put, and where a click
     // lands, stay at one to one: an atom that appeared somewhere other than
     // under the cursor would be a different kind of wrong.
+    // Whether Dynamik Opt is on, whichever engine is behind it.
+    //
+    // ``autoOpt`` is not that question.  It is the *browser's* own field, and
+    // under a server method Dynamik Opt deliberately switches that one off --
+    // the molecule follows the hand through one short xtb run per push
+    // instead.  Read as "the field is running", it is false in exactly the
+    // mode most of this editor is used in, which is how the torque on the
+    // right button came to be unreachable: the press fell through to the
+    // pivot, and a pivot rotate turns the *selection*, so it looked like it
+    // worked only with the whole arm selected.  Reported that way, too.
+    function setLiveHand(scopeKey, on) {
+        var state = getState(scopeKey);
+        state.liveHand = !!on;
+        return state.liveHand;
+    }
+    // One question for the right button: is a hand on an atom going to be
+    // answered by a relaxation?  Either engine says yes.
+    function handIsLive(state) {
+        return !!(state && (state.autoOpt || state.liveHand));
+    }
+
     function setDragSensitivity(scopeKey, value) {
         var state = getState(scopeKey);
         var asked = parseFloat(value);
@@ -4395,7 +4416,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                     // The button was free here: pivot picking is off while
                     // the field runs, and it fell through to the scene pan.
                     // Empty space still pans, so nothing is taken away.
-                    if (state.autoOpt) {
+                    if (handIsLive(state)) {
                         var turning = probeClickAtom(scopeKey, e.clientX,
                                                      e.clientY);
                         if (!turning) return;
@@ -5308,6 +5329,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         setInternal: setInternal,
         setOptimizerStrength: setOptimizerStrength,
         setDragSensitivity: setDragSensitivity,
+        setLiveHand: setLiveHand,
         setPullStrength: setPullStrength,
         setFixedInternals: setFixedInternals,
         exchangeLigands: exchangeLigands,

@@ -114,7 +114,11 @@ function rightDrag(serial, dy) {
   }
   return LIVE.state.drag;
 }
-function field(st){ st.autoOpt = true; }
+// Dynamik Opt, through the door the editor uses.  Setting autoOpt here
+// instead would test a mode the editor switches *off* under every server
+// method -- which is how the torque came to be unreachable in the first
+// place.
+function field(st){ window.__delfinSubmitManip.setLiveHand(SCOPE, true); }
 
 var out = {};
 
@@ -199,7 +203,7 @@ console.log(JSON.stringify(out));
 
 
 _RING_PROBE = r"""
-function field(st){ st.autoOpt = true; }
+function field(st){ window.__delfinSubmitManip.setLiveHand(SCOPE, true); }
 var out = {};
 fresh(undefined, field);
 var p = screenOf(0);
@@ -371,3 +375,51 @@ def test_the_four_atoms_are_held_as_a_dihedral_and_nothing_else():
     assert len(held) == 1, held
     assert held[0]['kind'] == 'dihedral'
     assert held[0]['atoms'] == [2, 0, 1, 5]
+
+
+def _an_editor_watching_js(text):
+    """An editor whose page script is captured rather than run."""
+    pytest.importorskip('ipywidgets')
+    import ipywidgets as widgets
+
+    from delfin.dashboard import structure_editor
+    from delfin.dashboard.context import DashboardContext
+
+    room = pathlib.Path(tempfile.mkdtemp())
+    for name in ('calc', 'archive', 'office'):
+        (room / name).mkdir()
+    ctx = DashboardContext(calc_dir=room / 'calc', archive_dir=room / 'archive',
+                           office_dir=room / 'office')
+    said = []
+    ctx.run_js = said.append
+    state = {}
+    part = structure_editor.build(
+        ctx, state=state, coords_widget=widgets.Textarea(value=text),
+        viewer_height=560,
+        schedule_ui_update=lambda func, *a, **k: func(*a, **k),
+        update_view=lambda *a, **k: None,
+        get_smiles_charge=lambda *a, **k: None)
+    return part, state, said
+
+
+def test_the_page_is_told_when_dynamik_opt_goes_on():
+    """The half of this that was missing, and the whole of the report.
+
+    The page has a switch it can see for itself -- ``autoOpt`` -- and it is
+    not this question: it is the *browser's* own field, which Dynamik Opt
+    switches off under every server method so that the molecule can follow the
+    hand through xtb instead. A right button reading it was told "no" in
+    exactly the mode most of this editor is used in, fell through to the pivot,
+    and a pivot rotate turns the selection: "drehmoment geht doch aber nur wenn
+    alles ausgewaehlt ist ... ich kann nicht nur ein atom nehmen".
+    """
+    part, _state, said = _an_editor_watching_js(_ETHANE)
+    part.submit_relax_btn.value = True
+    on = [one for one in said if 'setLiveHand' in one]
+    assert on, 'the page was never told the hand is live'
+    assert 'true' in on[-1], on[-1]
+
+    said.clear()
+    part.submit_relax_btn.value = False
+    off = [one for one in said if 'setLiveHand' in one]
+    assert off and 'false' in off[-1], off
