@@ -2033,6 +2033,50 @@ _ROLE_EXEC_DENYLIST: dict[str, frozenset[str]] = {
 }
 
 
+# What a refused tool was reached for, and what answers the same
+# question inside plan mode. Only entries where the substitute genuinely
+# serves the SAME intent: a reader looking at a directory, a file or a
+# pattern. There is deliberately no entry for the write tools -- nothing
+# read-only replaces an edit, and inventing a consolation tool there
+# would send the model somewhere it does not want to go.
+_PLAN_READONLY_SUBSTITUTES: dict[str, str] = {
+    "bash": ("list_files to see a directory, read_file to read a file, "
+             "grep_file to search inside files"),
+    "bash_background": ("list_files to see a directory, read_file to read "
+                        "a file, grep_file to search inside files"),
+}
+
+
+def _plan_mode_refusal(bare: str) -> str:
+    """Why plan mode refused this call, said as what was actually checked.
+
+    The gate matches a tool NAME against ``_PLAN_READONLY_TOOLS``; it
+    never looks at the arguments. The refusal used to answer "because it
+    can change something", which is a claim about the CALL -- and for
+    ``bash`` with ``ls -la`` it is simply false. A refusal that asserts
+    more than the check established teaches the model a wrong model of
+    the gate, and it did: a recorded session read the message, concluded
+    the directory was out of reach, and spent the turn on documentation
+    search while ``list_files`` sat unused on the allow list.
+
+    So: name the list, and where the same intent has a read-only tool,
+    name that tool. A refusal that only says no leaves the model to
+    guess what yes looks like.
+    """
+    lead = (f"plan mode (read-only) — '{bare}' is not on the plan-mode "
+            f"read-only tool list, so the call was refused before its "
+            f"arguments were looked at.")
+    substitute = _PLAN_READONLY_SUBSTITUTES.get(bare, "")
+    if substitute:
+        lead += (f" To LOOK at something, use {substitute} — those run in "
+                 f"plan mode and answer the same question.")
+    return (f"{lead} When investigating is finished, call exit_plan_mode "
+            f"with the plan; execution begins after the user approves it. "
+            f"If you cannot say what you would do until the user decides "
+            f"something, call ask_user_question instead of submitting a "
+            f"plan with the question in it.")
+
+
 def _bare_tool_name(name: str) -> str:
     """A namespaced ``mcp__server__tool`` reduced to its tool name.
 
@@ -7796,12 +7840,8 @@ class _DocToolExecutor:
             # NEVER use a tool should be told that, not told it is merely
             # the wrong mode. The more permanent reason is more useful.
             # A check_only call is a dry run and stays allowed.
-            result = json.dumps({"error": (
-                f"plan mode (read-only) — '{_bare_tool_name(name)}' "
-                "rejected because it can change something. Finish "
-                "investigating, then call exit_plan_mode with the plan; "
-                "execution begins after the user approves it."
-            )})
+            result = json.dumps({"error": _plan_mode_refusal(
+                _bare_tool_name(name))})
         elif block_reason:
             result = json.dumps({
                 "error": "blocked_by_hook",
@@ -10766,13 +10806,16 @@ class _DocToolExecutor:
             if (_bare_tool_name(name) not in _PLAN_READONLY_MCP_TOOLS
                     and not bool((args or {}).get("check_only"))):
                 _record_security_event("plan_mode_mcp", name, "", blocked=True)
-                return (
-                    f"plan mode (read-only) — '{_bare_tool_name(name)}' "
-                    "rejected because it can change something, and an MCP "
-                    "server is not a way around that. Finish investigating, "
-                    "then call exit_plan_mode with the plan; execution "
-                    "begins after the user approves it."
-                )
+                # Same wording as the native gate, for the same reason:
+                # the check is a name against a list and the message may
+                # not claim more than that. The one addition is the fact
+                # this site establishes and the other does not -- that
+                # the namespace was stripped before judging, so routing
+                # through a server changes nothing.
+                return (_plan_mode_refusal(_bare_tool_name(name))
+                        + " The name was judged with its server prefix "
+                          "removed, so calling it through an MCP server "
+                          "is not a way around the list.")
 
         # (0c) An action the user already refused, re-emitted through a
         # server. The ledger is keyed on the BARE name, so a native refusal
