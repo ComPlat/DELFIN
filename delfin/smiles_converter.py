@@ -35761,6 +35761,32 @@ def _smiles_to_xyz_isomers_impl(
     # beidseitig verdrahtet -- Aufrufstellen zaehlen, nicht Zeilen.
     results = _apply_atropisomer_enum_if_enabled(mol, results, _dual_parse_done)
 
+    # --- SPIEGELABSCHLUSS, jetzt AUCH auf dem Legacy-Pfad (27.08.2026) --------------------
+    # GEZAEHLT, nicht vermutet: `_apply_mirror_enum_if_enabled` hatte 2 Aufrufstellen im
+    # FF-freien Schwanz und NULL hier -- obwohl `_mirror_enum.expand_results(results)`
+    # Frames nimmt und Frames zurueckgibt und gar nicht weiss, wer sie gebaut hat.  Es ist
+    # strukturell pfadneutral.  Und 4069 von 5685 Systemen werden LEGACY gebaut, der
+    # Spiegelabschluss erreichte also 28 % des Pools.
+    #
+    # ⛔ WARUM ERST JETZT, obwohl die Zeile trivial ist: sie ist es NICHT ohne die zwei
+    # Tore darunter.  Gemessen am 27.08. auf beiden Archiven:
+    #     ohne Tore   +122 663 Frames auf 130 882 = +93,7 %   (Archivverdopplung)
+    #     Ursache     `_self_mirror_rmsd` prueft eine FESTE Atomreihenfolge und meldet
+    #                 deshalb bei 4069 von 4069 = 100 % "chiral" -- es misst
+    #                 KONFORMER-Haendigkeit, nicht MOLEKUEL-Chiralitaet
+    #     Trennung    >=1 Stereozentrum  1325 (32,6 %)  -> echtes neues Stereoisomer
+    #                 kein Stereozentrum 2744 (67,4 %)  -> nur ein zweiter Konformer,
+    #                                                      68 % des Preises fuer NULL Gewinn
+    # ⇒ Nur mit DELFIN_MIRROR_STEREO_GATE=1 und DELFIN_MIRROR_ONE_PER_SYSTEM=1 wird aus
+    #   dem Frame-Verdoppler ein Ein-Prozent-Hebel auf 1325 Systeme (+1,0 % statt +93,7 %).
+    #   Beide Tore sind GETRENNT schaltbar, weil sie verschiedene Fragen beantworten --
+    #   "welche Systeme" und "wie viele Frames je System".
+    #
+    # ⚠ NICHT GEMESSEN: ob die 1325 ihr CCDC-Isomer heute VERFEHLEN.  Ohne diese Zahl ist
+    #   der Nutzen eine Obergrenze, keine Landung.  Das entscheidet das Auge.
+    # ⛔ Vorgabe AUS (DELFIN_MIRROR_ENUM) -> byte-identisch, wie auf dem FF-freien Pfad.
+    results = _apply_mirror_enum_if_enabled(results)
+
     # --- Welle-5l Track-6: rotamer-diversity (env-flag gated, default OFF) ---
     # For each emitted isomer, sample staggered rotamers around bulky single
     # bonds (tBu / PMe3 / iPr / NMe2 …) and append the top-K best-energy

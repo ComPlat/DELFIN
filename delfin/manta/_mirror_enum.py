@@ -146,15 +146,99 @@ def mirror_frame(xyz: str) -> Optional[str]:
         return None
 
 
+def _hat_stereozentrum(xyz) -> Optional[bool]:
+    """Traegt das MOLEKUEL mindestens ein Stereozentrum?  None = nicht lesbar.
+
+    ⚠ WARUM DIESE FRAGE UEBERHAUPT NOETIG IST.  `_self_mirror_rmsd` prueft, ob ein
+    Frame in FESTER ATOMREIHENFOLGE auf sein Spiegelbild passt -- der Docstring
+    dort sagt es selbst ("in dieser Atomreihenfolge").  Ein weicher Konformer tut
+    das praktisch nie, egal ob das Molekuel chiral ist.  Der Test misst also
+    KONFORMER-Haendigkeit, nicht MOLEKUEL-Chiralitaet.
+
+    GEMESSEN 27.08. auf 4069 legacy gebauten Systemen: `expand_results` haengt bei
+    4069 von 4069 = 100 % etwas an.  Dubletten erklaeren das nicht (gegen alle
+    uebrigen Frames desselben Systems bleiben 99,8 % neu; unter `permute_dedup`
+    mit echten Automorphismen ueberleben 900 von 988).  Aufgeteilt nach dem
+    MOLEKUEL:
+
+        >=1 Stereozentrum   1325 / 4069 = 32,6 %   Spiegel = ECHTES neues Isomer
+        kein Stereozentrum  2744 / 4069 = 67,4 %   nur ein zweiter Konformer
+
+    Auf einem zweiten Archiv bestaetigt: 32,8 %, Abweichung 0,2 pp.
+    ⇒ 68 % der angehaengten Frames bringen NULL Isomergewinn.
+
+    Gelesen wird ueber die Bindungsperzeption aus dem Frame selbst -- ein SMILES
+    liegt an dieser Stelle nicht vor.  Nicht lesbar -> None -> das Tor laesst
+    durch (nie WENIGER bauen, wenn die Messung fehlt).
+    """
+    try:
+        from rdkit import Chem
+        from rdkit.Chem import rdDetermineBonds
+    except Exception:
+        return None
+    try:
+        syms, P, _lines = _parse_xyz(xyz)
+    except Exception:
+        return None
+    if not syms:
+        return None
+    try:
+        block = "%d\n\n" % len(syms) + "\n".join(
+            "%s %.6f %.6f %.6f" % (s, p[0], p[1], p[2])
+            for s, p in zip(syms, P))
+        mol = Chem.MolFromXYZBlock(block)
+        if mol is None:
+            return None
+        rdDetermineBonds.DetermineConnectivity(mol)
+        Chem.AssignStereochemistryFrom3D(mol)
+        zentren = Chem.FindMolChiralCenters(mol, includeUnassigned=True,
+                                            useLegacyImplementation=False)
+        return bool(zentren)
+    except Exception:
+        return None
+
+
 def expand_results(results):
     """ADDITIV: haengt je Frame sein Spiegelbild an.  Originale bleiben unberuehrt.
 
     ``results`` ist die Liste von ``(xyz, label)`` des FF-freien Pfads.  Bit-genauer
     No-op, wenn der Schalter aus ist oder kein Frame ein Spiegelbild hat.
+
+    ZWEI TORE, beide EINZELN schaltbar, beide Vorgabe AUS -> byte-identisch:
+
+      DELFIN_MIRROR_STEREO_GATE=1   nur Systeme mit >=1 Stereozentrum spiegeln.
+          Streicht 67,4 % der Systeme und damit 68 % des Preises, bei NULL
+          Isomerverlust.
+
+      DELFIN_MIRROR_ONE_PER_SYSTEM=1   EIN Repraesentant statt je Konformer.
+          Fuer die ISOMERabdeckung genuegt ein Frame mit gekippter Haendigkeit;
+          jeden Konformer zu spiegeln verdoppelt das Archiv, ohne ein Isomer mehr
+          zu treffen.  Gemessen: 1325 statt 39 254 Zusatzframes = +1,0 % statt
+          +93,7 %.
+
+    ⚠ DIE TORE SIND GETRENNT, weil sie VERSCHIEDENE Fragen beantworten -- das
+      erste "welche Systeme", das zweite "wie viele Frames je System".  Sie zu
+      buendeln machte jedes Verdikt unzuordenbar.
     """
     if not results or not _is_enabled():
         return results
     max_added = _env_int("DELFIN_MIRROR_MAX_ADDED", 128)
+    _stereo_tor = _env_int("DELFIN_MIRROR_STEREO_GATE", 0) == 1
+    _einer = _env_int("DELFIN_MIRROR_ONE_PER_SYSTEM", 0) == 1
+
+    if _stereo_tor:
+        # EINMAL je System fragen, nicht je Frame: die Stereozentren des MOLEKUELS
+        # aendern sich zwischen Konformeren nicht.  Der erste lesbare Frame
+        # entscheidet; ist keiner lesbar, laesst das Tor durch.
+        _hat = None
+        for (xyz, _lab) in results:
+            _hat = _hat_stereozentrum(xyz)
+            if _hat is not None:
+                break
+        if _hat is False:
+            _LOG.debug("mirror_enum: STEREO-TOR -- kein Stereozentrum im Molekuel, "
+                       "der Spiegel waere nur ein zweiter Konformer (0 Frames)")
+            return results
     added: List[Tuple[str, str]] = []
     n_achiral = 0
     n_failed = 0
@@ -183,6 +267,17 @@ def expand_results(results):
             n_failed += 1
             continue                      # sollte nicht vorkommen; nie eine Dublette anhaengen
         added.append((m, f"{label}_mirror"))
+        if _einer:
+            # EIN REPRAESENTANT.  Fuer die Isomerabdeckung genuegt ein Frame mit
+            # gekippter Haendigkeit -- weitere Spiegel sind Konformere DESSELBEN
+            # Spiegelisomers und treffen kein Isomer mehr.
+            # ⚠ Der Abbruch steht NACH dem Anhaengen, nicht davor: sonst bricht er
+            #   auch dann ab, wenn `mirror_frame` gerade None geliefert hat, und
+            #   das System bekaeme GAR keinen Spiegel.  Genau die Bauform, die
+            #   heute schon dreimal eine stille Nullmessung erzeugt hat.
+            _LOG.debug("mirror_enum: EIN-REPRAESENTANT -- 1 Spiegelframe statt %d",
+                       len(results))
+            break
     if not added:
         return results
     if len(added) >= max_added:
