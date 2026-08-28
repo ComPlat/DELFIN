@@ -727,7 +727,12 @@ def optimise_to_saddle(xyz_text: str, method: str = 'gfn2', *,
             checked = _gfn.optimize_with_gfn(
                 text, method, charge=charge, uhf=uhf, solvent=solvent,
                 solvation_model='alpb', optimise=False, free_energy=True,
-                timeout=max(60.0, float(timeout or 180.0)))
+                # No clock stays no clock.  Read as a falsy number this
+                # gave the confirming Hessian three minutes of its own
+                # under a caller that had asked for none, so a climb
+                # that was allowed to run came back unconfirmed.
+                timeout=(None if timeout is None
+                         else max(60.0, float(timeout))))
             if checked.get('ok') and checked.get('imaginary') is not None:
                 shape = checked['imaginary']
                 confirmed = True
@@ -1390,7 +1395,12 @@ def neb_to_saddle(reactant: str, product: str, method: str = 'gfn2', *,
             checked = _gfn.optimize_with_gfn(
                 text, method, charge=charge, uhf=uhf, solvent=solvent,
                 solvation_model='alpb', optimise=False, free_energy=True,
-                timeout=max(60.0, float(timeout or NEB_SECONDS)))
+                # No clock stays no clock.  Read as a falsy number this
+                # gave the confirming Hessian three minutes of its own
+                # under a caller that had asked for none, so a climb
+                # that was allowed to run came back unconfirmed.
+                timeout=(None if timeout is None
+                         else max(60.0, float(timeout))))
             if checked.get('ok') and checked.get('imaginary') is not None:
                 shape = checked['imaginary']
                 confirmed = True

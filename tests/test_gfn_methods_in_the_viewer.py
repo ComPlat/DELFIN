@@ -7216,3 +7216,144 @@ def test_all_is_offered_only_when_there_is_a_second_frame():
     every.value = True
     part._refresh_optimize_all()
     assert every.layout.display == "", "a running press must stay stoppable"
+
+
+_ORDERS_PAGE = r"""
+'use strict';
+const fs = require('fs');
+// A page, faked down to the last method the bond bookkeeping touches.
+function el(tag) {
+  return {tagName: (tag || 'DIV').toUpperCase(), style: {}, className: '',
+          children: [], _h: {},
+          classList: {add(){}, remove(){}, contains(){ return false; }},
+          addEventListener(t, fn){ (this._h[t] = this._h[t] || []).push(fn); },
+          removeEventListener(){}, appendChild(c){ return c; }, removeChild(){},
+          querySelector(){ return null; }, querySelectorAll(){ return []; },
+          getBoundingClientRect(){ return {left:0, top:0, right:600, bottom:600,
+                                           width:600, height:600}; },
+          contains(){ return true; }, dispatchEvent(){ return true; }};
+}
+const cmdInput = el('input'); cmdInput.value = '';
+const cmdWrap = el('div'); cmdWrap.querySelector = () => cmdInput;
+const root = el('div');
+root.querySelector = (sel) => (sel === '.submit-cmd-sync' ? cmdWrap : null);
+globalThis.document = {
+  querySelector: (sel) => (sel === '.s1' ? root : null),
+  querySelectorAll: (sel) => (sel === '.s1' ? [root] : []),
+  createElement: (t) => el(t), addEventListener(){},
+  body: {appendChild(){}, removeChild(){}}, activeElement: null};
+globalThis.window = {
+  document: globalThis.document, addEventListener(){}, removeEventListener(){},
+  requestAnimationFrame(fn){ fn(); return 1; }, cancelAnimationFrame(){},
+  setTimeout(fn){ fn(); return 1; }, clearTimeout(){},
+  getComputedStyle(){ return {position: 'relative'}; },
+  HTMLInputElement: {prototype: {}}, HTMLTextAreaElement: {prototype: {}},
+  Event: function(){}, performance: {now: () => 0}};
+globalThis.setTimeout = window.setTimeout;
+
+eval(fs.readFileSync(process.argv[2], 'utf8'));
+
+// Ethene and two more carbons far enough away to be unbonded: the diene end
+// of a Diels-Alder, before it closes.
+const atoms = [
+  {serial:0, elem:'C', x:0.00, y:0.00, z:0.00, bonds:[1], bondOrder:[1]},
+  {serial:1, elem:'C', x:1.33, y:0.00, z:0.00, bonds:[0], bondOrder:[1]},
+  {serial:2, elem:'C', x:0.00, y:3.00, z:0.00, bonds:[3], bondOrder:[1]},
+  {serial:3, elem:'C', x:1.33, y:3.00, z:0.00, bonds:[2], bondOrder:[1]},
+];
+const model = {atoms, selectedAtoms: () => atoms};
+const viewer = {atoms, getModel: () => model, selectedAtoms: () => atoms,
+  addSphere: (o) => ({o}), addLine: (o) => ({o}), addLabel: (o) => ({o}),
+  removeShape(){}, removeAllLabels(){}, render(){}, setSlab(){},
+  getSlab: () => ({near:-50, far:50}), setClickable(){}, setStyle(){},
+  rotationGroup: {position: {z: 150},
+                  matrix: {elements: [1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]}},
+  modelGroup: {matrixWorld: {elements: [1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]},
+               updateMatrixWorld(){}},
+  camera: {fov: 20,
+    matrixWorldInverse: {elements: [1,0,0,0,0,1,0,0,0,0,1,0,0,0,-150,1]},
+    projectionMatrix: {elements: [1,0,0,0,0,1,0,0,0,0,-1,0,0,0,0,1]},
+    updateMatrixWorld(){}}};
+const SCOPE = 's1';
+window._submitMolViewerByScope = {}; window._submitMolViewerByScope[SCOPE] = viewer;
+window._submitManipStateByScope = {};
+const api = window.__delfinSubmitManip;
+api.onViewerReady(SCOPE, el('div'));
+const st = window._submitManipStateByScope[SCOPE];
+
+function flat() {
+  const out = [];
+  atoms.forEach(a => { out.push(a.x, a.y, a.z); });
+  return out;
+}
+const said = [];
+function note(what) { said.push({what, cmd: cmdInput.value,
+                                 orders: atoms.map(a => (a.bondOrder||[]).slice())}); }
+
+// The two double bonds, as Python would send them.
+api.setBondOrders(SCOPE, [[0,1,2],[2,3,2]], true);
+note('told');
+
+// The hand closes the ring: 0-3 and 1-2 come within bonding distance.  The
+// lines follow the distances, so perception makes the new bonds -- and it
+// knows nothing about orders, so the old doubles are still drawn beside them.
+api.setDynamicBonds(SCOPE, true);
+atoms[2].y = 1.55; atoms[3].y = 1.55;
+cmdInput.value = '';
+api.setPositions(SCOPE, flat());
+note('closed');
+
+// Asked once, not once a frame.
+cmdInput.value = '';
+api.setPositions(SCOPE, flat());
+note('again');
+
+console.log(JSON.stringify(said));
+"""
+
+
+@_needs_node
+def test_the_orders_are_asked_for_again_when_a_bond_is_made(tmp_path):
+    """A ring closed with the hand needs no render, and the orders were only
+    ever worked out at one.
+
+    So a Diels-Alder drawn in the viewer kept the diene's double bonds beside
+    the two new sigma bonds it had just made, and the carbon at the join was
+    drawn with five.  Perception rebuilds the bond list from the distances on
+    every redraw and knows nothing about orders; only Python can say what the
+    new ones are, so the page notices that the bonds are not the ones it was
+    told about and asks.
+
+    Once per connectivity, not once per frame: bonds appear and vanish as
+    atoms are dragged past each other, and a question a frame is a question a
+    frame.
+    """
+    import json
+    import subprocess
+
+    from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
+
+    boot = tmp_path / "manip.js"
+    boot.write_text(submit_manip_bootstrap_js(), encoding="utf-8")
+    page = tmp_path / "page.js"
+    page.write_text(_ORDERS_PAGE, encoding="utf-8")
+    done = subprocess.run(["node", str(page), str(boot)],
+                          capture_output=True, text=True, timeout=120)
+    assert not done.returncode, done.stderr
+    steps = {one["what"]: one for one in json.loads(done.stdout)}
+
+    # What Python said is what is drawn: both double bonds, both ends.
+    assert steps["told"]["orders"][0] == [2], steps["told"]["orders"]
+    assert steps["told"]["orders"][1] == [2], steps["told"]["orders"]
+    # And an answer is not itself a question.  Applying the orders goes
+    # through the same function that notices a mismatch, so stamping the
+    # bonds afterwards had every answer followed by a question about the
+    # very bonds it had just answered for.
+    assert steps["told"]["cmd"] == "", steps["told"]["cmd"]
+
+    # The ring closes, and the page says so rather than drawing a five-bonded
+    # carbon and waiting to be asked.
+    assert steps["closed"]["cmd"].startswith("orders:"), steps["closed"]["cmd"]
+
+    # And it does not go on saying it.
+    assert steps["again"]["cmd"] == "", steps["again"]["cmd"]

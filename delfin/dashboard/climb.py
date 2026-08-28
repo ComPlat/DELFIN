@@ -2179,6 +2179,7 @@ def follow_the_mode_down(xyz_text: str, method: str = 'gfn2', *,
                          timeout: Optional[float] = 120.0,
                          modes: Optional[Dict[str, Any]] = None,
                          on_stage: Optional[Callable[[str], None]] = None,
+                         should_stop: Optional[Callable[[], bool]] = None,
                          ) -> Dict[str, Any]:
     """Push the structure down one mode both ways, and say where it lands.
 
@@ -2264,18 +2265,24 @@ def follow_the_mode_down(xyz_text: str, method: str = 'gfn2', *,
         xyz_document(symbols, here, 'the structure the mode was taken at'))
     top = _gfn.optimize_with_gfn(
         xyz_document(symbols, here, 'the saddle'), method, charge=charge,
-        uhf=uhf, solvent=solvent, optimise=False, timeout=timeout)
+        uhf=uhf, solvent=solvent, optimise=False, timeout=timeout,
+        should_stop=should_stop)
     summit = top.get('energy') if top.get('ok') else None
 
     ends: List[Dict[str, Any]] = []
     for sign, which in ((1.0, 'One way'), (-1.0, 'The other way')):
+        # Between the two ways as well as inside each of them: the second is a
+        # whole relaxation, and a press asking to stop should not have to wait
+        # out a run it has already said it does not want.
+        if should_stop is not None and should_stop():
+            break
         _say(f'Pushing {which.lower()} down the mode, and relaxing...')
         pushed = xyz_document(
             symbols, displaced_along(here, way, sign * float(step)),
             'pushed down the imaginary mode')
         got = _gfn.optimize_with_gfn(
             pushed, method, charge=charge, uhf=uhf, solvent=solvent,
-            optimise=True, timeout=timeout)
+            optimise=True, timeout=timeout, should_stop=should_stop)
         end: Dict[str, Any] = {'which': which, 'ok': bool(got.get('ok')),
                                'status': got.get('status'),
                                'xyz': got.get('xyz'), 'here': here}
