@@ -2622,9 +2622,22 @@ def create_tab(ctx):
     # while the drop handler had already moved to the context on
     # another, and a merge that keeps only one of the two loses a
     # feature without any test noticing which.
+    # The prefix of the class this module actually carries, which is the
+    # editor's scope -- orca_mol_module.add_class(orca_editor_scope), and the
+    # editor names its scopes submit-scope-<id> wherever it is built.  Told
+    # 'orca-scope-', classWithPrefix walked the ancestors, found nothing, and
+    # the module had no scope at all in fullscreen: every per-scope thing the
+    # overlay does on the way in was skipped, so in the enlarged picture no
+    # atom could be picked and no band drawn.  Nothing said so, because a
+    # module without a scope is also what a tab that has no editor looks like.
+    #
+    # And the by-scope map first, for the same reason it is first everywhere
+    # else: it is what the editor registers a viewer in.  _orcaBuildViewer is
+    # this tab's own name for the same object and stays as the fallback.
     ctx.add_init_js(structure_viewer_fullscreen_bootstrap_js()
                     + '\n' + structure_viewer_fullscreen_kind_js(
-                        'orca', 'orca-scope-', ['_orcaBuildViewer'])
+                        'orca', 'submit-scope-',
+                        ['_submitMolViewerByScope', '_orcaBuildViewer'])
                     + '\n' + _orca_drop_js)
 
     return tab_widget, {
