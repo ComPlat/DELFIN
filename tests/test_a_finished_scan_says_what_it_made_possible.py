@@ -254,7 +254,7 @@ def test_the_verdict_says_what_the_toolbar_has_just_done(tab):
     said = ' '.join(refs['editor_state'].get('mol_status_lines') or ())
     assert 'The scan walked' in said, said
     assert 'It left two ends' in said, said
-    assert 'the press now starts from them' in said, said
+    assert 'saddle press now starts from them' in said, said
     assert refs['submit_saddle_from'].value == 'scan'
 
 

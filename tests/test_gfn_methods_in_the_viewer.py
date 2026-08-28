@@ -3400,7 +3400,11 @@ def test_the_lines_can_be_asked_to_follow_the_distances(editor):
         "switching it on has to show the truth at once, not at the next frame"
     )
 
-    assert editor["submit_dyn_bonds_btn"].value is False
+    # On to begin with: the lines a structure was drawn with stop being true
+    # the moment it is dragged, so following the distances is the state to
+    # start in rather than one to find.
+    assert editor["submit_dyn_bonds_btn"].value is True
+    editor["submit_dyn_bonds_btn"].value = False
     editor["submit_dyn_bonds_btn"].value = True
     assert "follow the distances" in editor["mol_status"].value
     assert "Bond and Unbond" in editor["mol_status"].value, (

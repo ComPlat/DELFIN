@@ -282,7 +282,10 @@ def test_the_press_does_not_move_the_structure_it_is_asked_about():
     assert "optimise=False" in press and "free_energy=True" in press
     assert "_write_coords" not in press, "it must not replace the structure"
     assert "_remember(" not in press, "nothing to undo, so no history entry"
-    assert "the structure is untouched" in press
+    # It still says so, in two words at the end of the answer rather than in
+    # a sentence at the top of it: what the press was for is what it found,
+    # and how long the machine took is how it was arrived at.
+    assert "structure untouched" in press
 
 
 def test_the_press_says_the_same_words_the_saddle_search_says():

@@ -364,8 +364,10 @@ def test_a_scan_that_left_nothing_to_walk_between_says_that_instead(
     assert _values(refs['submit_saddle_from']) == ['here']
     assert not _shown(refs['submit_saddle_from'])
     said = _said(refs)
-    assert 'It left no two ends to walk between' in said, said
-    assert 'what is on screen is all there is to climb' in said, said
+    assert 'It left no two ends' in said, said
+    # And what to do about it, in the same clause rather than in a
+    # paragraph of its own: the user is reading this after every scan.
+    assert 'mark two structures by hand' in said, said
 
 
 @_needs_xtb
