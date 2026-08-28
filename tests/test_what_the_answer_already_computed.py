@@ -383,8 +383,12 @@ def test_the_two_new_controls_are_on_the_row_and_start_out_of_sight():
     # nothing. Numbering is a fact about the picture and not about the
     # structure, which is why the group is there and not on the toolbar.
     assert made.submit_label_group in made.submit_view_body.children
-    assert made.submit_label_what in made.submit_label_group.children
-    assert made.submit_labels_btn in made.submit_label_group.children
+    # Two lines rather than three: the switch with the box that qualifies it,
+    # and the size slider under them with the other sliders.
+    assert made.submit_label_what in made.submit_label_row.children
+    assert made.submit_labels_btn in made.submit_label_row.children
+    assert made.submit_label_row in made.submit_label_group.children
+    assert made.submit_label_size in made.submit_label_group.children
     assert made.submit_shape_btn in made.submit_manip_toolbar.children
     assert made.submit_label_what.layout.display == "none"
     assert made.submit_shape_btn.layout.display == "none"
