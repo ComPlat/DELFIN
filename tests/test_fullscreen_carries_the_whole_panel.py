@@ -146,9 +146,22 @@ def test_the_orca_preview_is_untouched():
 # one fullscreen, and how a tab joins it
 # ---------------------------------------------------------------------------
 
+#: Each tab, and the prefix of the scope class its module actually carries.
+#:
+#: Not the kind word.  Three of these four make their own scope id and name it
+#: after themselves, which makes "the prefix is the kind" look like the rule --
+#: and it was written down here as one.  The ORCA Builder borrows the editor's
+#: scope instead (orca_mol_module.add_class(orca_editor_scope)), so its class
+#: begins with submit-scope-, and this table said orca-scope-.
+#:
+#: What that cost: classWithPrefix walked the ancestors, found nothing and
+#: returned null, so in fullscreen the module had no scope at all and every
+#: per-scope thing the overlay does on the way in was skipped -- no atom in
+#: that tab could be picked in the enlarged picture, and no band drawn.  The
+#: check agreed with the mistake, confidently, for as long as it existed.
 TABS = {
     'submit': ('tab_submit', 'submit-scope-'),
-    'orca': ('tab_orca_builder', 'orca-scope-'),
+    'orca': ('tab_orca_builder', 'submit-scope-'),
     'calc': ('tab_calculations_browser', 'calc-scope-'),
     'remote': ('tab_remote_archive', 'remote-archive-scope-'),
 }
@@ -201,15 +214,16 @@ def test_every_tab_declares_itself_and_the_script_knows_no_tab():
 
     for kind, (module, prefix) in TABS.items():
         source = _tab_source(module)
-        # The module box carries the word, and the tab declares the same word
-        # with the prefix its scope class is named from.
+        # The module box carries the word, and the tab declares that word
+        # together with the prefix of the class its module really has -- which
+        # is not always a prefix named after the word.  See TABS.
         assert f"add_class('{kind}-structure-fs-module')" in source \
             or f'add_class("{kind}-structure-fs-module")' in source, kind
         declaration = source.split('structure_viewer_fullscreen_kind_js(')[1]
         declaration = declaration.split(')')[0]
         assert f"'{kind}'" in declaration, kind
         assert f"'{prefix}" in declaration, (
-            f'{kind} declares a prefix that is not the one it is named from')
+            f'{kind} declares a prefix its module carries no class for')
 
 
 def test_the_module_a_tab_builds_carries_the_scope_it_declared(built_tabs):
