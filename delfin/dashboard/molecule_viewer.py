@@ -5686,7 +5686,6 @@ STRUCTURE_VIEWER_FULLSCREEN_CSS = r"""
     top: 8px !important;
     right: 8px !important;
     width: auto !important;
-    max-width: 46% !important;
     max-height: 82% !important;
     overflow: auto !important;
     margin: 0 !important;
@@ -5711,7 +5710,19 @@ STRUCTURE_VIEWER_FULLSCREEN_CSS = r"""
    shrink.  A flex item will not go below its content width unless it is told
    it may, and a slider track counts as content. */
 .delfin-structure-view-over {
-    overflow-x: hidden !important;
+    /* The panel is what meets the edge of the picture, and the rows inside it
+       are a share of whatever it got.  A width in pixels on the rows and a
+       cap in per cent on the box is two authorities on one number, and on a
+       narrow viewer the box wins and the rows are cut off inside it. */
+    width: -moz-max-content !important;
+    width: max-content !important;
+    max-width: calc(100% - 16px) !important;
+}
+.delfin-structure-view-over .widget-hslider,
+.delfin-structure-view-over .widget-inline-hbox,
+.delfin-structure-view-over .widget-box {
+    max-width: 100% !important;
+    min-width: 0 !important;
 }
 /* A select is as wide as its longest option unless it is told otherwise, and
    "pull with a force" is wider than this column.  The box around it was
