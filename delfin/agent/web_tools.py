@@ -36,7 +36,25 @@ from dataclasses import dataclass
 from typing import Optional
 
 
-_USER_AGENT = "Mozilla/5.0 (DELFIN-KIT-agent; +https://kit.edu)"
+# Browser-shaped, and still says who is calling. The shape is the part that
+# matters: measured 2026-08-28 against html.duckduckgo.com, same host, same
+# minute, same query --
+#
+#   Mozilla/5.0 (DELFIN-KIT-agent; +https://kit.edu)      HTTP 202,  0 results
+#   Mozilla/5.0 (X11 …) Chrome/124 … DELFIN/1.0           HTTP 200, 10 results
+#   Mozilla/5.0 (X11 …) Chrome/124 …                      HTTP 200, 10 results
+#   Mozilla/5.0 (X11 …) Firefox/127.0                     HTTP 202,  0 results
+#
+# So the 202 was never the network and never the endpoint -- it was this
+# string. The code here used to say "measured on this host, every real query
+# comes back that way", which was true and misattributed: every query WITH
+# OUR AGENT came back that way. The DELFIN token is kept because a search
+# tool that hides who it is would be the wrong trade for a fix that does not
+# need it.
+_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0 Safari/537.36 DELFIN/1.0 (+https://kit.edu)"
+)
 _MAX_BYTES = 1_000_000           # 1 MB cap
 _DEFAULT_TIMEOUT_S = 15
 _BLOCKED_HOST_PATTERNS = (
@@ -359,9 +377,11 @@ def web_search(query: str, *, max_results: int = 8,
         if reason:
             return {"error": (
                 f"{reason}. No results were retrieved and none should be "
-                "inferred. If a web search tool from another server is "
-                "available, use that; otherwise tell the user the search "
-                "could not run and ask them for a URL."),
+                "inferred. The reason does not depend on the wording, so "
+                "rephrasing this query and calling again will fail the same "
+                "way. If a web search tool from another server is available, use "
+                "that; otherwise tell the user the search could not run and "
+                "ask them for a URL."),
                 "query": query, "results": [], "result_count": 0,
                 "source": "duckduckgo-unavailable", "http_status": status}
 

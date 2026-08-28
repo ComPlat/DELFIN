@@ -500,14 +500,29 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
         description='Out tokens',
         layout=widgets.Layout(width='200px', height='28px'),
     )
-    # Per-turn tool-round budget (agent.max_tool_rounds). High default so
-    # long multi-file tasks finish in one turn; 0 → uncapped (cost cap +
-    # consecutive-fail abort remain the real stops).
+    # Per-turn tool-round budget (agent.max_tool_rounds). THREE states, and
+    # the field has to be able to say all three:
+    #   -1  unset -> the per-model profile decides (10-50 rounds by model)
+    #    0  uncapped -> cost cap and consecutive-fail abort remain the stops
+    #   >0  a fixed number, which wins over the profile
+    #
+    # -1 exists because a plain number field cannot say "unset", and the
+    # setting default is None for a documented reason: without it the
+    # profile branch of _resolve_max_tool_rounds is unreachable and every
+    # model gets the fallback, including the small ones whose profiles ask
+    # for 10 or 20 so a degenerate loop dies early. This control used to
+    # show 500 for an unset setting and write it back on save, so opening
+    # the tab for any other reason and pressing save disabled the profiles
+    # for good -- measured on two installations, neither of which had ever
+    # chosen 500.
     max_tool_rounds_input = widgets.BoundedIntText(
-        value=500, min=0, max=5000, step=50,
+        value=-1, min=-1, max=5000, step=10,
         description='Tool rounds',
         layout=widgets.Layout(width='190px', height='28px'),
     )
+    max_tool_rounds_hint = widgets.HTML(
+        value='<span style="color:#6b7280; font-size:11px;">'
+              '−1 = per-model default · 0 = uncapped</span>')
     agentopt_save_btn = widgets.Button(
         description='Save agent extras', button_style='primary',
         layout=widgets.Layout(width='160px', height='28px'),
@@ -540,8 +555,11 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                 'max_output_tokens': int(subagent_tokens_input.value or _SA_TOKENS),
             })
             payload['agent']['subagents'] = subs
-            payload['agent']['max_tool_rounds'] = int(
-                max_tool_rounds_input.value)
+            # -1 writes None, so a save made for one of the other fields on
+            # this button cannot silently pin a number the user never chose.
+            _rounds_val = int(max_tool_rounds_input.value)
+            payload['agent']['max_tool_rounds'] = (
+                None if _rounds_val < 0 else _rounds_val)
             save_settings(payload, settings_path)
             agentopt_save_status.value = (
                 '<span style="color:#2e7d32; font-size:11px;">saved ✓</span>')
@@ -1129,10 +1147,15 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             subagent_tokens_input.value = int(subagents_payload.get('max_output_tokens', 16000) or 16000)
         except Exception:
             subagent_tokens_input.value = 16000
+        # An absent key and an explicit null both mean "unset", and both
+        # have to come back as -1. Reading them as a number here is what
+        # turned "let the profile decide" into a written-out 500.
         try:
-            max_tool_rounds_input.value = int(agent_payload.get('max_tool_rounds', 500))
+            _rounds = agent_payload.get('max_tool_rounds', None)
+            max_tool_rounds_input.value = (
+                -1 if _rounds is None else int(_rounds))
         except Exception:
-            max_tool_rounds_input.value = 500
+            max_tool_rounds_input.value = -1
 
     def _set_runtime_widgets(settings_payload):
         detected_local_cores, detected_local_ram_mb = detect_local_runtime_limits()
@@ -3615,7 +3638,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             ),
             widgets.HTML('<b style="margin-top:6px; display:block;">'
                          '🔁 Agent run limit (per turn)</b>'),
-            widgets.HBox([max_tool_rounds_input], layout=_row_layout),
+            widgets.HBox([max_tool_rounds_input, max_tool_rounds_hint],
+                         layout=_row_layout),
             widgets.HTML(
                 '<div style="color:#78909c; font-size:11px; margin:2px 0 0 0;">'
                 'How many tool-call rounds the agent runs in a single turn '
