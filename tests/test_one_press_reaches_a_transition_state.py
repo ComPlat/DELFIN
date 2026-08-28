@@ -447,3 +447,40 @@ def test_a_walk_to_where_the_coordinate_already_is_is_refused_rather_than_guesse
     part.on_submit_scan()
     assert not state.get('scan_legs')
     assert 'already is' in ' '.join(state.get('mol_status_lines') or ())
+
+
+def test_no_press_in_the_editor_runs_against_a_clock():
+    """A saddle search is not a thing to cut off at three minutes.
+
+    The measurement that set the old allowance is the argument against it:
+    ORCA's OptTS converged in 268 s on the sixteen-atom Diels-Alder from the
+    path finder's estimate, and three minutes stopped it a cycle or two short
+    -- the whole cost and none of the result.  The band is worse: it exists to
+    be the slow second opinion, and an opinion that was cut off settles
+    nothing.
+
+    Every one of them is stoppable, which is what the clock was standing in
+    for.  The mode-follow had no stop at all and was the one press the clock
+    was really holding, so it was given one.
+    """
+    import inspect
+
+    from delfin.dashboard import climb, structure_editor
+
+    source = inspect.getsource(structure_editor)
+    assert 'seconds_for(method)' not in source, (
+        'a press in the editor is running against a clock again')
+    assert 'neb_seconds_for(method)' not in source
+    assert 'fallback_timeout=None' in source
+
+    # And each of them can still be ended by hand.
+    for press in ('saddle_stop', 'chain_stop', 'band_stop'):
+        assert f"state.get('{press}')" in source, press
+
+    follow = inspect.signature(climb.follow_the_mode_down).parameters
+    assert 'should_stop' in follow, (
+        'the mode-follow lost its clock, so it needs a way to be stopped')
+    body = inspect.getsource(climb.follow_the_mode_down)
+    # Between the two ways as well as inside each of them.
+    assert body.count('should_stop=should_stop') == 2, body[-2000:]
+    assert 'if should_stop is not None and should_stop():' in body

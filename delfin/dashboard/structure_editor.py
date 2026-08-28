@@ -9797,6 +9797,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     state['ff_reassigning'] = False
             return
 
+        if verb == 'orders':
+            # The page saying the bonds are not the ones these orders were
+            # worked out for.  A bond made or broken by hand needs no render,
+            # so nothing else would have asked: a Diels-Alder closed with the
+            # mouse kept the diene's double bonds beside the new sigma one and
+            # drew a five-bonded carbon.
+            _push_bond_orders()
+            return
+
         if verb == 'gfnplay':
             # What the playback is doing, said by the page.  Without this the
             # only way to tell an invisible trajectory from a missing one was
@@ -12353,11 +12362,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
             found = _saddle.optimise_to_saddle(
                 xyz, method, charge=charge, uhf=uhf, solvent=wet,
-                # What this method is allowed before it is a job instead.
-                # Three minutes for the ones ORCA drives itself; longer for
-                # g-xTB, where every gradient is a separate process -- see
-                # saddle.SECONDS_ALLOWED for the measurement.
-                timeout=_saddle.seconds_for(method),
+                # No clock.  The measurement that set the old one is the
+                # argument against it: ORCA's OptTS converged in 268 s on a
+                # sixteen-atom Diels-Alder from the path finder's estimate,
+                # and three minutes stopped it a cycle or two short -- the
+                # whole cost and none of the result.  A press that is running
+                # too long is the user's to end, and Stop is beside it.
+                timeout=None,
                 on_frame=_watch,
                 should_stop=lambda: bool(state.get('saddle_stop')))
 
@@ -12851,10 +12862,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             got = _climb.follow_the_mode_down(
                 xyz, method, mode=chosen, charge=charge, uhf=uhf,
                 solvent=wet, modes=modes,
-                # The same allowance the saddle search itself has: this is two
-                # relaxations of a structure that search has already converged
-                # on, so anything it cannot do inside that is a job.
-                timeout=_saddle.seconds_for(method),
+                # No clock here either.  Two relaxations of a structure the
+                # search has already converged on -- usually seconds, and when
+                # it is not, the answer is worth waiting for rather than
+                # throwing away.  It is asked to stop between the two ways and
+                # inside each of them, which is what the clock was standing in
+                # for.
+                timeout=None,
+                should_stop=lambda: bool(state.get('saddle_stop')),
                 on_stage=lambda said: schedule_ui_update(
                     _set_mol_status, said, spinner=True))
 
@@ -14139,10 +14154,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     max_steps=_climb.CLIMB_CEILING,
                     on_frame=_drew, on_path=_walked, on_route=_route,
                     should_stop=_stopped,
-                    # What the last rung is allowed before it is a job
-                    # instead, taken from the same place the press next door
-                    # takes it.
-                    fallback_timeout=_saddle.seconds_for(method))
+                    # No clock on the last rung, for the reason the press
+                    # next door has none: it is stoppable, and a run cut off
+                    # a cycle from the answer costs the whole run and returns
+                    # nothing.
+                    fallback_timeout=None)
                 cut_by_a_hand = state.get('climb_cut') is token
                 if cut_by_a_hand or _stopped():
                     # Nothing to name.  A climb a hand cut off is about a
@@ -14440,12 +14456,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             found = _saddle.path_to_saddle(
                 ends[0], ends[1], method, charge=charge, uhf=uhf,
                 solvent=wet, solvation_model=model, on_frame=_watch,
-                # The climbing half's allowance, which is the method's --
-                # g-xTB takes a good deal longer than the xtb methods for the
-                # reason saddle.SECONDS_ALLOWED gives.  The walking half's is
-                # already generous enough for either: measured on sixteen
-                # atoms, 13 s under GFN2 and 105 under g-xTB against 600.
-                timeout=_saddle.seconds_for(method),
+                # No clock on the climbing half.  The walk that feeds it is
+                # measured at 13 s under GFN2 and 105 under g-xTB on sixteen
+                # atoms, and the climb from its estimate at 268 -- which is
+                # what the three-minute allowance used to cut in half.  Stop
+                # ends it; nothing else needs to.
+                timeout=None,
                 should_stop=lambda: bool(state.get('chain_stop')),
                 on_stage=lambda said: schedule_ui_update(
                     _set_mol_status, said, spinner=True))
@@ -14600,11 +14616,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             found = _saddle.neb_to_saddle(
                 ends[0], ends[1], method, charge=charge, uhf=uhf,
                 solvent=wet, on_frame=_watch,
-                # The method's own allowance.  g-xTB is measured at 716 s on
-                # the sixteen-atom Diels-Alder, where the methods ORCA drives
-                # itself are 39 -- every gradient is a separate process --
-                # so one number for both would stop one of them short.
-                timeout=_saddle.neb_seconds_for(method),
+                # No clock.  This is the press that is meant to run for
+                # minutes -- eight images relaxed onto the way at once, 716 s
+                # under g-xTB on the sixteen-atom Diels-Alder against 39 for
+                # the methods ORCA drives itself -- and it is the one whose
+                # answer is being checked against a faster one.  Stopping it
+                # early would leave exactly the doubt it exists to settle.
+                timeout=None,
                 should_stop=lambda: bool(state.get('band_stop')),
                 on_stage=lambda said: schedule_ui_update(
                     _set_mol_status, said, spinner=True))

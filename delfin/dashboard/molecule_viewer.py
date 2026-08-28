@@ -1766,6 +1766,24 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         }
     }
 
+    function bondMark(atoms) {
+        // Which bonds there are, as one number.  Order-independent on purpose:
+        // perception rebuilds the lists from scratch and is under no
+        // obligation to put them back in the order they were in.
+        var mark = 0;
+        for (var i = 0; i < (atoms || []).length; i++) {
+            var bonds = atoms[i].bonds || [];
+            for (var k = 0; k < bonds.length; k++) {
+                var j = bonds[k] | 0;
+                if (j > i) {
+                    mark = (mark + (((i + 1) * 92821) ^ ((j + 1) * 6151)))
+                           % 2147483647;
+                }
+            }
+        }
+        return mark;
+    }
+
     function keepTheBondKinds(scopeKey, viewer) {
         // What kind of bond each line is.  An XYZ block carries none: it is
         // element and three numbers, so 3Dmol builds every bond as a single
@@ -1778,6 +1796,24 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         var atoms = getAtoms(viewer);
         if (!atoms || !atoms.length) return false;
         var changed = false;
+        // A bond made or broken makes the orders stale, and no render has to
+        // happen for that: a Diels-Alder closed with the hand is a new sigma
+        // bond in the browser's own model, and the double bond that was there
+        // before goes on being drawn beside it -- a five-bonded carbon.  Only
+        // Python can say what the new orders are, so the page asks.
+        //
+        // Not while the hand is down.  Bonds appear and vanish frame by frame
+        // as atoms are dragged past each other, and a question per frame is a
+        // question per frame.  Asked once for each connectivity, so an answer
+        // that never comes does not turn into a loop.
+        if (state.bondKinds) {
+            var mark = bondMark(atoms);
+            if (mark !== state.bondsToldFor && mark !== state.bondsAskedFor
+                    && !state.drag) {
+                state.bondsAskedFor = mark;
+                pushCommandToPython(scopeKey, 'orders', String(mark));
+            }
+        }
         var want = state.bondKinds ? (state.bondOrders || null) : null;
         var by = null;
         if (want && want.length) {
@@ -3231,6 +3267,18 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         state.bondOrders = (triples || []).slice();
         var viewer = getViewer(scopeKey);
         if (!viewer) return 0;
+        // Stamped before they are applied, not after.  These orders belong to
+        // the bonds that are there now, and applying them goes through the
+        // same function that notices a mismatch and asks -- so stamping
+        // afterwards meant every answer was followed by a question about the
+        // very bonds it had just answered for.
+        //
+        // Only what has been told, never what has been asked.  The structure
+        // can move again between question and answer, and the redraw that
+        // saw it will have asked about the newer bonds already; clearing that
+        // here would drop the question and leave these orders standing as
+        // though they described the newer bonds.
+        state.bondsToldFor = bondMark(getAtoms(viewer));
         var changed = keepTheBondKinds(scopeKey, viewer);
         if (changed) {
             invalidateGeometry(viewer);
