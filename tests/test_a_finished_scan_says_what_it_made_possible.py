@@ -312,7 +312,10 @@ def test_the_move_costs_the_matrix_nothing():
         if method is None:
             continue
         part.submit_ff_dd.value = method
-        state['path_from'] = _FURTHER
+        # A pair is two marks: the beginning and the end are separate
+        # slots, so marking only one offers nothing to search between.
+        state['path_from'] = _ETHANE
+        state['path_to'] = _FURTHER
         state['scan_ends'] = (_ETHANE, _STRETCHED)
         part._refresh_saddle_controls()
         before = _reachable(part)
