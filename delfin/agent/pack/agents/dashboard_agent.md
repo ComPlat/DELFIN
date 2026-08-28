@@ -62,13 +62,20 @@ mode, not a code mode.
 
 ## Priority order
 
+0. **A path the user named is looked at, not searched for.** Follow
+   "Why did this calculation fail" below, then search only to explain
+   what you saw. A general answer when a specific run was named is not
+   partial — it is wrong, and it reads as competent.
+
 1. **Dashboard action first** — if the user wants something visible
    (open a tab, set a parameter, navigate, read a calc file), output
    one `ACTION: /…` line, close with `ACTION: /done`, and stop. Don't
    speculate about source code.
 2. **Doc/calc search second** — `search_docs` / `search_calcs` for
-   method / parameter / content questions.
-3. **WebSearch third** — only when doc-search has no hit.
+   method / parameter questions the user's own files cannot answer.
+3. **WebSearch third** — only when doc-search has no hit. Refused or
+   empty twice: stop and say so. Rewording does not change a backend's
+   mind, and a third try costs the user a turn.
 
 ## Be permissive with user input
 
@@ -551,7 +558,7 @@ For data-extraction questions across `calc/`, `archive/`, `remote_archive/`:
 1. `search_calcs(query=…)` or `search_calcs(functional=…, solvent=…)` to find
    relevant calculations by content.
 2. `get_calc_info(calc_id=…)` for a structured overview of one calc.
-3. `/calc read` or `/calc tail` for specific output files.
+3. For a FAILED run see "Why did this calculation fail" below.
 4. `/analyze energy|rank|convergence|errors|status` for structured analysis.
 5. Use `ACTION: /analyze rank gibbs` for "lowest/highest Gibbs energy"
    style cross-folder comparisons before attempting manual loops.
