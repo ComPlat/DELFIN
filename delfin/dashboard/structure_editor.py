@@ -2018,12 +2018,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: cis.  Given the two structures instead, the path finder answers in four
     #: seconds: 51.4 kcal/mol forward, trans 1.53 below cis, and its estimated
     #: transition state at 87.5 degrees, which is where a twisted alkene is.
+    #: The two ends of a path, marked one at a time.
+    #:
+    #: It is half a gesture, and it used to read as a whole one: "Mark this
+    #: end", pressed, and nothing visible happened -- because nothing can
+    #: until the second structure is on screen.  So it says which half it is
+    #: and changes when the half is done.  Beginning, then end, then the
+    #: saddle press can start from the pair.
     submit_path_from_btn = widgets.Button(
-        description='Mark this end', icon='map-pin',
-        tooltip=('Mark the structure on screen as one end of a path. Then '
-                 'load or build the other one, and the press beside this can '
-                 'start from the pair.'),
-        layout=widgets.Layout(width='128px', height='30px'),
+        description='Mark the beginning', icon='map-pin',
+        tooltip=('Mark the structure on screen as where a path starts. Then '
+                 'build or load the other structure and mark that as the end '
+                 '-- the saddle press can then search between the two.'),
+        layout=widgets.Layout(width='170px', height='30px'),
         disabled=True,
     )
     #: Where the search starts from.
@@ -12319,13 +12326,33 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         A button that walks between two ends and stops at the estimate is not
         going to the saddle, and a name that says it is would be a promise the
         press does not keep.  Two names, and the box beside it decides which.
+
+        And where there is nothing to decide, the press carries the answer
+        instead of the box.  A list of one is not a choice and is not shown --
+        which is right, and which left this press standing alone saying
+        neither where it starts nor how it gets there.  The rule is about
+        *choices*; the entry was also the explanation, and taking the box away
+        took that with it.  So with one start and one way the name says the
+        way and the tooltip says the start, and the boxes come back the moment
+        there is something to choose between.
         """
-        if str(submit_saddle_how.value) == 'walk':
-            submit_saddle_btn.description = 'Find the path'
-            submit_saddle_btn.icon = 'route'
+        walking = str(submit_saddle_how.value) == 'walk'
+        submit_saddle_btn.description = ('Find the path' if walking
+                                         else 'To the saddle')
+        submit_saddle_btn.icon = 'route' if walking else 'mountain'
+        ways = list(submit_saddle_how.options)
+        starts = list(submit_saddle_from.options)
+        if len(ways) == 1 and not walking:
+            submit_saddle_btn.description = (
+                f'To the saddle ({ways[0][0].replace("through ", "")})')
+        if len(starts) == 1:
+            submit_saddle_btn.tooltip = (
+                f'Optimise to the nearest transition state, from '
+                f'{starts[0][0]}. Says whether what it reached is one.')
         else:
-            submit_saddle_btn.description = 'To the saddle'
-            submit_saddle_btn.icon = 'mountain'
+            submit_saddle_btn.tooltip = (
+                'Optimise to the nearest transition state, from wherever the '
+                'box beside this says. Says whether what it reached is one.')
 
     def _note_the_saddle(xyz, shape):
         """Write down that this structure has modes going the wrong way.
@@ -12845,6 +12872,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 '' if can_run and len(ways) > 1 else 'none')
             submit_path_from_btn.layout.display = (
                 '' if _gfn.is_gfn_method(chosen) else 'none')
+            # Which half of the gesture is next.  A mark that is waiting for
+            # its partner is a different press from one that has none, and a
+            # button reading the same in both states is what made this look
+            # like a press that does nothing.
+            submit_path_from_btn.description = (
+                'Mark the end' if state.get('path_from')
+                else 'Mark the beginning')
             # And what there is to do with a saddle, which exists exactly when
             # a search has found one and the box still holds it.  Not "when a
             # transition state was found": a structure with two modes going
@@ -14063,9 +14097,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['path_from'] = xyz
         _refresh_saddle_controls()
         _set_mol_status(
-            f'Marked as one end of a path ({len(_gfn.atom_lines(xyz))} '
-            'atoms). Load or build the other structure, and the box beside '
-            'the press will offer to start from the pair.')
+            f'Beginning marked ({len(_gfn.atom_lines(xyz))} atoms). Build or '
+            'load the other structure and mark it as the end.')
 
     def _path_then_orca(ends):
         """Two structures in, a converged saddle out, at one press.
