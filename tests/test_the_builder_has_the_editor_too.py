@@ -67,6 +67,12 @@ def builder():
     ctx.run_js = sent.append
     _tab, refs = tab_orca_builder.create_tab(ctx)
     refs['orca_coords'].value = TWO_BLOCKS
+    # What a real page says a moment after the first picture: which editor it
+    # is running.  Until it has, the kernel hands it whole viewers -- the swap
+    # carries no copy of the editor and must not be sent to a page that may
+    # not have one.  A fixture that never speaks is a page that never loaded.
+    from delfin.dashboard.molecule_viewer import submit_manip_version
+    refs['submit_cmd_sync'].value = f'editor:1:{submit_manip_version()}'
     sent.clear()
     return refs, sent
 

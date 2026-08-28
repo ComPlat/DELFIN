@@ -17534,8 +17534,101 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             'metadata': {},
         },)
 
+    def _swap_the_model_js(xyz_data):
+        """Show another structure in the viewer that is already there.
+
+        Building a viewer means disposing a WebGL context and making a new
+        one, and a browser grants a handful of them: doing that on every step
+        between two isomers or two named blocks is both the slow path and the
+        reason a viewer goes black until the tab is switched.  Swapping the
+        model inside the living one costs a render, keeps the camera exactly
+        where the user left it, and consumes no context at all.
+
+        The ORCA Builder had this and the Submit tab did not, which is the
+        wrong way round for a thing that is about the browser rather than
+        about either tab.  It lives here now, so both have it.
+
+        Returns '' when there is nothing live to swap, and the caller places a
+        whole viewer instead.
+        """
+        if not state.get('viewer_on_screen'):
+            return ''
+        # And only to a page that has said it is running this editor.  The
+        # swap needs __delfinSubmitManip to introduce the new atoms, and it
+        # carries no copy of it -- that is the whole saving.  The bootstrap is
+        # sent once per session and the flag for it is the kernel's, so after
+        # the page has been reloaded the kernel believes a page that is now
+        # empty has the editor: the swap would then be retried into a viewer
+        # that no longer exists and nothing at all would be drawn.  A whole
+        # picture carries the editor with it and heals that by itself, which
+        # is what a page that has not confirmed gets.
+        if state.get('manip_seen_version') != submit_manip_version():
+            return ''
+        labels = ''
+        if submit_labels_btn.value:
+            labels = show_atom_numbers_js(
+                var='viewer',
+                scale=scale_for_px(submit_label_size.value),
+                texts=_label_texts_now())
+        try:
+            style_js = json.dumps(build_molecule_view_style(
+                *(lambda seen: (seen['representation'], seen['atom_scale'],
+                                seen['bond_radius'], True))(get_viewer_profile()),
+            ))
+        except Exception:
+            return ''
+        scope = json.dumps(submit_scope_id)
+        return (
+            '(function(){\n'
+            '  var tries=0;\n'
+            '  function go(){\n'
+            '    var map=window._submitMolViewerByScope||{};\n'
+            f'    var viewer=map[{scope}];\n'
+            '    if(!viewer||typeof viewer.addModel!=="function"){\n'
+            # a viewer placed moments ago may still be starting up
+            '      if(++tries<40){setTimeout(go,50);}\n'
+            '      return;\n'
+            '    }\n'
+            '    try{\n'
+            '      if(window.__delfinAtomNumbers)window.__delfinAtomNumbers.clear(viewer);\n'
+            '      viewer.removeAllModels();\n'
+            f'      viewer.addModel({json.dumps(xyz_data)},"xyz");\n'
+            f'      viewer.setStyle({{}},{style_js});\n'
+            f'      {labels}\n'
+            '      viewer.render();\n'
+            # The atoms are different ones, so everything the editor knows
+            # about the last set -- picks, undo, the held internals -- is about
+            # a structure that is gone.  onViewerReady is what says so, and it
+            # keeps the element it already has when given none.
+            '      if(window.__delfinSubmitManip){\n'
+            f'        window.__delfinSubmitManip.onViewerReady({scope},null);\n'
+            '      }\n'
+            '      var hs=viewer.__delfinInteractionEndHandlers||[];\n'
+            '      for(var i=0;i<hs.length;i++){try{hs[i]();}catch(_e){}}\n'
+            '    }catch(_err){}\n'
+            '  }\n'
+            '  go();\n'
+            '})();'
+        )
+
     def _clear_mol_output():
         show_output(())
+        state['viewer_on_screen'] = False
+
+    def note_the_picture_was_replaced():
+        """The host saying it has put something else where the viewer was.
+
+        A tab that places the viewer itself also places its own messages there
+        -- "paste coordinates", "SMILES detected", the numbering check's
+        comparison pictures -- and the editor cannot see it happen.  Believing
+        a viewer was still live, it swapped a model into one that had gone and
+        the message stayed on screen: a conversion answered, the coordinates
+        arrived, and the preview went on saying "SMILES detected".
+
+        So the one who replaces it says so.  One line in the host, against a
+        flag the editor cannot keep honestly on its own.
+        """
+        state['viewer_on_screen'] = False
 
     def _replace_mol_output_text(*lines):
         _set_mol_status(*lines)
@@ -17557,7 +17650,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # to build a second one, and a second viewer is a second set of
         # behaviours: the ORCA Builder's could not be selected in at all in
         # fullscreen, and nobody could have found that by reading the editor.
-        show_output(_build_mol_output_bundle(xyz_data))
+        swap = _swap_the_model_js(xyz_data)
+        if swap:
+            _run_manip_js(swap)
+        else:
+            show_output(_build_mol_output_bundle(xyz_data))
+            state['viewer_on_screen'] = True
         _set_manip_toolbar_enabled(True)
         # What kind each bond is, for the structure that is now on screen.
         # The orders were handed over only when the live force field was

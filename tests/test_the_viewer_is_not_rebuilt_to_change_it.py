@@ -33,6 +33,12 @@ def tab(tmp_path):
     )
     _widget, widgets_map = tab_orca_builder.create_tab(ctx)
     widgets_map["orca_coords"].value = TWO_MOLECULES
+    # A real page says which editor it is running a moment after the first
+    # picture, and the model swap is only sent to one that has: it carries no
+    # copy of the editor itself.  A fixture that never says so is a page that
+    # never finished loading, and would be handed whole viewers for ever.
+    from delfin.dashboard.molecule_viewer import submit_manip_version
+    widgets_map["submit_cmd_sync"].value = f"editor:1:{submit_manip_version()}"
     scripts.clear()
     return widgets_map, scripts
 
@@ -42,10 +48,14 @@ def test_browsing_to_the_next_molecule_keeps_the_viewer(tab):
 
     widgets_map["orca_mol_next_btn"].click()
 
-    assert len(scripts) == 1, "browsing should be one message to the page"
-    script = scripts[0]
-    assert "removeAllModels" in script, "the model was not swapped"
-    assert "__delfinCreateViewer" not in script, "a new WebGL context was created"
+    # No viewer HTML: this is the whole point, and counting the messages was
+    # only ever a way of saying so.  A second structure is also a second set of
+    # bond orders, and telling the page about those is a message that belongs
+    # to browsing rather than a sign that the viewer was rebuilt.
+    said = "".join(scripts)
+    assert "removeAllModels" in said, "the model was not swapped"
+    assert "__delfinCreateViewer" not in said, "a new WebGL context was created"
+    assert "3dmolviewer" not in said, "a whole viewer was placed again"
 
 
 def test_browsing_does_not_move_the_camera(tab):
@@ -53,7 +63,7 @@ def test_browsing_does_not_move_the_camera(tab):
 
     widgets_map["orca_mol_next_btn"].click()
 
-    script = scripts[0]
+    script = next(one for one in scripts if "removeAllModels" in one)
     for camera in ("zoomTo", "setView", "center("):
         assert camera not in script, (
             f"{camera} would throw away the orientation the user set"

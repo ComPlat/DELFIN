@@ -1435,6 +1435,11 @@ def create_tab(ctx):
         call comes from, which is how the Submit tab has always done it.
         """
         orca_mol_output.outputs = tuple(items)
+        # Whatever went in, the viewer that was there is gone -- and the editor
+        # has no way to see that happen.  Said here so it does not swap a model
+        # into a picture that has been replaced by a line of text.  The one
+        # place that puts a viewer back raises it again straight afterwards.
+        orca_editor.note_the_picture_was_replaced()
 
     def _as_html(markup):
         return {'output_type': 'display_data',
