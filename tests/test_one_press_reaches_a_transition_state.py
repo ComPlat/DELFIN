@@ -114,7 +114,11 @@ def test_the_two_questions_are_asked_once_each_and_reach_every_combination():
     assert _values(part.submit_saddle_from) == ['here']
     assert not _shown(part.submit_saddle_from)
     assert not _shown(part.submit_saddle_how)
-    assert part.submit_saddle_btn.description == 'To the saddle'
+    # And with neither box on screen the press carries what they would have
+    # said: a list of one is not a choice, but the entry was also the
+    # explanation, and taking the box away took that with it.
+    assert part.submit_saddle_btn.description == 'To the saddle (ORCA)'
+    assert 'what is on screen' in part.submit_saddle_btn.tooltip
 
     # A scan leaves two ends, and the second start appears with them.
     state['scan_ends'] = (_ETHANE, _STRETCHED)

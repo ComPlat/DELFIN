@@ -312,7 +312,9 @@ def test_the_button_shows_the_climb_and_the_same_press_stops_it():
     assert "if state.get('gfn_run') != state.get('saddle_frame_run'):" in source
     # The same button, because there is only one thing to want while it runs.
     assert "submit_saddle_btn.description = 'Stop'" in source
-    assert "submit_saddle_btn.description = 'To the saddle'" in source
+    # Named where the press is named rather than in the run that stops:
+    # what it goes back to is whatever the two boxes say at the time.
+    assert "_name_the_saddle_press()" in source
     # Not disabled while it runs -- a button nobody can press cannot stop it.
     assert 'submit_saddle_btn.disabled = True' not in source
 
