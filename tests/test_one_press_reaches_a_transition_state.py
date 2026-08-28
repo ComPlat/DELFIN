@@ -109,36 +109,34 @@ def test_the_two_questions_are_asked_once_each_and_reach_every_combination():
     part, state = _an_editor()
     part.submit_ff_dd.value = _method(part, 'gfn2')
 
-    # Nothing marked and no scan walked: one start, so no box, and the press
-    # means the only thing it can mean.
-    assert _values(part.submit_saddle_from) == ['here']
-    assert not _shown(part.submit_saddle_from)
-    assert not _shown(part.submit_saddle_how)
-    # And with neither box on screen the press carries what they would have
-    # said: a list of one is not a choice, but the entry was also the
-    # explanation, and taking the box away took that with it.
-    assert part.submit_saddle_btn.description == 'To the saddle (ORCA)'
-    assert 'what is on screen' in part.submit_saddle_btn.tooltip
+    # Nothing marked and no scan walked: no pair, so no press. Searching
+    # between two ends needs two ends, and what is on screen is the other
+    # press's business -- offered where the structure is on its way up rather
+    # than from any minimum at all.
+    assert not _shown(part.submit_saddle_btn)
+    assert not _shown(part.submit_optts_btn)
+    part.submit_climb_btn.value = True
+    part._refresh_saddle_controls()
+    assert _shown(part.submit_optts_btn)
+    assert not _shown(part.submit_saddle_btn), 'there is still no pair'
+    part.submit_climb_btn.value = False
+    part._refresh_saddle_controls()
 
     # A scan leaves two ends, and the second start appears with them.
     state['scan_ends'] = (_ETHANE, _STRETCHED)
     part._refresh_saddle_controls()
-    assert _values(part.submit_saddle_from) == ['here', 'scan']
-    assert _shown(part.submit_saddle_from)
+    assert _values(part.submit_saddle_from) == ['scan']
+    assert _shown(part.submit_saddle_btn), (
+        'one start is not a choice, so what appears is the press')
 
     # And a marked end is the third, named apart from the scan's -- which is
     # the combination no button reached.
     state['path_from'] = _FURTHER
     part._refresh_saddle_controls()
-    assert _values(part.submit_saddle_from) == ['here', 'marked', 'scan']
+    assert _values(part.submit_saddle_from) == ['marked', 'scan']
 
-    # From the structure on screen: ORCA, and nothing else on the list.
-    # Climbing what is on screen by hand is Climb to TS -- one press either
-    # way, and a second control for it under another name is the complaint
-    # this is answering.
-    part.submit_saddle_from.value = 'here'
-    assert _values(part.submit_saddle_how) == ['orca']
-    assert not _shown(part.submit_saddle_how)
+    # What is on screen is not on this list at all: it is the other press,
+    # which has one way and needs no box to say so.
 
     # From two ends there are four, and the walk alone is one of them.  The
     # order of the list is the recommendation: the interpolated search first,
@@ -175,7 +173,7 @@ def test_the_marked_pair_appears_when_the_second_structure_is_drawn():
     assert _values(part.submit_saddle_from) == ['here']
     state['current_xyz_for_copy'] = {'content': _STRETCHED}
     part._refresh_saddle_controls()
-    assert _values(part.submit_saddle_from) == ['here', 'marked']
+    assert _values(part.submit_saddle_from) == ['marked']
 
 
 def test_the_press_says_which_of_the_two_things_it_is_about_to_do():
@@ -231,7 +229,6 @@ def test_the_press_runs_what_the_two_boxes_say(monkeypatch):
     part._refresh_saddle_controls()
 
     wanted = [
-        ('here', 'orca', ('orca-here', _ETHANE)),
         ('marked', 'orca', ('orca-chain', _FURTHER, _ETHANE)),
         ('scan', 'orca', ('orca-chain', _ETHANE, _STRETCHED)),
         ('marked', 'walk', ('walk', _FURTHER, _ETHANE)),
@@ -251,6 +248,13 @@ def test_the_press_runs_what_the_two_boxes_say(monkeypatch):
         # for a run that is still going.
         for key in ('saddle_run', 'chain_run', 'path_run'):
             state.pop(key, None)
+
+    # And the press that takes no pair, which runs what start-from-here ran:
+    # one press per operation, and the machinery underneath unchanged.
+    called.clear()
+    part.on_submit_optts()
+    _wait_for(called)
+    assert called and called[0] == ('orca-here', _ETHANE), called
 
 
 def _wait_for(called, seconds=10.0):
@@ -288,7 +292,7 @@ def test_a_method_reached_through_another_program_offers_both_starts():
     from delfin.dashboard import saddle as _saddle
     assert 'gxtb' in _saddle.SADDLE_METHODS      # through ExtOpt
     assert 'gxtb' not in _climb.CLIMB_METHODS    # a process per gradient
-    assert _values(part.submit_saddle_from) == ['here', 'scan']
+    assert _values(part.submit_saddle_from) == ['scan']
     assert _shown(part.submit_saddle_btn)
     # By hand is the one way that is still missing, and it is missing for a
     # measured reason rather than an oversight: a g-xTB gradient is a whole

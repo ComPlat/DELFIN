@@ -201,9 +201,13 @@ def _run_a_scan(refs, method='gfnff', how='hold', whole=True, way='to',
 
 def _the_path_work_is_on_screen(refs):
     """Both boxes, the start on the pair, and the three ways from it."""
-    return (_values(refs['submit_saddle_from']) == ['here', 'scan']
+    # The pair is the only start there is now -- what is on screen belongs to
+    # the press beside this one -- so the box holds one entry and follows the
+    # rule every box here follows: a list of one is not a choice and is not
+    # shown. What is on screen is the press, and the four ways from a pair.
+    return (_values(refs['submit_saddle_from']) == ['scan']
             and refs['submit_saddle_from'].value == 'scan'
-            and _shown(refs['submit_saddle_from'])
+            and _shown(refs['submit_saddle_btn'])
             and _values(refs['submit_saddle_how']) == ['orca', 'neb',
                                                             'hand', 'walk']
             and _shown(refs['submit_saddle_how']))
@@ -361,8 +365,7 @@ def test_a_scan_that_left_nothing_to_walk_between_says_that_instead(
     _run_a_scan(refs, method='gfn2', steps=8)
 
     assert not refs['editor_state'].get('scan_ends')
-    assert _values(refs['submit_saddle_from']) == ['here']
-    assert not _shown(refs['submit_saddle_from'])
+    assert not _shown(refs['submit_saddle_btn'])
     said = _said(refs)
     assert 'It left no two ends' in said, said
     # And what to do about it, in the same clause rather than in a
@@ -393,8 +396,8 @@ def test_undo_back_past_a_scan_takes_the_path_work_with_it(tab):
                      _values(refs['submit_saddle_from']),
                      str(refs['submit_saddle_from'].value)))
     # Two stations inside the scan, then out the far side of it.
-    assert seen[0] == (True, ['here', 'scan'], 'scan'), seen
-    assert seen[1] == (True, ['here', 'scan'], 'scan'), seen
+    assert seen[0] == (True, ['scan'], 'scan'), seen
+    assert seen[1] == (True, ['scan'], 'scan'), seen
     assert seen[2] == (False, ['here'], 'here'), seen
     assert seen[3] == (False, ['here'], 'here'), seen
     assert not _shown(refs['submit_saddle_from'])
@@ -427,8 +430,8 @@ def test_a_mark_from_another_molecule_is_not_offered():
     # user takes when he has not run a scan.
     part.coords_widget.value = _STRETCHED
     part._refresh_saddle_controls()
-    assert _values(part.submit_saddle_from) == ['here', 'marked']
-    assert _shown(part.submit_saddle_from)
+    assert _values(part.submit_saddle_from) == ['marked']
+    assert _shown(part.submit_saddle_btn)
     part.submit_saddle_from.value = 'marked'
     assert _values(part.submit_saddle_how) == ['orca', 'neb', 'hand',
                                                'walk']
@@ -460,7 +463,7 @@ def test_a_mark_is_not_an_undo_step_and_is_not_taken_back_by_one():
     part.on_submit_path_from()
     part.coords_widget.value = _STRETCHED
     part._refresh_saddle_controls()
-    assert _values(part.submit_saddle_from) == ['here', 'marked']
+    assert _values(part.submit_saddle_from) == ['marked']
 
     part._remember('something else')
     part._undo_structure()

@@ -757,7 +757,9 @@ def test_one_press_of_the_real_button_walks_climbs_and_draws_it_once():
     # The pair is now a start the press can be given, and every way of
     # walking between the two ends is on the list beside it.
     part._refresh_saddle_controls()
-    assert part.submit_saddle_from.layout.display == ''
+    # One start is not a choice, so the box stays away and the press is what
+    # appears -- which is the whole of what the user needs to see.
+    assert part.submit_saddle_btn.layout.display == ''
     assert 'marked' in [value for _label, value
                         in part.submit_saddle_from.options]
     part.submit_saddle_from.value = 'marked'

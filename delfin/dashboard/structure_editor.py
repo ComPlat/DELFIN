@@ -2301,6 +2301,37 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='106px', height='30px', display='none'),
         disabled=True,
     )
+    #: Sharpen a structure that is already at or near a transition state.
+    #:
+    #: Two operations were one press with a box that silently decided which of
+    #: them it was.  Searching *between two ends* and converging *a guess* are
+    #: not the same thing: one needs a beginning and an end and has four ways
+    #: of getting between them, the other needs no pair at all and one way.
+    #: Said by the user, who had to ask what the difference was: "To the
+    #: saddle geht nur mit anfang ende ... und es gibt optts dann muss die
+    #: struktur im viewer schon bei einem TS liegen oder naehe".
+    #:
+    #: So they are two presses with two conditions, and each condition is
+    #: visible.  This one wants a structure on its way up -- a mode going the
+    #: wrong way, or the relaxation set to climb -- because from an ordinary
+    #: minimum ORCA's OptTS takes the geometry and wanders, and a press that
+    #: is a coin flip is worse than one that is absent.
+    #:
+    #: It runs exactly what the start-from-here combination ran.  Nothing
+    #: about the machinery changes here; what changes is that the editor says
+    #: which of the two questions is being asked.
+    submit_optts_btn = widgets.Button(
+        description='OptTS', icon='mountain', button_style='warning',
+        tooltip=("Sharpen the structure on screen onto the transition state "
+                 "it is already near, with ORCA's OptTS. It takes no two ends "
+                 "-- it converges a guess rather than searching between two "
+                 "structures -- so it is offered where this structure has a "
+                 "mode going the wrong way, or where the relaxation is set to "
+                 "climb."),
+        layout=widgets.Layout(width='96px', height='30px', display='none'),
+        disabled=True,
+    )
+
     #: Which mode the two presses after this are about, when there is a choice.
     #:
     #: There usually is not.  A transition state has exactly one mode going the
@@ -2779,7 +2810,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # is 34 px taller at 1280 in the overlay; put inside it, taller
             # again at three widths.
             submit_path_from_btn, submit_saddle_from,
-            submit_saddle_how, submit_saddle_btn, submit_shape_btn,
+            submit_saddle_how, submit_saddle_btn,
+            # The other question, which is not the same one: this converges a
+            # guess and takes no pair.
+            submit_optts_btn, submit_shape_btn,
             # And what there is to do with a saddle once the press has found
             # one, immediately after it. They are absent until it has: the
             # visible controls are the answer to "what can I do now", so a
@@ -3361,7 +3395,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                        submit_saddle_from, submit_saddle_how,
                        submit_mode_dd, submit_mode_btn, submit_ends_btn,
                        submit_down_dd, submit_best_btn, submit_best_dd,
-                       submit_climb_btn, submit_shape_btn,
+                       submit_climb_btn, submit_shape_btn, submit_optts_btn,
                        submit_path_from_btn):
             widget.disabled = not enabled
         submit_labels_btn.disabled = not enabled
@@ -12044,6 +12078,24 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         _start_background(_work, 'The Hessian',
                           guards={'shape_run': False})
 
+    def on_submit_optts(_button=None):
+        """Converge the structure on screen onto the saddle it is near.
+
+        The same run the start-from-here combination made, under a name and a
+        condition that can be seen.  Nothing about the machinery changes:
+        this calls what that combination called.
+
+        Stopping is the other press's business, because it is the other
+        press's run: whichever of the two started something, there is one
+        thing walking and one thing to want.
+        """
+        if (state.get('saddle_run') or state.get('chain_run')
+                or state.get('band_run') or state.get('path_run')
+                or state.get('climb_run') is not None):
+            on_submit_saddle()
+            return
+        _saddle_from_here()
+
     def on_submit_saddle(_button=None):
         """The one press for a transition state, and what the boxes say.
 
@@ -12819,11 +12871,27 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['saddle_controls_quiet'] = True
         try:
             chosen = str(submit_ff_dd.value)
-            starts = [('what is on screen', 'here')]
+            # Two ends, and what is on screen only as a fallback so the box
+            # always has something valid in it.  Searching between two
+            # structures is this press; sharpening the one on screen is the
+            # press beside it, and a box that turned one into the other
+            # silently is what made both hard to explain.
+            pairs = []
             if _marked_pair():
-                starts.append(('the end you marked', 'marked'))
+                pairs.append(('the end you marked', 'marked'))
             if _scan_ends_here():
-                starts.append(("the scan's two ends", 'scan'))
+                pairs.append(("the scan's two ends", 'scan'))
+            starts = pairs or [('what is on screen', 'here')]
+            if pairs and state.get('saddle_start_wish') == 'here':
+                # A wish for something that no longer exists pins the box for
+                # good.  The wish is there to hold a choice that has become
+                # unavailable *for now* -- a method that cannot reach it, a
+                # scan whose ends belong to another molecule -- and to put it
+                # back when it can be met.  "What is on screen" is not that:
+                # it has left this press for the one beside it and is never
+                # coming back, so a wish for it would make the scan's own ends
+                # unselectable, which is what the test caught.
+                state.pop('saddle_start_wish', None)
 
             def ways_from(start):
                 """The ways to a saddle that can run from this start."""
@@ -12895,21 +12963,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # scan's two ends, a mode going the wrong way, or the relaxation
             # set to climb -- and every one of them is a control on this same
             # row.  Nothing is unreachable, only unoffered.
-            # What is on screen is a start the run can use and not, on its
-            # own, a reason to offer the press.  ORCA's OptTS takes any
-            # geometry, and from an ordinary minimum that is a coin flip --
-            # "to the saddle kann ja nichts wenn ich nicht scan habe oder
-            # Mark".  A structure with a mode going the wrong way is a
-            # different matter, and so is one the hand is climbing.
-            #
-            # Splitting the two into two presses -- searching between two
-            # ends, and sharpening a guess -- is the right end of this and is
-            # not this change: it rewrites a dozen tests that encode the old
-            # model, and it is worth its own pass.
-            worth_it = (len(starts) > 1
-                        or bool(_saddle_here())
-                        or bool(submit_climb_btn.value))
-            can_run = bool(starts and ways and worth_it)
+            # This press is the pair, and nothing but the pair.
+            can_run = bool(pairs and ways)
+            # And the other one is the structure on screen, offered where
+            # there is a reason to think it is on its way up: a mode going the
+            # wrong way, or a relaxation set to climb.  From an ordinary
+            # minimum ORCA's OptTS takes the geometry and wanders, and a press
+            # that is a coin flip is worse than one that is absent.
+            climbing = bool(_saddle_here()) or bool(submit_climb_btn.value)
+            submit_optts_btn.layout.display = (
+                '' if climbing
+                and str(chosen).lower() in _saddle.SADDLE_METHODS else 'none')
             submit_saddle_btn.layout.display = '' if can_run else 'none'
             submit_saddle_from.layout.display = (
                 '' if can_run and len(starts) > 1 else 'none')
@@ -16920,6 +16984,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_scan_how.observe(on_submit_scan_how, names='value')
     submit_path_from_btn.on_click(on_submit_path_from)
     submit_saddle_btn.on_click(on_submit_saddle)
+    submit_optts_btn.on_click(on_submit_optts)
     submit_shape_btn.on_click(on_submit_shape)
     # The start decides which ways there are -- there is no walk to stop after
     # when the start is the structure on screen -- so it goes through the one
