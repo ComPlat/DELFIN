@@ -305,7 +305,10 @@ def test_optimise_starts_a_second_row_in_fullscreen():
 
     source = _TAB_AND_EDITOR
     children = source.split('submit_manip_toolbar = widgets.HBox')[1].split(']')[0]
-    order = ['submit_strength_slider', 'submit_fs_row_break',
+    # Anchored on the method box rather than on the strength slider: the
+    # sliders have gone onto the picture, where the eye already is, and what
+    # this asks is only that the break comes before Optimise.
+    order = ['submit_ff_dd', 'submit_fs_row_break',
              'submit_optimize_btn', 'submit_optimize_all_btn']
     positions = [children.index(name) for name in order]
     assert positions == sorted(positions), children
@@ -362,8 +365,11 @@ def test_toolbar_wraps_instead_of_clipping_its_own_controls():
     # Force field, then its strength, then the one-shot run, then the
     # continuous one, then the internal-coordinate group.
     children = source.split('submit_manip_toolbar = widgets.HBox')[1].split(']')[0]
+    # The strength slider is no longer on this row -- it acts on the feel of
+    # the hand rather than on the structure, and it lives on the picture with
+    # the others of its kind (see submit_view_panel).
     order = [
-        'submit_ff_dd', 'submit_strength_slider',
+        'submit_ff_dd',
         'submit_optimize_btn', 'submit_relax_btn', 'submit_internal_group',
     ]
     positions = [children.index(name) for name in order]
@@ -1978,8 +1984,10 @@ def test_a_button_brings_the_system_back_into_view():
     assert 'recentreView' in handler
     assert 'structure is unchanged' in handler
     assert 'submit_centre_btn.on_click(on_submit_centre)' in source
-    # It lives with the other viewer controls and switches with them.
-    assert 'submit_manip_clear_btn, submit_centre_btn,' in source
+    # It lives with the other viewer controls -- which now lie on the picture
+    # itself, because that is what they act on: the camera and nothing else.
+    panel = source.split('submit_view_body = widgets.VBox')[1].split(')\n')[0]
+    assert 'submit_centre_btn' in panel, panel
     assert 'submit_centre_btn.disabled = not enabled' in source
 
 

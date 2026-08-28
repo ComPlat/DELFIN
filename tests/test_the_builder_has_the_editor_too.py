@@ -95,11 +95,23 @@ def test_the_toolbar_is_there_with_everything_on_it(builder):
     for name in ('submit_select_btn', 'submit_manip_btn', 'submit_draw_btn',
                  'submit_ff_dd', 'submit_optimize_btn', 'submit_optimize_all_btn',
                  'submit_relax_btn', 'submit_settle_btn', 'submit_bond_btn',
-                 'submit_unbond_btn', 'submit_dyn_bonds_btn', 'submit_poly_dd',
-                 'submit_hyb_dd', 'submit_strength_slider', 'submit_sens_slider',
+                 'submit_unbond_btn', 'submit_poly_dd',
+                 'submit_hyb_dd',
                  'submit_gfn_charge', 'submit_gfn_mult', 'submit_gfn_solvent',
-                 'submit_labels_btn', 'submit_reset_btn', 'submit_manip_undo_btn'):
+                 'submit_reset_btn', 'submit_manip_undo_btn'):
         assert refs[name] in on_it, name
+    # And the ones that act on the view rather than on the structure are on
+    # the picture, in the Builder exactly as in the Submit tab -- one editor,
+    # so one place for each kind of control.
+    on_the_picture = set()
+    for kid in refs['submit_view_body'].children:
+        on_the_picture.add(kid)
+        on_the_picture.update(getattr(kid, 'children', ()) or ())
+    for name in ('submit_strength_slider', 'submit_sens_slider',
+                 'submit_pull_slider', 'submit_play_speed',
+                 'submit_dyn_bonds_btn', 'submit_centre_btn',
+                 'submit_labels_btn'):
+        assert refs[name] in on_the_picture, name
     # The whole ladder of methods, browser and server alike -- and the four
     # xtb ones in the order of what they cost, GFN1 among them: it is
     # implemented in every module the editor drives and three of the editor's

@@ -73,10 +73,13 @@ def test_the_viewer_offers_it_and_keeps_it_across_a_reload():
 
 
 def test_the_tab_puts_it_behind_strength():
-    children = SUBMIT.split('submit_manip_toolbar = widgets.HBox')[1].split(']')[0]
+    # On the picture now, with the other controls that act on the view and on
+    # the feel of the hand rather than on the structure -- and still behind
+    # the strength, which is the order this asks about.
+    panel = SUBMIT.split('submit_view_body = widgets.VBox')[1].split(')\n')[0]
 
-    assert 'submit_sens_slider' in children
-    assert children.index('submit_strength_slider') < children.index(
+    assert 'submit_sens_slider' in panel
+    assert panel.index('submit_strength_slider') < panel.index(
         'submit_sens_slider')
 
     made = SUBMIT.split('submit_sens_slider = widgets.FloatSlider')[1].split(')\n')[0]

@@ -1835,6 +1835,12 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         box.style.position = 'absolute';
         box.style.top = '8px';
         box.style.right = '8px';
+        // Under the controls rather than beside them.  Both want the top
+        // right corner -- this box says what is picked, the panel holds the
+        // sliders -- and the corner is the right home for both: one column of
+        // furniture, the picture everywhere else.  Where the top of this box
+        // actually is depends on how tall the panel is, and the panel folds,
+        // so it is measured rather than assumed (see placeMeasureBox).
         box.style.maxWidth = '260px';
         box.style.maxHeight = 'calc(100% - 16px)';
         box.style.padding = '6px 9px';
@@ -1852,11 +1858,32 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         state.measureBox = box;
         return box;
     }
+    // How far down the measure box starts: under the view controls when they
+    // are there, at the top corner when they are not.  Read from the panel
+    // every time rather than kept, because it folds and unfolds and its
+    // height changes with what the method offers.
+    function placeMeasureBox(scopeKey, box) {
+        var state = getState(scopeKey);
+        var top = 8;
+        try {
+            var stack = state.viewerEl
+                && state.viewerEl.closest('.delfin-structure-viewer-stack');
+            var panel = stack
+                && stack.querySelector('.delfin-structure-view-over');
+            if (panel) {
+                var seen = panel.getBoundingClientRect();
+                if (seen.height > 0) top = seen.height + 14;
+            }
+        } catch (e) {}
+        box.style.top = top + 'px';
+    }
+
     function updateMeasureBox(scopeKey) {
         var state = getState(scopeKey);
         var viewer = getViewer(scopeKey);
         var box = ensureMeasureBox(scopeKey);
         if (!box || !viewer) return;
+        placeMeasureBox(scopeKey, box);
         var picks = state.picks || [];
         if (!picks.length) {
             box.style.display = 'none';
@@ -5536,6 +5563,96 @@ STRUCTURE_VIEWER_FULLSCREEN_CSS = r"""
 .delfin-structure-viewer-stack > .delfin-structure-status-over > .widget-label {
     display: none !important;
 }
+/* A number box at the end of a wrapped line, and the input inside it.
+
+   Flexbox shrinks an item below the width it was given before it wraps it, and
+   an ipywidgets number box squeezed that way does not shrink its input with
+   it: the input keeps a width of its own and paints outside the box.
+   Measured at 1024 px in the overlay: the charge box's input 8 px past the
+   toolbar's own right edge, and the toolbar scrolling sideways to reach it.
+
+   This has been met before and was answered by placement -- an item was moved
+   so that the charge box would not land at the end of a line.  That is a fix
+   that holds until the next control is added or taken away, and it did not
+   survive nine of them moving onto the picture.  The rule is the answer
+   instead: a box that cannot be squeezed wraps whole, which is what the
+   toolbar promises everywhere else.
+
+   Only the number and text boxes.  The status line is an inline box too and
+   is meant to take whatever share of the row is left -- shrinking is the
+   whole of its behaviour. */
+.delfin-structure-toolbar .widget-text,
+.delfin-structure-fs-toolbar .widget-text {
+    flex-shrink: 0 !important;
+}
+/* And the input laid out *past* its own box rather than merely wider than
+   it -- measured, the charge box 928..1000 and its input starting at 1016,
+   24 px beyond the container it was given, which is the number the placement
+   comment above the toolbar records.  The box is made a flex row so the
+   label takes what it needs and the input takes the rest of the *inside*;
+   laid out any other way it is free to start where it likes. */
+.delfin-structure-toolbar .widget-text,
+.delfin-structure-fs-toolbar .widget-text {
+    display: flex !important;
+    align-items: center !important;
+    overflow: hidden !important;
+}
+.delfin-structure-toolbar .widget-text > .widget-label,
+.delfin-structure-fs-toolbar .widget-text > .widget-label {
+    flex: 0 0 auto !important;
+}
+.delfin-structure-toolbar .widget-text > input,
+.delfin-structure-fs-toolbar .widget-text > input {
+    flex: 1 1 0 !important;
+    min-width: 0 !important;
+    max-width: 100% !important;
+}
+
+/* The controls that change what you see, laid on the picture.
+   The counterpart of the status line along the bottom edge, and the same
+   bargain: a molecule has empty corners, and a panel in one of them costs no
+   layout at all -- nothing above or below it moves, and the toolbar is nine
+   controls shorter for it.
+
+   Unlike the line, this one takes the mouse.  It is controls rather than a
+   sentence, and a slider that cannot be dragged is not a slider.
+
+   Top right, never the middle, and it folds: a panel over a structure is
+   still over a structure, so there has to be a way to put it away, and the
+   way has to stay visible once it is away. */
+.delfin-structure-viewer-stack > .delfin-structure-view-over {
+    position: absolute !important;
+    top: 8px !important;
+    right: 8px !important;
+    width: auto !important;
+    max-width: 46% !important;
+    max-height: 82% !important;
+    overflow: auto !important;
+    margin: 0 !important;
+    padding: 4px 6px !important;
+    border-radius: 6px !important;
+    background: rgba(255, 255, 255, 0.88) !important;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18) !important;
+    z-index: 6 !important;
+}
+/* The sliders were built for a toolbar, where a label and a readout sit on
+   one line beside a 200 px track.  Stacked in a column they are narrower than
+   that, and a track that overflows its box paints over the structure. */
+.delfin-structure-view-over .widget-hslider,
+.delfin-structure-view-over .widget-inline-hbox {
+    width: 100% !important;
+    max-width: 236px !important;
+}
+.delfin-structure-view-over .widget-hslider .widget-label {
+    width: 52px !important;
+    flex: 0 0 52px !important;
+}
+/* A structure being dragged under a half-transparent panel is hard enough to
+   see without the panel also being the brightest thing on the picture. */
+.delfin-structure-view-over:hover {
+    background: rgba(255, 255, 255, 0.97) !important;
+}
+
 body.delfin-structure-fs-open {
     overflow: hidden !important;
 }
