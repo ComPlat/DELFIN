@@ -6489,6 +6489,37 @@ def _run_auto_verify(edited_paths: list, mode: str, command: str,
     return ""
 
 
+# The parts of a tool error that say WHICH call was made rather than WHY it
+# failed. Dropped before two failing rounds are compared.
+_VOLATILE_ERROR_FIELDS = re.compile(
+    r'"(?:query|command|path|file_path|url|pattern|text|content|'
+    r'description)"\s*:\s*"(?:[^"\\]|\\.)*"')
+
+
+def _error_signature(result: str) -> str:
+    """What makes two failing rounds THE SAME failure.
+
+    The identical-error abort exists so a model that cannot get a tool to
+    work stops instead of running to the round cap. It compared the whole
+    error text -- and most tool errors echo the arguments back, so a model
+    that reworded its request produced a different text for the same
+    failure and reset the counter every round.
+
+    Measured 2026-08-28, one recorded session: web_search refused with the
+    same HTTP 202 challenge 31 times while the model rewrote the query each
+    time. The turn ran to 68 tool rounds and 1 419 632 input tokens. Every
+    one of those errors was byte-identical apart from the echoed ``query``.
+
+    So the argument echo is dropped before comparing: what is left is the
+    REASON, which is the thing the model has to react to. The heads-up
+    advice is stripped for the reason it always was -- guidance must not
+    mask a loop.
+    """
+    core = re.sub(r', "heads_up": "[^"]*"', "",
+                  (result or "").split("\n[heads-up]")[0])
+    return _VOLATILE_ERROR_FIELDS.sub('"…"', core)
+
+
 def _cached_tokens_of(usage) -> int:
     """Prompt tokens served from the endpoint's prefix cache, read defensively
     from the OpenAI/vLLM ``usage.prompt_tokens_details.cached_tokens`` field.
@@ -16251,9 +16282,7 @@ class OpenAIClient(_BaseClient):
                     # both its JSON-field and text-suffix forms): the advice
                     # must not mask an identical-error loop.
                     signature = "|".join(
-                        re.sub(r', "heads_up": "[^"]*"', "",
-                               r.split("\n[heads-up]")[0])
-                        for r in _round_results)
+                        _error_signature(r) for r in _round_results)
                     # A model alternating between TWO error shapes (A,B,A,B…)
                     # previously reset the counter every round and looped to
                     # the round cap — track a small recent-signature window

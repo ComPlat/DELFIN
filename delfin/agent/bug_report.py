@@ -741,7 +741,19 @@ def push_report_to_remote(
         build_rsync_transfer_command,
     )
 
-    target_dir = f"{remote_path.rstrip('/')}/{subdir}"
+    # The configured remote path is where the archive lives, and people
+    # configure it BOTH ways: some point at the parent and expect the
+    # subdir appended, some point straight at the archive folder because
+    # that is the folder they were told bugs go in. Appending blindly turns
+    # the second into ``.../AGENT_BUGS/AGENT_BUGS``, one level below where
+    # anything looks -- ``find_unsolved`` iterates the immediate subdirs,
+    # sees a directory with no report.json, and skips it. Observed
+    # 2026-08-28: two reports from a second user sat there unread while the
+    # triage list showed nothing new.
+    _base = remote_path.rstrip("/")
+    _sub = (subdir or "").strip("/")
+    target_dir = (_base if _sub and _base.rsplit("/", 1)[-1] == _sub
+                  else f"{_base}/{_sub}" if _sub else _base)
     try:
         mk = subprocess.run(
             build_ssh_mkdir_command(host, user, target_dir, port),
