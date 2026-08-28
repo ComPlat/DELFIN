@@ -1710,6 +1710,55 @@ def _hapto_scaffold_primary_enabled() -> bool:
     return os.environ.get("DELFIN_FFFREE_HAPTO_SCAFFOLD_PRIMARY", "0") == "1"
 
 
+def _union_prepend_ffree(results_hapto, ffree_union):
+    """DELFIN_FFFREE_UNION_HAPTO -- Vorgabe 0, also byte-identisch AUS.
+
+    DER VERTRAGSBRUCH, DEN DIESER SCHALTER SCHLIESST.  `DELFIN_FFFREE_UNION`
+    sagt *ADD, never replace* zu: der FF-freie Bauer kehrt nicht mehr frueh
+    zurueck, seine Frames werden in ``_ffree_union`` geparkt und ganz am Ende
+    der legacy-Pipeline VORANGESTELLT.  Der Hapto-Zweig kehrt aber ~2700 Zeilen
+    VOR dieser Zusammenfuehrung zurueck.  Auf jedem System mit η-Koordination
+    wird ``_ffree_union`` damit nie gelesen -- UNION mischt dort nicht, es
+    UEBERGIBT das System an den Hapto-Pfad, und der ersetzt den enumerierten
+    Manifold durch ein einziges wiederholtes η-Etikett.
+
+    GEMESSEN 28.08.2026 (`harness/union_additiv_zensus.py --hapto`), Etikett-
+    Multiset ueber 9720 Systeme beider Arme von `unioniso10k`:
+        ADDITIV 9684 (99,6 %) · UMSCHALTER 36 (0,4 %)
+        GEWINNER (topo F->T)  204 -> 204 additiv    (100 %)
+        VERLIERER (topo T->F)   3 ->   3 Umschalter (100 %)
+        von den 36 Umschaltern sind 31 im ON-Arm RESTLOS η-etikettiert,
+        darunter ALLE DREI Verlierer: CAZMEX, JACVES, XIDKON.
+    Belegfall HACVOZ: OFF `T-4-hapto-iso1 / iso1-r1 / iso2 / iso2-r1 / iso3`
+    (enumeriert, 5 Etiketten) -> ON `η6-arene` 50x (EIN Etikett).  Gleiche
+    Framezahl, jedes OFF-Etikett fort.  Das ist kein Loeschen, das ist eine
+    Uebergabe -- und genau das soll der Vertrag verhindern.
+
+    ⚠️ WAS DIESER SCHALTER NICHT TUT.  Er urteilt NICHT darueber, welcher Bauer
+    die bessere η-Geometrie liefert; der analytische Scaffold ist dort gemessen
+    besser (η6 ~84 % sauber gegen ~27 % fuer RIGID_HAPTO, siehe
+    `_hapto_scaffold_primary_enabled`).  Er stellt nur her, was UNION zusagt:
+    BEIDE Manifolds, keiner ersetzt.  Frame 0 bleibt die FF-freie
+    Konstruktion, der vollstaendige Hapto-Manifold folgt dahinter.
+
+    ⚠️ BEKANNTE LUECKE, bewusst offen gelassen.  Ist
+    `DELFIN_FFFREE_HAPTO_SCAFFOLD_PRIMARY` an, bleibt ``_ffree_union`` None (die
+    FF-freien Frames liegen dann in ``_hapto_ff_fallback``) und dieser Schalter
+    tut nichts.  Das Flag steht NICHT im Champion; die Kombination ist
+    ungemessen und wird hier nicht stillschweigend mitrepariert.
+
+    Entdoppelt wird wie in der Zusammenfuehrung selbst -- ueber den exakten
+    XYZ-Text --, damit kein Frame zweimal im Manifold steht."""
+    if not ffree_union or _delfin_env_int("DELFIN_FFFREE_UNION_HAPTO", 0) != 1:
+        return results_hapto
+    try:
+        _seen = {x for x, _l in ffree_union}
+        _extra = [(x, l) for x, l in (results_hapto or []) if x not in _seen]
+        return list(ffree_union) + _extra
+    except Exception:
+        return results_hapto
+
+
 def _hapto_seat_rigid_enabled() -> bool:
     """DELFIN_FFFREE_HAPTO_SEAT_RIGID -- Vorgabe 0, also byte-identisch AUS.
 
@@ -33322,7 +33371,11 @@ def _smiles_to_xyz_isomers_impl(
                 results_hapto = _apply_bond_decollapse_if_enabled(
                     _mol_hapto_gate, results_hapto, _dual_parse_done
                 )
-                return results_hapto, None
+                # UNION haelt seinen Vertrag auch hier (DELFIN_FFFREE_UNION_HAPTO,
+                # Vorgabe AUS -> byte-identisch).  Ohne diese Zeile kehrt der
+                # Hapto-Zweig ~2700 Zeilen VOR der Zusammenfuehrung zurueck und
+                # `_ffree_union` wird nie gelesen.
+                return _union_prepend_ffree(results_hapto, _ffree_union), None
             # Multi-metal hapto: the hapto builder already produced the
             # best possible Cp geometry (perfectly planar rings). ETKDG
             # sampling would produce conformers with broken Cp rings.
@@ -33339,7 +33392,8 @@ def _smiles_to_xyz_isomers_impl(
             results_hapto = _apply_bond_decollapse_if_enabled(
                 _mol_hapto_gate, results_hapto, _dual_parse_done
             )
-            return results_hapto, None
+            # Dieselbe Vertragszeile fuer den mehrkernigen Hapto-Zweig.
+            return _union_prepend_ffree(results_hapto, _ffree_union), None
 
     # Non-metal molecules: deterministic conformer pool.  Organic
     # ligands have no coordination-isomer axis, but different rotamer
@@ -40299,6 +40353,39 @@ if __name__ == "__main__":
                 _hapto_candidate_collapsed_bonds(None), None)
     else:
         print("   (RDKit fehlt -- Geometrieteil uebersprungen)")
+
+    # ------------------------------------------------------------------
+    # SELBSTTEST fuer DELFIN_FFFREE_UNION_HAPTO
+    #   Ein Schalter, der nur beweist, dass er FEUERT, beweist nichts.  Zwei der
+    #   fuenf Faelle sind GEGENLAEUFIG: bei 3 und 5 ist der Schalter AN und die
+    #   Antwort muss trotzdem unveraendert sein.
+    # ------------------------------------------------------------------
+    print("## Selbsttest UNION_HAPTO")
+    _H = [("xH1", "η6-arene"), ("xH2", "η6-arene σ-1")]      # Hapto-Zweig
+    _F = [("xF1", "T-4-hapto-iso1"), ("xF2", "T-4-hapto-iso2")]   # FF-frei
+
+    os.environ.pop("DELFIN_FFFREE_UNION_HAPTO", None)
+    _pruefe("1 Vorgabe AUS -> unveraendert",
+            _union_prepend_ffree(_H, _F), _H)
+
+    os.environ["DELFIN_FFFREE_UNION_HAPTO"] = "1"
+    _pruefe("2 AN -> FF-frei zuerst, Hapto vollstaendig dahinter",
+            _union_prepend_ffree(_H, _F), _F + _H)
+
+    # GEGENLAEUFIG: der Schalter ist an, aber es gibt nichts zu mischen.
+    _pruefe("3 AN ohne FF-freie Frames -> unveraendert",
+            _union_prepend_ffree(_H, None), _H)
+
+    # Entdopplung ueber den exakten XYZ-Text: der gemeinsame Frame steht EINMAL.
+    _pruefe("4 AN mit Ueberlappung -> kein Frame doppelt",
+            _union_prepend_ffree([("xF2", "andersherum")] + _H, _F),
+            _F + _H)
+
+    # GEGENLAEUFIG: '0' ist AUS, nicht 'irgendein Wert gesetzt'.
+    os.environ["DELFIN_FFFREE_UNION_HAPTO"] = "0"
+    _pruefe("5 Schalter 0 -> unveraendert",
+            _union_prepend_ffree(_H, _F), _H)
+    os.environ.pop("DELFIN_FFFREE_UNION_HAPTO", None)
 
     print(f"## {'ALLES GRUEN' if _fehler == 0 else str(_fehler) + ' FEHLER'}")
     _sys.exit(1 if _fehler else 0)
