@@ -1862,19 +1862,48 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     // are there, at the top corner when they are not.  Read from the panel
     // every time rather than kept, because it folds and unfolds and its
     // height changes with what the method offers.
-    function placeMeasureBox(scopeKey, box) {
+    function theViewPanel(scopeKey) {
         var state = getState(scopeKey);
-        var top = 8;
         try {
             var stack = state.viewerEl
                 && state.viewerEl.closest('.delfin-structure-viewer-stack');
-            var panel = stack
+            return stack
                 && stack.querySelector('.delfin-structure-view-over');
-            if (panel) {
-                var seen = panel.getBoundingClientRect();
-                if (seen.height > 0) top = seen.height + 14;
-            }
-        } catch (e) {}
+        } catch (e) { return null; }
+    }
+
+    // The panel is not one height.  It grows when the numbering opens its own
+    // two settings, it shrinks when a method with no playback takes the speed
+    // slider away, and it folds to a single button when the user puts it
+    // away.  Measured once at the first pick, this box stayed where that
+    // measurement left it -- under a panel that was no longer that tall, or
+    // over one that had grown past it.
+    //
+    // So the panel is watched rather than measured once.  A ResizeObserver is
+    // what a browser has for exactly this, and it fires on the fold as well:
+    // the button is all that is left, and the box comes up under the button.
+    function watchTheViewPanel(scopeKey) {
+        var state = getState(scopeKey);
+        if (state.viewPanelWatch) return;
+        if (typeof ResizeObserver === 'undefined') return;
+        var panel = theViewPanel(scopeKey);
+        if (!panel) return;
+        state.viewPanelWatch = new ResizeObserver(function () {
+            placeMeasureBox(scopeKey);
+        });
+        state.viewPanelWatch.observe(panel);
+    }
+
+    function placeMeasureBox(scopeKey) {
+        var state = getState(scopeKey);
+        var box = state.measureBox;
+        if (!box) return;
+        var top = 8;
+        var panel = theViewPanel(scopeKey);
+        if (panel) {
+            var seen = panel.getBoundingClientRect();
+            if (seen.height > 0) top = seen.height + 14;
+        }
         box.style.top = top + 'px';
     }
 
@@ -1883,7 +1912,8 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         var viewer = getViewer(scopeKey);
         var box = ensureMeasureBox(scopeKey);
         if (!box || !viewer) return;
-        placeMeasureBox(scopeKey, box);
+        watchTheViewPanel(scopeKey);
+        placeMeasureBox(scopeKey);
         var picks = state.picks || [];
         if (!picks.length) {
             box.style.display = 'none';
@@ -5593,8 +5623,12 @@ STRUCTURE_VIEWER_FULLSCREEN_CSS = r"""
    laid out any other way it is free to start where it likes. */
 .delfin-structure-toolbar .widget-text,
 .delfin-structure-fs-toolbar .widget-text {
-    display: flex !important;
-    align-items: center !important;
+    /* Not `display`, ever.  The channels the page and the kernel talk through
+       -- the picks, the commands, the thermal wall -- are widget-text boxes
+       hidden by an inline display:none, and an !important display of any kind
+       here puts all three of them on the toolbar as empty text fields.  It
+       was not needed either: the bundle already lays an inline box out as a
+       flex row, and what the input was escaping through was the overflow. */
     overflow: hidden !important;
 }
 .delfin-structure-toolbar .widget-text > .widget-label,
@@ -5636,12 +5670,29 @@ STRUCTURE_VIEWER_FULLSCREEN_CSS = r"""
     z-index: 6 !important;
 }
 /* The sliders were built for a toolbar, where a label and a readout sit on
-   one line beside a 200 px track.  Stacked in a column they are narrower than
-   that, and a track that overflows its box paints over the structure. */
+   one line beside a 200 px track.  Stacked in a column that is narrower, the
+   track keeps the width it was given and the column grows a scrollbar along
+   the bottom -- which is a control panel asking to be scrolled sideways to be
+   read.
+
+   So the panel is given a width and everything in it is made to fit inside
+   it: rows at 100%, and every box between a row and its track allowed to
+   shrink.  A flex item will not go below its content width unless it is told
+   it may, and a slider track counts as content. */
+.delfin-structure-view-over {
+    width: 252px !important;
+    overflow-x: hidden !important;
+}
 .delfin-structure-view-over .widget-hslider,
-.delfin-structure-view-over .widget-inline-hbox {
+.delfin-structure-view-over .widget-inline-hbox,
+.delfin-structure-view-over .widget-box {
     width: 100% !important;
-    max-width: 236px !important;
+    max-width: 100% !important;
+    min-width: 0 !important;
+}
+.delfin-structure-view-over .slider-container,
+.delfin-structure-view-over .slider {
+    min-width: 0 !important;
 }
 .delfin-structure-view-over .widget-hslider .widget-label {
     width: 52px !important;

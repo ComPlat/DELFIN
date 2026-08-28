@@ -2598,6 +2598,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return
         showing = bool(change.get('new'))
         submit_view_body.layout.display = '' if showing else 'none'
+        # Folded, the panel is one button, and what stands under it comes up
+        # to meet it -- the page watches the panel's height for that (see
+        # watchTheViewPanel), so nothing has to be told from here.
         submit_view_open.tooltip = ('Hide these controls' if showing
                                     else 'Show the view controls')
 
@@ -15490,8 +15493,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 was if was in {code for _name, code in entries} else 'number')
         finally:
             state['label_what_quiet'] = False
+        # With the labels, and only where there is something to choose. Under
+        # a method that computes no charges the box has one entry -- "number"
+        # -- and a list of one is not a choice: it stood open beside the size
+        # box saying the only thing it could say.
         submit_label_what.layout.display = (
-            '' if submit_labels_btn.value else 'none')
+            '' if submit_labels_btn.value and len(entries) > 1 else 'none')
 
     def on_submit_labels_toggle(change):
         """Labels on or off, and nothing else.

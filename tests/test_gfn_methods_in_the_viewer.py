@@ -4487,9 +4487,12 @@ def test_the_pace_is_offered_only_where_a_path_is_walked(editor, monkeypatch):
     assert editor["submit_play_speed"].layout.display == ""
 
 
-def test_the_pace_control_is_on_the_toolbar(editor):
-    toolbar = editor["submit_manip_toolbar"]
-    assert editor["submit_play_speed"] in set(toolbar.children)
+def test_the_pace_control_is_where_the_picture_is(editor):
+    """How fast the picture is drawn is a fact about the picture, so it lies
+    on the picture with the other controls of its kind rather than on the row
+    that changes the structure."""
+    panel = editor["submit_view_body"]
+    assert editor["submit_play_speed"] in set(panel.children)
 
 
 def test_the_grab_says_which_frame_the_picture_stood_on():
