@@ -7359,3 +7359,52 @@ def test_the_orders_are_asked_for_again_when_a_bond_is_made(tmp_path):
 
     # And it does not go on saying it.
     assert steps["again"]["cmd"] == "", steps["again"]["cmd"]
+
+
+def test_gfn1_is_offered_everything_gfn2_is():
+    """GFN1 is the older Hamiltonian, not a lesser citizen of this toolbar.
+
+    It is kept because a structure GFN2 cannot converge sometimes converges
+    under it, and that is only worth having if everything else is the same
+    press: the scan, the path between two ends, the saddle search, the
+    trajectory the slider steps through.
+
+    Compared rather than listed.  A list is a thing to forget to add to; the
+    whole surface is measured under each method and the two are required to
+    agree, so a gate written on 'gfn2' anywhere in here is caught by the check
+    rather than by a user.
+    """
+    pytest.importorskip("ipywidgets")
+
+    from delfin.dashboard import gfn_optimize as gfn_mod
+    from delfin.dashboard import saddle
+
+    # The gates the walking, the path and the climb are decided by.
+    assert gfn_mod.is_gfn_method("gfn1"), "a scan needs this to be true"
+    assert "gfn1" in saddle.SADDLE_METHODS
+    # And it answers the free-energy probe with its own electrons rather than
+    # borrowing GFN2's, which is what GFN-FF and g-xTB have to do.
+    assert gfn_mod.can_measure_fod("gfn1")
+
+    def surface(method):
+        sent: list[str] = []
+        part, _state = _a_part(_WATER, sent)
+        part._replace_mol_output_view(_WATER)
+        part.submit_ff_dd.value = method
+        seen = {}
+        for name in dir(part):
+            if not name.startswith("submit_"):
+                continue
+            widget = getattr(part, name)
+            layout = getattr(widget, "layout", None)
+            if layout is None or not hasattr(widget, "disabled"):
+                continue
+            seen[name] = (getattr(layout, "display", None) != "none",
+                          not bool(widget.disabled))
+        return seen
+
+    one, two = surface("gfn1"), surface("gfn2")
+    assert one, "no controls were compared"
+    apart = {k: (one.get(k), two.get(k))
+             for k in set(one) | set(two) if one.get(k) != two.get(k)}
+    assert not apart, apart
