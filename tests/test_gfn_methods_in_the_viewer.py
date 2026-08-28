@@ -7107,3 +7107,112 @@ def test_a_bond_drawn_by_hand_survives_the_lines_following_the_distances():
         '\n    function ', 1)[0]
     assert 'linkOne(' in holds and 'unlinkOne(' in holds, (
         'a bond that was cut has to stay cut for the same reason')
+
+
+def _a_part(text, sent):
+    """One structure editor over a coordinate box of its own.
+
+    The whole tab does not draw a structure without a user gesture to draw it
+    with, and what is being checked here is what the drawing says -- so the
+    part is built directly and asked to draw.
+    """
+    import ipywidgets as widgets
+    import tempfile
+    from delfin.dashboard import structure_editor
+    from delfin.dashboard.context import DashboardContext
+
+    room = pathlib.Path(tempfile.mkdtemp())
+    for name in ("calc", "archive", "office"):
+        (room / name).mkdir()
+    ctx = DashboardContext(calc_dir=room / "calc", archive_dir=room / "archive",
+                           office_dir=room / "office")
+    ctx.run_js = sent.append
+    state = {}
+    part = structure_editor.build(
+        ctx, state=state, coords_widget=widgets.Textarea(value=text),
+        viewer_height=560,
+        schedule_ui_update=lambda func, *a, **k: func(*a, **k),
+        update_view=lambda *a, **k: None,
+        get_smiles_charge=lambda *a, **k: None)
+    return part, state
+
+
+def test_a_double_bond_is_two_lines_without_switching_the_field_on():
+    """What kind each bond is, said for every structure that is drawn.
+
+    An XYZ block carries no orders -- element and three numbers -- so 3Dmol
+    builds every bond as a single one, and asking it to draw doubles draws
+    nothing different.  The orders were handed over only where the live force
+    field was set up, so until somebody pressed Dynamik Opt a benzene was six
+    equal sticks: a cyclohexane, drawn over an aromatic ring.
+
+    They come from the same perception that types the atoms for the force
+    field, so the picture and the calculation are one opinion rather than two.
+    """
+    pytest.importorskip("ipywidgets")
+    pytest.importorskip("rdkit")
+
+    benzene = "\n".join([
+        "12", "benzene",
+        "C  1.3970  0.0000  0.0000", "C  0.6985  1.2098  0.0000",
+        "C -0.6985  1.2098  0.0000", "C -1.3970  0.0000  0.0000",
+        "C -0.6985 -1.2098  0.0000", "C  0.6985 -1.2098  0.0000",
+        "H  2.4810  0.0000  0.0000", "H  1.2405  2.1487  0.0000",
+        "H -1.2405  2.1487  0.0000", "H -2.4810  0.0000  0.0000",
+        "H -1.2405 -2.1487  0.0000", "H  1.2405 -2.1487  0.0000",
+    ]) + "\n"
+
+    sent: list[str] = []
+    part, _state = _a_part(benzene, sent)
+
+    sent.clear()
+    part._replace_mol_output_view(benzene)
+    said = "".join(sent)
+    assert "setBondOrders(" in said, "nothing was said about the bonds"
+    orders = said.split("setBondOrders(")[1].split(");")[0]
+    # Three of the six ring bonds are the double ones, Kekule.  Only what
+    # differs from a plain stick is sent, so the C-H bonds are not in it.
+    assert orders.count(", 2]") + orders.count(",2]") == 3, orders
+    assert orders.rstrip().endswith("true"), orders
+
+    # And off, the page is told to put every line back to one -- an answer,
+    # not silence, or the doubles of the last structure stay on screen.
+    sent.clear()
+    part.submit_bond_kinds_btn.value = False
+    said = "".join(sent)
+    assert "setBondOrders(" in said, said[-300:]
+    assert "[],false" in said.replace(" ", ""), said[-300:]
+
+
+def test_all_is_offered_only_when_there_is_a_second_frame():
+    """"all" minimises every loaded frame.  Over one structure that is what
+    Optimize already does, so both presses would be the same press -- and the
+    same press twice, with different names, is the interface asking the user
+    to work out that they agree here and not elsewhere.
+    """
+    pytest.importorskip("ipywidgets")
+
+    sent: list[str] = []
+    part, state = _a_part(_WATER, sent)
+
+    every = part.submit_optimize_all_btn
+    assert every.layout.display == "none", "nothing is loaded yet"
+
+    part._replace_mol_output_view(_WATER)
+    assert every.layout.display == "none", "one structure is not a set"
+
+    state["isomers"] = [_WATER, _WATER.replace("0.757", "0.760")]
+    part._replace_mol_output_view(_WATER)
+    assert every.layout.display == "", "two frames are what it is for"
+
+    # A press in flight keeps it on screen whatever the count says: it is also
+    # the way to stop that press, and a switch that vanishes mid-run leaves a
+    # running optimisation with nothing to turn it off.  The press itself is
+    # not what is being checked here -- it refuses at once without a method to
+    # run, which is why the switch is put down by hand and the rule asked
+    # directly.
+    every.unobserve_all()
+    state["isomers"] = []
+    every.value = True
+    part._refresh_optimize_all()
+    assert every.layout.display == "", "a running press must stay stoppable"

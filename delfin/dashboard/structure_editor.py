@@ -49,7 +49,8 @@ from .input_processing import (
     smiles_to_xyz_quick_with_previews,
 )
 from .molecule_viewer import (
-    apply_molecule_view_style, submit_manip_bootstrap_js, submit_manip_version,
+    apply_molecule_view_style, build_molecule_view_style, get_viewer_profile,
+    submit_manip_bootstrap_js, submit_manip_version,
 )
 
 
@@ -1197,7 +1198,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             'never side by side: a login node is shared, and a set of isomers '
             'would otherwise start one xtb per frame at once.'
         ),
-        layout=widgets.Layout(width='52px', height='30px'),
+        # Out of sight until there is a second frame -- see
+        # _refresh_optimize_all.  An editor with nothing loaded has none, so
+        # this is the state it starts in rather than one it has to be put in.
+        layout=widgets.Layout(width='52px', height='30px', display='none'),
         disabled=True,
     )
     submit_ff_dd = widgets.Dropdown(
@@ -1335,6 +1339,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             'is a separate question, and Bond and Unbond are how that is said.'
         ),
         layout=widgets.Layout(width='104px', height='30px'),
+    )
+    submit_bond_kinds_btn = widgets.ToggleButton(
+        value=True, description='Orders', icon='bars', button_style='info',
+        tooltip=(
+            'Draw a double bond as two lines and a triple as three, instead '
+            'of one line for every bond. An XYZ block carries no orders -- it '
+            'is an element and three numbers -- so they are worked out from '
+            'the geometry, by the same perception that types the atoms for '
+            'the force field. What is drawn is therefore what is computed '
+            'with, not a second opinion about it. They are worked out again '
+            'whenever the structure is redrawn; during a drag the kinds stay '
+            'as they were, because a bond stretched halfway to breaking is '
+            'not a question perception can answer sensibly.'
+        ),
+        layout=widgets.Layout(width='86px', height='30px'),
     )
     submit_gfn_solvent = widgets.Dropdown(
         options=[(label, name) for name, label in _gfn.SOLVENTS.items()],
@@ -2748,7 +2767,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         [submit_strength_slider, submit_hand_dd, submit_pull_slider,
          submit_sens_slider, submit_play_speed,
          submit_label_group,
-         widgets.HBox([submit_dyn_bonds_btn, submit_centre_btn],
+         widgets.HBox([submit_dyn_bonds_btn, submit_bond_kinds_btn,
+                       submit_centre_btn],
                       layout=widgets.Layout(gap='4px', flex_flow='wrap',
                                             align_items='center'))],
         layout=widgets.Layout(gap='2px', min_width='0'),
@@ -3435,6 +3455,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         submit_ff_dd.disabled = not enabled
         submit_optimize_btn.disabled = not enabled
         submit_optimize_all_btn.disabled = not enabled
+        _refresh_optimize_all()
         submit_internal_value.disabled = not enabled
         submit_internal_btn.disabled = not enabled
         submit_hold_btn.disabled = not enabled
@@ -7812,6 +7833,28 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['gfn_restarting'] = True
         on_submit_optimize(None, every_frame=every_frame)
 
+    def _refresh_optimize_all():
+        """"all" is a second press only when there is a second frame.
+
+        It minimises every frame that is loaded -- the isomers the Submit tab
+        generated, the named blocks the ORCA Builder holds.  Over a single
+        structure it does exactly what Optimize does, so offering both is
+        offering the same press twice and leaving the user to work out that
+        they are the same here and not the same elsewhere.
+
+        A press in flight keeps it on screen whatever the count says: it is
+        also the way to stop that press, and a switch that vanishes mid-run
+        would leave a running optimisation with nothing to turn it off.
+        """
+        if submit_optimize_all_btn.value:
+            submit_optimize_all_btn.layout.display = ''
+            return
+        try:
+            many = len(list(list_structures() or [])) > 1
+        except Exception:
+            many = False
+        submit_optimize_all_btn.layout.display = '' if many else 'none'
+
     def _optimise_carries_on(*, converged, moved, rounds, failed, every_frame,
                              still):
         """Whether one more xtb run belongs to the press that is running.
@@ -9626,7 +9669,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         carries none -- so every bond was drawn as one stick whatever it was.
         3Dmol draws a double as two cylinders and a triple as three once the
         model knows, so the orders are handed over after every render.
+
+        Off, nothing is perceived and the page is told to put every line back
+        to a single one.  Perception is cheap -- 2 ms on a forty-atom molecule
+        once its libraries are warm -- but it is not free, and a picture the
+        user asked to keep plain should not be paying for an answer it throws
+        away.
         """
+        drawing = bool(submit_bond_kinds_btn.value)
+        if not drawing:
+            _ensure_manip_bootstrap()
+            _run_manip_js(
+                'if(window.__delfinSubmitManip)'
+                'window.__delfinSubmitManip.setBondOrders('
+                f'{json.dumps(submit_scope_id)},[],false);'
+            )
+            return
         if bonds is None:
             xyz = _current_xyz()
             if not xyz:
@@ -9644,13 +9702,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             [int(i), int(j), int(order)]
             for (i, j), order in dict(bonds).items() if int(order) > 1
         ]
-        if not triples:
-            return
+        # Sent even when it is empty.  A molecule without a multiple bond is
+        # an answer, and staying silent about it left the double bonds of the
+        # structure before this one on screen.  A perception that *failed*
+        # returns above without saying anything, which is the difference.
         _ensure_manip_bootstrap()
         _run_manip_js(
             'if(window.__delfinSubmitManip)'
             'window.__delfinSubmitManip.setBondOrders('
-            f'{json.dumps(submit_scope_id)},{json.dumps(triples)});'
+            f'{json.dumps(submit_scope_id)},{json.dumps(triples)},true);'
         )
 
     def _mark_structure_edit():
@@ -15514,6 +15574,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             if active else
             'The lines keep the bonds the structure was drawn with.')
 
+    def on_submit_bond_kinds(change):
+        """Whether a double bond is drawn as two lines."""
+        if change.get('name') != 'value':
+            return
+        active = bool(submit_bond_kinds_btn.value)
+        submit_bond_kinds_btn.button_style = 'info' if active else ''
+        _push_bond_orders()
+        _set_mol_status(
+            'Doubles are drawn as two lines, triples as three.'
+            if active else 'Every bond is drawn as one line.')
+
     def on_submit_auto_toggle(change):
         if change.get('name') != 'value':
             return
@@ -17091,6 +17162,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_settle_btn.observe(on_submit_settle_toggle, names='value')
     submit_auto_btn.observe(on_submit_auto_toggle, names='value')
     submit_dyn_bonds_btn.observe(on_submit_dyn_bonds, names='value')
+    submit_bond_kinds_btn.observe(on_submit_bond_kinds, names='value')
     submit_pick_sync.observe(on_submit_pick_sync, names='value')
     submit_poly_dd.observe(on_submit_poly_changed, names='value')
     submit_hyb_dd.observe(on_submit_hyb_changed, names='value')
@@ -17319,7 +17391,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     def _build_mol_output_bundle(xyz_data):
         view = py3Dmol.view(width='100%', height=viewer_height)
         view.addModel(xyz_data, 'xyz')
-        apply_molecule_view_style(view)
+        # Drawn so that a double bond *can* be two lines; whether it is one
+        # is the Orders switch's question and nobody else's.  The global
+        # display setting decides this for every other viewer in the
+        # dashboard, and left in charge here it silently overruled a switch
+        # sitting right beside the picture: turned off in Settings, pressing
+        # Orders did nothing at all and said nothing about why.
+        try:
+            seen = get_viewer_profile()
+            drawn = build_molecule_view_style(
+                seen['representation'], seen['atom_scale'],
+                seen['bond_radius'], True,
+            )
+        except Exception:
+            drawn = None
+        apply_molecule_view_style(view, style=drawn)
         scope_key_js = json.dumps(submit_scope_id)
         # The editor rides along only until the page has said it has it. It is
         # 136 KiB of the 159 a rendered structure weighs, and every conversion,
@@ -17428,6 +17514,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         _ensure_manip_bootstrap()
         mol_output.outputs = _build_mol_output_bundle(xyz_data)
         _set_manip_toolbar_enabled(True)
+        # What kind each bond is, for the structure that is now on screen.
+        # The orders were handed over only when the live force field was
+        # switched on, so until somebody pressed Dynamik Opt every bond was
+        # drawn as one line whatever it was -- a benzene that looked like
+        # cyclohexane.  The page keeps them in its scope rather than in the
+        # viewer, so saying it here lands even though the picture beside it
+        # is a widget update that may arrive later.
+        _push_bond_orders()
         # A marked end and the structure on screen are a pair only once they
         # are two different structures, so the start that names them appears
         # when the second one is drawn and not when the mark is made. Asked
