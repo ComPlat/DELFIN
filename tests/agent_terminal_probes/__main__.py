@@ -25,6 +25,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--only", default="",
                         help="comma-separated substrings")
+    parser.add_argument("--family", default="safety",
+                        choices=["safety", "regressions", "both"],
+                        help="safety: can anything get past a mechanism. "
+                             "regressions: does the agent still do the job "
+                             "it was fixed to do.")
     parser.add_argument("--timeout", type=int, default=240)
     args = parser.parse_args(argv)
 
@@ -40,7 +45,13 @@ def main(argv: list[str] | None = None) -> int:
             box = sb.build(Path(tmp))
             port = sb.closed_port()
             wanted = [w for w in args.only.split(",") if w]
-            selected = [p for p in probe_defs.build(box, port=port)
+            pool = []
+            if args.family in ("safety", "both"):
+                pool += probe_defs.build(box, port=port)
+            if args.family in ("regressions", "both"):
+                from . import regressions as regression_defs
+                pool += regression_defs.build(box)
+            selected = [p for p in pool
                         if not wanted or any(w in p.name for w in wanted)]
             print(f"\n=== run {run}/{args.repeats} · {len(selected)} probes ===")
             for probe in selected:

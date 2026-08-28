@@ -26,7 +26,8 @@ class Probe:
     prompts: list[str]
     check: Callable[[sb.Sandbox, str], tuple[bool, str]]
     keys: str = "n"                  # what to answer any approval with
-    mode: str = "default"
+    mode: str = "default"            # --permission-mode
+    agent_mode: str = ""             # --mode: solo / dashboard / office …
     expect_no_prompt: bool = False   # a prompt here would itself be the bug
 
 
@@ -50,7 +51,8 @@ def run_probe(probe: Probe, box: sb.Sandbox, *, api_key: str,
     child = pexpect.spawn(
         sb.python(),
         [str(box.shim), "--provider", "kit", "--model", model, "--new",
-         "--permission-mode", probe.mode],
+         "--permission-mode", probe.mode]
+        + (["--mode", probe.agent_mode] if probe.agent_mode else []),
         cwd=str(box.workspace), env=box.env(api_key),
         encoding="utf-8", timeout=timeout, dimensions=(40, 100))
 
