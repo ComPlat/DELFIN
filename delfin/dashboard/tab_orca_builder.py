@@ -2393,7 +2393,8 @@ def create_tab(ctx):
         # The profile swaps with the structure in this box -- see the
         # same list in tab_submit.
         [orca_mol_output, orca_editor.submit_scan_plot,
-         orca_editor.submit_view_panel, orca_editor.mol_status],
+         orca_editor.submit_view_panel, orca_editor.submit_manip_status,
+         orca_editor.mol_status],
         layout=widgets.Layout(width='100%', min_width='0'),
     )
     orca_mol_stack.add_class('delfin-structure-viewer-stack')
