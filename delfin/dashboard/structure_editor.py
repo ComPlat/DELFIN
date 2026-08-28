@@ -2650,12 +2650,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: have to fit a width chosen once -- rendered and looked at, not
     #: measured and hoped for: at 200 px inside a 225 px panel the readout ran
     #: off the right edge and the label came out as "Stren...".
-    _VIEW_PANEL_PX = 250
+    #: One width, and it belongs to the panel rather than to the rows.
+    #:
+    #: Given to the rows, the panel was the wider of the two and the picture
+    #: capped it -- so on a narrow viewer the rows kept their 250 px inside a
+    #: box that had less, and the readouts were cut off with the scrollbar
+    #: switched off over them.  A row at 100 per cent of whatever the panel
+    #: has cannot do that: it is the panel that meets the picture, and the
+    #: rows follow it down.
     for _sized in (submit_strength_slider, submit_pull_slider,
                    submit_sens_slider, submit_play_speed, submit_label_size):
-        _sized.layout.width = f'{_VIEW_PANEL_PX}px'
+        _sized.layout.width = '250px'
         _sized.style.description_width = '58px'
-    submit_hand_dd.layout.width = f'{_VIEW_PANEL_PX}px'
+    submit_hand_dd.layout.width = '250px'
     # And it says what it is choosing.  On the toolbar it stood between two
     # sliders that named themselves and was read as one of the row; alone in a
     # column, "pull with a force" reads as a statement about what the hand is
