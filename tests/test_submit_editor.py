@@ -1806,8 +1806,23 @@ def test_the_editor_is_not_sent_again_to_a_page_that_has_it():
     assert submit_manip_version() in submit_manip_bootstrap_js()
 
 
-def test_a_confirmed_page_gets_a_much_smaller_picture(tmp_path):
-    """Measured through the tab itself, not asserted from the source."""
+def test_a_confirmed_page_gets_no_second_picture_at_all(tmp_path):
+    """Measured through the tab itself, not asserted from the source.
+
+    It used to get a much smaller one: the same viewer HTML without the 136 KiB
+    of editor it had already confirmed.  It now gets none.  A page that is
+    running this editor and has a viewer on screen is handed the *model*, and
+    the picture it is already looking at keeps its WebGL context and its camera
+    -- a browser grants a handful of contexts, and building one per structure
+    is how a viewer ends up black.
+
+    A page that has *not* confirmed still gets a whole picture, and must: the
+    swap carries no copy of the editor, and the flag that says the bootstrap
+    was sent is the kernel's.  Reload the page and that flag is a belief about
+    a page that is now empty -- so the swap would be retried into a viewer that
+    is gone and nothing would be drawn at all.  A whole picture heals that by
+    carrying the editor with it.
+    """
     pytest.importorskip('ipywidgets')
     from delfin.dashboard import tab_submit
     from delfin.dashboard.context import DashboardContext
@@ -1815,30 +1830,39 @@ def test_a_confirmed_page_gets_a_much_smaller_picture(tmp_path):
 
     for name in ('calc', 'archive', 'office'):
         (tmp_path / name).mkdir()
+    sent: list[str] = []
     ctx = DashboardContext(calc_dir=tmp_path / 'calc',
                            archive_dir=tmp_path / 'archive',
                            office_dir=tmp_path / 'office')
-    ctx.run_js = lambda _script: None
+    ctx.run_js = sent.append
     _widget, refs = tab_submit.create_tab(ctx)
     water = '3\nwater\nO 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0\n'
 
-    def weight():
+    def picture():
         outputs = refs['mol_output'].outputs
-        return len(outputs[0]['data']['text/html']) if outputs else 0
+        return outputs[0]['data']['text/html'] if outputs else ''
 
     refs['coords_widget'].value = water
-    before = weight()
+    first = picture()
+    assert len(first) > 100_000, 'the first picture carries the editor'
 
+    # The page says it is running this editor.
     refs['submit_cmd_sync'].value = f'editor:1:{submit_manip_version()}'
+    sent.clear()
     refs['coords_widget'].value = water.replace('0.96', '0.97')
-    after = weight()
 
-    assert after < before / 4, f'{before} -> {after} bytes'
+    assert picture() == first, 'a second picture was placed'
+    swap = next((one for one in sent if 'removeAllModels' in one), '')
+    assert swap, 'the model was not swapped into the living viewer'
+    assert len(swap) < len(first) / 4, f'{len(first)} -> {len(swap)} bytes'
+    assert '__delfinCreateViewer' not in swap, 'a new WebGL context was made'
 
-    # An editor from an older build is not one the kernel may rely on.
+    # An editor from an older build is not one the kernel may rely on, and a
+    # page that has just been reloaded is running none at all.
     refs['submit_cmd_sync'].value = 'editor:2:000000000000'
     refs['coords_widget'].value = water.replace('0.96', '0.98')
-    assert weight() > before / 2
+    assert picture() != first, 'a stale page was not given a whole picture'
+    assert len(picture()) > 100_000
 
 
 def test_the_picture_is_drawn_once_a_frame_however_often_it_is_asked_for():
