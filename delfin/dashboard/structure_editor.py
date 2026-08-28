@@ -5071,6 +5071,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         """
         return None
 
+    def _hand_gone():
+        """Whether the drag these answers belong to is still happening.
+
+        What the thirty-second clock on a follow step was standing in for.
+        It was never a limit on the work: measured in relax_steps, twenty
+        cycles on a hundred atoms under GFN2 take 17.5 s, so on half again
+        that many the step was being killed for being large rather than for
+        being stuck -- and a drag that stops answering says nothing about why.
+
+        Letting go clears the flag this reads, so a run nobody is waiting for
+        any more is asked to stop instead of being waited out.
+        """
+        return not state.get('gfn_follow')
+
     def _gfn_follow_step(xyz, holding=()):
         """Relax around the atom the hand is holding, and send that back.
 
@@ -5345,7 +5359,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         # inside the budget for a drag.
                         outcome = _mopac.optimize_with_mopac(
                             current, method, charge=charge, uhf=uhf,
-                            max_steps=_GFN_FOLLOW_CYCLES, timeout=30.0,
+                            max_steps=_GFN_FOLLOW_CYCLES, timeout=None,
+                            should_stop=_hand_gone,
                             constraints=constraints, solvent=wet)
                     else:
                         outcome = _gfn.relax_steps(
@@ -5361,7 +5376,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             # five, which is about ten answers a second.
                             cycles=(_THERMAL_FOLLOW_CYCLES if pricing
                                     else _GFN_FOLLOW_CYCLES),
-                            timeout=30.0,
+                            timeout=None, should_stop=_hand_gone,
                             constraints=keeping + contacts, solvent=wet,
                             solvation_model=model,
                             topology=_gfn_topology_dir(current),
@@ -5564,14 +5579,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             if bias is not None else
                             _gfn.optimize_with_gfn(
                                 outcome['xyz'], method, charge=charge, uhf=uhf,
-                                timeout=30.0, solvent=wet,
-                                solvation_model=model,
+                                timeout=None, should_stop=_hand_gone,
+                                solvent=wet, solvation_model=model,
                                 topology=_gfn_topology_dir(current),
                                 optimise=False))
                     elif pricing:
                         priced = _gfn.optimize_with_gfn(
                             current, method, charge=charge, uhf=uhf,
-                            timeout=30.0, solvent=wet, solvation_model=model,
+                            timeout=None, should_stop=_hand_gone,
+                            solvent=wet, solvation_model=model,
                             topology=_gfn_topology_dir(current),
                             optimise=False,
                         )
@@ -6802,7 +6818,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 or _current_xyz())
         if seed and len(_gfn.atom_lines(seed)) == atoms:
             try:
-                _gfn.relax_steps(seed, cycles=1, timeout=30.0,
+                # No clock.  One cycle whose only purpose is to make xtb
+                # write the topology file, and on a large complex under GFN-FF
+                # that is still a real calculation -- cut off, the file is not
+                # written and every later run perceives its own topology from
+                # a geometry the hand has since pulled about.
+                _gfn.relax_steps(seed, cycles=1, timeout=None,
                                  topology=Path(folder))
             except Exception:
                 pass
