@@ -10745,7 +10745,31 @@ class _DocToolExecutor:
             # user the exact command and let them add an allow_pattern or switch
             # the mode chip.
             hint = ""
-            if cmd.lstrip().startswith(("cd ", "cd\t")):
+            if re.search(r"^\s*(python[0-9.]*|py)\s+-c\b", cmd):
+                # Inline interpreter code is off the auto-allow list on
+                # purpose: it carries its own program text and so reaches
+                # past every write gate (that hole was closed once already).
+                # But the job the model usually wants here -- check that the
+                # file I just wrote parses -- has a sanctioned spelling, and
+                # the refusal never named it. Observed: asked for a Tetris,
+                # the agent wrote the file, tried `python3 -c "import ast;
+                # ast.parse(open('tetris.py').read())"`, was blocked, then
+                # edited three more times without ever verifying, and finally
+                # tried to grant itself `^\s*python3\s+-c\b` -- which the gate
+                # refused, correctly.
+                #
+                # py_compile and running the file are NOT a way around the
+                # block: both act on a file that already went through the
+                # write gate, which is exactly what `-c` skips.
+                hint = (
+                    " HINT: to check a file you just wrote, `python3 -m "
+                    "py_compile <file>` is allowed, and so is running it as "
+                    "`python3 <file>`. Those are not workarounds — they act "
+                    "on a file the write gate already saw, which is the part "
+                    "`-c` skips. Use one of them instead of asking for a "
+                    "`-c` allow-pattern."
+                )
+            elif cmd.lstrip().startswith(("cd ", "cd\t")):
                 hint = (
                     " HINT: this command starts with 'cd' — use the bash "
                     "tool's `cwd` parameter (it accepts absolute paths "
