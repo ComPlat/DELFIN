@@ -585,8 +585,13 @@ class _CommandLine:
         room = dict(os.environ)
         room['OMP_NUM_THREADS'] = str(self.cores)
         room['MKL_NUM_THREADS'] = str(self.cores)
+        # No clock.  A gradient is one xtb call and normally a fraction of a
+        # second, but under g-xTB it is a process with an ORCA start-up in
+        # front of it, and on a large system two minutes is a limit that stops
+        # the climb rather than a hang that needed stopping.  The climb itself
+        # is asked to stop between steps, which is the way out.
         subprocess.run(order, cwd=str(self.folder), env=room,
-                       capture_output=True, text=True, timeout=120)
+                       capture_output=True, text=True)
         self.calls += 1
         return _read_turbomole_gradient(self.folder / 'gradient',
                                         len(self.symbols))
@@ -1268,8 +1273,13 @@ class Climb:
                 [binary, 'in.xyz', *flag, '--hess', '--chrg',
                  str(self.charge), '--uhf', str(self.uhf)]
                 + (['--alpb', str(self.solvent)] if self.solvent else []),
-                cwd=str(folder), env=room, capture_output=True, text=True,
-                timeout=300)
+                # No clock.  This is the check that says whether what was
+                # climbed to is a transition state at all, and cut off it says
+                # nothing -- which reads as "no verdict" rather than as "the
+                # verdict did not fit in five minutes".  A Hessian on fifty
+                # atoms is already 11.8 s; on the sizes this editor is
+                # reaching for now it is the answer worth waiting for.
+                cwd=str(folder), env=room, capture_output=True, text=True)
             written = folder / 'hessian'
             if not written.is_file():
                 return None

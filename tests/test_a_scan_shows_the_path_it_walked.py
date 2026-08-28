@@ -973,3 +973,88 @@ def test_every_way_out_of_a_walk_closes_its_stream():
     walked_nothing = body.index('if not path:')
     assert closes < walked_nothing, (
         'a walk that ended early left its run open on the page')
+
+
+def test_the_view_panel_is_not_a_wall_across_the_picture():
+    """The panel is not its controls.
+
+    It sits over the picture at ``width: max-content`` -- which is the width of
+    its widest row laid out *unbroken* -- with a cap at the width of the
+    viewer.  The sliders in it are 250 px, so on a narrow viewer the box spans
+    most of the picture, and every press that landed on its padding was a press
+    the structure never saw: a rubber band could not be started at all.
+
+    Measured in chromium on the real stylesheet, at a 500 px viewer, a press a
+    short way down the middle of the picture:
+
+        two buttons on the bottom row   panel 262 px, 52% of the width -> slider
+        three buttons (Orders added)    panel 300 px, 60%             -> slider
+        three buttons, panel passed through                           -> the picture
+
+    So the wall was there before Orders widened it; the third button is what
+    pushed it past the width people were working at.  The controls take their
+    own presses back, which is what the panel is for.
+    """
+    playwright = pytest.importorskip(
+        'playwright.sync_api', reason='needs a browser to lay the panel out')
+    from delfin.dashboard.molecule_viewer import STRUCTURE_VIEWER_FULLSCREEN_CSS
+
+    css = STRUCTURE_VIEWER_FULLSCREEN_CSS
+    assert '.delfin-structure-view-over' in css
+
+    def page(width):
+        return (
+            "<!doctype html><html><head><style>body{margin:0}"
+            ".row{display:flex;gap:4px;flex-flow:row wrap;align-items:center}"
+            ".slider{width:250px;height:24px;background:#ccd}"
+            + css +
+            "\n#stack{position:relative!important;height:560px;"
+            f"width:{width}px!important;max-width:none!important}}"
+            "</style></head><body>"
+            "<div id='stack' class='delfin-structure-viewer-stack'>"
+            "<div class='delfin-structure-view-over'>"
+            "<div class='slider'></div><div class='slider'></div>"
+            "<div class='slider'></div><div class='slider'></div>"
+            "<div class='row'>"
+            "<button style='height:30px;width:104px'>Dyn. bonds</button>"
+            "<button style='height:30px;width:86px'>Orders</button>"
+            "<button style='height:30px;width:90px'>Centre</button>"
+            "</div></div></div></body></html>")
+
+    with playwright.sync_playwright() as engine:
+        try:
+            browser = engine.chromium.launch()
+        except Exception as exc:                     # no browser on this box
+            pytest.skip(f'chromium unavailable: {exc}')
+        try:
+            view = browser.new_page(viewport={'width': 1600, 'height': 900})
+            for width in (500, 640, 900):
+                view.set_content(page(width))
+                got = view.evaluate("""() => {
+                  const st = document.getElementById('stack');
+                  const p = document.querySelector('.delfin-structure-view-over');
+                  const r = p.getBoundingClientRect(), s = st.getBoundingClientRect();
+                  const hit = (fx, fy) => {
+                    const el = document.elementFromPoint(s.left + s.width * fx,
+                                                         s.top + s.height * fy);
+                    return el ? (el.id || el.className || el.tagName) : 'nothing';
+                  };
+                  return {wide: r.width > s.width * 0.5,
+                          picture: hit(0.5, 0.12), control: hit(0.8, 0.20)};
+                }""")
+                # Wherever the panel reaches, the picture is still reachable.
+                assert got['picture'] == 'stack', (width, got)
+                # And a press on a control in it is still that control's.
+                assert got['control'] == 'BUTTON', (width, got)
+            # The narrow case is the one that was broken, so it has to be the
+            # one that is actually narrow: a check that never covers half the
+            # picture is not testing the wall.
+            view.set_content(page(500))
+            covers = view.evaluate("""() => {
+              const st = document.getElementById('stack');
+              const p = document.querySelector('.delfin-structure-view-over');
+              return p.getBoundingClientRect().width
+                     / st.getBoundingClientRect().width; }""")
+            assert covers > 0.5, covers
+        finally:
+            browser.close()

@@ -477,6 +477,13 @@ def test_no_press_in_the_editor_runs_against_a_clock():
     for press in ('saddle_stop', 'chain_stop', 'band_stop'):
         assert f"state.get('{press}')" in source, press
 
+    # And the two the climb runs itself: one gradient a step, and the Hessian
+    # the verdict rests on.  Cut off, the verdict says nothing -- which reads
+    # as "not a transition state" rather than as "the check did not fit".
+    climb_source = inspect.getsource(climb)
+    assert 'timeout=120' not in climb_source, 'a gradient is on a clock again'
+    assert 'timeout=300' not in climb_source, 'the Hessian is on a clock again'
+
     follow = inspect.signature(climb.follow_the_mode_down).parameters
     assert 'should_stop' in follow, (
         'the mode-follow lost its clock, so it needs a way to be stopped')

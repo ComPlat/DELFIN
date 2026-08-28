@@ -5842,6 +5842,29 @@ STRUCTURE_VIEWER_FULLSCREEN_CSS = r"""
        touched in the one mode they are for -- the strength of a field you
        are dragging in is a thing you reach for *while* dragging. */
     z-index: 30 !important;
+    /* And the box is not the controls.  It is as wide as its widest row laid
+       out unbroken and as tall as everything stacked, with a cap at the width
+       of the picture -- so on a narrow viewer it spans the whole of it, and
+       every press meant for the structure landed on padding instead.  A
+       rubber band could not be started at all, which is how it was found.
+       The panel passes presses through and each control takes its own back;
+       see the rule below. */
+    pointer-events: none !important;
+}
+/* What is actually a control gets its presses back.  Named as the things that
+   are pressed rather than as "everything inside", so a future row of padding
+   or a label does not quietly become a wall again. */
+.delfin-structure-view-over button,
+.delfin-structure-view-over input,
+.delfin-structure-view-over select,
+.delfin-structure-view-over textarea,
+.delfin-structure-view-over .widget-slider,
+.delfin-structure-view-over .widget-hslider,
+.delfin-structure-view-over .slider-container,
+.delfin-structure-view-over .ui-slider,
+.delfin-structure-view-over .widget-readout,
+.delfin-structure-view-over label {
+    pointer-events: auto !important;
 }
 /* The sliders were built for a toolbar, where a label and a readout sit on
    one line beside a 200 px track.  Stacked in a column that is narrower, the
