@@ -331,14 +331,25 @@ def test_the_climb_stands_with_the_switches_and_not_with_the_press():
     """
     part, _state = _an_editor()
     children = list(part.submit_manip_toolbar.children)
-    where = children.index(part.submit_climb_btn)
     switches = {part.submit_optimize_btn, part.submit_optimize_all_btn,
                 part.submit_relax_btn, part.submit_auto_btn,
                 part.submit_settle_btn}
-    beside = {children[where - 1], children[where + 1]}
-    assert beside <= switches, [type(one).__name__ for one in beside]
-    # And it is still a switch, not a press: it stays down across the walks it
-    # starts, which is what makes it a mode.
+
+    # It is said as a direction now rather than as a switch of its own: two
+    # switches are four combinations of which two mean nothing, and climbing
+    # with the field off is not a thing that happens. The box stands where
+    # the switch stood, among the ones that say what a walk does.
+    where = children.index(part.submit_climb_way)
+    assert children[where - 1] in switches, type(children[where - 1]).__name__
+    assert children[where + 1] is part.submit_climb_btn
+
+    # And the switch itself is never on the row: one question, one control.
+    assert part.submit_climb_btn.layout.display == 'none'
+
+    # It is still a switch underneath, not a press: it stays down across the
+    # walks it starts, which is what makes it a mode -- and everything about a
+    # climb still hangs off it, which is why the box drives it rather than
+    # replacing it.
     import ipywidgets as widgets
     assert isinstance(part.submit_climb_btn, widgets.ToggleButton)
 

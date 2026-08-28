@@ -2619,6 +2619,30 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         value=True, icon='sliders', tooltip='Hide these controls',
         layout=widgets.Layout(width='34px', height='26px'),
     )
+    #: One column, one width.
+    #:
+    #: These were built for a toolbar, where a label, a track and a readout
+    #: share a line with everything else on the row.  Stacked in a column they
+    #: have to fit a width chosen once -- rendered and looked at, not
+    #: measured and hoped for: at 200 px inside a 225 px panel the readout ran
+    #: off the right edge and the label came out as "Stren...".
+    _VIEW_PANEL_PX = 250
+    for _sized in (submit_strength_slider, submit_pull_slider,
+                   submit_sens_slider, submit_play_speed, submit_label_size):
+        _sized.layout.width = f'{_VIEW_PANEL_PX}px'
+        _sized.style.description_width = '58px'
+    submit_hand_dd.layout.width = f'{_VIEW_PANEL_PX}px'
+    # And it says what it is choosing.  On the toolbar it stood between two
+    # sliders that named themselves and was read as one of the row; alone in a
+    # column, "pull with a force" reads as a statement about what the hand is
+    # doing rather than as the choice between two hands that it is.
+    submit_hand_dd.description = 'Hand'
+    submit_hand_dd.style.description_width = '58px'
+    # And the two presses at the foot of it, wide enough for their own words:
+    # "Dyn. bonds" came out as "Dyn. bo..." in a button sized for a toolbar.
+    submit_dyn_bonds_btn.layout.width = '124px'
+    submit_centre_btn.layout.width = '104px'
+
     submit_view_body = widgets.VBox(
         [submit_strength_slider, submit_hand_dd, submit_pull_slider,
          submit_sens_slider, submit_play_speed,
@@ -2803,6 +2827,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(gap='6px', align_items='center',
                               flex_flow='row wrap',
                               flex='0 1 auto', min_width='0',
+                              # Hard right, whatever else is on the row.  The
+                              # status line used to take the space between and
+                              # push this to the end; it lies on the picture
+                              # now, so the push has to be its own.
+                              margin='0 0 0 auto',
                               overflow='visible'),
     )
     # Appended to the row rather than written into the list that builds it.
@@ -7192,6 +7221,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             'window.__delfinSubmitManip.setLiveHand('
             f'{json.dumps(submit_scope_id)},{json.dumps(bool(active))});'
         )
+        # And what the hand is worth, at the moment dragging becomes the
+        # thing you are about to do.  Belt and braces: the method's own
+        # refresh says it too, and neither of them is the one that can be
+        # relied on to have run.
+        _tell_the_page_the_hand()
         if _server_method():
             # There is no GFN engine in the browser to run per frame, so this
             # switch means something else here: while it is on, the molecule
@@ -15590,7 +15624,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return
         on = bool(submit_labels_btn.value)
         submit_label_size.layout.display = '' if on else 'none'
-        submit_label_what.layout.display = '' if on else 'none'
+        # And the kind box only where there is a kind to choose.  Said in
+        # both places that show it, because a rule in one of two places is a
+        # rule that holds half the time: this is the one the press goes
+        # through, and it was overwriting the other.
+        submit_label_what.layout.display = (
+            '' if on and len(submit_label_what.options) > 1 else 'none')
         submit_labels_btn.button_style = 'info' if on else ''
         _run_manip_js(
             show_atom_numbers_js(
@@ -15748,6 +15787,37 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                        submit_thermal_anchor_btn):
             widget.layout.display = ('' if (shown and submit_thermal_btn.value)
                                      else 'none')
+        # And the page hears it, which is what the paragraph above promises.
+        _tell_the_page_the_hand()
+
+    def _tell_the_page_the_hand():
+        """Say what the hand is worth, whether or not anybody touched it.
+
+        The page decides between a force and a placement on one number: at a
+        share of nothing it skips the pull entirely and sets the coordinate,
+        which is the placing hand.  Nothing is what it holds until it is told
+        otherwise.
+
+        It was told only when a control moved -- the slider, or the hand box
+        -- and under a browser method also when the field was handed its
+        parameters.  Under a server method neither happens on the way in:
+        choosing GFN2 sends nothing, switching Dynamik Opt on sends nothing,
+        and the first drag is a placement however the box reads.  Measured,
+        with the run_js of a built editor captured: nothing on the method,
+        nothing on the switch, and 0.4 only once the slider was moved by hand.
+
+        The rule this belongs to already said so -- "the page is told the same
+        number through setPullStrength" is in :func:`_refresh_hand_controls`'s
+        own description of itself -- so what was missing was the line, not the
+        decision.
+        """
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.setPullStrength('
+            f'{json.dumps(submit_scope_id)},{_hand_share()},'
+            f'{json.dumps(_pull_most())});'
+        )
 
     def on_submit_hand_changed(change):
         """Moving or pulling, and what each of them brings with it."""
@@ -15773,18 +15843,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             + (' The thermal budget does not act on a placing hand -- what is '
                'kept there is not exactly what was priced -- so it is out of '
                'the way until you pull again.' if budget else ''))
-        on_submit_pull_changed({'name': 'value'})
+        _tell_the_page_the_hand()
 
     def on_submit_pull_changed(change):
         if change.get('name') != 'value':
             return
-        _ensure_manip_bootstrap()
-        _run_manip_js(
-            'if(window.__delfinSubmitManip)'
-            'window.__delfinSubmitManip.setPullStrength('
-            f'{json.dumps(submit_scope_id)},{_hand_share()},'
-            f'{json.dumps(_pull_most())});'
-        )
+        _tell_the_page_the_hand()
 
     def on_submit_strength_changed(change):
         if change.get('name') != 'value':
