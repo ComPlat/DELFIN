@@ -1744,6 +1744,28 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     // called from redrawHighlights, which every drag frame and every set of
     // coordinates goes through, so the lines follow the structure while it is
     // being moved rather than after.
+    // The hand's corrections, laid back over what the distances said.
+    //
+    // Perception is the right answer about *where* the atoms are and has
+    // nothing to say about what the user has decided: a bond drawn across a
+    // crowded coordination sphere is a correction *of* perception, so letting
+    // perception overwrite it is the tool arguing with the person using it.
+    function keepTheHandsBonds(scopeKey, viewer) {
+        var state = getState(scopeKey);
+        var edits = state && state.bondEdits;
+        if (!edits || !edits.length) return;
+        var atoms = getAtoms(viewer);
+        for (var n = 0; n < edits.length; n++) {
+            var i = edits[n][0] | 0, j = edits[n][1] | 0;
+            var connect = !!edits[n][2];
+            if (i === j || !atoms[i] || !atoms[j]) continue;
+            var linked = (atoms[i].bonds || []).indexOf(j) >= 0;
+            if (connect === linked) continue;
+            if (connect) { linkOne(atoms, i, j); linkOne(atoms, j, i); }
+            else { unlinkOne(atoms, i, j); unlinkOne(atoms, j, i); }
+        }
+    }
+
     function perceiveBonds(viewer) {
         var atoms = getAtoms(viewer);
         var n = atoms.length;
@@ -2001,7 +2023,12 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         // Every drag frame and every set of coordinates comes through here, so
         // this is where the lines are made to follow the distances -- during a
         // manipulation as much as after one.
-        if (state.dynamicBonds) perceiveBonds(viewer);
+        if (state.dynamicBonds) {
+            perceiveBonds(viewer);
+            // And what the user drew or cut, back on top of it: perception
+            // answers where the atoms are, not what the person decided.
+            keepTheHandsBonds(scopeKey, viewer);
+        }
         // The sticks and spheres are rebuilt only when the molecule has
         // actually changed. Picking three atoms moves nothing -- only the
         // translucent markers over them change -- and rebuilding a
@@ -3222,6 +3249,14 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         window.__delfinBondEditGeneration =
             (window.__delfinBondEditGeneration || 0) + 1;
         var generation = window.__delfinBondEditGeneration;
+        // Kept, not only applied.  Perception runs from the distances on
+        // every redraw -- which is every frame of a drag now that the lines
+        // follow them by default -- and it cannot know that two atoms a long
+        // way apart are bonded because somebody said so.  Applied once and
+        // forgotten, a drawn bond survived until the next redraw and then
+        // went, while remaining in force everywhere else: the same defect
+        // this function was written for, one layer further in.
+        getState(scopeKey).bondEdits = (triples || []).slice();
 
         function once() {
             if (window.__delfinBondEditGeneration !== generation) return 0;

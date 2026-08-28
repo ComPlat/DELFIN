@@ -3392,8 +3392,12 @@ def test_the_lines_can_be_asked_to_follow_the_distances(editor):
     # The asking and the drawing are two functions now -- a drag asks about
     # twice per mouse event and a mouse reports faster than a screen refreshes,
     # so the drawing happens once a frame however often it is asked for.
-    redraw = editor_js[editor_js.index("function drawHighlightsNow("):][:600]
-    assert "if (state.dynamicBonds) perceiveBonds(viewer);" in redraw
+    redraw = editor_js[editor_js.index("function drawHighlightsNow("):][:900]
+    assert "if (state.dynamicBonds) {" in redraw
+    assert "perceiveBonds(viewer);" in redraw
+    # and what the hand decided goes back on top, in the same breath -- see
+    # test_a_bond_drawn_by_hand_survives_the_lines_following_the_distances.
+    assert "keepTheHandsBonds(scopeKey, viewer);" in redraw
 
     setter = editor_js[editor_js.index("function setDynamicBonds("):][:900]
     assert "redrawHighlights(scopeKey)" in setter, (
@@ -7066,3 +7070,40 @@ def test_a_step_the_budget_refuses_is_put_back_whole(player_program, tmp_path):
 
     got = _drive(tmp_path, player_program, events, ticks=40)
     assert got['drawn'] == [0, 1, 0], got['drawn']
+
+
+def test_a_bond_drawn_by_hand_survives_the_lines_following_the_distances():
+    """Perception answers where the atoms are, not what the user decided.
+
+    Bond exists because distance is not a reliable answer in a crowded
+    coordination sphere -- on a real Pt complex it counted two phenyl carbons
+    as donors and invented a Pt-H bond instead -- so a drawn bond is a
+    correction *of* perception. Letting perception overwrite it is the tool
+    arguing with the person using it.
+
+    It became reachable when the lines were set to follow the distances by
+    default: perception then runs on every redraw, which is every frame of a
+    drag, and it recomputes the bond list from scratch. Applied once and
+    forgotten, a drawn bond survived until the next redraw and then went --
+    while remaining in force everywhere else, which is the same defect
+    ``applyBondEdits`` was written for, one layer further in.
+    """
+    from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
+
+    js = submit_manip_bootstrap_js()
+    # Kept where perception can see them, not only applied once.
+    kept = js.split('function applyBondEdits(', 1)[1].split('\n    function ', 1)[0]
+    assert 'getState(scopeKey).bondEdits' in kept
+
+    # And laid back over what the distances said, in the one place every drag
+    # frame and every set of coordinates goes through.
+    draw = js.split('function drawHighlightsNow(', 1)[1].split(
+        '\n    function ', 1)[0]
+    where = draw.index('perceiveBonds(viewer)')
+    assert 'keepTheHandsBonds(scopeKey, viewer)' in draw[where:], (
+        'the corrections have to go back on after perception, not before')
+
+    holds = js.split('function keepTheHandsBonds(', 1)[1].split(
+        '\n    function ', 1)[0]
+    assert 'linkOne(' in holds and 'unlinkOne(' in holds, (
+        'a bond that was cut has to stay cut for the same reason')

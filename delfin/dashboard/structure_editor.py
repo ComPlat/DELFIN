@@ -1707,16 +1707,25 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         description='Bond', icon='link', button_style='',
         tooltip=(
             'Draw a bond between the two selected atoms. Distance-based '
-            'perception is unreliable in a crowded coordination sphere, and '
-            'the coordination number and the force field both follow from '
-            'these bonds.'
+            'perception is unreliable in a crowded coordination sphere -- on '
+            'a real Pt complex it counted two phenyl carbons as donors and '
+            'invented a Pt-H bond instead. What follows from these bonds is '
+            'the picture, the coordination number, the polyhedron and the '
+            'hybridisation. Under UFF and MMFF94 the force field follows too; '
+            'xtb and MOPAC take no bond list at all and work the bonding out '
+            'from the electronic structure, so under GFN and PM this changes '
+            'what the editor holds a bond to be and not what is computed.'
         ),
         layout=widgets.Layout(width='74px', height='30px'),
         disabled=True,
     )
     submit_unbond_btn = widgets.Button(
         description='Unbond', icon='unlink', button_style='',
-        tooltip='Remove the bond between the two selected atoms.',
+        tooltip=('Remove the bond between the two selected atoms. Like '
+                 'Bond, this is what the editor holds a bond to be -- the '
+                 'picture, the coordination number, the polyhedron, the '
+                 'hybridisation, and the force field under UFF and MMFF94. '
+                 'xtb and MOPAC decide the bonding for themselves.'),
         layout=widgets.Layout(width='90px', height='30px'),
         disabled=True,
     )
