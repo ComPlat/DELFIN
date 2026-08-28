@@ -426,9 +426,12 @@ def test_a_mark_from_another_molecule_is_not_offered():
     part.submit_ff_dd.value = _method(part, 'gfn2')
     part.on_submit_path_from()
 
-    # The other end, same molecule: the start appears, which is the route the
-    # user takes when he has not run a scan.
+    # The other end, same molecule, marked in its turn: two slots and two
+    # presses, so the pair is what was marked rather than whatever happens to
+    # be on screen. This is the route the user takes when he has not run a
+    # scan.
     part.coords_widget.value = _STRETCHED
+    part.on_submit_path_from()
     part._refresh_saddle_controls()
     assert _values(part.submit_saddle_from) == ['marked']
     assert _shown(part.submit_saddle_btn)
@@ -437,14 +440,24 @@ def test_a_mark_from_another_molecule_is_not_offered():
                                                'walk']
     assert _shown(part.submit_saddle_how)
 
-    # Another molecule, the mark still held: it is not a pair for this one.
+    # Another molecule on screen, and the pair is untouched -- which is what
+    # two slots buy. The defect this guards against was a pair *made* of the
+    # mark and whatever was on screen: an ethane marked with a water showing
+    # put "the end you marked" in the box over a press that walks eight atoms
+    # into three. It cannot arise now, because the pair is two things that
+    # were both marked and are matched to each other.
     part.coords_widget.value = _WATER
     part._refresh_saddle_controls()
-    assert _values(part.submit_saddle_from) == ['here']
-    assert not _shown(part.submit_saddle_from)
+    assert part._marked_pair() is not None
+    assert _values(part.submit_saddle_from) == ['marked']
+
+    # And a pair that really is mismatched is refused, said of the two marks
+    # rather than of the screen.
+    state['path_to'] = _WATER
     assert part._marked_pair() is None
     assert part._path_ends('marked') is None
-    assert 'different molecule' in ' '.join(state.get('mol_status_lines') or ())
+    assert 'different molecules' in ' '.join(
+        state.get('mol_status_lines') or ())
 
 
 def test_a_mark_is_not_an_undo_step_and_is_not_taken_back_by_one():
@@ -462,6 +475,7 @@ def test_a_mark_is_not_an_undo_step_and_is_not_taken_back_by_one():
     part.submit_ff_dd.value = _method(part, 'gfn2')
     part.on_submit_path_from()
     part.coords_widget.value = _STRETCHED
+    part.on_submit_path_from()
     part._refresh_saddle_controls()
     assert _values(part.submit_saddle_from) == ['marked']
 
