@@ -1766,6 +1766,46 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         }
     }
 
+    function keepTheBondKinds(scopeKey, viewer) {
+        // What kind of bond each line is.  An XYZ block carries none: it is
+        // element and three numbers, so 3Dmol builds every bond as a single
+        // one and asking it to draw double and triple bonds draws nothing
+        // different.  The orders come from the same perception the force
+        // field types the atoms with, worked out on the server and sent in,
+        // so the picture and the calculation are one opinion rather than two.
+        var state = getState(scopeKey);
+        if (state.bondKinds === undefined) return false;
+        var atoms = getAtoms(viewer);
+        if (!atoms || !atoms.length) return false;
+        var changed = false;
+        var want = state.bondKinds ? (state.bondOrders || null) : null;
+        var by = null;
+        if (want && want.length) {
+            by = {};
+            for (var n = 0; n < want.length; n++) {
+                var a = want[n][0] | 0, b = want[n][1] | 0;
+                by[Math.min(a, b) + '-' + Math.max(a, b)] = want[n][2] | 0;
+            }
+        }
+        for (var i = 0; i < atoms.length; i++) {
+            var bonds = atoms[i].bonds || [];
+            var orders = atoms[i].bondOrder || (atoms[i].bondOrder = []);
+            for (var k = 0; k < bonds.length; k++) {
+                var j = bonds[k] | 0, order = 1;
+                if (by) {
+                    // Three is as far as 3Dmol draws.  A quadruple metal-metal
+                    // bond is a real thing to perceive and there is no fourth
+                    // cylinder to draw it with, so it is shown as a triple
+                    // rather than as nothing.
+                    var found = by[Math.min(i, j) + '-' + Math.max(i, j)];
+                    if (found > 1) order = found > 3 ? 3 : found;
+                }
+                if (orders[k] !== order) { orders[k] = order; changed = true; }
+            }
+        }
+        return changed;
+    }
+
     function perceiveBonds(viewer) {
         var atoms = getAtoms(viewer);
         var n = atoms.length;
@@ -2029,6 +2069,14 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             // answers where the atoms are, not what the person decided.
             keepTheHandsBonds(scopeKey, viewer);
         }
+        // And what kind each line is, whether or not the lines themselves are
+        // being worked out again: perception rebuilds the list from the
+        // distances and knows nothing about orders, and a bond the hand drew
+        // arrives as a single one.  A line that changes kind changes the
+        // sticks, so it is not a markers-only frame however it was asked for
+        // -- which is how the orders reach a viewer that was told about them
+        // before it existed.
+        if (keepTheBondKinds(scopeKey, viewer)) state.highlightsOnly = false;
         // The sticks and spheres are rebuilt only when the molecule has
         // actually changed. Picking three atoms moves nothing -- only the
         // translucent markers over them change -- and rebuilding a
@@ -3165,30 +3213,30 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     // only if the model knows the order -- and a model read from an XYZ block
     // cannot, because the format has no orders in it. So they are handed over
     // separately, after every render that changes them.
-    function setBondOrders(scopeKey, triples) {
+    function setBondOrders(scopeKey, triples, on) {
+        // Kept, not only applied.  Perception rebuilds the bond list from the
+        // distances on every redraw -- which is every frame of a drag now that
+        // the lines follow them by default -- and it carries an order across
+        // only for a pair that survives.  A bond that is broken and made again
+        // comes back single, and so does one the hand draws.  Held here, the
+        // orders are put back after every perception instead.
+        //
+        // ``on`` false is how they are taken off again: an XYZ block carries
+        // no orders, so a structure starts with every line single, and going
+        // back to that is setting them all to one rather than forgetting what
+        // was said.  Left out, it means on -- the older callers hand over the
+        // orders precisely because they want them drawn.
+        var state = getState(scopeKey);
+        state.bondKinds = (on === undefined) ? true : !!on;
+        state.bondOrders = (triples || []).slice();
         var viewer = getViewer(scopeKey);
         if (!viewer) return 0;
-        var atoms = getAtoms(viewer);
-        var changed = 0;
-        for (var n = 0; n < (triples || []).length; n++) {
-            var i = triples[n][0] | 0, j = triples[n][1] | 0;
-            var order = triples[n][2] | 0;
-            if (order < 1 || order > 3) continue;
-            if (!atoms[i] || !atoms[j]) continue;
-            var at = (atoms[i].bonds || []).indexOf(j);
-            var back = (atoms[j].bonds || []).indexOf(i);
-            if (at < 0 || back < 0) continue;
-            atoms[i].bondOrder = atoms[i].bondOrder || [];
-            atoms[j].bondOrder = atoms[j].bondOrder || [];
-            if (atoms[i].bondOrder[at] !== order) changed++;
-            atoms[i].bondOrder[at] = order;
-            atoms[j].bondOrder[back] = order;
-        }
+        var changed = keepTheBondKinds(scopeKey, viewer);
         if (changed) {
             invalidateGeometry(viewer);
             try { viewer.render(); } catch (e) {}
         }
-        return changed;
+        return changed ? 1 : 0;
     }
 
     function linkOne(atoms, a, b) {

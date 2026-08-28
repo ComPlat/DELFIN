@@ -1501,12 +1501,16 @@ def test_a_double_bond_is_drawn_as_two_sticks():
     Measured in a browser on ethene: the C-C order goes 1, 2, 3 and the
     geometry built for it goes 36, 40, 44 vertices."""
     body = _body('setBondOrders')
-    assert 'atoms[i].bondOrder[at] = order;' in body
-    assert 'atoms[j].bondOrder[back] = order;' in body   # both ends
+    # Kept in the scope rather than written once into a viewer: perception
+    # rebuilds the bond list from the distances on every redraw and carries an
+    # order over only for a pair that survives, so a bond broken and made
+    # again came back single.
+    assert 'state.bondOrders = (triples || []).slice();' in body
     assert 'invalidateGeometry(viewer)' in body
-    assert 'if (order < 1 || order > 3) continue;' in body
 
-    from delfin.dashboard import tab_submit
+    kinds = _body('keepTheBondKinds')
+    assert 'orders[k] = order' in kinds
+    assert 'found > 3 ? 3 : found' in kinds   # three is as far as 3Dmol draws
 
     source = _EDITOR_PY
     push = source.split('def _push_bond_orders')[1].split('\n    def ')[0]
