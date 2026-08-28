@@ -2841,6 +2841,12 @@ def test_the_saddle_search_is_offered_where_orca_can_drive_the_method(editor):
     from delfin.dashboard import saddle as _saddle
 
     part = editor()
+    # With something to search between, which is the other half of the
+    # question: a method that can drive a saddle and a pair to drive it from.
+    # From a bare structure the press is not offered at all -- ORCA's OptTS
+    # takes any geometry, and from an ordinary minimum that is a coin flip.
+    part.state['scan_ends'] = (part.coords_widget.value,
+                               part.coords_widget.value)
     for method in _METHODS:
         part.submit_ff_dd.value = method
         assert _visible(part.submit_saddle_btn) is (

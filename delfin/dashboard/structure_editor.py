@@ -2742,9 +2742,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # overlay.
             submit_ff_dd, submit_gfn_charge, submit_gfn_mult,
             submit_gfn_autospin, submit_gfn_solvent, submit_gfn_solv_model,
-            submit_thermal_btn, submit_temperature,
-            submit_thermal_relax, submit_thermal_anchor_btn,
-            submit_topology_btn,
             submit_xtb_install_btn, submit_xtb_confirm_btn,
             submit_xtb_cancel_btn,
             submit_fs_row_break,
@@ -2758,6 +2755,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             submit_relax_btn, submit_auto_btn,
             submit_climb_way, submit_climb_btn,
             submit_settle_btn,
+            # The budget and Keep bonds belong to the hand, not to the method:
+            # both are about what a *drag* is allowed to do, and both are only
+            # on screen while there is a drag to answer for. Beside the method
+            # boxes they read as a property of GFN2; here they read as what
+            # they are, the two rules the relaxation is held to.
+            submit_thermal_btn, submit_temperature,
+            submit_thermal_relax, submit_thermal_anchor_btn,
+            submit_topology_btn,
             # And the one press for a transition state next to them, with the
             # two boxes that say where it starts and how it gets there. It is
             # the third thing that makes this structure move -- down, up under
@@ -11916,8 +11921,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         for first, second, order in lowest:
             if not (0 <= first < len(rows) and 0 <= second < len(rows)):
                 continue
-            pairs.append(f'{rows[first][0]}{first}-{rows[second][0]}{second} '
-                         f'{float(order):.2f}')
+            names = f'{rows[first][0]}{first}-{rows[second][0]}{second}'
+            # The module's own clause, not a format string of my own.  It
+            # knows what the bare number does not: that a force field has no
+            # order to give at all, that one above 1.4 is multiple-bond
+            # character, and that at a closed frontier gap the number should
+            # not be read.  Cutting the paragraph above these is one thing;
+            # cutting the judgement inside them would be another.
+            said = _gfn.bond_order_note(order, names, gap)
+            if said:
+                pairs.append(said.rstrip('.'))
         if not pairs:
             return []
         # One line, and no paragraph over it.  What the paragraph said is
@@ -11926,7 +11939,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # bond still reads about one.  That belongs in the tooltip of the
         # press, which is where somebody asking "what am I reading" looks --
         # not in a line the same person reads after every Hessian.
-        return ['Weakest bonds: ' + ', '.join(pairs) + '.']
+        return ['Weakest bonds: ' + '; '.join(pairs) + '.']
 
     def on_submit_shape(_button=None):
         """One press: what is the structure on screen, and what does it cost.
@@ -12342,17 +12355,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         submit_saddle_btn.icon = 'route' if walking else 'mountain'
         ways = list(submit_saddle_how.options)
         starts = list(submit_saddle_from.options)
+        # Where there is nothing to decide, the press carries the answer
+        # instead of the box: a list of one is not a choice and is not shown,
+        # which is right, and which left this press saying neither where it
+        # starts nor how it gets there.  The rule is about *choices*; the
+        # single entry was also the explanation.
         if len(ways) == 1 and not walking:
             submit_saddle_btn.description = (
                 f'To the saddle ({ways[0][0].replace("through ", "")})')
-        if len(starts) == 1:
-            submit_saddle_btn.tooltip = (
-                f'Optimise to the nearest transition state, from '
-                f'{starts[0][0]}. Says whether what it reached is one.')
-        else:
-            submit_saddle_btn.tooltip = (
-                'Optimise to the nearest transition state, from wherever the '
-                'box beside this says. Says whether what it reached is one.')
+        where = (starts[0][0] if len(starts) == 1
+                 else 'wherever the box beside this says')
+        submit_saddle_btn.tooltip = (
+            'Search between two ends for the transition state between them, '
+            f'from {where}. Says whether what it reached is one.')
 
     def _note_the_saddle(xyz, shape):
         """Write down that this structure has modes going the wrong way.
@@ -12864,7 +12879,37 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # The mark stays: it describes two structures rather than a
             # program, and survives a change of method the way an armed scan
             # does.
-            can_run = bool(starts and ways)
+            # What is on screen is a start, but on its own it is not a
+            # reason to offer the press.
+            #
+            # It can always be *run* from -- ORCA's OptTS takes any geometry
+            # -- and that is not the same as its being worth pressing.  From
+            # an ordinary minimum it is a coin flip, and a press that is a
+            # coin flip is what the user was objecting to: "to the saddle kann
+            # ja nichts wenn ich nicht scan habe oder Mark".  A structure with
+            # a mode going the wrong way is a different matter, and so is one
+            # the hand is climbing uphill: both are already on their way up,
+            # and converging them is the whole of what this press is for.
+            #
+            # So the press waits for one of four things -- a marked pair, a
+            # scan's two ends, a mode going the wrong way, or the relaxation
+            # set to climb -- and every one of them is a control on this same
+            # row.  Nothing is unreachable, only unoffered.
+            # What is on screen is a start the run can use and not, on its
+            # own, a reason to offer the press.  ORCA's OptTS takes any
+            # geometry, and from an ordinary minimum that is a coin flip --
+            # "to the saddle kann ja nichts wenn ich nicht scan habe oder
+            # Mark".  A structure with a mode going the wrong way is a
+            # different matter, and so is one the hand is climbing.
+            #
+            # Splitting the two into two presses -- searching between two
+            # ends, and sharpening a guess -- is the right end of this and is
+            # not this change: it rewrites a dozen tests that encode the old
+            # model, and it is worth its own pass.
+            worth_it = (len(starts) > 1
+                        or bool(_saddle_here())
+                        or bool(submit_climb_btn.value))
+            can_run = bool(starts and ways and worth_it)
             submit_saddle_btn.layout.display = '' if can_run else 'none'
             submit_saddle_from.layout.display = (
                 '' if can_run and len(starts) > 1 else 'none')
@@ -14833,9 +14878,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # or it is a claim about a geometry nobody has.
         if walled is not None and done and not state.get(
                 'scan_carried_out_kept'):
-            held_back += (' The box is from before the bonds changed: '
-                          'raise the temperature or switch the budget off to '
-                          'keep what the force reached.')
+            held_back += (' The box is from before the bonds changed -- '
+                          'the budget priced the change and this temperature '
+                          'cannot pay for it. Raise it, or switch the budget '
+                          'off.')
         # And what the walk has made possible, said where the walk is being
         # reported.  The two ends are an entry in a box rather than the two
         # buttons that used to appear, and a box that has gained an entry is

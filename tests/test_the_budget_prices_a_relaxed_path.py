@@ -3080,7 +3080,13 @@ def test_a_path_can_be_marked_one_structure_at_a_time():
     """
     source = EDITOR_SOURCE
     assert 'submit_path_from_btn = widgets.Button(' in source
-    assert "description='Mark this end'" in source
+    # It names which half of the gesture is next: pressed once it is the
+    # beginning, and then it asks for the end. "Mark this end" said the same
+    # thing before and after, and before there is a second structure nothing
+    # visible happens -- which is what made it look like a press that does
+    # nothing.
+    assert "description='Mark the beginning'" in source
+    assert "'Mark the end' if state.get('path_from')" in source
     assert "state['path_from'] = xyz" in source
     assert 'submit_path_from_btn.on_click(on_submit_path_from)' in source
     # Which of the two sources is used is asked rather than assumed: it used
