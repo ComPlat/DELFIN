@@ -2282,7 +2282,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             'order -- or none of those, which is the answer for a structure '
             'that is still on a slope. Nothing is optimised and nothing is '
             'moved. The free energy, enthalpy, entropy and zero-point energy '
-            'come with it, at the temperature in the box on this row. '
+            'come with it, at the temperature in the box on this row -- the '
+            'zero-point energy apart from the others, because it is the one '
+            'no temperature takes away. The weakest bond orders come with it '
+            'too, as a reading rather than as evidence: an order is not a '
+            'test of whether a bond is there, and under a closed shell a '
+            'bond broken homolytically still reads about one. '
             'Seconds for a small structure and minutes for a large one, so '
             'it is a press rather than something that happens by itself.'
         ),
@@ -10448,20 +10453,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             others = [one for one in legs if one is not leg]
             _set_mol_status(
                 f'Armed: {_describe_leg(leg)}. '
-                + ('Arm the other half on a second pair -- one bond made '
-                   'while another breaks is what most reactions are -- or '
-                   'press Run scan.' if not others else
+                + ('Arm a second pair for a concerted step, or press Run '
+                   'scan.' if not others else
                    'Together: ' + ', '.join(_describe_leg(one) for one in legs)
                    + '.')
-                + (' Set to "push with a force"; a walk drives a value and a '
-                   'verb needs a force.'
+                + (' Set to "push with a force": a verb needs one.'
                    if str(submit_scan_how.value) != 'push' else ''))
             _clear_selection()
             return
         _set_mol_status(
             f'Armed {_describe_leg(legs[-1])} in {legs[-1]["steps"]} steps. '
-            + ('Arm another to walk them together, which is what a concerted '
-               'step needs, or press Run scan.' if len(legs) == 1 else
+            + ('Arm another for a concerted step, or press Run scan.'
+               if len(legs) == 1 else
                f'{len(legs)} legs, walked together.') + clipped)
         _clear_selection()
 
@@ -11832,17 +11835,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return []
         parts = []
         if free is not None:
-            parts.append(f'G = {float(free) * _HARTREE_TO_KCAL:.2f}')
+            parts.append(f'G {float(free) * _HARTREE_TO_KCAL:.2f}')
         if heat is not None:
-            parts.append(f'H = {float(heat) * _HARTREE_TO_KCAL:.2f}')
+            parts.append(f'H {float(heat) * _HARTREE_TO_KCAL:.2f}')
         if ts is not None:
-            parts.append(f'T*S = {float(ts) * _HARTREE_TO_KCAL:.2f}')
-        said = [f'At {warmth:g} K, in kcal/mol: ' + ', '.join(parts) + '.']
+            parts.append(f'T*S {float(ts) * _HARTREE_TO_KCAL:.2f}')
         if zpe is not None:
-            said.append('The zero-point energy is '
-                        f'{float(zpe) * _HARTREE_TO_KCAL:.2f} kcal/mol, which '
-                        'no temperature takes away.')
-        return said
+            parts.append(f'ZPE {float(zpe) * _HARTREE_TO_KCAL:.2f}')
+        # One line, four numbers, and the units and the temperature once at
+        # the end.  The zero-point energy used to have a sentence of its own
+        # explaining that no temperature takes it away, which is true and is
+        # not news every time a Hessian is taken: it is in the tooltip of the
+        # press instead.
+        return [' · '.join(parts) + f' kcal/mol at {warmth:g} K.']
 
     def _said_curvature(shape):
         """What the modes say where nothing is standing still.
@@ -11900,23 +11905,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         lowest = sorted(
             (one for one in bonds if float(one[2]) < _gfn.BOND_WORTH_SAYING),
             key=lambda one: float(one[2]))[:int(most)]
-        said = []
+        pairs = []
         for first, second, order in lowest:
             if not (0 <= first < len(rows) and 0 <= second < len(rows)):
                 continue
-            names = (f'{rows[first][0]}{first}-{rows[second][0]}{second}')
-            said.append(_gfn.bond_order_note(order, names, gap))
-        said = [one for one in said if one]
-        if said:
-            # Once, above them, and only where there are any to read. This is
-            # the sentence that keeps the numbers from being read as a bond
-            # watch, and it is the press that can afford it -- the drag line
-            # quotes the bare number, several times a second.
-            said.insert(0, 'The lowest bond orders here, as a readout -- an '
-                            'order is not a test of whether a bond is there, '
-                            'and under a closed shell a bond broken '
-                            'homolytically still reads about one:')
-        return said
+            pairs.append(f'{rows[first][0]}{first}-{rows[second][0]}{second} '
+                         f'{float(order):.2f}')
+        if not pairs:
+            return []
+        # One line, and no paragraph over it.  What the paragraph said is
+        # true and is not news every time: an order is not a test of whether
+        # a bond is there, and under a closed shell a homolytically broken
+        # bond still reads about one.  That belongs in the tooltip of the
+        # press, which is where somebody asking "what am I reading" looks --
+        # not in a line the same person reads after every Hessian.
+        return ['Weakest bonds: ' + ', '.join(pairs) + '.']
 
     def on_submit_shape(_button=None):
         """One press: what is the structure on screen, and what does it cost.
@@ -11984,8 +11987,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     return
                 _remember_charges(found)
                 _repaint_labels()
-                lines = [f'{label}: {found["seconds"]:.1f} s for the Hessian '
-                         f'on {atoms} atoms, and the structure is untouched.']
+                # What it cost goes last rather than first.  The answer is
+                # what the press was for; how long it took is how it was
+                # arrived at, and a line about the machine standing above the
+                # line about the molecule is the wrong way round.
+                cost = (f'{label}, {found["seconds"]:.1f} s, {atoms} atoms, '
+                        'structure untouched.')
+                lines = []
                 # First, because it decides how the rest may be worded: the
                 # names a Hessian goes by -- a minimum, a transition state --
                 # all mean "stationary point of this order", and none of them
@@ -12008,6 +12016,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     lines.append(depth)
                 lines.extend(_lowest_bond_orders_said(
                     found.get('bonds'), xyz, found.get('gap')))
+                lines.append(cost)
                 _set_mol_status(*lines)
 
             schedule_ui_update(_done)
@@ -12605,9 +12614,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             f'Drawing the mode at {float(cm[picked]):.0f} cm-1: '
             f'{_climb.MODE_SWINGS} swings, about {seconds:.0f} s, and it '
             'stops on the structure it started from.',
-            'The atoms it moves are the atoms the reaction moves. It is a '
-            'picture and nothing else: the coordinates in the box do not '
-            'change, and taking hold of the structure puts it straight back.'
+            'The atoms it moves are the atoms the reaction moves. A '
+            'picture only -- the box does not change.'
             + ('' if amplitude >= _climb.MODE_AMPLITUDE else
                f' Drawn at {amplitude:.2f} A rather than the usual '
                f'{_climb.MODE_AMPLITUDE:.2f} -- further than that and this '
@@ -14729,10 +14737,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             first = (f'The scan walked {many}. Highest at {top[0]:.3g}: '
                      f'{free[0]:+.1f} kcal/mol as a free energy at {T:g} K '
                      f'({top[1]:+.1f} electronic), ending {free[1]:+.1f} '
-                     f'({ends:+.1f}).{arrived} The free energies are from '
-                     f'three Hessians -- where it started, the top, and where '
-                     f'it came to -- and they are what the temperature below '
-                     f'is worked out from.{_scan_free_is_an_estimate()}')
+                     f'({ends:+.1f}).{arrived}'
+                     f'{_scan_free_is_an_estimate()}')
         # What was asked for, and whether it happened.  Said before the
         # temperature, because it is the question: a walk given a verb was not
         # asked how high the path was, it was asked to make a bond.
@@ -14794,11 +14800,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # or it is a claim about a geometry nobody has.
         if walled is not None and done and not state.get(
                 'scan_carried_out_kept'):
-            held_back += (' So the structure you have is from before the '
-                          'bonds changed -- the budget priced the change and '
-                          'this temperature cannot pay for it. Raise the '
-                          'temperature to see what it would take, or switch '
-                          'the budget off to keep what the force reached.')
+            held_back += (' The box is from before the bonds changed: '
+                          'raise the temperature or switch the budget off to '
+                          'keep what the force reached.')
         # And what the walk has made possible, said where the walk is being
         # reported.  The two ends are an entry in a box rather than the two
         # buttons that used to appear, and a box that has gained an entry is
@@ -14812,25 +14816,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # exactly what a walk that left something shows before anyone looks --
         # nothing.  Silence there is the editor claiming there was never
         # anything to offer, which is what the user was left reading.
-        left = (' It left two ends, and the press now starts from them: one '
-                'press walks its own way between the two and climbs what it '
-                'finds, without the coordinate you chose. The box beside it '
-                'says how far to go, and the one before it goes back to the '
-                'structure on screen.'
+        left = (' It left two ends: the saddle press now starts from them.'
                 if state.get('scan_ends') else
-                ' It left no two ends to walk between, so there is no path to '
-                'investigate from it and the box beside the press has no pair '
-                'to offer -- what is on screen is all there is to climb. Run '
-                'a scan that gets further, or mark two structures by hand.')
-        if rise <= ceiling:
-            return (first,
-                    f'{wants} You have {ceiling:.1f} kcal/mol at {T:g} K, so '
-                    f'the whole path is open. {_thermal_wait(rise, T)}'
-                    + held_back + left)
+                ' It left no two ends: run a scan that gets further, or '
+                'mark two structures by hand.')
+        # One clause for the ceiling rather than two: the number and what
+        # the number means were being said one after the other, and "open" or
+        # "closed" is the whole of what the second one added.
+        stands = ('open' if rise <= ceiling else 'closed')
         return (first,
-                f'{wants} At {T:g} K only {ceiling:.1f} kcal/mol is '
-                f'available, so the path is closed there. '
-                f'{_thermal_wait(rise, T)}' + held_back + left)
+                f'{wants} {ceiling:.1f} kcal/mol at {T:g} K, so the path is '
+                f'{stands}. {_thermal_wait(rise, T)}' + held_back + left)
 
     def _scan_plot_drop():
         """Take the profile off the page.
@@ -15363,14 +15359,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return
         _push_play_speed()
         asked = int(submit_play_speed.value)
+        # What the setting does, not what it implies.  The slider's own
+        # tooltip carries the rest: that a slower picture lets the calculation
+        # run ahead, that a hand then keeps the frame on screen, and that
+        # dragging keeps up whatever this says.
         _set_mol_status(
-            'The picture keeps up with the calculation: every frame is drawn '
-            'as soon as it arrives.'
+            'The picture keeps up with the calculation.'
             if asked >= int(submit_play_speed.max) else
-            f'The optimisation is drawn at {asked} frame(s) a second. Slower '
-            'lets the calculation run ahead of the picture -- take hold of an '
-            'atom and the frame you are looking at is the one that is kept. '
-            'Dragging always keeps up, whatever this says.')
+            f'Drawn at {asked} frame(s) a second.')
 
     def on_submit_thermal(change):
         """Switching the budget on anchors it; switching it off forgets."""
@@ -15890,13 +15886,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return
         _set_mol_status(
             'Dragging pulls: the atom follows as far as the chemistry allows.'
-            + (' The thermal budget measures it again.' if budget else '')
             if pulling else
             'Dragging moves: the atom goes where you put it and the rest '
             'settles around it.'
-            + (' The thermal budget does not act on a placing hand -- what is '
-               'kept there is not exactly what was priced -- so it is out of '
-               'the way until you pull again.' if budget else ''))
+            + (' The budget is out of the way until you pull again.'
+               if budget else ''))
         _tell_the_page_the_hand()
 
     def on_submit_pull_changed(change):

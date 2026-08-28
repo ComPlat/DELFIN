@@ -1057,7 +1057,7 @@ def test_the_scan_says_which_temperature_it_would_take():
     assert "thermal_temperature(" in body
     assert "wants about" in body
     # Wrapped across two lines in the source, so only the start of it.
-    assert "the whole path is " in body
+    assert "so the path is " in body
 
 
 def test_a_scan_stops_at_the_next_minimum():
@@ -1108,10 +1108,12 @@ def test_the_temperature_is_named_whether_the_path_is_open_or_not():
     something; without it an open scan said only how long it took.
     """
     body = EDITOR_SOURCE.split("def _scan_verdict(")[1].split("\n    def ")[0]
-    # One phrase, before the two branches, so both carry it.
-    assert body.index("wants = (") < body.index("if rise <= ceiling:")
-    assert "the whole path is open" in body.replace("'\n", "").replace(
-        "                    f'", "")
+    # One phrase, before the branch, so it is carried whichever way the
+    # ceiling falls -- there is one line now rather than two nearly identical
+    # ones, and "open" or "closed" is the whole of the difference.
+    assert body.index("wants = (") < body.index("stands = (")
+    # And the word that says which it is, in the one line both cases share.
+    assert "'open' if rise <= ceiling else 'closed'" in body
 
 
 def test_squeezing_is_refused_without_asking_the_energy():
