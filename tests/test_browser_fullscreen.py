@@ -13,6 +13,8 @@ same button as a click, so the two can never disagree.
 
 from __future__ import annotations
 
+import inspect
+
 import pytest
 
 from delfin.dashboard import tab_calculations_browser as browser
@@ -152,3 +154,50 @@ def test_escape_presses_the_button_rather_than_undoing_the_class(page):
     assert 'calc-fullscreen-btn' in escape_block
     assert 'btn.click()' in escape_block
     assert 'calc-zen' in escape_block
+
+
+def test_every_tab_declares_the_scope_its_module_really_carries():
+    """The fullscreen finds a module's scope by the prefix of its class.
+
+    A tab says which prefix that is once, and the overlay machinery knows
+    nothing about any particular tab.  Say a prefix no class begins with and
+    ``classWithPrefix`` walks the ancestors, finds nothing and returns null --
+    the module has no scope, every per-scope thing the overlay does on the way
+    in is skipped, and nothing anywhere says so, because a module without a
+    scope is also what a tab with no editor looks like.
+
+    Measured by what it cost: the ORCA Builder declared ``orca-scope-`` while
+    its module carries the editor's ``submit-scope-<id>``, and in the enlarged
+    picture no atom could be picked and no band drawn.
+
+    So the declaration is checked against the class, for every tab, rather than
+    read and believed.
+    """
+    import re
+
+    from delfin.dashboard import (tab_calculations_browser, tab_orca_builder,
+                                  tab_remote_archive, tab_submit)
+
+    # What each tab hands to structure_viewer_fullscreen_kind_js, and where
+    # the id its module is classed with is made.
+    tabs = {
+        'submit': (tab_submit, 'submit-scope-'),
+        'orca': (tab_orca_builder, 'submit-scope-'),
+        'calc': (tab_calculations_browser, 'calc-scope-'),
+        'remote': (tab_remote_archive, 'remote-archive-scope-'),
+    }
+    for kind, (module, expected) in tabs.items():
+        source = inspect.getsource(module)
+        said = re.search(
+            r"structure_viewer_fullscreen_kind_js\(\s*'%s',\s*'([^']+)'" % kind,
+            source)
+        assert said, f'{kind}: no fullscreen declaration found'
+        assert said.group(1) == expected, (
+            f'{kind} declares {said.group(1)!r} but its module is classed '
+            f'with a {expected!r} id')
+        # And the prefix is one this tab can actually produce: either it makes
+        # the id itself, or it takes the editor's.
+        makes_it = f"{expected}{{" in source or f'{expected}{{' in source
+        borrows = 'orca_editor_scope' in source or '_editor.submit_scope_id' in source
+        assert makes_it or borrows, (
+            f'{kind}: nothing in this tab produces a {expected!r} class')
