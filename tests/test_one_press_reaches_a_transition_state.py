@@ -468,6 +468,16 @@ def test_no_press_in_the_editor_runs_against_a_clock():
     from delfin.dashboard import climb, structure_editor
 
     source = inspect.getsource(structure_editor)
+    # Nor the work that runs per drag frame.  That clock was never a limit on
+    # a hang: measured in relax_steps, twenty cycles on a hundred atoms under
+    # GFN2 take 17.5 s, so half again that many atoms was a step killed for
+    # being large.  Letting go is the way out instead -- see _hand_gone.
+    assert 'timeout=30.0' not in source, 'a drag frame is on a clock again'
+    assert 'def _hand_gone(' in source, (
+        'the drag frames lost their clock, so they need a way to be stopped')
+    assert source.count('should_stop=_hand_gone') == 4, (
+        'every run a drag frame starts has to hear the hand let go')
+
     assert 'seconds_for(method)' not in source, (
         'a press in the editor is running against a clock again')
     assert 'neb_seconds_for(method)' not in source

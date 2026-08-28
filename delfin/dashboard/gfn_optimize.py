@@ -4036,6 +4036,7 @@ def relax_steps(
     topology: Optional[Path] = None,
     solvent: Optional[str] = None,
     solvation_model: str = 'alpb',
+    should_stop: Optional[Callable[[], bool]] = None,
 ) -> Dict[str, Any]:
     """A few optimisation cycles, for a loop that shows the structure settling.
 
@@ -4070,7 +4071,7 @@ def relax_steps(
         xyz_text, method, charge=charge, uhf=uhf,
         max_steps=max(1, int(cycles)), timeout=timeout,
         constraints=constraints, topology=topology, solvent=solvent,
-        solvation_model=solvation_model,
+        solvation_model=solvation_model, should_stop=should_stop,
     )
     result['converged'] = bool(
         result.get('ok') and 'converged in' in str(result.get('status') or '')
