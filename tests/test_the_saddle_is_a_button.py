@@ -754,6 +754,7 @@ def test_one_press_of_the_real_button_walks_climbs_and_draws_it_once():
     state['current_xyz_for_copy'] = {'content': _REACTANT}
     part.on_submit_path_from()
     state['current_xyz_for_copy'] = {'content': _PRODUCT}
+    part.on_submit_path_from()
     # The pair is now a start the press can be given, and every way of
     # walking between the two ends is on the list beside it.
     part._refresh_saddle_controls()

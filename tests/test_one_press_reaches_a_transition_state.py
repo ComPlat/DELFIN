@@ -132,6 +132,7 @@ def test_the_two_questions_are_asked_once_each_and_reach_every_combination():
     # And a marked end is the third, named apart from the scan's -- which is
     # the combination no button reached.
     state['path_from'] = _FURTHER
+    state['path_to'] = _ETHANE
     part._refresh_saddle_controls()
     assert _values(part.submit_saddle_from) == ['marked', 'scan']
 
@@ -172,6 +173,7 @@ def test_the_marked_pair_appears_when_the_second_structure_is_drawn():
     part._refresh_saddle_controls()
     assert _values(part.submit_saddle_from) == ['here']
     state['current_xyz_for_copy'] = {'content': _STRETCHED}
+    part.on_submit_path_from()
     part._refresh_saddle_controls()
     assert _values(part.submit_saddle_from) == ['marked']
 
@@ -226,6 +228,7 @@ def test_the_press_runs_what_the_two_boxes_say(monkeypatch):
     state['current_xyz_for_copy'] = {'content': _ETHANE}
     state['scan_ends'] = (_ETHANE, _STRETCHED)
     state['path_from'] = _FURTHER
+    state['path_to'] = _ETHANE
     part._refresh_saddle_controls()
 
     wanted = [

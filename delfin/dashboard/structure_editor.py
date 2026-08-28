@@ -12324,10 +12324,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         return _structure_fingerprint(one) == _structure_fingerprint(other)
 
     def _marked_pair():
-        """The end that was marked and what is on screen, or nothing.
+        """The two structures that were marked, or nothing.
 
-        Two structures, marked one at a time, so nothing has to hold two at
-        once.  The same structure twice is not a pair.
+        Both of them, marked one at a time and both kept: the end used to be
+        whatever happened to be on screen, so the pair changed underneath the
+        user every time they looked at something else, and there was no way to
+        say "not that one, this one" short of marking again and hoping.  Two
+        slots and a press that empties them is the whole of the fix.
+
+        The same structure twice is not a pair.
 
         Nor are two different molecules.  A mark outlives the structure it was
         made on -- that is the whole point of it, the other end is loaded
@@ -12338,11 +12343,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         without it; a start that is on screen and would be refused on the
         press is the same defect as one that is missing when it would work.
         """
-        marked = state.get('path_from')
-        here = _current_xyz()
-        if marked and here and marked.strip() != here.strip():
-            return (marked, here) if _same_molecule(marked, here) else None
-        return None
+        first = state.get('path_from')
+        second = state.get('path_to')
+        if not first or not second:
+            return None
+        if first.strip() == second.strip():
+            return None
+        return (first, second) if _same_molecule(first, second) else None
 
     def _path_ends(which='marked'):
         """The two structures to walk between, or nothing and why.
@@ -12369,20 +12376,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         pair = _marked_pair()
         if pair:
             return pair
-        marked = state.get('path_from')
-        here = _current_xyz()
-        if marked and here and not _same_molecule(marked, here):
+        first = state.get('path_from')
+        second = state.get('path_to')
+        if first and second and not _same_molecule(first, second):
             _set_mol_status(
-                f'The end you marked is a different molecule from the one on '
-                f'screen ({len(_gfn.atom_lines(marked))} atoms against '
-                f'{len(_gfn.atom_lines(here))}). A walk between two ends '
-                'matches them row by row, so mark this one instead, or load '
-                'the structure the mark was made on.')
+                f'The two marks are different molecules '
+                f'({len(_gfn.atom_lines(first))} atoms against '
+                f'{len(_gfn.atom_lines(second))}). A path matches them row by '
+                'row, so clear the marks and set two of the same one.')
             return None
         _set_mol_status(
-            'A path needs two structures, and the one marked is the one on '
-            'screen. Press Mark this end on one of them and load or build '
-            'the other -- or run a scan, which leaves both.')
+            'A path needs two structures. Mark a beginning, build or load the '
+            'other end and mark that -- or run a scan, which leaves both.')
         return None
 
     def _name_the_saddle_press():
@@ -12986,7 +12991,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # button reading the same in both states is what made this look
             # like a press that does nothing.
             submit_path_from_btn.description = (
-                'Mark the end' if state.get('path_from')
+                'Clear the marks'
+                if state.get('path_from') and state.get('path_to')
+                else 'Mark the end' if state.get('path_from')
                 else 'Mark the beginning')
             # And what there is to do with a saddle, which exists exactly when
             # a search has found one and the box still holds it.  Not "when a
@@ -14203,11 +14210,38 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         xyz = _current_xyz()
         if not xyz:
             return
-        state['path_from'] = xyz
+        # Three states and one press, in the order the gesture is made:
+        # nothing, a beginning, both -- and the third press empties them so a
+        # new pair can be marked without hunting for a way to undo the old
+        # one.
+        if state.get('path_from') and state.get('path_to'):
+            state.pop('path_from', None)
+            state.pop('path_to', None)
+            _refresh_saddle_controls()
+            _set_mol_status('Marks cleared. Mark a beginning to start again.')
+            return
+        atoms = len(_gfn.atom_lines(xyz))
+        if not state.get('path_from'):
+            state['path_from'] = xyz
+            _refresh_saddle_controls()
+            _set_mol_status(
+                f'Beginning marked ({atoms} atoms). Build or load the other '
+                'structure and mark it as the end.')
+            return
+        if xyz.strip() == str(state['path_from']).strip():
+            _set_mol_status('That is the structure the beginning was marked '
+                            'on. Build or load the other end first.')
+            return
+        if not _same_molecule(state['path_from'], xyz):
+            _set_mol_status(
+                f'The beginning is a different molecule from this one '
+                f'({len(_gfn.atom_lines(state["path_from"]))} atoms against '
+                f'{atoms}). A path between two ends matches them row by row.')
+            return
+        state['path_to'] = xyz
         _refresh_saddle_controls()
-        _set_mol_status(
-            f'Beginning marked ({len(_gfn.atom_lines(xyz))} atoms). Build or '
-            'load the other structure and mark it as the end.')
+        _set_mol_status(f'End marked ({atoms} atoms). The saddle press now '
+                        'searches between the two.')
 
     def _path_then_orca(ends):
         """Two structures in, a converged saddle out, at one press.
