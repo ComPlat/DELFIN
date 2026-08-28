@@ -378,9 +378,11 @@ def test_the_two_new_controls_are_on_the_row_and_start_out_of_sight():
     """
     made, _box = _an_editor()
     # The label box is a member of the numbering group, which is one item of
-    # the toolbar: three controls that became one place to wrap between, so
-    # that adding a setting to them cost the row nothing.
-    assert made.submit_label_group in made.submit_manip_toolbar.children
+    # the panel that lies on the picture: three controls that became one place
+    # to wrap between, so that adding a setting to them cost their row
+    # nothing. Numbering is a fact about the picture and not about the
+    # structure, which is why the group is there and not on the toolbar.
+    assert made.submit_label_group in made.submit_view_body.children
     assert made.submit_label_what in made.submit_label_group.children
     assert made.submit_labels_btn in made.submit_label_group.children
     assert made.submit_shape_btn in made.submit_manip_toolbar.children
