@@ -2670,6 +2670,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         [], layout=widgets.Layout(display='none'))
     submit_fs_row_break.add_class('submit-fs-row-break')
 
+    #: And one that breaks the row wherever it is drawn.
+    #:
+    #: The measuring group -- pick two to four atoms, the value, Set, Hold --
+    #: is a sentence about a selection, and it was wrapping into whatever
+    #: space was left after the presses.  Where that space begins depends on
+    #: the width of the window and on which controls happen to be visible, so
+    #: the group started in a different place every time and was read as part
+    #: of whatever it landed next to.  A line of its own is one place.
+    submit_row_break = widgets.Box([], layout=widgets.Layout(width='100%'))
+    submit_row_break.add_class('submit-row-break')
+
     #: The controls that change what you see, laid on the picture itself.
     #:
     #: Ninety-two controls stood in one row, thirty-four of them at rest --
@@ -2783,6 +2794,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # pressing for a transition state rather than as the sibling of
             # Dynamik Opt and Auto that it is.
             submit_optimize_btn, submit_optimize_all_btn,
+            # Sharpening what is on screen onto the saddle it is near stands
+            # with the other two that act on what is on screen and need
+            # nothing else: down to a minimum, down through a set, up to a
+            # transition state.
+            submit_optts_btn,
             submit_relax_btn, submit_auto_btn,
             submit_climb_way, submit_climb_btn,
             submit_settle_btn,
@@ -2810,10 +2826,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # is 34 px taller at 1280 in the overlay; put inside it, taller
             # again at three widths.
             submit_path_from_btn, submit_saddle_from,
-            submit_saddle_how, submit_saddle_btn,
+            submit_saddle_how, submit_saddle_btn, submit_shape_btn,
             # The other question, which is not the same one: this converges a
             # guess and takes no pair.
-            submit_optts_btn, submit_shape_btn,
+
             # And what there is to do with a saddle once the press has found
             # one, immediately after it. They are absent until it has: the
             # visible controls are the answer to "what can I do now", so a
@@ -2823,9 +2839,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             submit_mode_dd, submit_mode_btn, submit_ends_btn,
             # And the two structures that press reached, once it has.
             submit_down_dd,
-            # And the lowest one the search has been through, with the
-            # other questions it has been asked beside it.
-            submit_best_btn, submit_best_dd,
             # And the switch between the structure and the profile of the
             # walk that has just finished. On the row above the picture
             # the two share, because that row is always on screen: put
@@ -2834,8 +2847,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             submit_scan_plot_btn, submit_walk_at,
             submit_poly_dd, submit_poly_turn_btn,
             submit_hyb_dd, submit_hyb_auto_btn,
-            submit_internal_group,
+            submit_row_break, submit_internal_group,
             submit_bond_btn, submit_unbond_btn,
+            # What the search has been through, at the far end of the row:
+            # it changes nothing and goes back to something already found, so
+            # it belongs after everything that builds and everything that
+            # runs.
+            submit_best_btn, submit_best_dd,
             submit_swap_btn, submit_constraint_dd, submit_constraint_del,
             submit_pick_sync, submit_cmd_sync,
             submit_manip_sync, submit_gfn_frame,
@@ -12970,15 +12988,24 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # row.  Nothing is unreachable, only unoffered.
             # This press is the pair, and nothing but the pair.
             can_run = bool(pairs and ways)
-            # And the other one is the structure on screen, offered where
-            # there is a reason to think it is on its way up: a mode going the
-            # wrong way, or a relaxation set to climb.  From an ordinary
-            # minimum ORCA's OptTS takes the geometry and wanders, and a press
-            # that is a coin flip is worse than one that is absent.
-            climbing = bool(_saddle_here()) or bool(submit_climb_btn.value)
+            # And the other one is the structure on screen, which is always
+            # a thing this can be asked of.
+            #
+            # It was offered only where something already said the structure
+            # was on its way up -- a mode going the wrong way, or the
+            # relaxation set to climb -- on the grounds that from an ordinary
+            # minimum ORCA's OptTS wanders.  That is true and it is not the
+            # user's whole practice: dragging a structure into the shape a
+            # transition state should have and then converging it is exactly
+            # what this editor is for, and there is nothing in the geometry
+            # that says a hand-made guess is one.  "ich kann ja auch selber
+            # was ziehen und von dort dann optTS machen."
+            #
+            # So it is there whenever the method can drive it, and only the
+            # pair press waits for a pair.
             submit_optts_btn.layout.display = (
-                '' if climbing
-                and str(chosen).lower() in _saddle.SADDLE_METHODS else 'none')
+                '' if str(chosen).lower() in _saddle.SADDLE_METHODS
+                else 'none')
             submit_saddle_btn.layout.display = '' if can_run else 'none'
             submit_saddle_from.layout.display = (
                 '' if can_run and len(starts) > 1 else 'none')
@@ -13374,24 +13401,32 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # you: offering to go back to it then would be the row
                 # pointing at a place the user has left.
                 state.pop('best_came_from', None)
+            # The press is named, not measured.  A count and a difference
+            # in the label make the button a readout that changes width every
+            # time an answer lands, and the numbers are on the list beside it
+            # where they can be compared.  What the press needs to say is
+            # which of two things it will do.
+            gap = (None
+                   if last.get('key') != here or last.get('energy') is None
+                   or kept.get('energy') is None
+                   else (float(kept['energy']) - float(last['energy']))
+                   * _HARTREE_TO_KCAL)
             if standing and state.get('best_came_from'):
                 submit_best_btn.description = 'Back to where you were'
                 submit_best_btn.icon = 'undo'
                 submit_best_btn.disabled = False
-            elif standing:
-                submit_best_btn.description = f'{of}: you are on it'
-                submit_best_btn.icon = 'star'
-                submit_best_btn.disabled = True
+                submit_best_btn.tooltip = (
+                    'Back to the structure you were on before you looked at '
+                    'the best one.')
             else:
-                gap = (None
-                       if last.get('key') != here or last.get('energy') is None
-                       or kept.get('energy') is None
-                       else (float(kept['energy']) - float(last['energy']))
-                       * _HARTREE_TO_KCAL)
-                submit_best_btn.description = (
-                    of if gap is None else f'{of}: {gap:+.1f} kcal/mol')
+                submit_best_btn.description = 'Best of'
                 submit_best_btn.icon = 'star'
-                submit_best_btn.disabled = False
+                submit_best_btn.disabled = bool(standing)
+                submit_best_btn.tooltip = (
+                    f'{of}. You are on it.' if standing else
+                    f'{of}. Go to it' + ('' if gap is None else
+                                         f' -- {gap:+.1f} kcal/mol from here')
+                    + '.')
             submit_best_btn.layout.display = ''
         _refresh_the_points_list()
 
