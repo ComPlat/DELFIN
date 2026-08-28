@@ -5740,10 +5740,18 @@ STRUCTURE_VIEWER_FULLSCREEN_CSS = r"""
    width came out with five different bars.  A column of controls that are the
    same control should look like one. */
 .delfin-structure-view-over .widget-readout {
-    flex: 0 0 3.4em !important;
-    width: 3.4em !important;
-    min-width: 3.4em !important;
-    text-align: right !important;
+    /* Wide enough for the widest of them, which is the pull at "0.40" --
+       four characters, and a box measured for three cuts the last one off.
+       Rendered here it reads "0.4" and looked right; the widget writes it to
+       two decimals. */
+    flex: 0 0 4.4em !important;
+    width: 4.4em !important;
+    min-width: 4.4em !important;
+    /* Centred in its own box, which is what a readout is everywhere else.
+       What makes the tracks equal is the fixed width; the alignment was an
+       addition of mine and it put every number against the right-hand wall
+       of a field it was meant to sit in. */
+    text-align: center !important;
 }
 .delfin-structure-view-over .slider-container {
     flex: 1 1 auto !important;

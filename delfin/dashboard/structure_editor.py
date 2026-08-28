@@ -1319,8 +1319,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     # the structure had rather than the one it has.  Off by default: it costs a
     # rebuild per frame, and in a crowded coordination sphere the perception is
     # at its limit and the lines flicker.
+    #: On to begin with.
+    #:
+    #: The lines a structure was drawn with stop being true the moment it is
+    #: dragged: a bond stretched apart keeps its line and a pair pushed
+    #: together never gets one.  Following the distances is what the picture
+    #: is *for* while a structure is being worked on, so it is the state to
+    #: start in rather than one to find.
     submit_dyn_bonds_btn = widgets.ToggleButton(
-        value=False, description='Dyn. bonds', icon='link',
+        value=True, description='Dyn. bonds', icon='link',
         tooltip=(
             'Let the lines between the atoms follow the distances while the '
             'structure moves, instead of keeping the bonds it was drawn with. '
@@ -15259,10 +15266,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             _set_mol_status('Polyhedron released.')
         _clear_selection()
 
-    def on_submit_dyn_bonds(change):
-        """Whether the drawn lines follow the distances."""
-        if change.get('name') != 'value':
-            return
+    def _tell_the_page_the_bonds():
+        """Say whether the lines follow the distances, on the way in as well.
+
+        A default is not a message.  This switch starts on, and the page was
+        told only when it *changed* -- so a session that never touched it had
+        a button reading "on" over a viewer keeping the bonds the structure
+        was drawn with, which is the switch describing something that is not
+        happening.  The same shape as the hand's own share; see
+        :func:`_tell_the_page_the_hand`.
+        """
         active = bool(submit_dyn_bonds_btn.value)
         submit_dyn_bonds_btn.button_style = 'info' if active else ''
         _ensure_manip_bootstrap()
@@ -15271,6 +15284,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             'window.__delfinSubmitManip.setDynamicBonds('
             f'{json.dumps(submit_scope_id)},{"true" if active else "false"});'
         )
+
+    def on_submit_dyn_bonds(change):
+        """Whether the drawn lines follow the distances."""
+        if change.get('name') != 'value':
+            return
+        active = bool(submit_dyn_bonds_btn.value)
+        _tell_the_page_the_bonds()
         _set_mol_status(
             'The lines follow the distances now. Only the picture: what the '
             'calculation holds together is Bond and Unbond\'s business.'
@@ -15820,6 +15840,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                      else 'none')
         # And the page hears it, which is what the paragraph above promises.
         _tell_the_page_the_hand()
+        # And whether the lines follow the distances, for the same reason: a
+        # switch that starts on has to be said once before it is true.
+        _tell_the_page_the_bonds()
 
     def _tell_the_page_the_hand():
         """Say what the hand is worth, whether or not anybody touched it.
