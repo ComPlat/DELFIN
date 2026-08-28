@@ -7290,7 +7290,9 @@ const said = [];
 function note(what) { said.push({what, cmd: cmdInput.value,
                                  orders: atoms.map(a => (a.bondOrder||[]).slice())}); }
 
-// The two double bonds, as Python would send them.
+// The two double bonds, as Python would send them.  The channel carries the
+// page's own hello from onViewerReady until something else is said on it.
+cmdInput.value = '';
 api.setBondOrders(SCOPE, [[0,1,2],[2,3,2]], true);
 note('told');
 
