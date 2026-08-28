@@ -2381,7 +2381,8 @@ def create_tab(ctx):
         # place, so nothing above or below moves. In a row of its own
         # under the panel it was a second panel that pushed the page
         # down and landed off the bottom of the screen.
-        [mol_output, _editor.submit_scan_plot, mol_status],
+        [mol_output, _editor.submit_scan_plot, _editor.submit_view_panel,
+         mol_status],
         layout=widgets.Layout(width='100%', min_width='0'),
     )
     mol_viewer_stack.add_class('delfin-structure-viewer-stack')

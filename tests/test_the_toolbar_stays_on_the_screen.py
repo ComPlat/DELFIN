@@ -338,6 +338,7 @@ def test_no_control_in_the_toolbar_can_end_up_off_the_row():
     from delfin.dashboard.molecule_viewer import (
         structure_viewer_fullscreen_bootstrap_js,
         structure_viewer_fullscreen_kind_js,
+        STRUCTURE_VIEWER_FULLSCREEN_CSS,
     )
 
     tab_widget, exports = _build_tab()
@@ -347,7 +348,13 @@ def test_no_control_in_the_toolbar_can_end_up_off_the_row():
     _arm_a_scan(exports)
     document = (
         '<!doctype html><html><head><meta charset="utf-8"><style>'
-        + stylesheet + '\nhtml, body { margin: 0; padding: 0; }\n'
+        # The editor's own sheet as well as the widget bundle's.  Without it
+        # this page is not the page: the rules that lay the status line and
+        # the view controls on the picture live here, and a panel measured
+        # without them stands in the flow and widens everything around it --
+        # which is a layout no user has ever seen.
+        + stylesheet + '\n' + STRUCTURE_VIEWER_FULLSCREEN_CSS
+        + '\nhtml, body { margin: 0; padding: 0; }\n'
         + '</style></head><body>' + _render(tab_widget)
         + '<script>' + structure_viewer_fullscreen_bootstrap_js() + '\n'
         + structure_viewer_fullscreen_kind_js(

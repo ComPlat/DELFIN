@@ -2553,12 +2553,60 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         [], layout=widgets.Layout(display='none'))
     submit_fs_row_break.add_class('submit-fs-row-break')
 
+    #: The controls that change what you see, laid on the picture itself.
+    #:
+    #: Ninety-two controls stood in one row, thirty-four of them at rest --
+    #: and at rest means nothing selected and nothing running.  The row
+    #: already did the hard half, hiding what is meaningless now; what it had
+    #: no answer for was that a slider tuning the feel of the mouse stood
+    #: between Reset and Optimise with nothing saying they are different kinds
+    #: of thing.
+    #:
+    #: Sorted by what a control *acts on*, which is how every editor of this
+    #: shape sorts them.  These act on the view or on the feel of the hand and
+    #: change no structure and start no calculation -- so they belong where
+    #: the eye already is, the way the status line does along the bottom edge.
+    #: Everything that touches the molecule or starts a run stays on the
+    #: toolbar.
+    #:
+    #: Open to begin with.  A panel that starts folded is a set of controls
+    #: the user has to be told about; folded away by hand it stays folded,
+    #: which is the other half of the same rule.
+    submit_view_open = widgets.ToggleButton(
+        value=True, icon='sliders', tooltip='Hide these controls',
+        layout=widgets.Layout(width='34px', height='26px'),
+    )
+    submit_view_body = widgets.VBox(
+        [submit_strength_slider, submit_hand_dd, submit_pull_slider,
+         submit_sens_slider, submit_play_speed,
+         submit_label_group,
+         widgets.HBox([submit_dyn_bonds_btn, submit_centre_btn],
+                      layout=widgets.Layout(gap='4px', flex_flow='wrap',
+                                            align_items='center'))],
+        layout=widgets.Layout(gap='2px', min_width='0'),
+    )
+    submit_view_panel = widgets.VBox(
+        [widgets.HBox([submit_view_open],
+                      layout=widgets.Layout(justify_content='flex-end')),
+         submit_view_body],
+        layout=widgets.Layout(min_width='0'),
+    )
+    submit_view_panel.add_class('delfin-structure-view-over')
+
+    def on_submit_view_open(change):
+        if change.get('name') != 'value':
+            return
+        showing = bool(change.get('new'))
+        submit_view_body.layout.display = '' if showing else 'none'
+        submit_view_open.tooltip = ('Hide these controls' if showing
+                                    else 'Show the view controls')
+
     submit_manip_toolbar = widgets.HBox(
         [
             submit_fullscreen_btn,
             submit_select_btn, submit_manip_btn, submit_draw_btn,
             submit_element_dd, submit_adjust_h_btn,
-            submit_manip_clear_btn, submit_centre_btn,
+            submit_manip_clear_btn,
             submit_manip_undo_btn, submit_manip_redo_btn, submit_reset_btn,
             # After Reset rather than before Undo, which is three buttons to
             # the right of where the numbering used to sit and is a placement
@@ -2572,7 +2620,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # placement does is not provoke it. After Reset the toolbar is
             # clear at 1024, 1280, 1536 and 1920 px, embedded and in the
             # overlay.
-            submit_label_group,
             submit_ff_dd, submit_gfn_charge, submit_gfn_mult,
             submit_gfn_autospin, submit_gfn_solvent, submit_gfn_solv_model,
             submit_thermal_btn, submit_temperature,
@@ -2580,8 +2627,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             submit_topology_btn,
             submit_xtb_install_btn, submit_xtb_confirm_btn,
             submit_xtb_cancel_btn,
-            submit_strength_slider, submit_hand_dd, submit_pull_slider,
-            submit_sens_slider, submit_play_speed,
             submit_fs_row_break,
             # Climb to TS stands with the other switches that say what a walk
             # does, because that is what it is: the same release path with the
@@ -2630,7 +2675,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             submit_poly_dd, submit_poly_turn_btn,
             submit_hyb_dd, submit_hyb_auto_btn,
             submit_internal_group,
-            submit_bond_btn, submit_unbond_btn, submit_dyn_bonds_btn,
+            submit_bond_btn, submit_unbond_btn,
             submit_swap_btn, submit_constraint_dd, submit_constraint_del,
             submit_pick_sync, submit_cmd_sync,
             submit_manip_status, submit_manip_sync, submit_gfn_frame,
@@ -16562,6 +16607,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
     submit_select_btn.observe(on_submit_select_toggle, names='value')
     submit_manip_btn.observe(on_submit_manip_toggle, names='value')
+    submit_view_open.observe(on_submit_view_open, names='value')
     submit_manip_clear_btn.on_click(on_submit_manip_clear)
     submit_manip_undo_btn.on_click(on_submit_manip_undo)
     submit_manip_redo_btn.on_click(on_submit_manip_redo)
