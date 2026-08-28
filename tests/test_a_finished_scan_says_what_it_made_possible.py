@@ -184,7 +184,11 @@ def _reachable(part):
         part.submit_saddle_from.value = start
         for way in _values(part.submit_saddle_how):
             out.add((start, way))
-    part.submit_saddle_from.value = was
+    # The box may no longer offer what it held: "what is on screen" left this
+    # press for the one beside it, and putting it back would be asking for a
+    # start that does not exist.
+    if was in _values(part.submit_saddle_from):
+        part.submit_saddle_from.value = was
     return out
 
 
@@ -225,8 +229,10 @@ def test_a_finished_scan_leaves_the_next_thing_one_press_away(tab):
 
     # The start stands on the pair, and the press starts from it.
     assert refs['submit_saddle_from'].value == 'scan'
-    assert _values(refs['submit_saddle_from']) == ['here', 'scan']
-    assert _shown(refs['submit_saddle_from'])
+    # What is on screen has left this press for the one beside it, so the
+    # pair is the whole list -- and a list of one is not shown.
+    assert _values(refs['submit_saddle_from']) == ['scan']
+    assert _shown(refs['submit_saddle_btn'])
     # And the second box has arrived: from a pair there are three ways, and
     # from the structure on screen there was only ever one, so this box was
     # not on the toolbar at all a moment ago.
@@ -236,9 +242,10 @@ def test_a_finished_scan_leaves_the_next_thing_one_press_away(tab):
                                                   'walk']
     assert _shown(refs['submit_saddle_how'])
 
-    # What is on screen is not lost -- it is one selection away.
-    refs['submit_saddle_from'].value = 'here'
-    assert _values(refs['submit_saddle_how']) == ['orca']
+    # What is on screen is not lost either -- it is the press beside this
+    # one, which converges a guess rather than searching between two ends and
+    # so has one way and needs no box to say so.
+    assert 'here' not in _values(refs['submit_saddle_from'])
 
 
 @_needs_xtb
@@ -314,9 +321,9 @@ def test_the_move_costs_the_matrix_nothing():
         after = _reachable(part)
 
         assert after == before, prefix
-        assert before == ({('here', 'orca')}
-                          | {(start, way) for start in ('marked', 'scan')
-                             for way in ways}), prefix
+        assert before == {(start, way)
+                          for start in ('marked', 'scan')
+                          for way in ways}, prefix
         # And the resting place is the pair the scan left.
         assert part.submit_saddle_from.value == 'scan', prefix
 
