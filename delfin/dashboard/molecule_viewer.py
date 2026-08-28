@@ -5723,6 +5723,20 @@ STRUCTURE_VIEWER_FULLSCREEN_CSS = r"""
     width: 100% !important;
     min-width: 0 !important;
 }
+/* Every track the same length.
+   The readout takes the width its own number needs -- "1.10" is wider than
+   "6" -- and what is left over is the track, so five sliders of one declared
+   width came out with five different bars.  A column of controls that are the
+   same control should look like one. */
+.delfin-structure-view-over .widget-readout {
+    flex: 0 0 3.4em !important;
+    width: 3.4em !important;
+    min-width: 3.4em !important;
+    text-align: right !important;
+}
+.delfin-structure-view-over .slider-container {
+    flex: 1 1 auto !important;
+}
 /* A structure being dragged under a half-transparent panel is hard enough to
    see without the panel also being the brightest thing on the picture. */
 .delfin-structure-view-over:hover {

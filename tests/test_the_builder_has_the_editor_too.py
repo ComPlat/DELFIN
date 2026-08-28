@@ -104,9 +104,14 @@ def test_the_toolbar_is_there_with_everything_on_it(builder):
     # the picture, in the Builder exactly as in the Submit tab -- one editor,
     # so one place for each kind of control.
     on_the_picture = set()
-    for kid in refs['submit_view_body'].children:
-        on_the_picture.add(kid)
-        on_the_picture.update(getattr(kid, 'children', ()) or ())
+
+    def _gather(box, depth=0):
+        for kid in getattr(box, 'children', ()) or ():
+            on_the_picture.add(kid)
+            if depth < 3:
+                _gather(kid, depth + 1)
+
+    _gather(refs['submit_view_body'])
     for name in ('submit_strength_slider', 'submit_sens_slider',
                  'submit_pull_slider', 'submit_play_speed',
                  'submit_dyn_bonds_btn', 'submit_centre_btn',

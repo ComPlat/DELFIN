@@ -2577,11 +2577,35 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: internal group writes them out: a nested row that cannot shrink takes
     #: its whole content past the edge of the toolbar however narrow the
     #: window is.
-    submit_label_group = widgets.HBox(
-        [submit_labels_btn, submit_label_what, submit_label_size],
+    #: The numbering and its two settings, stacked.
+    #:
+    #: Side by side they wrapped: three controls of different widths in a
+    #: column of one, so the press took a line, the kind box took another and
+    #: the size slider a third -- with a ragged edge and more height than the
+    #: three of them need.  One under the other is the same three lines
+    #: without the raggedness, and it is how the rest of this column already
+    #: reads.
+    #: The press and what it says, on one line; how big it is, under them.
+    #:
+    #: Three controls side by side wrapped raggedly in a column this width,
+    #: and three lines one under the other is more height than they need.  Two
+    #: lines is the shape: the switch with the box that qualifies it, and the
+    #: slider that belongs with the other sliders underneath.
+    #:
+    #: A column really is a column here.  The flow this box was given as a
+    #: member of the toolbar is a wrapping row, and left on it a VBox is a
+    #: VBox in name and one ragged line in fact.
+    submit_label_row = widgets.HBox(
+        [submit_labels_btn, submit_label_what],
+        layout=widgets.Layout(gap='6px', align_items='center',
+                              flex_flow='row', min_width='0',
+                              overflow='visible'),
+    )
+    submit_label_group = widgets.VBox(
+        [submit_label_row, submit_label_size],
         layout=widgets.Layout(
-            gap='6px', align_items='center', flex_flow='row wrap',
-            flex='0 1 auto', min_width='0', overflow='visible',
+            gap='2px', align_items='flex-start', flex_flow='column',
+            min_width='0', overflow='visible',
         ),
     )
 
