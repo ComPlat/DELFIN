@@ -5642,6 +5642,33 @@ STRUCTURE_VIEWER_FULLSCREEN_CSS = r"""
     max-width: 100% !important;
 }
 
+/* What is picked, in the other top corner.
+   The picture has three pieces of furniture now and one rule between them:
+   what is *selected* top left, what can be *changed* top right, and what the
+   calculation is *saying* along the bottom.  Each is a different question and
+   each keeps its own corner, so none of them moves when another one grows.
+
+   It does not take the mouse.  It is a sentence, and the structure under it
+   is being dragged. */
+.delfin-structure-viewer-stack > .delfin-structure-picks-over {
+    position: absolute !important;
+    top: 8px !important;
+    left: 8px !important;
+    width: auto !important;
+    max-width: 42% !important;
+    margin: 0 !important;
+    padding: 3px 7px !important;
+    border-radius: 4px !important;
+    background: rgba(255, 255, 255, 0.86) !important;
+    /* Above the manipulate layer as well, so it is read rather than seen
+       through it.  It still takes no mouse: it is a sentence. */
+    z-index: 26 !important;
+    pointer-events: none !important;
+}
+.delfin-structure-viewer-stack > .delfin-structure-picks-over > .widget-label {
+    display: none !important;
+}
+
 /* The controls that change what you see, laid on the picture.
    The counterpart of the status line along the bottom edge, and the same
    bargain: a molecule has empty corners, and a panel in one of them costs no
@@ -5667,7 +5694,11 @@ STRUCTURE_VIEWER_FULLSCREEN_CSS = r"""
     border-radius: 6px !important;
     background: rgba(255, 255, 255, 0.88) !important;
     box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18) !important;
-    z-index: 6 !important;
+    /* Above the manipulate layer, which covers the whole picture at 20 to
+       catch a hand on an atom.  Below it, these controls could not be
+       touched in the one mode they are for -- the strength of a field you
+       are dragging in is a thing you reach for *while* dragging. */
+    z-index: 30 !important;
 }
 /* The sliders were built for a toolbar, where a label and a readout sit on
    one line beside a 200 px track.  Stacked in a column that is narrower, the
@@ -5693,6 +5724,19 @@ STRUCTURE_VIEWER_FULLSCREEN_CSS = r"""
 .delfin-structure-view-over .slider-container,
 .delfin-structure-view-over .slider {
     min-width: 0 !important;
+}
+/* A select is as wide as its longest option unless it is told otherwise, and
+   "pull with a force" is wider than this column.  The box around it was
+   already made to fit; the control inside it was not, and a few pixels of it
+   past the edge is a scrollbar under the whole panel. */
+.delfin-structure-view-over select,
+.delfin-structure-view-over input,
+.delfin-structure-view-over .widget-readout {
+    max-width: 100% !important;
+    min-width: 0 !important;
+}
+.delfin-structure-view-over select {
+    width: 100% !important;
 }
 .delfin-structure-view-over .widget-hslider .widget-label {
     width: 52px !important;

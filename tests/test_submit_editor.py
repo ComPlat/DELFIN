@@ -334,10 +334,14 @@ def test_toolbar_wraps_instead_of_clipping_its_own_controls():
     toolbar = source.split('submit_manip_toolbar = widgets.HBox')[1].split(')\n')[0]
     assert "flex_flow='row wrap'" in toolbar
     assert "overflow='hidden'" not in toolbar
-    # The status line takes a share of the row when there is room -- so
-    # fullscreen stays one line -- and wraps when there is not.
+    # The status line is not on this row at all any more: what is picked is a
+    # fact about the structure, so it lies in the picture's top-left corner
+    # with the run's own sentence along the bottom and the view controls in
+    # the other corner. On the toolbar it took a share of a row it had nothing
+    # to do with, and on a laptop it wrapped to a line of its own.
     status = source.split('submit_manip_status = widgets.HTML')[1].split(')\n')[0]
-    assert "flex='1 1 260px'" in status
+    assert "flex='1 1 260px'" not in status
+    assert "delfin-structure-picks-over" in source
 
     # The label, the value box and Set are still one group, in that order: a
     # label that lands on a different row from its field explains nothing.

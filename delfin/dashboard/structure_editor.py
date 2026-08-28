@@ -1098,14 +1098,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='46px', height='30px'),
         disabled=True,
     )
-    submit_label_size = widgets.BoundedIntText(
+    submit_label_size = widgets.IntSlider(
         value=LABEL_PX_DEFAULT,
         min=LABEL_PX_MIN,
         max=LABEL_PX_MAX,
         step=1,
-        tooltip=('How tall the labels are, in pixels. Type one or step it; '
-                 'they resize as you go.'),
-        layout=widgets.Layout(width='62px', height='30px', display='none'),
+        description='Size',
+        continuous_update=True,
+        readout=True,
+        style={'description_width': '34px'},
+        tooltip=('How tall the labels are, in pixels. Drag it and they resize '
+                 'as you go.'),
+        layout=widgets.Layout(width='150px', display='none'),
     )
     #: What the labels say, which is not a fourth button.
     #:
@@ -1411,15 +1415,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='58px', height='30px'),
         disabled=True,
     )
+    #: What is picked and what mode the hand is in, in the corner of the
+    #: picture.
+    #:
+    #: It is a fact about the structure on screen, so it belongs on the
+    #: structure -- top left, which is where every editor of this shape puts
+    #: what is selected, with the controls in the other corner and the run's
+    #: own sentence along the bottom.  On the toolbar it took a share of a row
+    #: it had nothing to do with, and on a laptop it wrapped to a line of its
+    #: own and pushed everything below it down.
     submit_manip_status = widgets.HTML(
         value='<span class="submit-manip-status" style="color:#888;font-size:0.9em;">— viewer empty —</span>',
-        # Takes a share of the row when there is room -- fullscreen keeps the
-        # toolbar on one line -- and wraps to its own line when there is not,
-        # which is what happens inside the tab on a laptop.
-        layout=widgets.Layout(
-            flex='1 1 260px', min_width='0', overflow_x='hidden',
-        ),
+        layout=widgets.Layout(min_width='0', overflow_x='hidden'),
     )
+    submit_manip_status.add_class('delfin-structure-picks-over')
     submit_manip_sync = widgets.Textarea(value='', layout=widgets.Layout(display='none'))
     submit_manip_sync.add_class('submit-manip-sync')
     # Coordinates from the kernel, one frame at a time.  Not through run_js:
@@ -2387,6 +2396,40 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: with the optimiser as the only difference.  There used to be two, and
     #: every defect this button has had was the second one disagreeing with
     #: the first.
+    #: Which way the live relaxation walks: down to a minimum, or up to a
+    #: transition state.
+    #:
+    #: Dynamik Opt and Climb to TS were two switches, and two switches are
+    #: four combinations of which two mean nothing -- climbing with the field
+    #: off is not a thing that happens.  It is one question with two answers,
+    #: and the toolbar's own comment had already said so: Climb to TS "is the
+    #: same release path with the optimiser walking uphill instead of down".
+    #:
+    #: Saying it as a direction is also what makes the *other* press
+    #: explainable.  With two switches, "Climb to TS" and "To the saddle" read
+    #: as two ways of pressing for a transition state and nothing said which
+    #: to use.  As a direction and a press they are plainly different things:
+    #: this is where your hand walks, that is DELFIN going to look on its own.
+    #:
+    #: Downhill to start with.  A relaxation goes downhill; climbing is the
+    #: thing you ask for.
+    #:
+    #: The switch it drives is kept rather than replaced.  Everything about a
+    #: climb hangs off ``submit_climb_btn`` -- the release path, the refusals,
+    #: the page's own reading of the pressed switches -- and that machinery is
+    #: what made the CI red twice this week.  What changes here is the surface.
+    submit_climb_way = widgets.Dropdown(
+        options=[('walks downhill', 'down'), ('walks uphill', 'up')],
+        value='down',
+        tooltip=('Which way the relaxation walks when you let go: down to the '
+                 'nearest minimum, or up towards a transition state. Uphill '
+                 'is a step at a time on xtb gradients -- drag an atom to '
+                 'point it at the reaction you mean, and Auto carries on when '
+                 'you let go. Tap the atom you are aiming at first and the '
+                 'search knows which contact to check itself against.'),
+        layout=widgets.Layout(width='150px', display='none'),
+    )
+
     submit_climb_btn = widgets.ToggleButton(
         value=False, description='Climb to TS', icon='hand-rock',
         tooltip=('Which way the optimiser walks: up to a transition state '
@@ -2638,7 +2681,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # pressing for a transition state rather than as the sibling of
             # Dynamik Opt and Auto that it is.
             submit_optimize_btn, submit_optimize_all_btn,
-            submit_relax_btn, submit_auto_btn, submit_climb_btn,
+            submit_relax_btn, submit_auto_btn,
+            submit_climb_way, submit_climb_btn,
             submit_settle_btn,
             # And the one press for a transition state next to them, with the
             # two boxes that say where it starts and how it gets there. It is
@@ -2681,7 +2725,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             submit_bond_btn, submit_unbond_btn,
             submit_swap_btn, submit_constraint_dd, submit_constraint_del,
             submit_pick_sync, submit_cmd_sync,
-            submit_manip_status, submit_manip_sync, submit_gfn_frame,
+            submit_manip_sync, submit_gfn_frame,
             # On the page, or the page cannot read it.  It was created and
             # written to and never placed, so the leash lived in the kernel's
             # memory alone: the line said the budget was spent and the atom
@@ -13465,6 +13509,37 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return False
         return True
 
+    def on_submit_climb_way(change):
+        """The direction box, and the switch it drives.
+
+        Both ways.  The box is what the user reads, and the switch is what
+        every other part of the editor asks -- so a refusal that puts the
+        switch back down (a method that cannot climb, a run that could not
+        start) has to be able to say so in the box, or the row would read
+        "walks uphill" over a release that goes down.
+        """
+        if change.get('name') != 'value' or state.get('climb_way_quiet'):
+            return
+        wants = str(change.get('new')) == 'up'
+        if bool(submit_climb_btn.value) == wants:
+            return
+        state['climb_way_quiet'] = True
+        try:
+            submit_climb_btn.value = wants
+        finally:
+            state['climb_way_quiet'] = False
+
+    def _say_the_climb_way():
+        """Put the box where the switch is, whoever moved it."""
+        wants = 'up' if submit_climb_btn.value else 'down'
+        if str(submit_climb_way.value) == wants:
+            return
+        state['climb_way_quiet'] = True
+        try:
+            submit_climb_way.value = wants
+        finally:
+            state['climb_way_quiet'] = False
+
     def on_submit_climb(change=None):
         """Which way the optimiser walks, and a walk started at the press.
 
@@ -16136,8 +16211,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # a gradient from it refused only after the press, which is a button
         # that promises what it cannot do -- under the most accurate method in
         # the list, where a transition state is most worth having.
-        submit_climb_btn.layout.display = (
-            '' if str(chosen).lower() in _climb.CLIMB_METHODS else 'none')
+        can_climb = str(chosen).lower() in _climb.CLIMB_METHODS
+        # The box says it; the switch under it does it, and is never shown.
+        submit_climb_way.layout.display = '' if can_climb else 'none'
+        submit_climb_btn.layout.display = 'none'
+        if not can_climb and submit_climb_btn.value:
+            # A method that cannot be asked for a gradient cannot climb, and
+            # a direction that survives the change would be a release walking
+            # a way the method has no answer for.
+            submit_climb_btn.value = False
         # Keep bonds works by watching what a follow step hands back and
         # taking back the ones that made or broke a bond -- so it needs a
         # follow step, and that is the kernel's, which runs for a server
@@ -16662,6 +16744,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_mode_btn.on_click(on_submit_show_mode)
     submit_ends_btn.on_click(on_submit_follow_down)
     submit_climb_btn.observe(on_submit_climb, names='value')
+    # The box follows the switch, and the switch follows the box.  Registered
+    # after the handler above so that what the press does happens before the
+    # row is redrawn to say it.
+    submit_climb_btn.observe(lambda _c: _say_the_climb_way(), names='value')
+    submit_climb_way.observe(on_submit_climb_way, names='value')
     submit_sens_slider.observe(on_submit_sens_changed, names='value')
     submit_play_speed.observe(on_submit_play_speed, names='value')
     submit_thermal_btn.observe(on_submit_thermal, names='value')
