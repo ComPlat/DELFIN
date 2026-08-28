@@ -17551,7 +17551,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             _remember('the structure as it was loaded')
         _clear_mol_status()
         _ensure_manip_bootstrap()
-        mol_output.outputs = _build_mol_output_bundle(xyz_data)
+        # Through the host's own channel, like every other thing this editor
+        # shows.  Written straight into mol_output, this was the one picture a
+        # tab could not receive -- so a tab that places the viewer itself had
+        # to build a second one, and a second viewer is a second set of
+        # behaviours: the ORCA Builder's could not be selected in at all in
+        # fullscreen, and nobody could have found that by reading the editor.
+        show_output(_build_mol_output_bundle(xyz_data))
         _set_manip_toolbar_enabled(True)
         # What kind each bond is, for the structure that is now on screen.
         # The orders were handed over only when the live force field was

@@ -330,10 +330,6 @@ def create_tab(ctx):
         'numbering_check_results': {},
         'numbering_check_block_idx': 1,
         'numbering_view_step': 0,
-        # the viewer currently on screen: its div, and whether it is still the
-        # thing the Output widget holds (see _update_molecule_js)
-        'viewer_div': None,
-        'viewer_live': False,
     }
 
     # -- the structure editor -------------------------------------------
@@ -1082,57 +1078,39 @@ def create_tab(ctx):
         return _structure_editor.show_atom_numbers_js(
             var=var, scale=_label_scale())
 
-    def _update_molecule_js(xyz_data, label_js=''):
-        """Script that shows another molecule in the viewer that is already there.
+    def _forget_the_camera():
+        """Ask for a fresh look at the next structure.
 
-        Building a viewer means disposing a WebGL context and creating a new one,
-        which is what browsing molecules and switching the numbers on and off
-        used to do on every click.  Swapping the model inside the living viewer
-        costs a render, keeps the camera exactly where the user left it, and
-        does not consume one of the handful of contexts a browser grants.
-
-        Returns '' when there is nothing live to update, so the caller falls
-        back to a full render.
+        The editor keeps the camera across a re-render -- that is what makes
+        stepping between blocks feel like stepping rather than reloading --
+        and it keeps it per scope.  ``reset_view`` is this tab saying the next
+        structure is not the last one moved, so the view it saved is not a
+        view of it.
         """
-        div_id = state.get('viewer_div')
-        if not div_id or not state.get('viewer_live'):
-            return ''
-        profile = get_viewer_profile()
-        if not profile['enabled']:
-            return ''
-        return (
-            '(function(){\n'
-            '  var tries=0;\n'
-            '  function go(){\n'
-            f'    var el=document.getElementById({json.dumps(div_id)});\n'
-            '    var viewer=window._orcaBuildViewer;\n'
-            '    if(!el||!viewer||typeof viewer.addModel!=="function"){\n'
-            # a viewer displayed moments ago may still be starting up
-            '      if(++tries<40){setTimeout(go,50);}\n'
-            '      return;\n'
-            '    }\n'
-            '    try{\n'
-            '      if(window.__delfinAtomNumbers)window.__delfinAtomNumbers.clear(viewer);\n'
-            '      viewer.removeAllModels();\n'
-            f'      viewer.addModel({json.dumps(xyz_data)},"xyz");\n'
-            f'      viewer.setStyle({{}},{profile["style_js"]});\n'
-            f'      {label_js}\n'
-            '      viewer.render();\n'
-            f'      {_register_with_editor_js("viewer", "el")}\n'
-            '      var hs=viewer.__delfinInteractionEndHandlers||[];\n'
-            '      for(var i=0;i<hs.length;i++){try{hs[i]();}catch(_e){}}\n'
-            '    }catch(_err){}\n'
-            '  }\n'
-            '  go();\n'
-            '})();'
-        )
+        ctx.run_js(
+            'try{if(window._submitMolViewByScope)'
+            f'delete window._submitMolViewByScope[{json.dumps(orca_editor_scope)}];'
+            '}catch(_e){}')
 
-    def _show_molecule_in_place(full_xyz):
-        """Show *full_xyz* without rebuilding the viewer.  True if it happened."""
-        script = _update_molecule_js(full_xyz, _labels_js())
-        if not script:
-            return False
-        ctx.run_js(script)
+    def _draw_through_the_editor(full_xyz):
+        """Show *full_xyz* the way the Submit tab shows a structure.
+
+        One viewer, built once, in the editor.  This tab used to build its own
+        -- ``window._orcaBuildViewer``, its own template, its own labels --
+        and then introduce it to the editor afterwards.  Everything the editor
+        can do had to work twice over, and the second one kept quietly not
+        doing it: in fullscreen no atom in this tab could be picked at all,
+        and the reason was a scope prefix nothing had ever needed to agree on.
+
+        So the editor draws, here as there, and the difference between the two
+        tabs is what they hand it rather than what it does.  What is left of
+        the tab's own renderer is the numbering check, whose pictures are two
+        structures at once and are explicitly not editable.
+
+        Always true: the editor keeps the camera across a re-render itself,
+        which is what the in-place path existed for.
+        """
+        orca_editor._replace_mol_output_view(full_xyz)
         _hand_to_editor(full_xyz)
         return True
 
@@ -1287,7 +1265,7 @@ def create_tab(ctx):
                                             len(blocks) - 1)
         finally:
             state['editor_quiet'] = False
-        if not drawn_already and not _show_molecule_in_place(full_xyz):
+        if not drawn_already and not _draw_through_the_editor(full_xyz):
             _refresh_mol_view(reset_view=False)
 
     def _viewer_html(xyz_data, label_js='', reset_view=False):
@@ -1299,10 +1277,7 @@ def create_tab(ctx):
         div_id = 'orca-mol-' + uuid.uuid4().hex[:10]
         profile = get_viewer_profile()
         if not profile['enabled']:
-            state['viewer_live'] = False
             return viewer_disabled_html()
-        state['viewer_div'] = div_id
-        state['viewer_live'] = True
         mouse_js = patch_viewer_mouse_controls_js('viewer', 'el')
         zoom = str(DEFAULT_3DMOL_ZOOM if DEFAULT_3DMOL_ZOOM is not None else 0.9)
         reset_js = 'window._orcaBuildViewState=null;' if reset_view else ''
@@ -1323,9 +1298,6 @@ def create_tab(ctx):
 
     def _overlay_viewer_html(reference_xyz, target_xyz, reset_view=False):
         profile = get_viewer_profile()
-        # two models in one viewer: not the single molecule an in-place swap
-        # would be updating
-        state['viewer_live'] = False
         if not profile['enabled']:
             return viewer_disabled_html()
         div_id = 'orca-overlay-' + uuid.uuid4().hex[:10]
@@ -1479,7 +1451,6 @@ def create_tab(ctx):
         _update_numbering_fix_button()
         orca_mol_output.layout.height = '560px'
         orca_mol_output.layout.min_height = '560px'
-        state['viewer_live'] = False   # nothing on screen until we draw it
         # Ask for the editor before drawing the thing it has to be told about.
         if blocks or strip_xyz_header(orca_coords.value).strip():
             orca_editor._ensure_manip_bootstrap()
@@ -1528,9 +1499,9 @@ def create_tab(ctx):
                         'A comparison, not a block -- editing waits until you '
                         'are back on the structure itself.',))
                 else:
-                    _show_in_viewer(_as_html(
-                        _viewer_html(full_xyz, _labels_js(), reset_view=reset_view)))
-                    _hand_to_editor(full_xyz)
+                    if reset_view:
+                        _forget_the_camera()
+                    _draw_through_the_editor(full_xyz)
             except Exception as e:
                 _show_in_viewer(_as_text(f'Could not visualize: {e}'))
             return
@@ -1557,9 +1528,9 @@ def create_tab(ctx):
         try:
             atom_lines = [l for l in coords.split('\n') if l.strip()]
             xyz_data = f'{len(atom_lines)}\nORCA Builder Preview\n{coords}'
-            _show_in_viewer(_as_html(
-                _viewer_html(xyz_data, _labels_js(), reset_view=reset_view)))
-            _hand_to_editor(xyz_data)
+            if reset_view:
+                _forget_the_camera()
+            _draw_through_the_editor(xyz_data)
         except Exception as e:
             _show_in_viewer(_as_text(f'Could not visualize: {e}'))
 
@@ -1616,7 +1587,7 @@ def create_tab(ctx):
         """Browse to the selected block, in place where the viewer allows it."""
         blocks = state['xyz_blocks']
         idx = state['xyz_view_idx']
-        if 0 <= idx < len(blocks) and _show_molecule_in_place(blocks[idx][1]):
+        if 0 <= idx < len(blocks) and _draw_through_the_editor(blocks[idx][1]):
             return
         _refresh_mol_view(reset_view=False)  # keep orientation
 
