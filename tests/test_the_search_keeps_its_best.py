@@ -87,7 +87,12 @@ def test_the_press_says_how_far_below_you_it_is():
     worth it from where they are."""
     part, _state = _an_editor(_geo(1.20, 'start'))
     _a_search(part)
-    said = part.submit_best_btn.description
+    # The press is named, not measured: a count and a difference in the label
+    # make the button a readout that changes width every time an answer lands.
+    # The numbers are on the list beside it, where they can be compared, and
+    # in the tooltip of the press itself.
+    assert part.submit_best_btn.description == 'Best of'
+    said = part.submit_best_btn.tooltip
     assert 'Best of 3' in said, said
     assert '-2.5 kcal/mol' in said, said
 
@@ -95,7 +100,8 @@ def test_the_press_says_how_far_below_you_it_is():
 def test_standing_on_the_best_is_said_rather_than_offered():
     part, _state = _an_editor(_geo(1.20, 'start'))
     _a_search(part, walk=((1.30, -100.0010), (1.15, -100.0050)))
-    assert 'you are on it' in part.submit_best_btn.description
+    assert part.submit_best_btn.description == 'Best of'
+    assert 'You are on it' in part.submit_best_btn.tooltip
     assert part.submit_best_btn.disabled
 
 

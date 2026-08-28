@@ -3092,12 +3092,17 @@ def test_a_path_can_be_marked_one_structure_at_a_time():
     # Which of the two sources is used is asked rather than assumed: it used
     # to prefer the marked pair silently, so a scan walked after marking
     # something could not be walked between at all.
-    assert 'if marked and here and marked.strip() != here.strip():' in source
+    # Two marks, not a mark and whatever is on screen: the end used to be
+    # whatever happened to be showing, so the pair changed under the user
+    # every time they looked at something else.
+    assert "first = state.get('path_from')" in source
+    assert "second = state.get('path_to')" in source
+    assert "if first.strip() == second.strip():" in source
     assert "ends = state.get('scan_ends')" in source
     assert "if which == 'scan':" in source
     assert "('the end you marked', 'marked')" in source
     # And with neither, what to do is said rather than "run a scan first".
-    assert 'Press Mark this end on one of them ' in source
+    assert 'Mark a beginning, build or load the ' in source
 
 
 def test_the_method_says_when_it_has_stopped_being_able_to_answer():

@@ -5504,6 +5504,19 @@ STRUCTURE_VIEWER_FULLSCREEN_CSS = r"""
    an element that takes a whole line and no height. Hidden outside an
    overlay: the ordinary toolbar is narrow enough to wrap where it needs to on
    its own, and a forced break there would waste a row. */
+/* A break that holds wherever the toolbar is drawn, unlike the one below
+   it, which is for the overlay alone.  Flexbox cannot be told "break here",
+   so the break is an element that takes a whole line and no height. */
+.submit-row-break {
+    display: block !important;
+    flex: 1 0 100% !important;
+    width: 100% !important;
+    height: 0 !important;
+    min-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+}
+
 .delfin-structure-fs-overlay .submit-fs-row-break {
     display: block !important;
     flex: 1 0 100% !important;

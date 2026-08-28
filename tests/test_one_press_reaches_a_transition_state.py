@@ -114,13 +114,11 @@ def test_the_two_questions_are_asked_once_each_and_reach_every_combination():
     # press's business -- offered where the structure is on its way up rather
     # than from any minimum at all.
     assert not _shown(part.submit_saddle_btn)
-    assert not _shown(part.submit_optts_btn)
-    part.submit_climb_btn.value = True
-    part._refresh_saddle_controls()
+    # The other press is there whatever: dragging a structure into the shape a
+    # transition state should have and then converging it is what this editor
+    # is for, and nothing in a geometry says a hand-made guess is one. Only
+    # the pair press waits for a pair.
     assert _shown(part.submit_optts_btn)
-    assert not _shown(part.submit_saddle_btn), 'there is still no pair'
-    part.submit_climb_btn.value = False
-    part._refresh_saddle_controls()
 
     # A scan leaves two ends, and the second start appears with them.
     state['scan_ends'] = (_ETHANE, _STRETCHED)
