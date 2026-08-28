@@ -5711,36 +5711,17 @@ STRUCTURE_VIEWER_FULLSCREEN_CSS = r"""
    shrink.  A flex item will not go below its content width unless it is told
    it may, and a slider track counts as content. */
 .delfin-structure-view-over {
-    width: 252px !important;
     overflow-x: hidden !important;
-}
-.delfin-structure-view-over .widget-hslider,
-.delfin-structure-view-over .widget-inline-hbox,
-.delfin-structure-view-over .widget-box {
-    width: 100% !important;
-    max-width: 100% !important;
-    min-width: 0 !important;
-}
-.delfin-structure-view-over .slider-container,
-.delfin-structure-view-over .slider {
-    min-width: 0 !important;
 }
 /* A select is as wide as its longest option unless it is told otherwise, and
    "pull with a force" is wider than this column.  The box around it was
    already made to fit; the control inside it was not, and a few pixels of it
    past the edge is a scrollbar under the whole panel. */
-.delfin-structure-view-over select,
-.delfin-structure-view-over input,
-.delfin-structure-view-over .widget-readout {
-    max-width: 100% !important;
-    min-width: 0 !important;
-}
+/* A select is as wide as its longest option unless it is told otherwise,
+   and "pull with a force" is wider than this column. */
 .delfin-structure-view-over select {
     width: 100% !important;
-}
-.delfin-structure-view-over .widget-hslider .widget-label {
-    width: 52px !important;
-    flex: 0 0 52px !important;
+    min-width: 0 !important;
 }
 /* A structure being dragged under a half-transparent panel is hard enough to
    see without the panel also being the brightest thing on the picture. */

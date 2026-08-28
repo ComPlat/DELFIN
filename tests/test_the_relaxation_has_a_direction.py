@@ -115,3 +115,83 @@ def test_it_stands_with_the_switches_that_say_what_a_walk_does():
     assert row.index(part.submit_climb_way) == row.index(
         part.submit_auto_btn) + 1
     assert row.index(part.submit_relax_btn) < row.index(part.submit_climb_way)
+
+
+# ---------------------------------------------------------------------------
+# The hand the page thinks it has
+# ---------------------------------------------------------------------------
+
+
+def _watching():
+    """An editor whose page script is captured rather than run."""
+    pytest.importorskip('ipywidgets')
+    import ipywidgets as widgets
+
+    from delfin.dashboard import structure_editor
+    from delfin.dashboard.context import DashboardContext
+
+    room = pathlib.Path(tempfile.mkdtemp())
+    for name in ('calc', 'archive', 'office'):
+        (room / name).mkdir()
+    ctx = DashboardContext(calc_dir=room / 'calc', archive_dir=room / 'archive',
+                           office_dir=room / 'office')
+    said = []
+    ctx.run_js = said.append
+    part = structure_editor.build(
+        ctx, state={},
+        coords_widget=widgets.Textarea(
+            value='3\nwater\nO 0 0 0\nH 0.96 0 0\nH -0.24 0.93 0\n'),
+        viewer_height=560,
+        schedule_ui_update=lambda func, *a, **k: func(*a, **k),
+        update_view=lambda *a, **k: None,
+        get_smiles_charge=lambda *a, **k: None)
+    part._set_manip_toolbar_enabled(True)
+    return part, said
+
+
+def _shares(said):
+    import re
+    return [m.group(1) for one in said
+            for m in re.finditer(r'setPullStrength\("[^"]+",([^,]+),', one)]
+
+
+def test_the_page_is_told_what_the_hand_is_worth_before_the_first_drag():
+    """The page decides between a force and a placement on one number, and at
+    a share of nothing it skips the pull entirely and sets the coordinate --
+    which is the placing hand.  Nothing is what it holds until it is told.
+
+    It was told only when a control moved, and under a browser method also
+    when the field was handed its parameters.  Under a server method neither
+    happens on the way in: choosing GFN2 sent nothing, switching Dynamik Opt
+    on sent nothing, and the first drag was a placement however the box read
+    -- "es ist jetzt immer move the atom egal was ich hier rein mache".
+    """
+    part, said = _watching()
+    gfn = [value for _label, value in part.submit_ff_dd.options
+           if 'gfn2' in str(value).lower()][0]
+
+    said.clear()
+    part.submit_ff_dd.value = gfn
+    assert _shares(said), 'the method was chosen and the page was told nothing'
+    assert _shares(said)[-1].startswith('0.4'), _shares(said)
+
+    said.clear()
+    part.submit_relax_btn.value = True
+    assert _shares(said), 'dragging became possible and the page was told nothing'
+
+
+def test_the_rule_that_says_it_tells_it():
+    """`_refresh_hand_controls` describes itself as telling the page the same
+    number through setPullStrength. It now does."""
+    part, said = _watching()
+    said.clear()
+    part._refresh_hand_controls()
+    assert _shares(said), 'the rule says it tells the page, and it must'
+
+
+def test_the_bug_button_stays_at_the_right_hand_end():
+    """It was pushed there by the status line taking the space between. That
+    line lies on the picture now, so the push has to be its own."""
+    part, _said = _watching()
+    assert part.submit_bug_group.layout.margin == '0 0 0 auto'
+    assert list(part.submit_manip_toolbar.children)[-1] is part.submit_bug_group
