@@ -36103,6 +36103,36 @@ def _smiles_to_xyz_isomers_impl(
     # here so frame 0 stays the FF-free pick -- the deterministic, construction-first one --
     # and legacy's spray follows as additional manifold members.  Strictly additive in both
     # directions: neither constructor's frames are altered or dropped.
+    #
+    # ═══ SPUR AM MERGE (30.08.2026) -- DELFIN_FFFREE_UNION_TRACE, Vorgabe AUS ═════════
+    #
+    # WOZU.  CAZMEX, JACVES und XIDKON verlieren mit UNION ihre ganze Chelatfamilie
+    # (8 -> 0, 3 -> 0, 9 -> 0).  Sieben Kandidaten sind ausgeschlossen -- zuletzt der
+    # Chelat-Enumerator selbst, dessen Bauspur (`_iso_trace`) in BEIDEN Armen bitgleich
+    # ist: er baut die Chelatframes also auch im Union-Arm.  Und zwischen dem
+    # Beiseitelegen (:32969) und hier steht kein `return` auf Rumpfebene, der Block wird
+    # erreicht.  Damit bleiben genau drei Moeglichkeiten, und keine ist gemessen:
+    #   (1) `_ffree_union` ist hier LEER, obwohl der Enumerator gebaut hat
+    #   (2) `if _ffree_union:` ist falsch aus einem anderen Grund
+    #   (3) die Chelatframes ueberleben den Merge und werden DANACH gefiltert
+    #
+    # Drei Zahlen trennen die drei Faelle: wie viele Frames traegt `_ffree_union`, wie
+    # viele `results`, und wie viele davon sind Chelat.  Genau die schreibt diese Zeile.
+    #
+    # ⚠️ NUR AUSGABE, keine Verzweigung -- der Bau bleibt byte-identisch, wenn der
+    #    Schalter aus ist (und das ist er per Vorgabe).  `os.write(2, ...)` wie beim
+    #    CN4-Debug ein paar Zeilen weiter unten, damit die Zeile auch dann erscheint,
+    #    wenn der Logger im Arbeiterprozess nicht eingerichtet ist.
+    if os.environ.get("DELFIN_FFFREE_UNION_TRACE", "0") == "1":
+        try:
+            _u = _ffree_union or []
+            _r = results or []
+            _uc = sum(1 for _x, _l in _u if "chelate" in str(_l))
+            _rc = sum(1 for _x, _l in _r if "chelate" in str(_l))
+            os.write(2, ("[UNION_MERGE] ffree=%d (chelat %d) legacy=%d (chelat %d)\n"
+                         % (len(_u), _uc, len(_r), _rc)).encode())
+        except Exception:
+            pass
     if _ffree_union:
         try:
             # ⚠ 2026-08-06: _seen_x kam aus `results` -- also aus DERSELBEN Liste, die danach
