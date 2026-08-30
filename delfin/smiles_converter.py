@@ -36124,6 +36124,16 @@ def _smiles_to_xyz_isomers_impl(
     #    CN4-Debug ein paar Zeilen weiter unten, damit die Zeile auch dann erscheint,
     #    wenn der Logger im Arbeiterprozess nicht eingerichtet ist.
     if os.environ.get("DELFIN_FFFREE_UNION_TRACE", "0") == "1":
+        # ⚠️ MARKER OHNE FEHLERABFANG (30.08.2026, 14:0x).  Die Zahlenzeile darunter
+        #    steht in einem `try/except: pass` -- wirft sie, erscheint NICHTS, und das
+        #    sieht in der Ausgabe exakt aus wie „Block nicht erreicht".  Genau dieser
+        #    Fall trat bei `cazmerge` ein: die ISO-Spur feuerte vollstaendig, die
+        #    Zahlenzeile nirgends.  Ohne diesen Marker sind die beiden Erklaerungen
+        #    -- Block nie erreicht ODER Ausnahme verschluckt -- nicht unterscheidbar.
+        #    Dieser `os.write` steht deshalb VOR dem `try` und ist selbst ungeschuetzt:
+        #    erscheint er, wurde der Block erreicht; erscheint er nicht, wurde er es
+        #    nicht.  Faellt er selbst um, sieht man den Traceback statt Schweigen.
+        os.write(2, b"[UNION_MERGE] ERREICHT\n")
         try:
             _u = _ffree_union or []
             _r = results or []
