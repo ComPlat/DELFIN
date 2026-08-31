@@ -1210,15 +1210,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_load_btn = widgets.ToggleButton(
         value=False, description='Pull', icon='location-arrow',
         tooltip=(
-            'Hang a force on an atom and leave it there. Drag from an atom to '
-            'aim it; the length says how hard it pulls against the other '
-            'arrows, not how hard the set pulls altogether -- that is the '
-            'ramp. The right button takes an arrow off again. '
-            'Scan then walks the load up instead of driving a coordinate, so '
-            'what gives way is the structure\'s answer rather than a guess '
-            'about which bond matters. A pair pulling apart is the clean '
-            'case; a single arrow mostly moves the molecule, and the line '
-            'says how much of it did.'
+            'Hang a force on an atom and leave it there. Drag from an atom '
+            'to aim it; the right button takes one off again.\n\n'
+            'The arrow is a direction and a strength, not a path: the atom '
+            'does not travel along it. Under the load the structure relaxes '
+            'to where its own gradient carries the pull, so it goes the way '
+            'of least resistance -- what gives way is its answer and not your '
+            'guess about which bond matters. That is the whole difference '
+            'from a scan, which drives a coordinate somebody chose.\n\n'
+            'The length says how hard this arrow pulls against the others; '
+            'how hard the set pulls altogether is the ramp. A pair pulling '
+            'apart is the clean case -- a single arrow mostly moves the '
+            'molecule, and the line says how much of it did.'
         ),
         layout=widgets.Layout(width='74px', height='30px'),
         disabled=True,
@@ -11063,6 +11066,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # released from, which is where it sits on the profile.
                 if kept:
                     path.append((last['force'], kept['energy'], kept['xyz']))
+                # A second press carries the ramp on, so it carries the walk
+                # on: one profile from the gentlest load to wherever it got,
+                # rather than two that each start again at zero.
+                #
+                # The new half is measured from its own starting structure --
+                # which is where the old half ended -- so it is lifted by that
+                # much before the two are laid end to end, or the profile
+                # would step back down to zero in the middle.
+                if carried is not None:
+                    before = list((state.get('scan_walk') or {}).get('points')
+                                  or ())
+                    if before:
+                        lift = float(before[-1][1])
+                        path = before + [(one[0], one[1] + lift, one[2])
+                                         for one in path]
                 _keep_the_walk(path, method, charge, uhf, wet, _solv_model())
                 _refresh_scan()
                 # And the press that steps through it, which comes and goes
