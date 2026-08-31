@@ -416,3 +416,83 @@ def test_the_pull_is_watched_while_it_pulls():
     # The end is said, or the player waits for a frame that never comes.
     assert "'final': 1" in pull
     assert '_stream_frames(' not in pull
+
+
+def test_the_press_says_stop_while_it_pulls():
+    """One press with two names, and the pair went out of step.
+
+    The walk restored "Run scan" with a play icon long after the button had
+    become "Scan" with the chart, so every finished walk left a press wearing
+    a name that no longer existed anywhere else.  And the ramp said nothing at
+    all: it ran under a button still reading Scan, which looks like a press
+    that would start a second one.
+    """
+    from editor_source import EDITOR_SOURCE as source
+
+    # One place, or the two halves drift apart again the next time either is
+    # renamed.
+    assert source.count("submit_scan_run_btn.description = ") == 1
+    said = source.split('def _the_scan_press_says')[1].split('\n    def ')[0]
+    assert "'Stop' if running else 'Scan'" in said
+    assert "'stop' if running else 'line-chart'" in said
+    assert 'Run scan' not in source, 'a name nothing else uses any more'
+
+    pull = source.split('def _pull_along_the_arrows')[1].split('\n    def ')[0]
+    assert '_the_scan_press_says(True)' in pull
+    assert '_the_scan_press_says(False)' in pull
+    # Pressed again while it pulls, it stops rather than starting a second.
+    assert "state['scan_stop'] = True" in pull
+
+
+def test_a_ramp_goes_from_one_settled_structure_to_the_next():
+    """"Pull is from minimum to minimum, and pull again is the next one."
+
+    Every level of a ramp is a minimum -- of the loaded surface -- so what
+    ends a ramp is the bond giving and the pieces settling after it.  Pressing
+    again starting over at the gentlest load would spend the whole ramp
+    arriving back where it already stands, so it carries on from the load it
+    stopped at.
+
+    "Whole profile" asks for the other thing: the whole ramp, whatever gives
+    on the way, which is what you want when a second bond might go after the
+    first.
+    """
+    from editor_source import EDITOR_SOURCE as source
+
+    pull = source.split('def _pull_along_the_arrows')[1].split('\n    def ')[0]
+    assert 'whole = bool(submit_scan_whole.value)' in pull
+    assert 'whole=whole' in pull
+    assert 'force_from=carried' in pull
+
+    # Carried only for the structure it belongs to: a different one on screen
+    # is a different ramp, and a load level from the last one means nothing
+    # about it.
+    assert "state['pull_reached']" in pull
+    assert "held.get('for') == _geometry_key(xyz)" in pull
+    assert "'for': _geometry_key(last['xyz'])" in pull
+
+    ramp = __import__('delfin.dashboard.under_load',
+                      fromlist=['x'])
+    import inspect
+    walk = inspect.getsource(ramp.walk_under_load)
+    assert 'whole: bool = False' in inspect.getsource(ramp.walk_under_load) \
+        or 'whole' in inspect.signature(ramp.walk_under_load).parameters
+    assert 'elif gave is not None and not whole:' in walk
+
+
+def test_the_ramp_can_be_looked_at_afterwards():
+    """A walk nobody can look at is a sentence about a picture that is gone.
+
+    The same three things any other walk leaves: the profile under the
+    picture, the frames the point slider steps through, and the walk itself
+    for the second opinion.
+    """
+    from editor_source import EDITOR_SOURCE as source
+
+    pull = source.split('def _pull_along_the_arrows')[1].split('\n    def ')[0]
+    assert '_keep_the_walk(' in pull
+    assert '_scan_profile_html(' in pull
+    assert '_show_scan_profile' in pull
+    # The path is what the ramp walked: the load, what it cost, and the
+    # geometry it settled at.
+    assert "one['force'], one['energy'], one['xyz']" in pull

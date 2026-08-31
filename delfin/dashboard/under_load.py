@@ -275,6 +275,7 @@ def walk_under_load(xyz_text: str, loads: Sequence[Dict[str, Any]],
                     charge: int = 0, uhf: int = 0,
                     solvent: Optional[str] = None, cores: int = 4,
                     steps: int = 20,
+                    whole: bool = False,
                     force_from: Optional[float] = None,
                     force_to: Optional[float] = None,
                     on_point: Optional[Callable[[Dict[str, Any]], None]] = None,
@@ -389,11 +390,16 @@ def walk_under_load(xyz_text: str, loads: Sequence[Dict[str, Any]],
                     'held': points[-2]['force'] if len(points) > 1 else None,
                     'broke': point['force'],
                 }
-            elif gave is not None:
-                # One more level, and then stop.  Past the break the load is
-                # only drawing two pieces apart -- every further level moves
-                # them by the trust region and says nothing new -- and the
-                # question has been answered.
+            elif gave is not None and not whole:
+                # One more level, and then stop.  A ramp goes from one settled
+                # structure to the next: the bond gave, the pieces relaxed,
+                # and that is a minimum.  Pressing again carries on from the
+                # load it stopped at, which is the next one.
+                #
+                # Past the break the load is otherwise only drawing two pieces
+                # apart -- every further level by the trust region -- and says
+                # nothing new.  "Whole profile" is asking for exactly that:
+                # the whole ramp, whatever gives on the way.
                 break
     finally:
         loaded.close()
