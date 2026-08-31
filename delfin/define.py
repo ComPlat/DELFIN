@@ -116,7 +116,7 @@ TDDFT Settings:
 TDDFT_TDDFT_maxiter=500
 TDDFT_nroots=15
 TDDFT_maxdim=30
-TDDFT_TDA=FALSE
+TDDFT_TDA=TRUE
 TDDFT_followiroot=true
 TDDFT_SOC=false
 ------------------------------------

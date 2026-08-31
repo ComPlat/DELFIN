@@ -853,13 +853,26 @@ class _WorkflowManager:
                 failed_prereqs = sorted(job.dependencies & failed_ids)
                 skipped_prereqs = sorted(job.dependencies & skipped_ids)
                 if failed_prereqs or skipped_prereqs:
-                    logger.warning(
-                        "[%s] Job %s starting although prerequisites failed/skipped: failed=%s, skipped=%s",
+                    # Readiness is computed over *finished* jobs
+                    # (completed | failed | skipped), so a job whose
+                    # prerequisite died still shows up as ready here.
+                    # Submitting it anyway feeds the downstream ORCA run
+                    # missing or half-written dependency files - e.g.
+                    # esd_phosp_T1_S0 starting without T1.hess after esd_T1
+                    # crashed, which then fails a second time and buries the
+                    # real error under a follow-up error.
+                    logger.error(
+                        "[%s] Skipping job %s: prerequisites failed/skipped: failed=%s, skipped=%s",
                         self.label,
                         job.job_id,
                         failed_prereqs or "none",
                         skipped_prereqs or "none",
                     )
+                    self._mark_skipped(
+                        job.job_id, failed_prereqs + skipped_prereqs
+                    )
+                    pending.pop(job.job_id, None)
+                    continue
                 self._submit(
                     job,
                     allocations.get(job.job_id),

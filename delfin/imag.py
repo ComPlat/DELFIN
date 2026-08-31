@@ -4,6 +4,8 @@ import os
 import re
 import shutil
 import subprocess
+
+from delfin.common.solvation import build_solvation_keyword
 import sys
 import threading
 from dataclasses import dataclass
@@ -1017,10 +1019,9 @@ def read_and_modify_xyz_IMAG(
     metal_eff = metal_basisset or metal_sel
 
     # implicit solvation
-    implicit = ""
-    model = str(config.get("implicit_solvation_model", "")).strip()
-    if model:
-        implicit = f"{model}({solvent})" if solvent else model
+    implicit = build_solvation_keyword(
+        config.get("implicit_solvation_model"), solvent
+    )
 
     # QM/MM partition handling
     geom_lines, qmmm_range, qmmm_explicit = split_qmmm_sections(coord_lines, Path(input_file_path))

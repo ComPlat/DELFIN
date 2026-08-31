@@ -1038,7 +1038,7 @@ def _create_s0_tddft_check_input(
     pal = config.get("PAL", 12)
     maxcore = config.get("maxcore", 6000)
     nroots = config.get('ESD_nroots', 15)
-    tda_flag = str(config.get('TDA', 'FALSE')).upper()
+    tda_flag = str(config.get('TDA', 'TRUE')).upper()
     esd_maxdim = config.get('ESD_maxdim', None)
     maxdim = esd_maxdim if esd_maxdim is not None else max(5, int(nroots / 2))
 

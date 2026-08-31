@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from delfin.common.logging import get_logger
+from delfin.common.solvation import build_solvation_keyword
 from delfin.common.orca_blocks import resolve_maxiter, collect_output_blocks
 from delfin.utils import resolve_level_of_theory
 
@@ -240,12 +241,7 @@ def _build_solvation_keyword(implicit_solvation_model: str, solvent: str) -> str
     Returns:
         Formatted solvation keyword (e.g., 'CPCM(water)') or empty string
     """
-    model = str(implicit_solvation_model).strip()
-    if not model:
-        return ""
-    if solvent and str(solvent).strip():
-        return f"{model}({solvent})"
-    return model
+    return build_solvation_keyword(implicit_solvation_model, solvent)
 
 
 
@@ -1021,7 +1017,7 @@ def _create_state_input_delta_scf(
 
             # TDDFT block for both singlets and triplets
             nroots = config.get('ESD_nroots', 15)
-            tda_flag = str(config.get('TDA', 'FALSE')).upper()
+            tda_flag = str(config.get('TDA', 'TRUE')).upper()
             # Use ESD_maxdim if set, otherwise default to nroots/2 (min 5)
             esd_maxdim = config.get('ESD_maxdim', None)
             maxdim = esd_maxdim if esd_maxdim is not None else max(5, int(nroots / 2))
@@ -1085,7 +1081,7 @@ def _create_state_input_delta_scf(
 
             # TDDFT block - NO followiroot for excited state checks
             nroots = config.get('ESD_nroots', 15)
-            tda_flag = str(config.get('TDA', 'FALSE')).upper()
+            tda_flag = str(config.get('TDA', 'TRUE')).upper()
             esd_maxdim = config.get('ESD_maxdim', None)
             maxdim = esd_maxdim if esd_maxdim is not None else max(5, int(nroots / 2))
             dosoc_flag = str(config.get('ESD_SOC', 'false')).strip().lower()
@@ -1148,7 +1144,7 @@ def _create_state_input_delta_scf(
 
             # TDDFT block - NO followiroot for excited state checks
             nroots = config.get('ESD_nroots', 15)
-            tda_flag = str(config.get('TDA', 'FALSE')).upper()
+            tda_flag = str(config.get('TDA', 'TRUE')).upper()
             esd_maxdim = config.get('ESD_maxdim', None)
             maxdim = esd_maxdim if esd_maxdim is not None else max(5, int(nroots / 2))
             dosoc_flag = str(config.get('ESD_SOC', 'false')).strip().lower()
@@ -1256,7 +1252,7 @@ def _create_state_input_hybrid1(
     pal = config.get('PAL', 12)
     maxcore = config.get('maxcore', 6000)
     nroots = _get_tddft_param(config, 'nroots', 15)
-    tda_flag = str(_get_tddft_param(config, 'TDA', 'FALSE')).upper()
+    tda_flag = str(_get_tddft_param(config, 'TDA', 'TRUE')).upper()
     esd_maxdim = _get_tddft_param(config, 'maxdim', None)
     maxdim = esd_maxdim if esd_maxdim is not None else max(5, int(nroots / 2))
     tddft_maxiter = _resolve_tddft_maxiter(config)
@@ -1485,7 +1481,7 @@ def _create_state_input_tddft(
     pal = config.get("PAL", 12)
     maxcore = config.get("maxcore", 6000)
     nroots = _get_tddft_param(config, "nroots", 15)
-    tda_flag = str(_get_tddft_param(config, "TDA", config.get("TDA", "FALSE"))).upper()
+    tda_flag = str(_get_tddft_param(config, "TDA", config.get("TDA", "TRUE"))).upper()
     # Use TDDFT_maxdim if set, otherwise default to nroots/2 (min 5)
     esd_maxdim = _get_tddft_param(config, "maxdim", None)
     maxdim = esd_maxdim if esd_maxdim is not None else max(5, int(nroots / 2))
@@ -2177,7 +2173,7 @@ def create_ic_input(
         # Singlet IC: S1->S0 uses IROOT=1, S2->S0 uses IROOT=2, etc.
         iroot = config.get('IROOT', init_root)
 
-    tda_flag = str(config.get('TDA', 'FALSE')).upper()
+    tda_flag = str(config.get('TDA', 'TRUE')).upper()
     nacme_flag = str(config.get('NACME', 'TRUE')).upper()
     etf_flag = str(config.get('ETF', 'TRUE')).upper()
     tddft_block = [
@@ -2487,7 +2483,7 @@ def create_phosp_input(
     # Shared settings
     doht_flag = str(config.get("DOHT", "TRUE")).upper()
     temperature = _resolve_temperature_K(config, default=298.15)
-    tda_flag = str(config.get("ESD_TDA", config.get("TDA", "FALSE"))).upper()
+    tda_flag = str(config.get("ESD_TDA", config.get("TDA", "TRUE"))).upper()
     # Use the general ESD_nroots by default (CONTROL), allow PHOSP override if desired.
     nroots = int(config.get("ESD_PHOSP_NROOTS", config.get("ESD_nroots", 15)))
     tddft_maxiter = _resolve_tddft_maxiter(config)
