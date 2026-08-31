@@ -207,7 +207,7 @@ def _a_real_gesture(part, state, box, *, drags=6, depth=0.95, pause=0.2):
     ej.press(part.submit_scan_to, 1.75)
     ej.press(part.submit_scan_steps, 8)
     ej.press(part.submit_scan_whole, True)
-    part.submit_scan_btn.click()
+    part.submit_scan_add_btn.click()
     part.submit_scan_run_btn.click()
     began = time.time()
     while state.get('scan_run') and time.time() - began < 240:

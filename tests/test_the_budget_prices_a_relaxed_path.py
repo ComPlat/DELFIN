@@ -1498,7 +1498,7 @@ def test_the_scan_controls_belong_to_the_method_that_can_run_them():
     refusal arrived only on the press."""
     body = EDITOR_SOURCE.split("def _refresh_method_controls")[1]
     body = body.split("\n    def ")[0]
-    assert "submit_scan_btn.layout.display = '' if xtb else 'none'" in body
+    assert "submit_scan_add_btn.layout.display = '' if xtb else 'none'" in body
     assert "submit_scan_run_btn" in body
     # The budget and the pull are decided elsewhere, because they answer to
     # the hand as well as to the method and one function has to hold both
@@ -3774,7 +3774,7 @@ def test_the_placing_hand_keeps_everything_that_still_works():
     assert _shown(part.submit_topology_btn)
     # A scan drives its own ramp of forces and never reads the hand's slider,
     # so it walks the same path whichever hand is chosen.
-    assert _shown(part.submit_scan_btn)
+    assert _shown(part.submit_scan_add_btn)
     assert "submit_pull_slider" not in EDITOR_SOURCE.split(
         "def _push_target(")[1].split("\n        def ")[0]
 
@@ -3790,7 +3790,7 @@ def test_the_placing_hand_keeps_everything_that_still_works():
     body = EDITOR_SOURCE.split("def _refresh_hand_controls")[1].split(
         "\n    def ")[0]
     for spare in ("submit_sens_slider", "submit_topology_btn",
-                  "submit_scan_btn", "submit_strength_slider"):
+                  "submit_scan_add_btn", "submit_strength_slider"):
         assert spare not in body, spare
 
 

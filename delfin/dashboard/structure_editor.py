@@ -1827,15 +1827,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='118px', height='30px'),
         disabled=True,
     )
-    submit_scan_btn = widgets.Button(
-        description='Scan', button_style='info', icon='line-chart',
+    #: Arming a second coordinate, which is the only reason arming exists.
+    #:
+    #: One coordinate needs no arming at all: pick the atoms, say which way,
+    #: press Scan.  Two presses were the price of the concerted case -- several
+    #: coordinates walked together -- paid on every walk whether or not anybody
+    #: wanted the second one, by two buttons whose names differed by a word.
+    submit_scan_add_btn = widgets.Button(
+        description='+ Add', button_style='info', icon='plus',
         tooltip=(
-            'Walk the value the selection describes from where it is to where '
-            'you say, relaxing everything else at every step. Several '
-            'coordinates can be armed and are then walked together, which is '
-            'what a concerted reaction needs.'
+            'Add this coordinate to the walk without starting it, so a second '
+            'one can be added and both are then walked together -- which is '
+            'what a concerted reaction needs. For one coordinate this is not '
+            'needed: Scan takes what is picked.'
         ),
-        layout=widgets.Layout(width='74px', height='30px'),
+        layout=widgets.Layout(width='78px', height='30px'),
         disabled=True,
     )
     #: Where the walk goes, said in the words the coordinate is in.
@@ -1896,6 +1902,48 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #:
     #: They are offered for a pair and not for an angle or a torsion, because
     #: a bond is between two atoms and there is no third one to make or break.
+    #: What is armed, as lines rather than as a box to open.
+    #:
+    #: A dropdown is a control for *choosing*, and this was never a choice: it
+    #: is the list of what is about to be walked.  To read it you had to open
+    #: it, and a dropdown shows one entry -- so two armed coordinates could
+    #: never be seen at once, which is the one case arming exists for.  A
+    #: concerted step is a bond forming *while* another breaks, and being
+    #: unable to see both of them is being unable to check what you set up.
+    #:
+    #: One item in the row's flexbox, the way the measuring group is: a
+    #: flexbox breaks between its items and never inside one, so the row goes
+    #: on wrapping around this rather than through it.
+    submit_scan_armed = widgets.VBox(
+        [], layout=widgets.Layout(display='none', gap='2px', min_width='0'),
+    )
+
+    submit_scan_gear = widgets.ToggleButton(
+        value=False, description='', icon='cog',
+        tooltip=(
+            'How the walk is driven, and what it reports. Every one of these '
+            'has an answer already, which is what makes it a setting: a force '
+            'ramp, the electronic energy, and stopping at the next minimum.'
+        ),
+        layout=widgets.Layout(width='40px', height='30px', display='none'),
+    )
+    #: A break that works outside an overlay -- see submit_row_break, which is
+    #: the same trick for the same reason.
+    #:
+    #: The toolbar sits above the picture, so anything that grows downwards
+    #: takes the picture with it: a column of five settings would push the
+    #: viewer off the screen to save the width of four.  A break makes them
+    #: the next *row* instead, which costs one line and no height that was not
+    #: going to be spent wrapping anyway.
+    submit_scan_break = widgets.Box(
+        [], layout=widgets.Layout(display='none', width='100%', height='0px'),
+    )
+    submit_scan_settings = widgets.HBox(
+        [], layout=widgets.Layout(display='none', gap='6px',
+                                  flex_flow='row wrap', align_items='center',
+                                  min_width='0'),
+    )
+
     submit_scan_way = widgets.Dropdown(
         options=[('closer together', 'in'), ('further apart', 'out'),
                  ('form this bond', 'form'), ('break this bond', 'break'),
@@ -2553,9 +2601,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         disabled=True,
     )
     submit_scan_run_btn = widgets.Button(
-        description='Run scan', button_style='success', icon='play',
-        tooltip='Walk every armed coordinate together, and say what it costs.',
-        layout=widgets.Layout(width='104px', height='30px', display='none'),
+        description='Scan', button_style='success', icon='line-chart',
+        tooltip=(
+            'Walk the coordinate from where it is to where you say, relaxing '
+            'everything else at every step, and say what the path costs. '
+            'Takes what is picked; anything added with + Add is walked with '
+            'it.'
+        ),
+        layout=widgets.Layout(width='84px', height='30px', display='none'),
         disabled=True,
     )
     #: The second opinion on a finished walk, and the moment it arrives is the
@@ -2658,11 +2711,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_internal_group = widgets.HBox(
         [submit_internal_label, submit_internal_value,
          submit_internal_btn, submit_hold_btn, submit_hold_mode,
-         submit_scan_btn, submit_scan_way, submit_scan_to,
+         submit_load_btn, submit_load_dd, submit_load_del,
+         submit_scan_add_btn, submit_scan_way, submit_scan_to,
          submit_scan_steps,
-         submit_scan_dd, submit_scan_del, submit_scan_whole,
-         submit_scan_how, submit_scan_energy, submit_scan_back,
-         submit_scan_run_btn, submit_scan_price_btn],
+         submit_scan_armed,
+         submit_scan_run_btn, submit_scan_price_btn,
+         submit_scan_gear, submit_scan_break, submit_scan_settings],
         layout=widgets.Layout(
             gap='6px', align_items='center', flex_flow='row wrap',
             flex='0 1 auto', min_width='0', overflow='visible',
@@ -2827,7 +2881,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         [
             submit_fullscreen_btn,
             submit_select_btn, submit_manip_btn, submit_draw_btn,
-            submit_load_btn, submit_load_dd, submit_load_del,
             submit_element_dd, submit_adjust_h_btn,
             submit_manip_clear_btn,
             submit_manip_undo_btn, submit_manip_redo_btn, submit_reset_btn,
@@ -3493,7 +3546,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         submit_internal_btn.disabled = not enabled
         submit_hold_btn.disabled = not enabled
         submit_hold_mode.disabled = not enabled
-        submit_scan_btn.disabled = not enabled
+        submit_scan_add_btn.disabled = not enabled
         submit_manip_undo_btn.disabled = not enabled
         _refresh_undo_redo()
         submit_centre_btn.disabled = not enabled
@@ -10430,6 +10483,70 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             symbols.append(f'{symbol}{index}')
         return '-'.join(symbols)
 
+    def _show_what_is_armed(legs):
+        """One line per armed coordinate, each with the press that drops it.
+
+        Rebuilt rather than edited: the list is two or three items long, the
+        widgets are cheap, and a line edited in place has to be told which leg
+        it now belongs to -- which is the bookkeeping the dropdown got wrong.
+        """
+        rows = []
+        for n, leg in enumerate(legs):
+            said = _describe_leg(leg)
+            if str(leg.get('verb') or '') not in ('form', 'break'):
+                said += f"  \u00b7  {int(leg.get('steps') or 0)} steps"
+            drop = widgets.Button(
+                description='', icon='times', button_style='danger',
+                tooltip='Drop this one from the walk',
+                layout=widgets.Layout(width='32px', height='26px'))
+            drop.on_click(lambda _b, which=n: _drop_one_leg(which))
+            rows.append(widgets.HBox(
+                [widgets.HTML(
+                    "<span style='font-family:monospace;font-size:0.9em'>"
+                    f"{html.escape(said)}</span>",
+                    layout=widgets.Layout(min_width='0')),
+                 drop],
+                layout=widgets.Layout(gap='6px', align_items='center')))
+        submit_scan_armed.children = tuple(rows)
+        submit_scan_armed.layout.display = '' if rows else 'none'
+
+    def _drop_one_leg(which):
+        """Take one coordinate back off the walk."""
+        legs = list(state.get('scan_legs') or [])
+        if 0 <= which < len(legs):
+            del legs[which]
+            state['scan_legs'] = legs
+        _refresh_scan()
+
+    def _the_scan_settings(legs, pulling):
+        """The four questions a walk has answers to already, on their own row.
+
+        Sorted by what they are about rather than listed: how the coordinate
+        is driven, and what is reported.  "Walk it back" belongs to the first
+        -- it means nothing under a force, where there is no grid of values to
+        retrace -- and it was sitting among the second.
+        """
+        wanted = bool(legs or pulling)
+        submit_scan_gear.layout.display = '' if wanted else 'none'
+        if not wanted and submit_scan_gear.value:
+            submit_scan_gear.value = False
+        open_now = wanted and bool(submit_scan_gear.value)
+        submit_scan_break.layout.display = '' if open_now else 'none'
+        submit_scan_settings.layout.display = '' if open_now else 'none'
+        submit_scan_gear.button_style = 'info' if open_now else ''
+        if not open_now:
+            return
+        driven = [submit_scan_how]
+        if submit_scan_back.layout.display != 'none':
+            driven.append(submit_scan_back)
+        submit_scan_settings.children = tuple(
+            [widgets.HTML("<span style='color:#888;font-size:0.9em'>"
+                          "driven&nbsp;by</span>")]
+            + driven
+            + [widgets.HTML("<span style='color:#888;font-size:0.9em;"
+                            "margin-left:10px'>reports</span>"),
+               submit_scan_energy, submit_scan_whole])
+
     def _describe_leg(leg):
         # A leg with a verb is read as the instruction it is rather than as
         # the pair of numbers underneath it: "form C1-C11" is what was asked
@@ -10455,12 +10572,33 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # only on the row once something is armed, and the only thing that
         # could arm it is the arrow.
         pulling = bool(state.get('loads'))
-        showing = '' if (legs or pulling) else 'none'
-        for widget in (submit_scan_dd, submit_scan_del, submit_scan_whole,
-                       submit_scan_how, submit_scan_energy, submit_scan_back,
-                       submit_scan_run_btn):
-            widget.layout.display = showing
+        # Pickable is armable, and armable is walkable: the press is on the row
+        # when a walk *could* start, not only once one has been set up.  Shown
+        # only after arming, the press that no longer needs arming would have
+        # been the one you had to arm to reach.
+        ready = bool(_CONSTRAINT_KINDS.get(len(state.get('picked') or ())))
+        # The press that starts a walk answers to what is picked; the
+        # settings do not.
+        #
+        # Measured before the two were told apart: picking two atoms put
+        # thirteen controls and 1314 px on the row, where it used to put nine.
+        # A press being reachable is not a reason to open every question about
+        # a walk nobody has started -- and the settings all have answers
+        # already, which is what makes them settings.
+        submit_scan_run_btn.layout.display = (
+            '' if (legs or pulling or ready) else 'none')
+        submit_scan_run_btn.disabled = not (legs or pulling or ready)
+        # The settings themselves are never hidden -- they are moved.  Behind
+        # the gear they are children of a row that is shown or not, so their
+        # own display must stay open or they would be invisible inside a
+        # visible row.
+        for widget in (submit_scan_whole, submit_scan_how, submit_scan_energy,
+                       submit_scan_back):
+            widget.layout.display = ''
             widget.disabled = not (legs or pulling)
+        # What is armed, and the press that drops one, belong to arming: with
+        # nothing armed there is nothing to show and nothing to drop.
+        _show_what_is_armed(legs)
         # Except the return leg, which belongs to walking a value and not to
         # pushing one: a push is a ramp of forces rather than a grid of
         # values, so there is no same-coordinate-backwards to walk.
@@ -10475,8 +10613,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         showing_price = '' if _reprice_is_possible() else 'none'
         submit_scan_price_btn.layout.display = showing_price
         submit_scan_price_btn.disabled = not showing_price == ''
+        # Kept in step for anything that still reads it -- the dropdown is off
+        # the row, not out of the editor.
         options = [(_describe_leg(leg), str(n)) for n, leg in enumerate(legs)]
         submit_scan_dd.options = options or [('nothing armed', '')]
+        _the_scan_settings(legs, pulling)
         if options:
             submit_scan_dd.value = options[0][1]
         # The two fields belong to the selection, not to the list, so they
@@ -10484,9 +10625,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # armed.
         picked = len(state.get('picked') or ())
         wanted = '' if picked in _CONSTRAINT_KINDS else 'none'
-        for widget in (submit_scan_way, submit_scan_steps):
-            widget.layout.display = wanted
-            widget.disabled = not wanted == ''
+        submit_scan_way.layout.display = wanted
+        submit_scan_way.disabled = not wanted == ''
+        # The count is the one of these two a pull also has.
+        #
+        # A pull picks no atoms -- that is what it is for -- so this followed
+        # the selection into hiding and the ramp ran on its default twenty,
+        # with no way to say otherwise.  Which way to go is genuinely a
+        # question only a coordinate has; how many steps to take is a question
+        # both have, and for a pull it is how many loads the ramp stops at.
+        many = '' if (wanted == '' or state.get('loads')) else 'none'
+        submit_scan_steps.layout.display = many
+        submit_scan_steps.disabled = not many == ''
         # Two atoms are closer or further apart; three or four are narrower or
         # wider.  The words follow what is picked, so the direction is never a
         # setting with no subject.
@@ -10946,6 +11096,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if str(submit_scan_how.value) == 'load' and not legs:
             _pull_along_the_arrows()
             return
+        # Nothing armed, but atoms picked and a direction chosen: arm it on the
+        # way through.  Arming exists for the concerted case -- several
+        # coordinates walked together -- and one coordinate needs none of it,
+        # so the common walk costs one press where it used to cost two whose
+        # names differed by a word.
+        if not legs and _CONSTRAINT_KINDS.get(len(state.get('picked') or ())):
+            on_submit_scan(None)
+            legs = _scan_legs()
         if not legs or not xyz:
             return
         # Stopping first.  Behind the method check, a scan started under GFN2
@@ -17116,7 +17274,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # press Run scan" -- an instruction that cannot work -- and the
         # refusal arrived only on the press.  Switching away with one armed
         # said nothing at all.
-        submit_scan_btn.layout.display = '' if xtb else 'none'
+        submit_scan_add_btn.layout.display = '' if xtb else 'none'
         # And the arrows belong to the scan.
         #
         # Offered under exactly the condition the Scan press is offered under,
@@ -17717,6 +17875,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_settle_btn.observe(on_submit_settle_toggle, names='value')
     submit_auto_btn.observe(on_submit_auto_toggle, names='value')
     submit_dyn_bonds_btn.observe(on_submit_dyn_bonds, names='value')
+    submit_scan_gear.observe(lambda _c: _refresh_scan(), names='value')
     submit_load_btn.observe(on_submit_load_toggle, names='value')
     submit_load_del.on_click(on_submit_load_del)
     submit_bond_kinds_btn.observe(on_submit_bond_kinds, names='value')
@@ -17730,7 +17889,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_element_dd.observe(on_submit_draw_choice, names='value')
     submit_hold_btn.on_click(on_submit_hold)
     submit_gfn_charge.observe(on_submit_gfn_charge, names='value')
-    submit_scan_btn.on_click(on_submit_scan)
+    submit_scan_add_btn.on_click(on_submit_scan)
     submit_scan_del.on_click(on_submit_scan_del)
     submit_scan_run_btn.on_click(on_submit_scan_run)
     submit_scan_price_btn.on_click(on_submit_scan_price)
