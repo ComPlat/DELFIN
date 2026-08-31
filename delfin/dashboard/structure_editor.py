@@ -10894,7 +10894,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return
         _set_mol_status(
             f'Armed {_describe_leg(legs[-1])} in {legs[-1]["steps"]} steps. '
-            + ('Arm another for a concerted step, or press Run scan.'
+            + ('Add another for a concerted step, or press Scan.'
                if len(legs) == 1 else
                f'{len(legs)} legs, walked together.') + clipped)
         _clear_selection()
@@ -10910,6 +10910,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             state['scan_legs'] = legs
             _refresh_scan()
             _set_mol_status(f'Dropped {_describe_leg(gone)}.')
+
+    def _the_scan_press_says(running):
+        """What the one press reads while a walk is on, and after it.
+
+        In one place because it is one press with two names, and the pair went
+        out of step the moment either half was renamed: the walk restored "Run
+        scan" with a play icon long after the button had become "Scan" with
+        the chart, so every finished walk left a press wearing the old name.
+        """
+        submit_scan_run_btn.description = 'Stop' if running else 'Scan'
+        submit_scan_run_btn.icon = 'stop' if running else 'line-chart'
+        submit_scan_run_btn.button_style = 'warning' if running else 'success'
 
     def _pull_along_the_arrows():
         """Walk the load up, and let the structure choose where to give.
@@ -10943,8 +10955,24 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         uhf = _gfn_uhf_now()
         wet = str(submit_gfn_solvent.value or '') or None
         steps = int(submit_scan_steps.value or 20)
+        whole = bool(submit_scan_whole.value)
+        # A ramp goes from one settled structure to the next, and pressing
+        # again is asking for the next one.  Starting over at the gentlest
+        # load would spend the whole ramp arriving back where it already is --
+        # so it carries on from the load it stopped at, as long as it is the
+        # same structure standing there.
+        carried = None
+        held = state.get('pull_reached')
+        if held and held.get('for') == _geometry_key(xyz):
+            carried = float(held['force'])
         state['scan_run'] = True
         state['scan_stop'] = False
+        # The same press, and while it pulls it is the way to stop it.  Only
+        # the walk said so, so a ramp ran under a button still reading Scan,
+        # which looks like a press that would start a second one.
+        _the_scan_press_says(True)
+        _ensure_manip_bootstrap()
+        schedule_ui_update(_install_gfn_frame_watcher)
         run_id = _claim_the_frame_run()
         _remember('a pull')
 
@@ -10974,12 +11002,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
                 got = _under_load.walk_under_load(
                     xyz, loads, method, charge=charge, uhf=uhf, solvent=wet,
-                    steps=steps, on_point=_drew,
+                    steps=steps, whole=whole, force_from=carried,
+                    on_point=_drew,
                     should_stop=lambda: bool(state.get('scan_stop')))
             finally:
                 state['scan_run'] = False
 
             def _done():
+                _the_scan_press_says(False)
                 # And the last frame closes the run, so the player stops
                 # playing rather than waiting for one more that never comes.
                 if got.get('points'):
@@ -11000,6 +11030,23 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 if rows:
                     _write_coords(xyz_document(rows, 'Pulled'),
                                   run=run_id)
+                # Where it stopped, so the next press is the next minimum and
+                # not this one over again.  Named with the structure it
+                # belongs to: a different one on screen is a different ramp.
+                state['pull_reached'] = {
+                    'force': float(last['force']),
+                    'for': _geometry_key(last['xyz']),
+                }
+                # And the walk itself, so it can be looked at: the profile
+                # under the picture, the point slider through the frames, and
+                # the second opinion the same as after any other walk.
+                path = [(one['force'], one['energy'], one['xyz'])
+                        for one in points]
+                _keep_the_walk(path, method, charge, uhf, wet, _solv_model())
+                _refresh_scan()
+                schedule_ui_update(
+                    _show_scan_profile,
+                    _scan_profile_html(path, [], True))
                 # What the arrows really did, before what they found: a load
                 # that mostly moves the molecule deforms it hardly at all, and
                 # a barrier read off one of those is a number about nothing.
@@ -11174,7 +11221,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['scan_disagree'] = None
         state['scan_jumped'] = None
         # The walk that is starting replaces the one that finished, and its
-        # second opinion with it.  Left standing, the press beside Run scan
+        # second opinion with it.  Left standing, the press beside Scan
         # would offer to re-price a profile that had just been walked over.
         state['scan_walk'] = None
         state['scan_repriced'] = None
@@ -11186,8 +11233,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['gfn_run'] = state['scan_frame_run']
         _ensure_manip_bootstrap()
         schedule_ui_update(_install_gfn_frame_watcher)
-        submit_scan_run_btn.description = 'Stop'
-        submit_scan_run_btn.icon = 'stop'
+        _the_scan_press_says(True)
         label = _server_label(method)
 
         def _push_target(here, leg):
@@ -12038,8 +12084,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # including the one that walked nothing -- because what
                     # this closes is the run, not the result.
                     _close_the_frames(state.get('scan_frame_run'))
-                    submit_scan_run_btn.description = 'Run scan'
-                    submit_scan_run_btn.icon = 'play'
+                    _the_scan_press_says(False)
                     # A run that walked nothing writes nothing and says only
                     # why.  It used to rewrite the box's comment to 'Scanned'
                     # over a geometry that had never moved, and then report
@@ -15523,7 +15568,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # position to ask.
             said += (' Nothing walked it back, so whether this profile '
                      'depends on the direction it was walked is not known. '
-                     '"Walk it back" beside Run scan answers that, for '
+                     '"Walk it back", behind the gear, answers that -- for '
                      'another leg of the same walk.')
         fell = state.get('scan_jumped')
         if fell is not None:
@@ -17214,7 +17259,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         _refresh_hand_controls()
         # And the scan is xtb's for the same reason.  Left visible under
         # UFF or PM7 a whole scan could be armed, with the line saying "or
-        # press Run scan" -- an instruction that cannot work -- and the
+        # press Scan" -- an instruction that cannot work -- and the
         # refusal arrived only on the press.  Switching away with one armed
         # said nothing at all.
         submit_scan_add_btn.layout.display = '' if xtb else 'none'
@@ -17246,7 +17291,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # And they come back with it.  The line above promises that the
             # armed legs are kept, and they were -- but nothing put their row
             # back on screen, so a detour through UFF and back to GFN2 left a
-            # scan that was still armed with no list, no Run scan and no way
+            # scan that was still armed with no list, no Scan press and no way
             # to reach either.  Kept and unreachable is the same as gone.
             _refresh_scan()
         # The transition-state press and the two boxes beside it: which starts
