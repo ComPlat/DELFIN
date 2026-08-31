@@ -131,6 +131,22 @@ _HARTREE_TO_KCAL = 627.5094740631
 #: hand feel dead (0.25 wants seven answers to pull properly).
 _HAND_FOLLOWS = 0.5
 
+#: The answer time _HAND_FOLLOWS was measured at, in seconds.
+#:
+#: A tenth of a second is what the browser's own field and a small system
+#: under GFN-FF answer in, and at that rate half the demand per answer is a
+#: hand that follows without shaking.  It is the reference, not a limit.
+_HAND_FOLLOWS_AT = 0.10
+
+#: And the least it may ever take, however slow the answers are.
+#:
+#: Scaled all the way down, a system answering once every few seconds would
+#: have a hand that never arrives at what the cursor is asking for -- which
+#: is not shaking, but is not dragging either.  A twentieth per answer still
+#: gets there in twenty answers and cannot oscillate: an overshoot needs a
+#: step larger than the distance to the target.
+_HAND_FOLLOWS_FLOOR = 0.05
+
 #: Eyring, both ways, and the four numbers behind it -- see
 #: :mod:`delfin.dashboard.thermal`.  Moved out when the reaction graph
 #: came to ask the same question of a whole network that this asks of one
@@ -5590,7 +5606,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                 'placing rather than pulling.')
                     said = (f'{label} is following the drag:{many} {steps} '
                             f'step(s), '
-                            f'{(time.perf_counter() - began) * 1000:.0f} ms '
+                            f'{_hand_answered_in(began) * 1000:.0f} ms '
                             f'each.{hand}')
                     # The bond order of the pair the hand is driving, as a
                     # readout and as nothing else.
@@ -9500,6 +9516,25 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # The box that names them goes back with them, or Undo restores
             # the pair and leaves the press meaning something else.
             'saddle_start': str(submit_saddle_from.value or 'here'),
+            # And the walk itself, which is the rest of the same rule.
+            #
+            # Two ends went back and the walk did not, so an Undo past an
+            # optimisation returned the structure and left the profile gone,
+            # the point slider gone and the second opinion unpressable -- the
+            # geometry of a scan without the scan.  Reported: "ich hab scan
+            # gemacht, weiter optimiert, wollte zurueckspringen, konnte scan
+            # nicht mehr anschauen obwohl struktur zurueckgesprungen ist".
+            #
+            # By reference, like the pair: a finished walk is not edited
+            # afterwards, so every entry over the same scan shares one object
+            # and the history costs a pointer rather than a trajectory.
+            'scan_walk': state.get('scan_walk'),
+            # The picture as it was drawn, not the flag that says one exists:
+            # it is a string this editor built and nothing edits afterwards,
+            # so it travels the same way the pair does.
+            'scan_plot': (submit_scan_plot.value
+                          if state.get('scan_plot') else None),
+            'walk_points_stale': bool(state.get('walk_points_stale')),
         }
 
     def _remember_landmark(coords, what, comment):
@@ -9714,6 +9749,25 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # instead of being forced.
         state['scan_ends'] = entry.get('scan_ends')
         state['saddle_start_wish'] = entry.get('saddle_start') or 'here'
+        # And the walk that made them, with the picture of it and whether the
+        # points are still this structure's -- see :func:`_structure_marks`.
+        # Put back before the refreshes below, because those are what read it.
+        state['scan_walk'] = entry.get('scan_walk')
+        state['walk_points_stale'] = bool(entry.get('walk_points_stale'))
+        # Put back, never taken away.
+        #
+        # An entry made before the walk finished carries no picture -- the
+        # scan's own landmarks are recorded on the way through, and the
+        # profile is drawn at the end -- so absence here means "this entry
+        # predates the drawing", not "there should be none".  Dropping on
+        # absence took the picture away from under an Undo that was stepping
+        # through the very walk it describes.  What arrives in the box decides
+        # that case, through _scan_plot_holds, and it already did.
+        drawn = entry.get('scan_plot')
+        if drawn:
+            _show_scan_profile(drawn)
+        _refresh_scan()
+        _refresh_the_walk_points()
         _refresh_constraints()
         _refresh_poly_turn()
         _refresh_saddle_controls()
@@ -13848,6 +13902,47 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         finally:
             state['saddle_controls_quiet'] = False
 
+    def _hand_answered_in(began):
+        """How long this answer took, and remembered for the next hand.
+
+        Taken where the line already reports it, so the number the damping
+        works from is the number the user is shown.
+        """
+        took = max(0.0, time.perf_counter() - float(began))
+        state['gfn_follow_took'] = took
+        return took
+
+    def _hand_follows_now():
+        """How much of this answer's demand the hand takes, given how slow the
+        answers are.
+
+        A fixed share is a fixed share *per answer*, and the thing it is
+        damping does not grow per answer -- it grows with the *time* between
+        them.  The cursor runs on while xtb thinks, so the longer an answer
+        takes the further the structure is behind when it lands and the larger
+        the force that is asked for.  Half of a much larger demand is still
+        large enough to overshoot, and then the hand goes slack, and then it
+        overshoots the other way.
+
+        Measured in the field on a slow system: answers 1.7 s apart, the pull
+        sitting on its ceiling every time and the ceiling itself swinging 59
+        to 88 kcal/mol/A, and the dragged atom going 1.3 A out and back every
+        answer.  Nine such there-and-back triples in eleven seconds, all of
+        them written "Within the budget" -- the wall had nothing to do with
+        it.
+
+        So the share is scaled by how fast the answers are actually coming.
+        At :data:`_HAND_FOLLOWS_AT` it is :data:`_HAND_FOLLOWS`, which is what
+        was measured when an answer was a tenth of a second; at 1.7 s it is a
+        twentieth of the demand instead of half of it.  A floor keeps it from
+        becoming no hand at all on a system where every answer is slow.
+        """
+        took = float(state.get('gfn_follow_took') or 0.0)
+        if took <= 0.0:
+            return _HAND_FOLLOWS
+        share = _HAND_FOLLOWS * (_HAND_FOLLOWS_AT / took)
+        return max(_HAND_FOLLOWS_FLOOR, min(_HAND_FOLLOWS, share))
+
     def _steady_hand(pushes):
         """The same forces, but not free to double and halve every answer.
 
@@ -13887,7 +13982,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                    tuple(int(i) for i in (one.get('atoms') or ())))
             before = remembered.get(key)
             steady = (asked if before is None else
-                      before + _HAND_FOLLOWS * (asked - before))
+                      before + _hand_follows_now() * (asked - before))
             keeping[key] = steady
             out.append(dict(one, force=steady))
         state['gfn_hand_force'] = keeping
