@@ -10509,7 +10509,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # beside it, on the same line.  Not a row of its own underneath: the
         # toolbar is above the picture, so a line added below is a line taken
         # off the viewer, and four controls are not worth that.
-        wanted = bool(legs or pulling)
+        # The settings answer to the press, and the press answers to what is
+        # picked.  Tied to arming instead, there was a state with Scan on the
+        # row and no gear beside it -- a walk you could start and not set up,
+        # which since Scan arms on the way through is every ordinary walk.
+        wanted = bool(legs or pulling or ready)
         submit_scan_gear.layout.display = '' if wanted else 'none'
         if not wanted and submit_scan_gear.value:
             submit_scan_gear.value = False
