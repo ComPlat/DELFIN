@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from delfin.common.logging import get_logger, add_file_handler
+from delfin.common.solvation import build_solvation_keyword
 from delfin.common.control_validator import resolve_occupier_compare
 from delfin.common.paths import resolve_path
 from delfin.global_manager import get_global_manager
@@ -382,11 +383,9 @@ def read_and_modify_file_OCCUPIER(from_index, output_file_path, charge, multipli
     )
 
     # Optional implicit solvent token
-    implicit = ""
-    if config.get('implicit_solvation_model') and solvent:
-        implicit = f"{config['implicit_solvation_model']}({solvent})"
-    elif config.get('implicit_solvation_model'):
-        implicit = config['implicit_solvation_model']
+    implicit = build_solvation_keyword(
+        config.get('implicit_solvation_model'), solvent
+    )
 
     # Initial guess (trim accidental trailing text)
     initial_guess = (str(config.get('initial_guess', '')).split() or [''])[0]
@@ -872,11 +871,9 @@ def run_OCCUPIER(work_dir: Optional[Path] = None):
         )
 
         # Optional implicit solvent token
-        implicit = ""
-        if config.get('implicit_solvation_model') and solvent:
-            implicit = f"{config['implicit_solvation_model']}({solvent})"
-        elif config.get('implicit_solvation_model'):
-            implicit = config['implicit_solvation_model']
+        implicit = build_solvation_keyword(
+            config.get('implicit_solvation_model'), solvent
+        )
 
         # Initial guess (trim accidental trailing text)
         initial_guess = (str(config.get('initial_guess', '')).split() or [''])[0]

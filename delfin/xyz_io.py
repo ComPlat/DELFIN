@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from delfin.common.orca_blocks import OrcaInputBuilder, collect_output_blocks, resolve_maxiter
+from delfin.common.solvation import build_solvation_keyword
 
 # import canonical selection helpers from utils
 from .utils import resolve_level_of_theory
@@ -345,10 +346,7 @@ def _first_sphere_indices(atoms, metal_indices, scale, radii_map):
 
 def _implicit_token(config, solvent):
     """Build implicit solvent token."""
-    mdl = str(config.get('implicit_solvation_model','') or '').strip()
-    if not mdl:
-        return ""
-    return f"{mdl}({solvent})" if solvent else mdl
+    return build_solvation_keyword(config.get('implicit_solvation_model'), solvent)
 
 
 def _ensure_qmmm_implicit_model(

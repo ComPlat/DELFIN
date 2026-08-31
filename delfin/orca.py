@@ -1871,13 +1871,19 @@ def run_orca_with_intelligent_recovery(
             logger.error(f"ORCA failed with unrecoverable error for {job_name}")
             return False
 
-        # Check if we've already tried to recover from this error type
+        # The same error type recurring is the normal case, not a reason to
+        # give up: recovery strategies deliberately escalate across attempts
+        # (e.g. TDA, then TDA + tighter SCF). The retry budget is enforced by
+        # tracker.should_retry() below, which counts per (job, error_type)
+        # and persists across runs. Bailing out here on the second occurrence
+        # made max_recovery_attempts effectively 1 and turned every
+        # `attempt >= 2` branch of every strategy into dead code.
         error_key = f"{job_name}_{error_type.value}"
         if error_key in attempted_errors:
-            logger.error(
-                f"Error type {error_type.value} persists after recovery attempt for {job_name}"
+            logger.info(
+                f"Error type {error_type.value} recurred for {job_name}; "
+                f"escalating recovery strategy"
             )
-            return False
 
         # Check if we should attempt recovery
         if not tracker.should_retry(job_name, error_type, max_recovery_attempts):
