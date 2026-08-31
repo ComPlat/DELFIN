@@ -387,3 +387,32 @@ def test_an_arrow_is_drawn_as_an_arrow():
     # most of the picture.
     reach = body.split('var LOAD_REACH = ')[1].split(';')[0]
     assert 0.8 <= float(reach) <= 1.6, reach
+
+
+def test_the_pull_is_watched_while_it_pulls():
+    """A ramp is a path, and a path nobody can see is a number with no picture
+    behind it.
+
+    The same writer the scan uses, and for the same reason: one frame at a
+    time, named with where it sits in the walk so the player *draws* it rather
+    than jumping to it, and refused if the run has moved on.  Handed to
+    _stream_frames instead, every load level arrived as a path of one and the
+    picture stood still until the whole ramp had finished.
+    """
+    from editor_source import EDITOR_SOURCE as source
+
+    pull = source.split('def _pull_along_the_arrows')[1].split('\n    def ')[0]
+
+    # Its own run, claimed before anything is drawn, so a frame of it can
+    # never be read into some other walk's path.
+    assert '_claim_the_frame_run()' in pull
+    # One frame per level, through the field the player reads.
+    assert '_frame_payload(' in pull
+    assert "'follow': 1" in pull
+    assert "'from': len(shown) - 1" in pull
+    assert "setattr(submit_gfn_frame, 'value', text)" in pull
+    # And refused when the run has moved on -- an edit or another press.
+    assert '_frame_run_is_current(r)' in pull
+    # The end is said, or the player waits for a frame that never comes.
+    assert "'final': 1" in pull
+    assert '_stream_frames(' not in pull

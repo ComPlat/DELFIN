@@ -2680,8 +2680,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         [submit_internal_label, submit_internal_value,
          submit_internal_btn, submit_hold_btn, submit_hold_mode,
          submit_load_btn, submit_load_dd, submit_load_del,
-         submit_scan_add_btn, submit_scan_way, submit_scan_to,
-         submit_scan_steps,
+         # Direction, target, count, and *then* the press that takes them.
+         #
+         # Arming captures what the boxes say, so a press that stands before
+         # them is a press before the thing it is about: read left to right it
+         # said "add" and only afterwards what was being added.
+         submit_scan_way, submit_scan_to, submit_scan_steps,
+         submit_scan_add_btn,
          submit_scan_dd, submit_scan_del,
          submit_scan_gear, submit_scan_whole, submit_scan_how,
          submit_scan_energy, submit_scan_back,
@@ -10944,18 +10949,28 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         _remember('a pull')
 
         def _work():
-            drawn = []
+            shown = []
             try:
                 def _drew(point):
-                    drawn.append(point)
                     schedule_ui_update(
                         _set_mol_status,
                         f'{label} is pulling at {point["force"]:.0f} '
                         f'kcal/mol/A: {point["energy"]:+.1f} kcal/mol.',
                         spinner=True)
+                    # The same writer the scan uses, and for the same reason:
+                    # one frame at a time, named with where it sits in the walk
+                    # so the player draws it rather than jumping to it, and
+                    # refused if the run has moved on.  Handed over through
+                    # _stream_frames instead, a load level arrived as a path of
+                    # one and the picture stood still until the ramp ended.
+                    shown.append(_gfn.coordinates_of(point['xyz']))
                     schedule_ui_update(
-                        lambda rows=[_gfn.coordinates_of(point['xyz'])]:
-                        _stream_frames(run_id, rows))
+                        lambda text=_frame_payload(
+                            run_id, **{'from': len(shown) - 1,
+                                       'follow': 1,
+                                       'frames': [shown[-1]]}),
+                        r=run_id: setattr(submit_gfn_frame, 'value', text)
+                        if _frame_run_is_current(r) else None)
 
                 got = _under_load.walk_under_load(
                     xyz, loads, method, charge=charge, uhf=uhf, solvent=wet,
@@ -10965,6 +10980,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 state['scan_run'] = False
 
             def _done():
+                # And the last frame closes the run, so the player stops
+                # playing rather than waiting for one more that never comes.
+                if got.get('points'):
+                    schedule_ui_update(
+                        lambda text=_frame_payload(
+                            run_id, **{'from': max(0, len(shown) - 1),
+                                       'follow': 1, 'frames': [], 'final': 1}),
+                        r=run_id: setattr(submit_gfn_frame, 'value', text)
+                        if _frame_run_is_current(r) else None)
                 if not got.get('ok') or not got.get('points'):
                     _set_mol_status(got.get('status')
                                     or 'The load could not be applied.')
