@@ -5708,9 +5708,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         # step of every drag.
                         bias = _gfn.restraint_energy(
                             outcome['xyz'], keeping + contacts, _value_in)
+                        # And the step has to have produced one.
+                        #
+                        # A relaxation step used to be bounded by a clock and
+                        # nothing else, so it either answered or the whole
+                        # frame failed.  It is asked to stop now instead --
+                        # letting go is the way out of a drag frame -- and a
+                        # stopped run comes back with a geometry and no
+                        # energy, which this then took the arithmetic of.
+                        # Measured in the field: "the relaxation under the
+                        # hand stopped on an error: TypeError: float()
+                        # argument must be ... not 'NoneType'", three times in
+                        # one session under the budget.
                         priced = (
                             dict(outcome, energy=float(outcome['energy']) - bias)
-                            if bias is not None else
+                            if bias is not None
+                            and outcome.get('energy') is not None else
                             _gfn.optimize_with_gfn(
                                 outcome['xyz'], method, charge=charge, uhf=uhf,
                                 timeout=None, should_stop=_hand_gone,
