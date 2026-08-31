@@ -51,6 +51,21 @@ H     1.900000   -1.020000    0.000000
 """
 
 
+def _the_rise(said):
+    """The number after "a rise of", however the sentence qualifies it.
+
+    It is qualified now: a relaxed scan's top is the top of the best path that
+    keeps to the coordinate somebody chose, so the saddle lies at or below it
+    and the sentence says "at most".  Read as the word straight after "of",
+    that turned a wording change into a ValueError -- which is a check
+    breaking on the thing it was not about.
+    """
+    import re as _re
+
+    found = _re.search(r'a rise of (?:at most )?(-?\d+(?:\.\d+)?)', said)
+    assert found, said
+    return float(found.group(1))
+
 def test_a_drag_holds_the_contact_it_changed():
     """One atom under the hand is held to the neighbour it is leaving."""
     held = gfn.contacts_holding(_ETHANE, [2], most=1)
@@ -2170,7 +2185,7 @@ def test_a_scan_hands_back_the_minimum_it_crossed_into_not_the_one_it_left():
         assert state.get("scan_arrived"), (how, said)
         # It crossed something, and says how much.
         assert "a rise of" in said, (how, said)
-        rise = float(said.split("a rise of")[1].split()[0])
+        rise = _the_rise(said)
         assert 4.0 < rise < 9.0, (how, said)
         # And it is not the temperature of no barrier at all.
         wants = float(said.split("It wants about")[1].split()[0])
@@ -2272,9 +2287,14 @@ def test_a_walk_that_never_settles_says_so_rather_than_pretending():
     said = part.mol_status.value
     assert not state.get("scan_arrived"), said
     assert "came back to the minimum" not in said, said
+    # The steps that were asked for, and the narrowing counted apart from
+    # them: the walk locates its own summit afterwards, and folding those
+    # points into one total took the two numbers the user set out of the
+    # answer.
     assert "walked 24 of 24 points" in said, said
+    assert "more to find the top" in said, said
     # And the barrier it reports is the syn one it went over.
-    rise = float(said.split("a rise of")[1].split()[0])
+    rise = _the_rise(said)
     assert 3.5 < rise < 6.5, said
 
 

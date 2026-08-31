@@ -7492,7 +7492,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                       frame[3 * i + 2]) for i in range(len(symbols))],
             comment)
 
-    def _the_picture_stopped_here(run_id, source, walked, comment):
+    def _the_picture_stopped_here(run_id, source, walked, comment,
+                                  *, undo_step=False):
         """Put a stopped run's path down, to be cut where the picture stands.
 
         A Stop means the frame on screen, and the only thing that knows which
@@ -7513,7 +7514,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         """
         state['gfn_stopped_path'] = {
             'run': int(run_id or 0), 'source': source or '',
-            'comment': comment,
+            'comment': comment, 'undo': bool(undo_step),
             'frames': [list(one) for one in (walked or [])],
         }
         return _land_the_stopped_frame()
@@ -7537,6 +7538,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if text is None:
             return False
         state.pop('gfn_stopped_path', None)
+        # A run that was *stopped* took its undo point when it started, and
+        # cutting its own path at the frame on screen is that same press
+        # ending -- one action, one entry.  A run that *finished* is different:
+        # its answer is already in the box and in the history, and standing on
+        # a frame of the playback afterwards is a second thing the user did.
+        # Without a step for it, Undo would go past the scan's own answer
+        # rather than back to it.
+        if held.get('undo'):
+            _remember('standing on a point of the walk')
         return _write_coords(text, drawn=True)
 
     #: How long to wait after the last change before starting again.  Letting
@@ -10366,6 +10376,39 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: is 1.53, it went there.  Slightly under one is real (a bond compresses
     #: in a transition state), well under one is not, and nothing has to be
     #: measured to know which side of that a number is on.
+    #: How many extra points the walk spends locating its own summit.
+    #:
+    #: Two.  The first is worth the most -- a parabola through three points
+    #: that bracket a smooth top lands close -- and the second confirms it or
+    #: corrects a bracket that was too wide.  A third buys less than the
+    #: relaxation noise it costs: these are constrained minimisations, and two
+    #: of them at neighbouring values agree to a few hundredths of a kcal/mol.
+    _SCAN_NARROW_ROUNDS = 2
+
+
+    def _the_vertex(share, low, middle, high):
+        """Where a parabola through three points has its top, as a share.
+
+        The three are at 0, *share* and 1.  Returns None when the fit says
+        nothing worth paying for: a curve that opens upward has no top between
+        them, and one that is nearly straight puts its vertex a long way
+        outside the bracket -- which after a discontinuity is exactly what the
+        numbers look like.
+        """
+        x1, x2, x3 = 0.0, float(share), 1.0
+        y1, y2, y3 = float(low), float(middle), float(high)
+        under = (x1 - x2) * (x1 - x3) * (x2 - x3)
+        if abs(under) < 1e-12:
+            return None
+        a = (x3 * (y2 - y1) + x2 * (y1 - y3) + x1 * (y3 - y2)) / under
+        b = (x3 * x3 * (y1 - y2) + x2 * x2 * (y3 - y1)
+             + x1 * x1 * (y2 - y3)) / under
+        if a >= 0:
+            return None               # opens upward: no top in here
+        top = -b / (2 * a)
+        return top if 0.02 < top < 0.98 else None
+
+
     _SCAN_NO_CLOSER = 0.85
 
     #: How a push ramps, and when it stops to look closer.
@@ -10746,6 +10789,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['scan_stop'] = False
         state['scan_arrived'] = False
         state['scan_came_back'] = None
+        state['scan_narrowed'] = 0
+        state['scan_became'] = None
         state['scan_free'] = None
         state['scan_ends'] = None
         # Why the walk ended, when it ended before it was finished.  Read by
@@ -10922,7 +10967,125 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                 standing_here))
                 return out
 
+            def _where_the_bonding_changed(points):
+                """The first step of the walk whose bond graph is different.
+
+                Returned as ``{'said', 'from', 'at'}`` -- what changed, in
+                words, and the two coordinate values it changed between -- or
+                None when the molecule kept the bonding it started with, which
+                is a scan that deformed something rather than reacting it.
+
+                Only the first.  A walk that keeps going past its reaction
+                changes the bonding again on the way out of the well, and a
+                list of every change is a list nobody reads; the one that
+                matters is where the molecule stopped being the reactant.
+                """
+                rows = None
+                was = None
+                for one in points:
+                    geometry = one[2] if len(one) > 2 else None
+                    if not geometry:
+                        continue
+                    if rows is None:
+                        rows = [line.split()[0]
+                                for line in _gfn.atom_lines(geometry)]
+                    graph = _gfn.bond_graph(geometry)
+                    if was is not None and graph != was[1]:
+                        said = _gfn.graph_changed(was[1], graph, rows)
+                        if said:
+                            return {'said': said, 'from': was[0], 'at': one[0]}
+                    was = (one[0], graph)
+                return None
+
+            def _narrow_on_the_top(points, top_at):
+                """Find the top between the two points that bracket it.
+
+                A walk of N even steps knows its summit to half a step and no
+                better, and what it reports is the highest point it *sampled*
+                -- which is at or below the real one, and moves when somebody
+                changes the number of steps.  Eight steps over 1.4 A is a
+                summit known to 0.09 A, and a barrier that depends on the grid
+                it was measured on is not a barrier.
+
+                A parabola through the three points is the cheap way: one
+                extra relaxation a round rather than two, and on a smooth top
+                it converges quadratically.  Where the parabola is useless --
+                the vertex outside the bracket, or a curve that opens the
+                wrong way, which is what a discontinuity looks like from here
+                -- it falls back to halving the wider side, which cannot be
+                worse than the sampling it is replacing.
+
+                The push has :func:`_across` for its own crossing and needs
+                none of this; this is the walk's.
+
+                Returns the points with whatever it found inserted in walked
+                order, and the new summit.  The frames are *not* added to the
+                playback: they are between two frames of it, and a trajectory
+                that steps backwards to show them is a picture of nothing.
+                """
+                found = list(points)
+                for _round in range(_SCAN_NARROW_ROUNDS):
+                    if state.get('scan_stop'):
+                        break
+                    at = max(range(len(found)), key=lambda k: found[k][1])
+                    if at == 0 or at == len(found) - 1:
+                        # The top is an end, so it is not a top: the walk was
+                        # stopped before it crossed anything, or it is still
+                        # climbing.  Nothing to bracket.
+                        break
+                    lo, mid, hi = found[at - 1], found[at], found[at + 1]
+                    if None in (lo[2], mid[2], hi[2]):
+                        break
+                    ends = [(_value_in(lo[2], one), _value_in(hi[2], one))
+                            for one in legs]
+                    if any(abs(b - a) < 1e-9 for a, b in ends):
+                        break
+                    share = ((_value_in(mid[2], legs[0]) - ends[0][0])
+                             / (ends[0][1] - ends[0][0]))
+                    if not 0.0 < share < 1.0:
+                        break
+                    want = _the_vertex(share, lo[1], mid[1], hi[1])
+                    if want is None or abs(want - share) < 0.02:
+                        # Either the curve says nothing useful, or it says the
+                        # top is where we already stand.  Halve the wider side
+                        # instead of paying for a point we have.
+                        want = share / 2 if share > 0.5 else (1 + share) / 2
+                    asked = [
+                        {'kind': one['kind'], 'atoms': list(one['atoms']),
+                         'mode': 'fix',
+                         'value': ends[k][0] + want * (ends[k][1] - ends[k][0])}
+                        for k, one in enumerate(legs)
+                    ]
+                    schedule_ui_update(
+                        _set_mol_status,
+                        f'{label} is narrowing in on the top: '
+                        f'{legs[0]["kind"]} at '
+                        f'{asked[0]["value"]:.4g}...', spinner=True)
+                    got = _gfn.optimize_with_gfn(
+                        mid[2], method, charge=charge, uhf=uhf,
+                        max_steps=_SCAN_CYCLES, timeout=None,
+                        constraints=asked, solvent=wet, solvation_model=model,
+                        topology=_gfn_topology_dir(mid[2]))
+                    if not got.get('ok') or got.get('energy') is None:
+                        break
+                    point = (asked[0]['value'],
+                             (float(got['energy']) - base) * _HARTREE_TO_KCAL,
+                             got['xyz'])
+                    where = at if want < share else at + 1
+                    found.insert(where, point)
+                    # Counted, so the sentence can still say how many of the
+                    # steps that were *asked for* ran.  Folded into one total,
+                    # "24 of 24" became "26 points" and the two numbers a user
+                    # set were no longer in the answer.
+                    state['scan_narrowed'] = (
+                        int(state.get('scan_narrowed') or 0) + 1)
+                best = max(found, key=lambda one: one[1])
+                if top_at is not None and best[1] <= top_at[0]:
+                    return found, top_at
+                return found, (best[1], best[2], best[0])
+
             def _free(here):
+
                 """The free energy of this geometry, unconstrained.
 
                 Its own calculation, with no restraint in it: a Hessian taken
@@ -11294,6 +11457,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # :func:`_across`, so the same test on a push would fire on
                 # the thing the push is for, and on a path whose points are
                 # not evenly spaced besides.
+                # Where on the walk the chemistry happened.
+                #
+                # Costs nothing: the geometries are already in hand and the
+                # graph is covalent radii, the same test the picture draws
+                # lines with.  It is the answer to the question a scan is
+                # really asked -- not "how high" but "where did it react" --
+                # and it is the one that says whether the two agree.
+                #
+                # They often do not.  Measured in :func:`_gfn.paths_disagree`
+                # on the Diels-Alder, the walk's summit and the bond that
+                # actually forms are 1.2 A apart in a coordinate nobody drove.
+                # A top that is nowhere near the bonding change is a top the
+                # saddle search will not confirm, and saying so before it is
+                # pressed is cheaper than pressing it.
+                state['scan_became'] = _where_the_bonding_changed(path)
                 if not pushing:
                     fell = _gfn.where_a_walk_jumped(
                         [one[1] for one in path])
@@ -11310,6 +11488,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             fell['was'] = who['was']
                             fell['now'] = who['now']
                         state['scan_jumped'] = fell
+                # And the top, located rather than sampled.
+                #
+                # Before the walk back, so the return leg still retraces the
+                # points the walk really held -- the refinement's points are
+                # between two of those and belong to the profile, not to the
+                # path that was driven.  And before the free energies and the
+                # landmarks, because those are taken *at the summit* and the
+                # summit is what has just moved.
+                if (not pushing and base is not None
+                        and not state.get('scan_stop')):
+                    path, summit = _narrow_on_the_top(path, summit)
+
                 # And the same coordinate walked back from where it ended.
                 #
                 # A driven scan is a minimum-energy path only where nothing
@@ -11565,6 +11755,24 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             'Scanned to the next minimum'
                             if state.get('scan_arrived') else 'Scanned'),
                             run=state.get('scan_frame_run'))
+                    # And the walk stays cuttable after it has finished.
+                    #
+                    # A run that is *stopped* puts its path down so the page's
+                    # "stopped at frame 3 of run 3" can cut it.  A run that
+                    # finishes did not, and its trajectory goes on playing:
+                    # halt the playback at frame 3 and the picture stands
+                    # there while the box holds the end.  The two then
+                    # disagree, and the next thing that reads the box -- a
+                    # grab, Copy, Submit -- makes them agree by jumping, which
+                    # is what "the scan result jumps when I grab it" is.
+                    #
+                    # Put down here, it waits: _the_shown_frame_of answers
+                    # None until the page reports a frame of *this* run, and
+                    # the next run to be claimed drops it.
+                    _the_picture_stopped_here(
+                        state.get('scan_frame_run'), final, shown,
+                        'the point of the walk the picture stopped on',
+                        undo_step=True)
                     _set_mol_status(*_scan_verdict(path, steps))
 
                 schedule_ui_update(_done)
@@ -15042,22 +15250,63 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # A push prices its crossing with points of its own, so the count
         # can pass the number of steps that were asked for -- said as it is
         # rather than as "27 of 20".
-        many = (f'{len(path)} points' if len(path) > steps
-                else f'{len(path)} of {steps} points')
+        narrowed = int(state.get('scan_narrowed') or 0)
+        driven = len(path) - narrowed
+        many = (f'{driven} points' if driven > steps
+                else f'{driven} of {steps} points')
+        if narrowed:
+            many += (f', and {narrowed} more to find the top')
         # Said as one quantity or as two, never as two wearing one name: a
         # highest point in E beside a rise in G reads as a contradiction, and
         # a reader has no way to tell which is which.
+        # "at most", because that is what it is.
+        #
+        # A relaxed scan drives a coordinate somebody chose, and its highest
+        # point is the top of the *best path that keeps to that coordinate*.
+        # The saddle is the lowest such top over every path there is, so it
+        # lies at or below this number and generally off the coordinate
+        # entirely -- measured in :func:`_gfn.paths_disagree` on the
+        # Diels-Alder, 1.2 A off it, in a bond nobody was driving.
+        #
+        # Written as a plain number it reads as a measurement, and a barrier
+        # quoted from a scan is then quoted as if a saddle search would agree
+        # with it.  It will not; it will be lower.  Saying which way the error
+        # points costs three words and turns the pair -- this and OptTS -- into
+        # a bracket instead of two numbers that disagree.
+        at_most = 'at most ' if rise > 0 else ''
         if free is None:
             first = (f'The scan walked {many}. Highest '
                      f'{top[1]:+.1f} kcal/mol at {top[0]:.3g}, a rise of '
-                     f'{rise:.1f} out of the minimum before it, ending '
-                     f'{ends:+.1f}.{arrived}')
+                     f'{at_most}{rise:.1f} out of the minimum before it, '
+                     f'ending {ends:+.1f}.{arrived}')
         else:
             first = (f'The scan walked {many}. Highest at {top[0]:.3g}: '
-                     f'{free[0]:+.1f} kcal/mol as a free energy at {T:g} K '
-                     f'({top[1]:+.1f} electronic), ending {free[1]:+.1f} '
-                     f'({ends:+.1f}).{arrived}'
+                     f'{at_most}{free[0]:+.1f} kcal/mol as a free energy at '
+                     f'{T:g} K ({top[1]:+.1f} electronic), ending '
+                     f'{free[1]:+.1f} ({ends:+.1f}).{arrived}'
                      f'{_scan_free_is_an_estimate()}')
+        # Where it reacted, and whether that is where the top is.
+        #
+        # One clause, and only when there is something to say: a deformation
+        # that never changed a bond has nothing, and neither has a walk whose
+        # summit sits on the change -- that is the ordinary case and does not
+        # need announcing.  What needs announcing is the other one, because a
+        # top a long way from the bonding change is a top the saddle search
+        # will not confirm.
+        became = state.get('scan_became')
+        if became is not None:
+            near = min(abs(top[0] - became['at']), abs(top[0] - became['from']))
+            spacing = abs(became['at'] - became['from']) or 1e-9
+            said_it = f' {became["said"]} between {became["from"]:.3g} and ' \
+                      f'{became["at"]:.3g}'
+            if near <= 1.5 * spacing:
+                said_it += ', which is where the top is.'
+            else:
+                said_it += (f', a long way from the top at {top[0]:.3g} -- so '
+                            f'the height above is a deformation and not this '
+                            f'reaction. Two ends and a saddle search will say '
+                            f'what it costs.')
+            first += said_it
         # What was asked for, and whether it happened.  Said before the
         # temperature, because it is the question: a walk given a verb was not
         # asked how high the path was, it was asked to make a bond.

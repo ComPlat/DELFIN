@@ -7263,8 +7263,9 @@ const atoms = [
 ];
 const model = {atoms, selectedAtoms: () => atoms};
 const viewer = {atoms, getModel: () => model, selectedAtoms: () => atoms,
-  addSphere: (o) => ({o}), addLine: (o) => ({o}), addLabel: (o) => ({o}),
-  removeShape(){}, removeAllLabels(){}, render(){}, setSlab(){},
+  addSphere: (o) => { shapes++; return {o}; },
+  addLine: (o) => { shapes++; return {o}; }, addLabel: (o) => ({o}),
+  removeShape(){ shapes--; }, removeAllLabels(){}, render(){}, setSlab(){},
   getSlab: () => ({near:-50, far:50}), setClickable(){}, setStyle(){},
   rotationGroup: {position: {z: 150},
                   matrix: {elements: [1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]}},
@@ -7286,6 +7287,8 @@ function flat() {
   atoms.forEach(a => { out.push(a.x, a.y, a.z); });
   return out;
 }
+// The markers a pick leaves on the viewer, counted where they live.
+let shapes = 0;
 const said = [];
 function note(what) { said.push({what, cmd: cmdInput.value,
                                  orders: atoms.map(a => (a.bondOrder||[]).slice())}); }
@@ -7310,7 +7313,13 @@ cmdInput.value = '';
 api.setPositions(SCOPE, flat());
 note('again');
 
-console.log(JSON.stringify(said));
+// A band selects two atoms, and the markers go on the viewer.
+api.setPicks(SCOPE, [0, 1]);
+const withPicks = shapes;
+// Then the structure is replaced -- the same call the editor makes when a
+// press has removed the picked atoms and handed back what is left.
+api.onViewerReady(SCOPE, el('div'));
+console.log(JSON.stringify({said, withPicks, afterwards: shapes}));
 """
 
 
@@ -7342,7 +7351,8 @@ def test_the_orders_are_asked_for_again_when_a_bond_is_made(tmp_path):
     done = subprocess.run(["node", str(page), str(boot)],
                           capture_output=True, text=True, timeout=120)
     assert not done.returncode, done.stderr
-    steps = {one["what"]: one for one in json.loads(done.stdout)}
+    ran = json.loads(done.stdout)
+    steps = {one["what"]: one for one in ran["said"]}
 
     # What Python said is what is drawn: both double bonds, both ends.
     assert steps["told"]["orders"][0] == [2], steps["told"]["orders"]
@@ -7359,6 +7369,19 @@ def test_the_orders_are_asked_for_again_when_a_bond_is_made(tmp_path):
 
     # And it does not go on saying it.
     assert steps["again"]["cmd"] == "", steps["again"]["cmd"]
+
+    # The markers a pick leaves are taken off the viewer when the structure is
+    # replaced, not merely forgotten.
+    #
+    # Dropping the references was enough while every new structure meant a new
+    # viewer: the spheres went with the one being thrown away.  A structure
+    # shown by swapping the model keeps its viewer, and removeAllModels removes
+    # models -- so select atoms with the band, press Remove, and the atoms went
+    # while their markers stayed behind over nothing.
+    assert ran["withPicks"] > 0, "picking drew no markers"
+    assert ran["afterwards"] == 0, (
+        f'{ran["afterwards"]} marker(s) left on the viewer after the '
+        f'structure was replaced')
 
 
 def test_gfn1_is_offered_everything_gfn2_is():
