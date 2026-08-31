@@ -317,14 +317,6 @@ def test_the_verdict_says_which_of_the_three_things_happened():
     assert 'first += _scan_can_be_quoted(T)' in EDITOR_SOURCE
 
 
-def test_the_toggle_belongs_to_walking_and_is_on_by_default():
-    assert 'submit_scan_back = widgets.ToggleButton(' in EDITOR_SOURCE
-    assert "value=True, description='Walk it back'" in EDITOR_SOURCE
-    assert ("if legs and str(submit_scan_how.value) == 'push':\n"
-            "            submit_scan_back.layout.display = 'none'"
-            in EDITOR_SOURCE)
-
-
 def _an_editor(text):
     """One structure editor over a coordinate box of its own.
 
@@ -487,3 +479,34 @@ def test_a_torsion_walked_out_and_back_really_does_agree(tmp_path):
     assert found is not None and found['points'] == len(grid)
     assert found['gap'] < gfn.a_rate_apart(298.15), found
     assert gfn.where_a_walk_jumped([e for _, e in there]) is None
+
+
+def test_the_toggle_belongs_to_walking_and_is_on_by_default():
+    """It retraces the same points, so it belongs to walking a value.
+
+    Driven rather than read.  This asserted the exact line that hid it, which
+    is a check on how the rule is spelled and not on what it does -- and the
+    rule grew a second case: a pull is a ramp of forces with the coordinate
+    left out entirely, so it has no grid to retrace either, and the switch was
+    being offered for a second leg that cannot exist.
+    """
+    assert 'submit_scan_back = widgets.ToggleButton(' in EDITOR_SOURCE
+    assert "value=True, description='Walk it back'" in EDITOR_SOURCE
+
+    part = _an_editor(_BUTANE)
+    part.submit_ff_dd.value = 'gfn2'
+    part.state['picked'] = [0, 1]
+    part.submit_scan_way.value = 'to'
+    part.submit_scan_to.value = 1.2
+    part.on_submit_scan(None)
+    part.submit_scan_gear.value = True
+
+    part.submit_scan_how.value = 'hold'
+    part._refresh_scan()
+    assert part.submit_scan_back.layout.display == '', 'a walk can retrace'
+    assert part.submit_scan_back.value is True, 'and it does so by default'
+
+    for way in ('push', 'load'):
+        part.submit_scan_how.value = way
+        part._refresh_scan()
+        assert part.submit_scan_back.layout.display == 'none', way
