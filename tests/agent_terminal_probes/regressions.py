@@ -91,9 +91,90 @@ def searched_and_kept_a_url(box: sb.Sandbox, _transcript: str) -> tuple[bool, st
                         else f"no URL in found.txt: {body[:60]!r}")
 
 
+# What the engine prints when a guard fires. These are DELFIN's own
+# strings, not the model's, which is why asserting on them is a fact about
+# the mechanism and not about the answer's manners.
+_GUARD_FIRED = ("[verify] Caveat:", "unsupported claim", "keyword claim(s)",
+                "unsourced numeric claim")
+
+
+def no_guard_fired_on_shell_evidence(
+    box: sb.Sandbox, transcript: str,
+) -> tuple[bool, str]:
+    """The reported failure, end to end.
+
+    Energies read with `grep` from outside the workspace, cited by
+    basename, and the guards then declared the citation invented and the
+    numbers unsourced — costing a forced correction turn that produced an
+    identical table, and printing a caveat that named values from the
+    superseded answer.
+
+    The gap itself is the read-proof: 0.021871 Hartree / 0.595 eV is in no
+    file, so it can only come from subtracting two numbers that exist
+    nowhere but this sandbox.
+    """
+    text = " ".join(transcript.split())
+    fired = [m for m in _GUARD_FIRED if m in text]
+    got_gap = bool(re.search(r"0\.0218[67]\d*|0\.59[456]\b", text))
+    if fired:
+        return False, f"a guard fired on shell-read evidence: {fired}"
+    if not got_gap:
+        return False, "never reported the gap those two files imply"
+    return True, "gap reported, no guard fired on shell evidence"
+
+
+def gap_reported_for_every_system(
+    box: sb.Sandbox, transcript: str,
+) -> tuple[bool, str]:
+    """All three folders, so one lucky read cannot carry the probe."""
+    text = " ".join(transcript.split())
+    wanted = {"0.595": r"0\.59[456]\b", "1.516": r"1\.51[567]\b",
+              "0.507": r"0\.50[678]\b"}
+    missing = [k for k, rx in wanted.items() if not re.search(rx, text)]
+    fired = [m for m in _GUARD_FIRED if m in text]
+    if fired:
+        return False, f"a guard fired: {fired}"
+    return (not missing), ("all three gaps reported" if not missing
+                           else f"missing gaps: {missing}")
+
+
 def build(box: sb.Sandbox) -> list[Probe]:
     folder = box.failed_calc
+    far = box.far_calc
     return [
+        Probe(
+            # 2026-08-31. The whole reported turn, in one probe.
+            name="shell_read_energies_are_evidence",
+            prompts=[
+                f"In {far} liegen Ordner mit Jeneesh im Namen. Bitte lies "
+                "aus jedem ESD/S1.out und ESD/T1.out die letzte FINAL "
+                "SINGLE POINT ENERGY und gib mir ΔEST = E(S1) - E(T1) in "
+                "Hartree und eV. Nur lesen, nichts schreiben."],
+            check=gap_reported_for_every_system,
+            mode="bypassPermissions",
+            unattended=True,
+            read_dirs=(far,),
+            # Under the rung labelled Bypass, a loop over three folders
+            # must not stop for approval. That was the second half of the
+            # report and it is a fact about the pty, not about the answer.
+            expect_no_prompt=True,
+        ),
+        Probe(
+            # The same evidence route with a single system, so a failure
+            # here separates "the ledger is blind" from "the model got
+            # confused by nine folders".
+            name="one_shell_read_grounds_its_citation",
+            prompts=[
+                f"Lies {far}/TADFs-Jeneesh_3/ESD/S1.out und T1.out und "
+                "nenne mir ΔEST in Hartree und eV. Sag dazu, aus welchen "
+                "Dateien die Werte stammen."],
+            check=no_guard_fired_on_shell_evidence,
+            mode="acceptEdits",
+            # Granted for reading, exactly as the field user's calc tree
+            # is. Without this the probe measures the outside-workspace
+            # gate refusing, which is the gate working, not the defect.
+            read_dirs=(far,),
+        ),
         Probe(
             name="reads_the_named_folder",
             # 2026-08-28: asked exactly this, the agent ran 32 web searches
