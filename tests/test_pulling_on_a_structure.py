@@ -521,3 +521,73 @@ def test_a_pull_has_no_way_back_either():
         part.submit_scan_how.value = way
         part._refresh_scan()
         assert part.submit_scan_back.layout.display == 'none', way
+
+
+@_needs_xtb
+def test_the_load_comes_off_before_anything_is_kept():
+    """Every level is a minimum of the *loaded* surface, which is a real thing
+    and not one anybody wants to keep.
+
+    Measured on an ethane pulled along its C-C under GFN2.  At 164 kcal/mol/A
+    the two carbons are 4.899 A apart and the structure is 130.3 kcal/mol up,
+    which reads as a broken bond and a barrier.  Released, it comes back to
+    1.521 A and -0.05: two radicals held apart by a force recombine the moment
+    the force stops, and all but a twentieth of a kcal/mol of that 130 was the
+    strain of holding them.
+
+    Reported without releasing, a pull says a bond broke every time it is
+    pulled hard enough -- which is a claim about the load and not about the
+    molecule.
+    """
+    import numpy as np
+
+    got = load.walk_under_load(
+        _ETHANE,
+        [{'atom': 0, 'vector': (0.0, 0.0, 1.0)},
+         {'atom': 1, 'vector': (0.0, 0.0, -1.0)}],
+        'gfn2', steps=10)
+    assert got['ok'], got['status']
+
+    def carbons(text):
+        rows = [one.split() for one in text.splitlines()[2:] if one.strip()]
+        a = np.array([float(v) for v in rows[0][1:4]])
+        b = np.array([float(v) for v in rows[1][1:4]])
+        return float(np.linalg.norm(a - b))
+
+    last = got['points'][-1]
+    settled = got['settled']
+    assert settled is not None, 'the load was never taken off'
+
+    # Held apart under the load...
+    assert carbons(last['xyz']) > 3.0, carbons(last['xyz'])
+    assert last['energy'] > 50.0, last['energy']
+    # ...and back together the moment it stops.
+    assert carbons(settled['xyz']) < 1.8, carbons(settled['xyz'])
+    assert abs(settled['energy']) < 5.0, settled['energy']
+
+    # Which is the answer: it gave under the load and did not survive it.
+    assert 'C1-C2' in got['gave']['said']
+    assert settled['said'] == '', settled['said']
+
+
+def test_what_is_kept_and_what_the_slider_can_reach():
+    """The settled structure is the last point of the walk, not an
+    afterthought beside it.
+
+    It is where the ramp ended and it is what the box holds, so the slider has
+    to be able to reach it -- or the one geometry the user keeps is the one
+    geometry the trajectory does not contain.
+    """
+    from editor_source import EDITOR_SOURCE as source
+
+    pull = source.split('def _pull_along_the_arrows')[1].split('\n    def ')[0]
+    # The box gets the settled one, never the loaded one.
+    assert "rested = kept or last" in pull
+    assert "rows = [line for line in rested['xyz']" in pull
+    # And it joins the path the slider steps through.
+    assert "path.append((last['force'], kept['energy'], kept['xyz']))" in pull
+    assert '_refresh_the_walk_points()' in pull
+    # Said as what it is: a load that broke something which came back is not
+    # a reaction, and the number that goes with it is strain.
+    assert 'came back together when the load came off' in pull
+    assert 'was the strain of' in pull

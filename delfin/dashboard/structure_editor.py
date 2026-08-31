@@ -11028,7 +11028,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     return
                 points = got['points']
                 last = points[-1]
-                rows = [line for line in last['xyz'].splitlines()[2:]
+                # What is kept is the structure with the load *off*.  Every
+                # level is a minimum of the loaded surface, which is a real
+                # thing and not one anybody wants: a structure held out of
+                # shape by a force that is about to stop existing.
+                kept = got.get('settled')
+                rested = kept or last
+                rows = [line for line in rested['xyz'].splitlines()[2:]
                         if line.strip()]
                 if rows:
                     _write_coords(xyz_document(rows, 'Pulled'),
@@ -11045,8 +11051,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # the second opinion the same as after any other walk.
                 path = [(one['force'], one['energy'], one['xyz'])
                         for one in points]
+                # The settled structure is the last point of the walk, not an
+                # afterthought beside it: it is where the ramp ended, it is
+                # what the box holds, and the slider has to be able to reach
+                # it or the one geometry the user keeps is the one geometry
+                # the trajectory does not contain.  Drawn at the load it was
+                # released from, which is where it sits on the profile.
+                if kept:
+                    path.append((last['force'], kept['energy'], kept['xyz']))
                 _keep_the_walk(path, method, charge, uhf, wet, _solv_model())
                 _refresh_scan()
+                # And the press that steps through it, which comes and goes
+                # with the structure the walk is about.
+                _refresh_the_walk_points()
                 schedule_ui_update(
                     _show_scan_profile,
                     _scan_profile_html(path, [], True))
@@ -11061,17 +11078,37 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         f'part that deforms it. Two arrows pulling against '
                         f'each other is the clean case.')
                 gave = got.get('gave')
-                if gave is not None:
+                # What the load did, and then what survived it coming off.
+                #
+                # The second half is the answer.  Measured on an ethane pulled
+                # along its C-C: at 164 kcal/mol/A it is 4.9 A apart and 130
+                # kcal/mol up, which reads as a broken bond -- and released it
+                # comes back to 1.52 A and -0.1.  A pull that only reported
+                # the first half would say a bond broke every time it was
+                # pulled hard enough, which is a claim about the load.
+                if gave is not None and kept and not kept.get('said'):
+                    said.insert(0, (
+                        f'{gave["said"]} at {gave["broke"]:.0f} kcal/mol/A, '
+                        f'and came back together when the load came off. '
+                        f'The {last["energy"]:+.1f} kcal/mol was the strain of '
+                        f'holding it, not a reaction: settled, it is '
+                        f'{kept["energy"]:+.1f}.'))
+                elif gave is not None:
+                    survived = (f' It stayed: {kept["said"]}, '
+                                f'{kept["energy"]:+.1f} kcal/mol settled.'
+                                if kept else '')
                     said.insert(0, (
                         f'Pulled to {last["force"]:.0f} kcal/mol/A: '
                         f'{gave["said"]}. It held at {gave["held"]:.0f} and '
-                        f'was broken by {gave["broke"]:.0f}.'))
+                        f'was broken by {gave["broke"]:.0f}.{survived}'))
                 else:
+                    settled_at = (f' Settled with the load off it is '
+                                  f'{kept["energy"]:+.1f}.' if kept else '')
                     said.insert(0, (
                         f'Pulled to {last["force"]:.0f} kcal/mol/A over '
                         f'{len(points)} loads and nothing gave: '
-                        f'{last["energy"]:+.1f} kcal/mol of deformation. '
-                        f'Aim harder, or aim somewhere else.'))
+                        f'{last["energy"]:+.1f} kcal/mol of deformation.'
+                        f'{settled_at} Aim harder, or aim somewhere else.'))
                 _set_mol_status(*said)
 
             schedule_ui_update(_done)
