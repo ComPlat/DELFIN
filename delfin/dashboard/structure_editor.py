@@ -15159,6 +15159,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 f'{atoms}). A path between two ends matches them row by row.')
             return
         state['path_to'] = xyz
+        # And the start moves onto the marks, the way it moves onto a scan's
+        # two ends when one finishes.
+        #
+        # A pair completed by hand is the strongest statement there is about
+        # what the user wants searched -- they marked it, one end at a time --
+        # and it has to win over a pair that was left standing there by
+        # something else.  Without this, marking a beginning and an end after
+        # a scan put "marked" in the list and left the box on "the scan's two
+        # ends", so the press went on searching between the scan's, and the
+        # sentence below promised the opposite.  Reported exactly so: a scan,
+        # then To the saddle, then two marks -- "hat einfach aus dem scan die
+        # enden genommen".
+        #
+        # Through the wish, like the scan's own move: a start this method
+        # cannot run from is left alone rather than forced.
+        state['saddle_start_wish'] = 'marked'
         _refresh_saddle_controls()
         _set_mol_status(f'End marked ({atoms} atoms). The saddle press now '
                         'searches between the two.')
