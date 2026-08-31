@@ -333,14 +333,30 @@ def test_a_recorded_session_replays_as_the_same_sequence(tmp_path,
     parted = ej.first_difference(timeline, second)
     assert parted is None or parted['at'] >= barrier, parted
 
-    # The coordinate the scan was told to walk is where it was told to walk
-    # to, on both sides. Whole-molecule agreement is not asserted past this
-    # point and must not be -- see the docstring.
+    # The coordinate ends where the *picture* was left, on both sides.
+    #
+    # This session is the one six bug reports were filed about, and it ends
+    # with the page saying "stopped at frame 3 of run 3" -- the playback of a
+    # finished scan, halted three points in.  The scan was told to walk to
+    # 1.75 and did; the picture was left standing at 2.72, which is where step
+    # 3 of 8 is.
+    #
+    # It used to end at 1.75 here, because only a run that was *stopped* put
+    # its path down for the page's frame number to cut, and this one finished.
+    # The box kept the end of the walk while the picture stood three points
+    # back, and the next thing to read the box -- a grab, Copy, Submit -- made
+    # them agree by jumping.  That is what the reports called "the scan result
+    # jumps when I grab it".
+    #
+    # So the box follows the picture, and Undo has a step of its own back to
+    # the walk's own answer.  Whole-molecule agreement is not asserted past
+    # this point and must not be -- see the docstring.
     def _walked(text):
         rows = _where(text)
         return float(np.linalg.norm(rows[0] - rows[10]))
 
-    assert abs(_walked(box.value) - 1.75) < 0.05, _walked(box.value)
+    assert 'the picture stopped on' in box.value.splitlines()[1], box.value[:80]
+    assert abs(_walked(box.value) - 2.72) < 0.05, _walked(box.value)
     assert abs(_walked(again_box.value) - _walked(box.value)) < 0.05, (
         _walked(box.value), _walked(again_box.value))
 

@@ -151,3 +151,50 @@ def test_a_walk_that_ends_takes_its_frame_number_with_it(editor):
     editor['submit_manip_undo_btn'].click()
     assert state.get('gfn_shown_frame') is None
     assert state.get('gfn_shown_run') is None
+
+
+def test_a_finished_walk_stays_cuttable_at_the_frame_on_screen():
+    """"The scan result jumps when I grab it", six identical reports of it.
+
+    A run that is *stopped* puts its path down, so the page's "stopped at
+    frame 3 of run 3" can cut it at the geometry the user is looking at.  A run
+    that *finished* did not -- and its trajectory goes on playing.  Halt the
+    playback at frame 3 and the picture stands there while the box holds the
+    end of the walk.  The two disagree, and the next thing that reads the box
+    -- a grab, Copy, Submit -- makes them agree by jumping.
+
+    From one of the reports, in order:
+
+        9.29  the scan finishes; the box is given "Scanned"
+       12.02  gfnplay:3:stopped at frame 3 of run 3
+       15.53  the bug button
+
+    _land_the_stopped_frame found no path and answered False, because nothing
+    had put one down.  The scan does now.
+
+    It takes an undo step of its own, which a stopped run does not: a stopped
+    run took one when it started and cutting its path is that press ending,
+    while a finished one has already put its answer in the box, so standing on
+    a frame of the playback afterwards is a second thing the user did.  Undo
+    goes back to the scan's own answer rather than past it.
+    """
+    scan = SOURCE.split('def on_submit_scan_run')[1].split('\n    def ')[0]
+    assert '_the_picture_stopped_here(' in scan, (
+        'a finished walk puts nothing down, so a stop has nothing to cut')
+    # The call, not up to the first bracket: state.get('scan_frame_run') has
+    # one of its own.
+    put = scan.split('_the_picture_stopped_here(')[1][:220]
+    assert 'scan_frame_run' in put, 'the frames must be named with their run'
+    assert 'undo_step=True' in put
+
+    land = SOURCE.split('def _land_the_stopped_frame')[1].split('\n    def ')[0]
+    assert "if held.get('undo'):" in land
+    assert '_remember(' in land
+    # And the step comes before the write, or it records the frame instead of
+    # what the frame is replacing.
+    assert land.index('_remember(') < land.index('_write_coords(')
+
+    # A path put down by a walk that has ended is still dropped when the next
+    # run claims a number -- it may only be cut while it is the walk on screen.
+    claim = SOURCE.split('def _claim_the_frame_run')[1].split('\n    def ')[0]
+    assert "state.pop('gfn_stopped_path', None)" in claim

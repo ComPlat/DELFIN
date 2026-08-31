@@ -1878,6 +1878,21 @@ def test_the_picture_is_drawn_once_a_frame_however_often_it_is_asked_for():
     ask = _body('redrawHighlights')
     assert 'redrawPending' in ask
     assert 'requestAnimationFrame' in ask
+    # And the flag has a way out that does not depend on a frame being
+    # granted.  requestAnimationFrame does not fire in a tab nobody is looking
+    # at; left standing, the flag turns every later request into an immediate
+    # return, so the markers freeze where they were while the atoms go on
+    # moving -- the paths that move them render for themselves.
+    assert 'redrawFallback' in ask
+    assert 'window.setTimeout(' in ask
+    # Asked for, like requestAnimationFrame beside it.  A page that hands the
+    # editor a window without one is not a browser but it is a page, and the
+    # redraw is not the place to find that out.
+    assert "typeof window.setTimeout === 'function'" in ask
+    assert 'if (state.redrawPending) run();' in ask
+    # Cleared when the frame does arrive, or the fallback fires over a redraw
+    # that has already happened.
+    assert 'clearTimeout(state.redrawFallback)' in ask
     assert 'drawHighlightsNow' in ask
     # The drawing itself is still there, under its own name.
     assert 'function drawHighlightsNow' in EDITOR

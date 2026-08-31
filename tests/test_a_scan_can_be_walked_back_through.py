@@ -203,8 +203,17 @@ def test_the_wording_names_no_chemistry():
     from editor_source import EDITOR_SOURCE as source
 
     said = source.split('def _done(final=walked)')[1].split('\n                schedule_ui_update')[0]
-    for word in ('educt', 'reactant', 'product', 'transition state', 'TS'):
+    # As words, not as substrings.  'TS' lowercased is 'ts', which is inside
+    # "puts", "points" and "its" -- so this passed only while the slice of
+    # source it reads happened to contain none of them, and the first ordinary
+    # sentence added to that slice failed for naming a landmark it had never
+    # mentioned.
+    import re
+
+    for word in ('educt', 'reactant', 'product', 'transition state'):
         assert word.lower() not in said.lower(), (
             f'the scan names its landmarks after {word}')
+    assert not re.search(r'\bTS\b', said), (
+        'the scan names its landmarks after TS')
     assert 'where it started' in said
     assert 'the highest point it crossed' in said

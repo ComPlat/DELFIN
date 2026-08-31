@@ -2082,11 +2082,31 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         if (state.redrawPending) return;
         state.redrawPending = true;
         var run = function() {
+            if (state.redrawFallback) {
+                try { window.clearTimeout(state.redrawFallback); } catch (e) {}
+                state.redrawFallback = null;
+            }
             state.redrawPending = false;
             drawHighlightsNow(scopeKey);
         };
         if (typeof window.requestAnimationFrame === 'function') {
             state.redrawRaf = window.requestAnimationFrame(run);
+            // A frame that never arrives leaves the flag standing, and every
+            // later request returns at once -- so the markers freeze where
+            // they were while the atoms go on moving and rendering, because
+            // the paths that move them render for themselves.  From outside
+            // that is a selection stuck in mid-air over nothing.
+            //
+            // requestAnimationFrame does not fire in a tab nobody is looking
+            // at, and a drag that carries on in another window is exactly the
+            // case: the picture is being written to and the frame is never
+            // granted.  So the flag has a way out that does not depend on the
+            // browser granting anything.
+            if (typeof window.setTimeout === 'function') {
+                state.redrawFallback = window.setTimeout(function () {
+                    if (state.redrawPending) run();
+                }, 250);
+            }
         } else {
             run();
         }
@@ -4944,6 +4964,27 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     function onViewerReady(scopeKey, viewerEl) {
         var state = getState(scopeKey);
         // External re-render → previous picks refer to stale atoms: reset.
+        //
+        // Taken off the viewer and not merely forgotten.  Dropping the
+        // references was enough while every new structure meant a new viewer:
+        // the markers went with the one being thrown away.  A structure shown
+        // by swapping the model keeps its viewer, and removeAllModels removes
+        // models -- so the translucent spheres over the picked atoms stayed on
+        // screen, over atoms that were no longer there.  Select some with the
+        // band, press Remove, and the atoms went while their markers did not.
+        //
+        // Harmless after a rebuild, where these belong to the viewer that has
+        // gone: removeShape is given a shape the new one has never heard of
+        // and says so, which is what the guard is for.
+        var going = (state.shapes || []).concat(state.pullShapes || []);
+        if (state.pivotShape) going.push(state.pivotShape);
+        var old = getViewer(scopeKey);
+        if (old) {
+            for (var g = 0; g < going.length; g++) {
+                try { old.removeShape(going[g]); } catch (e) {}
+            }
+            try { old.render(); } catch (e) {}
+        }
         state.picks = [];
         state.pivot = null;
         state.shapes = [];
@@ -4984,8 +5025,12 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         if (state.redrawRaf) {
             try { window.cancelAnimationFrame(state.redrawRaf); } catch (e) {}
         }
+        if (state.redrawFallback) {
+            try { window.clearTimeout(state.redrawFallback); } catch (e) {}
+        }
         state.redrawPending = false;
         state.redrawRaf = null;
+        state.redrawFallback = null;
         ensureOverlay(scopeKey);
         setOverlayInteractive(scopeKey);
         redrawHighlights(scopeKey);
