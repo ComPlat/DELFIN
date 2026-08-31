@@ -4666,7 +4666,36 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 }
                 if (e.button !== 0) return;
                 // Empty space belongs to the viewer, so the scene turns.
-                if (!atom) return;
+                //
+                // Handed on rather than merely let go of.  The overlay lies
+                // over the picture and takes the press; whether 3Dmol ever
+                // sees it depends on where that library happens to bind its
+                // own handlers, which is not a thing to depend on.  So the
+                // overlay steps aside for the length of one lookup, and the
+                // press is delivered to whatever was underneath it.
+                if (!atom) {
+                    if (typeof document.elementFromPoint !== 'function'
+                            || typeof window.MouseEvent !== 'function') {
+                        return;
+                    }
+                    var was = ov.style.pointerEvents;
+                    ov.style.pointerEvents = 'none';
+                    var under = document.elementFromPoint(e.clientX, e.clientY);
+                    ov.style.pointerEvents = was;
+                    if (under && under !== ov) {
+                        try {
+                            under.dispatchEvent(new window.MouseEvent(
+                                'mousedown', {
+                                    bubbles: true, cancelable: true,
+                                    clientX: e.clientX, clientY: e.clientY,
+                                    button: e.button, buttons: e.buttons,
+                                    shiftKey: e.shiftKey, ctrlKey: e.ctrlKey,
+                                    metaKey: e.metaKey, altKey: e.altKey
+                                }));
+                        } catch (_e) {}
+                    }
+                    return;
+                }
                 var here = getAtoms(getViewer(scopeKey) || {});
                 var index = here.indexOf(atom);
                 if (index < 0) return;
