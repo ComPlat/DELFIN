@@ -307,14 +307,14 @@ def test_the_jump_is_looked_for_on_a_walk_and_not_on_a_push():
 
 
 def test_the_verdict_says_which_of_the_three_things_happened():
-    assert 'two legs agree to {gap["gap"]:.2f} kcal/mol' in EDITOR_SOURCE
-    assert 'two legs disagree by {gap["gap"]:.1f} kcal/mol' in EDITOR_SOURCE
+    assert 'Both legs agree to {gap["gap"]:.2f} kcal/mol' in EDITOR_SOURCE
+    assert 'legs disagree by {gap["gap"]:.1f} kcal/mol' in EDITOR_SOURCE
     assert 'Nothing walked it back' in EDITOR_SOURCE
     assert 'arm that as well and ' in EDITOR_SOURCE
     # And it is said beside the barrier it is about rather than after the
     # temperature, because a caveat read after the number is a caveat nobody
     # applied.
-    assert 'first += _scan_can_be_quoted(T)' in EDITOR_SOURCE
+    assert 'bits += _phrases(_scan_can_be_quoted(T))' in EDITOR_SOURCE
 
 
 def _an_editor(text):
@@ -404,8 +404,8 @@ def test_the_editor_really_walks_the_second_leg_and_says_they_agree():
     assert both['disagree']['gap'] < gfn.a_rate_apart(298.15), both['disagree']
     assert both['jumped'] is None
     said = ' '.join(part.state['mol_status_lines'])
-    assert 'two legs agree to' in said, said
-    assert 'this profile is the path' in said
+    assert 'legs agree to' in said, said
+    assert 'the profile is the path' in said
 
 
 @_needs_xtb

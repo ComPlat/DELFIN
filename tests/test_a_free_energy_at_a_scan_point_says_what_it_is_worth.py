@@ -147,9 +147,9 @@ def test_the_reason_is_written_where_the_temptation_is():
 def test_a_hessian_that_is_not_at_a_minimum_is_reported_and_not_hidden():
     assert 'def _scan_free_is_an_estimate():' in EDITOR_SOURCE
     assert 'going the ' in EDITOR_SOURCE
-    assert 'not a stationary point -- a barrier top is not one' in EDITOR_SOURCE
+    assert 'wrong way{worst} -- not a stationary point, so the free' in EDITOR_SOURCE
     # And it is said on the same line as the free energies it is about.
-    assert '{_scan_free_is_an_estimate()}' in EDITOR_SOURCE
+    assert '_phrases(_scan_free_is_an_estimate())' in EDITOR_SOURCE
 
 
 def test_the_worst_of_the_three_is_the_one_reported():

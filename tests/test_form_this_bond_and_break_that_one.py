@@ -384,7 +384,7 @@ def test_what_the_budget_does_to_an_instruction_is_said():
     """
     source = EDITOR_SOURCE
     assert "state['scan_carried_out_kept'] = bool(" in source
-    assert 'the budget priced the change and' in source
+    assert 'the box is from before the bonds changed' in source
     assert 'Driven until the bonds were made and broken' in source
     # And that comment is one the editor may overwrite, which every line it
     # writes has to be -- see _EDITOR_COMMENTS.

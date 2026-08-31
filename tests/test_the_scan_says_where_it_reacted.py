@@ -33,7 +33,7 @@ def _verdict():
 
 def test_the_barrier_is_said_as_a_bound():
     verdict = _verdict()
-    assert "at_most = 'at most ' if rise > 0 else ''" in verdict
+    assert "at_most = '\\u2264' if rise > 0 else ''" in verdict
     # On both sentences: the electronic one and the free-energy one.  Said on
     # one and not the other, a reader comparing two runs would think the mode
     # changed the meaning of the number.
@@ -68,8 +68,8 @@ def test_a_top_away_from_the_reaction_is_said_to_be_one():
     answers it."""
     verdict = _verdict()
     assert "became = state.get('scan_became')" in verdict
-    assert 'which is where the top is.' in verdict
-    assert 'a deformation and not this' in verdict
+    assert 'at the top' in verdict
+    assert 'a deformation, not this reaction' in verdict
     # Judged against the spacing of the walk rather than against a fixed
     # distance: a scan of a torsion moves in degrees and one of a bond in
     # Angstrom, and one number cannot be near in both.

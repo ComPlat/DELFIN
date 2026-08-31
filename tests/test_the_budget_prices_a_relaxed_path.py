@@ -32,6 +32,7 @@ import pytest
 import pathlib
 
 from delfin.dashboard import gfn_optimize as gfn
+from delfin.dashboard import structure_editor
 from delfin.dashboard.structure_editor import thermal_temperature
 from editor_source import EDITOR_SOURCE
 
@@ -52,17 +53,19 @@ H     1.900000   -1.020000    0.000000
 
 
 def _the_rise(said):
-    """The number after "a rise of", however the sentence qualifies it.
+    """The number the verdict gives as the rise, however it qualifies it.
 
-    It is qualified now: a relaxed scan's top is the top of the best path that
+    It is qualified: a relaxed scan's top is the top of the best path that
     keeps to the coordinate somebody chose, so the saddle lies at or below it
-    and the sentence says "at most".  Read as the word straight after "of",
-    that turned a wording change into a ValueError -- which is a check
-    breaking on the thing it was not about.
+    and the clause carries a "less than or equal".  Read as the word straight
+    after a fixed phrase, a wording change turned into a ValueError -- which
+    is a check breaking on the thing it was not about -- so it is read as a
+    pattern with the qualifier optional, and the clause is now "rise <=4.9
+    kcal/mol" rather than a sentence.
     """
     import re as _re
 
-    found = _re.search(r'a rise of (?:at most )?(-?\d+(?:\.\d+)?)', said)
+    found = _re.search(r'rise \u2264?(-?\d+(?:\.\d+)?)', said)
     assert found, said
     return float(found.group(1))
 
@@ -1070,9 +1073,9 @@ def test_the_scan_says_which_temperature_it_would_take():
     """Not only that it is closed."""
     body = EDITOR_SOURCE.split("def _scan_verdict(")[1].split("\n    def ")[0]
     assert "thermal_temperature(" in body
-    assert "wants about" in body
+    assert "needs ~" in body
     # Wrapped across two lines in the source, so only the start of it.
-    assert "so the path is " in body
+    assert "K \\u2192 {stands}" in body
 
 
 def test_a_scan_stops_at_the_next_minimum():
@@ -1126,9 +1129,9 @@ def test_the_temperature_is_named_whether_the_path_is_open_or_not():
     # One phrase, before the branch, so it is carried whichever way the
     # ceiling falls -- there is one line now rather than two nearly identical
     # ones, and "open" or "closed" is the whole of the difference.
-    assert body.index("wants = (") < body.index("stands = (")
-    # And the word that says which it is, in the one line both cases share.
-    assert "'open' if rise <= ceiling else 'closed'" in body
+    assert body.index("stands = 'open'") < body.index("if needs is None:")
+    # And the word that says which it is, in the one clause both cases share.
+    assert "stands = 'open' if rise <= ceiling else 'closed'" in body
 
 
 def test_squeezing_is_refused_without_asking_the_energy():
@@ -1191,8 +1194,8 @@ def test_a_loose_hold_stops_the_drag_rather_than_only_saying_so():
     assert "refuse=aside" in body
     assert "else current)[0]" in body
     # And the two are told apart where the refusal is reported.
-    assert "'So the last structure that was measured and '" in body
-    assert "'Past the budget, so the last structure that '" in body
+    assert "'the last measured and allowed structure is '" in body
+    assert "'past the budget -- the last structure inside '" in body
 
 
 def test_the_line_says_how_steep_it_is():
@@ -1918,7 +1921,7 @@ def test_the_price_is_taken_off_rather_than_calculated_again():
     # A held value and a pull cannot share one force constant, so the hold
     # stands and the hand goes back to placing -- said, not done quietly.
     assert 'held_too = bool(constraints) and pull is not None' in source
-    assert 'force constant in xtb, so the hand is ' in source
+    assert 'force constant, so the hand places' in source
 
 
 #: Butadiene and ethylene, 3.13 A apart, the pair of forming bonds C0-C10 and
@@ -2187,11 +2190,11 @@ def test_a_scan_hands_back_the_minimum_it_crossed_into_not_the_one_it_left():
 
         assert state.get("scan_arrived"), (how, said)
         # It crossed something, and says how much.
-        assert "a rise of" in said, (how, said)
+        assert "rise " in said, (how, said)
         rise = _the_rise(said)
         assert 4.0 < rise < 9.0, (how, said)
         # And it is not the temperature of no barrier at all.
-        wants = float(said.split("It wants about")[1].split()[0])
+        wants = float(said.split("needs ~")[1].split()[0])
         assert 60 < wants < 120, (how, said)
 
         # What is left in the box is the product it walked into, not the
@@ -2294,8 +2297,8 @@ def test_a_walk_that_never_settles_says_so_rather_than_pretending():
     # them: the walk locates its own summit afterwards, and folding those
     # points into one total took the two numbers the user set out of the
     # answer.
-    assert "walked 24 of 24 points" in said, said
-    assert "more to find the top" in said, said
+    assert "24 of 24 points" in said, said
+    assert "at the top" in said, said
     # And the barrier it reports is the syn one it went over.
     rise = _the_rise(said)
     assert 3.5 < rise < 6.5, said
@@ -2764,11 +2767,11 @@ def test_the_scan_can_be_priced_with_free_energies():
     assert -70.0 < ends < -45.0, free
 
     said = part.mol_status.value
-    assert "as a free energy at 298.15 K" in said, said
+    assert "G, " in said and "E kcal/mol at 298.15 K" in said, said
     # And the temperature is worked out from the free energy, not from the
     # electronic one standing beside it: read the other way round, the line
     # quoted one number and reasoned from the other.
-    wants = float(said.split("It wants about")[1].split()[0])
+    wants = float(said.split("needs ~")[1].split()[0])
     assert wants == pytest.approx(
         thermal_temperature(top, 3600.0), abs=5.0), (wants, top)
 
@@ -2917,7 +2920,7 @@ def test_the_path_is_offered_once_there_is_something_to_walk_between():
     assert "'Estimated transition state, from the path'" in source
     # And how near it came, because the finder always reports a barrier and
     # only this says whether it is about the reaction that was asked for.
-    assert 'RMSD of the structure ' in source
+    assert 'RMSD from what it aimed ' in source
 
 
 @_needs_xtb
@@ -3047,7 +3050,8 @@ def test_a_scan_cannot_turn_a_double_bond_and_nothing_can_tell_it_so():
         legs=[{"kind": "dihedral", "atoms": [0, 1, 2, 3], "from": 0.0,
                "to": 180.0, "steps": 18, "structure": None}])
     said = part.mol_status.value
-    ends = float(said.split("ending")[1].split(".")[0].strip().lstrip("+"))
+    ends = float(said.split("\u00b7 end ")[1].split("\u00b7")[0].strip()
+                 .lstrip("+"))
     assert ends > 40.0, said            # nowhere near trans, which is -1.5
 
     # And it really is a minimum of the method, which is why nothing catches
@@ -3360,7 +3364,7 @@ def test_the_placing_hand_is_not_measured_and_does_not_pretend_to_be():
     # reported "+28.9 kcal/mol -- past the 22.3 this structure has at 298.15
     # K" and handed a C-C of 1.66 A back; here the line is the follow alone.
     said = part.state.get("gfn_last_status") or ""
-    assert "following the drag" in said, said
+    assert "follows the drag" in said, said
     for claim in ("kcal/mol", f"{ceiling:.1f}", "budget"):
         assert claim not in said, (claim, said)
     # And the wall never ran while the hand was down: the maximum it carries
@@ -3843,6 +3847,27 @@ def _pulled(text, far):
             + "\n".join(" ".join(one) for one in rows) + "\n")
 
 
+def _stretched(part, text, pair, by):
+    """The same molecule with one internal coordinate longer by *by*.
+
+    A rigid shift of one atom along x is not that: which way it takes the
+    coordinate the hand is driving depends on where the molecule happens to be
+    pointing, and half the time it takes it the other way.  What the budget
+    reads is the coordinate, so the coordinate is what is set here.
+    """
+    import math
+
+    flat = gfn.coordinates_of(text)
+    a, b = int(pair['atoms'][0]), int(pair['atoms'][1])
+    away = [flat[3 * a + i] - flat[3 * b + i] for i in range(3)]
+    span = math.sqrt(sum(v * v for v in away)) or 1.0
+    rows = [line.split() for line in gfn.atom_lines(text)]
+    for i in range(3):
+        rows[a][1 + i] = f"{flat[3 * a + i] + away[i] / span * float(by):.6f}"
+    return (f"{len(rows)}\nstretched {by:.2f} A\n"
+            + "\n".join(" ".join(one) for one in rows) + "\n")
+
+
 def _dihedral(text, a, b, c, d):
     """The torsion in degrees, for setting up a drive that means something."""
     import math
@@ -3902,7 +3927,7 @@ def test_the_wall_refuses_on_the_highest_point_the_drag_has_been_at():
     assert state["thermal_over"] == "path"
     # And the sentence about what was done says the same thing, so the two
     # halves of the line cannot disagree about why the structure sprang back.
-    assert "Past the budget on the way here, so the last " in EDITOR_SOURCE
+    assert "past the budget on the way here -- the last " in EDITOR_SOURCE
     assert "state.get('thermal_over') == 'path'" in EDITOR_SOURCE
 
 
@@ -4443,7 +4468,8 @@ def test_the_page_is_told_when_the_wall_refuses_and_when_it_stops():
     """
     follow = EDITOR_SOURCE.split("def _gfn_follow_step(", 1)[1].split(
         "_start_background(_work, 'The relaxation under the hand')", 1)[0]
-    assert "_stop_the_hand_at(came_back, current, holding)" in follow
+    assert "_stop_the_hand_at(" in follow
+    assert "came_back if came_back is not None" in follow
 
     stop = EDITOR_SOURCE.split("def _stop_the_hand_at(", 1)[1].split(
         "\n    def ", 1)[0]
@@ -4472,13 +4498,13 @@ def test_a_refusal_says_how_hot_and_not_only_how_long():
     part, state = _editor(_NITROSAMINE)
     _armed(part, state, _NITROSAMINE, -17.172582)
 
-    assert "about 150 K (-123 C)" in part._thermal_wants(11.0)
-    assert "about 406 K (+133 C)" in part._thermal_wants(30.6)
-    assert "about 591 K (+318 C)" in part._thermal_wants(45.0)
-    assert "about 883 K (+610 C)" in part._thermal_wants(68.0)
+    assert "~150 K (-123 C)" in part._thermal_wants(11.0)
+    assert "~406 K (+133 C)" in part._thermal_wants(30.6)
+    assert "~591 K (+318 C)" in part._thermal_wants(45.0)
+    assert "~883 K (+610 C)" in part._thermal_wants(68.0)
     # And where there is no answer, that is said rather than a number printed.
     said = part._thermal_wants(500.0)
-    assert "No temperature under 5000 K" in said, said
+    assert "no temperature under 5000 K" in said, said
     # The window is named, because a temperature without one is not an answer:
     # 22.3 kcal/mol is 298 K for an hour and 250 K for a year.
     assert "within an hour" in part._thermal_wants(45.0)
@@ -4501,20 +4527,20 @@ def test_both_refusals_say_the_temperature_they_want():
     # Standing past the ceiling: the temperature is worked out from where the
     # structure stands, which is the number being refused.
     said = part._thermal_note(at(45.0))
-    assert "+45.0 kcal/mol -- past the 22.3" in said, said
-    assert "about 591 K (+318 C)" in said, said
+    assert "+45.0 kcal/mol, past the 22.3" in said, said
+    assert "~591 K (+318 C)" in said, said
 
     # Standing somewhere cheap, having crossed something that was not: the
     # crossing is what is refused, so the crossing is what is answered.
     state["thermal_peak"] = 25.0
     said = part._thermal_note(at(0.0))
     assert "went through +25.0" in said, said
-    assert "about 333 K (+60 C)" in said, said
+    assert "~333 K (+60 C)" in said, said
     # And the waiting time stands beside it, because they are two questions:
     # how hot within the window, and how long at the temperature that is set.
     # +25 is four days at 298 K and inside the hour at 333, which is the pair
     # of answers a chemist chooses between.
-    assert "That is about 3.94 d" in said, said
+    assert "~3.94 d" in said, said
 
 
 def test_a_waiting_time_nobody_reads_is_said_in_words():
@@ -4545,13 +4571,13 @@ def test_a_refusal_says_it_priced_the_way_the_hand_went():
     quantity, and a minimum over all paths is a search rather than a drag.  So
     it is said once, where the refusal lands, and it names what does search.
     """
-    assert "This prices the way your " in EDITOR_SOURCE
+    assert "this prices the way " in EDITOR_SOURCE
     assert "not the cheapest way " in EDITOR_SOURCE
     # Named, so the sentence is a next move rather than a disclaimer -- and
     # named as the path finder rather than as the press it sits on, which
     # reads "Find the path" or "To the saddle" depending on the box beside it.
     assert "Scan and the path finder " in EDITOR_SOURCE
-    assert "look for that." in EDITOR_SOURCE
+    assert "look for that'" in EDITOR_SOURCE
     # Only where the temperature refused.  A hold that slipped, or two atoms
     # inside each other, is not a barrier -- and telling the user to look for
     # a cheaper way round would be advice about something else.
@@ -4595,9 +4621,10 @@ def test_a_refusal_says_when_the_drag_changed_how_many_pieces_there_are():
     assert "if began_in and now_in > began_in:" in EDITOR_SOURCE
     # And what it says: which way the price is wrong, and what gives the
     # right one.
-    assert "here where the budget was measured " in EDITOR_SOURCE
-    assert "price is strict by about ten " in EDITOR_SOURCE
-    assert "energy set to G prices it as a free " in EDITOR_SOURCE
+    assert "pieces here '" in EDITOR_SOURCE
+    assert "price is strict " in EDITOR_SOURCE
+    assert "by about ten kcal/mol" in EDITOR_SOURCE
+    assert "with its energy set to G prices it " in EDITOR_SOURCE
 
 
 def test_the_window_the_ceiling_is_quoted_over_stays_an_hour():
@@ -4818,15 +4845,395 @@ def test_the_hand_is_not_reset_by_the_coordinate_changing_its_name():
     assert max(applied) < 60, applied          # was 90 every other answer
     assert all(b >= a - 0.5 for a, b in zip(applied, applied[1:])), applied
 
-    # A pair that really is new starts at what is asked -- beginning a drag
-    # has to be immediate -- so this one still moves, but the backstop bounds
-    # it: nothing the structure did in one answer earns several times the
-    # force applied a moment ago.
+    # A pair that really is new starts at what is asked, and that is not a
+    # bug to be damped out: a fragment walked past a molecule does pick up a
+    # different contact, and a hand that would not begin a drag until it had
+    # been asked three times is not a hand.  There was a ceiling here on how
+    # much one answer may multiply the force by; it bought this case and cost
+    # six answers to reach a sustained pull, and the shaking it was aimed at
+    # turned out to be the budget's -- see _within_the_budget.
     applied = drag([44, 90] * 4, ['distance', 'dihedral'] * 4,
                    [[0, 1], [2, 3]] * 4)
-    assert max(applied) < 44 * 1.55, applied
+    assert applied[0] == pytest.approx(44.0), applied
 
     # And a fast system is untouched: half the demand per answer, as measured.
     applied = drag(list(range(10, 90, 10)), ['distance'] * 8, [[0, 1]] * 8,
                    took=0.10)
     assert applied[1] == pytest.approx(15.0)
+
+
+def test_the_budget_is_spent_forwards_so_nothing_has_to_be_taken_back():
+    """The shaking is the rollback, and the rollback is avoidable.
+
+    The wall is a refusal after the fact, and it has to be -- nothing can
+    price a geometry before it has been relaxed.  But a refusal after the fact
+    is a rollback, and a rollback while the cursor is still held out at the
+    forbidden place is a loop: the hand asks, the structure is put back, the
+    hand asks again.  On screen that is a molecule shaking once an answer.
+
+    It is the budget's shaking and nobody else's.  The user's own report, on
+    the same drag with the budget switched off: "nicht thermisch zappelt ja
+    meist nicht" -- and the reason to switch it on at all is the other half of
+    the same sentence, "nur das man da ueber die thermische grenze gehen
+    kann".
+
+    So the ceiling is spent forwards.  What is left of it, divided by what a
+    step of this coordinate is measured to cost, is how far the hand may still
+    ask for -- and a hand that never asks for the forbidden place never has to
+    be taken off it.
+    """
+    part, state = _editor(_NITROSAMINE)
+    _armed(part, state, _NITROSAMINE, -25.0)
+    ceiling = part._thermal_budget()[1]
+    assert part._thermal_budget()[0] is not None
+    assert ceiling == pytest.approx(22.3, abs=0.5)
+
+    pair = {'kind': 'distance', 'atoms': [0, 1]}
+    here = part._value_in(_NITROSAMINE, pair)
+
+    def wish(far):
+        return [dict(pair, value=here + far)]
+
+    # Nothing measured yet: the wall is the backstop it always was, and the
+    # hand asks for whatever the cursor asks for.  A rate cannot be invented
+    # from one answer.
+    state['thermal_peak'] = 0.0
+    assert part._within_the_budget(wish(2.0))[0]['value'] == \
+        pytest.approx(here + 2.0)
+
+    # Two answers of a real drag: the target moved a fifth of an Angstrom out
+    # and the answer cost four kcal/mol.  Twenty kcal/mol per Angstrom asked.
+    part._note_what_it_costs(0.0, [dict(pair, value=here)])
+    part._note_what_it_costs(4.0, [dict(pair, value=here + 0.2)])
+    assert state['thermal_cost'] == pytest.approx(20.0)
+
+    # And now the hand may ask for what is left of the ceiling and no more --
+    # measured from the target the last answer was given, which is what the
+    # rate is a rate of.
+    state['thermal_peak'] = 4.0
+    allowed = ((ceiling - 4.0) * structure_editor._BUDGET_SPENDS_AT_MOST
+               / state['thermal_cost'])
+    asked = part._within_the_budget(wish(2.0))[0]['value']
+    assert asked == pytest.approx(here + 0.2 + allowed)
+    assert state.get('thermal_held_back') is True
+
+    # A cursor inside what is left is not touched at all.  The budget cuts a
+    # wish back; it does not drive one.
+    state.pop('thermal_held_back', None)
+    assert part._within_the_budget(
+        wish(0.2 + allowed / 2))[0]['value'] == pytest.approx(
+            here + 0.2 + allowed / 2)
+    assert state.get('thermal_held_back') is None
+
+    # Coming back is never blocked.  A budget that could be entered and not
+    # left would be a trap, and the sign of the rate is what tells the two
+    # apart -- downhill is passed through however far it goes.
+    assert part._within_the_budget(wish(-2.0))[0]['value'] == \
+        pytest.approx(here - 2.0)
+
+    # Spent to the last kcal/mol, the hand asks for the target it already
+    # had: no further travel, and -- because a push is sized by how far its
+    # target has run ahead -- no more force either.  The structure rests
+    # against the ceiling instead of straining at it and being pulled off.
+    state['thermal_peak'] = ceiling
+    assert part._within_the_budget(wish(2.0))[0]['value'] == \
+        pytest.approx(here + 0.2)
+
+
+def test_what_a_step_costs_is_measured_against_what_was_asked_for():
+    """Not against how far the atom went, which is a different number.
+
+    :func:`_thermal_slope` measures a price per Angstrom the held atom moved,
+    and that is the right thing to *say* -- it is the unit a chemist pictures.
+    It is the wrong thing to spend from, because a push is soft and the target
+    runs a long way ahead of the structure.  Measured live on an ethane C-C
+    under GFN-FF at 88 kcal/mol/A, the hand asked for 0.24 A and the bond gave
+    0.038; spending from the price per Angstrom travelled, the drag settled at
+    2.1 of its 22.3 kcal/mol and could not move again, because the structure
+    had stopped and nothing was left to measure a new rate from.
+
+    So the rate is a price per unit *asked for*, and it needs no geometry at
+    all: the target is a number this editor chose and handed to xtb.
+
+    And it is only a rate while it is about one coordinate.  Which coordinate
+    the hand is on is worked out afresh every answer and it does flip -- a
+    contact that is a distance on one answer is a torsion on the next -- so a
+    difference taken across the flip would be degrees divided by Angstrom,
+    which is not a quantity at all.
+    """
+    part, state = _editor(_NITROSAMINE)
+    _armed(part, state, _NITROSAMINE, -25.0)
+    pair = {'kind': 'distance', 'atoms': [0, 1]}
+
+    # The coordinate changing its name drops the rate rather than inventing
+    # one from two readings of two different things.
+    part._note_what_it_costs(0.0, [dict(pair, value=1.0)])
+    part._note_what_it_costs(
+        4.0, [{'kind': 'dihedral', 'atoms': list(_TURN), 'value': 1.2}])
+    assert state.get('thermal_cost') is None
+
+    # So does the hand moving to another pair.
+    part._note_what_it_costs(0.0, [dict(pair, value=1.0)])
+    part._note_what_it_costs(
+        4.0, [{'kind': 'distance', 'atoms': [2, 3], 'value': 1.2}])
+    assert state.get('thermal_cost') is None
+
+    # A target that has barely moved says nothing about what a step of it
+    # costs: the answer would be the noise of two relaxations divided by
+    # about zero, and this number decides how far a hand may go.
+    part._note_what_it_costs(0.0, [dict(pair, value=1.0)])
+    part._note_what_it_costs(0.3, [dict(pair, value=1.0005)])
+    assert state.get('thermal_cost') is None
+
+    # And it is smoothed, because both ends of the difference carry the noise
+    # of a relaxation that ran a few cycles.  Half and half.
+    part._note_what_it_costs(0.0, [dict(pair, value=1.0)])
+    part._note_what_it_costs(4.0, [dict(pair, value=1.2)])
+    first = state['thermal_cost']
+    assert first == pytest.approx(20.0)
+    part._note_what_it_costs(4.0, [dict(pair, value=1.4)])
+    assert state['thermal_cost'] == pytest.approx(0.5 * first)
+
+    # And a new grab starts without it.  The next drag is on a different
+    # coordinate, and carried over, its first answer would have had its
+    # travel cut back by a rate measured on somebody else's bond.
+    clears = EDITOR_SOURCE.split('def _clear_thermal_wall(')[1].split(
+        '\n    def ')[0]
+    assert "state.pop('thermal_cost', None)" in clears
+    assert "state.pop('thermal_cost_at', None)" in clears
+    assert '_clear_thermal_wall()' in EDITOR_SOURCE.split(
+        'def _begin_gfn_follow(')[1].split('\n    def ')[0]
+
+
+def _a_drag_up_a_slope(part, state, text, pair, *, forwards, answers=24,
+                       cursor_step=0.15, per_angstrom=30.0, reach=2.0):
+    """One drag walked up a straight slope, answer by answer, both ways round.
+
+    The whole loop the field report is about, with xtb replaced by a surface
+    whose price is known: a coordinate that costs *per_angstrom* kcal/mol to
+    stretch, a cursor running on at *cursor_step* an answer whatever the
+    structure does, and a hand strong enough to reach what it asks for.  What
+    comes back is where the structure stood on screen, twice an answer: where
+    the wish put it -- the page draws that at once, it does not wait for the
+    price -- and where the answer left it.  Both, because the excursion
+    between the two is the whole of what is being looked at here.
+
+    *forwards* switches the thing under test: with it the wish is cut back to
+    what the budget can still pay for before it is asked for, without it the
+    wall is left to refuse it afterwards, which is what it did.
+    """
+    here = part._value_in(text, pair)
+    at, cursor, walked = 0.0, 0.0, []
+    for _ in range(answers):
+        cursor = min(reach, cursor + cursor_step)
+        wish = [dict(pair, value=here + cursor)]
+        if forwards:
+            wish = part._within_the_budget(wish)
+        # A hand that reaches what it asks for, which is the hardest case for
+        # the wall and the easiest to read.
+        at = float(wish[0]['value']) - here
+        walked.append(at)
+        got = _stretched(part, text, pair, at)
+        spent = per_angstrom * at
+        priced = float(state['thermal_e0']) + spent / 627.5094740631
+        # In the order the follow does it: what one more unit of asking
+        # cost is recorded first, off the push that was applied, and the wall
+        # then has its say about whether the geometry is kept.
+        part._note_what_it_costs(spent, wish)
+        back = part._thermal_wall(got, priced, [0])
+        if back is not None:
+            at = part._value_in(back, pair) - here
+        walked.append(at)
+    return walked
+
+
+def _reversals(walked):
+    """How many times the structure turned round.  A drag up a slope turns
+    round nought times; the shaking that was reported turned round on every
+    other answer."""
+    ways = [b - a for a, b in zip(walked, walked[1:]) if abs(b - a) > 1e-6]
+    return sum(1 for a, b in zip(ways, ways[1:]) if a * b < 0)
+
+
+def test_the_drag_walks_up_to_the_ceiling_instead_of_shaking_against_it():
+    """The whole loop, driven here, with and without the fix.
+
+    The wall acts after the fact, so a hand held out past the ceiling is
+    refused, put back, and asks for the same place again next answer.  Driven
+    over a straight slope steep enough to run out of budget in half an
+    Angstrom, that is the shaking as reported: the structure goes out and
+    comes back once an answer, for as long as the mouse is held there.
+
+    Spent forwards, the same drag walks up to the ceiling and rests on it.
+    """
+    part, state = _editor(_NITROSAMINE)
+    pair = {'kind': 'distance', 'atoms': [0, 1]}
+
+    _armed(part, state, _NITROSAMINE, -25.0)
+    walled = _a_drag_up_a_slope(part, state, _NITROSAMINE, pair,
+                                forwards=False)
+    _armed(part, state, _NITROSAMINE, -25.0)
+    spent = _a_drag_up_a_slope(part, state, _NITROSAMINE, pair, forwards=True)
+
+    # What was reported: out and back, once an answer, and it never stops.
+    assert _reversals(walled) > 8, walled
+    assert max(walled) - min(walled[12:]) > 1.0, walled
+
+    # And what it does now: up to the wall, and then still.  Not one turn in
+    # twenty-four answers, and the last dozen inside a hundredth of an
+    # Angstrom of each other -- which on screen is a structure that has
+    # stopped, because it has.
+    assert _reversals(spent) == 0, spent
+    assert max(spent) - min(spent[-12:]) < 0.01, spent
+
+    # Standing inside the budget, not against the far side of it.  The
+    # ceiling is 22.3 kcal/mol at 298 K and the slope 30 per Angstrom, so
+    # there are 0.74 A to be had and the hand takes very nearly all of them.
+    ceiling = part._thermal_budget()[1]
+    assert 0.8 * ceiling / 30.0 < max(spent) <= ceiling / 30.0, max(spent)
+
+    # And it is not a trap.  A hand resting against the ceiling has to be
+    # free to come straight back, in one answer, or the structure is stuck
+    # somewhere the user cannot get it out of.
+    here = part._value_in(_NITROSAMINE, pair)
+    rested = max(spent)
+    came = part._within_the_budget(
+        [dict(pair, value=here + rested - 0.5)])
+    assert came[0]['value'] == pytest.approx(here + rested - 0.5)
+
+
+def test_a_hand_held_back_by_the_budget_says_so_and_shows_where():
+    """A drag that stops following looks exactly like a drag that has broken.
+
+    With the ceiling spent forwards the wall hardly ever fires, so the two
+    things that used to tell the user a budget was refusing -- the sentence
+    and the mark on the picture -- both went quiet, and what was left was a
+    structure that had simply stopped moving under the cursor.  That is the
+    same silence this whole wall exists to close.
+
+    So the clause is on the line the drag is already writing, and the mark
+    goes on the picture at the geometry that was reached, which is where the
+    budget says the atom may stand.
+    """
+    body = EDITOR_SOURCE.split('def _gfn_follow_step(')[1].split(
+        '\n    def ')[0]
+    # The clause, on the same line rather than under it: the row stands above
+    # the viewer and a second one moves the picture while an atom is aimed.
+    assert "held at what the budget allows" in body
+    assert "state.get('thermal_held_back')" in body
+    # And the mark, through the same path a rollback marks by.
+    assert 'else (reached if' in body
+    assert '_stop_the_hand_at(' in body
+    # Raised by the clamp and cleared before it, so it is about this answer.
+    clamp = EDITOR_SOURCE.split('def _within_the_budget(')[1].split(
+        '\n    def ')[0]
+    assert "state['thermal_held_back'] = True" in clamp
+    assert "state.pop('thermal_held_back', None)" in body
+
+
+def test_the_rate_is_felt_at_once_when_the_surface_turns_steep():
+    """Smoothed one way only, and the asymmetry is the point.
+
+    What this number is for is not overspending, so a surface that is turning
+    steep has to be felt on the answer it steepens; a surface that is
+    flattening can be felt gradually, because being careful there costs an
+    answer and nothing else.
+
+    Measured live on an ethane C-C under GFN-FF at 88 kcal/mol/A, the price
+    per Angstrom asked went 13, 18, 24, 32, 48 over five answers.  Smoothed
+    both ways, the allowance for the sixth was worked out at 32 where the
+    truth was 54 -- so the answer landed at 22.6 against a 22.3 ceiling and
+    the wall, which is meant to be the backstop, had to fire and take it back.
+    """
+    part, state = _editor(_NITROSAMINE)
+    _armed(part, state, _NITROSAMINE, -25.0)
+    pair = {'kind': 'distance', 'atoms': [0, 1]}
+
+    # Steeper: taken whole, on this answer.
+    part._note_what_it_costs(0.0, [dict(pair, value=1.0)])
+    part._note_what_it_costs(2.0, [dict(pair, value=1.1)])
+    assert state['thermal_cost'] == pytest.approx(20.0)
+    part._note_what_it_costs(8.0, [dict(pair, value=1.2)])
+    assert state['thermal_cost'] == pytest.approx(60.0)
+
+    # Flatter: half now, the rest next time.
+    part._note_what_it_costs(8.0, [dict(pair, value=1.3)])
+    assert state['thermal_cost'] == pytest.approx(30.0)
+
+
+def test_a_hand_resting_on_the_ceiling_keeps_its_grip():
+    """It rests against the ceiling; it does not let go of the structure.
+
+    A wish clamped to the target the last answer was given is still a push,
+    and it is the push that is holding the structure out where it is.  Read
+    off the *geometry* instead -- the bond length the answer reached -- the
+    next wish asks for the length the bond already has, which is no force at
+    all: measured live, an ethane held at 22.3 kcal/mol relaxed the whole way
+    back to its minimum on the answer after the wall fired.
+
+    So what the wall records beside the geometry it will hand back is the
+    target that was holding it there, and that is what the next wish is
+    measured from.
+    """
+    part, state = _editor(_NITROSAMINE)
+    _armed(part, state, _NITROSAMINE, -25.0)
+    ceiling = part._thermal_budget()[1]
+    pair = {'kind': 'distance', 'atoms': [0, 1]}
+    stands = part._value_in(_NITROSAMINE, pair)
+
+    # A drag that is being held a long way ahead of the structure: the target
+    # is a whole Angstrom out, the bond has given a tenth of one.
+    part._note_what_it_costs(0.0, [dict(pair, value=stands + 0.8)])
+    part._note_what_it_costs(10.0, [dict(pair, value=stands + 1.0)])
+    state['thermal_peak'] = ceiling
+    held = part._within_the_budget([dict(pair, value=stands + 3.0)])
+    # The target it already had, not the length the bond has.  One of those
+    # goes on holding the structure and the other one lets go of it.
+    assert held[0]['value'] == pytest.approx(stands + 1.0)
+    assert held[0]['value'] > stands + 0.5
+
+    # And the wall records it, so a rollback goes back to asking for what
+    # was asked when the budget last agreed -- not for what overshot.
+    wall = EDITOR_SOURCE.split('def _thermal_wall(')[1].split('\n    def ')[0]
+    assert "state['thermal_good_ask'] = (" in wall
+    assert "value=float(held)" in wall
+
+
+def test_the_allowance_is_worked_out_at_the_rate_the_next_answer_will_have():
+    """A rate is a secant behind; the clamp spends it on the answer ahead.
+
+    On any approach to a wall the surface is stiffening, so the secant behind
+    is smaller than the tangent ahead and the allowance is a step too
+    generous.  Measured live on an ethane under GFN2: the rate read 35.4
+    kcal/mol per Angstrom asked, the answer realised 47, and the wall -- which
+    is meant to be the backstop -- had to fire and take the step back.
+
+    So the growth of the rate is carried and the allowance is divided by the
+    rate the next answer is expected to have.  Bounded at a doubling: a growth
+    factor read off two noisy secants can be anything, and no real stiffening
+    doubles inside one answer of a drag.
+    """
+    part, state = _editor(_NITROSAMINE)
+    _armed(part, state, _NITROSAMINE, -25.0)
+    ceiling = part._thermal_budget()[1]
+    pair = {'kind': 'distance', 'atoms': [0, 1]}
+    here = part._value_in(_NITROSAMINE, pair)
+
+    # A rate that is not growing is spent as it stands.
+    part._note_what_it_costs(0.0, [dict(pair, value=here)])
+    part._note_what_it_costs(2.0, [dict(pair, value=here + 0.1)])
+    assert state['thermal_cost_grew'] == pytest.approx(1.0)
+
+    # One that is growing by half is spent at half again.
+    part._note_what_it_costs(5.0, [dict(pair, value=here + 0.2)])
+    assert state['thermal_cost'] == pytest.approx(30.0)
+    assert state['thermal_cost_grew'] == pytest.approx(1.5)
+    state['thermal_peak'] = 10.0
+    left = (ceiling - 10.0) * structure_editor._BUDGET_SPENDS_AT_MOST
+    asked = part._within_the_budget(
+        [dict(pair, value=here + 5.0)])[0]['value']
+    assert asked == pytest.approx(here + 0.2 + left / (30.0 * 1.5))
+
+    # And a doubling is as far as it goes, whatever two noisy secants say.
+    part._note_what_it_costs(105.0, [dict(pair, value=here + 0.3)])
+    assert state['thermal_cost_grew'] == pytest.approx(2.0)

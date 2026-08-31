@@ -945,7 +945,7 @@ def test_the_two_ends_of_a_drag_write_one_message_not_two(bare_editor):
     assert not state["gfn_play_note"], (
         "whatever the page said about the last drag is not about this one")
 
-    said = "g-xTB is following the drag: 15 step(s), 973 ms each."
+    said = "g-xTB follows the drag \u00b7 15 steps, 973 ms"
     state["gfn_last_status"] = said
     # The follow is running, which is what puts the ring on the line: it is a
     # fact about the worker, not about which of the two ends wrote last.
@@ -960,7 +960,7 @@ def test_the_two_ends_of_a_drag_write_one_message_not_two(bare_editor):
     for name, html_value in (("kernel", from_kernel), ("page", from_page)):
         assert html_value.count("<br>") == 0, f"{name}: more than one row"
         assert "delfin-busy" in html_value, f"{name}: no spinner"
-        assert "is following the drag" in html_value, name
+        assert "follows the drag" in html_value, name
     # The page's count is not a row. It said the playback was working, several
     # times a second, under a viewer that moved every time it appeared.
     assert "received 15 frames" not in from_page
@@ -2294,7 +2294,7 @@ def test_the_follow_uses_the_method_that_is_on_screen(editor):
     follow = source.split("def _gfn_follow_step")[1].split("\n    def ")[0]
     assert "method=method" in follow, "the chosen method has to reach xtb"
     assert "'gfnff'" not in follow, "no method may be baked in here"
-    assert "{label} is following the drag" in follow, (
+    assert "{label} follows the drag" in follow, (
         "and the status has to name the one that ran"
     )
 
@@ -2775,7 +2775,7 @@ def test_the_status_counts_the_atoms_the_hand_is_on(editor):
 
     source = SUBMIT_SOURCE
     follow = source.split("def _gfn_follow_step")[1].split("\n    def ")[0]
-    assert "holding {len(holding)} atoms" in follow
+    assert ", {len(holding)} atoms" in follow
 
 
 def test_a_run_that_ends_lands_the_picture_on_its_last_frame(player_js):
@@ -4933,7 +4933,7 @@ def test_the_budget_line_goes_on_the_row_that_is_already_there():
     # relaxation came back with: xtb pulls the dragged atom home and reports
     # the repaired structure, so that energy is about a geometry nobody built.
     assert "state['thermal_now'] = priced.get('energy')" in follow
-    assert "said = f'{said} {spent}'" in follow
+    assert "said = f'{said} \\u00b7 {spent}'" in follow
     # One line handed to the status, never two.
     assert "schedule_ui_update(_set_mol_status, said, spinner=True)" in follow
 
