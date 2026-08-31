@@ -647,3 +647,34 @@ def test_the_arrow_is_not_a_path_and_the_button_says_so():
     assert 'not a path' in said
     assert 'does not travel along it' in said
     assert 'least resistance' in said
+
+
+def test_empty_space_is_handed_to_the_viewer_in_pull_mode():
+    """Rotating has to keep working while the arrows are aimed.
+
+    The overlay lies over the picture and takes the press, and whether 3Dmol
+    ever sees one depends on where that library happens to bind its own
+    handlers -- which is not a thing to depend on.  So on a press that lands
+    on nothing the overlay steps aside for the length of one lookup and the
+    press is delivered to whatever was underneath it.
+
+    Only a press *on an atom* becomes an arrow, and only if it is dragged: a
+    tap on an atom is a tap.
+    """
+    from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
+
+    body = submit_manip_bootstrap_js()
+    branch = body[body.index("if (state.mode === 'load')"):][:3200]
+
+    assert "ov.style.pointerEvents = 'none'" in branch
+    assert 'document.elementFromPoint(e.clientX, e.clientY)' in branch
+    assert 'new window.MouseEvent' in branch
+    assert 'ov.style.pointerEvents = was' in branch, 'the overlay must come back'
+    # A page without either is left alone rather than crashed on.
+    assert "typeof document.elementFromPoint !== 'function'" in branch
+
+    # And a press that *is* on an atom is taken, so the scene does not turn
+    # underneath the arrow being drawn.
+    assert 'e.preventDefault(); e.stopPropagation();' in branch
+    assert "kind: 'load'" in branch
+    assert 'movedEnough: false' in branch
