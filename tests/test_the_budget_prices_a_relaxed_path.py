@@ -3774,7 +3774,15 @@ def test_the_placing_hand_keeps_everything_that_still_works():
     assert _shown(part.submit_topology_btn)
     # A scan drives its own ramp of forces and never reads the hand's slider,
     # so it walks the same path whichever hand is chosen.
+    #
+    # With a selection, because arming answers to that now: + Add with nothing
+    # picked can only say "pick 2, 3 or 4 atoms first", and a press that is
+    # hidden for its own good reason is no witness to a hand taking things
+    # away.
+    _state['picked'] = [0, 1]
+    part._refresh_scan()
     assert _shown(part.submit_scan_add_btn)
+    assert _shown(part.submit_scan_run_btn)
     assert "submit_pull_slider" not in EDITOR_SOURCE.split(
         "def _push_target(")[1].split("\n        def ")[0]
 
