@@ -558,13 +558,23 @@ def test_the_settings_slide_out_beside_the_gear_not_under_the_row():
     part, state = _an_editor()
     part.submit_ff_dd.value = _method(part, 'gfn2') or 'gfn2'
 
-    # Nothing armed: no gear either, because there is no walk to set up.
+    # Nothing picked: no press and no gear, because there is no walk.
     part._refresh_scan()
+    assert part.submit_scan_run_btn.layout.display == 'none'
     assert part.submit_scan_gear.layout.display == 'none'
 
+    # Picked is enough for both.  The settings answer to the press and the
+    # press answers to the selection: tied to arming instead, there was a
+    # state with Scan on the row and no gear beside it -- a walk you could
+    # start and not set up, which since Scan arms on the way through is every
+    # ordinary walk.
     state['picked'] = [0, 1]
     part.submit_scan_way.value = 'to'
     part.submit_scan_to.value = 1.2
+    part._refresh_scan()
+    assert part.submit_scan_run_btn.layout.display == ''
+    assert part.submit_scan_gear.layout.display == ''
+
     part.on_submit_scan(None)
     part._refresh_scan()
     assert part.submit_scan_gear.layout.display == ''
