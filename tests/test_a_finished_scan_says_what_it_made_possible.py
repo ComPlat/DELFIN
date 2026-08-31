@@ -403,3 +403,41 @@ def test_a_fault_still_reaches_the_row_and_does_not_pile_up():
     # otherwise the next draw says it again.
     assert tuple(state.get('mol_status_lines') or ()) == (
         'The scan walked 8 of 8 points.',)
+
+
+def test_marking_a_pair_wins_over_the_ends_a_scan_left():
+    """A scan moves the start onto its own two ends, which is right: minutes
+    of walking is a strong statement about what the user is interested in.
+
+    Marking is a stronger one.  It is two deliberate presses, one end at a
+    time, and it has to win over a pair that was left standing there by
+    something else -- otherwise the marks appear in the list, the box goes on
+    saying "the scan's two ends", and the press searches between the scan's
+    while the line says it searches between the marks.
+
+    Reported: a scan, then To the saddle, then a beginning and an end marked
+    by hand -- "hat einfach aus dem scan die enden genommen".
+    """
+    part, state = _an_editor()
+    method = _method(part, 'gfn2')
+    if method is None:
+        pytest.skip('no method that can reach a saddle')
+    part.submit_ff_dd.value = method
+
+    # A finished scan, which moves the start onto its ends.
+    state['scan_ends'] = (_ETHANE, _STRETCHED)
+    part._scan_left_two_ends()
+    assert part.submit_saddle_from.value == 'scan'
+
+    # Now two marks by hand.
+    state['path_from'] = _ETHANE
+    part.coords_widget.value = _FURTHER
+    part.on_submit_path_from(None)
+
+    assert state.get('path_to')
+    assert part.submit_saddle_from.value == 'marked', (
+        'the press would still search between the ends the scan left')
+
+    # And the scan's pair is still there, one selection away -- nothing was
+    # taken from the user, the newest statement simply won.
+    assert 'scan' in [value for _label, value in part.submit_saddle_from.options]
