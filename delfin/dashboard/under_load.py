@@ -75,6 +75,14 @@ RIGID_SHARE_WORTH_SAYING = 0.05
 #: before it by construction, so this never binds on a walk that is going well.
 MOST_A_LEVEL_MOVES = 0.8
 
+#: And how far it may travel while the load comes off, in A.
+#:
+#: Wider, because this is the one step that is allowed to be large: a bond
+#: that has just given lets two pieces fall away from each other, and the
+#: trust region that keeps a *level* honest would stop that halfway and call
+#: the result a minimum.
+SETTLE_REACH = 3.0
+
 
 def rigid_directions(coords: Any) -> np.ndarray:
     """The six ways a molecule can move without changing shape, orthonormal.
@@ -187,7 +195,7 @@ class _Loaded:
 
 
 def relax_under_load(loaded: _Loaded, bohr: Any, forces: Any, *,
-                     steps: int = 200,
+                     steps: int = 200, reach: Optional[float] = None,
                      should_stop: Optional[Callable[[], bool]] = None,
                      ) -> Dict[str, Any]:
     """Let the structure settle under a load it cannot move away from.
@@ -246,8 +254,8 @@ def relax_under_load(loaded: _Loaded, bohr: Any, forces: Any, *,
     # would be doing all the work.  One level is a small step from the one
     # before it by construction, so a bound this wide never binds on a walk
     # that is going well and catches only the ones that are not.
-    reach = MOST_A_LEVEL_MOVES / _climb.BOHR
-    edges = [(float(v) - reach, float(v) + reach) for v in start]
+    far = (MOST_A_LEVEL_MOVES if reach is None else float(reach)) / _climb.BOHR
+    edges = [(float(v) - far, float(v) + far) for v in start]
     answer = minimize(biased, start, jac=True, method='L-BFGS-B',
                       bounds=edges,
                       options={'maxiter': int(steps), 'gtol': 1e-5,
@@ -335,6 +343,7 @@ def walk_under_load(xyz_text: str, loads: Sequence[Dict[str, Any]],
     rigid_share = 0.0
     was_bonded: Any = None
     gave: Optional[Dict[str, Any]] = None
+    settled: Optional[Dict[str, Any]] = None
     try:
         here = loaded.bohr.copy()
         first = None
@@ -401,11 +410,55 @@ def walk_under_load(xyz_text: str, loads: Sequence[Dict[str, Any]],
                 # nothing new.  "Whole profile" is asking for exactly that:
                 # the whole ramp, whatever gives on the way.
                 break
+        # And then the load comes off.
+        #
+        # Every level is a minimum of the *loaded* surface, which is a real
+        # thing and not the thing anybody wants to keep: it is a structure
+        # held out of shape by a force that is about to stop existing.  Handed
+        # back, it goes to Optimise and to the queue strained, and the energy
+        # quoted for it is the energy of the strain as much as of the
+        # chemistry.
+        #
+        # So the arrows are taken off and it settles once more.  That is the
+        # far end of "from one minimum to the next", and it is what the walk
+        # was for: the load is how the structure was got over the hill, not
+        # part of where it landed.
+        if points and not (should_stop is not None and should_stop()):
+            free = relax_under_load(loaded, here, np.zeros_like(here),
+                                    reach=SETTLE_REACH,
+                                    should_stop=should_stop)
+            if free.get('ok') and free.get('energy') is not None:
+                rested = _turned_onto(free['bohr'], loaded.bohr)
+                text = _climb.xyz_document(
+                    symbols, rested * _climb.BOHR,
+                    'pulled, and settled with the load off')
+                # And whether anything survived the load coming off.
+                #
+                # This is the question, not a detail.  Measured on an ethane
+                # pulled along its C-C under GFN2: at 164 kcal/mol/A the bond
+                # is 4.899 A apart and the structure is 130 kcal/mol up, which
+                # reads as a broken bond and a barrier.  Released, it comes
+                # back to 1.521 A and -0.1 kcal/mol -- two radicals held apart
+                # by a force recombine the moment the force stops, and all but
+                # a tenth of a kcal/mol of that 130 was the strain of holding
+                # them.  Reported without this, a pull says a bond broke every
+                # time it is pulled hard enough, which is a claim about the
+                # load and not about the molecule.
+                settled = {
+                    'xyz': text,
+                    'energy': ((float(free['energy']) - first)
+                               * _climb.HARTREE_IN_KCAL),
+                    'gradients': int(free.get('gradients') or 0),
+                    'said': _gfn.graph_changed(
+                        _gfn.bond_graph(points[0]['xyz']),
+                        _gfn.bond_graph(text), symbols),
+                }
     finally:
         loaded.close()
 
     if not points:
         return {'ok': False, 'points': [], 'rigid': rigid_share, 'gave': None,
+                'settled': None,
                 'status': 'The load could not be applied.'}
     return {'ok': True, 'points': points, 'rigid': rigid_share, 'gave': gave,
-            'status': ''}
+            'settled': settled, 'status': ''}
