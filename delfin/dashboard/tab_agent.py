@@ -1187,6 +1187,25 @@ def _perm_options_for_mode(mode: str) -> list[tuple[str, str]]:
             ("Accept Edits", "repo_free"), ("Bypass", "all_free")]
 
 
+# Each rung of the ladder above → the backend permission_mode it produces.
+#
+# It lives here, next to the labels it has to agree with, because the two
+# drifted apart while the table sat inside create_tab's closure where
+# nothing could compare them: the ladder's docstring said "Bypass asks
+# nothing" and the mapping quietly capped Bypass at 'acceptEdits', where
+# every shell command that is not on the auto-allow list still asks.
+#
+# The cap was defensible in itself; what it could not do is call itself
+# Bypass. A user who sets a control and is then asked anyway learns that
+# the control is decorative, and afterwards reads no label at all.
+PROFILE_TO_CLI_PERM: dict[str, str] = {
+    "plan":      "plan",                # read-only
+    "ask_all":   "default",             # asks before every write and shell
+    "repo_free": "acceptEdits",         # writes go through, shell asks
+    "all_free":  "bypassPermissions",   # asks nothing, as the label says
+}
+
+
 def resolve_office_workspace(configured) -> Path | None:
     """The one folder an office session may work in, or ``None``.
 
@@ -12623,17 +12642,26 @@ def create_tab(ctx):
         },
     }
 
-    # Map DELFIN profile → CLI-backend permission_mode.
-    # Safety: never use bypassPermissions for ANY mode — all modes cap at
-    # 'acceptEdits', which auto-approves file edits but still asks for Bash.
-    # The DELFIN zone system is the primary safety layer; CLI permissions
-    # are defense-in-depth.
-    _PROFILE_TO_CLI_PERM: dict[str, str] = {
-        "plan":      "plan",           # read-only
-        "ask_all":   "default",        # CLI asks before every write/bash
-        "repo_free": "acceptEdits",    # CLI auto-approves edits, asks for bash
-        "all_free":  "auto",           # user chose "all free" → skip permission prompts
-    }
+    # The profile → backend permission_mode map lives at module scope
+    # (PROFILE_TO_CLI_PERM), next to the labels it has to agree with.
+    #
+    # The setting the user makes is the setting that applies. The map used
+    # to cap every profile at 'acceptEdits' — where bash is still gated —
+    # while the chip said "Bypass" and the banner promised unrestricted
+    # access to shell commands. A single `grep` ran silently and
+    # `for d in */ESD; do grep … done` asked, because a compound command
+    # is auto-allowed only when every segment is, and a loop never
+    # decomposes into such segments. Reading nine result folders is a
+    # loop, so the profile that promised no prompts produced one per
+    # folder.
+    #
+    # What bypassPermissions does NOT switch off, verified rather than
+    # assumed: the deny-list, the sandbox, and the hard read-only rule on
+    # archive / remote_archive — that one is a per-path policy in
+    # _path_write_policy, which never consults the mode, so write_file,
+    # edit_file and a shell redirection are all still refused there.
+    # Those are exactly the exceptions the warning banner names.
+    _PROFILE_TO_CLI_PERM = PROFILE_TO_CLI_PERM
 
     def _active_perms() -> dict[str, tuple[int, bool]]:
         """Return the zone permissions for the active profile."""
@@ -12644,8 +12672,10 @@ def create_tab(ctx):
         """Return the CLI-backend permission_mode for the active profile.
 
         Dashboard mode always uses 'default' (asks before write tools).
-        All other modes map through _PROFILE_TO_CLI_PERM which caps at
-        'acceptEdits' — never bypassPermissions.
+        All other modes map through _PROFILE_TO_CLI_PERM, which passes the
+        chosen profile through unchanged — including bypassPermissions for
+        'all_free'. The deny-list, the sandbox and the read-only archive
+        hold in every mode; see the table's comment.
         """
         cur_mode = mode_dropdown.value
         if cur_mode == "dashboard":

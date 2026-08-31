@@ -646,6 +646,25 @@ def observed_numbers() -> Optional[list[float]]:
     return _observed_numbers.get()
 
 
+# The energy units this scanner can convert between, expressed in eV.
+#
+# Used ONLY to recognise that two claims IN THE SAME ANSWER are the same
+# quantity written twice — see _restates_a_grounded_claim. It is
+# deliberately not used to widen the observation pool: an attempt to do
+# that is recorded there, along with what it cost.
+#
+# nm is absent on purpose. It is an inverse measure, so it is not one
+# factor away from these, and a wavelength is a different claim from an
+# energy rather than the same one restated. Values from CODATA.
+_ENERGY_UNITS_IN_EV: dict[str, float] = {
+    "eV": 1.0,
+    "Hartree": 27.211386245988,
+    "kcal/mol": 1.0 / 23.060547830619,
+    "kJ/mol": 1.0 / 96.48533212331,
+    "cm-1": 1.0 / 8065.543937,
+}
+
+
 def _grounded_in_observations(value: float, pool: list[float]) -> bool:
     """Is this value one the tools returned, or a difference of two?
 
@@ -656,6 +675,19 @@ def _grounded_in_observations(value: float, pool: list[float]) -> bool:
     gaps. Bounded to the same base size the office ledger uses, because
     the derived set grows with its square and a large enough base makes
     every number derivable.
+
+    A unit conversion is deliberately NOT tried here. Rescaling the value
+    and asking the pool again was measured and rejected: the pool already
+    carries every number a tool printed, including state indices and
+    other labels, and its difference set is quadratic — so multiplying
+    the candidate set by a table of factors makes coincidences ordinary.
+    It grounded "7.77 eV" against |2.0 - 0.143331| kcal/mol, where the
+    2.0 is the "STATE 2" label, and raised the false-grounding rate on a
+    random eV-scale value from 0.23% to 3.0% even after the tolerance was
+    tied to the claim's printed precision. Conversions are recognised
+    where they can be recognised exactly instead — between two claims in
+    the same answer, whose units are both known. See
+    ``_restates_a_grounded_claim``.
     """
     tolerance = max(abs(value) * 1e-4, 5e-3)
     for known in pool:
@@ -675,16 +707,72 @@ MAX_DERIVATION_BASE = 24
 _CLAIM_VALUE_RE = re.compile(r"[-+−]?\d+(?:\.\d+)?")
 
 
-def _claim_is_observed(quantity: str, pool: list[float]) -> bool:
-    """Does the number inside a matched claim come from the tools?"""
+def _claim_value(quantity: str) -> tuple[float, float] | None:
+    """The number inside a matched claim, and how precise it says it is.
+
+    "0.858" asserts ±0.0005, "3" asserts ±0.5 — read off the digits, so a
+    value quoted to more decimals is held to more decimals.
+    """
     match = _CLAIM_VALUE_RE.search(str(quantity or ""))
     if not match:
-        return False
+        return None
+    token = match.group(0).replace("−", "-")
     try:
-        value = float(match.group(0).replace("−", "-"))
+        value = float(token)
     except ValueError:
+        return None
+    decimals = len(token.split(".", 1)[1]) if "." in token else 0
+    return value, 0.5 * (10.0 ** -decimals)
+
+
+def _claim_is_observed(quantity: str, pool: list[float]) -> bool:
+    """Does the number inside a matched claim come from the tools?"""
+    parsed = _claim_value(quantity)
+    if parsed is None:
         return False
-    return _grounded_in_observations(value, pool)
+    return _grounded_in_observations(parsed[0], pool)
+
+
+def _restates_a_grounded_claim(
+    quantity: str, unit: str,
+    matches: list[tuple[int, str, str]], pool: list[float],
+) -> bool:
+    """Is this claim another claim in the SAME answer, in another unit?
+
+    ORCA reports Hartree; chemists read eV and kcal/mol, so an answer
+    puts both in the table. The second column is not a second claim — it
+    is the first one written down again — and the guard used to flag it,
+    because rescaling was not a derivation it knew. In the field that
+    produced a caveat telling the reader to distrust 0.858 eV while
+    0.031522 Hartree, the identical quantity, stood unchallenged two
+    columns to the left.
+
+    Recognised here rather than by rescaling against the observation pool
+    because BOTH units are known, which makes it one exact factor instead
+    of a search over a table — no combinatorial widening, and nothing to
+    coincide with. It can only fire when the answer actually shows the
+    grounded partner, which is the whole claim being made: *this* value
+    restates *that* one.
+    """
+    here = _ENERGY_UNITS_IN_EV.get(unit)
+    parsed = _claim_value(quantity)
+    if here is None or parsed is None:
+        return False
+    value, quantum = parsed
+    in_ev = value * here
+    for _pos, other_qty, other_unit in matches:
+        there = _ENERGY_UNITS_IN_EV.get(other_unit)
+        if there is None or other_unit == unit:
+            continue
+        other = _claim_value(other_qty)
+        if other is None or not _grounded_in_observations(other[0], pool):
+            continue
+        # Both roundings ride along into eV, and neither claim can be
+        # held to more precision than it printed.
+        tol = quantum * here + other[1] * there
+        if abs(in_ev - other[0] * there) <= tol:
+            return True
+    return False
 
 
 def scan_for_unsourced_quantities(
@@ -746,6 +834,9 @@ def scan_for_unsourced_quantities(
                 continue
             seen.add(key)
             if pool is not None and _claim_is_observed(qty, pool):
+                continue
+            if pool is not None and _restates_a_grounded_claim(
+                    qty, unit, matches, pool):
                 continue
             flags.append(QuantityClaimFlag(quantity=qty, unit=unit))
             if len(flags) >= max_flags:
