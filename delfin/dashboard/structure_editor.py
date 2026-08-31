@@ -147,6 +147,16 @@ _HAND_FOLLOWS_AT = 0.10
 #: step larger than the distance to the target.
 _HAND_FOLLOWS_FLOOR = 0.05
 
+#: The most one answer may multiply the hand's force by, whatever it asks.
+#:
+#: Half again.  A pair really can be new -- a fragment walked past a molecule
+#: picks up a different contact -- and starting at what is asked is right
+#: there.  What is never right is a force several times the one applied a
+#: moment ago: nothing the structure did in one answer earns that, and it is
+#: what an overshoot is made of.  Measured in the field, the ceiling doubling
+#: from 44 to 90 and back once an answer.
+_HAND_JUMP_MOST = 1.5
+
 #: Eyring, both ways, and the four numbers behind it -- see
 #: :mod:`delfin.dashboard.thermal`.  Moved out when the reaction graph
 #: came to ask the same question of a whole network that this asks of one
@@ -13978,15 +13988,38 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             except (TypeError, ValueError):
                 out.append(one)
                 continue
-            key = (str(one.get('kind') or ''),
-                   tuple(int(i) for i in (one.get('atoms') or ())))
+            # Kept by the atoms, not by the coordinate.
+            #
+            # The hand is on a pair; which coordinate that pair is expressed
+            # in is worked out afresh from the geometry every answer, and it
+            # flips -- a contact that is a distance on one answer is a torsion
+            # on the next.  Keyed on both, every flip was a key nobody had
+            # seen, and a new key starts at what this answer asks for so that
+            # beginning a drag is immediate.  So the damping was skipped on
+            # every other answer: simulated with the demand alternating 44 and
+            # 90 and the kind flipping with it, the hand applied 44, 90, 44,
+            # 90 -- exactly the ceiling seen swinging in the field.
+            key = tuple(int(i) for i in (one.get('atoms') or ()))
             before = remembered.get(key)
             steady = (asked if before is None else
                       before + _hand_follows_now() * (asked - before))
+            # And a backstop that does not depend on keys at all.
+            #
+            # A pair really can be new -- a fragment walked past a molecule
+            # picks up a different contact -- and then starting at what is
+            # asked is right.  What is never right is a force several times
+            # the one that was applied a moment ago: that is a step larger
+            # than anything the structure could have earned in one answer, and
+            # it is what an overshoot is made of.
+            ceiling = state.get('gfn_hand_force_most')
+            if ceiling:
+                steady = min(steady, float(ceiling) * _HAND_JUMP_MOST)
             keeping[key] = steady
             out.append(dict(one, force=steady))
         state['gfn_hand_force'] = keeping
         state['gfn_hand_force_run'] = run
+        state['gfn_hand_force_most'] = max(
+            [abs(v) for v in keeping.values()] or [0.0]) or None
         return out
 
     def _stand_on(xyz, said, comment, what, gesture='walk-point'):

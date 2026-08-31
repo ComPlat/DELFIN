@@ -4782,3 +4782,51 @@ def test_the_hand_follows_more_slowly_when_the_answers_are_slow():
     # The number it works from is the number the user is shown.
     assert '_hand_answered_in(began)' in EDITOR_SOURCE
     assert "state['gfn_follow_took'] = took" in EDITOR_SOURCE
+
+
+def test_the_hand_is_not_reset_by_the_coordinate_changing_its_name():
+    """The damping was being skipped on every other answer.
+
+    The hand is on a pair.  Which coordinate that pair is expressed in is
+    worked out afresh from the geometry every answer, and it flips -- a
+    contact that is a distance on one answer is a torsion on the next.  Keyed
+    on both, every flip was a key nobody had seen, and a new key starts at
+    what this answer asks for so that beginning a drag is immediate.
+
+    Simulated with the demand alternating 44 and 90 and the kind flipping with
+    it, the hand applied 44, 90, 44, 90 -- which is exactly the ceiling seen
+    swinging between 44 and 91 in the field, once an answer, while the atom
+    went 1.3 A out and back.
+    """
+    part, state = _editor(_NITROSAMINE)
+
+    def drag(demand, kinds, atoms, took=1.7):
+        state['gfn_follow_run'] = 1
+        state['gfn_follow_took'] = took
+        for key in ('gfn_hand_force', 'gfn_hand_force_run',
+                    'gfn_hand_force_most'):
+            state.pop(key, None)
+        out = []
+        for want, kind, pair in zip(demand, kinds, atoms):
+            got = part._steady_hand(
+                [{'kind': kind, 'atoms': pair, 'force': float(want)}])
+            out.append(got[0]['force'])
+        return out
+
+    # The reported case: same pair, the name of the coordinate flipping.
+    applied = drag([44, 90] * 4, ['distance', 'dihedral'] * 4, [[0, 1]] * 8)
+    assert max(applied) < 60, applied          # was 90 every other answer
+    assert all(b >= a - 0.5 for a, b in zip(applied, applied[1:])), applied
+
+    # A pair that really is new starts at what is asked -- beginning a drag
+    # has to be immediate -- so this one still moves, but the backstop bounds
+    # it: nothing the structure did in one answer earns several times the
+    # force applied a moment ago.
+    applied = drag([44, 90] * 4, ['distance', 'dihedral'] * 4,
+                   [[0, 1], [2, 3]] * 4)
+    assert max(applied) < 44 * 1.55, applied
+
+    # And a fast system is untouched: half the demand per answer, as measured.
+    applied = drag(list(range(10, 90, 10)), ['distance'] * 8, [[0, 1]] * 8,
+                   took=0.10)
+    assert applied[1] == pytest.approx(15.0)
