@@ -111,9 +111,9 @@ def test_the_line_says_what_is_applied_and_what_is_possible():
     anyone's memory.
     """
     assert "push_pulls_now(" in EDITOR_SOURCE
-    assert "of a possible" in EDITOR_SOURCE
-    assert "drag further ahead " in EDITOR_SOURCE
-    assert "of the atom to pull harder" in EDITOR_SOURCE
+    assert "pull {applied:.1f}/{hardest:.0f} " in EDITOR_SOURCE
+    assert "drag further ahead of the atom to " in EDITOR_SOURCE
+    assert "pull harder" in EDITOR_SOURCE
 
 
 def test_a_restart_belongs_to_one_run_and_not_to_a_neighbouring_one():

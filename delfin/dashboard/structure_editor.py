@@ -147,15 +147,72 @@ _HAND_FOLLOWS_AT = 0.10
 #: step larger than the distance to the target.
 _HAND_FOLLOWS_FLOOR = 0.05
 
-#: The most one answer may multiply the hand's force by, whatever it asks.
+#: There is no ceiling on how much one answer may multiply the force by, and
+#: this is where one was and why it is not.
 #:
-#: Half again.  A pair really can be new -- a fragment walked past a molecule
-#: picks up a different contact -- and starting at what is asked is right
-#: there.  What is never right is a force several times the one applied a
-#: moment ago: nothing the structure did in one answer earns that, and it is
-#: what an overshoot is made of.  Measured in the field, the ceiling doubling
-#: from 44 to 90 and back once an answer.
-_HAND_JUMP_MOST = 1.5
+#: Half again, it was, on the grounds that nothing the structure did in one
+#: answer earns several times the force applied a moment ago.  What it bought
+#: was one simulated case: the hand moving to a genuinely new pair of atoms
+#: while the demand alternates, where the damping cannot help because a new
+#: pair has to start at what is asked or a drag could never be begun.  What it
+#: cost was the hand.  A multiplicative ceiling is a geometric ramp: from a
+#: tenth of the slider to the whole of it is six answers, which on a slow
+#: system is ten seconds of a hand that will not pull -- and a sustained pull
+#: reaching its force in three answers is what was measured and wanted.
+#:
+#: And it was aimed at the wrong thing.  The shaking that was reported is the
+#: budget's: "nicht thermisch zappelt ja meist nicht".  It is the wall's
+#: rollback, which is fixed where it happens -- see :func:`_within_the_budget`
+#: -- rather than by holding every hand back in case it is the one shaking.
+
+#: How much of what the budget has left the hand may ask for in one answer.
+#:
+#: The wall is a refusal after the fact: the hand asks, xtb answers, the
+#: price turns out to be past the ceiling, and the structure springs back to
+#: the last geometry that was inside it.  That spring-back is what the user
+#: sees as shaking -- "nicht thermisch zappelt ja meist nicht", the same drag
+#: with the budget switched off is steady -- because the hand goes on asking
+#: for the same forbidden place and gets pulled off it once an answer.
+#:
+#: So the budget is spent forwards instead.  What is left of the ceiling,
+#: divided by what an Angstrom of this coordinate is costing right now,
+#: is how far the hand may still ask for; asking for less than the whole of
+#: it means the structure walks up to the wall rather than into it, and never
+#: has to be taken back.  Four fifths leaves a fifth for the surface being
+#: steeper a little further on than it was a little way back, which is what
+#: a barrier is.
+_BUDGET_SPENDS_AT_MOST = 0.8
+
+#: How much of the ceiling is left standing, in kcal/mol: the hand stops
+#: asking once less than this is left.
+#:
+#: Taking four fifths of what is left, over and over, converges on the ceiling
+#: and never quite reaches it -- in exact arithmetic.  The arithmetic here is
+#: not exact.  A price is a relaxation of a few cycles, and the last of the
+#: budget is being spent in steps small enough that the relaxation's own noise
+#: is larger than the step: measured live on an ethane under GFN-FF, the last
+#: allowed answer was predicted at 22.27 kcal/mol and came back at 22.50
+#: against a 22.3 ceiling.  The wall then fires on the noise, hands the
+#: structure back, and the loop this whole thing exists to remove is back --
+#: at a thousandth of an Angstrom rather than at an Angstrom, but back.
+#:
+#: A relative margin cannot cover an absolute noise, so this one is absolute:
+#: the hand stops half a kcal/mol short.  That is comfortably above what five
+#: cycles of a relaxation disagree by, it is two per cent of what room
+#: temperature grants within the hour, and it is nothing at all beside a
+#: barrier.
+_BUDGET_LEFT_WORTH_SPENDING = 0.5
+
+#: The least a coordinate must have moved for the last two answers to say
+#: what a step of it costs, in each coordinate's own units.
+#:
+#: A rate is a difference over a difference, and both differences carry the
+#: noise of a relaxation that ran a few cycles.  Divided by a movement near
+#: zero the answer is the noise and nothing else -- and this number decides
+#: how far a hand may go, so a spurious large one stops the drag dead.  Two
+#: thousandths of an Angstrom and a tenth of a degree are each about a tenth
+#: of what one answer of a real drag moves.
+_COORDINATE_STIRRED = {'distance': 0.002, 'angle': 0.1, 'dihedral': 0.1}
 
 #: Eyring, both ways, and the four numbers behind it -- see
 #: :mod:`delfin.dashboard.thermal`.  Moved out when the reaction graph
@@ -5030,6 +5087,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # pulled strictly uphill was reported as "Falling 94 kcal/mol per A".
         state.pop('thermal_slope', None)
         state.pop('thermal_last', None)
+        # And what the coordinate this drag drove was costing, which the next
+        # drag will be driving a different one of.  Carried over, the first
+        # answer of a grab on the far side of a molecule would have its travel
+        # cut back by a rate measured on somebody else's bond.
+        state.pop('thermal_cost', None)
+        state.pop('thermal_cost_grew', None)
+        state.pop('thermal_cost_at', None)
+        state.pop('thermal_good_spent', None)
+        state.pop('thermal_good_ask', None)
+        state.pop('thermal_rolled', None)
+        state.pop('thermal_held_back', None)
         # And what the last answer of the last drag was priced at, which is
         # what "one answer cost this much" is measured against.
         state.pop('thermal_priced', None)
@@ -5503,7 +5571,39 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         keeping += [
                             one for one in _gfn.bonds_to_freeze(current)
                             if tuple(sorted(one['atoms'])) not in walking]
+                    # What the hand asked for, whether or not it is a pull:
+                    # the rigid hand sets values rather than asking for them,
+                    # and there is then nothing here to price a rate on.
+                    asked = []
                     if pull is not None and contacts:
+                        # Before the wish becomes a force, not after.  The
+                        # push is sized by how far the target has run ahead
+                        # of the structure, so cutting the target back is
+                        # what makes the hand ease off rather than merely
+                        # stop -- and a hand that eases off never has to be
+                        # taken back, which is the shaking gone.
+                        state.pop('thermal_held_back', None)
+                        contacts = _within_the_budget(contacts)
+                        # What was asked for, kept before it becomes a push.
+                        #
+                        # The push is not the ask.  Beyond a reach
+                        # :func:`gfn_optimize.as_pushes` stops moving the
+                        # target and makes the spring stronger instead, so
+                        # past that point the target it writes is the
+                        # structure's own position plus a constant -- it
+                        # follows the molecule rather than the cursor.  A rate
+                        # measured against it is then a rate against the
+                        # travel again, and it flips sign the moment the bond
+                        # comes back a little.  Measured live on an ethane:
+                        # 2.2, 3.8, 5.5 ... 18.4 kcal/mol per Angstrom asked
+                        # while the target still moved, then 92 on the answer
+                        # the reach caught it and -1130 on the next, after
+                        # which nothing was ever clamped again.
+                        #
+                        # The wish is the one variable the whole range is a
+                        # function of: below the reach it sets the target,
+                        # above it, it sets the force.
+                        asked = [dict(one) for one in contacts]
                         contacts = _gfn.as_pushes(
                             contacts, state.get('thermal_was') or current,
                             pull, value_of=_value_in, most=_pull_most())
@@ -5568,7 +5668,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # selection left over from earlier makes every drag move
                     # everything -- which reads as the molecule fighting
                     # itself, and is invisible unless it is counted here.
-                    many = (f' holding {len(holding)} atoms,'
+                    many = (f', {len(holding)} atoms'
                             if len(holding) > 1 else '')
                     # What the hand is allowed to pull with, said in the units
                     # that decide what it can do.  A number nobody can see is
@@ -5603,21 +5703,30 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                 kind, constant,
                                 float(driving['value']) - float(stands))
                         units = ('kcal/mol/A' if kind == 'distance'
-                                 else 'kcal/mol per radian')
-                        hand = (f' Pulling at {applied:.1f} of a possible '
-                                f'{hardest:.0f} {units} -- drag further ahead '
-                                f'of the atom to pull harder. The most this '
-                                f'hand may reach is '
-                                f'{hardest / _gfn.A_BOND_HOLDS:.2f} of what a '
-                                f'bond holds.')
+                                 else 'kcal/mol/rad')
+                        # In clauses.  This line is on screen through every
+                        # drag, at the top of the viewer, and it had become
+                        # three sentences of explanation around two numbers.
+                        # The numbers are what is watched; what they mean is
+                        # in this file.
+                        hand = (f' \u00b7 pull {applied:.1f}/{hardest:.0f} '
+                                f'{units} '
+                                f'({hardest / _gfn.A_BOND_HOLDS:.2f} of a '
+                                f'bond) -- drag further ahead of the atom to '
+                                f'pull harder')
+                        if state.get('thermal_held_back'):
+                            # And why it is not following the cursor any
+                            # further, which is the one thing a hand resting
+                            # against the ceiling has to say for itself: it
+                            # looks exactly like a drag that has stopped
+                            # working.
+                            hand += ' \u00b7 held at what the budget allows'
                     if held_too:
-                        hand = (' A held value and a pull cannot share one '
-                                'force constant in xtb, so the hand is '
-                                'placing rather than pulling.')
-                    said = (f'{label} is following the drag:{many} {steps} '
-                            f'step(s), '
-                            f'{_hand_answered_in(began) * 1000:.0f} ms '
-                            f'each.{hand}')
+                        hand = (' \u00b7 a held value and a pull cannot share '
+                                'one force constant, so the hand places')
+                    said = (f'{label} follows the drag{many} \u00b7 {steps} '
+                            f'steps, {_hand_answered_in(began) * 1000:.0f} ms'
+                            f'{hand}')
                     # The bond order of the pair the hand is driving, as a
                     # readout and as nothing else.
                     #
@@ -5885,13 +5994,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             else current)[0]
                         crowded = (tightest is not None
                                    and tightest < _gfn._TOO_CLOSE)
-                        _thermal_slope(
-                            (float(priced['energy'])
-                             - float(_thermal_budget()[0] or 0.0))
-                            * _HARTREE_TO_KCAL,
-                            current, [int(i) for i in (holding or ())]
-                        ) if priced.get('energy') is not None \
-                            and _thermal_budget()[0] is not None else None
+                        if (priced.get('energy') is not None
+                                and _thermal_budget()[0] is not None):
+                            paid = ((float(priced['energy'])
+                                     - float(_thermal_budget()[0]))
+                                    * _HARTREE_TO_KCAL)
+                            _thermal_slope(
+                                paid, current,
+                                [int(i) for i in (holding or ())])
+                            # And what one more unit of asking costs, which
+                            # is what the next answer's wish is bounded by.
+                            # Off the push that was applied rather than off
+                            # any geometry -- see _note_what_it_costs for the
+                            # ethane that stopped at a tenth of its budget
+                            # when this was measured off the atom instead.
+                            _note_what_it_costs(paid, asked)
                         # Whether the temperature is what refused this, or one
                         # of the two things that are refused at any
                         # temperature.  Said apart, because "past the budget"
@@ -5917,7 +6034,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             # never under it: this row stands above the viewer
                             # and a second one moves the picture while the
                             # user is aiming an atom.
-                            said = f'{said} {spent}'
+                            said = f'{said} \u00b7 {spent}'
                         # What the hand was asking for when it ran out, so the
                         # next steps can tell "still pulling" from "easing
                         # off" without running anything.
@@ -5926,7 +6043,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             if came_back is not None and contacts else None)
                         # And the page is told, so the picture stops promising
                         # travel the kernel is not going to deliver.
-                        _stop_the_hand_at(came_back, current, holding)
+                        #
+                        # Either because the wall took the step back, or --
+                        # now that the budget is spent forwards -- because the
+                        # hand was never allowed to ask for it.  The second is
+                        # the ordinary case and it had nothing on screen at
+                        # all: the structure simply stopped following, which
+                        # is exactly what a drag that has broken looks like.
+                        # Marked at the geometry that was reached, which is
+                        # where the budget says the atom may stand.
+                        _stop_the_hand_at(
+                            came_back if came_back is not None
+                            else (reached if state.get('thermal_held_back')
+                                  else None),
+                            current, holding)
                         if came_back is not None:
                             # Three cases rather than two.  Which number the
                             # budget refused on -- where the structure is
@@ -5936,14 +6066,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             # answered by easing off where you are, so a line
                             # that did not tell them apart had the user pulling
                             # harder at a wall already behind them.
-                            said = (f'{said} ' + (
-                                'So the last structure that was measured and '
-                                'allowed is back.' if aside else
-                                'Past the budget on the way here, so the last '
-                                'structure that was inside it is back.'
+                            said = (f'{said} \u00b7 ' + (
+                                'the last measured and allowed structure is '
+                                'back' if aside else
+                                'past the budget on the way here -- the last '
+                                'structure inside it is back'
                                 if state.get('thermal_over') == 'path' else
-                                'Past the budget, so the last structure that '
-                                'was inside it is back.'))
+                                'past the budget -- the last structure inside '
+                                'it is back'))
                             # And what the refusal is a refusal *of*, which is
                             # narrower than it reads.  What was priced is the
                             # way this hand went, one geometry at a time; the
@@ -5967,10 +6097,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             # not showing would send the user looking for a
                             # button that is not there.
                             if not aside:
-                                said = (f'{said} This prices the way your '
-                                        'hand went, not the cheapest way '
+                                said = (f'{said} \u00b7 this prices the way '
+                                        'your hand went, not the cheapest way '
                                         'there -- Scan and the path finder '
-                                        'look for that.')
+                                        'look for that')
                                 # And whether this is the one case where the
                                 # quantity itself is off.  A ceiling is a free
                                 # energy and a drag is priced with an
@@ -5988,13 +6118,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                 now_in = _pieces_in(reached)
                                 if began_in and now_in > began_in:
                                     said = (
-                                        f'{said} It is in {now_in} pieces '
-                                        f'here where the budget was measured '
-                                        f'on {began_in}, and an electronic '
-                                        f'price is strict by about ten '
-                                        f'kcal/mol there -- a scan with its '
-                                        f'energy set to G prices it as a free '
-                                        f'energy.')
+                                        f'{said} \u00b7 {now_in} pieces here '
+                                        f'against {began_in} at the anchor, '
+                                        f'where an electronic price is strict '
+                                        f'by about ten kcal/mol -- a scan '
+                                        f'with its energy set to G prices it '
+                                        f'as a free energy')
                             # And whether this was a slope or a step.
                             #
                             # A refusal on a slope can be worked with: ease
@@ -6043,16 +6172,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                         [line.split()[0] for line
                                          in _gfn.atom_lines(reached)])
                                 said = (
-                                    f'{said} That was a step and not a slope '
-                                    f'-- one answer cost {jump:+.0f} kcal/mol '
-                                    f'-- so coming at it more gently lands in '
-                                    f'the same place.'
-                                    + (f' On the far side the bonding '
-                                       f'{bonding}.' if bonding else ''))
+                                    f'{said} \u00b7 a step, not a slope: one '
+                                    f'answer cost {jump:+.0f} kcal/mol, so '
+                                    f'coming at it gently lands in the same '
+                                    f'place'
+                                    + (f' \u00b7 on the far side the bonding '
+                                       f'{bonding}' if bonding else ''))
                         if crowded:
-                            said = (f'{said} Two atoms are inside '
-                                    f'{tightest:.2f} of a bond length, which '
-                                    f'is no path at any temperature.')
+                            said = (f'{said} \u00b7 two atoms inside '
+                                    f'{tightest:.2f} of a bond length -- no '
+                                    f'path at any temperature')
                         # Both of these belong to the budget, so they are said
                         # where the budget is: read one indent further out,
                         # they are read on a drag that never set them, and the
@@ -6364,14 +6493,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         was = state.get('thermal_peak')
         peak = spent if was is None else max(float(was), spent)
         if peak <= ceiling:
-            return (f'{spent:+.1f} of {ceiling:.1f} kcal/mol available at '
-                    f'{T:g} K.')
+            return f'{spent:+.1f} of {ceiling:.1f} kcal/mol at {T:g} K'
         # Said as a time rather than as a number: how long this would take is
         # the thing a chemist can judge, and 34.7 kcal/mol means nothing until
         # it is "longer than the age of the earth".
         if spent > ceiling:
-            return (f'{spent:+.1f} kcal/mol -- past the {ceiling:.1f} this '
-                    f'structure has at {T:g} K. {_thermal_wait(spent, T)} '
+            return (f'{spent:+.1f} kcal/mol, past the {ceiling:.1f} at '
+                    f'{T:g} K \u00b7 {_thermal_wait(spent, T)} \u00b7 '
                     f'{_thermal_wants(spent)}')
         # Cheap here, and it got here over something that was not.  The
         # refusal is about the crossing, so the crossing is the number quoted
@@ -6386,13 +6514,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # know the button exists discovers instead that switching Dynamik Opt
         # off and on again makes the drag work -- which is the same thing
         # happening by accident.
-        return (f'{spent:+.1f} of {ceiling:.1f} kcal/mol available at '
-                f'{T:g} K, but this drag went through {peak:+.1f} to reach '
-                f'it -- past the {ceiling:.1f} it has at {T:g} K. '
-                f'{_thermal_wait(peak, T)} {_thermal_wants(peak)} '
-                f'The budget is counted from where it was set; if the '
-                f'structure has settled here, Set here measures from this '
-                f'one instead.')
+        return (f'{spent:+.1f} of {ceiling:.1f} kcal/mol at {T:g} K, but it '
+                f'went through {peak:+.1f} to get here \u00b7 '
+                f'{_thermal_wait(peak, T)} \u00b7 {_thermal_wants(peak)} '
+                f'\u00b7 Set here measures from this structure instead')
 
     def _thermal_wait(kcal, temperature):
         """How long a barrier of that height takes at that temperature.
@@ -6409,22 +6534,27 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         quantity -- the sentence this was written to produce is "longer than
         the age of the earth", and past about ten billion years every number
         means the same thing.  Said in years up to there and in words past it.
+
+        A phrase and not a sentence.  Every caller puts it inside a line of
+        its own making, and "That is about 4 min." dropped into the middle of
+        one reads as the start of a paragraph -- which is what the row had
+        become.
         """
         T = max(1.0, float(temperature))
         rate = ((_BOLTZMANN_SI * T / _PLANCK_SI)
                 * math.exp(-max(0.0, float(kcal)) / (_GAS_CONSTANT * T)))
         if rate <= 0:
-            return 'It does not happen.'
+            return 'it does not happen'
         seconds = 1.0 / rate
         if seconds > _UNIVERSE_SECONDS:
-            return 'That is longer than the universe has existed.'
+            return 'longer than the universe has existed'
         for limit, unit, name in ((1e-9, 1e-12, 'ps'), (1e-6, 1e-9, 'ns'),
                                   (1e-3, 1e-6, 'us'), (1.0, 1e-3, 'ms'),
                                   (60, 1, 's'), (3600, 60, 'min'),
                                   (86400, 3600, 'h'), (3.15576e7, 86400, 'd'),
                                   (float('inf'), 3.15576e7, 'years')):
             if seconds < limit:
-                return f'That is about {seconds / unit:.3g} {name}.'
+                return f'~{seconds / unit:.3g} {name}'
         return ''
 
     def _thermal_wants(kcal):
@@ -6449,10 +6579,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         """
         needs = thermal_temperature(kcal, _THERMAL_SECONDS)
         if needs is None:
-            return (f'No temperature under 5000 K crosses that within '
-                    f'{_timescale_label()}.')
-        return (f'It wants about {needs:.0f} K ({needs - 273.15:+.0f} C) '
-                f'within {_timescale_label()}.')
+            return (f'no temperature under 5000 K crosses it within '
+                    f'{_timescale_label()}')
+        return (f'wants ~{needs:.0f} K ({needs - 273.15:+.0f} C) within '
+                f'{_timescale_label()}')
 
     def _pieces_in(xyz):
         """How many separate pieces that geometry is in.
@@ -6520,6 +6650,206 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if moved <= 1e-6 or 'spent' not in last:
             return
         state['thermal_slope'] = (float(spent) - float(last['spent'])) / moved
+
+    def _apart_in(kind, wanted, stands):
+        """How far two values of one coordinate are apart, the short way.
+
+        A torsion is periodic, so 350 degrees away is ten degrees away and
+        subtracting plainly would read a hand near the far side of a turn as
+        most of a circle out.  The same arithmetic :func:`gfn_optimize.
+        as_pushes` does on the same values, kept here because the budget has
+        to read the gap before the pushes are built.
+        """
+        gap = float(wanted) - float(stands)
+        if str(kind) == 'dihedral':
+            gap = (gap + 180.0) % 360.0 - 180.0
+        return gap
+
+    def _note_what_it_costs(spent, contacts):
+        """What one more unit of *asking* costs, from the last two answers.
+
+        Of asking, and not of travelling, and the difference between those two
+        is the whole of why this is not :func:`_thermal_slope`.  That one
+        measures a price per Angstrom the held atom moved, which is the number
+        to *read* -- it is the unit a chemist pictures.  It is the wrong number
+        to spend from, because a push is soft: the target runs a long way
+        ahead of the structure and what the atom does is a fraction of what
+        was asked for.  Measured live on an ethane C-C under GFN-FF at 88
+        kcal/mol/A, the hand asked for 0.24 A and the bond gave 0.038.
+
+        Spending from the price per Angstrom *travelled* is what that costs.
+        The stiffness came out at 82 kcal/mol per Angstrom of travel, which is
+        correct, and the budget then allowed 0.20 A -- of asking, because that
+        is where it was applied.  0.20 A of asking buys 0.02 A of bond and 1.6
+        kcal/mol, so the drag settled with 20 of its 22.3 kcal/mol unspent and
+        could not move again: the structure had stopped, so nothing measured a
+        new rate, so the allowance never changed.  A budget that refuses nine
+        tenths of what it granted is worse than no budget.
+
+        So what is measured is the price against the *target* the push was
+        actually given -- 13.3 kcal/mol per Angstrom asked on that same drag
+        -- and the clamp below then applies it to the same quantity it was
+        measured in.  The geometry is not needed at all: the target is a
+        number this editor chose and handed to xtb.
+
+        Smoothed, because it is a difference of two relaxations and both ends
+        carry the noise of a few cycles.  Half and half: enough that one
+        ragged answer cannot shut the hand down, little enough that a surface
+        turning steep is felt within two answers.
+
+        Kept signed.  Which way is uphill is the whole of what makes this
+        usable -- a hand that has run out of budget must still be free to come
+        back the way it came, and the sign is what tells the two apart.
+        """
+        driving = next((one for one in (contacts or ())
+                        if one.get('value') is not None), None)
+        if driving is None:
+            return
+        value = float(driving['value'])
+        kind = str(driving.get('kind') or 'distance')
+        last = state.get('thermal_cost_at')
+        state['thermal_cost_at'] = {'kind': kind,
+                                    'atoms': [int(i) for i in
+                                              (driving.get('atoms') or ())],
+                                    'value': float(value),
+                                    'spent': float(spent)}
+        # Only against a reading of the same coordinate.  The hand's
+        # coordinate is worked out afresh every answer and it does change --
+        # a contact that is a distance on one answer is a torsion on the next
+        # -- and a rate taken across that change is degrees divided by
+        # Angstrom, which is not a quantity.
+        if not last or last.get('kind') != kind or last.get('atoms') != \
+                state['thermal_cost_at']['atoms']:
+            state.pop('thermal_cost', None)
+            return
+        if last.get('stale'):
+            # The answer this would be measured from was taken back by the
+            # wall, so the pair does not describe one continuous drag.  The
+            # rate stands; the next answer measures from this reading.
+            return
+        moved = _apart_in(kind, value, last['value'])
+        if abs(moved) <= _COORDINATE_STIRRED.get(kind, 0.002):
+            return
+        rate = (float(spent) - float(last['spent'])) / moved
+        was = state.get('thermal_cost')
+        # Smoothed one way only.  A surface that is turning steep has to be
+        # felt at once, because what this number is for is not overspending;
+        # a surface that is flattening can be felt gradually, because being
+        # careful there costs an answer and nothing else.  Measured live on
+        # an ethane C-C under GFN-FF: 13, 18, 24, 32, 48 kcal/mol per
+        # Angstrom asked over five answers, and smoothed both ways the
+        # allowance was worked out at 32 where the truth was 54 -- so the
+        # answer landed at 22.6 against a 22.3 ceiling and the wall, which is
+        # meant to be the backstop, had to fire.
+        now = (rate if was is None or abs(rate) > abs(float(was))
+               else 0.5 * float(was) + 0.5 * rate)
+        # How fast the rate itself is rising, which is the curvature.
+        #
+        # A rate is a secant over the answer that has been, and the clamp
+        # spends it over the answer to come.  On a surface that is stiffening
+        # -- which is every approach to a wall -- the secant behind is smaller
+        # than the tangent ahead, so the allowance is a step too generous and
+        # the answer lands over the ceiling by exactly one step's worth of
+        # curvature.  Measured live on an ethane under GFN2: 35.4 measured,
+        # 47 realised, and the wall had to fire.
+        #
+        # So the growth is carried and the allowance is worked out from the
+        # rate the next answer is expected to have.  Bounded, because a growth
+        # factor read off two noisy secants can be anything; doubling is more
+        # than any real stiffening does in one answer of a drag.
+        grew = 1.0
+        if was and now and float(was) * now > 0:
+            grew = min(2.0, max(1.0, abs(now) / abs(float(was))))
+        state['thermal_cost_grew'] = grew
+        state['thermal_cost'] = now
+
+    def _within_the_budget(contacts):
+        """Ask only for the travel the budget can still pay for.
+
+        The wall behind this is a refusal after the fact, and it has to be:
+        nothing can price a geometry before xtb has relaxed it.  But a refusal
+        after the fact is a rollback, and a rollback while the cursor is still
+        held out at the forbidden place is a loop -- the hand asks, the
+        structure is put back, the hand asks again -- which on screen is a
+        molecule shaking once an answer.  It is the budget's shaking and
+        nobody else's: the same drag with the budget switched off is steady,
+        which is how the user put it, and the reason it is worth switching on
+        at all is that without it there is nothing stopping the drag going
+        straight past the temperature it was given.
+
+        So the ceiling is spent forwards.  What is left of it, divided by what
+        this coordinate is costing per unit right now, is how far the hand may
+        still ask; the wish is cut back to that.  The force follows, because a
+        push is a spring and :func:`gfn_optimize.as_pushes` sizes it by how
+        far the target has run ahead -- so a hand near the wall does not merely
+        stop travelling, it stops pulling, which is the difference between a
+        structure that rests against the ceiling and one that strains at it.
+
+        Three things this deliberately does not do.  It does not cap the
+        *force* by a temperature: that needs a length no temperature supplies,
+        and sized as a distance it leaves the hand too weak to turn a torsion
+        -- which is the one thing room temperature certainly allows.  See
+        :func:`_pull_most`.  It does not act until a rate has been measured,
+        so the first answers of a drag are the wall's as they always were.
+        And it never stands in the way of coming back: a wish going downhill,
+        or back the way the hand came, is passed through untouched, because a
+        budget that could be entered and not left would be a trap.
+        """
+        # The anchor is the whole gate.  Switching the budget off clears it
+        # -- see on_submit_thermal -- and this is only reached from inside the
+        # pull, which is the hand :func:`_thermal_live` is asking about.  So
+        # asking again would be asking the same question twice and getting a
+        # different answer whenever the two drifted.
+        if not contacts:
+            return contacts
+        anchor, ceiling = _thermal_budget()
+        rate = state.get('thermal_cost')
+        peak = state.get('thermal_peak')
+        if anchor is None or not rate or peak is None:
+            return contacts
+        # Against the highest price this drag has been at, not against where
+        # it is standing.  A ceiling is a barrier height, so a drag that
+        # crossed +32 and settled at 0 has still crossed +32 -- and the wall
+        # refuses on exactly that number.  Read off the price of the moment
+        # instead, the hand would be given back the whole ceiling to spend
+        # every time it came down the far side of something it could not
+        # afford in the first place.
+        left = max(0.0, float(ceiling) - float(peak))
+        left = (0.0 if left < _BUDGET_LEFT_WORTH_SPENDING
+                else left * _BUDGET_SPENDS_AT_MOST)
+        driving = state.get('thermal_cost_at') or {}
+        kind = str(driving.get('kind') or '')
+        if driving.get('value') is None:
+            return contacts
+        # From the target the last answer was given, not from where the
+        # structure stands.  The rate is a price per unit *asked for*, so the
+        # thing it bounds is the next amount asked for; measured from the
+        # atom instead, a soft push spends its whole allowance on the gap
+        # between the target and the structure and the drag stops with most
+        # of the ceiling unspent.
+        was = float(driving['value'])
+        out = []
+        for one in contacts:
+            if (str(one.get('kind') or '') != kind
+                    or [int(i) for i in (one.get('atoms') or ())]
+                    != driving.get('atoms')
+                    or one.get('value') is None):
+                out.append(one)
+                continue
+            gap = _apart_in(kind, one['value'], was)
+            if gap * float(rate) <= 0.0:
+                # Downhill, or back the way the hand came.  Nothing to spend
+                # and nothing to refuse.
+                out.append(one)
+                continue
+            allowed = left / (abs(float(rate))
+                              * float(state.get('thermal_cost_grew') or 1.0))
+            if abs(gap) <= allowed:
+                out.append(one)
+                continue
+            out.append(dict(one, value=was + math.copysign(allowed, gap)))
+            state['thermal_held_back'] = True
+        return out
 
     def _arm_thermal_leash():
         """Remember where the budget still agreed, so there is somewhere back to.
@@ -6654,6 +6984,25 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if peak <= ceiling and not refuse:
             state['thermal_good'] = xyz
             state['thermal_good_peak'] = peak
+            # And what this one cost, as against the worst of the way here,
+            # with the push that was holding it.  After a rollback the
+            # structure is put back here, and the next wish is measured from
+            # the target -- so it has to be *this* target and not this
+            # geometry.  Measured live: re-anchored on the bond length
+            # instead, the next wish asked for the length the bond already
+            # had, which is no force at all, and an ethane resting against
+            # its ceiling relaxed the whole way home.
+            state['thermal_good_spent'] = spent
+            # And what the hand was asking for when it was allowed.  After a
+            # rollback that is what it must go back to asking for: pinned at
+            # the wish that overshot instead, the structure is relaxed out to
+            # the refused place and pulled back once an answer for as long as
+            # the mouse is held.  Measured live on an ethane under GFN2, a
+            # flicker of 0.04 A once an answer -- small, and exactly the shape
+            # of the fault this is here to remove.
+            state['thermal_good_ask'] = (
+                (state.get('thermal_cost_at') or {}).get('value'))
+            state['thermal_rolled'] = False
             return None
         # Past it.  Hand back the last geometry that was not, if there is one;
         # a drag that was already over budget when it started has nowhere to
@@ -6668,6 +7017,47 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             state.pop('thermal_good', None)
             state.pop('thermal_good_peak', None)
             return None
+        # The rate stands -- the surface is as steep as it was, and that is
+        # what stops the next wish going back over the same place -- but the
+        # reading it would be measured from next is of a geometry that is
+        # about to be thrown away.  Moved onto the one that is being handed
+        # back instead, which is where the structure will actually be
+        # standing when the next answer measures from it.
+        #
+        # Moved and not dropped.  Dropped, there was nothing left to say
+        # which coordinate the rate was about, so the next wish went through
+        # unclamped -- and the answer after that was the whole cursor again,
+        # over the ceiling again, refused again.  Measured in the loop
+        # simulated in the tests: eleven answers walking up to the wall and
+        # resting on it, then one refusal, and from there 2.0 A out and back
+        # once an answer for as long as the mouse was held.
+        # The reading stands; what it may no longer be measured *from* is
+        # the next answer, because that one starts from the geometry being
+        # handed back rather than from the one this answer reached.
+        #
+        # Once only.  While the wall goes on refusing, every answer starts
+        # from the same geometry -- this one -- so the pairs are continuous
+        # again and a rate taken across them is exactly the price of asking
+        # for more from where the structure is standing.  Marked every time,
+        # the rate froze at whatever it had been when the first refusal
+        # landed and the hand was never held back again: measured live on an
+        # ethane, frozen at -1130 kcal/mol per Angstrom, which passes
+        # everything through because it reads as downhill.
+        driving = state.get('thermal_cost_at')
+        held = state.get('thermal_good_ask')
+        if driving and held is not None:
+            state['thermal_cost_at'] = dict(
+                driving, value=float(held),
+                # Once only.  While the wall goes on refusing, every answer
+                # starts from the same geometry -- this one -- so the pairs
+                # are continuous again and a rate taken across them is the
+                # price of asking for more from where the structure stands.
+                # Marked every time, the rate froze at whatever it had been
+                # when the first refusal landed and the hand was never held
+                # back again: measured live, frozen at -1130 kcal/mol per
+                # Angstrom, which passes everything through as downhill.
+                stale=(not state.get('thermal_rolled')) or driving.get('stale'))
+        state['thermal_rolled'] = True
         return good
 
     def _settle_price(outcome, constraints):
@@ -7339,12 +7729,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     state['gfn_settle_forced'] = False
                     state['gfn_settle_rounds'] = 0
                     _set_mol_status(
-                        f'{label} settled to a structure that costs '
-                        f'{over:+.1f} kcal/mol, past the {ceiling:.1f} this '
-                        f'one has at {float(submit_temperature.value):g} K, '
-                        'so it has been left as it was. '
+                        f'{label}: the settled structure costs {over:+.1f} '
+                        f'kcal/mol, past the {ceiling:.1f} at '
+                        f'{float(submit_temperature.value):g} K \u00b7 left '
+                        f'as it was \u00b7 '
                         f'{_thermal_wait(over, submit_temperature.value)} '
-                        f'{_thermal_wants(over)}')
+                        f'\u00b7 {_thermal_wants(over)}')
                     return
                 lines = [line for line in outcome['xyz'].splitlines()[2:]
                          if line.strip()]
@@ -14003,23 +14393,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             before = remembered.get(key)
             steady = (asked if before is None else
                       before + _hand_follows_now() * (asked - before))
-            # And a backstop that does not depend on keys at all.
-            #
-            # A pair really can be new -- a fragment walked past a molecule
-            # picks up a different contact -- and then starting at what is
-            # asked is right.  What is never right is a force several times
-            # the one that was applied a moment ago: that is a step larger
-            # than anything the structure could have earned in one answer, and
-            # it is what an overshoot is made of.
-            ceiling = state.get('gfn_hand_force_most')
-            if ceiling:
-                steady = min(steady, float(ceiling) * _HAND_JUMP_MOST)
             keeping[key] = steady
             out.append(dict(one, force=steady))
         state['gfn_hand_force'] = keeping
         state['gfn_hand_force_run'] = run
-        state['gfn_hand_force_most'] = max(
-            [abs(v) for v in keeping.values()] or [0.0]) or None
         return out
 
     def _stand_on(xyz, said, comment, what, gesture='walk-point'):
@@ -15324,14 +15701,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     near = found.get('rmsd')
                     lines.append(
                         f'{label} walked a path in '
-                        f'{found["path_seconds"]:.1f} s: '
+                        f'{found["path_seconds"]:.1f} s \u00b7 '
                         f'{found["barrier"]:.1f} kcal/mol forward'
                         + (f', {found["back"]:.1f} back'
                            if found.get('back') is not None else '')
-                        + '.'
                         + ('' if near is None else
-                           f' It came within {near:.2f} A RMSD of the '
-                           'structure it was aiming at.'))
+                           f' \u00b7 {near:.2f} A RMSD from what it aimed '
+                           f'at'))
                 # What is shown is what the climb reached, or -- if it never
                 # got that far -- the estimate the walk left, which is still
                 # an answer and is named as the one it is.
@@ -15601,25 +15977,24 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # is the one that was asked for.
                 near = found.get('rmsd')
                 aimed = ('' if near is None else
-                         f' It came within {near:.2f} A RMSD of the structure '
-                         f'it was aiming at.')
+                         f' \u00b7 {near:.2f} A RMSD from what it aimed at')
                 lines = [
                     f'{label} walked {found.get("points") or "a"} points in '
-                    f'{found["seconds"]:.1f} s: {found["barrier"]:.1f} '
-                    f'kcal/mol forward'
+                    f'{found["seconds"]:.1f} s \u00b7 '
+                    f'{found["barrier"]:.1f} kcal/mol forward'
                     + (f', {found["back"]:.1f} back' if found.get('back')
                        is not None else '')
                     + (f', {found["reaction"]:.1f} for the reaction'
                        if found.get('reaction') is not None else '')
-                    + f'.{aimed}',
+                    + aimed,
                 ]
                 lines.append(
-                    'No temperature under 5000 K crosses that within '
-                    f'{_timescale_label()}.' if needs is None else
-                    f'It wants about {needs:.0f} K '
-                    f'({needs - 273.15:+.0f} C) within {_timescale_label()}; '
-                    f'you have {thermal_ceiling(T, _THERMAL_SECONDS):.1f} '
-                    f'kcal/mol at {T:g} K.')
+                    'no temperature under 5000 K crosses it within '
+                    f'{_timescale_label()}' if needs is None else
+                    f'needs ~{needs:.0f} K ({needs - 273.15:+.0f} C) within '
+                    f'{_timescale_label()} \u00b7 you have '
+                    f'{thermal_ceiling(T, _THERMAL_SECONDS):.1f} kcal/mol at '
+                    f'{T:g} K')
                 # Whether it is one.
                 #
                 # A path finder returns an estimated transition state whatever
@@ -15730,12 +16105,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         many = int(shape.get('count') or 0)
         modes = [one for one in (shape.get('modes') or ()) if one < 0]
         worst = f' ({modes[0]:.0f} cm-1)' if modes else ''
-        return (f' One of those Hessians came back with '
+        return (f' A Hessian came back with '
                 f'{"a mode" if many == 1 else f"{many} modes"} going the '
-                f'wrong way{worst}, which is the surface saying that point is '
-                f'not a stationary point -- a barrier top is not one -- so '
-                f'the free energies are an estimate rather than the '
-                f'thermodynamics of two minima.')
+                f'wrong way{worst} -- not a stationary point, so the free '
+                f'energies are an estimate.')
 
     def _scan_can_be_quoted(kelvin):
         """Whether the walk's own barrier is a number to quote, and why not.
@@ -15762,44 +16135,37 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if gap is not None:
             if gap['gap'] <= apart:
                 said += (
-                    f' Walked back over the same {gap["points"]} points, the '
-                    f'two legs agree to {gap["gap"]:.2f} kcal/mol -- inside '
-                    f'the {apart:.2f} that a factor of ten in rate is worth '
-                    f'at {float(kelvin):g} K -- so this profile is the path '
-                    f'and not the direction it was walked.')
+                    f' Both legs agree to {gap["gap"]:.2f} kcal/mol over '
+                    f'{gap["points"]} points, inside the {apart:.2f} a factor '
+                    f'of ten in rate is worth at {float(kelvin):g} K -- the '
+                    f'profile is the path, not the direction it was walked.')
             else:
                 said += (
-                    f' Walked back over the same {gap["points"]} points, the '
-                    f'two legs disagree by {gap["gap"]:.1f} kcal/mol at '
-                    f'{gap["at"]:.3g}: {gap["there"]:+.1f} on the way out '
-                    f'against {gap["back"]:+.1f} on the way back. A driven '
-                    f'scan is a path only while the coordinates nobody is '
-                    f'driving follow it continuously; where one slips, each '
-                    f'direction misses the crossing on its own side, so the '
-                    f'height above is where this walk went and not the '
-                    f'barrier. Two ends and a saddle search will answer what '
-                    f'the walk cannot.')
+                    f' The legs disagree by {gap["gap"]:.1f} kcal/mol at '
+                    f'{gap["at"]:.3g}: {gap["there"]:+.1f} out against '
+                    f'{gap["back"]:+.1f} back -- a coordinate nobody is '
+                    f'driving slipped, so the height above is where this walk '
+                    f'went and not the barrier. Two ends and a saddle search '
+                    f'answer what the walk cannot.')
         elif state.get('scan_back_wanted') is False:
             # Only where the second leg could have run and was not asked for.
             # A push has no grid to retrace, and a walk that was stopped or
             # that collapsed has already been told why it ended -- offering it
             # a second leg there would be answering a question nobody is in a
             # position to ask.
-            said += (' Nothing walked it back, so whether this profile '
-                     'depends on the direction it was walked is not known. '
-                     '"Walk it back", behind the gear, answers that -- for '
-                     'another leg of the same walk.')
+            said += (' Nothing walked it back, so whether the profile '
+                     'depends on the direction is not known -- "Walk it '
+                     'back", behind the gear, answers that.')
         fell = state.get('scan_jumped')
         if fell is not None:
             said += (
-                f' It jumped between {fell["from"]:.3g} and {fell["at"]:.3g}: '
-                f'{fell["fell"]:+.1f} kcal/mol in one step, where the rest of '
+                f' It jumped {fell["fell"]:+.1f} kcal/mol in one step between '
+                f'{fell["from"]:.3g} and {fell["at"]:.3g}, where the rest of '
                 f'the path bends by {fell["scale"]:.2f}.')
             if fell.get('named'):
-                said += (f' What went with it was {fell["named"]}, '
-                         f'{fell["was"]:.2f} to {fell["now"]:.2f} '
-                         f'({fell["moved"]:.2f} A) -- arm that as well and '
-                         f'walk both together.')
+                said += (f' {fell["named"]} went with it, {fell["was"]:.2f} '
+                         f'to {fell["now"]:.2f} ({fell["moved"]:.2f} A) -- '
+                         f'arm that as well and walk both together.')
         return said
 
     def _scan_collapsed(tightest):
@@ -15814,6 +16180,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         return ('The scan walked nothing: on the first point two atoms came '
                 f'inside {tightest:.2f} of a bond length, which is no path at '
                 'any temperature. The target is past the far side of a bond.')
+
+    def _phrases(said):
+        """A blob of sentences, as the clauses the verdict is built from.
+
+        Several things the verdict quotes were written as prose because that
+        is what the row used to be -- what the method has to say about its own
+        depth, whether the two legs agree, whether a Hessian at the top came
+        back with a mode going the wrong way.  Each is worth keeping and none
+        is worth a paragraph, so they are cut at the full stops and joined
+        back in with everything else.  Cut here rather than rewritten at every
+        source: they are said in other places too, and one of them is a bug
+        report, where a sentence is what is wanted.
+        """
+        return [one.strip() for one in str(said or '').split('. ')
+                if one.strip()]
 
     def _scan_verdict(path, steps):
         """What the walk found, and the temperature it would take.
@@ -15849,173 +16230,138 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             rise = free[0]
         ceiling = thermal_ceiling(T, _THERMAL_SECONDS)
         needs = thermal_temperature(rise, _THERMAL_SECONDS)
-        arrived = (f' It came back to the minimum it walked through, at '
-                   f'{came[0]:.3g}.'
-                   if state.get('scan_arrived') and came else '')
+        # Said in clauses, not in sentences.
+        #
+        # This grew into three or four paragraphs above the viewer, each
+        # clause an explanation of the one before it, and the user's word for
+        # reading it was that it "erschlaegt den user mit text" -- it beats
+        # him over the head.  A verdict nobody finishes is a verdict nobody
+        # has.  So what is on screen is the findings, in the order a chemist
+        # reads them, separated rather than joined up; the reasoning behind
+        # each one is in this file, where it belongs and where it costs the
+        # reader nothing.
+        marks = []
+        if state.get('scan_arrived') and came:
+            marks.append(f'back to the minimum at {came[0]:.3g}')
         if state.get('scan_stopped_out') and not state.get('scan_arrived'):
-            arrived = (' You stopped it there, so the highest point is where '
-                       'the walk was interrupted rather than a barrier.')
-        # And the walk that ended because it could not carry on, which reads
-        # from outside exactly like one that was asked for fewer steps.  The
-        # sentence saying so was written and then replaced by this verdict --
-        # so it is said here, where the verdict is, and the number of points
-        # above stops being the only hint that anything went wrong.
+            marks = ['you stopped it -- the top is where it was interrupted']
         if state.get('scan_gave_up'):
-            arrived = f' {state["scan_gave_up"]}'
+            marks = [str(state['scan_gave_up']).rstrip('.')]
         crowded = state.get('scan_crowded')
         if crowded:
-            arrived = (f' It stopped: two atoms came inside {crowded:.2f} of a '
-                       f'bond length, which is no path at any temperature. The '
-                       f'target is past the far side of a bond.')
-        # A push prices its crossing with points of its own, so the count
-        # can pass the number of steps that were asked for -- said as it is
+            marks = [f'stopped: two atoms inside {crowded:.2f} of a bond '
+                     f'length -- the target is past the far side of one']
+        # A push prices its crossing with points of its own, so the count can
+        # pass the number of steps that were asked for -- said as it is
         # rather than as "27 of 20".
         narrowed = int(state.get('scan_narrowed') or 0)
         driven = len(path) - narrowed
         many = (f'{driven} points' if driven > steps
                 else f'{driven} of {steps} points')
         if narrowed:
-            many += (f', and {narrowed} more to find the top')
+            many += f' +{narrowed} at the top'
         # Said as one quantity or as two, never as two wearing one name: a
         # highest point in E beside a rise in G reads as a contradiction, and
         # a reader has no way to tell which is which.
-        # "at most", because that is what it is.
         #
-        # A relaxed scan drives a coordinate somebody chose, and its highest
-        # point is the top of the *best path that keeps to that coordinate*.
-        # The saddle is the lowest such top over every path there is, so it
-        # lies at or below this number and generally off the coordinate
-        # entirely -- measured in :func:`_gfn.paths_disagree` on the
-        # Diels-Alder, 1.2 A off it, in a bond nobody was driving.
-        #
-        # Written as a plain number it reads as a measurement, and a barrier
-        # quoted from a scan is then quoted as if a saddle search would agree
-        # with it.  It will not; it will be lower.  Saying which way the error
-        # points costs three words and turns the pair -- this and OptTS -- into
-        # a bracket instead of two numbers that disagree.
-        at_most = 'at most ' if rise > 0 else ''
+        # "at most", written as the sign it is.  A relaxed scan drives a
+        # coordinate somebody chose, and its highest point is the top of the
+        # best path that keeps to that coordinate.  The saddle is the lowest
+        # such top over every path there is, so it lies at or below this
+        # number and generally off the coordinate entirely -- measured in
+        # :func:`_gfn.paths_disagree` on the Diels-Alder, 1.2 A off it, in a
+        # bond nobody was driving.  Written as a plain number it reads as a
+        # measurement, and the pair of it and OptTS reads as two numbers that
+        # disagree instead of as a bracket.
+        at_most = '\u2264' if rise > 0 else ''
         if free is None:
-            first = (f'The scan walked {many}. Highest '
-                     f'{top[1]:+.1f} kcal/mol at {top[0]:.3g}, a rise of '
-                     f'{at_most}{rise:.1f} out of the minimum before it, '
-                     f'ending {ends:+.1f}.{arrived}')
+            bits = [many,
+                    f'top {top[1]:+.1f} at {top[0]:.3g}',
+                    f'rise {at_most}{rise:.1f} kcal/mol',
+                    f'end {ends:+.1f}']
         else:
-            first = (f'The scan walked {many}. Highest at {top[0]:.3g}: '
-                     f'{at_most}{free[0]:+.1f} kcal/mol as a free energy at '
-                     f'{T:g} K ({top[1]:+.1f} electronic), ending '
-                     f'{free[1]:+.1f} ({ends:+.1f}).{arrived}'
-                     f'{_scan_free_is_an_estimate()}')
+            bits = [many,
+                    f'top at {top[0]:.3g}: {at_most}{free[0]:+.1f} G, '
+                    f'{top[1]:+.1f} E kcal/mol at {T:g} K',
+                    f'end {free[1]:+.1f} G, {ends:+.1f} E']
+            bits += _phrases(_scan_free_is_an_estimate())
+        bits += marks
         # Where it reacted, and whether that is where the top is.
         #
-        # One clause, and only when there is something to say: a deformation
-        # that never changed a bond has nothing, and neither has a walk whose
-        # summit sits on the change -- that is the ordinary case and does not
-        # need announcing.  What needs announcing is the other one, because a
-        # top a long way from the bonding change is a top the saddle search
-        # will not confirm.
+        # Only when there is something to say: a deformation that never
+        # changed a bond has nothing, and neither has a walk whose summit sits
+        # on the change -- that is the ordinary case.  What needs saying is
+        # the other one, because a top a long way from the bonding change is a
+        # top the saddle search will not confirm.
         became = state.get('scan_became')
         if became is not None:
             near = min(abs(top[0] - became['at']), abs(top[0] - became['from']))
             spacing = abs(became['at'] - became['from']) or 1e-9
-            said_it = f' {became["said"]} between {became["from"]:.3g} and ' \
-                      f'{became["at"]:.3g}'
-            if near <= 1.5 * spacing:
-                said_it += ', which is where the top is.'
-            else:
-                said_it += (f', a long way from the top at {top[0]:.3g} -- so '
-                            f'the height above is a deformation and not this '
-                            f'reaction. Two ends and a saddle search will say '
-                            f'what it costs.')
-            first += said_it
-        # What was asked for, and whether it happened.  Said before the
-        # temperature, because it is the question: a walk given a verb was not
-        # asked how high the path was, it was asked to make a bond.
-        #
-        # And when it did not happen, said as a statement about the chemistry
-        # rather than as a failure.  The ramp ends at
-        # :data:`gfn_optimize.PUSH_FORCE_TO`, which is more than twice
-        # :data:`gfn_optimize.A_BOND_HOLDS` -- the force a bond holds against
-        # -- so a bond that has not formed under it is one this method will
-        # not form from here, and that is an answer.
+            where = (f'{became["said"]} {became["from"]:.3g}'
+                     f'\u2192{became["at"]:.3g}')
+            bits.append(f'{where}, at the top' if near <= 1.5 * spacing else
+                        f'{where}, far from the top at {top[0]:.3g} -- the '
+                        f'height above is a deformation, not this reaction')
+        # What was asked for, and whether it happened.  A walk given a verb
+        # was not asked how high the path was, it was asked to make a bond.
+        # When it did not happen that is a statement about the chemistry and
+        # not a failure: the ramp ends at :data:`gfn_optimize.PUSH_FORCE_TO`,
+        # more than twice the force a bond holds against, so a bond that has
+        # not formed under it is one this method will not form from here.
         instructed = list(state.get('scan_instructed') or ())
         done = state.get('scan_carried_out')
         if instructed and done:
             step, force, said = done[0], done[1], (done[2] if len(done) > 2
                                                    else '')
-            first += (f' The instruction was carried out at step {step}, '
-                      f'under {force:.0f} kcal/mol/A'
-                      + (f': it {said}.' if said else '.'))
+            bits.append(f'instruction done at step {step}, {force:.0f} '
+                        f'kcal/mol/A' + (f': it {said}' if said else ''))
         elif instructed:
-            first += (f' The instruction was not carried out: '
-                      f'{", ".join(instructed)} still {"do" if len(instructed) > 1 else "does"} '
-                      f'not hold at {_gfn.PUSH_FORCE_TO:.0f} kcal/mol/A, '
-                      'which is twice what a bond holds against. From this '
-                      'structure and on this method, that is the answer '
-                      'rather than a setting to raise.')
-        if state.get('scan_depth'):
-            first += ' ' + state['scan_depth']
-        # And whether this profile is one path or two joined at a fall.  Said
-        # here, beside the barrier it is about, rather than on a line of its
-        # own after the temperature: a caveat that arrives after the number
-        # has been read is a caveat nobody applied.
-        first += _scan_can_be_quoted(T)
+            bits.append(f'instruction not carried out: '
+                        f'{", ".join(instructed)} at '
+                        f'{_gfn.PUSH_FORCE_TO:.0f} kcal/mol/A, twice what a '
+                        f'bond holds -- on this method, that is the answer')
+        bits += _phrases(state.get('scan_depth'))
+        bits += _phrases(_scan_can_be_quoted(T))
         if free is None and str(submit_scan_energy.value) == 'G':
-            first += (' The free energies could not be taken, so these are '
-                      'electronic.')
+            bits.append('G could not be taken -- these are electronic')
         # The temperature is said either way.  Said only when the path was
         # closed, the number a chemist came for was missing exactly when the
-        # answer was good news -- and "it needs 150 K and you have 298" is
-        # what makes an open path mean something.
+        # answer was good news -- and "needs 150 K and you have 298" is what
+        # makes an open path mean something.
+        stands = 'open' if rise <= ceiling else 'closed'
+        after = [f'{ceiling:.1f} kcal/mol at {T:g} K \u2192 {stands}']
         if needs is None:
-            wants = ('No temperature under 5000 K crosses that within '
-                     f'{_timescale_label()}, which is another way of saying '
-                     'it does not happen.')
+            after.append(f'no temperature under 5000 K crosses it within '
+                         f'{_timescale_label()}')
         else:
-            wants = (f'It wants about {needs:.0f} K ({needs - 273.15:+.0f} C) '
-                     f'to be crossed within {_timescale_label()}.')
+            after.append(f'needs ~{needs:.0f} K ({needs - 273.15:+.0f} C) '
+                         f'within {_timescale_label()}')
+        after.append(f'at {T:g} K: {_thermal_wait(rise, T)}')
         # What was handed back, when it is not where the walk ended.  The walk
         # is reported whole either way -- that is what a scan is for -- but a
         # structure the temperature cannot reach is not one to carry on from,
         # so the box has the last point it could and this says so.
         walled = state.get('scan_walled')
-        held_back = ('' if walled is None else
-                     f' Where it ended costs {walled:+.1f} kcal/mol against '
-                     f'this structure, which is past the {ceiling:.1f} '
-                     f'available at {T:g} K, so the box has the last point '
-                     f'that was inside it.')
-        # Which for an instruction is the whole of it: the box now holds a
-        # structure where the bonds were not made, and the line has to say so
-        # or it is a claim about a geometry nobody has.
-        if walled is not None and done and not state.get(
-                'scan_carried_out_kept'):
-            held_back += (' The box is from before the bonds changed -- '
-                          'the budget priced the change and this temperature '
-                          'cannot pay for it. Raise it, or switch the budget '
-                          'off.')
-        # And what the walk has made possible, said where the walk is being
-        # reported.  The two ends are an entry in a box rather than the two
-        # buttons that used to appear, and a box that has gained an entry is
-        # quiet -- so the sentence says what the toolbar has just done, and
-        # :func:`_scan_left_two_ends` is what makes the sentence true rather
-        # than a description of something the user would have to find.
-        #
-        # And said the other way round when there are none, because the
-        # toolbar cannot say it: what is on screen is the whole account of
-        # what can be done, and a walk that left nothing to walk between shows
-        # exactly what a walk that left something shows before anyone looks --
-        # nothing.  Silence there is the editor claiming there was never
-        # anything to offer, which is what the user was left reading.
-        left = (' It left two ends: the saddle press now starts from them.'
-                if state.get('scan_ends') else
-                ' It left no two ends: run a scan that gets further, or '
-                'mark two structures by hand.')
-        # One clause for the ceiling rather than two: the number and what
-        # the number means were being said one after the other, and "open" or
-        # "closed" is the whole of what the second one added.
-        stands = ('open' if rise <= ceiling else 'closed')
-        return (first,
-                f'{wants} {ceiling:.1f} kcal/mol at {T:g} K, so the path is '
-                f'{stands}. {_thermal_wait(rise, T)}' + held_back + left)
+        if walled is not None:
+            after.append(f'the end costs {walled:+.1f}, past the '
+                         f'{ceiling:.1f} available -- the box has the last '
+                         f'point inside it')
+            # Which for an instruction is the whole of it: the box now holds a
+            # structure where the bonds were not made, and the line has to say
+            # so or it is a claim about a geometry nobody has.
+            if done and not state.get('scan_carried_out_kept'):
+                after.append('the box is from before the bonds changed -- '
+                             'raise the temperature, or switch the budget off')
+        # And what the walk has made possible.  The two ends are an entry in a
+        # box rather than the two buttons that used to appear, and a box that
+        # has gained an entry is quiet.  Said the other way round when there
+        # are none, because the toolbar cannot say it: a walk that left
+        # nothing to walk between looks exactly like one that left something,
+        # which is the editor claiming there was never anything to offer.
+        after.append('two ends left: the saddle press starts from them'
+                     if state.get('scan_ends') else
+                     'no two ends -- scan further, or mark two by hand')
+        return ' \u00b7 '.join(bits), ' \u00b7 '.join(after)
 
     def _scan_plot_drop():
         """Take the profile off the page.

@@ -523,7 +523,7 @@ def test_a_real_scan_leaves_its_profile_on_the_page():
     time.sleep(0.3)
 
     said = ' '.join(state.get('mol_status_lines') or ())
-    assert 'The scan walked' in said, said
+    assert 'points' in said, said
     assert _shown(part.submit_scan_plot_btn), said
     # The walk ends with the structure it reached on screen, which is what
     # the user goes on working with. The profile is there for the asking.

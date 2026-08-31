@@ -242,7 +242,7 @@ def test_every_shape_of_scan_leaves_the_path_work_on_screen(tab, shape, how):
     assert _the_path_work_is_on_screen(refs), (
         shape, _values(refs['submit_saddle_from']),
         _values(refs['submit_saddle_how']))
-    assert 'It left two ends' in _said(refs), shape
+    assert 'two ends left' in _said(refs), shape
 
 
 @_needs_xtb
@@ -325,7 +325,7 @@ def test_a_walk_whose_xtb_stops_answering_still_leaves_its_two_ends(
 
     assert refs['editor_state'].get('scan_ends'), 'the walk lost its two ends'
     assert _the_path_work_is_on_screen(refs)
-    assert 'It left two ends' in _said(refs)
+    assert 'two ends left' in _said(refs)
 
 
 @_needs_xtb
@@ -344,7 +344,7 @@ def test_a_walk_that_gave_up_says_so_where_the_walk_is_reported(tab,
     _run_a_scan(refs, method='gfn2', steps=8)
 
     said = _said(refs)
-    assert 'The scan walked 2 of 8 points' in said, said
+    assert '2 of 8 points' in said, said
     assert 'It stopped at step 3 of 8' in said, said
     assert 'SCF not converged' in said, said
 
@@ -367,10 +367,10 @@ def test_a_scan_that_left_nothing_to_walk_between_says_that_instead(
     assert not refs['editor_state'].get('scan_ends')
     assert not _shown(refs['submit_saddle_btn'])
     said = _said(refs)
-    assert 'It left no two ends' in said, said
+    assert 'no two ends' in said, said
     # And what to do about it, in the same clause rather than in a
     # paragraph of its own: the user is reading this after every scan.
-    assert 'mark two structures by hand' in said, said
+    assert 'mark two by hand' in said, said
 
 
 @_needs_xtb
@@ -589,3 +589,80 @@ def test_the_settings_slide_out_beside_the_gear_not_under_the_row():
     assert not hasattr(part, 'submit_scan_break')
     assert part.submit_scan_gear in part.submit_internal_group.children
     assert part.submit_scan_how in part.submit_internal_group.children
+
+
+@_needs_xtb
+def test_one_scan_after_another_on_a_different_coordinate(tab):
+    """The editor is worked in a sequence, not in one press.
+
+    The user's own account of what the toolbar is for: "die bedienung muss so
+    sein, das man interaktiv weiter machen kann also mehrere scans
+    hintereinander, unterschiedliche scans hintereinander, mehrere To the
+    saddle usw".  So the second walk is driven here on top of the first, on a
+    different coordinate, and everything the first left behind has to be
+    either replaced or gone -- a verdict, a profile, a pair of ends and a
+    slider full of points all outlive their walk by default, and each of them
+    is a claim about a structure the second walk has since walked over.
+    """
+    refs = tab
+    state = refs['editor_state']
+
+    _run_a_scan(refs, legs=(('1,2', 1.53),), to=2.00, steps=5)
+    first = dict(walk=state.get('scan_walk'), ends=state.get('scan_ends'),
+                 said=_said(refs))
+    assert first['walk'] and first['ends']
+    assert '1' in str(first['walk'].get('label') or first['walk'])
+
+    # The first leg is dropped and a different pair armed -- which is the
+    # gesture, and it must not leave the first one running as well.
+    refs['submit_scan_dd'].value = '0'
+    refs['submit_scan_del'].click()
+    assert state.get('scan_legs') == []
+    _arm(refs, '2,3', 1.53, to=2.00, steps=5)
+    assert len(state.get('scan_legs') or []) == 1
+
+    refs['submit_scan_run_btn'].click()
+    _wait(refs)
+
+    # A second walk, and everything on screen is about it.
+    assert state.get('scan_run') is False
+    assert state.get('scan_walk') and state['scan_walk'] is not first['walk']
+    assert state.get('scan_ends') and state['scan_ends'] is not first['ends']
+    assert _said(refs) != first['said']
+    assert _the_path_work_is_on_screen(refs)
+    # And the press has its own name back, so a third one can be started.
+    assert refs['submit_scan_run_btn'].description == 'Scan'
+    assert not state.get('scan_stop')
+
+
+@_needs_xtb
+def test_the_saddle_press_runs_again_on_what_the_last_one_left(tab):
+    """Twice in a row, which is how it is actually used.
+
+    A search is not the end of the session: it lands on a structure, and the
+    next thing the user does is look at that structure and search again -- a
+    different way, or from the pair the first one refined.  What must not
+    happen is the press going quiet, or the second run starting from the ends
+    of a walk that has since been walked over.
+    """
+    refs = tab
+    state = refs['editor_state']
+    _run_a_scan(refs, legs=(('1,2', 1.53),), to=2.00, steps=5)
+    assert _shown(refs['submit_saddle_btn'])
+
+    # Walking the path the scan left, which is the one way that runs from
+    # two ends without ORCA.
+    refs['submit_saddle_how'].value = 'walk'
+    for round_number in (1, 2):
+        state['mol_status_lines'] = ()
+        refs['submit_saddle_btn'].click()
+        began = time.time()
+        while (state.get('saddle_run') and time.time() - began < 300):
+            time.sleep(0.02)
+        time.sleep(0.3)
+        # It really ran, and the press came back: a press that stays down
+        # after a run is a session that has ended.
+        assert 'walked' in _said(refs), (round_number, _said(refs))
+        assert _shown(refs['submit_saddle_btn']), round_number
+        assert not state.get('saddle_run'), round_number
+        assert refs['coords_widget'].value.strip(), round_number

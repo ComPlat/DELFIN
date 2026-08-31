@@ -259,9 +259,9 @@ def test_the_verdict_says_what_the_toolbar_has_just_done(tab):
     refs = tab
     _run_the_scan(refs)
     said = ' '.join(refs['editor_state'].get('mol_status_lines') or ())
-    assert 'The scan walked' in said, said
-    assert 'It left two ends' in said, said
-    assert 'saddle press now starts from them' in said, said
+    assert 'points' in said, said
+    assert 'two ends left' in said, said
+    assert 'saddle press starts from them' in said, said
     assert refs['submit_saddle_from'].value == 'scan'
 
 
@@ -281,7 +281,7 @@ def test_a_real_scans_verdict_is_still_there_after_the_page_reports(tab):
         'In benzene (ALPB). charge 0, multiplicity 1.')
     _run_the_scan(refs)
     verdict = tuple(refs['editor_state'].get('mol_status_lines') or ())
-    assert verdict and verdict[0].startswith('The scan walked'), verdict
+    assert verdict and 'points' in verdict[0], verdict
 
     refs['submit_cmd_sync'].value = 'gfnplay:9:received 8 frames'
     assert tuple(refs['editor_state'].get('mol_status_lines') or ()) == verdict

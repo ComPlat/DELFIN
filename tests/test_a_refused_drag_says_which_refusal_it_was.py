@@ -88,11 +88,11 @@ def test_a_step_is_not_a_slope_and_is_not_reported_as_one():
     know that goes on pulling.  Judged against the ceiling rather than against
     a number of kcal/mol, so it means the same at 100 K and at 1500 K.
     """
-    assert "That was a step and not a slope" in EDITOR_SOURCE
+    assert "a step, not a slope: one " in EDITOR_SOURCE
     assert "jump > max(1.0, ceiling)" in EDITOR_SOURCE
     # And what changed, named, because the bonding on the far side is the fact
     # that makes the number make sense.
-    assert "On the far side the bonding" in EDITOR_SOURCE
+    assert "on the far side the bonding" in EDITOR_SOURCE
 
 
 def test_the_budget_says_where_it_counts_from():
@@ -106,7 +106,7 @@ def test_the_budget_says_where_it_counts_from():
     makes the drag work again, which is the same thing happening by accident.
     """
     note = _between(EDITOR_SOURCE, "def _thermal_note", "def _thermal_wait")
-    assert "The budget is counted from where " in note
+    assert "Set here measures from this structure instead" in note
     assert "Set here" in note
     # And nothing anywhere offers a button by a name the toolbar does not have.
     assert "Press Measure from here" not in EDITOR_SOURCE
