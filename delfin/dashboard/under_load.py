@@ -346,7 +346,22 @@ def walk_under_load(xyz_text: str, loads: Sequence[Dict[str, Any]],
     settled: Optional[Dict[str, Any]] = None
     try:
         here = loaded.bohr.copy()
-        first = None
+        # The zero is the structure as it was handed over, unloaded.
+        #
+        # It used to be the first *level* -- already under the gentlest load --
+        # so every energy in the walk was quoted against a structure that was
+        # itself slightly bent, and the whole ramp was measured from somewhere
+        # nobody had been.  Measured: an ethane pulled and released came back
+        # at -0.05 kcal/mol against its own starting point, and the twentieth
+        # was the reference relaxing, not the molecule.
+        #
+        # A single point and no relaxation: the structure the user handed over
+        # is the structure they meant, and moving it to make a nicer zero is
+        # answering about a molecule they did not ask about.
+        try:
+            first = float(loaded.engine(here)[0])
+        except Exception:
+            first = None
         for level in range(many):
             if should_stop is not None and should_stop():
                 break
@@ -364,11 +379,10 @@ def walk_under_load(xyz_text: str, loads: Sequence[Dict[str, Any]],
             # Back where it started, so a walk of these frames sits still on
             # screen rather than swimming: see :func:`_turned_onto`.
             here = _turned_onto(got['bohr'], loaded.bohr)
-            if first is None:
-                first = float(got['energy'])
             point = {
                 'force': strength,
-                'energy': (float(got['energy']) - first) * _climb.HARTREE_IN_KCAL,
+                'energy': ((float(got['energy']) - first)
+                           * _climb.HARTREE_IN_KCAL) if first is not None else 0.0,
                 'xyz': _climb.xyz_document(
                     symbols, here * _climb.BOHR,
                     f'pulled at {strength:.0f} kcal/mol/A'),

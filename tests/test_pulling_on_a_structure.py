@@ -591,3 +591,59 @@ def test_what_is_kept_and_what_the_slider_can_reach():
     # a reaction, and the number that goes with it is strain.
     assert 'came back together when the load came off' in pull
     assert 'was the strain of' in pull
+
+
+def test_the_zero_is_the_structure_as_it_was_handed_over():
+    """It used to be the first *level* -- already under the gentlest load.
+
+    So every energy in the walk was quoted against a structure that was itself
+    slightly bent, and the whole ramp was measured from somewhere nobody had
+    been.  Measured: an ethane pulled and released came back at -0.05 kcal/mol
+    against its own starting point, and the twentieth was the reference
+    relaxing rather than the molecule doing anything.
+
+    A single point and no relaxation, because the structure the user handed
+    over is the structure they meant: moving it to make a nicer zero is
+    answering about a molecule they did not ask about.  If it was not at a
+    minimum the numbers say so, which is the honest way round.
+    """
+    import inspect
+
+    from delfin.dashboard import under_load as ramp
+
+    walk = inspect.getsource(ramp.walk_under_load)
+    assert 'first = float(loaded.engine(here)[0])' in walk
+    assert 'if first is None:\n                first = float' not in walk
+
+
+def test_a_second_press_extends_the_walk_rather_than_starting_one():
+    """The ramp carries on from the load it stopped at, so the walk carries on
+    too: one profile from the gentlest load to wherever it got, rather than
+    two that each start again at zero.
+
+    The new half is measured from its own starting structure -- which is where
+    the old half ended -- so it is lifted by that much before the two are laid
+    end to end, or the profile steps back down to zero in the middle.
+    """
+    from editor_source import EDITOR_SOURCE as source
+
+    pull = source.split('def _pull_along_the_arrows')[1].split('\n    def ')[0]
+    assert 'if carried is not None:' in pull
+    assert "(state.get('scan_walk') or {}).get('points')" in pull
+    assert 'lift = float(before[-1][1])' in pull
+    assert 'one[1] + lift' in pull
+
+
+def test_the_arrow_is_not_a_path_and_the_button_says_so():
+    """The one thing about this that can be misread.
+
+    The atom does not travel along the arrow: under the load the structure
+    relaxes to where its own gradient carries the pull, which is the way of
+    least resistance and not the way the arrow points.
+    """
+    from editor_source import EDITOR_SOURCE as source
+
+    said = source.split('submit_load_btn = widgets.ToggleButton(')[1][:1400]
+    assert 'not a path' in said
+    assert 'does not travel along it' in said
+    assert 'least resistance' in said
