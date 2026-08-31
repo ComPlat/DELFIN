@@ -183,3 +183,89 @@ def test_a_write_outside_every_root_is_still_refused(scene):
     assert "error" in _run(
         "write_file", {"path": "/etc/delfin-should-never-exist",
                        "content": "x"}, perms)
+
+
+# ---------------------------------------------------------------------------
+# One posture, not one per tool
+# ---------------------------------------------------------------------------
+#
+# Found by the live probes, not by reading: under Bypass the agent read a
+# real file outside every granted root with no prompt — through an MCP
+# shell, whose arguments belong to the server so no path check runs on
+# them. `read_file` on the very same path DID ask. Which of the two the
+# model happened to reach for decided whether the user saw a dialog.
+#
+# Resolved toward what a permission mode means everywhere else in this
+# stack and in the reference harness: bypass skips every QUESTION and no
+# RULE. The measurement that made the line safe to draw is in
+# test_no_rule_became_a_question_when_the_question_went below — reading
+# outside was the only act on that gate that had ever been a question.
+
+def test_bypass_does_not_ask_before_reading_outside(scene):
+    build, _ws, _arc = scene
+    perms, broker = build("all_free")
+    outside = Path(tempfile.mkdtemp(prefix="chip-far-")) / "note.txt"
+    outside.write_text("CONTENT-OUTSIDE-EVERY-ROOT\n")
+    # read_file answers with the file, not with JSON.
+    out = _doc_executor.execute("read_file", {"path": str(outside)}, perms)
+    assert broker.asked == [], "Bypass asked before an outside read"
+    assert "CONTENT-OUTSIDE-EVERY-ROOT" in out
+
+
+def test_the_other_rungs_still_ask_before_reading_outside(scene):
+    """Only the rung that opted out is exempt."""
+    build, _ws, _arc = scene
+    outside = Path(tempfile.mkdtemp(prefix="chip-far2-")) / "note.txt"
+    outside.write_text("CONTENT-OUTSIDE-EVERY-ROOT\n")
+    for profile in ("ask_all", "repo_free"):
+        perms, broker = build(profile)
+        _doc_executor.execute("read_file", {"path": str(outside)}, perms)
+        assert broker.asked, f"{profile} stopped asking before an outside read"
+
+
+def test_with_nobody_to_ask_bypass_grants_nothing(scene):
+    """Bypass says "do not ask ME". It is not inherited by a run with no
+    one in it.
+
+    A headless run — cmd_run, the scheduler, the benchmark — carries no
+    confirm callback, and its mode may come from a settings file rather
+    than from anyone present. Reaching outside there has to be configured,
+    not merely flagged. Pinned because my first version of the exemption
+    sat ABOVE this check and quietly turned every unattended bypass run
+    into a filesystem-wide reader; the suite caught it.
+    """
+    _build, ws, _arc = scene
+    outside = Path(tempfile.mkdtemp(prefix="chip-far4-")) / "note.txt"
+    outside.write_text("CONTENT-OUTSIDE-EVERY-ROOT\n")
+    headless = KitToolPermissions(
+        mode="bypassPermissions", workspace=str(ws))   # no confirm_callback
+    out = _doc_executor.execute("read_file", {"path": str(outside)}, headless)
+    assert "CONTENT-OUTSIDE-EVERY-ROOT" not in out
+    assert "outside the allowed" in out
+
+
+def test_no_rule_became_a_question_when_the_question_went(scene):
+    """The reason lifting the read question is safe, kept measurable.
+
+    Every write boundary is a refusal in every mode — nobody is asked and
+    nothing is offered — so an exemption on the ASK path cannot reach
+    them. If a later change turns one of these into a prompt, this test
+    fails before the exemption silently starts covering it.
+    """
+    build, _ws, arc = scene
+    outside = Path(tempfile.mkdtemp(prefix="chip-far3-"))
+    for profile in ("ask_all", "repo_free", "all_free"):
+        perms, broker = build(profile)
+        broker.asked.clear()
+        for tool, args in (
+            ("write_file", {"path": str(outside / "n.txt"), "content": "x"}),
+            ("write_file", {"path": str(arc / "n.txt"), "content": "x"}),
+            ("write_file", {"path": "/etc/delfin-nope", "content": "x"}),
+            ("bash", {"command": f"echo x > {arc}/via_shell.txt"}),
+        ):
+            assert "error" in json.dumps(_run(tool, args, perms)), (
+                f"{profile}: {tool} {args} was not refused")
+        assert broker.asked == [], (
+            f"{profile}: a write boundary was offered as a question")
+    assert list(outside.iterdir()) == []
+    assert sorted(p.name for p in arc.iterdir()) == ["kept.txt"]
