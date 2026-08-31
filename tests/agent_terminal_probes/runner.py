@@ -29,6 +29,16 @@ class Probe:
     mode: str = "default"            # --permission-mode
     agent_mode: str = ""             # --mode: solo / dashboard / office …
     expect_no_prompt: bool = False   # a prompt here would itself be the bug
+    # --unattended. The launch guard REFUSES --permission-mode
+    # bypassPermissions without it and starts in plan instead, which a
+    # probe cannot see from the outside: it just watches a read-only
+    # session decline everything and reads that as the mechanism failing.
+    # Cost me one live run.
+    unattended: bool = False
+    # --read-dir. Data the session may read but not write. Without it a
+    # probe that plants its evidence outside the workspace is asking the
+    # agent to do something it is correctly not allowed to do.
+    read_dirs: tuple[Path, ...] = ()
 
 
 @dataclass
@@ -52,6 +62,8 @@ def run_probe(probe: Probe, box: sb.Sandbox, *, api_key: str,
         sb.python(),
         [str(box.shim), "--provider", "kit", "--model", model, "--new",
          "--permission-mode", probe.mode]
+        + (["--unattended"] if probe.unattended else [])
+        + [a for d in probe.read_dirs for a in ("--read-dir", str(d))]
         + (["--mode", probe.agent_mode] if probe.agent_mode else []),
         cwd=str(box.workspace), env=box.env(api_key),
         encoding="utf-8", timeout=timeout, dimensions=(40, 100))

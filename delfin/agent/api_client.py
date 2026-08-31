@@ -10428,6 +10428,13 @@ class _DocToolExecutor:
             )
 
         # Outside the sandbox: ask the user.
+        #
+        # No callback means nobody is there to ask, and that is checked
+        # BEFORE the bypass exemption below — deliberately. Bypass is a
+        # statement by a present person about their own approvals ("do not
+        # ask ME"), not a blanket grant an unattended process inherits
+        # from a settings file. A headless run that needs to reach outside
+        # has to be configured to, and the message says how.
         if perms.confirm_callback is None:
             return (
                 f"read denied: '{label or resolved}' is outside the allowed "
@@ -10435,6 +10442,28 @@ class _DocToolExecutor:
                 "Add the directory via 'Erlaubte Verzeichnisse' or "
                 "remember_permission(kind='extra_dir', ...) to read it."
             )
+
+        # There IS someone, and they said not to ask. Exempt, for the same
+        # reason the egress gate above is and by the same rule: a profile
+        # that promises nothing is asked stops meaning anything the first
+        # time a gate asks anyway.
+        #
+        # The line is prompt versus rule, not read versus write. Measured
+        # across the whole surface before drawing it: reading outside the
+        # roots is the ONLY act on this gate that was ever a question —
+        # writing outside, writing into the archive and writing to /etc
+        # are refusals in every mode, asked of nobody. So lifting the
+        # question here cannot loosen a single write.
+        #
+        # It also ends a split that the model, not the user, was resolving:
+        # `read_file` on an outside path asked while the same file reached
+        # through an MCP shell did not, because MCP arguments belong to the
+        # server and no path check runs on them. Which of the two the model
+        # happened to pick decided whether the user saw a dialog.
+        if getattr(perms, "mode", "") == "bypassPermissions":
+            _record_security_event(
+                "outside_read_bypass", "read", str(resolved), blocked=False)
+            return None
         # Say what the click actually does. The old wording promised "only
         # this single read" while the approval added the file's PARENT to
         # the writable workspace roots — so approving a read of a file in

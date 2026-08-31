@@ -106,8 +106,17 @@ def test_work_inside_the_workspace_is_unaffected():
 
 
 def test_denial_ledger_records_a_real_refusal_only(monkeypatch):
-    """A timeout is absence, not refusal — it must NOT poison the path."""
+    """A timeout is absence, not refusal — it must NOT poison the path.
+
+    Runs in 'default', not the bypass mode _setup picks: a refusal has to
+    be possible before the ledger can be asked what it records, and since
+    2026-08-31 bypass does not ask a present user about an outside read
+    (see test_the_permission_chip_means_what_it_says). The subject here is
+    the ledger, not the posture, so it moves to a mode that still has a
+    dialog rather than pinning a posture it was never about.
+    """
     ex, perms, _, outside = _setup()
+    perms.mode = "default"
     target = outside / "parser.py"
 
     class _Broker:
