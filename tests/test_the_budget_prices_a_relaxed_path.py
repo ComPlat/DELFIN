@@ -1909,8 +1909,11 @@ def test_the_price_is_taken_off_rather_than_calculated_again():
     assert 'bias = _gfn.restraint_energy(' in source
     assert "dict(outcome, energy=float(outcome['energy']) - bias)" in source
     # And when it cannot be worked out, the calculation is asked for after all
-    # rather than a wrong number being reported.
-    assert 'if bias is not None else' in source
+    # rather than a wrong number being reported -- as it is when the step it
+    # would be taken off has no energy, which is what a stopped one comes
+    # back as.
+    assert 'if bias is not None' in source
+    assert "and outcome.get('energy') is not None else" in source
 
     # A held value and a pull cannot share one force constant, so the hold
     # stands and the hand goes back to placing -- said, not done quietly.
@@ -4703,3 +4706,31 @@ def test_an_answer_that_arrives_after_the_release_marks_nothing():
     assert "if not state.get('gfn_follow'):" in before, before
     assert before.rstrip().endswith('return'), (
         'the late answer leaves before it marks anything')
+
+
+def test_a_stopped_relaxation_step_is_not_priced():
+    """Letting go is the way out of a drag frame now, and a way out has a
+    shape: a stopped run comes back with a geometry and no energy.
+
+    The pricing took the arithmetic of that energy.  It was safe while the
+    only way a step could end early was a clock -- then it either answered or
+    the whole frame failed -- and it stopped being safe the moment the step
+    could be *asked* to stop.
+
+    Reported from the field, three times in one session under the budget:
+    "the relaxation under the hand stopped on an error: TypeError: float()
+    argument must be a string or a real number, not 'NoneType'".
+    """
+    step = EDITOR_SOURCE.split('def _gfn_follow_step')[1].split('\n    def ')[0]
+
+    # The restraint-energy shortcut, which is the one that took it.
+    priced = step.split("dict(outcome, energy=float(outcome['energy']) - bias)")[1]
+    assert "outcome.get('energy') is not None" in priced[:220], priced[:220]
+
+    # And every other place the budget reads a price is guarded too, because
+    # any of them can now be handed a step that was stopped.
+    for reader in ("float(priced['energy'])",
+                   "state['thermal_priced'] = float(priced['energy'])"):
+        at = step.index(reader)
+        near = step[max(0, at - 400):at + 400]
+        assert "priced.get('energy') is not None" in near, reader
