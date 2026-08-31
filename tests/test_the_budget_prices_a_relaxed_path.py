@@ -4734,3 +4734,51 @@ def test_a_stopped_relaxation_step_is_not_priced():
         at = step.index(reader)
         near = step[max(0, at - 400):at + 400]
         assert "priced.get('energy') is not None" in near, reader
+
+
+def test_the_hand_follows_more_slowly_when_the_answers_are_slow():
+    """A fixed share is a fixed share *per answer*, and what it damps does not
+    grow per answer -- it grows with the time between them.
+
+    The cursor runs on while xtb thinks, so the longer an answer takes the
+    further the structure is behind when it lands and the larger the force
+    that is asked for.  Half of a much larger demand is still large enough to
+    overshoot; then the hand goes slack, and then it overshoots the other way.
+
+    From the field, on a slow system: answers 1.7 s apart, the pull sitting on
+    its ceiling every single time and the ceiling itself swinging between 59
+    and 88 kcal/mol/A, and the dragged atom going 1.3 A out and back once an
+    answer -- nine such there-and-back triples in eleven seconds.  All of them
+    written "Within the budget", so the wall had nothing to do with it.
+
+    None of that is the molecule.  A structure under a steady pull does not
+    swing 1.3 A at 0.6 Hz; what was swinging was the force, worked out from a
+    geometry 1.7 seconds old.
+    """
+    part, state = _editor(_NITROSAMINE)
+    follows = part._hand_follows_now
+
+    # Nothing measured yet, and at the rate it was measured at: as before.
+    state.pop('gfn_follow_took', None)
+    assert follows() == pytest.approx(0.5)
+    state['gfn_follow_took'] = 0.10
+    assert follows() == pytest.approx(0.5)
+
+    # Twice as slow, half as eager -- the step per answer stays the same size
+    # however far the cursor has run on in between.
+    state['gfn_follow_took'] = 0.20
+    assert follows() == pytest.approx(0.25)
+
+    # And the session that was reported gets a twentieth instead of a half.
+    state['gfn_follow_took'] = 1.70
+    assert follows() == pytest.approx(0.05)
+
+    # A floor, because scaled all the way down is not shaking but is not
+    # dragging either.  An overshoot needs a step larger than the distance to
+    # the target, and a twentieth cannot be that.
+    state['gfn_follow_took'] = 30.0
+    assert follows() == pytest.approx(0.05)
+
+    # The number it works from is the number the user is shown.
+    assert '_hand_answered_in(began)' in EDITOR_SOURCE
+    assert "state['gfn_follow_took'] = took" in EDITOR_SOURCE
