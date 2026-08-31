@@ -208,19 +208,32 @@ POOL = [-1705.188083533148, -1705.219605478025,
         -1694.015332057528, -1694.103175837060]
 
 
-def test_a_gap_converted_to_ev_is_as_grounded_as_the_gap(calc):
+def test_a_gap_restated_in_ev_beside_it_is_not_a_second_claim(calc):
+    """The reported table: Hartree in one column, eV in the next."""
     text = ("Kleinste ΔEST: 0.031522 Hartree = 0.858 eV. "
             "Größte ΔEST: 0.087844 Hartree = 2.390 eV.")
     assert vg.scan_for_unsourced_quantities(text, numbers=POOL) == []
 
 
-def test_the_other_units_ride_the_same_table():
+def test_the_other_energy_units_ride_the_same_table():
     gap = abs(POOL[0] - POOL[1])
     for factor, unit in ((627.5094740631, "kcal/mol"),
                          (2625.4996394799, "kJ/mol"),
                          (219474.6313632, "cm-1")):
-        text = f"Die Lücke beträgt {gap * factor:.3f} {unit}."
+        text = f"Die Lücke ist {gap:.6f} Hartree = {gap * factor:.3f} {unit}."
         assert vg.scan_for_unsourced_quantities(text, numbers=POOL) == [], unit
+
+
+def test_a_converted_value_standing_alone_is_still_judged():
+    """The boundary, stated so nobody reads more into the rule than it says.
+
+    It licenses restating a grounded number in another unit — not
+    producing an unbacked one. With no grounded partner in the answer
+    there is nothing to restate, and the claim is judged like any other.
+    """
+    flags = vg.scan_for_unsourced_quantities(
+        "ΔEST beträgt 0.858 eV.", numbers=POOL)
+    assert [f.quantity for f in flags] == ["0.858 eV"]
 
 
 def test_an_invented_number_is_still_flagged():
@@ -229,29 +242,38 @@ def test_an_invented_number_is_still_flagged():
     assert [f.quantity for f in flags] == ["4.271 eV"]
 
 
-def test_a_wrong_conversion_of_a_real_gap_is_still_flagged():
-    """The point is not to wave energies through — 0.031522 Ha is
-    6918.4 cm-1, and an answer that prints 6917 has not converted it."""
+def test_a_wrong_conversion_is_still_flagged():
+    """The partner has to actually convert into the claim.
+
+    0.031522 Hartree is 0.858 eV; an answer writing 1.500 beside it has
+    not converted anything, and the pairing must not launder that.
+    """
     flags = vg.scan_for_unsourced_quantities(
-        "Die Lücke beträgt 6917 cm-1.", numbers=POOL)
-    assert [f.quantity for f in flags] == ["6917 cm-1"]
+        "ΔEST = 0.031522 Hartree = 1.500 eV.", numbers=POOL)
+    assert [f.quantity for f in flags] == ["1.500 eV"]
 
 
-def test_the_conversion_costs_less_than_one_percent():
-    """The COST side, pinned.
+def test_the_pairing_costs_nothing_where_there_is_no_partner():
+    """The COST side.
 
-    Tying the tolerance to the claim's printed precision instead of the
-    scanner's absolute floor is the whole reason this is affordable: with
-    the floor, dividing a claim by 96.485 opened a ±0.48 eV window and
-    29% of random eV-scale values came out "grounded". Measured here so a
-    later widening of _UNIT_FACTORS or of the tolerance cannot pass
-    unnoticed.
+    The first attempt at this rescaled the claim and asked the OBSERVATION
+    POOL again. That pool holds every number a tool printed — state
+    indices included — and its difference set is quadratic, so a table of
+    factors made coincidences ordinary: it grounded "7.77 eV" against
+    |2.0 - 0.143331| kcal/mol, where 2.0 is a "STATE 2" label, and it
+    raised the false-grounding rate from 0.23% to 3.0% even after the
+    tolerance was tied to printed precision.
+
+    Pairing two claims whose units are BOTH known is one exact factor
+    instead of a search, and it cannot fire at all unless the answer
+    shows the grounded partner. That is the structural argument; this is
+    the measurement that backs it.
     """
     rng = random.Random(20260831)
     grounded = sum(
-        bool(vg.scan_for_unsourced_quantities(
-            f"Der Wert ist {rng.uniform(0.01, 10.0):.3f} eV.", numbers=POOL)
-            == [])
-        for _ in range(2000)
+        vg.scan_for_unsourced_quantities(
+            f"Der Wert ist {rng.uniform(0.01, 10.0):.3f} eV.",
+            numbers=POOL) == []
+        for _ in range(3000)
     )
-    assert grounded / 2000 < 0.01, f"{grounded}/2000 wrongly grounded"
+    assert grounded / 3000 < 0.005, f"{grounded}/3000 wrongly grounded"
