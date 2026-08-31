@@ -646,8 +646,41 @@ def observed_numbers() -> Optional[list[float]]:
     return _observed_numbers.get()
 
 
-def _grounded_in_observations(value: float, pool: list[float]) -> bool:
-    """Is this value one the tools returned, or a difference of two?
+# Unit conversions an energy may pass through on its way into an answer.
+#
+# ORCA reports Hartree; chemists read eV, kcal/mol, kJ/mol, cm-1. Stating
+# a gap in the unit the reader thinks in is not a second claim, it is the
+# same claim written down — so the guard has to follow the number through
+# the conversion or it flags every energy answer this project produces.
+#
+# Field case that forced this: nine TADF systems, S1 and T1 energies
+# grepped out of ORCA outputs, gaps reported in both units. The Hartree
+# gaps were grounded (they are differences of observed values); the SAME
+# gaps in eV were flagged as unsourced, and the caveat told the user to
+# distrust 0.858 eV while 0.031522 Hartree — the identical quantity —
+# stood unchallenged two columns to the left.
+#
+# The set is CLOSED and physical, never "any scale factor": an open
+# factor would ground any number at all, which is the failure mode this
+# scanner exists to prevent. Both directions, because an answer may
+# convert either way. Values from CODATA.
+_UNIT_FACTORS: tuple[float, ...] = (
+    27.211386245988,     # Hartree -> eV
+    627.5094740631,      # Hartree -> kcal/mol
+    2625.4996394799,     # Hartree -> kJ/mol
+    219474.6313632,      # Hartree -> cm-1
+    23.060547830619,     # eV      -> kcal/mol
+    96.48533212331,      # eV      -> kJ/mol
+    8065.543937,         # eV      -> cm-1
+    4.184,               # kcal/mol-> kJ/mol
+)
+
+
+def _grounded_in_observations(
+    value: float, pool: list[float], *, quantum: float = 0.0,
+) -> bool:
+    """Is this value one the tools returned, a difference of two, or one
+    of those in another energy unit?
 
     The difference is in because an energy gap is the most ordinary
     derived quantity there is: an answer that reads 2.31 and 3.90 out of
@@ -656,16 +689,48 @@ def _grounded_in_observations(value: float, pool: list[float]) -> bool:
     gaps. Bounded to the same base size the office ledger uses, because
     the derived set grows with its square and a large enough base makes
     every number derivable.
+
+    The unit conversion is in for the same reason and with the same
+    limit: it is applied to the value being checked, against a closed
+    table of physical factors, so the candidate set grows by a constant
+    and not with the pool.
+
+    ``quantum`` is the half-step of the claim AS PRINTED — 0.0005 for
+    "0.858 eV", 0.5 for "3 eV". The conversion branch needs it because
+    the plain branch's tolerance is the wrong shape once a value is
+    rescaled: its ``5e-3`` floor exists for the pool's own magnitudes,
+    and dividing a claim by 96.485 turns that floor into a ±0.48 eV
+    window. Measured on the field pool, that grounded 29% of random
+    eV-scale values against 0.2% before — a guard that accepts a third of
+    all inventions is not a guard. Tying the tolerance to the printed
+    precision instead says the only true thing available: two numbers
+    agree when they agree to the digits the answer actually showed.
     """
-    tolerance = max(abs(value) * 1e-4, 5e-3)
-    for known in pool:
-        if abs(value - known) <= tolerance:
-            return True
-    base = pool[:MAX_DERIVATION_BASE]
-    for i, a in enumerate(base):
-        for b in base[i + 1:]:
-            if abs(value - abs(a - b)) <= tolerance:
+    def _matches(v: float, tol: float | None = None) -> bool:
+        t = max(abs(v) * 1e-4, 5e-3) if tol is None else tol
+        for known in pool:
+            if abs(v - known) <= t:
                 return True
+        base = pool[:MAX_DERIVATION_BASE]
+        for i, a in enumerate(base):
+            for b in base[i + 1:]:
+                if abs(v - abs(a - b)) <= t:
+                    return True
+        return False
+
+    if _matches(value):
+        return True
+    # The claim is stated in a converted unit: undo each conversion and
+    # ask the same question in the pool's own unit. The claim's rounding
+    # rescales with it, which is exactly the tolerance to allow — a
+    # printed 0.858 eV divides to 0.0315304 Hartree, ±1.8e-5, and meets
+    # the observed 0.0315219.
+    step = quantum if quantum > 0 else abs(value) * 1e-4
+    for factor in _UNIT_FACTORS:
+        if _matches(value / factor, step / factor):
+            return True
+        if _matches(value * factor, step * factor):
+            return True
     return False
 
 
@@ -680,11 +745,17 @@ def _claim_is_observed(quantity: str, pool: list[float]) -> bool:
     match = _CLAIM_VALUE_RE.search(str(quantity or ""))
     if not match:
         return False
+    token = match.group(0).replace("−", "-")
     try:
-        value = float(match.group(0).replace("−", "-"))
+        value = float(token)
     except ValueError:
         return False
-    return _grounded_in_observations(value, pool)
+    # How precise the answer claimed to be. "0.858" asserts ±0.0005; "3"
+    # asserts ±0.5. Read off the digits rather than assumed, so a value
+    # quoted to more decimals is held to more decimals.
+    decimals = len(token.split(".", 1)[1]) if "." in token else 0
+    quantum = 0.5 * (10.0 ** -decimals)
+    return _grounded_in_observations(value, pool, quantum=quantum)
 
 
 def scan_for_unsourced_quantities(

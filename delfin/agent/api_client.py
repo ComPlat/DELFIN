@@ -1242,6 +1242,96 @@ def _bash_write_targets(cmd: str) -> list[str]:
     return out
 
 
+# Commands that only ever READ the files named on their command line.
+# Anything that can write, execute, or take a program on stdin stays out:
+# what this set buys is evidence, and evidence must not be minted by a
+# command whose effect nobody checked.
+_BASH_READERS = frozenset({
+    "cat", "head", "tail", "grep", "egrep", "fgrep", "rg", "ag",
+    "awk", "gawk", "mawk", "nl", "wc", "sort", "uniq", "cut", "tac",
+    "od", "xxd", "strings", "jq", "column", "diff", "cmp", "md5sum",
+    "sha256sum", "file", "stat", "less", "more", "zcat", "zgrep",
+})
+
+
+def _bash_read_targets(cmd: str, cwd: Path | None = None) -> list[str]:
+    """Files a shell command demonstrably READ, as absolute paths.
+
+    The counterpart to :func:`_bash_write_targets`, and it exists for the
+    grounding guards rather than for the gate. Those guards judge an
+    answer against a ledger of files the session looked at, and the ledger
+    was fed only by the typed tools — so a session whose data lives
+    outside the workspace and is read with ``grep`` through the shell
+    produced an EMPTY ledger while the guards still ran against it. In the
+    field that turned a correct answer into a forced correction turn: nine
+    ORCA outputs grepped, the answer citing ``S1.out`` and ``T1.out``, and
+    the citation check resolving those names against the repo root,
+    finding nothing, and reporting them as invented.
+
+    A cited basename clears against an absolute entry here because
+    ``verify_guard._is_observed`` matches on suffix.
+
+    Disambiguation is by EXISTENCE, not by each tool's flag grammar: a
+    token is recorded when it resolves to a real file. ``grep PATTERN
+    file.out`` therefore records the file and not the pattern, without
+    this function having to know where grep's pattern sits. The residual
+    risk is a pattern that happens to name an existing file, which grounds
+    one extra path — bounded, and the direction that fails safe.
+
+    Globs are skipped rather than expanded: expanding one would record
+    files the command may never have opened.
+
+    Never raises; an unparseable command yields nothing.
+    """
+    found: list[str] = []
+    try:
+        import shlex
+
+        for segment in _split_shell_segments(cmd):
+            segment = segment.strip()
+            if not segment:
+                continue
+            try:
+                argv = shlex.split(segment, comments=True)
+            except ValueError:
+                continue
+            while argv and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[0]):
+                argv = argv[1:]
+            if not argv:
+                continue
+            if Path(argv[0]).name not in _BASH_READERS:
+                # An unrecognised segment contributes nothing. A compound
+                # command is only as trustworthy as its least understood
+                # part, and here that costs a missing entry, never a
+                # wrong one.
+                continue
+            for tok in argv[1:]:
+                tok = tok.strip()
+                if (not tok or tok.startswith("-") or tok.startswith("$")
+                        or "=" in tok.split("/")[0]
+                        or any(c in tok for c in "*?[]")):
+                    continue
+                try:
+                    p = Path(tok)
+                    if not p.is_absolute():
+                        if cwd is None:
+                            continue
+                        p = cwd / p
+                    if p.is_file():
+                        found.append(str(p.resolve()))
+                except OSError:
+                    continue
+    except Exception:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for t in found:
+        if t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out
+
+
 def _is_ephemeral_sink(path: Path, workspace: Path | None) -> bool:
     """True for device sinks and scratch space OUTSIDE the workspace.
 
@@ -6717,18 +6807,62 @@ def _read_saw_content(fn_name: str, result: str) -> bool:
     return not any(low.startswith(m) or low == m for m in _EMPTY_READ_MARKERS)
 
 
+def _observe_shell_reads(
+    observed: set, fn_args: dict, result: str, workspace: Path | None,
+) -> None:
+    """Feed the observed-files ledger from a finished ``bash`` call.
+
+    Two conditions, both facts about the run rather than about the
+    command: it exited 0, and it printed something. That is the same rule
+    the typed readers already answer to — a grep with no matches proves
+    nothing about the file it was pointed at, and grounding a later claim
+    on it would be the "one deliberately non-matching grep disarms the
+    guard for a whole file" hole in another dress.
+
+    ``bash_background`` is deliberately not routed here: it returns a job
+    id, so at this point nothing has been read yet.
+    """
+    try:
+        payload = json.loads(result)
+    except Exception:
+        return
+    if not isinstance(payload, dict) or payload.get("exit_code") != 0:
+        return
+    if not (payload.get("stdout") or "").strip():
+        return
+    cwd_arg = str(fn_args.get("cwd") or "").strip()
+    base = workspace
+    if cwd_arg:
+        p = Path(cwd_arg)
+        base = p if p.is_absolute() else (
+            (workspace / p) if workspace is not None else None)
+    observed.update(
+        _bash_read_targets(str(fn_args.get("command") or ""), base))
+
+
 def _observe_read_files(
     observed: set, fn_name: str, fn_args: Any, result: str,
+    *, workspace: Path | None = None,
 ) -> None:
     """Record files the model demonstrably observed this turn.
 
     Direct path arguments for read/grep-style tools; for the code-nav
-    tools the HIT locations come from the structured result. Best-effort:
+    tools the HIT locations come from the structured result; for a shell
+    command, the files a read-only reader actually opened. Best-effort:
     a parse failure records nothing rather than raising."""
     try:
         if not isinstance(fn_args, dict):
             return
         if (result or "").lstrip().startswith('{"error"'):
+            return
+        # A shell read is a read. Reaching the data through `grep` rather
+        # than `grep_file` is the normal thing to do when it lives outside
+        # the workspace, and it used to leave the ledger empty — so the
+        # guards judged an answer against a record of nothing and called
+        # verified work invented. MCP servers expose the same tool under
+        # a namespaced name, so compare on the tail.
+        if fn_name.rsplit("__", 1)[-1] == "bash":
+            _observe_shell_reads(observed, fn_args, result, workspace)
             return
         if fn_name in _OBSERVATION_TOOLS:
             # The call has to have SHOWN something. A grep with no matches,
@@ -16076,7 +16210,9 @@ class OpenAIClient(_BaseClient):
                         if _tamper_note:
                             result = _tamper_note + "\n\n" + result
                         _observe_read_files(
-                            self._observed_files, fn_name, fn_args, result)
+                            self._observed_files, fn_name, fn_args, result,
+                            workspace=getattr(
+                                self._permissions, "workspace", None))
                         # A delegate's reads and writes are evidence too.
                         # The cross-check already computes files_touched
                         # from the child's OWN trace; it was produced and
