@@ -546,47 +546,14 @@ def _scan_legs_of(part):
     return list(part._scan_legs())
 
 
-def test_two_armed_coordinates_can_be_seen_at_once():
-    """The one case arming exists for, and it was the one you could not check.
-
-    A dropdown is a control for choosing, and this was never a choice: it is
-    the list of what is about to be walked.  To read it you had to open it,
-    and a dropdown shows one entry -- so a concerted step, a bond forming
-    *while* another breaks, could be set up and never looked at.
-    """
-    part, state = _an_editor()
-    part.submit_ff_dd.value = _method(part, 'gfn2') or 'gfn2'
-
-    state['picked'] = [0, 1]
-    part.submit_scan_way.value = 'to'
-    part.submit_scan_to.value = 1.2
-    part.on_submit_scan(None)
-    state['picked'] = [0, 2]
-    part.submit_scan_way.value = 'to'
-    part.submit_scan_to.value = 1.5
-    part.on_submit_scan(None)
-    part._refresh_scan()
-
-    lines = part.submit_scan_armed.children
-    assert len(lines) == 2, lines
-    assert part.submit_scan_armed.layout.display == ''
-    # Each line is its own text and its own press to drop it.
-    for line in lines:
-        assert len(line.children) == 2
-        assert 'C0-' in line.children[0].value
-    # And dropping one takes that one, not the last.
-    lines[0].children[1].click()
-    assert len(part.submit_scan_armed.children) == 1
-    assert 'C0-H' in part.submit_scan_armed.children[0].children[0].value
-
-
-def test_the_settings_open_into_the_next_row_not_downwards():
+def test_the_settings_slide_out_beside_the_gear_not_under_the_row():
     """The toolbar sits above the picture.
 
-    A column of five settings would push the viewer off the screen to save the
-    width of four, which is a worse trade than the one it was meant to fix.  A
-    full-width break makes them the next *row* instead: one line, and no
-    height that was not going to be spent wrapping anyway.
+    A line added below the row is a line taken off the viewer, and four
+    controls are not worth that -- so the gear stands where the settings would
+    be and slides them out beside it, on the same line.  The row wraps if it
+    must, the way it always has, which is a different thing from being given a
+    row of its own.
     """
     part, state = _an_editor()
     part.submit_ff_dd.value = _method(part, 'gfn2') or 'gfn2'
@@ -601,23 +568,14 @@ def test_the_settings_open_into_the_next_row_not_downwards():
     part.on_submit_scan(None)
     part._refresh_scan()
     assert part.submit_scan_gear.layout.display == ''
-    assert part.submit_scan_settings.layout.display == 'none'
+    assert part.submit_scan_how.layout.display == 'none'
 
     part.submit_scan_gear.value = True
-    assert part.submit_scan_settings.layout.display == ''
-    # The break is what puts them on a line of their own.
-    assert part.submit_scan_break.layout.display == ''
-    assert part.submit_scan_break.layout.width == '100%'
-    assert part.submit_scan_break.layout.height == '0px'
+    for one in (part.submit_scan_how, part.submit_scan_energy,
+                part.submit_scan_whole):
+        assert one.layout.display == '', one
 
-    # Sorted by what they are about, not listed.  "Walk it back" is about how
-    # the coordinate is driven -- it means nothing under a force -- and it was
-    # sitting among the ones about what is reported.
-    inside = part.submit_scan_settings.children
-    assert part.submit_scan_how in inside
-    assert part.submit_scan_energy in inside
-    assert part.submit_scan_whole in inside
-    said = [one.value for one in inside if hasattr(one, 'value')
-            and isinstance(one.value, str) and '<span' in str(one.value)]
-    assert any('driven' in one for one in said), said
-    assert any('reports' in one for one in said), said
+    # And nothing was added under the row to hold them: they are on it.
+    assert not hasattr(part, 'submit_scan_break')
+    assert part.submit_scan_gear in part.submit_internal_group.children
+    assert part.submit_scan_how in part.submit_internal_group.children

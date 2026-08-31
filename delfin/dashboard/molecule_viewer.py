@@ -3910,19 +3910,30 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                       y: a.y + one.y * scale,
                       z: a.z + one.z * scale};
             try {
-                state.loadShapes.push(viewer.addLine({
+                // An arrow and not a line.  addLine is one screen pixel wide
+                // whatever the zoom, and in front of a structure that is
+                // effectively invisible -- so all that could be seen was the
+                // marker at the far end, which says where the pull points and
+                // not which atom it is pulling.  An arrow is real geometry:
+                // it has a thickness, it has a head, and it starts *at* the
+                // atom, which is the half of it that matters.
+                state.loadShapes.push(viewer.addArrow({
                     start: {x: a.x, y: a.y, z: a.z}, end: to,
+                    radius: 0.08, radiusRatio: 2.4, mid: 0.72,
                     color: LOAD_COLOR
-                }));
-                state.loadShapes.push(viewer.addSphere({
-                    center: to, radius: 0.22, color: LOAD_COLOR, opacity: 0.75
                 }));
             } catch (e) {}
         }
     }
 
     //: How long the strongest arrow is drawn, in Angstrom.
-    var LOAD_REACH = 2.2;
+    //:
+    //: About a bond length.  Longer, an arrow leaves the molecule it belongs
+    //: to and reads as a thing beside it rather than a thing on it -- and on
+    //: a small structure two of them are most of the picture.  This is the
+    //: *longest*; the rest are drawn in proportion, so what the picture shows
+    //: is how hard each one pulls against the others.
+    var LOAD_REACH = 1.3;
 
     function setLoads(scopeKey, loads) {
         var state = getState(scopeKey);

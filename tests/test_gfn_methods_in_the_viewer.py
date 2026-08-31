@@ -7264,7 +7264,9 @@ const atoms = [
 const model = {atoms, selectedAtoms: () => atoms};
 const viewer = {atoms, getModel: () => model, selectedAtoms: () => atoms,
   addSphere: (o) => { shapes++; return {o}; },
-  addLine: (o) => { shapes++; return {o}; }, addLabel: (o) => ({o}),
+  addLine: (o) => { shapes++; return {o}; },
+  addArrow: (o) => { shapes++; arrows.push(o); return {o}; },
+  addLabel: (o) => ({o}),
   removeShape(){ shapes--; }, removeAllLabels(){}, render(){}, setSlab(){},
   getSlab: () => ({near:-50, far:50}), setClickable(){}, setStyle(){},
   rotationGroup: {position: {z: 150},
@@ -7289,6 +7291,7 @@ function flat() {
 }
 // The markers a pick leaves on the viewer, counted where they live.
 let shapes = 0;
+let arrows = [];
 const said = [];
 function note(what) { said.push({what, cmd: cmdInput.value,
                                  orders: atoms.map(a => (a.bondOrder||[]).slice())}); }
@@ -7313,13 +7316,27 @@ cmdInput.value = '';
 api.setPositions(SCOPE, flat());
 note('again');
 
+// An arrow hung on an atom has to travel with it.
+api.setLoads(SCOPE, [[1, 0.0, 1.0, 0.0]]);
+arrows = [];
+api.setPositions(SCOPE, flat());
+const restingAt = arrows.length ? arrows[arrows.length - 1].start : null;
+// The atom is moved, the way a relaxation or a drag moves it.
+atoms[1].x += 3.0;
+arrows = [];
+api.setPositions(SCOPE, flat());
+const movedTo = arrows.length ? arrows[arrows.length - 1].start : null;
+atoms[1].x -= 3.0;
+api.setLoads(SCOPE, []);
+
 // A band selects two atoms, and the markers go on the viewer.
 api.setPicks(SCOPE, [0, 1]);
 const withPicks = shapes;
 // Then the structure is replaced -- the same call the editor makes when a
 // press has removed the picked atoms and handed back what is left.
 api.onViewerReady(SCOPE, el('div'));
-console.log(JSON.stringify({said, withPicks, afterwards: shapes}));
+console.log(JSON.stringify({said, withPicks, afterwards: shapes,
+                            restingAt, movedTo}));
 """
 
 
@@ -7379,6 +7396,14 @@ def test_the_orders_are_asked_for_again_when_a_bond_is_made(tmp_path):
     # models -- so select atoms with the band, press Remove, and the atoms went
     # while their markers stayed behind over nothing.
     assert ran["withPicks"] > 0, "picking drew no markers"
+    # An arrow hangs on an atom and travels with it: the relaxation moves the
+    # atom, and the arrow starts where the atom now is rather than where it
+    # was when the arrow was drawn.
+    assert ran["restingAt"] is not None, 'no arrow was drawn at all'
+    assert ran["movedTo"] is not None
+    assert abs(ran["movedTo"]["x"] - ran["restingAt"]["x"] - 3.0) < 1e-6, (
+        ran["restingAt"], ran["movedTo"])
+
     assert ran["afterwards"] == 0, (
         f'{ran["afterwards"]} marker(s) left on the viewer after the '
         f'structure was replaced')

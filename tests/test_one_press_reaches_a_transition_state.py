@@ -385,7 +385,10 @@ def test_an_armed_scan_comes_back_with_the_method_that_can_walk_it():
     part.submit_ff_dd.value = _method(part, 'gfn2')
     assert _shown(part.submit_scan_run_btn)
     assert _shown(part.submit_scan_dd)
-    assert _shown(part.submit_scan_whole)
+    # The settings are behind the gear now, and the gear is what comes back
+    # with a method that can walk: "Whole profile" is one of the four it
+    # slides out beside itself.
+    assert _shown(part.submit_scan_gear)
 
 
 def test_where_a_scan_walks_is_one_question_and_what_is_picked_answers_it():

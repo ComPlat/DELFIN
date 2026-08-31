@@ -326,7 +326,15 @@ def test_the_arrows_belong_to_the_scan_and_nothing_else_changed():
 
     part.submit_ff_dd.value = 'gfn2'
     assert part.submit_load_btn.layout.display == ''
+    # + Add needs something to add, and a pull picks no atoms -- so it stays
+    # off the row here, where Pull is on it.  Arming is what it is for, and
+    # arming with nothing picked can only answer "pick 2, 3 or 4 atoms first".
+    assert part.submit_scan_add_btn.layout.display == 'none'
+    state['picked'] = [0, 1]
+    part._refresh_scan()
     assert part.submit_scan_add_btn.layout.display == ''
+    state['picked'] = []
+    part._refresh_scan()
 
     # And a mode cannot be left standing when the row it lives on has gone.
     part.submit_load_btn.value = True
@@ -354,3 +362,28 @@ def test_the_first_arrow_says_what_the_scan_is_for():
     part.submit_cmd_sync.value = 'load:1:1,0.0,1.0,0.0'
     assert part.submit_scan_how.value == 'load'
     assert part.submit_scan_run_btn.layout.display == ''
+
+
+def test_an_arrow_is_drawn_as_an_arrow():
+    """It has to start at the atom and it has to be seen.
+
+    addLine is one screen pixel wide whatever the zoom, and in front of a
+    structure that is effectively invisible: all that could be seen was the
+    marker at the far end, which says where the pull points and not which atom
+    it is pulling -- and which atom is the half that matters.
+    """
+    from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
+
+    body = submit_manip_bootstrap_js()
+    drawing = body[body.index('function drawLoads('):][:2200]
+    assert 'viewer.addArrow(' in drawing, 'a line is not visible enough'
+    assert 'viewer.addLine(' not in drawing
+    # It starts at the atom, not at the tip.
+    assert 'start: {x: a.x, y: a.y, z: a.z}' in drawing
+    assert 'radiusRatio' in drawing, 'an arrow without a head is a stick'
+
+    # About a bond long.  Longer, an arrow leaves the molecule it belongs to
+    # and reads as a thing beside it; on a small structure two of them are
+    # most of the picture.
+    reach = body.split('var LOAD_REACH = ')[1].split(';')[0]
+    assert 0.8 <= float(reach) <= 1.6, reach
