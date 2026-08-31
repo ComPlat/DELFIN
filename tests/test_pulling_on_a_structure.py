@@ -215,3 +215,142 @@ def test_the_ramp_stops_once_it_has_its_answer():
     broke_at = next(i for i, one in enumerate(got['points'])
                     if one['force'] >= got['gave']['broke'] - 1e-6)
     assert len(got['points']) - broke_at <= 2, (broke_at, len(got['points']))
+
+
+def _an_editor():
+    pytest.importorskip('ipywidgets')
+    import pathlib
+    import tempfile
+
+    import ipywidgets as widgets
+
+    from delfin.dashboard import structure_editor
+    from delfin.dashboard.context import DashboardContext
+
+    water = '3\nwater\nO 0.0 0.0 0.0\nH 0.757 0.586 0.0\nH -0.757 0.586 0.0\n'
+    room = pathlib.Path(tempfile.mkdtemp())
+    for name in ('calc', 'archive', 'office'):
+        (room / name).mkdir()
+    sent: list = []
+    ctx = DashboardContext(calc_dir=room / 'calc', archive_dir=room / 'archive',
+                           office_dir=room / 'office')
+    ctx.run_js = sent.append
+    state: dict = {}
+    part = structure_editor.build(
+        ctx, state=state, coords_widget=widgets.Textarea(value=water),
+        viewer_height=560,
+        schedule_ui_update=lambda func, *a, **k: func(*a, **k),
+        update_view=lambda *a, **k: None, get_smiles_charge=lambda *a, **k: None)
+    part._replace_mol_output_view(water)
+    part.submit_ff_dd.value = 'gfn2'
+    return part, state, sent
+
+
+def test_an_arrow_is_hung_kept_listed_and_taken_off_again():
+    """The load outlives the picture it was drawn on, so it is kept by atom
+    number and not by anything the viewer owns: optimise, step to another
+    frame, come back, and it is still the load that was set."""
+    part, state, sent = _an_editor()
+
+    part.submit_load_btn.value = True
+    assert any("'load'" in one or '"load"' in one for one in sent), (
+        'the page was never put into the mode')
+
+    # The page reporting a drag, the way the gesture does.
+    sent.clear()
+    part.submit_cmd_sync.value = 'load:1:1,0.0,1.0,0.0'
+    part.submit_cmd_sync.value = 'load:2:2,0.0,-1.0,0.0'
+    assert state['loads'] == [{'atom': 1, 'vector': (0.0, 1.0, 0.0)},
+                              {'atom': 2, 'vector': (0.0, -1.0, 0.0)}]
+    assert 'setLoads(' in ''.join(sent), 'the page was never told'
+    assert [label for label, _v in part.submit_load_dd.options] == [
+        'H2  (1.00)', 'H3  (1.00)']
+
+    # A second arrow on an atom that already has one replaces it rather than
+    # adding to it: two forces on one atom are one force, and a user aiming
+    # again means the new aim.
+    part.submit_cmd_sync.value = 'load:4:1,1.0,0.0,0.0'
+    assert len(state['loads']) == 2, state['loads']
+    assert dict(state['loads'][-1])['vector'] == (1.0, 0.0, 0.0)
+
+    # A press that went nowhere is a press, not an arrow.
+    part.submit_cmd_sync.value = 'load:5:0,0.0,0.0,0.0'
+    assert all(one['atom'] != 0 for one in state['loads']), state['loads']
+
+    # And the right button takes one off.
+    part.submit_cmd_sync.value = 'unload:6:1'
+    assert [one['atom'] for one in state['loads']] == [2]
+
+
+def test_the_scan_can_pull_instead_of_driving():
+    """A load arms nothing -- there is no coordinate, which is what it is for
+    -- so the press has to answer to the arrows as well as to the legs, or the
+    one mode that needs no arming would be the one with no way to start."""
+    part, state, _sent = _an_editor()
+
+    assert [label for label, _v in part.submit_scan_how.options] == [
+        'push with a force', 'walk the value', 'pull along the arrows']
+
+    # Nothing armed and nothing drawn: no press.
+    part.submit_scan_how.value = 'load'
+    part._refresh_scan()
+    assert part.submit_scan_run_btn.layout.display == 'none'
+
+    part.submit_cmd_sync.value = 'load:1:1,0.0,1.0,0.0'
+    part._refresh_scan()
+    assert part.submit_scan_run_btn.layout.display == ''
+    assert not part.submit_scan_run_btn.disabled
+
+    # And pressing it without a method that can take a gradient says so
+    # rather than starting something that cannot answer.
+    part.submit_ff_dd.value = 'uff'
+    part._pull_along_the_arrows()
+    assert 'needs xtb' in part.mol_status.value, part.mol_status.value
+
+
+def test_the_arrows_belong_to_the_scan_and_nothing_else_changed():
+    """The mode exists inside the one press it is for.
+
+    Offered under exactly the condition the Scan press is offered under, so a
+    user who never scans never meets it -- and Select, Manipulate and Dynamik
+    Opt behave as they always did.  A load without a method that can take a
+    gradient is a load nothing can be done with.
+    """
+    part, state, _sent = _an_editor()
+
+    # A browser force field has no gradient to pull against, and the arrows go
+    # with the Scan press they belong to.
+    part.submit_ff_dd.value = 'uff'
+    assert part.submit_load_btn.layout.display == 'none'
+    assert part.submit_scan_btn.layout.display == 'none'
+
+    part.submit_ff_dd.value = 'gfn2'
+    assert part.submit_load_btn.layout.display == ''
+    assert part.submit_scan_btn.layout.display == ''
+
+    # And a mode cannot be left standing when the row it lives on has gone.
+    part.submit_load_btn.value = True
+    part.submit_ff_dd.value = 'uff'
+    assert part.submit_load_btn.value is False
+
+    # The other three modes are exactly the four-button mutex they were: one
+    # at a time, and pressing one puts the others down.
+    part.submit_ff_dd.value = 'gfn2'
+    part.submit_manip_btn.value = True
+    assert part.submit_load_btn.value is False
+    part.submit_load_btn.value = True
+    assert part.submit_manip_btn.value is False
+    assert part.submit_select_btn.value is False
+    assert part.submit_draw_btn.value is False
+
+
+def test_the_first_arrow_says_what_the_scan_is_for():
+    """Read as "the box already says load", the mode could never be reached:
+    the box that would say it is only on the row once something is armed, and
+    the only thing that could arm it is the arrow."""
+    part, state, _sent = _an_editor()
+
+    assert part.submit_scan_how.value == 'push'
+    part.submit_cmd_sync.value = 'load:1:1,0.0,1.0,0.0'
+    assert part.submit_scan_how.value == 'load'
+    assert part.submit_scan_run_btn.layout.display == ''

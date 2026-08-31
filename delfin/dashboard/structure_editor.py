@@ -48,6 +48,7 @@ from .input_processing import (
     append_hapto_previews_to_isomers, clean_input_data, smiles_to_xyz_isomers,
     smiles_to_xyz_quick_with_previews,
 )
+from . import under_load as _under_load
 from .molecule_viewer import (
     apply_molecule_view_style, build_molecule_view_style, get_viewer_profile,
     submit_manip_bootstrap_js, submit_manip_version,
@@ -204,6 +205,8 @@ _EDITOR_COMMENTS = (
     'edited in delfin viewer',
     'settled with ',
     'stopped at the frame on screen',
+    'the point of the walk the picture stopped on',
+    'pulled',
     'stopped where you took hold',
     'relaxed, and the budget measured from here',
     'within the budget',
@@ -1204,6 +1207,33 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(width='52px', height='30px', display='none'),
         disabled=True,
     )
+    submit_load_btn = widgets.ToggleButton(
+        value=False, description='Pull', icon='location-arrow',
+        tooltip=(
+            'Hang a force on an atom and leave it there. Drag from an atom to '
+            'aim it; the length says how hard it pulls against the other '
+            'arrows, not how hard the set pulls altogether -- that is the '
+            'ramp. The right button takes an arrow off again. '
+            'Scan then walks the load up instead of driving a coordinate, so '
+            'what gives way is the structure\'s answer rather than a guess '
+            'about which bond matters. A pair pulling apart is the clean '
+            'case; a single arrow mostly moves the molecule, and the line '
+            'says how much of it did.'
+        ),
+        layout=widgets.Layout(width='74px', height='30px'),
+        disabled=True,
+    )
+    submit_load_dd = widgets.Dropdown(
+        options=[('no arrows', '')], value='',
+        layout=widgets.Layout(width='210px', display='none'),
+        disabled=True,
+    )
+    submit_load_del = widgets.Button(
+        description='', icon='times', button_style='danger',
+        tooltip='Take this arrow off',
+        layout=widgets.Layout(width='40px', height='30px', display='none'),
+        disabled=True,
+    )
     submit_ff_dd = widgets.Dropdown(
         # GFN1 is in this list because it is in every other list: the climb
         # takes it, the saddle search takes it, the solvent table was measured
@@ -1933,7 +1963,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: (+5.2 kcal/mol), and at 20 the Diels-Alder goes over the top and lands
     #: in cyclohexene at 1.53 (-64.1).  Nothing said which bonds to form.
     submit_scan_how = widgets.Dropdown(
-        options=[('push with a force', 'push'), ('walk the value', 'hold')],
+        options=[('push with a force', 'push'), ('walk the value', 'hold'),
+                 ('pull along the arrows', 'load')],
         value='push',
         tooltip=(
             'Walk: the coordinate is told what to be at every step. Push: an '
@@ -2796,6 +2827,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         [
             submit_fullscreen_btn,
             submit_select_btn, submit_manip_btn, submit_draw_btn,
+            submit_load_btn, submit_load_dd, submit_load_del,
             submit_element_dd, submit_adjust_h_btn,
             submit_manip_clear_btn,
             submit_manip_undo_btn, submit_manip_redo_btn, submit_reset_btn,
@@ -3428,6 +3460,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         submit_select_btn.disabled = not enabled
         submit_manip_btn.disabled = not enabled
         submit_draw_btn.disabled = not enabled
+        submit_load_btn.disabled = not enabled
         submit_element_dd.disabled = not enabled
         submit_adjust_h_btn.disabled = not enabled
         submit_manip_clear_btn.disabled = not enabled
@@ -3487,9 +3520,80 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             f'{json.dumps(mode)});'
         )
 
+    def _tell_the_page_the_loads():
+        """The arrows, as the page draws them.
+
+        Sent whole every time rather than one at a time: the set is small, it
+        is the thing being described, and a page that has missed one message
+        is then a page with a different load from the kernel's -- which is the
+        one thing a load must never be, because it decides what a scan pulls
+        on.
+        """
+        loads = state.get('loads') or []
+        rows = [[int(one['atom']), *[float(v) for v in one['vector']]]
+                for one in loads]
+        _ensure_manip_bootstrap()
+        _run_manip_js(
+            'if(window.__delfinSubmitManip)'
+            'window.__delfinSubmitManip.setLoads('
+            f'{json.dumps(submit_scope_id)},{json.dumps(rows)});'
+        )
+
+    def _load_named(one):
+        """One arrow, as a chemist reads it: the atom and how hard, relative."""
+        rows = _gfn.atom_lines(_current_xyz() or '')
+        index = int(one.get('atom', -1))
+        name = (rows[index].split()[0] + str(index + 1)
+                if 0 <= index < len(rows) else f'atom {index + 1}')
+        size = math.sqrt(sum(float(v) ** 2 for v in one['vector']))
+        return f'{name}  ({size:.2f})'
+
+    def _refresh_load_controls():
+        """The arrows there are, and whether the mode is worth offering."""
+        loads = list(state.get('loads') or [])
+        showing = '' if loads else 'none'
+        submit_load_dd.layout.display = showing
+        submit_load_del.layout.display = showing
+        submit_load_dd.disabled = not loads
+        submit_load_del.disabled = not loads
+        if loads:
+            options = [(_load_named(one), str(one['atom'])) for one in loads]
+            want = submit_load_dd.value
+            submit_load_dd.options = options
+            if want in [value for _label, value in options]:
+                submit_load_dd.value = want
+        else:
+            submit_load_dd.options = [('no arrows', '')]
+            submit_load_dd.value = ''
+
+    def on_submit_load_toggle(change):
+        if change.get('name') != 'value':
+            return
+        active = bool(submit_load_btn.value)
+        submit_load_btn.button_style = 'info' if active else ''
+        if active:
+            _mode_buttons_mutex(submit_load_btn)
+        _apply_manip_mode_js('load' if active else 'off')
+        _refresh_load_controls()
+        if active:
+            _set_mol_status(
+                'Drag from an atom to hang a force on it; the right button '
+                'takes one off. Scan then walks the load up and lets the '
+                'structure choose where to give.')
+
+    def on_submit_load_del(_button=None):
+        which = str(submit_load_dd.value or '')
+        if not which:
+            return
+        state['loads'] = [one for one in (state.get('loads') or [])
+                          if str(one.get('atom')) != which]
+        _tell_the_page_the_loads()
+        _refresh_load_controls()
+
     def _mode_buttons_mutex(keep):
         """Only one mode at a time; the others switch themselves off."""
-        for button in (submit_select_btn, submit_manip_btn, submit_draw_btn):
+        for button in (submit_select_btn, submit_manip_btn, submit_draw_btn,
+                       submit_load_btn):
             if button is not keep and button.value:
                 button.value = False
 
@@ -9828,6 +9932,42 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     state['ff_reassigning'] = False
             return
 
+        if verb in ('load', 'unload'):
+            # An arrow hung on an atom, or taken off it again.
+            #
+            # Kept by atom index and not by serial: the load outlives the
+            # picture it was drawn on -- optimise, step to another frame, come
+            # back -- and what survives all of those is which atom of the
+            # structure it is, counted the way the coordinate box counts.
+            loads = list(state.get('loads') or [])
+            parts = str(payload).split(',')
+            try:
+                which = int(parts[0])
+            except (TypeError, ValueError):
+                return
+            loads = [one for one in loads if int(one.get('atom', -1)) != which]
+            if verb == 'load' and len(parts) >= 4:
+                try:
+                    vector = tuple(float(v) for v in parts[1:4])
+                except (TypeError, ValueError):
+                    return
+                # A press that went nowhere is a press, not an arrow.  Under
+                # the tap threshold the direction is whatever the hand shook
+                # by, which is a load pointing at nothing in particular.
+                if sum(v * v for v in vector) > 1e-4:
+                    loads.append({'atom': which, 'vector': vector})
+            state['loads'] = loads
+            # The first arrow over a scan with nothing else armed sets the
+            # way, because there is nothing else it could mean.  Left on
+            # "push with a force", the press would refuse the arrows that had
+            # just put it on the row.
+            if loads and not _scan_legs():
+                submit_scan_how.value = 'load'
+            _tell_the_page_the_loads()
+            _refresh_load_controls()
+            _refresh_scan()
+            return
+
         if verb == 'orders':
             # The page saying the bonds are not the ones these orders were
             # worked out for.  A bond made or broken by hand needs no render,
@@ -10302,14 +10442,25 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 f"{unit}")
 
     def _refresh_scan():
-        """Show the armed legs, or nothing at all when there are none."""
+        """Show the armed legs, or nothing at all when there are none.
+
+        A load is armed the moment an arrow is drawn: there is no coordinate to
+        arm, which is the whole point of it, so the press has to answer to the
+        arrows as well as to the legs or the one mode that needs no arming
+        would be the one with no way to start.
+        """
         legs = _scan_legs()
-        showing = '' if legs else 'none'
+        # An arrow arms the scan by existing.  Read as "the box already says
+        # load", this could never become true: the box that would say it is
+        # only on the row once something is armed, and the only thing that
+        # could arm it is the arrow.
+        pulling = bool(state.get('loads'))
+        showing = '' if (legs or pulling) else 'none'
         for widget in (submit_scan_dd, submit_scan_del, submit_scan_whole,
                        submit_scan_how, submit_scan_energy, submit_scan_back,
                        submit_scan_run_btn):
             widget.layout.display = showing
-            widget.disabled = not legs
+            widget.disabled = not (legs or pulling)
         # Except the return leg, which belongs to walking a value and not to
         # pushing one: a push is a ramp of forces rather than a grid of
         # values, so there is no same-coordinate-backwards to walk.
@@ -10686,11 +10837,115 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             _refresh_scan()
             _set_mol_status(f'Dropped {_describe_leg(gone)}.')
 
+    def _pull_along_the_arrows():
+        """Walk the load up, and let the structure choose where to give.
+
+        The other two ways drive a coordinate somebody chose.  This one does
+        not: the arrows say where the load is and how the parts of it compare,
+        the ramp says how hard the set pulls, and what gives way is the
+        structure's answer.  See :mod:`delfin.dashboard.under_load` for the
+        construction and for why a load has to have its rigid part taken out
+        before anything can be minimised at all.
+        """
+        if state.get('scan_run'):
+            state['scan_stop'] = True
+            _set_mol_status('Stopping after this load.')
+            return
+        loads = list(state.get('loads') or [])
+        xyz = _current_xyz()
+        method = str(submit_ff_dd.value)
+        if not loads:
+            _set_mol_status(
+                'Draw an arrow first: press Pull and drag from an atom.')
+            return
+        if not xyz:
+            _set_mol_status('There is no structure to pull on.')
+            return
+        if not _gfn.is_gfn_method(method):
+            _set_mol_status('Pulling needs xtb: choose a GFN method.')
+            return
+        label = _server_label(method)
+        charge = int(submit_gfn_charge.value or 0)
+        uhf = _gfn_uhf_now()
+        wet = str(submit_gfn_solvent.value or '') or None
+        steps = int(submit_scan_steps.value or 20)
+        state['scan_run'] = True
+        state['scan_stop'] = False
+        run_id = _claim_the_frame_run()
+        _remember('a pull')
+
+        def _work():
+            drawn = []
+            try:
+                def _drew(point):
+                    drawn.append(point)
+                    schedule_ui_update(
+                        _set_mol_status,
+                        f'{label} is pulling at {point["force"]:.0f} '
+                        f'kcal/mol/A: {point["energy"]:+.1f} kcal/mol.',
+                        spinner=True)
+                    schedule_ui_update(
+                        lambda rows=[_gfn.coordinates_of(point['xyz'])]:
+                        _stream_frames(run_id, rows))
+
+                got = _under_load.walk_under_load(
+                    xyz, loads, method, charge=charge, uhf=uhf, solvent=wet,
+                    steps=steps, on_point=_drew,
+                    should_stop=lambda: bool(state.get('scan_stop')))
+            finally:
+                state['scan_run'] = False
+
+            def _done():
+                if not got.get('ok') or not got.get('points'):
+                    _set_mol_status(got.get('status')
+                                    or 'The load could not be applied.')
+                    return
+                points = got['points']
+                last = points[-1]
+                rows = [line for line in last['xyz'].splitlines()[2:]
+                        if line.strip()]
+                if rows:
+                    _write_coords(xyz_document(rows, 'Pulled'),
+                                  run=run_id)
+                # What the arrows really did, before what they found: a load
+                # that mostly moves the molecule deforms it hardly at all, and
+                # a barrier read off one of those is a number about nothing.
+                said = []
+                if got.get('rigid', 0.0) > _under_load.RIGID_SHARE_WORTH_SAYING:
+                    said.append(
+                        f'{got["rigid"] * 100:.0f}% of the load only moved the '
+                        f'molecule and was taken out; what is left is the '
+                        f'part that deforms it. Two arrows pulling against '
+                        f'each other is the clean case.')
+                gave = got.get('gave')
+                if gave is not None:
+                    said.insert(0, (
+                        f'Pulled to {last["force"]:.0f} kcal/mol/A: '
+                        f'{gave["said"]}. It held at {gave["held"]:.0f} and '
+                        f'was broken by {gave["broke"]:.0f}.'))
+                else:
+                    said.insert(0, (
+                        f'Pulled to {last["force"]:.0f} kcal/mol/A over '
+                        f'{len(points)} loads and nothing gave: '
+                        f'{last["energy"]:+.1f} kcal/mol of deformation. '
+                        f'Aim harder, or aim somewhere else.'))
+                _set_mol_status(*said)
+
+            schedule_ui_update(_done)
+
+        _start_background(_work, 'The pull')
+
     def on_submit_scan_run(_button=None):
         """Walk every armed leg together and say what the path costs."""
         legs = _scan_legs()
         xyz = _current_xyz()
         method = str(submit_ff_dd.value)
+        # The load is its own kind of walk and arms nothing: there is no
+        # coordinate, which is what it is for.  Asked before the legs, or the
+        # press would refuse the one mode that has nothing to arm.
+        if str(submit_scan_how.value) == 'load' and not legs:
+            _pull_along_the_arrows()
+            return
         if not legs or not xyz:
             return
         # Stopping first.  Behind the method check, a scan started under GFN2
@@ -16862,12 +17117,24 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # refusal arrived only on the press.  Switching away with one armed
         # said nothing at all.
         submit_scan_btn.layout.display = '' if xtb else 'none'
+        # And the arrows belong to the scan.
+        #
+        # Offered under exactly the condition the Scan press is offered under,
+        # so the mode exists inside the one press it is for and nowhere else:
+        # Select, Manipulate and Dynamik Opt are untouched by it, and a user
+        # who never scans never meets it.  A load without a method that can
+        # take a gradient is a load nothing can be done with.
+        submit_load_btn.layout.display = '' if xtb else 'none'
+        if not xtb and submit_load_btn.value:
+            # Never left standing in a mode that is no longer on the row.
+            submit_load_btn.value = False
         if not xtb:
             for widget in (submit_scan_way, submit_scan_to, submit_scan_steps,
                            submit_scan_dd, submit_scan_del, submit_scan_whole,
                            submit_scan_how, submit_scan_energy,
                            submit_scan_back, submit_scan_run_btn,
-                           submit_scan_price_btn):
+                           submit_scan_price_btn, submit_load_dd,
+                           submit_load_del):
                 widget.layout.display = 'none'
             if _scan_legs():
                 _set_mol_status(
@@ -17450,6 +17717,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_settle_btn.observe(on_submit_settle_toggle, names='value')
     submit_auto_btn.observe(on_submit_auto_toggle, names='value')
     submit_dyn_bonds_btn.observe(on_submit_dyn_bonds, names='value')
+    submit_load_btn.observe(on_submit_load_toggle, names='value')
+    submit_load_del.on_click(on_submit_load_del)
     submit_bond_kinds_btn.observe(on_submit_bond_kinds, names='value')
     submit_pick_sync.observe(on_submit_pick_sync, names='value')
     submit_poly_dd.observe(on_submit_poly_changed, names='value')

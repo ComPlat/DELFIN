@@ -2133,6 +2133,8 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         // -- which is how the orders reach a viewer that was told about them
         // before it existed.
         if (keepTheBondKinds(scopeKey, viewer)) state.highlightsOnly = false;
+        // And the load's arrows, which hang on atoms and travel with them.
+        drawLoads(scopeKey, viewer);
         // The sticks and spheres are rebuilt only when the molecule has
         // actually changed. Picking three atoms moves nothing -- only the
         // translucent markers over them change -- and rebuilding a
@@ -3866,6 +3868,75 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             } catch (e) {}
         }
     }
+    //: A load stays until it is taken away, so it is drawn in a colour the
+    //: hand's own dashes are not: the hand is a thing happening now and a load
+    //: is a thing that was decided.
+    var LOAD_COLOR = '#7c4dff';
+
+    // The arrows a load is made of, redrawn where the atoms are now.
+    //
+    // Drawn from drawHighlightsNow, which every set of coordinates and every
+    // frame of a drag goes through, so an arrow hung on an atom travels with
+    // it.  Kept in the scope rather than in the viewer: a load outlives the
+    // picture it was drawn on -- optimise, step to another frame, come back,
+    // and it is still the load that was set.
+    function drawLoads(scopeKey, viewer) {
+        var state = getState(scopeKey);
+        var old = state.loadShapes || [];
+        for (var d = 0; d < old.length; d++) {
+            try { viewer.removeShape(old[d]); } catch (e) {}
+        }
+        state.loadShapes = [];
+        var loads = state.loads || [];
+        if (!loads.length) return;
+        var atoms = getAtoms(viewer);
+        // The longest arrow is drawn at LOAD_REACH and the rest in proportion,
+        // so what the picture shows is how hard each one pulls *relative to
+        // the others* -- which is what the drawing decides.  How hard the set
+        // pulls altogether is the ramp's business and has no length.
+        var most = 0;
+        for (var n = 0; n < loads.length; n++) {
+            var v = loads[n];
+            var size = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+            if (size > most) most = size;
+        }
+        if (most < 1e-9) return;
+        for (var n = 0; n < loads.length; n++) {
+            var one = loads[n];
+            var a = atoms[one.atom | 0];
+            if (!a) continue;
+            var scale = LOAD_REACH / most;
+            var to = {x: a.x + one.x * scale,
+                      y: a.y + one.y * scale,
+                      z: a.z + one.z * scale};
+            try {
+                state.loadShapes.push(viewer.addLine({
+                    start: {x: a.x, y: a.y, z: a.z}, end: to,
+                    color: LOAD_COLOR
+                }));
+                state.loadShapes.push(viewer.addSphere({
+                    center: to, radius: 0.22, color: LOAD_COLOR, opacity: 0.75
+                }));
+            } catch (e) {}
+        }
+    }
+
+    //: How long the strongest arrow is drawn, in Angstrom.
+    var LOAD_REACH = 2.2;
+
+    function setLoads(scopeKey, loads) {
+        var state = getState(scopeKey);
+        state.loads = (loads || []).map(function (one) {
+            return {atom: one[0] | 0, x: +one[1], y: +one[2], z: +one[3]};
+        });
+        var viewer = getViewer(scopeKey);
+        if (viewer) {
+            redrawHighlights(scopeKey, true);
+            try { viewer.render(); } catch (e) {}
+        }
+        return state.loads.length;
+    }
+
     // Which atoms a pull would take hold of, and where each of them starts.
     function ffWantFrom(viewer, targets) {
         var atoms = getAtoms(viewer);
@@ -4569,6 +4640,34 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             var x = e.clientX - rect.left, y = e.clientY - rect.top;
             var atom = raycastAtom(scopeKey, e.clientX, e.clientY);
 
+            if (state.mode === 'load') {
+                // The right button takes an arrow away again, off the atom
+                // under the cursor: the same shape as draw mode, where right
+                // is the undoing of left.
+                if (e.button === 2) {
+                    if (!atom) return;
+                    var all = getAtoms(getViewer(scopeKey) || {});
+                    var which = all.indexOf(atom);
+                    if (which < 0) return;
+                    e.preventDefault(); e.stopPropagation();
+                    pushCommandToPython(scopeKey, 'unload', String(which));
+                    return;
+                }
+                if (e.button !== 0) return;
+                // Empty space belongs to the viewer, so the scene turns.
+                if (!atom) return;
+                var here = getAtoms(getViewer(scopeKey) || {});
+                var index = here.indexOf(atom);
+                if (index < 0) return;
+                e.preventDefault(); e.stopPropagation();
+                state.drag = {
+                    kind: 'load', atomIndex: index,
+                    startX: e.clientX, startY: e.clientY,
+                    lastX: e.clientX, lastY: e.clientY,
+                    movedEnough: false
+                };
+                return;
+            }
             if (state.mode === 'draw') {
                 if (e.button === 2) {
                     // The right button takes things away: an atom, or the
@@ -4893,6 +4992,25 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                                                  d.grabbed);
                     if (tapped) togglePick(scopeKey, tapped, d.additive);
                 }
+            } else if (d.kind === 'load') {
+                // Where the cursor went, in the world rather than on the
+                // screen: an arrow is a direction in the structure, and the
+                // structure can be turned afterwards without the arrow
+                // turning with the screen.
+                var view = getViewer(scopeKey);
+                if (view && d.movedEnough) {
+                    var basis = getCameraBasis(view);
+                    var per = getPixelToWorld(view, state2.canvas);
+                    var dx = (e.clientX - d.startX) * per;
+                    var dy = (e.clientY - d.startY) * per;
+                    var vx = basis.right.x * dx - basis.up.x * dy;
+                    var vy = basis.right.y * dx - basis.up.y * dy;
+                    var vz = basis.right.z * dx - basis.up.z * dy;
+                    pushCommandToPython(
+                        scopeKey, 'load',
+                        d.atomIndex + ',' + vx.toFixed(4) + ','
+                        + vy.toFixed(4) + ',' + vz.toFixed(4));
+                }
             } else if (d.kind === 'draw') {
                 finishDraw(scopeKey, d, e.clientX, e.clientY);
             } else if (d.kind === 'maybe-rect') {
@@ -4957,6 +5075,12 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             // the scene can still be turned without leaving the mode.
             state.overlay.style.pointerEvents = 'auto';
             state.overlay.style.cursor = 'crosshair';
+        } else if (state.mode === 'load') {
+            // A press on an atom hangs an arrow on it; a press on empty space
+            // is the scene's, so it can still be turned while the arrows are
+            // being aimed -- which is most of aiming them.
+            state.overlay.style.pointerEvents = 'auto';
+            state.overlay.style.cursor = 'cell';
         }
     }
 
@@ -4976,7 +5100,8 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         // Harmless after a rebuild, where these belong to the viewer that has
         // gone: removeShape is given a shape the new one has never heard of
         // and says so, which is what the guard is for.
-        var going = (state.shapes || []).concat(state.pullShapes || []);
+        var going = (state.shapes || []).concat(state.pullShapes || [])
+                                        .concat(state.loadShapes || []);
         if (state.pivotShape) going.push(state.pivotShape);
         var old = getViewer(scopeKey);
         if (old) {
@@ -4990,6 +5115,10 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         state.shapes = [];
         state.pivotShape = null;
         state.pullShapes = [];
+        // The arrows go, but not the load: it is about atoms by number, and
+        // the structure that has just arrived has the same ones.  Redrawn on
+        // the first frame after this.
+        state.loadShapes = [];
         state.undo = [];
         state.viewerEl = viewerEl || state.viewerEl ||
             (getRoot(scopeKey) ? getRoot(scopeKey).querySelector('.submit-mol-output') : null);
@@ -5044,7 +5173,8 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
 
     function setMode(scopeKey, mode) {
         var state = getState(scopeKey);
-        state.mode = (mode === 'select' || mode === 'manipulate' || mode === 'draw')
+        state.mode = (mode === 'select' || mode === 'manipulate'
+                      || mode === 'draw' || mode === 'load')
             ? mode : 'off';
         widenSlabForEditing(scopeKey, state.mode !== 'off');
         ensureOverlay(scopeKey);
@@ -5553,6 +5683,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         // reads the wall off the page on the same clock it reads the path.
         applyThermalWall: setThermalWall,
         setDynamicBonds: setDynamicBonds,
+        setLoads: setLoads,
         // So a watcher outside this closure can hand the geometry over while
         // the mouse is still down, rather than only when it is let go.
         pushXyz: pushXyzToPython,
