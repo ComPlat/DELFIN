@@ -202,7 +202,7 @@ def _run_the_scan(refs, steps=8):
     refs['submit_scan_to'].value = 2.20
     refs['submit_scan_steps'].value = steps
     refs['submit_scan_whole'].value = True
-    refs['submit_scan_btn'].click()
+    refs['submit_scan_add_btn'].click()
     refs['submit_scan_run_btn'].click()
     began = time.time()
     while refs['editor_state'].get('scan_run') and time.time() - began < 240:

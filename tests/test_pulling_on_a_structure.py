@@ -322,11 +322,11 @@ def test_the_arrows_belong_to_the_scan_and_nothing_else_changed():
     # with the Scan press they belong to.
     part.submit_ff_dd.value = 'uff'
     assert part.submit_load_btn.layout.display == 'none'
-    assert part.submit_scan_btn.layout.display == 'none'
+    assert part.submit_scan_add_btn.layout.display == 'none'
 
     part.submit_ff_dd.value = 'gfn2'
     assert part.submit_load_btn.layout.display == ''
-    assert part.submit_scan_btn.layout.display == ''
+    assert part.submit_scan_add_btn.layout.display == ''
 
     # And a mode cannot be left standing when the row it lives on has gone.
     part.submit_load_btn.value = True

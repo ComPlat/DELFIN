@@ -513,7 +513,7 @@ def test_a_real_scan_leaves_its_profile_on_the_page():
     part.submit_scan_to.value = 2.20
     part.submit_scan_steps.value = 8
     part.submit_scan_whole.value = True
-    part.submit_scan_btn.click()
+    part.submit_scan_add_btn.click()
     assert not _shown(part.submit_scan_plot_btn)
 
     part.submit_scan_run_btn.click()

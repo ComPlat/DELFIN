@@ -166,7 +166,7 @@ def _walk_the_ethane(part, state, method='gfn2', steps=6, to=3.50):
     part.submit_pick_sync.value = '0,1'
     part.submit_scan_way.value = 'to'
     part.submit_scan_to.value = to
-    part.submit_scan_btn.click()
+    part.submit_scan_add_btn.click()
     part.submit_scan_run_btn.click()
     began = time.time()
     while state.get('scan_run') and time.time() - began < 600:
