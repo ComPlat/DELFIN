@@ -10524,10 +10524,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         for widget in (submit_scan_dd, submit_scan_del):
             widget.layout.display = '' if legs else 'none'
             widget.disabled = not legs
-        # Except the return leg, which belongs to walking a value and not to
-        # pushing one: a push is a ramp of forces rather than a grid of
-        # values, so there is no same-coordinate-backwards to walk.
-        if legs and str(submit_scan_how.value) == 'push':
+        # Except the return leg, which belongs to walking a *value*.
+        #
+        # A push is a ramp of forces rather than a grid of values, so there is
+        # no same-coordinate-backwards to walk -- and a pull is the same kind
+        # of thing with the coordinate left out entirely.  Offered under
+        # either, it is a switch for a second leg that cannot exist.
+        if str(submit_scan_how.value) in ('push', 'load'):
             submit_scan_back.layout.display = 'none'
         # The second opinion answers to a different question from the rest of
         # the row, and that is the point of it: everything above is here

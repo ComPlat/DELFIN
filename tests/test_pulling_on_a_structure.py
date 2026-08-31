@@ -496,3 +496,28 @@ def test_the_ramp_can_be_looked_at_afterwards():
     # The path is what the ramp walked: the load, what it cost, and the
     # geometry it settled at.
     assert "one['force'], one['energy'], one['xyz']" in pull
+
+
+def test_a_pull_has_no_way_back_either():
+    """"Walk it back" retraces the same points, which needs a grid of values.
+
+    A push is a ramp of forces and has none, so it was already hidden there --
+    and a pull is the same kind of thing with the coordinate left out
+    entirely.  Offered under it, it is a switch for a second leg that cannot
+    exist.
+    """
+    part, state, _sent = _an_editor()
+    state['picked'] = [0, 1]
+    part.submit_scan_way.value = 'to'
+    part.submit_scan_to.value = 1.2
+    part.on_submit_scan(None)
+    part.submit_scan_gear.value = True
+
+    part.submit_scan_how.value = 'hold'
+    part._refresh_scan()
+    assert part.submit_scan_back.layout.display == '', 'a walk can retrace'
+
+    for way in ('push', 'load'):
+        part.submit_scan_how.value = way
+        part._refresh_scan()
+        assert part.submit_scan_back.layout.display == 'none', way
