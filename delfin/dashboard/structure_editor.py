@@ -206,12 +206,26 @@ _BUDGET_LEFT_WORTH_SPENDING = 0.5
 #: How far apart two answers must be before they are two arrangements and
 #: not one answer measured twice.
 #:
-#: In the driven coordinate's own units, so an Angstrom for a distance and a
-#: degree for a turn -- one number for both, because what it is separating is
-#: a real change from a relaxation disagreeing with itself, and neither is
-#: near a hundredth in either unit.  Measured on the case this was written
-#: for: the C-O alternated between 1.385 and 1.435, a step of 0.05, while the
-#: return to the answer before was 0.0001.
+#: In Angstrom of atom travel, which is what
+#: :func:`gfn_optimize.travel_between` reads a step as -- the one currency
+#: this editor's perception already weighs a bond, an angle and a torsion in.
+#:
+#: It used to be in the driven coordinate's own unit, on the reasoning that
+#: "neither is near a hundredth in either unit".  Measured on drags with a
+#: standing cursor, both halves of that are wrong.  A converged relaxation
+#: disagrees with itself by 0.08 to 0.15 degrees of a torsion -- eight to
+#: fifteen times a hundredth -- so every firing on a converged answer sat on
+#: that noise.  And the coordinate's number says nothing about what the user
+#: sees: 0.11 degrees of one torsion is 0.0090 A of movement and is invisible,
+#: while 0.144 degrees of another is 0.0837 A and is plain on the screen.  A
+#: factor of nine for the same-sized number, which is two thresholds wearing
+#: one.
+#:
+#: The number itself does not move, because in the new currency it lands
+#: where it should: the acetate's alternating C-O steps 0.052 A and fires, the
+#: 0.0837 A torsion fires, the 0.0090 A one does not.  Measured on the case
+#: this was written for: the C-O alternated between 1.385 and 1.435, a step of
+#: 0.05, while the return to the answer before was 0.0001.
 _TWO_STATES_APART = 0.01
 
 #: The least the hand must have asked for, in Angstrom, for the last two
@@ -5875,7 +5889,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         # the same thing laid onto the untouched atoms.
                         if _two_arrangements(
                                 _value_in(outcome.get('xyz') or '', driving)
-                                if driving is not None else None):
+                                if driving is not None else None,
+                                driving, outcome.get('xyz') or ''):
                             hand += (' \u00b7 two arrangements under this '
                                      'pull, alternating -- ease off to hold '
                                      'one')
@@ -14579,7 +14594,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         share = _HAND_FOLLOWS * (_HAND_FOLLOWS_AT / took)
         return max(_HAND_FOLLOWS_FLOOR, min(_HAND_FOLLOWS, share))
 
-    def _two_arrangements(value):
+    def _two_arrangements(value, driving=None, xyz=''):
         """Whether the answers are alternating between two states.
 
         Not a fault to be smoothed away.  Chased to the end on the user's own
@@ -14614,6 +14629,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         well clear of what a relaxation disagrees with, and a return to where
         it was the answer before that is far smaller.  Three of those in a row
         before anything is said, so one ragged answer is not an announcement.
+
+        Both of those are read as the atom travel they imply rather than as
+        the coordinate's own number -- see :data:`_TWO_STATES_APART` for what
+        the old way cost, and :func:`gfn_optimize.travel_between`, which is
+        where the arithmetic lives and which also makes the comparison
+        periodic where the coordinate is.  A torsion alternating across
+        ±180 degrees subtracted plainly reads as most of a circle.
+
+        The trail stays in the coordinate's own unit and only the differences
+        are converted, off the geometry this answer came back on.  Scaling the
+        values themselves would put a lever arm that moves with the structure
+        into a quantity that has to be comparable across answers.
         """
         run = state.get('gfn_follow_run')
         if state.get('gfn_two_states_run') != run:
@@ -14629,8 +14656,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         held = int(state.get('gfn_two_states_for') or 0)
         if len(trail) < 3:
             return False
-        step = abs(trail[-1] - trail[-2])
-        back = abs(trail[-1] - trail[-3])
+        step = _gfn.travel_between(xyz, driving, trail[-1], trail[-2])
+        back = _gfn.travel_between(xyz, driving, trail[-1], trail[-3])
+        if step is None or back is None:
+            return False
         # A step worth calling a step, and a return far tighter than it.
         if step > _TWO_STATES_APART and back < step / 10.0:
             held += 1
