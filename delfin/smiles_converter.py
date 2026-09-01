@@ -32633,6 +32633,19 @@ def _ffree_shared_tail(mol, results, dual_parse_done: bool):
         results = _rg_keep(_rg_before, results)
     except Exception as _rg_exc:              # pragma: no cover
         logger.debug("refine-gate nicht angewandt: %s", _rg_exc)
+    # ZWEITE HAELFTE DESSELBEN VERTRAGES (01.09.2026).  `keep_better` setzt durch
+    # "kein Frame ist SCHLECHTER"; diese Zeile setzt durch "kein Frame ist WEG".
+    # Gemessen an mirrleg6k: ABUSAU 58->59 und JEJROI 89->90 verlieren je EINEN
+    # Frame, obwohl `_mirror_enum.expand_results` per Konstruktion additiv ist
+    # (:370 `return list(results) + added`) -- eine AUSWAHLSTUFE weiter unten nimmt
+    # ihn.  Vorgabe AUS (DELFIN_FFFREE_ADD_NEVER_REPLACE) -> byte-identisch.
+    # ⚠ NACH `keep_better`, nicht davor: erst Inhalte richtigstellen, dann Fehlendes
+    #   ergaenzen -- umgekehrt bewertete das Ruecknahmetor gerade Wiederhergestelltes.
+    try:
+        from delfin.manta._refine_gate import keep_all as _rg_all
+        results = _rg_all(_rg_before, results)
+    except Exception as _rg_all_exc:          # pragma: no cover
+        logger.debug("ADD-never-replace nicht angewandt: %s", _rg_all_exc)
     return results
 
 
@@ -32920,6 +32933,16 @@ def _smiles_to_xyz_isomers_impl(
                     _ff = _rg_keep_ff(_rg_before_ff, _ff)
                 except Exception as _rg_exc_ff:   # pragma: no cover
                     logger.debug("refine-gate (ffree) nicht angewandt: %s", _rg_exc_ff)
+                # ADD, NEVER REPLACE -- die zweite Haelfte des Vertrages, auch hier.
+                # Der Satz drei Zeilen hoeher ("die Enumeratoren haengen NEUE Etiketten
+                # an und gehen unberuehrt durch") war eine ANNAHME; auf ABUSAU und
+                # JEJROI ist sie am 01.09. widerlegt worden.  Vorgabe AUS.
+                try:
+                    from delfin.manta._refine_gate import keep_all as _rg_all_ff
+                    _ff = _rg_all_ff(_rg_before_ff, _ff)
+                except Exception as _rg_all_ff_exc:   # pragma: no cover
+                    logger.debug("ADD-never-replace (ffree) nicht angewandt: %s",
+                                 _rg_all_ff_exc)
                 # RING PUCKER FOR THE FF-FREE PATH: the hook that USED to sit here has been
                 # removed, and the reason is worth keeping.
                 #

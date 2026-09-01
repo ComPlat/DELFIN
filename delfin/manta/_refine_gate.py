@@ -308,6 +308,139 @@ def keep_better(before: Sequence, after: Sequence):
     return out
 
 
+FLAG_ADD = "DELFIN_FFFREE_ADD_NEVER_REPLACE"
+
+
+def _ka_on() -> bool:
+    """DIE eine Lesestelle -- wie `_rg_on`.  Ein Schalter, zweimal gelesen, driftet."""
+    return os.environ.get(FLAG_ADD, "0") == "1"
+
+
+def keep_all(before: Sequence, after: Sequence):
+    """ADD, NEVER REPLACE: kein Frame aus `before` darf am Ende FEHLEN.
+
+    Geschwister von `keep_better`.  Jenes setzt durch *"kein Frame ist schlechter
+    als vorher"*, dieses *"kein Frame ist WEG"* -- zwei Haelften desselben
+    Vertrages, und die zweite war bis heute nicht durchgesetzt.
+
+    ANLASS (01.09.2026, gemessen an `mirrleg6k`).  `harness/frame_keys_additiv.py`
+    hat die acht Sperrer des besten Landekandidaten auf INHALTSEBENE geprueft:
+
+        LIYGAC QOYTEE XUFHEM XUFHIQ FEDDEA VAPNEI   nur_basis 0   streng additiv
+        ABUSAU  58 -> 59 Frames                     nur_basis 1   INHALT WEG
+        JEJROI  89 -> 90 Frames                     nur_basis 1   INHALT WEG
+
+    Auf ABUSAU und JEJROI verschwindet je EIN Frame, obwohl `_mirror_enum.
+    expand_results` per Konstruktion additiv ist (`:370  return list(results) +
+    added`; der einzige andere Ausgang gibt `results` unveraendert zurueck).
+    Der Verlust entsteht also STROMABWAERTS, in einer Stufe die AUSWAEHLT.
+    Die Etiketten sagen, was es trifft:
+
+        ABUSAU  weg: ...Br-N2-D-conf4_stereo-u    neu: ...Br-N2-L-conf3_mirror (2x)
+        JEJROI  weg: all-cis-L-conf3-2_stereo-uu  neu: Isomer 2_mirror         (2x)
+
+    In beiden Faellen faellt ein STEREOZENTREN-Frame, waehrend Spiegel dazukommen --
+    und die Spiegelung kehrt Lambda/Delta um, die neuen Frames sind also nahe
+    Verwandte der gefallenen.  Zwei additive Paesse verdraengen einander ueber eine
+    Auswahlstufe.  Dieselbe Bauart hat `trans208` ein CCDC-Isomer gekostet (Notiz
+    an der Spiegel-Aufrufstelle, smiles_converter.py:32621).
+
+    WAS DIESES TOR NICHT TUT.  Es sagt NICHT, welche Stufe den Frame nimmt -- es
+    stellt ihn wieder her.  Die Wurzel bleibt offen und wird als eigene Aufgabe
+    gefuehrt; ein Vertrag, der erst am Ende der Kette durchgesetzt wird, ist eine
+    NAHT und keine Heilung.
+
+    UND ES KANN EINEN FRAME ZURUECKHOLEN, DEN EINE AUSWAHL BEWUSST VERWARF
+    (z. B. `_gfnff_ensemble_rank_filter` -- im Champion an, deckelt je Isomer auf
+    top-K in einem Energiefenster).  Das ist gewollt: der Vertrag sagt, ein
+    ENUMERATOR darf keinen Frame kosten.  Wer eine Auswahl will, muss sie VOR dem
+    Enumerator treffen, nicht danach.  Wer das anders sieht, laesst das Tor aus --
+    es ist Vorgabe AUS.
+
+    ZUORDNUNG UEBER DAS ETIKETT-MULTISET, nicht ueber den Text: Stufen dazwischen
+    formatieren Koordinaten um; ein Stringvergleich meldete dann "weg", wo nur
+    anders gedruckt wurde, und das Tor haengte DUBLETTEN an.  Etiketten sind stabil
+    (Paesse haengen Suffixe an, sie schreiben nicht um).  MULTISET, weil doppelte
+    Etiketten der Normalfall sind -- ABUSAU traegt 20 davon im Basisarm; eine
+    MENGE statt eines Zaehlers wuerde den zweiten Frame nie vermissen.
+
+    Byte-identisch, solange `DELFIN_FFFREE_ADD_NEVER_REPLACE != 1`.
+    """
+    if not _ka_on() or not before or not after:
+        return after
+    try:
+        def _lbl(e):
+            try:
+                return e[1] if len(e) > 1 else ""
+            except Exception:
+                return ""
+
+        n_vor: Dict[str, int] = {}
+        for e in before:
+            n_vor[_lbl(e)] = n_vor.get(_lbl(e), 0) + 1
+        n_nach: Dict[str, int] = {}
+        for e in after:
+            n_nach[_lbl(e)] = n_nach.get(_lbl(e), 0) + 1
+
+        fehlt = {l: n - n_nach.get(l, 0) for l, n in n_vor.items()
+                 if n - n_nach.get(l, 0) > 0}
+        if not fehlt:
+            return after
+
+        # WELCHE Vorkommnis wiederherstellen?  Das Etikett sagt WIE VIELE fehlen,
+        # nicht WELCHE.  Steht ein Etikett zweimal in `before` und einmal in
+        # `after`, und man nimmt einfach die erste, haengt man eine DUBLETTE des
+        # vorhandenen Frames an -- und der wirklich fehlende bleibt verloren.
+        # (Genau daran ist die erste Fassung im Selbsttest gescheitert.)
+        # Also: Inhalte, die `after` schon fuehrt, einmal abstreichen; bevorzugt
+        # wiederhergestellt wird, was danach uebrig ist.  Der Textvergleich taugt
+        # HIER, weil er nur AUSWAEHLT -- ob ueberhaupt etwas fehlt, hat das
+        # Etikett-Multiset schon entschieden.
+        vorhanden: Dict[str, int] = {}
+        for e in after:
+            try:
+                _k = str(e[0])
+            except Exception:
+                continue
+            vorhanden[_k] = vorhanden.get(_k, 0) + 1
+
+        rest = list(after)
+        offen = dict(fehlt)
+        nachrang = []
+        for e in before:
+            l = _lbl(e)
+            if offen.get(l, 0) <= 0:
+                continue
+            try:
+                _k = str(e[0])
+            except Exception:
+                _k = None
+            if _k is not None and vorhanden.get(_k, 0) > 0:
+                vorhanden[_k] -= 1          # dieser Inhalt steht schon da
+                nachrang.append(e)          # nur als Rueckfall aufheben
+                continue
+            rest.append(e)
+            offen[l] -= 1
+        # Rueckfall: bleiben Plaetze offen (alle Kandidaten waren inhaltsgleich),
+        # dann ist die Zahl trotzdem einzuhalten -- sonst waere das Tor je nach
+        # Datenlage still.
+        for e in nachrang:
+            l = _lbl(e)
+            if offen.get(l, 0) > 0:
+                rest.append(e)
+                offen[l] -= 1
+        # KEINE STILLE WIEDERHERSTELLUNG.  Ein Tor, das nicht meldet, sieht
+        # hinterher aus wie "es ist nie etwas verschwunden".
+        _LOG.info("ADD-never-replace: %d Frame(s) wiederhergestellt, die die Kette "
+                  "verloren hatte (%d Etikett(en): %s)",
+                  sum(fehlt.values()), len(fehlt), ", ".join(sorted(fehlt)[:4]))
+        return rest
+    except Exception as exc:                  # pragma: no cover - Fail-safe
+        _LOG.warning("ADD-never-replace nicht angewandt (%s) -- es wird NICHTS "
+                     "wiederhergestellt", type(exc).__name__)
+        return after
+
+
 def _rg_selbsttest() -> int:  # pragma: no cover - Werkzeug, kein Produktivpfad
     """Behauptungen dieses Moduls gegen Zahlen, nicht gegen Zuversicht.
 
@@ -401,6 +534,51 @@ def _rg_selbsttest() -> int:  # pragma: no cover - Werkzeug, kein Produktivpfad
                 os.environ.pop(_f, None)
             else:
                 os.environ[_f] = _v
+
+    # ── ADD, NEVER REPLACE ──────────────────────────────────────────────────────
+    # Nachgebaut wird ABUSAU: doppelte Etiketten sind der Normalfall (20 im
+    # Basisarm), EIN Frame verschwindet, zwei kommen dazu.  Ein Tor, das nur den
+    # einfachen Fall kann, faellt genau hier um.
+    _alt_add = os.environ.get(FLAG_ADD)
+    try:
+        vor = [("A", "L-conf3"), ("B", "L-conf3"), ("C", "D-conf4_stereo-u")]
+        nach = [("A", "L-conf3"), ("B", "L-conf3"),
+                ("M1", "L-conf3_mirror"), ("M2", "L-conf3_mirror")]
+
+        os.environ[FLAG_ADD] = "0"
+        _urteil("bei Vorgabe AUS ist es ein NO-OP (byte-identisch)",
+                keep_all(vor, nach) is nach)
+
+        os.environ[FLAG_ADD] = "1"
+        her = keep_all(vor, nach)
+        _urteil("das verschwundene Etikett ist wieder da",
+                any(l == "D-conf4_stereo-u" for _x, l in her))
+        _urteil("und zwar mit dem ORIGINALINHALT, nicht mit einem Ersatz",
+                any(x == "C" for x, _l in her))
+        _urteil("die Spiegel bleiben unangetastet",
+                sum(1 for _x, l in her if l == "L-conf3_mirror") == 2)
+        _urteil("nichts wird doppelt angehaengt (Multiset, nicht Menge)",
+                len(her) == 5, "4 vorhandene + genau 1 wiederhergestellter")
+
+        # DIE GEGENPROBE, ohne die die Zahl nichts wert waere: fehlt NICHTS,
+        # darf das Tor auch nichts anfassen -- sonst waechst der Manifold bei
+        # jedem Aufruf.
+        _urteil("fehlt nichts, bleibt die Liste unveraendert",
+                keep_all(vor, list(vor)) == list(vor))
+
+        # Und der Fall, an dem eine MENGE statt eines Zaehlers scheitern wuerde:
+        # ein Etikett steht zweimal vorher und nur einmal nachher.
+        vor2 = [("A", "dup"), ("B", "dup")]
+        nach2 = [("A", "dup")]
+        her2 = keep_all(vor2, nach2)
+        _urteil("ein von ZWEI gleichen Etiketten verlorener Frame wird bemerkt",
+                len(her2) == 2 and any(x == "B" for x, _l in her2),
+                "eine Menge statt eines Zaehlers saehe hier nichts")
+    finally:
+        if _alt_add is None:
+            os.environ.pop(FLAG_ADD, None)
+        else:
+            os.environ[FLAG_ADD] = _alt_add
 
     print(f"\n  {'ALLE PROBEN BESTANDEN' if fehler == 0 else str(fehler) + ' PROBE(N) GESCHEITERT'}")
     return 1 if fehler else 0
