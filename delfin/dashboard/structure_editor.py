@@ -203,6 +203,17 @@ _BUDGET_SPENDS_AT_MOST = 0.8
 #: barrier.
 _BUDGET_LEFT_WORTH_SPENDING = 0.5
 
+#: How far apart two answers must be before they are two arrangements and
+#: not one answer measured twice.
+#:
+#: In the driven coordinate's own units, so an Angstrom for a distance and a
+#: degree for a turn -- one number for both, because what it is separating is
+#: a real change from a relaxation disagreeing with itself, and neither is
+#: near a hundredth in either unit.  Measured on the case this was written
+#: for: the C-O alternated between 1.385 and 1.435, a step of 0.05, while the
+#: return to the answer before was 0.0001.
+_TWO_STATES_APART = 0.01
+
 #: The least the hand must have asked for, in Angstrom, for the last two
 #: answers to say what one more Angstrom of asking costs.
 #:
@@ -5694,6 +5705,23 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                 f'({hardest / _gfn.A_BOND_HOLDS:.2f} of a '
                                 f'bond) -- drag further ahead of the atom to '
                                 f'pull harder')
+                        # And whether the structure is answering with two
+                        # arrangements rather than one.  Said on the hand's own
+                        # clause, because it is a fact about what the hand is
+                        # doing to the molecule.
+                        # Off this answer's own geometry.  Not `reached`:
+                        # that is worked out further down, and this is a loop
+                        # body -- the name is still bound from the answer
+                        # before, so reading it here would compare the last
+                        # answer against itself and quietly never fire.  An
+                        # internal coordinate does not care that `reached` is
+                        # the same thing laid onto the untouched atoms.
+                        if _two_arrangements(
+                                _value_in(outcome.get('xyz') or '', driving)
+                                if driving is not None else None):
+                            hand += (' \u00b7 two arrangements under this '
+                                     'pull, alternating -- ease off to hold '
+                                     'one')
                         if state.get('thermal_held_back'):
                             # And why it is not following the cursor any
                             # further, which is the one thing a hand resting
@@ -14310,6 +14338,66 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return _HAND_FOLLOWS
         share = _HAND_FOLLOWS * (_HAND_FOLLOWS_AT / took)
         return max(_HAND_FOLLOWS_FLOOR, min(_HAND_FOLLOWS, share))
+
+    def _two_arrangements(value):
+        """Whether the answers are alternating between two states.
+
+        Not a fault to be smoothed away.  Chased to the end on the user's own
+        structure -- a 37-atom anion under GFN2, the carboxyl pulled -- the
+        answers alternate in an *internal* coordinate: the C-O runs 1.38511,
+        1.43245, 1.38511, 1.43296, repeating to five decimals with the mouse
+        standing still, and the radius of gyration alternates with it.  So the
+        molecule really is in two states, not laid two ways in space.
+
+        Everything that could have made it a fault of the loop was measured
+        and is not: the browser's field is stopped for every server method;
+        the budget off with twenty cycles gives the same numbers to four
+        decimals as the budget on; a hundred and twenty cycles still flip, and
+        more cleanly, so each relaxation is converging rather than
+        overshooting; and damping the wish changes nothing.
+
+        What it scales with is the pull.  The page hands the kernel the last
+        answer with the held atom displaced up to a reach towards the cursor,
+        and that displacement is how the cursor's demand arrives: at 1.0 A the
+        flip spans 0.42 and the hand pulls at 38 kcal/mol/A, at 0.3 A it spans
+        0.25 and pulls at 12, at 0.0 A it does not flip and does not pull at
+        all.  Strength and flip are one knob, because at that load the
+        relaxation lands in one of two arrangements depending where it began.
+
+        So this says it.  A structure that alternates under the hand is a fact
+        about the molecule -- it has two arrangements at this load -- and the
+        editor's business is to name it, the way it names everything else it
+        knows, rather than to filter it out and leave the user watching a
+        picture that twitches for no stated reason.
+
+        Judged on the coordinate the hand is driving: a step between answers
+        well clear of what a relaxation disagrees with, and a return to where
+        it was the answer before that is far smaller.  Three of those in a row
+        before anything is said, so one ragged answer is not an announcement.
+        """
+        run = state.get('gfn_follow_run')
+        if state.get('gfn_two_states_run') != run:
+            state['gfn_two_states_run'] = run
+            state['gfn_two_states'] = []
+            state['gfn_two_states_for'] = 0
+        if value is None:
+            return False
+        trail = list(state.get('gfn_two_states') or [])
+        trail.append(float(value))
+        trail = trail[-3:]
+        state['gfn_two_states'] = trail
+        held = int(state.get('gfn_two_states_for') or 0)
+        if len(trail) < 3:
+            return False
+        step = abs(trail[-1] - trail[-2])
+        back = abs(trail[-1] - trail[-3])
+        # A step worth calling a step, and a return far tighter than it.
+        if step > _TWO_STATES_APART and back < step / 10.0:
+            held += 1
+        else:
+            held = 0
+        state['gfn_two_states_for'] = held
+        return held >= 3
 
     def _steady_hand(pushes):
         """The same forces, but not free to double and halve every answer.

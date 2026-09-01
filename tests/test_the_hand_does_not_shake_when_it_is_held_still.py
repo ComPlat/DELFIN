@@ -38,6 +38,8 @@ import tempfile
 
 import pytest
 
+from editor_source import EDITOR_SOURCE
+
 
 _ETHANE = """8
 ethane
@@ -256,3 +258,71 @@ def test_adjust_h_is_a_switch_that_can_be_read():
     assert button.button_style == 'info'
     said = ' '.join(part.state.get('mol_status_lines') or ())
     assert 'filled in and trimmed' in said, said
+
+
+def test_two_arrangements_under_the_hand_are_said_and_not_smoothed():
+    """A structure that alternates is telling you something.
+
+    Chased to the end on the user's own structure -- a 37-atom anion under
+    GFN2, the carboxyl pulled, the mouse standing still.  The answers
+    alternate in an *internal* coordinate: the C-O runs 1.38511, 1.43245,
+    1.38511, 1.43296, to five decimals, and the radius of gyration alternates
+    with it.  The molecule really is in two states.
+
+    Everything that would have made it a fault of the loop was measured and is
+    not: the browser's field is stopped for every server method; the budget
+    off with twenty cycles gives the same numbers to four decimals as the
+    budget on; a hundred and twenty cycles still flip, and more cleanly, so
+    each relaxation converges rather than overshoots; and damping the wish
+    changes nothing (0.5 -> 0.479, 0.2 -> 0.468 against 0.424 undamped).
+
+    What it scales with is the pull: at a reach of 1.0 A the flip spans 0.42
+    and the hand pulls at 38 kcal/mol/A, at 0.3 A it spans 0.25 and pulls at
+    12, at 0.0 A it neither flips nor pulls.  Strength and flip are one knob.
+
+    So it is named rather than filtered.  Three alternations in a row before
+    anything is said, so one ragged answer is not an announcement.
+    """
+    part, state = _an_editor()
+    state['gfn_follow_run'] = 11
+    two = part._two_arrangements
+
+    # A drag that is going somewhere says nothing: every answer is a step on
+    # from the last and none of them comes back.
+    for value in (1.30, 1.34, 1.38, 1.42, 1.46, 1.50):
+        assert two(value) is False, value
+
+    # The measured case: two states, and the third time round it is said.
+    state['gfn_follow_run'] = 12
+    said = [two(v) for v in (1.38511, 1.43245, 1.38511, 1.43296,
+                             1.38511, 1.43245)]
+    assert said[:4] == [False, False, False, False], said
+    assert said[4] is True and said[5] is True, said
+
+    # A wobble smaller than a relaxation disagrees with itself is not two
+    # arrangements.
+    state['gfn_follow_run'] = 13
+    assert not any(two(v) for v in (1.4000, 1.4004, 1.4000, 1.4004,
+                                    1.4000, 1.4004)), 'noise is not a state'
+
+    # And a new drag starts the count again.
+    state['gfn_follow_run'] = 14
+    assert two(1.38511) is False
+    assert state['gfn_two_states'] == [1.38511]
+
+
+def test_the_two_arrangements_clause_reaches_the_line():
+    """Said on the hand's own clause, off this answer's own geometry.
+
+    Not off `reached`: that is worked out further down the same loop body, so
+    the name is still bound from the answer before -- reading it here would
+    compare an answer with itself and never fire.
+    """
+    follow = EDITOR_SOURCE.split('def _gfn_follow_step(')[1].split(
+        '\n    def ')[0]
+    assert '_two_arrangements(' in follow
+    assert "_value_in(outcome.get('xyz') or '', driving)" in follow
+    assert 'two arrangements under this ' in follow
+    # The detector is armed before the clause that reads it.
+    assert follow.index('driving = contacts[0]') < follow.index(
+        '_two_arrangements(')
