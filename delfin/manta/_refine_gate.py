@@ -303,8 +303,20 @@ def keep_better(before: Sequence, after: Sequence):
                 continue
             n_rueck += 1
     if n_rueck:
-        _LOG.info("refine-gate: %d von %d veraenderten Frames zurueckgenommen "
-                  "(Kollisionen oder Bindungslaengen wurden schlechter)", n_rueck, n_geprueft)
+        # WARNING, NICHT INFO (01.09.2026).  Gemessen: `refine-gate` steht in
+        # **0 von 2031** Lauf-Logs -- die INFO-Stufe des Bauers erreicht das
+        # Lauf-Log nicht, `mirror_enum` ist dort nur sichtbar, weil es `warning`
+        # benutzt.  Dieses Tor war damit seit seinem Bau UNBEOBACHTBAR: seine
+        # Wirkung war angenommen, nie gesehen.
+        # ⚠ Und die Folge war schlimmer als fehlende Neugier: bei `addroot3` konnte
+        #   ich aus dem Schweigen NICHT ablesen, ob das Tor nichts fand oder gar
+        #   nicht lief.  Genau die Unterscheidung, die `loop.py:_fire_out` mit
+        #   "gemessen und nichts getroffen ist eine ANDERE Aussage als nicht
+        #   gemessen" zur Regel erhebt.
+        # ⇒ Ein Ereignis wird gemeldet, Schweigen heisst ab jetzt "nichts getan".
+        _LOG.warning("refine-gate: %d von %d veraenderten Frames zurueckgenommen "
+                     "(Kollisionen oder Bindungslaengen wurden schlechter)",
+                     n_rueck, n_geprueft)
     return out
 
 
@@ -435,11 +447,13 @@ def keep_all(before: Sequence, after: Sequence):
             if offen.get(l, 0) > 0:
                 rest.append(e)
                 offen[l] -= 1
-        # KEINE STILLE WIEDERHERSTELLUNG.  Ein Tor, das nicht meldet, sieht
-        # hinterher aus wie "es ist nie etwas verschwunden".
-        _LOG.info("ADD-never-replace: %d Frame(s) wiederhergestellt, die die Kette "
-                  "verloren hatte (%d Etikett(en): %s)",
-                  sum(fehlt.values()), len(fehlt), ", ".join(sorted(fehlt)[:4]))
+        # KEINE STILLE WIEDERHERSTELLUNG, und WARNING statt INFO -- aus demselben
+        # gemessenen Grund wie bei `keep_better` oben: INFO aus dem Bauer erreicht
+        # das Lauf-Log nicht (0 von 2031).  Bei `addroot3` hat mich genau das um
+        # die Antwort gebracht, ob dieses Tor nichts fand oder nicht lief.
+        _LOG.warning("ADD-never-replace: %d Frame(s) wiederhergestellt, die die "
+                     "Kette verloren hatte (%d Etikett(en): %s)",
+                     sum(fehlt.values()), len(fehlt), ", ".join(sorted(fehlt)[:4]))
         return rest
     except Exception as exc:                  # pragma: no cover - Fail-safe
         _LOG.warning("ADD-never-replace nicht angewandt (%s) -- es wird NICHTS "
