@@ -109,18 +109,30 @@ def test_a_hydrogen_contact_is_not_held_alongside_a_heavy_one():
 
 
 def test_two_bonds_forming_at_once_are_both_held():
-    """That is a cycloaddition, and both halves of it are the coordinate."""
+    """That is a cycloaddition, and both halves of it are the coordinate.
+
+    Each carbon carries a hydrogen, which is not decoration.  A hand names
+    every atom it is holding, and an atom whose one bond goes to another it is
+    holding is riding on it rather than saying anything of its own -- see
+    :func:`gfn_optimize.speaking_for_the_drag`.  Written with a bare second
+    carbon, this fragment asked the perception to tell a carbon from a
+    hydrogen by their bonding alone, which nothing in there does and no real
+    cycloaddition ever demands: the carbons of an ethylene have their
+    hydrogens on them.
+    """
     apart = (
-        "6\ntwo pairs approaching\n"
-        "C  0.00 0.00 0.00\nC  1.40 0.00 0.00\nH -0.60 0.90 0.00\n"
-        "C  0.00 0.00 2.40\nC  1.40 0.00 2.40\nH -0.60 0.90 2.40\n"
+        "8\ntwo pairs approaching\n"
+        "C  0.00 0.00 0.00\nC  1.40 0.00 0.00\n"
+        "H -0.60 0.90 0.00\nH  2.00 0.90 0.00\n"
+        "C  0.00 0.00 2.40\nC  1.40 0.00 2.40\n"
+        "H -0.60 0.90 2.40\nH  2.00 0.90 2.40\n"
     )
     closer = apart.replace("2.40", "2.20")
-    held = gfn.contacts_holding(closer, [3, 4], most=3, was=apart)
+    held = gfn.contacts_holding(closer, [4, 5], most=3, was=apart)
     pairs = {frozenset(one["atoms"]) for one in held
              if one["kind"] == "distance"}
-    assert frozenset({3, 0}) in pairs
-    assert frozenset({4, 1}) in pairs
+    assert frozenset({4, 0}) in pairs
+    assert frozenset({5, 1}) in pairs
 
 
 def test_a_partner_with_something_in_the_way_is_not_a_contact():
@@ -895,14 +907,20 @@ def test_only_the_atoms_the_hand_took_hold_of_make_a_statement():
     assert owners == [3], owners
 
     # Two atoms under the hand make two statements, which is a cycloaddition.
+    # Each of them carrying its own hydrogen, because the same rule reads the
+    # other way as well: an atom whose one bond goes to another atom the hand
+    # is holding is riding on it, and a bare second carbon would be asking the
+    # perception to tell a carbon from a hydrogen by their bonding alone.
     apart = (
-        "6\ntwo pairs approaching\n"
-        "C  0.00 0.00 0.00\nC  1.40 0.00 0.00\nH -0.60 0.90 0.00\n"
-        "C  0.00 0.00 2.40\nC  1.40 0.00 2.40\nH -0.60 0.90 2.40\n"
+        "8\ntwo pairs approaching\n"
+        "C  0.00 0.00 0.00\nC  1.40 0.00 0.00\n"
+        "H -0.60 0.90 0.00\nH  2.00 0.90 0.00\n"
+        "C  0.00 0.00 2.40\nC  1.40 0.00 2.40\n"
+        "H -0.60 0.90 2.40\nH  2.00 0.90 2.40\n"
     )
     closer = apart.replace("2.40", "2.20")
-    held = gfn.contacts_holding(closer, [3, 4], most=3, was=apart)
-    assert sorted(one["atoms"][0] for one in held) == [3, 4]
+    held = gfn.contacts_holding(closer, [4, 5], most=3, was=apart)
+    assert sorted(one["atoms"][0] for one in held) == [4, 5]
 
 
 def test_the_follow_prices_the_relaxation_it_ran():

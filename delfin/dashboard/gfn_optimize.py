@@ -40,7 +40,8 @@ __all__ = ['GFN_METHODS', 'as_pushes', 'atom_lines', 'bond_graph',
            'bond_order_between', 'bond_order_note', 'read_bond_orders',
            'read_charges', 'not_a_stationary_point', 'rms_gradient',
            'constraint_input', 'contacts_holding', 'graph_changed',
-           'bonds_to_freeze', 'graph_holds', 'method_is_out_of_its_depth',
+           'speaking_for_the_drag', 'bonds_to_freeze', 'graph_holds',
+           'method_is_out_of_its_depth',
            'a_rate_apart', 'paths_disagree', 'where_a_walk_jumped',
            'what_else_moved', 'pair_named',
            'gfnff_refusal', 'gfnff_pair_refusal', 'gfnff_would_form',
@@ -1724,6 +1725,28 @@ def _turned_by(now: float, before: float) -> float:
 _MOVED_ANGSTROM = 0.02
 _MOVED_SHARE = 0.25
 
+#: How much better a coordinate has to be than the one already held before it
+#: takes its place.
+#:
+#: The choice was remade from scratch on every answer, and between candidates
+#: that say the same thing it was decided by noise.  A hand pulls rather than
+#: places, so the structure never arrives where the cursor is, and every
+#: coordinate spanning that standing gap has changed by about the same amount
+#: -- on an ethane with one methyl drawn 1.2 A out, the four best score 1.078,
+#: 1.038, 1.037 and 1.037.  Which of them comes first is decided by where the
+#: methyl's hydrogens happen to be pointing, and holding a different set turns
+#: the methyl, which moves the hydrogens, which changes the order again.
+#:
+#: Measured on that ethane with the hand standing still: the set changed on
+#: three of twenty answers and an atom moved 1.29 A on each of them, while
+#: within one unchanged set the leading score wandered by 2%.  The three
+#: changes were won by 5%, 7% and 23%.  So the margin is a quarter -- the same
+#: share :data:`_MOVED_SHARE` already calls "part of the same drag", which is
+#: the point: a challenger inside the band that would have kept the incumbent
+#: alongside it is not describing a different gesture, and swapping to it buys
+#: nothing and costs the structure a jump.
+_HELD_KEEPS_ITS_PLACE = 0.25
+
 #: How straight a contact has to be to the hand's own motion before it counts
 #: as a bond being made.  A pair the hand is closing at nearly the full rate of
 #: its own step is a reaction coordinate whatever the distance happens to be;
@@ -2509,6 +2532,49 @@ def _snapshot(was, count):
             for n in range(count)]
 
 
+def speaking_for_the_drag(where, radius, dragged) -> list:
+    """*dragged*, without the atoms that are only riding on another of them.
+
+    :func:`with_their_terminals` already says a methyl's hydrogens travel with
+    their carbon and "make no statement of their own".  It says it about atoms
+    the page did not name; this says the same thing about the ones it did.  A
+    page names every atom the hand is holding, and a hand that has hold of a
+    selected group names all of it -- so the group's hydrogens arrived as
+    atoms with a statement to make, and each of them claimed a coordinate.
+
+    What that costs was measured on an ethane with one methyl drawn 1.2 A out
+    and the hand then held still.  Four atoms are named, so four coordinates
+    are offered and three are kept: the C-C the hand is actually tearing, and
+    two H...H contacts across the gap.  The H...H ones carry no information --
+    every pair spanning that gap has changed by about the same amount, and
+    which is largest depends on where the methyl's hydrogens happen to point
+    -- so the set changed on three of twenty answers, and holding a different
+    set turns the methyl, which moves the hydrogens, which changes the set
+    again.  An atom moved 1.29 A on each of those answers.  With the
+    hydrogens silent the same twenty answers move an atom by at most 0.002 A
+    and the C-C stands within 0.002 A of itself throughout.
+
+    Terminal and carried, not hydrogen: an atom rides only if its one bond
+    goes to another atom in the same grab.  A hand on a lone hydrogen still
+    speaks for it, because its carbon is not in the grab and the contact is
+    the hand's own.  And if that would silence the whole grab -- two atoms
+    holding nothing but each other, which is what a bare two-carbon fragment
+    approaching another one is -- then nobody is riding and all of them speak.
+    """
+    grabbed = sorted({int(i) for i in (dragged or ())
+                      if 0 <= int(i) < len(where)})
+    if len(grabbed) < 2:
+        return grabbed
+    inside = set(grabbed)
+    riding = set()
+    for k in grabbed:
+        ties = [j for j in range(len(where))
+                if j != k and _is_a_bond(where, radius, k, j)]
+        if len(ties) == 1 and ties[0] in inside:
+            riding.add(k)
+    return [k for k in grabbed if k not in riding] or grabbed
+
+
 def contacts_holding(
     xyz_text: str,
     dragged: Any,
@@ -2591,6 +2657,11 @@ def contacts_holding(
     grabbed = sorted({int(i) for i in (dragged or ())
                       if 0 <= int(i) < len(where)})
     held = with_their_terminals(where, radius, grabbed)
+    # Everything the hand holds travels; not everything it holds has something
+    # of its own to say about what it is driving.  See
+    # :func:`speaking_for_the_drag`, and the methyl that turned 1.29 A an
+    # answer while its hydrogens took turns naming the coordinate.
+    grabbed = speaking_for_the_drag(where, radius, grabbed)
     inside = sorted(i for i in held if 0 <= i < len(where))
     outside = [j for j in range(len(where)) if j not in held]
     if not inside or not outside:
@@ -2714,16 +2785,29 @@ def contacts_holding(
     # than a molecule on its way anywhere.  Two dragged atoms give two, which
     # is a cycloaddition; six give the two that carry it, because the rest
     # score below the share.
+    #
+    # What is already held keeps its place unless it is clearly beaten -- see
+    # _HELD_KEEPS_ITS_PLACE, and the ethane whose methyl turned 1.29 A every
+    # time two equally good coordinates changed order.  Only the ordering is
+    # touched: a coordinate the hand has stopped moving still falls out on
+    # _MOVED_ANGSTROM below, so nothing is held for longer than it is true.
+    standing: dict = {}
+    already = {(str(one.get('kind')), tuple(int(n) for n in
+                                            one.get('atoms') or ()))
+               for one in (holding or ())}
+    for key, (score, _one) in best.items():
+        standing[key] = (score * (1.0 + _HELD_KEEPS_ITS_PLACE)
+                         if key in already else score)
     ranked, spoken = [], set()
-    for score, one in sorted(best.values(), key=lambda pair: -pair[0]):
+    for key, (score, one) in sorted(best.items(),
+                                    key=lambda pair: -standing[pair[0]]):
         if score < _MOVED_ANGSTROM:
             continue
         owner = one['atoms'][0]
         if owner in spoken:
             continue
         spoken.add(owner)
-        ranked.append((score, one))
-    ranked = [one for _score, one in ranked]
+        ranked.append(one)
     if not ranked:
         # A hand that has stopped moving has changed nothing, and nothing is
         # not an answer: with no values held the price falls back to a single
@@ -2747,9 +2831,9 @@ def contacts_holding(
                                 if one['kind'] == 'dihedral' else one['value'])
             return kept
         return contacts_holding(xyz_text, dragged, most=most)
-    top = sorted(best.values(), key=lambda one: -one[0])[0][0]
+    top = max(standing.values())
     kept = [one for one in ranked
-            if best[(one['kind'], tuple(one['atoms']))][0] >= _MOVED_SHARE * top]
+            if standing[(one['kind'], tuple(one['atoms']))] >= _MOVED_SHARE * top]
     return kept[:max(1, int(most))]
 
 def read_trajectory(folder: Path) -> list:
