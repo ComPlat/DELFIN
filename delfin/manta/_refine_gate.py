@@ -277,6 +277,7 @@ def keep_better(before: Sequence, after: Sequence):
             vorher[l] = x
 
     out = list(after)
+    ZAEHLER["keep_better_gelaufen"] += 1
     n_rueck = n_geprueft = 0
     for k, e in enumerate(out):
         l, x = _rg_lbl(e), _rg_xyz(e)
@@ -302,6 +303,7 @@ def keep_better(before: Sequence, after: Sequence):
             except Exception:
                 continue
             n_rueck += 1
+    ZAEHLER["keep_better_zurueck"] += n_rueck
     if n_rueck:
         # WARNING, NICHT INFO (01.09.2026).  Gemessen: `refine-gate` steht in
         # **0 von 2031** Lauf-Logs -- die INFO-Stufe des Bauers erreicht das
@@ -321,6 +323,28 @@ def keep_better(before: Sequence, after: Sequence):
 
 
 FLAG_ADD = "DELFIN_FFFREE_ADD_NEVER_REPLACE"
+
+# ── ZAEHLER STATT PROTOKOLL (01.09.2026) ────────────────────────────────────────
+# GEMESSEN: `refine-gate` steht in 0 von 2031 Lauf-Logs.  Ich habe daraufhin die
+# Meldungen von INFO auf WARNING gehoben -- und auf `addroot4` nachgemessen: es
+# erreicht ueberhaupt KEINE Bauer-Warnung das Lauf-Log, auch `mirror_enum` nicht,
+# das sicher gefeuert hat.  Der Bauer laeuft als Unterprozess, dessen Logstrom
+# verworfen wird; das Protokoll ist der falsche Kanal, egal auf welcher Stufe.
+#
+# DER RICHTIGE KANAL ist die JSON-Zeile, die der Bauer je System ohnehin schreibt
+# (loop.py:406).  Daneben steht `_fire_out()` mit genau dieser Begruendung:
+# "IMMER mitgeben, auch leer: 'gemessen und nichts getroffen' ist eine ANDERE
+#  Aussage als 'nicht gemessen'".
+#
+# ⚠ `gelaufen` wird UNABHAENGIG von `getroffen` gezaehlt.  Ohne das ist eine Null
+#   nicht lesbar -- und genau daran ist die Frage "fand das Tor nichts, oder lief
+#   es gar nicht?" bei `addroot3` und `addroot4` gescheitert.
+ZAEHLER = {
+    "keep_better_gelaufen": 0,      # Aufrufe, bei denen das Tor AN war
+    "keep_better_zurueck": 0,       # tatsaechlich zurueckgenommene Frames
+    "keep_all_gelaufen": 0,         # Aufrufe, bei denen das Tor AN war
+    "keep_all_wieder": 0,           # tatsaechlich wiederhergestellte Frames
+}
 
 
 def _ka_on() -> bool:
@@ -386,6 +410,7 @@ def keep_all(before: Sequence, after: Sequence):
     """
     if not _ka_on() or not before or not after:
         return after
+    ZAEHLER["keep_all_gelaufen"] += 1
     try:
         def _lbl(e):
             try:
@@ -451,6 +476,7 @@ def keep_all(before: Sequence, after: Sequence):
         # gemessenen Grund wie bei `keep_better` oben: INFO aus dem Bauer erreicht
         # das Lauf-Log nicht (0 von 2031).  Bei `addroot3` hat mich genau das um
         # die Antwort gebracht, ob dieses Tor nichts fand oder nicht lief.
+        ZAEHLER["keep_all_wieder"] += sum(fehlt.values())
         _LOG.warning("ADD-never-replace: %d Frame(s) wiederhergestellt, die die "
                      "Kette verloren hatte (%d Etikett(en): %s)",
                      sum(fehlt.values()), len(fehlt), ", ".join(sorted(fehlt)[:4]))
