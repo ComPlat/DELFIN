@@ -1989,8 +1989,13 @@ H            1.93775123027231        1.04166818908956       -0.88181350880857
 """
 
 
-def _a_part(structure=_ETHANE):
-    """One structure editor, built over a coordinate box of its own."""
+def _a_part(structure=_ETHANE, update_view=None):
+    """One structure editor, built over a coordinate box of its own.
+
+    *update_view* is the host's redraw.  A test that cares whether the picture
+    was told anything passes its own; the default is the no-op every other one
+    here wants.
+    """
     import tempfile
 
     pytest.importorskip("ipywidgets")
@@ -2009,7 +2014,8 @@ def _a_part(structure=_ETHANE):
         ctx, state={}, coords_widget=widgets.Textarea(value=structure),
         viewer_height=560,
         schedule_ui_update=lambda func, *a, **k: func(*a, **k),
-        update_view=lambda *a, **k: None, get_smiles_charge=lambda *a, **k: None)
+        update_view=update_view or (lambda *a, **k: None),
+        get_smiles_charge=lambda *a, **k: None)
 
 
 def _budgeted(structure, kelvin=298.15, hand="pull"):
@@ -3855,6 +3861,135 @@ def test_the_placing_hand_keeps_everything_that_still_works():
     for spare in ("submit_sens_slider", "submit_topology_btn",
                   "submit_scan_add_btn", "submit_strength_slider"):
         assert spare not in body, spare
+
+
+@_needs_xtb
+def test_the_release_draws_what_the_wall_kept():
+    """The box was right and the picture was the cursor's.
+
+    The atoms under the cursor belong to the page while the hand is down: an
+    answer that moved them would pull them back to where the cursor was an
+    animation frame ago, so the follow leaves them where the page put them.
+    At the release there is no further answer coming, and the wall's kept
+    structure has to reach the screen -- which it did not, because by then the
+    box was usually already holding it and the write that would have redrawn
+    was skipped as a no-op.  Reported from a live session: the status line read
+    E = -7.336370 Eh, the intact ethane, over a picture of two methyls 2.178 A
+    apart.
+    """
+    import time
+
+    start = gfn.optimize_with_gfn(_ETHANE, "gfn2", max_steps=400, timeout=300)
+    assert start.get("ok"), start.get("status")
+    begin = start["xyz"]
+    methyl = {1, 5, 6, 7}
+
+    drawn = []
+    part = _a_part(begin, update_view=lambda *a, **k: drawn.append(True))
+    part.submit_ff_dd.value = "gfn2"
+    part.submit_relax_btn.value = True
+    part.submit_hand_dd.value = "pull"
+    part.submit_temperature.value = 298.15
+    part.submit_thermal_btn.value = True
+    began = time.time()
+    while part.state.get("thermal_e0") is None and time.time() - began < 300:
+        time.sleep(0.05)
+    assert part.state.get("thermal_e0") is not None
+
+    part._begin_gfn_follow()
+    part._arm_thermal_leash()
+    for n in range(1, 4):
+        part.submit_manip_sync.value = _drag_message(
+            _shifted(begin, methyl, 2.4 * n / 3),
+            "DELFIN drag-follow held=1,5,6,7")
+        _quiet(part.state)
+
+    # The box is already holding what the budget allowed, which is exactly the
+    # case that used to leave the picture alone.
+    good = part.state.get("thermal_good")
+    assert good, "nothing was ever priced, so there is no wall to test"
+    assert (gfn.coordinates_of(part.coords_widget.value)
+            == gfn.coordinates_of(good))
+
+    drawn.clear()
+    part.submit_manip_sync.value = _drag_message(
+        _shifted(begin, methyl, 2.4), "DELFIN drag-end")
+    _quiet(part.state)
+
+    assert drawn, "the release left the cursor's structure on the screen"
+    # And what it draws is the wall's, not the mouse's.
+    assert _apart(part.coords_widget.value, 0, 1) < 2.0, _apart(
+        part.coords_widget.value, 0, 1)
+
+
+@_needs_xtb
+def test_a_placing_hand_is_not_stopped_by_a_budget_that_is_not_running():
+    """The switch keeps its value when the hand changes; the wall must not.
+
+    A budget claims the coordinate box for the whole of a drag -- the page
+    writes its own model there ten times a second, and that model is where the
+    cursor is rather than where the chemistry allowed, so the last word has to
+    be the wall's.  The claim asked whether the switch was *on*.  Under a
+    placing hand the budget is not on in any sense that matters: it is taken
+    off the screen because it cannot be exact about a geometry that is laid
+    back onto the cursor, and nothing prices anything.  So the box was
+    reserved for an answer that never came.
+
+    Measured on this ethane, the far methyl drawn 1.5 A: C-C read 1.521 before
+    the drag, 1.521 during it and 1.521 after the release, while the same drag
+    with the budget switched off reached 3.021 -- a drag that did nothing at
+    all, under a status line reporting that it had followed.
+    """
+    import time
+
+    start = gfn.optimize_with_gfn(_ETHANE, "gfn2", max_steps=400, timeout=300)
+    assert start.get("ok"), start.get("status")
+    begin = start["xyz"]
+    methyl = {1, 5, 6, 7}
+
+    def _dragged(hand, budget):
+        part = _a_part(begin)
+        part.submit_ff_dd.value = "gfn2"
+        part.submit_relax_btn.value = True
+        # The anchor is taken under the hand the budget belongs to, which is
+        # how a user gets here: switch it on, pull something, then choose to
+        # place instead.  The switch is not thrown away with the hand.
+        part.submit_hand_dd.value = "pull"
+        if budget:
+            part.submit_temperature.value = 298.15
+            part.submit_thermal_btn.value = True
+            began = time.time()
+            while (part.state.get("thermal_e0") is None
+                   and time.time() - began < 300):
+                time.sleep(0.05)
+            assert part.state.get("thermal_e0") is not None
+        part.submit_hand_dd.value = hand
+        part._begin_gfn_follow()
+        for n in range(1, 4):
+            part.submit_manip_sync.value = _drag_message(
+                _shifted(begin, methyl, 1.5 * n / 3),
+                "DELFIN drag-follow held=1,5,6,7")
+            _quiet(part.state)
+        part.submit_manip_sync.value = _drag_message(
+            _shifted(begin, methyl, 1.5), "DELFIN drag-end")
+        _quiet(part.state)
+        return part, _apart(part.coords_widget.value, 0, 1)
+
+    part, without = _dragged("move", budget=False)
+    assert without > 2.5, f"the drag never moved anything: {without:.3f}"
+
+    part, with_it = _dragged("move", budget=True)
+    assert part._thermal_live() is False, "the placing hand has no budget"
+    assert part.submit_thermal_btn.value is True, "but the switch is still on"
+    assert with_it == pytest.approx(without, abs=0.05), (
+        f"the switch stopped a drag it is not pricing: {with_it:.3f} against "
+        f"{without:.3f} with it off")
+
+    # And the hand it does belong to is still walled, or the fix would have
+    # been to take the wall away.
+    part, pulled = _dragged("pull", budget=True)
+    assert part._thermal_live() is True
+    assert pulled < 2.0, f"the budget let a pull go anywhere: {pulled:.3f}"
 
 
 # ---------------------------------------------------------------------------

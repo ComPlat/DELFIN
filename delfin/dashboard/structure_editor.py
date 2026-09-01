@@ -7157,10 +7157,26 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                       f'{float(submit_temperature.value):g} K')
 
     def _keep_this_geometry(good, why):
-        """Put *good* in the box, unless it is not about this molecule.
+        """Put *good* in the box and on the screen, if it is this molecule.
 
         The one place either wall writes its answer at the release, so the two
         cannot drift apart in how carefully they do it.
+
+        And the screen, which is the half this used to leave out.  The atoms
+        under the cursor belong to the page for as long as the hand is down --
+        an answer that moved them would drag them back to where the cursor was
+        an animation frame ago, so the follow's writes leave them alone.  At
+        the release nothing is held any more and there is no further answer
+        coming, so whatever the wall kept has to be drawn or the picture keeps
+        the cursor's structure for good.  Measured on an ethane with the
+        budget on: the box and the status line reported the intact molecule at
+        E = -7.336370 Eh while the picture showed two methyls 2.178 A apart
+        with no bond between them.  Same number, different molecule.
+
+        Both halves of that: written not-drawn, because the page has not drawn
+        this one; and redrawn from the box when there is nothing to write,
+        because the wall agreeing with the box says nothing at all about what
+        is on the screen.  Reset does the same thing for the same reason.
         """
         rows = [line for line in good.splitlines()[2:] if line.strip()]
         here = coords_widget.value or ''
@@ -7170,8 +7186,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # user.  The wall guards itself the same way, for the same reason.
             return
         if _gfn.coordinates_of(here) == _gfn.coordinates_of(good):
-            return          # already holding it, and the comment says why
-        _write_coords(xyz_document(rows, why), True)
+            state['manip_inflight'] = False
+            update_view()
+            return
+        _write_coords(xyz_document(rows, why))
 
     def _topology_wall(xyz):
         """Keep the molecule the molecule it was, and take back what did not.
@@ -18514,9 +18532,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # 1.521 A and seven bonds all through the drag, then 5.521 A and six
         # the moment the hand let go, while the wall's own kept structure was
         # still the seven-bond one.
+        #
+        # And the budget's half asks whether it is *live*, not whether its
+        # switch is on.  The switch keeps its value when the hand is changed
+        # to a placement -- it is only taken off the screen, because a budget
+        # cannot be exact about a geometry that is laid back onto the cursor
+        # -- so a rigid hand with the switch left on reserved the box for a
+        # pricing that never runs.  Measured on an ethane, the far methyl
+        # drawn 1.5 A: the box held C-C at 1.521 before the drag, during it
+        # and after the release, while the same drag with the budget switched
+        # off reached 3.021.  A drag that does nothing at all, under a status
+        # line reporting that it followed.
         walled = ((dragging or released)
                   and state.get('gfn_follow')
-                  and ((bool(submit_thermal_btn.value)
+                  and ((_thermal_live()
                         and _thermal_budget()[0] is not None)
                        or (bool(submit_topology_btn.value)
                            and state.get('topology_graph') is not None)))
