@@ -11714,8 +11714,27 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             now = _value_in(here, leg)
             if now is None:
                 return None
+            kind = str(leg.get('kind') or 'distance')
             way = -1.0 if float(leg['to']) < float(leg['from']) else 1.0
-            return max(0.2, now + way * _gfn.PUSH_REACH)
+            # A reach in the coordinate's own units.
+            #
+            # It was an Angstrom whatever the coordinate was, so a push on an
+            # angle or a torsion held its target one *degree* ahead where a
+            # reach is a hundred and eight of them -- see
+            # :data:`gfn_optimize.PUSH_REACH_DEGREES`, which existed and was
+            # not used here.  A push that asks for a hundredth of what it
+            # means to ask for does not refuse; it ramps a force against a
+            # target the structure is already at and nothing happens, which is
+            # what a user meets as "only walk the value works on an angle".
+            # The drag has converted since it was written; this had not.
+            reach = (_gfn.PUSH_REACH if kind == 'distance'
+                     else _gfn.PUSH_REACH_DEGREES)
+            target = now + way * reach
+            # And the floor is a distance's.  A bond cannot be asked for at or
+            # below zero; an angle of 0.2 degrees is not a floor, it is a
+            # different structure, and a torsion is periodic and has no floor
+            # at all.
+            return max(0.2, target) if kind == 'distance' else target
 
         # What the temperature will pay for, read once before the walk starts.
         #
@@ -14081,9 +14100,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # silently is what made both hard to explain.
             pairs = []
             if _marked_pair():
-                pairs.append(('the end you marked', 'marked'))
+                # Both entries begin with the same two words, so the eye
+                # lands on the only thing that differs: where the pair came
+                # from.  They were "the end you marked" and "the scan's two
+                # ends" -- one singular over a pair, the other putting the
+                # scan first -- and read side by side they looked like two
+                # different kinds of thing.  Asked directly, twice: "was ist
+                # jetzt the scans two ends und the end you mark?" and "aber
+                # was ist der unterschied ich verstehe ihn noch nicht ganz".
+                #
+                # They are the same kind of thing: two structures for the
+                # search to look between.  What differs is who chose them, and
+                # that is now the end of each label rather than buried in it.
+                pairs.append(('the ends you marked', 'marked'))
             if _scan_ends_here():
-                pairs.append(("the scan's two ends", 'scan'))
+                pairs.append(('the ends from the scan', 'scan'))
             starts = pairs or [('what is on screen', 'here')]
             if pairs and state.get('saddle_start_wish') == 'here':
                 # A wish for something that no longer exists pins the box for
@@ -16789,6 +16820,37 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             if active else
             'The lines keep the bonds the structure was drawn with.')
 
+    def on_submit_adjust_h(change):
+        """Whether an edit fills the hydrogens in again.
+
+        A switch nobody could read.  Every other toggle in this toolbar lights
+        when it is on and says in one line what it changed; this one was given
+        ``button_style='info'`` when it was built and never again, so it was
+        blue whether it was on or off, and it had no observer at all, so
+        pressing it said nothing.  It starts on.  Press it and the hydrogens
+        stop being adjusted, the button stays exactly as blue, and the line
+        goes on talking about whatever was said last.
+
+        Found by pressing everything in the toolbar on a running dashboard and
+        writing down what each press left behind: this was the one press with
+        nothing after it.
+
+        It is not a cosmetic switch.  Its own tooltip says what it is for -- a
+        radical, an open coordination site, a fragment about to be joined to
+        something else -- and each of those is a structure that is wrong if
+        the hydrogens come back uninvited.  A setting that decides that
+        silently is a setting that will be wrong without anybody noticing.
+        """
+        if change.get('name') != 'value':
+            return
+        active = bool(submit_adjust_h_btn.value)
+        submit_adjust_h_btn.button_style = 'info' if active else ''
+        _set_mol_status(
+            'Hydrogens are filled in and trimmed where an edit touches an '
+            'atom.' if active else
+            'Hydrogens are left exactly as they are -- what a radical, an '
+            'open site or a fragment to be joined needs.')
+
     def on_submit_bond_kinds(change):
         """Whether a double bond is drawn as two lines."""
         if change.get('name') != 'value':
@@ -18392,6 +18454,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_scan_gear.observe(lambda _c: _refresh_scan(), names='value')
     submit_load_btn.observe(on_submit_load_toggle, names='value')
     submit_load_del.on_click(on_submit_load_del)
+    submit_adjust_h_btn.observe(on_submit_adjust_h, names='value')
     submit_bond_kinds_btn.observe(on_submit_bond_kinds, names='value')
     submit_pick_sync.observe(on_submit_pick_sync, names='value')
     submit_poly_dd.observe(on_submit_poly_changed, names='value')

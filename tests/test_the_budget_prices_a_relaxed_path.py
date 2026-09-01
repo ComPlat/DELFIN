@@ -2907,7 +2907,7 @@ def test_the_path_is_offered_once_there_is_something_to_walk_between():
     """
     source = EDITOR_SOURCE
     assert 'submit_saddle_from = widgets.Dropdown(' in source
-    assert '''("the scan's two ends", 'scan')''' in source
+    assert "('the ends from the scan', 'scan')" in source
     assert "('the path only', 'walk')" in source
     assert "state['scan_ends'] = (" in source
     assert "if state.get('scan_ends'):" in source
@@ -3127,7 +3127,7 @@ def test_a_path_can_be_marked_one_structure_at_a_time():
     assert "if first.strip() == second.strip():" in source
     assert "ends = state.get('scan_ends')" in source
     assert "if which == 'scan':" in source
-    assert "('the end you marked', 'marked')" in source
+    assert "('the ends you marked', 'marked')" in source
     # And with neither, what to do is said rather than "run a scan first".
     assert 'Mark a beginning, build or load the ' in source
 

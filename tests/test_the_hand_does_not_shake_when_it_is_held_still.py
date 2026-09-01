@@ -221,3 +221,38 @@ def test_the_damping_is_in_the_drag_and_nowhere_else():
     follow = EDITOR_SOURCE.split('contacts = _gfn.as_pushes(', 1)[1]
     assert '_steady_hand(' in follow[:400]
     assert EDITOR_SOURCE.count('_steady_hand(contacts)') == 1
+
+
+def test_adjust_h_is_a_switch_that_can_be_read():
+    """It was blue whether it was on or off, and said nothing either way.
+
+    Every other toggle in this toolbar lights when it is on and writes one
+    line saying what it changed.  This one was given its colour when it was
+    built and never again, and it had no observer at all -- so it started on
+    and blue, went off and stayed blue, and left the status line talking about
+    whatever had happened before.
+
+    Found by pressing everything in the toolbar on a running dashboard and
+    writing down what each press left behind.  Of twenty-two presses under
+    each of GFN-FF, GFN1 and GFN2, this was the one with nothing after it.
+
+    Not cosmetic.  Its own tooltip says what it is for -- a radical, an open
+    coordination site, a fragment about to be joined to something else -- and
+    every one of those is a structure that comes out wrong if the hydrogens
+    are put back uninvited.
+    """
+    part, _state = _an_editor()
+    button = part.submit_adjust_h_btn
+
+    assert button.value is True, 'it starts on'
+    assert button.button_style == 'info', 'and lit, because it is on'
+
+    button.value = False
+    assert button.button_style == '', 'off has to look different from on'
+    said = ' '.join(part.state.get('mol_status_lines') or ())
+    assert 'left exactly as they are' in said, said
+
+    button.value = True
+    assert button.button_style == 'info'
+    said = ' '.join(part.state.get('mol_status_lines') or ())
+    assert 'filled in and trimmed' in said, said
