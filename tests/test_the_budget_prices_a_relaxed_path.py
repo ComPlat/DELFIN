@@ -3378,10 +3378,32 @@ def test_the_placing_hand_is_not_measured_and_does_not_pretend_to_be():
 def test_the_same_drag_goes_through_at_a_temperature_that_can_pay_for_it():
     """A ceiling that refuses everything is not a ceiling either.
 
-    The identical sequence of messages at 1500 K, where the hour buys 117.0
-    kcal/mol instead of 22.3.  The step that was refused at room temperature
-    -- the relaxed structure at +23.5 -- is kept here, and the bond is
-    stretched further than room temperature would ever allow.
+    The identical sequence of messages at both temperatures, where the hour
+    buys 117.0 kcal/mol instead of 22.3.  What room temperature pulls back to
+    something it can afford, 1500 K keeps.
+
+    **Both temperatures are run here, and the assertions compare them.**  They
+    used to compare one of them against a number.  That number was measured
+    once and stopped being true: the same drag, run six times on one box,
+    spent 11.8 to 14.8 kcal/mol against a threshold of 17.3, and the reason is
+    not flakiness in the usual sense.  How far a drag gets is settled by an
+    optimisation inside a relaxation inside a budget, and that composition is
+    reproducible *within* a process and not between them -- the same
+    ``far=6.0`` pull measured +8.8 hot in one process and +53.5 in another,
+    while three laps inside one process agreed to a percent.  A threshold
+    written from one process is a threshold about that process.
+
+    A comparison is not.  Both drags here share whatever the process brings,
+    and the thing being claimed is a difference: measured three laps each at
+    ``far=6.0``, room temperature kept +17.2, +18.0 and +17.2 kcal/mol with
+    the bond at 1.645, 1.648 and 1.644 A, and 1500 K kept +91.7, +92.2 and
+    +91.7 with it at 2.469, 2.476 and 2.469.  Five times the price and eight
+    tenths of an angstrom, against a percent of scatter on either side.
+
+    ``far=2.0``, which this asked for before, no longer reaches the ceiling at
+    either temperature -- the budget's own relaxation brings the structure
+    back first -- so the two were indistinguishable and there was nothing for
+    a temperature to decide.
     """
     from delfin.dashboard.structure_editor import (
         _THERMAL_SECONDS, thermal_ceiling)
@@ -3392,14 +3414,22 @@ def test_the_same_drag_goes_through_at_a_temperature_that_can_pay_for_it():
     hot = thermal_ceiling(1500.0, _THERMAL_SECONDS)
     assert hot > 100.0 > cold
 
-    part = _budgeted(begin, kelvin=1500.0, hand="pull")
-    kept = _dragged_apart(part, begin, far=2.0)
-    spent = _costs(kept, part.state["thermal_e0"])
-    # Past what room temperature would have allowed, and inside what this
-    # temperature does.
-    assert spent > cold - 5.0, f"{spent:+.1f} kcal/mol"
-    assert spent <= hot, f"{spent:+.1f} of {hot:.1f}"
-    assert _apart(kept, 0, 1) > _apart(begin, 0, 1) + 0.2
+    chilly = _budgeted(begin, kelvin=298.15, hand="pull")
+    kept_cold = _dragged_apart(chilly, begin, far=6.0)
+    spent_cold = _costs(kept_cold, chilly.state["thermal_e0"])
+
+    warm = _budgeted(begin, kelvin=1500.0, hand="pull")
+    kept_hot = _dragged_apart(warm, begin, far=6.0)
+    spent_hot = _costs(kept_hot, warm.state["thermal_e0"])
+
+    # Room temperature stays inside its hour, and 1500 K does not have to.
+    assert spent_cold <= cold + 2.0, f"{spent_cold:+.1f} of {cold:.1f}"
+    assert spent_hot > cold, f"{spent_hot:+.1f} against {cold:.1f}"
+    assert spent_hot <= hot, f"{spent_hot:+.1f} of {hot:.1f}"
+    # And the structure that survives says the same thing in angstroms.
+    assert _apart(kept_hot, 0, 1) > _apart(kept_cold, 0, 1) + 0.3, (
+        _apart(kept_cold, 0, 1), _apart(kept_hot, 0, 1))
+    assert _apart(kept_hot, 0, 1) > _apart(begin, 0, 1) + 0.2
 
 
 @_needs_xtb
