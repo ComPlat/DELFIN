@@ -35100,12 +35100,28 @@ def _smiles_to_xyz_isomers_impl(
                     _DPZ["dual_parse_gelaufen"] += 1
                 except Exception:
                     _DPZ = None
+                # ── DER FIX (DELFIN_DUALPARSE_KEEP_ALL, Vorgabe AUS) ────────────
+                # `seen_sigs` hat ZWEI Aufgaben, und nur EINE davon ist richtig:
+                #   (1) Nachschlagewerk "habe ich diese Geometrie schon?" fuer die
+                #       Alt-Kandidaten -- korrekt, die Alt-Schleife ueberschreibt nie.
+                #   (2) Traeger der Ergebnisliste (`results = list(seen_sigs.values())`
+                #       weiter unten) -- FALSCH: dabei fallen die EIGENEN Frames des
+                #       Aufrufers zusammen, bevor ueberhaupt ein Alt-Frame geprueft ist.
+                # Dieselbe Datei macht es an DREI anderen Stellen richtig (:29808,
+                # :30260, :30653): dort ist es ein SET, das nur das HINZUFUEGEN
+                # bremst und nie etwas ersetzt.  Der Fix gleicht diese Stelle daran
+                # an -- kein neuer Mechanismus, sondern das hier fehlende Muster.
+                _keep_all = os.environ.get("DELFIN_DUALPARSE_KEEP_ALL", "0") == "1"
+                _eigene = list(results)   # unangetastet, wenn der Fix AN ist
                 seen_sigs = {}
                 for _dx, _dl in results:
                     _dk = _sig(_dx)
                     if _dk in seen_sigs and _DPZ is not None:
                         _DPZ["dual_sig_kollision"] += 1
-                    seen_sigs[_dk] = (_dx, _dl)
+                    if _keep_all:
+                        seen_sigs.setdefault(_dk, (_dx, _dl))
+                    else:
+                        seen_sigs[_dk] = (_dx, _dl)
                 # The canonical-pipeline xyz carries the canonical mol's
                 # atom ordering, which usually differs from the caller
                 # mol's ordering.  We need the final output to reference
@@ -35179,9 +35195,15 @@ def _smiles_to_xyz_isomers_impl(
                         # whenever the mapping succeeded) so downstream
                         # consumers see consistent atom indices.
                         seen_sigs[s] = (reordered_xyz, lbl)
+                        if _keep_all:
+                            _eigene.append((reordered_xyz, lbl))
                     except Exception:
                         continue
-                results = list(seen_sigs.values())
+                # ⚠ MIT FIX: die eigenen Frames bleiben ALLE, die angenommenen
+                #   Alt-Frames kommen HINTEN dran -- additiv per Konstruktion, die
+                #   Framezahl kann hier nicht mehr FALLEN.
+                #   OHNE FIX: unveraendertes altes Verhalten, Byte fuer Byte.
+                results = _eigene if _keep_all else list(seen_sigs.values())
         except Exception as _dual_exc:
             logger.debug("Dual-parse union failed: %s", _dual_exc)
 
