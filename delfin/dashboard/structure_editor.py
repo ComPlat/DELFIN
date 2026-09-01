@@ -4974,9 +4974,40 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
     #: A follow step is a whole xtb process, so it is a few cycles rather than
     #: a minimisation.  Measured on a 102-atom complex: one cycle 0.06 s, five
-    #: 0.09 s, ten 0.12 s -- five is about ten answers a second, which reads as
-    #: the molecule following the hand rather than catching up with it.
-    _GFN_FOLLOW_CYCLES = 5
+    #: 0.09 s, ten 0.12 s -- which reads as the molecule following the hand
+    #: rather than catching up with it.
+    #:
+    #: Five is not enough, and the drag shook because of it.  Under a pull the
+    #: held atoms sit where the cursor has them and the rest of the structure
+    #: is at home, so each answer has a walk back to make; five cycles do not
+    #: finish it, the shortfall accumulates, and the structure snaps when it
+    #: can no longer carry it.  Measured on the page's own feedback loop --
+    #: each wish built from the LAST answer, which is the only way this is
+    #: visible at all -- with the cursor standing 12 A off at a reach of 0.6:
+    #:
+    #:     acetate, 7 atoms, GFN2      at37, 35 atoms, GFN2
+    #:     cycles  span  jump   ms     cycles  span   jump   ms
+    #:          5 0.108 0.172   63          5 0.0555 0.117  295
+    #:         10 0.002 0.020   82         10 0.0034 0.045  410
+    #:         20 0.002 0.020   82         20 0.0024 0.147  510
+    #:
+    #: The span is the drift and the snap; it collapses by a factor of twelve
+    #: to fifty-seven between five and ten, and nothing after ten improves it.
+    #:
+    #: Twenty is worse, which is the part worth writing down.  It is where the
+    #: answers begin to converge -- 45 of 57 on the at37, against none at ten
+    #: -- and a fully converged answer sits in its own minimum under the
+    #: restraint as it stands, so when the restraint moves that minimum hops.
+    #: The picture then jumps three times as far per answer.  Converged per
+    #: answer is not the same as a quiet sequence of answers, and a drag is a
+    #: sequence.  The budget's twenty stays where it is: it is chosen for the
+    #: accuracy of a *price*, which is a different requirement, and its own
+    #: note below says why.
+    #:
+    #: What it costs is a third, not the four-fold a cap suggests, because a
+    #: cap is a cap: xtb stops at convergence -- see _THERMAL_FOLLOW_CYCLES,
+    #: which measured exactly that.
+    _GFN_FOLLOW_CYCLES = 10
 
     #: How far the answer may put a held atom from the cursor before the drag
     #: counts as under-determined.

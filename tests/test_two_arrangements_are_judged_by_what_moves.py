@@ -167,3 +167,96 @@ def test_a_coordinate_the_geometry_does_not_carry_says_nothing():
     part = _an_editor()
     said = _alternating(part, _entry('distance', [0, 99]), 1.50, 1.55)
     assert not any(said), said
+
+
+# ---------------------------------------------------------------------------
+# And the loop it is judged on
+# ---------------------------------------------------------------------------
+
+#: An acetate anion relaxed under GFN2, charge -1.  A carboxyl oxygen drawn
+#: out of its carbon is the shape the shaking was reported on, and seven atoms
+#: keep the drag below a tenth of a second an answer.
+_ACETATE = """7
+acetate, relaxed under GFN2
+C  -0.674211   0.032822  -0.017922
+C   0.909634  -0.034240   0.017171
+O   1.384734  -1.020429   0.598777
+O   1.502057   0.903558  -0.535561
+H  -1.005331   0.926938  -0.544090
+H  -1.056399   0.044692   1.002521
+H  -1.060484  -0.853341  -0.520897
+"""
+
+
+def _wish(xyz, held, cursor, reach):
+    """The last answer with the held atoms moved up to *reach* at the cursor.
+
+    This is what the page sends, and it is the whole reason the shaking is
+    invisible to a harness that does not do it: a wish built from the geometry
+    the drag *began* on asks the same question every answer, and a
+    deterministic relaxation must give the same answer back.
+    """
+    import numpy as np
+
+    from delfin.dashboard.structure_editor import xyz_line
+
+    here = np.asarray(gfn.coordinates_of(xyz), float).reshape(-1, 3)
+    out = here.copy()
+    for i in held:
+        want = cursor[i] - here[i]
+        far = float(np.linalg.norm(want))
+        if far > 1e-9:
+            out[i] = here[i] + want * (min(reach, far) / far)
+    lines = gfn.atom_lines(xyz)
+    body = [xyz_line(line.split()[0], *out[n])
+            for n, line in enumerate(lines)]
+    return (f'{len(body)}\nDELFIN drag-follow held='
+            + ','.join(str(i) for i in sorted(held)) + '\n'
+            + '\n'.join(body))
+
+
+@pytest.mark.skipif(gfn.find_xtb() is None, reason='no xtb to relax with')
+def test_a_pull_that_is_held_does_not_drift_and_snap():
+    """Five cycles an answer were not enough, and the drag shook for it.
+
+    Under a pull the held atoms sit where the cursor has them and the rest of
+    the structure is at home, so every answer has a walk back to make.  Five
+    cycles do not finish it; the shortfall accumulates over several answers
+    and the structure snaps when it can no longer carry it.  Measured on this
+    acetate with the cursor standing still 12 A off at a reach of 0.6, the
+    driven C-O ran 1.278, 1.287, 1.297, 1.313, 1.321 and then back to 1.221 --
+    a 0.108 A snap, twice inside twenty answers.  At ten cycles the same drag
+    holds inside 0.002 A.
+
+    Driven through the page's own loop, which is the only way it is visible:
+    see :func:`_wish`.
+    """
+    import numpy as np
+
+    helper = pytest.importorskip('test_the_budget_prices_a_relaxed_path')
+
+    part = helper._a_part(_ACETATE)
+    part.submit_ff_dd.value = 'gfn2'
+    part.submit_gfn_charge.value = -1
+    part.submit_relax_btn.value = True
+    part.submit_hand_dd.value = 'pull'
+    part.submit_pull_slider.value = 0.60
+    part._begin_gfn_follow()
+
+    held = [2]
+    way = np.array([0.383276, -0.795584, 0.469197])
+    way = way / np.linalg.norm(way)
+    start = np.asarray(gfn.coordinates_of(_ACETATE), float).reshape(-1, 3)
+    cursor = {i: start[i] + way * 12.0 for i in held}
+
+    answer, seen = _ACETATE, []
+    for _n in range(16):
+        part.submit_manip_sync.value = _wish(answer, held, cursor, 0.60)
+        helper._quiet(part.state)
+        answer = part.state.get('thermal_was') or answer
+        seen.append(helper._apart(answer, 1, 2))
+
+    span = max(seen) - min(seen)
+    assert span < 0.02, (
+        'the held pull drifted and snapped: C-O ran %s, a span of %.4f A'
+        % (['%.4f' % one for one in seen], span))
