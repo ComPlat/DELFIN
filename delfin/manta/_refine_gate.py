@@ -344,6 +344,19 @@ ZAEHLER = {
     "keep_better_zurueck": 0,       # tatsaechlich zurueckgenommene Frames
     "keep_all_gelaufen": 0,         # Aufrufe, bei denen das Tor AN war
     "keep_all_wieder": 0,           # tatsaechlich wiederhergestellte Frames
+    # ── Dual-Parse-Vereinigung (smiles_converter.py:~35092), 01.09.2026 ──────────
+    # Der Bau laeuft bei Metall-SMILES mit `canonical != input` ZWEIMAL; die
+    # beiden Ergebnismengen werden ueber eine XYZ-Signatur vereinigt.  Diese
+    # Signatur laesst WASSERSTOFFE WEG und sortiert die Schweratomzeilen -- zwei
+    # Frames, die sich nur in H-Positionen unterscheiden (Stereozentrum gegen
+    # Spiegelbild), bekommen denselben Schluessel.  Die Zuweisung behaelt den
+    # SPAETEREN.  Das ist die einzige gefundene Stufe mit umgekehrter
+    # Vorzugsregel und H-blindem Schluessel.
+    # ⚠ HIER WIRD NUR GEZAEHLT, NICHTS GEAENDERT.  Die These ist erst dann
+    #   belegt, wenn `dual_sig_kollision` auf ABUSAU/JEJROI ungleich null steht
+    #   UND mit dem Spiegel verschwindet.
+    "dual_parse_gelaufen": 0,       # zweiter Bau ueberhaupt ausgefuehrt
+    "dual_sig_kollision": 0,        # Frames, die einen bestehenden Schluessel UEBERSCHREIBEN
 }
 
 

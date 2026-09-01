@@ -35089,7 +35089,23 @@ def _smiles_to_xyz_isomers_impl(
                         if len(p) >= 4 and p[0] not in ('H', 'h')
                     )
                     return tuple(heavy)
-                seen_sigs = {_sig(xyz): (xyz, lbl) for xyz, lbl in results}
+                # ⚠ NUR ZAEHLEN, NICHT AENDERN (01.09.2026).  Diese Zuweisung ist
+                #   die einzige gefundene Stufe mit UMGEKEHRTER Vorzugsregel: bei
+                #   gleichem Schluessel gewinnt der SPAETERE Frame.  Und `_sig`
+                #   laesst Wasserstoffe weg -- ein Stereozentrum und sein
+                #   Spiegelbild sind fuer sie IDENTISCH.  Ob hier wirklich ein
+                #   Frame verlorengeht, entscheidet die Zahl, nicht die Erzaehlung.
+                try:
+                    from delfin.manta._refine_gate import ZAEHLER as _DPZ
+                    _DPZ["dual_parse_gelaufen"] += 1
+                except Exception:
+                    _DPZ = None
+                seen_sigs = {}
+                for _dx, _dl in results:
+                    _dk = _sig(_dx)
+                    if _dk in seen_sigs and _DPZ is not None:
+                        _DPZ["dual_sig_kollision"] += 1
+                    seen_sigs[_dk] = (_dx, _dl)
                 # The canonical-pipeline xyz carries the canonical mol's
                 # atom ordering, which usually differs from the caller
                 # mol's ordering.  We need the final output to reference
