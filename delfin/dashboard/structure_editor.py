@@ -5015,6 +5015,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: path instead of jumping along it, and it was asked for.
     _THERMAL_FOLLOW_CYCLES = 20
 
+    #: And how many more before a step is refused, once.
+    #:
+    #: See the follow, where this is spent: a truncated relaxation can price a
+    #: geometry the same relaxation walks away from given more cycles, and the
+    #: wall would then refuse a barrier that is not there.  Measured on the
+    #: Ac-Ala-NHMe drag written up there, the worst answer of it converged in
+    #: 60 cycles and every wish out to 3.86 A was home inside 400.  Two
+    #: hundred is above the first and below the second, and it is a bound
+    #: rather than a target: the run stops when it converges.
+    _THERMAL_FINISH_CYCLES = 200
+
     def _begin_gfn_follow():
         """A drag has started and the molecule is to follow it."""
         if not (submit_relax_btn.value
@@ -5706,6 +5717,84 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             _set_mol_status,
                             f'The molecule stopped following: {note}')
                         return
+                    # An answer that is about to be refused has to be a
+                    # finished one.
+                    #
+                    # Under a pull the held atoms are wherever the cursor has
+                    # them and the rest of the structure is at home, so the
+                    # distance the relaxation has to walk back grows with the
+                    # drag and does not stop growing.  Twenty cycles cover it
+                    # until they do not, and the answer that comes back then
+                    # is the wish with the walk half done -- which is
+                    # expensive, and expensive for no chemical reason at all.
+                    #
+                    # Measured on an Ac-Ala-NHMe under GFN-FF at 298.15 K
+                    # against a 22.3 ceiling, the acetyl methyl drawn out 3 A
+                    # in twelve steps.  The wish's C0-C1 goes 1.7, 1.9, ...,
+                    # 3.3 A and every answer relaxes it back to 1.488 -- until
+                    # the eighth, where twenty cycles reach only 3.244 A and
+                    # +103.1 kcal/mol.  The same input, the same held block
+                    # and the same topology given more cycles: 40 reach 1.489
+                    # A and +0.65, and 60 converge at 1.488 A and +0.59.  So
+                    # there was no barrier; there was an optimisation stopped
+                    # in the middle of one.  Swept finely, the truncated
+                    # answer tracks the finished one to a wish of 3.43 A and
+                    # then steps to +96.8, +102.1, +103.0 while the finished
+                    # one stays between +0.2 and +0.8 the whole way out to
+                    # 3.86 A.
+                    #
+                    # And it does not cost one refused step: the running
+                    # maximum only comes down where the structure returns to
+                    # the last geometry the budget agreed to, and here the
+                    # cursor never goes back, so every later step of the drag
+                    # is refused too.  From the user's side that is a drag
+                    # that silently stops working.
+                    #
+                    # Only where the price is about to fire the wall, and only
+                    # where the run said it had not finished -- so an ordinary
+                    # step pays nothing, and a genuinely torn bond, whose
+                    # answer converges, pays it once and is refused anyway.
+                    # Measured on the alanine above: 44 ms for the twenty
+                    # cycles and 52 ms for the continuation, and drawn the
+                    # whole 3 A the continuation converges at +102.96 and the
+                    # refusal stands.
+                    #
+                    # Continued from the geometry already reached rather than
+                    # started again from the wish, so nothing is walked twice:
+                    # 52 ms against 70 for the same answer built from scratch.
+                    #
+                    # No clock on it, the way the answer above has none: what
+                    # ends a follow step is the hand letting go, and
+                    # should_stop is what hears that.  The cost is bounded by
+                    # the cycles instead, which are ten answers' worth -- on a
+                    # method and a size where one answer is already seconds
+                    # long, so is this, and the drag was already a slideshow
+                    # there.
+                    #
+                    # Named rather than left to the switch: a method that
+                    # cannot price takes the budget down with it, so this
+                    # cannot fire under MOPAC -- but the continuation is an
+                    # xtb call and would be handed a MOPAC method's name if it
+                    # ever did.  The three other places in this step that ask
+                    # the same question ask it out loud.
+                    if (pricing and not outcome.get('converged')
+                            and not _mopac.is_mopac_method(method)):
+                        anchor, ceiling = _thermal_budget()
+                        raw = outcome.get('energy')
+                        if (anchor is not None and raw is not None
+                                and (float(raw) - float(anchor))
+                                * _HARTREE_TO_KCAL > ceiling):
+                            finishing = _gfn.relax_steps(
+                                outcome['xyz'], method=method, charge=charge,
+                                uhf=uhf, cycles=_THERMAL_FINISH_CYCLES,
+                                timeout=None, should_stop=_hand_gone,
+                                constraints=keeping + contacts, solvent=wet,
+                                solvation_model=model,
+                                topology=_gfn_topology_dir(current),
+                            )
+                            if (finishing.get('ok')
+                                    and finishing.get('energy') is not None):
+                                outcome = finishing
                     # What this answer computed and used to throw away with
                     # its scratch directory. A list assignment and, with the
                     # labels off, nothing else at all -- see _repaint_labels.

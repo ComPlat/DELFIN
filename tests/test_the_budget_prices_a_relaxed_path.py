@@ -2018,17 +2018,21 @@ def _a_part(structure=_ETHANE, update_view=None):
         get_smiles_charge=lambda *a, **k: None)
 
 
-def _budgeted(structure, kelvin=298.15, hand="pull"):
+def _budgeted(structure, kelvin=298.15, hand="pull", method="gfn2"):
     """One editor with a thermal budget on it, anchored on that structure.
 
     The anchor is an xtb run of its own and it is taken in a thread, so this
     waits for it: without one there is no budget at all and every assertion
     below would be about a ceiling that was never in force.
+
+    *method* is the one the anchor is taken under, and it has to be the one
+    the drag then runs: an anchor of one method read against energies of
+    another is not a difference at all, and the budget refuses to act on it.
     """
     import time
 
     part = _a_part(structure)
-    part.submit_ff_dd.value = "gfn2"
+    part.submit_ff_dd.value = method
     part.submit_relax_btn.value = True
     part.submit_hand_dd.value = hand
     part.submit_temperature.value = kelvin
@@ -5283,3 +5287,94 @@ def test_the_allowance_is_worked_out_at_the_rate_the_next_answer_will_have():
         0.3 + left / (30.0 * 1.5), abs=1e-6)
 
 
+#: Ac-Ala-NHMe, relaxed under GFN2 -- the structure the cliff below was found
+#: on.  Kept as coordinates rather than optimised in the test: the chemistry
+#: here is GFN-FF's, and a starting minimum that moved with the xtb version
+#: would move the measurement with it.
+_ALANINE_DIPEPTIDE = "\n".join([
+    "22", "Ac-Ala-NHMe",
+    "C   2.41731  -0.80626  -0.16310",
+    "C   1.24432   0.14330  -0.27952",
+    "O   1.28110   1.19486  -0.88365",
+    "N   0.13808  -0.28173   0.37046",
+    "C  -1.12416   0.41242   0.29435",
+    "C  -2.23420  -0.64035   0.24751",
+    "O  -2.04835  -1.78303   0.61514",
+    "N  -3.41613  -0.17900  -0.19974",
+    "C  -4.60008  -1.00114  -0.27227",
+    "C  -1.32718   1.31693   1.51722",
+    "H   3.30040  -0.34182  -0.59171",
+    "H   2.60333  -1.05288   0.87925",
+    "H   2.19790  -1.72370  -0.70548",
+    "H   0.08529  -1.20765   0.77412",
+    "H  -1.11709   1.02211  -0.61699",
+    "H  -3.48883   0.77610  -0.51222",
+    "H  -5.39194  -0.59198   0.35792",
+    "H  -4.33019  -1.99359   0.08536",
+    "H  -4.95917  -1.07135  -1.30029",
+    "H  -0.51759   2.04041   1.56484",
+    "H  -2.27263   1.84944   1.45307",
+    "H  -1.32020   0.71892   2.42572",
+]) + "\n"
+
+
+def _drawn_out(part, begin, grabbed, far, steps):
+    """Draw those atoms out by *far*, one page message at a time.
+
+    Absolute coordinates from the structure the drag began on, which is what
+    the browser sends: under a pull the held atom stays where the cursor put
+    it however far the answer comes back.  Hands back the running maximum
+    after each step.
+    """
+    part._begin_gfn_follow()
+    part._arm_thermal_leash()
+    peaks = []
+    for n in range(1, steps + 1):
+        part.submit_manip_sync.value = _drag_message(
+            _shifted(begin, grabbed, far * n / steps),
+            "DELFIN drag-follow held="
+            + ",".join(str(i) for i in sorted(grabbed)))
+        _quiet(part.state, seconds=600)
+        peaks.append(float(part.state.get("thermal_peak") or 0.0))
+    return peaks
+
+
+@_needs_xtb
+def test_a_relaxation_stopped_in_the_middle_does_not_price_a_barrier():
+    """A step is refused on a finished answer, not on a half-finished one.
+
+    Under a pull the held atoms sit where the cursor has them and the rest of
+    the structure is at home, so the walk back each answer has to make grows
+    with the drag and does not stop growing.  The twenty cycles the budget
+    spends cover it until they do not.
+
+    Measured on this Ac-Ala-NHMe under GFN-FF at 298.15 K against a 22.3
+    kcal/mol ceiling, the acetyl methyl drawn out 3 A in twelve steps.  Every
+    answer relaxes C0-C1 back to 1.488 A and costs under a kcal/mol -- until
+    the eighth, where twenty cycles reach 3.244 A and +103.1.  The same input,
+    the same held block and the same GFN-FF topology given more cycles: 40
+    reach 1.489 A and +0.65, and 60 converge at 1.488 A and +0.59.  There is
+    no barrier there at all; there is an optimisation stopped in the middle of
+    one, and the running maximum then refuses every later step of the drag.
+
+    The second half is what keeps the first honest.  Drawn the whole 3 A the
+    methyl really is off: the answer converges at C0-C1 3.797 A and +103.0,
+    and no number of cycles brings it home.  That refusal is a torn bond and
+    it has to stand.
+    """
+    begin = _ALANINE_DIPEPTIDE
+    grabbed = {0, 10, 11, 12}
+    ceiling = structure_editor.thermal_ceiling(
+        298.15, structure_editor._THERMAL_SECONDS)
+
+    part = _budgeted(begin, kelvin=298.15, hand="pull", method="gfnff")
+    peaks = _drawn_out(part, begin, grabbed, 2.0, 8)
+    assert max(peaks) < ceiling, (
+        "a relaxation cut off at twenty cycles priced a barrier that is not "
+        "there: %s against %.1f" % (["%.1f" % p for p in peaks], ceiling))
+
+    part = _budgeted(begin, kelvin=298.15, hand="pull", method="gfnff")
+    torn = _drawn_out(part, begin, grabbed, 3.0, 12)
+    assert max(torn) > ceiling, (
+        "the methyl is off at 3 A and the wall let it go: %s"
+        % (["%.1f" % p for p in torn],))
