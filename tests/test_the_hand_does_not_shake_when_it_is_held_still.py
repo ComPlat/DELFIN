@@ -282,10 +282,19 @@ def test_two_arrangements_under_the_hand_are_said_and_not_smoothed():
 
     So it is named rather than filtered.  Three alternations in a row before
     anything is said, so one ragged answer is not an announcement.
+
+    The coordinate has to be named alongside its value, because both tests are
+    read as the atom travel the step implies rather than as the coordinate's
+    own number -- see test_two_arrangements_are_judged_by_what_moves for the
+    measurement that demanded it.  These are distances, where the two are the
+    same thing, so every number below means what it always meant.
     """
     part, state = _an_editor()
     state['gfn_follow_run'] = 11
-    two = part._two_arrangements
+    span = {'kind': 'distance', 'atoms': [0, 1], 'value': 0.0, 'mode': 'drag'}
+
+    def two(value):
+        return part._two_arrangements(value, span, _ETHANE)
 
     # A drag that is going somewhere says nothing: every answer is a step on
     # from the last and none of them comes back.

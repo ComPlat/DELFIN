@@ -40,7 +40,8 @@ __all__ = ['GFN_METHODS', 'as_pushes', 'atom_lines', 'bond_graph',
            'bond_order_between', 'bond_order_note', 'read_bond_orders',
            'read_charges', 'not_a_stationary_point', 'rms_gradient',
            'constraint_input', 'contacts_holding', 'graph_changed',
-           'speaking_for_the_drag', 'bonds_to_freeze', 'graph_holds',
+           'speaking_for_the_drag', 'travel_between',
+           'bonds_to_freeze', 'graph_holds',
            'method_is_out_of_its_depth',
            'a_rate_apart', 'paths_disagree', 'where_a_walk_jumped',
            'what_else_moved', 'pair_named',
@@ -2530,6 +2531,43 @@ def _snapshot(was, count):
         return None
     return [(before[3 * n], before[3 * n + 1], before[3 * n + 2])
             for n in range(count)]
+
+
+def travel_between(xyz_text: str, entry: Any, one: float,
+                   two: float) -> Optional[float]:
+    """How far apart two values of this coordinate are, in Angstrom of travel.
+
+    The currency this module scores everything in -- see
+    :data:`_MOVED_ANGSTROM`.  A bond, an angle and a torsion are weighed by how
+    far their change moves atoms, and for a turn that is the lever arm times
+    the angle in radians, so there is no threshold holding a degree against a
+    length.
+
+    Anything comparing two values of a coordinate in the coordinate's own unit
+    is two thresholds wearing one number.  Measured on drags with a standing
+    cursor: 0.11 degrees of one torsion is 0.0090 A of movement and nobody can
+    see it, while 0.144 degrees of another is 0.0837 A and is plain on the
+    screen -- a factor of nine for the same-sized number.
+
+    Periodic where the coordinate is: 350 degrees away is ten degrees away.
+    ``None`` when the entry does not describe this geometry.
+    """
+    here = coordinates_of(xyz_text or '')
+    atoms = [int(i) for i in ((entry or {}).get('atoms') or ())]
+    if not atoms or any(i < 0 or 3 * i + 2 >= len(here) for i in atoms):
+        return None
+    where = [(here[3 * i], here[3 * i + 1], here[3 * i + 2])
+             for i in range(len(here) // 3)]
+    kind = str((entry or {}).get('kind') or '')
+    if kind == 'distance' and len(atoms) == 2:
+        return abs(float(one) - float(two))
+    if kind == 'angle' and len(atoms) == 3:
+        arm = math.dist(where[atoms[0]], where[atoms[1]])
+        return arm * math.radians(abs(float(one) - float(two)))
+    if kind == 'dihedral' and len(atoms) == 4:
+        arm = _lever(where, atoms[0], atoms[1], atoms[2])
+        return arm * math.radians(_turned_by(float(one), float(two)))
+    return None
 
 
 def speaking_for_the_drag(where, radius, dragged) -> list:
