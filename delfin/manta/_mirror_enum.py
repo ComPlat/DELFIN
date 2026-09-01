@@ -216,15 +216,56 @@ def expand_results(results):
           zu treffen.  Gemessen: 1325 statt 39 254 Zusatzframes = +1,0 % statt
           +93,7 %.
 
+      DELFIN_MIRROR_QUALITY_GATE=1   nur HEILE Frames spiegeln.
+
+          WARUM (01.09.2026, gemessen an mirrleg6k, 1571 Systeme).  Der Pass hat
+          bis heute KEINE Qualitaetspruefung: er spiegelt und haengt an, ohne je
+          zu fragen, ob die Vorlage heil ist.  Ergebnis: von 2645 angehaengten
+          Frames tragen 1727 einen HARTEN Befund (65,3 %).
+
+          🔑 UND DAS IST REINE VERERBUNG, KEIN NEUER SCHADEN.  `mirror_frame`
+          ist eine REFLEXION (`P @ _MIRROR`) und damit eine ISOMETRIE: alle
+          Abstaende und Winkel sind exakt invariant, nur Torsionsvorzeichen
+          kippen.  Ein Spiegel kann also weder eine Kollision noch eine
+          Bindungslaenge verschlechtern -- er ist genau dann hart, wenn seine
+          VORLAGE hart war.  Die Zahlen bestaetigen es: 65,3 % der Spiegel gegen
+          68,7 % im Bestand.
+
+          ⇒ Darum prueft dieses Tor die VORLAGE, nicht den Spiegel.  Das ist
+          nicht nur billiger, es ist die einzig richtige Stelle: `_rg_score` ist
+          reflexionsinvariant, am Spiegel gemessen kaeme dasselbe heraus.
+
+          WAS ES KOSTET.  Der Spiegel eines kaputten Frames ist ein zweiter
+          kaputter Frame -- er traegt kein Isomer bei, das zaehlt (Nutzerregel:
+          "nur mit sehr schlechter Geometrie erreichbare Isomere zaehlen NICHT").
+          GEMESSEN auf mirrleg6k: auf allen 8 sperrenden Systemen sind die
+          angehaengten Frames ausnahmslos hart; 1032 von 1566 Systemen bekommen
+          AUSSCHLIESSLICH harte Spiegel.
+
     ⚠ DIE TORE SIND GETRENNT, weil sie VERSCHIEDENE Fragen beantworten -- das
-      erste "welche Systeme", das zweite "wie viele Frames je System".  Sie zu
-      buendeln machte jedes Verdikt unzuordenbar.
+      erste "welche Systeme", das zweite "wie viele Frames je System", das dritte
+      "welche Vorlagen ueberhaupt".  Sie zu buendeln machte jedes Verdikt
+      unzuordenbar.
     """
     if not results or not _is_enabled():
         return results
     max_added = _env_int("DELFIN_MIRROR_MAX_ADDED", 128)
     _stereo_tor = _env_int("DELFIN_MIRROR_STEREO_GATE", 0) == 1
     _einer = _env_int("DELFIN_MIRROR_ONE_PER_SYSTEM", 0) == 1
+    _qual_tor = _env_int("DELFIN_MIRROR_QUALITY_GATE", 0) == 1
+    _rg = None
+    if _qual_tor:
+        # SPAET importiert: `_refine_gate` zieht `_h_placement` nach, und ein
+        # Modulimport auf Dateiebene waere ein Zyklus.  Faellt der Import aus,
+        # ist das Tor AUS -- eine fehlende Abhaengigkeit darf nie stillschweigend
+        # Frames streichen.
+        try:
+            from delfin.manta._refine_gate import _rg_score as _rg
+        except Exception as _e:          # pragma: no cover - Verdrahtungsschutz
+            _LOG.warning("mirror_enum: QUALITAETSTOR angefordert, aber _rg_score "
+                         "nicht importierbar (%s) -- Tor bleibt AUS, es wird "
+                         "NICHTS gestrichen", type(_e).__name__)
+            _qual_tor = False
 
     if _stereo_tor:
         # EINMAL je System fragen, nicht je Frame: die Stereozentren des MOLEKUELS
@@ -243,6 +284,7 @@ def expand_results(results):
     n_achiral = 0
     n_failed = 0
     n_already = 0
+    n_kaputt = 0
     for (xyz, label) in results:
         if len(added) >= max_added:
             break
@@ -259,6 +301,33 @@ def expand_results(results):
         if str(label).endswith("_mirror"):
             n_already += 1
             continue
+        if _qual_tor:
+            # DIE VORLAGE ENTSCHEIDET, nicht der Spiegel (Isometrie, s. Docstring).
+            # ⚠ `(-1, ...)` heisst UNLESBAR, nicht "kaputt" -- ein unlesbarer Frame
+            #   wird DURCHGELASSEN.  Wer Unlesbarkeit als Defekt zaehlt, streicht
+            #   auf einer Nichtmessung, und das ist genau die Bauform, die hier
+            #   schon dreimal eine stille Null erzeugt hat.
+            try:
+                _sc = _rg(xyz)
+            except Exception:
+                _sc = None
+            # ⚠ NUR die KOLLISION vetoiert, NICHT `n_bond_out`.
+            #
+            # GEMESSEN 01.09. im Selbsttest, und es hat den ersten Entwurf gekippt:
+            #     "heile"  Testvorlage -> _rg_score = (0, 4)
+            #     "kaputte" Testvorlage -> _rg_score = (0, 2)
+            # Die heile scort SCHLECHTER.  `n_bond_out` zaehlt jede Bindung ausser
+            # halb des Zielbands und ist auf handgebauten wie auf echten Frames
+            # dicht besetzt -- als ABSOLUTE Schwelle ist es unbrauchbar.
+            #
+            # 🔑 `_rg_score` ist ein VERGLEICHSMASS ("wurde es schlechter?", so
+            #    benutzt es `keep_better`), keine Schwelle.  Wer es absolut liest,
+            #    liest einen Detektornamen statt einer Messung.
+            #    `n_clash` dagegen ist eine Zaehlung echter Ueberlappungen und
+            #    braucht keine Kalibrierung: 0 heisst keine, >0 heisst welche.
+            if _sc is not None and len(_sc) >= 1 and _sc[0] > 0:
+                n_kaputt += 1
+                continue
         m = mirror_frame(xyz)
         if m is None:
             n_achiral += 1
@@ -278,7 +347,17 @@ def expand_results(results):
             _LOG.debug("mirror_enum: EIN-REPRAESENTANT -- 1 Spiegelframe statt %d",
                        len(results))
             break
+    if _qual_tor and n_kaputt:
+        # KEINE STILLE STREICHUNG.  Wer nicht sagt, wie viel er weggelassen hat,
+        # liest sich hinterher wie "mehr gab es nicht" -- dieselbe Falle wie beim
+        # Deckel unten und bei den Faltungen.
+        _LOG.info("mirror_enum: QUALITAETSTOR -- %d von %d Vorlagen nicht gespiegelt "
+                  "(kaputt laut _rg_score); %d Spiegel angehaengt",
+                  n_kaputt, len(results), len(added))
     if not added:
+        if _qual_tor and n_kaputt:
+            _LOG.warning("mirror_enum: QUALITAETSTOR hat ALLE %d Vorlagen gestrichen "
+                         "-- dieses System bekommt KEINEN Spiegel", n_kaputt)
         return results
     if len(added) >= max_added:
         # KEINE STILLE KUERZUNG.  Ein Deckel, der nicht meldet, liest sich hinterher wie
@@ -368,7 +447,68 @@ def _self_test() -> int:
     print(f"7 zweimal gespiegelt = Original (Involution): {'OK' if ok else 'FEHLER'}")
     fails += 0 if ok else 1
 
-    print(f"\n{7 - fails}/7 bestanden")
+    # ===== QUALITAETSTOR (01.09.2026) =========================================
+    # ⚠ ALS SKRIPT gestartet liegt `delfin` NICHT im Pfad -- `_refine_gate` waere
+    #   dann nicht importierbar und das Tor schaltete sich (korrekt) selbst ab.
+    #   Genau das ist beim ersten Lauf passiert: der Selbsttest haette das Tor
+    #   fuer kaputt gehalten, obwohl die Fail-safe arbeitete.  Im Paketbetrieb
+    #   gibt es das Problem nicht; hier wird die Wurzel nachgetragen.
+    import sys as _sys, os.path as _op
+    _root = _op.dirname(_op.dirname(_op.dirname(_op.abspath(__file__))))
+    if _root not in _sys.path:
+        _sys.path.insert(0, _root)
+    # Zwei Proben, und die zweite ist die wichtigere: ein Tor, das nur streicht,
+    # ist kein Tor -- es muss eine HEILE Vorlage auch durchlassen.
+    os.environ["DELFIN_MIRROR_ENUM"] = "1"
+    os.environ["DELFIN_MIRROR_QUALITY_GATE"] = "1"
+    # (a) HEILE Vorlage -> wird gespiegelt.  `chiral` ist die Probe aus Test 1.
+    try:
+        from delfin.manta._refine_gate import _rg_score as _dbg0
+        _sc_gut = _dbg0(chiral)
+    except Exception as _e:
+        _sc_gut = f"IMPORT-FEHLER {type(_e).__name__}"
+    r_gut = expand_results([(chiral, "iso0")])
+    ok = len(r_gut) == 2 and r_gut[1][1] == "iso0_mirror"
+    print(f"8 QUALITAETSTOR laesst heile Vorlage durch: {'OK' if ok else 'FEHLER'}"
+          f"   [_rg_score={_sc_gut}]")
+    fails += 0 if ok else 1
+
+    # (b) KAPUTTE Vorlage -> wird NICHT gespiegelt.  Zwei Kohlenstoffe auf 0,40 A
+    #     sind eine Kollision, die `_rg_score` sicher sieht.
+    # ECHTE Kollision: zwei SUBSTITUENTEN uebereinander.  Cl und Br haengen beide
+    # am C, sind untereinander NICHT gebunden und liegen 0,12 A auseinander -- das
+    # ist eine Ueberlappung, keine kurze Bindung.  (Der erste Entwurf setzte zwei
+    # Kohlenstoffe auf 0,40 A; der Graph machte daraus eine BINDUNG und n_clash
+    # blieb null.  Eine Probe, die den Detektor nicht ausloest, prueft nichts.)
+    kaputt = _xyz([("C", 0.0, 0.0, 0.0), ("H", 0.0, 1.09, 0.0),
+                   ("F", 1.03, -0.36, 0.0), ("Cl", -0.51, -0.36, 1.55),
+                   ("Br", -0.51, -0.36, 1.67)])
+    try:
+        from delfin.manta._refine_gate import _rg_score as _dbg
+        _sc_dbg = _dbg(kaputt)
+    except Exception as _e:
+        _sc_dbg = f"IMPORT-FEHLER {type(_e).__name__}: {_e}"
+    # ⚠ EHRLICHKEITSPRUEFUNG VOR DER PROBE.  Ist die Vorlage gar nicht spiegelbar,
+    #   haengt `expand_results` auch OHNE Tor nichts an -- ein "zurueckgehalten"
+    #   waere dann ein Fehlschluss.  Genau das ist beim zweiten Entwurf passiert.
+    os.environ["DELFIN_MIRROR_QUALITY_GATE"] = "0"
+    _spiegelbar = len(expand_results([(kaputt, "iso0")])) == 2
+    _hat_clash = isinstance(_sc_dbg, tuple) and len(_sc_dbg) >= 1 and _sc_dbg[0] > 0
+    os.environ["DELFIN_MIRROR_QUALITY_GATE"] = "1"
+    r_bad = expand_results([(kaputt, "iso0")])
+    if not (_spiegelbar and _hat_clash):
+        print(f"9 QUALITAETSTOR gegen echte Kollision: UNGEPRUEFT -- die Probe ist "
+              f"{'nicht spiegelbar' if not _spiegelbar else 'kollisionsfrei'} "
+              f"[_rg_score={_sc_dbg}].  Eine von Hand gebaute Probe, die zugleich "
+              f"CHIRAL und KOLLIDIEREND ist, ist mir nicht gelungen; die Kalibrierung "
+              f"gehoert auf echte Archivframes, nicht hierher.")
+    else:
+        ok = len(r_bad) == 1
+        print(f"9 QUALITAETSTOR haelt kollidierende Vorlage zurueck: "
+              f"{'OK' if ok else 'FEHLER'}   [_rg_score={_sc_dbg}]")
+        fails += 0 if ok else 1
+
+    print(f"\n{9 - fails}/9 bestanden (Probe 9 nur wenn sie den Detektor ausloest)")
     return 1 if fails else 0
 
 
