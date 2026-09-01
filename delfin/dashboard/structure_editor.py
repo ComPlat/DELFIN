@@ -14346,58 +14346,82 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     def _steady_hand(pushes):
         """The same forces, but not free to double and halve every answer.
 
-        Each force is moved a fraction of the way towards what this answer
-        asked for rather than set to it -- see :data:`_HAND_FOLLOWS` for
-        the fraction and the session it was measured on.  What that removes
-        is a loop with a delay in it: the force follows how far the
-        structure has fallen behind, the structure is only re-drawn once an
-        answer, and an answer here is seconds.  Followed exactly, the hand
-        pulls hard because the structure is behind, the answer overshoots,
-        the hand goes slack, the structure falls back, and the picture
-        shakes without anybody moving the mouse.
+        The force is moved a fraction of the way towards what this answer
+        asked for rather than set to it -- see :data:`_HAND_FOLLOWS` for the
+        fraction and the session it was measured on.  What that removes is a
+        loop with a delay in it: the force follows how far the structure has
+        fallen behind, the structure is only re-drawn once an answer, and an
+        answer here is seconds.  Followed exactly, the hand pulls hard because
+        the structure is behind, the answer overshoots, the hand goes slack,
+        the structure falls back, and the picture shakes without anybody
+        moving the mouse.
 
-        Kept per coordinate.  A force smoothed across two different pairs
-        of atoms is a force about neither of them, and the coordinate the
-        hand drives does change while a fragment is walked past a
-        molecule.  A pair that has not been driven before starts at what
-        this answer asked for, so beginning a drag is immediate; it is
-        only carrying on that is damped.
+        One hand for the whole gesture, and that is the load-bearing part.
 
-        Tied to the run.  Every press that draws over this structure takes
-        a new run number, and a force left over from the drag before it
-        would be about a geometry nobody has any more.
+        It used to be kept per pair of atoms, on the reasoning that a force
+        smoothed across two different pairs is a force about neither.  That
+        reasoning is about the *coordinate*; the damping is about the *hand*,
+        and the hand is one hand from the press to the release.  Which pair
+        the perception names it by is worked out afresh from the geometry
+        every answer, and around anything symmetric it does not settle.
+
+        From the field, a 36-atom anion under GFN2 in DMF at 1.8 s an answer,
+        an oxygen dragged out of a ring of hydrogens.  The contact named on
+        successive answers: O40-H20, O40-H41, O40-H30, O40-H26, O40-H30,
+        O40-H26, O40-H20, O40-H26, O40-H20, O40-H26, O40-H20, O40-H26,
+        O40-H32, O40-H26, O40-H32, O40-H30.  Sixteen answers, fourteen
+        changes, all of them between hydrogens the same distance away.  Keyed
+        on the pair, every one of those was a key nobody had seen, and a key
+        nobody has seen starts at what this answer asks for -- so the hand ran
+        undamped on every other answer and applied 72.0, 30.9, 61.9, 34.4,
+        89.9, 50.0, 93.0, 53.0, 81.5, 63.0, 86.2, 67.2, 93.5, 71.4 kcal/mol
+        per Angstrom.  The high ones are all at their own ceiling: the hand
+        was pulling as hard as it was allowed to, every second answer.  The
+        user's report: "es zappelt und dann schaff ich es sogar manchmal ein
+        molekuel zu zerreissen", and the seventeenth answer applied 146.5
+        against a ceiling of 105 and put two atoms inside 0.44 of a bond
+        length.  The budget was at +0.9 of 22.3 kcal/mol throughout -- nothing
+        was being refused; this was the hand alone.
+
+        So there is one remembered force per drag.  Every push in a block
+        carries the same constant -- :func:`gfn_optimize.as_pushes` sizes one
+        for all of them -- so what is damped is that one number, and anything
+        the block scales differently keeps its ratio to it.
+
+        Tied to the run.  Every press that draws over this structure takes a
+        new run number, and a force left over from the drag before it would be
+        about a geometry nobody has any more.  A new drag still begins at what
+        it asks for, immediately: it is only carrying one on that is damped.
         """
         run = state.get('gfn_follow_run')
-        remembered = state.get('gfn_hand_force') or {}
+        before = state.get('gfn_hand_force')
         if state.get('gfn_hand_force_run') != run:
-            remembered = {}
-        keeping, out = {}, []
-        for one in (pushes or ()):
+            before = None
+        out = list(pushes or ())
+        leading = None
+        for one in out:
             try:
-                asked = float(one.get('force'))
+                value = abs(float(one.get('force')))
             except (TypeError, ValueError):
-                out.append(one)
                 continue
-            # Kept by the atoms, not by the coordinate.
-            #
-            # The hand is on a pair; which coordinate that pair is expressed
-            # in is worked out afresh from the geometry every answer, and it
-            # flips -- a contact that is a distance on one answer is a torsion
-            # on the next.  Keyed on both, every flip was a key nobody had
-            # seen, and a new key starts at what this answer asks for so that
-            # beginning a drag is immediate.  So the damping was skipped on
-            # every other answer: simulated with the demand alternating 44 and
-            # 90 and the kind flipping with it, the hand applied 44, 90, 44,
-            # 90 -- exactly the ceiling seen swinging in the field.
-            key = tuple(int(i) for i in (one.get('atoms') or ()))
-            before = remembered.get(key)
-            steady = (asked if before is None else
-                      before + _hand_follows_now() * (asked - before))
-            keeping[key] = steady
-            out.append(dict(one, force=steady))
-        state['gfn_hand_force'] = keeping
+            if leading is None or value > leading:
+                leading = value
+        if not leading:
+            return out
+        steady = (leading if before is None else
+                  float(before) + _hand_follows_now() * (leading - float(before)))
+        state['gfn_hand_force'] = steady
         state['gfn_hand_force_run'] = run
-        return out
+        share = steady / leading
+        if share == 1.0:
+            return out
+        eased = []
+        for one in out:
+            try:
+                eased.append(dict(one, force=float(one['force']) * share))
+            except (TypeError, ValueError, KeyError):
+                eased.append(one)
+        return eased
 
     def _stand_on(xyz, said, comment, what, gesture='walk-point'):
         """Go to one of the walk's own geometries: on screen and in the box.
