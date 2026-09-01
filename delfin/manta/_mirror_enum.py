@@ -285,6 +285,29 @@ def expand_results(results):
     n_failed = 0
     n_already = 0
     n_kaputt = 0
+    # ── EIN REPRAESENTANT HEISST EINER JE SYSTEM, NICHT EINER JE AUFRUF ─────────────
+    # GEMESSEN (01.09.2026, `LOOP_FIRE_TRACE` auf ABUSAU und JEJROI, beide Arme):
+    # der Legacy-Aufruf `smiles_converter.py:35932` laeuft ZWEIMAL je System, beide
+    # Male im Wiedereintritt der Konformer-Vollstaendigkeit
+    # (`outermost = not _CONF_COMPLETE_ACTIVE.value`).
+    #
+    # Die Idempotenz-Pruefung unten (`endswith("_mirror")`) verhindert nur, dass ein
+    # SPIEGEL gespiegelt wird.  Sie verhindert NICHT, dass der zweite Aufruf die
+    # naechste unberuehrte Vorlage spiegelt -- unter `_einer` bricht die Schleife
+    # nach dem ersten Anhaengen ab, also liefert jeder Aufruf einen weiteren Spiegel.
+    # Im Archiv sichtbar als ZWEI `..._mirror`-Etiketten je System, und ABUSAU
+    # kommt auf 58 + 2 - 1 = 59 Frames: der zweite Spiegel kostet einen Basis-Frame
+    # (`...Δ-conf4_stereo-u` verschwindet).
+    #
+    # ⚠ NICHT der Aufrufer wurde geschuetzt.  Ein `outermost`-Tor dort schaltet die
+    #   Achse auf dem Legacy-Pfad GANZ ab (gemessen an `addroot10`: 58 -> 58, null
+    #   Spiegel) -- ein stiller Faehigkeitsverlust, zurueckgenommen als b424e6cd.
+    #   Der Vertrag gehoert dorthin, wo er formuliert ist: EIN Repraesentant JE
+    #   SYSTEM.  Liegt schon einer vor, ist dieser Pass fertig.
+    if _einer and any(str(_l).endswith("_mirror") for _x, _l in results):
+        _LOG.debug("mirror_enum: EIN-REPRAESENTANT -- es liegt bereits ein Spiegel "
+                   "vor, dieser Aufruf haengt nichts an (Wiedereintritt)")
+        return results
     for (xyz, label) in results:
         if len(added) >= max_added:
             break
@@ -508,7 +531,40 @@ def _self_test() -> int:
               f"{'OK' if ok else 'FEHLER'}   [_rg_score={_sc_dbg}]")
         fails += 0 if ok else 1
 
-    print(f"\n{9 - fails}/9 bestanden (Probe 9 nur wenn sie den Detektor ausloest)")
+    # ── 10  EIN REPRAESENTANT JE SYSTEM, AUCH BEI ZWEI AUFRUFEN ────────────────────
+    # Der Fall, der `ABUSAU` einen Frame gekostet hat: der Legacy-Pfad ruft den Pass
+    # ZWEIMAL (gemessen mit LOOP_FIRE_TRACE), und ohne diese Probe haengt der zweite
+    # Aufruf einen weiteren Spiegel an.
+    _alt_einer = os.environ.get("DELFIN_MIRROR_ONE_PER_SYSTEM")
+    try:
+        os.environ["DELFIN_MIRROR_ONE_PER_SYSTEM"] = "1"
+        _rows = [("C", 0.0, 0.0, 0.0), ("N", 1.5, 0.0, 0.0),
+                 ("O", 0.0, 1.5, 0.0), ("F", 0.0, 0.0, 1.5)]
+        _a = _xyz(_rows)
+        _rows2 = [("C", 0.1, 0.0, 0.0), ("N", 1.6, 0.0, 0.0),
+                  ("O", 0.0, 1.6, 0.0), ("F", 0.0, 0.0, 1.6)]
+        _b = _xyz(_rows2)
+        _erst = expand_results([(_a, "iso1"), (_b, "iso2")])
+        _zweit = expand_results(_erst)
+        ok = (len(_erst) == 3 and len(_zweit) == 3)
+        print(f"10 ZWEITER Aufruf haengt NICHTS an: erst {len(_erst)}, dann "
+              f"{len(_zweit)} Frames  {'OK' if ok else 'FEHLER'}")
+        fails += 0 if ok else 1
+        # Gegenprobe: OHNE den Ein-Repraesentant-Schalter darf er sehr wohl erneut
+        # anhaengen -- sonst waere die Probe oben nur ein abgeschalteter Pass.
+        os.environ["DELFIN_MIRROR_ONE_PER_SYSTEM"] = "0"
+        _drei = expand_results(_erst)
+        ok2 = len(_drei) > len(_erst)
+        print(f"   GEGENPROBE ohne ONE_PER_SYSTEM haengt weiter an: "
+              f"{len(_erst)} -> {len(_drei)}  {'OK' if ok2 else 'FEHLER'}")
+        fails += 0 if ok2 else 1
+    finally:
+        if _alt_einer is None:
+            os.environ.pop("DELFIN_MIRROR_ONE_PER_SYSTEM", None)
+        else:
+            os.environ["DELFIN_MIRROR_ONE_PER_SYSTEM"] = _alt_einer
+
+    print(f"\n{11 - fails}/11 bestanden (Probe 9 nur wenn sie den Detektor ausloest)")
     return 1 if fails else 0
 
 
