@@ -2517,6 +2517,7 @@ def contacts_holding(
     turning: Any = None,
     holding: Any = None,
     opening: bool = False,
+    unchanged: bool = False,
 ) -> list:
     """The internal coordinates the hand moved, to hold while the rest relaxes.
 
@@ -2597,6 +2598,24 @@ def contacts_holding(
         # between the two describes the drag, and a caller that gets nothing
         # back is being told to price the geometry some other way.
         return []
+    # The hand stood still, so the question has not changed and neither may
+    # the answer.  Said by the caller, because only the caller knows where the
+    # *hand* is: from in here the structure is all there is, and under a
+    # budget the structure moves whether or not anybody is moving it.  Held
+    # coordinates re-derived under that movement chase it -- see the editor's
+    # own note where this is passed.
+    if unchanged and holding:
+        kept = [dict(one) for one in holding]
+        for one in kept:
+            atoms = [int(n) for n in one['atoms']]
+            if any(not (0 <= n < len(where)) for n in atoms):
+                break
+            one['value'] = (math.dist(where[atoms[0]], where[atoms[1]])
+                            if one['kind'] == 'distance'
+                            else _dihedral(where, *atoms)
+                            if one['kind'] == 'dihedral' else one['value'])
+        else:
+            return kept
     then = _snapshot(was, len(where))
     if then is None or opening:
         # The opening answer of a drag decides by what the coordinates *can*
