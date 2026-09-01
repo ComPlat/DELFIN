@@ -203,16 +203,16 @@ _BUDGET_SPENDS_AT_MOST = 0.8
 #: barrier.
 _BUDGET_LEFT_WORTH_SPENDING = 0.5
 
-#: The least a coordinate must have moved for the last two answers to say
-#: what a step of it costs, in each coordinate's own units.
+#: The least the hand must have asked for, in Angstrom, for the last two
+#: answers to say what one more Angstrom of asking costs.
 #:
 #: A rate is a difference over a difference, and both differences carry the
 #: noise of a relaxation that ran a few cycles.  Divided by a movement near
 #: zero the answer is the noise and nothing else -- and this number decides
 #: how far a hand may go, so a spurious large one stops the drag dead.  Two
-#: thousandths of an Angstrom and a tenth of a degree are each about a tenth
-#: of what one answer of a real drag moves.
-_COORDINATE_STIRRED = {'distance': 0.002, 'angle': 0.1, 'dihedral': 0.1}
+#: thousandths of an Angstrom is about a hundredth of what one answer of a
+#: real drag asks for.
+_HAND_STIRRED = 0.002
 
 #: Eyring, both ways, and the four numbers behind it -- see
 #: :mod:`delfin.dashboard.thermal`.  Moved out when the reaction graph
@@ -5045,6 +5045,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # the hand is measured against, and the drag bites from its first
         # answer.
         state['thermal_was'] = state['gfn_topology_source']
+        # And the same geometry kept apart, because thermal_was is rewritten
+        # every answer and what the budget measures its rate against has to be
+        # where this gesture *started*.
+        state['thermal_hand_from'] = state['gfn_topology_source']
         # The one thing that history takes away, put back below: with no
         # geometry to compare against, contacts_holding decides between a turn
         # and a stretch by a rule about bonds, and with one it decides by which
@@ -5094,6 +5098,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state.pop('thermal_cost', None)
         state.pop('thermal_cost_grew', None)
         state.pop('thermal_cost_at', None)
+        state.pop('thermal_hand_from', None)
         state.pop('thermal_good_spent', None)
         state.pop('thermal_good_ask', None)
         state.pop('thermal_rolled', None)
@@ -5505,6 +5510,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # act on at all: the follow relaxed freely and the answer
                     # -- which no longer puts the atom back under the cursor --
                     # undid the drag on every step.
+                    # Before anything is perceived: the wish is cut back
+                    # to what the budget can pay for, and then the contact,
+                    # the force and the calculation all follow from a wish
+                    # that is already affordable.
+                    state.pop('thermal_held_back', None)
+                    if pull is not None:
+                        current = _within_the_budget(current, holding)
                     contacts = (
                         _gfn.contacts_holding(
                             current, holding, most=3,
@@ -5571,39 +5583,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         keeping += [
                             one for one in _gfn.bonds_to_freeze(current)
                             if tuple(sorted(one['atoms'])) not in walking]
-                    # What the hand asked for, whether or not it is a pull:
-                    # the rigid hand sets values rather than asking for them,
-                    # and there is then nothing here to price a rate on.
-                    asked = []
                     if pull is not None and contacts:
-                        # Before the wish becomes a force, not after.  The
-                        # push is sized by how far the target has run ahead
-                        # of the structure, so cutting the target back is
-                        # what makes the hand ease off rather than merely
-                        # stop -- and a hand that eases off never has to be
-                        # taken back, which is the shaking gone.
-                        state.pop('thermal_held_back', None)
-                        contacts = _within_the_budget(contacts)
-                        # What was asked for, kept before it becomes a push.
-                        #
-                        # The push is not the ask.  Beyond a reach
-                        # :func:`gfn_optimize.as_pushes` stops moving the
-                        # target and makes the spring stronger instead, so
-                        # past that point the target it writes is the
-                        # structure's own position plus a constant -- it
-                        # follows the molecule rather than the cursor.  A rate
-                        # measured against it is then a rate against the
-                        # travel again, and it flips sign the moment the bond
-                        # comes back a little.  Measured live on an ethane:
-                        # 2.2, 3.8, 5.5 ... 18.4 kcal/mol per Angstrom asked
-                        # while the target still moved, then 92 on the answer
-                        # the reach caught it and -1130 on the next, after
-                        # which nothing was ever clamped again.
-                        #
-                        # The wish is the one variable the whole range is a
-                        # function of: below the reach it sets the target,
-                        # above it, it sets the force.
-                        asked = [dict(one) for one in contacts]
                         contacts = _gfn.as_pushes(
                             contacts, state.get('thermal_was') or current,
                             pull, value_of=_value_in, most=_pull_most())
@@ -6008,7 +5988,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             # any geometry -- see _note_what_it_costs for the
                             # ethane that stopped at a tenth of its budget
                             # when this was measured off the atom instead.
-                            _note_what_it_costs(paid, asked)
+                            _note_what_it_costs(
+                                paid,
+                                _how_far_the_hand_has_asked(current, holding))
                         # Whether the temperature is what refused this, or one
                         # of the two things that are refused at any
                         # temperature.  Said apart, because "past the budget"
@@ -6651,119 +6633,86 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return
         state['thermal_slope'] = (float(spent) - float(last['spent'])) / moved
 
-    def _apart_in(kind, wanted, stands):
-        """How far two values of one coordinate are apart, the short way.
+    def _how_far_the_hand_has_asked(xyz, holding):
+        """How far the hand has taken the held atoms from where it began.
 
-        A torsion is periodic, so 350 degrees away is ten degrees away and
-        subtracting plainly would read a hand near the far side of a turn as
-        most of a circle out.  The same arithmetic :func:`gfn_optimize.
-        as_pushes` does on the same values, kept here because the budget has
-        to read the gap before the pushes are built.
+        One number for the whole gesture, and that is the point of it.  A
+        drag's price is a function of how far it has asked, and "how far" has
+        to be something that exists whatever the perception makes of the
+        geometry -- a hand between two unbonded fragments drives a contact
+        that changes which atoms it names from answer to answer, and a
+        quantity keyed on that has no continuity to measure a rate along.
+
+        Measured on the largest travel of any held atom rather than the mean:
+        a hand on several atoms is dragging them together, and what the budget
+        is bounding is the furthest any of them is being asked to go.
         """
-        gap = float(wanted) - float(stands)
-        if str(kind) == 'dihedral':
-            gap = (gap + 180.0) % 360.0 - 180.0
-        return gap
+        began = state.get('thermal_hand_from')
+        if not began or not holding:
+            return None
+        here = _gfn.coordinates_of(xyz or '')
+        there = _gfn.coordinates_of(began)
+        if not here or len(here) != len(there):
+            return None
+        far = 0.0
+        for one in holding:
+            i = int(one)
+            if 3 * i + 2 >= len(here):
+                continue
+            far = max(far, math.dist(here[3 * i:3 * i + 3],
+                                     there[3 * i:3 * i + 3]))
+        return far
 
-    def _note_what_it_costs(spent, contacts):
-        """What one more unit of *asking* costs, from the last two answers.
+    def _note_what_it_costs(spent, asked):
+        """What one more Angstrom of *asking* costs, from the last two answers.
 
-        Of asking, and not of travelling, and the difference between those two
-        is the whole of why this is not :func:`_thermal_slope`.  That one
-        measures a price per Angstrom the held atom moved, which is the number
-        to *read* -- it is the unit a chemist pictures.  It is the wrong number
-        to spend from, because a push is soft: the target runs a long way
-        ahead of the structure and what the atom does is a fraction of what
-        was asked for.  Measured live on an ethane C-C under GFN-FF at 88
-        kcal/mol/A, the hand asked for 0.24 A and the bond gave 0.038.
+        *asked* is :func:`_how_far_the_hand_has_asked`.  Neither a coordinate
+        nor a travel: it is the gesture's own progress, and the price is a
+        function of it for any drag there is.
 
-        Spending from the price per Angstrom *travelled* is what that costs.
-        The stiffness came out at 82 kcal/mol per Angstrom of travel, which is
-        correct, and the budget then allowed 0.20 A -- of asking, because that
-        is where it was applied.  0.20 A of asking buys 0.02 A of bond and 1.6
-        kcal/mol, so the drag settled with 20 of its 22.3 kcal/mol unspent and
-        could not move again: the structure had stopped, so nothing measured a
-        new rate, so the allowance never changed.  A budget that refuses nine
-        tenths of what it granted is worse than no budget.
+        It was the contact's own value, and that is the second half of the
+        fault the hand's damping had.  Which pair the perception names is
+        worked out afresh every answer, and between two fragments it does not
+        settle: measured on the field's butadiene and ethene, the coordinate
+        went distance[10,0], [10,5], [10,4], [10,5], [10,4], [10,0] over six
+        answers.  A rate kept per coordinate is dropped on every one of those
+        changes, so the forward spend never engaged at all -- the user, on
+        exactly this: "zappeln ist aber noch vor allem bei systemen die nicht
+        verbunden sind sprich zwei molekuelen".
 
-        So what is measured is the price against the *target* the push was
-        actually given -- 13.3 kcal/mol per Angstrom asked on that same drag
-        -- and the clamp below then applies it to the same quantity it was
-        measured in.  The geometry is not needed at all: the target is a
-        number this editor chose and handed to xtb.
-
-        Smoothed, because it is a difference of two relaxations and both ends
-        carry the noise of a few cycles.  Half and half: enough that one
-        ragged answer cannot shut the hand down, little enough that a surface
-        turning steep is felt within two answers.
-
-        Kept signed.  Which way is uphill is the whole of what makes this
-        usable -- a hand that has run out of budget must still be free to come
-        back the way it came, and the sign is what tells the two apart.
+        Smoothed one way only -- steeper is taken whole on the answer it
+        steepens, flatter half at a time -- because what this is for is not
+        overspending, and the surface stiffens on every approach to a wall.
         """
-        driving = next((one for one in (contacts or ())
-                        if one.get('value') is not None), None)
-        if driving is None:
+        if asked is None:
             return
-        value = float(driving['value'])
-        kind = str(driving.get('kind') or 'distance')
         last = state.get('thermal_cost_at')
-        state['thermal_cost_at'] = {'kind': kind,
-                                    'atoms': [int(i) for i in
-                                              (driving.get('atoms') or ())],
-                                    'value': float(value),
+        state['thermal_cost_at'] = {'asked': float(asked),
                                     'spent': float(spent)}
-        # Only against a reading of the same coordinate.  The hand's
-        # coordinate is worked out afresh every answer and it does change --
-        # a contact that is a distance on one answer is a torsion on the next
-        # -- and a rate taken across that change is degrees divided by
-        # Angstrom, which is not a quantity.
-        if not last or last.get('kind') != kind or last.get('atoms') != \
-                state['thermal_cost_at']['atoms']:
-            state.pop('thermal_cost', None)
+        if not last:
             return
         if last.get('stale'):
             # The answer this would be measured from was taken back by the
-            # wall, so the pair does not describe one continuous drag.  The
-            # rate stands; the next answer measures from this reading.
+            # wall, so the pair does not describe one continuous drag.
             return
-        moved = _apart_in(kind, value, last['value'])
-        if abs(moved) <= _COORDINATE_STIRRED.get(kind, 0.002):
+        moved = float(asked) - float(last['asked'])
+        if abs(moved) <= _HAND_STIRRED:
             return
         rate = (float(spent) - float(last['spent'])) / moved
+        if rate <= 0:
+            # Asking for more that costs less is the structure settling, not
+            # the surface: there is nothing to spend against.
+            return
         was = state.get('thermal_cost')
-        # Smoothed one way only.  A surface that is turning steep has to be
-        # felt at once, because what this number is for is not overspending;
-        # a surface that is flattening can be felt gradually, because being
-        # careful there costs an answer and nothing else.  Measured live on
-        # an ethane C-C under GFN-FF: 13, 18, 24, 32, 48 kcal/mol per
-        # Angstrom asked over five answers, and smoothed both ways the
-        # allowance was worked out at 32 where the truth was 54 -- so the
-        # answer landed at 22.6 against a 22.3 ceiling and the wall, which is
-        # meant to be the backstop, had to fire.
-        now = (rate if was is None or abs(rate) > abs(float(was))
+        now = (rate if was is None or rate > float(was)
                else 0.5 * float(was) + 0.5 * rate)
-        # How fast the rate itself is rising, which is the curvature.
-        #
-        # A rate is a secant over the answer that has been, and the clamp
-        # spends it over the answer to come.  On a surface that is stiffening
-        # -- which is every approach to a wall -- the secant behind is smaller
-        # than the tangent ahead, so the allowance is a step too generous and
-        # the answer lands over the ceiling by exactly one step's worth of
-        # curvature.  Measured live on an ethane under GFN2: 35.4 measured,
-        # 47 realised, and the wall had to fire.
-        #
-        # So the growth is carried and the allowance is worked out from the
-        # rate the next answer is expected to have.  Bounded, because a growth
-        # factor read off two noisy secants can be anything; doubling is more
-        # than any real stiffening does in one answer of a drag.
         grew = 1.0
-        if was and now and float(was) * now > 0:
-            grew = min(2.0, max(1.0, abs(now) / abs(float(was))))
+        if was and now:
+            grew = min(2.0, max(1.0, now / float(was)))
         state['thermal_cost_grew'] = grew
         state['thermal_cost'] = now
 
-    def _within_the_budget(contacts):
+    def _within_the_budget(xyz, holding):
         """Ask only for the travel the budget can still pay for.
 
         The wall behind this is a refusal after the fact, and it has to be:
@@ -6771,85 +6720,73 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         after the fact is a rollback, and a rollback while the cursor is still
         held out at the forbidden place is a loop -- the hand asks, the
         structure is put back, the hand asks again -- which on screen is a
-        molecule shaking once an answer.  It is the budget's shaking and
-        nobody else's: the same drag with the budget switched off is steady,
-        which is how the user put it, and the reason it is worth switching on
-        at all is that without it there is nothing stopping the drag going
-        straight past the temperature it was given.
+        molecule shaking once an answer.
 
-        So the ceiling is spent forwards.  What is left of it, divided by what
-        this coordinate is costing per unit right now, is how far the hand may
-        still ask; the wish is cut back to that.  The force follows, because a
-        push is a spring and :func:`gfn_optimize.as_pushes` sizes it by how
-        far the target has run ahead -- so a hand near the wall does not merely
-        stop travelling, it stops pulling, which is the difference between a
-        structure that rests against the ceiling and one that strains at it.
+        What is cut back is the *wish itself*: the held atoms are drawn back
+        along the way they have come, so the geometry handed on is one the
+        budget can pay for.  Everything after this then follows -- which
+        contact is perceived, what force it becomes, what xtb is asked -- and
+        none of it has to know the budget exists.  Cutting a contact's value
+        instead meant the clamp only worked where the perception happened to
+        be steady, which is not where the shaking is.
 
-        Three things this deliberately does not do.  It does not cap the
-        *force* by a temperature: that needs a length no temperature supplies,
-        and sized as a distance it leaves the hand too weak to turn a torsion
-        -- which is the one thing room temperature certainly allows.  See
-        :func:`_pull_most`.  It does not act until a rate has been measured,
-        so the first answers of a drag are the wall's as they always were.
-        And it never stands in the way of coming back: a wish going downhill,
-        or back the way the hand came, is passed through untouched, because a
-        budget that could be entered and not left would be a trap.
+        Coming back is never blocked: a wish that reduces how far the hand has
+        asked is passed through whatever it does, because a budget that could
+        be entered and not left would be a trap.
         """
-        # The anchor is the whole gate.  Switching the budget off clears it
-        # -- see on_submit_thermal -- and this is only reached from inside the
-        # pull, which is the hand :func:`_thermal_live` is asking about.  So
-        # asking again would be asking the same question twice and getting a
-        # different answer whenever the two drifted.
-        if not contacts:
-            return contacts
         anchor, ceiling = _thermal_budget()
         rate = state.get('thermal_cost')
         peak = state.get('thermal_peak')
         if anchor is None or not rate or peak is None:
-            return contacts
-        # Against the highest price this drag has been at, not against where
-        # it is standing.  A ceiling is a barrier height, so a drag that
-        # crossed +32 and settled at 0 has still crossed +32 -- and the wall
-        # refuses on exactly that number.  Read off the price of the moment
-        # instead, the hand would be given back the whole ceiling to spend
-        # every time it came down the far side of something it could not
-        # afford in the first place.
+            return xyz
+        asked = _how_far_the_hand_has_asked(xyz, holding)
+        last = state.get('thermal_cost_at') or {}
+        was = last.get('asked')
+        if asked is None or was is None or asked <= was:
+            return xyz
         left = max(0.0, float(ceiling) - float(peak))
         left = (0.0 if left < _BUDGET_LEFT_WORTH_SPENDING
                 else left * _BUDGET_SPENDS_AT_MOST)
-        driving = state.get('thermal_cost_at') or {}
-        kind = str(driving.get('kind') or '')
-        if driving.get('value') is None:
-            return contacts
-        # From the target the last answer was given, not from where the
-        # structure stands.  The rate is a price per unit *asked for*, so the
-        # thing it bounds is the next amount asked for; measured from the
-        # atom instead, a soft push spends its whole allowance on the gap
-        # between the target and the structure and the drag stops with most
-        # of the ceiling unspent.
-        was = float(driving['value'])
-        out = []
-        for one in contacts:
-            if (str(one.get('kind') or '') != kind
-                    or [int(i) for i in (one.get('atoms') or ())]
-                    != driving.get('atoms')
-                    or one.get('value') is None):
-                out.append(one)
+        allowed = left / (abs(float(rate))
+                          * float(state.get('thermal_cost_grew') or 1.0))
+        if asked - float(was) <= allowed:
+            return xyz
+        state['thermal_held_back'] = True
+        return _hand_drawn_back(xyz, holding, (float(was) + allowed) / asked)
+
+    def _hand_drawn_back(xyz, holding, share):
+        """The same wish with the held atoms *share* of the way along it.
+
+        Along the way they have come, not towards anything else: the
+        direction is the gesture's and only its length is the budget's.
+        """
+        began = state.get('thermal_hand_from')
+        here = _gfn.coordinates_of(xyz or '')
+        there = _gfn.coordinates_of(began or '')
+        if not here or len(here) != len(there):
+            return xyz
+        rows = _gfn.atom_lines(xyz)
+        out = list(rows)
+        for one in holding:
+            i = int(one)
+            if 3 * i + 2 >= len(here) or i >= len(rows):
                 continue
-            gap = _apart_in(kind, one['value'], was)
-            if gap * float(rate) <= 0.0:
-                # Downhill, or back the way the hand came.  Nothing to spend
-                # and nothing to refuse.
-                out.append(one)
-                continue
-            allowed = left / (abs(float(rate))
-                              * float(state.get('thermal_cost_grew') or 1.0))
-            if abs(gap) <= allowed:
-                out.append(one)
-                continue
-            out.append(dict(one, value=was + math.copysign(allowed, gap)))
-            state['thermal_held_back'] = True
-        return out
+            name = rows[i].split()[0]
+            put = [there[3 * i + k]
+                   + share * (here[3 * i + k] - there[3 * i + k])
+                   for k in range(3)]
+            out[i] = (f'{name} {put[0]:.10f} {put[1]:.10f} {put[2]:.10f}')
+        # The wish's own header and comment, kept, and not a document of our
+        # own making.
+        #
+        # This is the same wish only shorter, on its way to xtb rather than
+        # into the box.  Built through xyz_document it would be a line this
+        # editor writes, and every one of those has to be a line it can take
+        # back again -- see _EDITOR_COMMENTS.  There is nothing here to take
+        # back: the user's own comment goes on saying what it said.
+        was = (xyz or '').splitlines()
+        head = was[:2] if len(was) > 1 else [str(len(out)), '']
+        return '\n'.join([*head, *out]) + '\n'
 
     def _arm_thermal_leash():
         """Remember where the budget still agreed, so there is somewhere back to.
@@ -7001,7 +6938,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # flicker of 0.04 A once an answer -- small, and exactly the shape
             # of the fault this is here to remove.
             state['thermal_good_ask'] = (
-                (state.get('thermal_cost_at') or {}).get('value'))
+                (state.get('thermal_cost_at') or {}).get('asked'))
             state['thermal_rolled'] = False
             return None
         # Past it.  Hand back the last geometry that was not, if there is one;
@@ -7047,7 +6984,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         held = state.get('thermal_good_ask')
         if driving and held is not None:
             state['thermal_cost_at'] = dict(
-                driving, value=float(held),
+                driving, asked=float(held),
                 # Once only.  While the wall goes on refusing, every answer
                 # starts from the same geometry -- this one -- so the pairs
                 # are continuous again and a rate taken across them is the
