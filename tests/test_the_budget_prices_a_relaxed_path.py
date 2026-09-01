@@ -1838,8 +1838,8 @@ def test_the_scan_controls_say_what_they_are():
     assert 'submit_scan_way.observe(on_submit_scan_way' in source
 
 
-def test_a_drag_that_is_only_a_drag_stays_at_five_cycles():
-    """Twenty cycles are the budget's, not the hold's.
+def test_a_drag_that_is_only_a_drag_does_not_pay_the_budgets_cycles():
+    """Twenty cycles are the budget's, not the hold's -- and ten are the hand's.
 
     A price has to be for a properly relaxed path or the wall stands in the
     wrong place, which is what twenty buys.  Keyed on whether anything was
@@ -1847,15 +1847,28 @@ def test_a_drag_that_is_only_a_drag_stays_at_five_cycles():
     every step of every drag paid for an accuracy nothing was going to read:
     measured on a 102-atom complex, one xtb process is 0.06 s at one cycle,
     0.09 at five and 0.12 at ten, so a drag would have gone from about ten
-    answers a second to two.
+    answers a second to two.  Interactivity is the point of the whole mode, so
+    it is keyed on the budget instead.
 
-    Interactivity is the point of the whole mode, so it is keyed on the
-    budget instead.
+    What the plain drag pays is ten and not five, and that is a correction.
+    Five did not finish the walk back an answer has to make under a pull, the
+    shortfall accumulated, and the structure snapped -- on an acetate with the
+    cursor standing still, the driven C-O climbed over eight answers and came
+    back 0.108 A, twice inside twenty.  Ten holds the same drag inside 0.002.
+    Twenty is worse than ten and not better: it is where the answers begin to
+    converge, and a converged answer sits in its own minimum under the
+    restraint as it stands, so the picture jumps three times as far when that
+    minimum hops.  See _GFN_FOLLOW_CYCLES, which carries the table, and
+    test_a_pull_that_is_held_does_not_drift_and_snap, which drives it.
+
+    The two numbers stay different, which is the whole of what this asserts:
+    the budget buys accuracy for a price, the hand buys a quiet picture, and
+    they are not the same purchase.
     """
     source = EDITOR_SOURCE
     assert 'cycles=(_THERMAL_FOLLOW_CYCLES if pricing' in source
     assert 'else _GFN_FOLLOW_CYCLES),' in source
-    assert '_GFN_FOLLOW_CYCLES = 5' in source
+    assert '_GFN_FOLLOW_CYCLES = 10' in source
     assert '_THERMAL_FOLLOW_CYCLES = 20' in source
 
 
