@@ -350,12 +350,18 @@ def keep_all(before: Sequence, after: Sequence):
     gefuehrt; ein Vertrag, der erst am Ende der Kette durchgesetzt wird, ist eine
     NAHT und keine Heilung.
 
-    UND ES KANN EINEN FRAME ZURUECKHOLEN, DEN EINE AUSWAHL BEWUSST VERWARF
-    (z. B. `_gfnff_ensemble_rank_filter` -- im Champion an, deckelt je Isomer auf
-    top-K in einem Energiefenster).  Das ist gewollt: der Vertrag sagt, ein
-    ENUMERATOR darf keinen Frame kosten.  Wer eine Auswahl will, muss sie VOR dem
-    Enumerator treffen, nicht danach.  Wer das anders sieht, laesst das Tor aus --
-    es ist Vorgabe AUS.
+    UND ES KANN EINEN FRAME ZURUECKHOLEN, DEN EINE AUSWAHL BEWUSST VERWARF.
+    Das ist gewollt: der Vertrag sagt, ein ENUMERATOR darf keinen Frame kosten.
+    Wer eine Auswahl will, muss sie VOR dem Enumerator treffen, nicht danach.
+    Wer das anders sieht, laesst das Tor aus -- es ist Vorgabe AUS.
+
+    ⚠️ KORREKTUR 01.09.2026, spaeter am Tag: hier stand `_gfnff_ensemble_rank_filter`
+       als Verdaechtiger, "im Champion an".  DAS WAR FALSCH.  `_CHAMPION_FLAGS`
+       (cli_manta.py:42-281) hat 20 Eintraege, `GFNFF_RANK` ist keiner davon; mein
+       Treffer stammte aus Kommentartext neben der Definition.  Der Taeter ist
+       weiterhin UNBEKANNT -- und `harness/kettenzaehler.py` hat inzwischen die
+       ganze AEUSSERE Kette (14 Stufen) ausgeschlossen: die Framezahl faellt dort
+       nirgends.  Was dieses Tor tut, haengt also nicht an jener Vermutung.
 
     ZUORDNUNG UEBER DAS ETIKETT-MULTISET, nicht ueber den Text: Stufen dazwischen
     formatieren Koordinaten um; ein Stringvergleich meldete dann "weg", wo nur
