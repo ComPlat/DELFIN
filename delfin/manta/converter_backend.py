@@ -950,6 +950,91 @@ def _min_nonbonded_heavy(syms, P) -> float:
     return best
 
 
+# ══ DAS NEUE PAAR, NICHT DAS GLOBALE MINIMUM (01.09.2026, gemessen) ═══════════════
+# ANLASS.  `bbre6k` (BACKBONE_REEMBED) haengt Frames an und ist dabei STRENG ADDITIV
+# -- kein Frame verschwindet.  Trotzdem steigt `broken_frac` auf 295 von 1220
+# messbaren Systemen (24,2 %); der Kaputtanteil im ZUWACHS ist 37,7 % gegen 17,3 %
+# im Bestand (Faktor 2,18; zweites, unabhaengiges Feld sagt 2,31).  Dominanter
+# Befund des Schiedsrichters: `intclash_pair` auf 186 Systemen.
+#
+# WARUM DAS BESTEHENDE TOR ES NICHT FAENGT -- es war AN, es misst nur anders:
+#     HIER   `_interlig_clash_ok`:  EIN globales Minimum gegen max(2,0 ; base_min·0,95)
+#     DORT   metric_inter_ligand_clash.py:26:  d(i,j) < 0,65·(vdW_i + vdW_j)  JE PAAR
+# Fuer C-C ist die dortige Schranke 0,65·3,40 = 2,21 A.  Ein C-C-Kontakt bei 2,10 A
+# besteht hier (ueber dem 2,0-Boden) und faellt dort.  Das ist die Luecke in Zahlen:
+# ein SKALARER Test auf einen PAARWEISEN Defekt.
+# ⚠️ Ein aktives Tor sieht aus wie Schutz.  Bei jedem "es gibt doch schon ein Tor"
+#    gehoert die Frage dazu: PRUEFT ES DIE GROESSE, UM DIE ES GEHT?
+#
+# DIE FORM DER HEILUNG.  Nicht "keine engen Kontakte" -- das verwuerfe auch Frames,
+# deren Enge schon im Basis-Frame steht und die diese Achse nicht zu verantworten
+# hat.  Sondern NEVER-WORSE JE PAAR: verworfen wird nur, was ein Paar unter die
+# Schranke drueckt, das im BASIS-Frame darueber lag.  Vorbestehende Enge bleibt
+# erlaubt; die Achse wird fuer den Bestand nicht haftbar gemacht.
+#
+# ⚠️ DIE ZAHL 0,65 IST CHEMIE, NICHT GESCHMACK.  Der Detektor nennt ihre Herkunft:
+#    an COD validiert, echte Zwischenligand-Kontakte liegen selten unter 0,70·vdW-
+#    Summe; 0,78 gab 8 % Falschpositive, 0,65 faengt die chemisch unmoeglichen
+#    Faelle.  Sie wird hier NICHT importiert (getrennte Baeume), sondern mit
+#    Zeigerkommentar gespiegelt -- weicht eine ab, faellt es beim Vergleich auf.
+_IL_CLASH_FACTOR = 0.65       # Spiegel von detectors/metric_inter_ligand_clash.py:26
+_IL_VDW = {"H": 1.20, "C": 1.70, "N": 1.55, "O": 1.52, "F": 1.47, "P": 1.80,
+           "S": 1.80, "Cl": 1.75, "Br": 1.85, "I": 1.98, "B": 1.92, "Si": 2.10,
+           "Se": 1.90, "As": 1.85, "Te": 2.06}
+_IL_VDW_DEFAULT = 1.70
+
+
+def _il_vdw(s):
+    return _IL_VDW.get(s, _IL_VDW_DEFAULT)
+
+
+def _pairwise_gate_enabled() -> bool:
+    """Paarweises Nie-Schlechter-Tor fuer ANGEHAENGTE Frames.
+    `DELFIN_FFFREE_INTERLIG_PAIR_GATE`, Vorgabe AUS -> byte-identisch.
+    Wirkt nur, wo ueberhaupt Frames angehaengt werden (reembed/reseat); ohne
+    diese Flags entsteht kein Zusatzframe, das es filtern koennte -> no-op."""
+    return os.environ.get("DELFIN_FFFREE_INTERLIG_PAIR_GATE", "0") == "1"
+
+
+def _neues_paar_zu_eng(syms, P, base_P) -> bool:
+    """Fuehrt das NEUE Frame ein Schweratom-Paar unter 0,65·vdW-Summe, das im
+    BASIS-Frame darueber lag?
+
+    JE PAAR, nicht ueber ein globales Minimum -- das ist der ganze Unterschied zu
+    `_interlig_clash_ok`.  Nicht gebundene Schweratom-Paare nach demselben
+    graphfreien Kriterium wie `_min_nonbonded_heavy` (d >= 1,30·ideal_bond),
+    Wasserstoff und Metalle ausgenommen.
+
+    ⚠️ Verlangt IDENTISCHE Atomreihenfolge in beiden Frames -- beim Re-Embed ist
+       der Kern eingefroren und die Atomzahl unveraendert.  Stimmt die Form nicht,
+       wird NICHT geurteilt (False = durchlassen): lieber ein Frame zu viel als
+       ein stilles Verwerfen aus einem Vergleich, der gar nicht moeglich war.
+       Eine Null aus einem unmoeglichen Vergleich ist keine Messung.
+    """
+    P = np.asarray(P, dtype=float)
+    B = np.asarray(base_P, dtype=float)
+    n = len(syms)
+    if B.shape != P.shape or len(B) != n:
+        return False
+    for i in range(n):
+        if syms[i] == "H" or _bd._is_metal(syms[i]):
+            continue
+        for j in range(i + 1, n):
+            if syms[j] == "H" or _bd._is_metal(syms[j]):
+                continue
+            d_new = float(np.linalg.norm(P[i] - P[j]))
+            if d_new < 1.30 * _bd._ideal_bond(syms[i], syms[j]):
+                continue                                  # gebunden -> kein Kontakt
+            tgt = _IL_CLASH_FACTOR * (_il_vdw(syms[i]) + _il_vdw(syms[j]))
+            if d_new >= tgt:
+                continue
+            # Lag das Paar im Basis-Frame schon darunter, ist die Enge NICHT von
+            # diesem Frame verursacht -> kein Grund zu verwerfen.
+            if float(np.linalg.norm(B[i] - B[j])) >= tgt:
+                return True
+    return False
+
+
 _SP2_PLANAR_BAND = 3.0        # deg of angle-sum deficit a sibling may add; same width as the
                               # gate's own pyramid band (harness/loop.py:1255)
 
@@ -1114,6 +1199,18 @@ def _append_reembed(results, metal, lig_groups, base_syms, base_P, base_label,
     # frame must not introduce a worse (closer) inter-ligand contact.
     _gate = _interlig_vdw_gate_enabled()
     base_min = _min_nonbonded_heavy(base_syms, base_P) if _gate else None
+    # ⚠ ZWEITES, PAARWEISES TOR (Vorgabe AUS).  Das erste vergleicht ein globales
+    #   Minimum, dieses ein PAAR gegen sein eigenes Gegenstueck im Basis-Frame.
+    #   Gemessen: 295 von 1220 Systemen bekamen ueber `bbre6k` kaputte ANGEHAENGTE
+    #   Frames, dominant `intclash_pair` -- genau die Klasse, die ein skalares
+    #   Minimum nicht sieht.  Siehe Blockkommentar bei `_neues_paar_zu_eng`.
+    _pgate = _pairwise_gate_enabled()
+    try:
+        from delfin.manta._refine_gate import ZAEHLER as _PZ
+        if _pgate:
+            _PZ["pairgate_gelaufen"] += 1
+    except Exception:
+        _PZ = None
     for fi, (syms, P) in enumerate(frames):
         try:
             syms, P = _maybe_relax(syms, P)
@@ -1121,6 +1218,10 @@ def _append_reembed(results, metal, lig_groups, base_syms, base_P, base_label,
                 continue
             if _gate and not _interlig_clash_ok(syms, P, base_min):
                 continue                    # new conformer collapses inter-ligand -> drop
+            if _pgate and _neues_paar_zu_eng(syms, P, base_P):
+                if _PZ is not None:
+                    _PZ["pairgate_verworfen"] += 1
+                continue                    # NEUES zu enges Paar -> nicht anhaengen
             results.append((_xyz(syms, P), f"{base_label}-reembed{fi+1}"))
         except Exception:
             continue

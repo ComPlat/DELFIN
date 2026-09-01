@@ -357,6 +357,12 @@ ZAEHLER = {
     #   UND mit dem Spiegel verschwindet.
     "dual_parse_gelaufen": 0,       # zweiter Bau ueberhaupt ausgefuehrt
     "dual_sig_kollision": 0,        # Frames, die einen bestehenden Schluessel UEBERSCHREIBEN
+    # ── Paarweises Tor fuer angehaengte Frames (converter_backend, 01.09.2026) ──
+    # `gelaufen` getrennt von `verworfen`, aus demselben Grund wie oben: eine Null
+    # bei gelaufen>0 heisst "geprueft, nichts zu verwerfen", eine Null bei
+    # gelaufen==0 heisst "das Tor lief nicht". Ohne die Trennung ist sie unlesbar.
+    "pairgate_gelaufen": 0,         # Aufrufe von `_append_reembed` mit Tor AN
+    "pairgate_verworfen": 0,        # angehaengte Frames, die ein NEUES zu enges Paar brachten
 }
 
 
