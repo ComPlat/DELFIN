@@ -137,16 +137,48 @@ def test_a_sustained_pull_still_gets_there():
     assert reached[2] > 0.85 * 90.0, ('and in three', reached)
 
 
-def test_each_coordinate_is_damped_on_its_own():
-    """A force smoothed across two different pairs of atoms is a force about
-    neither of them, and the coordinate the hand drives does change while a
-    fragment is walked past a molecule."""
+def test_the_hand_is_one_hand_however_the_contact_is_named():
+    """The damping belongs to the gesture, not to the pair it is named by.
+
+    It used to be kept per pair of atoms, on the reasoning that a force
+    smoothed across two different pairs is a force about neither.  That
+    reasoning is about the coordinate; the damping is about the hand, and the
+    hand is one hand from the press to the release.  Which pair the perception
+    names it by is worked out afresh from the geometry every answer, and
+    around anything symmetric it does not settle.
+
+    From the field, a 36-atom anion under GFN2 in DMF at 1.8 s an answer, an
+    oxygen dragged out of a ring of hydrogens: sixteen answers named
+    O40-H20, O40-H41, O40-H30, O40-H26, O40-H30, O40-H26, O40-H20, ... --
+    fourteen changes, every one between hydrogens the same distance away.
+    Keyed on the pair, each was a key nobody had seen, and a key nobody has
+    seen starts at what this answer asks for, so the hand ran undamped every
+    other answer: 72.0, 30.9, 61.9, 34.4, 89.9, 50.0, 93.0, 53.0 kcal/mol per
+    Angstrom, the high ones each at their own ceiling.  The user: "es zappelt
+    und dann schaff ich es sogar manchmal ein molekuel zu zerreissen", and
+    the next answer applied 146.5 against a ceiling of 105 and put two atoms
+    inside 0.44 of a bond length.  The budget stood at +0.9 of 22.3 the whole
+    time: nothing was being refused, this was the hand alone.
+    """
     part, state = _an_editor()
     state['gfn_follow_run'] = 3
-    part._steady_hand([_push(20.0, atoms=(0, 1))])
-    got = part._steady_hand([_push(80.0, atoms=(2, 3))])
-    assert got[0]['force'] == pytest.approx(80.0), (
-        'a pair nobody has driven starts where it is asked to')
+    state['gfn_follow_took'] = 1.8
+
+    pairs = [(40, 20), (40, 41), (40, 30), (40, 26), (40, 30), (40, 26),
+             (40, 20), (40, 26), (40, 20), (40, 26), (40, 20), (40, 26)]
+    # The lag alternates with the contact: on one answer the structure is
+    # behind on this pair, on the next it is not.
+    demand = [95.0 if i % 2 == 0 else 44.0 for i in range(len(pairs))]
+    applied = [float(part._steady_hand(
+        [_push(want, atoms=pair)])[0]['force'])
+        for want, pair in zip(demand, pairs)]
+
+    swing = max(abs(b - a) for a, b in zip(applied, applied[1:]))
+    assert swing < 5.0, (swing, applied)      # it was 51, once an answer
+    assert max(applied) <= 95.0 + 1e-9, applied
+    # And it is a glide rather than a square wave: no answer reverses by more
+    # than the damping step.
+    assert applied[0] == pytest.approx(95.0), 'a drag still begins at once'
 
 
 def test_a_new_run_starts_the_hand_again():
