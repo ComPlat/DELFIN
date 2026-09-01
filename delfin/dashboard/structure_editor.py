@@ -2552,9 +2552,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         description='Show the mode', icon='film', button_style='',
         tooltip=('Draw the imaginary mode -- the reaction coordinate itself, '
                  'so you can see which bonds are forming and which are '
-                 'breaking. Six swings and it stops on the structure it '
-                 'started from. It is a picture: the coordinates never '
-                 'change.'),
+                 'breaking. It repeats until the press is let go again, and '
+                 'then the structure is back where it was. It is a picture: '
+                 'the coordinates never change.'),
         layout=widgets.Layout(width='142px', height='30px', display='none'),
         disabled=True,
     )
@@ -4009,6 +4009,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         the current run.  It begins where the minimisation begins now, so the
         two cannot drift apart again.
         """
+        # Whatever is about to draw, the repeating picture is not it.  Said
+        # here because this is the one place a writer announces itself, and a
+        # loop left running under somebody else's frames would be a picture of
+        # a structure that has been replaced -- with a press still offering to
+        # stop something that had already stopped.
+        if state.get('mode_showing'):
+            _stop_the_mode(quietly=True)
         run = int(state.get('gfn_run', 0)) + 1
         state['gfn_run'] = run
         # Who took it, worked out here from what is walking rather than said
@@ -4431,6 +4438,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '         be under way -- and a halt nobody addressed cleared\n'
             '         that one\'s queue and reported it stopped. */\n'
             '      if(run&&play.run!==null&&run!==play.run) return;\n'
+            '      /* And a loop stops looping.  Put the structure back\n'
+            '         on the way out: the frame a repeat happens to be\n'
+            '         standing on is the structure displaced along a\n'
+            '         mode, which is a picture and not something anybody\n'
+            '         chose to work on. */\n'
+            '      if(play.cycle&&play.home) show(play.last,play.home,1);\n'
+            '      play.cycle=null;\n'
             '      play.queue=[]; play.stopped=1;\n'
             '      if(!play.toldStop){ play.toldStop=1;\n'
             '        /* Which frame is on screen, and of which run.  Stopping\n'
@@ -4473,7 +4487,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '      }\n'
             '      play.run=run; play.seen=0; play.queue=[]; play.last=null;\n'
             '      play.shown=0; play.toldStop=0; play.complete=0;\n'
-            '      play.stopped=0; play.home=null;\n'
+            '      play.stopped=0; play.home=null; play.cycle=null;\n'
             '    }\n'
             '    /* Where the picture has to be put back to if this run is cut\n'
             '       short.\n'
@@ -4495,6 +4509,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '       pushes ten times a second: asked, the first push of every\n'
             '       drag would carry a displaced geometry. */\n'
             '    if(data&&data.home) play.home=data.home;\n'
+            '    /* A picture that repeats until it is switched off.\n'
+            '       The frames are kept rather than asked for again:\n'
+            '       they are arithmetic on a geometry the page already\n'
+            '       has, so a kernel that had to resend them every few\n'
+            '       seconds would be doing work to say something it has\n'
+            '       already said -- and would race every other writer\n'
+            '       on this channel for the whole time the loop ran. */\n'
+            '    if(data&&data.loop) play.cycle=frames.slice();\n'
+            '    else if(data&&data.loop!==undefined) play.cycle=null;\n'
             '    /* A run that was stopped stays stopped.  The kernel refuses\n'
             '       to write for it once the switch is up; this is the same\n'
             '       refusal on the page, for the write that was already in\n'
@@ -4849,6 +4872,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             '    }\n'
             '    readWall();\n'
             '    read(now);\n'
+            '    /* Round again.  Refilled here rather than when the\n'
+            '       last frame is drawn, because the queue is emptied\n'
+            '       in three places above and only one of them is the\n'
+            '       picture ending of its own accord. */\n'
+            '    if(play.cycle&&play.cycle.length&&!play.queue.length){\n'
+            '      for(var c=0;c<play.cycle.length;c++)\n'
+            '        play.queue.push(play.cycle[c]);\n'
+            '    }\n'
             '    if(play.queue.length){\n'
             '      if(!play.started) play.started=now;\n'
             '      var ms=stepMs();\n'
@@ -13874,6 +13905,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         :func:`_frame_payload`), and the ``home`` frame, because these frames
         are a picture and not a structure.
         """
+        if state.get('mode_showing'):
+            _stop_the_mode()
+            return
         if state.get('mode_run') or state.get('down_run'):
             return
         if not _mode_press_can_run():
@@ -13906,6 +13940,28 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
         _start_background(_work, 'The mode',
                           guards={'mode_run': False})
+
+    def _stop_the_mode(quietly=False):
+        """Switch the repeating picture off and put the structure back.
+
+        The frame it happens to be standing on is the structure displaced
+        along an eigenvector, so stopping is not "leave it where it is" the
+        way stopping a trajectory is -- the page puts the home frame back
+        first, and it does that for itself: the halt has to arrive even if
+        nothing here is listening any more, which is why it is the page that
+        holds the frame to return to.
+        """
+        run = state.pop('mode_showing', None)
+        submit_mode_btn.description = 'Show the mode'
+        submit_mode_btn.button_style = ''
+        if run is None:
+            return
+        schedule_ui_update(
+            lambda: setattr(submit_gfn_frame, 'value',
+                            _frame_payload(run, halt=1, loop=0, frames=[])))
+        if not quietly:
+            _set_mol_status('The mode stopped, and the structure is back where '
+                            'it was.')
 
     def _draw_the_mode(modes, chosen):
         """Put the mode on the frame channel, once, as a whole picture.
@@ -13943,17 +13999,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         _ensure_manip_bootstrap()
         schedule_ui_update(_install_gfn_frame_watcher)
         seconds = (len(frames) * _climb.MODE_PACE_MS) / 1000.0
+        state['mode_showing'] = run
+        submit_mode_btn.description = 'Stop the mode'
+        submit_mode_btn.button_style = 'warning'
         schedule_ui_update(
             lambda text=_frame_payload(
                 run, pace=_climb.MODE_PACE_MS,
-                **{'from': 0, 'frames': frames, 'final': 1,
+                **{'from': 0, 'frames': frames, 'final': 1, 'loop': 1,
                    'home': frames[-1]}),
             r=run: setattr(submit_gfn_frame, 'value', text)
             if _frame_run_is_current(r) else None)
         _set_mol_status(
             f'Drawing the mode at {float(cm[picked]):.0f} cm-1: '
-            f'{_climb.MODE_SWINGS} swings, about {seconds:.0f} s, and it '
-            'stops on the structure it started from.',
+            f'{_climb.MODE_SWINGS} swings every {seconds:.0f} s, over and '
+            'over until the press is let go again.',
             'The atoms it moves are the atoms the reaction moves. A '
             'picture only -- the box does not change.'
             + ('' if amplitude >= _climb.MODE_AMPLITUDE else
