@@ -1928,6 +1928,22 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         var state = getState(scopeKey);
         if (state.measureBox) return state.measureBox;
         if (!state.viewerEl) return null;
+        // Anything of this kind already in the picture belongs to a viewer
+        // that is gone.  A render replaces the HTML and the state lets go of
+        // its box, but letting go is not removing: the old one stayed in the
+        // corner with the last numbers it was given, owned by nobody, so
+        // nobody ever hid it again -- and the next pick built a second one
+        // beside it.  That is "man sieht manchmal mehrere und sie bleiben
+        // auch nachdem die markierungen weg sind".
+        try {
+            var stale = state.viewerEl.querySelectorAll(
+                '.submit-manip-measure-box');
+            for (var s = 0; s < stale.length; s++) {
+                if (stale[s].parentNode) {
+                    stale[s].parentNode.removeChild(stale[s]);
+                }
+            }
+        } catch (eStale) {}
         var box = document.createElement('div');
         box.className = 'submit-manip-measure-box';
         box.style.position = 'absolute';
@@ -5185,6 +5201,13 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         state.fixedInternals = [];
         state.ffActive = false;
         state.ffInfo = null;
+        // Taken out of the picture and not merely let go of.  See
+        // ensureMeasureBox: a reference dropped here left the box standing.
+        if (state.measureBox && state.measureBox.parentNode) {
+            try {
+                state.measureBox.parentNode.removeChild(state.measureBox);
+            } catch (eBox) {}
+        }
         state.measureBox = null;
         // Nothing from the picture that is going away may be waiting on an
         // answer meant for it.
