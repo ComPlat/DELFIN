@@ -911,6 +911,32 @@ def _apply_mirror_enum_if_enabled(results):
     """
     if not results:
         return results
+    # ── NUR AM AEUSSERSTEN AUFRUF (01.09.2026, gemessen) ────────────────────────────
+    # `_conf_complete_filter` ruft REKURSIV in `smiles_to_xyz_isomers` zurueck; der
+    # innere Aufruf ist an `_CONF_COMPLETE_ACTIVE` erkennbar, und genau dafuer gibt es
+    # `outermost` (smiles_converter.py:32413).  JEDER benachbarte Endpass traegt den
+    # Schutz -- `_conf`, `_pdedup`, `_grank`, `_hdeclash`, `_sdeclash`, `_cofix`,
+    # `_coordint_late`, `_emir` stehen alle als `... if outermost else (lambda x: x)`.
+    # DER SPIEGEL ALS EINZIGER NICHT.
+    #
+    # BELEG (`LOOP_FIRE_TRACE`, addroot8/9 auf ABUSAU und JEJROI, beide Arme):
+    #     smiles_converter.py:35932   2 Treffer     <- Legacy-Spiegel, ZWEIMAL
+    #     :32627 :32885 (FF-freier Pfad)  0         <- diese Systeme laufen da nicht
+    #     die fuenf Legacy-Stufen danach  0
+    # Zwei Ausfuehrungen derselben Zeile = innerer + aeusserer Aufruf.  Sichtbar wird
+    # das im Archiv als ZWEI identische `..._mirror`-Etiketten je System -- beide Male
+    # wird dieselbe erste Vorlage gespiegelt (unter ONE_PER_SYSTEM bricht die Schleife
+    # nach dem ersten Anhaengen ab).
+    #
+    # ⚠ WAS DAMIT NOCH NICHT BEWIESEN IST: dass die Doppelung den verschwundenen
+    #   `..._stereo-u`-Frame KOSTET.  Die Vorhersage steht in der Warteschlangenzeile
+    #   und wird gemessen, nicht behauptet.  Faellt sie, bleibt dieser Schutz trotzdem
+    #   richtig -- ein Enumerator, der im Wiedereintritt ein zweites Mal anhaengt,
+    #   verletzt denselben Vertrag wie die Paesse nebenan.
+    #
+    # Byte-identisch, solange `DELFIN_MIRROR_ENUM` aus ist (das Modul prueft selbst).
+    if getattr(_CONF_COMPLETE_ACTIVE, "value", False):
+        return results
     try:
         from delfin.manta._mirror_enum import expand_results as _mirror_expand
         return _mirror_expand(results)
