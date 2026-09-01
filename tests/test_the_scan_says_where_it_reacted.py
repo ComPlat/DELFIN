@@ -22,7 +22,11 @@ saddle search would agree with.  It will not: it will be lower.
 
 from __future__ import annotations
 
+import math
+
 import pytest
+
+from delfin.dashboard import gfn_optimize as gfn
 
 from editor_source import EDITOR_SOURCE as SOURCE
 
@@ -75,3 +79,36 @@ def test_a_top_away_from_the_reaction_is_said_to_be_one():
     # Angstrom, and one number cannot be near in both.
     assert 'spacing' in verdict
     assert '1.5 * spacing' in verdict
+
+
+def test_a_push_reaches_as_far_in_degrees_as_it_does_in_angstrom():
+    """A reach in the coordinate's own units, and it was not.
+
+    The scan's push holds its target a reach ahead of the structure and ramps
+    the force, so what the molecule feels is a force and not a spring that
+    pulls harder the further it has to go.  The reach was an Angstrom whatever
+    the coordinate was -- so on an angle or a torsion, whose values are in
+    degrees, the target sat one degree ahead where a reach is a hundred and
+    eight of them.
+
+    A push that asks for a hundredth of what it means to ask for does not
+    refuse.  It ramps a force against a target the structure is already at,
+    nothing happens, and the user meets it as "on an angle only walk the value
+    works" -- which is what was reported.  gfn_optimize.PUSH_REACH_DEGREES
+    existed the whole time and the drag had been converting with it; this had
+    not.
+
+    And the floor goes with it: a bond cannot be asked for at or below zero,
+    but 0.2 degrees is not a floor on an angle, and a torsion is periodic and
+    has no floor at all.
+    """
+    push = SOURCE.split('def _push_target(')[1].split('\n        def ')[0]
+    assert '_gfn.PUSH_REACH_DEGREES' in push, push[:400]
+    assert "kind == 'distance'" in push
+    # The floor is a distance's, and is applied as one.
+    assert "max(0.2, target) if kind == 'distance' else target" in push
+
+    # And the two reaches really are the same reach, said twice.
+    assert gfn.PUSH_REACH_DEGREES == pytest.approx(
+        math.degrees(gfn.PUSH_REACH / gfn.BOHR_IN_ANGSTROM))
+    assert gfn.PUSH_REACH_DEGREES > 100.0, 'a hundredth of this was the bug'
