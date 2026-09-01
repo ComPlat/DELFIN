@@ -478,7 +478,12 @@ def test_no_press_in_the_editor_runs_against_a_clock():
     assert 'timeout=30.0' not in source, 'a drag frame is on a clock again'
     assert 'def _hand_gone(' in source, (
         'the drag frames lost their clock, so they need a way to be stopped')
-    assert source.count('should_stop=_hand_gone') == 4, (
+    # A census on purpose, and brittle on purpose: a new run cannot be added
+    # to a drag frame without someone reading this line.  The fifth is the
+    # continuation the budget spends before it refuses a step -- two hundred
+    # cycles, which is ten answers' worth, and the one press in here with no
+    # clock of its own that could last that long.
+    assert source.count('should_stop=_hand_gone') == 5, (
         'every run a drag frame starts has to hear the hand let go')
 
     assert 'seconds_for(method)' not in source, (
