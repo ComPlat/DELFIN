@@ -29,10 +29,15 @@ from __future__ import annotations
 
 import pytest
 
+from delfin.dashboard import climb as _climb
 from delfin.dashboard import gfn_optimize as gfn
 
+# ``have_fast_gradients`` is climb's, not gfn_optimize's.  Written against the
+# wrong module this never fired here -- ``find_xtb()`` answers on this box, so
+# the ``and`` short-circuited before reaching it -- and broke collection on a
+# runner with no xtb, where the second half is exactly what does get read.
 _needs_xtb = pytest.mark.skipif(
-    gfn.find_xtb() is None and not gfn.have_fast_gradients(),
+    gfn.find_xtb() is None and not _climb.have_fast_gradients(),
     reason='no xtb to relax with')
 
 _ETHANE = """8
