@@ -150,6 +150,7 @@ import numpy as np
 
 from . import gfn_optimize as _gfn
 from . import saddle as _saddle
+from .model_hessian import model_hessian
 
 #: Angstrom in a Bohr, from the same place the rest of the editor takes it.
 BOHR = _gfn.BOHR_IN_ANGSTROM
@@ -295,6 +296,68 @@ HESSIAN_EVERY = 20
 #: arrives now takes twenty to thirty steps, so it pauses once; one that is
 #: lost pauses eight times and no more.
 MOST_HESSIANS = 8
+
+#: The displacement a differenced Hessian is taken with, in bohr.
+HESSIAN_DELTA = 0.005
+
+#: Where the *first* Hessian comes from: ``'measured'`` differences the
+#: gradient for it, which is what every climb has done so far and costs ``6N``
+#: gradients before the first step -- 72 for butane, 330 and thirteen minutes
+#: for a manganese complex.  ``'model'`` guesses it from the geometry with
+#: :func:`delfin.dashboard.model_hessian.model_hessian` and costs none.
+#:
+#: ``'corrected'`` is the middle course: the guess, with its own softest
+#: :data:`MEASURE_THE_SOFTEST` modes measured after all, at two gradients each.
+#:
+#: **The default stays measured, and that is a measured decision.**  Over the
+#: twenty-one drags this module was developed against -- each run twice, aimed
+#: from the structure before the drag, everything else identical -- starting
+#: from the guess *loses three real transition states*: a Diels-Alder at
+#: -393 cm-1 replaced by one at -46 somewhere else, another at -721 lost
+#: outright, and a proton transfer at -572 lost.  It gains one, at -82 cm-1
+#: with the bond it is supposed to be breaking still at 1.544 A, which is a
+#: conformational saddle and not the reaction.  Cheaper is not better when
+#: cheaper changes the answer.
+#:
+#: Three attempts to make the swap safe were measured and none worked: the
+#: correction above, adding the drag's own direction to what is measured
+#: (0.804 against 0.804 -- it is dominated by the relaxation of everything
+#: else), and scaling the model, which the surface is 4 to 6 times stiffer
+#: than (1.00, 0.50 and 0.25 give the identical failure; the trust radius
+#: absorbs the scale).  What goes wrong is two different things: on the
+#: Diels-Alders the corrected start climbs the *same* mode -- 0.996 overlap --
+#: and drifts anyway, taking 143 steps where the measured start takes 24; on a
+#: proton transfer it climbs a different mode entirely, 0.002, because the
+#: reaction there is a *stiff* direction and a sum of springs cannot hold one.
+#:
+#: Not the climb's fault, which was checked: two differenced Hessians a fifth
+#: of a percent apart in step size reach the same saddle in the same 24 steps,
+#: their energies equal to eight decimals.
+FIRST_HESSIAN = 'measured'
+
+#: What :data:`FIRST_HESSIAN` and the *first_hessian* argument may say.  An
+#: unknown one is refused at construction rather than quietly falling back,
+#: because falling back to the expensive path is exactly the mistake a typo
+#: here would hide.
+HESSIANS_START_FROM = ('measured', 'model', 'corrected')
+
+#: How many of the model's own softest modes ``'corrected'`` measures rather
+#: than guesses, at two gradients each.  Ten is 20 gradients against the 330 a
+#: 57-atom complex costs outright.
+#:
+#: The number comes from where the guess is right and where it is not.
+#: Measured against differenced Hessians, the model's softest mode lies inside
+#: the true softest *five* to 0.96 or better on everything rigid or moderately
+#: flexible, so the soft space is found there; but the *ordering* inside it is
+#: not -- five model modes against five true ones overlap only 0.67 to 0.96 --
+#: and it is the ordering that :meth:`Climb.aim` reads when it decides which
+#: mode to climb.  Ten covers the five that matter with room for the mixing.
+#:
+#: On large flexible molecules the guess does not find the soft space at all
+#: (0.613 for a 67-atom tetrapeptide, 0.810 for imatinib), so ten of its modes
+#: are ten of the wrong ones.  That is a reason to leave the default where it
+#: is rather than a number to tune.
+MEASURE_THE_SOFTEST = 10
 
 #: Below this a mode counts as imaginary rather than as noise, in cm-1.
 #:
@@ -813,7 +876,8 @@ class Climb:
 
     def __init__(self, xyz_text: str, method: str = 'gfn2', *,
                  charge: int = 0, uhf: int = 0, solvent: Optional[str] = None,
-                 cores: int = 4, trust: float = START_TRUST):
+                 cores: int = 4, trust: float = START_TRUST,
+                 first_hessian: Optional[str] = None):
         found = _elements(xyz_text)
         if found is None:
             raise ValueError('there is no structure to climb from')
@@ -831,6 +895,12 @@ class Climb:
         self.weight = np.repeat(
             np.sqrt(self.masses * ELECTRON_MASSES_PER_AMU), 3)
         self.trust = float(trust)
+        self.first_hessian = str(first_hessian or FIRST_HESSIAN).lower()
+        if self.first_hessian not in HESSIANS_START_FROM:
+            raise ValueError(
+                'a climb starts from '
+                + ' or '.join(HESSIANS_START_FROM)
+                + f', not from {first_hessian!r}')
         self.hessian: Optional[np.ndarray] = None
         self.following: Optional[np.ndarray] = None
         self.energy: Optional[float] = None
@@ -889,7 +959,7 @@ class Climb:
         energy, gradient = self.engine(bohr)
         return float(energy), np.asarray(gradient, dtype=float).reshape(-1)
 
-    def numerical_hessian(self, delta: float = 0.005) -> np.ndarray:
+    def numerical_hessian(self, delta: float = HESSIAN_DELTA) -> np.ndarray:
         """Central differences of the gradient, in the working metric.
 
         6N gradients and no cleverness: measured, 0.6 s for sixteen atoms in
@@ -916,6 +986,100 @@ class Climb:
         built = 0.5 * (built + built.T)
         return built / np.outer(self.scale, self.scale)
 
+    def first_matrix(self, aimed_from: Any = None) -> np.ndarray:
+        """The Hessian the climb sets off with, measured or guessed.
+
+        Which of the two is :attr:`first_hessian`, and the difference is the
+        whole of what it costs to begin: ``6N`` gradients against none.  The
+        refreshes along the way are not affected -- those are always measured,
+        because by then the climb is somewhere the model has no claim to know
+        about and a guess would be replacing something better with something
+        worse.
+        """
+        if self.first_hessian == 'measured':
+            return self.numerical_hessian()
+        guess = (model_hessian(self.numbers, self.bohr)
+                 / np.outer(self.scale, self.scale))
+        if self.first_hessian == 'model':
+            return guess
+        return self._corrected(guess, self._asked_for(aimed_from))
+
+    def _asked_for(self, aimed_from: Any) -> Optional[np.ndarray]:
+        """The way the hand moved the structure, as a working-metric unit."""
+        if aimed_from is None:
+            return None
+        before = _elements(aimed_from) if isinstance(aimed_from, str) \
+            else {'angstrom': np.asarray(aimed_from, dtype=float)}
+        if before is None:
+            return None
+        earlier = np.asarray(before['angstrom'], dtype=float)
+        if earlier.shape != self.bohr.shape:
+            return None
+        moved = ((self.bohr - earlier / BOHR).reshape(-1)) * self.scale
+        size = float(np.linalg.norm(moved))
+        return None if size < 1e-8 else moved / size
+
+    def _product(self, way: np.ndarray) -> np.ndarray:
+        """The real Hessian applied to one direction, for two gradients.
+
+        A whole Hessian is 6N of these.  One is two, whatever the molecule's
+        size, which is the only reason any of this is worth doing.
+        """
+        step = np.asarray(way, dtype=float) / self.scale
+        reach = HESSIAN_DELTA / max(1e-12, float(np.linalg.norm(step)))
+        flat = self.bohr.reshape(-1)
+        _e, up = self._measure((flat + reach * step).reshape(-1, 3))
+        _e, down = self._measure((flat - reach * step).reshape(-1, 3))
+        return ((up - down) / (2.0 * reach)) / self.scale
+
+    def _corrected(self, guess: np.ndarray,
+                   asked: Optional[np.ndarray] = None) -> np.ndarray:
+        """The model, with its own softest modes measured instead of guessed.
+
+        The guess finds the soft *space* and gets the order inside it wrong,
+        so the order is the only thing bought back: the model's softest
+        :data:`MEASURE_THE_SOFTEST` directions are handed to the real surface,
+        one gradient pair each, and that small block is replaced by what comes
+        back.  Everything stiffer stays as the model had it, where being four
+        to six times too stiff costs a climb nothing -- it is not going that
+        way.
+
+        *asked* is the way the hand moved the structure, and it is measured
+        too, because the reaction is not always a soft mode.  Measured on a
+        proton half transferred across a hydrogen bond: the true mode is a
+        stretch at -0.387 in the working metric, nowhere near the soft end, and
+        correcting only the softest ten brought the matrix to -0.072 -- the
+        right sign and a fifth of the size.  A drag says where to look, and
+        looking there costs one more gradient pair.
+
+        The correction can also do the one thing the model never can.  A sum of
+        springs cannot hold a negative curvature; a measured block can, and on
+        a Diels-Alder held at 1.10 A it does -- the guess said +0.0037 where the
+        surface says -0.0080, and the correction says -0.0071.  A climb that
+        starts with nothing to climb is the failure this addresses.
+        """
+        basis = self._basis()
+        small = basis.T @ guess @ basis
+        _value, vector = np.linalg.eigh(0.5 * (small + small.T))
+        want = int(min(MEASURE_THE_SOFTEST, vector.shape[1]))
+        if want < 1:
+            return guess
+        ways = basis @ vector[:, :want]
+        if asked is not None:
+            # Orthogonal to the soft ones, or it is asking a second time for
+            # something already bought.
+            spare = asked - ways @ (ways.T @ asked)
+            size = float(np.linalg.norm(spare))
+            if size > 1e-3:
+                ways = np.concatenate([ways, (spare / size)[:, None]], axis=1)
+                want += 1
+        image = np.stack([self._product(ways[:, i]) for i in range(want)],
+                         axis=1)
+        was = ways.T @ guess @ ways
+        now = ways.T @ image
+        now = 0.5 * (now + now.T)
+        return guess + ways @ (now - was) @ ways.T
+
     def start(self, aimed_from: Any = None) -> Dict[str, Any]:
         """Pay for the Hessian, and choose the mode to climb.
 
@@ -926,7 +1090,7 @@ class Climb:
         guides a saddle search.  See :meth:`took`.
         """
         began = time.perf_counter()
-        self.hessian = self.numerical_hessian()
+        self.hessian = self.first_matrix(aimed_from)
         self.energy, self.gradient = self._measure(self.bohr)
         self.steps = 0
         self.refused = 0
@@ -939,6 +1103,7 @@ class Climb:
         modes = self.frequencies()
         return {'seconds': time.perf_counter() - began,
                 'gradients': int(getattr(self.engine, 'calls', 0)),
+                'from': self.first_hessian,
                 'aimed': overlap, 'modes': [float(one) for one in modes[:4]],
                 'imaginary': int((modes < IMAGINARY_BELOW).sum())}
 
