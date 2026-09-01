@@ -5516,6 +5516,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     stale = bool(holding) and not any(
                         0 <= int(i) < count for i in holding)
                     pricing = _thermal_live() and not stale
+                    # Whether the bonding is being held as well.  Read here so
+                    # that what the box is left holding can be decided by
+                    # *which* walls are standing rather than by the budget
+                    # alone -- the two are independent switches and either of
+                    # them makes the box the wall's rather than the page's.
+                    keeping = bool(submit_topology_btn.value)
                     # The hand as a force rather than as a value.
                     #
                     # The coordinates the hand has changed were held exactly,
@@ -5559,12 +5565,43 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     state.pop('thermal_held_back', None)
                     if pull is not None:
                         current = _within_the_budget(current, holding)
+                    # A hand that has not moved is not asking for anything
+                    # new, and what is held must not change under it.
+                    #
+                    # The perception has that rule already, and it measures
+                    # the wrong stillness: it asks whether the *structure*
+                    # changed, and hands the previous set back only when it
+                    # did not.  Under a budget the structure is exactly what
+                    # will not hold still -- so the rule never fired where it
+                    # was needed, and the loop fed itself.  Contact A is held,
+                    # the molecule relaxes into the arrangement that goes with
+                    # it, next answer that movement makes contact B score
+                    # highest, the molecule relaxes into B's arrangement, and
+                    # so on.  Measured on an ethane with the hand standing
+                    # still to a thousandth of an angstrom: the named contact
+                    # changed 17 times in 20 answers -- C1-C0, H7-H4, H7-H3,
+                    # C1-C0, H5-H2 -- and an atom moved 1.21 A between every
+                    # pair of consecutive answers, for as long as the hand was
+                    # held there.  That is the shaking, and it is not the
+                    # chemistry: it is the question changing.
+                    #
+                    # So the stillness that matters is the hand's, which the
+                    # budget already measures for its own purposes, and it is
+                    # measured against the last answer rather than the drag's
+                    # beginning -- a hand may hold anywhere.
+                    asked = _how_far_the_hand_has_asked(current, holding)
+                    was_asked = state.get('hand_asked_last')
+                    still = (was_asked is not None
+                             and abs(float(asked) - float(was_asked))
+                             <= _HAND_STIRRED)
+                    state['hand_asked_last'] = asked
                     contacts = (
                         _gfn.contacts_holding(
                             current, holding, most=3,
                             was=state.get('thermal_was'),
                             turning=state.get('thermal_turn'),
-                            holding=state.get('thermal_holding'))
+                            holding=state.get('thermal_holding'),
+                            unchanged=still)
                         if ((pricing or pull is not None)
                             and not _mopac.is_mopac_method(method)) else [])
                     if contacts and state.pop('gfn_follow_opening', False):
@@ -6325,9 +6362,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # instead -- and the page's model is the mouse's wish, at
                     # +136.7 kcal/mol under a 22.3 ceiling while the line
                     # underneath read "+16.2 of 22.3 available".
+                    #
+                    # Keep bonds owns the box the same way, and did not: with
+                    # the budget off, an *allowed* step said nothing and so
+                    # wrote nothing, and the page's own model -- where the
+                    # cursor is -- stayed in the box underneath a switch that
+                    # says the bonding is being kept.  Measured on an ethane
+                    # with Keep bonds on and no budget: the box held a C-C at
+                    # 2.19, 2.52, 2.86 and 3.19 A on the four steps the wall
+                    # allowed, every one of them a broken bond, while the wall
+                    # itself was holding 1.55.
                     why = ''
                     if kept is not None:
                         why = 'Kept: the bonding would have changed'
+                    elif keeping:
+                        why = 'The bonding this structure had is being kept'
                     elif came_back is not None:
                         why = ('Back to the last structure that was measured '
                                'and allowed' if aside else
@@ -7073,6 +7122,25 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         return (float(outcome['energy']) - bias if bias is not None
                 else float(outcome['energy']))
 
+    def _keep_the_walled_geometry():
+        """Leave the box holding what the walls that are standing agreed to.
+
+        The budget's wall and the bonding's wall each keep the last geometry
+        *they* allowed, and either of them may be the one holding.  With both
+        on they can disagree -- the budget can afford a step whose bonding the
+        other refuses -- and then the bonding's is the later word, because it
+        is applied to what the budget already decided.
+
+        Which of the two is handed back is a smaller question than it looks:
+        whichever it is, it is a structure that was measured and allowed, and
+        the alternative is the page's model, which is where the cursor was.
+        """
+        if submit_topology_btn.value and state.get('topology_good'):
+            _keep_this_geometry(state['topology_good'],
+                                'Keeping the bonding this structure had')
+            return
+        _keep_the_priced_geometry()
+
     def _keep_the_priced_geometry():
         """Leave the box holding the last geometry the budget agreed to.
 
@@ -7083,8 +7151,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         the last word on a drag was the one geometry nothing had ever priced.
         """
         good = state.get('thermal_good')
-        if not good:
-            return
+        if good:
+            _keep_this_geometry(
+                good, 'Within the budget at '
+                      f'{float(submit_temperature.value):g} K')
+
+    def _keep_this_geometry(good, why):
+        """Put *good* in the box, unless it is not about this molecule.
+
+        The one place either wall writes its answer at the release, so the two
+        cannot drift apart in how carefully they do it.
+        """
         rows = [line for line in good.splitlines()[2:] if line.strip()]
         here = coords_widget.value or ''
         if not rows or len(_gfn.atom_lines(here)) != len(rows):
@@ -7094,10 +7171,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return
         if _gfn.coordinates_of(here) == _gfn.coordinates_of(good):
             return          # already holding it, and the comment says why
-        _write_coords(
-            xyz_document(rows, 'Within the budget at '
-                               f'{float(submit_temperature.value):g} K'),
-            True)
+        _write_coords(xyz_document(rows, why), True)
 
     def _topology_wall(xyz):
         """Keep the molecule the molecule it was, and take back what did not.
@@ -18433,10 +18507,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # once that handler has finished.  That order is what makes the last
         # write of a drag a priced one rather than a raw one, so it is worth
         # knowing that it is the event loop guaranteeing it.
+        # Either wall makes the box the wall's.  Written for the budget alone,
+        # this let a Keep bonds drag with no budget fall through to the raw
+        # payload -- and the release is a raw write, so the last word on such
+        # a drag was the mouse's wish.  Measured on an ethane: the box held
+        # 1.521 A and seven bonds all through the drag, then 5.521 A and six
+        # the moment the hand let go, while the wall's own kept structure was
+        # still the seven-bond one.
         walled = ((dragging or released)
-                  and bool(submit_thermal_btn.value)
                   and state.get('gfn_follow')
-                  and _thermal_budget()[0] is not None)
+                  and ((bool(submit_thermal_btn.value)
+                        and _thermal_budget()[0] is not None)
+                       or (bool(submit_topology_btn.value)
+                           and state.get('topology_graph') is not None)))
         if drag_ended:
             # Set, Hold, a bond edit and a drag all arrive here.  Any of them
             # during an optimisation makes what xtb is doing about a structure
@@ -18476,7 +18559,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # way what the user is left with is a structure that was measured
             # and allowed, which is the whole of what the temperature means.
             if released:
-                _keep_the_priced_geometry()
+                _keep_the_walled_geometry()
             if state.pop('poly_recheck', False):
                 schedule_ui_update(_enable_live_forcefield)
             return
