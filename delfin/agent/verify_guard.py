@@ -444,13 +444,13 @@ _EVIDENCE_TOOL_SHAPE = re.compile(r"(?i)(read|grep|search|fetch|docs|glob)")
 # Number token for unit-anchored claims. The lookbehind stops mid-token
 # matches (dotted version strings like 6.0.1 can never contribute their
 # tail digits); the sign class includes the Unicode minus.
-_QTY_NUM = r"(?<![\w.])[-+−]?\d+(?:\.\d+)?"
+_QTY_NUM = r"(?<![\w.])[-+−]?\d+(?:[.,]\d+)?"
 
 # A number that LOOKS like a measurement rather than a count: it carries a
 # decimal, or it is large enough that no one wrote it as a tally. Used
 # where the unit token is also an ordinary word and the number has to
 # carry the discrimination on its own.
-_QTY_MEASURED = r"(?<![\w.])[-+−]?(?:\d+\.\d+|\d{4,})"
+_QTY_MEASURED = r"(?<![\w.])[-+−]?(?:\d+[.,]\d+|\d{4,})"
 
 # Unit-anchored claim patterns: a number IMMEDIATELY before the unit
 # (at most one whitespace char between them). Percentages and bare
@@ -1183,7 +1183,49 @@ def _grounded_in_observations(value: float, pool: list[float]) -> bool:
 # How many observed numbers take part in deriving a difference.
 MAX_DERIVATION_BASE = 24
 
-_CLAIM_VALUE_RE = re.compile(r"[-+−]?\d+(?:\.\d+)?")
+_CLAIM_VALUE_RE = re.compile(r"[-+−]?\d+(?:[.,]\d+)?")
+
+
+def _claim_readings(quantity: str) -> list[tuple[float, float]]:
+    """Every number a matched claim could be asserting, with its precision.
+
+    A separator means opposite things in the two languages this agent
+    answers in: "2,31" is two-and-a-bit where the user writes German and
+    two thousand three hundred and ten where they do not, and "1.234" is
+    the same disagreement mirrored. The scanner knew only the dot, so a
+    German answer had its claims read wrong rather than not read —
+    measured, "2,31 eV" was checked as "31 eV", a number the answer never
+    states. That fails in both directions: a correct value is accused,
+    and a wrong one can be excused by whatever the fragment happens to
+    match.
+
+    Three digits after the separator is the ambiguous case and yields BOTH
+    readings; one or two digits can only be a decimal. A claim grounded
+    under either reading is left alone, because a guard that has to guess
+    should guess toward silence.
+    """
+    match = _CLAIM_VALUE_RE.search(str(quantity or ""))
+    if not match:
+        return []
+    token = match.group(0).replace("−", "-")
+    sep = "," if "," in token else ("." if "." in token else "")
+    if not sep:
+        try:
+            return [(float(token), 0.5)]
+        except ValueError:
+            return []
+    head, _, tail = token.partition(sep)
+    out: list[tuple[float, float]] = []
+    try:
+        out.append((float(f"{head}.{tail}"), 0.5 * (10.0 ** -len(tail))))
+    except ValueError:
+        return []
+    if len(tail) == 3:                    # a grouped thousand, or not
+        try:
+            out.append((float(head + tail), 0.5))
+        except ValueError:
+            pass
+    return out
 
 
 def _claim_value(quantity: str) -> tuple[float, float] | None:
@@ -1192,24 +1234,17 @@ def _claim_value(quantity: str) -> tuple[float, float] | None:
     "0.858" asserts ±0.0005, "3" asserts ±0.5 — read off the digits, so a
     value quoted to more decimals is held to more decimals.
     """
-    match = _CLAIM_VALUE_RE.search(str(quantity or ""))
-    if not match:
-        return None
-    token = match.group(0).replace("−", "-")
-    try:
-        value = float(token)
-    except ValueError:
-        return None
-    decimals = len(token.split(".", 1)[1]) if "." in token else 0
-    return value, 0.5 * (10.0 ** -decimals)
+    readings = _claim_readings(quantity)
+    return readings[0] if readings else None
 
 
 def _claim_is_observed(quantity: str, pool: list[float]) -> bool:
-    """Does the number inside a matched claim come from the tools?"""
-    parsed = _claim_value(quantity)
-    if parsed is None:
-        return False
-    return _grounded_in_observations(parsed[0], pool)
+    """Does the number inside a matched claim come from the tools?
+
+    Any reading the claim admits will do — see ``_claim_readings``.
+    """
+    return any(_grounded_in_observations(value, pool)
+               for value, _tol in _claim_readings(quantity))
 
 
 def _restates_a_grounded_claim(
