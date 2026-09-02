@@ -5365,6 +5365,54 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 return False
         return True
 
+    def _still_torn(current):
+        """Whether the bonding wall is standing and the hand has not eased.
+
+        The budget's standstill has a way out -- :func:`_still_spent` lets the
+        drag run again the moment the hand comes back in -- and this one had
+        none.  The counter it reads is only put back to zero by an ALLOWED
+        step, and no step can be allowed while the guard is skipping them all,
+        so three refusals in a row ended the drag for the rest of the grab.
+
+        Measured on an ethane, Keep bonds on, the hand set to move rather than
+        pull: answers 0 to 4 ran and refused at 2, 3 and 4; answers 5 to 15
+        were not computed at all.  Answers 8 to 15 carried a wish with a C-C
+        of 1.596 A and all seven bonds -- a geometry both walls allow -- and
+        not one of them was looked at; the box stood at 1.929 A for eleven
+        answers.  Bringing the hand back to a legal place did nothing; only
+        letting go and grabbing again did.
+
+        So the same shape as the budget's: remember how far the wish was from
+        the structure the wall kept when it gave up, and start again as soon
+        as the hand is nearer to it than that.  One number, and it is the
+        hand's own distance rather than anything about the bonding, because
+        what has to be detected is the user easing off.
+        """
+        if not submit_topology_btn.value:
+            state.pop('topology_stuck', None)
+            return False
+        if int(state.get('topology_refused') or 0) < 3:
+            return False
+        good = state.get('topology_good')
+        if not good or len(_gfn.atom_lines(good)) != len(
+                _gfn.atom_lines(current)):
+            state.pop('topology_stuck', None)
+            return False
+        far = _gfn.largest_shift(good, current)
+        if far is None:
+            return False
+        stuck = state.get('topology_stuck')
+        if stuck is None:
+            state['topology_stuck'] = far
+            return True
+        if far < float(stuck) - 1e-6:
+            # The hand has come back in.  The count goes with the standstill:
+            # what it was counting is over.
+            state.pop('topology_stuck', None)
+            state['topology_refused'] = 0
+            return False
+        return True
+
     def _hand_share():
         """What the page should make of the slider, given which hand it is.
 
@@ -5530,8 +5578,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # Once it is clearly refusing, it stands still: no xtb, no
                     # frames, and the line already says which two settings are
                     # disagreeing.
-                    if (int(state.get('topology_refused') or 0) >= 3
-                            and submit_topology_btn.value):
+                    if _still_torn(current):
                         schedule_ui_update(
                             _set_mol_status,
                             state.get('gfn_last_status') or '',
@@ -6485,6 +6532,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                     f'Pull instead, or turn Keep bonds off.')
                     else:
                         state['topology_refused'] = 0
+                        state.pop('topology_stuck', None)
+                    # And what the wall has just said reaches the screen.
+                    #
+                    # The row was stored and shown further up, and both of the
+                    # wall's sentences are appended to it after that -- so
+                    # neither was ever read again.  Measured over fifteen
+                    # status readings across a drag with three refusals in it:
+                    # "bonding" 0 times, "Keep bonds" 0, "Three steps" 0,
+                    # "Held:" 0.  Every one of them read "GFN2-xTB follows the
+                    # drag", including the ones taken while whole messages were
+                    # being skipped -- a frozen drag reporting that it is
+                    # following, which is indistinguishable from a crash.
+                    if said != state.get('gfn_last_status'):
+                        state['gfn_last_status'] = said
+                        schedule_ui_update(_set_mol_status, said, spinner=True)
                     # What the box is to be left holding, and why.
                     #
                     # One write, at the end, of the geometry that survives the
@@ -17506,8 +17568,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         _refresh_scan()
 
     def _forget_topology_refusals(_change=None):
-        """A new grab is a new question, so the count starts again."""
+        """A new grab is a new question, so the count starts again.
+
+        And with it the standstill the count feeds -- see
+        :func:`_still_torn`, which remembers how far the hand was when the
+        wall gave up.  Left behind, that number is about a gesture that is
+        over.
+        """
         state['topology_refused'] = 0
+        state.pop('topology_stuck', None)
 
     def on_submit_topology(change):
         """Keep bonds, switched on or off.
