@@ -2110,6 +2110,32 @@ def create_tab(ctx):
                 for fn in saved_files:
                     print(f'  {fn}')
 
+    def _stop(running):
+        """Stop ORCA and everything it started.
+
+        It is in a session of its own, so the whole group can be signalled --
+        which is what has to happen: a child left behind holds the pipe open,
+        and a read on it never returns.
+        """
+        import os as _os
+        import signal as _signal
+
+        for how in (_signal.SIGTERM, _signal.SIGKILL):
+            if running.poll() is not None:
+                return
+            try:
+                _os.killpg(_os.getpgid(running.pid), how)
+            except Exception:                           # noqa: BLE001
+                try:
+                    running.kill()
+                except Exception:                       # noqa: BLE001
+                    pass
+            try:
+                running.wait(timeout=8)
+                return
+            except subprocess.TimeoutExpired:
+                continue
+
     def _inp_for_the_check():
         """The input as it stands, without saving anything anywhere.
 
@@ -2133,12 +2159,24 @@ def create_tab(ctx):
         xyz file cannot start without that file, and failing for want of it
         would say nothing about the input.
         """
-        from .saddle import find_orca
+        # The same resolver and the same environment a real run uses.  A
+        # check that started ORCA its own way would be checking its own way of
+        # starting ORCA: the scratch directory, the library path and the MPI
+        # settings are set up in there, and without them ORCA can fail for a
+        # reason that has nothing to do with the input.
+        from delfin.orca import _prepare_orca_environment, find_orca_executable
 
-        orca = find_orca()
+        orca = find_orca_executable()
+        if not orca:
+            from .saddle import find_orca
+            orca = find_orca()
         if not orca:
             return False, 'No ORCA to check with -- none was found on this machine.', ''
         _say_progress(f'Found {orca} -- starting it...')
+        try:
+            environment = _prepare_orca_environment()
+        except Exception:                               # noqa: BLE001
+            environment = None
         (room / 'check.inp').write_text(input_for_check(body), encoding='utf-8')
         for filename, xyz_content in (parse_xyz_blocks(orca_coords.value) or []):
             (room / filename).write_text(xyz_content)
@@ -2154,6 +2192,11 @@ def create_tab(ctx):
             [orca, 'check.inp'], cwd=str(room),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            env=environment,
+            # Its own process group, the way a real run gets one -- and the
+            # only way to take the children with it when it is stopped.  ORCA
+            # starts several, and one left behind holds the pipe open.
+            start_new_session=True,
             text=True, errors='replace',
         )
         # Read as it comes rather than at the end.  ORCA leaves children
@@ -2180,11 +2223,7 @@ def create_tab(ctx):
                 # a minute nobody has a reason to spend.
                 said = ''.join(collected)
                 if _orca_has_spoken(said):
-                    running.terminate()
-                    try:
-                        running.wait(timeout=10)
-                    except subprocess.TimeoutExpired:
-                        running.kill()
+                    _stop(running)
                     reader.join(timeout=5)
                     return orca_startup_report(
                         ''.join(collected), still_running=True,
@@ -2195,11 +2234,7 @@ def create_tab(ctx):
                         ''.join(collected), running.returncode)
                 if time.monotonic() - started > CHECK_SECONDS:
                     # Still going, which is the answer: it took the input.
-                    running.terminate()
-                    try:
-                        running.wait(timeout=10)
-                    except subprocess.TimeoutExpired:
-                        running.kill()
+                    _stop(running)
                     reader.join(timeout=5)
                     return orca_startup_report(
                         ''.join(collected), still_running=True,
@@ -2207,7 +2242,7 @@ def create_tab(ctx):
                 time.sleep(0.25)
         finally:
             if running.poll() is None:
-                running.kill()
+                _stop(running)
 
     def _say_progress(line):
         """A line while the check is still working, so a wait is never blank."""

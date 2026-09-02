@@ -127,6 +127,17 @@ def _an_orca(room, name, body):
     return where
 
 
+def _use(monkeypatch, orca):
+    """Put *orca* where the check looks, which is where a real run looks.
+
+    Both resolvers: the check asks DELFIN's own first and falls back to the
+    editor's, so a stand-in has to stand in both places or the real ORCA on
+    the machine answers instead.
+    """
+    monkeypatch.setattr("delfin.orca.find_orca_executable", lambda: orca)
+    monkeypatch.setattr("delfin.dashboard.saddle.find_orca", lambda: orca)
+
+
 @pytest.fixture
 def builder_tab(tmp_path, monkeypatch):
     pytest.importorskip("ipywidgets")
@@ -169,7 +180,7 @@ cat <<'EOT'
 EOT
 exit 1
 """)
-    monkeypatch.setattr("delfin.dashboard.saddle.find_orca", lambda: str(fake))
+    _use(monkeypatch, str(fake))
 
     said = _pressed(builder_tab, capsys)
 
@@ -181,7 +192,7 @@ def test_the_button_says_so_when_orca_gets_going(builder_tab, monkeypatch,
                                                 capsys):
     fake = _an_orca(builder_tab["tmp_path"], "orca_ok",
                     "echo 'ORCA GTO INTEGRAL CALCULATION'\nexit 0\n")
-    monkeypatch.setattr("delfin.dashboard.saddle.find_orca", lambda: str(fake))
+    _use(monkeypatch, str(fake))
 
     said = _pressed(builder_tab, capsys)
 
@@ -194,7 +205,7 @@ def test_one_that_keeps_running_is_stopped_and_counted_as_started(
     """A check that waited for the calculation would be the calculation."""
     fake = _an_orca(builder_tab["tmp_path"], "orca_slow",
                     "echo 'SCF SETTINGS'\nsleep 300\n")
-    monkeypatch.setattr("delfin.dashboard.saddle.find_orca", lambda: str(fake))
+    _use(monkeypatch, str(fake))
     monkeypatch.setattr(builder, "CHECK_SECONDS", 2.0)
 
     began = time.monotonic()
@@ -211,7 +222,7 @@ def test_a_good_input_is_answered_in_seconds_not_at_the_window(
     for a minute before this, on an input that was fine."""
     fake = _an_orca(builder_tab["tmp_path"], "orca_quick",
                     "echo 'SCF SETTINGS'\nsleep 300\n")
-    monkeypatch.setattr("delfin.dashboard.saddle.find_orca", lambda: str(fake))
+    _use(monkeypatch, str(fake))
     monkeypatch.setattr(builder, "CHECK_SECONDS", 45.0)
 
     began = time.monotonic()
@@ -226,7 +237,7 @@ def test_a_good_input_is_answered_in_seconds_not_at_the_window(
 
 def test_no_orca_to_check_with_is_said_rather_than_guessed(builder_tab,
                                                            monkeypatch, capsys):
-    monkeypatch.setattr("delfin.dashboard.saddle.find_orca", lambda: None)
+    _use(monkeypatch, None)
 
     said = _pressed(builder_tab, capsys)
 
@@ -239,7 +250,7 @@ def test_the_check_writes_nothing_into_the_calculation_directory(builder_tab,
     """A check is not a job.  SUBMIT saves; this does not."""
     fake = _an_orca(builder_tab["tmp_path"], "orca_ok2",
                     "echo 'SCF SETTINGS'\nexit 0\n")
-    monkeypatch.setattr("delfin.dashboard.saddle.find_orca", lambda: str(fake))
+    _use(monkeypatch, str(fake))
 
     _pressed(builder_tab, capsys)
 
@@ -276,7 +287,7 @@ def test_one_that_says_nothing_and_waits_is_still_answered(builder_tab,
     back with an answer like everything else."""
     fake = _an_orca(builder_tab["tmp_path"], "orca_mute",
                     "cat > /dev/null\nsleep 300\n")
-    monkeypatch.setattr("delfin.dashboard.saddle.find_orca", lambda: str(fake))
+    _use(monkeypatch, str(fake))
     monkeypatch.setattr(builder, "CHECK_SECONDS", 2.0)
 
     began = time.monotonic()
@@ -293,7 +304,7 @@ def test_it_says_which_orca_it_found_before_it_waits(builder_tab, monkeypatch,
     says where it was standing."""
     fake = _an_orca(builder_tab["tmp_path"], "orca_named",
                     "echo 'SCF SETTINGS'\nexit 0\n")
-    monkeypatch.setattr("delfin.dashboard.saddle.find_orca", lambda: str(fake))
+    _use(monkeypatch, str(fake))
 
     said = _pressed(builder_tab, capsys)
 
@@ -309,3 +320,33 @@ def test_no_answer_at_all_is_said_rather_than_left_standing():
     assert "orca_check_btn.disabled = False" in guard, "the button comes back"
     assert "No answer after" in guard
     assert "watchdog.cancel()" in source, "and it is called off when one comes"
+
+
+# ---------------------------------------------------------------------------
+# started the way a real run starts it
+# ---------------------------------------------------------------------------
+def test_it_starts_orca_the_way_delfin_starts_orca():
+    """A check that started ORCA its own way would be checking its own way of
+    starting ORCA.  The scratch directory, the library path and the MPI
+    settings are all in that environment, and without them ORCA can fail for a
+    reason that has nothing to do with the input."""
+    source = pathlib.Path(builder.__file__).read_text(encoding="utf-8")
+
+    assert "find_orca_executable" in source, "the resolver a real run uses"
+    assert "_prepare_orca_environment" in source
+    started = source.split("running = subprocess.Popen(")[1].split("\n        )")[0]
+    assert "env=environment" in started
+    assert "start_new_session=True" in started, (
+        "its own process group, the way a real run gets one"
+    )
+
+
+def test_stopping_it_takes_the_children_with_it():
+    """ORCA starts several, and one left behind holds the pipe open -- a read
+    on it never returns, which is what "Starting ORCA..." and then nothing
+    was."""
+    source = pathlib.Path(builder.__file__).read_text(encoding="utf-8")
+    stopping = source.split("def _stop(running)")[1].split("\n    def ")[0]
+
+    assert "killpg" in stopping
+    assert "SIGKILL" in stopping, "and it does not ask twice for ever"
