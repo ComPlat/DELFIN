@@ -16,7 +16,7 @@ from pathlib import Path
 
 from . import probes as probe_defs
 from . import sandbox as sb
-from .runner import run_probe
+from .runner import run_headless, run_probe
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -55,8 +55,9 @@ def main(argv: list[str] | None = None) -> int:
                         if not wanted or any(w in p.name for w in wanted)]
             print(f"\n=== run {run}/{args.repeats} · {len(selected)} probes ===")
             for probe in selected:
-                out = run_probe(probe, box, api_key=api_key, model=args.model,
-                                timeout=args.timeout)
+                drive = run_headless if probe.headless else run_probe
+                out = drive(probe, box, api_key=api_key, model=args.model,
+                            timeout=args.timeout)
                 mark = "ok  " if out.passed else "FAIL"
                 asked = " (asked)" if out.prompted else ""
                 print(f"  {mark}  {probe.name:26} {out.detail}{asked}")
