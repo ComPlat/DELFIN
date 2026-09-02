@@ -29,7 +29,7 @@ from __future__ import annotations
 import json
 import threading
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import ipywidgets as widgets
 from IPython import get_ipython
@@ -175,6 +175,7 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
 
     state: Dict[str, Any] = {'asked': None, 'serial': 0}
     frame_selector = f'.{FRAME_CLASS}.{scope}'
+    sync_selector = f'.{SYNC_CLASS}.{scope}'
 
     # -- the parts ------------------------------------------------------
     status = widgets.HTML(value='')
@@ -226,41 +227,6 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
         tooltip='Put the reaction SMILES on the clipboard.',
     )
 
-    name_box = widgets.Text(
-        value='', placeholder='what to call it', description='Name:',
-        layout=widgets.Layout(width='320px'),
-        style={'description_width': '60px'},
-    )
-    format_dd = widgets.Dropdown(
-        options=list(_ketcher.DRAWING_SUFFIXES), value='.ket',
-        description='as', layout=widgets.Layout(width='150px'),
-        style={'description_width': '30px'},
-    )
-    save_btn = widgets.Button(
-        description='SAVE', icon='save', button_style='success',
-        tooltip=f'Keep it in the {_ketcher.DRAWINGS_FOLDER} folder.',
-        layout=widgets.Layout(width='100px'),
-    )
-    files_dd = widgets.Dropdown(
-        options=[], value=None, description='Kept:',
-        layout=widgets.Layout(width='360px'),
-        style={'description_width': '60px'},
-    )
-    open_btn = widgets.Button(
-        description='OPEN', icon='folder-open', button_style='info',
-        tooltip='Put it back into the editor.',
-        layout=widgets.Layout(width='100px'),
-    )
-    delete_btn = widgets.Button(
-        description='DELETE', icon='trash', button_style='danger',
-        tooltip='Throw this drawing away.',
-        layout=widgets.Layout(width='110px'),
-    )
-    refresh_btn = widgets.Button(
-        description='', icon='refresh', tooltip='Look at the folder again.',
-        layout=widgets.Layout(width='45px'),
-    )
-
     # -- saying things --------------------------------------------------
     def _say(text: str, colour: str = '#333') -> None:
         import html as _html
@@ -274,16 +240,25 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
     def _calc_dir() -> Path:
         return Path(getattr(ctx, 'calc_dir', None) or (Path.home() / 'calc'))
 
-    def _refresh_files(select: Optional[str] = None) -> None:
+    def _scan_files() -> list:
+        """What is kept, remembered by name so an answer can be resolved."""
         kept = _ketcher.list_drawings(_calc_dir())
         state['files'] = {item.name: item for item in kept}
-        files_dd.options = [item.name for item in kept]
-        if select and select in state['files']:
-            files_dd.value = select
-        elif kept and files_dd.value not in state['files']:
-            files_dd.value = kept[0].name
+        return [item.name for item in kept]
+
+    def _refresh_files() -> None:
+        """Tell the editor what is kept, so its own Open list can show it."""
+        _send(_ketcher.files_js(frame_selector, _scan_files()))
 
     # -- talking to the page --------------------------------------------
+    def _wire() -> str:
+        """The wiring, restated. It marks the window it bound to, so arriving
+        again costs nothing -- and the frame may have been built since the
+        page's startup script ran, which is the case the moment Ketcher is
+        fetched for the first time."""
+        return '\n'.join([_ketcher.focus_js(frame_selector),
+                          _ketcher.wire_js(frame_selector, sync_selector)])
+
     def _send(*scripts) -> None:
         """Everything this panel says to the page, said once.
 
@@ -311,16 +286,14 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
             frame.value = ''
             install_btn.description = 'FETCH KETCHER'
             install_btn.button_style = 'warning'
-            for button in (smiles_btn, save_btn, open_btn, delete_btn,
-                           to_submit_btn):
+            for button in (smiles_btn, to_submit_btn):
                 button.disabled = True
             return False
         # Kept rather than hidden: an editor that is there is an editor that
         # can be brought up to date, and the tab is the place to do it from.
         install_btn.description = 'UPDATE KETCHER'
         install_btn.button_style = ''
-        for button in (smiles_btn, save_btn, open_btn, delete_btn,
-                       to_submit_btn):
+        for button in (smiles_btn, to_submit_btn):
             button.disabled = False
         # Set once.  Setting the same frame again reloads it, and a reloaded
         # editor is an empty one -- which is a drawing thrown away every time
@@ -335,7 +308,7 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
         state['serial'] += 1
         mine = state['serial']
         _say(saying)
-        _send(_ketcher.focus_js(frame_selector), read_js(scope, kind, want))
+        _send(_wire(), read_js(scope, kind, want))
 
         def _leash():
             if state['serial'] == mine and state['asked'] == kind:
@@ -351,19 +324,6 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
         if not _show_frame():
             return
         _ask('smiles', 'auto', 'Reading the drawing...')
-
-    def _on_save(_button=None) -> None:
-        if not _show_frame():
-            return
-        wanted = str(format_dd.value or '.ket')
-        raw = str(name_box.value or '').strip()
-        if not raw:
-            _say('Give the drawing a name first.', '#d32f2f')
-            return
-        # Remembered now rather than read when the answer comes back: the box
-        # is the user's and they may have moved on by then.
-        state['saving'] = {'name': raw, 'suffix': wanted}
-        _ask('save', _ASK_FOR.get(wanted, 'ket'), f'Writing {raw}{wanted}...')
 
     # -- what came back -------------------------------------------------
     def _on_sync(change) -> None:
@@ -382,26 +342,51 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
                  else f'The drawing could not be read: {trouble}', '#d32f2f')
             return
         if kind == 'save':
-            wanted = state.get('saving') or {}
+            # The name and the format are the ones typed into Ketcher's own
+            # Save dialog: "my aspirin.mol" comes back whole.
+            filename, _, body = payload.partition('\n')
+            suffix = Path(filename).suffix.lower() or '.ket'
             outcome = _ketcher.save_drawing(
-                _calc_dir(), wanted.get('name', ''), payload,
-                wanted.get('suffix', '.ket'))
+                _calc_dir(), Path(filename).stem, body, suffix)
             _say(outcome['status'], '#2e7d32' if outcome['ok'] else '#d32f2f')
             if outcome['ok']:
-                _refresh_files(select=Path(outcome['path']).name)
+                _refresh_files()
+            return
+        if kind == 'save-failed':
+            _say(f'The drawing could not be read out of the editor: {payload}',
+                 '#d32f2f')
+            return
+        if kind == 'open-list':
+            _refresh_files()
+            return
+        if kind == 'open':
+            where = (state.get('files') or {}).get(payload)
+            if where is None:
+                _refresh_files()
+                _say(f'{payload} is not there any more.', '#d32f2f')
+                return
+            got = _ketcher.read_drawing(where)
+            if not got['ok']:
+                _refresh_files()
+                _say(got['status'], '#d32f2f')
+                return
+            open_text(got['text'], got['name'])
             return
         outcome = _ketcher.smiles_from_drawing(payload)
         if not outcome['ok']:
             _say(outcome['status'], '#d32f2f')
             return
-        # A reaction and a structure are not interchangeable, so they do not
-        # share a box.  Everything downstream of a SMILES here reads a single
-        # molecule; handing it "A.B>>C" would be handing it something it will
-        # either refuse or, worse, quietly misread.
+        # Two boxes, because a reaction and a structure are read differently
+        # by whoever picks them up -- and because one of them would otherwise
+        # be overwritten by the other the next time TO SMILES is pressed.
         if outcome.get('reaction'):
             rxn_out.value = outcome['smiles']
         else:
             smiles_out.value = outcome['smiles']
+        # Which of the two boxes the last reading filled, so TO SUBMIT carries
+        # what was actually just drawn rather than whatever is left over in
+        # the other one from an hour ago.
+        state['last'] = 'reaction' if outcome.get('reaction') else 'structure'
         _say(outcome['status'], '#2e7d32')
 
     # -- opening one that was kept --------------------------------------
@@ -419,46 +404,9 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
             _say('Ketcher is not installed yet, so there is nowhere to open '
                  'it.  Press FETCH KETCHER first.', '#d32f2f')
             return False
-        _send(_ketcher.focus_js(frame_selector),
-              _ketcher.load_js(frame_selector, body))
-        if name:
-            stem = Path(name).stem
-            name_box.value = stem
-            suffix = Path(name).suffix.lower()
-            if suffix in _ketcher.DRAWING_SUFFIXES:
-                format_dd.value = suffix
+        _send(_wire(), _ketcher.load_js(frame_selector, body))
         _say(f'{name or "The drawing"} is in the editor.', '#2e7d32')
         return True
-
-    def _on_open(_button=None) -> None:
-        chosen = files_dd.value
-        where = (state.get('files') or {}).get(chosen)
-        if where is None:
-            _refresh_files()
-            _say('There is nothing chosen to open.', '#d32f2f')
-            return
-        got = _ketcher.read_drawing(where)
-        if not got['ok']:
-            _say(got['status'], '#d32f2f')
-            _refresh_files()
-            return
-        open_text(got['text'], got['name'])
-
-    def _on_delete(_button=None) -> None:
-        chosen = files_dd.value
-        where = (state.get('files') or {}).get(chosen)
-        if where is None:
-            _refresh_files()
-            _say('There is nothing chosen to delete.', '#d32f2f')
-            return
-        outcome = _ketcher.delete_drawing(where)
-        _say(outcome['status'], '#2e7d32' if outcome['ok'] else '#d32f2f')
-        _refresh_files()
-
-    def _on_refresh(_button=None) -> None:
-        _refresh_files()
-        _say(f'{len(state.get("files") or {})} drawing(s) in '
-             f'{_ketcher.DRAWINGS_FOLDER}.')
 
     def _on_to_submit(_button=None) -> None:
         """The structure into the Submit tab, where the job is set up.
@@ -467,7 +415,11 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
         needs is over there, and a second, staler copy of them would be worse
         than a tab switch.  The same handover the reaction graph makes.
         """
-        drawn = str(smiles_out.value or '').strip()
+        reaction = state.get('last') == 'reaction'
+        drawn = str((rxn_out if reaction else smiles_out).value or '').strip()
+        if not drawn:
+            drawn = str(smiles_out.value or rxn_out.value or '').strip()
+            reaction = not smiles_out.value
         if not drawn:
             _say('Press TO SMILES first -- there is nothing to send.', '#d32f2f')
             return
@@ -477,8 +429,10 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
                  '#d32f2f')
             return
         box.value = drawn
-        _say(f'{drawn} is in the Submit tab -- Convert turns it into '
-             'coordinates.', '#2e7d32')
+        _say(f'{drawn} is in the Submit tab' + (
+            ' -- a reaction, so Convert, which builds one structure, has '
+            'nothing to do with it.' if reaction
+            else ' -- Convert turns it into coordinates.'), '#2e7d32')
         try:
             ctx.select_tab('Submit Job')
         except Exception:                               # noqa: BLE001
@@ -510,7 +464,8 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
                 _say(outcome['status'],
                      '#2e7d32' if outcome.get('ok') else '#d32f2f')
                 if _show_frame():
-                    _send(_ketcher.focus_js(frame_selector))
+                    _send(_wire(),
+                          _ketcher.files_js(frame_selector, _scan_files()))
 
             schedule(_done)
 
@@ -522,10 +477,6 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
     smiles_copy_btn.on_click(_on_copy_smiles)
     to_submit_btn.on_click(_on_to_submit)
     rxn_copy_btn.on_click(_on_copy_rxn)
-    save_btn.on_click(_on_save)
-    open_btn.on_click(_on_open)
-    delete_btn.on_click(_on_delete)
-    refresh_btn.on_click(_on_refresh)
     install_btn.on_click(_on_install)
     sync.observe(_on_sync, names='value')
 
@@ -540,23 +491,26 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
             frame, sync,
             _row([smiles_out, smiles_copy_btn, to_submit_btn]),
             _row([rxn_out, rxn_copy_btn]),
-            widgets.HTML(
-                f'<b>Kept in {_ketcher.DRAWINGS_FOLDER}, beside the '
-                'calculations:</b>'),
-            _row([name_box, format_dd, save_btn]),
-            _row([files_dd, open_btn, delete_btn, refresh_btn]),
         ],
         layout=widgets.Layout(width='100%', gap='6px'),
     )
 
-    _refresh_files()
     ready = _show_frame()
     # Registered on the context rather than sent: create_dashboard collects
     # every tab's startup script and sends them as one, after all of the tabs
     # are built.  Sending it here would be a second run_js against a page that
-    # has not been drawn yet.
+    # has not been drawn yet -- and it would clear whatever the tab before it
+    # had sent.
+    #
+    # The wiring goes out with it: Ketcher's Save and Open have to be answered
+    # from the first press, not from the first time somebody happens to touch
+    # a control beside the frame.
     try:
-        ctx.add_init_js(_ketcher.focus_js(frame_selector))
+        ctx.add_init_js('\n'.join([
+            _ketcher.focus_js(frame_selector),
+            _ketcher.wire_js(frame_selector, sync_selector),
+            _ketcher.files_js(frame_selector, _scan_files()),
+        ]))
     except Exception:                                   # noqa: BLE001
         pass
     if ready:

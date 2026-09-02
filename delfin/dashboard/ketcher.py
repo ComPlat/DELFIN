@@ -39,7 +39,8 @@ __all__ = ['app_directory', 'app_url', 'install', 'installed_version',
            'reaction_smiles_from_rxnfile', 'smiles_from_drawing',
            'DRAWINGS_FOLDER', 'DRAWING_SUFFIXES', 'drawings_directory',
            'is_drawing', 'list_drawings', 'save_drawing', 'read_drawing',
-           'delete_drawing', 'frame_html', 'focus_js', 'load_js']
+           'delete_drawing', 'frame_html', 'focus_js', 'load_js',
+           'files_js', 'wire_js']
 
 #: Where the releases come from.  The versioned asset rather than the
 #: unversioned one beside it: two files of the same content and only one of
@@ -737,6 +738,184 @@ def focus_js(host_selector: str) -> str:
         "    host.addEventListener('pointerdown',reach,true);\n"
         "  }\n"
         "  bind();\n"
+        "})();"
+    )
+
+
+def files_js(host_selector: str, names: list) -> str:
+    """Tell the frame which drawings are kept, so its Open list can show them."""
+    return (
+        "(function(){\n"
+        "  var host=document.querySelector(" + json.dumps(host_selector) + ");\n"
+        "  var frame=host&&host.querySelector('iframe');\n"
+        "  var w=null; try{ w=frame&&frame.contentWindow; }catch(e){ w=null; }\n"
+        "  if(!w) return;\n"
+        "  w.__delfinKetcherFiles=" + json.dumps([str(n) for n in names]) + ";\n"
+        "  if(w.__delfinKetcherRedraw) w.__delfinKetcherRedraw();\n"
+        "})();"
+    )
+
+
+def wire_js(host_selector: str, sync_selector: str) -> str:
+    """Wire Ketcher's own Save and Open buttons to the calculation directory.
+
+    The editor already has the two buttons a chemist looks for, with a name
+    field and a format list behind Save.  A second pair beside the frame is a
+    second answer to a question the editor had already answered, so these are
+    the ones that are made to work.
+
+    **Save.**  Ketcher writes a file the way every browser application does:
+    it builds a Blob, makes an object URL for it, hangs that on a detached
+    ``<a download>`` and dispatches a click at it.  Nothing of that reaches the
+    page's own listeners -- the anchor is never in the document -- so the two
+    ends are taken instead: ``URL.createObjectURL`` remembers which Blob each
+    URL stands for, and ``dispatchEvent`` recognises the click when it comes.
+    The name comes off the anchor, which is the name typed into Ketcher's own
+    dialog, and the download never happens.
+
+    Only the formats that can be opened again are taken.  Save as SVG or PNG
+    is a picture for somewhere else and still downloads the way it always did.
+
+    **Open.**  Ketcher's dialog offers the clipboard and a file picker, and a
+    file picker shows the machine the *browser* is on -- which, down an SSH
+    tunnel, is not the machine the calculations are on.  So the button is
+    answered with the drawings that are actually kept, and the picker is still
+    one click away for a file that is genuinely local.
+    """
+    return (
+        "(function(){\n"
+        "  var tries=0;\n"
+        "  function hand(kind,payload){\n"
+        "    var box=document.querySelector(" + json.dumps(sync_selector) + ");\n"
+        "    var input=box&&box.querySelector('textarea, input');\n"
+        "    if(!input) return;\n"
+        "    var proto=(input.tagName==='TEXTAREA')\n"
+        "      ? window.HTMLTextAreaElement.prototype\n"
+        "      : window.HTMLInputElement.prototype;\n"
+        "    var setter=Object.getOwnPropertyDescriptor(proto,'value');\n"
+        "    var line=(Date.now())+'\\n'+kind+'\\n'+payload;\n"
+        "    if(setter&&setter.set) setter.set.call(input,line);\n"
+        "    else input.value=line;\n"
+        "    input.dispatchEvent(new Event('input',{bubbles:true}));\n"
+        "    input.dispatchEvent(new Event('change',{bubbles:true}));\n"
+        "  }\n"
+        "  var KEEP=" + json.dumps(list(DRAWING_SUFFIXES)) + ";\n"
+        "  function wire(){\n"
+        "    var host=document.querySelector(" + json.dumps(host_selector) + ");\n"
+        "    var frame=host&&host.querySelector('iframe');\n"
+        "    var w=null,d=null;\n"
+        "    try{ w=frame&&frame.contentWindow; d=w&&w.document; }catch(e){ w=null; }\n"
+        "    if(!w||!d||!w.ketcher){ if(++tries<80) window.setTimeout(wire,250); return; }\n"
+        "    if(w.__delfinKetcherWired) return;\n"
+        "    w.__delfinKetcherWired=true;\n"
+        "\n"
+        "    /* Save: the two ends of a download nothing else can see. */\n"
+        "    var blobs=new Map();\n"
+        "    var makeURL=w.URL.createObjectURL.bind(w.URL);\n"
+        "    w.URL.createObjectURL=function(thing){\n"
+        "      var url=makeURL(thing);\n"
+        "      try{ if(thing instanceof w.Blob) blobs.set(url,thing); }catch(e){}\n"
+        "      return url;\n"
+        "    };\n"
+        "    var fire=w.EventTarget.prototype.dispatchEvent;\n"
+        "    w.EventTarget.prototype.dispatchEvent=function(evt){\n"
+        "      try{\n"
+        "        if(evt&&evt.type==='click'&&this instanceof w.HTMLAnchorElement\n"
+        "           &&this.hasAttribute('download')&&blobs.has(this.href)){\n"
+        "          var name=this.getAttribute('download')||'drawing';\n"
+        "          var dot=name.lastIndexOf('.');\n"
+        "          var ext=dot<0?'':name.slice(dot).toLowerCase();\n"
+        "          if(KEEP.indexOf(ext)>=0){\n"
+        "            var blob=blobs.get(this.href); blobs.delete(this.href);\n"
+        "            blob.text().then(function(text){ hand('save',name+'\\n'+text); },\n"
+        "                             function(err){ hand('save-failed',''+err); });\n"
+        "            return true;\n"
+        "          }\n"
+        "        }\n"
+        "      }catch(e){}\n"
+        "      return fire.apply(this,arguments);\n"
+        "    };\n"
+        "\n"
+        "    /* Open: answered with what is kept, not with the browser's disk. */\n"
+        "    var sheet=d.createElement('style');\n"
+        "    sheet.textContent=''\n"
+        "      +'.delfin-open{position:fixed;inset:0;z-index:2147483000;'\n"
+        "      +'background:rgba(0,0,0,.35);display:flex;align-items:center;'\n"
+        "      +'justify-content:center;font-family:Arial,sans-serif;}'\n"
+        "      +'.delfin-open-box{background:#fff;border-radius:8px;padding:18px;'\n"
+        "      +'min-width:380px;max-width:520px;max-height:70vh;overflow:auto;'\n"
+        "      +'box-shadow:0 8px 32px rgba(0,0,0,.3);}'\n"
+        "      +'.delfin-open h3{margin:0 0 4px;font-size:15px;color:#333;}'\n"
+        "      +'.delfin-open p{margin:0 0 12px;font-size:12px;color:#777;}'\n"
+        "      +'.delfin-open button.row{display:block;width:100%;text-align:left;'\n"
+        "      +'padding:8px 10px;margin:2px 0;border:1px solid #e0e0e0;'\n"
+        "      +'border-radius:4px;background:#fafafa;cursor:pointer;font-size:13px;}'\n"
+        "      +'.delfin-open button.row:hover{background:#e8f0fe;border-color:#1976d2;}'\n"
+        "      +'.delfin-open .feet{margin-top:14px;display:flex;gap:8px;'\n"
+        "      +'justify-content:flex-end;}'\n"
+        "      +'.delfin-open .feet button{padding:6px 12px;border-radius:4px;'\n"
+        "      +'border:1px solid #bbb;background:#fff;cursor:pointer;font-size:12px;}';\n"
+        "    d.head.appendChild(sheet);\n"
+        "\n"
+        "    var shown=null;\n"
+        "    function shut(){ if(shown&&shown.parentNode) shown.parentNode.removeChild(shown);\n"
+        "                     shown=null; }\n"
+        "    function draw(){\n"
+        "      shut();\n"
+        "      var kept=w.__delfinKetcherFiles||[];\n"
+        "      shown=d.createElement('div');\n"
+        "      shown.className='delfin-open';\n"
+        "      var box=d.createElement('div'); box.className='delfin-open-box';\n"
+        "      var head=d.createElement('h3'); head.textContent='Open a drawing';\n"
+        "      var note=d.createElement('p');\n"
+        "      note.textContent=kept.length\n"
+        "        ? 'Kept beside the calculations, in the Ketcher folder.'\n"
+        "        : 'Nothing is kept in the Ketcher folder yet. Save one first.';\n"
+        "      box.appendChild(head); box.appendChild(note);\n"
+        "      kept.forEach(function(name){\n"
+        "        var row=d.createElement('button');\n"
+        "        row.className='row'; row.textContent=name;\n"
+        "        row.onclick=function(){ shut(); hand('open',name); };\n"
+        "        box.appendChild(row);\n"
+        "      });\n"
+        "      var feet=d.createElement('div'); feet.className='feet';\n"
+        "      var local=d.createElement('button');\n"
+        "      local.textContent='From this computer...';\n"
+        "      local.onclick=function(){\n"
+        "        shut();\n"
+        "        /* Ketcher's own dialog, let through for one press. */\n"
+        "        w.__delfinKetcherPass=true;\n"
+        "        /* The one on screen. Ketcher carries two, one per mode, and\n"
+        "           the first in the document is the hidden macromolecule\n"
+        "           editor's -- clicking that one does nothing at all. */\n"
+        "        var all=d.querySelectorAll('[data-testid=\"open-file-button\"]');\n"
+        "        var real=null;\n"
+        "        for(var i=0;i<all.length;i++){\n"
+        "          if(all[i].offsetParent!==null){ real=all[i]; break; }\n"
+        "        }\n"
+        "        if(!real) real=all[0];\n"
+        "        if(real) real.click();\n"
+        "      };\n"
+        "      var stop=d.createElement('button');\n"
+        "      stop.textContent='Cancel'; stop.onclick=shut;\n"
+        "      feet.appendChild(local); feet.appendChild(stop);\n"
+        "      box.appendChild(feet);\n"
+        "      shown.appendChild(box);\n"
+        "      shown.onclick=function(ev){ if(ev.target===shown) shut(); };\n"
+        "      d.body.appendChild(shown);\n"
+        "    }\n"
+        "    w.__delfinKetcherRedraw=function(){ if(shown) draw(); };\n"
+        "    d.addEventListener('click',function(ev){\n"
+        "      var button=ev.target&&ev.target.closest\n"
+        "        ? ev.target.closest('[data-testid=\"open-file-button\"]') : null;\n"
+        "      if(!button) return;\n"
+        "      if(w.__delfinKetcherPass){ w.__delfinKetcherPass=false; return; }\n"
+        "      ev.preventDefault(); ev.stopPropagation();\n"
+        "      hand('open-list','');\n"
+        "      draw();\n"
+        "    },true);\n"
+        "  }\n"
+        "  wire();\n"
         "})();"
     )
 

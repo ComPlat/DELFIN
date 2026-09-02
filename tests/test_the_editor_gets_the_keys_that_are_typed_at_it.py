@@ -98,8 +98,8 @@ def test_it_is_sent_with_the_scroll_hold_rather_than_after_it():
     these two travel joined."""
     opener = SUBMIT_SOURCE.split("def on_submit_draw_open")[1].split("\n    def ")[0]
 
-    assert "_run_manip_js(_KETCHER_SCROLL_HOLD_JS + _KETCHER_FOCUS_JS)" in opener
-    assert opener.count("_run_manip_js(") == 1, "one script, not two"
+    assert "_run_manip_js(_KETCHER_SCROLL_HOLD_JS + _draw_wiring()" in opener
+    assert opener.count("_run_manip_js(") == 1, "one script, not several"
 
 
 # ---------------------------------------------------------------------------

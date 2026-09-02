@@ -77,9 +77,7 @@ def test_opening_it_puts_it_in_the_editor_and_goes_there(dashboard):
     assert "setMolecule" in script
     assert '{\\"root\\":{\\"nodes\\":[]}}' in script, "the drawing itself"
     assert dashboard["ctx"].tabs_widget.selected_index == 7, "and it is shown"
-    panel = dashboard["ketcher"]["ketcher_panel"]
-    assert panel.name_box.value == "aspirin"
-    assert panel.format_dd.value == ".ket"
+    assert "aspirin.ket" in dashboard["ketcher"]["ketcher_panel"].status.value
 
 
 def test_it_is_not_shown_as_text(dashboard):

@@ -138,20 +138,30 @@ def editor(tmp_path, monkeypatch):
     return refs
 
 
-def test_a_reaction_does_not_go_into_the_box_a_structure_goes_into(editor):
-    """Convert, Build and Submit all read one molecule out of that box.
-    "A.B>>C" put there is either refused or, worse, quietly misread as a
-    structure -- so it goes in a box of its own."""
+def test_a_reaction_lands_in_the_input_box_and_in_a_box_of_its_own(editor):
+    """Both, and for different reasons.  The input box is where the rest of
+    the tab looks, and a reaction SMILES asked for is a reaction SMILES wanted
+    there; the reaction box is where it can still be read and copied once the
+    input box has coordinates on top of it."""
     editor["coords_widget"].value = ""
 
     editor["submit_draw_sync"].value = "1\n" + rxnblock(
         [molblock("CCO"), molblock("CC(=O)O")], [molblock("CCOC(C)=O")])
 
     assert editor["submit_draw_rxn_out"].value == "CC(=O)O.CCO>>CCOC(C)=O"
-    assert editor["coords_widget"].value == "", (
-        "the input box is for one molecule and must be left alone"
-    )
+    assert editor["coords_widget"].value == "CC(=O)O.CCO>>CCOC(C)=O"
     assert editor["submit_draw_rxn_row"].layout.display == "", "and it is shown"
+
+
+def test_it_says_that_convert_has_nothing_to_do_with_a_reaction(editor):
+    """Convert builds one structure.  Said when the reaction arrives, rather
+    than found out by pressing Convert and reading whatever it makes of
+    "A.B>>C"."""
+    editor["submit_draw_sync"].value = "1\n" + rxnblock(
+        [molblock("CCO")], [molblock("CC=O")])
+
+    said = editor["mol_status"].value
+    assert "reaction" in said and "Convert" in said
 
 
 def test_a_plain_drawing_still_lands_where_it_always_did(editor):
