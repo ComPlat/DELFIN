@@ -1499,6 +1499,76 @@ def test_the_anchor_belongs_to_the_method_that_measured_it():
     assert "state['thermal_method'] = method" in EDITOR_SOURCE
 
 
+@_needs_xtb
+def test_the_anchor_belongs_to_the_whole_question_and_not_only_the_method():
+    """The charge, the multiplicity and the solvent move an energy too.
+
+    The method was guarded and the three boxes beside it were not, and they
+    shift a total energy by the same order.  Measured on this ethane with the
+    budget on and an anchor taken:
+
+        charge 0 -> +2       first answer priced +831.4 kcal/mol of 22.3,
+                             C-C stuck at 1.521, every later step refused
+        multiplicity 1 -> 3  +139.2 kcal/mol, the same dead drag
+        solvent -> water     +1.4, which is why it was never noticed on a
+                             neutral -- an acetate anion moves -67.4 kcal/mol
+                             between vacuum and water, three times the ceiling
+
+    An anchor is an energy, and an energy of one question read against
+    energies of another is not a difference at all.  That is the sentence the
+    method's own guard is written on; these three are the rest of the
+    question.
+
+    And the refusal has to be audible.  Without an anchor the switch is still
+    on, the drag still holds its contacts and still costs what a priced drag
+    costs, and nothing is ever refused -- which on screen is a budget that is
+    working.
+    """
+    import time
+
+    start = gfn.optimize_with_gfn(_ETHANE, "gfn2", max_steps=400, timeout=300)
+    assert start.get("ok"), start.get("status")
+    begin = start["xyz"]
+
+    def _anchored():
+        part = _a_part(begin)
+        part.submit_ff_dd.value = "gfn2"
+        part.submit_relax_btn.value = True
+        part.submit_hand_dd.value = "pull"
+        part.submit_temperature.value = 298.15
+        part.submit_thermal_btn.value = True
+        began = time.time()
+        while (part.state.get("thermal_e0") is None
+               and time.time() - began < 300):
+            time.sleep(0.05)
+        assert part.state.get("thermal_e0") is not None
+        return part
+
+    part = _anchored()
+    assert part._thermal_budget()[0] is not None, "the anchor it just took"
+
+    for move, box, value in (("charge", "submit_gfn_charge", 2),
+                             ("multiplicity", "submit_gfn_mult", 3),
+                             ("solvent", "submit_gfn_solvent", "water")):
+        part = _anchored()
+        setattr(getattr(part, box), "value", value)
+        assert part._thermal_budget()[0] is None, (
+            f"the anchor survived the {move} box moving")
+        said = part._thermal_note(part.state["thermal_e0"])
+        assert "not in force" in said, (move, said)
+        assert "Set here" in said, (move, said)
+
+    # And a budget that was never measured says the other thing.
+    part = _a_part(begin)
+    part.submit_ff_dd.value = "gfn2"
+    part.submit_hand_dd.value = "pull"
+    part.submit_thermal_btn.value = False
+    part.state.pop("thermal_e0", None)
+    part.submit_thermal_btn.value = True
+    said = part._thermal_note(-1.0)
+    assert said == "" or "no budget yet" in said, said
+
+
 def test_the_editor_does_not_forge_the_users_consent_on_the_charge():
     """reset_controls writes the charge, which fires the observer that
     remembers a number the user typed.
@@ -4026,6 +4096,11 @@ def _armed(part, state, text, energy, T=298.15, method="gfn2"):
     part.coords_widget.value = text
     state["thermal_e0"] = float(energy)
     state["thermal_method"] = method
+    # The whole question the anchor answers, not only the method: the charge,
+    # the spin and the solvent move an energy by the same order, and a fixture
+    # that skips the guard is a fixture testing a state the editor cannot
+    # reach.
+    state["thermal_asked"] = part._the_question_an_anchor_answers()
     state["thermal_for"] = part._structure_fingerprint(text)
     state["thermal_good"] = text
     state.pop("thermal_good_peak", None)
