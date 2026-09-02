@@ -1755,11 +1755,6 @@ _HELD_KEEPS_ITS_PLACE = 0.25
 _ALONG_ENOUGH = 0.5
 
 
-def _is_a_bond(where, radius, i, j, slack: float = 1.25) -> bool:
-    """Whether these two are bonded, by covalent radii."""
-    return math.dist(where[i], where[j]) < slack * (radius[i] + radius[j])
-
-
 #: Where a bond starts and stops being one, as a share of the two radii.
 #:
 #: ORCA's GOAT calls a bond anything inside 1.3 times the sum of the covalent
@@ -1785,16 +1780,61 @@ def _is_a_bond(where, radius, i, j, slack: float = 1.25) -> bool:
 #: bonding differs is refused and the next one is tried; refusing one frame
 #: of a drag that was not really changing costs a tenth of a second and
 #: nothing else.
+#:
+#: And it is the only one: every question this module asks about bonding
+#: asks it.  A second lived in :func:`_is_a_bond`'s default for a while --
+#: 1.25, with nothing written down beside it -- and between the two lay a band
+#: where the graph still held a bond the perception had already let go of.  For a
+#: C-C that band is 1.900 to 1.976 A, which is exactly where a hand pulling a
+#: bond apart spends its time, and it widens with the radii: 0.130 A for a
+#: Pd-Br, 0.192 for a Cs-I.
+#:
+#: What it cost is a coordinate.  A torsion is built through bonds, so inside
+#: the band the perception could not name a turn about the very bond the graph
+#: was holding the user to.  Measured live under GFN2 on butane, its C2-C3
+#: relaxed out to 1.894 A and the end carbon then swung 0.45 A -- which puts
+#: that bond at 1.947 A, inside the band:
+#:
+#:     one rule    the torsion C4-C3-C2-C1, relaxes to +0.32 kcal/mol above
+#:                 butane, and the bonding holds
+#:     two rules   no bond to turn about, so the distance from the swung
+#:                 carbon to a hydrogen on itself is named instead; +25.63
+#:                 kcal/mol, and the step is refused for breaking C4-H14
+#:
+#: The same gesture at 1.807 A, below the band, named the torsion under both
+#: and cost +0.34; at 2.003 A, past both, there is no bond to turn about and
+#: the distance is the right answer.  So it was the band and not the gesture.
 BOND_STARTS_AT = 1.3
+
+
+def _is_a_bond(where, radius, i, j, slack: float = BOND_STARTS_AT) -> bool:
+    """Whether these two are bonded, by covalent radii."""
+    return math.dist(where[i], where[j]) < slack * (radius[i] + radius[j])
 
 
 def bond_graph(xyz_text: str, slack: float = BOND_STARTS_AT) -> frozenset:
     """Which atoms this geometry has bonded to which, by covalent radii.
 
-    The same test the rest of this file contacts with, and the same one the
-    viewer draws lines with, so what is compared is what is seen.  Returned as
-    a frozen set of index pairs, which makes "did the molecule stay the same
-    molecule" a set difference.
+    The same test the rest of this file contacts with -- see
+    :data:`BOND_STARTS_AT`.  Returned as a frozen set of index pairs, which
+    makes "did the molecule stay the same molecule" a set difference.
+
+    A near neighbour of the test the picture draws lines with, and not the
+    same one.  The viewer adds a fixed 0.40 A to the two radii where this
+    multiplies them by 1.3, because a factor grows a metal's reach along with
+    its radius and starts drawing lines into the second coordination sphere;
+    the measurement is beside ``BOND_TOLERANCE`` in ``molecule_viewer.py``.
+    Multiplying is right here for the opposite reason: this is the conformer
+    search's question, and 1.3 is the number the conformer searches ask it
+    with.
+
+    So the picture is the stricter of the two for anything heavier than
+    hydrogen, and the gap grows with the radii: a C-C is drawn out to 1.920 A
+    and held bonded here to 1.976, a Pd-Br drawn to 2.990 and held to 3.367.
+    In that band the line is off the screen while a step that breaks the bond
+    is still refused -- which is the safe direction to differ in, because the
+    user has seen it go before the editor says so, and the refusal names the
+    pair.
 
     Covalent radii and nothing else: a bond order would need a wavefunction,
     and this has to be answerable ten times a second on whatever the hand has

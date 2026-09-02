@@ -8,8 +8,10 @@ that bond at 1.76.  Two maxima 0.7 A apart on the coordinate that was driven and
 1.2 A apart on the one that was not.
 
 So the walk carries its bond graph along.  It costs nothing: the geometries are
-already in hand and the graph is covalent radii, the same test the picture draws
-its lines with.  Where the bonding changes is where the molecule stopped being
+already in hand and the graph is covalent radii, near enough the test the
+picture draws its lines with -- :data:`gfn_optimize.BOND_STARTS_AT` has the two
+numbers and why each is right for its own job.  Where the bonding changes is
+where the molecule stopped being
 the reactant, and whether the summit sits there decides whether the height above
 it is a barrier or a deformation.
 
@@ -53,7 +55,7 @@ def test_the_walk_says_where_the_bonding_changed():
 
     body = SOURCE.split('def _where_the_bonding_changed')[1] \
                  .split('\n            def ')[0]
-    # The geometries the walk already has, and the graph the picture draws.
+    # The geometries the walk already has, and the covalent-radius graph.
     assert '_gfn.bond_graph(' in body
     assert '_gfn.graph_changed(' in body
     # The first change only.  A walk that carries on past its reaction changes

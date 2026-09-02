@@ -6002,7 +6002,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # It decides nothing. This was built to be the honest
                     # answer to "is the bond still there", on the grounds that
                     # the editor's own watch -- :func:`gfn_optimize._is_a_bond`,
-                    # covalent radii with slack -- is a cliff at 1.94 A, and
+                    # covalent radii with slack -- is a cliff at 1.98 A, and
                     # the measurement says the opposite: an ethane C-C held at
                     # 3.03 A with everything else relaxed still reads 1.000,
                     # because a single closed-shell determinant keeps that pair
@@ -11778,10 +11778,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         made.
 
         It is the geometric test -- :func:`gfn_optimize.bond_graph`, covalent
-        radii, the same one the viewer draws lines with and ``Keep bonds``
-        judges against -- so what the rule reads is what the user sees.  It is
-        deliberately **not** a bond order, and that was measured rather than
-        assumed.
+        radii, the same one ``Keep bonds`` judges against -- so the rule and
+        the wall the walk runs into are one measure.  The picture is drawn
+        with a near neighbour of that number rather than the number itself: a
+        C-C's line goes at 1.920 A against this rule's 1.976, and on a metal
+        the two are further apart still.  See :func:`gfn_optimize.bond_graph`
+        for which is right for what.  It is deliberately **not** a bond order,
+        and that was measured rather than assumed.
 
         SCINE's NT2 stops on Mayer bond orders: formed above 0.75, broken
         below 0.15.  Three measurements here, all under GFN2, reading xtb's
@@ -13013,8 +13016,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # Where on the walk the chemistry happened.
                 #
                 # Costs nothing: the geometries are already in hand and the
-                # graph is covalent radii, the same test the picture draws
-                # lines with.  It is the answer to the question a scan is
+                # graph is covalent radii, near enough the test the
+                # picture draws lines with -- :func:`_gfn.bond_graph` has the
+                # sizes.  It is the answer to the question a scan is
                 # really asked -- not "how high" but "where did it react" --
                 # and it is the one that says whether the two agree.
                 #
