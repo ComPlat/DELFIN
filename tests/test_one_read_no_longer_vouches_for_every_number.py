@@ -266,12 +266,15 @@ def test_au_as_an_ordinary_word_is_not_a_measurement(prose):
     assert vg.scan_for_unsourced_quantities(prose, numbers=[447.9339]) == []
 
 
-def test_a_large_round_figure_in_atomic_units_still_counts():
-    """A hyperpolarizability runs to five and six digits, and is written
-    without a decimal often enough that requiring one would miss it."""
+@pytest.mark.parametrize("written", ["180721 au", "737 au", "~737 au"])
+def test_a_round_figure_in_atomic_units_still_counts(written):
+    """A hyperpolarizability is written without a decimal often enough
+    that requiring one would miss it. Three digits is where the live runs
+    put the threshold: a fourth missed "737 au", and the prose this rule
+    ignores is one digit."""
     flags = vg.scan_for_unsourced_quantities(
-        "Der Wert betraegt 180721 au.", numbers=[447.9339])
-    assert [f.quantity for f in flags] == ["180721 au"]
+        f"Mein berechneter Wert: {written}", numbers=[447.9339])
+    assert flags and flags[0].unit == "au"
 
 
 # ---------------------------------------------------------------------------
