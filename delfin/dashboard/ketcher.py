@@ -491,6 +491,46 @@ def _extent(mol: Any) -> Optional[Dict[str, float]]:
             'cx': (min(xs) + max(xs)) / 2.0}
 
 
+def _grouped(names: list) -> str:
+    """Several things in one field, written as the one field they are.
+
+    ``(A.B)`` rather than ``A.B``.  It is reaction SMILES' own grouping mark --
+    RDKit reads ``(A.B)`` as one template holding two fragments and writes it
+    back the same way -- and here it says the same thing: this is one side of
+    an arrow, and the dots inside it are the dots that were drawn.
+
+    One thing needs no group, and no things need nothing.
+    """
+    parts = [one for one in names if one]
+    if not parts:
+        return ''
+    if len(parts) == 1:
+        return parts[0]
+    return '(' + '.'.join(parts) + ')'
+
+
+def _ungrouped(field: str) -> str:
+    """The other way: take a field out of its group, if it is in one.
+
+    Only a pair that wraps the whole field.  A SMILES carries parentheses of
+    its own -- ``CC(=O)O`` -- but never at the front, because a branch has to
+    hang off an atom, so a leading one is always a group.  The closing partner
+    is found by counting rather than assumed to be the last character.
+    """
+    text = str(field or '').strip()
+    if not text.startswith('('):
+        return text
+    depth = 0
+    for at, mark in enumerate(text):
+        if mark == '(':
+            depth += 1
+        elif mark == ')':
+            depth -= 1
+            if depth == 0:
+                return text[1:at] if at == len(text) - 1 else text
+    return text
+
+
 def _as_drawn(components: list, arrows: list) -> Dict[str, Any]:
     """The scheme read off the canvas, which is where it is actually written.
 
@@ -562,9 +602,10 @@ def _as_drawn(components: list, arrows: list) -> Dict[str, Any]:
     if placed == 0:
         return {'ok': False, 'smiles': '', 'status': 'The drawing is empty.'}
 
-    def written(*groups):
-        parts = [one for group in groups for one in (group or [])]
-        return '.'.join(sorted(Chem.MolToSmiles(one) for one in parts))
+    def written(*groups, group=True):
+        parts = [one for group_ in groups for one in (group_ or [])]
+        names = sorted(Chem.MolToSmiles(one) for one in parts)
+        return _grouped(names) if group else '.'.join(names)
 
     # Four places at an arrow, four fields:
     #
@@ -590,8 +631,11 @@ def _as_drawn(components: list, arrows: list) -> Dict[str, Any]:
     try:
         smiles = written(befores.get(0))
         for index in range(len(arrows)):
-            smiles += (f'>>{written(overs.get(index))}'
-                       f'>{written(unders.get(index))}'
+            # What is over and under an arrow is never grouped: reaction
+            # SMILES allows the mark on the two sides only, and RDKit refuses
+            # it in the middle -- "Problems constructing agent from SMARTS".
+            smiles += (f'>>{written(overs.get(index), group=False)}'
+                       f'>{written(unders.get(index), group=False)}'
                        f'>>{written(befores.get(index + 1))}')
     except Exception as exc:                            # noqa: BLE001
         return {'ok': False, 'smiles': '',
@@ -1356,13 +1400,16 @@ def parse_reaction_smiles(text: str) -> Dict[str, Any]:
                 'status': 'RDKit is not installed, so a reaction cannot be built.'}
 
     def pieces(field):
-        return [one for one in str(field or '').split('.') if one]
+        return [one for one in _ungrouped(field).split('.') if one]
 
     steps = []
     for number, (left, added, off, right) in enumerate(walked, start=1):
         # A by-product is a product: that is what makes the step balance, and
         # it is the only place an ordinary reaction SMILES has for it.
-        plain = f'{left}>{added}>{".".join(pieces(right) + pieces(off))}'
+        # Grouped on the two sides and never in the middle: RDKit reads
+        # "(A.B)" as one template there and refuses it as an agent.
+        plain = (f'{_grouped(pieces(left))}>{".".join(pieces(added))}'
+                 f'>{_grouped(pieces(right) + pieces(off))}')
         try:
             built = rdChemReactions.ReactionFromSmarts(plain, useSmiles=True)
         except Exception as exc:                        # noqa: BLE001

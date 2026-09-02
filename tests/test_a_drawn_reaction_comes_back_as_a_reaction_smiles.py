@@ -256,15 +256,38 @@ def test_both_at_once_read_as_one_in_and_one_out():
     assert outcome["smiles"] == "CCC>>C>C>>CCC"
 
 
-def test_a_dot_only_ever_separates_things_in_the_same_place():
-    """Two reactants and two products, nothing over or under: the two middle
-    fields are empty and every dot is one the drawing put there."""
+def test_a_side_with_several_things_on_it_is_written_as_the_one_side_it_is():
+    """``(A.B)`` rather than ``A.B``.  It is reaction SMILES' own grouping
+    mark -- RDKit reads it as one template holding two fragments and writes it
+    back the same way -- and here it says the same thing: this is one side of
+    an arrow, and the dots inside it are the dots that were drawn."""
     outcome = ketcher.reaction_smiles_from_rxnfile(
         rxnblock([placed("CCO", 0), placed("CC(=O)O", 0, 5)],
                  [placed("CCOC(C)=O", 14), placed("O", 14, 5)]),
         canvas([(6.0, 10.0, 0.0)]))
 
-    assert outcome["smiles"] == "CC(=O)O.CCO>>>>>CCOC(C)=O.O"
+    assert outcome["smiles"] == "(CC(=O)O.CCO)>>>>>(CCOC(C)=O.O)"
+
+
+def test_one_thing_on_a_side_needs_no_group():
+    outcome = ketcher.reaction_smiles_from_rxnfile(
+        rxnblock([placed("CCC", 0)], [placed("CCC", 14)]),
+        canvas([(6.0, 10.0, 0.0)]))
+
+    assert outcome["smiles"] == "CCC>>>>>CCC"
+
+
+def test_what_is_over_or_under_an_arrow_is_never_grouped():
+    """Reaction SMILES allows the mark on the two sides only, and RDKit
+    refuses it in the middle: "Problems constructing agent from SMARTS"."""
+    outcome = ketcher.reaction_smiles_from_rxnfile(
+        rxnblock([placed("c1ccccc1", 0)],
+                 [placed("C1CCCCC1", 14), placed("CC", 7, 5),
+                  placed("CO", 9, 5)]),
+        canvas([(6.0, 10.0, 0.0)]))
+
+    assert outcome["smiles"] == "c1ccccc1>>CC.CO>>>C1CCCCC1"
+    assert "(CC.CO)" not in outcome["smiles"]
 
 
 def test_a_reactant_that_merely_reaches_across_the_line_is_not_a_reagent():
@@ -378,11 +401,17 @@ def test_each_step_comes_back_as_a_reaction_rdkit_can_hold():
 
     step, = ketcher.parse_reaction_smiles("CCC>>C>C>>CCC")["steps"]
 
-    assert step["smiles"] == "CCC>C>CCC.C"
+    assert step["smiles"] == "CCC>C>(CCC.C)"
     built = step["reaction"]
     assert built.GetNumReactantTemplates() == 1
     assert built.GetNumAgentTemplates() == 1
-    assert built.GetNumProductTemplates() == 2, "the product and what came off"
+    # One template, because the products of a step are one side of one arrow;
+    # the two fragments in it are the product and what came off.
+    assert built.GetNumProductTemplates() == 1
+    product, = built.GetProducts()
+    from rdkit import Chem
+    assert sorted(Chem.MolToSmiles(f) for f in
+                  Chem.GetMolFrags(product, asMols=True)) == ["C", "CCC"]
 
 
 def test_a_chain_comes_back_as_one_step_after_another():
@@ -475,7 +504,7 @@ def test_a_follow_up_step_is_made_from_what_the_one_before_it_produced():
         canvas([(5.0, 9.0, 0.0), (18.5, 22.5, 0.0)]))
 
     assert written["smiles"] == (
-        "CC(=O)O.CCO>>[Pd]>O>>CCC.CCOC(C)=O>>>>>C1CCC1.CO")
+        "(CC(=O)O.CCO)>>[Pd]>O>>(CCC.CCOC(C)=O)>>>>>(C1CCC1.CO)")
 
     first, second = ketcher.parse_reaction_smiles(written["smiles"])["steps"]
     assert first["products"] == second["reactants"], (
@@ -539,3 +568,34 @@ def test_the_records_reach_the_reader_that_splits_them():
 
     assert outcome["reaction"] is True
     assert outcome["smiles"] == "c1ccccc1>>>>>C1CCCCC1"
+
+
+def test_the_grouping_mark_is_taken_back_off_when_it_is_read():
+    """A SMILES carries parentheses of its own -- ``CC(=O)O`` -- but never at
+    the front, because a branch has to hang off an atom.  So a leading one is
+    always a group, and its partner is found by counting."""
+    pytest.importorskip("rdkit")
+
+    read = ketcher.parse_reaction_smiles(
+        "(C1=CCC=C1.C1=CCC=C1)>>C1CCCCC1>O>>(C1CC1.C1CC1)")
+
+    step, = read["steps"]
+    assert step["reactants"] == ["C1=CCC=C1", "C1=CCC=C1"]
+    assert step["in"] == ["C1CCCCC1"]
+    assert step["out"] == ["O"]
+    assert step["products"] == ["C1CC1", "C1CC1"]
+    assert ketcher._ungrouped("CC(=O)O") == "CC(=O)O", "not a group"
+    assert ketcher._ungrouped("(A.B)") == "A.B"
+
+
+def test_the_ordinary_grouped_three_field_form_round_trips():
+    """Which is what RDKit itself writes, character for character."""
+    pytest.importorskip("rdkit")
+
+    text = "(C1=CCC=C1.C1=CCC=C1)>C1CCCCC1.C1CCCCC1>(C1CC1.C1CC1)"
+    step, = ketcher.parse_reaction_smiles(text)["steps"]
+
+    assert step["reactants"] == ["C1=CCC=C1", "C1=CCC=C1"]
+    assert step["in"] == ["C1CCCCC1", "C1CCCCC1"]
+    assert step["out"] == []
+    assert step["smiles"] == text
