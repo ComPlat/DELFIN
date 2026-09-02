@@ -568,6 +568,277 @@ _observed_complete: "_contextvars.ContextVar[bool]" = (
     _contextvars.ContextVar("delfin_observed_complete", default=True))
 
 
+# ---------------------------------------------------------------------------
+# The same numbers again, but keyed — so two of them can be compared
+# ---------------------------------------------------------------------------
+#
+# The pool above answers "did any tool return this number". It cannot
+# answer the question the field case turned on: DELFIN had already
+# computed beta_HRS and stored it, the agent computed its own, the two
+# disagreed by up to 47%, and BOTH were in the pool — so both were
+# correctly "grounded" and the contradiction was invisible. Grounded and
+# wrong is the case none of the other scanners can express.
+#
+# What makes it decidable is that the two numbers carry the same NAME for
+# the same RECORD. `beta_HRS_au` for folder `…BAF1_C_119` was 171232.01
+# when read out of DELFIN_Data.json and 180721.43 when read back out of
+# the CSV the agent produced. No model judgement is needed to see that;
+# it is two floats and a tolerance.
+#
+# Bounded like its sibling, and for the same reason: a run over 404
+# folders would otherwise carry 404 × every field.
+MAX_KEYED_VALUES = 4000
+
+# `"field": 12.3` in a JSON-ish result. Deliberately regex and not a JSON
+# parse: the result arrives as a HEAD slice and is usually not valid JSON
+# by the time it gets here.
+_JSON_FIELD_RE = re.compile(
+    r'"([A-Za-z_][A-Za-z0-9_]{2,40})"\s*:\s*'
+    r'(-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)')
+
+# A record id: the longest path segment that looks like a calculation
+# folder, or a CSV's first column.
+_PATH_SEGMENT_RE = re.compile(r"[A-Za-z0-9][\w.+-]{3,}")
+
+_keyed_values: "_contextvars.ContextVar[Optional[dict]]" = (
+    _contextvars.ContextVar("delfin_keyed_values", default=None))
+
+
+def _witness_of(source: str) -> str:
+    """Which artifact a value came out of.
+
+    A contradiction is between two WITNESSES, never between two readings
+    of the same one. Without this the guard fired on the most ordinary
+    thing an agent does: read a config, change a setting, read it back —
+    ``timeout`` 30 then 60, same file, reported as a conflict. Two
+    readings of one file at two times are a history, not a disagreement.
+    """
+    text = str(source or "")
+    match = re.search(r'"(?:path|file_path|file)"\s*:\s*"([^"]+)"', text)
+    if match:
+        return match.group(1)
+    # A shell call: the artifact is whichever path the command names.
+    paths = re.findall(r"[\w./+-]*/[\w./+-]+|\b[\w-]+\.(?:csv|json|out|txt)\b",
+                       text)
+    return paths[-1] if paths else text[:80]
+
+
+def reset_keyed_values() -> None:
+    """Per turn, like every other evidence ledger in this module."""
+    _keyed_values.set(None)
+
+
+def _record_id(source: str) -> str:
+    """Which record a result is about, from the path it came from.
+
+    The deepest path segment that is not a generic container. Two files
+    under one calculation folder describe the same record, which is what
+    lets a value read from `<folder>/DELFIN_Data.json` be compared with
+    one read back from a table row keyed on `<folder>`.
+    """
+    parts = [p for p in str(source or "").replace("\\", "/").split("/") if p]
+    for part in reversed(parts):
+        if "." in part and part.rsplit(".", 1)[-1].isalpha():
+            continue                       # a file name, not the record
+        if part.lower() in {"esd", "output", "results", "data", "tmp",
+                            "calc", "archive", "home", "opt", "freq"}:
+            continue
+        if _PATH_SEGMENT_RE.fullmatch(part):
+            return part
+    return ""
+
+
+def record_keyed_values(output: Any, *, source: str = "") -> int:
+    """Record `field -> value` pairs, scoped to the record they describe.
+
+    Two shapes, because the two sides of the field case arrived in two
+    shapes: JSON fields out of a stored result file, and CSV rows out of
+    a table the agent had just written. Never raises; anything it cannot
+    parse it simply does not record, which fails toward silence.
+    """
+    try:
+        pool = _keyed_values.get()
+        if pool is None:
+            pool = {}
+            _keyed_values.set(pool)
+        if len(pool) >= MAX_KEYED_VALUES:
+            return 0
+        body = str(output or "")[:_TOOL_OUTPUT_SCAN_CHARS]
+        added = 0
+
+        witness = _witness_of(source)
+
+        def _add(record: str, field: str, raw: str) -> None:
+            nonlocal added
+            if not record or len(pool) >= MAX_KEYED_VALUES:
+                return
+            try:
+                value = float(raw)
+            except ValueError:
+                return
+            pool.setdefault((record, field), []).append((value, witness))
+            added += 1
+
+        json_record = _record_id(source)
+        for m in _JSON_FIELD_RE.finditer(body):
+            _add(json_record, m.group(1), m.group(2))
+
+        added += _record_csv_rows(body, _add)
+        return added
+    except Exception:
+        return 0
+
+
+def _record_csv_rows(body: str, add) -> int:
+    """A header line of names, then rows whose first cell is the record.
+
+    This is how a summary table the agent produced comes back — the
+    field case reached the harness as the first ten lines of
+    `beta_hrs_summary.csv`, header included.
+    """
+    header: list[str] | None = None
+    seen = 0
+    for line in body.splitlines()[:400]:
+        cells = [c.strip().strip('"') for c in line.split(",")]
+        if len(cells) < 2:
+            header = None
+            continue
+        numeric = sum(1 for c in cells[1:] if _is_number(c))
+        if header is None:
+            if numeric == 0 and all(c and " " not in c for c in cells):
+                header = cells
+            continue
+        if numeric == 0:
+            header = None
+            continue
+        for name, cell in zip(header[1:], cells[1:]):
+            if _is_number(cell):
+                add(cells[0], name, cell)
+                seen += 1
+    return seen
+
+
+def _is_number(text: str) -> bool:
+    try:
+        float(text)
+        return True
+    except (TypeError, ValueError):
+        return False
+
+
+@dataclass(frozen=True)
+class FigureConflict:
+    """One record whose field came back with two different values."""
+
+    record: str
+    field: str
+    values: tuple[float, ...]
+
+    @property
+    def spread_pct(self) -> float:
+        lo, hi = min(self.values), max(self.values)
+        base = max(abs(lo), abs(hi)) or 1.0
+        return abs(hi - lo) / base * 100.0
+
+
+def scan_for_conflicting_figures(max_flags: int = 5) -> list[FigureConflict]:
+    """Fields this turn saw twice, with values that disagree.
+
+    Tolerance is relative and generous — 0.5% — because the point is not
+    rounding but a different METHOD. The field case disagreed by 5.5% on
+    its mildest system and 47% on its worst, and would still be caught an
+    order of magnitude tighter.
+
+    Deterministic and order-stable: worst spread first, so a forced
+    correction names the case hardest to explain away.
+    """
+    try:
+        pool = _keyed_values.get() or {}
+        out: list[FigureConflict] = []
+        for (record, field), entries in pool.items():
+            if len(entries) < 2:
+                continue
+            # Two witnesses, not two readings of one. See _witness_of.
+            if len({w for _v, w in entries}) < 2:
+                continue
+            values = [v for v, _w in entries]
+            # Both sides must be measurements. A setting an agent changed
+            # mid-turn is an integer far more often than a measured value
+            # is, and this is the cheap half of telling them apart — it
+            # errs toward silence, which is the direction to err in.
+            if any(float(v).is_integer() for v in values):
+                continue
+            lo, hi = min(values), max(values)
+            base = max(abs(lo), abs(hi))
+            if base == 0 or abs(hi - lo) / base <= 0.005:
+                continue
+            out.append(FigureConflict(record=record, field=field,
+                                      values=(lo, hi)))
+        out.sort(key=lambda f: (-f.spread_pct, f.record, f.field))
+        return out[:max_flags]
+    except Exception:
+        return []
+
+
+def conflicting_figure_feedback(flags: list[FigureConflict]) -> str:
+    """What the model is told when its number fights the stored one.
+
+    Written as a question of fact, not of style: two values exist, one of
+    them is being delivered, and which one has to be decided rather than
+    narrated. The last sentence is the one the field case needed — the
+    agent explained a spread of -2.33% to +47.04% as a "convention",
+    which a constant factor cannot produce.
+    """
+    if not flags:
+        return ""
+    lines = [
+        f"'{f.field}' for {f.record}: {f.values[0]:.6g} and "
+        f"{f.values[1]:.6g} ({f.spread_pct:.1f}% apart)"
+        for f in flags
+    ]
+    return (
+        "[Verify] This turn saw two different values for the same field of "
+        "the same record: " + "; ".join(lines) + ". One of them is wrong, "
+        "or they measure different things. If one came from the source and "
+        "the other from your own computation, the source wins unless you "
+        "can show why. Say which value you are delivering and on what "
+        "basis. A deviation that VARIES between records is not a unit or "
+        "convention difference — those are constant factors."
+    )
+
+
+def conflict_is_addressed(flag: FigureConflict, text: str) -> bool:
+    """Did the correction pick a number, or just talk about the question?
+
+    Satisfied only by one of the two VALUES appearing in the text, to the
+    precision the conflict was reported at. Words cannot meet it — which
+    is the point, because the field answer met every word-shaped standard
+    while shipping the wrong column: it called a spread of -2.33% to
+    +47.04% a "Formel-Konvention" and delivered its own figures anyway.
+    """
+    body = " ".join(str(text or "").split())
+    if not body:
+        return False
+    for value in flag.values:
+        for form in (f"{value:.6g}", f"{value:.4f}", f"{value:.2f}"):
+            if form.lstrip("-") in body:
+                return True
+    return False
+
+
+def conflicting_figure_caveat(flags: list[FigureConflict]) -> str:
+    """Appended when the correction turn did not resolve the conflict."""
+    if not flags:
+        return ""
+    f = flags[0]
+    return (
+        f"\n\n[verify] Caveat: für '{f.field}' ({f.record}) liegen zwei "
+        f"Werte vor, {f.values[0]:.6g} und {f.values[1]:.6g} — "
+        f"{f.spread_pct:.1f}% auseinander. Es wurde nicht geklärt, welcher "
+        "gilt; bitte vor der Weitergabe entscheiden."
+    )
+
+
 def reset_observed_numbers() -> None:
     """Forget what the previous turn's tools returned.
 
@@ -2085,6 +2356,38 @@ def scan_for_counts_over_truncated_output(
 _LIST_ITEM_RE = re.compile(r"(?m)^\s*(?:\d{1,3}[.)]\s+|[-*•]\s+)\S")
 
 
+def _longest_list_block(text: str) -> int:
+    """Length of the longest UNBROKEN run of list items.
+
+    A stated count refers to one enumeration, not to the union of every
+    bullet in the answer. Summing them compared unrelated things: an
+    answer about hyperpolarizability said "27 Tensor-Komponenten" — a
+    fact about a rank-3 tensor, promising no list at all — and was warned
+    that it "lists 11 entries", the 11 being two separate Top-5 blocks
+    plus a statistics block added together. That warning stood next to a
+    real one about truncated output, which is how a reader learns to skip
+    both.
+
+    ONLY a blank line continues a run — a list may be loosely spaced.
+    Anything else with text on it starts a new subject, including the
+    bold lead-in that introduces the next list. That detail is the whole
+    fix: a first attempt treated ``**`` lines as non-breaking, and
+    ``**Top 5 höchste βHRS-Werte:**`` is precisely the boundary between
+    two unrelated lists, so the three blocks merged back into 11 and the
+    false warning survived the repair.
+    """
+    run = best = 0
+    for line in (text or "").splitlines():
+        if _LIST_ITEM_RE.match(line):
+            run += 1
+            best = max(best, run)
+        elif not line.strip():
+            continue                    # loose spacing inside one list
+        else:
+            run = 0
+    return best
+
+
 def scan_for_count_vs_enumeration(text: str) -> list[tuple[int, int]]:
     """(claimed, listed) pairs where an answer states N and then lists M.
 
@@ -2099,11 +2402,14 @@ def scan_for_count_vs_enumeration(text: str) -> list[tuple[int, int]]:
     number refers to (a count of 31 followed by two examples is not a
     contradiction) and when the gap is real rather than an off-by-one
     from a header row.
+
+    The list is the longest UNBROKEN run of items, never every bullet in
+    the answer added up — see _longest_list_block for what that cost.
     """
     if not text:
         return []
     try:
-        listed = len(_LIST_ITEM_RE.findall(text))
+        listed = _longest_list_block(text)
         if listed < 3:
             return []
         out: list[tuple[int, int]] = []
