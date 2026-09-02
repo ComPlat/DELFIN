@@ -113,6 +113,19 @@ def test_a_kept_drawing_is_put_back_with_one_call_whatever_it_is():
     assert "setTimeout" in script and "tries" in script
 
 
+def test_an_opened_drawing_is_fitted_to_the_frame_it_is_read_in():
+    """``setMolecule`` fits it itself -- against the size the frame has at the
+    moment it runs, which for a drawing opened into a tab that is not on
+    screen yet is not the size it will be looked at.  That is how a structure
+    ends up at 10% zoom somewhere off the side."""
+    script = ketcher.load_js(".frame", '{"root":{}}')
+
+    assert "zoomAccordingContent" in script
+    assert "centerStruct" in script
+    # and again once the frame has the size it is going to keep
+    assert script.count("fit(api)") >= 3
+
+
 # ---------------------------------------------------------------------------
 # in the tab
 # ---------------------------------------------------------------------------
@@ -226,3 +239,63 @@ def test_a_drawing_handed_in_from_elsewhere_opens_the_editor_first(editor):
 def test_an_empty_file_is_said_rather_than_pushed(editor):
     assert editor["open_drawing"]("   ", "empty.ket") is False
     assert "empty" in editor["mol_status"].value
+
+
+# ---------------------------------------------------------------------------
+# the drawing goes with the job
+# ---------------------------------------------------------------------------
+def test_a_submitted_job_keeps_the_drawing_it_was_drawn_from(editor, tmp_path):
+    """A CONTROL.txt says what was asked and an input.txt says of what.  A
+    structure that was drawn rather than typed has a third thing to say, and
+    until now it was said only inside a browser frame that the next page load
+    empties."""
+    pytest.importorskip("rdkit")
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    mol = Chem.MolFromSmiles("CCO")
+    AllChem.Compute2DCoords(mol)
+    editor["submit_draw_sync"].value = (
+        "1\n" + Chem.MolToMolBlock(mol) + ketcher.KET_MARK + '{"root":{}}')
+    assert editor["coords_widget"].value == "CCO", "the drawing was read"
+
+    where = tmp_path / "calc" / "drawn_job"
+    where.mkdir(parents=True)
+    editor["keep_the_drawing"](where, "CCO")
+
+    assert (where / "drawing.ket").read_text() == '{"root":{}}'
+
+
+def test_a_job_that_was_typed_does_not_carry_someone_elses_drawing(editor,
+                                                                   tmp_path):
+    """The editor remembers the SMILES its drawing produced, so a job set up
+    an hour later from a typed SMILES does not end up with an unrelated
+    picture in its folder."""
+    pytest.importorskip("rdkit")
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    mol = Chem.MolFromSmiles("CCO")
+    AllChem.Compute2DCoords(mol)
+    editor["submit_draw_sync"].value = (
+        "1\n" + Chem.MolToMolBlock(mol) + ketcher.KET_MARK + '{"root":{}}')
+
+    where = tmp_path / "calc" / "typed_job"
+    where.mkdir(parents=True)
+    editor["keep_the_drawing"](where, "c1ccccc1")
+
+    assert not (where / "drawing.ket").exists()
+    # and nothing drawn at all writes nothing
+    editor["keep_the_drawing"](where, "")
+    assert not (where / "drawing.ket").exists()
+
+
+def test_the_drawing_is_written_where_control_and_input_are():
+    """Beside them, in the same folder, by the same press."""
+    from editor_source import TAB_SOURCE
+
+    handler = TAB_SOURCE.split("def handle_submit(button)")[1]
+    handler = handler.split("\n    def ")[0]
+    order = [handler.index("CONTROL.txt"), handler.index("input.txt"),
+             handler.index("_keep_the_drawing(")]
+    assert order == sorted(order), "written after the two it stands beside"

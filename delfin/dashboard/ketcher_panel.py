@@ -81,6 +81,7 @@ def read_js(scope: str, kind: str, want: str, *,
         "  var scope=" + json.dumps(str(scope)) + ";\n"
         "  var kind=" + json.dumps(str(kind)) + ";\n"
         "  var want=" + json.dumps(str(want)) + ";\n"
+        "  var MARK=" + json.dumps(_ketcher.KET_MARK) + ";\n"
         "  var box=document.querySelector('." + sync_class + ".'+scope);\n"
         "  var input=box&&box.querySelector('textarea, input');\n"
         "  function hand(text){\n"
@@ -110,7 +111,15 @@ def read_js(scope: str, kind: str, want: str, *,
         "    var arrow=false;\n"
         "    try{ arrow=!!(api.containsReaction&&api.containsReaction()); }\n"
         "    catch(e){ arrow=false; }\n"
-        "    return arrow ? api.getRxn() : api.getMolfile();\n"
+        "    /* Always both. For a reaction because an RXN file holds one\n"
+        "       arrow, so Indigo flattens a scheme drawn in three steps into\n"
+        "       \"the first thing, into everything else\" and the arrows\n"
+        "       survive only in Ketcher's own KET; and for a structure so\n"
+        "       that the drawing itself can be kept beside the job it was\n"
+        "       drawn for. */\n"
+        "    return Promise.all([arrow ? api.getRxn() : api.getMolfile(),\n"
+        "                        api.getKet()])\n"
+        "      .then(function(both){ return both[0]+MARK+both[1]; });\n"
         "  }\n"
         "  try{\n"
         "    Promise.resolve(ask()).then(function(text){ hand(text||''); },\n"
@@ -203,10 +212,13 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
                  'drawing with an arrow in it as a reaction SMILES.'),
         layout=widgets.Layout(width='140px'),
     )
+    # One box, whatever was drawn.  A structure and a reaction are read out
+    # by the same press and go to the same places; two boxes meant one of them
+    # was always holding something stale from an earlier drawing.
     smiles_out = widgets.Text(
-        value='', placeholder='the structure that was drawn',
+        value='', placeholder='what was drawn, as a SMILES',
         description='SMILES:', layout=widgets.Layout(width='100%'),
-        style={'description_width': '90px'},
+        style={'description_width': '80px'},
     )
     smiles_copy_btn = widgets.Button(
         description='COPY', icon='copy', layout=widgets.Layout(width='90px'),
@@ -216,15 +228,6 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
         description='TO SUBMIT', icon='arrow-right', button_style='info',
         tooltip='Put it in the Submit tab\'s input box and go there.',
         layout=widgets.Layout(width='130px'),
-    )
-    rxn_out = widgets.Text(
-        value='', placeholder='reactants>agents>products, once an arrow is drawn',
-        description='Reaction:', layout=widgets.Layout(width='100%'),
-        style={'description_width': '90px'},
-    )
-    rxn_copy_btn = widgets.Button(
-        description='COPY', icon='copy', layout=widgets.Layout(width='90px'),
-        tooltip='Put the reaction SMILES on the clipboard.',
     )
 
     # -- saying things --------------------------------------------------
@@ -379,14 +382,8 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
         # Two boxes, because a reaction and a structure are read differently
         # by whoever picks them up -- and because one of them would otherwise
         # be overwritten by the other the next time TO SMILES is pressed.
-        if outcome.get('reaction'):
-            rxn_out.value = outcome['smiles']
-        else:
-            smiles_out.value = outcome['smiles']
-        # Which of the two boxes the last reading filled, so TO SUBMIT carries
-        # what was actually just drawn rather than whatever is left over in
-        # the other one from an hour ago.
-        state['last'] = 'reaction' if outcome.get('reaction') else 'structure'
+        smiles_out.value = outcome['smiles']
+        state['reaction'] = bool(outcome.get('reaction'))
         _say(outcome['status'], '#2e7d32')
 
     # -- opening one that was kept --------------------------------------
@@ -415,11 +412,8 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
         needs is over there, and a second, staler copy of them would be worse
         than a tab switch.  The same handover the reaction graph makes.
         """
-        reaction = state.get('last') == 'reaction'
-        drawn = str((rxn_out if reaction else smiles_out).value or '').strip()
-        if not drawn:
-            drawn = str(smiles_out.value or rxn_out.value or '').strip()
-            reaction = not smiles_out.value
+        reaction = bool(state.get('reaction'))
+        drawn = str(smiles_out.value or '').strip()
         if not drawn:
             _say('Press TO SMILES first -- there is nothing to send.', '#d32f2f')
             return
@@ -441,10 +435,6 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
     def _on_copy_smiles(_button=None) -> None:
         _send(copy_js(smiles_out.value or ''))
         _say('The SMILES is on the clipboard.')
-
-    def _on_copy_rxn(_button=None) -> None:
-        _send(copy_js(rxn_out.value or ''))
-        _say('The reaction SMILES is on the clipboard.')
 
     # -- fetching it ----------------------------------------------------
     def _on_install(_button=None) -> None:
@@ -476,7 +466,6 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
     smiles_btn.on_click(_on_smiles)
     smiles_copy_btn.on_click(_on_copy_smiles)
     to_submit_btn.on_click(_on_to_submit)
-    rxn_copy_btn.on_click(_on_copy_rxn)
     install_btn.on_click(_on_install)
     sync.observe(_on_sync, names='value')
 
@@ -490,7 +479,6 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
             _row([smiles_btn, install_btn, status]),
             frame, sync,
             _row([smiles_out, smiles_copy_btn, to_submit_btn]),
-            _row([rxn_out, rxn_copy_btn]),
         ],
         layout=widgets.Layout(width='100%', gap='6px'),
     )

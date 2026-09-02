@@ -39,7 +39,7 @@ __all__ = ['app_directory', 'app_url', 'install', 'installed_version',
            'reaction_smiles_from_rxnfile', 'smiles_from_drawing',
            'DRAWINGS_FOLDER', 'DRAWING_SUFFIXES', 'drawings_directory',
            'is_drawing', 'list_drawings', 'save_drawing', 'read_drawing',
-           'delete_drawing', 'frame_html', 'focus_js', 'load_js',
+           'delete_drawing', 'frame_html', 'focus_js', 'load_js', 'KET_MARK',
            'files_js', 'wire_js']
 
 #: Where the releases come from.  The versioned asset rather than the
@@ -435,7 +435,149 @@ def smiles_from_molfile(molfile: str) -> Dict[str, Any]:
     return {'ok': True, 'smiles': smiles, 'dative': dative, 'status': said}
 
 
-def reaction_smiles_from_rxnfile(rxnfile: str) -> Dict[str, Any]:
+#: What separates the two things a drawn reaction is fetched as.
+#:
+#: An RXN file is what RDKit reads, and it holds one arrow -- Indigo writes a
+#: canvas with three molecules and two arrows as "one into two", because the
+#: format has nowhere to put the second one.  The arrows themselves survive
+#: only in Ketcher's own KET, so both come back and are read together.
+KET_MARK = '\n$DELFIN-KET$\n'
+
+
+def _arrows(ket: str) -> list:
+    """Where the arrows are, as ``{x0, x1, y}`` sorted left to right.
+
+    Everything about how a scheme is read comes off these: what is before an
+    arrow and what is after it, and what is written over or under one.
+    """
+    try:
+        document = json.loads(str(ket or ''))
+        nodes = document['root']['nodes']
+    except (ValueError, KeyError, TypeError):
+        return []
+    found = []
+    for node in nodes:
+        if not isinstance(node, dict) or node.get('type') != 'arrow':
+            continue
+        where = (node.get('data') or {}).get('pos') or []
+        points = [point for point in where if isinstance(point, dict)
+                  and point.get('x') is not None]
+        if not points:
+            continue
+        xs = [point['x'] for point in points]
+        ys = [point.get('y', 0.0) for point in points]
+        found.append({'x0': min(xs), 'x1': max(xs),
+                      'y': sum(ys) / len(ys)})
+    return sorted(found, key=lambda one: one['x0'])
+
+
+def _extent(mol: Any) -> Optional[Dict[str, float]]:
+    """Where a component sits on the canvas, or None if it says nothing."""
+    try:
+        if not mol.GetNumConformers() or not mol.GetNumAtoms():
+            return None
+        frame = mol.GetConformer()
+        spots = [frame.GetAtomPosition(i) for i in range(mol.GetNumAtoms())]
+        xs = [spot.x for spot in spots]
+        ys = [spot.y for spot in spots]
+    except Exception:                                   # noqa: BLE001
+        return None
+    if not xs:
+        return None
+    return {'x0': min(xs), 'x1': max(xs), 'y0': min(ys), 'y1': max(ys),
+            'cx': (min(xs) + max(xs)) / 2.0}
+
+
+def _as_drawn(drawn: Any, arrows: list) -> Dict[str, Any]:
+    """The scheme read off the canvas, which is where it is actually written.
+
+    Four places mean four things around an arrow, and only two of them survive
+    a trip through an RXN file:
+
+    * **before** it -- what goes in;
+    * **after** it -- what comes out;
+    * **over** it -- what is added, the reagent or solvent;
+    * **under** it -- what is given off, which comes out with the products.
+
+    Indigo keeps neither the second arrow nor the difference between over and
+    under.  A three-step scheme comes back as "the first thing, into
+    everything else", not even in the drawn order, and a molecule under the
+    arrow is handed back as an agent exactly like one over it -- measured:
+    benzene, cyclobutane over, cyclopropane under, cyclohexane after came back
+    as ``C1C=CC=CC=1>C1CCC1.C1CC1>C1CCCCC1``.
+
+    What it does keep is every component and its coordinates, and the KET
+    keeps the arrows and theirs in the same frame.  So the reading is done
+    from the geometry instead, and the result is the ordinary
+    ``reactants>agents>products`` -- with a further ``>agents>products`` for
+    every arrow after the first.
+
+    Over and under are told apart strictly: the component has to sit inside
+    the arrow's span and clear of its line altogether.  Reactants and products
+    straddle that line -- measured at y -8.18..-6.17 against an arrow at
+    -7.18 -- so anything that merely reaches across it is not a reagent.
+    """
+    from rdkit import Chem
+
+    befores: Dict[int, list] = {}
+    overs: Dict[int, list] = {}
+    dative = 0
+    placed = 0
+    for mol in list(drawn.GetReactants()) + list(drawn.GetAgents()) \
+            + list(drawn.GetProducts()):
+        where = _extent(mol)
+        if where is None:
+            continue
+        fresh, moved = _tidied(mol)
+        dative += moved
+        placed += 1
+        on = None
+        for index, arrow in enumerate(arrows):
+            if not (arrow['x0'] <= where['cx'] <= arrow['x1']):
+                continue
+            if where['y0'] > arrow['y']:                # clear of it, above
+                on = ('over', index)
+            elif where['y1'] < arrow['y']:              # clear of it, below
+                on = ('under', index)
+            break
+        if on is None:
+            step = sum(1 for arrow in arrows
+                       if (arrow['x0'] + arrow['x1']) / 2.0 < where['cx'])
+            befores.setdefault(step, []).append(fresh)
+        elif on[0] == 'over':
+            overs.setdefault(on[1], []).append(fresh)
+        else:
+            # Given off by that step, so it comes out with its products.
+            befores.setdefault(on[1] + 1, []).append(fresh)
+    if placed == 0:
+        return {'ok': False, 'smiles': '', 'status': 'The drawing is empty.'}
+
+    def written(parts):
+        return '.'.join(sorted(Chem.MolToSmiles(one) for one in parts or []))
+
+    try:
+        pieces = [written(befores.get(0))]
+        for index in range(len(arrows)):
+            pieces.append(written(overs.get(index)))
+            pieces.append(written(befores.get(index + 1)))
+    except Exception as exc:                            # noqa: BLE001
+        return {'ok': False, 'smiles': '',
+                'status': f'That reaction could not be written as SMILES: {exc}'}
+    if not pieces[-1]:
+        return {'ok': False, 'smiles': '',
+                'status': ('The last arrow has nothing after it yet, so there '
+                           'is no reaction to write.')}
+    smiles = '>'.join(pieces)
+    steps = len(arrows)
+    said = (f'{steps} step{"" if steps == 1 else "s"} drawn: {smiles}')
+    if dative:
+        said += (f' ({dative} coordination bond(s) written with the charge on '
+                 'both ends, which is the form the rest of DELFIN reads.)')
+    return {'ok': True, 'smiles': smiles, 'dative': dative, 'steps': steps,
+            'status': said}
+
+
+def reaction_smiles_from_rxnfile(rxnfile: str, ket: str = '') -> Dict[str, Any]:
     """Turn a drawn reaction into a reaction SMILES, the way RDKit writes one.
 
     An arrow on the canvas makes the drawing a reaction, and a reaction is not
@@ -474,6 +616,12 @@ def reaction_smiles_from_rxnfile(rxnfile: str) -> Dict[str, Any]:
         return {'ok': False, 'smiles': '',
                 'status': 'That drawing could not be read as a reaction.'}
 
+    arrows = _arrows(ket)
+    if arrows:
+        return _as_drawn(drawn, arrows)
+
+    # No KET to read the canvas from, so the RXN file's own split is all there
+    # is: one arrow, and whatever Indigo decided was an agent.
     made = rdChemReactions.ChemicalReaction()
     dative = atoms = 0
     for taken, add in ((drawn.GetReactants(), made.AddReactantTemplate),
@@ -544,12 +692,17 @@ def smiles_from_drawing(payload: str) -> Dict[str, Any]:
     says so on its first line.
     """
     text = str(payload or '')
-    if text.lstrip().startswith('$RXN'):
-        outcome = reaction_smiles_from_rxnfile(text)
+    body, _, ket = text.partition(KET_MARK)
+    if body.lstrip().startswith('$RXN'):
+        outcome = reaction_smiles_from_rxnfile(body, ket)
         outcome['reaction'] = True
-        return outcome
-    outcome = smiles_from_molfile(text)
-    outcome['reaction'] = False
+    else:
+        outcome = smiles_from_molfile(body)
+        outcome['reaction'] = False
+    # The drawing itself travels with the answer, so it can be kept beside the
+    # job it was drawn for rather than fetched again from a frame that may by
+    # then hold something else.
+    outcome['ket'] = ket
     return outcome
 
 
@@ -690,10 +843,16 @@ def frame_html(url: str, *, height: str = '560px') -> str:
     """
     import html as _html
 
+    # A little narrower than the box it sits in, and its border counted
+    # inside its own width.  At a plain 100% the frame stood 4 px past its
+    # parent -- measured: parent right edge 1475, frame right edge 1479 -- and
+    # the right-hand end of Ketcher's toolbar was clipped by it.
     return (
         "<iframe src='" + _html.escape(str(url), quote=True) + "' "
         "tabindex='0' allow='clipboard-read; clipboard-write' "
-        "style='width:100%; height:" + _html.escape(str(height), quote=True) +
+        "style='display:block; box-sizing:border-box; "
+        "width:calc(100% - 8px); max-width:100%; height:" +
+        _html.escape(str(height), quote=True) +
         "; border:1px solid #d0d0d0; "
         "border-radius:6px; background:#fff;' "
         "title='Ketcher'></iframe>"
@@ -930,10 +1089,24 @@ def load_js(host_selector: str, text: str) -> str:
     only just been made, and Ketcher is a 30 MB application: the global this
     reaches for does not exist for the first second or two after the frame is
     put on the page, and a file opened in that window used to vanish.
+
+    And it fits the drawing to the frame afterwards.  ``setMolecule`` does
+    that itself, but against the size the frame has at the moment it runs --
+    which, for a drawing opened into a tab that is not on screen yet, or into
+    an editor that is still folded away, is not the size it will be looked at.
+    That is how a structure ends up at 10% zoom somewhere off the side.  Fitted
+    again a moment later, when the frame has the size it is going to keep.
     """
     return (
         "(function(){\n"
         "  var tries=0;\n"
+        "  function fit(api){\n"
+        "    try{\n"
+        "      var ed=api.editor;\n"
+        "      ed.zoomAccordingContent(ed.struct());\n"
+        "      ed.centerStruct();\n"
+        "    }catch(e){}\n"
+        "  }\n"
         "  function put(){\n"
         "    var host=document.querySelector(" + json.dumps(host_selector) + ");\n"
         "    var frame=host&&host.querySelector('iframe');\n"
@@ -941,8 +1114,15 @@ def load_js(host_selector: str, text: str) -> str:
         "    try{ api=frame&&frame.contentWindow&&frame.contentWindow.ketcher; }\n"
         "    catch(e){ api=null; }\n"
         "    if(!api){ if(++tries<60) window.setTimeout(put,200); return; }\n"
-        "    try{ Promise.resolve(api.setMolecule(" + json.dumps(str(text or '')) +
-        ")); }catch(e){}\n"
+        "    try{\n"
+        "      Promise.resolve(api.setMolecule(" + json.dumps(str(text or '')) +
+        ")).then(function(){\n"
+        "        fit(api);\n"
+        "        /* Again once the frame is the size it will be read at. */\n"
+        "        window.setTimeout(function(){ fit(api); }, 400);\n"
+        "        window.setTimeout(function(){ fit(api); }, 1200);\n"
+        "      });\n"
+        "    }catch(e){}\n"
         "  }\n"
         "  put();\n"
         "})();"

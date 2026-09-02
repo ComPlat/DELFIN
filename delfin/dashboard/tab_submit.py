@@ -1323,6 +1323,30 @@ def create_tab(ctx):
             ]
         return []
 
+    def _keep_the_drawing(job_dir, smiles):
+        """Put the drawing beside the job it was drawn for.
+
+        A CONTROL.txt says what was asked and an input.txt says of what; a
+        structure that was drawn rather than typed has a third thing to say,
+        and until now it was said only inside a browser frame that is emptied
+        by the next page load.  It lands as ``drawing.ket`` in the job folder,
+        which is where the Calculations tab already offers to open it.
+
+        Only when it *is* the drawing being submitted.  The editor remembers
+        the SMILES its drawing produced, so a job set up an hour later from a
+        typed SMILES does not end up carrying an unrelated picture.
+        """
+        drawn = state.get('drawn') or {}
+        body = str(drawn.get('ket') or '')
+        if not body.strip() or not drawn.get('smiles'):
+            return
+        if not smiles or str(drawn['smiles']).strip() != str(smiles).strip():
+            return
+        try:
+            (job_dir / 'drawing.ket').write_text(body, encoding='utf-8')
+        except OSError:
+            pass
+
     def _prepare_delfin_submit_input(raw_input, cache):
         """Return the exact payload DELFIN should receive in input.txt.
 
@@ -1948,6 +1972,8 @@ def create_tab(ctx):
 
                 (job_dir / 'CONTROL.txt').write_text(control_content)
                 (job_dir / 'input.txt').write_text(input_content)
+                _keep_the_drawing(job_dir, submit_smiles or (
+                    input_content.strip() if input_type == 'smiles' else ''))
 
                 pal, maxcore = parse_resource_settings(control_content)
                 mode, co2_delta = resolve_co2_submit_mode(control_content)
@@ -2589,8 +2615,7 @@ def create_tab(ctx):
         'submit_draw_frame': submit_draw_frame,
         'submit_draw_sync': submit_draw_sync,
         'submit_draw_tools': submit_draw_tools,
-        'submit_draw_rxn_out': _editor.submit_draw_rxn_out,
-        'submit_draw_rxn_row': _editor.submit_draw_rxn_row,
+        'keep_the_drawing': _keep_the_drawing,
         'submit_draw_file_sync': _editor.submit_draw_file_sync,
         'open_drawing': _editor.open_drawing,
         # The two channels the page speaks through, and the line it is
