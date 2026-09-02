@@ -11521,7 +11521,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     _PUSH_ACROSS = 6              # points the crossing itself is priced with
 
     def _scan_floor_for(leg):
-        """The shortest this leg may be driven to, or None if it is an angle."""
+        """The shortest this leg may be driven to, or None if it has no floor.
+
+        A distance has one because two atoms cannot be pushed inside the bond
+        they would make.  An angle has one because it cannot be negative, and
+        that had been left out: asked to go "narrower" with no end typed, a
+        109-degree H-C-H was armed to 109 - 180 = -71 degrees, and nothing
+        said so.  See :func:`_scan_ceiling_for` for the other side of it and
+        :func:`_suggest_scan_target` for where the number comes from.
+
+        A torsion has neither: it is periodic, and 289 degrees is a place a
+        structure can be in.
+        """
+        if leg['kind'] == 'angle' and len(leg['atoms']) == 3:
+            return 0.0
         if leg['kind'] != 'distance' or len(leg['atoms']) != 2:
             return None
         rows = [line.split() for line in _gfn.atom_lines(_current_xyz() or '')]
@@ -11530,6 +11543,24 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         from delfin.atom_mapping import cov_radius
         reach = sum(cov_radius(str(rows[i][0])) for i in leg['atoms'])
         return _SCAN_NO_CLOSER * reach
+
+    def _scan_ceiling_for(leg):
+        """The furthest this leg may be driven to, or None if it has no ceiling.
+
+        Only an angle has one.  Three atoms in a line are 180 degrees apart and
+        there is nothing past that -- asked to go "wider" with no end typed, a
+        109-degree bend was armed to 289.
+
+        What that cost is not only an impossible target.  A walked point is
+        recorded at the value it was ASKED to hold, so the profile's own axis
+        and the verdict's "top at ..." then report angles the structures do not
+        have: measured on an H-C-H, the axis read -10.95, -40.95, -70.95
+        degrees where the geometries stood at +2.26, +2.74, +2.27, and the
+        verdict quoted a rise of 20646.7 kcal/mol.
+        """
+        if leg['kind'] == 'angle' and len(leg['atoms']) == 3:
+            return 180.0
+        return None
 
     #: How far a scan may walk when nobody has said where to stop.
     #:
@@ -11724,11 +11755,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if verb:
             leg['verb'] = verb
         floor = _scan_floor_for(leg)
+        roof = _scan_ceiling_for(leg)
         clipped = ''
         if floor is not None and leg['to'] < floor:
-            clipped = (f' Asked for {leg["to"]:.3g}, which is inside the bond '
-                       f'those two would make, so it stops at {floor:.3g}.')
+            clipped = (
+                f' Asked for {leg["to"]:.3g}, which is inside the bond those '
+                f'two would make, so it stops at {floor:.3g}.'
+                if leg['kind'] == 'distance' else
+                f' Asked for {leg["to"]:.3g} deg, which is not an angle three '
+                f'atoms can have, so it stops at {floor:.3g}.')
             leg['to'] = floor
+        elif roof is not None and leg['to'] > roof:
+            clipped = (f' Asked for {leg["to"]:.3g} deg, and three atoms in a '
+                       f'line are {roof:.3g}, so it stops there.')
+            leg['to'] = roof
         legs.append(leg)
         state['scan_legs'] = legs
         _refresh_scan()
