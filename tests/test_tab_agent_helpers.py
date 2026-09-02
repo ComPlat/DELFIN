@@ -1603,7 +1603,17 @@ def test_plan_turns_are_exempt_from_claim_grounding():
     assert "def _turn_describes_intent(" in eng
     assert 'getattr(self.kit_permissions, "mode", "") or "") == "plan"' in eng
     assert "exit_plan_mode" in eng
-    assert "and not self._turn_describes_intent()" in eng
+    # The engine exemption moved INSIDE the guard on 2026-09-02. Gating
+    # ENTRY on it meant a persisted `default_mode: plan` switched off the
+    # whole claim-guard family — measured on one sandbox, one line apart:
+    # with the setting an English question came back in German, without
+    # it in English. The scanners still stand down for a plan; only the
+    # language check no longer does, and language was never what the
+    # exemption was measured for.
+    assert "if self._turn_describes_intent():" in eng
+    assert "loc, qty, conflicts, func, ambiguous = [], [], [], [], []" in eng
+    # The dashboard's own block is all claim scanners and no language
+    # check, so its gate is correct as it stands and is left alone.
     src = _watchdog_source()
     assert "_describes_intent = engine._turn_describes_intent()" in src
     assert "and not _describes_intent" in src
