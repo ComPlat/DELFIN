@@ -121,3 +121,65 @@ def test_the_same_drag_without_the_switch_does_break_it():
 
     assert len(gfn.bond_graph(seen[-1])) < whole, (
         'the drag never broke anything, so keeping it whole proves nothing')
+
+
+@_needs_xtb
+def test_the_wall_lets_go_when_the_hand_does_and_says_that_it_held():
+    """Three refusals ended the drag for the rest of the grab, silently.
+
+    The stand-still that follows three refusals in a row reads a counter that
+    is only put back to zero by an *allowed* step -- and no step can be allowed
+    while the stand-still is skipping them all.  So the count could never come
+    down inside one gesture: the drag stopped following and never followed
+    again until the hand was let go of and put back.  Measured on this ethane
+    with the rigid hand and Keep bonds on, answers 8 to 15 carried a wish with
+    a C-C of 1.596 A and all seven bonds -- a geometry both walls allow -- and
+    not one of them was computed.
+
+    The budget's own stand-still has a way out (_still_spent lets the drag run
+    again the moment the hand eases in) and this one now has the same one, in
+    the hand's own currency: how far the wish is from the structure the wall
+    kept.  Nearer than when it gave up means the user is easing off.
+
+    And it says so.  Both of the wall's sentences were appended to a status
+    row that had already been stored and shown, so neither was ever read
+    again: fifteen readings across a drag with three refusals in it contained
+    "bonding" 0 times, "Keep bonds" 0, "Three steps" 0.  Every one of them
+    said "GFN2-xTB follows the drag" -- including the ones taken while whole
+    messages were being skipped, which is a frozen drag reporting that it is
+    following.
+    """
+    helper = pytest.importorskip('test_the_budget_prices_a_relaxed_path')
+
+    start = gfn.optimize_with_gfn(_ETHANE, 'gfn2', max_steps=400, timeout=300)
+    assert start.get('ok'), start.get('status')
+    begin = start['xyz']
+    methyl = {1, 5, 6, 7}
+
+    part = helper._a_part(begin)
+    part.submit_ff_dd.value = 'gfn2'
+    part.submit_relax_btn.value = True
+    part.submit_hand_dd.value = 'move'          # the rigid hand, which tears
+    part.submit_topology_btn.value = True
+    part._begin_gfn_follow()
+
+    ran, said = [], []
+    # Out until the wall gives up, then back in again.
+    for far in (0.4, 0.9, 1.5, 2.1, 2.7, 3.3, 3.9, 0.4, 0.3, 0.2, 0.1):
+        was = int(part.state.get('gfn_follow_steps') or 0)
+        part.submit_manip_sync.value = helper._drag_message(
+            helper._shifted(begin, methyl, far),
+            'DELFIN drag-follow held=1,5,6,7')
+        helper._quiet(part.state, seconds=300)
+        ran.append(int(part.state.get('gfn_follow_steps') or 0) > was)
+        said.append(str(part.state.get('gfn_last_status') or ''))
+
+    assert not all(ran), 'the wall never gave up, so nothing is being tested'
+    assert ran[-1], (
+        f'the hand came back in and the drag never restarted: ran={ran}')
+    assert ran[-4:] == [True, True, True, True], ran
+    assert int(part.state.get('topology_refused') or 0) == 0, (
+        'the count survived the hand coming back in')
+
+    spoke = sum(1 for one in said if 'bonding' in one)
+    assert spoke, f'the wall held a step and never said so: {said[-1]!r}'
