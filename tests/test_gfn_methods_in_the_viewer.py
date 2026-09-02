@@ -4887,6 +4887,7 @@ def test_the_anchor_belongs_to_one_structure(bare_editor):
 
     here = part.coords_widget.value
     state["thermal_e0"] = -15.877561
+    state["thermal_asked"] = part._the_question_an_anchor_answers()
     state["thermal_for"] = part._structure_fingerprint(here)
     # And the method it was measured with: read against another engine, an
     # untouched structure priced at +6384 kcal/mol against a 22.3 ceiling.
@@ -4951,6 +4952,7 @@ def test_the_last_affordable_structure_is_what_comes_back(bare_editor):
     part.submit_ff_dd.value = "gfn2"
     part.submit_temperature.value = 298.15
     state["thermal_e0"] = -15.0
+    state["thermal_asked"] = part._the_question_an_anchor_answers()
     # The anchor names its method as well as its structure: an energy of one
     # method against energies of another is not a difference.
     state["thermal_method"] = "gfn2"
@@ -5040,9 +5042,17 @@ def test_the_grab_remembers_where_to_come_back_to(editor, monkeypatch):
     state["current_xyz_for_copy"] = {"content": xyz}
     refs["submit_ff_dd"].value = "gfn2"
     state["thermal_e0"] = -15.0
+    # The whole question the anchor answers, the way the anchor press stamps
+    # it: an anchor guarded only on the method is read against energies of a
+    # different charge, spin or solvent, which is not a difference at all.
+    asked = (int(refs["submit_gfn_charge"].value or 0),
+             0, str(refs["submit_gfn_solvent"].value or "") or None,
+             "alpb")
+    state["thermal_asked"] = asked
     state["thermal_for"] = None
     refs["submit_thermal_btn"].value = True
     state["thermal_e0"] = -15.0
+    state["thermal_asked"] = asked
     state["thermal_for"] = refs["structure_fingerprint"](xyz) \
         if "structure_fingerprint" in refs else state.get("thermal_for")
     state.pop("thermal_good", None)
