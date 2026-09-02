@@ -291,6 +291,221 @@ def test_a_real_server_still_works_inside_the_namespace():
         walled.stop()
 
 
+# ------------------------------- the roots DELFIN's own servers are given
+
+
+def _home_with(tmp_path, *names):
+    home = tmp_path / "home"
+    for name in names:
+        (home / name).mkdir(parents=True)
+    return home
+
+
+def test_the_derived_roots_come_from_the_settings_not_from_a_guess(tmp_path):
+    home = _home_with(tmp_path, "archive", "agent_workspace")
+    elsewhere = tmp_path / "scratch" / "calcs"
+    elsewhere.mkdir(parents=True)
+
+    iso = mcp_isolation.delfin_roots(
+        settings={"paths": {"calculations_dir": str(elsewhere)}}, home=home)
+
+    assert str(elsewhere) in iso.write_roots
+    assert str(home / "calc") not in iso.write_roots
+
+
+def test_the_archive_is_readable_and_never_writable(tmp_path):
+    """Every other route in the product refuses to write there. A namespace
+    that allowed it would grant what the path policy denies."""
+    home = _home_with(tmp_path, "archive", "calc")
+    iso = mcp_isolation.delfin_roots(settings={}, home=home)
+
+    assert str(home / "archive") in iso.read_roots
+    assert str(home / "archive") not in iso.write_roots
+
+
+def test_the_credential_store_is_in_no_root(tmp_path):
+    home = _home_with(tmp_path, "calc", ".delfin/applications")
+    (home / ".delfin" / "credentials.json").write_text("{}")
+    iso = mcp_isolation.delfin_roots(settings={}, home=home)
+
+    cred = str((home / ".delfin" / "credentials.json").resolve())
+    assert not any(cred.startswith(r.rstrip("/") + "/") for r in iso.roots)
+    assert str((home / ".delfin").resolve()) not in iso.roots
+
+
+def test_another_accounts_archive_is_not_bound(tmp_path):
+    """`transfer.remote_path` is reached over SSH, which the namespace does
+    not touch. Binding it locally would re-open the read the field report
+    caught being taken."""
+    home = _home_with(tmp_path, "calc")
+    remote = tmp_path / "someone_else" / "archive"
+    remote.mkdir(parents=True)
+    iso = mcp_isolation.delfin_roots(
+        settings={"transfer": {"remote_path": str(remote)}}, home=home)
+
+    assert not any(str(remote) in r for r in iso.roots)
+
+
+def test_a_directory_the_user_does_not_keep_is_dropped_not_refused(tmp_path):
+    """A declared root that is missing stops the launch; an INFERRED one
+    must not — an inference that refuses would be making policy."""
+    home = _home_with(tmp_path, "calc")          # no office, no archive
+    iso = mcp_isolation.delfin_roots(settings={}, home=home)
+
+    assert iso.missing == ()
+    assert str(home / "office") not in iso.roots
+
+
+def test_the_runtime_tree_is_readable_so_the_tools_still_run(tmp_path):
+    home = _home_with(tmp_path, "calc", ".delfin/qm_tools")
+    iso = mcp_isolation.delfin_roots(
+        settings={"runtime": {"qm_tools_root": str(home / ".delfin/qm_tools")}},
+        home=home)
+
+    assert str((home / ".delfin/qm_tools").resolve()) in iso.read_roots
+    assert str((home / ".delfin/qm_tools").resolve()) not in iso.write_roots
+
+
+# ------------------------------------------- when the derivation applies
+
+
+def _builtin_cfg():
+    name = sorted(mcp_client._BUILTIN_SERVERS)[0]
+    return name, dict(mcp_client._BUILTIN_SERVERS[name])
+
+
+def test_the_builtins_are_uncontained_until_the_setting_says_otherwise(
+        monkeypatch):
+    """The no-regression test. Deriving roots by default would put an
+    inference in front of the dashboard's own engine."""
+    monkeypatch.setattr(mcp_isolation, "builtin_isolation_enabled",
+                        lambda *a, **k: False)
+    name, cfg = _builtin_cfg()
+    assert mcp_client._isolation_for(name, cfg, None) is None
+
+
+def test_the_setting_gives_the_builtins_their_roots(monkeypatch, tmp_path):
+    root = tmp_path / "calc"
+    root.mkdir()
+    monkeypatch.setattr(mcp_isolation, "builtin_isolation_enabled",
+                        lambda *a, **k: True)
+    monkeypatch.setattr(mcp_isolation, "delfin_roots",
+                        lambda **k: mcp_isolation.Isolation((str(root),), ()))
+
+    name, cfg = _builtin_cfg()
+    iso = mcp_client._isolation_for(name, cfg, None)
+    assert iso is not None and str(root) in iso.write_roots
+    # A server the user wired up is not covered by a setting about ours.
+    assert mcp_client._isolation_for("someone-elses", {"command": "x"},
+                                     None) is None
+
+
+def test_an_entry_that_turned_it_off_is_not_overruled_by_the_setting(
+        monkeypatch):
+    monkeypatch.setattr(mcp_isolation, "builtin_isolation_enabled",
+                        lambda *a, **k: True)
+    name, cfg = _builtin_cfg()
+    cfg["isolation"] = "off"
+    assert mcp_client._isolation_for(name, cfg, None) is None
+
+
+def test_declared_roots_beat_the_derivation(monkeypatch, tmp_path):
+    mine = tmp_path / "mine"
+    mine.mkdir()
+    monkeypatch.setattr(mcp_isolation, "builtin_isolation_enabled",
+                        lambda *a, **k: True)
+    name, cfg = _builtin_cfg()
+    cfg["roots"] = [str(mine)]
+    iso = mcp_client._isolation_for(name, cfg, None)
+    assert iso.write_roots == (str(mine.resolve()),)
+
+
+def test_the_package_probe_runs_once_per_interpreter_and_place(monkeypatch):
+    """The banner, /mcp and the doctor all build the same rows. Without the
+    cache each of them paid for its own interpreter start."""
+    calls = []
+    real = subprocess.run
+
+    def counting(argv, *a, **kw):
+        if len(argv) > 1 and argv[1] == "-c":
+            calls.append(argv)
+        return real(argv, *a, **kw)
+
+    mcp_isolation.reset_probe_cache()
+    monkeypatch.setattr(mcp_isolation.subprocess, "run", counting)
+    first = mcp_isolation._package_root(sys.executable, str(Path.cwd()))
+    second = mcp_isolation._package_root(sys.executable, str(Path.cwd()))
+
+    assert first == second
+    assert len(calls) == 1
+
+
+def test_the_launcher_cwd_is_kept_when_it_is_inside_the_roots(
+        tmp_path, monkeypatch):
+    """Without isolation a server inherits the cwd it was started from, and
+    plenty resolve work against it. Changing that silently would be a
+    behaviour change smuggled in with a containment change."""
+    root = tmp_path / "project"
+    inner = root / "sub"
+    inner.mkdir(parents=True)
+    iso = mcp_isolation.parse_isolation({"roots": [str(root)]})
+
+    monkeypatch.chdir(inner)
+    argv = mcp_isolation.bwrap_argv("/bin/sh", [], iso, home=tmp_path / "home")
+    assert _argv_pairs(argv, "--chdir") == [str(inner.resolve())]
+
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    monkeypatch.chdir(outside)
+    argv = mcp_isolation.bwrap_argv("/bin/sh", [], iso, home=tmp_path / "home")
+    assert _argv_pairs(argv, "--chdir") == [str(root.resolve())]
+
+
+@pytest.mark.skipif(not mcp_isolation.bwrap_functional(),
+                    reason="bubblewrap is not usable on this host")
+def test_delfins_own_package_is_readable_from_any_of_its_roots(tmp_path):
+    """Pinned apart from the cwd, because together they hid each other: the
+    first measured failure was `No module named 'delfin'`, and starting in
+    the checkout by accident would have made it look fixed."""
+    iso = mcp_isolation.delfin_roots()
+    assert iso is not None
+    argv = mcp_isolation.bwrap_argv(
+        sys.executable, ["-c", "import delfin; print('IMPORTED')"], iso,
+        cwd=iso.roots[0])
+
+    done = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+    assert "IMPORTED" in done.stdout, done.stderr[-400:]
+
+
+@pytest.mark.skipif(not mcp_isolation.bwrap_functional(),
+                    reason="bubblewrap is not usable on this host")
+def test_a_builtin_still_works_inside_its_derived_roots(monkeypatch):
+    """Step three of the plan: measured against the real server before the
+    setting is ever considered for a default."""
+    repo = Path(__file__).resolve().parents[1]
+    spec = dict(command=sys.executable, args=["-m", "delfin.tools.mcp_server"])
+
+    control = mcp_client.MCPServer(name="delfin-tools", **spec)
+    try:
+        control.start()
+        if control.proc is None or not control.initialize():
+            pytest.skip("the server does not run uncontained here either")
+        expected = len(control.list_tools())
+    finally:
+        control.stop()
+
+    walled = mcp_client.MCPServer(
+        name="delfin-tools", **spec,
+        isolation=mcp_isolation.delfin_roots(workspace=repo))
+    try:
+        walled.start()
+        assert walled.proc is not None, walled.last_error
+        assert walled.initialize(), walled.last_error
+        assert len(walled.list_tools()) == expected
+    finally:
+        walled.stop()
+
+
 # ------------------------------------------------------- saying it out loud
 
 

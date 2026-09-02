@@ -945,7 +945,24 @@ class MCPServer:
         return "\n\n".join(parts)
 
 
-def _server_from_config(name: str, cfg: dict) -> MCPServer:
+def _isolation_for(name: str, cfg: dict, workspace: Path | None):
+    """The containment one stdio entry gets, declared or derived.
+
+    Declared beats derived, and an explicit ``"isolation": "off"`` beats
+    both — otherwise the settings switch would quietly overrule the entry
+    that turned it off, which is the same class of defect as a rule whose
+    mechanism permits its opposite.
+    """
+    declared = mcp_isolation.parse_isolation(cfg)
+    if declared is not None or mcp_isolation.isolation_disabled(cfg):
+        return declared
+    if name in _BUILTIN_SERVERS and mcp_isolation.builtin_isolation_enabled():
+        return mcp_isolation.delfin_roots(workspace=workspace)
+    return None
+
+
+def _server_from_config(name: str, cfg: dict,
+                        workspace: Path | None = None) -> MCPServer:
     """Build an MCPServer from one config entry, picking the transport.
 
     HTTP when ``type`` is http/sse/streamable-http or a ``url`` is present;
@@ -966,7 +983,7 @@ def _server_from_config(name: str, cfg: dict) -> MCPServer:
         # Only stdio. An HTTP server runs somewhere DELFIN cannot build a
         # namespace around, so accepting roots there would be a promise
         # made by a field nobody enforces.
-        isolation=mcp_isolation.parse_isolation(cfg),
+        isolation=_isolation_for(name, cfg, workspace),
     )
 
 
@@ -1037,7 +1054,7 @@ class MCPRegistry:
         for name, cfg in configs.items():
             if name in self.servers:
                 continue
-            self.servers[name] = _server_from_config(name, cfg)
+            self.servers[name] = _server_from_config(name, cfg, workspace)
         self.sources.update(sources)
         self.trust_notice = notice
         self.workspace = Path(workspace) if workspace else self.workspace
@@ -1300,7 +1317,9 @@ def effective_servers(workspace: Path | None) -> list[dict]:
     out: list[dict] = []
     for name, cfg in configs.items():
         url = cfg.get("url", "")
-        iso = None if url else mcp_isolation.parse_isolation(cfg)
+        # The same decision the registry makes, so the listing and the
+        # banner cannot disagree with what actually launches.
+        iso = None if url else _isolation_for(name, cfg, workspace)
         out.append({
             "name": name,
             "command": cfg.get("command", ""),

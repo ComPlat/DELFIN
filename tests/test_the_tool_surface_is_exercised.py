@@ -314,10 +314,17 @@ def test_search_results_arrive_marked_untrusted(box, perms):
 
     The fence is what is under test, so a run with no results has nothing
     to test and says so.
+
+    The condition is the CONTRACT, not a list of the refusals seen so far.
+    Naming two of them left a third — a connection reset, reported as
+    ``{"error": "network error: ..."}`` — falling through to the assert,
+    and the suite went red over someone else's network. ``_wrap_untrusted``
+    passes an error object through unfenced by design, so any error object
+    is a run with nothing to fence.
     """
     _, raw = call("web_search", {"query": "orca manual", "max_results": 2},
                   perms)
-    if '"source": "duckduckgo-unavailable"' in raw or '"results": []' in raw:
+    if raw.lstrip().startswith('{"error"') or '"results": []' in raw:
         pytest.skip(f"the search backend returned nothing: {raw[:120]}")
     assert "UNTRUSTED" in raw
 
