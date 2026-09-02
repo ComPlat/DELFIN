@@ -444,7 +444,20 @@ _EVIDENCE_TOOL_SHAPE = re.compile(r"(?i)(read|grep|search|fetch|docs|glob)")
 # Number token for unit-anchored claims. The lookbehind stops mid-token
 # matches (dotted version strings like 6.0.1 can never contribute their
 # tail digits); the sign class includes the Unicode minus.
-_QTY_NUM = r"(?<![\w.])[-+−]?\d+(?:\.\d+)?"
+_QTY_NUM = r"(?<![\w.])[-+−]?\d+(?:[.,]\d+)?"
+
+# A number that LOOKS like a measurement rather than a count: it carries a
+# decimal, or it has three digits and up. Used where the unit token is
+# also an ordinary word and the number has to carry the discrimination on
+# its own.
+#
+# The threshold is three because the live runs put it there. Four missed
+# "737 au" — a hyperpolarizability written without decimals, which is an
+# ordinary way to write one — while the prose this rule exists to ignore
+# ("3 au weiteren Quellen", "7 au fond") is one digit. Nothing between
+# those two has been seen; if it is, the discriminator has to become
+# something other than length.
+_QTY_MEASURED = r"(?<![\w.])[-+−]?(?:\d+[.,]\d+|\d{3,})"
 
 # Unit-anchored claim patterns: a number IMMEDIATELY before the unit
 # (at most one whitespace char between them). Percentages and bare
@@ -472,6 +485,25 @@ _QUANTITY_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = tuple(
         ("K",        rf"{_QTY_NUM}\s?K(?=$|[\s.,;:)\]!?])"),
         ("kcal",     rf"{_QTY_NUM}\s?kcal\b(?!\s?/)"),
         ("GHz",      rf"{_QTY_NUM}\s?GHz\b"),
+        # Atomic units — the unit DELFIN stores its own hyperpolarizability,
+        # polarizability and dipole values in, and the one this list did
+        # not have. Measured on a live turn: the model recomputed a stored
+        # beta_HRS with a formula of its own, delivered "367.91 au" beside
+        # the stored "447.9339 au", and nothing flagged it. The same answer
+        # with "eV" in place of "au" is flagged at once — so the gap was
+        # never the reasoning, only the vocabulary.
+        #
+        # Anchored tighter than the rest, in two halves. "a.u." is
+        # unambiguous. Bare "au" is a word in the languages this agent
+        # answers in — measured, "3 au weiteren Quellen" and "7 au fond"
+        # were both flagged — so it is accepted only after something
+        # SHAPED like a measurement: a decimal, or four digits and up.
+        # Same discriminator the conflict scan uses, for the same reason.
+        ("au",       rf"{_QTY_NUM}\s?a\.u\.?(?=$|[\s,;:)\]!?*_]|\b)"),
+        # The terminator class carries the markdown a model writes AROUND
+        # its result: `**483,2 au**` was missed for want of `*`, and a
+        # bolded final figure is the common case, not an edge one.
+        ("au",       rf"{_QTY_MEASURED}\s?au(?=$|[\s.,;:)\]!?*_])"),
     )
 )
 
@@ -676,17 +708,100 @@ def record_keyed_values(output: Any, *, source: str = "") -> int:
                 value = float(raw)
             except ValueError:
                 return
-            pool.setdefault((record, field), []).append((value, witness))
+            entries = pool.setdefault((record, field), [])
+            # One witness saying the same thing twice is one statement.
+            # The loose pass below re-reads bodies the JSON pass already
+            # read, and a duplicate there is noise, not a second opinion.
+            if (value, witness) in entries:
+                return
+            entries.append((value, witness))
             added += 1
+
+        # Fields already keyed to exactly one record, captured BEFORE this
+        # call adds any. See _record_recomputed_values.
+        known = _single_record_fields(pool)
 
         json_record = _record_id(source)
         for m in _JSON_FIELD_RE.finditer(body):
             _add(json_record, m.group(1), m.group(2))
 
         added += _record_csv_rows(body, _add)
+        if not _reads_an_artifact(witness):
+            # ONLY for output that came out of a COMPUTATION. Output read
+            # from a file is about whatever record that file belongs to,
+            # and borrowing the record from elsewhere attributes one
+            # calculation's figure to another: measured, `energy` tailed
+            # out of an unrelated log was reported as disagreeing with a
+            # stored `energy`. Both halves of that are needed — a shell
+            # read of another folder's file yields no record id either.
+            added += _record_recomputed_values(body, known, _add)
         return added
     except Exception:
         return 0
+
+
+_ARTIFACT_WITNESS_RE = re.compile(r"/|\.[A-Za-z]{1,5}\b")
+
+
+def _reads_an_artifact(witness: str) -> bool:
+    """Did this output come out of a FILE rather than out of a computation?
+
+    The loose pass borrows a record from what the turn already knows, and
+    that is only sound when the value has no record of its own. A shell
+    command that reads someone else's file has one — it is just not in a
+    form ``_record_id`` recognises — so the witness is asked instead.
+    Errs toward calling something an artifact, which errs toward silence.
+    """
+    return bool(_ARTIFACT_WITNESS_RE.search(str(witness or "")))
+
+
+def _single_record_fields(pool: dict) -> dict:
+    """``field -> record`` for every field this turn has seen for ONE record.
+
+    A field seen for two records is dropped: `beta_hrs` for both `tadf1`
+    and `tadf2` cannot tell us which one a bare `beta_hrs = 1204.77`
+    belongs to, and guessing would manufacture the disagreement rather
+    than find it.
+    """
+    seen: dict = {}
+    for (record, field), _entries in (pool or {}).items():
+        if field in seen and seen[field] != record:
+            seen[field] = None
+        else:
+            seen.setdefault(field, record)
+    return {f: r for f, r in seen.items() if r}
+
+
+def _record_recomputed_values(body: str, known: dict, add) -> int:
+    """A figure recomputed in a shell call, keyed to the record it is about.
+
+    The gap this closes, measured rather than reasoned: the ledger keys a
+    value by the PATH it came out of, so a number produced by
+    ``python3 -c`` has no record and was silently dropped. The one shape
+    the field case is most likely to take — read the stored quantity,
+    recompute it from a half-remembered formula, report the recomputation
+    — therefore had nothing to disagree with. Reproduced at 35% apart,
+    with the guard saying nothing.
+
+    Deliberately narrow. Only names this turn has ALREADY seen in a real
+    record file are looked for, so there is no list of quantities to
+    drift, no new vocabulary, and the pass cannot fire unless there is
+    something to compare against. Anything the plain-text form catches
+    that the JSON pass already recorded is deduped by witness in ``_add``.
+    """
+    if not known:
+        return 0
+    seen = 0
+    for field, record in known.items():
+        pattern = re.compile(
+            r"(?<![\w.])" + re.escape(field) + r"\s*[=:]\s*"
+            r"(-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)")
+        for m in pattern.finditer(body):
+            add(record, field, m.group(1))
+            seen += 1
+            if seen >= 200:                # a bounded pass, like the others
+                return seen
+    return seen
 
 
 def _record_csv_rows(body: str, add) -> int:
@@ -1078,7 +1193,49 @@ def _grounded_in_observations(value: float, pool: list[float]) -> bool:
 # How many observed numbers take part in deriving a difference.
 MAX_DERIVATION_BASE = 24
 
-_CLAIM_VALUE_RE = re.compile(r"[-+−]?\d+(?:\.\d+)?")
+_CLAIM_VALUE_RE = re.compile(r"[-+−]?\d+(?:[.,]\d+)?")
+
+
+def _claim_readings(quantity: str) -> list[tuple[float, float]]:
+    """Every number a matched claim could be asserting, with its precision.
+
+    A separator means opposite things in the two languages this agent
+    answers in: "2,31" is two-and-a-bit where the user writes German and
+    two thousand three hundred and ten where they do not, and "1.234" is
+    the same disagreement mirrored. The scanner knew only the dot, so a
+    German answer had its claims read wrong rather than not read —
+    measured, "2,31 eV" was checked as "31 eV", a number the answer never
+    states. That fails in both directions: a correct value is accused,
+    and a wrong one can be excused by whatever the fragment happens to
+    match.
+
+    Three digits after the separator is the ambiguous case and yields BOTH
+    readings; one or two digits can only be a decimal. A claim grounded
+    under either reading is left alone, because a guard that has to guess
+    should guess toward silence.
+    """
+    match = _CLAIM_VALUE_RE.search(str(quantity or ""))
+    if not match:
+        return []
+    token = match.group(0).replace("−", "-")
+    sep = "," if "," in token else ("." if "." in token else "")
+    if not sep:
+        try:
+            return [(float(token), 0.5)]
+        except ValueError:
+            return []
+    head, _, tail = token.partition(sep)
+    out: list[tuple[float, float]] = []
+    try:
+        out.append((float(f"{head}.{tail}"), 0.5 * (10.0 ** -len(tail))))
+    except ValueError:
+        return []
+    if len(tail) == 3:                    # a grouped thousand, or not
+        try:
+            out.append((float(head + tail), 0.5))
+        except ValueError:
+            pass
+    return out
 
 
 def _claim_value(quantity: str) -> tuple[float, float] | None:
@@ -1087,24 +1244,17 @@ def _claim_value(quantity: str) -> tuple[float, float] | None:
     "0.858" asserts ±0.0005, "3" asserts ±0.5 — read off the digits, so a
     value quoted to more decimals is held to more decimals.
     """
-    match = _CLAIM_VALUE_RE.search(str(quantity or ""))
-    if not match:
-        return None
-    token = match.group(0).replace("−", "-")
-    try:
-        value = float(token)
-    except ValueError:
-        return None
-    decimals = len(token.split(".", 1)[1]) if "." in token else 0
-    return value, 0.5 * (10.0 ** -decimals)
+    readings = _claim_readings(quantity)
+    return readings[0] if readings else None
 
 
 def _claim_is_observed(quantity: str, pool: list[float]) -> bool:
-    """Does the number inside a matched claim come from the tools?"""
-    parsed = _claim_value(quantity)
-    if parsed is None:
-        return False
-    return _grounded_in_observations(parsed[0], pool)
+    """Does the number inside a matched claim come from the tools?
+
+    Any reading the claim admits will do — see ``_claim_readings``.
+    """
+    return any(_grounded_in_observations(value, pool)
+               for value, _tol in _claim_readings(quantity))
 
 
 def _restates_a_grounded_claim(

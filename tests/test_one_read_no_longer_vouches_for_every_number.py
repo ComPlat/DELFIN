@@ -222,3 +222,118 @@ def test_a_tool_result_reaches_the_pool_through_a_real_turn(agent_tree):
     pool = vg.observed_numbers()
     assert pool is not None, "the tool result never reached the pool"
     assert any(abs(v - 2.310) < 1e-6 for v in pool), pool[:20]
+
+
+# ---------------------------------------------------------------------------
+# Atomic units — the unit DELFIN's own figures are stored in
+#
+# Found on a live Qwen turn, not by reading. Asked to recompute a stored
+# beta_HRS, the model used a formula of its own, delivered "367.91 au"
+# beside the stored "447.9339 au", and closed with the same sentence the
+# field report carried: this suggests a different convention in DELFIN.
+# Nothing flagged it. The identical answer with "eV" in place of "au" is
+# flagged at once, so what was missing was never the reasoning — it was
+# that "au" had no entry in the unit list.
+# ---------------------------------------------------------------------------
+
+def test_a_recomputed_figure_in_atomic_units_is_a_claim_like_any_other():
+    flags = vg.scan_for_unsourced_quantities(
+        "Mein berechneter Wert ist 367.91 au, der gespeicherte 447.9339 au.",
+        numbers=[447.9339])
+    assert [f.quantity for f in flags] == ["367.91 au"]
+
+
+def test_the_dotted_spelling_counts_too():
+    flags = vg.scan_for_unsourced_quantities(
+        "beta = 367.91 a.u.", numbers=[447.9339])
+    assert [f.unit for f in flags] == ["au"]
+
+
+def test_a_stored_value_in_atomic_units_is_not_flagged():
+    assert vg.scan_for_unsourced_quantities(
+        "Der gespeicherte Wert ist 447.9339 au.", numbers=[447.9339]) == []
+
+
+@pytest.mark.parametrize("prose", [
+    "Wir haben 3 au weiteren Quellen genommen.",     # a typo for "aus"
+    "7 au fond der Sache.",                          # a loan phrase
+    "Der Bau hat 4 Etagen.",
+    "5 aus 30 Faellen.",
+])
+def test_au_as_an_ordinary_word_is_not_a_measurement(prose):
+    """The cost side, and why the bare form needs a measured-looking
+    number: this agent answers in German, where `au` is not only a unit."""
+    assert vg.scan_for_unsourced_quantities(prose, numbers=[447.9339]) == []
+
+
+@pytest.mark.parametrize("written", ["180721 au", "737 au", "~737 au"])
+def test_a_round_figure_in_atomic_units_still_counts(written):
+    """A hyperpolarizability is written without a decimal often enough
+    that requiring one would miss it. Three digits is where the live runs
+    put the threshold: a fourth missed "737 au", and the prose this rule
+    ignores is one digit."""
+    flags = vg.scan_for_unsourced_quantities(
+        f"Mein berechneter Wert: {written}", numbers=[447.9339])
+    assert flags and flags[0].unit == "au"
+
+
+# ---------------------------------------------------------------------------
+# The decimal comma
+#
+# The scanner knew only the dot, so a German answer had its claims read
+# WRONG rather than not read: "2,31 eV" was checked as "31 eV", a number
+# the answer never states. That fails in both directions — a correct
+# value is accused because 31 is not in the pool, and a wrong one can be
+# excused by whatever the fragment happens to match. This agent answers
+# in the language it is asked in, so half its answers were being checked
+# against numbers nobody wrote.
+# ---------------------------------------------------------------------------
+
+def test_a_german_decimal_is_read_as_the_number_it_is():
+    assert vg._claim_readings("2,31 eV")[0][0] == pytest.approx(2.31)
+
+
+def test_a_grounded_german_claim_is_not_accused():
+    assert vg.scan_for_unsourced_quantities(
+        "Die Anregung liegt bei 2,31 eV.", numbers=[2.31]) == []
+
+
+def test_an_ungrounded_german_claim_is_still_caught():
+    flags = vg.scan_for_unsourced_quantities(
+        "Die Anregung liegt bei 2,31 eV.", numbers=[9.99])
+    assert [f.quantity for f in flags] == ["2,31 eV"]
+
+
+@pytest.mark.parametrize("pool", [[1.234], [1234.0]])
+def test_three_digits_after_the_separator_may_be_either(pool):
+    """`1,234` is one-and-a-bit in German and one thousand elsewhere, and
+    the text does not say which. Both readings ground it: a guard that has
+    to guess should guess toward silence."""
+    assert vg.scan_for_unsourced_quantities(
+        "Der Wert ist 1,234 eV.", numbers=pool) == []
+
+
+def test_the_dot_form_is_unchanged():
+    assert vg.scan_for_unsourced_quantities(
+        "The gap is 2.31 eV.", numbers=[2.31]) == []
+    assert vg.scan_for_unsourced_quantities(
+        "The gap is 2.31 eV.", numbers=[9.99])
+
+
+@pytest.mark.parametrize("written", [
+    "**483,2 au**",          # what the fourth live run actually wrote
+    "*483,2 au*",
+    "**367.91 a.u.**",
+])
+def test_a_bolded_result_is_still_a_claim(written):
+    """A model bolds its final figure. The terminator class had no `*`,
+    so the one number the answer was built around was the one number the
+    scanner could not see."""
+    flags = vg.scan_for_unsourced_quantities(
+        f"Mein Ergebnis: {written}", numbers=[447.9339])
+    assert flags and flags[0].unit == "au"
+
+
+def test_a_bolded_grounded_figure_is_still_quiet():
+    assert vg.scan_for_unsourced_quantities(
+        "Der gespeicherte Wert ist **447.9339 au**.", numbers=[447.9339]) == []
