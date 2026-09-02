@@ -11773,23 +11773,43 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         """The shortest this leg may be driven to, or None if it has no floor.
 
         A distance has one because two atoms cannot be pushed inside the bond
-        they would make.  An angle has one because it cannot be negative, and
-        that had been left out: asked to go "narrower" with no end typed, a
-        109-degree H-C-H was armed to 109 - 180 = -71 degrees, and nothing
-        said so.  See :func:`_scan_ceiling_for` for the other side of it and
-        :func:`_suggest_scan_target` for where the number comes from.
+        they would make.  An angle has one for the same reason, one step
+        removed: closing a bend drives the two outer atoms towards each other,
+        and they stop where any other pair stops.  Zero was the bound before
+        -- true, and no use: an H-C-H closed to five degrees is two hydrogens
+        inside one another, and the walk went there and priced it.
+
+        Read off the geometry rather than named, because how narrow an angle
+        may be depends on the two bonds that make it: with the arms at *a* and
+        *b* and the outer pair no closer than *d*, the law of cosines gives
+        the angle exactly.  On a methane's H-C-H -- arms 1.09, hydrogens no
+        closer than 0.53 -- that is 28 degrees; on a wide C-C-C with arms of
+        1.53 it is 21.
 
         A torsion has neither: it is periodic, and 289 degrees is a place a
-        structure can be in.
+        structure can be in.  What a torsion can drive two atoms into is real
+        and is not a bound on its own value -- see the grab that reached
+        +6302 kcal/mol on one.
         """
-        if leg['kind'] == 'angle' and len(leg['atoms']) == 3:
-            return 0.0
-        if leg['kind'] != 'distance' or len(leg['atoms']) != 2:
-            return None
         rows = [line.split() for line in _gfn.atom_lines(_current_xyz() or '')]
         if any(not (0 <= i < len(rows)) for i in leg['atoms']):
             return None
         from delfin.atom_mapping import cov_radius
+        if leg['kind'] == 'angle' and len(leg['atoms']) == 3:
+            here = _gfn.coordinates_of(_current_xyz() or '')
+            at = [(here[3 * i], here[3 * i + 1], here[3 * i + 2])
+                  for i in leg['atoms']]
+            arm_one = math.dist(at[0], at[1])
+            arm_two = math.dist(at[2], at[1])
+            if arm_one < 1e-6 or arm_two < 1e-6:
+                return 0.0
+            closest = _SCAN_NO_CLOSER * (cov_radius(str(rows[leg['atoms'][0]][0]))
+                                         + cov_radius(str(rows[leg['atoms'][2]][0])))
+            cosine = ((arm_one * arm_one + arm_two * arm_two
+                       - closest * closest) / (2.0 * arm_one * arm_two))
+            return math.degrees(math.acos(max(-1.0, min(1.0, cosine))))
+        if leg['kind'] != 'distance' or len(leg['atoms']) != 2:
+            return None
         reach = sum(cov_radius(str(rows[i][0])) for i in leg['atoms'])
         return _SCAN_NO_CLOSER * reach
 

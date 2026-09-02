@@ -1542,13 +1542,22 @@ def test_an_angle_is_only_armed_to_an_angle_three_atoms_can_have():
     -40.95 and -70.95 degrees where the geometries stood at +2.26, +2.74 and
     +2.27, and the verdict quoted a rise of 20646.7 kcal/mol.
 
+    Zero was the first half of that fix and is no longer the floor.  It is
+    true and no use: an H-C-H closed to five degrees is two hydrogens inside
+    one another, and the walk went there and priced it.  Closing a bend drives
+    the outer pair together and they stop where any other pair stops, so the
+    floor is read off the geometry -- with the arms at *a* and *b* and that
+    pair no closer than *d*, the law of cosines gives it.  On this ethane's
+    H-C-H, arms of 1.09 A and hydrogens no closer than 0.53, that is 28.1
+    degrees.  See tests/test_a_hand_cannot_ask_for_a_place_there_is_not.py.
+
     A torsion keeps neither bound: it is periodic, and 289 degrees is a place
     a structure can be in.
     """
     part = _a_part(_ETHANE)
     part.submit_ff_dd.value = "gfn2"
 
-    for way, expected, phrase in (("in", 0.0, "not an angle three atoms"),
+    for way, expected, phrase in (("in", 28.145, "not an angle three atoms"),
                                   ("out", 180.0, "three atoms in a line")):
         part.state["scan_legs"] = []
         part.state["picked"] = [2, 0, 3]
@@ -1558,7 +1567,7 @@ def test_an_angle_is_only_armed_to_an_angle_three_atoms_can_have():
         legs = part.state.get("scan_legs") or []
         assert len(legs) == 1, legs
         assert legs[0]["kind"] == "angle", legs[0]
-        assert legs[0]["to"] == pytest.approx(expected), legs[0]
+        assert legs[0]["to"] == pytest.approx(expected, abs=1e-2), legs[0]
         assert phrase in str(part.mol_status.value or ""), (
             way, part.mol_status.value)
 
