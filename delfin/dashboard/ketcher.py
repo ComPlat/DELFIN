@@ -35,7 +35,11 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 __all__ = ['app_directory', 'app_url', 'install', 'installed_version',
-           'latest_release', 'is_installed', 'smiles_from_molfile']
+           'latest_release', 'is_installed', 'smiles_from_molfile',
+           'reaction_smiles_from_rxnfile', 'smiles_from_drawing',
+           'DRAWINGS_FOLDER', 'DRAWING_SUFFIXES', 'drawings_directory',
+           'is_drawing', 'list_drawings', 'save_drawing', 'read_drawing',
+           'delete_drawing', 'frame_html', 'focus_js', 'load_js']
 
 #: Where the releases come from.  The versioned asset rather than the
 #: unversioned one beside it: two files of the same content and only one of
@@ -428,3 +432,339 @@ def smiles_from_molfile(molfile: str) -> Dict[str, Any]:
         said += (f' ({dative} coordination bond(s) written with the charge on '
                  'both ends, which is the form the rest of DELFIN reads.)')
     return {'ok': True, 'smiles': smiles, 'dative': dative, 'status': said}
+
+
+def reaction_smiles_from_rxnfile(rxnfile: str) -> Dict[str, Any]:
+    """Turn a drawn reaction into a reaction SMILES, the way RDKit writes one.
+
+    An arrow on the canvas makes the drawing a reaction, and a reaction is not
+    a molfile: asked for one, Ketcher refuses with "The structure cannot be
+    saved as *.MOL due to reaction".  So a drawing with an arrow is fetched as
+    an RXN file instead, and this is what reads it.
+
+    The result is the ordinary form, ``reactants>agents>products`` with the
+    sides joined by dots -- ``CCO.CC(=O)O>>CCOC(C)=O`` -- which is what RDKit
+    writes and what the reaction SMARTS elsewhere in DELFIN already read.
+
+    The reaction is rebuilt rather than edited in place.  Each side is read,
+    tidied and added to a new reaction, because the molecules a parsed reaction
+    hands out are its own and replacing one of them under it is not something
+    to rely on.
+    """
+    text = str(rxnfile or '')
+    if not text.strip():
+        return {'ok': False, 'smiles': '', 'status': 'Nothing was drawn yet.'}
+    try:
+        from rdkit import RDLogger
+        from rdkit.Chem import rdChemReactions
+
+        RDLogger.DisableLog('rdApp.*')
+    except ImportError:
+        return {'ok': False, 'smiles': '',
+                'status': 'RDKit is not installed, so a drawing cannot be read.'}
+    # sanitize is off by default here, which is the right default for a
+    # drawing: a reaction between two things a valence table dislikes is still
+    # a reaction, and refusing it would refuse the reason for drawing it.
+    try:
+        drawn = rdChemReactions.ReactionFromRxnBlock(text)
+    except Exception:                                   # noqa: BLE001
+        drawn = None
+    if drawn is None:
+        return {'ok': False, 'smiles': '',
+                'status': 'That drawing could not be read as a reaction.'}
+
+    made = rdChemReactions.ChemicalReaction()
+    dative = atoms = 0
+    for taken, add in ((drawn.GetReactants(), made.AddReactantTemplate),
+                       (drawn.GetAgents(), made.AddAgentTemplate),
+                       (drawn.GetProducts(), made.AddProductTemplate)):
+        for mol in taken:
+            fresh = _tidied(mol)
+            dative += fresh[1]
+            atoms += fresh[0].GetNumAtoms()
+            add(fresh[0])
+    if atoms == 0:
+        return {'ok': False, 'smiles': '', 'status': 'The drawing is empty.'}
+    if not made.GetNumProductTemplates():
+        return {'ok': False, 'smiles': '',
+                'status': ('The arrow has nothing after it yet, so there is no '
+                           'reaction to write.')}
+    try:
+        smiles = rdChemReactions.ReactionToSmiles(made)
+    except Exception as exc:                            # noqa: BLE001
+        return {'ok': False, 'smiles': '',
+                'status': f'That reaction could not be written as SMILES: {exc}'}
+    if not smiles:
+        return {'ok': False, 'smiles': '',
+                'status': 'That reaction came out as an empty SMILES.'}
+    said = (f'{made.GetNumReactantTemplates()} drawn into '
+            f'{made.GetNumProductTemplates()}: {smiles}')
+    if dative:
+        said += (f' ({dative} coordination bond(s) written with the charge on '
+                 'both ends, which is the form the rest of DELFIN reads.)')
+    return {'ok': True, 'smiles': smiles, 'dative': dative, 'status': said}
+
+
+def _tidied(mol: Any):
+    """A copy of *mol* read as far as it can be, with its arrows charged.
+
+    Returns ``(molecule, converted)``.  A full sanitisation first, because that
+    is what gives the clean SMILES; the partial one that :func:`smiles_from_molfile`
+    falls back to when it fails, because a drawn metal complex frequently does
+    fail it and is still the structure the chemist means.
+    """
+    from rdkit import Chem
+
+    fresh = Chem.RWMol(mol).GetMol()
+    try:
+        Chem.SanitizeMol(fresh)
+    except Exception:                                   # noqa: BLE001
+        try:
+            Chem.SanitizeMol(fresh, Chem.SanitizeFlags.SANITIZE_ALL
+                             ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES)
+        except Exception:                               # noqa: BLE001
+            pass
+    moved = 0
+    try:
+        moved = _charge_separate_dative(fresh)
+        if moved:
+            Chem.SanitizeMol(fresh, Chem.SanitizeFlags.SANITIZE_ALL
+                             ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES)
+    except Exception:                                   # noqa: BLE001
+        pass
+    return fresh, moved
+
+
+def smiles_from_drawing(payload: str) -> Dict[str, Any]:
+    """Whatever the editor handed back, read as the thing it actually is.
+
+    One call site for both: the editor is asked for an RXN file when there is
+    an arrow on the canvas and for a molfile when there is not, and an RXN file
+    says so on its first line.
+    """
+    text = str(payload or '')
+    if text.lstrip().startswith('$RXN'):
+        outcome = reaction_smiles_from_rxnfile(text)
+        outcome['reaction'] = True
+        return outcome
+    outcome = smiles_from_molfile(text)
+    outcome['reaction'] = False
+    return outcome
+
+
+# ---------------------------------------------------------------------------
+# Keeping a drawing, and opening it again
+# ---------------------------------------------------------------------------
+
+#: The folder drawings are kept in, inside the calculation directory the
+#: Calculations tab already shows.  A drawing belongs with the work it was
+#: drawn for, not in a store of its own that nothing else can see.
+DRAWINGS_FOLDER = 'Ketcher'
+
+#: What can be written and read back.  ``.ket`` first and by default: it is
+#: Ketcher's own format and the only one of these that keeps an arrow, a text
+#: label and the layout, so a drawing opened again is the drawing that was
+#: saved.  The others are for handing a structure to something that is not
+#: Ketcher.
+DRAWING_SUFFIXES = ('.ket', '.mol', '.rxn', '.smi', '.cdxml')
+
+
+def drawings_directory(calc_dir: Any) -> Path:
+    """Where drawings are kept for this calculation directory."""
+    return Path(calc_dir) / DRAWINGS_FOLDER
+
+
+def is_drawing(path: Any) -> bool:
+    """Whether the editor can open this file."""
+    return Path(path).suffix.lower() in DRAWING_SUFFIXES
+
+
+def list_drawings(calc_dir: Any) -> list:
+    """Every drawing kept here, by name, or nothing when there is no folder."""
+    try:
+        found = [item for item in drawings_directory(calc_dir).iterdir()
+                 if item.is_file() and is_drawing(item)]
+    except OSError:
+        return []
+    return sorted(found, key=lambda item: item.name.lower())
+
+
+def save_drawing(calc_dir: Any, name: str, text: str,
+                 suffix: str = '.ket') -> Dict[str, Any]:
+    """Keep what was drawn, under the name it was given.
+
+    The name is made safe the same way a reaction graph's folder name is, so
+    ``../../etc/passwd`` becomes ``etc_passwd`` and stays in the folder; the
+    resolved path is checked against the folder afterwards as well, because a
+    rule that is only applied is a rule that can be got round.
+    """
+    from .reaction_graph import safe_name
+
+    wanted = str(suffix or '.ket').strip().lower()
+    if wanted and not wanted.startswith('.'):
+        wanted = '.' + wanted
+    if wanted not in DRAWING_SUFFIXES:
+        return {'ok': False, 'path': None,
+                'status': f'{wanted or "That"} is not a format the editor writes.'}
+    body = str(text or '')
+    if not body.strip():
+        return {'ok': False, 'path': None,
+                'status': 'There is nothing drawn to save.'}
+    raw = str(name or '').strip()
+    # Typing "acetone.ket" into the name box means the drawing is called
+    # acetone, not acetone.ket.ket.
+    if raw.lower().endswith(wanted):
+        raw = raw[:-len(wanted)].strip()
+    if not raw:
+        return {'ok': False, 'path': None,
+                'status': 'Give the drawing a name first.'}
+    folder = drawings_directory(calc_dir)
+    target = folder / f'{safe_name(raw)}{wanted}'
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        if target.resolve().parent != folder.resolve():
+            return {'ok': False, 'path': None,
+                    'status': 'That name would leave the Ketcher folder.'}
+        target.write_text(body, encoding='utf-8')
+    except OSError as exc:
+        return {'ok': False, 'path': None,
+                'status': f'It could not be saved: {exc}'}
+    return {'ok': True, 'path': target,
+            'status': f'Saved as {target.name} in {DRAWINGS_FOLDER}.'}
+
+
+def read_drawing(path: Any) -> Dict[str, Any]:
+    """A kept drawing, as the text the editor takes back."""
+    where = Path(path)
+    if not where.is_file():
+        return {'ok': False, 'text': '', 'name': where.name,
+                'status': f'{where.name} is not there any more.'}
+    if not is_drawing(where):
+        return {'ok': False, 'text': '', 'name': where.name,
+                'status': f'{where.name} is not something the editor opens.'}
+    try:
+        text = where.read_text(encoding='utf-8')
+    except (OSError, UnicodeDecodeError) as exc:
+        return {'ok': False, 'text': '', 'name': where.name,
+                'status': f'{where.name} could not be read: {exc}'}
+    if not text.strip():
+        return {'ok': False, 'text': '', 'name': where.name,
+                'status': f'{where.name} is empty.'}
+    return {'ok': True, 'text': text, 'name': where.name,
+            'status': f'{where.name} is in the editor.'}
+
+
+def delete_drawing(path: Any) -> Dict[str, Any]:
+    """Throw a kept drawing away."""
+    where = Path(path)
+    if not is_drawing(where):
+        return {'ok': False,
+                'status': f'{where.name} is not a drawing, so it is left alone.'}
+    try:
+        where.unlink()
+    except FileNotFoundError:
+        return {'ok': False, 'status': f'{where.name} was already gone.'}
+    except OSError as exc:
+        return {'ok': False, 'status': f'{where.name} could not be deleted: {exc}'}
+    return {'ok': True, 'status': f'{where.name} is gone.'}
+
+
+# ---------------------------------------------------------------------------
+# The frame the editor lives in, and reaching into it
+# ---------------------------------------------------------------------------
+
+def frame_html(url: str, *, height: str = '560px') -> str:
+    """The editor in a frame of its own, reachable by keyboard and clipboard.
+
+    A frame rather than the page: Ketcher is a React application that owns its
+    own globals, and the dashboard is another one.  Same origin, so the page
+    may reach in and ask it for the drawing -- across origins there would be
+    nothing to ask with, because Ketcher speaks no messages.
+
+    ``tabindex`` so the frame can hold the focus at all, and ``allow`` so the
+    clipboard permission is handed into it.  Same-origin frames are already
+    inside the default allowlist for those two, so this changes nothing today;
+    it is what keeps Paste working if the editor is ever served from somewhere
+    else.
+    """
+    import html as _html
+
+    return (
+        "<iframe src='" + _html.escape(str(url), quote=True) + "' "
+        "tabindex='0' allow='clipboard-read; clipboard-write' "
+        "style='width:100%; height:" + _html.escape(str(height), quote=True) +
+        "; border:1px solid #d0d0d0; "
+        "border-radius:6px; background:#fff;' "
+        "title='Ketcher'></iframe>"
+    )
+
+
+def focus_js(host_selector: str) -> str:
+    """Give the frame the focus when the pointer is on it, and not before.
+
+    Ketcher listens for keys, and for copy, cut and paste, on the document
+    *inside* the frame.  Those handlers run only while that document holds the
+    focus, so a dashboard that never hands it over swallows every hotkey and
+    makes ``navigator.clipboard.read()`` throw "Document is not focused".  One
+    cause with two names: the keyboard does nothing, and Paste does nothing.
+
+    On the pointer rather than on load or on a timer.  A frame that takes the
+    focus by itself a couple of seconds after it appears is what scrolls the
+    page away under the user -- which is the whole reason the scroll hold in
+    the structure editor exists -- and taking it while somebody is typing in a
+    field of the dashboard would be a worse bug than the one being fixed.
+    Moving the pointer onto the canvas is the moment the editor is meant.
+
+    The timer here looks for the element, not for a moment to steal focus: a
+    widget's value is set from the kernel and the DOM catches up afterwards, so
+    the host may not be there yet when this runs.
+    """
+    return (
+        "(function(){\n"
+        "  var tries=0;\n"
+        "  function reach(){\n"
+        "    var host=document.querySelector(" + json.dumps(host_selector) + ");\n"
+        "    var frame=host&&host.querySelector('iframe');\n"
+        "    try{ if(frame&&frame.contentWindow) frame.contentWindow.focus(); }\n"
+        "    catch(e){}\n"
+        "  }\n"
+        "  function bind(){\n"
+        "    var host=document.querySelector(" + json.dumps(host_selector) + ");\n"
+        "    if(!host){ if(++tries<40) window.setTimeout(bind,150); return; }\n"
+        "    if(host.__delfinKetcherFocus) return;\n"
+        "    host.__delfinKetcherFocus=true;\n"
+        "    host.addEventListener('pointerenter',reach);\n"
+        "    host.addEventListener('pointerdown',reach,true);\n"
+        "  }\n"
+        "  bind();\n"
+        "})();"
+    )
+
+
+def load_js(host_selector: str, text: str) -> str:
+    """Put a kept drawing back into the editor.
+
+    ``setMolecule`` and not one call per format: Indigo reads what it is given,
+    so the same line takes a .ket, a .mol, a .rxn or a SMILES.
+
+    It waits for the editor rather than giving up on it.  The frame may have
+    only just been made, and Ketcher is a 30 MB application: the global this
+    reaches for does not exist for the first second or two after the frame is
+    put on the page, and a file opened in that window used to vanish.
+    """
+    return (
+        "(function(){\n"
+        "  var tries=0;\n"
+        "  function put(){\n"
+        "    var host=document.querySelector(" + json.dumps(host_selector) + ");\n"
+        "    var frame=host&&host.querySelector('iframe');\n"
+        "    var api=null;\n"
+        "    try{ api=frame&&frame.contentWindow&&frame.contentWindow.ketcher; }\n"
+        "    catch(e){ api=null; }\n"
+        "    if(!api){ if(++tries<60) window.setTimeout(put,200); return; }\n"
+        "    try{ Promise.resolve(api.setMolecule(" + json.dumps(str(text or '')) +
+        ")); }catch(e){}\n"
+        "  }\n"
+        "  put();\n"
+        "})();"
+    )

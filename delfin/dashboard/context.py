@@ -88,6 +88,10 @@ class DashboardContext:
     job_status_refs: dict = field(default_factory=dict)
     recalc_refs: dict = field(default_factory=dict)
     calc_browser_refs: dict = field(default_factory=dict)
+    # The Ketcher tab publishes itself here: the tab registry keeps a
+    # factory's widget and throws its refs away, and the Calculations
+    # browser needs a way to hand a drawing over to be edited.
+    ketcher_refs: dict = field(default_factory=dict)
     remote_archive_refs: dict = field(default_factory=dict)
 
     # Templates
