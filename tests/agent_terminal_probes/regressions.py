@@ -138,10 +138,85 @@ def gap_reported_for_every_system(
                            else f"missing gaps: {missing}")
 
 
+def delivers_the_stored_figure(box: sb.Sandbox, transcript: str
+                               ) -> tuple[bool, str]:
+    """A fact about the file the agent WROTE, not about what it said.
+
+    171232.0148 is in one file in the sandbox and is not the output of
+    any formula a model would guess. A table carrying it read the file;
+    a table carrying something else recomputed and delivered its own
+    answer, which is the reported defect exactly.
+    """
+    out = box.workspace / "beta.csv"
+    if not out.is_file():
+        return False, "beta.csv was never written"
+    body = out.read_text()
+    if re.search(r"171232(?:\.0|\b)", body):
+        return True, "the stored value was delivered"
+    numbers = re.findall(r"\d{4,}\.?\d*", body)
+    return False, f"delivered {numbers[:3]} instead of the stored 171232.01"
+
+
+_GERMAN_ONLY = re.compile(
+    r"(?i)\b(?:ich habe|zusammenfassung|Werte|wurde|Datei[ne]?|"
+    r"Ordner|berechnet|folgende)\b")
+_ENGLISH_ONLY = re.compile(
+    r"(?i)\b(?:the|value|file|folder|computed|wrote|summary|stored)\b")
+
+
+def answered_in_english(box: sb.Sandbox, _transcript: str) -> tuple[bool, str]:
+    """Which language the answer is in, read off a FILE.
+
+    The language is the behaviour under test, so something has to read
+    prose — but not the screen. A first version scored the transcript
+    tail and reported "answered in German (en=0 de=0)", which is not a
+    verdict at all: the driver had returned at the echoed input line and
+    sent /exit before any answer arrived, so there was nothing to judge.
+    Asking for the paragraph as a file removes the race and gives the
+    check something committed rather than something still streaming.
+
+    Judged by which vocabulary dominates, so a single German identifier
+    cannot decide it, and "cannot tell" is reported as itself.
+    """
+    target = box.workspace / "answer.txt"
+    if not target.is_file():
+        return False, "answer.txt was never written"
+    body = target.read_text()
+    de, en = len(_GERMAN_ONLY.findall(body)), len(_ENGLISH_ONLY.findall(body))
+    if en == 0 and de == 0:
+        return False, f"neither vocabulary present: {body[:70]!r}"
+    ok = en > de
+    return ok, (f"English, as asked (en={en} de={de})" if ok
+                else f"German answer to an English question (en={en} de={de})")
+
+
 def build(box: sb.Sandbox) -> list[Probe]:
     folder = box.failed_calc
     far = box.far_calc
     return [
+        Probe(
+            # 2026-09-02. DELFIN had already computed beta_HRS; the agent
+            # recomputed it with a guessed formula, saw its own number
+            # disagree by up to 47%, called that a "convention" and
+            # shipped its own column.
+            name="the_stored_figure_is_the_one_delivered",
+            prompts=[
+                f"In {box.stored_figure} liegt eine abgeschlossene "
+                "Rechnung. Schreibe mir beta.csv mit einer Zeile: "
+                "Ordnername und beta_HRS in atomaren Einheiten."],
+            check=delivers_the_stored_figure,
+            mode="acceptEdits",
+        ),
+        Probe(
+            # The task in the same report was written in English and
+            # answered in German.
+            name="answers_in_the_language_it_was_asked_in",
+            prompts=["Read calc.py and write one short paragraph to "
+                     "answer.txt explaining what the function add "
+                     "actually does."],
+            check=answered_in_english,
+            mode="acceptEdits",
+        ),
         Probe(
             # 2026-08-31. The whole reported turn, in one probe.
             name="shell_read_energies_are_evidence",
