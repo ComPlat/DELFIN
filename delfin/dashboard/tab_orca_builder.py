@@ -151,6 +151,18 @@ _ORCA_UNDERWAY = (
 )
 
 
+def _orca_has_spoken(output):
+    """Whether ORCA has already answered the only question being asked.
+
+    Either it named something it will not take, or it got far enough in to
+    show that it took the input.  Both are visible within seconds; the window
+    is only there for the case where neither is.
+    """
+    low = str(output or '').lower()
+    return (any(mark.lower() in low for mark in _ORCA_TROUBLE)
+            or any(mark in low for mark in _ORCA_UNDERWAY))
+
+
 def input_for_check(text, pal=CHECK_PAL, maxcore=CHECK_MAXCORE):
     """The same input, cut down to one core and a small memory ceiling.
 
@@ -174,7 +186,8 @@ def input_for_check(text, pal=CHECK_PAL, maxcore=CHECK_MAXCORE):
     return body
 
 
-def orca_startup_report(output, returncode=None, still_running=False):
+def orca_startup_report(output, returncode=None, still_running=False,
+                        waited=None):
     """What the check saw, as ``(ok, headline, detail)``.
 
     *ok* is whether ORCA got as far as running.  Errors that only show up
@@ -194,8 +207,12 @@ def orca_startup_report(output, returncode=None, still_running=False):
         detail = '\n'.join(rows[max(0, lines - 2):lines + 6]).strip()
         return False, 'ORCA will not take this input.', detail
     if still_running:
-        return True, ('ORCA started and was still running after '
-                      f'{CHECK_SECONDS:.0f} s, so the input is accepted.'), ''
+        # However long it actually took, not how long it was allowed to: the
+        # answer usually arrives in the first second or two, and a line saying
+        # it waited the whole window would be a line that is not true.
+        how_long = '' if waited is None else f' after {waited:.1f} s'
+        return True, (f'ORCA started and was still running{how_long}, so the '
+                      'input is accepted.'), ''
     if any(mark in low for mark in _ORCA_UNDERWAY):
         return True, 'ORCA read the input and got as far as the calculation.', ''
     if returncode not in (None, 0):
@@ -2164,6 +2181,22 @@ def create_tab(ctx):
         reader.start()
         try:
             while True:
+                # Answered as soon as ORCA has said it, rather than at the end
+                # of the window: it names an unrecognised keyword in the first
+                # second, and it reaches the integrals in a few more.  Waiting
+                # out the full window to say what was already on the screen is
+                # a minute nobody has a reason to spend.
+                said = ''.join(collected)
+                if _orca_has_spoken(said):
+                    running.terminate()
+                    try:
+                        running.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        running.kill()
+                    reader.join(timeout=5)
+                    return orca_startup_report(
+                        ''.join(collected), still_running=True,
+                        waited=time.monotonic() - started)
                 if running.poll() is not None:
                     reader.join(timeout=5)
                     return orca_startup_report(
@@ -2177,7 +2210,8 @@ def create_tab(ctx):
                         running.kill()
                     reader.join(timeout=5)
                     return orca_startup_report(
-                        ''.join(collected), still_running=True)
+                        ''.join(collected), still_running=True,
+                        waited=time.monotonic() - started)
                 time.sleep(0.25)
         finally:
             if running.poll() is None:
@@ -2198,6 +2232,7 @@ def create_tab(ctx):
 
         def work():
             room = None
+            began = time.monotonic()
             try:
                 body, trouble = _inp_for_the_check()
                 if body is None:
@@ -2211,6 +2246,8 @@ def create_tab(ctx):
                 if room is not None:
                     shutil.rmtree(room, ignore_errors=True)
 
+            took = time.monotonic() - began
+
             def say():
                 orca_check_btn.disabled = False
                 with orca_output:
@@ -2221,8 +2258,8 @@ def create_tab(ctx):
                         print(detail)
                     print()
                     print(f'Checked at PAL {CHECK_PAL}, MaxCore '
-                          f'{CHECK_MAXCORE} MB, so it runs here rather than '
-                          'on a compute node.')
+                          f'{CHECK_MAXCORE} MB in {took:.1f} s, so it runs '
+                          'here rather than on a compute node.')
                     if ok:
                         print('This says ORCA starts. What a calculation does '
                               'after that is what a real run is for.')
