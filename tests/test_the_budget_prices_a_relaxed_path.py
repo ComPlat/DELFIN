@@ -1499,6 +1499,53 @@ def test_the_anchor_belongs_to_the_method_that_measured_it():
     assert "state['thermal_method'] = method" in EDITOR_SOURCE
 
 
+def test_an_angle_is_only_armed_to_an_angle_three_atoms_can_have():
+    """A distance had a floor and said so; an angle had neither side.
+
+    With a direction chosen and no end typed, a scan is armed as far as the
+    coordinate can sensibly go, because the walk stops at the next minimum
+    anyway.  For a distance that is 2.5 A and a floor catches anything inside
+    the bond those two would make, with a sentence.  For an angle it was 180
+    degrees either way from where it stands, and nothing caught it: a
+    109-degree H-C-H was armed to -70.9 going in and to 289.05 going out.
+
+    That is not only an impossible target.  A walked point is recorded at the
+    value it was ASKED to hold, so the profile's own axis and the verdict then
+    report angles the structures never had -- measured, the axis read -10.95,
+    -40.95 and -70.95 degrees where the geometries stood at +2.26, +2.74 and
+    +2.27, and the verdict quoted a rise of 20646.7 kcal/mol.
+
+    A torsion keeps neither bound: it is periodic, and 289 degrees is a place
+    a structure can be in.
+    """
+    part = _a_part(_ETHANE)
+    part.submit_ff_dd.value = "gfn2"
+
+    for way, expected, phrase in (("in", 0.0, "not an angle three atoms"),
+                                  ("out", 180.0, "three atoms in a line")):
+        part.state["scan_legs"] = []
+        part.state["picked"] = [2, 0, 3]
+        part.submit_internal_value.value = 109.47
+        part.submit_scan_way.value = way
+        part.on_submit_scan()
+        legs = part.state.get("scan_legs") or []
+        assert len(legs) == 1, legs
+        assert legs[0]["kind"] == "angle", legs[0]
+        assert legs[0]["to"] == pytest.approx(expected), legs[0]
+        assert phrase in str(part.mol_status.value or ""), (
+            way, part.mol_status.value)
+
+    # And a torsion is left alone, because it is periodic.
+    part.state["scan_legs"] = []
+    part.state["picked"] = [2, 0, 1, 5]
+    part.submit_internal_value.value = 60.0
+    part.submit_scan_way.value = "out"
+    part.on_submit_scan()
+    legs = part.state.get("scan_legs") or []
+    assert legs and legs[0]["kind"] == "dihedral", legs
+    assert legs[0]["to"] == pytest.approx(420.0), legs[0]
+
+
 @_needs_xtb
 def test_the_anchor_belongs_to_the_whole_question_and_not_only_the_method():
     """The charge, the multiplicity and the solvent move an energy too.
