@@ -9482,7 +9482,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # every optimised geometry in a tab whose structures are
                     # blocks: the status line said "Optimised 2 of 2 frames"
                     # over a coordinates box that had not changed a character.
-                    _offer_isomers(results, show=not played[0])
+                    #
+                    # It said it again in the Submit tab, which keeps one
+                    # structure and reads it out of the box.  Holding the
+                    # showing back held that back too, because showing is what
+                    # writes the box.  So what is held back now is the drawing
+                    # alone, and only for the frame the playback is standing
+                    # on -- frame 1, the one whose trajectory was streamed.
+                    _offer_isomers(results, drawn=0 if played[0] else None)
                 elif failures:
                     # Nothing came back.  A run that produced no geometry hands
                     # the input straight back, and writing that to the box
@@ -20357,7 +20364,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         finally:
             state['charge_filling'] = False
 
-    def _offer_isomers(isomers, quick=False, show=True):
+    def _offer_isomers(isomers, quick=False, show=True, drawn=None):
         """Every structure a conversion produced, to wherever they belong.
 
         A tab that keeps more than one -- the ORCA Builder, with its named
@@ -20369,6 +20376,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         *quick* says this came from the quick conversion, which is the one
         that answers with a structure rather than with a set to choose from.
         A tab may want plain coordinates for that one and blocks for the rest.
+
+        *drawn* is the index of the structure the picture is already standing
+        on, if any.  An optimisation plays its own trajectory and ends on the
+        geometry it kept, and drawing that again rebuilds the viewer under the
+        playback -- so that one is handed over without being redrawn and every
+        other one is drawn as usual.
+
+        Handing over used to be skipped along with the drawing, and a tab that
+        keeps one structure has nowhere else to read it from: under any method
+        that streams frames the box, Copy XYZ and Submit all kept the geometry
+        the user pressed on while the line above them said it had been
+        optimised.  Measured on a pulled propane under GFN2, "Optimised 2 of 2
+        frame(s) ... E = -10.500828 Eh" over a box 0.4751 A away from that
+        geometry and 67.08 kcal/mol above it -- and that box is what SUBMIT
+        JOB sends.  The same press under UFF, which streams nothing, wrote the
+        box correctly.
         """
         isomers = list(isomers or [])
         state['isomers'] = isomers
@@ -20383,16 +20406,35 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             _clear_mol_status()
             return
         if show:
-            _show_isomer_at_index(state.get('isomer_index', 0)
-                                  if len(isomers) > 1 else 0)
+            index = state.get('isomer_index', 0) if len(isomers) > 1 else 0
+            already = (drawn is not None and bool(isomers)
+                       and index % len(isomers) == drawn)
+            _show_isomer_at_index(index, drawn=already)
 
-    def _show_isomer_at_index(index):
+    def _show_isomer_at_index(index, drawn=False):
+        """One of them on screen, in the box, and ready to copy.
+
+        *drawn* says the picture already has this geometry -- see
+        :func:`_offer_isomers`.
+        """
         isomers = state['isomers']
         if not isomers:
             return
         index = index % len(isomers)
         state['isomer_index'] = index
         xyz_string, num_atoms, label = isomers[index]
+        # A bare body is what this list holds, because everything below puts
+        # its own header on.  An optimisation writes back what xtb handed it,
+        # which is a whole document, and stepping onto one of those left the
+        # box with a header saying 11 above thirteen more lines -- xtb's own
+        # count and its "energy: ... gnorm: ..." among them.  That is not an
+        # XYZ file, and it is the text Copy XYZ and Submit hand on.  So
+        # whatever arrives is taken down to its atom lines and counted; the
+        # count is re-derived rather than trusted, for the reason
+        # :func:`gfn_optimize.atom_lines` gives.
+        rows = _gfn.atom_lines(xyz_string)
+        if rows:
+            xyz_string, num_atoms = '\n'.join(rows), len(rows)
 
         # Update navigation label and visibility
         if len(isomers) > 1:
@@ -20406,7 +20448,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             isomer_nav_row.layout.display = 'none'
 
         xyz_data = f'{num_atoms}\nIsomer: {label}\n{xyz_string}'
-        _replace_mol_output_view(xyz_data)
+        if not drawn:
+            _replace_mol_output_view(xyz_data)
 
         # Update copy state
         state['current_xyz_for_copy'] = {'content': xyz_data}
