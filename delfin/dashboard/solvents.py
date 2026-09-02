@@ -224,6 +224,43 @@ def xtb_flags(model: Any, solvent: Any) -> List[str]:
     return [found['flag'], wet]
 
 
+#: Where ORCA writes a liquid's name differently from xtb.
+#:
+#: The names in :data:`SOLVENTS` are xtb's, because xtb is what most of this
+#: runs on.  ORCA takes the same continuum by keyword and agrees on 24 of the
+#: 25 -- measured with ORCA 6.1.1 on this box, one ``! XTB2 SP ALPB(name)``
+#: per name: 24 ran and ``ALPB(ether)`` stopped with "UNRECOGNIZED OR
+#: DUPLICATED KEYWORD(S) IN SIMPLE INPUT LINE" before doing any work.  So
+#: every press that goes through ORCA -- climb from here, the chain's second
+#: half, the band -- died outright on the one solvent the dropdown calls
+#: diethyl ether, while the same choice ran perfectly well on the xtb halves.
+#:
+#: ``diethylether`` is the same liquid and not merely a name ORCA accepts: on
+#: one water, ORCA's ``ALPB(diethylether)`` gives -5.078841108810 Eh against
+#: xtb's own ``--alpb ether`` -5.078841108805, which is the agreement the two
+#: also have in water (-5.084878982390 against -5.084878982393).
+_ORCA_NAMES: Dict[str, str] = {'ether': 'diethylether'}
+
+
+def orca_keyword(solvent: Any) -> str:
+    """ORCA's continuum keyword for this liquid, or '' for the gas phase.
+
+    ALPB and nothing else, because ORCA's xtb driver has nothing else to
+    offer: asked for ``CPCM(water)`` or ``SMD(water)`` beside ``! XTB2`` it
+    stops in ``main_input_check`` before doing any arithmetic.  So a press
+    that runs through ORCA runs ALPB whatever the model box says, and what it
+    owes the user is to name ALPB rather than what was asked for.
+    """
+    wet = _key(solvent)
+    if not wet:
+        return ''
+    # A name this table does not know is handed on rather than dropped: ORCA
+    # refuses one it does not recognise and says so, and a press that stops
+    # with a reason is better than one that quietly answers the gas-phase
+    # question instead.
+    return f'ALPB({_ORCA_NAMES.get(wet, wet)})'
+
+
 def mopac_words(solvent: Any) -> List[str]:
     """What to add to a MOPAC keyword line, or [] for the gas phase.
 

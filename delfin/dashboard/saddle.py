@@ -101,6 +101,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import gfn_optimize as _gfn
+from . import solvents as _solvents
 
 #: The methods ORCA can drive that are fast enough for this to be a button.
 #: Anything with a basis set is a job, not a press.
@@ -586,7 +587,12 @@ def optimise_to_saddle(xyz_text: str, method: str = 'gfn2', *,
             from . import gxtb_engrad
 
             own_program = gxtb_engrad.write_hook(folder)
-        wet = f' ALPB({solvent})' if solvent and own_program is None else ''
+        # ORCA's own name for the liquid, which is not always xtb's -- see
+        # :func:`solvents.orca_keyword`, and the diethyl ether that killed
+        # every press that comes through here.
+        keyword = ('' if own_program is not None
+                   else _solvents.orca_keyword(solvent))
+        wet = f' {keyword}' if keyword else ''
         # A numerical Hessian, when the gradient is not ORCA's own to
         # differentiate.  ORCA's default for a method it drives itself is an
         # analytic one, and asked for that with ExtOpt it stops in PROPINT --
@@ -1251,7 +1257,12 @@ def neb_to_saddle(reactant: str, product: str, method: str = 'gfn2', *,
             from . import gxtb_engrad
 
             own_program = gxtb_engrad.write_hook(folder)
-        wet = f' ALPB({solvent})' if solvent and own_program is None else ''
+        # ORCA's own name for the liquid, which is not always xtb's -- see
+        # :func:`solvents.orca_keyword`, and the diethyl ether that killed
+        # every press that comes through here.
+        keyword = ('' if own_program is not None
+                   else _solvents.orca_keyword(solvent))
+        wet = f' {keyword}' if keyword else ''
         # One process when ORCA is not doing the arithmetic, for the reason
         # :func:`optimise_to_saddle` writes down: through ExtOpt every
         # gradient is a program of ours, and ORCA's own parallel driver
