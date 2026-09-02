@@ -97,6 +97,18 @@ def test_saving_goes_back_to_the_folder_it_came_out_of(dashboard):
     assert kept.read_text() == '{"root":{"nodes":[1]}}'
 
 
+def test_nothing_that_cannot_act_on_a_drawing_is_shown_beside_it(dashboard):
+    """There is no buffer to search, no top and no end to jump to, and nothing
+    to edit as text.  The editor brings its own toolbars."""
+    dashboard["browser"]["calc_open_input"].value = "\u270f\ufe0f aspirin.ket"
+
+    browser = dashboard["browser"]
+    assert browser["calc_ketcher_container"].layout.display == "flex"
+    for gone in ("calc_content_toolbar", "calc_content_area",
+                 "calc_edit_area", "calc_recalc_toolbar"):
+        assert browser[gone].layout.display == "none", gone
+
+
 def test_opening_something_else_folds_the_editor_away(dashboard):
     dashboard["browser"]["calc_open_input"].value = "\u270f\ufe0f aspirin.ket"
     assert dashboard["browser"]["calc_ketcher_container"].layout.display == "flex"

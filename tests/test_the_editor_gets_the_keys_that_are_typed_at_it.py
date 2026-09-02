@@ -43,10 +43,37 @@ def test_the_frame_the_structure_editor_shows_is_that_one():
     assert "<iframe" not in maker, "no second copy of the frame to fall behind"
 
 
-def test_the_frame_is_as_tall_as_it_was():
-    """The panel is not the place to make the editor bigger: the tab is."""
+def test_the_frame_is_as_tall_as_it_is_told_to_be():
+    """The panel is not the place to decide that: the tab is, and in the
+    Calculations tab it is the height of the pane, so the frame reaches the
+    bottom and follows it -- measured at 535 px in a 900 px window, bottom at
+    762, with nothing to scroll in either direction."""
     assert "height:560px" in ketcher.frame_html("x", height="560px")
     assert "height:72vh" in ketcher.frame_html("x", height="72vh")
+    assert "height:100%" in ketcher.frame_html("x", height="100%")
+
+
+def test_a_filling_panel_can_be_made_shorter_than_its_box():
+    """A frame at a fixed height inside a pane that is shorter than it is a
+    pane you scroll from top to bottom to see the editor in."""
+    pytest.importorskip("ipywidgets")
+    from delfin.dashboard import ketcher_panel
+
+    source = pathlib.Path(ketcher_panel.__file__).read_text(encoding="utf-8")
+    assert "fill: bool = False" in source
+    assert "'flex': '1 1 0', 'min_height': '0', 'height': '100%'" in source
+
+
+def test_a_field_beside_two_buttons_can_be_made_narrower():
+    """At a flat 100% the row came to more than the width it had, and the
+    pane grew a sideways scrollbar for the difference."""
+    pytest.importorskip("ipywidgets")
+    from delfin.dashboard import ketcher_panel
+
+    source = pathlib.Path(ketcher_panel.__file__).read_text(encoding="utf-8")
+    smiles = source.split("smiles_out = widgets.Textarea(")[1].split(")")[0]
+    assert "width='auto'" in smiles and "flex='1 1 0'" in smiles
+    assert "width='100%'" not in smiles
 
 
 # ---------------------------------------------------------------------------

@@ -522,6 +522,7 @@ def _as_drawn(drawn: Any, arrows: list) -> Dict[str, Any]:
 
     befores: Dict[int, list] = {}
     overs: Dict[int, list] = {}
+    unders: Dict[int, list] = {}
     dative = 0
     placed = 0
     for mol in list(drawn.GetReactants()) + list(drawn.GetAgents()) \
@@ -548,29 +549,44 @@ def _as_drawn(drawn: Any, arrows: list) -> Dict[str, Any]:
         elif on[0] == 'over':
             overs.setdefault(on[1], []).append(fresh)
         else:
-            # Given off by that step, so it comes out with its products.
-            befores.setdefault(on[1] + 1, []).append(fresh)
+            # Given off by that step.  Kept apart from what is drawn between
+            # the arrows, because those two are not the same thing once there
+            # is a second arrow: the water a step gives off is a product of
+            # that step and not something the next one is made from.
+            unders.setdefault(on[1], []).append(fresh)
     if placed == 0:
         return {'ok': False, 'smiles': '', 'status': 'The drawing is empty.'}
 
-    def written(parts):
-        return '.'.join(sorted(Chem.MolToSmiles(one) for one in parts or []))
+    def written(*groups):
+        parts = [one for group in groups for one in (group or [])]
+        return '.'.join(sorted(Chem.MolToSmiles(one) for one in parts))
 
+    # One reaction per step, one to a line.  A scheme is a sequence of
+    # reactions and not one long one: written as a single chain,
+    # ``A>reagent>B.HCl>>C``, the field holding B.HCl is at once the products
+    # of the first step and the reactants of the second, so the hydrogen
+    # chloride the first step gives off is read as something the second one is
+    # made from.  A line each says what each step is, and every one of them is
+    # a reaction SMILES anything can read on its own.
     try:
-        pieces = [written(befores.get(0))]
+        lines = []
         for index in range(len(arrows)):
-            pieces.append(written(overs.get(index)))
-            pieces.append(written(befores.get(index + 1)))
+            lines.append('>'.join([
+                written(befores.get(index)),
+                written(overs.get(index)),
+                written(befores.get(index + 1), unders.get(index)),
+            ]))
     except Exception as exc:                            # noqa: BLE001
         return {'ok': False, 'smiles': '',
                 'status': f'That reaction could not be written as SMILES: {exc}'}
-    if not pieces[-1]:
+    if not lines or not lines[-1].rsplit('>', 1)[-1]:
         return {'ok': False, 'smiles': '',
                 'status': ('The last arrow has nothing after it yet, so there '
                            'is no reaction to write.')}
-    smiles = '>'.join(pieces)
+    smiles = '\n'.join(lines)
     steps = len(arrows)
-    said = (f'{steps} step{"" if steps == 1 else "s"} drawn: {smiles}')
+    said = (f'{steps} step{"" if steps == 1 else "s"} drawn: '
+            + ' / '.join(lines))
     if dative:
         said += (f' ({dative} coordination bond(s) written with the charge on '
                  'both ends, which is the form the rest of DELFIN reads.)')
