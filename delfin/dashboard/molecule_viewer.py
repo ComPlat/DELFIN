@@ -3931,22 +3931,30 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         var loads = state.loads || [];
         if (!loads.length) return;
         var atoms = getAtoms(viewer);
-        // The longest arrow is drawn at LOAD_REACH and the rest in proportion,
-        // so what the picture shows is how hard each one pulls *relative to
-        // the others* -- which is what the drawing decides.  How hard the set
-        // pulls altogether is the ramp's business and has no length.
-        var most = 0;
-        for (var n = 0; n < loads.length; n++) {
-            var v = loads[n];
-            var size = Math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
-            if (size > most) most = size;
-        }
-        if (most < 1e-9) return;
+        // Each arrow is drawn at the length it was dragged, and nothing else
+        // changes it.
+        //
+        // The longest was drawn at LOAD_REACH and the rest in proportion to
+        // it, so the picture showed how hard each one pulled against the
+        // others.  From the other side of the screen that reads as a defect
+        // and was reported as one: hanging a second arrow made the first one
+        // shorter, with nothing having touched the first.  A vector set here
+        // is in world units -- it IS the distance the cursor travelled
+        // through the scene, see where the drag ends -- so drawing it at that
+        // length is at once the honest picture and the predictable one.
+        //
+        // Capped, because a drag across the whole viewport is metres of arrow
+        // on a small molecule.  The cap shortens only the arrow that reaches
+        // it, which is the whole point: what one arrow does stays one arrow's
+        // business.
         for (var n = 0; n < loads.length; n++) {
             var one = loads[n];
             var a = atoms[one.atom | 0];
             if (!a) continue;
-            var scale = LOAD_REACH / most;
+            var size = Math.sqrt(one.x * one.x + one.y * one.y
+                                 + one.z * one.z);
+            if (size < 1e-9) continue;
+            var scale = (size > LOAD_LONGEST) ? (LOAD_LONGEST / size) : 1;
             var to = {x: a.x + one.x * scale,
                       y: a.y + one.y * scale,
                       z: a.z + one.z * scale};
@@ -3967,14 +3975,14 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         }
     }
 
-    //: How long the strongest arrow is drawn, in Angstrom.
+
+    //: The longest an arrow is drawn however far it was dragged, in Angstrom.
     //:
-    //: About a bond length.  Longer, an arrow leaves the molecule it belongs
-    //: to and reads as a thing beside it rather than a thing on it -- and on
-    //: a small structure two of them are most of the picture.  This is the
-    //: *longest*; the rest are drawn in proportion, so what the picture shows
-    //: is how hard each one pulls against the others.
-    var LOAD_REACH = 1.3;
+    //: Three bond lengths, which no deliberate gesture reaches -- a drag that
+    //: long is the cursor having run off across the viewport.  Only the arrow
+    //: that reaches it is shortened; the others are drawn as they were set,
+    //: which is the point.
+    var LOAD_LONGEST = 4.0;
 
     function setLoads(scopeKey, loads) {
         var state = getState(scopeKey);
@@ -4715,25 +4723,25 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 // overlay steps aside for the length of one lookup, and the
                 // press is delivered to whatever was underneath it.
                 if (!atom) {
-                    if (typeof document.elementFromPoint !== 'function'
-                            || typeof window.MouseEvent !== 'function') {
-                        return;
-                    }
-                    var was = ov.style.pointerEvents;
-                    ov.style.pointerEvents = 'none';
-                    var under = document.elementFromPoint(e.clientX, e.clientY);
-                    ov.style.pointerEvents = was;
-                    if (under && under !== ov) {
-                        try {
-                            under.dispatchEvent(new window.MouseEvent(
-                                'mousedown', {
-                                    bubbles: true, cancelable: true,
-                                    clientX: e.clientX, clientY: e.clientY,
-                                    button: e.button, buttons: e.buttons,
-                                    shiftKey: e.shiftKey, ctrlKey: e.ctrlKey,
-                                    metaKey: e.metaKey, altKey: e.altKey
-                                }));
-                        } catch (_e) {}
+                    // Handed to 3Dmol's own handler, which is the way
+                    // Manipulate has always done it a hundred lines below.
+                    //
+                    // A synthetic mousedown was dispatched at the element
+                    // under the overlay instead, and a turn is not one event:
+                    // 3Dmol takes the press and then follows the pointer, and
+                    // where it binds the move and the release is its own
+                    // business.  A press it never bound for is a press that
+                    // goes nowhere, so aiming arrows meant losing the ability
+                    // to turn the scene -- reported as exactly that.
+                    //
+                    // The pivot is put back on the molecule first, for the
+                    // same reason Manipulate does it: a camera that turns
+                    // about a point which has wandered off the structure
+                    // swings the molecule out of the frame.
+                    centreOnSystem(scopeKey, false);
+                    var turn = getViewer(scopeKey);
+                    if (turn && typeof turn._handleMouseDown === 'function') {
+                        try { turn._handleMouseDown(e); } catch (_e) {}
                     }
                     return;
                 }
@@ -4896,9 +4904,31 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                     }
                     return;
                 }
+                if (e.shiftKey && e.button === 0) {
+                    // Shift draws a window, the same window Select mode
+                    // draws.  A selection is a selection whichever mode is
+                    // on, and having to leave Manipulate to pick a group is
+                    // the mode getting in the way of the work -- asked for as
+                    // "in manipulate will ich auch mit gross taste fenster
+                    // ziehen koennen fuer auswahl".
+                    //
+                    // Shift and not any modifier, so that dragging the whole
+                    // selection from empty space is still there under Ctrl or
+                    // Cmd: one axis, two keys, and nothing taken away.
+                    e.preventDefault(); e.stopPropagation();
+                    state.drag = {
+                        kind: 'maybe-rect',
+                        startX: e.clientX, startY: e.clientY,
+                        origX: x, origY: y,
+                        additive: true,
+                        movedEnough: false,
+                        atomRef: atom
+                    };
+                    return;
+                }
                 if (state.picks.length > 0) {
-                    // Modifier on empty space keeps the old behaviour: drag the
-                    // whole selection from anywhere in the viewport.
+                    // Ctrl or Cmd on empty space keeps the older behaviour:
+                    // drag the whole selection from anywhere in the viewport.
                     e.preventDefault(); e.stopPropagation();
                     // Say so before anything moves: the history is kept on
                     // the kernel side, and a step it is to be able to take

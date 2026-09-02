@@ -375,18 +375,39 @@ def test_an_arrow_is_drawn_as_an_arrow():
     from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
 
     body = submit_manip_bootstrap_js()
-    drawing = body[body.index('function drawLoads('):][:2200]
+    drawing = body[body.index('function drawLoads('):][:3400]
     assert 'viewer.addArrow(' in drawing, 'a line is not visible enough'
     assert 'viewer.addLine(' not in drawing
     # It starts at the atom, not at the tip.
     assert 'start: {x: a.x, y: a.y, z: a.z}' in drawing
     assert 'radiusRatio' in drawing, 'an arrow without a head is a stick'
 
-    # About a bond long.  Longer, an arrow leaves the molecule it belongs to
-    # and reads as a thing beside it; on a small structure two of them are
-    # most of the picture.
-    reach = body.split('var LOAD_REACH = ')[1].split(';')[0]
-    assert 0.8 <= float(reach) <= 1.6, reach
+
+def test_an_arrow_keeps_the_length_it_was_dragged():
+    """Hanging a second arrow must not change the first.
+
+    The longest was drawn at a fixed reach and the rest in proportion to it,
+    so the picture showed how hard each one pulled against the others.  From
+    the other side of the screen that reads as a defect and was reported as
+    one: a second arrow made the first shorter with nothing having touched it.
+
+    A vector set here is in world units -- it is the distance the cursor
+    travelled through the scene -- so its own length is both the honest
+    picture and the predictable one.  Only a cap is left, and it shortens the
+    one arrow that reaches it.
+    """
+    from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
+
+    body = submit_manip_bootstrap_js()
+    drawing = body[body.index('function drawLoads('):][:3400]
+    # Nothing in the drawing may depend on the other arrows.
+    assert 'if (size > most) most = size' not in drawing
+    assert 'LOAD_REACH / most' not in drawing
+    assert 'var scale = (size > LOAD_LONGEST) ? (LOAD_LONGEST / size) : 1;' \
+        in drawing
+    # Generous, so no deliberate gesture is ever clipped.
+    longest = body.split('var LOAD_LONGEST = ')[1].split(';')[0]
+    assert 3.0 <= float(longest) <= 6.0, longest
 
 
 def test_the_pull_is_watched_while_it_pulls():
@@ -652,11 +673,13 @@ def test_the_arrow_is_not_a_path_and_the_button_says_so():
 def test_empty_space_is_handed_to_the_viewer_in_pull_mode():
     """Rotating has to keep working while the arrows are aimed.
 
-    The overlay lies over the picture and takes the press, and whether 3Dmol
-    ever sees one depends on where that library happens to bind its own
-    handlers -- which is not a thing to depend on.  So on a press that lands
-    on nothing the overlay steps aside for the length of one lookup and the
-    press is delivered to whatever was underneath it.
+    Handed to 3Dmol's own handler, which is how Manipulate has always done it
+    a hundred lines below.  A synthetic mousedown was dispatched at whatever
+    the overlay was covering instead, and a turn is not one event: 3Dmol takes
+    the press and then follows the pointer, and where it binds the move and
+    the release is its own business.  A press it never bound for goes nowhere,
+    so aiming arrows meant losing the ability to turn the scene -- reported as
+    exactly that.
 
     Only a press *on an atom* becomes an arrow, and only if it is dragged: a
     tap on an atom is a tap.
@@ -666,12 +689,15 @@ def test_empty_space_is_handed_to_the_viewer_in_pull_mode():
     body = submit_manip_bootstrap_js()
     branch = body[body.index("if (state.mode === 'load')"):][:3200]
 
-    assert "ov.style.pointerEvents = 'none'" in branch
-    assert 'document.elementFromPoint(e.clientX, e.clientY)' in branch
-    assert 'new window.MouseEvent' in branch
-    assert 'ov.style.pointerEvents = was' in branch, 'the overlay must come back'
-    # A page without either is left alone rather than crashed on.
-    assert "typeof document.elementFromPoint !== 'function'" in branch
+    assert 'turn._handleMouseDown(e)' in branch
+    # The pivot goes back onto the molecule first, for the reason Manipulate
+    # gives: a camera turning about a point that has wandered off the
+    # structure swings the molecule out of the frame.
+    assert 'centreOnSystem(scopeKey, false);' in branch
+    # And the mechanism that could not work is gone rather than left beside
+    # the one that does.
+    assert 'new window.MouseEvent' not in branch
+    assert "ov.style.pointerEvents = 'none'" not in branch
 
     # And a press that *is* on an atom is taken, so the scene does not turn
     # underneath the arrow being drawn.
