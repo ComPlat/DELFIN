@@ -5213,6 +5213,28 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         }
     }
 
+    // The wheel pressed reaches every mode, including the one whose overlay
+    // is not listening.
+    //
+    // Select mode leaves the overlay passthrough unless Shift is held, so
+    // that 3Dmol can take atom clicks itself -- which means a middle press
+    // never reaches the overlay's own handler there.  Bound on the viewer as
+    // well, the gesture is the same gesture in all five modes, which is the
+    // whole of what it is for.
+    function bindWheelClears(scopeKey, viewerEl) {
+        if (!viewerEl || viewerEl.__delfinWheelClears) return;
+        viewerEl.__delfinWheelClears = true;
+        viewerEl.addEventListener('mousedown', function(e) {
+            var state = getState(scopeKey);
+            if (!state || state.mode === 'off') return;
+            if (e.button !== 1) return;
+            e.preventDefault();
+            e.stopPropagation();
+            clearSelection(scopeKey);
+            pushPicksToPython(scopeKey);
+        }, true);
+    }
+
     // --- Public API ---
     function onViewerReady(scopeKey, viewerEl) {
         var state = getState(scopeKey);
@@ -5244,6 +5266,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         state.shapes = [];
         state.pivotShape = null;
         state.pullShapes = [];
+        bindWheelClears(scopeKey, viewerEl);
         // The arrows go, but not the load: it is about atoms by number, and
         // the structure that has just arrived has the same ones.  Redrawn on
         // the first frame after this.

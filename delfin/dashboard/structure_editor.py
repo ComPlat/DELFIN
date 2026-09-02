@@ -8435,7 +8435,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         'and has gone off with it. Switch the relaxation back '
                         'on to have changes priced again.')
                     return
-                _set_mol_status('The structure is no longer being relaxed.')
+                # What this switch stops is the hand being answered.  A
+                # climb or an optimisation is its own press with its own
+                # button, and taking one down from here would surprise
+                # somebody who started it deliberately -- but saying nothing
+                # is being relaxed while one of them is still walking the
+                # structure is worse.  Reported from a real session: the
+                # switch went off, the line said this, and run 54 went on
+                # streaming frames into the picture for another sixteen
+                # seconds.
+                walking = ('the climb' if state.get('climb_run') is not None
+                           else 'an optimisation'
+                           if state.get('optimize_run') is not None else '')
+                _set_mol_status(
+                    'The structure is no longer following your hand.'
+                    + (f' {walking.capitalize()} is still running -- its own '
+                       'button is what stops that.' if walking else ''))
                 return
             if _server_binary(submit_ff_dd.value) is None:
                 _set_mol_status(f'{label} needs a program that was not found.')
@@ -17480,6 +17495,26 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # to clear everything else.
         _remember('the reset', controls=True)
         kept = list(state.get('history') or [])
+        # Which mode the hand is in is not the structure's business.
+        #
+        # The write below goes through the host's "a structure I have not
+        # seen" path, and that path puts Manipulate, Select, Draw and Load
+        # back to off -- rightly, for a structure that has just arrived, which
+        # is what its own note argues.  Reset is not that: it goes back to the
+        # same molecule the user is working on, and switching off the mode
+        # they are working in leaves a picture that does not answer a click.
+        # Reported twice within the hour, as "der viewer ist nach reset
+        # einfach eingefroren" and "warum reagiert nach reset der viewer nicht
+        # mehr" -- from a session where the journal shows the press, then
+        # `submit_manip_btn = False`, and then nothing the hand did reaching
+        # anything.
+        #
+        # The same reasoning the host already applies to the method and the
+        # solvent: they are how the user is working, and a structure arriving
+        # does not stop them being that.
+        modes_were = [(one, one.value) for one in
+                      (submit_select_btn, submit_manip_btn,
+                       submit_draw_btn, submit_load_btn)]
         aside = _stop_what_is_running()
         state['constraints'] = []
         state['scan_legs'] = []
@@ -17509,6 +17544,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         finally:
             state['hold_mode_quiet'] = False
         submit_internal_value.value = 0.0
+        # And what is drawn *on* the structure, which is the half this left
+        # standing.  An arrow hung on an atom survives a redraw on purpose --
+        # it is about atoms by number and the structure that arrives has the
+        # same ones -- so nothing in the write below takes one away, and after
+        # a Reset the pull vectors were still there over a structure that had
+        # never been pulled.  Reported as "reset setzt viewer nicht zurueck
+        # auf anfang ich seh immer noch den vektor".
+        #
+        # Reset is the one action that means "as it was loaded", and a load
+        # was not part of that.  The same for the pivot: it is a point chosen
+        # on a structure, and the structure is going back.
+        state['loads'] = []
+        _tell_the_page_the_loads()
+        _refresh_load_controls()
+        state['pivot'] = None
         _clear_selection()
         # Writing the coordinates is what re-renders and re-perceives; it also
         # clears everything above a second time, which is the point.
@@ -17525,6 +17575,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # which is what Undo now returns to.
         state['history'] = kept
         state.pop('history_seed_pending', None)
+        # And back into the mode the hand was in, after the write that took it.
+        for widget, was in modes_were:
+            if bool(widget.value) != bool(was):
+                widget.value = was
         _refresh_constraints()
         _set_mol_status('Back to the structure as it was loaded. '
                         'Undo brings back what was here.' + aside)
