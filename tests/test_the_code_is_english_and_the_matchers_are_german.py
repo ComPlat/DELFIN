@@ -201,11 +201,42 @@ def test_the_shared_module_is_where_the_vocabulary_lives():
 _PACK = Path(__file__).resolve().parents[1] / "delfin" / "agent" / "pack"
 
 
-def test_the_pack_states_the_answer_language_as_its_own_rule():
-    text = (_PACK / "shared" / "work_cycle_rules.md").read_text()
-    assert "Answer in the language the user wrote in" in text
-    # Decided per message — not from the project, not from habit.
-    assert "latest\n  message" in text or "latest message" in text
+# Delivery, not authorship. The first version of this test read the rule
+# out of work_cycle_rules.md on disk and passed — while that whole file
+# reached only the four full-context roles. `load_shared_context` gives
+# every other role a 16-line slice of the bundle, all of it from
+# delfin_context.md, so the rule was ABSENT from the solo, dashboard and
+# office prompts, and so was the code-English rule beside it. Qwen went on
+# answering an English question in German with the fix "shipped".
+#
+# A prompt rule is a rule when it is in the prompt. These build the real
+# thing and look in it.
+
+_ROLES_A_USER_TALKS_TO = ("solo_agent", "dashboard_agent", "office_agent")
+
+
+def _composed(role: str) -> str:
+    from delfin.agent.prompt_loader import PromptLoader
+    return PromptLoader().build_system_prompt(role, "read calc.py")
+
+
+@pytest.mark.parametrize("role", _ROLES_A_USER_TALKS_TO + ("builder_agent",))
+def test_the_answer_language_rule_reaches_the_model(role):
+    assert "language of the user's LATEST message" in _composed(role), role
+
+
+@pytest.mark.parametrize("role", _ROLES_A_USER_TALKS_TO + ("builder_agent",))
+def test_the_code_english_rule_reaches_the_model(role):
+    prompt = _composed(role)
+    assert "INTO code stays English" in prompt, role
+    assert "docstrings" in prompt, role
+
+
+def test_the_rule_has_one_home():
+    """Stated twice, the two copies drift and neither is authoritative."""
+    homes = [f.name for f in sorted((_PACK / "shared").glob("*.md"))
+             if "language of the user" in f.read_text()]
+    assert homes == ["honesty_addendum.md"], homes
 
 
 def test_no_skill_prescribes_the_language_of_its_own_output():
@@ -221,9 +252,3 @@ def test_no_skill_prescribes_the_language_of_its_own_output():
         "\n".join(offenders)
 
 
-def test_code_is_still_english_regardless_of_the_conversation():
-    """The load-bearing half of the same bullet, which the rewrite must
-    not have loosened: what goes INTO code stays English."""
-    text = (_PACK / "shared" / "work_cycle_rules.md").read_text()
-    assert "Everything you write INTO code is English" in text
-    assert "regardless of the conversation" in text
