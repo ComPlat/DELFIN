@@ -5393,12 +5393,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return False
         if int(state.get('topology_refused') or 0) < 3:
             return False
-        good = state.get('topology_good')
-        if not good or len(_gfn.atom_lines(good)) != len(
+        # Measured against the geometry the grab began on, which is the one
+        # thing in a drag that does not move.  The wall's own kept structure
+        # does -- it is rewritten by every allowed step -- so a distance to it
+        # is not a yardstick: measured, a wish further out than the one that
+        # gave up came out *nearer* by that reckoning, the drag restarted for
+        # one answer and then stuck for good.  Six copies of the test at once,
+        # two of them failing.
+        began = state.get('gfn_topology_source')
+        if not began or len(_gfn.atom_lines(began)) != len(
                 _gfn.atom_lines(current)):
             state.pop('topology_stuck', None)
             return False
-        far = _gfn.largest_shift(good, current)
+        far = _gfn.largest_shift(began, current)
         if far is None:
             return False
         stuck = state.get('topology_stuck')
@@ -7434,8 +7441,26 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # user.  The wall guards itself the same way, for the same reason.
             return
         if _gfn.coordinates_of(here) == _gfn.coordinates_of(good):
+            # The box already holds it, so there is nothing to write -- but the
+            # picture still has the cursor's structure, and that is what this
+            # is for.  Redrawn through the host, which has no way of knowing
+            # the redraw is about the molecule it is already on: it takes its
+            # "structure I have not seen" path and starts over.  Measured on
+            # one ordinary release: charge -1 -> 0, multiplicity 3 -> 1, one
+            # held value -> none, a hand-made bond -> none, three history
+            # entries -> one, the pristine structure Reset goes back to
+            # replaced by the dragged one, and Manipulate, Dynamik Opt and the
+            # budget all switching themselves off -- so the next click did not
+            # even take hold of an atom.
+            #
+            # The same flag every other write in here uses says it is the same
+            # molecule.  This one had no write to hang it on.
             state['manip_inflight'] = False
-            update_view()
+            state['structure_edit_inflight'] = True
+            try:
+                update_view()
+            finally:
+                state['structure_edit_inflight'] = False
             return
         _write_coords(xyz_document(rows, why))
 
@@ -10354,8 +10379,24 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['history'] = history
         return True
 
-    def _remember(what, gesture=None):
+    def _remember(what, gesture=None, controls=False):
         """Put the state as it is now into the history, under a name.
+
+        *controls* also keeps the switches that belong to the structure -- the
+        charge, the multiplicity, the method and the rest of
+        :func:`_structure_controls`.  Off by default, and that is the point:
+        those are the user's own choices and go on standing across an ordinary
+        Undo, which takes back an action and not a decision made after it.
+
+        Reset is the case that needs them.  It clears the switches along with
+        the structure -- intended -- and then says "Undo brings back what was
+        here", and Undo brought back only the coordinates and the marks.
+        Measured on an oxalate: as the user set it up, "E = -20.844028 Eh ...
+        charge -2"; after Reset the charge box reads 0; after Undo the six
+        atoms are back and the charge still reads 0, and the very next press
+        answers "E = -20.617076 Eh ... charge 0" -- the same structure, two
+        answers 142.4 kcal/mol apart, with nothing said.  On an acetate the
+        same sequence does not even run.
 
         One history for everything the viewer can do, and one entry per
         action. There used to be three -- a stack in the browser for drags, a
@@ -10382,6 +10423,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                      coords=coords_widget.value,
                      what=str(what),
                      gesture=gesture)
+        if controls:
+            entry['controls'] = [one.value for one in _structure_controls()]
         last = history[-1] if history else None
         # The same picture *and* everything held with it.  Judged on the
         # picture alone, a Hold was never a step of its own -- it changes no
@@ -10509,6 +10552,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                       in (entry.get('poly_arrangements') or [])]
         state['poly_arrangement_index'] = int(
             entry.get('poly_arrangement_index') or 0)
+        # And the switches, where the action that was taken back had cleared
+        # them.  Only where they were kept: an ordinary Undo takes back an
+        # action, not a decision the user made after it, so a method chosen
+        # since must go on standing.  See :func:`_remember`.
+        if entry.get('controls'):
+            _apply_controls(entry['controls'])
         # The dropdown as well, quietly: it is what says which polyhedron is
         # being held, and left showing the one that was just taken back it
         # would put it on again at the next thing the user touched.
@@ -17269,7 +17318,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # the history away and seeds a new one. So it is taken back out
         # afterwards rather than being left to survive a write that is meant
         # to clear everything else.
-        _remember('the reset')
+        _remember('the reset', controls=True)
         kept = list(state.get('history') or [])
         aside = _stop_what_is_running()
         state['constraints'] = []
