@@ -495,10 +495,16 @@ def _as_drawn(drawn: Any, arrows: list) -> Dict[str, Any]:
     Four places mean four things around an arrow, and only two of them survive
     a trip through an RXN file:
 
-    * **before** it -- what goes in;
-    * **after** it -- what comes out;
+    * **before** it -- the reactants;
     * **over** it -- what is added, the reagent or solvent;
-    * **under** it -- what is given off, which comes out with the products.
+    * **under** it -- what is given off;
+    * **after** it -- the products.
+
+    Written ``reactants>>in>out>>products``, a field each, so that a dot
+    only ever separates several things standing in the same place.  The
+    doubled marks are the arrow's own two ends, so several steps run on
+    one after another and each one can still be picked out:
+    ``A>>in>out>>B>>in>out>>C``.
 
     Indigo keeps neither the second arrow nor the difference between over and
     under.  A three-step scheme comes back as "the first thing, into
@@ -509,9 +515,7 @@ def _as_drawn(drawn: Any, arrows: list) -> Dict[str, Any]:
 
     What it does keep is every component and its coordinates, and the KET
     keeps the arrows and theirs in the same frame.  So the reading is done
-    from the geometry instead, and the result is the ordinary
-    ``reactants>agents>products`` -- with a further ``>agents>products`` for
-    every arrow after the first.
+    from the geometry instead.
 
     Over and under are told apart strictly: the component has to sit inside
     the arrow's span and clear of its line altogether.  Reactants and products
@@ -561,32 +565,42 @@ def _as_drawn(drawn: Any, arrows: list) -> Dict[str, Any]:
         parts = [one for group in groups for one in (group or [])]
         return '.'.join(sorted(Chem.MolToSmiles(one) for one in parts))
 
-    # One reaction per step, one to a line.  A scheme is a sequence of
-    # reactions and not one long one: written as a single chain,
-    # ``A>reagent>B.HCl>>C``, the field holding B.HCl is at once the products
-    # of the first step and the reactants of the second, so the hydrogen
-    # chloride the first step gives off is read as something the second one is
-    # made from.  A line each says what each step is, and every one of them is
-    # a reaction SMILES anything can read on its own.
+    # Four places at an arrow, four fields:
+    #
+    #     reactants >> what goes in > what comes out >> products
+    #
+    # The doubled marks are the arrow's own two ends, so a step can be seen to
+    # begin and to end, and the next one begins the same way.
+    #
+    # Ordinary reaction SMILES has three, and a by-product put in with the
+    # products is a by-product nothing can pick out again -- a dot there means
+    # "and this one too", which is what a second product drawn beside the
+    # first one means.  The fourth field is what keeps the two apart, so a dot
+    # only ever separates several things standing in the same place.
+    #
+    # Steps run on, one after another, because the doubled marks show where
+    # each arrow begins and ends:
+    #
+    #     A>>in>out>>B>>in>out>>C
+    #
+    # What stands between two arrows is written once and is the products of
+    # the step before it and the reactants of the step after it, which is what
+    # it is on the canvas.
     try:
-        lines = []
+        smiles = written(befores.get(0))
         for index in range(len(arrows)):
-            lines.append('>'.join([
-                written(befores.get(index)),
-                written(overs.get(index)),
-                written(befores.get(index + 1), unders.get(index)),
-            ]))
+            smiles += (f'>>{written(overs.get(index))}'
+                       f'>{written(unders.get(index))}'
+                       f'>>{written(befores.get(index + 1))}')
     except Exception as exc:                            # noqa: BLE001
         return {'ok': False, 'smiles': '',
                 'status': f'That reaction could not be written as SMILES: {exc}'}
-    if not lines or not lines[-1].rsplit('>', 1)[-1]:
+    if not written(befores.get(len(arrows))):
         return {'ok': False, 'smiles': '',
                 'status': ('The last arrow has nothing after it yet, so there '
                            'is no reaction to write.')}
-    smiles = '\n'.join(lines)
     steps = len(arrows)
-    said = (f'{steps} step{"" if steps == 1 else "s"} drawn: '
-            + ' / '.join(lines))
+    said = f'{steps} step{"" if steps == 1 else "s"} drawn: {smiles}'
     if dative:
         said += (f' ({dative} coordination bond(s) written with the charge on '
                  'both ends, which is the form the rest of DELFIN reads.)')
@@ -602,9 +616,12 @@ def reaction_smiles_from_rxnfile(rxnfile: str, ket: str = '') -> Dict[str, Any]:
     saved as *.MOL due to reaction".  So a drawing with an arrow is fetched as
     an RXN file instead, and this is what reads it.
 
-    The result is the ordinary form, ``reactants>agents>products`` with the
-    sides joined by dots -- ``CCO.CC(=O)O>>CCOC(C)=O`` -- which is what RDKit
-    writes and what the reaction SMARTS elsewhere in DELFIN already read.
+    With a canvas to read, the result carries all four places an arrow has:
+    ``reactants>>in>out>>products``, with a further ``>>in>out>>products``
+    for every arrow after the first.  Without one -- an RXN
+    file on its own, with no KET beside it -- there is only what Indigo
+    decided, and that is the ordinary three-field
+    ``reactants>agents>products``.
 
     The reaction is rebuilt rather than edited in place.  Each side is read,
     tidied and added to a new reaction, because the molecules a parsed reaction
