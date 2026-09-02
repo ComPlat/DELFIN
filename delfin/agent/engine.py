@@ -2163,6 +2163,7 @@ class AgentEngine:
             try:
                 from . import verify_guard as _vg_numbers
                 _vg_numbers.reset_observed_numbers()
+                _vg_numbers.reset_keyed_values()
             except Exception:
                 pass
 
@@ -2593,6 +2594,19 @@ class AgentEngine:
                             _out,
                             truncated=bool(
                                 getattr(event, "output_truncated", False)))
+                        # The same numbers, keyed by record and field, so
+                        # two of them can be compared rather than merely
+                        # counted as present. The path comes from the call
+                        # that produced this result — a value read out of
+                        # <folder>/DELFIN_Data.json and one read back out
+                        # of a table row keyed on <folder> describe the
+                        # same thing, and that is the only way to see it.
+                        _src = ""
+                        for _pn, _pi, _ in reversed(self._trace_pending):
+                            if _pn == event.tool_name:
+                                _src = str(_pi)
+                                break
+                        _vg_numbers.record_keyed_values(_out, source=_src)
                     except Exception:
                         pass
                     # And whether the model saw the whole result. A count
@@ -3569,7 +3583,14 @@ class AgentEngine:
         # class rather than the correction class: the number is not wrong,
         # it is unfounded, and a retry is free to guess the same way again.
         ambiguous = self._scan_ambiguous_column_totals(response_text)
-        if not loc and not qty:
+        # Two values for one field of one record. This one does not judge
+        # the ANSWER at all — it judges what the turn's tools returned, so
+        # it fires even when the answer only reports aggregates, which is
+        # exactly how the field case hid: the chat gave min/max/mean and
+        # the contradiction lived between a stored file and a table the
+        # agent had just written.
+        conflicts = _vg.scan_for_conflicting_figures()
+        if not loc and not qty and not conflicts:
             return self._append_answer_caveats(
                 response_text, functional=func, ambiguous=ambiguous,
                 on_token=on_token)
@@ -3577,13 +3598,17 @@ class AgentEngine:
             # The single correction for this user turn is spent (e.g. a
             # nested continuation re-entered here) — annotate, never loop.
             return self._append_answer_caveats(
-                response_text + _vg.grounding_caveat(loc, qty),
+                response_text + _vg.grounding_caveat(loc, qty)
+                + _vg.conflicting_figure_caveat(conflicts),
                 functional=func, ambiguous=ambiguous, on_token=on_token)
         parts: list[str] = []
         if loc:
             parts.append(_vg.location_claim_feedback(loc))
         if qty:
             parts.append(_vg.quantity_claim_feedback(qty))
+        if conflicts:
+            parts.append(_vg.conflicting_figure_feedback(conflicts)
+                         .replace("[Verify] ", "", 1))
         feedback = "[Verify] " + " ".join(parts)
         # What the session had observed BEFORE the retry. The retry either
         # reads something new or it does not, and that is the only thing
@@ -3616,7 +3641,8 @@ class AgentEngine:
             self._claim_guard_active = False
         if not correction:
             return self._append_answer_caveats(
-                response_text + _vg.grounding_caveat(loc, qty),
+                response_text + _vg.grounding_caveat(loc, qty)
+                + _vg.conflicting_figure_caveat(conflicts),
                 functional=func, ambiguous=ambiguous, on_token=on_token)
         combined = response_text + "\n\n" + correction
         # Re-scan the correction: the recursive turn refreshed the
@@ -3643,6 +3669,16 @@ class AgentEngine:
         else:
             caveat = ""
             self._claim_guard_corrected = True
+        # A conflict is resolved by NAMING a number, not by acknowledging
+        # the question. The field case answered its own comparison with
+        # "deutet auf eine unterschiedliche Formel-Konvention hin" and
+        # delivered its values unchanged — prose that would satisfy any
+        # check made of words. Requiring one of the two figures to appear
+        # in the correction cannot be met that way.
+        unresolved = [c for c in conflicts
+                      if not _vg.conflict_is_addressed(c, correction)]
+        if unresolved:
+            caveat += _vg.conflicting_figure_caveat(unresolved)
         marker = _vg.verification_marker(new_files) if caveat == "" else ""
         note = caveat or marker
         if note:

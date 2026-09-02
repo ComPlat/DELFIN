@@ -24,4 +24,4 @@ Constraints:
 - If more than 200 folders match, ask the user to narrow the filter.
 - Use absolute Eh values; do NOT convert to relative kcal/mol unless asked.
 
-Output format: short German chat summary + CSV path.
+Output format: short chat summary in the user's language + CSV path.
