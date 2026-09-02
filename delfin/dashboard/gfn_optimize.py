@@ -4237,12 +4237,22 @@ def electron_parity(xyz_text: str, charge: int = 0) -> int:
     An even count can only pair up to a singlet, triplet, quintet ...; an odd
     one to a doublet, quartet ... -- so the parity fixes which multiplicities
     are even possible, and scanning the others would be scanning nonsense.
+
+    Header or no header, because both arrive here.  The Optimise button
+    hands over the coordinate box, which has one; Optimise all hands over the
+    tab's frames, which are bare atom lines.  Skipping two lines regardless
+    threw away the first two *atoms* of every frame, so the parity came out
+    inverted whenever those two had an odd atomic-number sum -- water read odd
+    (O + H = 9) and methane read odd (C + H = 7), while both have ten
+    electrons.  Both directions of the guard then failed on the same molecule:
+    a legal run refused with arithmetic that is simply wrong, and an illegal
+    one run and its multiplicity asserted on the status line.
     """
     from delfin.atom_mapping import _periodic_table
 
     table = _periodic_table()
     electrons = 0
-    for line in str(xyz_text or '').splitlines()[2:]:
+    for line in atom_lines(xyz_text):
         parts = line.split()
         if len(parts) < 4:
             continue
