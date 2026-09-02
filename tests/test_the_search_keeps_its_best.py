@@ -335,3 +335,58 @@ def test_the_list_is_bounded_and_says_when_it_drops_one():
     assert len(part._points_here()) == part._POINTS_KEPT
     book = state['points_by'][part._best_conditions()]
     assert book['dropped'] == 5, book['dropped']
+
+
+def test_a_heat_of_formation_is_not_multiplied_by_the_hartree_conversion():
+    """MOPAC's number is already in kcal/mol, and the list treated it as one.
+
+    A point's energy is whatever the engine that found it reports, and the two
+    do not report the same quantity: xtb gives a total energy in hartree,
+    MOPAC a heat of formation in kcal/mol.  Every place that turned a stored
+    difference into kcal/mol converted from hartree regardless.
+
+    Measured on butane's two conformers under PM7 -- heats of formation
+    -28.21108 and -27.48793 kcal/mol, which is the 0.72 kcal/mol gauche-anti
+    gap room temperature crosses without noticing.  The list offered the
+    second as "+453.78 kcal/mol", and picking it said "It stands +453.78
+    kcal/mol against the lowest one found."  The same drive under GFN2 gave
+    +0.60 and was right, so the arithmetic was correct for hartree and only
+    for hartree.
+
+    The list cannot mix the two: the question a point belongs to includes the
+    method, so every point in the book on screen was found by the engine on
+    the toolbar now.
+    """
+    part, _state = _an_editor(_geo(1.20))
+    part.submit_ff_dd.value = 'pm7'
+    part._keep_a_point(_geo(1.20), -28.21108, 'minimum', 'optimisation')
+    part._keep_a_point(_geo(1.31), -27.48793, 'minimum', 'optimisation')
+    part._refresh_the_best()
+    said = [label for label, _value in part.submit_best_dd.options]
+    assert any('+0.72 kcal/mol' in one for one in said), said
+    assert not any('453' in one for one in said), said
+
+    # And the same numbers as hartree, which is what they are under xtb.
+    part, _state = _an_editor(_geo(1.20))
+    part.submit_ff_dd.value = 'gfn2'
+    part._keep_a_point(_geo(1.20), -13.665128, 'minimum', 'optimisation')
+    part._keep_a_point(_geo(1.31), -13.664175, 'minimum', 'optimisation')
+    part._refresh_the_best()
+    said = [label for label, _value in part.submit_best_dd.options]
+    assert any('+0.60 kcal/mol' in one for one in said), said
+
+
+def test_two_readings_of_one_mopac_point_are_one_point():
+    """The same conversion decides whether two answers are the same place.
+
+    A thousandth of a kcal/mol between two readings became 0.63 through the
+    hartree conversion, which is past what counts as the same point -- so one
+    minimum reached twice was kept as two.
+    """
+    part, _state = _an_editor(_geo(1.20))
+    part.submit_ff_dd.value = 'pm7'
+    part._keep_a_point(_geo(1.20), -28.21108, 'minimum', 'optimisation')
+    part._keep_a_point(_geo(1.20), -28.21008, 'minimum', 'optimisation')
+    points = part._points_here()
+    assert len(points) == 1, points
+    assert int(points[0].get('seen') or 1) == 2, points
