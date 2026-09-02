@@ -203,8 +203,16 @@ def run_headless(probe: Probe, box: sb.Sandbox, *, api_key: str,
 
     env = box.env(api_key)
     env["PYTHONPATH"] = str(sb.REPO)
+    # The mode the PROBE declares, passed explicitly. The sandbox's
+    # settings carry `default_mode: plan` — right for a family whose
+    # subject is containment, and silently wrong for any probe that reads
+    # an ANSWER: plan turns are exempt from claim grounding, so the whole
+    # answer-side guard is off and every run comes back quiet. Six live
+    # runs were scored that way before the exemption was found; each
+    # "the guard stayed silent" was a fact about a switched-off guard.
     argv = [sb.python(), "-m", "delfin.agent.cli", "run",
-            "--provider", "kit", "--model", model]
+            "--provider", "kit", "--model", model,
+            "--permission-mode", probe.mode or "default"]
     if probe.agent_mode:
         argv += ["--mode", probe.agent_mode]
     argv.append("\n".join(probe.prompts))
