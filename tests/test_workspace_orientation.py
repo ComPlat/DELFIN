@@ -75,12 +75,27 @@ def test_failed_write_is_not_recorded_as_evidence():
 
 
 def test_code_language_rule_ships_in_the_shared_pack():
+    """Two rules, and they must not be one.
+
+    Until 2026-09-02 the answer-language rule was the closing clause of
+    this bullet — "You still talk to the user in their language" — and a
+    task written in English came back in German. It now stands on its
+    own, so this asserts the CONTRACT rather than that old phrasing:
+    code English, answer in the user's language, stated separately.
+    """
     rules = (Path(__file__).resolve().parent.parent / "delfin" / "agent"
              / "pack" / "shared" / "work_cycle_rules.md").read_text(
                  encoding="utf-8")
     assert "English" in rules
     assert "docstrings" in rules
-    assert "talk to the user in their language" in rules
+    assert "Answer in the language the user wrote in" in rules
+    # Its own bullet, not a tail on the code-comment one.
+    for line in rules.splitlines():
+        if "Answer in the language" in line:
+            assert line.lstrip().startswith("-"), line
+            break
+    else:                                        # pragma: no cover
+        raise AssertionError("answer-language rule is not a rule of its own")
 
 
 def test_delfin_context_suppressed_for_a_user_project(tmp_path):
