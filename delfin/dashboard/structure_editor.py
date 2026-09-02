@@ -12689,8 +12689,42 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             f'{n}: {outcome.get("status") or "it did not run"}')
                         return
                     walked = outcome['xyz']
-                    energy = (_priced(outcome, held) if pushing
-                              else outcome['energy'])
+                    # The hold's own spring comes off a walk too, and it used
+                    # to come off only a push.
+                    #
+                    # A walk holds its coordinate at a value with a force
+                    # constant of 20 and reported xtb's biased total, which is
+                    # the molecule plus the hold.  The push path already takes
+                    # the hold back off, for the reason written on _unbiased;
+                    # this is the same reason on the same kind of number.
+                    #
+                    # How much it is worth, measured rather than assumed.  On
+                    # a methane with an H-C-H bend held at values it can reach
+                    # -- 109.5, 100, 80, 40 degrees -- the spring is 0.0, 0.0,
+                    # 0.4 and 0.2 kcal/mol against a molecule at -0.0, +1.4,
+                    # +32.0 and +91.3.  On an ethane C-C walked outwards over
+                    # six points it runs -0.000 to -0.065.  So this is small
+                    # wherever the value is met, which is the ordinary case,
+                    # and it is not nothing on a barrier.
+                    #
+                    # It was reported as being worth a great deal more: an
+                    # angle walk quoting +774.7, +7429.9 and +20646.7 where
+                    # the molecule stood at +107.4, +133.5 and +149.7.  Those
+                    # came from a walk armed to -70.9 degrees, which is not an
+                    # angle three atoms can have, and that is fixed at the
+                    # arming instead.  Asked for angles a geometry can hold,
+                    # the values are met and the spring stays where it is
+                    # above -- so the numbers below are what this is worth,
+                    # and the ones in the report are what the other defect was
+                    # worth.
+                    #
+                    # _priced is the arithmetic that was already written for
+                    # the push, for the same reason and against a real
+                    # calculation: k*d^2, agreeing to 0.0000 kcal/mol over a
+                    # distance, an angle and a torsion.  It costs nothing
+                    # extra where the value is met, which is the ordinary
+                    # case, because the residue it subtracts is then zero.
+                    energy = _priced(outcome, held)
                     if energy is None:
                         state['scan_gave_up'] = (
                             f'It stopped at step {n} of {steps}: the push '
@@ -16970,6 +17004,27 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         f'{", ".join(instructed)} at '
                         f'{_gfn.PUSH_FORCE_TO:.0f} kcal/mol/A, twice what a '
                         f'bond holds -- on this method, that is the answer')
+        # What a break's number is a number about.
+        #
+        # A form/break walk stops the moment the bond graph agrees with every
+        # verb -- see :func:`_carried_out` for why that test and not a bond
+        # order -- and for a break that is where the line stops being drawn.
+        # The rise to there is then reported beside a temperature and a
+        # waiting time, which reads as the cost of breaking the bond, and it
+        # is a good deal less than that.  Measured on an ethane C-C relaxed at
+        # fixed lengths: +40.1 kcal/mol at 2.02 A, which is where the graph
+        # gives up on it, against +86.2 at 2.50, +114.0 at 3.00 and a plateau
+        # of +130.3 -- so the number quoted is under a third of what parting
+        # the pair costs.
+        #
+        # Said rather than changed.  Stopping there is right: it is the same
+        # test the picture is drawn with and the one the user can see, and a
+        # walk that ran to the plateau would be a walk nobody asked for.  What
+        # was missing is what the number means.
+        if done and any('break' in str(one) for one in instructed):
+            bits.append('a break ends where the bond stops being drawn, '
+                        'which is short of parting it -- the rise is to '
+                        'there')
         bits += _phrases(state.get('scan_depth'))
         bits += _phrases(_scan_can_be_quoted(T))
         if free is None and str(submit_scan_energy.value) == 'G':

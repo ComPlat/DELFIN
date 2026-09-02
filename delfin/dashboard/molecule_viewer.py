@@ -3556,11 +3556,26 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
     // the kernel costs 45 ms and collapses to 13 Hz under a drag. Term indices
     // are 0-based into the model's atom order, which is the XYZ order Python
     // exported the parameters from.
+    /* In the order the serials were given, which for a selection is the order
+       the atoms were clicked.  It walked the model 0..n-1 instead and handed
+       back ascending atom numbers, and everything the user can see honours
+       the click order: the highlight colours are indexed by it, the measure
+       box prints the chain [H5 -> C1 -> C0 -> H2] and the toolbar's value is
+       the torsion over exactly that chain.
+       Python was told 0,1,2,5.  Hold then paired the sorted list with the
+       value measured over the clicked one and wrote "dihedral: 1, 2, 3, 6,
+       -59.9" into xtb -- one chain's number applied to another chain.  For
+       two atoms it makes no difference, for three it moves the vertex of the
+       angle, and for four it is a different torsion outright. */
     function ffIndicesOf(viewer, serials) {
         var atoms = getAtoms(viewer);
-        var out = [];
+        var where = {};
         for (var i = 0; i < atoms.length; i++) {
-            if (serials.indexOf(atoms[i].serial) >= 0) out.push(i);
+            if (!(atoms[i].serial in where)) where[atoms[i].serial] = i;
+        }
+        var out = [];
+        for (var s = 0; s < serials.length; s++) {
+            if (serials[s] in where) out.push(where[serials[s]]);
         }
         return out;
     }

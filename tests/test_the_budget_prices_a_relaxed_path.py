@@ -1499,6 +1499,33 @@ def test_the_anchor_belongs_to_the_method_that_measured_it():
     assert "state['thermal_method'] = method" in EDITOR_SOURCE
 
 
+def test_a_break_says_what_its_rise_is_a_rise_to():
+    """It stops where the line stops being drawn, not where the pair parts.
+
+    A form/break walk ends the moment the bond graph agrees with every verb,
+    and for a break that is the drawing threshold.  The verdict then reported
+    the rise to there beside a temperature and a waiting time -- "top +40.2 at
+    2.02 ... rise <=40.2 kcal/mol ... needs ~530 K ... at 298.15 K: ~1.62e+09
+    years" -- which reads as the cost of breaking the bond.
+
+    Measured on an ethane C-C relaxed at fixed lengths against its own
+    minimum: +40.1 kcal/mol at 2.02 A, which is where the graph gives up on
+    it, against +86.2 at 2.50, +114.0 at 3.00 and a plateau of +130.3.  The
+    number quoted was under a third of what parting the pair costs.
+
+    Stopping there is right and stays: it is the test the picture is drawn
+    with, and _carried_out records why it is not a bond order -- an ethane's
+    C-C still reads 0.91 at 3.5 A, because a restricted determinant cannot
+    part an electron pair.  What was missing is what the number means.
+    """
+    body = EDITOR_SOURCE.split("def _scan_verdict(")[1].split("\n    def ")[0]
+    assert "a break ends where the bond stops being drawn" in body
+    # Only for a break, and only once the instruction was carried out: on a
+    # walk that never broke anything the clause would be about nothing.
+    where = body.split("a break ends where")[0]
+    assert "if done and any('break' in str(one) for one in instructed):" in where
+
+
 def test_an_angle_is_only_armed_to_an_angle_three_atoms_can_have():
     """A distance had a floor and said so; an angle had neither side.
 
@@ -1780,7 +1807,7 @@ def test_a_push_and_a_hold_cannot_share_one_force_constant():
     assert "A push is a force between two atoms, so it walks distances." in source
 
 
-def test_a_push_is_priced_without_its_own_force_in_the_answer():
+def test_a_point_is_priced_without_its_own_hold_in_the_answer():
     """A push leaves a real restraint energy behind -- it is meant to, that is
     the force -- and xtb reports the biased total.
 
@@ -1789,11 +1816,25 @@ def test_a_push_is_priced_without_its_own_force_in_the_answer():
     same geometry gives -7.203332.  The 1.42 kcal/mol between them is the
     restraint, and priced as it stands every point of a push would carry its
     own push in the barrier.
+
+    A walk is the same kind of number and was not treated as one.  It holds
+    its coordinate with a force constant of 20 and reported the biased total
+    too.  Measured on a methane with an H-C-H bend held at values it can reach
+    -- 109.5, 100, 80 and 40 degrees -- the hold is worth 0.0, 0.0, 0.4 and
+    0.2 kcal/mol against a molecule at -0.0, +1.4, +32.0 and +91.3, and on an
+    ethane C-C walked outwards it runs -0.000 to -0.065.  Small wherever the
+    value is met, which is the ordinary case, and not nothing on a barrier.
+
+    It was reported as being worth a great deal more -- an angle walk quoting
+    +20646.7 where the molecule stood at +149.7 -- but those points came from
+    a walk armed to -70.9 degrees, which is not an angle three atoms can have,
+    and that is fixed at the arming.  Asked for angles a geometry can hold,
+    the numbers above are what this is worth.
     """
     source = EDITOR_SOURCE
     assert 'def _unbiased(here, applied=()):' in source
     assert 'def _priced(got, applied):' in source
-    assert "energy = (_priced(outcome, held) if pushing" in source
+    assert "energy = _priced(outcome, held)" in source
     # And the path records where the coordinate *got to*, because a push does
     # not dictate a value -- that is the whole point of it.  The geometry goes
     # down beside the price so that the finished profile can be handed to a
