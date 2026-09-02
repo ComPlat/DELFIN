@@ -131,15 +131,22 @@ def test_the_first_line_says_which_it_is():
     assert reaction["smiles"] == "CCO>>CC=O"
 
 
-def test_the_editor_is_asked_for_a_reaction_only_when_there_is_one():
-    """``getRxn`` throws when there is no arrow, exactly as ``getMolfile``
-    throws when there is one.  Which to ask for is decided in the page, where
-    the canvas is, rather than guessed here."""
+def test_the_editor_is_asked_for_the_records_only_when_there_is_a_reaction():
+    """``getMolfile`` throws when there is an arrow, so which to ask for is
+    decided in the page, where the canvas is, rather than guessed here.
+
+    And for a reaction it is the records, not a reaction file: an RXN drops
+    components a scheme still needs.  Both tabs ask the same way -- the Submit
+    tab used to ask for ``getRxn`` and send no canvas at all, which is why what
+    it put in the input box was the ordinary three-field form with over and
+    under run together."""
     handler = SUBMIT_SOURCE.split("def on_submit_draw_get")[1].split("\n    def ")[0]
 
     assert "containsReaction" in handler
-    assert "api.getRxn()" in handler
+    assert "api.getSdf()" in handler
     assert "api.getMolfile()" in handler
+    assert "api.getKet()" in handler, "the arrows are only in there"
+    assert "api.getRxn()" not in handler
     # Still not the editor's own SMILES: everything downstream reads with
     # RDKit, and a SMILES RDKit wrote is one RDKit will certainly read back.
     assert "getSmiles" not in handler
