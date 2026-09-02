@@ -155,19 +155,20 @@ def builder_tab(tmp_path, monkeypatch):
     return refs
 
 
-def _pressed(refs, capsys, seconds=60):
-    """Press it and wait for the answer.
+def _pressed(refs, capsys=None, seconds=60):
+    """Press it and wait for the answer, then read what the widget holds.
 
-    Read off stdout rather than out of the Output widget: without a kernel
-    around it, an Output captures nothing and the text goes where print always
-    sends it.
+    The widget, because that is what the browser shows.  It used to have to be
+    read off stdout, which was the bug: everything said from a callback or a
+    worker thread went to stdout and never reached the page.
     """
     refs["orca_check_btn"].click()
     for _ in range(int(seconds * 4)):
         time.sleep(0.25)
         if not refs["orca_check_btn"].disabled:
             break
-    return capsys.readouterr().out
+    return "".join(one.get("text", "")
+                   for one in (refs["orca_output"].outputs or []))
 
 
 def test_the_button_says_what_orca_said_about_the_keyword(builder_tab,
@@ -315,9 +316,9 @@ def test_it_says_which_orca_it_found_before_it_waits(builder_tab, monkeypatch,
 def test_no_answer_at_all_is_said_rather_than_left_standing():
     """A button that stays greyed with one line under it is not an answer."""
     source = pathlib.Path(builder.__file__).read_text(encoding="utf-8")
-    guard = source.split("def nothing_came_back")[1].split("\n    watchdog")[0]
+    guard = source.split("def nothing_came_back")[1].split("\n        def still_looking")[0]
 
-    assert "orca_check_btn.disabled = False" in guard, "the button comes back"
+    assert "disabled', False" in guard, "the button comes back"
     assert "No answer after" in guard
     assert "watchdog.cancel()" in source, "and it is called off when one comes"
 
@@ -508,3 +509,27 @@ def test_a_place_that_never_answers_does_not_hold_the_check(builder_tab,
     assert "No ORCA to check with" in said
     assert "no answer in 1 s" in said, "and it says which place did not answer"
     assert took < 20, f"still looking after {took:.0f}s"
+
+
+def test_what_the_check_says_reaches_the_page(builder_tab, monkeypatch):
+    """``with output: print(...)`` routes text only while a cell is being
+    executed.  From a timer, a callback or a worker thread there is no
+    execution to attach to and the text is dropped -- which is what "Looking
+    for ORCA..." and then silence was.  The first line came from the press
+    itself and arrived; every line after it did not.
+    """
+    fake = _an_orca(builder_tab["tmp_path"], "orca_page",
+                    "echo 'SCF SETTINGS'\nexit 0\n")
+    _use(monkeypatch, str(fake))
+
+    said = _pressed(builder_tab)
+
+    assert "Looking for ORCA" in said, "said from the press"
+    assert "starting it" in said, "said from the worker thread"
+    assert "OK" in said, "said when it was over"
+
+    source = pathlib.Path(builder.__file__).read_text(encoding="utf-8")
+    saying = source.split("def _check_say")[1].split("\n    def ")[0]
+    body = saying.split('"""')[2]          # past the docstring, which names it
+    assert "append_stdout" in body
+    assert "with orca_output" not in body, "not the context manager"

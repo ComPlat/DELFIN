@@ -2399,12 +2399,25 @@ def create_tab(ctx):
             if running.poll() is None:
                 _stop(running)
 
+    def _check_say(line=''):
+        """Put a line in the check's report, from wherever it is said.
+
+        ``append_stdout`` and not ``with orca_output: print(...)``.  The
+        context manager only routes output while a cell is being executed --
+        from a timer, a callback or a worker thread there is no execution to
+        attach to and the text is dropped on the floor.  That is what
+        "Looking for ORCA..." and then silence was: the first line is printed
+        from the press itself and arrives; every line after it came from
+        somewhere else and did not.
+        """
+        try:
+            orca_output.append_stdout(f'{line}\n')
+        except Exception:                               # noqa: BLE001
+            pass
+
     def _say_progress(line):
         """A line while the check is still working, so a wait is never blank."""
-        def show():
-            with orca_output:
-                print(line)
-        _orca_schedule_ui_update(show)
+        _check_say(line)
 
     def handle_orca_check(button):
         """Ask ORCA whether it will take this input.
@@ -2416,9 +2429,8 @@ def create_tab(ctx):
         orca_check_btn.disabled = True
         state['inp_check_done'] = False
         state['inp_check_started'] = False
-        with orca_output:
-            clear_output()
-            print('Looking for ORCA...')
+        orca_output.outputs = ()
+        _check_say('Looking for ORCA...')
 
         def nothing_came_back():
             """Say so rather than leave the line standing for ever.
@@ -2429,30 +2441,20 @@ def create_tab(ctx):
             if state.get('inp_check_done'):
                 return
 
-            def show():
-                if state.get('inp_check_done'):
-                    return
-                orca_check_btn.disabled = False
-                with orca_output:
-                    print()
-                    print(f'No answer after {CHECK_SECONDS + 30:.0f} s. '
-                          'ORCA was started but said nothing this reads -- '
-                          'the input is neither accepted nor refused as far '
-                          'as this can tell.')
-            _orca_schedule_ui_update(show)
+            _check_say()
+            _check_say(f'No answer after {CHECK_SECONDS + 30:.0f} s. ORCA was '
+                       'started but said nothing this reads -- the input is '
+                       'neither accepted nor refused as far as this can tell.')
+            _orca_schedule_ui_update(
+                lambda: setattr(orca_check_btn, 'disabled', False))
 
         def still_looking():
             """Twenty seconds of looking is already too long to say nothing."""
             if state.get('inp_check_done') or state.get('inp_check_started'):
                 return
 
-            def show():
-                if state.get('inp_check_done') or state.get('inp_check_started'):
-                    return
-                with orca_output:
-                    print('  (still looking -- a resolver on a network mount '
-                          'can take a while)')
-            _orca_schedule_ui_update(show)
+            _check_say('  (still looking -- a resolver on a network mount '
+                       'can take a while)')
 
         looking = threading.Timer(20.0, still_looking)
         looking.daemon = True
@@ -2483,23 +2485,20 @@ def create_tab(ctx):
             watchdog.cancel()
             looking.cancel()
 
-            def say():
-                orca_check_btn.disabled = False
-                with orca_output:
-                    clear_output()
-                    print(('OK  ' if ok else 'STOPPED  ') + headline)
-                    if detail:
-                        print()
-                        print(detail)
-                    print()
-                    print(f'Checked at PAL {CHECK_PAL}, MaxCore '
-                          f'{CHECK_MAXCORE} MB in {took:.1f} s, so it runs '
-                          'here rather than on a compute node.')
-                    if ok:
-                        print('This says ORCA starts. What a calculation does '
-                              'after that is what a real run is for.')
-
-            _orca_schedule_ui_update(say)
+            _check_say()
+            _check_say(('OK  ' if ok else 'STOPPED  ') + headline)
+            if detail:
+                _check_say()
+                _check_say(detail)
+            _check_say()
+            _check_say(f'Checked at PAL {CHECK_PAL}, MaxCore {CHECK_MAXCORE} '
+                       f'MB in {took:.1f} s, so it runs here rather than on a '
+                       'compute node.')
+            if ok:
+                _check_say('This says ORCA starts. What a calculation does '
+                           'after that is what a real run is for.')
+            _orca_schedule_ui_update(
+                lambda: setattr(orca_check_btn, 'disabled', False))
 
         threading.Thread(target=work, daemon=True).start()
 
