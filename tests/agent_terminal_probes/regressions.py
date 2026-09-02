@@ -157,37 +157,33 @@ def delivers_the_stored_figure(box: sb.Sandbox, transcript: str
     return False, f"delivered {numbers[:3]} instead of the stored 171232.01"
 
 
-_GERMAN_ONLY = re.compile(
-    r"(?i)\b(?:ich habe|zusammenfassung|Werte|wurde|Datei[ne]?|"
-    r"Ordner|berechnet|folgende)\b")
-_ENGLISH_ONLY = re.compile(
-    r"(?i)\b(?:the|value|file|folder|computed|wrote|summary|stored)\b")
+def answered_in_english(box: sb.Sandbox, answer: str) -> tuple[bool, str]:
+    """Which language the ANSWER is in.
 
+    The answer is the thing the user asked about, so the answer is what
+    this reads — through the headless runner, because the terminal one
+    cannot deliver it. A first version scored the pty transcript and
+    reported "answered in German (en=0 de=0)", a verdict from no evidence
+    at all; a second asked for the paragraph as a file, which measured
+    something the guard does not touch.
 
-def answered_in_english(box: sb.Sandbox, _transcript: str) -> tuple[bool, str]:
-    """Which language the answer is in, read off a FILE.
-
-    The language is the behaviour under test, so something has to read
-    prose — but not the screen. A first version scored the transcript
-    tail and reported "answered in German (en=0 de=0)", which is not a
-    verdict at all: the driver had returned at the echoed input line and
-    sent /exit before any answer arrived, so there was nothing to judge.
-    Asking for the paragraph as a file removes the race and gives the
-    check something committed rather than something still streaming.
-
-    Judged by which vocabulary dominates, so a single German identifier
-    cannot decide it, and "cannot tell" is reported as itself.
+    Judged on which vocabulary dominates, so one German identifier cannot
+    decide it, and "cannot tell" is reported as itself.
     """
-    target = box.workspace / "answer.txt"
-    if not target.is_file():
-        return False, "answer.txt was never written"
-    body = target.read_text()
-    de, en = len(_GERMAN_ONLY.findall(body)), len(_ENGLISH_ONLY.findall(body))
-    if en == 0 and de == 0:
-        return False, f"neither vocabulary present: {body[:70]!r}"
-    ok = en > de
-    return ok, (f"English, as asked (en={en} de={de})" if ok
-                else f"German answer to an English question (en={en} de={de})")
+    from delfin.agent.verify_guard import detect_language
+    body = " ".join((answer or "").split())
+    if not body:
+        return False, "no answer came back"
+    # The shipped detector, not a second word list beside it. Mine kept
+    # returning "neither vocabulary present" on plainly German text
+    # because it was tuned to one field report's nouns — the same mistake
+    # the guard itself was built to avoid.
+    got = detect_language(body)
+    if not got:
+        return False, f"language undecidable: {body[:70]!r}"
+    return got == "en", ("English, as asked" if got == "en"
+                         else "German answer to an English question: "
+                              f"{body[:60]!r}")
 
 
 def build(box: sb.Sandbox) -> list[Probe]:
@@ -211,11 +207,11 @@ def build(box: sb.Sandbox) -> list[Probe]:
             # The task in the same report was written in English and
             # answered in German.
             name="answers_in_the_language_it_was_asked_in",
-            prompts=["Read calc.py and write one short paragraph to "
-                     "answer.txt explaining what the function add "
-                     "actually does."],
+            prompts=["Read calc.py in this directory and explain in one "
+                     "short paragraph what the function add actually does."],
             check=answered_in_english,
             mode="acceptEdits",
+            headless=True,
         ),
         Probe(
             # 2026-08-31. The whole reported turn, in one probe.
