@@ -446,6 +446,12 @@ _EVIDENCE_TOOL_SHAPE = re.compile(r"(?i)(read|grep|search|fetch|docs|glob)")
 # tail digits); the sign class includes the Unicode minus.
 _QTY_NUM = r"(?<![\w.])[-+−]?\d+(?:\.\d+)?"
 
+# A number that LOOKS like a measurement rather than a count: it carries a
+# decimal, or it is large enough that no one wrote it as a tally. Used
+# where the unit token is also an ordinary word and the number has to
+# carry the discrimination on its own.
+_QTY_MEASURED = r"(?<![\w.])[-+−]?(?:\d+\.\d+|\d{4,})"
+
 # Unit-anchored claim patterns: a number IMMEDIATELY before the unit
 # (at most one whitespace char between them). Percentages and bare
 # version numbers never match because every pattern requires a unit
@@ -472,6 +478,22 @@ _QUANTITY_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = tuple(
         ("K",        rf"{_QTY_NUM}\s?K(?=$|[\s.,;:)\]!?])"),
         ("kcal",     rf"{_QTY_NUM}\s?kcal\b(?!\s?/)"),
         ("GHz",      rf"{_QTY_NUM}\s?GHz\b"),
+        # Atomic units — the unit DELFIN stores its own hyperpolarizability,
+        # polarizability and dipole values in, and the one this list did
+        # not have. Measured on a live turn: the model recomputed a stored
+        # beta_HRS with a formula of its own, delivered "367.91 au" beside
+        # the stored "447.9339 au", and nothing flagged it. The same answer
+        # with "eV" in place of "au" is flagged at once — so the gap was
+        # never the reasoning, only the vocabulary.
+        #
+        # Anchored tighter than the rest, in two halves. "a.u." is
+        # unambiguous. Bare "au" is a word in the languages this agent
+        # answers in — measured, "3 au weiteren Quellen" and "7 au fond"
+        # were both flagged — so it is accepted only after something
+        # SHAPED like a measurement: a decimal, or four digits and up.
+        # Same discriminator the conflict scan uses, for the same reason.
+        ("au",       rf"{_QTY_NUM}\s?a\.u\.?(?=$|[\s,;:)\]!?]|\b)"),
+        ("au",       rf"{_QTY_MEASURED}\s?au(?=$|[\s.,;:)\]!?])"),
     )
 )
 
