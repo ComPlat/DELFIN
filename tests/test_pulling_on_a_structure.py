@@ -729,3 +729,24 @@ def test_the_wheel_pressed_takes_the_marks_off():
     assert press.index('e.button === 1') < press.index("state.mode === 'load'")
     # And the browser's own middle-click behaviour is kept out of the way.
     assert press.index('e.preventDefault();') < press.index('clearSelection(')
+
+
+def test_the_wheel_reaches_select_mode_too():
+    """Select leaves the overlay passthrough unless Shift is held.
+
+    3Dmol takes atom clicks itself there, which is what that is for -- and it
+    means a middle press never reaches the overlay's own handler.  Bound on
+    the viewer as well, the gesture is the same gesture in all five modes.
+    """
+    from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
+
+    body = submit_manip_bootstrap_js()
+    fn = body[body.index('function bindWheelClears('):][:900]
+    assert 'e.button !== 1' in fn
+    assert 'clearSelection(scopeKey);' in fn
+    assert 'pushPicksToPython(scopeKey);' in fn
+    # Once per viewer, and it survives the overlay being deaf.
+    assert '__delfinWheelClears' in fn
+    # And it is wired where a viewer becomes ready.
+    ready = body[body.index('function onViewerReady('):][:2600]
+    assert 'bindWheelClears(scopeKey, viewerEl);' in ready
