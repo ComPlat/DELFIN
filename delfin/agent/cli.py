@@ -2306,6 +2306,17 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--session", default="",
                      help="Session ID to resume, or 'latest'")
     _add_agent_flags(run)
+    # `_build_engine` has always read this; only `chat` could set it, so a
+    # headless turn took whatever the settings file said. A workspace or
+    # profile carrying `default_mode: plan` therefore ran every headless
+    # turn as a plan — and plan turns are exempt from claim grounding, so
+    # the answer-side guards were off with nothing on screen to say so.
+    # That is not a setting a benchmark or a probe should inherit by
+    # accident; it is a decision the caller should be able to state.
+    run.add_argument("--permission-mode", default="", dest="permission_mode",
+                     choices=["", "plan", "default", "acceptEdits",
+                              "bypassPermissions"],
+                     help="Approval mode for this turn (default: settings)")
     run.add_argument("--json", action="store_true",
                      help="Emit JSON instead of plain text")
     run.add_argument("-v", "--verbose", action="store_true")
