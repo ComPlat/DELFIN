@@ -229,16 +229,6 @@ def create_tab(ctx):
 
     Returns ``(tab_widget, refs_dict)``.
     """
-    #: Widgets belong to the thread that owns them, and the input check runs
-    #: on one of its own so the dashboard stays usable while ORCA starts.
-    _io_loop = getattr(getattr(get_ipython(), 'kernel', None), 'io_loop', None)
-
-    def _schedule(func, *args, **kwargs):
-        if _io_loop is not None:
-            _io_loop.add_callback(lambda: func(*args, **kwargs))
-            return
-        func(*args, **kwargs)
-
     # -- option lists ---------------------------------------------------
     method_options = sorted(ORCA_FUNCTIONALS)
     basis_options = sorted(ORCA_BASIS_SETS)
@@ -2148,6 +2138,7 @@ def create_tab(ctx):
         orca = find_orca()
         if not orca:
             return False, 'No ORCA to check with -- none was found on this machine.', ''
+        _say_progress(f'Found {orca} -- starting it...')
         (room / 'check.inp').write_text(input_for_check(body), encoding='utf-8')
         for filename, xyz_content in (parse_xyz_blocks(orca_coords.value) or []):
             (room / filename).write_text(xyz_content)
@@ -2161,6 +2152,7 @@ def create_tab(ctx):
         started = time.monotonic()
         running = subprocess.Popen(
             [orca, 'check.inp'], cwd=str(room),
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             text=True, errors='replace',
         )
@@ -2217,6 +2209,13 @@ def create_tab(ctx):
             if running.poll() is None:
                 running.kill()
 
+    def _say_progress(line):
+        """A line while the check is still working, so a wait is never blank."""
+        def show():
+            with orca_output:
+                print(line)
+        _orca_schedule_ui_update(show)
+
     def handle_orca_check(button):
         """Ask ORCA whether it will take this input.
 
@@ -2225,10 +2224,35 @@ def create_tab(ctx):
         to see whether it gets past reading the input, and stops it again.
         """
         orca_check_btn.disabled = True
+        state['inp_check_done'] = False
         with orca_output:
             clear_output()
-            print('Starting ORCA on one core to see whether it takes this '
-                  'input...')
+            print('Looking for ORCA...')
+
+        def nothing_came_back():
+            """Say so rather than leave the line standing for ever.
+
+            A check that cannot finish is still an answer, and a button that
+            stays greyed with one line under it is not one.
+            """
+            if state.get('inp_check_done'):
+                return
+
+            def show():
+                if state.get('inp_check_done'):
+                    return
+                orca_check_btn.disabled = False
+                with orca_output:
+                    print()
+                    print(f'No answer after {CHECK_SECONDS + 30:.0f} s. '
+                          'ORCA was started but said nothing this reads -- '
+                          'the input is neither accepted nor refused as far '
+                          'as this can tell.')
+            _orca_schedule_ui_update(show)
+
+        watchdog = threading.Timer(CHECK_SECONDS + 30, nothing_came_back)
+        watchdog.daemon = True
+        watchdog.start()
 
         def work():
             room = None
@@ -2248,6 +2272,9 @@ def create_tab(ctx):
 
             took = time.monotonic() - began
 
+            state['inp_check_done'] = True
+            watchdog.cancel()
+
             def say():
                 orca_check_btn.disabled = False
                 with orca_output:
@@ -2264,7 +2291,7 @@ def create_tab(ctx):
                         print('This says ORCA starts. What a calculation does '
                               'after that is what a real run is for.')
 
-            _schedule(say)
+            _orca_schedule_ui_update(say)
 
         threading.Thread(target=work, daemon=True).start()
 
