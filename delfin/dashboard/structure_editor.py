@@ -6786,6 +6786,56 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return None, ceiling
         return state.get('thermal_e0'), ceiling
 
+    def _the_anchor_outlived_its_question():
+        """Whether there is an anchor that no longer answers what is asked.
+
+        Told apart from having no anchor at all, because only this one can be
+        put right without the user doing anything: the structure is here, the
+        question is here, and what is missing is one single point.
+        """
+        return (state.get('thermal_e0') is not None
+                and state.get('thermal_asked')
+                != _the_question_an_anchor_answers())
+
+    def _keep_the_anchor_current(why):
+        """Measure the anchor again when the editor moved the question itself.
+
+        The guard above is right that an energy of one question read against
+        energies of another is not a difference -- but *dropping* the anchor is
+        the dangerous way to be right about it.  The switch stays lit, the drag
+        goes on holding its contacts and costing what a priced drag costs, and
+        nothing is refused any more: a wall that is on and not there.
+
+        Survivable when the user moved the question -- they know they did.
+        Not survivable when the editor moved it, and it does: ``auto M`` scans
+        and keeps the lowest, and what it settles on is the spin every later
+        run uses, because :func:`_gfn_uhf_now` returns it.  One Optimise with
+        auto M ticked therefore changes the question with nobody asking, and
+        from that moment the wall is off.
+
+        Where the damage lands is the release.  While the hand is down the
+        follow writes what it priced either way; at the release the box is
+        only handed the wall's kept geometry when a wall is in force, and
+        otherwise what stays is the page's model -- which is where the cursor
+        was.  Measured on an ethane, one hydrogen pulled fourteen times by
+        0.45 A under GFN2 with the budget lit and a solvent chosen after Set:
+
+            anchor kept current   C-H 1.088 A, seven bonds, and the line
+                                  reads +16.0 of 22.3 kcal/mol at 298.15 K
+            anchor let go of      C-H 1.307 A -- the drag looks identical
+                                  until the release, and then the wish lands
+
+        Pull further and that is a proton off.  A single point is a tenth of a
+        second; losing the wall costs the molecule.  So it is measured again
+        rather than let go of, on the structure that is there now.
+        """
+        if not submit_thermal_btn.value:
+            return False
+        if not _the_anchor_outlived_its_question():
+            return False
+        _set_thermal_anchor(relax=False, note=why)
+        return True
+
     def _thermal_live():
         """Whether the budget is switched on *and* has a hand it can price.
 
@@ -6832,8 +6882,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             if state.get('thermal_e0') is None:
                 return ('no budget yet \u00b7 press Set here to measure one '
                         'from this structure')
+            if state.get('thermal_method') != str(submit_ff_dd.value):
+                return ('the budget is not in force: its zero was measured '
+                        'under ' + _server_label(str(state.get(
+                            'thermal_method') or 'another method'))
+                        + ' \u00b7 press Set here to measure one for this')
             return ('the budget is not in force: its zero belongs to another '
-                    'method, charge, multiplicity or solvent \u00b7 press Set '
+                    'charge, multiplicity or solvent \u00b7 press Set '
                     'here to measure one for this')
         if energy is None:
             return ''
@@ -7459,7 +7514,29 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             #
             # The same flag every other write in here uses says it is the same
             # molecule.  This one had no write to hang it on.
+            #
+            # And it is swapped into the viewer that is already there rather
+            # than redrawn through the host at all, because the host's redraw
+            # is its "a structure changed" path however the flag is set: it
+            # throws the perception away and rebuilds it with RDKit, and it
+            # ends in a whole new viewer -- a WebGL context disposed and
+            # another made, of which a browser grants a handful.  One per
+            # release is what every drag was paying.  Measured through the
+            # real Submit tab on a single release: `perceived` rebuilt from
+            # nothing and six viewer writes, to move three atoms.
+            #
+            # :func:`_swap_the_model_js` is the cheap half of exactly this and
+            # was written for it -- the model changes inside the living
+            # viewer, the camera stays where the user left it, and it costs a
+            # render.  It answers '' when there is no live viewer to swap
+            # into or the page has not confirmed it is running this editor,
+            # and then there is nothing else to draw with and the host's path
+            # is the right one after all.
             state['manip_inflight'] = False
+            swap = _swap_the_model_js(xyz_document(rows, why))
+            if swap:
+                _run_manip_js(swap)
+                return
             state['structure_edit_inflight'] = True
             try:
                 update_view()
@@ -9298,6 +9375,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         if switch.value:
                             switch.value = False
                         switch.disabled = False
+                    # And the budget's zero, if this press moved the question
+                    # it answers.  A multiplicity scan settles on one and every
+                    # later run uses it, so a press with auto M ticked changes
+                    # the question without anybody asking -- and the guard in
+                    # _thermal_budget then takes the wall out of force with the
+                    # button still lit.  See _keep_the_anchor_current for what
+                    # that cost on an ethane.
+                    _keep_the_anchor_current(
+                        'The multiplicity moved under the budget, so its zero')
                 state['pre_optimize_frames'] = {
                     'isomers': frames,
                     'coords': coords_widget.value,
@@ -10944,6 +11030,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # A new grab is a new question: whatever the bonding wall
             # refused about the last one says nothing about this one.
             _forget_topology_refusals()
+            # And the budget's zero, before the hand can spend against it.
+            #
+            # This is the one moment that matters: a wall is needed while a
+            # hand is on the molecule and at no other time, and a grab happens
+            # once, where a single point at a tenth of a second is invisible.
+            # Hooked at the presses that move the question instead, it would
+            # be right for the press that moved it and miss every other way --
+            # and the way it goes wrong is the molecule coming apart.  See
+            # :func:`_keep_the_anchor_current`.
+            _keep_the_anchor_current(
+                'The question the budget answers has moved, so its zero')
             # A hand on the structure. The step is recorded here rather than
             # when it is let go of, because by then the coordinate box already
             # holds what the drag made -- the relaxation pushes into it while
