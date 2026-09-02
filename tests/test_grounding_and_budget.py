@@ -982,3 +982,54 @@ def test_a_guard_note_is_never_read_back_as_the_models_own_text(agent_tree):
     engine = _engine(agent_tree, client=fake)
     out = engine.stream_response("wie viele?")
     assert out.count("geschätzt und nicht gezählt") == 1
+
+
+# ---------------------------------------------------------------------------
+# A language correction REPLACES; every other correction appends
+# ---------------------------------------------------------------------------
+#
+# Appending is right when the correction adds something: the claim and its
+# correction both belong on the page. For language it is the opposite —
+# the reader asked in English, and showing them the German first with the
+# English underneath hands them the thing they did not ask for as well as
+# the thing they did. Confirmed live against kit.qwen3.5-397b-A17b: the
+# answer came back German, the correction turn produced the same content
+# in English, and before this the user saw both.
+
+_GERMAN_ANSWER = (
+    "Die Funktion `add` nimmt zwei Parameter `a` und `b` entgegen, gibt "
+    "aber nicht deren Summe zurück, sondern die Differenz der Werte.")
+_ENGLISH_CORRECTION = (
+    "The function `add` takes two parameters `a` and `b`, but it does not "
+    "return their sum — it returns the difference of the two values.")
+
+
+def test_a_language_correction_replaces_the_answer(agent_tree):
+    fake = _claims_client([_GERMAN_ANSWER, _ENGLISH_CORRECTION])
+    engine = _engine(agent_tree, client=fake)
+    out = engine.stream_response(
+        "Read calc.py and explain in a short paragraph what the function "
+        "add actually does.")
+    assert fake.stream_message.call_count == 2, "no correction turn ran"
+    assert "The function" in out
+    assert "Die Funktion" not in out, "the German answer was kept as well"
+
+
+def test_a_correction_that_is_not_about_language_still_appends(agent_tree):
+    """The grounding case must not be swallowed by the language branch."""
+    fake = _claims_client(
+        ["Zeile 26: class AgentEngine", "Zeile 281: class AgentEngine"],
+        observe_on_reply={1: {"delfin/agent/engine.py"}})
+    engine = _engine(agent_tree, client=fake)
+    out = engine.stream_response("wo ist die klasse definiert?")
+    assert fake.stream_message.call_count == 2
+    assert "Zeile 26" in out and "Zeile 281" in out
+
+
+def test_a_matching_language_never_triggers_a_correction(agent_tree):
+    fake = _claims_client([_GERMAN_ANSWER])
+    engine = _engine(agent_tree, client=fake)
+    engine.stream_response(
+        "Kannst du mir bitte erklären, was die Funktion add in dieser "
+        "Datei eigentlich macht?")
+    assert fake.stream_message.call_count == 1
