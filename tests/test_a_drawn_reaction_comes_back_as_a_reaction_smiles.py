@@ -346,3 +346,94 @@ def test_structures_with_no_arrow_between_them_are_one_dotted_smiles():
     assert outcome["reaction"] is False
     assert outcome["smiles"] == "CCO.[Cl-].[Na+].c1ccccc1"
     assert ">" not in outcome["smiles"], "nothing to separate, so no arrow"
+
+
+# ---------------------------------------------------------------------------
+# and back again, as reactions RDKit can work with
+# ---------------------------------------------------------------------------
+def test_the_four_fields_are_read_back_apart():
+    """The form is what the drawing says; this is how anything that speaks
+    ordinary reaction SMILES gets to read it."""
+    pytest.importorskip("rdkit")
+
+    read = ketcher.parse_reaction_smiles("CCC>>C>C>>CCC")
+
+    assert read["ok"] is True, read["status"]
+    step, = read["steps"]
+    assert step["reactants"] == ["CCC"]
+    assert step["in"] == ["C"]
+    assert step["out"] == ["C"]
+    assert step["products"] == ["CCC"]
+
+
+def test_each_step_comes_back_as_a_reaction_rdkit_can_hold():
+    """A by-product is a product: putting it there is what keeps the step
+    balanced, and it is the only place an ordinary reaction SMILES has."""
+    pytest.importorskip("rdkit")
+
+    step, = ketcher.parse_reaction_smiles("CCC>>C>C>>CCC")["steps"]
+
+    assert step["smiles"] == "CCC>C>CCC.C"
+    built = step["reaction"]
+    assert built.GetNumReactantTemplates() == 1
+    assert built.GetNumAgentTemplates() == 1
+    assert built.GetNumProductTemplates() == 2, "the product and what came off"
+
+
+def test_a_chain_comes_back_as_one_step_after_another():
+    pytest.importorskip("rdkit")
+
+    read = ketcher.parse_reaction_smiles(
+        "c1ccccc1>>>O>>C1CCCCC1>>CO>>>C1CCC1")
+
+    assert read["ok"] is True, read["status"]
+    first, second = read["steps"]
+    assert (first["reactants"], first["out"], first["products"]) == (
+        ["c1ccccc1"], ["O"], ["C1CCCCC1"])
+    assert (second["reactants"], second["in"], second["products"]) == (
+        ["C1CCCCC1"], ["CO"], ["C1CCC1"])
+    assert "O" not in second["reactants"], (
+        "what the first step gave off is not what the second is made from"
+    )
+
+
+def test_what_the_drawing_writes_is_what_the_parser_reads():
+    """The round trip is the point: the geometry is read off the canvas once,
+    written down, and understood again without the canvas."""
+    pytest.importorskip("rdkit")
+
+    written = ketcher.reaction_smiles_from_rxnfile(
+        rxnblock([placed("c1ccccc1", 0)],
+                 [placed("C1CCCCC1", 14), placed("CC", 8, 4),
+                  placed("O", 8, -4)]),
+        canvas([(6.0, 10.0, 0.0)]))
+    assert written["smiles"] == "c1ccccc1>>CC>O>>C1CCCCC1"
+
+    read = ketcher.parse_reaction_smiles(written["smiles"])
+
+    step, = read["steps"]
+    assert step["in"] == ["CC"], "drawn over the arrow"
+    assert step["out"] == ["O"], "drawn under it"
+    assert step["products"] == ["C1CCCCC1"]
+
+
+def test_the_ordinary_three_field_form_is_still_read():
+    """An RXN file with no canvas beside it produces one, and so does every
+    other tool."""
+    pytest.importorskip("rdkit")
+
+    step, = ketcher.parse_reaction_smiles("CCO>[Pd]>CC=O")["steps"]
+
+    assert step["in"] == ["[Pd]"] and step["out"] == []
+    assert step["smiles"] == "CCO>[Pd]>CC=O"
+
+
+def test_something_that_is_not_a_reaction_is_said_rather_than_guessed():
+    pytest.importorskip("rdkit")
+
+    assert ketcher.parse_reaction_smiles("")["ok"] is False
+    structures = ketcher.parse_reaction_smiles("CCO.CCC")
+    assert structures["ok"] is False
+    assert "no arrow" in structures["status"]
+    crooked = ketcher.parse_reaction_smiles("CCO>>>CC=O")
+    assert crooked["ok"] is False and "fields" in crooked["status"]
