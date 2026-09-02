@@ -2125,24 +2125,85 @@ def create_tab(ctx):
         """
         tried = []
         base = str(getattr(ctx, 'orca_base', '') or '').strip()
+        # Said before each one is tried, not after.  A resolver that walks a
+        # network mount can sit there for minutes, and the difference between
+        # "found nothing" and "still looking in X" is the whole of what a
+        # report of it hanging is worth.
         if base:
             candidate = Path(base).expanduser() / 'orca'
             tried.append(str(candidate) + '   (the one SUBMIT passes on)')
-            if candidate.is_file():
+            _say_progress(f'  the ORCA base directory: {candidate}')
+            try:
+                there = candidate.is_file()
+            except OSError as exc:
+                _say_progress(f'    unreadable: {exc}')
+                there = False
+            if there:
                 return str(candidate), tried
         else:
             tried.append('(no ORCA base directory is set for this dashboard)')
+            _say_progress('  no ORCA base directory is set for this dashboard')
+
+        # What the dashboard already found when it started.  It goes looking
+        # for every ORCA it can see and keeps the list; asking anything else
+        # first was asking a question that had already been answered.
+        for where in (getattr(ctx, 'orca_candidates', None) or []):
+            candidate = Path(where) / 'orca'
+            tried.append(str(candidate) + '   (found by the dashboard)')
+            _say_progress(f'  one the dashboard found: {candidate}')
+            try:
+                if candidate.is_file():
+                    return str(candidate), tried
+            except OSError as exc:
+                _say_progress(f'    unreadable: {exc}')
+
+        # Where it is shipped.  ORCA comes with DELFIN, under
+        # software/orca_* beside the checkout, and the submit script finds it
+        # by walking up from its own directory looking for software/delfin.
+        # The same walk, from the places this dashboard knows itself by.
+        for start in (getattr(ctx, 'repo_dir', None),
+                      getattr(ctx, 'notebook_dir', None),
+                      getattr(ctx, 'calc_dir', None)):
+            if not start:
+                continue
+            here = Path(start).expanduser()
+            for folder in [here] + list(here.parents):
+                shipped = folder / 'software'
+                try:
+                    if not (shipped / 'delfin').is_dir():
+                        continue
+                    beside = sorted(shipped.glob('orca_*'))
+                except OSError:
+                    continue
+                for where in beside:
+                    candidate = where / 'orca'
+                    tried.append(str(candidate) + '   (shipped with DELFIN)')
+                    _say_progress(f'  shipped beside DELFIN: {candidate}')
+                    try:
+                        if candidate.is_file():
+                            return str(candidate), tried
+                    except OSError:
+                        pass
+                break
+
+        tried.append("DELFIN's own resolver")
+        _say_progress("  DELFIN's own resolver...")
         try:
             from delfin.orca import find_orca_executable
             found = find_orca_executable()
-        except Exception:                               # noqa: BLE001
+        except Exception as exc:                        # noqa: BLE001
+            _say_progress(f'    it raised: {exc}')
             found = None
-        tried.append("DELFIN's own resolver")
         if found:
             return found, tried
-        from .saddle import find_orca
         tried.append('the PATH')
-        found = find_orca()
+        _say_progress('  the PATH...')
+        try:
+            from .saddle import find_orca
+            found = find_orca()
+        except Exception as exc:                        # noqa: BLE001
+            _say_progress(f'    it raised: {exc}')
+            found = None
         return (found or ''), tried
 
     def _orca_environment(orca):
@@ -2220,10 +2281,13 @@ def create_tab(ctx):
         if not orca:
             return False, 'No ORCA to check with.', (
                 'Looked in:\n  ' + '\n  '.join(tried)
-                + '\n\nSUBMIT ORCA JOB does not look for it at all -- it '
-                'passes the ORCA base directory to the submit script, which '
-                'puts it on the PATH on the compute node. If nothing is set '
-                'there either, set the ORCA path in Settings.')
+                + '\n\nSUBMIT ORCA JOB does not look for it here at all: it '
+                'passes the base directory to the submit script, and the '
+                'script finds ORCA on the compute node -- under '
+                'software/orca_* beside the DELFIN checkout. So a job can run '
+                'where this check cannot, if the login node cannot see that '
+                'directory. The ORCA path can be set in Settings.')
+        state['inp_check_started'] = True
         _say_progress(f'Found {orca} -- starting it...')
         environment = _orca_environment(orca)
         (room / 'check.inp').write_text(input_for_check(body), encoding='utf-8')
@@ -2309,6 +2373,7 @@ def create_tab(ctx):
         """
         orca_check_btn.disabled = True
         state['inp_check_done'] = False
+        state['inp_check_started'] = False
         with orca_output:
             clear_output()
             print('Looking for ORCA...')
@@ -2334,6 +2399,22 @@ def create_tab(ctx):
                           'as this can tell.')
             _orca_schedule_ui_update(show)
 
+        def still_looking():
+            """Twenty seconds of looking is already too long to say nothing."""
+            if state.get('inp_check_done') or state.get('inp_check_started'):
+                return
+
+            def show():
+                if state.get('inp_check_done') or state.get('inp_check_started'):
+                    return
+                with orca_output:
+                    print('  (still looking -- a resolver on a network mount '
+                          'can take a while)')
+            _orca_schedule_ui_update(show)
+
+        looking = threading.Timer(20.0, still_looking)
+        looking.daemon = True
+        looking.start()
         watchdog = threading.Timer(CHECK_SECONDS + 30, nothing_came_back)
         watchdog.daemon = True
         watchdog.start()
@@ -2358,6 +2439,7 @@ def create_tab(ctx):
 
             state['inp_check_done'] = True
             watchdog.cancel()
+            looking.cancel()
 
             def say():
                 orca_check_btn.disabled = False
