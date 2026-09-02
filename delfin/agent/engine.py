@@ -3112,9 +3112,17 @@ class AgentEngine:
         # caveat. The nested correction turn (guard active) skips this
         # block, which structurally rules out a loop. Best-effort: a guard
         # failure must never break the turn.
+        # _turn_describes_intent no longer gates ENTRY. It exempts the
+        # claim scanners inside, which is what it was measured for — a
+        # plan names files that do not exist yet and grounding them turns
+        # every plan into a false alarm. It never had anything to say
+        # about the LANGUAGE a plan is written in, and gating entry on it
+        # meant a persisted `default_mode: plan` switched off the whole
+        # family. Measured on one sandbox, one line apart: with the
+        # setting an English question came back in German, without it in
+        # English.
         if (full_response and not _empty_turn and not self._stop_requested
-                and not self._claim_guard_active
-                and not self._turn_describes_intent()):
+                and not self._claim_guard_active):
             try:
                 full_response = self._enforce_claim_grounding(
                     full_response,
@@ -3590,6 +3598,12 @@ class AgentEngine:
         # the contradiction lived between a stored file and a table the
         # agent had just written.
         conflicts = _vg.scan_for_conflicting_figures()
+        # A plan proposes; it does not assert. Every scanner about what IS
+        # stands down for it — see _turn_describes_intent — and only the
+        # language question survives, because a plan is still an answer to
+        # somebody who wrote in a particular language.
+        if self._turn_describes_intent():
+            loc, qty, conflicts, func, ambiguous = [], [], [], [], []
         # The language the user wrote in. Measured to be necessary: with
         # the prompt rule delivered and nothing German in the prompt, the
         # backend answered an English question in German four times in
