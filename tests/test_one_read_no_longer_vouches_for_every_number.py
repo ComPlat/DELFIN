@@ -222,3 +222,53 @@ def test_a_tool_result_reaches_the_pool_through_a_real_turn(agent_tree):
     pool = vg.observed_numbers()
     assert pool is not None, "the tool result never reached the pool"
     assert any(abs(v - 2.310) < 1e-6 for v in pool), pool[:20]
+
+
+# ---------------------------------------------------------------------------
+# Atomic units — the unit DELFIN's own figures are stored in
+#
+# Found on a live Qwen turn, not by reading. Asked to recompute a stored
+# beta_HRS, the model used a formula of its own, delivered "367.91 au"
+# beside the stored "447.9339 au", and closed with the same sentence the
+# field report carried: this suggests a different convention in DELFIN.
+# Nothing flagged it. The identical answer with "eV" in place of "au" is
+# flagged at once, so what was missing was never the reasoning — it was
+# that "au" had no entry in the unit list.
+# ---------------------------------------------------------------------------
+
+def test_a_recomputed_figure_in_atomic_units_is_a_claim_like_any_other():
+    flags = vg.scan_for_unsourced_quantities(
+        "Mein berechneter Wert ist 367.91 au, der gespeicherte 447.9339 au.",
+        numbers=[447.9339])
+    assert [f.quantity for f in flags] == ["367.91 au"]
+
+
+def test_the_dotted_spelling_counts_too():
+    flags = vg.scan_for_unsourced_quantities(
+        "beta = 367.91 a.u.", numbers=[447.9339])
+    assert [f.unit for f in flags] == ["au"]
+
+
+def test_a_stored_value_in_atomic_units_is_not_flagged():
+    assert vg.scan_for_unsourced_quantities(
+        "Der gespeicherte Wert ist 447.9339 au.", numbers=[447.9339]) == []
+
+
+@pytest.mark.parametrize("prose", [
+    "Wir haben 3 au weiteren Quellen genommen.",     # a typo for "aus"
+    "7 au fond der Sache.",                          # a loan phrase
+    "Der Bau hat 4 Etagen.",
+    "5 aus 30 Faellen.",
+])
+def test_au_as_an_ordinary_word_is_not_a_measurement(prose):
+    """The cost side, and why the bare form needs a measured-looking
+    number: this agent answers in German, where `au` is not only a unit."""
+    assert vg.scan_for_unsourced_quantities(prose, numbers=[447.9339]) == []
+
+
+def test_a_large_round_figure_in_atomic_units_still_counts():
+    """A hyperpolarizability runs to five and six digits, and is written
+    without a decimal often enough that requiring one would miss it."""
+    flags = vg.scan_for_unsourced_quantities(
+        "Der Wert betraegt 180721 au.", numbers=[447.9339])
+    assert [f.quantity for f in flags] == ["180721 au"]
