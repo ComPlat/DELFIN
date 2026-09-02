@@ -8894,6 +8894,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         token = object()
         state['optimize_run'] = token
 
+        #: Whether this press was ever stopped, remembered rather than asked
+        #: for again at the end.  By the time the row is written the run
+        #: number has moved on whatever happened, so the question only has an
+        #: answer while the run is going -- asked afterwards it says yes about
+        #: a press that finished.
+        was_stopped = [False]
+
         def _stopped():
             """Whether this run is still the one, and the page told if not.
 
@@ -8902,6 +8909,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             """
             halted = state.get('optimize_run') is not token
             if halted:
+                was_stopped[0] = True
                 _halt_the_frames(run_id)
             return halted
 
@@ -9228,7 +9236,26 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 done = count - len(failures)
                 # "1 of 1 frame(s)" is a count of a thing there is one of, and
                 # it cost the line the width that pushed it onto a second row.
+                # A press the user stopped is not an optimisation, and this
+                # is the one line that said it was.  Stop is a real result and
+                # everything else reports it honestly -- the comment written
+                # into the box by the same _apply reads "stopped at the frame
+                # on screen" -- but the row read "Optimised with GFN2-xTB."
+                # over it.  Measured on a stretched C20H42 under GFN2, the
+                # press stopped at frame 11 of 44: the box holds a geometry
+                # 2.84 A and +400 kcal/mol from the minimum, and stopped at
+                # frame 2 it is +2404.  With the page never reporting where
+                # the picture stood, the box is byte-identical to the input
+                # after twelve frames had been drawn, under the same sentence.
+                #
+                # It got through because the third kind of unfinished run had
+                # nobody to speak for it: the split into failures and
+                # unfinished keys the second on the words "before converging",
+                # which is what a cycle limit says and not what a Stop says.
+                # A press knows it was stopped without reading its own prose.
+                halted = was_stopped[0]
                 said = (f'{label} could not optimise it.' if not done else
+                        f'{label} stopped where you stopped it.' if halted else
                         f'Optimised with {label}.' if count == 1 else
                         f'Optimised {done} of {count} frame(s) with {label}.')
                 # The energy, the way the force field shows one.  xtb reports
