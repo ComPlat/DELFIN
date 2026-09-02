@@ -2,6 +2,10 @@
 
 import re
 import shutil
+import subprocess
+import tempfile
+import threading
+import time
 from pathlib import Path
 from collections import Counter
 from itertools import permutations, product
@@ -107,11 +111,117 @@ _OVERLAY_REFERENCE_COLOUR = '#d32f2f'   # the block everything is compared to
 _OVERLAY_TARGET_COLOUR = '#1f5fff'      # the block being checked
 
 
+#: How long the checker lets ORCA run before it counts as started.
+#:
+#: Long enough to be past reading the input and into the calculation -- ORCA
+#: echoes the file, resolves the basis and builds the integrals first -- and
+#: short enough that nobody waits for it.  What happens after this is what a
+#: real run is for; the check only answers whether ORCA will take the input.
+CHECK_SECONDS = 45.0
+
+#: What the check runs at, so that it can be run where the dashboard is.
+#: One core and a small memory ceiling is a login node's worth of work.
+CHECK_PAL = 1
+CHECK_MAXCORE = 1000
+
+#: What ORCA says when it will not start.  Matched case-insensitively, and
+#: the whole neighbourhood of the first hit is what gets shown, because the
+#: line that names the offending keyword is usually the one after it.
+_ORCA_TROUBLE = (
+    'unrecognized or duplicated keyword',
+    'input error',
+    'error (orca',
+    'aborting the run',
+    'ORCA finished by error termination',
+    'not a valid',
+    'unknown method',
+    'unknown basis',
+    'could not find',
+    'sorry, but',
+)
+
+#: What ORCA has printed by the time it is past the input and running.
+_ORCA_UNDERWAY = (
+    'orca gto integral calculation',
+    'scf settings',
+    'basis set information',
+    'initial guess',
+    'total scf energy',
+    'orca terminated normally',
+)
+
+
+def input_for_check(text, pal=CHECK_PAL, maxcore=CHECK_MAXCORE):
+    """The same input, cut down to one core and a small memory ceiling.
+
+    The point of the check is to run it where the dashboard is, which is a
+    login node.  Sixteen cores and six gigabytes is not that, so PAL and
+    MaxCore come down -- in the block form and in the ``! PAL8`` keyword form
+    both, because either one will send it wide.
+
+    Nothing else is touched.  A check that quietly rewrote the input would be
+    checking a different input.
+    """
+    body = str(text or '')
+    if re.search(r'(?is)%pal\b.*?\bend\b', body):
+        body = re.sub(r'(?is)%pal\b.*?\bend\b',
+                      f'%pal\n  nprocs {pal}\nend', body, count=1)
+    if re.search(r'(?im)^%maxcore\s*=?\s*\d+', body):
+        body = re.sub(r'(?im)^%maxcore\s*=?\s*\d+', f'%maxcore {maxcore}',
+                      body, count=1)
+    # ! ... PAL8 ... -- the same thing said on the keyword line.
+    body = re.sub(r'(?im)(^!.*?)\bPAL\d+\b', r'\1', body)
+    return body
+
+
+def orca_startup_report(output, returncode=None, still_running=False):
+    """What the check saw, as ``(ok, headline, detail)``.
+
+    *ok* is whether ORCA got as far as running.  Errors that only show up
+    later in a calculation cannot be found this way and are not claimed to be:
+    what this answers is whether ORCA will take the input at all.
+    """
+    text = str(output or '')
+    low = text.lower()
+    where = -1
+    for mark in _ORCA_TROUBLE:
+        at = low.find(mark.lower())
+        if at >= 0 and (where < 0 or at < where):
+            where = at
+    if where >= 0:
+        lines = text[:where].count('\n')
+        rows = text.splitlines()
+        detail = '\n'.join(rows[max(0, lines - 2):lines + 6]).strip()
+        return False, 'ORCA will not take this input.', detail
+    if still_running:
+        return True, ('ORCA started and was still running after '
+                      f'{CHECK_SECONDS:.0f} s, so the input is accepted.'), ''
+    if any(mark in low for mark in _ORCA_UNDERWAY):
+        return True, 'ORCA read the input and got as far as the calculation.', ''
+    if returncode not in (None, 0):
+        rows = [row for row in text.splitlines() if row.strip()]
+        return False, f'ORCA stopped straight away (exit {returncode}).', \
+            '\n'.join(rows[-12:])
+    rows = [row for row in text.splitlines() if row.strip()]
+    return False, 'ORCA stopped without getting into the calculation.', \
+        '\n'.join(rows[-12:])
+
+
 def create_tab(ctx):
     """Create the ORCA Input Builder tab.
 
     Returns ``(tab_widget, refs_dict)``.
     """
+    #: Widgets belong to the thread that owns them, and the input check runs
+    #: on one of its own so the dashboard stays usable while ORCA starts.
+    _io_loop = getattr(getattr(get_ipython(), 'kernel', None), 'io_loop', None)
+
+    def _schedule(func, *args, **kwargs):
+        if _io_loop is not None:
+            _io_loop.add_callback(lambda: func(*args, **kwargs))
+            return
+        func(*args, **kwargs)
+
     # -- option lists ---------------------------------------------------
     method_options = sorted(ORCA_FUNCTIONALS)
     basis_options = sorted(ORCA_BASIS_SETS)
@@ -282,6 +392,13 @@ def create_tab(ctx):
 
     orca_save_btn = widgets.Button(description='SAVE', button_style='warning',
                                    layout=widgets.Layout(width='150px'))
+    orca_check_btn = widgets.Button(
+        description='CHECK INP', icon='stethoscope',
+        tooltip=('Start ORCA on one core with this input and see whether it '
+                 'gets going. Answers whether ORCA will take the input, not '
+                 'whether the calculation will succeed.'),
+        layout=widgets.Layout(width='140px'),
+    )
     orca_submit_btn = widgets.Button(description='SUBMIT ORCA JOB', button_style='success',
                                      layout=widgets.Layout(width='150px'))
     orca_output = widgets.Output()
@@ -1986,6 +2103,134 @@ def create_tab(ctx):
                 for fn in saved_files:
                     print(f'  {fn}')
 
+    def _inp_for_the_check():
+        """The input as it stands, without saving anything anywhere.
+
+        The same text SUBMIT would send, taken from the preview when there is
+        one and built from the fields when there is not -- but nothing is
+        written into the calculation directory, because a check is not a job.
+        """
+        preview_content = orca_preview.value.strip()
+        if preview_content:
+            body = preview_content
+        else:
+            if not strip_xyz_header(orca_coords.value):
+                return None, 'Coordinates or INP preview cannot be empty.'
+            body = generate_orca_input()
+        return sanitize_orca_input(body), ''
+
+    def _run_the_check(body, room):
+        """Start ORCA on the input in *room* and say what happened.
+
+        Everything the input refers to goes in beside it: a job that names an
+        xyz file cannot start without that file, and failing for want of it
+        would say nothing about the input.
+        """
+        from .saddle import find_orca
+
+        orca = find_orca()
+        if not orca:
+            return False, 'No ORCA to check with -- none was found on this machine.', ''
+        (room / 'check.inp').write_text(input_for_check(body), encoding='utf-8')
+        for filename, xyz_content in (parse_xyz_blocks(orca_coords.value) or []):
+            (room / filename).write_text(xyz_content)
+        for name, content in (state.get('extra_files') or {}).items():
+            try:
+                (room / name).write_bytes(
+                    content if isinstance(content, bytes) else bytes(content))
+            except Exception:                           # noqa: BLE001
+                pass
+
+        started = time.monotonic()
+        running = subprocess.Popen(
+            [orca, 'check.inp'], cwd=str(room),
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, errors='replace',
+        )
+        # Read as it comes rather than at the end.  ORCA leaves children
+        # behind -- and a child that outlives the terminate holds the pipe
+        # open, so a read after the fact never returns.  Whatever has arrived
+        # by the time we stop looking is what there is to go on.
+        collected = []
+
+        def drain():
+            try:
+                for line in running.stdout:
+                    collected.append(line)
+            except Exception:                           # noqa: BLE001
+                pass
+
+        reader = threading.Thread(target=drain, daemon=True)
+        reader.start()
+        try:
+            while True:
+                if running.poll() is not None:
+                    reader.join(timeout=5)
+                    return orca_startup_report(
+                        ''.join(collected), running.returncode)
+                if time.monotonic() - started > CHECK_SECONDS:
+                    # Still going, which is the answer: it took the input.
+                    running.terminate()
+                    try:
+                        running.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        running.kill()
+                    reader.join(timeout=5)
+                    return orca_startup_report(
+                        ''.join(collected), still_running=True)
+                time.sleep(0.25)
+        finally:
+            if running.poll() is None:
+                running.kill()
+
+    def handle_orca_check(button):
+        """Ask ORCA whether it will take this input.
+
+        Errors that only appear later in a calculation cannot be found this
+        way, and this does not pretend to: it starts ORCA on one core, waits
+        to see whether it gets past reading the input, and stops it again.
+        """
+        orca_check_btn.disabled = True
+        with orca_output:
+            clear_output()
+            print('Starting ORCA on one core to see whether it takes this '
+                  'input...')
+
+        def work():
+            room = None
+            try:
+                body, trouble = _inp_for_the_check()
+                if body is None:
+                    ok, headline, detail = False, trouble, ''
+                else:
+                    room = Path(tempfile.mkdtemp(prefix='delfin-inp-check-'))
+                    ok, headline, detail = _run_the_check(body, room)
+            except Exception as exc:                    # noqa: BLE001
+                ok, headline, detail = False, f'The check itself failed: {exc}', ''
+            finally:
+                if room is not None:
+                    shutil.rmtree(room, ignore_errors=True)
+
+            def say():
+                orca_check_btn.disabled = False
+                with orca_output:
+                    clear_output()
+                    print(('OK  ' if ok else 'STOPPED  ') + headline)
+                    if detail:
+                        print()
+                        print(detail)
+                    print()
+                    print(f'Checked at PAL {CHECK_PAL}, MaxCore '
+                          f'{CHECK_MAXCORE} MB, so it runs here rather than '
+                          'on a compute node.')
+                    if ok:
+                        print('This says ORCA starts. What a calculation does '
+                              'after that is what a real run is for.')
+
+            _schedule(say)
+
+        threading.Thread(target=work, daemon=True).start()
+
     def handle_orca_submit(button):
         with orca_output:
             clear_output()
@@ -2040,6 +2285,7 @@ def create_tab(ctx):
 
     # -- wiring ---------------------------------------------------------
     orca_save_btn.on_click(handle_orca_save)
+    orca_check_btn.on_click(handle_orca_check)
     orca_submit_btn.on_click(handle_orca_submit)
     orca_file_upload.observe(update_uploaded_files_label, names='value')
 
@@ -2313,7 +2559,8 @@ def create_tab(ctx):
     # it, and past the point where anyone was still reading.  Between SAVE and
     # SUBMIT it is the last thing under the eye before the job goes.
     orca_save_submit_row = _row(
-        [orca_save_btn, orca_slurm_time, orca_submit_btn], wrap=False)
+        [orca_save_btn, orca_slurm_time, orca_check_btn, orca_submit_btn],
+        wrap=False)
     orca_save_submit_row.layout.margin = '14px 0 0 0'
 
     orca_left = widgets.VBox([
@@ -2636,6 +2883,8 @@ def create_tab(ctx):
         'orca_template_delete_btn': orca_template_delete_btn,
         'orca_template_delete_confirm_btn': orca_template_delete_confirm_btn,
         'orca_preview': orca_preview,
+        'orca_check_btn': orca_check_btn,
+        'orca_output': orca_output,
         'orca_submit_btn': orca_submit_btn,          # destructive: starts real ORCA job
         'orca_copy_coords_btn': orca_copy_coords_btn,
         'orca_check_numbering_btn': orca_check_numbering_btn,
