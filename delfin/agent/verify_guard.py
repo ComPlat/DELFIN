@@ -447,10 +447,17 @@ _EVIDENCE_TOOL_SHAPE = re.compile(r"(?i)(read|grep|search|fetch|docs|glob)")
 _QTY_NUM = r"(?<![\w.])[-+−]?\d+(?:[.,]\d+)?"
 
 # A number that LOOKS like a measurement rather than a count: it carries a
-# decimal, or it is large enough that no one wrote it as a tally. Used
-# where the unit token is also an ordinary word and the number has to
-# carry the discrimination on its own.
-_QTY_MEASURED = r"(?<![\w.])[-+−]?(?:\d+[.,]\d+|\d{4,})"
+# decimal, or it has three digits and up. Used where the unit token is
+# also an ordinary word and the number has to carry the discrimination on
+# its own.
+#
+# The threshold is three because the live runs put it there. Four missed
+# "737 au" — a hyperpolarizability written without decimals, which is an
+# ordinary way to write one — while the prose this rule exists to ignore
+# ("3 au weiteren Quellen", "7 au fond") is one digit. Nothing between
+# those two has been seen; if it is, the discriminator has to become
+# something other than length.
+_QTY_MEASURED = r"(?<![\w.])[-+−]?(?:\d+[.,]\d+|\d{3,})"
 
 # Unit-anchored claim patterns: a number IMMEDIATELY before the unit
 # (at most one whitespace char between them). Percentages and bare
