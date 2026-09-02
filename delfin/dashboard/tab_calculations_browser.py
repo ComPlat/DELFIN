@@ -37,6 +37,7 @@ from . import pdf_view as _pdf
 from . import formula_engine as _formula_engine
 from . import spreadsheet_view as _sheet
 from . import text_view as _text_view
+from . import ketcher as _ketcher
 from .molecule_viewer import (
     VIEWER_CONTAINER_DYNAMIC_SCALE,
     VIEWER_CONTAINER_HEIGHT_PX,
@@ -178,6 +179,10 @@ def create_tab(ctx):
     CALC_CUBE_MAX_READ_BYTES = 100 * 1024 * 1024         # 100 MB – skip full read for huge cube files
     CALC_IMAGE_MAX_READ_BYTES = 20 * 1024 * 1024         # 20 MB – skip inline base64 for huge images
     CALC_LOG_XYZ_EXTRACT_MAX = 50 * 1024 * 1024          # 50 MB – skip XYZ extraction from huge logs
+    #: How much of a drawing to show as text when there is no editor to
+    #: open it in.  A .ket is JSON and unreadable either way; this is
+    #: enough to tell one file from another.
+    CALC_DRAWING_PREVIEW_MAX_CHARS = 20000
     # Trajectories with more frames than this use single-frame mode
     # (avoids embedding the full XYZ in a JS template literal via comm)
     CALC_XYZ_LARGE_TRAJ_FRAMES = 2000
@@ -8071,6 +8076,8 @@ def create_tab(ctx):
                         items.append(f'🧊 {entry.name}')
                     elif suffix in ['.gbw', '.cis', '.densities']:
                         items.append(f'💾 {entry.name}')
+                    elif _ketcher.is_drawing(entry):
+                        items.append(f'✏️ {entry.name}')
                     elif suffix in ['.doc', '.docx']:
                         items.append(f'📃 {entry.name}')
                     else:
@@ -8403,6 +8410,13 @@ def create_tab(ctx):
             if rmsd_available:
                 xyz_options.append('RMSD')
             calc_options_dropdown.options = xyz_options
+            calc_options_dropdown.value = '(Options)'
+            calc_options_dropdown.layout.display = 'block'
+            return
+        if selected and _ketcher.is_drawing(_calc_label_to_name(selected)):
+            # Double-clicking it opens it too; this is for reaching it after
+            # the file is already selected, without opening it again.
+            calc_options_dropdown.options = ['(Options)', 'Open in Ketcher']
             calc_options_dropdown.value = '(Options)'
             calc_options_dropdown.layout.display = 'block'
             return
@@ -9287,6 +9301,15 @@ def create_tab(ctx):
             _calc_show_censo_nmr_panel(False)
         if change['new'] not in ('hyperpol_xtb', 'tadf_xtb'):
             calc_reset_xyz_workflow_state()
+        if change['new'] == 'Open in Ketcher':
+            cur_labels = _calc_selected_labels()
+            where = _calc_path_for_label(cur_labels[0]) if cur_labels else None
+            if where is not None and where.is_file():
+                _calc_open_in_ketcher(where)
+            else:
+                calc_set_message('There is nothing selected to open.')
+            calc_options_dropdown.value = '(Options)'
+            return
         if change['new'] == 'Override':
             calc_override_input.layout.display = 'block'
             calc_override_time.layout.display = 'block'
@@ -12172,6 +12195,58 @@ def create_tab(ctx):
             panel.show_error(f'PDF could not be displayed: {exc}')
         calc_update_view()
 
+    # -- a drawing goes back to the editor it came from ----------------------
+
+    def _calc_open_in_ketcher(full_path, size_str=''):
+        """Hand a kept drawing to the Ketcher tab, and go there.
+
+        A .ket is JSON and a .mol is a table of numbers: shown as text, which
+        is what the default branch would do, neither is anything a chemist can
+        read.  The one program that can read them is already in the dashboard.
+
+        Returns False when there is no Ketcher tab in this dashboard -- it is
+        registered additively and a registered tab that failed to build is
+        marked unavailable -- so that the caller can fall back to the text
+        preview rather than leaving the double-click doing nothing at all.
+        """
+        calc_file_info.value = (
+            f'<b><span style="word-break:break-all;">'
+            f'{_html.escape(full_path.name)}</span></b>'
+            + (f' ({size_str})' if size_str else '')
+        )
+        got = _ketcher.read_drawing(full_path)
+        if not got['ok']:
+            calc_set_message(got['status'])
+            return
+        refs = getattr(ctx, 'ketcher_refs', None) or {}
+        hand_over = refs.get('open_drawing')
+        trouble = ''
+        if not callable(hand_over):
+            trouble = ('There is no Ketcher tab in this dashboard to open it '
+                       'in, so here is the file itself.')
+        else:
+            try:
+                if hand_over(got['text'], got['name']):
+                    calc_set_message(
+                        f'{full_path.name} is open in the Ketcher tab.')
+                    try:
+                        ctx.select_tab('Ketcher')
+                    except Exception:                   # noqa: BLE001
+                        pass
+                    return
+                trouble = ('The editor would not take it; here is the file '
+                           'itself.')
+            except Exception as exc:                    # noqa: BLE001
+                trouble = f'It could not be handed over ({exc}).'
+        # The text, and why it is text.  Falling through to the ordinary text
+        # branch instead would show the same thing and overwrite the reason
+        # on the way, which is a double-click that appears to do nothing.
+        body = got['text']
+        if len(body) > CALC_DRAWING_PREVIEW_MAX_CHARS:
+            body = (body[:CALC_DRAWING_PREVIEW_MAX_CHARS]
+                    + f'\n\n[... {len(got["text"])} characters in all]')
+        calc_set_message(f'{trouble}\n\n{body}')
+
     # -- item open logic (shared by dblclick and single-click on files) ------
 
     def _calc_open_item(selected):
@@ -12311,6 +12386,13 @@ def create_tab(ctx):
         state['selected_file_path'] = str(full_path)
         state['selected_file_size'] = int(size)
         calc_update_download_btn()
+
+        # --- a drawing, which belongs in the editor it was drawn in ---
+        # First in the ladder rather than last: these are text files, and the
+        # default branch would show a chemist the JSON of their own structure.
+        if _ketcher.is_drawing(full_path):
+            _calc_open_in_ketcher(full_path, size_str)
+            return
 
         # --- Turbomole coord file ---
         if name_lower == 'coord':
@@ -15118,6 +15200,9 @@ def create_tab(ctx):
         'calc_bottom_btn': calc_bottom_btn,
         'calc_search_result': calc_search_result,
         'calc_file_info': calc_file_info,
+        # What the browser is showing, which is how a test can ask
+        # what a file was opened as.
+        'calc_content_area': calc_content_area,
         'calc_sheet_payload_input': calc_sheet_payload_input,
         'calc_sheet_action_btn': calc_sheet_action_btn,
         # the spreadsheet, for driving it the way the browser does

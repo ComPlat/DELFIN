@@ -1,0 +1,570 @@
+"""The whole of Ketcher as a panel: draw it, keep it, open it again.
+
+The structure editor has had a small Ketcher beside its input box for a while:
+a frame that opens under a DRAW toggle and one button that hands a molecule
+back as a SMILES.  That is the right size for "I would rather draw this than
+type it" and the wrong size for everything else the editor can do.
+
+This is the editor as its own thing.  The frame fills the panel, what is drawn
+is kept in ``<calc>/Ketcher`` under a name and opened again from there, and a
+drawing with an arrow in it comes back as a reaction SMILES rather than as an
+error -- Ketcher refuses to write a molfile for a reaction, which is why the
+small version could not read one at all.
+
+Three things travel between here and the browser, and each of them goes the way
+the structure editor already established:
+
+* out through ``ctx.run_js``, which is fine for a question but useless for an
+  answer -- it clears the previous script before sending the next, so a reply
+  written that way can be thrown away before the page has run it;
+* back through a hidden textarea whose value the script sets, which is ordered,
+  survives a background thread and arrives as an ordinary widget change;
+* stamped with a serial, because a widget only reports a value that *changed*
+  and drawing the same thing twice would otherwise look like an answer that
+  never came.
+"""
+
+from __future__ import annotations
+
+import json
+import threading
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+import ipywidgets as widgets
+from IPython import get_ipython
+
+from . import ketcher as _ketcher
+
+__all__ = ['Panel', 'build', 'read_js', 'copy_js']
+
+#: The classes the page finds the two halves of a panel by.  A dashboard can
+#: hold more than one -- the Ketcher tab has one and each structure editor has
+#: another -- so every selector is qualified by the panel's own scope, the way
+#: the structure editor qualifies its frame.  Asking for "the" frame is how a
+#: press in one tab was answered into another.
+FRAME_CLASS = 'delfin-ketcher-frame'
+SYNC_CLASS = 'delfin-ketcher-sync'
+
+#: How long an answer from the page is waited for before the panel stops
+#: claiming it is reading.  A frame that has been reloaded never answers at
+#: all, and a status line that says "Reading the drawing..." for good is a lie
+#: about what is happening.
+_ANSWER_LEASH = 25.0
+
+#: What to ask the editor for, per saved format.  ``auto`` is what the SMILES
+#: button uses: a molfile normally, an RXN file when there is an arrow on the
+#: canvas, because Ketcher throws "The structure cannot be saved as *.MOL due
+#: to reaction" rather than writing one.
+_ASK_FOR = {
+    '.ket': 'ket', '.mol': 'mol', '.rxn': 'rxn', '.smi': 'smi',
+    '.cdxml': 'cdxml',
+}
+
+
+def read_js(scope: str, kind: str, want: str, *,
+            frame_class: str = FRAME_CLASS,
+            sync_class: str = SYNC_CLASS) -> str:
+    """Ask the editor for what has been drawn, in the form *want*.
+
+    *kind* travels back with the answer so the one channel can carry both
+    questions -- what to put in the SMILES box, and what to write to disk --
+    without a second hidden widget for each.
+
+    The two classes are arguments because the structure editor has a Ketcher
+    of its own, under names of its own that predate this module and that its
+    tests read.  The question being asked is the same one, so it is asked from
+    one place; only which elements on the page it is asked through differs.
+    """
+    return (
+        "(function(){\n"
+        "  var scope=" + json.dumps(str(scope)) + ";\n"
+        "  var kind=" + json.dumps(str(kind)) + ";\n"
+        "  var want=" + json.dumps(str(want)) + ";\n"
+        "  var box=document.querySelector('." + sync_class + ".'+scope);\n"
+        "  var input=box&&box.querySelector('textarea, input');\n"
+        "  function hand(text){\n"
+        "    if(!input) return;\n"
+        "    var proto=(input.tagName==='TEXTAREA')\n"
+        "      ? window.HTMLTextAreaElement.prototype\n"
+        "      : window.HTMLInputElement.prototype;\n"
+        "    var setter=Object.getOwnPropertyDescriptor(proto,'value');\n"
+        "    var line=(Date.now())+'\\n'+kind+'\\n'+text;\n"
+        "    if(setter&&setter.set) setter.set.call(input,line);\n"
+        "    else input.value=line;\n"
+        "    input.dispatchEvent(new Event('input',{bubbles:true}));\n"
+        "    input.dispatchEvent(new Event('change',{bubbles:true}));\n"
+        "  }\n"
+        "  var host=document.querySelector('." + frame_class + ".'+scope);\n"
+        "  var frame=host&&host.querySelector('iframe');\n"
+        "  var api=null;\n"
+        "  try{ api=frame&&frame.contentWindow&&frame.contentWindow.ketcher; }\n"
+        "  catch(e){ api=null; }\n"
+        "  if(!api){ hand('!no-editor'); return; }\n"
+        "  function ask(){\n"
+        "    if(want==='ket') return api.getKet();\n"
+        "    if(want==='smi') return api.getSmiles();\n"
+        "    if(want==='cdxml') return api.getCDXml();\n"
+        "    if(want==='rxn') return api.getRxn();\n"
+        "    if(want==='mol') return api.getMolfile();\n"
+        "    var arrow=false;\n"
+        "    try{ arrow=!!(api.containsReaction&&api.containsReaction()); }\n"
+        "    catch(e){ arrow=false; }\n"
+        "    return arrow ? api.getRxn() : api.getMolfile();\n"
+        "  }\n"
+        "  try{\n"
+        "    Promise.resolve(ask()).then(function(text){ hand(text||''); },\n"
+        "      function(err){ hand('!'+err); });\n"
+        "  }catch(e){ hand('!'+e); }\n"
+        "})();"
+    )
+
+
+def copy_js(text: str) -> str:
+    """Put *text* on the clipboard, however this browser will let us.
+
+    The same ladder the structure editor's XYZ copy uses: the clipboard API
+    where there is one, a hidden textarea and ``execCommand`` where there is
+    not -- a dashboard reached over plain HTTP at a machine name has no
+    clipboard API at all, because it is not a secure context.
+    """
+    payload = json.dumps(str(text or ''))
+    return (
+        "(function(){\n"
+        "  var text=" + payload + ";\n"
+        "  function old(){\n"
+        "    try{\n"
+        "      var ta=document.createElement('textarea');\n"
+        "      ta.value=text; ta.style.position='fixed'; ta.style.opacity='0';\n"
+        "      document.body.appendChild(ta); ta.focus(); ta.select();\n"
+        "      document.execCommand('copy'); document.body.removeChild(ta);\n"
+        "    }catch(e){ window.prompt('Copy:', text); }\n"
+        "  }\n"
+        "  try{\n"
+        "    if(navigator.clipboard&&navigator.clipboard.writeText){\n"
+        "      navigator.clipboard.writeText(text).catch(old);\n"
+        "    } else { old(); }\n"
+        "  }catch(e){ old(); }\n"
+        "})();"
+    )
+
+
+class Panel:
+    """One Ketcher, with somewhere to keep what is drawn in it."""
+
+    def __init__(self, parts: Dict[str, Any]):
+        self.__dict__.update(parts)
+
+    @property
+    def widget(self):
+        return self.box
+
+
+def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
+          title: str = 'Ketcher') -> Panel:
+    """One editor panel, ready to be placed."""
+    main_io_loop = getattr(getattr(get_ipython(), 'kernel', None),
+                           'io_loop', None)
+
+    def schedule(func, *args, **kwargs):
+        """Touch a widget from the thread that owns it."""
+        if main_io_loop is not None:
+            main_io_loop.add_callback(lambda: func(*args, **kwargs))
+            return
+        func(*args, **kwargs)
+
+    state: Dict[str, Any] = {'asked': None, 'serial': 0}
+    frame_selector = f'.{FRAME_CLASS}.{scope}'
+
+    # -- the parts ------------------------------------------------------
+    status = widgets.HTML(value='')
+
+    frame = widgets.HTML(value='', layout=widgets.Layout(width='100%'))
+    frame.add_class(FRAME_CLASS)
+    frame.add_class(scope)
+
+    # What the editor hands back.  A widget value rather than a script,
+    # because a script sent through run_js can be replaced before the page
+    # has run it.
+    sync = widgets.Textarea(value='', layout=widgets.Layout(display='none'))
+    sync.add_class(SYNC_CLASS)
+    sync.add_class(scope)
+
+    install_btn = widgets.Button(
+        description='FETCH KETCHER', icon='download', button_style='warning',
+        tooltip='Fetch the newest published Ketcher (about 32 MB).',
+        layout=widgets.Layout(width='180px'),
+    )
+
+    smiles_btn = widgets.Button(
+        description='TO SMILES', icon='arrow-down', button_style='success',
+        tooltip=('Read what is drawn.  A structure comes back as a SMILES, a '
+                 'drawing with an arrow in it as a reaction SMILES.'),
+        layout=widgets.Layout(width='140px'),
+    )
+    smiles_out = widgets.Text(
+        value='', placeholder='the structure that was drawn',
+        description='SMILES:', layout=widgets.Layout(width='100%'),
+        style={'description_width': '90px'},
+    )
+    smiles_copy_btn = widgets.Button(
+        description='COPY', icon='copy', layout=widgets.Layout(width='90px'),
+        tooltip='Put the SMILES on the clipboard.',
+    )
+    to_submit_btn = widgets.Button(
+        description='TO SUBMIT', icon='arrow-right', button_style='info',
+        tooltip='Put it in the Submit tab\'s input box and go there.',
+        layout=widgets.Layout(width='130px'),
+    )
+    rxn_out = widgets.Text(
+        value='', placeholder='reactants>agents>products, once an arrow is drawn',
+        description='Reaction:', layout=widgets.Layout(width='100%'),
+        style={'description_width': '90px'},
+    )
+    rxn_copy_btn = widgets.Button(
+        description='COPY', icon='copy', layout=widgets.Layout(width='90px'),
+        tooltip='Put the reaction SMILES on the clipboard.',
+    )
+
+    name_box = widgets.Text(
+        value='', placeholder='what to call it', description='Name:',
+        layout=widgets.Layout(width='320px'),
+        style={'description_width': '60px'},
+    )
+    format_dd = widgets.Dropdown(
+        options=list(_ketcher.DRAWING_SUFFIXES), value='.ket',
+        description='as', layout=widgets.Layout(width='150px'),
+        style={'description_width': '30px'},
+    )
+    save_btn = widgets.Button(
+        description='SAVE', icon='save', button_style='success',
+        tooltip=f'Keep it in the {_ketcher.DRAWINGS_FOLDER} folder.',
+        layout=widgets.Layout(width='100px'),
+    )
+    files_dd = widgets.Dropdown(
+        options=[], value=None, description='Kept:',
+        layout=widgets.Layout(width='360px'),
+        style={'description_width': '60px'},
+    )
+    open_btn = widgets.Button(
+        description='OPEN', icon='folder-open', button_style='info',
+        tooltip='Put it back into the editor.',
+        layout=widgets.Layout(width='100px'),
+    )
+    delete_btn = widgets.Button(
+        description='DELETE', icon='trash', button_style='danger',
+        tooltip='Throw this drawing away.',
+        layout=widgets.Layout(width='110px'),
+    )
+    refresh_btn = widgets.Button(
+        description='', icon='refresh', tooltip='Look at the folder again.',
+        layout=widgets.Layout(width='45px'),
+    )
+
+    # -- saying things --------------------------------------------------
+    def _say(text: str, colour: str = '#333') -> None:
+        import html as _html
+        status.value = (f"<span style='color:{colour}'>"
+                        f"{_html.escape(str(text))}</span>")
+
+    def _say_later(text: str, colour: str = '#333') -> None:
+        schedule(_say, text, colour)
+
+    # -- the folder -----------------------------------------------------
+    def _calc_dir() -> Path:
+        return Path(getattr(ctx, 'calc_dir', None) or (Path.home() / 'calc'))
+
+    def _refresh_files(select: Optional[str] = None) -> None:
+        kept = _ketcher.list_drawings(_calc_dir())
+        state['files'] = {item.name: item for item in kept}
+        files_dd.options = [item.name for item in kept]
+        if select and select in state['files']:
+            files_dd.value = select
+        elif kept and files_dd.value not in state['files']:
+            files_dd.value = kept[0].name
+
+    # -- talking to the page --------------------------------------------
+    def _send(*scripts) -> None:
+        """Everything this panel says to the page, said once.
+
+        ``ctx.run_js`` clears its output before it displays the next script,
+        so two calls in a row can mean the first is thrown away before the
+        browser has run it.  Whatever has to happen together is therefore
+        joined and sent as one -- which is also why the focus script travels
+        with every question rather than being sent beside it.  It marks the
+        element it bound to, so arriving again costs nothing.
+        """
+        joined = '\n'.join(str(part) for part in scripts if part)
+        if joined:
+            ctx.run_js(joined)
+
+    # -- the frame ------------------------------------------------------
+    def _show_frame() -> bool:
+        """Put the editor on the page, if there is one to put there.
+
+        Widgets only.  Nothing is sent to the page from here: this is called
+        on the way into asking a question, and a script sent immediately
+        before another one is a script that may never run.
+        """
+        url = _ketcher.app_url()
+        if not url:
+            frame.value = ''
+            install_btn.description = 'FETCH KETCHER'
+            install_btn.button_style = 'warning'
+            for button in (smiles_btn, save_btn, open_btn, delete_btn,
+                           to_submit_btn):
+                button.disabled = True
+            return False
+        # Kept rather than hidden: an editor that is there is an editor that
+        # can be brought up to date, and the tab is the place to do it from.
+        install_btn.description = 'UPDATE KETCHER'
+        install_btn.button_style = ''
+        for button in (smiles_btn, save_btn, open_btn, delete_btn,
+                       to_submit_btn):
+            button.disabled = False
+        # Set once.  Setting the same frame again reloads it, and a reloaded
+        # editor is an empty one -- which is a drawing thrown away every time
+        # anything on this panel is refreshed.
+        if url not in (frame.value or ''):
+            frame.value = _ketcher.frame_html(url, height=height)
+        return True
+
+    # -- asking the page ------------------------------------------------
+    def _ask(kind: str, want: str, saying: str) -> None:
+        state['asked'] = kind
+        state['serial'] += 1
+        mine = state['serial']
+        _say(saying)
+        _send(_ketcher.focus_js(frame_selector), read_js(scope, kind, want))
+
+        def _leash():
+            if state['serial'] == mine and state['asked'] == kind:
+                state['asked'] = None
+                _say_later('The editor did not answer.  If it was reloaded, '
+                           'draw again and ask once more.', '#ef6c00')
+
+        timer = threading.Timer(_ANSWER_LEASH, _leash)
+        timer.daemon = True
+        timer.start()
+
+    def _on_smiles(_button=None) -> None:
+        if not _show_frame():
+            return
+        _ask('smiles', 'auto', 'Reading the drawing...')
+
+    def _on_save(_button=None) -> None:
+        if not _show_frame():
+            return
+        wanted = str(format_dd.value or '.ket')
+        raw = str(name_box.value or '').strip()
+        if not raw:
+            _say('Give the drawing a name first.', '#d32f2f')
+            return
+        # Remembered now rather than read when the answer comes back: the box
+        # is the user's and they may have moved on by then.
+        state['saving'] = {'name': raw, 'suffix': wanted}
+        _ask('save', _ASK_FOR.get(wanted, 'ket'), f'Writing {raw}{wanted}...')
+
+    # -- what came back -------------------------------------------------
+    def _on_sync(change) -> None:
+        if change.get('name') != 'value':
+            return
+        raw = sync.value or ''
+        parts = raw.split('\n', 2)
+        if len(parts) < 3:
+            return
+        _serial, kind, payload = parts
+        state['asked'] = None
+        if payload.startswith('!'):
+            trouble = payload[1:]
+            _say('The editor is not open yet, so there is nothing to read.'
+                 if trouble == 'no-editor'
+                 else f'The drawing could not be read: {trouble}', '#d32f2f')
+            return
+        if kind == 'save':
+            wanted = state.get('saving') or {}
+            outcome = _ketcher.save_drawing(
+                _calc_dir(), wanted.get('name', ''), payload,
+                wanted.get('suffix', '.ket'))
+            _say(outcome['status'], '#2e7d32' if outcome['ok'] else '#d32f2f')
+            if outcome['ok']:
+                _refresh_files(select=Path(outcome['path']).name)
+            return
+        outcome = _ketcher.smiles_from_drawing(payload)
+        if not outcome['ok']:
+            _say(outcome['status'], '#d32f2f')
+            return
+        # A reaction and a structure are not interchangeable, so they do not
+        # share a box.  Everything downstream of a SMILES here reads a single
+        # molecule; handing it "A.B>>C" would be handing it something it will
+        # either refuse or, worse, quietly misread.
+        if outcome.get('reaction'):
+            rxn_out.value = outcome['smiles']
+        else:
+            smiles_out.value = outcome['smiles']
+        _say(outcome['status'], '#2e7d32')
+
+    # -- opening one that was kept --------------------------------------
+    def open_text(text: str, name: str = '') -> bool:
+        """Put *text* into the editor, whatever format it is written in.
+
+        The entry point the Calculations browser calls, so that a drawing
+        double-clicked over there arrives here as the drawing it was.
+        """
+        body = str(text or '')
+        if not body.strip():
+            _say(f'{name or "That file"} is empty.', '#d32f2f')
+            return False
+        if not _show_frame():
+            _say('Ketcher is not installed yet, so there is nowhere to open '
+                 'it.  Press FETCH KETCHER first.', '#d32f2f')
+            return False
+        _send(_ketcher.focus_js(frame_selector),
+              _ketcher.load_js(frame_selector, body))
+        if name:
+            stem = Path(name).stem
+            name_box.value = stem
+            suffix = Path(name).suffix.lower()
+            if suffix in _ketcher.DRAWING_SUFFIXES:
+                format_dd.value = suffix
+        _say(f'{name or "The drawing"} is in the editor.', '#2e7d32')
+        return True
+
+    def _on_open(_button=None) -> None:
+        chosen = files_dd.value
+        where = (state.get('files') or {}).get(chosen)
+        if where is None:
+            _refresh_files()
+            _say('There is nothing chosen to open.', '#d32f2f')
+            return
+        got = _ketcher.read_drawing(where)
+        if not got['ok']:
+            _say(got['status'], '#d32f2f')
+            _refresh_files()
+            return
+        open_text(got['text'], got['name'])
+
+    def _on_delete(_button=None) -> None:
+        chosen = files_dd.value
+        where = (state.get('files') or {}).get(chosen)
+        if where is None:
+            _refresh_files()
+            _say('There is nothing chosen to delete.', '#d32f2f')
+            return
+        outcome = _ketcher.delete_drawing(where)
+        _say(outcome['status'], '#2e7d32' if outcome['ok'] else '#d32f2f')
+        _refresh_files()
+
+    def _on_refresh(_button=None) -> None:
+        _refresh_files()
+        _say(f'{len(state.get("files") or {})} drawing(s) in '
+             f'{_ketcher.DRAWINGS_FOLDER}.')
+
+    def _on_to_submit(_button=None) -> None:
+        """The structure into the Submit tab, where the job is set up.
+
+        Carried across rather than copied here: every field a calculation
+        needs is over there, and a second, staler copy of them would be worse
+        than a tab switch.  The same handover the reaction graph makes.
+        """
+        drawn = str(smiles_out.value or '').strip()
+        if not drawn:
+            _say('Press TO SMILES first -- there is nothing to send.', '#d32f2f')
+            return
+        box = (getattr(ctx, 'submit_refs', None) or {}).get('coords_widget')
+        if box is None:
+            _say('There is no Submit tab in this dashboard to send it to.',
+                 '#d32f2f')
+            return
+        box.value = drawn
+        _say(f'{drawn} is in the Submit tab -- Convert turns it into '
+             'coordinates.', '#2e7d32')
+        try:
+            ctx.select_tab('Submit Job')
+        except Exception:                               # noqa: BLE001
+            pass
+
+    def _on_copy_smiles(_button=None) -> None:
+        _send(copy_js(smiles_out.value or ''))
+        _say('The SMILES is on the clipboard.')
+
+    def _on_copy_rxn(_button=None) -> None:
+        _send(copy_js(rxn_out.value or ''))
+        _say('The reaction SMILES is on the clipboard.')
+
+    # -- fetching it ----------------------------------------------------
+    def _on_install(_button=None) -> None:
+        install_btn.disabled = True
+        _say('Fetching Ketcher...')
+
+        def _work():
+            try:
+                outcome = _ketcher.install(
+                    on_line=lambda line: _say_later(f'Ketcher: {line}'))
+            except Exception as exc:                    # noqa: BLE001
+                outcome = {'ok': False,
+                           'status': f'Ketcher could not be installed: {exc}'}
+
+            def _done():
+                install_btn.disabled = False
+                _say(outcome['status'],
+                     '#2e7d32' if outcome.get('ok') else '#d32f2f')
+                if _show_frame():
+                    _send(_ketcher.focus_js(frame_selector))
+
+            schedule(_done)
+
+        thread = threading.Thread(target=_work, daemon=True)
+        thread.start()
+
+    # -- wiring ---------------------------------------------------------
+    smiles_btn.on_click(_on_smiles)
+    smiles_copy_btn.on_click(_on_copy_smiles)
+    to_submit_btn.on_click(_on_to_submit)
+    rxn_copy_btn.on_click(_on_copy_rxn)
+    save_btn.on_click(_on_save)
+    open_btn.on_click(_on_open)
+    delete_btn.on_click(_on_delete)
+    refresh_btn.on_click(_on_refresh)
+    install_btn.on_click(_on_install)
+    sync.observe(_on_sync, names='value')
+
+    def _row(members):
+        return widgets.HBox(members, layout=widgets.Layout(
+            gap='8px', align_items='center', flex_wrap='wrap'))
+
+    box = widgets.VBox(
+        [
+            widgets.HTML(f'<b>{title}</b>'),
+            _row([smiles_btn, install_btn, status]),
+            frame, sync,
+            _row([smiles_out, smiles_copy_btn, to_submit_btn]),
+            _row([rxn_out, rxn_copy_btn]),
+            widgets.HTML(
+                f'<b>Kept in {_ketcher.DRAWINGS_FOLDER}, beside the '
+                'calculations:</b>'),
+            _row([name_box, format_dd, save_btn]),
+            _row([files_dd, open_btn, delete_btn, refresh_btn]),
+        ],
+        layout=widgets.Layout(width='100%', gap='6px'),
+    )
+
+    _refresh_files()
+    ready = _show_frame()
+    # Registered on the context rather than sent: create_dashboard collects
+    # every tab's startup script and sends them as one, after all of the tabs
+    # are built.  Sending it here would be a second run_js against a page that
+    # has not been drawn yet.
+    try:
+        ctx.add_init_js(_ketcher.focus_js(frame_selector))
+    except Exception:                                   # noqa: BLE001
+        pass
+    if ready:
+        version = _ketcher.installed_version()
+        _say(f'Ketcher {version}: draw it, keep it, open it again.')
+    else:
+        _say('Ketcher is not here yet.  It is about 32 MB, fetched once and '
+             'then it works without a network -- press FETCH KETCHER.',
+             '#ef6c00')
+
+    return Panel(locals())

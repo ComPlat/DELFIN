@@ -571,6 +571,7 @@ def create_tab(ctx):
     submit_draw_update_btn = _editor.submit_draw_update_btn
     submit_draw_frame = _editor.submit_draw_frame
     submit_draw_sync = _editor.submit_draw_sync
+    submit_draw_tools = _editor.submit_draw_tools
 
 
     def _apply_batch_preview_result(task_id, entry, preview_payload):
@@ -2336,7 +2337,7 @@ def create_tab(ctx):
         widgets.HBox([submit_draw_open_btn, submit_draw_get_btn,
                       submit_draw_update_btn],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
-        submit_draw_frame, submit_draw_sync,
+        submit_draw_frame, submit_draw_sync, submit_draw_tools,
         widgets.HBox([convert_smiles_button, convert_smiles_uff_button,
                       convert_smiles_quick_button],
                      layout=widgets.Layout(gap='10px', flex_wrap='wrap')),
@@ -2587,6 +2588,16 @@ def create_tab(ctx):
         'submit_draw_update_btn': submit_draw_update_btn,
         'submit_draw_frame': submit_draw_frame,
         'submit_draw_sync': submit_draw_sync,
+        'submit_draw_tools': submit_draw_tools,
+        'submit_draw_rxn_out': _editor.submit_draw_rxn_out,
+        'submit_draw_rxn_row': _editor.submit_draw_rxn_row,
+        'submit_draw_name': _editor.submit_draw_name,
+        'submit_draw_format_dd': _editor.submit_draw_format_dd,
+        'submit_draw_save_btn': _editor.submit_draw_save_btn,
+        'submit_draw_files_dd': _editor.submit_draw_files_dd,
+        'submit_draw_open_file_btn': _editor.submit_draw_open_file_btn,
+        'submit_draw_file_sync': _editor.submit_draw_file_sync,
+        'open_drawing': _editor.open_drawing,
         # The two channels the page speaks through, and the line it is
         # answered on: a test that cannot use them has to drive the editor
         # through its internals instead of the way the browser drives it.

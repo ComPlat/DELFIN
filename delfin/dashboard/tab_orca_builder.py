@@ -2331,6 +2331,7 @@ def create_tab(ctx):
               orca_editor.submit_draw_update_btn]),
         orca_editor.submit_draw_frame,
         orca_editor.submit_draw_sync,
+        orca_editor.submit_draw_tools,
         _row([orca_copy_coords_btn, orca_check_numbering_btn,
               orca_apply_numbering_btn, orca_back_to_editor_btn]),
         widgets.HTML('<b>Config Templates:</b>'),

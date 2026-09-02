@@ -39,6 +39,7 @@ _DISCOVERED = False
 # Built-in dynamic tabs that register themselves on import.
 _BUILTIN_DYNAMIC_TABS = (
     "delfin.dashboard.tab_application",
+    "delfin.dashboard.tab_ketcher",
     "delfin.dashboard.tab_reaction_graph",
 )
 
