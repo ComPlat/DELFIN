@@ -2999,6 +2999,69 @@ def test_the_bonding_is_kept_for_the_molecule_it_was_perceived_from(editor):
     assert "if _gfn.is_gfn_method(method) else None" in settle
 
 
+def test_the_bonding_is_perceived_at_the_charge_the_molecule_carries():
+    """An ion is a different molecule, and the seed never ran on one.
+
+    The topology is perceived once, by a single-cycle run made for that
+    purpose, and that run was given neither the charge nor the spin on screen.
+    On an ion it therefore did not run at all: an acetate anion seeded at
+    charge 0 comes back "7 atoms at charge 0 have an odd number of electrons,
+    which cannot make a closed shell", the folder is left EMPTY, and every
+    later run falls back to perceiving its own bonding from whatever geometry
+    it is handed -- which is the cliff the whole mechanism exists to avoid
+    (a propane C-C at 1.96 A is not seen as a bond, and the relaxation then
+    pushes it to 2.80).
+
+    The key ignored them as well, so a charge changed on screen went on using
+    the topology perceived under the old one.
+    """
+    import pathlib
+    import tempfile
+
+    import pytest as _pytest
+
+    _pytest.importorskip("ipywidgets")
+    import ipywidgets as widgets
+
+    from delfin.dashboard import structure_editor
+    from delfin.dashboard.context import DashboardContext
+
+    acetate = (
+        "7\nacetate\n"
+        "C  -0.674211   0.032822  -0.017922\n"
+        "C   0.909634  -0.034240   0.017171\n"
+        "O   1.384734  -1.020429   0.598777\n"
+        "O   1.502057   0.903558  -0.535561\n"
+        "H  -1.005331   0.926938  -0.544090\n"
+        "H  -1.056399   0.044692   1.002521\n"
+        "H  -1.060484  -0.853341  -0.520897\n"
+    )
+    room = pathlib.Path(tempfile.mkdtemp())
+    for name in ("calc", "archive", "office"):
+        (room / name).mkdir()
+    ctx = DashboardContext(calc_dir=room / "calc", archive_dir=room / "archive",
+                           office_dir=room / "office")
+    ctx.run_js = lambda _script: None
+    part = structure_editor.build(
+        ctx, state={}, coords_widget=widgets.Textarea(value=acetate),
+        viewer_height=560,
+        schedule_ui_update=lambda func, *a, **k: func(*a, **k),
+        update_view=lambda *a, **k: None,
+        get_smiles_charge=lambda *a, **k: None)
+    part.submit_ff_dd.value = "gfnff"
+    part.submit_gfn_charge.value = -1
+
+    folder = part._gfn_topology_dir(acetate)
+    assert (pathlib.Path(folder) / "gfnff_topo").is_file(), (
+        "the seed did not run, so nothing is kept and every later run "
+        "perceives its own bonding")
+
+    # And the charge is part of which molecule this is.
+    part.submit_gfn_charge.value = 0
+    assert str(part._gfn_topology_dir(acetate)) != str(folder), (
+        "the topology perceived as an anion was kept for the neutral")
+
+
 def test_only_gfnff_has_a_topology_to_keep():
     """GFN2 works the bonding out from the wavefunction every time."""
     source = open(gfn.__file__, encoding="utf-8").read()
