@@ -214,12 +214,19 @@ def _check_python_deps(ctx: dict) -> list[dict]:
     return out
 
 
-def _uncontained_mcp(configs: dict) -> int:
-    """How many configured servers no namespace is built around."""
+def _uncontained_mcp(configs: dict, workspace=None) -> int:
+    """How many configured servers no namespace is built around.
+
+    Asks the registry's own decision rather than re-deriving it: a
+    built-in whose roots come from the settings is contained, and a
+    doctor that counted it as loose would be reporting on a rule it had
+    reimplemented.
+    """
     try:
-        from .mcp_isolation import parse_isolation
-        return sum(1 for cfg in configs.values()
-                   if not cfg.get("url") and parse_isolation(cfg) is None)
+        from .mcp_client import _isolation_for
+        return sum(1 for name, cfg in configs.items()
+                   if not cfg.get("url")
+                   and _isolation_for(name, cfg, workspace) is None)
     except Exception:
         return 0
 
@@ -240,7 +247,7 @@ def _check_mcp(ctx: dict) -> list[dict]:
     # Stated, not warned about: running a server uncontained is the default
     # and an ordinary choice. What is not ordinary is believing the shell's
     # sandbox covers it, and the doctor is where that belief gets checked.
-    loose = _uncontained_mcp(configs)
+    loose = _uncontained_mcp(configs, Path(workspace) if workspace else None)
     if loose:
         names += f" — {loose} without declared roots (outside the shell's isolation)"
     if ctx.get("fast", True):
