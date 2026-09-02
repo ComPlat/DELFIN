@@ -11550,6 +11550,33 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # either, it is a switch for a second leg that cannot exist.
         if str(submit_scan_how.value) in ('push', 'load'):
             submit_scan_back.layout.display = 'none'
+        # And the field offers only what the armed legs can be walked with.
+        #
+        # A push is a force between two atoms, so it walks distances.  There
+        # is no force that drives an *angle* towards a reaction -- what one
+        # would push on is the two bonds that make it, which is what the atoms
+        # at its ends already are.  The press said so, and said it after the
+        # leg was armed and the button pressed, which is the worst moment for
+        # it: the work is done and then comes the correction.  Asked for as
+        # "warum muss ich dann noch umstellen ... da soll direkt das genommen
+        # werden was geht bzw nur noch die auswahl geben die geht".
+        #
+        # So it comes off the field instead, exactly the way `form` and
+        # `break` already come off :data:`submit_scan_way` for an angle.  When
+        # the legs go back to distances the three are offered again.
+        turning = any(str(one.get('kind')) != 'distance' for one in legs)
+        offered = ([('walk the value', 'hold')] if turning else
+                   [('push with a force', 'push'), ('walk the value', 'hold'),
+                    ('pull along the arrows', 'load')])
+        if [v for _label, v in submit_scan_how.options] != [
+                v for _label, v in offered]:
+            state['scan_how_quiet'] = True
+            try:
+                submit_scan_how.options = offered
+                if submit_scan_how.value not in [v for _l, v in offered]:
+                    submit_scan_how.value = offered[0][1]
+            finally:
+                state['scan_how_quiet'] = False
         # The second opinion answers to a different question from the rest of
         # the row, and that is the point of it: everything above is here
         # because a scan is *armed*, and this is here because one has
@@ -17867,6 +17894,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         showing a press that would do nothing under the mode now chosen.
         """
         if change.get('name') != 'value':
+            return
+        # Not while the row is narrowing the field itself, or the refresh
+        # that narrows it would call this, which would call it again.
+        if state.get('scan_how_quiet'):
             return
         _refresh_scan()
 
