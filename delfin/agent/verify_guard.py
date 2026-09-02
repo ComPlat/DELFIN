@@ -726,6 +726,109 @@ def _is_number(text: str) -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------
+# Which language the answer came back in
+# ---------------------------------------------------------------------------
+#
+# The prompt rule is not enough, and that was measured rather than
+# assumed: with the rule delivered to the role, no contradicting memory
+# in the sandbox, and five of 1109 prompt lines carrying any German at
+# all, Qwen answered an English question in German four times in four
+# runs. So this asks the same question the reader asks.
+#
+# FUNCTION WORDS, not vocabulary. They are the part of a text that does
+# not move with the subject: an answer about `beta_HRS_au` and `xTB`
+# carries the same English or German scaffolding as one about anything
+# else, and a word list of nouns would be defeated by every technical
+# term. They are also what survives a code block.
+_FUNCTION_WORDS: dict[str, frozenset[str]] = {
+    "de": frozenset("""der die das den dem des ein eine einen einem und
+        oder nicht ist sind war waren werden wird wurde für mit von zu
+        auf im in dass sich auch noch nur schon aber wenn dann als bei
+        nach über unter kann muss soll hat haben wieder sowie damit""".split()),
+    "en": frozenset("""the a an and or not is are was were be been being
+        for with from to on in that it this these those but if then as
+        at by can must should has have had do does did will would""".split()),
+}
+
+_WORD_RE = re.compile(r"[A-Za-zÄÖÜäöüß]+")
+
+# Below this many words a text says nothing about its language, and a
+# guard that guesses there would fire on "OK." and on a bare file path.
+MIN_WORDS_FOR_LANGUAGE = 12
+
+
+def detect_language(text: str) -> str:
+    """``"de"``, ``"en"``, or ``""`` when the text cannot say.
+
+    The empty answer is a real answer here and is returned often — for a
+    path, a number, a code block, a one-word acknowledgement. Every
+    caller treats it as "do not judge", because a wrong verdict about
+    language would force a correction turn on an answer that was fine.
+    """
+    words = [w.lower() for w in _WORD_RE.findall(text or "")]
+    if len(words) < MIN_WORDS_FOR_LANGUAGE:
+        return ""
+    hits = {lang: sum(1 for w in words if w in vocab)
+            for lang, vocab in _FUNCTION_WORDS.items()}
+    best, other = sorted(hits, key=lambda k: -hits[k])
+    if hits[best] < 3:
+        return ""
+    # A clear margin, not a bare majority: technical German quotes English
+    # identifiers and vice versa, and one borrowed "the" must not decide.
+    if hits[best] < 2 * max(hits[other], 1):
+        return ""
+    return best
+
+
+def scan_for_language_mismatch(answer: str, user_message: str) -> str:
+    """The language the answer SHOULD have been in, or ``""``.
+
+    Both sides have to be legible: if either the question or the answer
+    is too short, too technical or too full of code to say, nothing is
+    claimed. That is the same rule the number pool runs on — unobserved
+    is not evidence of the opposite.
+    """
+    want = detect_language(user_message)
+    got = detect_language(answer)
+    if not want or not got or want == got:
+        return ""
+    return want
+
+
+_LANGUAGE_NAMES = {"de": "German", "en": "English"}
+
+
+def language_mismatch_feedback(want: str) -> str:
+    """Sent into the one correction turn."""
+    if want not in _LANGUAGE_NAMES:
+        return ""
+    return (
+        f"[Verify] The user wrote their message in "
+        f"{_LANGUAGE_NAMES[want]} and this answer is not in "
+        f"{_LANGUAGE_NAMES[want]}. Say the same thing in "
+        f"{_LANGUAGE_NAMES[want]} — the content is not in question, only "
+        "the language. A remembered preference does not override the "
+        "message in front of you. What goes into code stays English "
+        "either way."
+    )
+
+
+def language_mismatch_caveat(want: str) -> str:
+    """Appended when the correction turn did not switch either.
+
+    German, like every other caveat here: it is the last thing in the
+    answer and nothing after it translates it.
+    """
+    if want not in _LANGUAGE_NAMES:
+        return ""
+    if want == "de":
+        return ("\n\n[verify] Hinweis: Die Frage war auf Deutsch, die "
+                "Antwort ist es nicht.")
+    return ("\n\n[verify] Note: the question was in English, the answer "
+            "is not.")
+
+
 @dataclass(frozen=True)
 class FigureConflict:
     """One record whose field came back with two different values."""
