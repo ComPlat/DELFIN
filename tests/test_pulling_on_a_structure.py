@@ -704,3 +704,28 @@ def test_empty_space_is_handed_to_the_viewer_in_pull_mode():
     assert 'e.preventDefault(); e.stopPropagation();' in branch
     assert "kind: 'load'" in branch
     assert 'movedEnough: false' in branch
+
+
+def test_the_wheel_pressed_takes_the_marks_off():
+    """In whichever mode the hand is in, and on both sides of the screen.
+
+    It is the one button no mode had a use for, and until now a selection
+    could only be dropped by picking somewhere else -- which on a crowded
+    structure means picking something you did not want.
+
+    Both sides, because a selection lives on both: the marks are the picture's
+    and the measure box, Set and Hold all read the kernel's copy.  Clearing
+    one and not the other leaves those three acting on atoms that are no
+    longer marked anywhere.
+    """
+    from delfin.dashboard.molecule_viewer import submit_manip_bootstrap_js
+
+    body = submit_manip_bootstrap_js()
+    press = body[body.index("ov.addEventListener('mousedown'"):][:2000]
+    assert 'if (e.button === 1) {' in press
+    assert 'clearSelection(scopeKey);' in press
+    assert 'pushPicksToPython(scopeKey);' in press
+    # Ahead of the modes, so it is the same gesture in all of them.
+    assert press.index('e.button === 1') < press.index("state.mode === 'load'")
+    # And the browser's own middle-click behaviour is kept out of the way.
+    assert press.index('e.preventDefault();') < press.index('clearSelection(')
