@@ -206,31 +206,60 @@ def test_the_editor_carries_no_second_field_for_a_reaction(editor):
 
 
 # ---------------------------------------------------------------------------
-# four places around an arrow, and only two of them survive an RXN file
+# four places around an arrow, and four fields to put them in
 # ---------------------------------------------------------------------------
+#
+# ``reactants>>in>out>>products``.  Ordinary reaction SMILES has three fields,
+# and a by-product put in with the products is one nothing can pick out again:
+# a dot there means "and this one too", which is what a second product drawn
+# beside the first one means.  The fourth field keeps the two apart, so a dot
+# only ever separates several things standing in the same place.
+#
+# The doubled marks are the arrow's own two ends, so steps run on one after
+# another and each can still be seen: ``A>>in>out>>B>>in>out>>C``.
 def test_what_is_over_the_arrow_is_what_is_added():
-    """Ketcher writes it as an agent already, and this keeps that."""
     outcome = ketcher.reaction_smiles_from_rxnfile(
         rxnblock([placed("c1ccccc1", 0)],
                  [placed("C1CCCCC1", 14), placed("CC", 8, 4)]),
         canvas([(6.0, 10.0, 0.0)]))
 
     assert outcome["ok"] is True, outcome["status"]
-    assert outcome["smiles"] == "c1ccccc1>CC>C1CCCCC1"
+    assert outcome["smiles"] == "c1ccccc1>>CC>>>C1CCCCC1"
 
 
 def test_what_is_under_the_arrow_is_what_comes_off():
     """Indigo cannot tell the two apart -- measured, a cyclobutane over the
     arrow and a cyclopropane under it both came back as agents, as
-    ``C1C=CC=CC=1>C1CCC1.C1CC1>C1CCCCC1``.  Under the arrow is what the step
-    gives off, so it belongs with the products."""
+    ``C1C=CC=CC=1>C1CCC1.C1CC1>C1CCCCC1``.  Here they stand in different
+    fields, so a dot in the products means a second product and nothing
+    else."""
     outcome = ketcher.reaction_smiles_from_rxnfile(
         rxnblock([placed("c1ccccc1", 0)],
                  [placed("C1CCCCC1", 14), placed("O", 8, -4)]),
         canvas([(6.0, 10.0, 0.0)]))
 
     assert outcome["ok"] is True, outcome["status"]
-    assert outcome["smiles"] == "c1ccccc1>>C1CCCCC1.O"
+    assert outcome["smiles"] == "c1ccccc1>>>O>>C1CCCCC1"
+
+
+def test_both_at_once_read_as_one_in_and_one_out():
+    outcome = ketcher.reaction_smiles_from_rxnfile(
+        rxnblock([placed("CCC", 0)],
+                 [placed("CCC", 14), placed("C", 8, 4), placed("C", 8, -4)]),
+        canvas([(6.0, 10.0, 0.0)]))
+
+    assert outcome["smiles"] == "CCC>>C>C>>CCC"
+
+
+def test_a_dot_only_ever_separates_things_in_the_same_place():
+    """Two reactants and two products, nothing over or under: the two middle
+    fields are empty and every dot is one the drawing put there."""
+    outcome = ketcher.reaction_smiles_from_rxnfile(
+        rxnblock([placed("CCO", 0), placed("CC(=O)O", 0, 5)],
+                 [placed("CCOC(C)=O", 14), placed("O", 14, 5)]),
+        canvas([(6.0, 10.0, 0.0)]))
+
+    assert outcome["smiles"] == "CC(=O)O.CCO>>>>>CCOC(C)=O.O"
 
 
 def test_a_reactant_that_merely_reaches_across_the_line_is_not_a_reagent():
@@ -241,26 +270,25 @@ def test_a_reactant_that_merely_reaches_across_the_line_is_not_a_reagent():
         rxnblock([placed("c1ccccc1", 8)], [placed("C1CCCCC1", 20)]),
         canvas([(14.0, 18.0, 0.0)]))
 
-    assert outcome["smiles"] == "c1ccccc1>>C1CCCCC1"
+    assert outcome["smiles"] == "c1ccccc1>>>>>C1CCCCC1"
 
 
-def test_several_arrows_are_read_as_the_steps_they_were_drawn_as():
+def test_several_arrows_run_on_one_after_another():
     """An RXN file holds one arrow, so Indigo flattens three steps into "the
     first thing, into everything else" and does not even keep the drawn order.
     The arrows survive in the KET, and every component keeps its coordinates
     in the same frame, so the steps come off the geometry.
 
-    A line each, because a scheme is a sequence of reactions and not one long
-    one -- and each line is a reaction SMILES anything can read on its own.
-    """
+    What stands between two arrows is written once: it is the products of the
+    step before it and the reactants of the step after it, which is what it is
+    on the canvas."""
     outcome = ketcher.reaction_smiles_from_rxnfile(
         rxnblock([placed("c1ccccc1", 0)],
                  [placed("C1CCC1", 24), placed("C1CCCCC1", 12)]),
         canvas([(5.0, 8.0, 0.0), (17.0, 20.0, 0.0)]))
 
     assert outcome["ok"] is True, outcome["status"]
-    assert outcome["smiles"].splitlines() == ["c1ccccc1>>C1CCCCC1",
-                                              "C1CCCCC1>>C1CCC1"]
+    assert outcome["smiles"] == "c1ccccc1>>>>>C1CCCCC1>>>>>C1CCC1"
     assert outcome["steps"] == 2
 
 
@@ -271,42 +299,50 @@ def test_a_reagent_belongs_to_the_step_it_is_drawn_over():
                   placed("CO", 18.5, 5)]),
         canvas([(5.0, 8.0, 0.0), (17.0, 20.0, 0.0)]))
 
-    assert outcome["smiles"].splitlines() == ["c1ccccc1>>C1CCCCC1",
-                                              "C1CCCCC1>CO>C1CCC1"]
+    assert outcome["smiles"] == "c1ccccc1>>>>>C1CCCCC1>>CO>>>C1CCC1"
 
 
-def test_what_a_step_gives_off_does_not_become_the_next_steps_reactant():
-    """Written as one chain, `A>reagent>B.HCl>>C`, the field holding B.HCl is
-    at once the products of the first step and the reactants of the second, so
-    the hydrogen chloride the first step gives off is read as something the
-    second one is made from.  A line each keeps it where it belongs."""
+def test_what_a_step_gives_off_stays_in_that_steps_own_field():
+    """It is not something the next step is made from, and it is not a second
+    product either -- it has a field of its own."""
     outcome = ketcher.reaction_smiles_from_rxnfile(
         rxnblock([placed("c1ccccc1", 0)],
                  [placed("C1CCC1", 24), placed("C1CCCCC1", 12),
                   placed("O", 6.5, -5)]),
         canvas([(5.0, 8.0, 0.0), (17.0, 20.0, 0.0)]))
 
-    first, second = outcome["smiles"].splitlines()
-    assert first == "c1ccccc1>>C1CCCCC1.O", "given off by the first step"
-    assert second == "C1CCCCC1>>C1CCC1"
-    assert ".O" not in second.split(">")[0], (
-        "and not something the second step is made from"
-    )
-
-
-def test_one_arrow_is_still_one_line():
-    outcome = ketcher.reaction_smiles_from_rxnfile(
-        rxnblock([placed("c1ccccc1", 0)],
-                 [placed("C1CCCCC1", 14), placed("CC", 8, 4)]),
-        canvas([(6.0, 10.0, 0.0)]))
-
-    assert outcome["smiles"] == "c1ccccc1>CC>C1CCCCC1"
-    assert "\n" not in outcome["smiles"]
+    assert outcome["smiles"] == "c1ccccc1>>>O>>C1CCCCC1>>>>>C1CCC1"
+    first, rest = outcome["smiles"].split(">>C1CCCCC1", 1)
+    assert first.endswith(">O"), "given off by the first step"
+    assert "O" not in rest, "and nowhere in the second"
 
 
 def test_without_a_canvas_the_rxn_files_own_split_is_used():
-    """Which is the right answer for one arrow and no geometry to read."""
+    """Which is the right answer for one arrow and no geometry to read: the
+    ordinary three-field form, because that is all an RXN file can say."""
     outcome = ketcher.reaction_smiles_from_rxnfile(
         rxnblock([placed("CCO", 0)], [placed("CC=O", 10)]))
 
     assert outcome["smiles"] == "CCO>>CC=O"
+
+
+def test_structures_with_no_arrow_between_them_are_one_dotted_smiles():
+    """No arrow, no reaction: what is on the canvas is a set of structures,
+    and a set of structures is a dotted SMILES -- which is exactly what goes
+    into the input box and is read there as the reactants would be.
+
+    Ketcher hands back one molfile holding every fragment, so this needs
+    nothing of the geometry at all.
+    """
+    pytest.importorskip("rdkit")
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    mol = Chem.MolFromSmiles("CCO.c1ccccc1.[Na+].[Cl-]")
+    AllChem.Compute2DCoords(mol)
+
+    outcome = ketcher.smiles_from_drawing(Chem.MolToMolBlock(mol))
+
+    assert outcome["reaction"] is False
+    assert outcome["smiles"] == "CCO.[Cl-].[Na+].c1ccccc1"
+    assert ">" not in outcome["smiles"], "nothing to separate, so no arrow"
