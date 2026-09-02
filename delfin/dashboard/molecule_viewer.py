@@ -4696,6 +4696,24 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             state.lastUsed = (window.performance && window.performance.now)
                 ? window.performance.now() : (+new Date());
             if (state.mode === 'off') return;
+            // The wheel pressed takes the marks off, whichever mode the hand
+            // is in.  It is the one button no mode had a use for, and until
+            // now a selection could only be dropped by picking somewhere
+            // else -- which on a crowded structure means picking something
+            // you did not want.
+            //
+            // The kernel is told as well, because a selection lives on both
+            // sides: clearSelection drops the marks from the picture, and the
+            // measure box, Set and Hold all read the kernel's copy.  Clearing
+            // one and not the other would leave those three acting on atoms
+            // that are no longer marked anywhere.
+            if (e.button === 1) {
+                e.preventDefault();
+                e.stopPropagation();
+                clearSelection(scopeKey);
+                pushPicksToPython(scopeKey);
+                return;
+            }
             var rect = ov.getBoundingClientRect();
             var x = e.clientX - rect.left, y = e.clientY - rect.top;
             var atom = raycastAtom(scopeKey, e.clientX, e.clientY);
