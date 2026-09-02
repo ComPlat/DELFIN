@@ -303,9 +303,18 @@ def model_hessian(numbers: Sequence[int], bohr: np.ndarray) -> np.ndarray:
 
     if quads.shape[0]:
         at = spots[quads]
-        bent = np.minimum(_bend(at[:, :3]), _bend(at[:, 1:]))
-        open_enough = (bent > STRAIGHT_WITHIN) & (bent < np.pi
-                                                  - STRAIGHT_WITHIN)
+        # Both bends, each against both bounds.  A torsion is undefined when
+        # EITHER of them is straight, and the smaller one tested against the
+        # upper bound cannot see it: on an acetonitrile the H-C-C bend is
+        # 109.4 degrees and the C-C-N is 180.0, so the minimum sails through
+        # and the torsion is built anyway.  What it puts in the matrix is not
+        # a small error -- the derivative diverges there.  Measured, the
+        # largest eigenvalue of the guessed Hessian goes from 1.4 on an ethane
+        # to 3.4e+09 on that acetonitrile and 3.1e+09 on a propyne, and the
+        # six flat directions a molecule has to have collapse to one.
+        one, two = _bend(at[:, :3]), _bend(at[:, 1:])
+        open_enough = ((np.minimum(one, two) > STRAIGHT_WITHIN)
+                       & (np.maximum(one, two) < np.pi - STRAIGHT_WITHIN))
         quads, at = quads[open_enough], at[open_enough]
         if quads.shape[0]:
             holds = (TORSION_HOLDS * close[quads[:, 0], quads[:, 1]]

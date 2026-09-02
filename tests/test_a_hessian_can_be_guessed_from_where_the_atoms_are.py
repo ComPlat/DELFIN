@@ -391,3 +391,42 @@ def test_correcting_every_direction_gives_back_the_measured_hessian():
     finally:
         climb.MEASURE_THE_SOFTEST = was
         walk.close()
+
+
+def test_a_torsion_through_a_straight_bend_is_left_out():
+    """Both bends decide, and the smaller one alone could not see it.
+
+    A torsion i-j-k-l has no derivative when EITHER of its bends is straight,
+    and the gate tested the smaller of the two against both bounds.  On an
+    acetonitrile the H-C-C bend is 109.4 degrees and the C-C-N is 180.0: the
+    minimum passes, the torsion is built, and its derivative diverges there.
+
+    What that costs is not a small error.  The largest eigenvalue of the
+    guessed Hessian went from 1.4 on an ethane to 3.4e+09 on that acetonitrile
+    and 3.1e+09 on a propyne, and the six flat directions every molecule has --
+    three translations and three rotations -- collapsed to one.  As the
+    starting matrix for a climb that is not an inaccurate guess, it is noise.
+    """
+    bohr = 0.52917721092
+    cases = {
+        'acetonitrile': (
+            np.array([6, 6, 7, 1, 1, 1]),
+            np.array([[0.0, 0.0, 0.00], [0.0, 0.0, 1.46], [0.0, 0.0, 2.62],
+                      [1.02, 0.0, -0.36], [-0.51, 0.884, -0.36],
+                      [-0.51, -0.884, -0.36]])),
+        'propyne': (
+            np.array([6, 6, 6, 1, 1, 1, 1]),
+            np.array([[0.0, 0.0, 0.00], [0.0, 0.0, 1.46], [0.0, 0.0, 2.66],
+                      [0.0, 0.0, 3.72], [1.02, 0.0, -0.36],
+                      [-0.51, 0.884, -0.36], [-0.51, -0.884, -0.36]])),
+    }
+    for name, (numbers, positions) in cases.items():
+        guessed = model_hessian(numbers, positions / bohr)
+        spectrum = np.linalg.eigvalsh(guessed)
+        assert abs(spectrum).max() < 100.0, (
+            f'{name}: a straight bend put {abs(spectrum).max():.3g} into the '
+            f'matrix, which is a divided-by-nothing derivative and not a '
+            f'force constant')
+        flat = int((np.abs(spectrum) < 1e-9).sum())
+        assert flat == 6, (
+            f'{name}: {flat} flat directions where a molecule has six')
