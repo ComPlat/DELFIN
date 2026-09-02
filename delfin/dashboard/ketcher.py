@@ -37,6 +37,7 @@ from typing import Any, Callable, Dict, Optional
 __all__ = ['app_directory', 'app_url', 'install', 'installed_version',
            'latest_release', 'is_installed', 'smiles_from_molfile',
            'reaction_smiles_from_rxnfile', 'smiles_from_drawing',
+           'parse_reaction_smiles',
            'DRAWINGS_FOLDER', 'DRAWING_SUFFIXES', 'drawings_directory',
            'is_drawing', 'list_drawings', 'list_in', 'save_drawing',
            'save_into', 'read_drawing',
@@ -1241,3 +1242,92 @@ def load_js(host_selector: str, text: str) -> str:
         "  put();\n"
         "})();"
     )
+
+
+def parse_reaction_smiles(text: str) -> Dict[str, Any]:
+    """Read the four-field form back, as reactions RDKit can work with.
+
+    ``reactants>>in>out>>products``, and a further ``>>in>out>>products`` for
+    every arrow after the first.  What comes back is one entry per step, each
+    carrying the four places apart *and* a plain three-field reaction SMILES
+    that RDKit parses -- ``reactants>in>products.out``, because a by-product is
+    a product and putting it there is what keeps the step balanced.
+
+    So the four-field form is what the drawing says, and this is how anything
+    that speaks ordinary reaction SMILES gets to read it.
+
+    A SMILES never contains ``>``, which is what makes this safe to split on.
+    One arrow is five marks -- ``>>``, ``>``, ``>>`` -- so a string with
+    ``1 + 5n`` fields is the four-field form with *n* arrows, and one with
+    three fields is the ordinary ``reactants>agents>products``, which is read
+    as a single step with nothing under the arrow.
+    """
+    raw = str(text or '').strip()
+    if not raw:
+        return {'ok': False, 'steps': [], 'status': 'There is nothing to read.'}
+    if '>' not in raw:
+        return {'ok': False, 'steps': [],
+                'status': ('There is no arrow in that, so it is a set of '
+                           'structures rather than a reaction.')}
+    fields = raw.split('>')
+    walked = []
+    if len(fields) == 3:
+        # The ordinary three-field form: reactants, agents, products.
+        walked.append((fields[0], fields[1], '', fields[2]))
+    elif (len(fields) - 1) % 5 == 0:
+        standing = [fields[0]]
+        for step in range((len(fields) - 1) // 5):
+            base = 1 + 5 * step
+            if fields[base] or fields[base + 3]:
+                return {'ok': False, 'steps': [],
+                        'status': (f'That is not a reaction this reads: the '
+                                   f'arrow marks around step {step + 1} are '
+                                   'not >> ... > ... >>.')}
+            walked.append((standing[-1], fields[base + 1],
+                           fields[base + 2], fields[base + 4]))
+            standing.append(fields[base + 4])
+    else:
+        return {'ok': False, 'steps': [],
+                'status': (f'That has {len(fields)} fields, which is neither '
+                           'reactants>agents>products nor '
+                           'reactants>>in>out>>products.')}
+
+    try:
+        from rdkit import RDLogger
+        from rdkit.Chem import rdChemReactions
+
+        RDLogger.DisableLog('rdApp.*')
+    except ImportError:
+        return {'ok': False, 'steps': [],
+                'status': 'RDKit is not installed, so a reaction cannot be built.'}
+
+    def pieces(field):
+        return [one for one in str(field or '').split('.') if one]
+
+    steps = []
+    for number, (left, added, off, right) in enumerate(walked, start=1):
+        # A by-product is a product: that is what makes the step balance, and
+        # it is the only place an ordinary reaction SMILES has for it.
+        plain = f'{left}>{added}>{".".join(pieces(right) + pieces(off))}'
+        try:
+            built = rdChemReactions.ReactionFromSmarts(plain, useSmiles=True)
+        except Exception as exc:                        # noqa: BLE001
+            built = None
+            trouble = str(exc)
+        else:
+            trouble = ''
+        if built is None:
+            return {'ok': False, 'steps': [],
+                    'status': (f'Step {number} could not be read as a '
+                               f'reaction: {trouble or plain}')}
+        steps.append({
+            'reactants': pieces(left), 'in': pieces(added),
+            'out': pieces(off), 'products': pieces(right),
+            'smiles': plain, 'reaction': built,
+        })
+    if not steps:
+        return {'ok': False, 'steps': [],
+                'status': 'There is no arrow in that, so there is no step.'}
+    return {'ok': True, 'steps': steps,
+            'status': (f'{len(steps)} step{"" if len(steps) == 1 else "s"}: '
+                       + ' then '.join(one['smiles'] for one in steps))}
