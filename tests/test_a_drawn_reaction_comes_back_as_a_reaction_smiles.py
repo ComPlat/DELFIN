@@ -248,14 +248,19 @@ def test_several_arrows_are_read_as_the_steps_they_were_drawn_as():
     """An RXN file holds one arrow, so Indigo flattens three steps into "the
     first thing, into everything else" and does not even keep the drawn order.
     The arrows survive in the KET, and every component keeps its coordinates
-    in the same frame, so the steps come off the geometry."""
+    in the same frame, so the steps come off the geometry.
+
+    A line each, because a scheme is a sequence of reactions and not one long
+    one -- and each line is a reaction SMILES anything can read on its own.
+    """
     outcome = ketcher.reaction_smiles_from_rxnfile(
         rxnblock([placed("c1ccccc1", 0)],
                  [placed("C1CCC1", 24), placed("C1CCCCC1", 12)]),
         canvas([(5.0, 8.0, 0.0), (17.0, 20.0, 0.0)]))
 
     assert outcome["ok"] is True, outcome["status"]
-    assert outcome["smiles"] == "c1ccccc1>>C1CCCCC1>>C1CCC1"
+    assert outcome["smiles"].splitlines() == ["c1ccccc1>>C1CCCCC1",
+                                              "C1CCCCC1>>C1CCC1"]
     assert outcome["steps"] == 2
 
 
@@ -266,7 +271,37 @@ def test_a_reagent_belongs_to_the_step_it_is_drawn_over():
                   placed("CO", 18.5, 5)]),
         canvas([(5.0, 8.0, 0.0), (17.0, 20.0, 0.0)]))
 
-    assert outcome["smiles"] == "c1ccccc1>>C1CCCCC1>CO>C1CCC1"
+    assert outcome["smiles"].splitlines() == ["c1ccccc1>>C1CCCCC1",
+                                              "C1CCCCC1>CO>C1CCC1"]
+
+
+def test_what_a_step_gives_off_does_not_become_the_next_steps_reactant():
+    """Written as one chain, `A>reagent>B.HCl>>C`, the field holding B.HCl is
+    at once the products of the first step and the reactants of the second, so
+    the hydrogen chloride the first step gives off is read as something the
+    second one is made from.  A line each keeps it where it belongs."""
+    outcome = ketcher.reaction_smiles_from_rxnfile(
+        rxnblock([placed("c1ccccc1", 0)],
+                 [placed("C1CCC1", 24), placed("C1CCCCC1", 12),
+                  placed("O", 6.5, -5)]),
+        canvas([(5.0, 8.0, 0.0), (17.0, 20.0, 0.0)]))
+
+    first, second = outcome["smiles"].splitlines()
+    assert first == "c1ccccc1>>C1CCCCC1.O", "given off by the first step"
+    assert second == "C1CCCCC1>>C1CCC1"
+    assert ".O" not in second.split(">")[0], (
+        "and not something the second step is made from"
+    )
+
+
+def test_one_arrow_is_still_one_line():
+    outcome = ketcher.reaction_smiles_from_rxnfile(
+        rxnblock([placed("c1ccccc1", 0)],
+                 [placed("C1CCCCC1", 14), placed("CC", 8, 4)]),
+        canvas([(6.0, 10.0, 0.0)]))
+
+    assert outcome["smiles"] == "c1ccccc1>CC>C1CCCCC1"
+    assert "\n" not in outcome["smiles"]
 
 
 def test_without_a_canvas_the_rxn_files_own_split_is_used():

@@ -170,7 +170,8 @@ class Panel:
 
 
 def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
-          title: str = 'Ketcher', folder=None, compact: bool = False) -> Panel:
+          title: str = 'Ketcher', folder=None, compact: bool = False,
+          fill: bool = False) -> Panel:
     """One editor panel, ready to be placed.
 
     *folder* is where Ketcher's own Save writes and where its own Open reads,
@@ -180,6 +181,10 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
 
     *compact* leaves out what belongs to a drawing board rather than to a file
     being looked at -- the SMILES row and the handover to Submit.
+
+    *fill* makes the frame take the height it is given rather than a fixed
+    one, so that it reaches the bottom of the pane and follows it, which is
+    what the text view, the grid and the document beside it do.
     """
     main_io_loop = getattr(getattr(get_ipython(), 'kernel', None),
                            'io_loop', None)
@@ -196,9 +201,15 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
     sync_selector = f'.{SYNC_CLASS}.{scope}'
 
     # -- the parts ------------------------------------------------------
-    status = widgets.HTML(value='')
+    # It says whatever it has to say, and gives way rather than pushing the
+    # row wider than the pane.
+    status = widgets.HTML(value='', layout=widgets.Layout(
+        flex='1 1 0', min_width='0'))
 
-    frame = widgets.HTML(value='', layout=widgets.Layout(width='100%'))
+    frame = widgets.HTML(value='', layout=widgets.Layout(
+        width='100%',
+        **({'flex': '1 1 0', 'min_height': '0', 'height': '100%'}
+           if fill else {})))
     frame.add_class(FRAME_CLASS)
     frame.add_class(scope)
 
@@ -224,9 +235,15 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
     # One box, whatever was drawn.  A structure and a reaction are read out
     # by the same press and go to the same places; two boxes meant one of them
     # was always holding something stale from an earlier drawing.
-    smiles_out = widgets.Text(
+    # A box rather than a line: a scheme drawn in several steps comes back as
+    # one reaction per step, one to a line.
+    # A box rather than a line, and one that can be made narrower: at a flat
+    # 100% beside two buttons of a fixed width the row came to more than the
+    # width it had, and the pane grew a sideways scrollbar for the difference.
+    smiles_out = widgets.Textarea(
         value='', placeholder='what was drawn, as a SMILES',
-        description='SMILES:', layout=widgets.Layout(width='100%'),
+        description='SMILES:', rows=2,
+        layout=widgets.Layout(width='auto', flex='1 1 0', min_width='0'),
         style={'description_width': '80px'},
     )
     smiles_copy_btn = widgets.Button(
@@ -489,7 +506,8 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
 
     def _row(members):
         return widgets.HBox(members, layout=widgets.Layout(
-            gap='8px', align_items='center', flex_wrap='wrap'))
+            gap='8px', align_items='center', flex_wrap='wrap',
+            width='100%', max_width='100%', overflow='hidden'))
 
     box = widgets.VBox(
         [
@@ -498,7 +516,10 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
             frame, sync,
         ] + ([] if compact else
              [_row([smiles_out, smiles_copy_btn, to_submit_btn])]),
-        layout=widgets.Layout(width='100%', gap='6px'),
+        layout=widgets.Layout(
+            width='100%', gap='6px',
+            **({'flex': '1 1 0', 'min_height': '0', 'height': '100%',
+                'flex_flow': 'column'} if fill else {})),
     )
 
     ready = _show_frame()

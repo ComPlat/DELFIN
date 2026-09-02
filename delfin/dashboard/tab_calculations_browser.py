@@ -5993,6 +5993,25 @@ def create_tab(ctx):
             calc_nmr_panel.layout.display = 'none'
             calc_censo_nmr_panel.layout.display = 'none'
             return
+        if state.get('ketcher_active'):
+            # The editor brings its own toolbars, all four of them, and none
+            # of what is below applies to a drawing: there is no buffer to
+            # search, no top and no end to jump to, and nothing to edit as
+            # text. It is saved with the editor's own Save.
+            calc_ketcher_container.layout.display = 'flex'
+            calc_pdf_container.layout.display = 'none'
+            calc_mol_container.layout.display = 'none'
+            calc_content_area.layout.display = 'none'
+            calc_edit_area.layout.display = 'none'
+            calc_text_area.layout.display = 'none'
+            calc_content_label.layout.display = 'none'
+            calc_content_toolbar.layout.display = 'none'
+            calc_recalc_toolbar.layout.display = 'none'
+            calc_xyz_workflow_toolbar.layout.display = 'none'
+            calc_nmr_panel.layout.display = 'none'
+            calc_censo_nmr_panel.layout.display = 'none'
+            return
+        calc_ketcher_container.layout.display = 'none'
         if state.get('pdf_active'):
             # The PDF panel brings its own toolbar (pages, zoom, search); the
             # text toolbar below would search a buffer that does not exist.
@@ -12217,13 +12236,17 @@ def create_tab(ctx):
         """
         panel = state.get('ketcher_panel')
         if panel is None:
+            # The height the pane has, not a number: the frame reaches the
+            # bottom and follows the tab into fullscreen, the way the text
+            # view and the grid do.
             panel = _ketcher_panel.build(
                 ctx,
-                height=f'{max(320, CALC_CONTENT_HEIGHT - 40)}px',
+                height='100%',
                 scope=f'delfin-ketcher-calc-{abs(id(calc_ketcher_container))}',
                 title='',
                 folder=lambda: state.get('ketcher_folder') or _calc_dir(),
                 compact=True,
+                fill=True,
             )
             state['ketcher_panel'] = panel
             calc_ketcher_container.children = [panel.widget]
@@ -12235,6 +12258,7 @@ def create_tab(ctx):
         return panel
 
     def _calc_ketcher_close():
+        """Hand the pane back to whatever is opened next."""
         state['ketcher_active'] = False
         calc_ketcher_container.layout.display = 'none'
 
@@ -12266,9 +12290,7 @@ def create_tab(ctx):
             return
         state['ketcher_active'] = True
         _set_view_toggle(False, False)
-        calc_mol_container.layout.display = 'none'
-        calc_content_area.layout.display = 'none'
-        calc_ketcher_container.layout.display = 'flex'
+        calc_update_view()
         if not panel.open_text(got['text'], got['name']):
             # Not installed yet: the panel says so, and it is on screen to
             # say it in.
@@ -15234,6 +15256,8 @@ def create_tab(ctx):
         # what a file was opened as.
         'calc_content_area': calc_content_area,
         'calc_ketcher_container': calc_ketcher_container,
+        'calc_recalc_toolbar': calc_recalc_toolbar,
+        'calc_content_toolbar': calc_content_toolbar,
         'calc_sheet_payload_input': calc_sheet_payload_input,
         'calc_sheet_action_btn': calc_sheet_action_btn,
         # the spreadsheet, for driving it the way the browser does
