@@ -130,9 +130,9 @@ def _an_orca(room, name, body):
 def _use(monkeypatch, orca):
     """Put *orca* where the check looks, which is where a real run looks.
 
-    Both resolvers: the check asks DELFIN's own first and falls back to the
-    editor's, so a stand-in has to stand in both places or the real ORCA on
-    the machine answers instead.
+    Every resolver: the check asks the ORCA base directory first, then
+    DELFIN's own, then the PATH, so a stand-in has to stand everywhere or the
+    real ORCA on the machine answers instead.
     """
     monkeypatch.setattr("delfin.orca.find_orca_executable", lambda: orca)
     monkeypatch.setattr("delfin.dashboard.saddle.find_orca", lambda: orca)
@@ -350,3 +350,59 @@ def test_stopping_it_takes_the_children_with_it():
 
     assert "killpg" in stopping
     assert "SIGKILL" in stopping, "and it does not ask twice for ever"
+
+
+# ---------------------------------------------------------------------------
+# found the way a submitted job finds it
+# ---------------------------------------------------------------------------
+def test_the_orca_base_is_asked_before_the_path(tmp_path, monkeypatch, capsys):
+    """SUBMIT ORCA JOB never looks for ORCA: it hands the base directory to
+    the submit script, and the script puts that on the PATH before running
+    anything.  So on a login node ORCA is quite often not on the PATH at all,
+    and a check that only asked the PATH found nothing while submitting worked
+    -- which is what was reported."""
+    pytest.importorskip("ipywidgets")
+
+    base = tmp_path / "orca_6_1_1"
+    base.mkdir()
+    _an_orca(base, "orca", "echo 'SCF SETTINGS'\nexit 0\n")
+    monkeypatch.setattr("delfin.orca.find_orca_executable", lambda: None)
+    monkeypatch.setattr("delfin.dashboard.saddle.find_orca", lambda: None)
+
+    (tmp_path / "calc").mkdir()
+    ctx = DashboardContext(calc_dir=tmp_path / "calc",
+                           archive_dir=tmp_path / "calc",
+                           office_dir=tmp_path / "calc",
+                           orca_base=str(base))
+    ctx.run_js = lambda _script: None
+    _widget, refs = builder.create_tab(ctx)
+    refs["orca_coords"].value = "1\nx\nH 0 0 0\n"
+    refs["update_orca_preview"]()
+
+    said = _pressed(refs, capsys)
+
+    assert "OK" in said
+    assert str(base / "orca") in said, "the one SUBMIT would pass on"
+
+
+def test_finding_nothing_says_where_it_looked(builder_tab, monkeypatch, capsys):
+    """"Not found" is only useful when it says where it looked."""
+    monkeypatch.setattr("delfin.orca.find_orca_executable", lambda: None)
+    monkeypatch.setattr("delfin.dashboard.saddle.find_orca", lambda: None)
+
+    said = _pressed(builder_tab, capsys)
+
+    assert "No ORCA to check with" in said
+    assert "Looked in" in said
+    assert "the PATH" in said
+    assert "SUBMIT ORCA JOB does not look for it at all" in said
+
+
+def test_orca_is_given_its_own_directory_to_load_from():
+    """It loads its libraries from beside itself, and the submit script puts
+    the base directory on PATH and LD_LIBRARY_PATH before starting it."""
+    source = pathlib.Path(builder.__file__).read_text(encoding="utf-8")
+    making = source.split("def _orca_environment(orca)")[1].split("\n    def ")[0]
+
+    assert "LD_LIBRARY_PATH" in making and "PATH" in making
+    assert "Path(orca).parent" in making

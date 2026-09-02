@@ -2110,6 +2110,63 @@ def create_tab(ctx):
                 for fn in saved_files:
                     print(f'  {fn}')
 
+    def _the_orca_submit_would_use():
+        """The ORCA a submitted job would run, and what was tried to find it.
+
+        SUBMIT ORCA JOB never looks for ORCA: it hands the base directory to
+        the submit script, and the script puts that on the PATH before running
+        anything.  So on a login node ORCA is quite often not on the PATH at
+        all, and a check that only asked the PATH found nothing while
+        submitting worked perfectly -- which is what was reported.
+
+        The base directory is asked first for that reason.  What was tried
+        comes back with it, because "not found" is only useful when it says
+        where it looked.
+        """
+        tried = []
+        base = str(getattr(ctx, 'orca_base', '') or '').strip()
+        if base:
+            candidate = Path(base).expanduser() / 'orca'
+            tried.append(str(candidate) + '   (the one SUBMIT passes on)')
+            if candidate.is_file():
+                return str(candidate), tried
+        else:
+            tried.append('(no ORCA base directory is set for this dashboard)')
+        try:
+            from delfin.orca import find_orca_executable
+            found = find_orca_executable()
+        except Exception:                               # noqa: BLE001
+            found = None
+        tried.append("DELFIN's own resolver")
+        if found:
+            return found, tried
+        from .saddle import find_orca
+        tried.append('the PATH')
+        found = find_orca()
+        return (found or ''), tried
+
+    def _orca_environment(orca):
+        """What a real run gives ORCA, including its own directory.
+
+        The submit script puts the base directory on PATH and
+        LD_LIBRARY_PATH before ORCA is started -- ORCA loads its own libraries
+        from beside itself and will not get far without them.  The same is
+        done here, around the scratch settings DELFIN prepares.
+        """
+        try:
+            from delfin.orca import _prepare_orca_environment
+            environment = _prepare_orca_environment()
+        except Exception:                               # noqa: BLE001
+            import os as _os
+            environment = _os.environ.copy()
+        here = str(Path(orca).parent)
+        for name in ('PATH', 'LD_LIBRARY_PATH'):
+            already = environment.get(name, '')
+            if here not in already.split(':'):
+                environment[name] = f'{here}:{already}' if already else here
+        environment.setdefault('ORCA_DIR', here)
+        return environment
+
     def _stop(running):
         """Stop ORCA and everything it started.
 
@@ -2159,24 +2216,16 @@ def create_tab(ctx):
         xyz file cannot start without that file, and failing for want of it
         would say nothing about the input.
         """
-        # The same resolver and the same environment a real run uses.  A
-        # check that started ORCA its own way would be checking its own way of
-        # starting ORCA: the scratch directory, the library path and the MPI
-        # settings are set up in there, and without them ORCA can fail for a
-        # reason that has nothing to do with the input.
-        from delfin.orca import _prepare_orca_environment, find_orca_executable
-
-        orca = find_orca_executable()
+        orca, tried = _the_orca_submit_would_use()
         if not orca:
-            from .saddle import find_orca
-            orca = find_orca()
-        if not orca:
-            return False, 'No ORCA to check with -- none was found on this machine.', ''
+            return False, 'No ORCA to check with.', (
+                'Looked in:\n  ' + '\n  '.join(tried)
+                + '\n\nSUBMIT ORCA JOB does not look for it at all -- it '
+                'passes the ORCA base directory to the submit script, which '
+                'puts it on the PATH on the compute node. If nothing is set '
+                'there either, set the ORCA path in Settings.')
         _say_progress(f'Found {orca} -- starting it...')
-        try:
-            environment = _prepare_orca_environment()
-        except Exception:                               # noqa: BLE001
-            environment = None
+        environment = _orca_environment(orca)
         (room / 'check.inp').write_text(input_for_check(body), encoding='utf-8')
         for filename, xyz_content in (parse_xyz_blocks(orca_coords.value) or []):
             (room / filename).write_text(xyz_content)
