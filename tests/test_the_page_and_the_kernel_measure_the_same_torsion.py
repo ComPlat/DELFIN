@@ -106,3 +106,59 @@ def test_the_transcription_above_still_matches_the_page():
     readout = readout.split('\n    function ')[0]
     assert 'readInternal(scopeKey)' in readout
     assert re.search(r"submit-internal-value", readout)
+
+
+# ---------------------------------------------------------------------------
+# And the same atoms, in the same order
+# ---------------------------------------------------------------------------
+
+class _Atom:
+    def __init__(self, serial):
+        self.serial = serial
+
+
+def _as_the_page_reports_picks(atoms, serials):
+    """ffIndicesOf, transcribed line for line."""
+    where = {}
+    for i, one in enumerate(atoms):
+        if one.serial not in where:
+            where[one.serial] = i
+    return [where[s] for s in serials if s in where]
+
+
+def test_the_selection_reaches_the_kernel_in_the_order_it_was_clicked():
+    """A value measured over one chain was written onto another.
+
+    Everything the user can see honours the order the atoms were clicked: the
+    highlight colours are indexed by it, the measure box prints the chain
+    [H5 -> C1 -> C0 -> H2], and the toolbar's value is the torsion over
+    exactly that chain.  What was sent to the kernel walked the model from 0
+    upwards instead, so Python was told 0,1,2,5.
+
+    Hold then paired that sorted list with the value measured over the clicked
+    one: the row read "Holding C0-C1-H2-H5 = -59.9 deg" and xtb's input got
+    "dihedral: 1, 2, 3, 6, -59.900000".  For two atoms the order makes no
+    difference; for three it moves the vertex of the angle; for four it is a
+    different torsion outright.
+    """
+    atoms = [_Atom(i + 1) for i in range(8)]      # ethane, serials 1..8
+    clicked = [6, 2, 1, 3]                        # H5, C1, C0, H2
+    assert _as_the_page_reports_picks(atoms, clicked) == [5, 1, 0, 2]
+    # And that is not the ascending order, or the test would pass either way.
+    assert sorted(_as_the_page_reports_picks(atoms, clicked)) == [0, 1, 2, 5]
+
+
+def test_a_serial_the_model_does_not_have_is_left_out():
+    """Rather than becoming an index into somebody else's atom."""
+    atoms = [_Atom(i + 1) for i in range(3)]
+    assert _as_the_page_reports_picks(atoms, [3, 99, 1]) == [2, 0]
+
+
+def test_the_transcription_of_the_picks_still_matches_the_page():
+    """Same rule as the torsion above: the copy has to be tied to the JS."""
+    body = _VIEWER.split('function ffIndicesOf(')[1].split('\n    }')[0]
+    assert 'for (var s = 0; s < serials.length; s++)' in body, body
+    assert 'out.push(where[serials[s]])' in body
+    # The old shape walked the model and asked whether each atom was picked,
+    # which is where the order was lost.
+    assert 'serials.indexOf(atoms[i].serial)' not in body
