@@ -1398,9 +1398,30 @@ class Climb:
             unit = self.held_stretch(held)
             if unit is not None:
                 share = abs(float(unit @ shapes[:, 0]))
+        # And whether the Hessian was taken anywhere a Hessian means
+        # anything.  Curvature is a statement about a stationary point; at a
+        # point on a slope the same numbers are not the frequencies of
+        # anything, and the module next door says so in as many words --
+        # :func:`gfn_optimize.not_a_stationary_point`.  Measured on a
+        # cyclohexene whose C0-C1 was driven to 1.90 A and then climbed: the
+        # press reported "it converged onto a different saddle, at -205 cm-1"
+        # while the gradient at that geometry was 3.3e-03 Hartree per Bohr
+        # per coordinate, and the editor's own slope test, given the same
+        # structure, answered "this structure is neither a minimum nor a
+        # saddle".  Costs nothing: the gradient is the one the walk already
+        # has.  ``None`` where there is none to read -- a verdict asked of a
+        # structure this walk has not stepped on -- because unknown is not
+        # the same as moving.
+        still = gmax = grms = None
+        if self.gradient is not None:
+            gmax = float(np.abs(self.gradient).max())
+            grms = float(np.sqrt(np.mean(
+                (self._basis().T @ self.gradient) ** 2)))
+            still = bool(gmax < GRADIENT_MAX and grms < GRADIENT_RMS)
         return {'count': len(wrong), 'modes': wrong[:4],
                 'lowest': float(modes[0]) if modes.size else None,
-                'ok': first, 'share': share,
+                'ok': first, 'share': share, 'still': still,
+                'gmax': gmax, 'grms': grms,
                 'reaction': (None if share is None
                              else bool(first and share >= IS_THE_REACTION))}
 
@@ -1553,7 +1574,10 @@ def climb_to_saddle(xyz_text: str, method: str = 'gfn2', *,
         # does not.
         shape = None if halted else walk.verdict(held=held)
         seconds = time.perf_counter() - began
-        return {'ok': arrived, 'xyz': walk.xyz(
+        # ``ok`` is the ladder's to rewrite -- a climb that converged onto
+        # the wrong saddle has not reached the reaction -- so whether the
+        # gradient actually vanished is kept under its own name as well.
+        return {'ok': arrived, 'converged': arrived, 'xyz': walk.xyz(
                     'Climbed to a transition state' if arrived
                     else 'Where the climb got to'),
                 'seconds': seconds, 'steps': walk.steps, 'stopped': halted,
@@ -1588,6 +1612,8 @@ def _named_landing(shape: Optional[Dict[str, Any]]) -> str:
     """What a Hessian found, in a phrase that can be put inside a sentence."""
     if not shape:
         return 'what it reached could not be checked'
+    if shape.get('still') is False:
+        return _on_a_slope(shape, short=True)
     count = int(shape.get('count') or 0)
     modes = shape.get('modes') or []
     if count == 0:
@@ -1599,8 +1625,57 @@ def _named_landing(shape: Optional[Dict[str, Any]]) -> str:
             + ', '.join(f'{one:.0f}' for one in modes[:3]) + ' cm-1)')
 
 
-def _why_not(shape: Dict[str, Any], contact: str) -> str:
-    """Why the climb's answer was not taken, said in one sentence."""
+def _on_a_slope(shape: Dict[str, Any], short: bool = False) -> str:
+    """A Hessian taken where nothing was standing still, said plainly.
+
+    The modes are still computed and still reported -- they are what the walk
+    was following, and hiding them would leave the user with nothing to read.
+    What is not said is that they are the modes of a saddle or of a minimum,
+    because at a point on a slope they are the modes of neither.
+
+    *short* is for the second place in a sentence that has already said this
+    once: the ladder prefixes every later line with why the first rung missed,
+    so the long form twice over is one line saying one thing twice.
+    """
+    largest = shape.get('gmax')
+    count = int(shape.get('count') or 0)
+    modes = shape.get('modes') or []
+    deepest = f'{modes[0]:.0f} cm-1' if count else ''
+    if short:
+        said = 'it too ran out of tries before anything stood still'
+        if deepest:
+            said += f', at {deepest}'
+        if largest is not None:
+            said += f' with the gradient still {largest:.1e}'
+        return said
+    said = ('it stopped where it had run out of tries rather than where the '
+            'structure had stopped moving')
+    if largest is not None:
+        said += (f' -- the gradient there is still {largest:.1e} Hartree per '
+                 f'Bohr against the {GRADIENT_MAX:.0e} it converges on')
+    if count == 1:
+        said += f', so the {deepest} there is not a saddle\'s'
+    elif count:
+        said += (', so the ' + ', '.join(f'{one:.0f}' for one in modes[:3])
+                 + " cm-1 there are not a saddle's")
+    else:
+        said += ', so nothing there says it is a minimum'
+    return said
+
+
+def _why_not(shape: Dict[str, Any], contact: str,
+             advise: bool = True) -> str:
+    """Why the climb's answer was not taken, said in one sentence.
+
+    *advise* is off when the ladder has rungs left to try: this sentence is
+    prefixed to every later one, and advice inside it would be repeated
+    against whatever the last rung ends up saying.
+    """
+    if shape.get('still') is False:
+        return ('The climb did not converge: ' + _on_a_slope(shape) + '.'
+                + (' Pressing again starts a fresh climb from where it got '
+                   'to, with its tries counted from nought.' if advise
+                   else ''))
     count = int(shape.get('count') or 0)
     modes = shape.get('modes') or []
     if count == 0:
@@ -1828,7 +1903,14 @@ def reach_the_reaction(xyz_text: str, method: str = 'gfn2', *,
     # this one has already passed, so the rest could only spend a minute to
     # agree.  The weaker test is used and the sentence says which one it was.
     told_which = reached.get('share') is not None
-    if bool(reached.get('reaction') if told_which else reached.get('ok')):
+    # A Hessian at a point on a slope is not a verdict about a saddle, so a
+    # rung that ran out of tries has not reached anything however its modes
+    # come out -- see :meth:`Climb.verdict`, where ``still`` is measured.  The
+    # ladder carries on to the next rung, which is what a rung that missed has
+    # always done.
+    landed = reached.get('still') is not False
+    if landed and bool(reached.get('reaction') if told_which
+                       else reached.get('ok')):
         first['ok'] = True
         deepest = (reached.get('modes') or [0.0])[0]
         first['status'] = (
@@ -1843,10 +1925,11 @@ def reach_the_reaction(xyz_text: str, method: str = 'gfn2', *,
              f'contact you meant, so whether it is the reaction you were '
              f'after is for you to read off the mode.'))
         return first
-    why = _why_not(reached, contact)
+    more = bool(told_which and fallback)
+    why = _why_not(reached, contact, advise=not more)
     first['ok'] = False
     first['status'] = why
-    if not told_which or not fallback:
+    if not more:
         return first
     if should_stop is not None and should_stop():
         # Stopped between rungs.  ``ok`` is already false and the sentence is
@@ -1874,7 +1957,8 @@ def reach_the_reaction(xyz_text: str, method: str = 'gfn2', *,
                 why + ' Climbing along the softest mode instead was stopped '
                 'before it reached anything.')
             return again
-        if (again.get('imaginary') or {}).get('reaction'):
+        softest = again.get('imaginary') or {}
+        if softest.get('still') is not False and softest.get('reaction'):
             return _arrived(
                 again, 'Climbing along the softest mode instead',
                 why + ' ')
@@ -1925,7 +2009,8 @@ def reach_the_reaction(xyz_text: str, method: str = 'gfn2', *,
     # what the press cost and ORCA does not know about it.
     last['seconds'] = time.perf_counter() - began
     last = _took(last, 'ORCA')
-    if (last.get('imaginary') or {}).get('reaction'):
+    orca = last.get('imaginary') or {}
+    if orca.get('still') is not False and orca.get('reaction'):
         return _arrived(last, "ORCA's optimiser, given the structure you made,",
                         why + ' ')
 
@@ -1934,22 +2019,32 @@ def reach_the_reaction(xyz_text: str, method: str = 'gfn2', *,
     # the one the user watched.
     best = _closest(tried)
     best['ok'] = False
+    # Whose fault it was.  "The structure has to change" is the right advice
+    # for a search that ran to a stationary point somewhere else, and the
+    # wrong one for a search that simply ran out of tries -- there the
+    # structure may be perfectly good and the ceiling is what stopped it.
+    advice = (
+        ' Every one of them ran out of tries rather than arriving, so press '
+        'again from what is on screen: each press starts a fresh climb from '
+        'there with its tries counted from nought.'
+        if (best.get('imaginary') or {}).get('still') is False else
+        (' All three start from where you let go, so it is the structure '
+         'that has to change -- move the atoms nearer the arrangement the '
+         'reaction passes through and press again.'
+         if len(tried) > 2 else
+         ' Both start from where you let go, so it is the structure that has '
+         'to change -- move the atoms nearer the arrangement the reaction '
+         'passes through and press again.'))
     best['status'] = (
         why + f' Climbing along the surface\'s own softest mode and then '
         f'ORCA\'s optimiser were given the same structure and did not reach '
         f'it either ({spent:.1f} s altogether). What is left on screen is the '
         f'nearest any of the three came: '
-        + _named_landing(best.get('imaginary')) + '. All three start from '
-        'where you let go, so it is the structure that has to change -- move '
-        'the atoms nearer the arrangement the reaction passes through and '
-        'press again.'
+        + _named_landing(best.get('imaginary')) + '.'
         if len(tried) > 2 else
         why + f' ORCA\'s optimiser was given the same structure and did not '
         f'reach it either ({spent:.1f} s altogether): '
-        + _named_landing(best.get('imaginary')) + '. Both start from where '
-        'you let go, so it is the structure that has to change -- move the '
-        'atoms nearer the arrangement the reaction passes through and press '
-        'again.')
+        + _named_landing(best.get('imaginary')) + '.') + advice
     return best
 
 

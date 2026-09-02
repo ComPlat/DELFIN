@@ -14406,7 +14406,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # mistake would outlive the sentence that said so.
                     kept = xyz_document(rows, f'Optimised to {said["name"]}')
                     _write_coords(kept)
-                    _note_the_saddle(kept, found.get('imaginary'))
+                    _note_the_saddle(
+                        kept, found.get('imaginary'),
+                        first_order=said['first_order'])
                     lines.append('It is in the box; Undo takes it back.')
                     lines.extend(_the_mode_is_offered(found.get('imaginary')))
                     if said['first_order']:
@@ -14533,7 +14535,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             'Search between two ends for the transition state between them, '
             f'from {where}. Says whether what it reached is one.')
 
-    def _note_the_saddle(xyz, shape):
+    def _note_the_saddle(xyz, shape, first_order=None):
         """Write down that this structure has modes going the wrong way.
 
         Said by whichever search found it -- the press, the chain, the climb --
@@ -14565,8 +14567,25 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         the failure this row has already had once: a capability arrived and
         nothing on screen said so.
         """
-        order = int((shape or {}).get('count') or 0)
-        modes = [float(one) for one in ((shape or {}).get('modes') or [])]
+        # Only what the search that found it was willing to call one.
+        #
+        # The count on its own is xtb's, with a cutoff around -5 cm-1, and two
+        # things sit between that number and the name.  :func:`saddle.verdict`
+        # applies autodE's -40 cm-1 floor and renames anything shallower "a
+        # stationary point with one shallow mode the wrong way" -- so a press
+        # said "it is not one on this evidence", wrote that into the box, and
+        # filed the same geometry here as a transition state, which is the one
+        # of the three the user meets again later.  And a Hessian taken where
+        # nothing was standing still is not a verdict about a saddle at all;
+        # :meth:`climb.Climb.verdict` measures that as ``still``.
+        #
+        # Both are refusals rather than judgements of their own: a producer
+        # that says nothing leaves this exactly as it was.
+        shape = shape or {}
+        order = int(shape.get('count') or 0)
+        modes = [float(one) for one in (shape.get('modes') or [])]
+        if first_order is False or shape.get('still') is False:
+            order = 0
         if not xyz or order < 1 or not modes:
             state.pop('saddle_found', None)
         else:
@@ -16744,7 +16763,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     kept = xyz_document(
                         rows, f'From a path, optimised to {said["name"]}')
                     _write_coords(kept)
-                    _note_the_saddle(kept, found.get('imaginary'))
+                    _note_the_saddle(
+                        kept, found.get('imaginary'),
+                        first_order=said['first_order'])
                     lines.append('It is in the box; Undo takes it back.')
                     lines.extend(_the_mode_is_offered(found.get('imaginary')))
                     if said['first_order']:
