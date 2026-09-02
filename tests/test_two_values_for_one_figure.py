@@ -180,3 +180,71 @@ def test_a_garbled_result_records_nothing_rather_than_raising():
     assert vg.record_keyed_values(b"\x00\x01not text", source="") == 0
     assert vg.record_keyed_values(None, source=None) == 0
     assert vg.scan_for_conflicting_figures() == []
+
+
+# ---------------------------------------------------------------------------
+# The shape the same defect takes when nothing is written to a file
+#
+# The ledger keys a value by the PATH it came out of, so a figure printed
+# by `python3 -c` had no record and was dropped — and the most likely form
+# of the field case (read the stored quantity, recompute it from a
+# half-remembered formula, report the recomputation) had nothing to
+# disagree with. Measured at 35% apart with the guard silent.
+# ---------------------------------------------------------------------------
+
+COMPUTED_FROM = '{"command": "python3 -c \'print(beta)\'"}'
+
+
+def test_a_figure_recomputed_in_a_shell_call_is_compared_with_the_stored_one():
+    _saw(STORED, STORED_FROM)
+    _saw("beta_HRS_au = 180721.4333", COMPUTED_FROM)
+    flags = vg.scan_for_conflicting_figures()
+    assert [f.field for f in flags] == ["beta_HRS_au"]
+    assert flags[0].values == (171232.0148, 180721.4333)
+
+
+def test_the_colon_form_counts_too():
+    _saw(STORED, STORED_FROM)
+    _saw("beta_HRS_au: 180721.4333", COMPUTED_FROM)
+    assert vg.scan_for_conflicting_figures()
+
+
+def test_a_figure_read_out_of_another_records_file_is_not_borrowed():
+    """The cost side, and the reason the pass is gated on the witness.
+
+    A shell command that reads someone else's file yields no record id
+    either, so without this an unrelated calculation's value was reported
+    as disagreeing with the stored one — a false accusation about a
+    number that was never in question.
+    """
+    _saw(STORED, STORED_FROM)
+    _saw("beta_HRS_au = 999.9",
+         '{"command": "tail -1 /w/archive/OTHER_MOLECULE/summary.log"}')
+    assert vg.scan_for_conflicting_figures() == []
+
+
+def test_a_name_the_turn_never_saw_is_not_invented():
+    """The pass looks only for fields already keyed to a real record, so
+    there is no vocabulary to drift and it cannot fire on its own."""
+    _saw(STORED, STORED_FROM)
+    _saw("some_other_quantity = 42.5", COMPUTED_FROM)
+    assert vg.scan_for_conflicting_figures() == []
+
+
+def test_a_field_belonging_to_two_records_is_attributed_to_neither():
+    """Guessing which one a bare number belongs to would manufacture the
+    disagreement rather than find it."""
+    _saw(STORED, STORED_FROM)
+    _saw(STORED.replace("171232.0148", "171999.0"),
+         '{"path": "/w/archive/ADMA-2021-BAF1_C_120/DELFIN_Data.json"}')
+    _saw("beta_HRS_au = 180721.4333", COMPUTED_FROM)
+    flags = vg.scan_for_conflicting_figures()
+    assert all(f.values != (171232.0148, 180721.4333) for f in flags)
+
+
+def test_one_witness_repeating_itself_is_still_one_statement():
+    _saw(STORED, STORED_FROM)
+    _saw("beta_HRS_au = 180721.4333\nbeta_HRS_au = 180721.4333", COMPUTED_FROM)
+    pool = vg._keyed_values.get() or {}
+    entries = pool[("ADMA-2021-BAF1_C_119", "beta_HRS_au")]
+    assert [v for v, _w in entries] == [171232.0148, 180721.4333]
