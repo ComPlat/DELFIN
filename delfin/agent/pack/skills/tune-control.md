@@ -27,4 +27,4 @@ Edge cases:
   support it, flag and propose `numerical`.
 - If `solvent` is set but `solvation_model` is missing or vice versa, flag.
 
-Output format: a short bulleted list, German prose, exact numerical values.
+Output format: a short bulleted list in the user's language, exact numerical values.
