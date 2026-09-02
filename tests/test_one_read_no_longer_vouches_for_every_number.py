@@ -272,3 +272,46 @@ def test_a_large_round_figure_in_atomic_units_still_counts():
     flags = vg.scan_for_unsourced_quantities(
         "Der Wert betraegt 180721 au.", numbers=[447.9339])
     assert [f.quantity for f in flags] == ["180721 au"]
+
+
+# ---------------------------------------------------------------------------
+# The decimal comma
+#
+# The scanner knew only the dot, so a German answer had its claims read
+# WRONG rather than not read: "2,31 eV" was checked as "31 eV", a number
+# the answer never states. That fails in both directions — a correct
+# value is accused because 31 is not in the pool, and a wrong one can be
+# excused by whatever the fragment happens to match. This agent answers
+# in the language it is asked in, so half its answers were being checked
+# against numbers nobody wrote.
+# ---------------------------------------------------------------------------
+
+def test_a_german_decimal_is_read_as_the_number_it_is():
+    assert vg._claim_readings("2,31 eV")[0][0] == pytest.approx(2.31)
+
+
+def test_a_grounded_german_claim_is_not_accused():
+    assert vg.scan_for_unsourced_quantities(
+        "Die Anregung liegt bei 2,31 eV.", numbers=[2.31]) == []
+
+
+def test_an_ungrounded_german_claim_is_still_caught():
+    flags = vg.scan_for_unsourced_quantities(
+        "Die Anregung liegt bei 2,31 eV.", numbers=[9.99])
+    assert [f.quantity for f in flags] == ["2,31 eV"]
+
+
+@pytest.mark.parametrize("pool", [[1.234], [1234.0]])
+def test_three_digits_after_the_separator_may_be_either(pool):
+    """`1,234` is one-and-a-bit in German and one thousand elsewhere, and
+    the text does not say which. Both readings ground it: a guard that has
+    to guess should guess toward silence."""
+    assert vg.scan_for_unsourced_quantities(
+        "Der Wert ist 1,234 eV.", numbers=pool) == []
+
+
+def test_the_dot_form_is_unchanged():
+    assert vg.scan_for_unsourced_quantities(
+        "The gap is 2.31 eV.", numbers=[2.31]) == []
+    assert vg.scan_for_unsourced_quantities(
+        "The gap is 2.31 eV.", numbers=[9.99])
