@@ -92,6 +92,50 @@ def test_the_line_no_longer_blames_the_method_for_a_multiplicity():
     assert 'method, charge, multiplicity or solvent' not in body
 
 
+def test_a_follow_that_has_answered_owns_the_box_wall_or_no_wall():
+    """The release must not put the cursor's wish over a computed geometry.
+
+    The wall's branch decides *which* geometry to keep.  Underneath it sits
+    the plainer question: whether the last word on a drag may be a geometry
+    nothing computed.  The page's payload is where the cursor was, and the
+    release is the one message that carries it with no answer on its way to
+    overwrite it -- so one frame undid every relaxed answer the drag had made.
+
+    Measured on an ethane with the budget lit and the engine moved from GFN2
+    to GFN-FF after Set, which takes the anchor out of force and leaves the
+    switch on: through the drag the box held answers -- the hand asked
+    x=-0.744 and the box held -1.076 -- and at the release it held -0.206,
+    the wish to the digit.
+    """
+    body = _EDITOR.split('def on_submit_manip_sync(')[1].split('\n    def ')[0]
+    assert 'pulling = bool((dragging or released)' in body
+    assert 'lit = _thermal_live() or bool(submit_topology_btn.value)' in body
+    assert "if pulling and lit and int(state.get('gfn_follow_steps') or 0):" \
+        in body
+    # Before the raw payload, or it would never be reached.
+    assert body.index('if pulling and lit') < body.index('payload = header')
+
+
+def test_and_leaves_alone_the_two_cases_where_the_hand_is_the_answer():
+    """No wall switched on, a placing hand, and a follow that has not answered.
+
+    Each of the three was measured.  With no wall the release is *meant* to
+    leave the structure where the hand put it and the next grab carries on
+    from there -- refusing it put the second grab 0.29 A behind the first.
+    Under a placing hand the answer is laid back onto the cursor, so the box
+    has to follow the hand or the drag does nothing at all.  And a follow that
+    has answered nothing is the one case where the page's geometry is all
+    there is.
+    """
+    body = _EDITOR.split('def on_submit_manip_sync(')[1].split('\n    def ')[0]
+    guard = body.split('if pulling and lit and int(')[1].split('\n\n')[0]
+    assert "state.get('gfn_follow_steps') or 0)" in guard
+    # And the count belongs to this grab: it is put back to nought where a
+    # follow starts, beside the flag the other half reads.
+    start = _EDITOR.split("state['gfn_follow'] = True")[1][:200]
+    assert "state['gfn_follow_steps'] = 0" in start
+
+
 @pytest.mark.parametrize('marker', [
     'C-H 1.088 A',
     'C-H 1.307 A',

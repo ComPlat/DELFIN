@@ -19121,8 +19121,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # and after the release, while the same drag with the budget switched
         # off reached 3.021.  A drag that does nothing at all, under a status
         # line reporting that it followed.
-        walled = ((dragging or released)
-                  and state.get('gfn_follow')
+        # And only a *pulling* hand.  Under a placing hand the answer is laid
+        # back onto the cursor, so the box has to follow the hand or the drag
+        # does nothing at all -- which is the failure the budget's own
+        # _thermal_live() guard was written for, measured at C-C 1.521 A held
+        # through a drag that reached 3.021 with the switch off.
+        pulling = bool((dragging or released) and state.get('gfn_follow')
+                       and _hand_pulls())
+        # A wall the user has switched on, whether or not it is holding.
+        lit = _thermal_live() or bool(submit_topology_btn.value)
+        walled = (pulling
                   and ((_thermal_live()
                         and _thermal_budget()[0] is not None)
                        or (bool(submit_topology_btn.value)
@@ -19167,6 +19175,37 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # and allowed, which is the whole of what the temperature means.
             if released:
                 _keep_the_walled_geometry()
+            if state.pop('poly_recheck', False):
+                schedule_ui_update(_enable_live_forcefield)
+            return
+
+        if pulling and lit and int(state.get('gfn_follow_steps') or 0):
+            # A wall is switched on and is not holding, and something has been
+            # answering.  What has answered owns the box.
+            #
+            # The branch above decides *which* geometry a standing wall keeps.
+            # This is the narrower case underneath it: a wall the user has
+            # switched on and that is not in force.  The page's payload is
+            # where the cursor was and nothing priced it, and the release is
+            # the one message that carries it with no answer on its way to
+            # overwrite it -- so one frame undid every relaxed answer the drag
+            # had made, under a lit button.
+            #
+            # Measured on an ethane with the budget lit and the engine moved
+            # from GFN2 to GFN-FF after Set, which takes the anchor out of
+            # force and leaves the switch on: through the whole drag the box
+            # held answers -- the hand asked x=-0.744 and the box held -1.076,
+            # asked -0.306 and held -0.606 -- and at the release it held
+            # -0.206, the wish to the digit.
+            #
+            # Narrow on purpose, and each half was measured.  With no wall
+            # switched on at all the release is *meant* to leave the structure
+            # where the hand put it, and the next grab carries on from there;
+            # refusing it there put the second grab back 0.29 A behind the
+            # first.  Under a placing hand the answer is laid back onto the
+            # cursor, so the box has to follow the hand or the drag does
+            # nothing.  And a follow that has answered nothing is the one case
+            # where the page's geometry is all there is.
             if state.pop('poly_recheck', False):
                 schedule_ui_update(_enable_live_forcefield)
             return
