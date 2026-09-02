@@ -382,6 +382,12 @@ def _mcp(ctx, _args: str) -> CommandResult:
         state = "" if row.get("enabled", True) else "  (disabled)"
         lines.append(f"  {row.get('name', '?'):<18} {where[:60]}{state}")
         lines.append(f"  {'':<18} from {row.get('source', '?')}")
+        # Per server, because that is where the answer differs. The
+        # summary line in the banner counts them; this says which roots
+        # the contained ones were given.
+        iso = str(row.get("isolation", "") or "")
+        lines.append(f"  {'':<18} isolation " + (
+            iso if iso else "none — outside the shell's containment"))
     if notice:
         lines.append("  " + notice)
     return CommandResult(output="\n".join(lines))

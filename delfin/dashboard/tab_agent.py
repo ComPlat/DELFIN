@@ -16826,6 +16826,15 @@ def create_tab(ctx):
                 "access to files, shell commands, and all directories "
                 "(except archive & remote archive). Only use if you trust the setup."
             )
+            # Named because this mode is where it matters most: the shell
+            # DELFIN starts is sandboxed here, and a tool reached through
+            # a configured MCP server is a process DELFIN did not start,
+            # so no sandbox of ours is around it.
+            _append_system_message(
+                "Tools reached through a configured MCP server run outside "
+                "that sandbox — they are contained only if the server "
+                "declares `roots` in the MCP config."
+            )
         try:
             from delfin.user_settings import load_settings, save_settings
             s = load_settings()

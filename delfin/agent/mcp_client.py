@@ -27,7 +27,9 @@ Configuration shape (``~/.delfin/mcp_servers.json`` or per-project
           "command": "npx",
           "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
           "env": {"FOO": "bar"},
-          "enabled": true
+          "enabled": true,
+          "roots": ["/data/project"],
+          "read_roots": ["/opt/corpus"]
         },
         "remote": {
           "type": "http",
@@ -40,6 +42,12 @@ Configuration shape (``~/.delfin/mcp_servers.json`` or per-project
 
 A server is treated as HTTP when ``type`` is ``http``/``sse``/
 ``streamable-http`` or a ``url`` is present; otherwise stdio.
+
+``roots`` / ``read_roots`` on a stdio entry launch that server inside a
+namespace holding only those paths — the one containment that works for a
+process whose tool arguments DELFIN cannot interpret. Declaring neither
+keeps the previous behaviour, which every listing then names as such.
+See ``mcp_isolation``.
 
 The user's own config is always read. A WORKSPACE's config is read only
 when the user has explicitly trusted that directory for MCP servers —
@@ -83,6 +91,8 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
+
+from . import mcp_isolation
 
 
 _DEFAULT_PROTOCOL_VERSION = "2025-06-18"
@@ -327,6 +337,10 @@ class MCPServer:
     transport: str = "stdio"
     url: str = ""
     headers: dict[str, str] = field(default_factory=dict)
+    # Declared filesystem containment, or None for "as it always ran".
+    # Applied at the launch because it cannot be applied at the call: see
+    # mcp_isolation's module docstring.
+    isolation: Optional["mcp_isolation.Isolation"] = None
     session_id: str = ""        # Mcp-Session-Id, set from the initialize reply
     proc: Optional[subprocess.Popen] = None
     _id_counter: itertools.count = field(default_factory=lambda: itertools.count(1))
@@ -362,6 +376,19 @@ class MCPServer:
                 return
             env = dict(os.environ)
             env.update(self.env or {})
+            argv = [self.command, *self.args]
+            if self.isolation is not None:
+                # A declared containment either holds or the server does
+                # not run. Starting it anyway would leave the config file
+                # saying one thing and the process doing another, which is
+                # the exact shape of defect this whole path exists to close.
+                reason = mcp_isolation.refusal_reason(self.name, self.isolation)
+                if reason:
+                    self.last_error = reason
+                    self.proc = None
+                    return
+                argv = mcp_isolation.bwrap_argv(
+                    self.command, self.args, self.isolation)
             try:
                 # stderr is PIPED, not discarded. It used to be DEVNULL,
                 # which threw away the only account a dying server ever
@@ -372,7 +399,7 @@ class MCPServer:
                 # running", which is true, useless, and looks like a
                 # configuration mistake rather than a broken install.
                 self.proc = subprocess.Popen(
-                    [self.command, *self.args],
+                    argv,
                     stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     env=env, text=True, bufsize=1,
@@ -936,6 +963,10 @@ def _server_from_config(name: str, cfg: dict) -> MCPServer:
         command=str(cfg.get("command", "")),
         args=list(cfg.get("args", []) or []),
         env={k: str(v) for k, v in (cfg.get("env") or {}).items()},
+        # Only stdio. An HTTP server runs somewhere DELFIN cannot build a
+        # namespace around, so accepting roots there would be a promise
+        # made by a field nobody enforces.
+        isolation=mcp_isolation.parse_isolation(cfg),
     )
 
 
@@ -1268,14 +1299,20 @@ def effective_servers(workspace: Path | None) -> list[dict]:
     configs, sources, _notice = _load_configs_with_sources(workspace)
     out: list[dict] = []
     for name, cfg in configs.items():
+        url = cfg.get("url", "")
+        iso = None if url else mcp_isolation.parse_isolation(cfg)
         out.append({
             "name": name,
             "command": cfg.get("command", ""),
             "args": list(cfg.get("args") or []),
             "env": dict(cfg.get("env") or {}),
-            "url": cfg.get("url", ""),
+            "url": url,
             "enabled": bool(cfg.get("enabled", True)),
             "source": sources.get(name, ""),
+            # A string, not the object: this row is rendered, logged and
+            # compared, and an empty one is the answer to "what contains
+            # this server" rather than a missing field.
+            "isolation": iso.describe() if iso else "",
         })
     out.sort(key=lambda r: r["name"])
     return out
