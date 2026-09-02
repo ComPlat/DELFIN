@@ -3662,7 +3662,17 @@ class AgentEngine:
                 + _vg.conflicting_figure_caveat(conflicts)
                 + _vg.language_mismatch_caveat(wrong_language),
                 functional=func, ambiguous=ambiguous, on_token=on_token)
-        combined = response_text + "\n\n" + correction
+        # Appending is right when the correction ADDS something — the
+        # claim and its correction both belong on the page. A language
+        # correction replaces instead: the reader asked in English, and
+        # showing them the German first and the English underneath gives
+        # them the thing they did not ask for plus the thing they did.
+        # Only when language was the SOLE reason, so a grounding fix is
+        # never swallowed along with it.
+        if wrong_language and not (loc or qty or conflicts):
+            combined = correction
+        else:
+            combined = response_text + "\n\n" + correction
         # Re-scan the correction: the recursive turn refreshed the
         # observed-files snapshot and _last_turn_tools.
         loc2, qty2 = self._scan_claim_grounding(
