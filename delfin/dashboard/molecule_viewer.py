@@ -1907,6 +1907,16 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         cs = Math.max(-1, Math.min(1, cs));
         return Math.acos(cs) * 180 / Math.PI;
     }
+    /* The sign is the same one the kernel, xtb and RDKit use.
+       It was the opposite.  The frame this is measured in was built the other
+       way round -- n1 x b2n rather than b2n x n1 -- so every torsion the page
+       reported came back negated: four points that the kernel's own
+       _dihedral and RDKit's GetDihedralDeg both put at -81.870 deg were shown
+       as +81.870.
+       That is not only the measure box.  updateInternalReadout writes this
+       number into the toolbar's value field, and that field is what Set, Hold
+       and arming a scan all read -- so "hold this torsion where it is" asked
+       the kernel for the mirror image of where it was. */
     function dihedralV(a, b, c, d) {
         var b1x = b.x-a.x, b1y = b.y-a.y, b1z = b.z-a.z;
         var b2x = c.x-b.x, b2y = c.y-b.y, b2z = c.z-b.z;
@@ -1916,9 +1926,9 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         var b2nx = b2x/nb2, b2ny = b2y/nb2, b2nz = b2z/nb2;
         var n1x = b1y*b2z - b1z*b2y, n1y = b1z*b2x - b1x*b2z, n1z = b1x*b2y - b1y*b2x;
         var n2x = b2y*b3z - b2z*b3y, n2y = b2z*b3x - b2x*b3z, n2z = b2x*b3y - b2y*b3x;
-        var m1x = n1y*b2nz - n1z*b2ny;
-        var m1y = n1z*b2nx - n1x*b2nz;
-        var m1z = n1x*b2ny - n1y*b2nx;
+        var m1x = b2ny*n1z - b2nz*n1y;
+        var m1y = b2nz*n1x - b2nx*n1z;
+        var m1z = b2nx*n1y - b2ny*n1x;
         var x = n1x*n2x + n1y*n2y + n1z*n2z;
         var y = m1x*n2x + m1y*n2y + m1z*n2z;
         return Math.atan2(y, x) * 180 / Math.PI;
