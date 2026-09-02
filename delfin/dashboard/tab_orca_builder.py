@@ -124,6 +124,11 @@ CHECK_SECONDS = 45.0
 CHECK_PAL = 1
 CHECK_MAXCORE = 1000
 
+#: How long any one place is given to say whether ORCA is in it.  A path on a
+#: mount that has gone away does not fail, it waits, and there is always
+#: another place to try.
+LOOKUP_SECONDS = 10.0
+
 #: What ORCA says when it will not start.  Matched case-insensitively, and
 #: the whole neighbourhood of the first hit is what gets shown, because the
 #: line that names the offending keyword is usually the one after it.
@@ -2110,6 +2115,49 @@ def create_tab(ctx):
                 for fn in saved_files:
                     print(f'  {fn}')
 
+    def _is_there(candidate):
+        """Whether that file is there, without waiting for ever to find out."""
+        try:
+            there, gave_up = _within(
+                LOOKUP_SECONDS, lambda: Path(candidate).is_file(),
+                otherwise=False)
+        except OSError as exc:
+            _say_progress(f'    unreadable: {exc}')
+            return False
+        if gave_up:
+            _say_progress(f'    no answer in {LOOKUP_SECONDS:.0f} s -- that '
+                          'path is on something that is not answering')
+            return False
+        return bool(there)
+
+    def _within(seconds, work, otherwise=None):
+        """Run *work*, and give up on it if it does not answer in time.
+
+        A path on a network mount that has gone away does not fail, it waits,
+        and a resolver walking several of them waits once per path.  Nothing
+        here is worth an unbounded wait: every place ORCA might be is one of
+        several, and the next one can be tried instead.
+
+        The thread is left to finish on its own.  It cannot be stopped, but it
+        is a daemon and it holds nothing anybody else needs.
+        """
+        answer = {}
+
+        def run():
+            try:
+                answer['it'] = work()
+            except Exception as exc:                    # noqa: BLE001
+                answer['trouble'] = exc
+
+        worker = threading.Thread(target=run, daemon=True)
+        worker.start()
+        worker.join(timeout=seconds)
+        if worker.is_alive():
+            return otherwise, True
+        if 'trouble' in answer:
+            raise answer['trouble']
+        return answer.get('it', otherwise), False
+
     def _the_orca_submit_would_use():
         """The ORCA a submitted job would run, and what was tried to find it.
 
@@ -2133,12 +2181,7 @@ def create_tab(ctx):
             candidate = Path(base).expanduser() / 'orca'
             tried.append(str(candidate) + '   (the one SUBMIT passes on)')
             _say_progress(f'  the ORCA base directory: {candidate}')
-            try:
-                there = candidate.is_file()
-            except OSError as exc:
-                _say_progress(f'    unreadable: {exc}')
-                there = False
-            if there:
+            if _is_there(candidate):
                 return str(candidate), tried
         else:
             tried.append('(no ORCA base directory is set for this dashboard)')
@@ -2151,11 +2194,8 @@ def create_tab(ctx):
             candidate = Path(where) / 'orca'
             tried.append(str(candidate) + '   (found by the dashboard)')
             _say_progress(f'  one the dashboard found: {candidate}')
-            try:
-                if candidate.is_file():
-                    return str(candidate), tried
-            except OSError as exc:
-                _say_progress(f'    unreadable: {exc}')
+            if _is_there(candidate):
+                return str(candidate), tried
 
         # Where it is shipped.  ORCA comes with DELFIN, under
         # software/orca_* beside the checkout, and the submit script finds it
@@ -2179,31 +2219,33 @@ def create_tab(ctx):
                     candidate = where / 'orca'
                     tried.append(str(candidate) + '   (shipped with DELFIN)')
                     _say_progress(f'  shipped beside DELFIN: {candidate}')
-                    try:
-                        if candidate.is_file():
-                            return str(candidate), tried
-                    except OSError:
-                        pass
+                    if _is_there(candidate):
+                        return str(candidate), tried
                 break
 
         tried.append("DELFIN's own resolver")
         _say_progress("  DELFIN's own resolver...")
         try:
             from delfin.orca import find_orca_executable
-            found = find_orca_executable()
+            found, gave_up = _within(LOOKUP_SECONDS, find_orca_executable)
         except Exception as exc:                        # noqa: BLE001
             _say_progress(f'    it raised: {exc}')
-            found = None
+            found, gave_up = None, False
+        if gave_up:
+            _say_progress(f'    no answer in {LOOKUP_SECONDS:.0f} s, '
+                          'moving on')
         if found:
             return found, tried
         tried.append('the PATH')
         _say_progress('  the PATH...')
         try:
             from .saddle import find_orca
-            found = find_orca()
+            found, gave_up = _within(LOOKUP_SECONDS, find_orca)
         except Exception as exc:                        # noqa: BLE001
             _say_progress(f'    it raised: {exc}')
-            found = None
+            found, gave_up = None, False
+        if gave_up:
+            _say_progress(f'    no answer in {LOOKUP_SECONDS:.0f} s')
         return (found or ''), tried
 
     def _orca_environment(orca):
