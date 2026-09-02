@@ -318,3 +318,22 @@ def test_the_dot_form_is_unchanged():
         "The gap is 2.31 eV.", numbers=[2.31]) == []
     assert vg.scan_for_unsourced_quantities(
         "The gap is 2.31 eV.", numbers=[9.99])
+
+
+@pytest.mark.parametrize("written", [
+    "**483,2 au**",          # what the fourth live run actually wrote
+    "*483,2 au*",
+    "**367.91 a.u.**",
+])
+def test_a_bolded_result_is_still_a_claim(written):
+    """A model bolds its final figure. The terminator class had no `*`,
+    so the one number the answer was built around was the one number the
+    scanner could not see."""
+    flags = vg.scan_for_unsourced_quantities(
+        f"Mein Ergebnis: {written}", numbers=[447.9339])
+    assert flags and flags[0].unit == "au"
+
+
+def test_a_bolded_grounded_figure_is_still_quiet():
+    assert vg.scan_for_unsourced_quantities(
+        "Der gespeicherte Wert ist **447.9339 au**.", numbers=[447.9339]) == []

@@ -499,8 +499,11 @@ _QUANTITY_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = tuple(
         # were both flagged — so it is accepted only after something
         # SHAPED like a measurement: a decimal, or four digits and up.
         # Same discriminator the conflict scan uses, for the same reason.
-        ("au",       rf"{_QTY_NUM}\s?a\.u\.?(?=$|[\s,;:)\]!?]|\b)"),
-        ("au",       rf"{_QTY_MEASURED}\s?au(?=$|[\s.,;:)\]!?])"),
+        ("au",       rf"{_QTY_NUM}\s?a\.u\.?(?=$|[\s,;:)\]!?*_]|\b)"),
+        # The terminator class carries the markdown a model writes AROUND
+        # its result: `**483,2 au**` was missed for want of `*`, and a
+        # bolded final figure is the common case, not an edge one.
+        ("au",       rf"{_QTY_MEASURED}\s?au(?=$|[\s.,;:)\]!?*_])"),
     )
 )
 
