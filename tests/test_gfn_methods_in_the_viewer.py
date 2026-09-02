@@ -2999,6 +2999,120 @@ def test_the_bonding_is_kept_for_the_molecule_it_was_perceived_from(editor):
     assert "if _gfn.is_gfn_method(method) else None" in settle
 
 
+def test_letting_go_of_a_drag_keeps_what_the_user_set(editor):
+    """A release redrew the picture and the host started the molecule over.
+
+    When a wall is standing it owns the coordinate box, and at the release it
+    puts back the geometry it kept.  Usually the box already holds that -- the
+    follow wrote it -- so there is nothing to write, and the picture is then
+    the only thing still showing the cursor's structure.  Redrawing it through
+    the host raw is redrawing it as a molecule the host has never seen: it
+    takes its own new-structure path and starts over.
+
+    Measured through the real tab on one ordinary release, with a wall on:
+    charge -1 -> 0, multiplicity 3 -> 1, one held value -> none, a hand-made
+    bond -> none, three history entries -> one, and Manipulate and Dynamik Opt
+    both switching themselves off, so the next click did not even take hold of
+    an atom.  The user sees a drag they let go of normally.
+
+    The same flag every other write in the editor uses says "this is the
+    molecule you already have"; this redraw had no write to hang it on.
+    """
+    import pathlib
+    import sys as _sys
+
+    _sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+    helper = pytest.importorskip("test_the_budget_prices_a_relaxed_path")
+    if gfn.find_xtb() is None:
+        pytest.skip("no xtb to relax with")
+
+    start = gfn.optimize_with_gfn(helper._ETHANE, "gfn2", max_steps=400,
+                                  timeout=300)
+    assert start.get("ok"), start.get("status")
+    begin = start["xyz"]
+
+    refs = editor
+    state = refs["editor_state"]
+    refs["coords_widget"].value = begin
+    refs["submit_ff_dd"].value = "gfn2"
+    refs["submit_relax_btn"].value = True
+    refs["submit_hand_dd"].value = "pull"
+    refs["submit_gfn_charge"].value = -1
+    refs["submit_gfn_mult"].value = 3
+    refs["submit_topology_btn"].value = True
+    state["constraints"] = [{"kind": "distance", "atoms": [0, 1],
+                             "value": 1.6, "mode": "hold"}]
+    state["hand_bonds"] = {(2, 5): True}
+    state["history"] = ["one", "two", "three"]
+
+    def _standing():
+        return (refs["submit_gfn_charge"].value,
+                refs["submit_gfn_mult"].value,
+                len(state.get("constraints") or []),
+                len(state.get("hand_bonds") or {}),
+                len(state.get("history") or []),
+                bool(refs["submit_manip_btn"].value),
+                bool(refs["submit_relax_btn"].value))
+
+    before = _standing()
+    methyl = {1, 5, 6, 7}
+    refs["submit_manip_sync"].value = helper._drag_message(
+        helper._shifted(begin, methyl, 0.3),
+        "DELFIN drag-follow held=1,5,6,7")
+    helper._quiet(state, seconds=300)
+    refs["submit_manip_sync"].value = helper._drag_message(
+        helper._shifted(begin, methyl, 0.3), "DELFIN drag-end")
+    helper._quiet(state, seconds=300)
+
+    assert _standing() == before, (
+        f"the release started the molecule over: {before} -> {_standing()}")
+
+
+def test_undo_of_a_reset_brings_back_what_reset_said_it_would(editor):
+    """Reset clears the switches with the structure, and promises them back.
+
+    Clearing them is intended: a cation in one block and a neutral in the next
+    are two different calculations.  But Reset prints "Undo brings back what
+    was here", and Undo brought back only the coordinates and the marks.
+
+    Measured on an oxalate: as the user set it up, "E = -20.844028 Eh ...
+    charge -2".  After Reset the charge box reads 0; after Undo the six atoms
+    are back and the charge still reads 0; and the very next press answers
+    "E = -20.617076 Eh ... charge 0" -- the same structure, two answers 142.4
+    kcal/mol apart, with nothing said.  On an acetate the same sequence does
+    not even run: seven atoms at charge 0 have an odd number of electrons.
+
+    The history entry carries the switches now, and only where the action that
+    made it cleared them.  An ordinary Undo takes back an action, not a
+    decision the user made after it -- a method chosen since must go on
+    standing -- so this is not a rule about every entry.
+    """
+    refs = editor
+    oxalate = (
+        "6\noxalate\n"
+        "C  -0.780000   0.000000   0.000000\n"
+        "C   0.780000   0.000000   0.000000\n"
+        "O  -1.400000   1.080000   0.000000\n"
+        "O  -1.400000  -1.080000   0.000000\n"
+        "O   1.400000   1.080000   0.000000\n"
+        "O   1.400000  -1.080000   0.000000\n"
+    )
+    refs["coords_widget"].value = oxalate
+    refs["submit_ff_dd"].value = "gfn2"
+    refs["submit_gfn_charge"].value = -2
+    assert refs["submit_gfn_charge"].value == -2
+
+    refs["submit_reset_btn"].click()
+    assert refs["submit_gfn_charge"].value == 0, "Reset is meant to clear it"
+
+    refs["submit_manip_undo_btn"].click()
+    atoms = len(refs["coords_widget"].value.splitlines()) - 2
+    assert atoms == 6, atoms
+    assert refs["submit_gfn_charge"].value == -2, (
+        "Undo gave the structure back and left the charge at zero, so the "
+        "next run is silently a different calculation")
+
+
 def test_the_bonding_is_perceived_at_the_charge_the_molecule_carries():
     """An ion is a different molecule, and the seed never ran on one.
 
