@@ -437,3 +437,45 @@ def test_something_that_is_not_a_reaction_is_said_rather_than_guessed():
     assert "no arrow" in structures["status"]
     crooked = ketcher.parse_reaction_smiles("CCO>>>CC=O")
     assert crooked["ok"] is False and "fields" in crooked["status"]
+
+
+def test_several_things_in_one_place_are_separated_by_a_dot():
+    """A dot only ever means "and this one too", in whichever of the four
+    fields it stands -- and a step with nothing over and nothing under its
+    arrow is five marks with nothing between them."""
+    pytest.importorskip("rdkit")
+
+    read = ketcher.parse_reaction_smiles(
+        "CCO.CC(=O)O>>[Pd]>O>>CCOC(C)=O.CCC>>>>>C1CCC1.CO")
+
+    assert read["ok"] is True, read["status"]
+    first, second = read["steps"]
+    assert first["reactants"] == ["CCO", "CC(=O)O"]
+    assert first["products"] == ["CCOC(C)=O", "CCC"]
+    assert second["in"] == [] and second["out"] == [], "nothing in, nothing out"
+    assert second["products"] == ["C1CCC1", "CO"]
+
+
+def test_a_follow_up_step_is_made_from_what_the_one_before_it_produced():
+    """Written once, because on the canvas it is one set of structures: the
+    products of the step to its left and the reactants of the step to its
+    right."""
+    pytest.importorskip("rdkit")
+
+    written = ketcher.reaction_smiles_from_rxnfile(
+        rxnblock([placed("CCO", 0), placed("CC(=O)O", 0, 6)],
+                 [placed("CCOC(C)=O", 13), placed("CCC", 13, 6),
+                  placed("C1CCC1", 27), placed("CO", 27, 6),
+                  placed("[Pd]", 7, 5), placed("O", 7, -5)]),
+        canvas([(5.0, 9.0, 0.0), (18.5, 22.5, 0.0)]))
+
+    assert written["smiles"] == (
+        "CC(=O)O.CCO>>[Pd]>O>>CCC.CCOC(C)=O>>>>>C1CCC1.CO")
+
+    first, second = ketcher.parse_reaction_smiles(written["smiles"])["steps"]
+    assert first["products"] == second["reactants"], (
+        "the same set of structures, standing between the two arrows"
+    )
+    assert "O" not in second["reactants"], (
+        "and what the first step gave off is not among them"
+    )
