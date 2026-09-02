@@ -482,3 +482,29 @@ def test_every_place_is_named_before_it_is_tried(builder_tab, monkeypatch,
     assert "base directory" in looking
     assert "DELFIN's own resolver" in looking
     assert "the PATH" in looking
+
+
+def test_a_place_that_never_answers_does_not_hold_the_check(builder_tab,
+                                                            monkeypatch,
+                                                            capsys):
+    """A path on a mount that has gone away does not fail, it waits, and a
+    resolver walking several of them waits once per path.  "Looking for
+    ORCA..." and nothing after it was that.
+
+    Nothing here is worth an unbounded wait: every place ORCA might be is one
+    of several, and the next one can be tried instead.
+    """
+    def never():
+        time.sleep(600)
+
+    monkeypatch.setattr("delfin.orca.find_orca_executable", never)
+    monkeypatch.setattr("delfin.dashboard.saddle.find_orca", never)
+    monkeypatch.setattr(builder, "LOOKUP_SECONDS", 1.0)
+
+    began = time.monotonic()
+    said = _pressed(builder_tab, capsys)
+    took = time.monotonic() - began
+
+    assert "No ORCA to check with" in said
+    assert "no answer in 1 s" in said, "and it says which place did not answer"
+    assert took < 20, f"still looking after {took:.0f}s"
