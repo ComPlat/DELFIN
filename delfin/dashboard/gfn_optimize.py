@@ -2653,6 +2653,33 @@ def speaking_for_the_drag(where, radius, dragged) -> list:
     return [k for k in grabbed if k not in riding] or grabbed
 
 
+#: How close a hand may ask two atoms to stand, as a share of the two radii.
+#:
+#: The same number the scan has had all along -- see the editor's
+#: ``_SCAN_NO_CLOSER`` -- applied to the one route that never had it.  A scan
+#: is armed to a value somebody typed and is bounded; a drag reads its value
+#: off the page's model, and the page will happily report a hydrogen pushed
+#: 0.78 A into the carbon it is bonded to.
+#:
+#: Measured on a real session, one grab of forty-nine answers: the wish put
+#: H36 at 0.862, 0.778 and 0.776 A from C12, where a C-H is 1.09, and the
+#: perception passed those on as the distance to hold.  The first three
+#: answers cost +27.4, +64.7 and +65.7 kcal/mol before the hand had gone
+#: anywhere, and the same grab later reached +6302.6 -- which is not a
+#: strained molecule, it is a torn one.
+#:
+#: It is a floor on what is *asked for*, not on what the structure may do.  A
+#: relaxation that finds its own way to a short contact is answering a
+#: question; a hand that demands one is asking a question with no answer.
+NO_CLOSER_THAN = 0.85
+
+
+def _no_closer_than(where, radius, i, j, value):
+    """A distance the hand is asking for, with the floor under it."""
+    floor = NO_CLOSER_THAN * (radius[i] + radius[j])
+    return max(float(value), floor)
+
+
 def contacts_holding(
     xyz_text: str,
     dragged: Any,
@@ -2806,7 +2833,8 @@ def contacts_holding(
                 if (_carries(_swing(where, *turn[0]['atoms'][:3]), pulled)
                         > _carries([one / length for one in axis], pulled)):
                     return turn
-        return [{'kind': 'distance', 'atoms': [i, j], 'value': span,
+        return [{'kind': 'distance', 'atoms': [i, j],
+                 'value': _no_closer_than(where, radius, i, j, span),
                  'mode': 'drag'}]
 
     best: dict = {}
@@ -2832,7 +2860,9 @@ def contacts_holding(
                     continue
             if _occluded(where, radius, i, j):
                 continue
-            offer('distance', (i, j), math.dist(where[i], where[j]),
+            offer('distance', (i, j),
+                  _no_closer_than(where, radius, i, j,
+                                  math.dist(where[i], where[j])),
                   abs(math.dist(where[i], where[j])
                       - math.dist(then[i], then[j])))
             if not bond:
