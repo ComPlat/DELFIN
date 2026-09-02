@@ -676,17 +676,100 @@ def record_keyed_values(output: Any, *, source: str = "") -> int:
                 value = float(raw)
             except ValueError:
                 return
-            pool.setdefault((record, field), []).append((value, witness))
+            entries = pool.setdefault((record, field), [])
+            # One witness saying the same thing twice is one statement.
+            # The loose pass below re-reads bodies the JSON pass already
+            # read, and a duplicate there is noise, not a second opinion.
+            if (value, witness) in entries:
+                return
+            entries.append((value, witness))
             added += 1
+
+        # Fields already keyed to exactly one record, captured BEFORE this
+        # call adds any. See _record_recomputed_values.
+        known = _single_record_fields(pool)
 
         json_record = _record_id(source)
         for m in _JSON_FIELD_RE.finditer(body):
             _add(json_record, m.group(1), m.group(2))
 
         added += _record_csv_rows(body, _add)
+        if not _reads_an_artifact(witness):
+            # ONLY for output that came out of a COMPUTATION. Output read
+            # from a file is about whatever record that file belongs to,
+            # and borrowing the record from elsewhere attributes one
+            # calculation's figure to another: measured, `energy` tailed
+            # out of an unrelated log was reported as disagreeing with a
+            # stored `energy`. Both halves of that are needed — a shell
+            # read of another folder's file yields no record id either.
+            added += _record_recomputed_values(body, known, _add)
         return added
     except Exception:
         return 0
+
+
+_ARTIFACT_WITNESS_RE = re.compile(r"/|\.[A-Za-z]{1,5}\b")
+
+
+def _reads_an_artifact(witness: str) -> bool:
+    """Did this output come out of a FILE rather than out of a computation?
+
+    The loose pass borrows a record from what the turn already knows, and
+    that is only sound when the value has no record of its own. A shell
+    command that reads someone else's file has one — it is just not in a
+    form ``_record_id`` recognises — so the witness is asked instead.
+    Errs toward calling something an artifact, which errs toward silence.
+    """
+    return bool(_ARTIFACT_WITNESS_RE.search(str(witness or "")))
+
+
+def _single_record_fields(pool: dict) -> dict:
+    """``field -> record`` for every field this turn has seen for ONE record.
+
+    A field seen for two records is dropped: `beta_hrs` for both `tadf1`
+    and `tadf2` cannot tell us which one a bare `beta_hrs = 1204.77`
+    belongs to, and guessing would manufacture the disagreement rather
+    than find it.
+    """
+    seen: dict = {}
+    for (record, field), _entries in (pool or {}).items():
+        if field in seen and seen[field] != record:
+            seen[field] = None
+        else:
+            seen.setdefault(field, record)
+    return {f: r for f, r in seen.items() if r}
+
+
+def _record_recomputed_values(body: str, known: dict, add) -> int:
+    """A figure recomputed in a shell call, keyed to the record it is about.
+
+    The gap this closes, measured rather than reasoned: the ledger keys a
+    value by the PATH it came out of, so a number produced by
+    ``python3 -c`` has no record and was silently dropped. The one shape
+    the field case is most likely to take — read the stored quantity,
+    recompute it from a half-remembered formula, report the recomputation
+    — therefore had nothing to disagree with. Reproduced at 35% apart,
+    with the guard saying nothing.
+
+    Deliberately narrow. Only names this turn has ALREADY seen in a real
+    record file are looked for, so there is no list of quantities to
+    drift, no new vocabulary, and the pass cannot fire unless there is
+    something to compare against. Anything the plain-text form catches
+    that the JSON pass already recorded is deduped by witness in ``_add``.
+    """
+    if not known:
+        return 0
+    seen = 0
+    for field, record in known.items():
+        pattern = re.compile(
+            r"(?<![\w.])" + re.escape(field) + r"\s*[=:]\s*"
+            r"(-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)")
+        for m in pattern.finditer(body):
+            add(record, field, m.group(1))
+            seen += 1
+            if seen >= 200:                # a bounded pass, like the others
+                return seen
+    return seen
 
 
 def _record_csv_rows(body: str, add) -> int:
