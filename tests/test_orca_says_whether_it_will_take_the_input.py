@@ -89,9 +89,22 @@ def test_getting_into_the_calculation_is_the_answer_yes():
 def test_still_running_is_also_the_answer_yes():
     """It got past the input, which is the only thing being asked."""
     ok, headline, _ = builder.orca_startup_report(
-        "* O R C A *\nSCF SETTINGS\n", None, still_running=True)
+        "* O R C A *\nSCF SETTINGS\n", None, still_running=True, waited=0.3)
 
     assert ok is True and "still running" in headline
+    assert "0.3 s" in headline, (
+        "how long it actually took, not how long it was allowed to"
+    )
+
+
+def test_the_answer_is_given_as_soon_as_orca_has_given_it():
+    """Waiting out the whole window to repeat what is already on the screen is
+    a minute nobody has a reason to spend.  ORCA names an unrecognised keyword
+    in the first second and reaches the integrals in a few more."""
+    assert builder._orca_has_spoken("... SCF SETTINGS ...") is True
+    assert builder._orca_has_spoken(
+        "UNRECOGNIZED OR DUPLICATED KEYWORD(S)") is True
+    assert builder._orca_has_spoken("* O R C A *\nreading input\n") is False
 
 
 def test_stopping_without_saying_why_is_still_reported_as_stopping():
@@ -190,6 +203,25 @@ def test_one_that_keeps_running_is_stopped_and_counted_as_started(
 
     assert "OK" in said and "still running" in said
     assert took < 45, f"the check waited {took:.0f}s on a job that never ends"
+
+
+def test_a_good_input_is_answered_in_seconds_not_at_the_window(
+        builder_tab, monkeypatch, capsys):
+    """The window is the fallback, not the wait.  It said "Starting ORCA..."
+    for a minute before this, on an input that was fine."""
+    fake = _an_orca(builder_tab["tmp_path"], "orca_quick",
+                    "echo 'SCF SETTINGS'\nsleep 300\n")
+    monkeypatch.setattr("delfin.dashboard.saddle.find_orca", lambda: str(fake))
+    monkeypatch.setattr(builder, "CHECK_SECONDS", 45.0)
+
+    began = time.monotonic()
+    said = _pressed(builder_tab, capsys)
+    took = time.monotonic() - began
+
+    assert "OK" in said
+    assert took < 15, (
+        f"answered after {took:.0f}s, though ORCA had said so at once"
+    )
 
 
 def test_no_orca_to_check_with_is_said_rather_than_guessed(builder_tab,
