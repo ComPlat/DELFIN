@@ -6657,6 +6657,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             state['structure_edit_inflight'] = False
         return True
 
+    def _the_question_an_anchor_answers():
+        """Everything besides the structure and the method that an energy is of.
+
+        The charge, the spin, the solvent and its model.  An anchor is one
+        number and it is the answer to all of them at once; read against
+        energies of a different question it is not a difference at all, which
+        is the same sentence the method's guard in :func:`_thermal_budget` is
+        written on.
+        """
+        return (int(submit_gfn_charge.value or 0), _gfn_uhf_now(),
+                str(submit_gfn_solvent.value or '') or None, _solv_model())
+
     def _thermal_budget():
         """What this structure may spend, in kcal/mol, and from where.
 
@@ -6681,6 +6693,23 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # other way round is quieter and worse -- a C-C torn to 3 A reported
         # "-6117.9 of 22.3 available" and the wall never fired.
         if state.get('thermal_method') != str(submit_ff_dd.value):
+            return None, ceiling
+        # And to everything else the energy was asked under.  The method was
+        # guarded and the three boxes beside it were not, and they move a
+        # total energy by the same order: measured on the ethane above, the
+        # charge box taken from 0 to +2 with the budget on prices the
+        # untouched structure at +831.4 kcal/mol against a 22.3 ceiling and
+        # the drag is dead on its first answer, the multiplicity box from 1 to
+        # 3 at +139.2, and the wall then refuses every later step because the
+        # cursor never goes back.  The solvent looks harmless on a neutral --
+        # +0.1 on that ethane, which is why it went unnoticed -- and is not:
+        # an acetate anion moves -67.4 kcal/mol between vacuum and water,
+        # three times the whole ceiling.
+        #
+        # An anchor is an energy.  An energy of one question read against
+        # energies of another is not a difference at all, which is the same
+        # sentence the method's guard above is written on.
+        if state.get('thermal_asked') != _the_question_an_anchor_answers():
             return None, ceiling
         return state.get('thermal_e0'), ceiling
 
@@ -6711,7 +6740,29 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         past.
         """
         anchor, ceiling = _thermal_budget()
-        if anchor is None or energy is None:
+        if anchor is None:
+            # Said rather than left blank.  Without an anchor the switch is
+            # still on, the drag still holds its contacts and still costs what
+            # a priced drag costs, and nothing is ever refused -- which on
+            # screen is a budget that is working.  Measured: with the budget
+            # on, moving the method box between two xtb methods takes the
+            # anchor out of force, and the same gesture that was refused a
+            # moment ago goes through with the button still lit and not a word
+            # said.  The charge, multiplicity and solvent boxes do the same,
+            # and for the same reason -- see :func:`_thermal_budget`.
+            #
+            # Which of the two it is matters, because the way out differs: one
+            # has never been measured, the other was measured for a question
+            # nobody is asking any more.
+            if not _thermal_live():
+                return ''
+            if state.get('thermal_e0') is None:
+                return ('no budget yet \u00b7 press Set here to measure one '
+                        'from this structure')
+            return ('the budget is not in force: its zero belongs to another '
+                    'method, charge, multiplicity or solvent \u00b7 press Set '
+                    'here to measure one for this')
+        if energy is None:
             return ''
         spent = (float(energy) - float(anchor)) * _HARTREE_TO_KCAL
         T = float(submit_temperature.value)
@@ -7501,6 +7552,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     return
                 state['thermal_e0'] = float(outcome['energy'])
                 state['thermal_method'] = method
+                state['thermal_asked'] = _the_question_an_anchor_answers()
                 state['thermal_for'] = _structure_fingerprint(
                     outcome.get('xyz') or xyz)
                 # A new zero is a new path, and nothing has been crossed on
@@ -14942,13 +14994,33 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             said.append(f'{len(holds)} held')
         return ', '.join(said)
 
+    def _apart_in_kcal(gap):
+        """A difference between two stored point energies, in kcal/mol.
+
+        A point's energy is whatever the engine that found it reports, and the
+        two engines do not report the same quantity: xtb gives a total energy
+        in hartree, MOPAC a heat of formation that is already in kcal/mol.
+        Converted from hartree regardless, two PM7 minima 0.72 kcal/mol apart
+        -- butane's gauche-anti gap, which room temperature crosses without
+        noticing -- were offered on the list as "+453.78 kcal/mol", and two
+        readings of one point a thousandth apart read as 0.63 and were kept as
+        two points instead of one.
+
+        The list cannot mix the two.  :func:`_best_conditions` keys the book on
+        the method among other things, so every point in the one on screen was
+        found by the engine that is on the toolbar now, and that engine says
+        which quantity these numbers are.
+        """
+        return (float(gap) if _mopac.is_mopac_method(submit_ff_dd.value)
+                else float(gap) * _HARTREE_TO_KCAL)
+
     def _is_the_same_point(one, xyz, energy):
         """Whether a structure is a stationary point already in the list."""
         if one.get('kind') != 'minimum' and energy is None:
             pass
         both = (one.get('energy'), energy)
         if None not in both:
-            if abs(float(both[0]) - float(both[1])) * _HARTREE_TO_KCAL \
+            if abs(_apart_in_kcal(float(both[0]) - float(both[1]))) \
                     > _SAME_POINT_KCAL:
                 return False
         try:
@@ -15083,8 +15155,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             gap = (None
                    if last.get('key') != here or last.get('energy') is None
                    or kept.get('energy') is None
-                   else (float(kept['energy']) - float(last['energy']))
-                   * _HARTREE_TO_KCAL)
+                   else _apart_in_kcal(
+                       float(kept['energy']) - float(last['energy'])))
             if standing and state.get('best_came_from'):
                 submit_best_btn.description = 'Back to where you were'
                 submit_best_btn.icon = 'undo'
@@ -15127,7 +15199,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             if one.get('energy') is None or floor is None:
                 cost = 'no energy in hand'
             else:
-                cost = (f'{(float(one["energy"]) - float(floor)) * _HARTREE_TO_KCAL:+.2f}'
+                cost = (f'{_apart_in_kcal(float(one["energy"]) - float(floor)):+.2f}'
                         ' kcal/mol')
             twice = '' if int(one.get('seen') or 1) < 2 else \
                 f", reached {int(one['seen'])}x"
@@ -15177,7 +15249,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                           if p.get('kind') == 'minimum'
                           and p.get('energy') is not None), None)
             cost = ('' if one.get('energy') is None or floor is None else
-                    f' It stands {(float(one["energy"]) - float(floor)) * _HARTREE_TO_KCAL:+.2f} '
+                    f' It stands '
+                    f'{_apart_in_kcal(float(one["energy"]) - float(floor)):+.2f} '
                     f'kcal/mol against the lowest one found.')
             _stand_on(one['xyz'],
                       f'A {one["kind"]} this search has been through.{cost} '
