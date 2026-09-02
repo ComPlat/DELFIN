@@ -62,6 +62,11 @@ def placed(smiles, x, y=0.0):
     return Chem.MolToMolBlock(mol, kekulize=False)
 
 
+def sdf(*blocks):
+    """The records Ketcher hands back for a canvas with an arrow on it."""
+    return ''.join(block + "$$$$\n" for block in blocks)
+
+
 def canvas(arrows):
     """A KET holding just the arrows, which is all their positions need."""
     import json
@@ -479,3 +484,58 @@ def test_a_follow_up_step_is_made_from_what_the_one_before_it_produced():
     assert "O" not in second["reactants"], (
         "and what the first step gave off is not among them"
     )
+
+
+# ---------------------------------------------------------------------------
+# every component, which an RXN file does not carry
+# ---------------------------------------------------------------------------
+def test_a_scheme_is_read_from_the_records_that_keep_every_component():
+    """An RXN file loses some.  Measured against the served build: benzene
+    into cyclohexane into cyclobutane with a cyclopropane over the first
+    arrow came back from ``getRxn`` as three ``$MOL`` blocks -- the one over
+    the arrow simply was not there, and the scheme came out as
+    ``c1ccccc1>>>>>C1CCCCC1>>>>>C1CCC1``, the reagent gone.  ``getSdf`` on the
+    same canvas gave four records; ``getCml`` gave two.
+    """
+    outcome = ketcher.reaction_smiles_from_sdf(
+        sdf(placed("c1ccccc1", 0), placed("C1CCCCC1", 14),
+            placed("C1CCC1", 28), placed("CC", 8, 5)),
+        canvas([(6.0, 10.0, 0.0), (20.0, 24.0, 0.0)]))
+
+    assert outcome["ok"] is True, outcome["status"]
+    assert outcome["smiles"] == "c1ccccc1>>CC>>>C1CCCCC1>>>>>C1CCC1"
+    assert "CC" in outcome["smiles"], "the reagent an RXN file would have lost"
+
+
+def test_the_editor_is_asked_for_the_records_and_not_for_a_reaction_file():
+    """Which is the whole reason a reagent over an arrow survives."""
+    pytest.importorskip("ipywidgets")
+    from delfin.dashboard import ketcher_panel
+
+    reading = ketcher_panel.read_js("scope-1", "smiles", "auto")
+
+    assert "arrow ? api.getSdf()" in reading, "the records, not a reaction file"
+    assert "api.getKet()" in reading, "the arrows are only in there"
+    # getRxn is still there, but only for saving a file the user asked for by
+    # that name -- never for reading the canvas.
+    assert "if(want==='rxn') return api.getRxn();" in reading
+
+
+def test_records_with_no_arrow_are_a_set_of_structures():
+    outcome = ketcher.reaction_smiles_from_sdf(
+        sdf(placed("CCO", 0), placed("c1ccccc1", 10)), canvas([]))
+
+    assert outcome["ok"] is True
+    assert outcome["smiles"] == "CCO.c1ccccc1"
+    assert outcome["steps"] == 0
+
+
+def test_the_records_reach_the_reader_that_splits_them():
+    """``smiles_from_drawing`` is the one call site, and it tells the three
+    shapes apart by what they are."""
+    body = sdf(placed("c1ccccc1", 0), placed("C1CCCCC1", 14))
+    outcome = ketcher.smiles_from_drawing(
+        body + ketcher.KET_MARK + canvas([(6.0, 10.0, 0.0)]))
+
+    assert outcome["reaction"] is True
+    assert outcome["smiles"] == "c1ccccc1>>>>>C1CCCCC1"
