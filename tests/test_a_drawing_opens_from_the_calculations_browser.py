@@ -68,25 +68,43 @@ def test_a_drawing_is_marked_as_one_in_the_listing(dashboard):
                for name in listed), "and only the drawings are marked"
 
 
-def test_opening_it_puts_it_in_the_editor_and_goes_there(dashboard):
+def test_opening_it_shows_it_in_this_tab(dashboard):
+    """In place, the way the spreadsheet and the document beside it open.
+    Jumping to another tab to read a file is not how the rest of the browser
+    behaves."""
     dashboard["sent"].clear()
 
-    dashboard["browser"]["calc_open_input"].value = "✏️ aspirin.ket"
+    dashboard["browser"]["calc_open_input"].value = "\u270f\ufe0f aspirin.ket"
 
     script = "\n".join(dashboard["sent"])
     assert "setMolecule" in script
     assert '{\\"root\\":{\\"nodes\\":[]}}' in script, "the drawing itself"
-    assert dashboard["ctx"].tabs_widget.selected_index == 7, "and it is shown"
-    assert "aspirin.ket" in dashboard["ketcher"]["ketcher_panel"].status.value
+    assert dashboard["browser"]["calc_ketcher_container"].layout.display == "flex"
+    assert dashboard["ctx"].tabs_widget.selected_index is None, (
+        "and it does not send the reader somewhere else"
+    )
 
 
-def test_it_is_not_shown_as_text(dashboard):
-    """Which is what the default branch would have done with it."""
-    dashboard["browser"]["calc_open_input"].value = "✏️ aspirin.ket"
+def test_saving_goes_back_to_the_folder_it_came_out_of(dashboard):
+    """A drawing opened out of a job's directory belongs back in that
+    directory, not in a store of its own -- the way a document does."""
+    dashboard["browser"]["calc_open_input"].value = "\u270f\ufe0f aspirin.ket"
+    panel = dashboard["browser"]["sheet_state"]["ketcher_panel"]
 
-    shown = dashboard["browser"]["calc_content_area"].value or ""
-    assert '"root"' not in shown, "the JSON of their own structure"
-    assert "aspirin.ket" in dashboard["browser"]["calc_file_info"].value
+    panel.sync.value = '1\nsave\naspirin.ket\n{"root":{"nodes":[1]}}'
+
+    kept = dashboard["tmp_path"] / "calc" / "Ketcher" / "aspirin.ket"
+    assert kept.read_text() == '{"root":{"nodes":[1]}}'
+
+
+def test_opening_something_else_folds_the_editor_away(dashboard):
+    dashboard["browser"]["calc_open_input"].value = "\u270f\ufe0f aspirin.ket"
+    assert dashboard["browser"]["calc_ketcher_container"].layout.display == "flex"
+
+    dashboard["browser"]["calc_open_input"].value = ""
+    dashboard["browser"]["calc_open_input"].value = "\U0001f4c4 notes.txt"
+
+    assert dashboard["browser"]["calc_ketcher_container"].layout.display == "none"
 
 
 def test_it_can_be_reached_after_the_file_is_already_selected(dashboard):
@@ -104,20 +122,14 @@ def test_it_can_be_reached_after_the_file_is_already_selected(dashboard):
     assert "setMolecule" in "\n".join(dashboard["sent"])
 
 
-def test_a_dashboard_with_no_ketcher_tab_says_so_rather_than_doing_nothing(
-        dashboard):
-    """It is registered additively and can be hidden or fail to build.  A
-    double-click that silently does nothing is worse than a text preview."""
-    dashboard["ctx"].ketcher_refs = {}
-    dashboard["sent"].clear()
+def test_the_editor_is_built_only_when_a_drawing_is_opened(dashboard):
+    """It carries a 30 MB application behind it, and most browsing never
+    touches one."""
+    assert dashboard["browser"]["sheet_state"].get("ketcher_panel") is None
 
-    dashboard["browser"]["calc_open_input"].value = ""
-    dashboard["browser"]["calc_open_input"].value = "✏️ aspirin.ket"
+    dashboard["browser"]["calc_open_input"].value = "\u270f\ufe0f aspirin.ket"
 
-    shown = dashboard["browser"]["calc_content_area"].value or ""
-    assert "setMolecule" not in "\n".join(dashboard["sent"])
-    assert "no Ketcher tab" in shown, "a double-click that does nothing is worse"
-    assert "nodes" in shown, "and the file itself is shown, as it was before"
+    assert dashboard["browser"]["sheet_state"].get("ketcher_panel") is not None
 
 
 def test_the_archive_and_office_tabs_find_it_too(tmp_path, monkeypatch):

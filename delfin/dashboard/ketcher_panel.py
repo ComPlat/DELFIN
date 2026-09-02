@@ -170,8 +170,17 @@ class Panel:
 
 
 def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
-          title: str = 'Ketcher') -> Panel:
-    """One editor panel, ready to be placed."""
+          title: str = 'Ketcher', folder=None, compact: bool = False) -> Panel:
+    """One editor panel, ready to be placed.
+
+    *folder* is where Ketcher's own Save writes and where its own Open reads,
+    given as a callable because it moves: the Ketcher tab keeps its drawings
+    in one place, and a drawing opened from the Calculations tab is saved back
+    into the folder it came out of, the way a document is.
+
+    *compact* leaves out what belongs to a drawing board rather than to a file
+    being looked at -- the SMILES row and the handover to Submit.
+    """
     main_io_loop = getattr(getattr(get_ipython(), 'kernel', None),
                            'io_loop', None)
 
@@ -240,12 +249,21 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
         schedule(_say, text, colour)
 
     # -- the folder -----------------------------------------------------
-    def _calc_dir() -> Path:
-        return Path(getattr(ctx, 'calc_dir', None) or (Path.home() / 'calc'))
+    def _folder() -> Path:
+        """Where this panel keeps things, which is not always one place."""
+        if folder is not None:
+            try:
+                chosen = folder() if callable(folder) else folder
+            except Exception:                           # noqa: BLE001
+                chosen = None
+            if chosen:
+                return Path(chosen)
+        return _ketcher.drawings_directory(
+            getattr(ctx, 'calc_dir', None) or (Path.home() / 'calc'))
 
     def _scan_files() -> list:
         """What is kept, remembered by name so an answer can be resolved."""
-        kept = _ketcher.list_drawings(_calc_dir())
+        kept = _ketcher.list_in(_folder())
         state['files'] = {item.name: item for item in kept}
         return [item.name for item in kept]
 
@@ -349,8 +367,8 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
             # Save dialog: "my aspirin.mol" comes back whole.
             filename, _, body = payload.partition('\n')
             suffix = Path(filename).suffix.lower() or '.ket'
-            outcome = _ketcher.save_drawing(
-                _calc_dir(), Path(filename).stem, body, suffix)
+            outcome = _ketcher.save_into(
+                _folder(), Path(filename).stem, body, suffix)
             _say(outcome['status'], '#2e7d32' if outcome['ok'] else '#d32f2f')
             if outcome['ok']:
                 _refresh_files()
@@ -475,11 +493,11 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
 
     box = widgets.VBox(
         [
-            widgets.HTML(f'<b>{title}</b>'),
+            widgets.HTML(f'<b>{title}</b>') if title else widgets.HTML(''),
             _row([smiles_btn, install_btn, status]),
             frame, sync,
-            _row([smiles_out, smiles_copy_btn, to_submit_btn]),
-        ],
+        ] + ([] if compact else
+             [_row([smiles_out, smiles_copy_btn, to_submit_btn])]),
         layout=widgets.Layout(width='100%', gap='6px'),
     )
 

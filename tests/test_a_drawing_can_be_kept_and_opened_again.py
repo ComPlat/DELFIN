@@ -299,3 +299,64 @@ def test_the_drawing_is_written_where_control_and_input_are():
     order = [handler.index("CONTROL.txt"), handler.index("input.txt"),
              handler.index("_keep_the_drawing(")]
     assert order == sorted(order), "written after the two it stands beside"
+
+
+# ---------------------------------------------------------------------------
+# saved where it came from, in the format that keeps everything
+# ---------------------------------------------------------------------------
+def test_a_drawing_is_saved_into_whatever_folder_it_belongs_to(tmp_path):
+    """The store is one particular folder, not a different kind of thing: a
+    drawing opened out of a job's directory is saved back into that
+    directory, the way a document is."""
+    made = ketcher.save_into(tmp_path / "some_job", "aspirin", "x")
+
+    assert made["ok"] is True
+    assert made["path"] == tmp_path / "some_job" / "aspirin.ket"
+    assert "some_job" in made["status"]
+    assert [item.name for item in ketcher.list_in(tmp_path / "some_job")] == [
+        "aspirin.ket"]
+    # and the store is that, pointed at the Ketcher folder
+    assert ketcher.save_drawing(tmp_path, "kept", "x")["path"] == (
+        tmp_path / "Ketcher" / "kept.ket")
+
+
+def test_the_save_dialog_is_opened_on_ket(tmp_path):
+    """Of the formats Ketcher writes it is the only one that keeps an arrow, a
+    text label and the layout, so a drawing saved and opened again is the
+    drawing that was saved.
+
+    The list is opened and the entry is pressed, which is what a person would
+    do.  It is a Material select, and its own hidden input can be set without
+    React noticing.
+    """
+    wiring = ketcher.wire_js(".frame", ".sync")
+
+    assert 'save-dialog' in wiring
+    assert "input.MuiSelect-nativeInput" in wiring
+    assert "now.value==='ket'" in wiring, "already on Ket is left alone"
+    assert "/^ket/i" in wiring
+    assert "all[i].click()" in wiring, "pressed, not assigned"
+
+
+# ---------------------------------------------------------------------------
+# nothing is thrown away without asking
+# ---------------------------------------------------------------------------
+def test_replacing_unsaved_work_asks_first():
+    """The clean mark is set when a drawing is opened and when one is saved,
+    so a difference from it is work that opening another one would lose."""
+    opening = ketcher.load_js(".frame", "x")
+
+    assert "confirm(" in opening
+    assert "__delfinKetcherClean" in opening
+    assert "if(!go) return;" in opening, "saying no keeps the drawing"
+
+    saving = ketcher.wire_js(".frame", ".sync")
+    assert "__delfinKetcherClean" in saving, "saving makes it clean again"
+
+
+def test_an_editor_nobody_has_opened_anything_into_has_nothing_to_lose():
+    """Unknown means unknown, not dirty.  A first drawing must not be met with
+    a question about losing something that was never there."""
+    opening = ketcher.load_js(".frame", "x")
+
+    assert "if(clean===undefined||clean===null){ go(true); return; }" in opening
