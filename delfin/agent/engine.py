@@ -3590,7 +3590,20 @@ class AgentEngine:
         # the contradiction lived between a stored file and a table the
         # agent had just written.
         conflicts = _vg.scan_for_conflicting_figures()
-        if not loc and not qty and not conflicts:
+        # The language the user wrote in. Measured to be necessary: with
+        # the prompt rule delivered and nothing German in the prompt, the
+        # backend answered an English question in German four times in
+        # four runs. Returns "" whenever either side is too short or too
+        # technical to say, so it is silent far more often than it fires.
+        # The engine already records what the user wrote, at the top of
+        # the turn. A "[Verify] …" body means a correction turn has since
+        # overwritten it — those are always English, and reading one back
+        # would demand English of every German session, so it is ignored.
+        _asked = str(getattr(self, "_last_user_message", "") or "")
+        wrong_language = _vg.scan_for_language_mismatch(
+            response_text,
+            "" if _asked.lstrip().startswith("[Verify]") else _asked)
+        if not loc and not qty and not conflicts and not wrong_language:
             return self._append_answer_caveats(
                 response_text, functional=func, ambiguous=ambiguous,
                 on_token=on_token)
@@ -3599,7 +3612,8 @@ class AgentEngine:
             # nested continuation re-entered here) — annotate, never loop.
             return self._append_answer_caveats(
                 response_text + _vg.grounding_caveat(loc, qty)
-                + _vg.conflicting_figure_caveat(conflicts),
+                + _vg.conflicting_figure_caveat(conflicts)
+                + _vg.language_mismatch_caveat(wrong_language),
                 functional=func, ambiguous=ambiguous, on_token=on_token)
         parts: list[str] = []
         if loc:
@@ -3608,6 +3622,9 @@ class AgentEngine:
             parts.append(_vg.quantity_claim_feedback(qty))
         if conflicts:
             parts.append(_vg.conflicting_figure_feedback(conflicts)
+                         .replace("[Verify] ", "", 1))
+        if wrong_language:
+            parts.append(_vg.language_mismatch_feedback(wrong_language)
                          .replace("[Verify] ", "", 1))
         feedback = "[Verify] " + " ".join(parts)
         # What the session had observed BEFORE the retry. The retry either
@@ -3642,7 +3659,8 @@ class AgentEngine:
         if not correction:
             return self._append_answer_caveats(
                 response_text + _vg.grounding_caveat(loc, qty)
-                + _vg.conflicting_figure_caveat(conflicts),
+                + _vg.conflicting_figure_caveat(conflicts)
+                + _vg.language_mismatch_caveat(wrong_language),
                 functional=func, ambiguous=ambiguous, on_token=on_token)
         combined = response_text + "\n\n" + correction
         # Re-scan the correction: the recursive turn refreshed the
@@ -3679,6 +3697,14 @@ class AgentEngine:
                       if not _vg.conflict_is_addressed(c, correction)]
         if unresolved:
             caveat += _vg.conflicting_figure_caveat(unresolved)
+        # Judged on the CORRECTION, so switching resolves it and restating
+        # in the same language does not. Silence counts as resolved: a
+        # short correction cannot be judged, and a caveat built on a
+        # verdict the detector refused to give would be this guard doing
+        # what the project keeps catching it doing.
+        if wrong_language and _vg.detect_language(correction) not in (
+                "", wrong_language):
+            caveat += _vg.language_mismatch_caveat(wrong_language)
         marker = _vg.verification_marker(new_files) if caveat == "" else ""
         note = caveat or marker
         if note:
