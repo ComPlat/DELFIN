@@ -7634,17 +7634,31 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         molecule, both being twelve atoms, so the second was optimised with the
         first one's bonding. It came back with a hydrogen 5.9 A from its carbon
         and the ring torn open -- at an energy that looked perfectly ordinary.
+
+        And to the charge and the spin it was perceived under, which is the
+        rest of what makes a molecule this molecule.  The seed below used to
+        run at neither, so on an ion it did not run at all: an acetate anion
+        seeded at charge 0 comes back "7 atoms at charge 0 have an odd number
+        of electrons", the folder is left empty, and every later run then
+        perceives its own bonding from whatever geometry it happens to be
+        handed -- which is the cliff this whole function exists to avoid.  The
+        key ignored them too, so a charge changed on screen kept the topology
+        perceived under the old one.
         """
         import tempfile
 
         who = _structure_fingerprint(xyz)
         atoms = len(who)
+        charge = int(submit_gfn_charge.value or 0)
+        uhf = _gfn_uhf_now()
         kept = state.get('gfn_topology')
-        if kept and kept.get('who') == who and atoms:
+        if (kept and kept.get('who') == who and atoms
+                and kept.get('asked') == (charge, uhf)):
             return Path(kept['dir'])
         _drop_gfn_topology()
         folder = tempfile.mkdtemp(prefix='delfin-gfnff-topo-')
-        state['gfn_topology'] = {'dir': folder, 'atoms': atoms, 'who': who}
+        state['gfn_topology'] = {'dir': folder, 'atoms': atoms, 'who': who,
+                                 'asked': (charge, uhf)}
         # Perceived here and now, from the structure as it stood before a hand
         # was laid on it.  Left to the first calculation that needs it, the
         # perception is made from a geometry that has already been pulled
@@ -7662,6 +7676,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # written and every later run perceives its own topology from
                 # a geometry the hand has since pulled about.
                 _gfn.relax_steps(seed, cycles=1, timeout=None,
+                                 charge=charge, uhf=uhf,
                                  topology=Path(folder))
             except Exception:
                 pass
