@@ -38,7 +38,8 @@ __all__ = ['app_directory', 'app_url', 'install', 'installed_version',
            'latest_release', 'is_installed', 'smiles_from_molfile',
            'reaction_smiles_from_rxnfile', 'smiles_from_drawing',
            'DRAWINGS_FOLDER', 'DRAWING_SUFFIXES', 'drawings_directory',
-           'is_drawing', 'list_drawings', 'save_drawing', 'read_drawing',
+           'is_drawing', 'list_drawings', 'list_in', 'save_drawing',
+           'save_into', 'read_drawing',
            'delete_drawing', 'frame_html', 'focus_js', 'load_js', 'KET_MARK',
            'files_js', 'wire_js']
 
@@ -733,19 +734,35 @@ def is_drawing(path: Any) -> bool:
     return Path(path).suffix.lower() in DRAWING_SUFFIXES
 
 
-def list_drawings(calc_dir: Any) -> list:
-    """Every drawing kept here, by name, or nothing when there is no folder."""
+def list_in(folder: Any) -> list:
+    """Every drawing in *folder*, by name, or nothing when there is no folder.
+
+    A folder rather than the store, because a drawing opened from a job's own
+    directory is saved back into that directory.  The store is one particular
+    folder and not a different kind of thing.
+    """
     try:
-        found = [item for item in drawings_directory(calc_dir).iterdir()
+        found = [item for item in Path(folder).iterdir()
                  if item.is_file() and is_drawing(item)]
     except OSError:
         return []
     return sorted(found, key=lambda item: item.name.lower())
 
 
+def list_drawings(calc_dir: Any) -> list:
+    """Every drawing kept in the Ketcher folder of *calc_dir*."""
+    return list_in(drawings_directory(calc_dir))
+
+
 def save_drawing(calc_dir: Any, name: str, text: str,
                  suffix: str = '.ket') -> Dict[str, Any]:
-    """Keep what was drawn, under the name it was given.
+    """Keep what was drawn in the Ketcher folder of *calc_dir*."""
+    return save_into(drawings_directory(calc_dir), name, text, suffix)
+
+
+def save_into(folder: Any, name: str, text: str,
+              suffix: str = '.ket') -> Dict[str, Any]:
+    """Keep what was drawn in *folder*, under the name it was given.
 
     The name is made safe the same way a reaction graph's folder name is, so
     ``../../etc/passwd`` becomes ``etc_passwd`` and stays in the folder; the
@@ -772,19 +789,19 @@ def save_drawing(calc_dir: Any, name: str, text: str,
     if not raw:
         return {'ok': False, 'path': None,
                 'status': 'Give the drawing a name first.'}
-    folder = drawings_directory(calc_dir)
-    target = folder / f'{safe_name(raw)}{wanted}'
+    where = Path(folder)
+    target = where / f'{safe_name(raw)}{wanted}'
     try:
-        folder.mkdir(parents=True, exist_ok=True)
-        if target.resolve().parent != folder.resolve():
+        where.mkdir(parents=True, exist_ok=True)
+        if target.resolve().parent != where.resolve():
             return {'ok': False, 'path': None,
-                    'status': 'That name would leave the Ketcher folder.'}
+                    'status': f'That name would leave {where.name}.'}
         target.write_text(body, encoding='utf-8')
     except OSError as exc:
         return {'ok': False, 'path': None,
                 'status': f'It could not be saved: {exc}'}
     return {'ok': True, 'path': target,
-            'status': f'Saved as {target.name} in {DRAWINGS_FOLDER}.'}
+            'status': f'Saved as {target.name} in {where.name}.'}
 
 
 def read_drawing(path: Any) -> Dict[str, Any]:
@@ -988,12 +1005,52 @@ def wire_js(host_selector: str, sync_selector: str) -> str:
         "            var blob=blobs.get(this.href); blobs.delete(this.href);\n"
         "            blob.text().then(function(text){ hand('save',name+'\\n'+text); },\n"
         "                             function(err){ hand('save-failed',''+err); });\n"
+        "            /* What was just saved is what there is no reason to warn\n"
+        "               about losing. */\n"
+        "            try{ Promise.resolve(w.ketcher.getKet()).then(\n"
+        "              function(k){ w.__delfinKetcherClean=k; }); }catch(e){}\n"
         "            return true;\n"
         "          }\n"
         "        }\n"
         "      }catch(e){}\n"
         "      return fire.apply(this,arguments);\n"
         "    };\n"
+        "\n"
+        "    /* Save: opened on Ket, which is the only one of these formats\n"
+        "       that keeps an arrow, a text label and the layout, so a drawing\n"
+        "       saved and opened again is the drawing that was saved.  The\n"
+        "       control is a Material select: its own hidden input can be set\n"
+        "       without React noticing, so the list is opened and the entry is\n"
+        "       pressed, which is what a person would do. */\n"
+        "    d.addEventListener('click',function(ev){\n"
+        "      var press=ev.target&&ev.target.closest\n"
+        "        ? ev.target.closest('[data-testid=\"save-file-button\"]') : null;\n"
+        "      if(!press) return;\n"
+        "      var waited=0;\n"
+        "      function pick(){\n"
+        "        var box=d.querySelector('[data-testid=\"save-dialog\"]');\n"
+        "        if(!box){ if(++waited<40) window.setTimeout(pick,100); return; }\n"
+        "        var label=d.querySelector('label[data-testid=\"file-format-list\"]');\n"
+        "        if(!label) return;\n"
+        "        var now=label.querySelector('input.MuiSelect-nativeInput');\n"
+        "        if(now&&now.value==='ket') return;\n"
+        "        var face=label.querySelector('[role=\"combobox\"]');\n"
+        "        if(!face) return;\n"
+        "        face.dispatchEvent(new w.MouseEvent('mousedown',{bubbles:true}));\n"
+        "        var tries=0;\n"
+        "        function press_it(){\n"
+        "          var all=d.querySelectorAll('[role=\"option\"]');\n"
+        "          for(var i=0;i<all.length;i++){\n"
+        "            if(/^ket/i.test((all[i].textContent||'').trim())){\n"
+        "              all[i].click(); return;\n"
+        "            }\n"
+        "          }\n"
+        "          if(++tries<30) window.setTimeout(press_it,100);\n"
+        "        }\n"
+        "        press_it();\n"
+        "      }\n"
+        "      pick();\n"
+        "    },true);\n"
         "\n"
         "    /* Open: answered with what is kept, not with the browser's disk. */\n"
         "    var sheet=d.createElement('style');\n"
@@ -1100,6 +1157,23 @@ def load_js(host_selector: str, text: str) -> str:
     return (
         "(function(){\n"
         "  var tries=0;\n"
+        "  function settled(api, go){\n"
+        "    /* What is on the canvas that nobody has kept.  The clean mark is\n"
+        "       set when a drawing is opened and when one is saved, so a\n"
+        "       difference from it is work that replacing this would lose.\n"
+        "       Unknown means unknown, not dirty: an editor nobody has opened\n"
+        "       anything into has nothing to warn about. */\n"
+        "    var w=api.__delfinWindow||window;\n"
+        "    var clean=w.__delfinKetcherClean;\n"
+        "    if(clean===undefined||clean===null){ go(true); return; }\n"
+        "    try{\n"
+        "      Promise.resolve(api.getKet()).then(function(now){\n"
+        "        if(now===clean){ go(true); return; }\n"
+        "        go(w.confirm('This drawing has changes that were never '\n"
+        "          + 'saved. Open the other one and lose them?'));\n"
+        "      }, function(){ go(true); });\n"
+        "    }catch(e){ go(true); }\n"
+        "  }\n"
         "  function fit(api){\n"
         "    try{\n"
         "      var ed=api.editor;\n"
@@ -1114,15 +1188,22 @@ def load_js(host_selector: str, text: str) -> str:
         "    try{ api=frame&&frame.contentWindow&&frame.contentWindow.ketcher; }\n"
         "    catch(e){ api=null; }\n"
         "    if(!api){ if(++tries<60) window.setTimeout(put,200); return; }\n"
-        "    try{\n"
-        "      Promise.resolve(api.setMolecule(" + json.dumps(str(text or '')) +
+        "    api.__delfinWindow=frame.contentWindow;\n"
+        "    settled(api, function(go){\n"
+        "      if(!go) return;\n"
+        "      try{\n"
+        "        Promise.resolve(api.setMolecule(" + json.dumps(str(text or '')) +
         ")).then(function(){\n"
-        "        fit(api);\n"
-        "        /* Again once the frame is the size it will be read at. */\n"
-        "        window.setTimeout(function(){ fit(api); }, 400);\n"
-        "        window.setTimeout(function(){ fit(api); }, 1200);\n"
-        "      });\n"
-        "    }catch(e){}\n"
+        "          fit(api);\n"
+        "          /* Again once the frame is the size it will be read at. */\n"
+        "          window.setTimeout(function(){ fit(api); }, 400);\n"
+        "          window.setTimeout(function(){ fit(api); }, 1200);\n"
+        "          /* What was just opened is the clean state from here on. */\n"
+        "          try{ Promise.resolve(api.getKet()).then(function(k){\n"
+        "            api.__delfinWindow.__delfinKetcherClean=k; }); }catch(e){}\n"
+        "        });\n"
+        "      }catch(e){}\n"
+        "    });\n"
         "  }\n"
         "  put();\n"
         "})();"

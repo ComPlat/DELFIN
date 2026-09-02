@@ -38,6 +38,7 @@ from . import formula_engine as _formula_engine
 from . import spreadsheet_view as _sheet
 from . import text_view as _text_view
 from . import ketcher as _ketcher
+from . import ketcher_panel as _ketcher_panel
 from .molecule_viewer import (
     VIEWER_CONTAINER_DYNAMIC_SCALE,
     VIEWER_CONTAINER_HEIGHT_PX,
@@ -880,6 +881,15 @@ def create_tab(ctx):
     calc_pdf_container = widgets.VBox(
         [],
         layout=widgets.Layout(display='none', width='100%', flex='1 1 0', min_height='0'),
+    )
+
+    # Drawings are opened here, in the tab, the way a document is -- built on
+    # first use, because most browsing never touches one and the panel carries
+    # a 30 MB editor behind it.
+    calc_ketcher_container = widgets.VBox(
+        [],
+        layout=widgets.Layout(display='none', width='100%', flex='1 1 0',
+                              min_height='0'),
     )
 
     # Molecule viewer
@@ -7978,6 +7988,7 @@ def create_tab(ctx):
         _calc_show_mo_plot_panel(False)
         _calc_hide_chunk_controls()
         _calc_pdf_close()
+        _calc_ketcher_close()
         calc_update_view()
         calc_set_message('Select a file...')
         _calc_process_staged_uploads()
@@ -12197,17 +12208,44 @@ def create_tab(ctx):
 
     # -- a drawing goes back to the editor it came from ----------------------
 
+    def _calc_ketcher_panel():
+        """The tab's drawing editor, built on first use.
+
+        It saves into the folder of whatever is open, not into a store of its
+        own: a drawing opened out of a job's directory belongs back in that
+        directory, the way a document does.
+        """
+        panel = state.get('ketcher_panel')
+        if panel is None:
+            panel = _ketcher_panel.build(
+                ctx,
+                height=f'{max(320, CALC_CONTENT_HEIGHT - 40)}px',
+                scope=f'delfin-ketcher-calc-{abs(id(calc_ketcher_container))}',
+                title='',
+                folder=lambda: state.get('ketcher_folder') or _calc_dir(),
+                compact=True,
+            )
+            state['ketcher_panel'] = panel
+            calc_ketcher_container.children = [panel.widget]
+            # Its startup script would otherwise never go out: the dashboard
+            # sent them all before this panel existed.
+            fresh = '\n'.join(getattr(ctx, 'init_js_parts', [])[-1:])
+            if fresh.strip():
+                _run_js(fresh)
+        return panel
+
+    def _calc_ketcher_close():
+        state['ketcher_active'] = False
+        calc_ketcher_container.layout.display = 'none'
+
     def _calc_open_in_ketcher(full_path, size_str=''):
-        """Hand a kept drawing to the Ketcher tab, and go there.
+        """Show a drawing in the editor that can read it, here in this tab.
 
-        A .ket is JSON and a .mol is a table of numbers: shown as text, which
-        is what the default branch would do, neither is anything a chemist can
-        read.  The one program that can read them is already in the dashboard.
-
-        Returns False when there is no Ketcher tab in this dashboard -- it is
-        registered additively and a registered tab that failed to build is
-        marked unavailable -- so that the caller can fall back to the text
-        preview rather than leaving the double-click doing nothing at all.
+        A .ket is JSON and a .mol is a table of numbers.  Shown as text --
+        which is what the default branch does with anything it has no viewer
+        for -- neither is something a chemist can read, so this is a viewer
+        for them, opened and saved in place like the spreadsheet and the
+        document beside it.
         """
         calc_file_info.value = (
             f'<b><span style="word-break:break-all;">'
@@ -12218,34 +12256,24 @@ def create_tab(ctx):
         if not got['ok']:
             calc_set_message(got['status'])
             return
-        refs = getattr(ctx, 'ketcher_refs', None) or {}
-        hand_over = refs.get('open_drawing')
-        trouble = ''
-        if not callable(hand_over):
-            trouble = ('There is no Ketcher tab in this dashboard to open it '
-                       'in, so here is the file itself.')
-        else:
-            try:
-                if hand_over(got['text'], got['name']):
-                    calc_set_message(
-                        f'{full_path.name} is open in the Ketcher tab.')
-                    try:
-                        ctx.select_tab('Ketcher')
-                    except Exception:                   # noqa: BLE001
-                        pass
-                    return
-                trouble = ('The editor would not take it; here is the file '
-                           'itself.')
-            except Exception as exc:                    # noqa: BLE001
-                trouble = f'It could not be handed over ({exc}).'
-        # The text, and why it is text.  Falling through to the ordinary text
-        # branch instead would show the same thing and overwrite the reason
-        # on the way, which is a double-click that appears to do nothing.
-        body = got['text']
-        if len(body) > CALC_DRAWING_PREVIEW_MAX_CHARS:
-            body = (body[:CALC_DRAWING_PREVIEW_MAX_CHARS]
-                    + f'\n\n[... {len(got["text"])} characters in all]')
-        calc_set_message(f'{trouble}\n\n{body}')
+        # Saving goes back where it came from, and Ketcher's own Open lists
+        # what else is in that folder.
+        state['ketcher_folder'] = full_path.parent
+        try:
+            panel = _calc_ketcher_panel()
+        except Exception as exc:                        # noqa: BLE001
+            calc_set_message(f'The drawing editor could not be built: {exc}')
+            return
+        state['ketcher_active'] = True
+        _set_view_toggle(False, False)
+        calc_mol_container.layout.display = 'none'
+        calc_content_area.layout.display = 'none'
+        calc_ketcher_container.layout.display = 'flex'
+        if not panel.open_text(got['text'], got['name']):
+            # Not installed yet: the panel says so, and it is on screen to
+            # say it in.
+            return
+        calc_set_message(f'{full_path.name} is open in the editor.')
 
     # -- item open logic (shared by dblclick and single-click on files) ------
 
@@ -12299,6 +12327,7 @@ def create_tab(ctx):
         # Close any open PDF so the document is not kept mapped behind an
         # unrelated file; the .pdf handler re-opens on demand.
         _calc_pdf_close()
+        _calc_ketcher_close()
         # Restore the standard 3D viewer row in case the previous render
         # was a Fukui panel (which hides this row to claim the full frame).
         calc_mol_view_row.layout.display = ''
@@ -14834,6 +14863,7 @@ def create_tab(ctx):
         calc_chunk_hidden_row,
         calc_override_status,
         calc_pdf_container,
+        calc_ketcher_container,
         calc_content_area,
         calc_edit_area,
         calc_text_area,
@@ -15203,6 +15233,7 @@ def create_tab(ctx):
         # What the browser is showing, which is how a test can ask
         # what a file was opened as.
         'calc_content_area': calc_content_area,
+        'calc_ketcher_container': calc_ketcher_container,
         'calc_sheet_payload_input': calc_sheet_payload_input,
         'calc_sheet_action_btn': calc_sheet_action_btn,
         # the spreadsheet, for driving it the way the browser does
