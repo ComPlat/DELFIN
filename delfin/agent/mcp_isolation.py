@@ -46,6 +46,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -117,6 +118,167 @@ def parse_isolation(cfg: dict) -> Isolation | None:
     return Isolation(tuple(write_roots), tuple(read_roots), tuple(missing))
 
 
+# DELFIN's own servers are configured by the same settings file the
+# dashboard writes, so their roots are READ rather than invented. Each
+# entry is (settings path, writable) and resolves to nothing when the
+# directory is absent — a user who does not keep an office folder should
+# not have a server refuse to start over it.
+def delfin_roots(settings: dict | None = None,
+                 workspace: Path | str | None = None,
+                 home: Path | str | None = None,
+                 interpreter: str = "") -> Isolation | None:
+    """The roots the built-in servers work in, from the user's settings.
+
+    What goes in is what DELFIN is configured to use: the calculations
+    folder, the office folder, the agent workspace, the two state
+    directories the tools server persists into, and the launch workspace.
+    Read-only: the archive, and the runtime trees that hold xtb and ORCA —
+    a server may run the tools it was installed with and may not rewrite
+    them.
+
+    What stays OUT is as much of the decision as what goes in:
+
+    * ``~/.delfin`` as a whole, because ``credentials.json`` lives there.
+      The two sub-directories the servers persist into are bound by name.
+    * ``transfer.remote_path``. It is another account's tree, reached over
+      SSH by design — the network is untouched by the namespace, so the
+      configured route keeps working, and the local shortcut into someone
+      else's files stops being available. That shortcut is what the field
+      report caught being taken.
+    * the archive as a WRITE root. Every other route in the product
+      refuses to write there, and a namespace that allowed it would grant
+      what the path policy denies. ``move_to_archive`` is refused under
+      isolation; a user who needs it says so with an explicit ``roots``
+      entry of their own, which overrides this derivation.
+    """
+    try:
+        if settings is None:
+            from delfin.user_settings import load_settings
+            settings = load_settings() or {}
+    except Exception:
+        settings = {}
+    home_path = Path(home) if home is not None else Path.home()
+    paths = (settings.get("paths") or {}) if isinstance(settings, dict) else {}
+    runtime = (settings.get("runtime") or {}) if isinstance(settings, dict) else {}
+
+    def configured(key: str, default: str) -> str:
+        return str(paths.get(key) or "").strip() or str(home_path / default)
+
+    write = [
+        configured("calculations_dir", "calc"),
+        configured("office_dir", "office"),
+        str(home_path / "agent_workspace"),
+        str(home_path / ".delfin" / "applications"),
+        str(home_path / ".delfin" / "adapters"),
+    ]
+    if workspace:
+        write.append(str(workspace))
+    read = [configured("archive_dir", "archive")]
+    qm_root = str(runtime.get("qm_tools_root") or "").strip()
+    if qm_root:
+        read.append(qm_root)
+    orca = str(((runtime.get("local") or {}).get("orca_base") or "")).strip()
+    if orca:
+        read.append(orca)
+    for binary in (runtime.get("tool_binaries") or {}).values():
+        read.extend(_runtime_binds(str(binary or ""), home_path))
+
+    def usable(entries) -> list[str]:
+        out: list[str] = []
+        for entry in entries:
+            try:
+                resolved = Path(entry).expanduser().resolve()
+            except (OSError, ValueError):
+                continue
+            # An absent directory is dropped, not refused. Unlike a root
+            # the user typed, this one was inferred — and an inference
+            # that stops the server would be the derivation making policy.
+            if resolved.is_dir() and str(resolved) not in out:
+                out.append(str(resolved))
+        return out
+
+    write_roots = usable(write)
+    read_roots = [r for r in usable(read) if r not in write_roots]
+    if not write_roots and not read_roots:
+        return None
+    partial = Isolation(tuple(write_roots), tuple(read_roots))
+    # DELFIN's own source, read-only, and ASKED FOR rather than assumed.
+    # Measured: with only the data roots bound, the tools server died with
+    # "No module named 'delfin'". Taking the answer from this process was
+    # not enough either — on a checkout install the package resolves
+    # through a .pth into a directory that has nothing to do with where
+    # the launcher happens to be standing. The server's own interpreter,
+    # starting where the server will start, is the only thing that knows.
+    package = _package_root(interpreter or sys.executable,
+                            _start_dir(partial, None))
+    if package and package not in write_roots and package not in read_roots:
+        read_roots.append(package)
+    return Isolation(tuple(write_roots), tuple(read_roots))
+
+
+_PACKAGE_PROBE = (
+    "import os,delfin;print(os.path.dirname(os.path.dirname(delfin.__file__)))"
+)
+_PACKAGE_ROOTS: dict[tuple[str, str], str] = {}
+
+
+def _package_root(interpreter: str, start_dir: str) -> str:
+    """Where *interpreter*, started in *start_dir*, imports delfin from.
+
+    One short subprocess per contained launch, and only when the derived
+    containment is switched on. It fails to "" — an unanswerable question
+    must not stop a server from starting; the missing bind then shows up
+    as the server's own import error, which names the path.
+    """
+    if not interpreter:
+        return ""
+    key = (interpreter, start_dir)
+    if key in _PACKAGE_ROOTS:
+        # The listing, the banner and the doctor all build the same rows,
+        # and each one used to pay for its own interpreter start.
+        return _PACKAGE_ROOTS[key]
+    try:
+        done = subprocess.run([interpreter, "-c", _PACKAGE_PROBE],
+                              capture_output=True, text=True, timeout=20,
+                              cwd=start_dir or None)
+        path = Path(done.stdout.strip()) if done.returncode == 0 else None
+        found = str(path.resolve()) if path and path.is_dir() else ""
+    except Exception:
+        found = ""
+    _PACKAGE_ROOTS[key] = found
+    return found
+
+
+def isolation_disabled(cfg: dict) -> bool:
+    """True when the entry turned it off in so many words.
+
+    ``parse_isolation`` returns None both for "nothing declared" and for
+    "declared off", and those must not be treated alike: the first may be
+    filled in from the settings, the second is the user saying no.
+    """
+    if not isinstance(cfg, dict):
+        return False
+    return str(cfg.get("isolation", "") or "").strip().lower() == "off"
+
+
+def builtin_isolation_enabled(settings: dict | None = None) -> bool:
+    """Is the derived containment switched on for DELFIN's own servers?
+
+    ``agent.mcp_isolation``: "off" (the default) or "builtin". Opt-in on
+    purpose — the roots are inferred, and an inference that is wrong takes
+    out the dashboard's own engine. It graduates to a default once it has
+    been run against a real session, not before.
+    """
+    try:
+        if settings is None:
+            from delfin.user_settings import load_settings
+            settings = load_settings() or {}
+        value = ((settings.get("agent") or {}).get("mcp_isolation", "off"))
+    except Exception:
+        return False
+    return str(value or "off").strip().lower() == "builtin"
+
+
 def _under(path: Path, root: str) -> bool:
     try:
         path.relative_to(root)
@@ -157,6 +319,28 @@ def _runtime_binds(command: str, home: Path) -> list[str]:
     return [str(prefix)]
 
 
+def _start_dir(iso: Isolation, cwd: Path | str | None) -> str:
+    """Where the server starts, keeping the launcher's cwd when it can.
+
+    Without isolation a server inherits the cwd of whatever started it,
+    and plenty of them resolve work against it — `npx` finds its packages
+    in `./node_modules`, an interpreter finds a package in `.`. Silently
+    starting somewhere else would be a behaviour change smuggled in with
+    a containment change, so the inherited directory is kept whenever it
+    is inside the roots, and only otherwise does a root stand in for it.
+    """
+    if cwd:
+        return str(cwd)
+    try:
+        here = Path(os.getcwd()).resolve()
+        for root in iso.roots:
+            if here == Path(root) or _under(here, root):
+                return str(here)
+    except OSError:                         # pragma: no cover - cwd unlinked
+        pass
+    return iso.roots[0] if iso.roots else "/"
+
+
 def bwrap_argv(
     command: str,
     args,
@@ -192,8 +376,7 @@ def bwrap_argv(
         argv += ["--ro-bind", root, root]
     for root in iso.write_roots:
         argv += ["--bind", root, root]
-    start_dir = str(cwd) if cwd else (iso.roots[0] if iso.roots else "/")
-    argv += ["--chdir", start_dir, "--die-with-parent", command]
+    argv += ["--chdir", _start_dir(iso, cwd), "--die-with-parent", command]
     argv += [str(a) for a in (args or ())]
     return argv
 
@@ -229,9 +412,10 @@ def bwrap_functional(probe: bool = True) -> bool:
 
 
 def reset_probe_cache() -> None:
-    """Forget the bwrap probe. For tests, and for a doctor re-run."""
+    """Forget both probes. For tests, and for a doctor re-run."""
     global _BWRAP_OK
     _BWRAP_OK = None
+    _PACKAGE_ROOTS.clear()
 
 
 def refusal_reason(name: str, iso: Isolation) -> str:
@@ -272,8 +456,11 @@ def uncontained_note(rows) -> str:
 
 __all__ = [
     "Isolation",
+    "builtin_isolation_enabled",
     "bwrap_argv",
     "bwrap_functional",
+    "delfin_roots",
+    "isolation_disabled",
     "parse_isolation",
     "refusal_reason",
     "reset_probe_cache",
