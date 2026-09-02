@@ -58,3 +58,19 @@ def test_the_run_still_refuses_it_if_it_ever_gets_there():
     run = _EDITOR.split('def on_submit_scan_run(')[1].split('\n    def ')[0]
     assert "if pushing and any(one['kind'] != 'distance' for one in legs):" \
         in run
+
+
+def test_the_step_count_is_the_one_in_the_box_when_the_scan_runs():
+    """Not the one a leg was armed with.
+
+    The count was written into a leg at the moment it was armed and the run
+    took the smallest of them, so the field stopped being read the instant
+    anything was armed: arm at 20, type 40, press Scan, and twenty points are
+    walked with nothing saying which number won.
+    """
+    run = _EDITOR.split('def on_submit_scan_run(')[1].split('\n    def ')[0]
+    assert "steps = max(2, int(submit_scan_steps.value or 20))" in run
+    assert "min(int(one['steps']) for one in legs)" not in run
+    # The leg still carries what it was armed with -- that is what the
+    # "armed in N steps" sentence said, and it was true when it said it.
+    assert "'steps': int(submit_scan_steps.value)" in _EDITOR

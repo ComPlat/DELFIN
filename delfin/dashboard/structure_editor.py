@@ -12374,7 +12374,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         legs = fresh
         state['scan_legs'] = legs
         _refresh_scan()
-        steps = max(2, min(int(one['steps']) for one in legs))
+        # What the box says now, not what a leg was armed with.
+        #
+        # The count was written into a leg at the moment it was armed and the
+        # run took the smallest of them, so the field stopped being read the
+        # instant anything was armed: type 40 after arming, press Scan, and 20
+        # points are walked with nothing saying which number won.  Reported as
+        # exactly that.  A number in the box is the number the user means, and
+        # a leg armed before they typed it does not outrank it.
+        #
+        # The legs keep carrying their own count -- it is what the "armed in N
+        # steps" sentence says at the moment of arming, which was true then --
+        # and it is no longer what decides the walk.
+        steps = max(2, int(submit_scan_steps.value or 20))
         charge = int(submit_gfn_charge.value or 0)
         uhf = _gfn_uhf_now()
         wet = str(submit_gfn_solvent.value or '') or None
