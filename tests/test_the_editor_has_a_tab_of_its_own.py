@@ -77,7 +77,7 @@ def test_every_press_sends_exactly_one_script(tab):
     """run_js clears its output before displaying the next, so two calls in a
     row can mean the first is thrown away before the browser has run it."""
     panel = tab["panel"]
-    for press in (panel.smiles_btn, panel.smiles_copy_btn, panel.rxn_copy_btn):
+    for press in (panel.smiles_btn, panel.smiles_copy_btn):
         tab["sent"].clear()
         press.click()
         assert len(tab["sent"]) == 1, press.description
@@ -136,17 +136,23 @@ def test_the_structure_editor_asks_the_same_question_of_its_own_elements(tab):
 # ---------------------------------------------------------------------------
 # what comes back
 # ---------------------------------------------------------------------------
-def test_a_structure_and_a_reaction_do_not_share_a_box(tab):
+def test_one_box_holds_whatever_was_drawn(tab):
+    """A structure and a reaction are read out by the same press and go to the
+    same places.  Two boxes meant one of them was always holding something
+    stale from an earlier drawing."""
     panel = tab["panel"]
 
     panel.sync.value = "1\nsmiles\n" + molblock("CCO")
     assert panel.smiles_out.value == "CCO"
-    assert panel.rxn_out.value == ""
+    assert panel.state["reaction"] is False
 
     panel.sync.value = "2\nsmiles\n" + rxnblock(
         [molblock("CCO")], [molblock("CC=O")])
-    assert panel.rxn_out.value == "CCO>>CC=O"
-    assert panel.smiles_out.value == "CCO", "the structure box is left alone"
+    assert panel.smiles_out.value == "CCO>>CC=O"
+    assert panel.state["reaction"] is True
+
+    for gone in ("rxn_out", "rxn_copy_btn"):
+        assert not hasattr(panel, gone), gone
 
 
 def test_the_drawing_is_written_under_the_name_ketcher_was_given(tab):

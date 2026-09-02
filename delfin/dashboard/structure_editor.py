@@ -20374,26 +20374,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     submit_draw_frame.add_class(submit_scope_id)
     submit_draw_sync.add_class(submit_scope_id)
 
-    # -- what a drawn reaction comes back as ----------------------------
-    # A reaction has nowhere else to go. The input box feeds Convert, Build
-    # and Submit, and every one of them reads a single molecule; "A.B>>C" put
-    # there is either refused or quietly misread.
-    submit_draw_rxn_out = widgets.Text(
-        value='', description='Reaction:',
-        placeholder='reactants>agents>products, once an arrow is drawn',
-        layout=widgets.Layout(width='100%'),
-        style={'description_width': '80px'},
-    )
-    submit_draw_rxn_copy_btn = widgets.Button(
-        description='COPY', icon='copy', layout=widgets.Layout(width='90px'),
-        tooltip='Put the reaction SMILES on the clipboard.',
-    )
-    submit_draw_rxn_row = widgets.HBox(
-        [submit_draw_rxn_out, submit_draw_rxn_copy_btn],
-        layout=widgets.Layout(gap='8px', align_items='center',
-                              flex_wrap='wrap', display='none'),
-    )
-
     # -- keeping a drawing, and opening it again ------------------------
     # Through Ketcher's own Save and Open, which are wired to the calculation
     # directory rather than to the browser's downloads folder.  A second pair
@@ -20407,11 +20387,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         value='', layout=widgets.Layout(display='none'))
     submit_draw_file_sync.add_class('submit-ketcher-file-sync')
     submit_draw_file_sync.add_class(submit_scope_id)
-    #: Everything the drawing editor grew beyond its one button, as one member
-    #: so that a tab placing it adds a line rather than three.
+    #: What the editor's own Save and Open say back, and nothing visible: a
+    #: reaction goes into the input box like a structure does, so there is no
+    #: second field for it to be read out of.
     submit_draw_tools = widgets.VBox(
-        [submit_draw_rxn_row, submit_draw_file_sync],
-        layout=widgets.Layout(flex_flow='column', gap='4px', width='100%'),
+        [submit_draw_file_sync],
+        layout=widgets.Layout(flex_flow='column', gap='0px', width='100%'),
     )
 
     # -- drawing the structure ------------------------------------------
@@ -20440,11 +20421,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         submit_draw_frame.layout.display = '' if (drawn and ready) else 'none'
         submit_draw_get_btn.layout.display = '' if (drawn and ready) else 'none'
         submit_draw_update_btn.layout.display = '' if (drawn and ready) else 'none'
-        # The reaction box comes up when there is a reaction to put in it and
-        # stays up while the editor is open: an empty box captioned "Reaction"
-        # under every drawing is a question nobody asked.
-        if not (drawn and ready):
-            submit_draw_rxn_row.layout.display = 'none'
 
     #: Keep the pane where it is while the editor loads.
     #:
@@ -20682,22 +20658,25 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if not outcome['ok']:
             _set_mol_status(outcome['status'])
             return
+        # Kept with the SMILES it produced, so that submitting can put the
+        # drawing beside the job -- and can tell whether the drawing is still
+        # what is being submitted, rather than one from an hour ago.
+        state['drawn'] = {'smiles': outcome['smiles'],
+                          'ket': outcome.get('ket') or ''}
         if outcome.get('reaction'):
-            # Into both. The reaction box is where it can be read and copied
-            # without the input box's coordinates on top of it; the input box
-            # is where the rest of the tab looks, and a reaction SMILES asked
-            # for is a reaction SMILES wanted there.
+            # The same box a structure goes into. It is where the rest of the
+            # tab looks, and a reaction SMILES asked for is a reaction SMILES
+            # wanted there -- a second field beside it would hold a copy of
+            # what is already on screen.
             #
             # It is not a structure, so Convert and Build will not make
-            # coordinates out of it -- said here rather than found out by
+            # coordinates out of it. Said here rather than found out by
             # pressing Convert and reading whatever it makes of "A.B>>C".
-            submit_draw_rxn_out.value = outcome['smiles']
-            submit_draw_rxn_row.layout.display = ''
             write_input(outcome['smiles'])
             _set_mol_status(f'Drawn: {outcome["smiles"]}',
-                            'A reaction, in the input box and in the reaction '
-                            'box. Convert builds one structure, not a '
-                            'reaction, so it has nothing to do with this one.')
+                            'A reaction, in the input box. Convert builds one '
+                            'structure, not a reaction, so it has nothing to '
+                            'do with this one.')
             return
         # Into the box the rest of the tab reads, so Convert, Build and every
         # other button downstream sees it exactly as a typed SMILES.
@@ -20731,10 +20710,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['draw_files'] = {item.name: item for item in kept}
         return _ketcher.files_js(_draw_frame_selector(),
                                  [item.name for item in kept])
-
-    def on_submit_draw_rxn_copy(_button=None):
-        _run_manip_js(_ketcher_panel.copy_js(submit_draw_rxn_out.value or ''))
-        _set_mol_status('The reaction SMILES is on the clipboard.')
 
     def on_submit_draw_file_sync(change):
         """What Ketcher's own Save and Open buttons asked for."""
@@ -20809,7 +20784,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         _set_mol_status(f'{name or "The drawing"} is in the editor.')
         return True
 
-    submit_draw_rxn_copy_btn.on_click(on_submit_draw_rxn_copy)
     submit_draw_file_sync.observe(on_submit_draw_file_sync, names='value')
     submit_draw_open_btn.observe(on_submit_draw_open, names='value')
     submit_draw_get_btn.on_click(on_submit_draw_get)

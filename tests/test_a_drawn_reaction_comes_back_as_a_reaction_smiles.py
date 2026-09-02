@@ -41,6 +41,37 @@ def rxnblock(reactants, products):
     return text
 
 
+def placed(smiles, x, y=0.0):
+    """A molblock for *smiles*, drawn where it was put on the canvas.
+
+    Coordinates are the whole of how a scheme is read: an RXN file keeps them
+    and keeps nothing else about the layout.
+    """
+    pytest.importorskip("rdkit")
+    from rdkit import Chem
+    from rdkit.Chem import AllChem
+
+    mol = Chem.MolFromSmiles(smiles, sanitize=False)
+    Chem.SanitizeMol(mol, Chem.SanitizeFlags.SANITIZE_ALL
+                     ^ Chem.SanitizeFlags.SANITIZE_PROPERTIES)
+    AllChem.Compute2DCoords(mol)
+    frame = mol.GetConformer()
+    for i in range(mol.GetNumAtoms()):
+        spot = frame.GetAtomPosition(i)
+        frame.SetAtomPosition(i, (spot.x + x, spot.y + y, 0.0))
+    return Chem.MolToMolBlock(mol, kekulize=False)
+
+
+def canvas(arrows):
+    """A KET holding just the arrows, which is all their positions need."""
+    import json
+
+    return json.dumps({'root': {'nodes': [
+        {'type': 'arrow', 'data': {'mode': 'open-angle', 'pos': [
+            {'x': x0, 'y': y, 'z': 0}, {'x': x1, 'y': y, 'z': 0}]}}
+        for x0, x1, y in arrows]}})
+
+
 # ---------------------------------------------------------------------------
 # reading it
 # ---------------------------------------------------------------------------
@@ -138,19 +169,16 @@ def editor(tmp_path, monkeypatch):
     return refs
 
 
-def test_a_reaction_lands_in_the_input_box_and_in_a_box_of_its_own(editor):
-    """Both, and for different reasons.  The input box is where the rest of
-    the tab looks, and a reaction SMILES asked for is a reaction SMILES wanted
-    there; the reaction box is where it can still be read and copied once the
-    input box has coordinates on top of it."""
+def test_a_reaction_lands_in_the_box_a_structure_lands_in(editor):
+    """The same box.  It is where the rest of the tab looks, and a reaction
+    SMILES asked for is a reaction SMILES wanted there -- a second field
+    beside it would only hold a copy of what is already on screen."""
     editor["coords_widget"].value = ""
 
     editor["submit_draw_sync"].value = "1\n" + rxnblock(
         [molblock("CCO"), molblock("CC(=O)O")], [molblock("CCOC(C)=O")])
 
-    assert editor["submit_draw_rxn_out"].value == "CC(=O)O.CCO>>CCOC(C)=O"
     assert editor["coords_widget"].value == "CC(=O)O.CCO>>CCOC(C)=O"
-    assert editor["submit_draw_rxn_row"].layout.display == "", "and it is shown"
 
 
 def test_it_says_that_convert_has_nothing_to_do_with_a_reaction(editor):
@@ -169,24 +197,81 @@ def test_a_plain_drawing_still_lands_where_it_always_did(editor):
     editor["submit_draw_sync"].value = "1\n" + molblock("CCO")
 
     assert editor["coords_widget"].value == "CCO"
-    assert editor["submit_draw_rxn_out"].value == ""
-    assert editor["submit_draw_rxn_row"].layout.display == "none", (
-        "an empty box captioned Reaction under every drawing is a question "
-        "nobody asked"
-    )
 
 
-def test_the_reaction_box_is_offered_with_a_way_to_take_it(editor):
-    """It is an answer to copy, not one to compute with, so what it needs is
-    a COPY button rather than a Convert."""
-    editor["submit_draw_rxn_out"].value = "CCO>>CC=O"
-    editor["sent_js"].clear()
+def test_the_editor_carries_no_second_field_for_a_reaction(editor):
+    for gone in ("submit_draw_rxn_out", "submit_draw_rxn_row",
+                 "submit_draw_rxn_copy_btn"):
+        assert gone not in editor, gone
 
-    editor["submit_draw_rxn_row"].children[1].click()
 
-    script = "\n".join(editor["sent_js"])
-    assert "CCO>>CC=O" in script
-    assert "clipboard" in script and "execCommand" in script, (
-        "a dashboard reached over plain HTTP at a machine name has no "
-        "clipboard API, so there has to be a way down from it"
-    )
+# ---------------------------------------------------------------------------
+# four places around an arrow, and only two of them survive an RXN file
+# ---------------------------------------------------------------------------
+def test_what_is_over_the_arrow_is_what_is_added():
+    """Ketcher writes it as an agent already, and this keeps that."""
+    outcome = ketcher.reaction_smiles_from_rxnfile(
+        rxnblock([placed("c1ccccc1", 0)],
+                 [placed("C1CCCCC1", 14), placed("CC", 8, 4)]),
+        canvas([(6.0, 10.0, 0.0)]))
+
+    assert outcome["ok"] is True, outcome["status"]
+    assert outcome["smiles"] == "c1ccccc1>CC>C1CCCCC1"
+
+
+def test_what_is_under_the_arrow_is_what_comes_off():
+    """Indigo cannot tell the two apart -- measured, a cyclobutane over the
+    arrow and a cyclopropane under it both came back as agents, as
+    ``C1C=CC=CC=1>C1CCC1.C1CC1>C1CCCCC1``.  Under the arrow is what the step
+    gives off, so it belongs with the products."""
+    outcome = ketcher.reaction_smiles_from_rxnfile(
+        rxnblock([placed("c1ccccc1", 0)],
+                 [placed("C1CCCCC1", 14), placed("O", 8, -4)]),
+        canvas([(6.0, 10.0, 0.0)]))
+
+    assert outcome["ok"] is True, outcome["status"]
+    assert outcome["smiles"] == "c1ccccc1>>C1CCCCC1.O"
+
+
+def test_a_reactant_that_merely_reaches_across_the_line_is_not_a_reagent():
+    """Reactants and products straddle the arrow's line -- measured at
+    y -8.18..-6.17 against an arrow at -7.18 -- so being near it is not
+    enough.  Over and under mean clear of it."""
+    outcome = ketcher.reaction_smiles_from_rxnfile(
+        rxnblock([placed("c1ccccc1", 8)], [placed("C1CCCCC1", 20)]),
+        canvas([(14.0, 18.0, 0.0)]))
+
+    assert outcome["smiles"] == "c1ccccc1>>C1CCCCC1"
+
+
+def test_several_arrows_are_read_as_the_steps_they_were_drawn_as():
+    """An RXN file holds one arrow, so Indigo flattens three steps into "the
+    first thing, into everything else" and does not even keep the drawn order.
+    The arrows survive in the KET, and every component keeps its coordinates
+    in the same frame, so the steps come off the geometry."""
+    outcome = ketcher.reaction_smiles_from_rxnfile(
+        rxnblock([placed("c1ccccc1", 0)],
+                 [placed("C1CCC1", 24), placed("C1CCCCC1", 12)]),
+        canvas([(5.0, 8.0, 0.0), (17.0, 20.0, 0.0)]))
+
+    assert outcome["ok"] is True, outcome["status"]
+    assert outcome["smiles"] == "c1ccccc1>>C1CCCCC1>>C1CCC1"
+    assert outcome["steps"] == 2
+
+
+def test_a_reagent_belongs_to_the_step_it_is_drawn_over():
+    outcome = ketcher.reaction_smiles_from_rxnfile(
+        rxnblock([placed("c1ccccc1", 0)],
+                 [placed("C1CCC1", 24), placed("C1CCCCC1", 12),
+                  placed("CO", 18.5, 5)]),
+        canvas([(5.0, 8.0, 0.0), (17.0, 20.0, 0.0)]))
+
+    assert outcome["smiles"] == "c1ccccc1>>C1CCCCC1>CO>C1CCC1"
+
+
+def test_without_a_canvas_the_rxn_files_own_split_is_used():
+    """Which is the right answer for one arrow and no geometry to read."""
+    outcome = ketcher.reaction_smiles_from_rxnfile(
+        rxnblock([placed("CCO", 0)], [placed("CC=O", 10)]))
+
+    assert outcome["smiles"] == "CCO>>CC=O"
