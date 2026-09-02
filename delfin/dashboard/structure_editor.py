@@ -20395,33 +20395,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     )
 
     # -- keeping a drawing, and opening it again ------------------------
-    # In the calculation directory, beside the work it was drawn for, rather
-    # than in a store of its own that nothing else can see.
-    submit_draw_name = widgets.Text(
-        value='', placeholder='what to call it', description='Name:',
-        layout=widgets.Layout(width='260px'),
-        style={'description_width': '55px'},
-    )
-    submit_draw_format_dd = widgets.Dropdown(
-        options=list(_ketcher.DRAWING_SUFFIXES), value='.ket',
-        description='as', layout=widgets.Layout(width='130px'),
-        style={'description_width': '25px'},
-    )
-    submit_draw_save_btn = widgets.Button(
-        description='SAVE', icon='save',
-        tooltip=f'Keep it in the {_ketcher.DRAWINGS_FOLDER} folder.',
-        layout=widgets.Layout(width='100px'),
-    )
-    submit_draw_files_dd = widgets.Dropdown(
-        options=[], value=None, description='Kept:',
-        layout=widgets.Layout(width='300px'),
-        style={'description_width': '55px'},
-    )
-    submit_draw_open_file_btn = widgets.Button(
-        description='OPEN', icon='folder-open',
-        tooltip='Put it back into the editor.',
-        layout=widgets.Layout(width='100px'),
-    )
+    # Through Ketcher's own Save and Open, which are wired to the calculation
+    # directory rather than to the browser's downloads folder.  A second pair
+    # of buttons beside the frame was a second answer to a question the editor
+    # had already answered; see :func:`delfin.dashboard.ketcher.wire_js`.
     # A second channel, not the same one. What comes back here is a whole
     # drawing on its way to disk; what comes back on submit_draw_sync is a
     # structure on its way to the input box, and its shape is what the tests
@@ -20430,22 +20407,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         value='', layout=widgets.Layout(display='none'))
     submit_draw_file_sync.add_class('submit-ketcher-file-sync')
     submit_draw_file_sync.add_class(submit_scope_id)
-    submit_draw_files_row = widgets.VBox(
-        [
-            widgets.HBox([submit_draw_name, submit_draw_format_dd,
-                          submit_draw_save_btn],
-                         layout=widgets.Layout(gap='8px', align_items='center',
-                                               flex_wrap='wrap')),
-            widgets.HBox([submit_draw_files_dd, submit_draw_open_file_btn],
-                         layout=widgets.Layout(gap='8px', align_items='center',
-                                               flex_wrap='wrap')),
-        ],
-        layout=widgets.Layout(flex_flow='column', gap='4px', display='none'),
-    )
     #: Everything the drawing editor grew beyond its one button, as one member
-    #: so that a tab placing it adds a line rather than five.
+    #: so that a tab placing it adds a line rather than three.
     submit_draw_tools = widgets.VBox(
-        [submit_draw_rxn_row, submit_draw_files_row, submit_draw_file_sync],
+        [submit_draw_rxn_row, submit_draw_file_sync],
         layout=widgets.Layout(flex_flow='column', gap='4px', width='100%'),
     )
 
@@ -20475,14 +20440,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         submit_draw_frame.layout.display = '' if (drawn and ready) else 'none'
         submit_draw_get_btn.layout.display = '' if (drawn and ready) else 'none'
         submit_draw_update_btn.layout.display = '' if (drawn and ready) else 'none'
-        submit_draw_files_row.layout.display = '' if (drawn and ready) else 'none'
         # The reaction box comes up when there is a reaction to put in it and
         # stays up while the editor is open: an empty box captioned "Reaction"
         # under every drawing is a question nobody asked.
         if not (drawn and ready):
             submit_draw_rxn_row.layout.display = 'none'
-        if drawn and ready:
-            _refresh_draw_files()
 
     #: Keep the pane where it is while the editor loads.
     #:
@@ -20568,7 +20530,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             if url not in (submit_draw_frame.value or ''):
                 submit_draw_frame.value = _draw_frame_html(url)
             _refresh_ketcher_controls()
-            _run_manip_js(_KETCHER_SCROLL_HOLD_JS + _KETCHER_FOCUS_JS)
+            _run_manip_js(_KETCHER_SCROLL_HOLD_JS + _draw_wiring()
+                          + _refresh_draw_files())
             _set_mol_status(
                 f'Ketcher {version}: draw the structure, then press TO SMILES '
                 'to put it in the input box.')
@@ -20720,16 +20683,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             _set_mol_status(outcome['status'])
             return
         if outcome.get('reaction'):
-            # Not into the input box. Everything downstream of it reads one
-            # molecule -- Convert, Build, Submit -- and handing them
-            # "A.B>>C" would be handing them something they will either
-            # refuse or, worse, quietly misread as a structure. It goes in a
-            # box of its own, to be copied out of.
+            # Into both. The reaction box is where it can be read and copied
+            # without the input box's coordinates on top of it; the input box
+            # is where the rest of the tab looks, and a reaction SMILES asked
+            # for is a reaction SMILES wanted there.
+            #
+            # It is not a structure, so Convert and Build will not make
+            # coordinates out of it -- said here rather than found out by
+            # pressing Convert and reading whatever it makes of "A.B>>C".
             submit_draw_rxn_out.value = outcome['smiles']
             submit_draw_rxn_row.layout.display = ''
+            write_input(outcome['smiles'])
             _set_mol_status(f'Drawn: {outcome["smiles"]}',
-                            'It is a reaction, so it is in the reaction box '
-                            'rather than the input box -- COPY takes it.')
+                            'A reaction, in the input box and in the reaction '
+                            'box. Convert builds one structure, not a '
+                            'reaction, so it has nothing to do with this one.')
             return
         # Into the box the rest of the tab reads, so Convert, Build and every
         # other button downstream sees it exactly as a typed SMILES.
@@ -20742,87 +20710,76 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     def _draw_calc_dir():
         return Path(getattr(ctx, 'calc_dir', None) or (Path.home() / 'calc'))
 
-    def _refresh_draw_files(select=None):
-        """What is in the Ketcher folder, as the list to open from."""
+    def _draw_frame_selector():
+        return f'.submit-ketcher-frame.{submit_scope_id}'
+
+    def _draw_wiring():
+        """Ketcher's own Save and Open, pointed at the calculation directory.
+
+        Restated whenever anything is said to the frame: it marks the window
+        it bound to, so arriving again costs nothing, and the frame may have
+        been built since the last time -- which is the case the moment the
+        editor is fetched for the first time.
+        """
+        return (_KETCHER_FOCUS_JS + _ketcher.wire_js(
+            _draw_frame_selector(),
+            f'.submit-ketcher-file-sync.{submit_scope_id}'))
+
+    def _refresh_draw_files():
+        """Tell the editor what is kept, so its own Open list can show it."""
         kept = _ketcher.list_drawings(_draw_calc_dir())
         state['draw_files'] = {item.name: item for item in kept}
-        submit_draw_files_dd.options = [item.name for item in kept]
-        if select and select in state['draw_files']:
-            submit_draw_files_dd.value = select
-        elif kept and submit_draw_files_dd.value not in state['draw_files']:
-            submit_draw_files_dd.value = kept[0].name
+        return _ketcher.files_js(_draw_frame_selector(),
+                                 [item.name for item in kept])
 
     def on_submit_draw_rxn_copy(_button=None):
         _run_manip_js(_ketcher_panel.copy_js(submit_draw_rxn_out.value or ''))
         _set_mol_status('The reaction SMILES is on the clipboard.')
 
-    def on_submit_draw_save(_button=None):
-        """Ask the editor for the whole drawing, to write it down.
-
-        The name is taken now rather than when the answer arrives: the box
-        belongs to the user and they may have moved on by then.
-        """
-        wanted = str(submit_draw_format_dd.value or '.ket')
-        named = str(submit_draw_name.value or '').strip()
-        if not named:
-            _set_mol_status('Give the drawing a name first.')
-            return
-        if not _ketcher.is_installed():
-            _set_mol_status('The editor is not open yet, so there is nothing '
-                            'to save.')
-            return
-        state['draw_saving'] = {'name': named, 'suffix': wanted}
-        _set_mol_status(f'Writing {named}{wanted}...')
-        _begin_round_trip('draw_save', 'The drawing on its way to disk')
-        _run_manip_js(_ketcher_panel.read_js(
-            submit_scope_id, 'save',
-            _ketcher_panel._ASK_FOR.get(wanted, 'ket'),
-            frame_class='submit-ketcher-frame',
-            sync_class='submit-ketcher-file-sync'))
-
     def on_submit_draw_file_sync(change):
-        """The whole drawing came back; write it where it was asked to go."""
+        """What Ketcher's own Save and Open buttons asked for."""
         if change.get('name') != 'value':
             return
         raw = submit_draw_file_sync.value or ''
         parts = raw.split('\n', 2)
         if len(parts) < 3:
             return
-        _end_round_trip('draw_save')
-        payload = parts[2]
-        if payload.startswith('!'):
-            trouble = payload[1:]
-            _set_mol_status(
-                'The editor is not open yet, so there is nothing to save.'
-                if trouble == 'no-editor' else
-                f'The drawing could not be read: {trouble}')
+        _kind, payload = parts[1], parts[2]
+        if _kind == 'save-failed':
+            _set_mol_status('The drawing could not be read out of the '
+                            f'editor: {payload}')
             return
-        asked = state.get('draw_saving') or {}
+        if _kind == 'open-list':
+            _run_manip_js(_refresh_draw_files())
+            return
+        if _kind == 'open':
+            where = (state.get('draw_files') or {}).get(payload)
+            if where is None:
+                _run_manip_js(_refresh_draw_files())
+                _set_mol_status(f'{payload} is not there any more.')
+                return
+            got = _ketcher.read_drawing(where)
+            if not got['ok']:
+                _run_manip_js(_refresh_draw_files())
+                _set_mol_status(got['status'])
+                return
+            open_drawing(got['text'], got['name'])
+            return
+        if _kind != 'save':
+            return
+        # The name and the format are the ones typed into Ketcher's own Save
+        # dialog, so "my aspirin.mol" comes back whole.
+        filename, _, body = payload.partition('\n')
+        suffix = Path(filename).suffix.lower() or '.ket'
         outcome = _ketcher.save_drawing(
-            _draw_calc_dir(), asked.get('name', ''), payload,
-            asked.get('suffix', '.ket'))
+            _draw_calc_dir(), Path(filename).stem, body, suffix)
         if not outcome['ok']:
             _set_mol_status(outcome['status'])
             return
-        _refresh_draw_files(select=Path(outcome['path']).name)
+        _run_manip_js(_refresh_draw_files())
         _set_mol_status(outcome['status'],
                         f'It is in {_ketcher.DRAWINGS_FOLDER}, beside the '
                         'calculations, and the Calculations tab opens it.')
-
-    def on_submit_draw_open_file(_button=None):
-        """A kept drawing, back in the editor."""
-        chosen = submit_draw_files_dd.value
-        where = (state.get('draw_files') or {}).get(chosen)
-        if where is None:
-            _refresh_draw_files()
-            _set_mol_status('There is nothing chosen to open.')
-            return
-        got = _ketcher.read_drawing(where)
-        if not got['ok']:
-            _refresh_draw_files()
-            _set_mol_status(got['status'])
-            return
-        open_drawing(got['text'], got['name'])
 
     def open_drawing(text, name=''):
         """Put a drawing into this editor, whatever format it is written in.
@@ -20847,19 +20804,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             _refresh_ketcher_controls()
         # One script. run_js clears its output before displaying the next, so
         # the focus binding travels with the drawing rather than after it.
-        _run_manip_js(_KETCHER_FOCUS_JS + _ketcher.load_js(
-            f'.submit-ketcher-frame.{submit_scope_id}', body))
-        if name:
-            submit_draw_name.value = Path(name).stem
-            suffix = Path(name).suffix.lower()
-            if suffix in _ketcher.DRAWING_SUFFIXES:
-                submit_draw_format_dd.value = suffix
+        _run_manip_js(_draw_wiring()
+                      + _ketcher.load_js(_draw_frame_selector(), body))
         _set_mol_status(f'{name or "The drawing"} is in the editor.')
         return True
 
     submit_draw_rxn_copy_btn.on_click(on_submit_draw_rxn_copy)
-    submit_draw_save_btn.on_click(on_submit_draw_save)
-    submit_draw_open_file_btn.on_click(on_submit_draw_open_file)
     submit_draw_file_sync.observe(on_submit_draw_file_sync, names='value')
     submit_draw_open_btn.observe(on_submit_draw_open, names='value')
     submit_draw_get_btn.on_click(on_submit_draw_get)

@@ -77,12 +77,24 @@ def test_every_press_sends_exactly_one_script(tab):
     """run_js clears its output before displaying the next, so two calls in a
     row can mean the first is thrown away before the browser has run it."""
     panel = tab["panel"]
-    panel.name_box.value = "a"
-    for press in (panel.smiles_btn, panel.save_btn, panel.smiles_copy_btn,
-                  panel.rxn_copy_btn):
+    for press in (panel.smiles_btn, panel.smiles_copy_btn, panel.rxn_copy_btn):
         tab["sent"].clear()
         press.click()
         assert len(tab["sent"]) == 1, press.description
+
+
+def test_the_panel_has_no_save_or_open_of_its_own(tab):
+    """Ketcher already has both, with a name field and a format list behind
+    Save.  A second pair beside the frame is a second answer to a question the
+    editor had already answered."""
+    panel = tab["panel"]
+    for gone in ("name_box", "format_dd", "save_btn", "files_dd", "open_btn",
+                 "delete_btn", "refresh_btn"):
+        assert not hasattr(panel, gone), gone
+
+    startup = "\n".join(tab["ctx"].init_js_parts)
+    assert "createObjectURL" in startup, "Ketcher's Save is wired at startup"
+    assert "open-file-button" in startup, "and so is its Open"
 
 
 def test_the_question_carries_the_focus_binding_with_it(tab):
@@ -137,19 +149,42 @@ def test_a_structure_and_a_reaction_do_not_share_a_box(tab):
     assert panel.smiles_out.value == "CCO", "the structure box is left alone"
 
 
-def test_the_drawing_is_written_where_the_name_said_at_the_time(tab):
-    """The name box belongs to the user and they may have moved on between
-    pressing SAVE and the drawing coming back."""
+def test_the_drawing_is_written_under_the_name_ketcher_was_given(tab):
+    """The name and the format both come out of Ketcher's own Save dialog, so
+    the filename arrives whole and nothing here has to remember either."""
     panel = tab["panel"]
-    panel.name_box.value = "aspirin"
-    panel.save_btn.click()
-    panel.name_box.value = "something else entirely"
 
-    panel.sync.value = '1\nsave\n{"root":{}}'
+    panel.sync.value = '1\nsave\naspirin.ket\n{"root":{}}'
 
     kept = tab["tmp_path"] / "calc" / "Ketcher" / "aspirin.ket"
     assert kept.read_text() == '{"root":{}}'
-    assert panel.files_dd.value == "aspirin.ket"
+    assert "aspirin.ket" in panel.state["files"]
+
+
+def test_the_kept_list_is_handed_to_the_editor_not_to_a_dropdown(tab):
+    """Ketcher's Open dialog is the list now, so the names have to be inside
+    the frame before the button is pressed."""
+    (tab["tmp_path"] / "calc" / "Ketcher").mkdir()
+    (tab["tmp_path"] / "calc" / "Ketcher" / "one.ket").write_text("x")
+    tab["sent"].clear()
+
+    panel = tab["panel"]
+    panel.sync.value = "1\nopen-list\n"
+
+    script = "\n".join(tab["sent"])
+    assert "__delfinKetcherFiles" in script and "one.ket" in script
+
+
+def test_a_name_the_editor_asks_for_is_read_and_pushed_back(tab):
+    (tab["tmp_path"] / "calc" / "Ketcher").mkdir()
+    (tab["tmp_path"] / "calc" / "Ketcher" / "one.ket").write_text("drawn")
+    tab["panel"].sync.value = "1\nopen-list\n"
+    tab["sent"].clear()
+
+    tab["panel"].sync.value = "2\nopen\none.ket"
+
+    script = "\n".join(tab["sent"])
+    assert "setMolecule" in script and "drawn" in script
 
 
 def test_the_structure_can_be_carried_to_the_tab_that_submits_it(tab):
@@ -170,6 +205,26 @@ def test_the_structure_can_be_carried_to_the_tab_that_submits_it(tab):
 
     assert box.value == "CCO"
     assert tab["ctx"].tabs_widget.selected_index == 0
+
+
+def test_a_reaction_is_carried_over_too(tab):
+    """Asked for a reaction SMILES, wanted in the box the rest of the tab
+    reads -- and TO SUBMIT sends whichever of the two boxes the last reading
+    filled, not whatever is left over in the other one."""
+    pytest.importorskip("ipywidgets")
+    import ipywidgets as widgets
+
+    panel = tab["panel"]
+    box = widgets.Textarea(value="")
+    tab["ctx"].submit_refs = {"coords_widget": box}
+    panel.sync.value = "1\nsmiles\n" + molblock("CCO")
+    panel.sync.value = "2\nsmiles\n" + rxnblock(
+        [molblock("CCO")], [molblock("CC=O")])
+
+    panel.to_submit_btn.click()
+
+    assert box.value == "CCO>>CC=O"
+    assert "Convert" in panel.status.value, "and that Convert is not for it"
 
 
 def test_nothing_drawn_is_not_carried_anywhere(tab):

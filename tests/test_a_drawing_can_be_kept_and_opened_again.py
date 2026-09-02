@@ -143,57 +143,73 @@ def editor(tmp_path, monkeypatch):
     return refs
 
 
-def test_saving_asks_the_editor_then_writes_what_comes_back(editor):
-    """Two steps, because the drawing is in the browser and the disk is not."""
-    editor["submit_draw_name"].value = "ester"
-    editor["sent_js"].clear()
+def test_the_editors_own_save_button_writes_into_the_calc_folder(editor):
+    """Ketcher already has the two buttons a chemist looks for, with a name
+    field and a format list behind Save.  A second pair beside the frame was a
+    second answer to a question the editor had already answered, so these are
+    the ones that were made to work.
 
-    editor["submit_draw_save_btn"].click()
+    The name comes back the way Ketcher wrote it -- "my aspirin.mol", stem and
+    suffix together -- because it is the name typed into Ketcher's own dialog.
+    """
+    written = "\n  Ketcher  9 2\n\n  3  2  0  0\n"
+    editor["submit_draw_file_sync"].value = (
+        '1\nsave\nmy aspirin.mol\n' + written)
 
-    asked = "\n".join(editor["sent_js"])
-    assert '"ket"' in asked, "the .ket the format box is showing"
-    assert "submit-ketcher-file-sync" in asked, (
-        "a channel of its own: the other one carries a structure on its way "
-        "to the input box, and its shape is what pins that path"
-    )
-
-    editor["submit_draw_file_sync"].value = '1\nsave\n{"root":{}}'
-
-    kept = editor["tmp_path"] / "calc" / "Ketcher" / "ester.ket"
-    assert kept.read_text() == '{"root":{}}'
-    assert editor["submit_draw_files_dd"].options == ("ester.ket",)
+    kept = editor["tmp_path"] / "calc" / "Ketcher" / "my_aspirin.mol"
+    assert kept.exists(), list((editor["tmp_path"] / "calc" / "Ketcher").glob("*"))
+    assert kept.read_text() == written
+    assert "Ketcher" in editor["mol_status"].value
 
 
-def test_a_drawing_with_no_name_is_not_asked_for_at_all(editor):
-    editor["submit_draw_name"].value = "   "
-    editor["sent_js"].clear()
+def test_the_download_ketcher_would_have_made_never_happens(editor):
+    """Ketcher writes a file the way every browser application does: a Blob, an
+    object URL, a detached ``<a download>`` and a click dispatched at it.  None
+    of that reaches the page's own listeners, so the two ends are taken
+    instead -- and the click is swallowed rather than passed on, or the
+    drawing would land in the browser's downloads folder as well."""
+    wiring = ketcher.wire_js(".frame", ".sync")
 
-    editor["submit_draw_save_btn"].click()
+    assert "createObjectURL" in wiring and "dispatchEvent" in wiring
+    assert "hasAttribute('download')" in wiring
+    assert "return true;" in wiring, "the click is swallowed, not forwarded"
+    # Save as SVG or PNG is a picture for somewhere else, and still downloads.
+    assert "KEEP.indexOf(ext)>=0" in wiring
 
-    assert editor["sent_js"] == [], "nothing is asked of the page"
-    assert "name" in editor["mol_status"].value
+
+def test_the_editors_own_open_button_is_answered_with_what_is_kept(editor):
+    """A file picker shows the machine the *browser* is on, which down an SSH
+    tunnel is not the machine the calculations are on.  So the button is
+    answered with the drawings that are actually kept."""
+    wiring = ketcher.wire_js(".frame", ".sync")
+    assert "open-file-button" in wiring
+    assert "ev.preventDefault(); ev.stopPropagation();" in wiring
+    # and a genuinely local file is still one press away
+    assert "__delfinKetcherPass" in wiring
+    assert "From this computer" in wiring
+    # Ketcher carries two Open buttons, one per mode, and the first in the
+    # document is the hidden macromolecule editor's. Clicking that one does
+    # nothing at all, which is what "From this computer" did.
+    assert "offsetParent!==null" in wiring
 
 
-def test_opening_one_shows_the_editor_and_hands_the_drawing_over(editor):
+def test_a_kept_drawing_asked_for_by_name_is_opened(editor):
     (editor["tmp_path"] / "calc" / "Ketcher").mkdir()
     (editor["tmp_path"] / "calc" / "Ketcher" / "benzene.mol").write_text("drawn")
     editor["submit_draw_open_btn"].value = False
-    editor["submit_draw_open_btn"].value = True   # refreshes the list
+    editor["submit_draw_open_btn"].value = True     # rescans the folder
     editor["sent_js"].clear()
 
-    editor["submit_draw_open_file_btn"].click()
+    editor["submit_draw_file_sync"].value = "1\nopen\nbenzene.mol"
 
-    assert len(editor["sent_js"]) == 1, (
-        "run_js clears its output before displaying the next script, so the "
-        "focus binding travels with the drawing rather than after it"
-    )
-    script = editor["sent_js"][0]
+    script = "\n".join(editor["sent_js"])
     assert "setMolecule" in script and "drawn" in script
-    assert "pointerenter" in script
-    # The name box follows the file, so pressing SAVE writes it back where it
-    # came from rather than under whatever was last typed.
-    assert editor["submit_draw_name"].value == "benzene"
-    assert editor["submit_draw_format_dd"].value == ".mol"
+
+
+def test_a_name_that_is_gone_is_said_rather_than_pushed(editor):
+    editor["submit_draw_file_sync"].value = "1\nopen\nnever_existed.ket"
+
+    assert "not there any more" in editor["mol_status"].value
 
 
 def test_a_drawing_handed_in_from_elsewhere_opens_the_editor_first(editor):

@@ -74,10 +74,11 @@ def test_it_runs_when_the_editor_is_opened():
     source = SUBMIT_SOURCE
     opener = source.split('def on_submit_draw_open')[1].split('\n    def ')[0]
 
-    # Sent joined to the focus script rather than beside it: run_js clears
-    # its output before displaying the next script, so two calls in a row can
-    # mean the hold is thrown away before the browser has run it.
-    assert '_run_manip_js(_KETCHER_SCROLL_HOLD_JS + _KETCHER_FOCUS_JS)' in opener
+    # Sent joined to the rest of the wiring rather than beside it: run_js
+    # clears its output before displaying the next script, so two calls in a
+    # row can mean the hold is thrown away before the browser has run it.
+    assert '_run_manip_js(_KETCHER_SCROLL_HOLD_JS + _draw_wiring()' in opener
+    assert opener.count('_run_manip_js(') == 1, 'one script, not several'
     # Only on the way in. Folding it shut moves nothing.
     assert opener.index('if not submit_draw_open_btn.value:') < opener.index(
         '_run_manip_js(_KETCHER_SCROLL_HOLD_JS')

@@ -2591,11 +2591,6 @@ def create_tab(ctx):
         'submit_draw_tools': submit_draw_tools,
         'submit_draw_rxn_out': _editor.submit_draw_rxn_out,
         'submit_draw_rxn_row': _editor.submit_draw_rxn_row,
-        'submit_draw_name': _editor.submit_draw_name,
-        'submit_draw_format_dd': _editor.submit_draw_format_dd,
-        'submit_draw_save_btn': _editor.submit_draw_save_btn,
-        'submit_draw_files_dd': _editor.submit_draw_files_dd,
-        'submit_draw_open_file_btn': _editor.submit_draw_open_file_btn,
         'submit_draw_file_sync': _editor.submit_draw_file_sync,
         'open_drawing': _editor.open_drawing,
         # The two channels the page speaks through, and the line it is
