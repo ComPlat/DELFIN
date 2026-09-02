@@ -214,6 +214,16 @@ def _check_python_deps(ctx: dict) -> list[dict]:
     return out
 
 
+def _uncontained_mcp(configs: dict) -> int:
+    """How many configured servers no namespace is built around."""
+    try:
+        from .mcp_isolation import parse_isolation
+        return sum(1 for cfg in configs.values()
+                   if not cfg.get("url") and parse_isolation(cfg) is None)
+    except Exception:
+        return 0
+
+
 def _check_mcp(ctx: dict) -> list[dict]:
     """MCP servers — configured list; reachability only when fast=False."""
     from .mcp_client import _load_configs
@@ -227,6 +237,12 @@ def _check_mcp(ctx: dict) -> list[dict]:
             "(builtin delfin-tools was disabled)",
         )]
     names = ", ".join(sorted(configs))
+    # Stated, not warned about: running a server uncontained is the default
+    # and an ordinary choice. What is not ordinary is believing the shell's
+    # sandbox covers it, and the doctor is where that belief gets checked.
+    loose = _uncontained_mcp(configs)
+    if loose:
+        names += f" — {loose} without declared roots (outside the shell's isolation)"
     if ctx.get("fast", True):
         return [_row(
             "mcp servers", PASS,

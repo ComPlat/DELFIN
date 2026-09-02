@@ -223,7 +223,7 @@ Subagents run **in parallel** (each isolated, so concurrent runs can't clobber o
 ### Tools, MCP & safety
 
 - **Built-in tools**: read / edit / write files, grep, sandboxed bash (foreground + long-running background jobs), code navigation, test runner, notebooks, web search/fetch, task tracking, scheduling, plus DELFIN-specific calc/manual search.
-- **MCP (Model Context Protocol)**: connect external MCP servers over **stdio or HTTP/SSE** — their tools, resources, and prompts become available to the agent (configured in `~/.delfin/mcp_servers.json`).
+- **MCP (Model Context Protocol)**: connect external MCP servers over **stdio or HTTP/SSE** — their tools, resources, and prompts become available to the agent (configured in `~/.delfin/mcp_servers.json`). A tool reached through MCP runs in a process DELFIN did not launch a command line for, so the shell's sandbox is not around it: give a stdio server `"roots": [...]` (read-write) or `"read_roots": [...]` (read-only) and it is started inside a namespace holding only those paths. Servers that declare neither run uncontained, and the startup banner, `/mcp` and `delfin-agent doctor` all name them as such.
 - **Sandboxed execution**: every shell command runs through a layered defense (allow-list + bubblewrap/firejail sandbox + audit log); credential dirs (`~/.ssh`, `~/.aws`, `~/.gnupg`, …) are masked, network is denied by default, and every command lands in `~/.cache/delfin/agent-audit.jsonl`. Configurable via `DELFIN_AGENT_SANDBOX={auto,bwrap,firejail,allowlist,off}`.
 - **Permission modes**: plan / default / acceptEdits / bypass, with per-pattern allow-list rules the agent can remember across sessions.
 

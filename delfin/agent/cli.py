@@ -758,6 +758,7 @@ def _startup_banner(engine, report, workspace: Path,
     for extra in (_grant_line("writable", getattr(report, "granted_dirs", ())),
                   _grant_line("readable", getattr(report, "read_dirs", ())),
                   *_bounds_in_force(engine),
+                  _mcp_note(workspace),
                   _parked_work_line(engine, workspace)):
         if extra:
             lines.append(extra)
@@ -774,6 +775,22 @@ def _startup_banner(engine, report, workspace: Path,
         lines.append(f"session    {sid[:8]}   (/status for the full id)")
     lines.append("esc interrupt · shift+tab approval mode · /help · ctrl+d exit")
     return "\n".join(lines)
+
+
+def _mcp_note(workspace) -> str:
+    """The configured servers nothing contains, or "".
+
+    The isolation line above it is about the shell DELFIN starts. A tool
+    reached over MCP is not that shell, and under bypass — where the
+    shell IS wrapped — the difference is at its widest while the banner
+    said nothing about it. Reads the config only; starts no server.
+    """
+    try:
+        from . import mcp_client, mcp_isolation
+        return mcp_isolation.uncontained_note(
+            mcp_client.effective_servers(workspace))
+    except Exception:
+        return ""
 
 
 def _grant_line(label: str, dirs) -> str:
