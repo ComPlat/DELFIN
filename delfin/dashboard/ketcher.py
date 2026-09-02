@@ -36,7 +36,8 @@ from typing import Any, Callable, Dict, Optional
 
 __all__ = ['app_directory', 'app_url', 'install', 'installed_version',
            'latest_release', 'is_installed', 'smiles_from_molfile',
-           'reaction_smiles_from_rxnfile', 'smiles_from_drawing',
+           'reaction_smiles_from_rxnfile', 'reaction_smiles_from_sdf',
+           'smiles_from_drawing',
            'parse_reaction_smiles',
            'DRAWINGS_FOLDER', 'DRAWING_SUFFIXES', 'drawings_directory',
            'is_drawing', 'list_drawings', 'list_in', 'save_drawing',
@@ -490,7 +491,7 @@ def _extent(mol: Any) -> Optional[Dict[str, float]]:
             'cx': (min(xs) + max(xs)) / 2.0}
 
 
-def _as_drawn(drawn: Any, arrows: list) -> Dict[str, Any]:
+def _as_drawn(components: list, arrows: list) -> Dict[str, Any]:
     """The scheme read off the canvas, which is where it is actually written.
 
     Four places mean four things around an arrow, and only two of them survive
@@ -530,8 +531,7 @@ def _as_drawn(drawn: Any, arrows: list) -> Dict[str, Any]:
     unders: Dict[int, list] = {}
     dative = 0
     placed = 0
-    for mol in list(drawn.GetReactants()) + list(drawn.GetAgents()) \
-            + list(drawn.GetProducts()):
+    for mol in components:
         where = _extent(mol)
         if where is None:
             continue
@@ -653,7 +653,8 @@ def reaction_smiles_from_rxnfile(rxnfile: str, ket: str = '') -> Dict[str, Any]:
 
     arrows = _arrows(ket)
     if arrows:
-        return _as_drawn(drawn, arrows)
+        return _as_drawn(list(drawn.GetReactants()) + list(drawn.GetAgents())
+                         + list(drawn.GetProducts()), arrows)
 
     # No KET to read the canvas from, so the RXN file's own split is all there
     # is: one arrow, and whatever Indigo decided was an agent.
@@ -719,6 +720,54 @@ def _tidied(mol: Any):
     return fresh, moved
 
 
+def reaction_smiles_from_sdf(sdf: str, ket: str = '') -> Dict[str, Any]:
+    """A drawn scheme read from the components, all of them.
+
+    An RXN file loses some.  Measured against the served build: benzene into
+    cyclohexane into cyclobutane, with a cyclopropane written over the first
+    arrow, came back from ``getRxn`` as three ``$MOL`` blocks -- the one over
+    the arrow simply was not there, and the scheme came out as
+    ``c1ccccc1>>>>>C1CCCCC1>>>>>C1CCC1`` with the reagent missing.  ``getSdf``
+    on the same canvas gave four records, and ``getCml`` only two.
+
+    So the components come from the SDF and the arrows from the KET, and the
+    scheme is read from where each of them sits.
+    """
+    text = str(sdf or '')
+    if not text.strip():
+        return {'ok': False, 'smiles': '', 'status': 'Nothing was drawn yet.'}
+    try:
+        from rdkit import Chem, RDLogger
+
+        RDLogger.DisableLog('rdApp.*')
+    except ImportError:
+        return {'ok': False, 'smiles': '',
+                'status': 'RDKit is not installed, so a drawing cannot be read.'}
+    import io
+
+    try:
+        supply = Chem.ForwardSDMolSupplier(
+            io.BytesIO(text.encode('utf-8')), sanitize=False, removeHs=False)
+        components = [mol for mol in supply if mol is not None]
+    except Exception as exc:                            # noqa: BLE001
+        return {'ok': False, 'smiles': '',
+                'status': f'That drawing could not be read: {exc}'}
+    if not components:
+        return {'ok': False, 'smiles': '', 'status': 'The drawing is empty.'}
+    arrows = _arrows(ket)
+    if not arrows:
+        # No arrow, so it is a set of structures rather than a scheme.
+        tidied = [_tidied(mol)[0] for mol in components]
+        try:
+            smiles = '.'.join(sorted(Chem.MolToSmiles(one) for one in tidied))
+        except Exception as exc:                        # noqa: BLE001
+            return {'ok': False, 'smiles': '',
+                    'status': f'That drawing could not be written: {exc}'}
+        return {'ok': True, 'smiles': smiles, 'dative': 0, 'steps': 0,
+                'status': f'{len(tidied)} structure(s) drawn: {smiles}'}
+    return _as_drawn(components, arrows)
+
+
 def smiles_from_drawing(payload: str) -> Dict[str, Any]:
     """Whatever the editor handed back, read as the thing it actually is.
 
@@ -728,7 +777,12 @@ def smiles_from_drawing(payload: str) -> Dict[str, Any]:
     """
     text = str(payload or '')
     body, _, ket = text.partition(KET_MARK)
-    if body.lstrip().startswith('$RXN'):
+    if '$$$$' in body:
+        # Several records, which is what a canvas with an arrow on it is
+        # fetched as: an RXN file drops components a scheme still needs.
+        outcome = reaction_smiles_from_sdf(body, ket)
+        outcome['reaction'] = bool(outcome.get('steps'))
+    elif body.lstrip().startswith('$RXN'):
         outcome = reaction_smiles_from_rxnfile(body, ket)
         outcome['reaction'] = True
     else:
