@@ -3850,8 +3850,17 @@ def test_the_page_does_not_write_its_own_coordinates_under_a_budget():
     that had never been priced.
     """
     source = EDITOR_SOURCE
-    assert "walled = ((dragging or released)" in source
+    assert 'pulling = bool((dragging or released)' in source
     assert "and state.get('gfn_follow')" in source
+    assert "walled = (pulling" in source
+    # And a wall that is switched on but not holding does not hand the box to
+    # the page either -- see
+    # tests/test_the_release_costs_a_render_not_a_viewer.py, where that is
+    # measured.  It is a narrower branch of its own, because with no wall at
+    # all the release is meant to leave the structure where the hand put it.
+    assert "lit = _thermal_live() or bool(submit_topology_btn.value)" in source
+    assert "if pulling and lit and int(state.get('gfn_follow_steps') or 0):" \
+        in source
     # An undo is not a drag: it hands back a geometry that was already there,
     # so held to the budget it would be answered with the very structure it is
     # undoing.
