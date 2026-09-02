@@ -395,7 +395,8 @@ def test_finding_nothing_says_where_it_looked(builder_tab, monkeypatch, capsys):
     assert "No ORCA to check with" in said
     assert "Looked in" in said
     assert "the PATH" in said
-    assert "SUBMIT ORCA JOB does not look for it at all" in said
+    assert "SUBMIT ORCA JOB does not look for it here at all" in said
+    assert "software/orca_*" in said, "and where a job would find it instead"
 
 
 def test_orca_is_given_its_own_directory_to_load_from():
@@ -406,3 +407,78 @@ def test_orca_is_given_its_own_directory_to_load_from():
 
     assert "LD_LIBRARY_PATH" in making and "PATH" in making
     assert "Path(orca).parent" in making
+
+
+def test_the_dashboard_already_knows_where_orca_is(tmp_path, monkeypatch,
+                                                   capsys):
+    """It goes looking for every ORCA it can see when it starts and keeps the
+    list.  Asking anything else before that list is asking a question that has
+    already been answered."""
+    pytest.importorskip("ipywidgets")
+
+    where = tmp_path / "orca_6_1_1"
+    where.mkdir()
+    _an_orca(where, "orca", "echo 'SCF SETTINGS'\nexit 0\n")
+    monkeypatch.setattr("delfin.orca.find_orca_executable", lambda: None)
+    monkeypatch.setattr("delfin.dashboard.saddle.find_orca", lambda: None)
+
+    (tmp_path / "calc").mkdir()
+    ctx = DashboardContext(calc_dir=tmp_path / "calc",
+                           archive_dir=tmp_path / "calc",
+                           office_dir=tmp_path / "calc",
+                           orca_candidates=[where])
+    ctx.run_js = lambda _script: None
+    _widget, refs = builder.create_tab(ctx)
+    refs["orca_coords"].value = "1\nx\nH 0 0 0\n"
+    refs["update_orca_preview"]()
+
+    said = _pressed(refs, capsys)
+
+    assert "OK" in said
+    assert str(where / "orca") in said
+
+
+def test_the_one_shipped_beside_delfin_is_found(tmp_path, monkeypatch, capsys):
+    """ORCA is shipped with DELFIN to the cluster, under software/orca_*
+    beside the checkout, and the submit script finds it by walking up from its
+    own directory looking for software/delfin.  The same walk here."""
+    pytest.importorskip("ipywidgets")
+
+    (tmp_path / "software" / "delfin").mkdir(parents=True)
+    shipped = tmp_path / "software" / "orca_6_1_1"
+    shipped.mkdir()
+    _an_orca(shipped, "orca", "echo 'SCF SETTINGS'\nexit 0\n")
+    monkeypatch.setattr("delfin.orca.find_orca_executable", lambda: None)
+    monkeypatch.setattr("delfin.dashboard.saddle.find_orca", lambda: None)
+
+    (tmp_path / "calc").mkdir()
+    ctx = DashboardContext(calc_dir=tmp_path / "calc",
+                           archive_dir=tmp_path / "calc",
+                           office_dir=tmp_path / "calc",
+                           notebook_dir=tmp_path / "calc")
+    ctx.run_js = lambda _script: None
+    _widget, refs = builder.create_tab(ctx)
+    refs["orca_coords"].value = "1\nx\nH 0 0 0\n"
+    refs["update_orca_preview"]()
+
+    said = _pressed(refs, capsys)
+
+    assert "OK" in said
+    assert "shipped beside DELFIN" in said
+    assert str(shipped / "orca") in said
+
+
+def test_every_place_is_named_before_it_is_tried(builder_tab, monkeypatch,
+                                                 capsys):
+    """A resolver that walks a network mount can sit there for minutes, and
+    the difference between "found nothing" and "still looking in X" is the
+    whole of what a report of it hanging is worth."""
+    monkeypatch.setattr("delfin.orca.find_orca_executable", lambda: None)
+    monkeypatch.setattr("delfin.dashboard.saddle.find_orca", lambda: None)
+
+    said = _pressed(builder_tab, capsys)
+
+    looking = said.split("Looking for ORCA")[1].split("No ORCA")[0]
+    assert "base directory" in looking
+    assert "DELFIN's own resolver" in looking
+    assert "the PATH" in looking
