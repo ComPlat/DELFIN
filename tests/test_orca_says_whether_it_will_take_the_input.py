@@ -256,3 +256,56 @@ def test_it_stands_before_the_press_it_is_there_to_come_before():
     row = source.split("orca_save_btn, orca_slurm_time")[1].split("]")[0]
 
     assert row.index("orca_check_btn") < row.index("orca_submit_btn")
+
+
+# ---------------------------------------------------------------------------
+# a check that cannot finish is not a check
+# ---------------------------------------------------------------------------
+def test_orca_is_given_no_standing_input_to_wait_on():
+    """A wrapper that reads stdin waits for something nobody is going to type,
+    and the dashboard sits on "Starting ORCA..." for ever."""
+    source = pathlib.Path(builder.__file__).read_text(encoding="utf-8")
+    started = source.split("running = subprocess.Popen(")[1].split("\n        )")[0]
+
+    assert "stdin=subprocess.DEVNULL" in started
+
+
+def test_one_that_says_nothing_and_waits_is_still_answered(builder_tab,
+                                                           monkeypatch, capsys):
+    """Silent and blocked on stdin is the shape that hung.  It has to come
+    back with an answer like everything else."""
+    fake = _an_orca(builder_tab["tmp_path"], "orca_mute",
+                    "cat > /dev/null\nsleep 300\n")
+    monkeypatch.setattr("delfin.dashboard.saddle.find_orca", lambda: str(fake))
+    monkeypatch.setattr(builder, "CHECK_SECONDS", 2.0)
+
+    began = time.monotonic()
+    said = _pressed(builder_tab, capsys)
+    took = time.monotonic() - began
+
+    assert "OK" in said or "STOPPED" in said, "an answer either way"
+    assert took < 30, f"still waiting after {took:.0f}s"
+
+
+def test_it_says_which_orca_it_found_before_it_waits(builder_tab, monkeypatch,
+                                                     capsys):
+    """So that a wait is never a blank one, and so that a report of it hanging
+    says where it was standing."""
+    fake = _an_orca(builder_tab["tmp_path"], "orca_named",
+                    "echo 'SCF SETTINGS'\nexit 0\n")
+    monkeypatch.setattr("delfin.dashboard.saddle.find_orca", lambda: str(fake))
+
+    said = _pressed(builder_tab, capsys)
+
+    assert "Looking for ORCA" in said
+    assert "orca_named" in said, "the one it found, by name"
+
+
+def test_no_answer_at_all_is_said_rather_than_left_standing():
+    """A button that stays greyed with one line under it is not an answer."""
+    source = pathlib.Path(builder.__file__).read_text(encoding="utf-8")
+    guard = source.split("def nothing_came_back")[1].split("\n    watchdog")[0]
+
+    assert "orca_check_btn.disabled = False" in guard, "the button comes back"
+    assert "No answer after" in guard
+    assert "watchdog.cancel()" in source, "and it is called off when one comes"
