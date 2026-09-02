@@ -302,8 +302,23 @@ def test_web_search_returns_results_not_just_an_absence(box, perms):
 
 @needs_net
 def test_search_results_arrive_marked_untrusted(box, perms):
+    """Results carry the fence. An anti-bot refusal is not a result.
+
+    DuckDuckGo answers a share of requests with HTTP 202 — a challenge,
+    not an empty result set — and web_search reports that as its own
+    error. Our own error text is not external content and must NOT be
+    fenced, so asserting the fence unconditionally turned a refused
+    request into an accusation against the fencing. Measured: it failed
+    roughly one run in three, in isolation, and cost a full-suite
+    investigation twice.
+
+    The fence is what is under test, so a run with no results has nothing
+    to test and says so.
+    """
     _, raw = call("web_search", {"query": "orca manual", "max_results": 2},
                   perms)
+    if '"source": "duckduckgo-unavailable"' in raw or '"results": []' in raw:
+        pytest.skip(f"the search backend returned nothing: {raw[:120]}")
     assert "UNTRUSTED" in raw
 
 

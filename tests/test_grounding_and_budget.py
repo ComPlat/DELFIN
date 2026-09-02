@@ -1033,3 +1033,38 @@ def test_a_matching_language_never_triggers_a_correction(agent_tree):
         "Kannst du mir bitte erklären, was die Funktion add in dieser "
         "Datei eigentlich macht?")
     assert fake.stream_message.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# A plan stands the CLAIM scanners down, not the whole guard
+# ---------------------------------------------------------------------------
+#
+# `_turn_describes_intent` used to gate ENTRY, so a persisted
+# `default_mode: plan` switched off everything this file tests. Measured
+# live on one sandbox, one line apart: with the setting an English
+# question came back in German, without it in English.
+#
+# The exemption itself is sound and was measured too (field case
+# 20260729-125618: three flags on files a plan intended to create). It is
+# an argument about claims to PRESENT state, and it never had anything to
+# say about the language a plan is written in.
+
+def test_a_plan_turn_is_not_corrected_for_its_claims(agent_tree):
+    """The contract the exemption exists for, as behaviour."""
+    fake = _claims_client(["Ich lege tetris_game.py und snake_game.py an."])
+    engine = _engine(agent_tree, client=fake)
+    engine.kit_permissions.mode = "plan"
+    engine.stream_response("bitte einen plan für die zwei spiele")
+    assert fake.stream_message.call_count == 1, "a plan was put to a retry"
+
+
+def test_a_plan_turn_is_still_answered_in_the_users_language(agent_tree):
+    """What the entry gate was swallowing."""
+    fake = _claims_client([_GERMAN_ANSWER, _ENGLISH_CORRECTION])
+    engine = _engine(agent_tree, client=fake)
+    engine.kit_permissions.mode = "plan"
+    out = engine.stream_response(
+        "Read calc.py and explain in a short paragraph what the function "
+        "add actually does.")
+    assert fake.stream_message.call_count == 2, "plan mode swallowed it again"
+    assert "The function" in out and "Die Funktion" not in out
