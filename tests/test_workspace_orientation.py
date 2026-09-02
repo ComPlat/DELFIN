@@ -75,27 +75,25 @@ def test_failed_write_is_not_recorded_as_evidence():
 
 
 def test_code_language_rule_ships_in_the_shared_pack():
-    """Two rules, and they must not be one.
+    """"Ships" means it reaches the model, not that a file contains it.
 
-    Until 2026-09-02 the answer-language rule was the closing clause of
-    this bullet — "You still talk to the user in their language" — and a
-    task written in English came back in German. It now stands on its
-    own, so this asserts the CONTRACT rather than that old phrasing:
-    code English, answer in the user's language, stated separately.
+    This asserted the phrase inside work_cycle_rules.md and was green for
+    as long as that file existed — while `load_shared_context` handed
+    every role outside the four full-context ones a 16-line slice taken
+    entirely from delfin_context.md, so neither the code-English rule nor
+    the answer-language rule beside it was ever in the solo, dashboard or
+    office prompt. Qwen kept answering English questions in German with
+    the fix "shipped". The rule now lives in the honesty addendum, which
+    every role does get, and this builds the prompt and looks in it.
     """
-    rules = (Path(__file__).resolve().parent.parent / "delfin" / "agent"
-             / "pack" / "shared" / "work_cycle_rules.md").read_text(
-                 encoding="utf-8")
-    assert "English" in rules
-    assert "docstrings" in rules
-    assert "Answer in the language the user wrote in" in rules
-    # Its own bullet, not a tail on the code-comment one.
-    for line in rules.splitlines():
-        if "Answer in the language" in line:
-            assert line.lstrip().startswith("-"), line
-            break
-    else:                                        # pragma: no cover
-        raise AssertionError("answer-language rule is not a rule of its own")
+    from delfin.agent.prompt_loader import PromptLoader
+    loader = PromptLoader()
+    for role in ("solo_agent", "dashboard_agent", "office_agent",
+                 "builder_agent"):
+        prompt = loader.build_system_prompt(role, "read calc.py")
+        assert "INTO code stays English" in prompt, role
+        assert "docstrings" in prompt, role
+        assert "language of the user's LATEST message" in prompt, role
 
 
 def test_delfin_context_suppressed_for_a_user_project(tmp_path):
