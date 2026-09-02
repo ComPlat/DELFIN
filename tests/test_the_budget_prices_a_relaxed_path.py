@@ -2346,6 +2346,13 @@ def _scanned(how, steps=20, seconds=600, structure=None, legs=None,
         {"kind": "distance", "atoms": [3, 11], "from": 3.135, "to": 0.7,
          "steps": steps, "structure": None},
     ]
+    # The box says what the walk walks -- see
+    # tests/test_a_scan_offers_only_the_walk_that_works.py, and the report of
+    # forty typed and twenty walked.  A caller that hands in its own legs is
+    # standing in for a user who armed them, and that user had the number in
+    # the box while they did it.
+    part.submit_scan_steps.value = min(
+        int(one["steps"]) for one in state["scan_legs"])
     began = time.time()
     part.on_submit_scan_run()
     while state.get("scan_run") and time.time() - began < seconds:
