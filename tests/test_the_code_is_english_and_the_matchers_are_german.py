@@ -29,6 +29,7 @@ stops the German half being quietly refactored away.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 
@@ -178,3 +179,51 @@ def test_the_shared_module_is_where_the_vocabulary_lives():
     from delfin.agent.deliverables import _slugify as report_slug
     from delfin.agent.memory_store import _slugify as memory_slug
     assert memory_slug("Müller GmbH") == report_slug("Müller GmbH")
+
+
+# ---------------------------------------------------------------------------
+# The premise this whole file rests on: the model answers in the user's
+# language, so an English string aimed at the model is translated on the
+# way out. Nothing ever checked that the prompt pack actually says so.
+# ---------------------------------------------------------------------------
+#
+# Field report 20260902-080635: the user wrote the task in English —
+# "Extract the hyperpolarizability tensor from all folders … and calculate
+# the Hyper-Rayleigh scattering hyperpolarizability βHRS from it" — and the
+# answer came back in German, headed "## Zusammenfassung".
+#
+# The rule existed. It was the last clause of a bullet about CODE comments
+# ("You still talk to the user in their language"), which is the weakest
+# place to put a rule about answers, and two skills contradicted it
+# outright by prescribing "German chat summary" and "German prose" as
+# their output format regardless of who was asking.
+
+_PACK = Path(__file__).resolve().parents[1] / "delfin" / "agent" / "pack"
+
+
+def test_the_pack_states_the_answer_language_as_its_own_rule():
+    text = (_PACK / "shared" / "work_cycle_rules.md").read_text()
+    assert "Answer in the language the user wrote in" in text
+    # Decided per message — not from the project, not from habit.
+    assert "latest\n  message" in text or "latest message" in text
+
+
+def test_no_skill_prescribes_the_language_of_its_own_output():
+    """A skill that pins German overrides the user's choice silently,
+    and the user never sees the skill file that did it."""
+    offenders = []
+    for path in sorted((_PACK / "skills").glob("*.md")):
+        for i, line in enumerate(path.read_text().splitlines(), 1):
+            if re.search(r"(?i)\b(?:german|deutsch)\b", line) and \
+                    re.search(r"(?i)output|format|summary|prose|antwort", line):
+                offenders.append(f"{path.name}:{i}: {line.strip()}")
+    assert not offenders, "skills pinning an output language:\n" + \
+        "\n".join(offenders)
+
+
+def test_code_is_still_english_regardless_of_the_conversation():
+    """The load-bearing half of the same bullet, which the rewrite must
+    not have loosened: what goes INTO code stays English."""
+    text = (_PACK / "shared" / "work_cycle_rules.md").read_text()
+    assert "Everything you write INTO code is English" in text
+    assert "regardless of the conversation" in text
