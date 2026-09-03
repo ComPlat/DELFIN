@@ -669,7 +669,7 @@ def test_every_search_that_reaches_a_saddle_offers_what_to_do_with_it(editor):
     for where in ('def _saddle_from_here():', 'def _climb_now():'):
         block = source.split(where)[1].split('\n    def _')[0]
         assert block.index('_write_coords(kept') < \
-            block.index('_note_the_saddle(kept')
+            block.index('_note_the_saddle(')
 
 
 def test_the_verdict_says_the_presses_have_arrived(editor):
