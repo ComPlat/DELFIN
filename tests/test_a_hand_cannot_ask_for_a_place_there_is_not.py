@@ -104,3 +104,49 @@ def test_a_torsion_is_left_periodic():
     body = _EDITOR.split('def _scan_floor_for(')[1].split('\n    def ')[0]
     assert 'periodic' in body
     assert "leg['kind'] != 'distance'" in body
+
+
+def test_the_geometry_the_kernel_is_given_has_no_atoms_inside_one_another():
+    """The floor on a held value is not enough, because the value is not the
+    geometry.
+
+    A drag reads its structure off the page, and the page reports where the
+    cursor put the atoms.  Measured over one session of twenty-five grabs, 98
+    of the 567 frames it sent had a pair closer than the two radii allow --
+    one in six -- and they were not spread evenly: two grabs held 70 of the
+    98, and those two are exactly the two that priced worst.  The worst frame
+    had a pair at 0.3 of the radii, which is two atoms in the same place.
+
+    The kernel cleans them up and pays for it: of 386 answers it gave back,
+    one still had such a pair.  Every one of those cycles went on undoing an
+    overlap rather than following the hand, and the budget was charged for it.
+    """
+    good = ('2\nfine\nC 0.000000 0.000000 0.000000\n'
+            'H 0.000000 0.000000 1.090000\n')
+    assert gfn.eased_apart(good) == good, 'a real bond must not be touched'
+
+    squashed = ('2\nsquashed\nC 0.000000 0.000000 0.000000\n'
+                'H 0.000000 0.000000 0.400000\n')
+    out = gfn.eased_apart(squashed)
+    flat = gfn.coordinates_of(out)
+    span = math.dist(tuple(flat[:3]), tuple(flat[3:6]))
+    floor = gfn.NO_CLOSER_THAN * (cov_radius('C') + cov_radius('H'))
+    assert span == pytest.approx(floor, abs=1e-3), span
+
+
+def test_two_atoms_in_the_same_place_are_still_separated():
+    """It has no axis of its own, so it is given one."""
+    same = ('2\nsame place\nC 0.000000 0.000000 0.000000\n'
+            'C 0.000000 0.000000 0.000000\n')
+    flat = gfn.coordinates_of(gfn.eased_apart(same))
+    span = math.dist(tuple(flat[:3]), tuple(flat[3:6]))
+    assert span == pytest.approx(gfn.NO_CLOSER_THAN * 2 * cov_radius('C'),
+                                 abs=1e-3)
+
+
+def test_the_follow_eases_the_wish_before_anything_reads_it():
+    body = _EDITOR.split('def on_submit_relax_toggle(')[0]
+    body = body.split('current, holding = newest')[1][:1400]
+    assert 'current = _gfn.eased_apart(current)' in body
+    # Before the clock starts, so what it costs is counted with the answer.
+    assert body.index('eased_apart') < body.index('time.perf_counter()')
