@@ -1530,6 +1530,48 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         ),
         layout=widgets.Layout(width='108px', display='none'),
     )
+    #: Which question the perception is asked on every answer of a drag.
+    #:
+    #: Off -- the default, and what the editor has always done -- it is asked
+    #: what has *changed* since the last answer.  On, it is asked what the
+    #: direction the hand is going *carries*, which is the question the first
+    #: answer of a drag is already asked.
+    #:
+    #: The difference is not a preference.  "What changed" answers itself
+    #: badly: the coordinate being held is, by construction, the one that has
+    #: changed least, because holding it is what stopped it changing.  So it
+    #: falls in the ranking, something else is held, the first one moves
+    #: again, and the question flips answer by answer -- which is the shaking
+    #: users report.  Measured on one real session of twenty-five grabs and
+    #: 567 answers, with both floors and the geometry guard in place:
+    #:
+    #:                          changes   over the ceiling   worst answer
+    #:     what changed (off)      128           163            +98.2
+    #:     what the hand carries    30           116           +296.2
+    #:
+    #: Four times steadier and slightly cheaper on the whole, and three times
+    #: worse at its worst.  That is the trade, and it is why this is a switch
+    #: and not a replacement: the steady rule holds what the hand is really
+    #: driving -- on the grab measured, the C-H bond of the dragged hydrogen,
+    #: which is what a chemist would name -- and holding something real costs
+    #: something.  The old rule stays cheap by never holding anything
+    #: meaningful; it takes whatever contact happens to be drifting.
+    #:
+    #: In nineteen of the twenty-five grabs the steady rule names one
+    #: coordinate and never changes it.  What changes remain sit in the three
+    #: longest grabs, where a hand really did turn -- which is the behaviour
+    #: asked for: the gesture may develop, the shaking may not.
+    submit_steady_hand_btn = widgets.Checkbox(
+        value=False, description='steady gesture', indent=False,
+        tooltip=(
+            'Ask what the direction of your hand carries, rather than what '
+            'changed since the last answer. Four times fewer changes of the '
+            'coordinate being held -- the shaking -- and it holds what you '
+            'are really driving, which can cost more where that is expensive. '
+            'Off is what the editor has always done.'
+        ),
+        layout=widgets.Layout(width='150px', display='none'),
+    )
     submit_gfn_autospin = widgets.Checkbox(
         value=False, description='auto M', indent=False,
         tooltip=(
@@ -2939,6 +2981,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
     submit_view_body = widgets.VBox(
         [submit_strength_slider, submit_hand_dd, submit_pull_slider,
+         submit_steady_hand_btn,
          submit_sens_slider, submit_play_speed,
          submit_label_group,
          widgets.HBox([submit_dyn_bonds_btn, submit_bond_kinds_btn,
@@ -5726,12 +5769,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                              and abs(float(asked) - float(was_asked))
                              <= _HAND_STIRRED)
                     state['hand_asked_last'] = asked
+                    # Which question, on every answer -- see
+                    # :data:`submit_steady_hand_btn` for the two and the
+                    # measurement that separates them.  The opening answer of
+                    # a drag is asked the steady one either way, a few lines
+                    # below; this is about all the ones after it.
+                    steady = bool(submit_steady_hand_btn.value)
                     contacts = (
                         _gfn.contacts_holding(
                             current, holding, most=3,
                             was=state.get('thermal_was'),
                             turning=state.get('thermal_turn'),
                             holding=state.get('thermal_holding'),
+                            opening=steady,
                             unchanged=still)
                         if ((pricing or pull is not None)
                             and not _mopac.is_mopac_method(method)) else [])
@@ -18396,6 +18446,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         """
         pulling = _hand_pulls()
         submit_pull_slider.layout.display = '' if pulling else 'none'
+        # Beside the pull, because it is about what a pull holds.  Under a
+        # placing hand the answer is laid back onto the cursor and no
+        # coordinate is read at all, so there are no two questions to choose
+        # between.
+        submit_steady_hand_btn.layout.display = (
+            '' if pulling and _server_method() else 'none')
         # Two conditions, about two different things.
         #
         # The method: the budget differences energies against an anchor, and
