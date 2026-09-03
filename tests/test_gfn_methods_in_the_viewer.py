@@ -639,15 +639,18 @@ def test_optimise_sends_the_path_for_the_viewer_to_play(editor):
     # by hand: see test_every_frame_writer_asks_whether_its_run_is_still_the_one.
     assert "_stream_frames(run_id, frames, final=final)" in handler
     assert "_install_gfn_frame_watcher" in handler
-    # both ways of showing a result rebuild the viewer, and both would tear
-    # the playback down
     # The set goes back the way it came -- to the tab that keeps blocks as
-    # blocks, or to the isomer stepper -- and showing one re-renders, which is
-    # why a running playback keeps the results without being shown.
-    assert "show=not played[0]" in handler, "the isomer path re-renders too"
-    assert "_offer_isomers(results, show=not played[0])" in handler, (
-        "the set goes back to the tab whatever the picture is doing -- held "
-        "back, every optimised geometry was lost in a tab that keeps blocks")
+    # blocks, or to the isomer stepper -- and only the DRAWING is held back
+    # while the playback runs, because drawing rebuilds the viewer and that is
+    # what tore the playback down.  Held back with it, the hand-over was lost:
+    # in a tab that keeps one structure the box is the only place there is, so
+    # Copy XYZ and SUBMIT JOB kept the pre-press geometry under a line saying
+    # "Optimised 2 of 2 frame(s)".  See
+    # tests/test_optimise_all_hands_back_what_it_optimised.py, where that is
+    # measured.
+    assert "_offer_isomers(results, drawn=0 if played[0] else None)" in handler
+    assert "show=not played[0]" not in handler, (
+        "the showing is what writes the box; held back, nothing gets it")
 
 
 @_needs_xtb
