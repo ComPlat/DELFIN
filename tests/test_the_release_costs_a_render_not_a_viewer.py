@@ -58,10 +58,17 @@ def test_an_anchor_that_outlived_its_question_is_measured_again():
     assert '_set_thermal_anchor(' in body
     assert 'submit_thermal_btn.value' in body
     assert '_the_anchor_outlived_its_question()' in body
-    # Told apart from having no anchor at all: only one of the two can be put
-    # right without the user doing anything.
+    # Two ways a lit budget ends up with no zero it can use, and both are
+    # the editor's doing rather than the user's, so both are put right the
+    # same way.  It is *stale* -- auto M settled on a spin, or a solvent was
+    # chosen after Set -- or it is *gone*, because an Optimise wrote its
+    # result back and structure_changed dropped the anchor with the structure
+    # it belonged to.  The second was left out at first, and measured: the
+    # budget on, one Optimise all pressed, and the next grab ran unwalled
+    # with the button still lit.
     told = _body('_the_anchor_outlived_its_question')
-    assert "state.get('thermal_e0') is not None" in told
+    assert "if state.get('thermal_e0') is None:" in told
+    assert 'return bool(_current_xyz())' in told
     assert '_the_question_an_anchor_answers()' in told
 
 
