@@ -187,3 +187,22 @@ def test_only_the_drawing_is_held_back_while_a_trajectory_plays():
     # And the press names the frame whose trajectory was played.
     press = _SOURCE.split('def on_submit_optimize(')[1].split('\n    def ')[0]
     assert '_offer_isomers(results, drawn=0 if played[0] else None)' in press
+
+
+def test_the_budget_gets_its_zero_back_after_the_press():
+    """Writing the box is a new structure, and a new structure has no anchor.
+
+    That is right and it is not the end of it: the switch stays lit, and
+    until something measures a zero again the drag runs unwalled.  Measured
+    with the budget on and one Optimise all pressed under GFN2: the box was
+    written, the anchor was gone, and before this the next grab ran with the
+    button still lit and nothing holding.  A grab is where a wall is needed,
+    so a grab is where the zero is taken again.
+    """
+    told = _SOURCE.split('def _the_anchor_outlived_its_question(')[1]
+    told = told.split('\n    def ')[0]
+    assert "if state.get('thermal_e0') is None:" in told
+    assert 'return bool(_current_xyz())' in told
+    grab = _SOURCE.split("if verb == 'grabbed':")[1]
+    grab = grab.split('\n        if verb')[0]
+    assert '_keep_the_anchor_current(' in grab

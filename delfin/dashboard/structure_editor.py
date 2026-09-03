@@ -6854,14 +6854,27 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         return state.get('thermal_e0'), ceiling
 
     def _the_anchor_outlived_its_question():
-        """Whether there is an anchor that no longer answers what is asked.
+        """Whether a lit budget has no zero it can use.
 
-        Told apart from having no anchor at all, because only this one can be
-        put right without the user doing anything: the structure is here, the
-        question is here, and what is missing is one single point.
+        Two ways that happens and both are the editor's doing, not the
+        user's, which is why both can be put right without asking: the
+        structure is here, the question is here, and what is missing is one
+        single point.
+
+        The anchor is *stale* -- it answers a question nobody is asking any
+        more, because auto M settled on a spin or a solvent was chosen after
+        Set.  Or it is *gone*: an Optimise writes its result back, that is a
+        different structure, and structure_changed drops the anchor with it.
+
+        The second was left out at first, on the grounds that having no
+        anchor at all is the user's to fix with Set here.  It is not, when
+        the editor threw it away: measured, the budget switched on, one
+        Optimise all pressed, and the next grab ran unwalled with the button
+        still lit.
         """
-        return (state.get('thermal_e0') is not None
-                and state.get('thermal_asked')
+        if state.get('thermal_e0') is None:
+            return bool(_current_xyz())
+        return (state.get('thermal_asked')
                 != _the_question_an_anchor_answers())
 
     def _keep_the_anchor_current(why):
@@ -9465,7 +9478,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # button still lit.  See _keep_the_anchor_current for what
                     # that cost on an ethane.
                     _keep_the_anchor_current(
-                        'The multiplicity moved under the budget, so its zero')
+                        "The budget needs a zero for this question")
                 state['pre_optimize_frames'] = {
                     'isomers': frames,
                     'coords': coords_widget.value,
@@ -11154,8 +11167,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # be right for the press that moved it and miss every other way --
             # and the way it goes wrong is the molecule coming apart.  See
             # :func:`_keep_the_anchor_current`.
+            # Two reasons, one sentence: the zero is stale or it is gone,
+            # and either way what happens next is the same single point.
             _keep_the_anchor_current(
-                'The question the budget answers has moved, so its zero')
+                "The budget needs a zero for this question")
             # A hand on the structure. The step is recorded here rather than
             # when it is let go of, because by then the coordinate box already
             # holds what the drag made -- the relaxation pushes into it while
