@@ -1489,7 +1489,47 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
     #   je 3 Mulden = 6561 Kombinationen, jede mit Relax und Clash-Tor).  Darum steht
     #   die Vollversion hinter einem Schalter und nicht in der Vorgabe.
     _n_voll = len(combos)
-    if _os.environ.get("DELFIN_FFFREE_PUCKER_FULL", "0") == "1":
+    # ══ ADD, NEVER REPLACE -- AN DER KAPPE, NICHT AN DER REDUKTION ═════════════
+    # (04.09.2026, Nutzerentscheidung.)
+    #
+    # BEFUND (Register #305/#315).  `symmfold6k` sperrt an RONSIW mit
+    # `broken_regressed`: 12 Frames vorher, 12 nachher -- und trotzdem EINES neu.
+    #     off   SP-4-chelate-1-pucker r0:base+r1:1+r2:3+r3:base
+    #     on    SP-4-chelate-1-pucker r0:3+r1:base+r2:4+r3:base
+    #
+    # ⛔ MEINE ERSTE ERKLAERUNG WAR FALSCH.  Ich hielt das fuer eine
+    #    Ersetzungs-Entscheidung der Symmetriereduktion.  Es ist eine KAPPEN-
+    #    Folge: die Reduktion macht Plaetze unter `combos[:budget]` frei, also
+    #    rutschen ANDERE Kombinationen herein.  Die Reduktion ersetzt nichts --
+    #    die Kappe tut es.  Deshalb sitzt die Wache HIER und nicht dort.
+    #
+    # DIE FOLGE.  Der Champion-Satz ist keine Teilmenge des reduzierten Satzes:
+    # ein Zustand, den der Champion baute, faellt heraus, und wenn der
+    # hereingerutschte schlechter einbettet, steigt `broken_frac` (RONSIW
+    # 0,250 -> 0,333).
+    #
+    # DIE WACHE.  Erst der Satz, den der Champion gebaut haette, dann mit dem
+    # reduzierten aufgefuellt.  Damit ist die Champion-Framemenge BY
+    # CONSTRUCTION enthalten und die Achse never-worse.
+    # ⚠️ PREIS, ehrlich: die Vereinigung wird bis zu doppelt so gross wie die
+    #    Kappe.  Das IST der Punkt -- die Reduktion soll TIEFERE Zustaende
+    #    erreichbar machen, nicht flachere verdraengen.  Wer die Kappe halten
+    #    will, laesst die Wache aus.
+    # ⚠️ Vorgabe AUS -> byte-identisch.
+    if (_symm and _bahnen and any(len(b) > 1 for b in _bahnen)
+            and _os.environ.get("DELFIN_FFFREE_PUCKER_SYMM_ADD", "0") == "1"
+            and _os.environ.get("DELFIN_FFFREE_PUCKER_FULL", "0") != "1"):
+        _champ = [c for c in _it.product(*[range(len(s)) for s in per_ring_states])
+                  if any(c)]
+        _champ.sort(key=lambda c: (sum(1 for x in c if x), c))
+        _champ = _champ[:max(0, int(budget))]
+        _gesehen = set(_champ)
+        combos = _champ + [c for c in combos[:max(0, int(budget))]
+                           if c not in _gesehen]
+        if _zaehler is not None:
+            _zaehler["symm_add_champion"] = len(_champ)
+            _zaehler["symm_add_gesamt"] = len(combos)
+    elif _os.environ.get("DELFIN_FFFREE_PUCKER_FULL", "0") == "1":
         pass                                    # alle Faltungen, keine Kappe
     else:
         combos = combos[:max(0, int(budget))]

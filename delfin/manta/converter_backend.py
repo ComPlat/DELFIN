@@ -1199,7 +1199,7 @@ def _interlig_clash_ok(syms, P, base_min) -> bool:
 
 
 def _append_reembed(results, metal, lig_groups, base_syms, base_P, base_label,
-                    cn=None, geom=None, donors=None):
+                    cn=None, geom=None, donors=None, graph_bonds=None):
     """Backbone re-embed source (Task 2026-06-18, env DELFIN_FFFREE_BACKBONE_REEMBED).
 
     Given an ACCEPTED native base frame (base_syms, base_P) and its construction-order
@@ -1238,7 +1238,18 @@ def _append_reembed(results, metal, lig_groups, base_syms, base_P, base_label,
     for fi, (syms, P) in enumerate(frames):
         try:
             syms, P = _maybe_relax(syms, P)
-            if not _build_is_clean(syms, P, cn=cn, geom=geom, donors=donors):
+            # ⚠️ GRAPHANKER, DURCHGEREICHT STATT NEU GEBAUT (04.09.2026).
+            #    `_build_is_clean` nimmt `graph_bonds` seit langem; fuenf
+            #    Aufrufstellen uebergeben ihn, DIESE nicht -- gemessen in
+            #    Register #299.  Ohne ihn urteilt der Selbsttest hier
+            #    GRAPHFREI: ein Schweratompaar, das auf Bindungsabstand
+            #    zusammenfaellt, sieht fuer ein rein geometrisches Kriterium
+            #    wie eine Bindung aus und wird durchgelassen.  Genau dafuer
+            #    hat das AUGE seinen SMILES-Anker
+            #    (`find_inter_ligand_clash.py:265-280`).
+            #    Vorgabe: der Aufrufer uebergibt None -> byte-identisch.
+            if not _build_is_clean(syms, P, cn=cn, geom=geom, donors=donors,
+                                   graph_bonds=graph_bonds):
                 continue
             if _gate and not _interlig_clash_ok(syms, P, base_min):
                 continue                    # new conformer collapses inter-ligand -> drop
@@ -2234,9 +2245,19 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers, union: bool = False):
                                     max_isomers=max_isomers)
         # Backbone re-embed (env DELFIN_FFFREE_BACKBONE_REEMBED, default OFF): add
         # core-preserving global-fold variants of this accepted chelate frame.
+        # ⚠️ NUR HIER, NICHT AN DER ZWEITEN AUFRUFSTELLE (:2933).  Der Basisframe
+        #    DIESES Zweiges wird bei :2225/:2233 selbst MIT `graph_bonds=_gb`
+        #    geprueft -- Basis und Geschwister liegen also an derselben Latte.
+        #    Im Zweig `_fffree_isomers` gibt es vor dem Anhaengen gar keinen
+        #    Graphanker (der Primaerframe wird bei :2694 ohne geprueft); dort
+        #    waere es ein UNGLEICHER Massstab, und der Blockkommentar bei :2911
+        #    hat das fuer den Faltungspfad bereits ausbuchstabiert.
+        #    DELFIN_FFFREE_GRAPH_ANCHOR_APPEND, Vorgabe 0 -> None -> byte-identisch.
         _append_reembed(results, d["metal"], _clg,
                         syms, P, _lab, cn=d.get("cn"), geom=d.get("geometry"),
-                        donors=donors)
+                        donors=donors,
+                        graph_bonds=(_gb if os.environ.get(
+                            "DELFIN_FFFREE_GRAPH_ANCHOR_APPEND", "0") == "1" else None))
         # ===== DER MANIFOLD WAR EINE SUMME, KEIN PRODUKT ==========================
         # Gemessen 2026-08-18 an 143904 Frame-Etiketten aus fuenf Archiven: die
         # Kombination "Konformer UND Ringfaltung" existiert NULL mal, obwohl beide
