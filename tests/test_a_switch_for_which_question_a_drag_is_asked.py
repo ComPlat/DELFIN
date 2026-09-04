@@ -1,9 +1,9 @@
 """Two questions a drag can be asked, and the switch that chooses.
 
-Off -- the default, and what the editor has always done -- the perception is
-asked what has *changed* since the last answer.  On, it is asked what the
-direction the hand is going *carries*, which is the question the first answer
-of a drag is already asked.
+On -- the default -- the perception is asked what the direction the hand is
+going *carries*, which is the question the first answer of a drag is already
+asked.  Off, it is asked what has *changed* since the last answer, which is
+what the editor did before this was measured.
 
 "What changed" answers itself badly.  The coordinate being held is, by
 construction, the one that has changed least, because holding it is what
@@ -21,12 +21,14 @@ floors and the geometry guard in place:
     what changed (off)      128           163            +98.2
     what the hand carries    30           116           +296.2
 
-Four times steadier and slightly cheaper on the whole, three times worse at
-its worst.  That is the trade, and it is why this is a switch: the steady rule
-holds what the hand is really driving -- on the grab measured, the C-H bond of
-the dragged hydrogen, which is what a chemist would name -- and holding
-something real costs something.  The old rule stays cheap by never holding
-anything meaningful.
+Four times steadier and slightly cheaper on the whole, worse only at its
+single worst answer -- which the wall refuses either way.  Measured again on a
+user\'s own structure, a hydrogen in a ring of others dragged with the hand
+standing still: the old rule changed the held coordinate ten times in fifteen
+answers and jumped an atom a median 0.85 A and up to 1.96 between answers,
+where this one changed it once and jumped 0.14.  That is the zappeln and this
+is the cure, so it is the default; the switch stays for the hand that really
+turns, where the old rule\'s cheapness is the point.
 """
 from __future__ import annotations
 
@@ -36,15 +38,16 @@ _EDITOR = (pathlib.Path(__file__).resolve().parents[1]
            / 'delfin' / 'dashboard' / 'structure_editor.py').read_text()
 
 
-def test_the_default_is_what_the_editor_has_always_done():
+def test_the_default_is_the_steady_rule_that_removes_the_shaking():
     block = _EDITOR.split('submit_steady_hand_btn = widgets.Checkbox(')[1]
     block = block.split(')')[0]
-    assert 'value=False' in block, 'the new rule must not arrive switched on'
+    assert 'value=True' in block, 'the cure for the zappeln is the default'
+    assert 'value=False' not in block
 
 
 def test_the_follow_asks_the_question_the_switch_chose():
     body = _EDITOR.split('def on_submit_relax_toggle(')[0]
-    body = body.split('steady = bool(submit_steady_hand_btn.value)')[1][:600]
+    body = body.split('steady = bool(submit_steady_hand_btn.value)')[1][:1200]
     assert 'opening=steady,' in body
 
 
@@ -97,5 +100,5 @@ def test_the_editor_hands_the_switch_out_like_every_other_control():
         schedule_ui_update=lambda f, *a, **k: f(*a, **k),
         update_view=lambda *a, **k: None,
         get_smiles_charge=lambda *a, **k: None)
-    assert part.submit_steady_hand_btn.value is False
+    assert part.submit_steady_hand_btn.value is True
     assert part.submit_steady_hand_btn.description == 'steady gesture'
