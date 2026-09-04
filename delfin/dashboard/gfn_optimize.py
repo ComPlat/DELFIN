@@ -47,6 +47,9 @@ __all__ = ['GFN_METHODS', 'as_pushes', 'atom_lines', 'bond_graph',
            'what_else_moved', 'pair_named',
            'gfnff_refusal', 'gfnff_pair_refusal', 'gfnff_would_form',
            'FOD_METHODS', 'can_measure_fod', 'fod_moved',
+           'SCC_METHODS', 'SMEARED_TEMPERATURE', 'GAP_NEEDS_SMEARING',
+           'electronic_temperature_for', 'scc_did_not_converge',
+           'smearing_note', 'scc_gave_out',
            'push_constant', 'turn_for',
            'restraint_energy', 'walk_the_path', 'lowest_real_modes',
            'find_xtb', 'find_binary', 'find_gxtb',
@@ -1177,6 +1180,109 @@ FOD_METHODS = ('gfn1', 'gfn2')
 def can_measure_fod(method: Any) -> bool:
     """Whether *method* answers ``--fod`` -- see :data:`FOD_METHODS`."""
     return str(method or '').strip().lower() in FOD_METHODS
+
+
+#: The methods with a self-consistent charge cycle, which is the thing an
+#: electronic temperature is about.  GFN-FF has no wavefunction to smear, and
+#: g-xTB is another binary whose flags were not measured.
+SCC_METHODS = ('gfn1', 'gfn2')
+
+#: The electronic temperature a run is moved to when a closed-shell SCC has
+#: stopped being able to converge, in kelvin.  xtb's own is 300 K.
+#:
+#: Fermi smearing fills the frontier orbitals fractionally where they are
+#: within a few kT of each other, and does nothing at all where they are not:
+#: kT at 1000 K is 0.086 eV, so at a gap of 1.5 eV the occupations are
+#: integers to machine precision and the energy is the 300 K energy.  Measured
+#: on a 42-atom molecule under GFN2 in DMSO, the geometries taken out of a
+#: user's own session:
+#:
+#:     C-H being torn      gap at 300 K     300 K        1000 K
+#:     1.08 A (intact)     1.86 eV          converges    identical (0.0002 kcal/mol)
+#:     2.13 A              0.20 eV          converges    1.3 kcal/mol lower
+#:     2.08 / 2.10 A       --               SCC fails    converges, gap 0.4 eV
+#:
+#: So 1000 K is not a different method for an ordinary structure; it is the
+#: same one, kept converging across the region where a single determinant has
+#: two orbitals it cannot choose between.  Higher is not better: 3000 K lowers
+#: the torn geometry by 8.5 kcal/mol, which is a statement about the smearing
+#: rather than the molecule.
+SMEARED_TEMPERATURE = 1000.0
+
+#: The frontier gap, in eV, below which the next run is smeared before the SCC
+#: has had the chance to fail.  A failed SCC is xtb's whole iteration budget
+#: spent for nothing -- 250 cycles, and on the geometries above fifty seconds
+#: of a shared machine -- so it is cheaper to read the gap of the answer that
+#: has just come back than to wait for the next one to fail.  The failures
+#: measured sit below 0.2 eV; half an electronvolt is one answer's margin on a
+#: bond being pulled apart, where the gap falls fastest.
+GAP_NEEDS_SMEARING = 0.5
+
+
+def electronic_temperature_for(gap: Any, method: Any) -> Optional[float]:
+    """The electronic temperature this gap asks for, or None for xtb's own.
+
+    None for a method without an SCC, for no gap at all, and for any gap that
+    is open -- see :data:`GAP_NEEDS_SMEARING` for the one number this reads,
+    and :data:`SMEARED_TEMPERATURE` for what it answers with.
+    """
+    if str(method or '').strip().lower() not in SCC_METHODS:
+        return None
+    try:
+        value = float(gap)
+    except (TypeError, ValueError):
+        return None
+    if value < GAP_NEEDS_SMEARING:
+        return SMEARED_TEMPERATURE
+    return None
+
+
+def scc_did_not_converge(text: Any) -> bool:
+    """Whether a status or an xtb output says the SCC gave out.
+
+    The two spellings xtb has for it, both taken from real runs: a single
+    point says "Self consistent charge iterator did not converge", and an
+    optimisation whose step failed says "SCF not converged, aborting" first
+    and the other sentence further down.
+    """
+    low = str(text or '').lower()
+    return ('self consistent charge iterator did not converge' in low
+            or 'scf not converged' in low)
+
+
+def smearing_note(etemp: Any) -> str:
+    """The clause a run's status carries when it was smeared, or ''."""
+    try:
+        warmth = float(etemp)
+    except (TypeError, ValueError):
+        return ''
+    if warmth <= 0:
+        return ''
+    return f' At an electronic temperature of {warmth:g} K.'
+
+
+def scc_gave_out(label: str, gap: Any = None, etemp: Any = None) -> str:
+    """What to say when the SCC would not converge, in a chemist's terms.
+
+    The generic failure text blames the xtb build, because for a Fortran
+    runtime error that is the right suspect.  It is the wrong one here: a
+    closed-shell SCC that stops converging where a bond is being pulled apart
+    is the method reaching its limit, and the sentence has to say what to do
+    about it rather than which binary to compare against.
+    """
+    said = f'{label} could not converge a closed-shell wavefunction here'
+    try:
+        said += f' -- the frontier gap had closed to {float(gap):.1f} eV'
+    except (TypeError, ValueError):
+        pass
+    try:
+        if float(etemp) > 0:
+            said += f', even with Fermi smearing at {float(etemp):g} K'
+    except (TypeError, ValueError):
+        pass
+    return (said + '. A single determinant cannot describe two electrons '
+            'coming apart; ease the bond back, or take this structure to a '
+            'method that can.')
 
 
 #: How much of a change in N_FOD is worth a sentence.
@@ -3606,6 +3712,7 @@ def optimize_with_gfn(
     free_energy: bool = False,
     thermo_kelvin: float = 298.15,
     fod: bool = False,
+    etemp: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Relax *xyz_text* with xtb and say what happened.
 
@@ -3671,6 +3778,13 @@ def optimize_with_gfn(
     0.49 for sixteen atoms and 10.5 against 3.5 for a 57-atom manganese
     complex -- two to three single points, and a small fraction of one
     optimisation step, which was 7.4 s and 35.6 s on the same two.
+
+    *etemp* is an electronic temperature in kelvin, passed to xtb as
+    ``--etemp`` for the methods that have an SCC and ignored for the ones that
+    do not -- see :data:`SCC_METHODS` and :data:`SMEARED_TEMPERATURE` for
+    when it is worth asking for.  The result carries it as ``'etemp'`` (None
+    for xtb's own), so a caller comparing two energies can see whether they
+    were computed the same way.
     """
     key = str(method or '').strip().lower()
     if key not in GFN_METHODS:
@@ -3785,6 +3899,10 @@ def optimize_with_gfn(
         source.write_text(f'{len(body)}\nfrom the DELFIN viewer\n'
                           + '\n'.join(body) + '\n', encoding='utf-8')
         cores = interactive_cores(len(body))
+        # The electronic temperature, where the method has one -- see
+        # :data:`SCC_METHODS`.  Asked of GFN-FF it would be a flag about a
+        # wavefunction the method does not have, so it is not passed.
+        warmth = float(etemp) if (etemp and key in SCC_METHODS) else None
         # A free energy is a Hessian, and a Hessian is not free: measured
         # under GFN2, 0.57 s against 0.29 for sixteen atoms and 3.72 against
         # 0.76 for twenty-four.  So it is asked for and never assumed.
@@ -3793,6 +3911,7 @@ def optimize_with_gfn(
                      else ['--opt'] if optimise
                      else ['--hess'] if free_energy else []),
                    *(['--fod'] if fod else []),
+                   *(['--etemp', f'{warmth:g}'] if warmth else []),
                    '--chrg', str(int(charge)), '--uhf', str(max(0, int(uhf))),
                    '-P', str(cores)]
         if max_steps:
@@ -4175,6 +4294,7 @@ def optimize_with_gfn(
                 'version': version, 'hamiltonian': reported or wanted,
                 'frames': [],
                 'output': output[-4000:], 'binary': str(binary),
+                'etemp': warmth,
                 'status': (f'{label} stopped with an error: '
                            f'{why_it_stopped(output)} The structure was left '
                            f'as it was. {which_xtb_ran(binary, output)}'),
@@ -4206,26 +4326,28 @@ def optimize_with_gfn(
                 'ok': True, 'xyz': relaxed, 'energy': energy, 'free_energy': free,
                 'imaginary': wrong_way, 'gap': gap, 'method': key,
                 'charges': charges, 'bonds': bonds, 'gradient': gradient,
-                'thermo': thermo, 'fod': spread,
+                'thermo': thermo, 'fod': spread, 'etemp': warmth,
                 'seconds': seconds, 'engine': 'xtb', 'frames': frames, 'version': version,
                 'hamiltonian': reported or wanted or label, 'held': held,
                 'converged': False, 'solvent': wet, 'solvation_model': model,
                 'status': (f'{label} stopped before converging after '
                            f'{seconds:.1f} s; the geometry it reached is shown. '
                            f'(xtb {version}, {reported or wanted or label})'
-                           + solvent_note(wet, model) + held_note(held)),
+                           + solvent_note(wet, model) + held_note(held)
+                       + smearing_note(warmth)),
             }
         return {
             'ok': True, 'xyz': relaxed, 'energy': energy, 'free_energy': free,
             'imaginary': wrong_way, 'gap': gap, 'method': key,
             'charges': charges, 'bonds': bonds, 'gradient': gradient,
-            'thermo': thermo, 'fod': spread,
+            'thermo': thermo, 'fod': spread, 'etemp': warmth,
             'seconds': seconds, 'engine': 'xtb', 'frames': frames, 'version': version,
             'hamiltonian': reported or wanted or label, 'held': held,
             'converged': True, 'solvent': wet, 'solvation_model': model,
             'status': (f'{label} converged in {seconds:.1f} s '
                        f'(xtb {version}, {reported or wanted or label}).'
-                       + solvent_note(wet, model) + held_note(held)),
+                       + solvent_note(wet, model) + held_note(held)
+                       + smearing_note(warmth)),
         }
     finally:
         shutil.rmtree(folder, ignore_errors=True)
@@ -4327,6 +4449,7 @@ def relax_steps(
     solvent: Optional[str] = None,
     solvation_model: str = 'alpb',
     should_stop: Optional[Callable[[], bool]] = None,
+    etemp: Optional[float] = None,
 ) -> Dict[str, Any]:
     """A few optimisation cycles, for a loop that shows the structure settling.
 
@@ -4362,6 +4485,7 @@ def relax_steps(
         max_steps=max(1, int(cycles)), timeout=timeout,
         constraints=constraints, topology=topology, solvent=solvent,
         solvation_model=solvation_model, should_stop=should_stop,
+        etemp=etemp,
     )
     result['converged'] = bool(
         result.get('ok') and 'converged in' in str(result.get('status') or '')
