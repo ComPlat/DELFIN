@@ -2137,6 +2137,10 @@ class AgentEngine:
             # grounded, and flagging it would be the fastest way to teach
             # somebody to ignore the guard.
             self._last_user_message = user_message or ""
+            # Per turn, like every other one-shot above it: the model is
+            # told once that it is answering in the wrong language, and
+            # the next turn gets to be told again if it happens again.
+            self._language_note_sent = False
             # Same rule, same reason, and it was documented as per-turn
             # while never being cleared: once ANY tool truncated in a
             # session, every later answer carrying a two-digit count got
@@ -2504,6 +2508,9 @@ class AgentEngine:
                         on_thinking(event.text)
 
                 elif event.type == "tool_use":
+                    # The first thing the user reads is the sentence before
+                    # this call, and the end-of-turn guard cannot reach it.
+                    self._nudge_language_if_wrong(chunks)
                     # Code-level tool whitelist enforcement
                     role_id = self.route[self.current_role_index] if self.route else ""
                     allowed = _ROLE_TOOL_WHITELIST.get(role_id)
@@ -3141,6 +3148,51 @@ class AgentEngine:
                 pass
 
         return full_response + _guard_note
+
+    def _nudge_language_if_wrong(self, chunks) -> None:
+        """Tell the model it is in the wrong language, mid-turn.
+
+        The end-of-turn guard corrects the ANSWER. What a user reads FIRST
+        is the sentence before the first tool call, and that one is on
+        screen before anything has looked at it — measured in a field
+        report where an English question got a German opening line, four
+        tool rounds, and no final answer at all: the whole turn the user
+        saw was the one sentence no guard could reach, and the report
+        asked why it was still both languages.
+
+        Nothing here can un-print that sentence. What it can do is stop
+        the rest of the turn from continuing in it. The note rides the
+        rail built for facts that changed under the model mid-run
+        (``push_run_note`` → drained between tool rounds), so the model is
+        told before it writes its next word rather than after its last.
+
+        Once per turn. A second telling on every round would be nagging
+        about a thing already said, and the model has to be allowed to act
+        on the first one.
+        """
+        if getattr(self, "_language_note_sent", False):
+            return
+        try:
+            asked = str(getattr(self, "_last_user_message", "") or "")
+            # A correction turn's body is always English; reading one back
+            # would demand English of every German session.
+            if asked.lstrip().startswith("[Verify]"):
+                return
+            said = "".join(chunks or ())
+            from . import verify_guard as _vg
+            want = _vg.scan_for_language_mismatch(said, asked)
+            if not want:
+                return
+            note = _vg.language_mismatch_feedback(want).replace(
+                "[Verify] ", "", 1)
+            if not note:
+                return
+            self._language_note_sent = True
+            self.client.push_run_note(note)
+        except Exception:
+            # A nudge that raises would cost the turn it was meant to
+            # improve. It is advice, not a gate.
+            pass
 
     def _turn_describes_intent(self) -> bool:
         """True when this turn proposes future work rather than asserting
