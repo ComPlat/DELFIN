@@ -632,6 +632,69 @@ _JSON_FIELD_RE = re.compile(
 # folder, or a CSV's first column.
 _PATH_SEGMENT_RE = re.compile(r"[A-Za-z0-9][\w.+-]{3,}")
 
+# Every caveat, in both languages the sessions run in. One table, so a
+# new note cannot be added in one language and forgotten in the other.
+_CAVEAT_TEXTS: dict[str, dict[str, str]] = {
+    "de": {
+        "unsourced": ("\n\n[verify] Caveat: die folgenden Angaben sind "
+                      "unbelegt — kein Datei-Zugriff und keine Recherche in "
+                      "dieser Sitzung deckt sie ab: "),
+        "unsourced_end": ". Bitte als unbestätigt behandeln.",
+        "truncated_a": "\n\n> ⚠️ Diese Antwort nennt ",
+        "truncated_b": ", aber die Ausgabe von ",
+        "truncated_c": (" wurde in diesem Zug abgeschnitten. Eine Zahl, "
+                        "deren einzige Quelle abgeschnitten war, ist "
+                        "geschätzt und nicht gezählt — bitte gegen die "
+                        "vollständige Liste prüfen, bevor sie weitergegeben "
+                        "wird."),
+        "truncated_where": "ein Werkzeug-Ergebnis",
+    },
+    "en": {
+        "unsourced": ("\n\n[verify] Caveat: the following figures are "
+                      "unsupported — no file access and no lookup in this "
+                      "session covers them: "),
+        "unsourced_end": ". Please treat them as unconfirmed.",
+        "truncated_a": "\n\n> ⚠️ This answer states ",
+        "truncated_b": ", but the output of ",
+        "truncated_c": (" was truncated in this turn. A number whose only "
+                        "source was cut short is an estimate, not a count — "
+                        "please check it against the full list before "
+                        "passing it on."),
+        "truncated_where": "a tool result",
+    },
+}
+
+
+# Which language the CAVEATS speak. They are the only guard output the
+# user reads — the feedback that goes to the model is English by
+# construction — and they were hardcoded German. An English session
+# therefore got an English answer from the model with German warnings
+# stapled underneath it, which is the rule and its own mechanism
+# disagreeing, in the one place the disagreement is visible.
+#
+# A ContextVar rather than a global: subagents and background turns run
+# in their own contexts and must not repaint each other's language.
+_caveat_language: "_contextvars.ContextVar[str]" = (
+    _contextvars.ContextVar("delfin_caveat_language", default="de"))
+
+
+def set_caveat_language(lang: str) -> None:
+    """Speak the session's language in the notes the user reads.
+
+    Anything but a language this module has words for leaves it alone —
+    a half-translated caveat is worse than one consistent language.
+    """
+    if str(lang or "") in _CAVEAT_TEXTS:
+        _caveat_language.set(str(lang))
+
+
+def _t(key: str) -> str:
+    """The caveat text for the active language, German if unsure."""
+    lang = _caveat_language.get() or "de"
+    table = _CAVEAT_TEXTS.get(lang) or _CAVEAT_TEXTS["de"]
+    return table.get(key, _CAVEAT_TEXTS["de"].get(key, ""))
+
+
 _keyed_values: "_contextvars.ContextVar[Optional[dict]]" = (
     _contextvars.ContextVar("delfin_keyed_values", default=None))
 
@@ -704,6 +767,8 @@ def record_keyed_values(output: Any, *, source: str = "") -> int:
             nonlocal added
             if not record or len(pool) >= MAX_KEYED_VALUES:
                 return
+            if field in _ENVELOPE_FIELDS:
+                return
             try:
                 value = float(raw)
             except ValueError:
@@ -753,6 +818,18 @@ def _reads_an_artifact(witness: str) -> bool:
     Errs toward calling something an artifact, which errs toward silence.
     """
     return bool(_ARTIFACT_WITNESS_RE.search(str(witness or "")))
+
+
+# The harness's own bookkeeping, wrapped around every tool result. These
+# are not figures about a record and comparing them is never a finding:
+# a shell call that took 0.055 s and another that took 0.943 s is not a
+# contradiction, and reporting it as one — in a session the user was
+# recording — is a false accusation about a number nobody claimed.
+_ENVELOPE_FIELDS = frozenset({
+    "elapsed_s", "exit_code", "returncode", "duration_s", "runtime_s",
+    "elapsed", "duration", "ttft_ms", "latency_ms", "status_code",
+    "input_tokens", "output_tokens", "total_tokens", "cost_usd",
+})
 
 
 def _single_record_fields(pool: dict) -> dict:
@@ -1822,9 +1899,7 @@ def grounding_caveat(
     if not items:
         return ""
     return (
-        "\n\n[verify] Caveat: die folgenden Angaben sind unbelegt — kein "
-        "Datei-Zugriff und keine Recherche in dieser Sitzung deckt sie ab: "
-        + ", ".join(items) + ". Bitte als unbestätigt behandeln."
+        _t("unsourced") + ", ".join(items) + _t("unsourced_end")
     )
 
 
@@ -2696,15 +2771,14 @@ def truncated_output_caveat(counts: list[str], tools: list[str]) -> str:
     """The note appended to an answer counting from a cut-short result."""
     if not counts:
         return ""
-    named = ", ".join(counts[:3])
-    where = ", ".join(sorted(set(tools))[:3]) or "ein Werkzeug-Ergebnis"
-    return (
-        "\n\n> ⚠️ Diese Antwort nennt " + named + ", aber die Ausgabe von "
-        + where + " wurde in diesem Zug abgeschnitten. Eine Zahl, deren "
-        "einzige Quelle abgeschnitten war, ist geschätzt und nicht gezählt "
-        "— bitte gegen die vollständige Liste prüfen, bevor sie "
-        "weitergegeben wird."
-    )
+    # Deduplicated, order kept. The field report read "27 components,
+    # 27 components, 27 components": one claim, counted once per place it
+    # appeared in the answer, and printed once per count. A warning that
+    # stutters is read as a broken warning.
+    named = ", ".join(dict.fromkeys(counts))
+    where = ", ".join(sorted(set(tools))[:3]) or _t("truncated_where")
+    return (_t("truncated_a") + named + _t("truncated_b")
+            + where + _t("truncated_c"))
 
 
 def ambiguous_column_caveat(columns: list[str]) -> str:
