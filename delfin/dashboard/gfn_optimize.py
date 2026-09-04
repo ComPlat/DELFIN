@@ -41,7 +41,7 @@ __all__ = ['GFN_METHODS', 'as_pushes', 'atom_lines', 'bond_graph',
            'read_charges', 'not_a_stationary_point', 'rms_gradient',
            'constraint_input', 'contacts_holding', 'graph_changed',
            'speaking_for_the_drag', 'travel_between',
-           'bonds_to_freeze', 'graph_holds',
+           'bonds_to_freeze', 'graph_holds', 'stretched_bond',
            'method_is_out_of_its_depth',
            'a_rate_apart', 'paths_disagree', 'where_a_walk_jumped',
            'what_else_moved', 'pair_named',
@@ -2004,6 +2004,42 @@ def bonds_to_freeze(xyz_text: str) -> list:
     return held
 
 
+def stretched_bond(reference: str, wish: str, dragged: Any,
+                   keeping: Any = None) -> Optional[dict]:
+    """The kept bond a wish stretches most, or None when it stretches none.
+
+    ``{'atoms': (i, j), 'was': A, 'now': A, 'names': 'C12-H36'}`` -- for the
+    line that says why a gesture under Keep bonds moved nothing: the hand
+    asked for the one thing it was told not to do.
+    """
+    then = [line.split() for line in atom_lines(reference)]
+    now = [line.split() for line in atom_lines(wish)]
+    if not then or len(then) != len(now):
+        return None
+    before = [(float(r[1]), float(r[2]), float(r[3])) for r in then]
+    after = [(float(r[1]), float(r[2]), float(r[3])) for r in now]
+    symbols = [str(r[0]) for r in now]
+    bonds = (frozenset(tuple(sorted(int(n) for n in one)) for one in keeping)
+             if keeping is not None else bond_graph(reference))
+    hand = {int(i) for i in (dragged or ()) if 0 <= int(i) < len(now)}
+    worst = None
+    for i, j in bonds:
+        if i not in hand and j not in hand:
+            continue
+        if not (0 <= i < len(now) and 0 <= j < len(now)):
+            continue
+        was = math.dist(before[i], before[j])
+        is_now = math.dist(after[i], after[j])
+        grown = abs(is_now - was)
+        if worst is None or grown > worst['grown']:
+            worst = {'atoms': (i, j), 'was': was, 'now': is_now,
+                     'grown': grown, 'names': pair_named((i, j), symbols)}
+    if worst is None or worst['grown'] < _MOVED_ANGSTROM:
+        return None
+    worst.pop('grown')
+    return worst
+
+
 def graph_changed(before: Any, after: Any, symbols: Any = None) -> str:
     """What happened between two bond graphs, said in words, or ''.
 
@@ -2540,7 +2576,8 @@ def _carries(vector, pulled) -> float:
     return abs(sum(one * two for one, two in zip(vector, pulled)))
 
 
-def turn_for(where, radius, grabbed, held, pulled=None) -> list:
+def turn_for(where, radius, grabbed, held, pulled=None,
+             terminal=False) -> list:
     """The soft coordinate a hand on *grabbed* would really be moving.
 
     A bond is the wrong thing for a drag to drive.  It is the one coordinate
@@ -2591,6 +2628,14 @@ def turn_for(where, radius, grabbed, held, pulled=None) -> list:
     where a better one exists -- and the caller weighs the two, in the one
     currency :func:`_carries` puts them both in.
 
+    *terminal* admits a grabbed atom with a single bond -- a hydrogen -- to
+    the torsion about the bond one further in, which does carry it: a
+    hydrogen on a carbon swings through an arc when the carbon's own bond is
+    turned.  Off, which is the ordinary drag, such an atom is left to the
+    bond it hangs on, because pulled at, the bond is usually what the hand
+    means.  Keep bonds asks for it on, because there the bond is the one
+    thing the hand may not have, and the arc is what is left.
+
     What this does not settle, said plainly because it was measured.  The
     carry says which coordinates *can* move the grabbed atom; it cannot say
     whether the molecule will let them, because that is an energy and there
@@ -2613,7 +2658,7 @@ def turn_for(where, radius, grabbed, held, pulled=None) -> list:
         # was.  Pulled at, what changes is the bond and nothing else -- which
         # is the case the hold on "the neighbour it is leaving" was written
         # for, and it stays that.
-        if len(near) < 2:
+        if len(near) < (1 if terminal else 2):
             continue
         for b in near:
             if b in grabbed:
@@ -2864,6 +2909,7 @@ def contacts_holding(
     holding: Any = None,
     opening: bool = False,
     unchanged: bool = False,
+    keeping: Any = None,
 ) -> list:
     """The internal coordinates the hand moved, to hold while the rest relaxes.
 
@@ -2909,6 +2955,24 @@ def contacts_holding(
     the caller then makes that decision stick through *turning*.  It is still
     given *was*, because which way the hand went is exactly what tells a turn
     from a stretch, and a drag that has not been told cannot know.
+
+    *keeping* is the bonding the drag must leave as it is -- the pairs of a
+    :func:`bond_graph` -- and given, it changes what may be driven at all.
+    A bond in it is never a held coordinate, and neither is a pair that is
+    not in it and would be bonded at the value the hand asks for: the first
+    is a bond breaking, the second one forming.  What the hand can drive
+    then is a torsion or an angle, which is what moves an atom without
+    moving it off its neighbours, and a terminal atom is given the torsion
+    about the bond one further in for it -- see :func:`turn_for`.  Where no
+    such coordinate exists the answer is empty, and the caller says so:
+    that gesture asks for a bond to stretch, and that is the one thing it
+    was told not to do.
+
+    Measured before this, with Keep bonds on and the hand a pull: a
+    hydrogen drawn off its carbon was driven *on its own bond* at 72
+    kcal/mol/A, the bond came apart, the wall refused every answer, and the
+    picture stood still through twenty-seven of them with a line underneath
+    saying the bonding was being kept.  Kept it was; nothing else happened.
     """
     rows = [line.split() for line in atom_lines(xyz_text)]
     if not rows:
@@ -2937,6 +3001,30 @@ def contacts_holding(
     grabbed = sorted({int(i) for i in (dragged or ())
                       if 0 <= int(i) < len(where)})
     held = with_their_terminals(where, radius, grabbed)
+    kept_bonds = (frozenset(tuple(sorted(int(n) for n in one))
+                            for one in keeping)
+                  if keeping is not None else None)
+
+    def tied(i, j):
+        """Whether this pair is off limits while the bonding is kept.
+
+        A bond that is being kept; a pair that would be bonded at the value
+        asked for; and a pair across one atom -- the angle in another
+        currency.  Held exactly against frozen bonds, an angle cannot be
+        met without one of them giving: measured on an ethane under the
+        rigid hand, the H...C across the carbon held to the wish stretched
+        the C-H it hangs on to 1.34 A.  A torsion carries the atom along
+        the arc the bonds allow, and that is what is left on offer.
+        """
+        if kept_bonds is None:
+            return False
+        if (min(i, j), max(i, j)) in kept_bonds:
+            return True
+        if _is_a_bond(where, radius, i, j):
+            return True
+        return any((min(i, k), max(i, k)) in kept_bonds
+                   and (min(j, k), max(j, k)) in kept_bonds
+                   for k in range(len(where)) if k not in (i, j))
     # Everything the hand holds travels; not everything it holds has something
     # of its own to say about what it is driving.  See
     # :func:`speaking_for_the_drag`, and the methyl that turned 1.29 A an
@@ -2996,6 +3084,12 @@ def contacts_holding(
             far = math.sqrt(sum(one * one for one in went))
             if far > 1e-9:
                 pulled = [one / far for one in went]
+        if tied(i, j):
+            # Under Keep bonds the bond is not on offer, so the turn is the
+            # answer whether or not it carries the hand better -- and
+            # nothing is the answer when there is no turn.
+            return turn_for(where, radius, grabbed, held, pulled=pulled,
+                            terminal=True)
         if _is_a_bond(where, radius, i, j):
             turn = turn_for(where, radius, grabbed, held, pulled=pulled)
             if turn:
@@ -3035,12 +3129,16 @@ def contacts_holding(
                     continue
             if _occluded(where, radius, i, j):
                 continue
-            offer('distance', (i, j),
-                  _no_closer_than(where, radius, i, j,
-                                  math.dist(where[i], where[j])),
-                  abs(math.dist(where[i], where[j])
-                      - math.dist(then[i], then[j])))
-            if not bond:
+            if not tied(i, j):
+                offer('distance', (i, j),
+                      _no_closer_than(where, radius, i, j,
+                                      math.dist(where[i], where[j])),
+                      abs(math.dist(where[i], where[j])
+                          - math.dist(then[i], then[j])))
+            # A bond stretched past the cutoff in the wish is still the bond
+            # its torsions hang on while it is being kept.
+            if not (bond or (kept_bonds is not None
+                             and (min(i, j), max(i, j)) in kept_bonds)):
                 continue
             for k in range(len(where)):
                 if k in (i, j) or k in held:
@@ -3107,13 +3205,14 @@ def contacts_holding(
             for one in kept:
                 atoms = [int(n) for n in one['atoms']]
                 if any(not (0 <= n < len(where)) for n in atoms):
-                    return contacts_holding(xyz_text, dragged, most=most)
+                    return contacts_holding(xyz_text, dragged, most=most,
+                                            keeping=keeping)
                 one['value'] = (math.dist(where[atoms[0]], where[atoms[1]])
                                 if one['kind'] == 'distance'
                                 else _dihedral(where, *atoms)
                                 if one['kind'] == 'dihedral' else one['value'])
             return kept
-        return contacts_holding(xyz_text, dragged, most=most)
+        return contacts_holding(xyz_text, dragged, most=most, keeping=keeping)
     top = max(standing.values())
     kept = [one for one in ranked
             if standing[(one['kind'], tuple(one['atoms']))] >= _MOVED_SHARE * top]

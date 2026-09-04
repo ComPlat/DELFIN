@@ -5778,6 +5778,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # a drag is asked the steady one either way, a few lines
                     # below; this is about all the ones after it.
                     steady = bool(submit_steady_hand_btn.value)
+                    # The bonding Keep bonds is keeping, or None.  Handed to
+                    # the perception so a bond is never the coordinate the
+                    # hand drives -- see contacts_holding for what it was
+                    # doing before, which was driving the bond apart and
+                    # refusing every answer.
+                    bonds_kept = _bonds_being_kept(
+                        state.get('thermal_was') or current)
                     contacts = (
                         _gfn.contacts_holding(
                             current, holding, most=3,
@@ -5785,8 +5792,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             turning=state.get('thermal_turn'),
                             holding=state.get('thermal_holding'),
                             opening=steady,
-                            unchanged=still)
-                        if ((pricing or pull is not None)
+                            unchanged=still,
+                            keeping=bonds_kept)
+                        # And under Keep bonds with the rigid hand, which
+                        # used to hold nothing: the page kept the atom at
+                        # the cursor, every bond was frozen, and the one way
+                        # to satisfy both was for the whole molecule to
+                        # follow the hand -- measured on an ethane, a
+                        # hydrogen drawn across its bond turned the torsion
+                        # six degrees in eight answers and the molecule
+                        # drifted.  With the torsion held to the wish it
+                        # swings.
+                        if ((pricing or pull is not None
+                             or bonds_kept is not None)
                             and not _mopac.is_mopac_method(method)) else [])
                     if contacts and state.pop('gfn_follow_opening', False):
                         # The first answer of a drag decides whether the hand
@@ -5820,10 +5838,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         # history is better at.
                         opening = _gfn.contacts_holding(
                             current, holding, most=3,
-                            was=state.get('thermal_was'), opening=True)
+                            was=state.get('thermal_was'), opening=True,
+                            keeping=bonds_kept)
                         if opening and str(
                                 opening[0].get('kind')) == 'dihedral':
                             contacts = opening
+                    # Under Keep bonds a hand that has moved and has nothing
+                    # to drive has asked for a bond to stretch.  Said, once
+                    # per gesture, because on screen it is a drag that does
+                    # nothing.
+                    stretched = None
+                    if bonds_kept is not None and not contacts and not still:
+                        stretched = _gfn.stretched_bond(
+                            state.get('thermal_was') or current, current,
+                            holding, bonds_kept)
                     # Keep bonds, the way GOAT keeps them: frozen while the
                     # structure is being pushed, rather than the step refused
                     # afterwards.  The way not to break a bond is not to let
@@ -5843,8 +5871,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         walking = {tuple(sorted(one['atoms']))
                                    for one in contacts
                                    if len(one.get('atoms') or ()) == 2}
+                        # At the lengths of the last answer, not of the wish:
+                        # the wish has the held atom where the cursor put
+                        # it, and a bond frozen at *that* length is a bond
+                        # frozen stretched.
                         keeping += [
-                            one for one in _gfn.bonds_to_freeze(current)
+                            one for one in _gfn.bonds_to_freeze(
+                                state.get('thermal_was') or current)
                             if tuple(sorted(one['atoms'])) not in walking]
                     if pull is not None and contacts:
                         contacts = _gfn.as_pushes(
@@ -6106,6 +6139,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     said = (f'{label} follows the drag{many} \u00b7 {steps} '
                             f'steps, {_hand_answered_in(began) * 1000:.0f} ms'
                             f'{hand}')
+                    if bonds_kept is not None:
+                        said += ' \u00b7 bonds kept'
+                        if stretched is not None:
+                            said += (f' -- this gesture only stretches '
+                                     f'{stretched["names"]}, which is being '
+                                     f'kept; pull across it to swing the '
+                                     f'atom, or turn Keep bonds off')
                     if warmth:
                         # Said on every answer it applies to, because the
                         # price on the same line is the Mermin free energy
@@ -7680,6 +7720,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 state['structure_edit_inflight'] = False
             return
         _write_coords(xyz_document(rows, why))
+
+    def _bonds_being_kept(reference):
+        """The bond graph Keep bonds is holding this drag to, or None.
+
+        The wall's own graph where it has one for this molecule, and the
+        graph of *reference* -- the last answer -- where it has not yet
+        looked, which is the first answer of a drag.
+        """
+        if not submit_topology_btn.value or not reference:
+            return None
+        graph = state.get('topology_graph')
+        if (graph is None
+                or state.get('topology_for') != _structure_fingerprint(reference)):
+            graph = _gfn.bond_graph(reference)
+        return graph
 
     def _topology_wall(xyz):
         """Keep the molecule the molecule it was, and take back what did not.
