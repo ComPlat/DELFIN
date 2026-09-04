@@ -8665,22 +8665,61 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         'and has gone off with it. Switch the relaxation back '
                         'on to have changes priced again.')
                     return
-                # What this switch stops is the hand being answered.  A
-                # climb or an optimisation is its own press with its own
-                # button, and taking one down from here would surprise
-                # somebody who started it deliberately -- but saying nothing
-                # is being relaxed while one of them is still walking the
-                # structure is worse.  Reported from a real session: the
-                # switch went off, the line said this, and run 54 went on
-                # streaming frames into the picture for another sixteen
-                # seconds.
-                walking = ('the climb' if state.get('climb_run') is not None
-                           else 'an optimisation'
-                           if state.get('optimize_run') is not None else '')
+                # Dynamik Opt is the switch for the structure answering the
+                # hand, and a walk a release started is the hand carrying on:
+                # Auto minimising from where a drag left off, or a climb
+                # aimed by the gesture.  So it belongs to this switch and
+                # goes off with it.  Reported from a real session: the switch
+                # went off, the line said a climb was still its own to stop,
+                # and run 54 went on streaming frames into the picture for
+                # another sixteen seconds -- "Dynamik Opt aus, es geht
+                # weiter, warum?".
+                #
+                # A climb or a minimise the *user* pressed for, on the other
+                # hand, is a deliberate calculation with its own button, and
+                # taking that down from here would surprise them.  Which of
+                # the two it is was written where the run began -- see
+                # walk_from_release in _climb_now and on_submit_optimize.
+                climbing = state.get('climb_run') is not None
+                optimising = state.get('optimize_run') is not None
+                from_hand = ((climbing or optimising)
+                             and bool(state.get('walk_from_release')))
+                if from_hand:
+                    stopped = 'the climb' if climbing else 'the optimisation'
+                    if optimising:
+                        # Its own switch is the clean way to stop it, and it
+                        # ends the run and tidies the player behind it.
+                        for one in (submit_optimize_btn, submit_optimize_all_btn):
+                            if one.value:
+                                one.value = False
+                    if climbing:
+                        # A climb has no switch that is only its run -- Climb
+                        # to TS is a mode, left as it is so the next drag
+                        # still climbs -- so the run is ended here the way an
+                        # interrupt ends it, and the player is reset so its
+                        # frames do not play on over the structure.
+                        state['climb_cut'] = state.get('climb_run')
+                        state['climb_run'] = None
+                        state.pop('climb_interrupted', None)
+                        state['gfn_halt_sent'] = True
+                        blank = _note_the_run(
+                            int(state.get('gfn_run', 0)) + 1, 'abandoned')
+                        state['gfn_run'] = blank
+                        submit_gfn_frame.value = _frame_payload(
+                            blank, **{'frames': [], 'abandoned': 1})
+                    state.pop('walk_from_release', None)
+                    _set_mol_status(
+                        'The structure is no longer following your hand, and '
+                        + stopped + ' it had carried on into has stopped with '
+                        'it.')
+                    return
+                walking = ('the climb' if climbing
+                           else 'an optimisation' if optimising else '')
                 _set_mol_status(
                     'The structure is no longer following your hand.'
-                    + (f' {walking.capitalize()} is still running -- its own '
-                       'button is what stops that.' if walking else ''))
+                    + (f' {walking.capitalize()} is still running -- you '
+                       'started it yourself, so its own button is what stops '
+                       'that.' if walking else ''))
                 return
             if _server_binary(submit_ff_dd.value) is None:
                 _set_mol_status(f'{label} needs a program that was not found.')
@@ -9072,6 +9111,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return                      # one is already running
         if submit_optimize_btn.value or submit_optimize_all_btn.value:
             return                      # a switch is already down
+        # A minimise Auto starts on a release is the hand carrying on, the
+        # same as the climb above: it belongs to Dynamik Opt.  The button's
+        # own handler reads this the moment it is pressed.
+        state['optimise_from_release'] = True
         # The switch, not the handler: it has to be seen to be on for as long
         # as it runs, and it is what the user presses to stop it again.
         submit_optimize_btn.value = True
@@ -9321,6 +9364,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
         token = object()
         state['optimize_run'] = token
+        # A minimise Auto started on a release belongs to Dynamik Opt; one a
+        # user pressed Optimize for is their own.  Read once, here, where the
+        # run begins, so the flag cannot outlive the press that set it.
+        state['walk_from_release'] = bool(state.pop('optimise_from_release', False))
 
         #: Whether this press was ever stopped, remembered rather than asked
         #: for again at the end.  By the time the row is written the run
@@ -16434,6 +16481,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         held = state.pop('climb_held', None)
         token = object()
         state['climb_run'] = token
+        # Whether a hand release started this walk.  A climb aimed by a
+        # gesture -- Auto carrying on from a drag, or the drag bringing back
+        # the climb it interrupted -- is a continuation of the hand, so it
+        # belongs to Dynamik Opt and stops when that switch goes off.  One
+        # begun by pressing Climb to TS on an idle structure is the user's
+        # own deliberate calculation and keeps its own button.
+        state['walk_from_release'] = aimed_from is not None
         state.pop('climb_interrupted', None)
         charge = int(submit_gfn_charge.value or 0)
         uhf = _gfn_uhf_now()
