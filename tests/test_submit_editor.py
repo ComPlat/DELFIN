@@ -2687,6 +2687,9 @@ _METHODS = ('uff', 'mmff94', 'gfnff', 'gfn2', 'gxtb', 'pm6d3h4', 'pm6', 'pm7')
 _BROWSER = ('uff', 'mmff94')
 _XTB = ('gfnff', 'gfn2', 'gxtb')
 _MOPAC = ('pm6d3h4', 'pm6', 'pm7')
+#: The methods the live hand can drive: climb takes a drag-speed gradient from
+#: GFN2/GFN1/GFN-FF and not from g-xTB, which is an xtb method but too slow.
+_STEERABLE = ('gfnff', 'gfn2')
 
 _ETHANE = """8
 ethane
@@ -2963,7 +2966,7 @@ def test_keep_bonds_does_not_tell_a_pm_user_it_changes_nothing(editor):
 
 
 def test_the_pull_hand_is_not_offered_where_it_is_a_placement(editor):
-    """Two hands, and under MOPAC only one of them exists.
+    """Three hands where each has an engine, fewer where one does not.
 
     A pull is a force on an internal coordinate, so it needs an engine that
     can be told to hold one: the browser's field can, and xtb can through its
@@ -2976,13 +2979,19 @@ def test_the_pull_hand_is_not_offered_where_it_is_a_placement(editor):
     cursor -- the same geometry the move hand gives, to the last decimal.
     "Pull with a force" under MOPAC was the move hand under another name, and
     the difference was invisible from the outside.
+
+    The live hand is the server's steered dynamics, whose gradients climb
+    takes from GFN2/GFN1/GFN-FF only, so it joins the box under those and not
+    under g-xTB, a browser method or MOPAC.
     """
     part = editor()
     for method in _METHODS:
         part.submit_ff_dd.value = method
         offered = [value for _label, value in part.submit_hand_dd.options]
-        assert offered == (['move'] if method in _MOPAC
-                           else ['pull', 'move']), method
+        expected = (['move'] if method in _MOPAC
+                    else ['pull', 'move', 'live'] if method in _STEERABLE
+                    else ['pull', 'move'])
+        assert offered == expected, method
         if method in _MOPAC:
             assert part.submit_hand_dd.value == 'move'
             assert not _visible(part.submit_pull_slider)
