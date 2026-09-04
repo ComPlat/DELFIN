@@ -1532,10 +1532,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     )
     #: Which question the perception is asked on every answer of a drag.
     #:
-    #: On -- the default -- the perception is asked what the direction the
-    #: hand is going *carries*, which is the question the first answer of a
-    #: drag is already asked.  Off, it is asked what has *changed* since the
-    #: last answer, which is what the editor did before this was measured.
+    #: Off -- the default, and what the editor has always done -- it is asked
+    #: what has *changed* since the last answer.  On, it is asked what the
+    #: direction the hand is going *carries*, which is the question the first
+    #: answer of a drag is already asked.
     #:
     #: The difference is not a preference.  "What changed" answers itself
     #: badly: the coordinate being held is, by construction, the one that has
@@ -1549,29 +1549,26 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #:     what changed (off)      128           163            +98.2
     #:     what the hand carries    30           116           +296.2
     #:
-    #: Four times steadier and slightly cheaper on the whole, and worse only
-    #: at its single worst answer -- which the wall refuses either way, so it
-    #: is a number in the price and not a geometry the user is left with.
-    #: Measured again on a user's own 42-atom structure, GFN2 in DMSO, a
-    #: hydrogen in a ring of others dragged with the hand standing still: the
-    #: coordinate changed ten times in fifteen answers and an atom jumped a
-    #: median 0.85 A and up to 1.96 between answers with the old rule, and one
-    #: time and a median 0.14 A with this one.  That is the zappeln, and this
-    #: is the cure, so it is the default; the switch stays for the hand that
-    #: really turns, where the old rule's cheapness is the point.
+    #: Four times steadier and slightly cheaper on the whole, and three times
+    #: worse at its worst.  That is the trade, and it is why this is a switch
+    #: and not a replacement: the steady rule holds what the hand is really
+    #: driving -- on the grab measured, the C-H bond of the dragged hydrogen,
+    #: which is what a chemist would name -- and holding something real costs
+    #: something.  The old rule stays cheap by never holding anything
+    #: meaningful; it takes whatever contact happens to be drifting.
     #:
     #: In nineteen of the twenty-five grabs the steady rule names one
     #: coordinate and never changes it.  What changes remain sit in the three
     #: longest grabs, where a hand really did turn -- which is the behaviour
     #: asked for: the gesture may develop, the shaking may not.
     submit_steady_hand_btn = widgets.Checkbox(
-        value=True, description='steady gesture', indent=False,
+        value=False, description='steady gesture', indent=False,
         tooltip=(
             'Ask what the direction of your hand carries, rather than what '
             'changed since the last answer. Four times fewer changes of the '
             'coordinate being held -- the shaking -- and it holds what you '
             'are really driving, which can cost more where that is expensive. '
-            'On by default; turn it off for what the editor did before.'
+            'Off is what the editor has always done.'
         ),
         layout=widgets.Layout(width='150px', display='none'),
     )
