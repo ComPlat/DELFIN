@@ -722,10 +722,54 @@ def optimise_to_saddle(xyz_text: str, method: str = 'gfn2', *,
                                 f'{len(walked)} steps in, and the structure '
                                 'it had reached is shown.'))
         if not _DONE_RE.search(output):
+            # Not converged is not the same as nothing reached.  ORCA hit the
+            # cycle bound without meeting its gradient thresholds -- but a
+            # dissociation saddle is flat, and a run that walks close to one
+            # and stops a hair short of the thresholds has still reached a
+            # transition state the user can take on.  Reported from a real
+            # session on a C-Br breaking: OptTS pressed again and again, each
+            # time "did not converge", and nothing said whether what it had
+            # reached was a saddle at all.
+            #
+            # So the Hessian the converged path takes is taken here too, on
+            # the geometry it stopped at, and the verdict is about the
+            # structure rather than about the optimiser's patience.  One
+            # imaginary mode of its own is a first-order saddle whatever
+            # ORCA's gradient said, and the user is told they have a
+            # transition state to tighten as a job -- not turned away from an
+            # answer they had.
+            shape = None
+            if confirm and text:
+                checked = _gfn.optimize_with_gfn(
+                    text, method, charge=charge, uhf=uhf, solvent=solvent,
+                    solvation_model='alpb', optimise=False, free_energy=True,
+                    timeout=(None if timeout is None
+                             else max(60.0, float(timeout))))
+                if checked.get('ok') and checked.get('imaginary') is not None:
+                    shape = checked['imaginary']
+            read = verdict(shape)
+            if read.get('first_order'):
+                return dict(rest, ok=True, halted=False,
+                            imaginary=shape, confirmed=bool(shape),
+                            converged=False, verdict=read,
+                            status=(f'ORCA walked to a transition state on '
+                                    f'{label} in {seconds:.1f} s but did not '
+                                    'reach its gradient thresholds in the '
+                                    'cycles it had. The structure it stopped '
+                                    'at is a first-order saddle; tighten it as '
+                                    'a job to converge it fully, or take this '
+                                    'estimate.'))
+            # Zero, or more than one, imaginary mode: not a transition state.
+            # Say which it reached, from the Hessian, rather than only that it
+            # did not converge -- a minimum and a second-order saddle are two
+            # different reasons a search did not land, and they are acted on
+            # differently.
+            became = ('' if shape is None else f' What it reached is {read["name"]}.')
             return dict(rest, ok=False, halted=False, output=output[-4000:],
+                        imaginary=shape, verdict=read,
                         status=('The transition-state optimisation did not '
                                 'converge; the structure it reached is '
-                                'shown.'))
+                                'shown.' + became))
         # What was reached, from a Hessian on the geometry that was reached.
         shape = _last_modes(output)
         confirmed = False

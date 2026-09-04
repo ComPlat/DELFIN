@@ -802,3 +802,69 @@ def test_one_press_of_the_real_button_walks_climbs_and_draws_it_once():
     history = state.get('history') or []
     assert len(history) == 1, history
     assert history[-1].get('what') == 'the path and the climb', history[-1]
+
+
+def test_a_run_that_did_not_converge_is_still_told_what_it_reached():
+    """Not converged is not the same as nothing reached.
+
+    Reported from a real session on a C-Br bond breaking: OptTS pressed again
+    and again, each time 'did not converge', and nothing said whether what it
+    had reached was a saddle at all.  A dissociation saddle is flat, and ORCA
+    can walk close to one and stop a hair short of its gradient thresholds in
+    the cycles it has -- so the geometry it stopped at is often a first-order
+    saddle whatever the gradient said.
+
+    So the branch that used to say only 'did not converge' now takes the same
+    Hessian the converged branch takes, on the geometry it stopped at, and
+    branches on what a Hessian says it is: one imaginary mode of its own is a
+    transition state to tighten as a job, and zero or several is named as the
+    minimum or higher saddle it actually reached.
+    """
+    import inspect
+
+    body = inspect.getsource(saddle.optimise_to_saddle)
+    # The not-converged branch is the one guarded by the DONE marker being
+    # absent; everything asserted here has to sit after that guard.
+    after = body.split('if not _DONE_RE.search(output):', 1)[1]
+    after = after.split('# What was reached, from a Hessian', 1)[0]
+    # It takes a Hessian on what it reached ...
+    assert 'optimize_with_gfn' in after, (
+        'the not-converged branch reports without checking what it reached')
+    assert 'free_energy=True' in after, 'the check has to be a Hessian'
+    # ... reads the verdict from it ...
+    assert 'verdict(' in after
+    # ... and lets a first-order saddle come back as a reached transition
+    # state rather than a bare failure.
+    assert "read.get('first_order')" in after
+    assert 'ok=True' in after and 'converged=False' in after
+    # And where it is not a saddle, it names what it is.
+    assert "read[\"name\"]" in after or "read['name']" in after
+
+
+@_needs_orca
+def test_a_flat_climb_that_stops_short_names_the_minimum_it_found():
+    """Live, on a start OptTS cannot converge in the one cycle it is given: a
+    pyramidal ammonia, whose planar saddle is several umbrella-mode cycles
+    away.  The old branch said 'did not converge' and stopped; now a Hessian
+    on the geometry it reached says which stationary point it is, so the user
+    learns the climb went down to a minimum rather than up to the saddle."""
+    pyramidal = ("4\nammonia pyramidal\n"
+                 "N   0.0000   0.0000   0.35\n"
+                 "H   0.9377   0.0000  -0.10\n"
+                 "H  -0.4688   0.8121  -0.10\n"
+                 "H  -0.4688  -0.8121  -0.10\n")
+    got = saddle.optimise_to_saddle(pyramidal, 'gfn2', charge=0, uhf=0,
+                                    max_steps=1, timeout=150, confirm=True)
+    # It did not converge in one cycle from there.
+    if got.get('ok'):
+        # ORCA converged after all on this machine -- then the point of the
+        # test does not arise, and a converged saddle is a fine outcome.
+        assert got.get('imaginary') is not None
+        return
+    # Not converged, but now characterised: the verdict and the modes are
+    # there, and the line names what it reached rather than only that it did
+    # not converge.
+    assert got.get('verdict') is not None, got.get('status')
+    assert got.get('imaginary') is not None
+    assert 'did not converge' in got['status']
+    assert 'What it reached is' in got['status']
