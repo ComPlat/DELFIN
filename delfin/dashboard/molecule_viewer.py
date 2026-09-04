@@ -5261,7 +5261,40 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             }
             try { old.render(); } catch (e) {}
         }
-        state.picks = [];
+        // Keep the selection across a rebuild where it is still the same
+        // molecule.  A drag or a relaxation re-renders the same atoms in the
+        // same order, so their serials come back the same and the marks
+        // belong exactly where they were -- while a Remove, an Add or a
+        // switch to another structure renumbers or drops them, and a pick
+        // whose serial no longer names an atom of its own element falls away.
+        //
+        // Cleared unconditionally before, the selection could not survive a
+        // single operation: the pair a climb is named by, or the group being
+        // dragged, was gone the moment the structure was redrawn.  Reported as
+        // "die Auswahl bleibt nicht nach einer Operation ... nur bei Mausrad
+        // druecken soll abgewaehlt werden" -- so the wheel press (and the
+        // explicit clears) stays the only thing that drops it, and an ordinary
+        // operation leaves it standing.
+        var nowAtoms = getAtoms(getViewer(scopeKey)) || [];
+        if (nowAtoms.length && (state.picks || []).length) {
+            var bySerial = {};
+            for (var ai = 0; ai < nowAtoms.length; ai++) {
+                bySerial[nowAtoms[ai].serial] = nowAtoms[ai];
+            }
+            // Every pick still names an atom of its own element, or none of
+            // them are kept.  A drag re-renders the same atoms in the same
+            // order, so all of them survive exactly; a Remove or an Add
+            // renumbers the atoms, and then a mark left standing would sit on
+            // whatever atom slid into its old number -- so the selection is
+            // dropped whole rather than quietly pointed at the wrong atoms.
+            var allSurvive = state.picks.every(function(p) {
+                var a = bySerial[p.serial];
+                return a && (a.elem || 'X') === (p.elem || 'X');
+            });
+            if (!allSurvive) state.picks = [];
+        } else {
+            state.picks = [];
+        }
         state.pivot = null;
         state.shapes = [];
         state.pivotShape = null;
@@ -5322,6 +5355,11 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         ensureOverlay(scopeKey);
         setOverlayInteractive(scopeKey);
         redrawHighlights(scopeKey);
+        // And the kernel's copy of the selection is made to agree with what
+        // survived the rebuild, so the measure box, Set and Hold act on the
+        // atoms that are still marked -- one fewer, say, where a Remove
+        // dropped one -- rather than on a set the picture no longer shows.
+        pushPicksToPython(scopeKey);
         if (state.mode === 'select') attachClickable(scopeKey);
         // Say which editor is on the page. Every render of a structure used to
         // carry a whole copy of this script -- 136 KiB of the 159 the picture
