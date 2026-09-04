@@ -6138,7 +6138,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             # against the ceiling has to say for itself: it
                             # looks exactly like a drag that has stopped
                             # working.
-                            hand += ' \u00b7 held at what the budget allows'
+                            #
+                            # And how to study the process past here, because a
+                            # hand held at the ceiling is exactly where someone
+                            # studying a reaction, a rearrangement or an
+                            # isomerisation wants to go on: the drag alone
+                            # cannot, since it stops at what T allows, so it
+                            # points at the two things that can -- a higher
+                            # temperature, which raises the ceiling, and the
+                            # Scan, which walks the whole coordinate and prices
+                            # the barrier whatever it costs.
+                            held_at = float(submit_temperature.value or 298.15)
+                            hand += (
+                                f' \u00b7 held at what {held_at:g} K allows -- '
+                                'raise the temperature to drive it further, or '
+                                'Scan this coordinate to walk the whole barrier')
                     if held_too:
                         hand = (' \u00b7 a held value and a pull cannot share '
                                 'one force constant, so the hand places')

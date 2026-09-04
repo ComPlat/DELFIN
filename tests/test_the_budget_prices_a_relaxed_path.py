@@ -5412,7 +5412,10 @@ def test_a_hand_held_back_by_the_budget_says_so_and_shows_where():
         '\n    def ')[0]
     # The clause, on the same line rather than under it: the row stands above
     # the viewer and a second one moves the picture while an atom is aimed.
-    assert "held at what the budget allows" in body
+    # It says what temperature the drag is held at, and points at the two ways
+    # to study the process past here -- a higher temperature, or the Scan.
+    assert "held at what" in body and "K allows" in body
+    assert "raise the temperature" in body and "Scan" in body
     assert "state.get('thermal_held_back')" in body
     # And the mark, through the same path a rollback marks by.
     assert 'else (reached if' in body
