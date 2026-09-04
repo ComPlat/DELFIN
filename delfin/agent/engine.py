@@ -1988,6 +1988,18 @@ class AgentEngine:
         # compaction fires (no value for other roles — they run in
         # pipeline mode with their own context budgets).
         live_state = self._live_state
+        # The session's language, decided by the first message and stated
+        # BEFORE the model writes its first word. Every other attempt at
+        # this corrected afterwards: the end-of-turn guard replaces a
+        # finished German answer, the mid-turn note reaches the model
+        # after its opening sentence is already on the user's screen.
+        # Neither can stop the draft, and a user filming the session sees
+        # the draft. An instruction in the prompt is the only version of
+        # this rule that acts before there is anything to correct.
+        _lang_block = self._session_language_block()
+        if _lang_block:
+            live_state = (f"{_lang_block}\n\n{live_state}" if live_state
+                          else _lang_block)
         # office_agent joins the interactive roles. It was left out when this
         # gate was written and never revisited, so the mode that works on
         # real records ran on prompt text alone -- on the model this project
@@ -2141,6 +2153,9 @@ class AgentEngine:
             # told once that it is answering in the wrong language, and
             # the next turn gets to be told again if it happens again.
             self._language_note_sent = False
+            # Per SESSION, and only the first time: what language this
+            # conversation runs in. See _note_session_language.
+            self._note_session_language(user_message or "")
             # Same rule, same reason, and it was documented as per-turn
             # while never being cleared: once ANY tool truncated in a
             # session, every later answer carrying a two-digit count got
@@ -3149,6 +3164,51 @@ class AgentEngine:
 
         return full_response + _guard_note
 
+    def _note_session_language(self, user_message: str) -> None:
+        """Fix the session's language from the FIRST message that says one.
+
+        The rule the user asked for, in their words: the language you start
+        writing in is the one the session runs in. It is stronger than
+        "the language of the latest message" for the case that actually
+        hurt — a long unattended run where the answer arrives minutes
+        later — because it can be STATED UP FRONT rather than checked
+        afterwards.
+
+        Set once. A later message in another language does not move it;
+        that is the point of a session language, and it is what stops an
+        English run drifting German halfway through.
+        """
+        if getattr(self, "_session_language", ""):
+            return
+        text = str(user_message or "")
+        if text.lstrip().startswith("[Verify]"):
+            return                      # the harness talking, always English
+        try:
+            from . import verify_guard as _vg
+            found = _vg.detect_language(text)
+        except Exception:
+            found = ""
+        if found:
+            self._session_language = found
+
+    def _session_language_block(self) -> str:
+        """The one line that goes in front of the model, or ""."""
+        want = str(getattr(self, "_session_language", "") or "")
+        try:
+            from . import verify_guard as _vg
+            name = _vg._LANGUAGE_NAMES.get(want, "")
+        except Exception:
+            name = ""
+        if not name:
+            return ""
+        return (
+            f"SESSION LANGUAGE: {name}. Every answer in this session is "
+            f"written in {name} — the first message set it, and a later "
+            f"message in another language does not change it. This covers "
+            f"what you SAY. What goes into code is English either way: "
+            f"comments, docstrings, identifiers, log and error strings."
+        )
+
     def _nudge_language_if_wrong(self, chunks) -> None:
         """Tell the model it is in the wrong language, mid-turn.
 
@@ -3180,7 +3240,13 @@ class AgentEngine:
                 return
             said = "".join(chunks or ())
             from . import verify_guard as _vg
-            want = _vg.scan_for_language_mismatch(said, asked)
+            # Same source of truth as the end-of-turn guard.
+            session_lang = str(getattr(self, "_session_language", "") or "")
+            if session_lang:
+                spoken = _vg.detect_language(said)
+                want = session_lang if spoken and spoken != session_lang else ""
+            else:
+                want = _vg.scan_for_language_mismatch(said, asked)
             if not want:
                 return
             note = _vg.language_mismatch_feedback(want).replace(
@@ -3665,10 +3731,22 @@ class AgentEngine:
         # the turn. A "[Verify] …" body means a correction turn has since
         # overwritten it — those are always English, and reading one back
         # would demand English of every German session, so it is ignored.
-        _asked = str(getattr(self, "_last_user_message", "") or "")
-        wrong_language = _vg.scan_for_language_mismatch(
-            response_text,
-            "" if _asked.lstrip().startswith("[Verify]") else _asked)
+        # ONE source of truth. The session language is set by the first
+        # message and stated in the prompt; judging the answer against the
+        # LATEST message instead would let the two disagree, and a rule
+        # whose two halves disagree is the defect this project keeps
+        # finding. A session that never got one (an older restore) falls
+        # back to the per-message question rather than to silence.
+        _session_lang = str(getattr(self, "_session_language", "") or "")
+        if _session_lang:
+            _said = _vg.detect_language(response_text)
+            wrong_language = (_session_lang
+                              if _said and _said != _session_lang else "")
+        else:
+            _asked = str(getattr(self, "_last_user_message", "") or "")
+            wrong_language = _vg.scan_for_language_mismatch(
+                response_text,
+                "" if _asked.lstrip().startswith("[Verify]") else _asked)
         if not loc and not qty and not conflicts and not wrong_language:
             return self._append_answer_caveats(
                 response_text, functional=func, ambiguous=ambiguous,
@@ -5589,6 +5667,14 @@ class AgentEngine:
     # veto) and once in the reset (a new conversation inherited the previous
     # one's tool-name set and a satisfied delegation flag).
     _SESSION_FIELDS: "tuple[_SessionField, ...]" = (
+        # The language this conversation runs in, set by its first message.
+        # Carried, because a resumed session is the SAME conversation: a
+        # run picked up tomorrow that forgot which language it was started
+        # in would answer the resumed half differently from the half
+        # already on the page, which is the drift the pin exists to stop.
+        _SessionField(
+            "_session_language", "session_language", "state",
+            str, str, lambda: ""),
         # -- the ledgers the guards judge against -------------------------
         _SessionField(
             "_last_observed_files", "observed_files", "evidence",
