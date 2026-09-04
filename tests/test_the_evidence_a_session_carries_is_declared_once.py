@@ -214,6 +214,10 @@ _NOT_CARRIED = {
     #    inherited a spent latch would stay silent through its first
     #    wrong answer, which is the defect the latch belongs to.
     "_language_note_sent",
+    #    Whether THIS turn has already been told its work is drifting into
+    #    a second folder. Per turn for the same reason as the language
+    #    latch above it.
+    "_stray_write_noted",
     #    Whether THIS turn's message was a greeting and nothing else.
     #    Read by the cross-session task notice, which must not hand a
     #    backlog to a model that was only greeted.
