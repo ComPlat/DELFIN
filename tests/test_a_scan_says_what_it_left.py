@@ -666,3 +666,41 @@ def test_the_saddle_press_runs_again_on_what_the_last_one_left(tab):
         assert _shown(refs['submit_saddle_btn']), round_number
         assert not state.get('saddle_run'), round_number
         assert refs['coords_widget'].value.strip(), round_number
+
+
+def test_a_scan_short_of_its_points_says_why_and_points_at_whole_profile():
+    """Reported: "hab scan mit 40 point machen wollen geht das nur wenn ich
+    ziel winkel einstelle?"  The count came back short of the forty asked for
+    and nothing said the target angle was not the reason.  It is not: off
+    Whole profile the scan stops once it has crossed a barrier and settled at
+    the next minimum, which is where a reaction scan is meant to end -- so the
+    verdict now says that, and names the switch that walks the rest."""
+    part, state = _an_editor()
+    # A thirty-point walk over a barrier, of the forty that were asked for,
+    # left back at a minimum: exactly the shape the walk loop leaves when it
+    # arrives before it has spent its steps.
+    coords = [180.0 - 6.0 * i for i in range(30)]
+    energies = [max(0.0, 4.5 - abs(i - 12) * 0.4) for i in range(30)]
+    path = list(zip(coords, energies))
+    state['scan_arrived'] = True
+    state['scan_came_back'] = (coords[-1], 0.4)
+    for key in ('scan_stopped_out', 'scan_gave_up', 'scan_crowded',
+                'scan_free', 'scan_became'):
+        state[key] = None
+    state['scan_narrowed'] = 0
+    part.submit_temperature.value = 298.15
+
+    said = ' '.join(part._scan_verdict(path, 40))
+    assert '30 of 40 points' in said, said
+    assert 'short of the 40 points you asked for' in said, said
+    assert 'Whole profile' in said, said
+
+    # And when it walked all forty, there is nothing to explain: the count is
+    # not short, so the clause does not appear.
+    full = list(zip([180.0 - 4.5 * i for i in range(40)],
+                    [max(0.0, 4.5 - abs(i - 20) * 0.3) for i in range(40)]))
+    state['scan_arrived'] = False
+    state['scan_came_back'] = None
+    whole = ' '.join(part._scan_verdict(full, 40))
+    assert '40 of 40 points' in whole or '40 points' in whole, whole
+    assert 'Whole profile' not in whole, whole
