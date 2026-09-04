@@ -5161,12 +5161,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # that closes it, so the baseline belongs to the grab.
         state.pop('gfn_follow_gap0', None)
         state.pop('gfn_follow_gap', None)
+        state.pop('gfn_follow_bonds0', None)
         state.pop('gfn_follow_etemp', None)
         state.pop('gfn_follow_smeared_at', None)
         _gfn_new_generation()
         # What the molecule looked like before this drag: the bonding is read
         # from here, not from a frame that has already been pulled about.
         state['gfn_topology_source'] = _current_xyz()
+        # The bonding the drag starts from, so the bond-order clause
+        # can tell the bond being studied from a stranger a torn atom
+        # is swept past.
+        state['gfn_follow_bonds0'] = _gfn.bond_graph(
+            state['gfn_topology_source'])
         # And it is what the first answer measures the hand against.
         #
         # Every later answer sets this to the geometry it handed back, and the
@@ -6200,9 +6206,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                    if len(one.get('atoms') or ()) == 2), None)
                     if driven is not None:
                         pair = [int(i) for i in driven['atoms']]
+                        # Only a pair that is a bond now or was one where the
+                        # drag began.  A torn atom driven past a stranger --
+                        # H36 swept past S16 once the C-H was gone -- named a
+                        # new never-bonded pair every answer and read 0.00 at
+                        # it, with a caveat about ethane attached: a number
+                        # about the wrong thing, several times a second.  The
+                        # order is about the bond being studied or it is not
+                        # said.
+                        started = state.get('gfn_follow_bonds0') or frozenset()
+                        key = (min(pair), max(pair))
+                        studied = (key in started
+                                   or _gfn.bond_order_is_a_bond(
+                                       outcome.get('bonds'), pair[0], pair[1]))
                         order = _gfn.bond_order_between(
                             outcome.get('bonds'), pair[0], pair[1])
-                        if order is not None:
+                        if order is not None and studied:
                             rows = _gfn.atom_lines(outcome.get('xyz') or '')
                             names = 'The pair the hand is driving'
                             if all(0 <= i < len(rows) for i in pair):

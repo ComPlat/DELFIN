@@ -42,6 +42,7 @@ __all__ = ['GFN_METHODS', 'as_pushes', 'atom_lines', 'bond_graph',
            'constraint_input', 'contacts_holding', 'graph_changed',
            'speaking_for_the_drag', 'travel_between',
            'bonds_to_freeze', 'graph_holds', 'stretched_bond',
+           'bond_order_is_a_bond',
            'method_is_out_of_its_depth',
            'a_rate_apart', 'paths_disagree', 'where_a_walk_jumped',
            'what_else_moved', 'pair_named',
@@ -3412,6 +3413,26 @@ def bond_order_between(bonds: Any, i: Any, j: Any) -> Optional[float]:
 BOND_WORTH_SAYING = 0.7
 
 
+def bond_order_is_a_bond(bonds: Any, i: Any, j: Any) -> bool:
+    """Whether xtb's Wiberg orders list these two as a bonded pair.
+
+    A readout, not the editor's bond watch -- that stays geometric, in
+    :func:`_is_a_bond`.  This is only for deciding whether the order of a
+    driven pair is worth saying at all: xtb prints the pairs it found a bond
+    for, so a pair it left out is one it did not consider bonded, and there is
+    nothing there to read.  Presence in the printed list, not the zero that
+    :func:`bond_order_between` returns for a pair the list omits.
+    """
+    if not bonds:
+        return False
+    try:
+        first, second = int(i), int(j)
+    except (TypeError, ValueError):
+        return False
+    return any((one, two) == (first, second) or (one, two) == (second, first)
+               for one, two, _order in bonds)
+
+
 def bond_order_note(order: Any, names: str = 'the pair',
                     gap: Any = None, was: Any = None) -> str:
     """A bond order as a readout, in a clause for the status line.
@@ -3441,11 +3462,13 @@ def bond_order_note(order: Any, names: str = 'the pair',
             said_gap = f'{float(gap):.1f} eV'
         except (TypeError, ValueError):
             said_gap = 'a gap this small'
-        return (f'{names} reads {value:.2f}, which is not worth reading at a '
-                f'frontier gap of {said_gap}: a closed-shell bond order holds '
-                'a pair in one orbital however far the two are pulled, so a '
-                'bond coming apart still reads about one -- measured on an '
-                'ethane, 1.00 at a C-C of 3.03 A.')
+        # The full reason -- a closed-shell order holds a pair in one
+        # orbital however far they are pulled, so a bond broken homolytically
+        # still reads about one -- is on the "What is it?" control's tooltip,
+        # so it is not written onto the status line several times a second
+        # while a drag runs.
+        return (f'{names} reads {value:.2f}, not worth reading at a frontier '
+                f'gap of {said_gap}.')
     if value >= 1.4:
         return (f'{names} is at {value:.2f}, which is multiple-bond '
                 'character.')
