@@ -17912,6 +17912,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 said.append('Walked together with '
                             + ', '.join(_describe_leg(one)
                                         for one in legs[1:]) + '.')
+            # The temperature the profile is read at, in the line under the
+            # picture rather than on the picture: the ceiling carries it on
+            # the axis already, but a reader wants it in words below too, and
+            # a free energy is a free energy only at a stated temperature.
+            said.append(
+                f'Heights are free energies at {T:g} K.' if free is not None
+                else f'The ceiling is what {T:g} K allows in an hour.')
+            # And, where a point ran into a closed gap, the electronic
+            # temperature it was smeared at -- a second temperature, and a
+            # different one, so it is named as what it is.
+            if state.get('scan_smeared_at') is not None:
+                said.append(
+                    'Points past the closing gap were computed with Fermi '
+                    f'smearing at {_gfn.SMEARED_TEMPERATURE:g} K.')
             said.append('Undo steps back through the marked points.')
             return _scan_profile.profile_html(
                 points,
