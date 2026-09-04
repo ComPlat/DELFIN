@@ -748,7 +748,7 @@ def test_the_wheel_reaches_select_mode_too():
     # Once per viewer, and it survives the overlay being deaf.
     assert '__delfinWheelClears' in fn
     # And it is wired where a viewer becomes ready.
-    ready = body[body.index('function onViewerReady('):][:2600]
+    ready = body[body.index('function onViewerReady('):][:4200]
     assert 'bindWheelClears(scopeKey, viewerEl);' in ready
 
 
