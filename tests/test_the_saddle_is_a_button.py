@@ -837,8 +837,13 @@ def test_a_run_that_did_not_converge_is_still_told_what_it_reached():
     # state rather than a bare failure.
     assert "read.get('first_order')" in after
     assert 'ok=True' in after and 'converged=False' in after
-    # And where it is not a saddle, it names what it is.
+    # And where it is not a saddle, it names what it is and what to do: a
+    # minimum means the coordinate may have no barrier -- scan to find one --
+    # and a higher-order saddle needs a better estimate on a second coordinate.
     assert "read[\"name\"]" in after or "read['name']" in after
+    assert 'walked down to a minimum' in after
+    assert 'barrier to aim' in after
+    assert 'second coordinate' in after
 
 
 @_needs_orca
@@ -867,4 +872,7 @@ def test_a_flat_climb_that_stops_short_names_the_minimum_it_found():
     assert got.get('verdict') is not None, got.get('status')
     assert got.get('imaginary') is not None
     assert 'did not converge' in got['status']
-    assert 'What it reached is' in got['status']
+    # It names what it reached and what that means: a minimum is not a saddle,
+    # and the search says the coordinate may have no barrier to aim at.
+    assert ('walked down to a minimum' in got['status']
+            or 'What it reached is' in got['status'])
