@@ -482,8 +482,11 @@ def test_no_press_in_the_editor_runs_against_a_clock():
     # to a drag frame without someone reading this line.  The fifth is the
     # continuation the budget spends before it refuses a step -- two hundred
     # cycles, which is ten answers' worth, and the one press in here with no
-    # clock of its own that could last that long.
-    assert source.count('should_stop=_hand_gone') == 5, (
+    # clock of its own that could last that long.  The sixth is the retry
+    # under Fermi smearing, where the first answer's SCC gave out on a bond
+    # coming apart: the same follow run once more with an electronic
+    # temperature, and it hears the hand let go the same way the first did.
+    assert source.count('should_stop=_hand_gone') == 6, (
         'every run a drag frame starts has to hear the hand let go')
 
     assert 'seconds_for(method)' not in source, (
