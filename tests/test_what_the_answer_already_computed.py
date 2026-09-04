@@ -146,10 +146,31 @@ def test_where_the_gap_has_closed_the_order_is_not_quoted_as_evidence():
     said = gfn.bond_order_note(1.0, "C0-C1", gap=0.75)
     assert "not worth reading" in said
     assert "0.8 eV" in said
-    assert "3.03" in said, "the measurement is quoted, not asserted"
+    assert "C0-C1" in said and "1.00" in said
+    # The clause is written onto the status line several times a second while
+    # a drag runs, so the standing explanation -- the ethane at 3.03 A -- is
+    # not in it; it is on the "What is it?" control, said once where it can be
+    # read.
+    assert "ethane" not in said and "3.03" not in said
     # And on a gap that has fallen far without being small in absolute terms.
     assert "not worth reading" in gfn.bond_order_note(
         0.998, "C0-C1", gap=2.16, was=15.26)
+
+
+def test_an_order_is_only_read_out_for_a_pair_xtb_called_bonded():
+    """The clause names the bond being studied or nothing.
+
+    A torn hydrogen driven past a stranger -- H36 swept past S16 once its C-H
+    was gone -- had a nearest contact every answer, and reading an order at it
+    printed 0.00 for a pair that was never bonded, a new one each answer.  The
+    order is worth saying only where xtb listed the pair as bonded at all.
+    """
+    bonds = [(0, 1, 0.98), (1, 2, 1.90)]
+    assert gfn.bond_order_is_a_bond(bonds, 0, 1)
+    assert gfn.bond_order_is_a_bond(bonds, 2, 1)      # order is symmetric
+    assert not gfn.bond_order_is_a_bond(bonds, 0, 2)  # a pair xtb never listed
+    assert not gfn.bond_order_is_a_bond(None, 0, 1)
+    assert not gfn.bond_order_is_a_bond([], 0, 1)
 
 
 def test_nothing_in_the_editor_decides_anything_on_a_bond_order():
