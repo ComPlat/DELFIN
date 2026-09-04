@@ -26,15 +26,24 @@ def test_the_box_offers_a_live_hand():
 def test_the_follow_worker_runs_the_steered_engine_for_it():
     """The live hand branches out of the follow loop before the pull's own
     perception, runs its own answer, and continues -- so nothing below it
-    reads a hand it was not written for."""
-    body = _EDITOR.split('def _gfn_follow_step(')[1]
-    branch = body.split('if _hand_is_live()')[1][:200]
-    assert 'not _mopac.is_mopac_method(method)' in branch, branch
-    assert '_live_answer(current, holding, began)' in branch, branch
+    reads a hand it was not written for.  The branch and the call are kept
+    free of any climb name (a helper decides whether the engine can run), so
+    the follow step itself names no climb machinery -- see
+    test_the_climb_can_be_helped."""
+    follow = _EDITOR.split('def _gfn_follow_step(')[1].split(
+        "_start_background(_work, 'The relaxation under the hand')")[0]
+    branch = follow.split('if _live_hand_runs(method):')[1][:200]
+    assert '_live_answer(current, holding, began' in branch, branch
     assert 'continue' in branch, branch
-    # And the live answer is a self-contained function, not a change threaded
-    # through the pull's path.
-    assert 'def _live_answer(' in body
+    assert 'climb' not in follow, 'the follow step must name no climb'
+    # The live answer is a self-contained function at editor scope, not a
+    # change threaded through the pull's path and not buried in the follow
+    # step (so the source slices that guard the follow step do not read it).
+    assert 'def _live_answer(current, holding, began, method' in _EDITOR
+    assert 'def _live_answer(' not in follow
+    # Its engine only runs where climb can drive it: GFN2/GFN1/GFN-FF.
+    runs = _EDITOR.split('def _live_hand_runs(')[1].split('def ')[0]
+    assert 'in _climb.CLIMB_METHODS' in runs
 
 
 def test_the_budget_treats_the_live_hand_as_a_force():

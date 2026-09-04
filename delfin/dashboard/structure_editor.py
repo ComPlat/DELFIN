@@ -5375,6 +5375,20 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         """
         return str(submit_hand_dd.value) == 'live'
 
+    def _live_hand_runs(method):
+        """Whether the live hand is chosen *and* its engine can drive *method*.
+
+        Steered dynamics takes its gradients from :mod:`climb`, which knows
+        GFN2, GFN1 and GFN-FF and no others -- g-xTB is an xtb method but its
+        gradient is far too slow to drag against.  The option is not offered
+        elsewhere (see the method's own refresh), and this is the follow's own
+        check so the drag never reaches the steered engine with a method it
+        cannot run.  Kept out of the follow step itself so that step names no
+        climb machinery of any kind.
+        """
+        return (_hand_is_live()
+                and str(method or '').lower() in _climb.CLIMB_METHODS)
+
     def _hand_is_a_force():
         """Whether the hand is a force rather than a placement.
 
@@ -5638,194 +5652,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         wet = str(submit_gfn_solvent.value or '') or None
         model = _solv_model()
 
-        def _live_answer(current, holding, began):
-            """One drag answer by steered dynamics -- the continuous hand.
-
-            The other engine pins the coordinate the hand has changed and
-            re-minimises the rest around it, and at a reaction top that biased
-            minimum has two solutions the minimiser flips between -- the two
-            arrangements a molecule cannot be held on.  This does not minimise.
-            It springs the dragged atom towards the cursor, adds that to the
-            field's own force, and moves every atom down the total by a capped
-            step (:func:`climb.steer`).  Carried forward from the last answer,
-            it stays on one branch until the force pushes it over, which is
-            what a hand on a real molecule feels and what lets a reaction, a
-            rotation or an isomerisation be walked rather than jumped.
-
-            It is a force hand, so it reuses the pull's whole budget: the wish
-            is clamped to what the temperature can pay for, the answer is
-            priced against the anchor, and the wall keeps what was allowed and
-            takes back what was not.  Priced more exactly than the pull, even
-            -- the answer is the geometry that is kept, with no laying-back to
-            slip against.  Keep bonds and Fermi smearing act here as there.
-            """
-            count = len(_gfn.atom_lines(current))
-            stale = bool(holding) and not any(
-                0 <= int(i) < count for i in holding)
-            pricing = _thermal_live() and not stale
-            state.pop('thermal_held_back', None)
-            # The wish clamped to what the budget can still pay for, so the
-            # spring never leads the atom past the ceiling and the drag rests
-            # against the wall rather than springing back from it.
-            if pricing:
-                current = _within_the_budget(current, holding)
-            # The electronic temperature this answer runs at -- sticky once a
-            # drag has been smeared, so the price does not step where the
-            # frontier gap crosses the threshold.
-            warmth = _smearing_for(method)
-            start = state.get('thermal_was') or current
-            cores = _gfn.interactive_cores(count)
-
-            def _steer(etemp):
-                return _climb.steer(
-                    start, current, holding, method=method, charge=charge,
-                    uhf=uhf, solvent=wet, cores=cores, etemp=etemp,
-                    should_stop=_hand_gone)
-
-            out = _steer(warmth)
-            # A gradient that will not run at a closed gap is the same failure
-            # the relaxation hits there, and the same smearing rescues it:
-            # tried once more, warmed, before it is reported.
-            if (not out.get('ok') and warmth is None and not _hand_gone()
-                    and _gfn.scc_did_not_converge(out.get('status'))):
-                warmth = _smearing_for(method, failed=True)
-                if warmth:
-                    out = _steer(warmth)
-            if not out.get('ok'):
-                if _hand_gone():
-                    return
-                note = str(out.get('status') or 'it did not run')
-                if _gfn.scc_did_not_converge(note):
-                    note = _gfn.scc_gave_out(
-                        label, state.get('gfn_follow_gap'), warmth)
-                schedule_ui_update(
-                    _set_mol_status,
-                    f'The molecule stopped following: {note}')
-                return
-            # Laid back onto the atoms the hand never touched, so the molecule
-            # stays where it is on screen and only what was steered has moved.
-            # The dynamics already carries the geometry forward from the last
-            # answer, so this only removes the little bodily drift a capped
-            # step leaves; without a rest to lay onto (the whole structure
-            # held, or none of it) the answer stands as it is.
-            reached = out['xyz']
-            grabbed = {int(i) for i in (holding or ())}
-            rest = [i for i in range(count) if i not in grabbed]
-            if rest and grabbed:
-                reached = _gfn.settle_onto(out['xyz'], start, rest)
-            _remember_charges(out)
-            if submit_labels_btn.value:
-                schedule_ui_update(_repaint_labels, False)
-            steps = int(state.get('gfn_follow_steps') or 0) + 1
-            state['gfn_follow_steps'] = steps
-            many = f', {len(holding)} atoms' if len(holding) > 1 else ''
-            said = (f'{label} steers the drag{many} · {steps} steps, '
-                    f'{_hand_answered_in(began) * 1000:.0f} ms')
-            energy = out.get('energy')
-            if not stale:
-                state['thermal_now'] = energy
-            if stale and _thermal_live():
-                said = (f'{said} · The hand is on atoms this structure '
-                        f'does not have, so this step is not priced.')
-            came_back = None
-            aside = False
-            if pricing:
-                # A squeezed contact is not chemistry at any temperature, so
-                # it is refused whatever the price -- read off where the
-                # structure actually is, which under the steered hand is the
-                # answer and not the wish.
-                tightest = _gfn.closest_contact(reached)[0]
-                aside = tightest is not None and tightest < _gfn._TOO_CLOSE
-                anchor, ceiling = _thermal_budget()
-                if energy is not None and anchor is not None:
-                    paid = (float(energy) - float(anchor)) * _HARTREE_TO_KCAL
-                    _thermal_slope(paid, reached,
-                                   [int(i) for i in (holding or ())])
-                    _note_what_it_costs(
-                        paid, _how_far_the_hand_has_asked(current, holding))
-                came_back = _thermal_wall(reached, energy, holding,
-                                          refuse=aside)
-                spent = _thermal_note(energy)
-                if spent:
-                    said = f'{said} · {spent}'
-                state['thermal_spent'] = None
-                _stop_the_hand_at(
-                    came_back if came_back is not None
-                    else (reached if state.get('thermal_held_back')
-                          else None),
-                    current, holding)
-                if state.get('thermal_held_back'):
-                    held_at = float(submit_temperature.value or 298.15)
-                    said += (
-                        f' · held at what {held_at:g} K allows -- raise '
-                        'the temperature to drive it further, or Scan this '
-                        'coordinate to walk the whole barrier')
-                if came_back is not None:
-                    said = (f'{said} · ' + (
-                        'the last measured and allowed structure is back'
-                        if aside else
-                        'past the budget on the way here -- the last '
-                        'structure inside it is back'
-                        if state.get('thermal_over') == 'path' else
-                        'past the budget -- the last structure inside it '
-                        'is back'))
-                slope = state.get('thermal_slope')
-                if slope is not None and abs(slope) > 1.0:
-                    said = (f'{said} '
-                            + ('Climbing' if slope > 0 else 'Falling')
-                            + f' {abs(slope):.0f} kcal/mol per A here.')
-                if energy is not None:
-                    state['thermal_priced'] = float(energy)
-            if warmth:
-                said += f' · Fermi smearing at {warmth:g} K'
-            state['gfn_last_status'] = said
-            schedule_ui_update(_set_mol_status, said, spinner=True)
-            settled = came_back if came_back is not None else reached
-            # Keep bonds owns the box the same way the budget does: a step
-            # that made or broke a bond is replaced by the last one that did
-            # not, and the line says so.
-            kept, changed = _topology_wall(settled)
-            if kept is not None:
-                settled = kept
-                said = (f'{said} Held: that step {changed}, and the bonding '
-                        f'is being kept.')
-                schedule_ui_update(_set_mol_status, said, spinner=True)
-                state['gfn_last_status'] = said
-            # What the box is left holding: the geometry that survives the
-            # step, which is what Copy, Submit and the next calculation read.
-            why = ''
-            if kept is not None:
-                why = 'Kept: the bonding would have changed'
-            elif came_back is not None:
-                why = ('Back to the last structure that was measured and '
-                       'allowed' if aside else
-                       'Past the budget: back to the last structure that '
-                       'was inside it')
-            elif pricing:
-                why = ('Within the budget at '
-                       f'{float(submit_temperature.value):g} K')
-            else:
-                why = 'Steered by the hand'
-            rows = [line for line in settled.splitlines()[2:] if line.strip()]
-            if rows:
-                schedule_ui_update(
-                    _write_coords, xyz_document(rows, why), True)
-            # What the next answer measures the hand against: the geometry
-            # this one handed back, which the steered step carries forward.
-            state['thermal_was'] = settled
-            frames = list(state.get('gfn_follow_frames') or [])
-            frames.append(_gfn.coordinates_of(settled))
-            state['gfn_follow_frames'] = frames
-            trail = frames[-40:]
-            drag_run = state.get('gfn_follow_run')
-            payload = _frame_payload(
-                drag_run, **{'from': len(frames) - len(trail),
-                             'follow': 1, 'frames': trail})
-            schedule_ui_update(
-                lambda text=payload, r=drag_run: setattr(
-                    submit_gfn_frame, 'value', text)
-                if _frame_run_is_current(r) else None)
-
         def _work():
             try:
                 while state.get('gfn_follow'):
@@ -5897,8 +5723,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # the pull and the placement fall through to the block that
                     # follows, exactly as they did.  Never under MOPAC, which
                     # has no xtb gradients for it.
-                    if _hand_is_live() and not _mopac.is_mopac_method(method):
-                        _live_answer(current, holding, began)
+                    if _live_hand_runs(method):
+                        _live_answer(current, holding, began, method, label,
+                                     charge, uhf, wet, model)
                         continue
                     # With the budget on, the drag is followed differently:
                     # the contacts the hand has changed are held and the rest
@@ -7056,6 +6883,196 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 state['gfn_follow_busy'] = False
 
         _start_background(_work, 'The relaxation under the hand')
+
+    def _live_answer(current, holding, began, method, label, charge,
+                     uhf, wet, model):
+        """One drag answer by steered dynamics -- the continuous hand.
+
+        The other engine pins the coordinate the hand has changed and
+        re-minimises the rest around it, and at a reaction top that biased
+        minimum has two solutions the minimiser flips between -- the two
+        arrangements a molecule cannot be held on.  This does not minimise.
+        It springs the dragged atom towards the cursor, adds that to the
+        field's own force, and moves every atom down the total by a capped
+        step (:func:`climb.steer`).  Carried forward from the last answer,
+        it stays on one branch until the force pushes it over, which is
+        what a hand on a real molecule feels and what lets a reaction, a
+        rotation or an isomerisation be walked rather than jumped.
+
+        It is a force hand, so it reuses the pull's whole budget: the wish
+        is clamped to what the temperature can pay for, the answer is
+        priced against the anchor, and the wall keeps what was allowed and
+        takes back what was not.  Priced more exactly than the pull, even
+        -- the answer is the geometry that is kept, with no laying-back to
+        slip against.  Keep bonds and Fermi smearing act here as there.
+        """
+        count = len(_gfn.atom_lines(current))
+        stale = bool(holding) and not any(
+            0 <= int(i) < count for i in holding)
+        pricing = _thermal_live() and not stale
+        state.pop('thermal_held_back', None)
+        # The wish clamped to what the budget can still pay for, so the
+        # spring never leads the atom past the ceiling and the drag rests
+        # against the wall rather than springing back from it.
+        if pricing:
+            current = _within_the_budget(current, holding)
+        # The electronic temperature this answer runs at -- sticky once a
+        # drag has been smeared, so the price does not step where the
+        # frontier gap crosses the threshold.
+        warmth = _smearing_for(method)
+        start = state.get('thermal_was') or current
+        cores = _gfn.interactive_cores(count)
+
+        def _steer(etemp):
+            return _climb.steer(
+                start, current, holding, method=method, charge=charge,
+                uhf=uhf, solvent=wet, cores=cores, etemp=etemp,
+                should_stop=_hand_gone)
+
+        out = _steer(warmth)
+        # A gradient that will not run at a closed gap is the same failure
+        # the relaxation hits there, and the same smearing rescues it:
+        # tried once more, warmed, before it is reported.
+        if (not out.get('ok') and warmth is None and not _hand_gone()
+                and _gfn.scc_did_not_converge(out.get('status'))):
+            warmth = _smearing_for(method, failed=True)
+            if warmth:
+                out = _steer(warmth)
+        if not out.get('ok'):
+            if _hand_gone():
+                return
+            note = str(out.get('status') or 'it did not run')
+            if _gfn.scc_did_not_converge(note):
+                note = _gfn.scc_gave_out(
+                    label, state.get('gfn_follow_gap'), warmth)
+            schedule_ui_update(
+                _set_mol_status,
+                f'The molecule stopped following: {note}')
+            return
+        # Laid back onto the atoms the hand never touched, so the molecule
+        # stays where it is on screen and only what was steered has moved.
+        # The dynamics already carries the geometry forward from the last
+        # answer, so this only removes the little bodily drift a capped
+        # step leaves; without a rest to lay onto (the whole structure
+        # held, or none of it) the answer stands as it is.
+        reached = out['xyz']
+        grabbed = {int(i) for i in (holding or ())}
+        rest = [i for i in range(count) if i not in grabbed]
+        if rest and grabbed:
+            reached = _gfn.settle_onto(out['xyz'], start, rest)
+        _remember_charges(out)
+        if submit_labels_btn.value:
+            schedule_ui_update(_repaint_labels, False)
+        steps = int(state.get('gfn_follow_steps') or 0) + 1
+        state['gfn_follow_steps'] = steps
+        many = f', {len(holding)} atoms' if len(holding) > 1 else ''
+        said = (f'{label} steers the drag{many} · {steps} steps, '
+                f'{_hand_answered_in(began) * 1000:.0f} ms')
+        energy = out.get('energy')
+        if not stale:
+            state['thermal_now'] = energy
+        if stale and _thermal_live():
+            said = (f'{said} · The hand is on atoms this structure '
+                    f'does not have, so this step is not priced.')
+        came_back = None
+        aside = False
+        if pricing:
+            # A squeezed contact is not chemistry at any temperature, so
+            # it is refused whatever the price -- read off where the
+            # structure actually is, which under the steered hand is the
+            # answer and not the wish.
+            tightest = _gfn.closest_contact(reached)[0]
+            aside = tightest is not None and tightest < _gfn._TOO_CLOSE
+            anchor, ceiling = _thermal_budget()
+            if energy is not None and anchor is not None:
+                paid = (float(energy) - float(anchor)) * _HARTREE_TO_KCAL
+                _thermal_slope(paid, reached,
+                               [int(i) for i in (holding or ())])
+                _note_what_it_costs(
+                    paid, _how_far_the_hand_has_asked(current, holding))
+            came_back = _thermal_wall(reached, energy, holding,
+                                      refuse=aside)
+            spent = _thermal_note(energy)
+            if spent:
+                said = f'{said} · {spent}'
+            state['thermal_spent'] = None
+            _stop_the_hand_at(
+                came_back if came_back is not None
+                else (reached if state.get('thermal_held_back')
+                      else None),
+                current, holding)
+            if state.get('thermal_held_back'):
+                held_at = float(submit_temperature.value or 298.15)
+                said += (
+                    f' · held at what {held_at:g} K allows -- raise '
+                    'the temperature to drive it further, or Scan this '
+                    'coordinate to walk the whole barrier')
+            if came_back is not None:
+                said = (f'{said} · ' + (
+                    'the last measured and allowed structure is back'
+                    if aside else
+                    'past the budget on the way here -- the last '
+                    'structure inside it is back'
+                    if state.get('thermal_over') == 'path' else
+                    'past the budget -- the last structure inside it '
+                    'is back'))
+            slope = state.get('thermal_slope')
+            if slope is not None and abs(slope) > 1.0:
+                said = (f'{said} '
+                        + ('Climbing' if slope > 0 else 'Falling')
+                        + f' {abs(slope):.0f} kcal/mol per A here.')
+            if energy is not None:
+                state['thermal_priced'] = float(energy)
+        if warmth:
+            said += f' · Fermi smearing at {warmth:g} K'
+        state['gfn_last_status'] = said
+        schedule_ui_update(_set_mol_status, said, spinner=True)
+        settled = came_back if came_back is not None else reached
+        # Keep bonds owns the box the same way the budget does: a step
+        # that made or broke a bond is replaced by the last one that did
+        # not, and the line says so.
+        kept, changed = _topology_wall(settled)
+        if kept is not None:
+            settled = kept
+            said = (f'{said} Held: that step {changed}, and the bonding '
+                    f'is being kept.')
+            schedule_ui_update(_set_mol_status, said, spinner=True)
+            state['gfn_last_status'] = said
+        # What the box is left holding: the geometry that survives the
+        # step, which is what Copy, Submit and the next calculation read.
+        why = ''
+        if kept is not None:
+            why = 'Kept: the bonding would have changed'
+        elif came_back is not None:
+            why = ('Back to the last structure that was measured and '
+                   'allowed' if aside else
+                   'Past the budget: back to the last structure that '
+                   'was inside it')
+        elif pricing:
+            why = ('Within the budget at '
+                   f'{float(submit_temperature.value):g} K')
+        else:
+            why = 'Steered by the hand'
+        rows = [line for line in settled.splitlines()[2:] if line.strip()]
+        if rows:
+            schedule_ui_update(
+                _write_coords, xyz_document(rows, why), True)
+        # What the next answer measures the hand against: the geometry
+        # this one handed back, which the steered step carries forward.
+        state['thermal_was'] = settled
+        frames = list(state.get('gfn_follow_frames') or [])
+        frames.append(_gfn.coordinates_of(settled))
+        state['gfn_follow_frames'] = frames
+        trail = frames[-40:]
+        drag_run = state.get('gfn_follow_run')
+        payload = _frame_payload(
+            drag_run, **{'from': len(frames) - len(trail),
+                         'follow': 1, 'frames': trail})
+        schedule_ui_update(
+            lambda text=payload, r=drag_run: setattr(
+                submit_gfn_frame, 'value', text)
+            if _frame_run_is_current(r) else None)
+
 
     #: Letting go with Settle on.  More cycles than a follow step, because
     #: nothing is being held any more and the structure should reach somewhere
@@ -19521,6 +19538,12 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         server = _server_method()
         xtb = _gfn.is_gfn_method(chosen)
         mopac = _mopac.is_mopac_method(chosen)
+        # Whether the live hand's engine can drive this method.  Steered
+        # dynamics takes gradients from climb, which knows GFN2, GFN1 and
+        # GFN-FF and nothing else -- g-xTB is an xtb method but climb cannot
+        # take a gradient from it at a drag's pace, so the live hand is not
+        # offered there even though the pull and the budget are.
+        steerable = str(chosen or '').lower() in _climb.CLIMB_METHODS
         # Charge and spin: the server engines are told both, the browser's
         # field has no notion of either.
         submit_gfn_charge.layout.display = '' if server else 'none'
@@ -19570,8 +19593,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         moving = ('move the atom', 'move')
         living = ('live dynamics', 'live')
         # Which hand the user had, so a detour through a method that cannot
-        # offer it does not quietly cost it.  Read before the options change,
-        # because changing them moves the value off any hand they drop.
+        # offer it does not quietly cost it -- and so the value survives the
+        # options being reassigned at all.  Read before the change: setting
+        # ``options`` to a different list moves the value to the first entry,
+        # even when the old one is still among them, so what the value should
+        # be afterwards is decided here and written back explicitly.  The old
+        # code never hit this because it only ever offered two lists -- [move]
+        # under MOPAC and [pull, move] otherwise -- so switching between two
+        # xtb methods left the options untouched and the value where it was;
+        # the live hand adds a third list, and now a gfn/uff swap really does
+        # reassign them.
         had = str(submit_hand_dd.value)
         state['hand_quiet'] = True
         try:
@@ -19582,23 +19613,31 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 if had in ('pull', 'live'):
                     state['hand_was'] = had
                 submit_hand_dd.options = [moving]
-            elif xtb:
+                submit_hand_dd.value = 'move'
+            elif steerable:
                 # The live hand is the server's steered dynamics, so it is
-                # offered only where there are xtb gradients to drive it.
+                # offered only where climb can drive it.  Any of the three is
+                # valid here, so a remembered hand comes back and otherwise the
+                # one that was in use is kept.
                 submit_hand_dd.options = [pulling, moving, living]
-                want = state.pop('hand_was', None)
-                if want in ('pull', 'live'):
-                    submit_hand_dd.value = want
+                want = state.pop('hand_was', None) or had
+                submit_hand_dd.value = (want if want in ('pull', 'move', 'live')
+                                        else 'pull')
             else:
-                # A browser method: the pull runs in the browser's own field,
-                # but the live hand has no server engine here, so a live choice
-                # is remembered to be given back when an xtb method returns.
+                # A method that cannot drive the live hand: a browser method,
+                # where the pull runs in the browser's own field, or g-xTB,
+                # whose gradients are too slow for a drag.  A live choice is
+                # remembered to be given back when a steerable method returns
+                # and the placing hand stands in for it meanwhile.
                 if had == 'live':
                     state['hand_was'] = 'live'
                 submit_hand_dd.options = [pulling, moving]
                 if state.get('hand_was') == 'pull':
-                    submit_hand_dd.value = 'pull'
                     state.pop('hand_was', None)
+                    submit_hand_dd.value = 'pull'
+                else:
+                    submit_hand_dd.value = had if had in ('pull', 'move') \
+                        else 'move'
         finally:
             state['hand_quiet'] = False
         # The slider is the pull's own setting, and so is the budget, so
