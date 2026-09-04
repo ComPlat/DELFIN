@@ -3916,17 +3916,89 @@ def create_tab(ctx):
     # archive so maintainers can reproduce a bad turn. Optional one-line
     # note describes what went wrong. Archive path comes from
     # DELFIN_BUG_ARCHIVE / settings.agent.bug_archive_dir — never hard-coded.
+    #
+    # Folded away until it is wanted, the way the viewer's beetle is. The
+    # control row is where the session is DRIVEN — mode, provider, model,
+    # effort, permissions, stop — and a text field standing open in it
+    # asks a question nobody was asking, in the place where the work is
+    # steered. Two controls' worth of width, on every screen, for the one
+    # thing a user does when something has already gone wrong.
+    #
+    # The toggle carries the same sentence the viewer's does, because the
+    # same misreading is available here: the button could as easily be a
+    # start switch. What it hands over is what the session has already
+    # kept.
+    bug_toggle = widgets.ToggleButton(
+        value=False, description="🐞",
+        tooltip=("This tab keeps the conversation as you work, in memory. "
+                 "Nothing is written or sent until you press Send, and Send "
+                 "hands over what has already happened -- it does not start "
+                 "a recording."),
+        layout=widgets.Layout(width="44px", flex="0 0 auto"),
+    )
     bug_note_input = widgets.Text(
-        placeholder="Bug: what went wrong? (optional)",
-        layout=widgets.Layout(width="220px"),
+        placeholder="What went wrong? (one line)",
+        layout=widgets.Layout(width="260px", display="none"),
     )
     bug_report_btn = widgets.Button(
-        description="🐞 Bug Report",
+        description="Send",
         button_style="warning",
-        layout=widgets.Layout(width="120px"),
-        tooltip="Bundle conversation + mode/provider/model/effort/perms "
-                "into an archive report (for maintainers)",
+        layout=widgets.Layout(width="72px", display="none"),
+        tooltip="Hand over what has already happened",
     )
+    bug_where = widgets.HTML(value="", layout=widgets.Layout(display="none"))
+    # A row inside a row wraps on its own, so the four stay together when
+    # the toolbar breaks rather than the note landing on the line below
+    # its own button.
+    bug_group = widgets.HBox(
+        [bug_toggle, bug_note_input, bug_report_btn, bug_where],
+        layout=widgets.Layout(gap="6px", align_items="center",
+                              flex_flow="row wrap", flex="0 1 auto",
+                              min_width="0", overflow="visible"),
+    )
+
+    def _on_bug_toggle(change=None):
+        """Open the line to write in, or put it away again.
+
+        What opens with it is how much is being held and where a press
+        would put it. The count is read when the control is opened, not
+        kept live: a live one would write to a widget on every message to
+        say a thing that does not change — that the conversation is being
+        kept. The number is the evidence, not the instrument.
+        """
+        if change is not None and change.get("name") != "value":
+            return
+        open_now = bool(bug_toggle.value)
+        for widget in (bug_note_input, bug_report_btn, bug_where):
+            widget.layout.display = "flex" if open_now else "none"
+        if not open_now:
+            return
+        try:
+            from delfin.agent.bug_report import resolve_archive_dir
+            from delfin.user_settings import load_settings
+            settings = load_settings() or {}
+            here = str(resolve_archive_dir(settings)).replace(
+                str(Path.home()), "~")
+            held = len(state.get("chat_messages", []) or [])
+            transfer = (settings.get("transfer") or {})
+            if transfer.get("host") and transfer.get("remote_path"):
+                goes = (f"→ <code>{_html.escape(here)}</code>, then "
+                        f"<code>{_html.escape(str(transfer['host']))}</code>")
+            else:
+                goes = (f"→ <code>{_html.escape(here)}</code>, and no further "
+                        "-- no transfer host is configured")
+            bug_where.value = (
+                '<span style="font-size:11px;opacity:.75">'
+                f"Kept as you work: <b>{held}</b> message(s). "
+                "Send hands over what is already here.<br>"
+                f"{goes}</span>")
+        except Exception as exc:                       # never break the row
+            bug_where.value = (
+                '<span style="font-size:11px;opacity:.75">'
+                f"Send writes a report for maintainers ({_html.escape(str(exc))})"
+                "</span>")
+
+    bug_toggle.observe(_on_bug_toggle, names="value")
 
     # Everything in ONE visible row — no collapsing. Sessions go first (they
     # are prepended a few lines below, once defined), then the settings, then
@@ -3943,7 +4015,7 @@ def create_tab(ctx):
     _controls_hbox = widgets.HBox(
         [mode_dropdown, provider_dropdown, model_dropdown,
          effort_dropdown, perm_dropdown, stop_btn,
-         export_btn, bug_note_input, bug_report_btn, model_refresh_btn],
+         export_btn, bug_group, model_refresh_btn],
         layout=widgets.Layout(flex_flow="row wrap"),
     )
     controls_row = widgets.VBox([
@@ -13844,6 +13916,10 @@ def create_tab(ctx):
                 f"mode/provider/model/effort/perms, tokens, cost, versions."
             )
             bug_note_input.value = ""
+            # Fold it away again. The report is filed and the answer is in
+            # the conversation; leaving the line open invites a second
+            # press on a sentence that has already been sent.
+            bug_toggle.value = False
         except Exception as exc:
             _append_system_message(f"Bug report failed: {exc}")
 
