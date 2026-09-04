@@ -1058,3 +1058,40 @@ def test_the_view_panel_is_not_a_wall_across_the_picture():
             assert covers > 0.5, covers
         finally:
             browser.close()
+
+
+def test_the_temperature_is_in_the_line_under_the_profile():
+    """The user asked for it below the picture, not on it: a free energy is a
+    free energy only at a stated temperature, and the line under the profile
+    is where a reader reads words rather than an axis."""
+    pytest.importorskip('matplotlib')
+    pytest.importorskip('ipywidgets')
+    part, state = _an_editor()
+    part.submit_temperature.value = 310.0
+    html = part._scan_profile_html(
+        _CLOSING, [{'kind': 'distance', 'atoms': [0, 1], 'from': 3.26,
+                    'to': 1.55, 'steps': 12}], False, began=_CLOSING[0])
+    assert html is not None
+    # The note sits in the caption div under the <img>, not in the alt text or
+    # the axis baked into the PNG.
+    caption = html.split('</img>')[-1] if '</img>' in html else html.split('/>')[-1]
+    assert '310 K' in caption, caption[-300:]
+
+
+def test_a_smeared_scan_names_its_electronic_temperature_below_too():
+    """When a point ran into a closed gap the profile note says the electronic
+    temperature those points were smeared at -- a second temperature, and a
+    different one from the thermal T."""
+    pytest.importorskip('matplotlib')
+    pytest.importorskip('ipywidgets')
+    from delfin.dashboard import gfn_optimize as gfn
+    part, state = _an_editor()
+    part.submit_temperature.value = 300.0
+    state['scan_smeared_at'] = 2.90
+    html = part._scan_profile_html(
+        _CLOSING, [{'kind': 'distance', 'atoms': [0, 1], 'from': 3.26,
+                    'to': 1.55, 'steps': 12}], False, began=_CLOSING[0])
+    assert html is not None
+    assert '300 K' in html
+    assert f'{gfn.SMEARED_TEMPERATURE:g} K' in html
+    assert 'Fermi smearing' in html
