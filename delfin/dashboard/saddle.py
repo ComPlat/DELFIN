@@ -760,11 +760,34 @@ def optimise_to_saddle(xyz_text: str, method: str = 'gfn2', *,
                                     'a job to converge it fully, or take this '
                                     'estimate.'))
             # Zero, or more than one, imaginary mode: not a transition state.
-            # Say which it reached, from the Hessian, rather than only that it
-            # did not converge -- a minimum and a second-order saddle are two
-            # different reasons a search did not land, and they are acted on
-            # differently.
-            became = ('' if shape is None else f' What it reached is {read["name"]}.')
+            # Say which it reached, from the Hessian, and -- because "warum
+            # findet es den TS nicht?" is answered differently for each -- what
+            # that means and what to do about it.  A search that walks down to
+            # a minimum is not failing to converge: it has found that the
+            # estimate was past the barrier, or that the coordinate has none, a
+            # barrierless dissociation being the case measured (a C-Br pulled
+            # apart in water rises monotonically to +37 kcal with no top).  A
+            # higher-order saddle needs a better estimate on a second
+            # coordinate.  So the count is not a number to read but an
+            # instruction.
+            order = read.get('order')
+            if shape is None:
+                became = ''
+            elif order == 0:
+                became = (' It walked down to a minimum, not up to a saddle -- '
+                          'the estimate was already past the barrier, or the '
+                          'coordinate has no barrier at all, and a barrierless '
+                          'step has no transition state to find. Scan the '
+                          'coordinate to see whether there is a barrier to aim '
+                          'at.')
+            elif order and int(order) > 1:
+                became = (f' What it reached is {read["name"]}: it is a maximum '
+                          'in more than one direction, so it needs a better '
+                          'estimate on a second coordinate -- the path finder, '
+                          'or a scan of the bond that is also changing, gives '
+                          'one.')
+            else:
+                became = f' What it reached is {read["name"]}.'
             return dict(rest, ok=False, halted=False, output=output[-4000:],
                         imaginary=shape, verdict=read,
                         status=('The transition-state optimisation did not '
