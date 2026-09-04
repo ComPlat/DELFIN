@@ -5160,6 +5160,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # A drag that begins at a closed gap is a different statement from one
         # that closes it, so the baseline belongs to the grab.
         state.pop('gfn_follow_gap0', None)
+        state.pop('gfn_follow_gap', None)
+        state.pop('gfn_follow_etemp', None)
+        state.pop('gfn_follow_smeared_at', None)
         _gfn_new_generation()
         # What the molecule looked like before this drag: the bonding is read
         # from here, not from a frame that has already been pulled about.
@@ -5848,6 +5851,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             contacts, state.get('thermal_was') or current,
                             pull, value_of=_value_in, most=_pull_most())
                         contacts = _steady_hand(contacts)
+                    warmth = None
                     if _mopac.is_mopac_method(method):
                         # MOPAC takes no held internals and no topology file,
                         # so it is given what it does take. A few cycles, the
@@ -5863,6 +5867,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             should_stop=_hand_gone,
                             constraints=constraints, solvent=wet)
                     else:
+                        # The electronic temperature this answer runs at,
+                        # and a second try under smearing where the first
+                        # one's SCC gave out -- see _smearing_for for the
+                        # rule and the measurement.
+                        warmth = _smearing_for(method)
                         outcome = _gfn.relax_steps(
                             current, method=method, charge=charge, uhf=uhf,
                             # Twenty cycles are the *budget's*, not the
@@ -5880,9 +5889,42 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             constraints=keeping + contacts, solvent=wet,
                             solvation_model=model,
                             topology=_gfn_topology_dir(current),
+                            etemp=warmth,
                         )
+                        if (not outcome.get('ok') and warmth is None
+                                and not _hand_gone()
+                                and _gfn.scc_did_not_converge(
+                                    outcome.get('status'))):
+                            warmth = _smearing_for(method, failed=True)
+                            if warmth:
+                                outcome = _gfn.relax_steps(
+                                    current, method=method, charge=charge,
+                                    uhf=uhf,
+                                    cycles=(_THERMAL_FOLLOW_CYCLES if pricing
+                                            else _GFN_FOLLOW_CYCLES),
+                                    timeout=None, should_stop=_hand_gone,
+                                    constraints=keeping + contacts,
+                                    solvent=wet, solvation_model=model,
+                                    topology=_gfn_topology_dir(current),
+                                    etemp=warmth,
+                                )
                     if not outcome.get('ok'):
+                        if _hand_gone():
+                            # The hand let go while xtb was running and the
+                            # run was stopped for it.  That is how a drag
+                            # ends, not a failure, and the line below would
+                            # report the release as one -- three times in one
+                            # session's journal, "stopped following: GFN2-xTB
+                            # was stopped."
+                            return
                         note = str(outcome.get('status') or 'it did not run')
+                        if _gfn.scc_did_not_converge(note):
+                            # The generic text blames the build.  A closed-
+                            # shell SCC giving out on a bond being pulled
+                            # apart is the method's limit, and the sentence
+                            # has to say so and what to do about it.
+                            note = _gfn.scc_gave_out(
+                                label, state.get('gfn_follow_gap'), warmth)
                         schedule_ui_update(
                             _set_mol_status,
                             f'The molecule stopped following: {note}')
@@ -5961,6 +6003,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                 constraints=keeping + contacts, solvent=wet,
                                 solvation_model=model,
                                 topology=_gfn_topology_dir(current),
+                                etemp=warmth,
                             )
                             if (finishing.get('ok')
                                     and finishing.get('energy') is not None):
@@ -6063,6 +6106,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     said = (f'{label} follows the drag{many} \u00b7 {steps} '
                             f'steps, {_hand_answered_in(began) * 1000:.0f} ms'
                             f'{hand}')
+                    if warmth:
+                        # Said on every answer it applies to, because the
+                        # price on the same line is the Mermin free energy
+                        # while this is on, and a reader comparing it with a
+                        # single point of their own has to know.
+                        said += f' \u00b7 Fermi smearing at {warmth:g} K'
+                        try:
+                            said += (' (frontier gap '
+                                     f'{float(state.get("gfn_follow_smeared_at")):.1f}'
+                                     ' eV)')
+                        except (TypeError, ValueError):
+                            pass
                     # The bond order of the pair the hand is driving, as a
                     # readout and as nothing else.
                     #
@@ -6128,6 +6183,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                 said = f'{said} {note}'
                     if state.get('gfn_follow_gap0') is None:
                         state['gfn_follow_gap0'] = outcome.get('gap')
+                    state['gfn_follow_gap'] = outcome.get('gap')
                     # What the drag has cost so far: the energy of the
                     # relaxation that has just run, which held the drag and
                     # let everything else move.
@@ -6200,14 +6256,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                                 timeout=None, should_stop=_hand_gone,
                                 solvent=wet, solvation_model=model,
                                 topology=_gfn_topology_dir(current),
-                                optimise=False))
+                                optimise=False, etemp=warmth))
                     elif pricing:
                         priced = _gfn.optimize_with_gfn(
                             current, method, charge=charge, uhf=uhf,
                             timeout=None, should_stop=_hand_gone,
                             solvent=wet, solvation_model=model,
                             topology=_gfn_topology_dir(current),
-                            optimise=False,
+                            optimise=False, etemp=warmth,
                         )
                     else:
                         priced = {}
@@ -7779,6 +7835,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         wet = str(submit_gfn_solvent.value or '') or None
         model = _solv_model()
         state['thermal_e0'] = None
+        state.pop('thermal_etemp', None)
         _set_mol_status(f'{note}: {_server_label(method)} is measuring the '
                         'energy of this structure...', spinner=True)
 
@@ -7790,6 +7847,23 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                           if _gfn.is_gfn_method(method) else None),
                 optimise=bool(wants_relax),
             )
+            # An anchor whose own frontier gap has closed is priced under the
+            # smearing every drag from it will run under -- see _smearing_for
+            # -- or the two would disagree by the smearing alone, on a
+            # structure where the method is already at its limit.
+            warmth = None
+            closed = None
+            if outcome.get('ok'):
+                closed = outcome.get('gap')
+                warmth = _gfn.electronic_temperature_for(closed, method)
+                if warmth:
+                    outcome = _gfn.optimize_with_gfn(
+                        xyz, method, charge=charge, uhf=uhf, timeout=None,
+                        solvent=wet, solvation_model=model,
+                        topology=(_gfn_topology_dir(xyz)
+                                  if _gfn.is_gfn_method(method) else None),
+                        optimise=bool(wants_relax), etemp=warmth,
+                    )
 
             def _done():
                 if not outcome.get('ok') or outcome.get('energy') is None:
@@ -7799,6 +7873,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                               'come back.'))
                     return
                 state['thermal_e0'] = float(outcome['energy'])
+                state['thermal_etemp'] = warmth
+                state['thermal_smeared_at'] = closed if warmth else None
                 state['thermal_method'] = method
                 state['thermal_asked'] = _the_question_an_anchor_answers()
                 state['thermal_for'] = _structure_fingerprint(
@@ -15221,6 +15297,53 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['gfn_follow_took'] = took
         return took
 
+    def _smearing_for(method, failed=False):
+        """The electronic temperature the next answer of this drag runs at.
+
+        None is xtb's own 300 K, and it is the answer for every method
+        without an SCC and for every drag whose frontier gap is open.
+
+        Where the gap closes, a closed-shell SCC stops converging: measured
+        on a user's own 42-atom structure under GFN2 in DMSO, a hydrogen
+        being pulled off its carbon, the SCC failed on five of the seven
+        answers between 2.08 and 2.10 A -- each of them xtb's whole iteration
+        budget spent for nothing, and each of them reported as a fault of the
+        xtb build.  Fermi smearing at :data:`gfn_optimize.SMEARED_TEMPERATURE`
+        converges the same geometries and changes nothing at all where the
+        gap is open; the numbers are beside that constant.
+
+        Three things decide it, in this order.  A drag that has already been
+        smeared stays smeared to the release: the answers of one gesture are
+        compared with each other, by the budget and by the eye, and a
+        temperature that switched back and forth inside a drag would put a
+        step of about a kcal/mol into the price at exactly the geometry
+        where the gap crosses the threshold.  An anchor that was smeared
+        smears the drags priced against it, for the same reason.  Otherwise
+        the gap of the answer that has just come back is read against
+        :data:`gfn_optimize.GAP_NEEDS_SMEARING`, so the run is warmed one
+        answer *before* the SCC would fail rather than after -- and *failed*
+        is the backstop for the answer nobody saw coming, the first of a
+        drag included.
+
+        Universal by construction: it reads a property every SCC method
+        reports and decides nothing on the molecule.
+        """
+        if str(method or '').strip().lower() not in _gfn.SCC_METHODS:
+            return None
+        warmth = state.get('gfn_follow_etemp') or state.get('thermal_etemp')
+        if not warmth:
+            gap = state.get('gfn_follow_gap')
+            warmth = (_gfn.SMEARED_TEMPERATURE if failed
+                      else _gfn.electronic_temperature_for(gap, method))
+            if warmth:
+                state['gfn_follow_smeared_at'] = gap
+        if not warmth:
+            return None
+        if state.get('gfn_follow_smeared_at') is None:
+            state['gfn_follow_smeared_at'] = state.get('thermal_smeared_at')
+        state['gfn_follow_etemp'] = float(warmth)
+        return float(warmth)
+
     def _hand_follows_now():
         """How much of this answer's demand the hand takes, given how slow the
         answers are.
@@ -18052,6 +18175,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         _refresh_hand_controls()
         if not active:
             state['thermal_e0'] = None
+            state.pop('thermal_etemp', None)
             state['thermal_for'] = None
             # And the page is told, or the last drag's leash outlives the
             # switch that made it: the marks stay, the reach stays, and the
@@ -20360,6 +20484,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         """
         if state.get('thermal_e0') is not None:
             state['thermal_e0'] = None
+            state.pop('thermal_etemp', None)
             # And what the last structure's drag went through, which is not a
             # statement about this one.
             state.pop('thermal_peak', None)
