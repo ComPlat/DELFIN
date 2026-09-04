@@ -12567,6 +12567,25 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         f'Pulled to {last["force"]:.0f} kcal/mol/A: '
                         f'{gave["said"]}. It held at {gave["held"]:.0f} and '
                         f'was broken by {gave["broke"]:.0f}.{survived}'))
+                elif got.get('reached') is not None:
+                    # The ramp came down into a product minimum and would only
+                    # have over-strained it from there -- so it stopped, and
+                    # this says where, rather than reporting the strain at the
+                    # far end of a ramp that went past the answer.  "Geht ueber
+                    # das Minimum hinaus" was that overshoot; the walk stops at
+                    # the minimum now.
+                    reached = got['reached']
+                    settled_at = (f' Released, it settles to '
+                                  f'{kept["energy"]:+.1f} kcal/mol'
+                                  + (f' ({kept["said"]})' if kept
+                                     and kept.get('said') else '')
+                                  + '.' if kept else '')
+                    said.insert(0, (
+                        f'Pushed to a lower minimum at '
+                        f'{reached["force"]:.0f} kcal/mol/A, '
+                        f'{reached["energy"]:+.1f} kcal/mol under load. Past it '
+                        f'the arrows only strain what they made, so the walk '
+                        f'stops there.{settled_at}'))
                 else:
                     settled_at = (f' Settled with the load off it is '
                                   f'{kept["energy"]:+.1f}.' if kept else '')

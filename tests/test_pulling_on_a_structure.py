@@ -750,3 +750,96 @@ def test_the_wheel_reaches_select_mode_too():
     # And it is wired where a viewer becomes ready.
     ready = body[body.index('function onViewerReady('):][:2600]
     assert 'bindWheelClears(scopeKey, viewerEl);' in ready
+
+
+def test_past_the_minimum_tells_a_product_from_a_deformation():
+    """The detector, on crafted profiles rather than on xtb: it fires only
+    where the energy came down into a basin and then climbed back out.
+
+    A monotonic climb never arms it -- its floor is the start, with nothing
+    above it -- so a push climbing its first barrier is never mistaken for one
+    that has left a product behind.  A basin the energy only dipped into by a
+    hundredth of a kcal (a cyclohexane over-strained from its chair) is not a
+    product; one it fell a kcal into after crossing a barrier (a butane pushed
+    gauche to anti) is.
+    """
+    fell = load.PAST_A_BARRIER
+    rose = load.OUT_OF_THE_BASIN
+
+    def pm(seq):
+        return load.past_the_minimum(seq, fell=fell, rose=rose)
+
+    # Fires: a barrier crossed, a basin, and climbing out of it.
+    assert pm([0, 2, 5, 1, -2, -1, 3]) == 4
+    # Fires: downhill from the start into a deep basin, then out.
+    assert pm([0, -1, -3, -8, -7, -6]) == 3
+    # Fires: the butane gauche->anti profile measured live, product at 7.
+    assert pm([-0.61, -0.57, -0.46, -0.38, -0.05, 0.16, -0.63, -0.94,
+               -0.86, -0.50, -0.27, 0.57, 1.05, 3.01]) == 7
+    # Silent: a monotonic climb to a bond break, no product.
+    assert pm([0, 2, 5, 9, 15]) is None
+    # Silent: the cyclohexane over-strain, a 0.02 kcal dip is not a basin.
+    assert pm([0.57, 0.55, 1.23, 1.25, 3.00, 2.70, 10.86]) is None
+    # Silent: still descending -- the floor is the last point, nothing left.
+    assert pm([0, -2, -5, -9]) is None
+    # Silent: a bumpy climb whose floor is the start.
+    assert pm([0, 1, 0.9, 2, 1.9, 3.5]) is None
+
+
+@_needs_xtb
+def test_a_push_stops_at_a_conformational_product_not_past_it():
+    """A reaction that leaves the bonding alone -- a butane pushed from gauche
+    over its torsion barrier to anti -- has a product minimum and no bond to
+    break, so the graph watch cannot stop the ramp.  Left to run it strains
+    the anti product level after level; measured live, an eighteen-level ramp
+    reached anti at about 12 kcal/mol/A and then climbed 23 kcal/mol past it.
+
+    The energy watch stops it at the product: the ramp ends a level or two
+    past the minimum instead of at the far end, `reached` names where, and the
+    structure released from the load is the anti product rather than the
+    over-strained wreck the old ramp settled from.
+    """
+    rdkit = pytest.importorskip('rdkit')
+    from rdkit import Chem
+    from rdkit.Chem import AllChem, rdMolTransforms
+    from delfin.dashboard import gfn_optimize as gfn
+
+    mol = Chem.AddHs(Chem.MolFromSmiles('CCCC'))
+    AllChem.EmbedMolecule(mol, randomSeed=3)
+    AllChem.MMFFOptimizeMolecule(mol)
+    carbons = [a.GetIdx() for a in mol.GetAtoms() if a.GetSymbol() == 'C']
+    conf = mol.GetConformer()
+    rdMolTransforms.SetDihedralDeg(conf, *carbons, 62.0)   # gauche
+    rows = [f"{a.GetSymbol()} {conf.GetAtomPosition(a.GetIdx()).x:.4f} "
+            f"{conf.GetAtomPosition(a.GetIdx()).y:.4f} "
+            f"{conf.GetAtomPosition(a.GetIdx()).z:.4f}" for a in mol.GetAtoms()]
+    xyz = f"{len(rows)}\nbutane gauche\n" + "\n".join(rows)
+
+    got = load.walk_under_load(
+        xyz, [{'atom': carbons[0], 'vector': (0.0, 0.0, -6.0)},
+              {'atom': carbons[3], 'vector': (0.0, 0.0, 6.0)}],
+        'gfn2', steps=18, force_from=3.0, force_to=90.0)
+    assert got['ok'], got['status']
+
+    # No bond changed -- it is a conformational reaction.
+    assert got['gave'] is None, got['gave']
+    # But it reached a product minimum and stopped there, well short of the
+    # eighteen levels it was offered.
+    assert got['reached'] is not None, 'the ramp ran past the product minimum'
+    assert len(got['points']) < 18, len(got['points'])
+
+    # The kept structure -- released from the load -- is the anti product,
+    # near 180 degrees, not a strained gauche near 62.
+    settled = got['settled']
+    assert settled is not None
+    here = np.asarray(gfn.coordinates_of(settled['xyz'])).reshape(-1, 3)
+    b0 = here[carbons[0]] - here[carbons[1]]
+    b1 = here[carbons[2]] - here[carbons[1]]
+    b2 = here[carbons[3]] - here[carbons[2]]
+    b1n = b1 / np.linalg.norm(b1)
+    v = b0 - np.dot(b0, b1n) * b1n
+    w = b2 - np.dot(b2, b1n) * b1n
+    import math
+    ang = abs(math.degrees(math.atan2(np.dot(np.cross(b1n, v), w),
+                                      np.dot(v, w))))
+    assert ang > 150.0, ('settled at %.0f deg, not anti' % ang)

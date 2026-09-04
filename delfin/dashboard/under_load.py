@@ -83,6 +83,60 @@ MOST_A_LEVEL_MOVES = 0.8
 #: the result a minimum.
 SETTLE_REACH = 3.0
 
+#: How far the energy must have fallen from a peak it climbed first, into the
+#: basin, before the ramp is allowed to say it has left a product behind, in
+#: kcal/mol.  Its whole job is to tell a real product from the numerical dip
+#: at the very first level: measured, a cyclohexane over-strained from its
+#: chair dipped 0.02 kcal below its start and is not a product, while a butane
+#: pushed gauche-to-anti sat 1.1 kcal below the barrier it crossed and is one.
+#: So the cut is between those two, well above the hundredth-of-a-kcal noise
+#: of a relaxed level and below the smallest barrier worth crossing.  A
+#: monotonic climb never arms this at all -- its floor is the start, with
+#: nothing above it -- so the number only ever separates a shallow product
+#: from none, never a barrier climb from a product.
+PAST_A_BARRIER = 0.8
+
+#: And how far back up out of that basin, in kcal/mol, before the ramp is over
+#: the product and only over-straining what is left.  Small, because past the
+#: minimum every further level of force only bends a settled structure, and
+#: the point of stopping is not to spend the walk finding out how far.
+OUT_OF_THE_BASIN = 1.0
+
+
+def past_the_minimum(energies: Sequence[float], *, fell: float,
+                     rose: float) -> Optional[int]:
+    """The index of a product minimum the ramp has climbed back out of, or None.
+
+    A push ramps a force until a reaction happens, and past the product it
+    only over-strains the structure -- so the walk should stop where the
+    energy bottomed out.  A bond breaking is one such bottom and is caught on
+    the bond graph; a reaction that leaves the bonding alone -- a ring
+    flipping, a torsion turning over -- is caught here, on the energy, which is
+    what "geht ueber das Minimum hinaus" was about: a cyclohexane pushed to a
+    lower conformer and then, level after level, over 190 kcal past it.
+
+    Armed only once the energy has come down into a basin *fell* below the
+    highest it climbed to first -- a barrier crossed, or, when the walk runs
+    downhill from the start, the start itself.  Without that a push climbing
+    its first barrier would read as leaving a basin it had never been in.
+    Then, once the energy has risen *rose* back above the floor of that basin,
+    the ramp is over the product, and the floor is where it should have
+    stopped.
+    """
+    values = [float(one) for one in energies]
+    if len(values) < 2:
+        return None
+    floor = min(values)
+    index = values.index(floor)
+    if index >= len(values) - 1:
+        return None                     # still at the bottom; nothing to leave
+    climbed_first = max(values[:index + 1]) - floor
+    if climbed_first < fell:
+        return None                     # never in a basin; a bond break stops it
+    if values[-1] - floor < rose:
+        return None                     # not yet clear of the product
+    return index
+
 
 def rigid_directions(coords: Any) -> np.ndarray:
     """The six ways a molecule can move without changing shape, orthonormal.
@@ -344,6 +398,7 @@ def walk_under_load(xyz_text: str, loads: Sequence[Dict[str, Any]],
     was_bonded: Any = None
     gave: Optional[Dict[str, Any]] = None
     settled: Optional[Dict[str, Any]] = None
+    reached: Optional[Dict[str, Any]] = None
     try:
         here = loaded.bohr.copy()
         # The zero is the structure as it was handed over, unloaded.
@@ -424,6 +479,19 @@ def walk_under_load(xyz_text: str, loads: Sequence[Dict[str, Any]],
                 # nothing new.  "Whole profile" is asking for exactly that:
                 # the whole ramp, whatever gives on the way.
                 break
+            # And the same, on the energy, for a reaction that leaves the
+            # bonding alone: a ring flip, a torsion turned over.  Past the
+            # product minimum the load only over-strains it -- the cyclohexane
+            # that ran 190 kcal past its own lower conformer -- so the walk
+            # stops at the floor, and settles from there rather than from the
+            # wreck at the far end of the ramp.
+            if reached is None and gave is None and not whole:
+                index = past_the_minimum(
+                    [one['energy'] for one in points],
+                    fell=PAST_A_BARRIER, rose=OUT_OF_THE_BASIN)
+                if index is not None:
+                    reached = points[index]
+                    break
         # And then the load comes off.
         #
         # Every level is a minimum of the *loaded* surface, which is a real
@@ -438,7 +506,20 @@ def walk_under_load(xyz_text: str, loads: Sequence[Dict[str, Any]],
         # was for: the load is how the structure was got over the hill, not
         # part of where it landed.
         if points and not (should_stop is not None and should_stop()):
-            free = relax_under_load(loaded, here, np.zeros_like(here),
+            # From the product, not from the overshoot.  Where the ramp
+            # stopped at a minimum on the energy, *here* is a level or two
+            # past it -- so the settle starts from the floor the walk found,
+            # not from the strained geometry that told it the floor was
+            # behind.  Released from the wreck at the far end instead, a
+            # cyclohexane came back with three bonds rearranged; released from
+            # the product it comes back to the product.
+            settle_from = here
+            if reached is not None:
+                settle_from = _turned_onto(
+                    np.asarray(_gfn.coordinates_of(reached['xyz']), float)
+                    .reshape(-1, 3) / _climb.BOHR, loaded.bohr)
+            free = relax_under_load(loaded, settle_from,
+                                    np.zeros_like(settle_from),
                                     reach=SETTLE_REACH,
                                     should_stop=should_stop)
             if free.get('ok') and free.get('energy') is not None:
@@ -475,4 +556,4 @@ def walk_under_load(xyz_text: str, loads: Sequence[Dict[str, Any]],
                 'settled': None,
                 'status': 'The load could not be applied.'}
     return {'ok': True, 'points': points, 'rigid': rigid_share, 'gave': gave,
-            'settled': settled, 'status': ''}
+            'reached': reached, 'settled': settled, 'status': ''}
