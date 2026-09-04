@@ -85,6 +85,10 @@ def test_it_is_put_where_the_browser_can_reach_it(tmp_path, monkeypatch):
     everything below its root at /voila/files/, which is the same route the
     literature tab already uses for PDFs."""
     monkeypatch.setenv("DELFIN_VOILA_ROOT_DIR", str(tmp_path))
+    # This is the route for a dashboard nobody launched with delfin-voila:
+    # with one of its own the editor is loaded from where it is kept and
+    # nothing is put under the root at all.
+    monkeypatch.delenv(ketcher._URL_ENV, raising=False)
     # A home of its own: the editor is kept there now, and a copy on the
     # machine running the tests would otherwise be served into this root.
     home = tmp_path / "home"
@@ -110,6 +114,7 @@ def test_it_is_put_where_the_browser_can_reach_it(tmp_path, monkeypatch):
 
 def test_without_a_served_directory_it_says_so(monkeypatch):
     monkeypatch.delenv("DELFIN_VOILA_ROOT_DIR", raising=False)
+    monkeypatch.delenv(ketcher._URL_ENV, raising=False)
 
     assert ketcher.app_directory() is None
     assert ketcher.app_url() is None
@@ -465,6 +470,7 @@ def test_the_editor_is_kept_somewhere_that_does_not_move(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr(pathlib.Path, "home", lambda: home)
+    monkeypatch.delenv(ketcher._URL_ENV, raising=False)
 
     kept = ketcher.stored_directory()
     kept.mkdir(parents=True)
@@ -488,6 +494,8 @@ def test_an_editor_that_is_already_there_is_taken_in(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setattr(pathlib.Path, "home", lambda: home)
+
+    monkeypatch.delenv(ketcher._URL_ENV, raising=False)
 
     old_root = tmp_path / "where it was"
     served = old_root / ".delfin" / "ketcher"

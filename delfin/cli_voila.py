@@ -480,6 +480,39 @@ def _prepare_login_template_dir() -> str | None:
         return None
 
 
+def _prepare_published_dir() -> str | None:
+    """Create the one directory the server publishes, and return it.
+
+    The drawing editor is a browser application: it has to be fetched over
+    HTTP, so it has to sit somewhere the server will hand out. Until now the
+    only such place was Voilà's root directory — which is whatever directory
+    the dashboard was started in — so thirty megabytes of Ketcher were copied
+    into it, one copy per launch directory, and a user found them in their
+    archive folder next to the calculations.
+
+    A static route of its own fixes that: the editor is loaded from where it
+    is kept, in ``~/.delfin/served``, and nothing is written into the launch
+    directory at all. Returns the directory, or ``None`` if it cannot be made
+    (the editor then falls back to the copy under the root, as before).
+
+    ``/static/`` is served WITHOUT a token — jupyter_server needs it for the
+    login page — which is why what is published gets a directory of its own
+    rather than a route into ``~/.delfin``, where the credentials and the
+    agent's memory live. It holds the editor and nothing else, and the editor
+    is a public open-source bundle. This narrows the surface rather than
+    widening it: ``/voila/files/`` is equally unauthenticated and reaches
+    every .png/.pdf/.html below the launch directory.
+    """
+    try:
+        from delfin.dashboard import ketcher
+
+        published = ketcher.published_root()
+        published.mkdir(parents=True, exist_ok=True)
+        return str(published)
+    except Exception:
+        return None
+
+
 # Benign lines jupyter_server emits that only confuse users without signalling
 # any real problem: an internal "ServerApp.token config is deprecated" warning
 # (jupyter_server reads its OWN deprecated trait during startup) and a routine
@@ -807,17 +840,28 @@ def main(argv=None):
         f"--VoilaConfiguration.extension_denylist={_extension_denylist()!r}",
     ]
 
+    import json
+
     # DELFIN-branded login page: drop our own login.html (logo inlined) onto
     # extra_template_paths so jupyter_server renders it instead of its generic
     # "Password or token" page. Appearance only — the LoginHandler still
     # validates the token/password server-side, so auth is unchanged.
     _login_dir = _prepare_login_template_dir()
     if _login_dir:
-        import json
-
         cmd.append(
             "--ServerApp.extra_template_paths=" + json.dumps([_login_dir])
         )
+
+    # The drawing editor, published from where it is kept instead of being
+    # copied into the directory the dashboard was started in. The dashboard
+    # only takes this route when the variable says the route is there, so a
+    # dashboard started any other way still finds its editor.
+    _published_dir = _prepare_published_dir()
+    if _published_dir:
+        cmd.append(
+            "--ServerApp.extra_static_paths=" + json.dumps([_published_dir])
+        )
+        env["DELFIN_KETCHER_URL"] = "/static/ketcher"
 
     # Token authentication — now actually ENFORCED by jupyter_server. Pass via
     # env var, not CLI: /proc/PID/cmdline is world-readable on shared hosts, so

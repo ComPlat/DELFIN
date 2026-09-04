@@ -16,9 +16,13 @@ duo, closable), and they are near enough identical.  Only the one the main page
 loads is kept, which is the difference between 115 MB on disk and 32.
 
 It has to be reachable by the browser, which means a URL rather than a path.
-Voila serves everything below its root directory at ``/voila/files/``; that is
-the same route the literature tab already uses for PDFs, and it goes through
-whatever tunnel the dashboard itself came down.
+``delfin-voila`` publishes one directory for that -- ``~/.delfin/served``,
+which holds the editor and nothing else -- and the editor is loaded from where
+it is kept.  Started any other way there is no such route, and the only thing
+a browser can reach is Voila's root directory, which is whatever the dashboard
+was started in: then a copy is put there, the way it was for everybody before.
+That is how thirty megabytes of editor came to sit in a user's archive folder,
+one copy per directory anyone had ever launched from.
 """
 
 from __future__ import annotations
@@ -35,6 +39,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 __all__ = ['app_directory', 'app_url', 'install', 'installed_version',
+           'published_root', 'stored_directory', 'url_prefix',
            'latest_release', 'is_installed', 'smiles_from_molfile',
            'reaction_smiles_from_rxnfile', 'reaction_smiles_from_sdf',
            'smiles_from_drawing',
@@ -54,6 +59,12 @@ _ASSET = re.compile(r'^ketcher-standalone-(\d[\w.]*)\.zip$')
 #: Written beside the app so an installed copy can say which build it is.
 _STAMP = '.delfin-ketcher-version'
 
+#: Set by ``delfin-voila`` once it has given the server a route to the
+#: published directory, and holding the URL that route answers on.  Nothing
+#: else sets it: only the launcher can add a route, so a dashboard started any
+#: other way falls back to the copy under Voila's root.
+_URL_ENV = 'DELFIN_KETCHER_URL'
+
 
 def _voila_root() -> Optional[Path]:
     """The directory Voila serves, or None when nothing is being served.
@@ -71,29 +82,56 @@ def _voila_root() -> Optional[Path]:
         return None
 
 
-def app_directory() -> Optional[Path]:
-    """Where the browser loads the editor from, which is under the served root.
+def published_root() -> Path:
+    """The one directory DELFIN publishes over HTTP, holding only what may be.
 
-    That root is whatever the dashboard was started in, so this path moves
-    with the launch directory -- which is why a Ketcher that had been fetched
-    was gone the next time somebody started the dashboard from somewhere else,
-    and why one fetched into the cache directory disappeared when /tmp was
-    swept.  It is where the editor has to be *served* from; it is not where it
-    should be *kept*.  See :func:`stored_directory`.
+    ``~/.delfin`` is where the credentials, the settings and the agent's
+    memory live, so a route pointed at it would hand all of that to anybody
+    who can reach the port.  What is published gets a directory of its own
+    instead, and the editor is the only thing in it.
+    """
+    return Path.home() / '.delfin' / 'served'
+
+
+def url_prefix() -> Optional[str]:
+    """The route the published directory answers on, or None if there is none."""
+    raw = os.environ.get(_URL_ENV, '').strip().rstrip('/')
+    return raw if raw.startswith('/') else None
+
+
+def _launch_copy() -> Optional[Path]:
+    """The copy under Voila's root, from when that was the only way in.
+
+    That root is whatever the dashboard was started in, which is how thirty
+    megabytes of editor came to sit in somebody's archive folder -- one copy
+    per directory anyone ever launched from, and nothing ever took them back.
     """
     root = _voila_root()
     return None if root is None else root / '.delfin' / 'ketcher'
 
 
+def app_directory() -> Optional[Path]:
+    """Where the browser loads the editor from.
+
+    Its own published directory when there is a route to one -- which is
+    where it is kept, so there is nothing to copy and nothing is left behind
+    in the directory the dashboard happened to be started in.  Without that
+    route the only thing a browser can reach is Voila's root, and the editor
+    has to be put there.  See :func:`stored_directory` and :func:`_launch_copy`.
+    """
+    if url_prefix():
+        return stored_directory()
+    return _launch_copy()
+
+
 def stored_directory() -> Path:
     """Where the editor is kept, which does not move.
 
-    One place per user, beside everything else DELFIN installs for them.  The
-    served copy is made from this one, and making it is a local file copy of
-    thirty megabytes -- under a second -- against fetching the same thirty
-    over the network again.
+    One place per user, beside everything else DELFIN installs for them --
+    and, since ``delfin-voila`` publishes the directory it is in, the place
+    the browser loads it from as well.
     """
-    return Path.home() / '.delfin' / 'ketcher'
+    return published_root() / 'ketcher'
 
 
 def _version_in(folder: Optional[Path]) -> Optional[str]:
@@ -108,6 +146,60 @@ def _version_in(folder: Optional[Path]) -> Optional[str]:
         return None
 
 
+def _take_over_the_old_store() -> None:
+    """Move a store kept beside the settings into the published directory.
+
+    It was at ``~/.delfin/ketcher`` before there was a route of its own.
+    Moving it is a rename on the same filesystem; leaving it would mean
+    fetching thirty megabytes again for something already on the disk.
+    """
+    was = Path.home() / '.delfin' / 'ketcher'
+    now = stored_directory()
+    if was == now or _version_in(now) is not None or _version_in(was) is None:
+        return
+    try:
+        now.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(was), str(now))
+    except OSError:
+        pass
+
+
+def _take_in_the_launch_copy() -> None:
+    """Keep an editor that is only in a launch directory, before it is lost."""
+    left = _launch_copy()
+    if left is None or _version_in(left) is None:
+        return
+    try:
+        stored_directory().parent.mkdir(parents=True, exist_ok=True)
+        shutil.rmtree(stored_directory(), ignore_errors=True)
+        shutil.copytree(left, stored_directory())
+    except OSError:
+        pass
+
+
+def _clear_the_launch_copy() -> None:
+    """Take back the thirty megabytes an older DELFIN left in a launch directory.
+
+    Only what DELFIN itself put there -- a folder carrying the version stamp
+    and the page -- and only once the same editor is kept somewhere that does
+    not move.  The ``.delfin`` directory that held it goes as well, if
+    nothing else was ever put in it.
+    """
+    left = _launch_copy()
+    if left is None or _version_in(left) is None:
+        return
+    if _version_in(stored_directory()) is None:
+        return
+    try:
+        shutil.rmtree(left)
+    except OSError:
+        return
+    try:
+        left.parent.rmdir()
+    except OSError:
+        pass
+
+
 def place_from_store() -> Optional[str]:
     """Put the kept copy where the browser can load it, if it is not there.
 
@@ -116,9 +208,19 @@ def place_from_store() -> Optional[str]:
     symlink out of the directory it serves is doing the right thing, and
     thirty megabytes of local copy is not worth arguing with it about.
     """
+    _take_over_the_old_store()
     served = app_directory()
     if served is None:
         return None
+    if served == stored_directory():
+        # Published where it is kept, so there is nothing to copy.  An older
+        # DELFIN may still have left one in the launch directory: that is the
+        # copy to take in if it is the only one, and to take back afterwards
+        # -- a calculation folder is no place for a JavaScript bundle.
+        if _version_in(served) is None:
+            _take_in_the_launch_copy()
+        _clear_the_launch_copy()
+        return _version_in(served)
     there = _version_in(served)
     if there:
         # Already being served, and if it is not kept anywhere yet then this
@@ -169,17 +271,24 @@ def app_url() -> Optional[str]:
     through messages, and Ketcher does not speak any.
     """
     folder = app_directory()
-    root = _voila_root()
-    if folder is None or root is None or not is_installed():
+    if folder is None or not is_installed():
         return None
     from urllib.parse import quote
 
-    rel = folder.relative_to(root).as_posix()
     # Cache-busted by version: an update that kept the same URL would be shown
     # from the browser cache, and the new build would appear to have changed
     # nothing.
-    return (f'/voila/files/{quote(rel)}/index.html'
-            f'?v={quote(str(installed_version()))}')
+    stamp = quote(str(installed_version()))
+    prefix = url_prefix()
+    if prefix:
+        # A route of its own, so the URL does not say where the dashboard was
+        # started -- and does not change when it is started somewhere else.
+        return f'{prefix}/index.html?v={stamp}'
+    root = _voila_root()
+    if root is None:
+        return None
+    rel = folder.relative_to(root).as_posix()
+    return f'/voila/files/{quote(rel)}/index.html?v={stamp}'
 
 
 def latest_release(timeout: float = 20.0) -> Dict[str, Any]:
@@ -275,7 +384,9 @@ def install(
     started = time.perf_counter()
     say(f'fetching Ketcher {newest["version"]} '
         f'({newest["size"] / 1e6:.0f} MB)')
-    staging = folder.parent / ('ketcher-download-%d' % os.getpid())
+    # Staged beside the store, never inside the published directory: what is
+    # published is the editor, not a half-unpacked download of it.
+    staging = Path.home() / '.delfin' / ('ketcher-download-%d' % os.getpid())
     archive = staging / 'ketcher.zip'
     try:
         staging.mkdir(parents=True, exist_ok=True)
@@ -316,9 +427,10 @@ def install(
         shutil.rmtree(kept, ignore_errors=True)
         kept.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(unpacked), str(kept))
-        shutil.rmtree(folder, ignore_errors=True)
-        folder.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(kept, folder)
+        if folder != kept:
+            shutil.rmtree(folder, ignore_errors=True)
+            folder.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(kept, folder)
     except (OSError, zipfile.BadZipFile, urllib.error.URLError) as exc:
         return {'ok': False, 'version': None,
                 'status': f'Ketcher could not be installed: {exc}'}
