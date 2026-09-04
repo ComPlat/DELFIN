@@ -209,6 +209,11 @@ _NOT_CARRIED = {
     "_cost_cap_hit", "_cost_cap_value", "_ambiguous_columns_turn",
     "_truncated_tools_turn", "_stop_requested", "_steering_delivered",
     "_steering_refreshes",
+    #    Whether THIS turn has already been told it is answering in the
+    #    wrong language. Per turn on purpose: a resumed session that
+    #    inherited a spent latch would stay silent through its first
+    #    wrong answer, which is the defect the latch belongs to.
+    "_language_note_sent",
     #    Whether THIS turn's message was a greeting and nothing else.
     #    Read by the cross-session task notice, which must not hand a
     #    backlog to a model that was only greeted.
