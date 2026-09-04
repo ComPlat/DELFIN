@@ -170,8 +170,8 @@ __BOOTSTRAP__
 var MODEL = __ATOMS__;
 var PER_PX = 0.03;                       // Angstrom of world per screen pixel
 
-function makeViewer(perPx) {
-  var atoms = MODEL.map(function(a){
+function makeViewer(perPx, atomList) {
+  var atoms = (atomList || MODEL).map(function(a){
     return {serial: a.serial, elem: a.elem, x: a.x, y: a.y, z: a.z};
   });
   var model = {atoms: atoms, selectedAtoms: function(){ return atoms; }};
@@ -412,6 +412,28 @@ out.pairPicksDuring = picks();
 up(h.x + 20, h.y);
 out.pairAfter = {picks: picks(), reported: reported(),
                  closed: at(DRAGGED)[0] - HOME};
+
+// --- the selection survives a re-render of the same molecule, and is
+// --- dropped when an atom is removed under it ------------------------------
+function reRender(atomList) {
+  window._submitMolViewerByScope[SCOPE] = makeViewer(PER_PX, atomList);
+  window.__delfinSubmitManip.onViewerReady(SCOPE, viewerEl);
+}
+fresh();
+tap(NAMED);
+tap(DRAGGED, {shiftKey: true});          // two atoms picked
+var beforeRe = picks();
+reRender(MODEL);                          // the same molecule, redrawn
+var sameKeeps = picks();
+// A middle atom removed, and the rest renumbered as a real rebuild does:
+// the atoms after it slide down a serial, so a mark left on an old number
+// would land on a different atom -- and the selection is dropped whole.
+var afterRemove = MODEL.filter(function(a){ return a.serial !== 2; })
+  .map(function(a, i){ return {serial: i, elem: a.elem, x: a.x, y: a.y, z: a.z}; });
+reRender(afterRemove);
+var removeClears = picks();
+out.reRender = {before: beforeRe, sameKeeps: sameKeeps,
+                removeClears: removeClears};
 
 console.log(JSON.stringify(out));
 """
@@ -848,3 +870,23 @@ def test_what_a_tap_would_have_reset_had_it_been_a_grab():
     ends = EDITOR_SOURCE.split("def _end_gfn_follow", 1)[1].split(
         "\n    #:", 1)[0]
     assert "_clear_thermal_wall()" in ends
+
+
+def test_the_selection_survives_a_re_render_of_the_same_molecule(gestures):
+    """Reported: "die Auswahl bleibt nicht nach einer Operation ... nur bei
+    Mausrad druecken soll abgewaehlt werden."
+
+    A drag, a relaxation, a Settle -- every operation redraws the structure,
+    and the redraw is a fresh viewer.  The picks used to be cleared on every
+    one, so the pair a climb is named by, or the group being dragged, was gone
+    the moment anything happened to it.  Now the same molecule re-rendered
+    keeps its marks (the atoms come back in the same order with the same
+    serials), while an atom removed under the selection drops it whole rather
+    than leaving a mark on whatever slid into the old number.
+    """
+    re = gestures["reRender"]
+    assert re["before"] == [_NAMED, _DRAGGED], re
+    # The same molecule, redrawn: the selection is exactly where it was.
+    assert re["sameKeeps"] == [_NAMED, _DRAGGED], re
+    # An atom removed under it: the selection is dropped whole.
+    assert re["removeClears"] == [], re
