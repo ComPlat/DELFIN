@@ -17625,7 +17625,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # reader nothing.
         marks = []
         if state.get('scan_arrived') and came:
-            marks.append(f'back to the minimum at {came[0]:.3g}')
+            # Why it walked fewer points than were asked for, and how to get
+            # them all.  Reported: "hab scan mit 40 point machen wollen geht
+            # das nur wenn ich ziel winkel einstelle?" -- the count came back
+            # short and nothing said the target was not the reason.  It is
+            # not: the scan stopped because it had crossed a barrier and
+            # settled at the next minimum, which off Whole profile is where a
+            # reaction scan is meant to end.  So the mark says that, and names
+            # the switch that walks the rest.
+            short = len(path) < int(steps)
+            marks.append(
+                f'back to the minimum at {came[0]:.3g}'
+                + (f' -- it stopped there, short of the {int(steps)} points '
+                   'you asked for, because it had crossed a barrier and '
+                   'settled; turn on Whole profile to walk past it for all of '
+                   'them' if short else ''))
         if state.get('scan_stopped_out') and not state.get('scan_arrived'):
             marks = ['you stopped it -- the top is where it was interrupted']
         if state.get('scan_gave_up'):
