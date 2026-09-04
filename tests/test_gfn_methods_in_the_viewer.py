@@ -7523,7 +7523,11 @@ api.setLoads(SCOPE, []);
 api.setPicks(SCOPE, [0, 1]);
 const withPicks = shapes;
 // Then the structure is replaced -- the same call the editor makes when a
-// press has removed the picked atoms and handed back what is left.
+// press has removed the picked atoms and handed back what is left.  The
+// handed-back structure no longer has those atoms, so their serials are gone
+// from the viewer the rebuild reads; the selection is dropped because it can
+// no longer be placed, and its markers come off with it.
+atoms.splice(0, 2);
 api.onViewerReady(SCOPE, el('div'));
 console.log(JSON.stringify({said, withPicks, afterwards: shapes,
                             restingAt, movedTo}));
