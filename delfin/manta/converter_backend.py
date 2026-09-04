@@ -977,7 +977,31 @@ def _min_nonbonded_heavy(syms, P) -> float:
 #    Summe; 0,78 gab 8 % Falschpositive, 0,65 faengt die chemisch unmoeglichen
 #    Faelle.  Sie wird hier NICHT importiert (getrennte Baeume), sondern mit
 #    Zeigerkommentar gespiegelt -- weicht eine ab, faellt es beim Vergleich auf.
-_IL_CLASH_FACTOR = 0.65       # Spiegel von detectors/metric_inter_ligand_clash.py:26
+# ⚠️ GESPIEGELT WIRD DIE FALSCHE DATEI (gemessen 03.09.2026, Register #299).
+#    `metric_inter_ligand_clash.py` nennt `full_verdict.py:1732` selbst eine
+#    DUBLETTE des verdrahteten `find_inter_ligand_clash` -- und verdrahtet ist
+#    laut `full_verdict.py:1531` die Schwelle **0,70**, nicht 0,65.  Ein Bautor
+#    UNTER der Augenschwelle kann das Auge per Konstruktion nie befriedigen:
+#    jedes Paar im Band [0,65 · 0,70)·vdW ist fuer das Auge eine Kollision und
+#    fuer das Tor unsichtbar.  Gemessen an den 194 Schadenssystemen von
+#    `bbre6k`: 99 von 163 verfehlten Systemen (60,7 %) liegen genau in diesem
+#    Band, GABYIS mit beiden ueberlebenden Frames darunter.
+#
+#    UEBERSCHREIBBAR STATT HART GESETZT, und das ist kein Zoegern:
+#    `pairgate6k` lief am 04.09. bei 5075/6000 und baut jedes System in einem
+#    NEUEN Unterprozess, der diese Datei frisch importiert.  Ein harter Wechsel
+#    haette die restlichen ~925 Systeme mit 0,70 und die ersten 5075 mit 0,65
+#    gebaut -- ein gemischtes Archiv und ein unbrauchbarer Lauf.  Mit Vorgabe
+#    0,65 ist JEDER bestehende Lauf byte-identisch; der neue setzt 0,70.
+#
+#    ⚠️ Die Schwelle ist KEIN monotoner Knopf.  Dieselbe Zahl steht auch in der
+#    Bedingung `d_base >= tgt` ("lag das Paar vorher darueber"), und die wird
+#    mit steigendem Faktor SCHWERER.  Simuliert ueber 295 Schadenssysteme:
+#        0,65 -> heilt  81   0,68 -> 139   0,70 -> 200   0,72 -> 190
+#    0,70 ist das Maximum, und das ist kein Zufall: dort fragt das Tor exakt
+#    "verletzt dieses Frame das AUGENkriterium neu?".  Wer hoeher dreht, misst
+#    weniger.
+_IL_CLASH_FACTOR = float(os.environ.get("DELFIN_FFFREE_INTERLIG_PAIR_FACTOR", "0.65"))
 _IL_VDW = {"H": 1.20, "C": 1.70, "N": 1.55, "O": 1.52, "F": 1.47, "P": 1.80,
            "S": 1.80, "Cl": 1.75, "Br": 1.85, "I": 1.98, "B": 1.92, "Si": 2.10,
            "Se": 1.90, "As": 1.85, "Te": 2.06}
