@@ -1713,6 +1713,60 @@ class AgentEngine:
         # Directory of the first project write ("." == workspace root).
         self._project_dir = path.rsplit("/", 1)[0] if "/" in path else "."
 
+    def _note_stray_write(self, tool_name: str, tool_input: Any) -> None:
+        """Say it mid-turn when a write lands outside the pinned directory.
+
+        The pin already exists and already reaches the prompt — and the
+        prompt says, in as many words, to lock to ONE place and never
+        write the same project under two roots. A recorded run wrote
+        `extract_hyperpolarizability.py`, the results CSV and the results
+        JSON into the data archive AND into the home directory above it:
+        three files, two roots, one rule, ignored.
+
+        That is the pattern this project keeps meeting — a rule as a
+        sentence does not bind — so this says it on the rail that does
+        reach the model while it is still working, naming both places.
+        It advises; it does not refuse. A gate here would have to decide
+        that a legitimate second write is a mistake, and it cannot know
+        that; the model can.
+
+        Once per turn: a second telling before the model has acted on the
+        first is nagging.
+        """
+        if getattr(self, "_stray_write_noted", False):
+            return
+        pinned = str(getattr(self, "_project_dir", "") or "")
+        if not pinned or pinned == ".":
+            return
+        name = (tool_name.rsplit("__", 1)[-1]
+                if isinstance(tool_name, str) and tool_name.startswith("mcp__")
+                else tool_name)
+        if name not in self._MUTATE_TOOLS_FOR_PIN:
+            return
+        try:
+            data = (json.loads(tool_input) if isinstance(tool_input, str)
+                    else tool_input)
+            path = str((data or {}).get("file_path")
+                       or (data or {}).get("path") or "").strip().rstrip("/")
+        except Exception:
+            return
+        if not path or "/" not in path:
+            return
+        here = path.rsplit("/", 1)[0]
+        if here == pinned or here.startswith(pinned.rstrip("/") + "/"):
+            return
+        self._stray_write_noted = True
+        try:
+            self.client.push_run_note(
+                f"This session's work is in `{pinned}` — that is where its "
+                f"first file was written. `{path}` is somewhere else. Keep "
+                f"one place: throwaway scripts belong in "
+                f"`~/agent_workspace/<task-slug>/`, and results belong with "
+                f"the work, not in two folders. If the new path is the right "
+                f"one, move the earlier files there instead of leaving both.")
+        except Exception:
+            pass
+
     def _build_project_dir_block(self) -> str:
         """High-salience per-turn reminder pinning the project to its first-write
         directory — keeps a long session from drifting into sibling folders."""
@@ -2156,6 +2210,9 @@ class AgentEngine:
             # Per SESSION, and only the first time: what language this
             # conversation runs in. See _note_session_language.
             self._note_session_language(user_message or "")
+            # Per turn: the stray-write note is said once and the next
+            # turn may say it again if the work drifts again.
+            self._stray_write_noted = False
             # The notes the USER reads follow the session too. They were
             # hardcoded German, so an English session got an English
             # answer with German warnings stapled underneath — the rule
@@ -2594,6 +2651,9 @@ class AgentEngine:
                         del self._exec_pending[:-64]
                     self._trace_pending.append(
                         (event.tool_name, event.tool_input, _time.monotonic()))
+                    # Order matters: the stray check reads the pin, so it
+                    # must see the pin as it was BEFORE this write set it.
+                    self._note_stray_write(event.tool_name, event.tool_input)
                     self._maybe_pin_project_dir(
                         event.tool_name, event.tool_input)
                     if on_tool_use:
