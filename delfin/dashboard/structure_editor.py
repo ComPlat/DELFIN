@@ -12719,6 +12719,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['scan_gave_up'] = None
         state['scan_gap_first'] = None
         state['scan_gap_least'] = None
+        state['scan_smeared_at'] = None
         state['scan_depth'] = ''
         state['scan_crowded'] = None
         state['scan_free_shaky'] = None
@@ -12814,6 +12815,26 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # already holds for a walk of four hundred.
             walked, path = xyz, []
             base = None
+            # The electronic temperature the walk runs at, and whether it has
+            # started needing one.  A coordinate driven through a bond
+            # breaking or a double bond twisting closes the frontier gap, and
+            # a closed-shell SCC then gives a spurious point or stops
+            # converging altogether -- the scan's outlier, and the same thing
+            # a drag meets when it tears a bond.  The drag answers it by
+            # smearing (see _smearing_for and the closed-gap commit); a scan
+            # answers it the same way: read the gap of the point just
+            # computed and warm the next one before it fails, keep the
+            # temperature to the end of the leg, and retry a point whose SCC
+            # gave out unwarned.  Kept once it engages because an open-gap
+            # point is the same energy smeared or not -- measured on a
+            # twisting ethylene, identical to 0.1 kcal/mol from 0 to 70
+            # degrees and 89.1 against 85.2 only at the 90-degree point where
+            # the gap reaches zero -- so keeping it costs nothing where it is
+            # not needed and removes the step it would otherwise make in the
+            # profile.  Only the methods with an SCC are ever warmed; see
+            # :func:`gfn_optimize.electronic_temperature_for`.
+            scan_last_gap = None
+            scan_smeared = False
             bottom = None
             summit = None
             began_at = None
@@ -13183,12 +13204,39 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         held += [dict(one) for one
                                  in (state.get('constraints') or [])
                                  if tuple(one.get('atoms') or ()) not in walking]
+                        # The temperature this point runs at: what the last
+                        # point's gap asks for, or the smearing this leg is
+                        # already committed to.
+                        warmth = (_gfn.SMEARED_TEMPERATURE if scan_smeared
+                                  else _gfn.electronic_temperature_for(
+                                      scan_last_gap, method))
                         outcome = _gfn.optimize_with_gfn(
                             walked, method, charge=charge, uhf=uhf,
                             max_steps=_SCAN_CYCLES, timeout=None,
                             constraints=held, solvent=wet,
                             solvation_model=model,
-                            topology=_gfn_topology_dir(walked))
+                            topology=_gfn_topology_dir(walked), etemp=warmth)
+                        # The backstop the drag has too: a point whose SCC
+                        # gave out with no warning from the gap is tried once
+                        # more smeared before the whole scan is abandoned at
+                        # it.
+                        if (not outcome.get('ok') and warmth is None
+                                and _gfn.scc_did_not_converge(
+                                    outcome.get('status'))):
+                            warmth = _gfn.SMEARED_TEMPERATURE
+                            outcome = _gfn.optimize_with_gfn(
+                                walked, method, charge=charge, uhf=uhf,
+                                max_steps=_SCAN_CYCLES, timeout=None,
+                                constraints=held, solvent=wet,
+                                solvation_model=model,
+                                topology=_gfn_topology_dir(walked),
+                                etemp=warmth)
+                        # Committed to for the rest of the leg once it
+                        # engages, and where it engaged remembered for the
+                        # verdict to say.
+                        if warmth and not scan_smeared:
+                            scan_smeared = True
+                            state['scan_smeared_at'] = _value_in(walked, legs[0])
                     if not outcome.get('ok') or outcome.get('energy') is None:
                         # Written down, not only said.  The sentence scheduled
                         # here is replaced a moment later by the verdict the
@@ -13206,6 +13254,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             f'{n}: {outcome.get("status") or "it did not run"}')
                         return
                     walked = outcome['xyz']
+                    # What the next point reads to decide whether to warm
+                    # itself before its SCC can fail -- see scan_smeared above.
+                    scan_last_gap = outcome.get('gap')
                     # The hold's own spring comes off a walk too, and it used
                     # to come off only a push.
                     #
@@ -13589,10 +13640,28 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 #
                 # Joined rather than concatenated: either half can be empty,
                 # and the verdict puts a single space before whatever this is.
+                #
+                # And, where the walk smeared, a word that those points are
+                # 1000 K free energies -- see scan_smeared above.  It goes on
+                # the end of the depth sentence because it is the answer to
+                # the same fact: the gap closed, so a closed shell stopped
+                # describing the electrons, so those points were run at an
+                # electronic temperature to keep converging.  A reader
+                # comparing one against a single point of their own has to
+                # know the two were not computed the same way.
+                smeared = ('' if state.get('scan_smeared_at') is None else
+                           f'The points past {state["scan_smeared_at"]:.2f} '
+                           'were computed with Fermi smearing at '
+                           f'{_gfn.SMEARED_TEMPERATURE:g} K, so they are free '
+                           'energies at that temperature rather than '
+                           'ground-state energies -- a single determinant no '
+                           'longer describes the electrons where the gap has '
+                           'closed.')
                 state['scan_depth'] = ' '.join(part for part in (
                     _gfn.method_is_out_of_its_depth(
                         state.get('scan_gap_least'),
                         state.get('scan_gap_first')),
+                    smeared,
                     '' if state.get('scan_stop') else _fod_along_the_walk(
                         began_at, summit, method, charge, uhf, wet, model),
                 ) if part)
