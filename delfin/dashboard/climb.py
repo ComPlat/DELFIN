@@ -181,6 +181,26 @@ START_TRUST = 0.3
 LARGEST_TRUST = 0.5
 SMALLEST_TRUST = 0.02
 
+#: The interactive drag as overdamped steered dynamics -- see :func:`steer`.
+#:
+#: The hand is a spring from the dragged atom to where the cursor has it, and
+#: every atom moves DOWN the total force (the field's own plus that spring) by
+#: a step capped per atom.  This is a follow that carries the geometry forward
+#: rather than re-minimising it, so it stays on one branch of the surface until
+#: the force pushes it over -- which is the fix for the two arrangements a
+#: constrained minimisation alternates between at a reaction top.
+#:
+#: The three numbers were measured on the prototype (a butane torsion swept
+#: through a full turn with no reversal, and a butene C=C driven through its
+#: twist).  ``STEER_SPRING`` is stiff enough to lead the atom and soft enough
+#: that the chemistry answers; ``STEER_CAP`` is a trust radius, the most any
+#: atom may move in one internal step; ``STEER_STEPS`` is how many internal
+#: steps one follow answer takes, which sets how fast the structure keeps up
+#: with the hand against how long an answer costs.
+STEER_SPRING = 0.3          #: Hartree per Bohr squared, on the dragged atom(s)
+STEER_CAP = 0.12            #: Angstrom, the most one atom moves in one step
+STEER_STEPS = 4            #: gradient steps per follow answer
+
 #: ORCA's ``TolMaxG`` and ``TolRMSG``, in Hartree per Bohr.  Converging on the
 #: same numbers as the button next door means the two can be compared at all.
 #: 3e-4 on the largest gradient component is also Baker's own and Gaussian's,
@@ -572,7 +592,8 @@ def have_fast_gradients() -> bool:
 class _InProcess:
     """xtb through its own library, which is where the speed is."""
 
-    def __init__(self, numbers, bohr, method, charge, uhf, solvent, cores):
+    def __init__(self, numbers, bohr, method, charge, uhf, solvent, cores,
+                 etemp=None):
         from xtb.interface import Calculator, Param
         from xtb.libxtb import VERBOSITY_MUTED
 
@@ -583,6 +604,17 @@ class _InProcess:
                                    np.asarray(bohr, dtype=float),
                                    charge=float(charge), uhf=int(uhf))
             self.calc.set_verbosity(VERBOSITY_MUTED)
+            # Fermi smearing, the same rescue the follow loop reaches for at
+            # a closed frontier gap: a closed-shell SCC fails where the two
+            # frontier orbitals meet -- exactly where a bond being pulled
+            # apart takes it -- and an electronic temperature holds it
+            # together.  Set once here because a drag holds one gap for many
+            # gradients, and it persists across ``update``.
+            if etemp:
+                try:
+                    self.calc.set_electronic_temperature(float(etemp))
+                except Exception:
+                    pass
             # Nothing louder is asked for and nothing quieter is available:
             # ``set_output`` is the API for binding the Fortran side's own
             # output elsewhere, and bound to a file the very next ``update``
@@ -618,7 +650,8 @@ class _CommandLine:
     read rather than the printed energy, which carries fewer digits.
     """
 
-    def __init__(self, numbers, bohr, method, charge, uhf, solvent, cores):
+    def __init__(self, numbers, bohr, method, charge, uhf, solvent, cores,
+                 etemp=None):
         self.binary = _gfn.find_xtb()
         self.symbols = [_SYMBOLS[int(z)] for z in numbers]
         self.method = method
@@ -626,6 +659,7 @@ class _CommandLine:
         self.uhf = int(uhf)
         self.solvent = solvent
         self.cores = max(1, int(cores))
+        self.etemp = float(etemp) if etemp else None
         self.folder = Path(tempfile.mkdtemp(prefix='delfin-climb-'))
         self.calls = 0
 
@@ -643,6 +677,8 @@ class _CommandLine:
                 'gfnff': ['--gfnff']}.get(self.method, ['--gfn', '2'])
         order = [self.binary, 'in.xyz', *flag, '--grad',
                  '--chrg', str(self.charge), '--uhf', str(self.uhf)]
+        if self.etemp:
+            order += ['--etemp', str(self.etemp)]
         if self.solvent:
             order += ['--alpb', str(self.solvent)]
         room = dict(os.environ)
@@ -679,6 +715,106 @@ def _read_turbomole_gradient(path: Path, count: int):
     if energy is None or len(grad) != count:
         raise RuntimeError('xtb wrote no gradient')
     return energy, np.array(grad, dtype=float)
+
+
+def _make_gradients(numbers, bohr, method, charge, uhf, solvent, cores,
+                    etemp=None):
+    """A callable ``(bohr) -> (energy, gradient)`` in atomic units.
+
+    In process where the module is there and the method is not GFN-FF -- the
+    same choice :class:`Climb` makes, and for the same reason: an in-process
+    GFN-FF drops a topology file into the launch directory.
+    """
+    fast = have_fast_gradients() and str(method) != 'gfnff'
+    return (_InProcess if fast else _CommandLine)(
+        numbers, bohr, method, charge, uhf, solvent, cores, etemp=etemp)
+
+
+def steer(start_xyz, wish_xyz, held, *, method='gfn2', charge=0, uhf=0,
+          solvent=None, cores=1, etemp=None,
+          k_spring=STEER_SPRING, cap_angstrom=STEER_CAP, steps=STEER_STEPS,
+          should_stop=None):
+    """One drag answer by overdamped steered dynamics -- the continuous follow.
+
+    The current follow re-minimises every frame: it pins the dragged coordinate
+    at the cursor and relaxes the rest.  At a reaction top that biased minimum
+    has two solutions, and the minimiser flips between them answer to answer --
+    the two arrangements a molecule cannot be held on.  This does not minimise.
+    It puts a spring from each dragged atom to where the cursor has it, adds
+    that to the field's own force, and moves every atom DOWN the total by a step
+    no longer than ``cap_angstrom`` -- the quasi-static limit of interactive
+    molecular dynamics.  Because it carries the geometry forward from the last
+    answer, it stays on one branch until the force pushes it over, which is
+    what a hand on a real molecule would feel and what lets every process --
+    a rotation, a reaction, an isomerisation -- be walked rather than jumped.
+
+    ``start_xyz`` is the geometry to advance (the last answer, not the cursor's
+    wish); ``wish_xyz`` supplies only where the cursor has put the ``held``
+    atoms, which is the spring's target.  The two carry the same atoms in the
+    same order.  ``etemp`` smears the gradient the way the follow loop smears a
+    relaxation at a closed gap.
+
+    Returns a dict shaped like :func:`gfn_optimize.relax_steps`' -- ``ok``,
+    ``xyz``, ``energy`` (of the geometry returned, Hartree), ``calls`` -- or
+    ``ok`` ``False`` with a ``status`` where a gradient would not run.
+    """
+    start = _elements(start_xyz)
+    wish = _elements(wish_xyz)
+    if start is None or wish is None:
+        return {'ok': False, 'xyz': start_xyz,
+                'status': 'the structure could not be read'}
+    numbers = start['numbers']
+    symbols = start['symbols']
+    if len(wish['angstrom']) != len(start['angstrom']):
+        # A frame from before the structure changed under the drag -- there is
+        # no target to spring towards, so nothing is driven.
+        return {'ok': False, 'xyz': start_xyz,
+                'status': 'the hand is on a structure that is no longer here'}
+    held = [int(i) for i in (held or ())
+            if 0 <= int(i) < len(numbers)]
+    rb = np.asarray(start['angstrom'], dtype=float) / BOHR
+    target = np.asarray(wish['angstrom'], dtype=float) / BOHR
+    cap = float(cap_angstrom) / BOHR
+    try:
+        grad = _make_gradients(numbers, rb, method, charge, uhf, solvent,
+                               cores, etemp=etemp)
+    except Exception as oops:                        # noqa: BLE001
+        return {'ok': False, 'xyz': start_xyz, 'status': str(oops)}
+    energy = None
+    try:
+        for _ in range(max(1, int(steps))):
+            if should_stop is not None and should_stop():
+                break
+            energy, gradient = grad(rb)
+            force = -np.asarray(gradient, dtype=float)
+            for i in held:
+                # The spring only on the dragged atom(s): a force with a
+                # ceiling that leads the atom towards the cursor and is weaker
+                # the closer it gets, so the chemistry keeps a say.
+                force[i] += k_spring * (target[i] - rb[i])
+            norm = np.linalg.norm(force, axis=1, keepdims=True)
+            # A trust radius per atom, not on the whole step: the dragged atom
+            # is where the force is largest and the rest must not be dragged
+            # bodily behind it.
+            scale = np.minimum(1.0, cap / (norm + 1e-12))
+            rb = rb + force * scale
+        else:
+            # The energy the loop leaves is the geometry before its last move,
+            # so the returned structure is priced by one more single point --
+            # skipped only when the hand let go mid-answer.
+            if should_stop is None or not should_stop():
+                energy, _ = grad(rb)
+    except Exception as oops:                        # noqa: BLE001
+        return {'ok': False, 'xyz': start_xyz, 'status': str(oops),
+                'calls': int(getattr(grad, 'calls', 0))}
+    finally:
+        closer = getattr(grad, 'close', None)
+        if closer is not None:
+            closer()
+    return {'ok': True,
+            'xyz': xyz_document(symbols, rb * BOHR,
+                                'Steered by the hand on the structure'),
+            'energy': energy, 'calls': int(getattr(grad, 'calls', 0))}
 
 
 # --------------------------------------------------------------------------
