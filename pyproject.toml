@@ -38,7 +38,22 @@ dependencies = [
     "matplotlib>=3.3.4,<4",
     # rdkit versions by release year; the ceiling only rules out a jump into a
     # future year's series without anyone checking.
-    "rdkit>=2023.3.1,<2027",
+    #
+    # 2026.3.6 is excluded, and the exclusion is dated because it is meant to
+    # be removed. Same commit, two CI runs, nothing between them but a patch
+    # release upstream:
+    #
+    #   2026-09-03 19:57  80fb85cb  push      success   rdkit 2026.3.5
+    #   2026-09-04 07:56  80fb85cb  schedule  failure   rdkit 2026.3.6
+    #
+    # Under 2026.3.6 the isomer builder returns the metal skeleton without
+    # its hydrogens — Fe(OH)7 comes back with 8 atoms instead of 15 and 0
+    # hydrogens instead of 7 — so six tests in
+    # test_an_isomer_is_the_molecule_that_was_asked_for.py fail. Excluding
+    # the one release restores the signal; it does not fix the chemistry,
+    # and the code has to be made to work with the new series before this
+    # line can go.
+    "rdkit>=2023.3.1,!=2026.3.6,<2027",
     "stk>=2024.1,<2027",
     "openbabel-wheel>=3.1.0,<4",
     "ipykernel>=6.0,<8",
