@@ -1020,7 +1020,7 @@ def _pairwise_gate_enabled() -> bool:
     return os.environ.get("DELFIN_FFFREE_INTERLIG_PAIR_GATE", "0") == "1"
 
 
-def _neues_paar_zu_eng(syms, P, base_P) -> bool:
+def _neues_paar_zu_eng(syms, P, base_P, bericht=False):
     """Fuehrt das NEUE Frame ein Schweratom-Paar unter 0,65·vdW-Summe, das im
     BASIS-Frame darueber lag?
 
@@ -1055,8 +1055,14 @@ def _neues_paar_zu_eng(syms, P, base_P) -> bool:
             # Lag das Paar im Basis-Frame schon darunter, ist die Enge NICHT von
             # diesem Frame verursacht -> kein Grund zu verwerfen.
             if float(np.linalg.norm(B[i] - B[j])) >= tgt:
-                return True
-    return False
+                # `bericht=True` liefert das AUSLOESENDE Paar statt nur "ja" --
+                # rein diagnostisch, ohne Verhaltensaenderung: der Bau ruft ohne
+                # Argument auf und bekommt weiter True/False.  Gebraucht, weil
+                # "WARUM verwirft das Tor?" sonst nur mit einer ZWEITEN
+                # Nachbaufassung des Kriteriums zu beantworten waere, und zwei
+                # Fassungen sind hier schon dreimal auseinandergelaufen.
+                return (i, j) if bericht else True
+    return None if bericht else False
 
 
 _SP2_PLANAR_BAND = 3.0        # deg of angle-sum deficit a sibling may add; same width as the
