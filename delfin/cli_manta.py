@@ -277,6 +277,33 @@ _CHAMPION_FLAGS = (
                           # That is a DECISION, not a passed gate, and it stands here so that nobody
                           # later mistakes it for the latter.
                           # Env DELFIN_FFFREE_TPR6(+_EARLY_TM); impl converter_backend.py:2350ff.
+    "BACKBONE_REEMBED", "INTERLIG_PAIR_GATE",
+                          # #30: backbone re-embedding of ligands WITH the pairwise never-worse gate in
+                          # front of it -- landed together, 2026-09-05, as the first landing written by
+                          # loop.py --ab itself in 683 verdicts (register #338; verdict_pairgate6kv.json).
+                          #   pool_6000, both historic floors: n_compared 5775, judged 1191,
+                          #   valid 1096->1103, cap_LOST=0, cap_gained=7, n_good_regressions=0,
+                          #   never_worse_ok=True (topology_floor=True), landing_gate.ok=True,
+                          #   blocked_by=[] ; HIST1KV2 n=101 all values equal to the control arm,
+                          #   HIST6K n=1191 all values 0.
+                          # ⚠ THREE CAVEATS, stated here so nobody reads the landing as more than it is:
+                          #   (1) improves_absolute=False, hard_frame_frac_delta=+0.0638.  It passed via
+                          #       stock_proven_intact (dilution rule of 2026-08-11): no existing frame is
+                          #       lost on any of the 1325 systems, but the APPENDED frames are broken in
+                          #       35.3 % of cases against 17.1 % in the stock -- denser, not cleaner (#337).
+                          #   (2) two excuses carry it: EKAKIK via _nd_base (nondeterministic, measured
+                          #       twice) and 25 systems via the timeout excuse (machine load).
+                          #   (3) the determinism file came from the first attempt of the same label.
+                          # What the two flags do: BACKBONE_REEMBED alone (bbre6k) appends +4972 frames
+                          # of which 38.2 % are broken and is blocked by WABMOD/ECOQIX/GABYIS, all three
+                          # deterministic (DETBBRE3, 3/3 byte-identical, register #340) -- construction,
+                          # not instrument.  INTERLIG_PAIR_GATE rejects 679 of those appended frames
+                          # (38.2 % -> 35.3 %); it fires on ordinary C-C/C-N ligand-periphery contacts,
+                          # three quarters without any metal involvement, so the rejections are correct
+                          # (#339).  Isomer breadth: +2 isomers on 1191 systems -- density, not breadth.
+                          # Env DELFIN_FFFREE_BACKBONE_REEMBED / DELFIN_FFFREE_INTERLIG_PAIR_GATE;
+                          # impl delfin/manta/backbone_reembed.py, converter_backend.py (pair gate at
+                          # the re-embed loop).
 )
 _BUILDER_FLAGS = ("KAPPA4", "SIGMA_ENSEMBLE", "CONF_ENERGY_RANK")
 
