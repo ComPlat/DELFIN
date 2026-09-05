@@ -426,6 +426,37 @@ def reembed_complex(metal: str, lig_groups: List[Dict], native: Tuple[List[str],
         ch = [min(1, len(p) - 1) for p in per_lig]
         choices.append(ch)
 
+    # ══ DER ERZEUGER PRUEFT SEIN EIGENES ERGEBNIS (05.09.2026) ════════════════════
+    # `DELFIN_FFFREE_REEMBED_SELF_GATE`, Vorgabe AUS -> byte-identisch.
+    #
+    # GEMESSEN (Register #339).  Das nachgeschaltete Paartor
+    # (`INTERLIG_PAIR_GATE`, seit heute im Champion) verwirft, WENN es feuert,
+    # im MEDIAN den GANZEN Zuwachs eines Systems -- bei jeder Schwelle von 0,65
+    # bis 0,72.  Es ist damit kein Filter, sondern ein Umschalter zurueck auf den
+    # Champion.  Und es verwirft zu RECHT: von 573 verworfenen Frames loesen
+    # 74,9 % ein Paar aus, an dem KEIN Metall beteiligt ist (C-C 425, C-N 136);
+    # nur 3,8 % sind cis-Donoren, also legitime Koordinationsgeometrie.
+    #
+    # ⇒ Ein Filter, der auf getroffenen Systemen 100 % wegwirft, ist ein Befund
+    #   ueber den ERZEUGER.  Hier ist die Stelle: `choices` enthaelt MEHR
+    #   Kandidaten als `max_frames` ausgibt.  Wer erst hier prueft, kann den
+    #   naechsten Kandidaten nehmen, statt ein Frame auszugeben, das nachher
+    #   ohnehin geloescht wird.  Das Tor kann nur LOESCHEN, der Erzeuger kann
+    #   ERSETZEN -- Konstruktion schlaegt Nachfilterung (Regel 23.07.).
+    #
+    # ⚠️ DASSELBE Kriterium, importiert, nicht nachgebaut.  Der Import ist lokal,
+    #    weil `converter_backend` dieses Modul auf Modulebene laedt (Zyklus).
+    # ⚠️ Schlaegt der Import fehl, wird NICHT geprueft und NICHT verworfen --
+    #    lieber ein Frame zu viel als ein stilles Wegwerfen aus einem Test, der
+    #    gar nicht lief.
+    _selbsttor = os.environ.get("DELFIN_FFFREE_REEMBED_SELF_GATE", "0") == "1"
+    _zu_eng = None
+    if _selbsttor:
+        try:
+            from delfin.manta.converter_backend import _neues_paar_zu_eng as _zu_eng
+        except Exception:
+            _zu_eng = None
+
     for ch in choices:
         Pc = _assemble(ch)
         if Pc is None:
@@ -437,6 +468,8 @@ def reembed_complex(metal: str, lig_groups: List[Dict], native: Tuple[List[str],
                 break
         if dup:
             continue
+        if _zu_eng is not None and _zu_eng(list(syms), Pc, P):
+            continue          # dieser Kandidat wuerde vom Tor geloescht -> naechster
         seen.append(Pc)
         frames.append((list(syms), Pc))
         if len(frames) >= int(max_frames):
