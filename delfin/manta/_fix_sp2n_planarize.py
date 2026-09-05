@@ -92,9 +92,9 @@ _Z_BY_SYMBOL: Dict[str, int] = {
 
 
 def _is_metal_sym(sym: str) -> bool:
-    # EINE QUELLE (14.08.2026): delfin/manta/_elements.py.  Vorgabe AUS -> byte-identisch.
-    # ⚠ Selbstwiderspruch: _METAL_Z_RANGES deckt Ce..Lu ab, _Z_BY_SYMBOL springt von
-    # La 57 auf Hf 72 -> alle Lanthanoide ausser La sind hier keine Metalle.
+    # ONE SOURCE (14.08.2026): delfin/manta/_elements.py.  Default OFF -> byte-identical.
+    # ⚠ Self-contradiction: _METAL_Z_RANGES covers Ce..Lu, _Z_BY_SYMBOL jumps from
+    # La 57 to Hf 72 -> all lanthanides except La are not metals here.
     from delfin.manta import _elements as _EL
     if _EL.unified_enabled():
         return _EL.is_metal(sym)
@@ -339,30 +339,30 @@ def planarize_sp2_nitrogen(xyz: str, mol,
         return xyz, report
     if mol.GetNumAtoms() != len(syms):
         return xyz, report
-    # ===== REIHENFOLGE, NICHT NUR ANZAHL (16.08.2026) ===============================
-    # Die Wache darueber prueft die ANZAHL.  `detect_planar_sp2n_groups` liefert aber
-    # `mol`-ATOMINDIZES, und die werden gleich auf die XYZ-Koordinaten angewandt.  Stimmt
-    # die Anzahl und die REIHENFOLGE nicht, greift die Wache nicht -- und der Korrektor
-    # verflacht die FALSCHEN Atome.  Das ist keine stille Wirkungslosigkeit, sondern eine
-    # stille Zerstoerung, und sie waere von aussen nicht von einem Baufehler zu trennen.
+    # ===== ORDER, NOT JUST COUNT (16.08.2026) =======================================
+    # The guard above checks the COUNT.  But `detect_planar_sp2n_groups` returns
+    # `mol` ATOM INDICES, and those are applied directly to the XYZ coordinates.  If the
+    # count matches but the ORDER does not, the guard does not fire -- and the corrector
+    # flattens the WRONG atoms.  That is not silent ineffectiveness but silent
+    # destruction, and from the outside it could not be told apart from a build defect.
     #
-    # DER FALL IST NICHT HYPOTHETISCH.  `_ffree_shared_tail` warnt woertlich davor: ein aus
-    # dem SMILES geparstes `mol` traegt RDKits Atomreihenfolge, FF-freie Frames tragen
-    # Metall-auf-0 plus AddHs(ligand)-Bloecke in Baureihenfolge -- "the two never coincide".
-    # Genau dieser Bruch hat dort schon den Ring-Pucker-Emitter zu einem Nullhebel gemacht.
-    # Solange dieser Korrektor nur auf dem legacy-Pfad laeuft (wo XYZ aus demselben `mol`
-    # stammt), ist die Pruefung byte-identisch wahr und kostet nichts.  Sie ist die
-    # Vorbedingung dafuer, ihn ueberhaupt woanders anschliessen zu duerfen.
-    # ===== UND SEIT 16.08. ABENDS: STATT AUFGEBEN -- UEBERSETZEN =====================
-    # Der Riegel oben verhinderte die stille Zerstoerung, aber er liess den Korrektor auf
-    # dem FF-freien Pfad auch WIRKUNGSLOS: `pyr131` mass am 16.08. `affected = 2 von 131`.
-    # Die Zuordnung ist jedoch bestimmbar -- `_frame_atom_map.frame_to_mol_map` rekonstruiert
-    # sie als echte Graphisomorphie (vollstaendiger Substruktur-Treffer ueber alle Atome,
-    # generische Bindungen, weil der Frame-Graph keine Bindungsordnungen kennt).
-    # Stimmt die Reihenfolge -> Identitaet, also byte-identisch wie bisher.
-    # Stimmt sie nicht -> uebersetzen statt abbrechen.
-    # Ist sie nicht bestimmbar -> weiterhin abbrechen; eine FALSCHE Zuordnung waere
-    # schlimmer als keine.
+    # THE CASE IS NOT HYPOTHETICAL.  `_ffree_shared_tail` warns of it verbatim: a `mol`
+    # parsed from the SMILES carries RDKit's atom order, FF-free frames carry
+    # metal-at-0 plus AddHs(ligand) blocks in build order -- "the two never coincide".
+    # Exactly this break has already turned the ring-pucker emitter there into a null lever.
+    # As long as this corrector runs only on the legacy path (where XYZ comes from the same
+    # `mol`), the check is byte-identically true and costs nothing.  It is the
+    # precondition for being allowed to hook it up anywhere else at all.
+    # ===== AND SINCE THE EVENING OF 16.08.: INSTEAD OF GIVING UP -- TRANSLATE ========
+    # The latch above prevented the silent destruction, but it also left the corrector
+    # INEFFECTIVE on the FF-free path: `pyr131` measured `affected = 2 of 131` on 16.08.
+    # The mapping is determinable, however -- `_frame_atom_map.frame_to_mol_map` reconstructs
+    # it as a true graph isomorphism (complete substructure match over all atoms,
+    # generic bonds, because the frame graph knows no bond orders).
+    # If the order matches -> identity, i.e. byte-identical as before.
+    # If it does not match -> translate instead of aborting.
+    # If it is not determinable -> still abort; a WRONG mapping would be
+    # worse than none.
     _fmap = None
     try:
         _same_order = [a.GetSymbol() for a in mol.GetAtoms()] == list(syms)
@@ -385,11 +385,11 @@ def planarize_sp2_nitrogen(xyz: str, mol,
         groups = detect_planar_sp2n_groups(mol, include_amide_imine)
     except Exception:
         return xyz, report
-    # Die Gruppen tragen `mol`-Indizes (`n_idx`, `o_idxs`, `c_idx`).  Bei abweichender
-    # Reihenfolge werden sie hier EINMAL auf Frame-Indizes uebersetzt -- generisch ueber die
-    # Schluesselnamen, damit eine spaeter hinzukommende Indexart nicht stillschweigend
-    # unuebersetzt bleibt.  Faellt auch nur ein Index aus der Zuordnung, wird die Gruppe
-    # verworfen statt falsch angewandt.
+    # The groups carry `mol` indices (`n_idx`, `o_idxs`, `c_idx`).  If the order
+    # differs, they are translated to frame indices here ONCE -- generically via the
+    # key names, so that an index kind added later does not silently remain
+    # untranslated.  If even a single index is missing from the mapping, the group is
+    # rejected rather than applied wrongly.
     if _fmap is not None:
         _tr = []
         for g in groups:

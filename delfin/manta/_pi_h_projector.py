@@ -1,7 +1,7 @@
-"""Iter-14 Baustein 4 — Post-ETKDG/UFF Rigid-π H Projector.
+"""Iter-14 Building Block 4 — Post-ETKDG/UFF Rigid-π H Projector.
 
 Operates on already-finalised XYZ strings (post UFF, post snap, post clash-relief,
-post dual-parse, post Iter-12/13 Baustein 3 coord-angle correction).  For every
+post dual-parse, post Iter-12/13 Building Block 3 coord-angle correction).  For every
 detected π-system (5/6-membered planar ring of C/N/O/S — aromatic / Cp / η^n
 ligand), project ring-attached H atoms onto the ring plane along the outward
 in-plane radial direction (parent → centroid).
@@ -14,13 +14,13 @@ ring-snap-time projection inside ``_snap_aromatic_rings_to_plane`` (heavy-atom
 snap in the molecule conformer).  Iter-12/13 B3 already handles rotation of
 the X-side around a coordinated donor (BFS includes attached H).  Other
 upstream π-operations (sandwich rotation, hapto-shift, ring tilt, Cp
-orientation) may leave attached H atoms in stale positions.  Baustein 4 is a
+orientation) may leave attached H atoms in stale positions.  Building Block 4 is a
 post-pass that re-projects them universally on the FINAL XYZ.
 
 Doctrine:
     - Co-evolution safe (Iter-10): post-ETKDG/UFF, no embedding disturbance.
     - Diversity safe (Iter-11): per-conformer; n_frames invariant.
-    - Universal (Master-Prinzip 2): geometric ring detection only — no
+    - Universal (Master Principle 2): geometric ring detection only — no
       refcode, SMILES substring, element-listing, or hardcoded atom-id logic.
     - Per-H rollback: if projection introduces a NEW non-bonded clash (with
       any heavy atom or H not in the same ring) below 0.85 · Σr_vdw threshold,
@@ -102,9 +102,9 @@ _Z_BY_SYMBOL: Dict[str, int] = {
 
 
 def _is_metal_sym(sym: str) -> bool:
-    # EINE QUELLE (14.08.2026): delfin/manta/_elements.py.  Vorgabe AUS -> byte-identisch.
-    # ⚠ Selbstwiderspruch: _METAL_Z_RANGES deckt Ce..Lu ab, _Z_BY_SYMBOL springt von
-    # La 57 auf Hf 72 -> alle Lanthanoide ausser La sind hier keine Metalle.
+    # SINGLE SOURCE (14.08.2026): delfin/manta/_elements.py.  Default OFF -> byte-identical.
+    # ⚠ Self-contradiction: _METAL_Z_RANGES covers Ce..Lu, _Z_BY_SYMBOL jumps from
+    # La 57 to Hf 72 -> all lanthanides except La are not metals here.
     from delfin.manta import _elements as _EL
     if _EL.unified_enabled():
         return _EL.is_metal(sym)

@@ -22,9 +22,9 @@ from delfin.manta import metal_sphere_builder as MSB
 import delfin.manta._bond_decollapse as _bd
 
 SEED = 42
-# Band der Polyedertreue-Auswahl (18.08.2026).  Siehe die lange Begruendung an der
-# Auswahlstelle: ungebinnt entschiede die Gleitkommazahl jeden Vergleich und der
-# gelandete Beta-Term kaeme nie wieder zum Zug.
+# Bin width of the polyhedron-fidelity selection (18.08.2026).  See the long
+# justification at the selection site: unbinned, the floating-point number would decide
+# every comparison and the landed beta term would never get its turn again.
 _POLY_FIDELITY_BIN = 0.05
 
 
@@ -223,7 +223,7 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
         # bound to the metal and DG happily collapses it ONTO the metal (~0.7-1.1 A).  That
         # in-shell intruder makes _build_is_clean reject the whole complex (over-coordination
         # / overlap) -> it falls back to legacy UFF, whose mixed-donor OC-6 buckles the donors
-        # together ("kein OC-6 Polyeder, donors bunched" — eye-flagged ADOHOT/ADOROD/ZUSBEU/
+        # together ("no OC-6 polyhedron, donors bunched" — eye-flagged ADOHOT/ADOROD/ZUSBEU/
         # ASEBAC class).  The donor VERTEX assignment itself is already a perfect octahedron
         # (12 cis 90deg / 3 trans 180deg, verified); only the embed's non-donor collapse
         # poisons it.  Fix: a metal->non-donor-heavy EXCLUSION floor in the DG bounds matrix
@@ -747,7 +747,7 @@ def _collapsed_heavy_bonds_strict(syms, P, factor=None):   # None -> _bd.COLLAPS
     RIGID PLANAR tridentate that carry a collapsed donor-backbone bond, so a clean
     conformer is selected from the pool.  Universal, geometry-only, deterministic."""
     if factor is None:
-        factor = _bd.COLLAPSE_FLOOR   # EINE Quelle fuer den Kollaps-Boden, siehe _bond_decollapse
+        factor = _bd.COLLAPSE_FLOOR   # ONE source for the collapse floor, see _bond_decollapse
     n = len(syms)
     for i in range(n):
         if syms[i] == "H" or _bd._is_metal(syms[i]):
@@ -1110,38 +1110,38 @@ _TRILAT_RESCUE = False
 
 
 def _ffree_flag(name: str) -> bool:
-    """EIN SCHALTER, ZWEI SCHREIBWEISEN -- und nur eine davon kann je landen.
+    """ONE SWITCH, TWO SPELLINGS -- and only one of them can ever land.
 
-    ===== DER BUCHSTABE, AN DEM 50,8 PROZENT HAENGEN (26.08.2026) =================
+    ===== THE LETTER ON WHICH 50.8 PERCENT HANG (26.08.2026) ======================
 
-    `cli_manta.py:293` setzt den Champion so:
+    `cli_manta.py:293` sets the champion like this:
 
-        os.environ["DELFIN_FFFREE_" + f] = "1"        # DREI F
+        os.environ["DELFIN_FFFREE_" + f] = "1"        # THREE F
 
-    Es gibt aber eine ganze Klasse von Schaltern, die als `DELFIN_FFREE_` gelesen
-    wird -- ZWEI F.  Kein Schalter dieser Klasse kann je in den Champion gelangen,
-    egal wie gut sein Verdikt ausfaellt.  Betroffen mit GEMESSENER Reichweite:
+    But there is a whole class of switches that is read as `DELFIN_FFREE_` -- TWO F.
+    No switch of this class can ever get into the champion, no matter how good its
+    verdict turns out.  Affected, with MEASURED reach:
 
-        TRILATERATE     50,8 %      MD_MEASURED   19,9 %      H_FOLLOW  6,4 %
-        CONF_RELAX       4,0 %      TRILAT_RESCUE  3,7 %
+        TRILATERATE     50.8 %      MD_MEASURED   19.9 %      H_FOLLOW  6.4 %
+        CONF_RELAX       4.0 %      TRILAT_RESCUE  3.7 %
 
-    🔑 Und `TRILAT_RESCUE` ist nicht irgendeiner: er ist die LETZTE SPROSSE der
-       Rettungsleiter unter dem Chelat-Selbstgate, das 2822 von 3597 Chelat-Configs
-       verwirft (78,5 %).  Zeile 1 von `_trilat_rescue` ist ein Return auf genau
-       diesen Schalter -- und er wird an EINER Stelle gelesen und an NULL gesetzt.
+    🔑 And `TRILAT_RESCUE` is not just any of them: it is the LAST RUNG of the
+       rescue ladder below the chelate self-gate, which rejects 2822 of 3597 chelate
+       configs (78.5 %).  Line 1 of `_trilat_rescue` is a return on exactly this
+       switch -- and it is read at ONE place and set at NONE.
 
-    WARUM NICHT EINFACH UMBENENNEN.  Gemessen: 31 von 1286 Achsendateien setzen den
-    ALTEN Namen.  Ein Umbenennen machte diese 31 Archive unreproduzierbar -- sie
-    waeren mit einem Namen gemessen, den der Code nicht mehr liest.  Das ist genau
-    die Klasse stillen Versagens, gegen die diese Kampagne gebaut ist.
+    WHY NOT SIMPLY RENAME.  Measured: 31 of 1286 axis files set the OLD name.
+    A rename would make these 31 archives unreproducible -- they would have been
+    measured with a name the code no longer reads.  That is exactly the class of
+    silent failure this campaign is built against.
 
-    ⇒ Also BEIDE lesen.  Der Baum tut das an anderer Stelle laengst: `_mirror_enum`
-      liest `DELFIN_FFFREE_MIRROR_ENUM` oder `DELFIN_MIRROR_ENUM` in einer Zeile.
+    ⇒ So read BOTH.  The tree already does this elsewhere: `_mirror_enum`
+      reads `DELFIN_FFFREE_MIRROR_ENUM` or `DELFIN_MIRROR_ENUM` in one line.
 
-    ⛔ DAS IST KEINE LANDUNG, SONDERN IHRE VORBEDINGUNG.  Vorher war der Mechanismus
-      unlandbar; jetzt ist er landFAEHIG.  Reichweite ist nicht Nutzen -- er braucht
-      weiterhin sein eigenes Verdikt.
-    ⛔ Vorgabe bleibt AUS unter BEIDEN Namen -> byte-identisch.
+    ⛔ THIS IS NOT A LANDING, BUT ITS PRECONDITION.  Before, the mechanism was
+      unlandable; now it is landABLE.  Reach is not benefit -- it still needs
+      its own verdict.
+    ⛔ Default stays OFF under BOTH names -> byte-identical.
     """
     return (os.environ.get("DELFIN_FFFREE_" + name, "0") == "1"
             or os.environ.get("DELFIN_FFREE_" + name, "0") == "1")
@@ -1150,8 +1150,8 @@ def _ffree_flag(name: str) -> bool:
 def trilat_rescue_enabled() -> bool:
     """THE one place TRILAT_RESCUE is read (default OFF -> byte-identical).
 
-    Liest beide Schreibweisen, siehe `_ffree_flag`.  Ohne das kann diese Sprosse
-    der Rettungsleiter nie in den Champion, weil der Setzer drei F schreibt."""
+    Reads both spellings, see `_ffree_flag`.  Without that, this rung of the
+    rescue ladder can never get into the champion, because the setter writes three F."""
     return _ffree_flag("TRILAT_RESCUE")
 
 
@@ -2539,14 +2539,14 @@ def _ligand_confs_from_mol(frag_mol, k=10):
     Result is memoised by canonical SMILES + k (deterministic embed): repeated calls
     for the same ligand (e.g. the ensemble builder's variant loop) skip the costly
     re-embed.  The cached coords/mol are NOT mutated by any caller."""
-    # ⚠️ EINTRITTSSPUR.  Der erste Mesomerie-Rauchtest lieferte SECHS gebaute Systeme
-    # und NULL Spurzeilen -- die Vorgabe sass hinter dem MMFF-Block und wurde nie
-    # erreicht.  Das hat drei Ursachen, die sich ohne Messung nicht trennen lassen:
-    # die Funktion wird gar nicht gerufen, sie liefert aus dem Cache, oder sie kehrt
-    # vorher zurueck.  Mein statischer Nachweis "assemble_from_config ruft sie bei
-    # :4381" war WAHR und trotzdem nicht hinreichend -- zum dritten Mal heute die
-    # Verwechslung von "die Stelle existiert" mit "dieser Lauf kommt dort an".
-    # Diese eine Zeile beantwortet es, und sie kostet nichts, wenn der Pfad leer ist.
+    # ⚠️ ENTRY TRACE.  The first mesomery smoke test delivered SIX built systems
+    # and ZERO trace lines -- the default sat behind the MMFF block and was never
+    # reached.  That has three causes which cannot be separated without measuring:
+    # the function is not called at all, it serves from the cache, or it returns
+    # earlier.  My static proof "assemble_from_config calls it at
+    # :4381" was TRUE and still not sufficient -- for the third time today the
+    # confusion of "the site exists" with "this run arrives there".
+    # This one line answers it, and it costs nothing when the path is empty.
     _entp = os.environ.get("DELFIN_MESO_TRACE", "")
     if _entp and _entp != "0":
         try:
@@ -2628,53 +2628,53 @@ def _ligand_confs_from_mol(frag_mol, k=10):
 
 
 def _symmetrize_degenerate(m, cids):
-    """Entartete Bindungspaare auf EINE Laenge setzen -- Carboxylat, Nitro, Amidinat.
+    """Set degenerate bond pairs to ONE length -- carboxylate, nitro, amidinate.
 
-    ===== DIE KEKULE-ZEICHNUNG IST KEINE GEOMETRIE ==============================
-    Eine SMILES zeichnet ein Carboxylat als ``C(=O)[O-]`` -- eine Doppel- und eine
-    Einfachbindung.  In Wirklichkeit sind beide C-O gleich lang.  Gemessen 18.08.
-    gegen die TREFFER-Verteilung (nur Systeme mit ``org_bond_realized == false``):
+    ===== THE KEKULE DRAWING IS NOT A GEOMETRY ==================================
+    A SMILES draws a carboxylate as ``C(=O)[O-]`` -- one double and one single
+    bond.  In reality both C-O are equally long.  Measured 18.08. against the
+    HIT distribution (only systems with ``org_bond_realized == false``):
 
-        Nitro,      schlimmste Bindung N-O:  24,79 % gegen 1,94 %  = 12,75x
-        Carboxylat, schlimmste Bindung C-O:  24,82 % gegen 7,00 %  =  3,55x
+        nitro,       worst bond N-O:  24.79 % against 1.94 %  = 12.75x
+        carboxylate, worst bond C-O:  24.82 % against 7.00 %  =  3.55x
 
-    Und die Richtung ist eindeutig: bei Nitro sind **29 von 30 ZU LANG**, mittlere
-    Abweichung 0,233 Angstroem, davon **19 auf der gezeichneten EINFACHbindung**.
-    Das ist die Kekule-Signatur unverstellt.  Sie verdoppelt ausserdem
-    ``pyramidal_sp2`` (Faktor 2,41) und trifft damit die dreifach gemessene
-    pi-Wurzel von der Bauseite.
-    Reichweite: 780 von 10000 Systemen hart entartet (7,8 %).
+    And the direction is unambiguous: for nitro, **29 of 30 are TOO LONG**, mean
+    deviation 0.233 Angstrom, of which **19 on the drawn SINGLE bond**.
+    That is the Kekule signature, undisguised.  It also doubles
+    ``pyramidal_sp2`` (factor 2.41) and thereby hits the three-times-measured
+    pi root from the build side.
+    Reach: 780 of 10000 systems hard-degenerate (7.8 %).
 
-    ⚠ WARUM HIER UND NICHT IN EINEM KORREKTOR.  Diese Funktion laeuft im
-    METALLFREI geschnittenen Ligandfragment, VOR der Platzierung -- sie ist Teil
-    der Konstruktion des Ligandgeruests, keine Nachkorrektur am fertigen Komplex.
-    Der naheliegende Ort ``refine._precompute_arom_targets`` haette Reichweite
-    nahe NULL: seine Never-worse-Wache schliesst alles aus, was die
-    Koordinationssphaere beruehrt -- und 281 von 301 Carboxylaten sind am Metall.
+    ⚠ WHY HERE AND NOT IN A CORRECTOR.  This function runs in the METAL-FREE
+    cut ligand fragment, BEFORE placement -- it is part of the construction of
+    the ligand scaffold, not a post-correction on the finished complex.
+    The obvious place ``refine._precompute_arom_targets`` would have reach
+    near ZERO: its never-worse guard excludes everything that touches the
+    coordination sphere -- and 281 of 301 carboxylates are on the metal.
 
-    ⚠ WARUM DIE AROMATEN-ACHSE ES NICHT SCHON TUT.  ``AROM_SEAT`` verlangt an allen
-    drei Sitzstellen RDKit-Aromatizitaet oder einen geometrischen 5/6-Ring.  Ein
-    Carboxylat ist keins von beidem; der acac-Chelatring waere ein Sechsring, traegt
-    aber das Metall und faellt heraus.  Reichweite auf diesen Gruppen: exakt 0.
+    ⚠ WHY THE AROMATICS AXIS DOES NOT ALREADY DO IT.  ``AROM_SEAT`` demands RDKit
+    aromaticity or a geometric 5/6-ring at all three seating sites.  A
+    carboxylate is neither; the acac chelate ring would be a six-ring, but carries
+    the metal and drops out.  Reach on these groups: exactly 0.
 
-    DIE REGEL ist elementagnostisch, damit sie nicht auf Muster festgelegt ist:
-    fuer jedes Schweratom X werden seine ENDSTAENDIGEN schweren Nachbarn nach
-    Element gruppiert; hat eine Gruppe mindestens zwei Mitglieder UND
-    unterschiedliche Bindungsordnungen, ist sie entartet und alle ihre Bindungen
-    bekommen die MITTLERE Laenge.  Das trifft Carboxylat, Nitro, Nitrat, Sulfonat,
-    Phosphonat und Amidinat, ohne dass eines davon im Code steht.  Sind die
-    Ordnungen bereits gleich, wird nichts angefasst -- dann hat der Zeichner die
-    Symmetrie schon ausgedrueckt.
+    THE RULE is element-agnostic, so that it is not pinned to patterns:
+    for every heavy atom X its TERMINAL heavy neighbours are grouped by
+    element; if a group has at least two members AND
+    different bond orders, it is degenerate and all its bonds
+    get the MEAN length.  That hits carboxylate, nitro, nitrate, sulfonate,
+    phosphonate and amidinate, without any of them appearing in the code.  If the
+    orders are already equal, nothing is touched -- then the drawer has already
+    expressed the symmetry.
 
-    DELFIN_FFFREE_MESOMERY_SEAT (Vorgabe 0 -> byte-identisch).
+    DELFIN_FFFREE_MESOMERY_SEAT (default 0 -> byte-identical).
     """
     if os.environ.get("DELFIN_FFFREE_MESOMERY_SEAT", "0") != "1":
         return
-    # ⚠️ DIE SPUR MUSS VOR DEM try STEHEN.  Im ersten Entwurf lag sie darin -- eine
-    # Ausnahme waehrend der Gruppensuche waere damit im `except: pass` gelandet, OHNE
-    # eine Zeile zu schreiben, und haette sich von "keine Gruppe gefunden" nicht
-    # unterscheiden lassen.  Ein stiller Ausnahmepfad ist genau die Luecke, an der
-    # der Feuerzensus am 14.08. Befunde erfunden hat.
+    # ⚠️ THE TRACE MUST STAND BEFORE THE try.  In the first draft it sat inside -- an
+    # exception during the group search would thereby have landed in `except: pass`
+    # WITHOUT writing a line, and could not have been distinguished from "no group
+    # found".  A silent exception path is exactly the gap at which the fire census
+    # invented findings on 14.08.
     _mtp = os.environ.get("DELFIN_MESO_TRACE", "")
 
     def _mtrace(txt):
@@ -2696,7 +2696,7 @@ def _symmetrize_degenerate(m, cids):
                 nb = b.GetOtherAtom(a)
                 if nb.GetSymbol() == "H":
                     continue
-                # endstaendig: ausser X kein weiterer schwerer Nachbar
+                # terminal: no heavy neighbour other than X
                 if sum(1 for x in nb.GetNeighbors() if x.GetSymbol() != "H") != 1:
                     continue
                 by_el.setdefault(nb.GetSymbol(), []).append(
@@ -2705,12 +2705,12 @@ def _symmetrize_degenerate(m, cids):
                 if len(mem) < 2:
                     continue
                 if len({round(o, 2) for _i, o in mem}) < 2:
-                    continue          # schon symmetrisch gezeichnet -> nichts zu tun
+                    continue          # already drawn symmetrically -> nothing to do
                 groups.append((a.GetIdx(), [i for i, _o in mem]))
-        # DIESELBE SPUR-DISZIPLIN WIE BEIM ZUSICHERUNGSPROTOKOLL: ein byte-identischer
-        # Bau hat auch hier mehrere ununterscheidbare Ursachen -- die Funktion laeuft
-        # nicht, sie findet keine Gruppe, sie bricht ab, oder sie findet eine und die
-        # Bindungen sind bereits gleich lang.
+        # THE SAME TRACE DISCIPLINE AS IN THE ASSERTION PROTOCOL: a byte-identical
+        # build here too has several indistinguishable causes -- the function does not
+        # run, it finds no group, it aborts, or it finds one and the
+        # bonds are already equally long.
         if not groups:
             _mtrace("natoms=%d groups=0 moved=0.0" % m.GetNumAtoms())
             return
@@ -2738,8 +2738,8 @@ def _symmetrize_degenerate(m, cids):
         _mtrace("natoms=%d groups=%d conf=%d worst_shift=%.4f"
                 % (m.GetNumAtoms(), len(groups), len(cids), _worst))
     except Exception as _mx:
-        # eine Vorgabe, die nicht greift, darf nichts kosten -- aber sie darf auch
-        # nicht schweigen, sonst liest sich der Abbruch wie "nichts gefunden".
+        # a default that does not take effect must cost nothing -- but it must not
+        # stay silent either, otherwise the abort reads like "nothing found".
         _mtrace("ABBRUCH %s" % type(_mx).__name__)
 
 
@@ -2813,31 +2813,31 @@ def _joint_declash_frame(out_syms, P, fixed, block_specs, geom=None):
 
 
 def _refine_guarded(out_syms, P, fixed):
-    """``refine()`` mit der Zusicherung der Setzung davor und dahinter.
+    """``refine()`` with the seating's assertion before and after it.
 
-    ⚠️ WARUM DIESE FUNKTION EXISTIERT -- ein Fehler von mir, am 18.08. gemessen und
-    hier festgehalten, damit ihn niemand wiederholt.  Ich hatte den Schutz zuerst
-    INLINE an EINE Aufrufstelle geschrieben (``assemble_heteroleptic_from_mols``) und
-    danach auf den 19 gemessenen OC-6-Faellen geprueft: 19 von 19 byte-identisch.  Das
-    sah aus wie "die Zusicherung haelt".  Die Positivkontrolle hat es widerlegt: mit
-    Toleranz 0,0001 Angstroem -- wo JEDE Relaxation anschlagen muss -- blieb der Bau
-    ebenfalls identisch.  Der Block lief also nie.  Der FF-freie Chelatbauer geht durch
-    ``assemble_from_config`` -> ``_finish_config_frame``, eine ANDERE Funktion mit einer
-    EIGENEN refine-Aufrufstelle.
-    Ich hatte die Zeile auf Erreichbarkeit geprueft und die FUNKTION nicht -- dieselbe
-    Bauart wie ``ISOLATED_SEAT``, das ich am selben Tag bei anderen dokumentiert habe.
-    ⇒ Der Schutz gehoert an ALLE vier refine-Aufrufstellen, also in EINE Funktion.
+    ⚠️ WHY THIS FUNCTION EXISTS -- a mistake of mine, measured on 18.08. and
+    recorded here so that nobody repeats it.  I had first written the guard
+    INLINE at ONE call site (``assemble_heteroleptic_from_mols``) and
+    then checked it on the 19 measured OC-6 cases: 19 of 19 byte-identical.  That
+    looked like "the assertion holds".  The positive control refuted it: with
+    tolerance 0.0001 Angstrom -- where EVERY relaxation must trigger -- the build
+    stayed identical as well.  So the block never ran.  The FF-free chelate builder goes
+    through ``assemble_from_config`` -> ``_finish_config_frame``, a DIFFERENT function
+    with its OWN refine call site.
+    I had checked the line for reachability and not the FUNCTION -- the same
+    construction as ``ISOLATED_SEAT``, which I documented in others on the same day.
+    ⇒ The guard belongs at ALL four refine call sites, hence in ONE function.
 
-    Vorgabe AUS -> byte-identisch: ohne den Schalter ist dies exakt der alte
-    ``try: P = refine(...) except: pass``-Block.
+    Default OFF -> byte-identical: without the switch this is exactly the old
+    ``try: P = refine(...) except: pass`` block.
     """
     _assert_on = os.environ.get("DELFIN_FFFREE_ASSERT_ENFORCE", "0") == "1"
     _assertion, _P_before = None, None
     if _assert_on:
         try:
             from delfin.manta import _frame_assertions as _FA
-            # Die Menge des BAUERS, nicht meine Rekonstruktion davon: refine() bekommt
-            # `fixed` als Zusage, also ist genau das der Vertrag, den es halten muss.
+            # The BUILDER's set, not my reconstruction of it: refine() receives
+            # `fixed` as a promise, so exactly that is the contract it has to keep.
             _assertion = _FA.derive((list(out_syms), P), frozen=fixed)
             _P_before = P.copy()
         except Exception:
@@ -2851,14 +2851,14 @@ def _refine_guarded(out_syms, P, fixed):
         try:
             from delfin.manta import _frame_assertions as _FA
             _v = _FA.violations(_assertion, (list(out_syms), P))
-            # ⚠️ EINE SPUR, WEIL EIN BYTE-VERGLEICH HIER NICHT ENTSCHEIDET.
-            # Der erste Rauchtest zeigte "identisch" -- und das hat drei mit blossem
-            # Auge ununterscheidbare Ursachen: (a) der Block laeuft nicht, (b)
-            # derive() liefert None, (c) refine() bewegt nichts, dann ist die
-            # Ruecknahme ein No-op.  Genau diese Verwechslung hat am 14.08. den
-            # Feuerzensus Befunde erfinden lassen.  Die Spur trennt sie:
-            #   derived=1 sagt (b) ab, moved=... sagt (c) ab, broke=1 ist der Treffer.
-            # DELFIN_ASSERT_TRACE=<pfad>, sonst still und kostenlos.
+            # ⚠️ A TRACE, BECAUSE A BYTE COMPARISON DOES NOT DECIDE HERE.
+            # The first smoke test showed "identical" -- and that has three causes
+            # indistinguishable to the naked eye: (a) the block does not run, (b)
+            # derive() returns None, (c) refine() moves nothing, in which case the
+            # rollback is a no-op.  Exactly this confusion let the fire census
+            # invent findings on 14.08.  The trace separates them:
+            #   derived=1 rules out (b), moved=... rules out (c), broke=1 is the hit.
+            # DELFIN_ASSERT_TRACE=<path>, otherwise silent and free.
             _tp = os.environ.get("DELFIN_ASSERT_TRACE", "")
             if _tp and _tp != "0":
                 try:
@@ -2878,23 +2878,23 @@ def _refine_guarded(out_syms, P, fixed):
                 except Exception:
                     pass
             if _v is not None and _v.get("any_broken"):
-                P = _P_before              # Ruecknahme: die Behauptung wiegt schwerer
-                # ===== NUR ZUR DIAGNOSE, NIE IM BETRIEB ==========================
-                # Frage, die das beantwortet: der volle Lauf ueber die 19
-                # Oktaederfaelle brach die Zusicherung SECHSMAL (109 Aufrufe, alle
-                # sechs trans) -- und lieferte trotzdem 19 von 19 byte-identische
-                # Archivdateien.  Zwei Erklaerungen, beide plausibel:
-                #   (a) die betroffenen Frames verwirft das Selbstgate ohnehin, sie
-                #       stehen in KEINEM Arm im Archiv;
-                #   (b) ein Pass NACH refine stellt den verdrehten Zustand wieder her.
-                # Beide erzeugen byte-identische Archive, ein Byte-Vergleich kann sie
-                # also nicht trennen -- dieselbe Falle wie beim ersten Rauchtest.
-                # DELFIN_ASSERT_MARK_ROLLBACK=1 verschiebt den zurueckgenommenen Frame
-                # zusaetzlich um 100 Angstroem.  So ein Frame ist geometrisch
-                # unmoeglich und faellt durch jedes Tor.  Bleibt das Archiv DANN immer
-                # noch byte-identisch, stand der Frame nie darin -> Fall (a).
-                # Aendert es sich, erreicht die Ruecknahme das Archiv sehr wohl ->
-                # Fall (b), und die Ursache liegt hinter refine.
+                P = _P_before              # rollback: the claim weighs more
+                # ===== DIAGNOSIS ONLY, NEVER IN PRODUCTION =======================
+                # Question this answers: the full run over the 19
+                # octahedral cases broke the assertion SIX TIMES (109 calls, all
+                # six trans) -- and still delivered 19 of 19 byte-identical
+                # archive files.  Two explanations, both plausible:
+                #   (a) the affected frames are rejected by the self-gate anyway, they
+                #       stand in NO arm in the archive;
+                #   (b) a pass AFTER refine restores the twisted state.
+                # Both produce byte-identical archives, so a byte comparison cannot
+                # separate them -- the same trap as in the first smoke test.
+                # DELFIN_ASSERT_MARK_ROLLBACK=1 additionally shifts the rolled-back frame
+                # by 100 Angstrom.  Such a frame is geometrically
+                # impossible and falls through every gate.  If the archive is THEN still
+                # byte-identical, the frame was never in it -> case (a).
+                # If it changes, the rollback does very well reach the archive ->
+                # case (b), and the cause lies behind refine.
                 if os.environ.get("DELFIN_ASSERT_MARK_ROLLBACK", "0") == "1":
                     P = P + np.array([100.0, 0.0, 0.0], float)
         except Exception:
@@ -2965,11 +2965,11 @@ def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs,
                         Q = _orient_diatomic_block(
                             Q, lsyms, _dp[0], _dp[1], np.zeros(3), vertex)
             cl = _clash_count(Q, np.array(placed_P), lsyms, placed_syms)
-            # DER FREIE FREIHEITSGRAD, AUFRUFSTELLE 2 von 2 (rein monodentater Pfad).
-            # Hier ist der Azimut um M-D der einzige freie DOF, und er wird auf diesem
-            # Pfad NIRGENDS abgetastet -- die vorhandene Achsendrehung (CN2_SPINS)
-            # sitzt in der Ensemble-Schwester assemble_heteroleptic_ensemble, nicht
-            # hier.  Vorgabe AUS -> None -> byte-identisch.
+            # THE FREE DEGREE OF FREEDOM, CALL SITE 2 of 2 (purely monodentate path).
+            # Here the azimuth about M-D is the only free DOF, and on this path it is
+            # sampled NOWHERE -- the existing axis rotation (CN2_SPINS)
+            # sits in the ensemble sibling assemble_heteroleptic_ensemble, not
+            # here.  Default OFF -> None -> byte-identical.
             _fd = _free_dof_reseat(Q, lsyms, [di], np.array(placed_P), placed_syms, cl)
             if _fd is not None:
                 Q, cl = _fd
@@ -2988,37 +2988,37 @@ def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs,
             fixed.add(pos + di); pos += len(lsyms)
     P = np.vstack(blocks)
     if refine:
-        # ===== DIE SETZUNG UEBERGIBT DER RELAXATION IHRE ZUSICHERUNG ==============
-        # Gemessen 2026-08-18 auf 30921 Systemen: netto 988 Systeme fliessen vom
-        # Oktaeder ins trigonale Prisma (McNemar X2 = 860,8), der Bauer erzeugt 2,99
-        # mal zu viele Prismen, waehrend jede andere Form zwischen 0,86 und 1,29
-        # bleibt.  Es sind aber KEINE Prismen -- die CShM-Masse liegt unimodal bei 8
-        # bis 12 statt bei 16,7, also ein HALBER Bailar-Twist.  Und es ist keine
-        # Auswahl: poly_match ist in 1061 von 1061 Faellen false, obwohl das Auge den
-        # besten Frame ueber den GANZEN Manifold liest -- im ganzen Manifold gibt es
-        # kein Oktaeder.  Das Signal ist die Verzahnung, monoton von 2,49 % bei null
-        # Chelatringen auf 16,12 % bei fuenf; Metall und d-Zahl sind flach.
+        # ===== THE SEATING HANDS THE RELAXATION ITS ASSERTION =====================
+        # Measured 2026-08-18 on 30921 systems: net 988 systems flow from the
+        # octahedron into the trigonal prism (McNemar X2 = 860.8), the builder produces
+        # 2.99 times too many prisms, while every other shape stays between 0.86 and
+        # 1.29.  But they are NOT prisms -- the CShM mass lies unimodally at 8
+        # to 12 instead of at 16.7, i.e. a HALF Bailar twist.  And it is not a
+        # selection: poly_match is false in 1061 of 1061 cases, although the eye reads
+        # the best frame over the WHOLE manifold -- in the whole manifold there is
+        # no octahedron.  The signal is the interlocking, monotone from 2.49 % at zero
+        # chelate rings to 16.12 % at five; metal and d-count are flat.
         #
-        # ⇒ Die Setzung stellt das Polyeder richtig, und der Chelatzug dreht es danach
-        # heraus.  Genau dafuer ist das Zusicherungsprotokoll gebaut: die Konstruktion
-        # sagt, WAS sie behauptet, und die Relaxation darf es nicht brechen.
+        # ⇒ The seating sets the polyhedron correctly, and the chelate pull twists it
+        # out afterwards.  That is exactly what the assertion protocol is built for: the
+        # construction says WHAT it claims, and the relaxation must not break it.
         #
-        # Die vorhandene Gegenmassnahme im Quelltext (smiles_converter.py:38074, die
-        # UFF-Winkelziele auf die gegenueberliegenden Donorpaare) haengt ueber :27451
-        # an apply_uff und liegt hinter dem FF-freien Return -- sie lief auf diesem
-        # Pfad NIE.  Dies hier ist ihr FF-freies Gegenstueck, und es korrigiert nicht,
-        # es VERBIETET: bricht die Relaxation die Zusicherung, gilt der Frame VOR der
-        # Relaxation.  Never-worse per Konstruktion, kein Zielwert, keine Schwelle,
-        # die sich auf einen Pool feintunen liesse.
+        # The existing countermeasure in the source (smiles_converter.py:38074, the
+        # UFF angle targets on the opposing donor pairs) hangs via :27451
+        # on apply_uff and lies behind the FF-free return -- it NEVER ran on this
+        # path.  This here is its FF-free counterpart, and it does not correct,
+        # it FORBIDS: if the relaxation breaks the assertion, the frame BEFORE the
+        # relaxation stands.  Never-worse by construction, no target value, no threshold
+        # that could be fine-tuned to a pool.
         #
-        # ⚠ WARUM DAS KEIN REPARATEUR IST.  Der Modulzensus vom 18.08. hat gemessen,
-        # dass 20 von 21 Reparateuren ohnehin nichts tun und der eine verbleibende
-        # (die unbedingte Nachrelaxation) TRAGEND ist -- ohne sie wird jede Achse
-        # schlechter (uffoffE).  Die Antwort ist also nicht "keine Optimierung",
-        # sondern "keine BLINDE Optimierung".  Dieser Block nimmt der Relaxation
-        # nichts weg; er gibt ihr nur, was sie bisher nicht wusste.
+        # ⚠ WHY THIS IS NOT A REPAIRER.  The module census of 18.08. measured
+        # that 20 of 21 repairers do nothing anyway and the one remaining
+        # (the unconditional post-relaxation) is LOAD-BEARING -- without it every axis
+        # gets worse (uffoffE).  So the answer is not "no optimisation",
+        # but "no BLIND optimisation".  This block takes nothing away from the
+        # relaxation; it only gives it what it did not know before.
         #
-        # DELFIN_FFFREE_ASSERT_ENFORCE (Vorgabe 0 -> byte-identisch).
+        # DELFIN_FFFREE_ASSERT_ENFORCE (default 0 -> byte-identical).
         P = _refine_guarded(out_syms, P, fixed)
         # #308 whole-complex torsion-space clash relax (env-gated, default-OFF
         # byte-id): when rigid M-D-axis selection is not enough and ligand-internal
@@ -3039,86 +3039,86 @@ def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs,
     return out_syms, P
 
 
-# ===== DAS FEHLENDE AUGE DER ENTDOPPLUNG: DER FALTUNGS-FINGERABDRUCK ==============
+# ===== THE MISSING EYE OF THE DEDUP: THE FOLD FINGERPRINT =========================
 #
-# WAS GEMESSEN WURDE (26.08.2026, harness/faltung_dedup_schwelle.py, Rohdaten unter
-# results/FALTUNG_DEDUP_2026_08_26/).  Jede Entdopplung im Bau rechnet RMSD ueber
-# ALLE schweren Atome.  Eine Ringfaltung bewegt aber nur die RINGATOME -- ihr
-# Median-Anteil an den Schweratomen ist 0,1316.  Gegenfaktisch gemessen, an echten
-# Archivframes mit dem Erzeuger des Baus selbst gefaltet (`_ring_pucker._set_pucker`
-# ueber `_pucker_candidates`, Substituenten reiten starr mit):
+# WHAT WAS MEASURED (26.08.2026, harness/faltung_dedup_schwelle.py, raw data under
+# results/FALTUNG_DEDUP_2026_08_26/).  Every dedup in the build computes RMSD over
+# ALL heavy atoms.  But a ring fold moves only the RING ATOMS -- their
+# median share of the heavy atoms is 0.1316.  Measured counterfactually, on real
+# archive frames folded with the build's own generator (`_ring_pucker._set_pucker`
+# via `_pucker_candidates`, substituents ride along rigidly):
 #
-#   Archiv gkfam6kb_on (5681 Dateien, 500 gezogen, 199 auswertbar, 459 Ringe)
-#       4539 von 5754 Faltungskandidaten unter 0,50 A Gesamt-RMSD   =  78,88 %
-#       3311 von 5754                    unter 0,30 A               =  57,54 %
-#       2672 von 5754                    unter 0,25 A               =  46,44 %
-#   Archiv hplacegate6k_on (4313 Dateien, 136 auswertbar, 327 Ringe)
-#       3117 von 4206 Faltungskandidaten unter 0,50 A               =  74,11 %
-#   Sessel gegen GEGENsessel, der klassischste Umschlag ueberhaupt:
-#         94 von  294 geraden Ringen     unter 0,50 A               =  31,97 %
+#   archive gkfam6kb_on (5681 files, 500 drawn, 199 evaluable, 459 rings)
+#       4539 of 5754 fold candidates below 0.50 A total RMSD        =  78.88 %
+#       3311 of 5754                    below 0.30 A               =  57.54 %
+#       2672 of 5754                    below 0.25 A               =  46.44 %
+#   archive hplacegate6k_on (4313 files, 136 evaluable, 327 rings)
+#       3117 of 4206 fold candidates below 0.50 A                  =  74.11 %
+#   chair against COUNTER-chair, the most classic flip of all:
+#         94 of  294 even rings         below 0.50 A               =  31.97 %
 #
-# ⛔ NICHT DIE SCHWELLE SENKEN.  Das waere ein Knopf, gamebar, und es traefe JEDE
-#    andere Achse mit -- Rotamere, Setzungsvarianten, Kombinationen.  Verschaerft
-#    wird stattdessen das PRAEDIKAT selbst:
+# ⛔ DO NOT LOWER THE THRESHOLD.  That would be a knob, gameable, and it would hit
+#    EVERY other axis as well -- rotamers, seating variants, combinations.  Instead,
+#    the PREDICATE itself is tightened:
 #
-#        rmsd < thr        ->        rmsd < thr  UND  gleiche Faltung
+#        rmsd < thr        ->        rmsd < thr  AND  same fold
 #
-# ⚠ WARUM DAS HIER NICHT EXPLODIEREN KANN, obwohl eine CP-Entdopplung am 26.08. in
-#   `_ring_pucker` GENAU DARAN gescheitert ist.  Dort war gemessen worden: ohne CP
-#   konvergiert n=5 bei 3/3/3 Zustaenden, mit CP explodiert es auf 9/13/14 -- alle
-#   dreizehn bei theta=90 und Q=0,300, unterschieden NUR durch phi.  Das ist die
-#   Pseudorotation eines unsubstituierten Rings; phi haengt an der ATOMNUMMERIERUNG,
-#   nicht an der Chemie.  TFD faltet die topologische Symmetrie mit, CP kann das
-#   nicht.  CP ALLEIN ist kein Ersatz fuer TFD.
-#     Der Unterschied hier ist die KONJUNKTION.  Dort stand CP allein und ENTSCHIED;
-#   hier steht es HINTER der RMSD und kann nur Paare RETTEN, die schon unter der
-#   RMSD-Schwelle liegen -- also atomweise fast deckungsgleich sind.  Zwei
-#   Pseudorotamere 60 Grad auseinander sind das gerade NICHT: die halbe Ringmenge
-#   wechselt die Seite, die RMSD trennt sie ohnehin.  Der Explosionsmodus liegt per
-#   Konstruktion ausserhalb der Reichweite dieses Terms, und die Zahl der zusaetzlich
-#   gehaltenen Frames ist nach oben durch `n_frames` / `max_builds` gedeckelt.
+# ⚠ WHY THIS CANNOT EXPLODE HERE, although a CP dedup on 26.08. in
+#   `_ring_pucker` failed on EXACTLY THAT.  There it had been measured: without CP
+#   n=5 converges at 3/3/3 states, with CP it explodes to 9/13/14 -- all
+#   thirteen at theta=90 and Q=0.300, distinguished ONLY by phi.  That is the
+#   pseudorotation of an unsubstituted ring; phi hangs on the ATOM NUMBERING,
+#   not on the chemistry.  TFD folds in the topological symmetry, CP cannot
+#   do that.  CP ALONE is no substitute for TFD.
+#     The difference here is the CONJUNCTION.  There CP stood alone and DECIDED;
+#   here it stands BEHIND the RMSD and can only RESCUE pairs that already lie below
+#   the RMSD threshold -- i.e. are almost congruent atom by atom.  Two
+#   pseudorotamers 60 degrees apart are precisely NOT that: half the ring set
+#   switches side, the RMSD separates them anyway.  The explosion mode lies by
+#   construction outside the reach of this term, and the number of additionally
+#   kept frames is capped from above by `n_frames` / `max_builds`.
 #
-# AUFLOESUNG NICHT GERATEN, SONDERN VOM ERZEUGER GENOMMEN.  `_pucker_candidates`
-# tastet den CP-Aequator mit K = max(8, 2n) Phasen ab; die feinste Weite, die der
-# Generator selbst zieht, ist also 360/K Grad.  Die Toleranz unten ist die HALBE
-# Abtastweite, 180/K: darunter liegen zwei Zustaende innerhalb der Koernung des
-# Generators, darueber sind es fuer ihn selbst zwei verschiedene Kandidaten.
-#     n=4  22,5   n=5  18,0   n=6  15,0   n=7  12,86   n=8  11,25 Grad
-# Kein freier Parameter, kein gedrehter Knopf.
+# RESOLUTION NOT GUESSED, BUT TAKEN FROM THE GENERATOR.  `_pucker_candidates`
+# samples the CP equator with K = max(8, 2n) phases; the finest spacing the
+# generator itself draws is therefore 360/K degrees.  The tolerance below is HALF the
+# sampling spacing, 180/K: below it two states lie within the granularity of the
+# generator, above it they are two different candidates for the generator itself.
+#     n=4  22.5   n=5  18.0   n=6  15.0   n=7  12.86   n=8  11.25 degrees
+# No free parameter, no turned knob.
 #
-# ⚠ KOSTEN, GEMESSEN statt angenommen (harness/faltung_fp_kosten.py):
-#       _cp_theta_phi   n=5 75,2 us · n=6 85,9 us · n=7 87,9 us   je Ring und Frame
-#       _cp_abstand      6,9 us                                   je Ring und PAAR
-#       _tfd          1435,8 us                                   je PAAR (35 Atome)
-#   Daraus drei Konsequenzen:
-#     1. TFD scheidet an dieser Stelle aus.  Es ist per Konstruktion eine PAAR-
-#        groesse und nicht je Frame zwischenspeicherbar; bei `_dedup_builds` mit
-#        bis zu 180 Kandidaten gegen bis zu 60 Gehaltene sind das 10 800 Paare
-#        = 15,5 s je Komplex.  Das ist kein Instrumentenurteil, das ist ein Preis.
-#     2. Der Fingerabdruck wird JE FRAME berechnet und gemerkt, nie je Paar.  Naiv
-#        je Paar waeren es an derselben Stelle 21 600 CP-Auswertungen statt 180 --
-#        genau die quadratische Falle.
-#     3. Er wird ausserdem VERZOEGERT berechnet: erst wenn eine RMSD-Naehe
-#        ueberhaupt auftritt.  Wo nichts entdoppelt wird, kostet er null.
-#   Obergrenze damit: 16 Ringe x 86 us = 1,4 ms je Frame, x 180 Frames = 0,25 s je
-#   Komplex im schlimmsten Fall; gemessen wurden im Mittel 459/199 = 2,31 faltbare
-#   Ringe je System, der Deckel beisst also praktisch nie.
+# ⚠ COST, MEASURED instead of assumed (harness/faltung_fp_kosten.py):
+#       _cp_theta_phi   n=5 75.2 us · n=6 85.9 us · n=7 87.9 us   per ring and frame
+#       _cp_abstand      6.9 us                                   per ring and PAIR
+#       _tfd          1435.8 us                                   per PAIR (35 atoms)
+#   Three consequences from that:
+#     1. TFD is ruled out at this site.  It is by construction a PAIR
+#        quantity and cannot be cached per frame; in `_dedup_builds` with
+#        up to 180 candidates against up to 60 kept, that is 10 800 pairs
+#        = 15.5 s per complex.  That is not an instrument verdict, that is a price.
+#     2. The fingerprint is computed and memorised PER FRAME, never per pair.  Naively
+#        per pair it would be 21 600 CP evaluations instead of 180 at the same site --
+#        exactly the quadratic trap.
+#     3. It is moreover computed LAZILY: only when an RMSD proximity
+#        occurs at all.  Where nothing is deduplicated, it costs zero.
+#   Upper bound thereby: 16 rings x 86 us = 1.4 ms per frame, x 180 frames = 0.25 s per
+#   complex in the worst case; measured on average were 459/199 = 2.31 foldable
+#   rings per system, so the cap practically never bites.
 #
-# ⚠ VERZOEGERTER IMPORT, und der Grund ist NICHT Zirkularitaet.  Gemessen (beide
-#   Ladereihenfolgen in je einem frischen Interpreter): `_ring_pucker` zieht beim
-#   Laden nur `delfin`, `delfin.manta`, `delfin.manta._ring_pucker` nach -- KEIN
-#   `assemble_complex`.  Ein Import auf Modulebene waere also erlaubt.  Er bleibt
-#   trotzdem in der Funktion, weil er sonst eine LADEZEIT-Kopplung waere: ein
-#   momentan defektes `_ring_pucker` risse dann den ganzen Bauer mit, auch mit
-#   abgeschaltetem Fingerabdruck.  Bei Vorgabe AUS laeuft der Import nie.
+# ⚠ DEFERRED IMPORT, and the reason is NOT circularity.  Measured (both
+#   load orders, each in a fresh interpreter): `_ring_pucker` pulls in on
+#   loading only `delfin`, `delfin.manta`, `delfin.manta._ring_pucker` -- NO
+#   `assemble_complex`.  A module-level import would therefore be permitted.  It stays
+#   in the function nonetheless, because otherwise it would be a LOAD-TIME coupling: a
+#   momentarily broken `_ring_pucker` would then take down the whole builder, even with
+#   the fingerprint switched off.  With default OFF the import never runs.
 #
-# Schalter: DELFIN_FFFREE_DEDUP_FOLD_FP (Vorgabe 0 -> Praedikat byte-identisch).
+# Switch: DELFIN_FFFREE_DEDUP_FOLD_FP (default 0 -> predicate byte-identical).
 
-_FOLD_FP_QMIN = 0.075        # A -- halbe kleinste Amplitude, die der Bau erzeugt
-                             # (`_cp_pucker_amps` gibt +/-0,15 A fuer eta-Flaechen).
-                             # Darunter ist der Ring flach und theta/phi sind Rauschen.
-_FOLD_FP_RINGMAX = 12        # groesste beruecksichtigte Ringgroesse
-_FOLD_FP_MAXRING = 16        # Kostendeckel: Ringe je Frame (deterministisch sortiert)
+_FOLD_FP_QMIN = 0.075        # A -- half the smallest amplitude the build produces
+                             # (`_cp_pucker_amps` gives +/-0.15 A for eta faces).
+                             # Below it the ring is flat and theta/phi are noise.
+_FOLD_FP_RINGMAX = 12        # largest ring size considered
+_FOLD_FP_MAXRING = 16        # cost cap: rings per frame (deterministically sorted)
 
 
 def _fold_fp_enabled():
@@ -3126,28 +3126,28 @@ def _fold_fp_enabled():
 
 
 def _fold_rings_from_blocks(blocks, syms):
-    """Globale Ringindexlisten der potentiell FALTBAREN Ringe.
+    """Global ring index lists of the potentially FOLDABLE rings.
 
-    ``blocks`` ist eine Folge von ``(global_offset, mol)``, wobei
-    ``global_offset + local_index`` der Index im Frame ist -- die Konvention, die
-    der Bauer selbst schreibt (``_collect_exempt``: "the AddHs ligand block starts
+    ``blocks`` is a sequence of ``(global_offset, mol)``, where
+    ``global_offset + local_index`` is the index in the frame -- the convention the
+    builder itself writes (``_collect_exempt``: "the AddHs ligand block starts
     at lig_offset+1 in the assembled coords").
 
-    Der Filter ist bewusst GROB: nicht vollstaendig aromatisch, Groesse 4..12.  Das
-    eigentliche Tor ist der Amplitudenboden zur Laufzeit -- ein starrer, flacher
-    Ring hat in BEIDEN Frames Q ~ 0 und gilt damit ohnehin als gleich gefaltet.
-    Der Filter spart nur Rechenzeit, er entscheidet nichts.
+    The filter is deliberately COARSE: not fully aromatic, size 4..12.  The
+    actual gate is the amplitude floor at run time -- a rigid, flat
+    ring has Q ~ 0 in BOTH frames and thus counts as equally folded anyway.
+    The filter only saves compute time, it decides nothing.
 
-    ⚠ GIBT ``None`` ZURUECK, SOBALD DAS VERSATZMODELL NICHT AUFGEHT.  Kein Urteil
-      ist besser als ein falsches: mit ``None`` faellt das Praedikat auf die alte,
-      reine RMSD zurueck.  Geprueft wird jedes Ringatom gegen sein Elementsymbol
-      im Frame.  ⚠ Was das NICHT faengt: ``_ligand_confs_from_mol`` merkt sich
-      seine Konformerpools nach kanonischem SMILES; zwei konstitutionsgleiche
-      Liganden mit verschiedener interner Atomreihenfolge bekommen denselben Pool,
-      und dann kann lokal j ein ANDERES gleichnamiges Atom sein.  Das ist ein
-      vorbestehender Zug des Bauers (Zeilen 3705/3722/3744 mischen dieselben beiden
-      Indexraeume); hier waere die Folge hoechstens ein zusaetzlich gehaltener
-      Fastdoppelgaenger, nie ein verlorener Frame."""
+    ⚠ RETURNS ``None`` AS SOON AS THE OFFSET MODEL DOES NOT WORK OUT.  No verdict
+      is better than a wrong one: with ``None`` the predicate falls back to the old,
+      pure RMSD.  Every ring atom is checked against its element symbol
+      in the frame.  ⚠ What that does NOT catch: ``_ligand_confs_from_mol`` memoises
+      its conformer pools by canonical SMILES; two constitutionally identical
+      ligands with different internal atom order get the same pool,
+      and then local j can be a DIFFERENT atom of the same name.  That is a
+      pre-existing trait of the builder (lines 3705/3722/3744 mix the same two
+      index spaces); here the consequence would at most be one additionally kept
+      near-duplicate, never a lost frame."""
     rings = []
     try:
         for off, mol in blocks:
@@ -3159,7 +3159,7 @@ def _fold_rings_from_blocks(blocks, syms):
                 if n < 4 or n > _FOLD_FP_RINGMAX:
                     continue
                 if all(mol.GetAtomWithIdx(int(j)).GetIsAromatic() for j in r):
-                    continue                     # flache, starre Flaeche: keine Achse
+                    continue                     # flat, rigid face: no axis
                 g = [off + int(j) for j in r]
                 if min(g) < 0 or max(g) >= len(syms):
                     return None
@@ -3171,16 +3171,16 @@ def _fold_rings_from_blocks(blocks, syms):
         return None
     if not rings:
         return None
-    rings.sort()                                 # deterministisch, unabhaengig von SSSR
+    rings.sort()                                 # deterministic, independent of SSSR
     return rings[:_FOLD_FP_MAXRING]
 
 
 def _fold_fp(P, rings):
-    """Der Cremer-Pople-Zustand je Ring, gerechnet mit dem Instrument des
-    FALTUNGSERZEUGERS selbst (``_ring_pucker._cp_theta_phi``) statt nachgebaut.
-    Je Eintrag ``(n, Q, theta, phi)``.  ``None`` = kein Urteil moeglich."""
+    """The Cremer-Pople state per ring, computed with the instrument of the
+    FOLD GENERATOR itself (``_ring_pucker._cp_theta_phi``) instead of re-implemented.
+    Per entry ``(n, Q, theta, phi)``.  ``None`` = no verdict possible."""
     try:
-        from delfin.manta._ring_pucker import _cp_theta_phi     # verzoegert, s.o.
+        from delfin.manta._ring_pucker import _cp_theta_phi     # deferred, see above
     except Exception:
         return None
     out = []
@@ -3193,268 +3193,269 @@ def _fold_fp(P, rings):
     return out
 
 
-# ===== DIE DRITTE ACHSE DER KUGEL: DIE AMPLITUDE (26.08.2026) =====================
+# ===== THE THIRD AXIS OF THE SPHERE: THE AMPLITUDE (26.08.2026) ==================
 #
-# Der Fingerabdruck oben las (Q, theta, phi) und verglich davon NUR (theta, phi).
-# Q stand im Tupel und wurde ausschliesslich gegen den Boden gehalten -- die
-# RICHTUNG der Falte entschied alles, ihre TIEFE nichts.  Zwei Luecken folgen
-# daraus, und beide sind gemessen, nicht vermutet
-# (`harness/faltung_fp_rettung_metallacyclus.py`, `archive_gkfam6kb_on`, Seed 11,
-#  500 Systeme -- dieselbe Ziehung wie alle Zahlen dieses Blocks):
+# The fingerprint above read (Q, theta, phi) and compared ONLY (theta, phi) of it.
+# Q stood in the tuple and was held exclusively against the floor -- the
+# DIRECTION of the fold decided everything, its DEPTH nothing.  Two gaps follow
+# from that, and both are measured, not suspected
+# (`harness/faltung_fp_rettung_metallacyclus.py`, `archive_gkfam6kb_on`, seed 11,
+#  500 systems -- the same draw as all numbers of this block):
 #
-#   (1) FLACH GEGEN GEFALTET.  Liegt EIN Ring unter dem Boden und der andere
-#       darueber, urteilt die Grosskreisdistanz ueber das theta/phi des flachen --
-#       und das ist die Phase einer verschwindenden Auslenkung, also Rauschen.
-#       Gemessen 1191 solcher Paare, davon 146 (12,26 %) als GLEICH geurteilt.
-#       Das ist der `5M:planar`-Zustand, den das Auge als eigene Mulde zaehlt:
-#       ein flacher und ein gefalteter Ring gingen als dieselbe Faltung durch.
-#   (2) FLACH GEGEN TIEF.  Zwei Ringe mit derselben Faltungsrichtung, aber
-#       Q = 0,15 gegen Q = 0,60, haben Grosskreisdistanz NULL -- eine angedeutete
-#       und eine ausgepraegte Wanne galten als derselbe Zustand.
+#   (1) FLAT AGAINST FOLDED.  If ONE ring lies below the floor and the other
+#       above, the great-circle distance judges by the theta/phi of the flat one --
+#       and that is the phase of a vanishing displacement, i.e. noise.
+#       Measured 1191 such pairs, of which 146 (12.26 %) judged as SAME.
+#       That is the `5M:planar` state, which the eye counts as its own basin:
+#       a flat and a folded ring passed as the same fold.
+#   (2) FLAT AGAINST DEEP.  Two rings with the same fold direction, but
+#       Q = 0.15 against Q = 0.60, have great-circle distance ZERO -- a hinted
+#       and a pronounced boat counted as the same state.
 #
-# ⚖ DIE TOLERANZ IST HERGELEITET, NICHT GEWAEHLT -- nach DEM Gesetz, nach dem die
-#   beiden schon vorhandenen Zahlen dieses Instruments gebaut sind:
+# ⚖ THE TOLERANCE IS DERIVED, NOT CHOSEN -- by THE law by which the
+#   two already existing numbers of this instrument are built:
 #
-#       TOLERANZ = DIE HALBE ABTASTWEITE DES ERZEUGERS AUF DIESER ACHSE.
+#       TOLERANCE = HALF THE GENERATOR'S SAMPLING SPACING ON THIS AXIS.
 #
-#   * Winkel: `_pucker_candidates` zieht K = max(8, 2n) Phasen um den Aequator,
-#     Weite 360/K, halbe Weite 180/max(8,2n)  -- exakt die Zeile unten.
-#   * Boden:  die kleinste Amplitude, die der Bau ueberhaupt setzt, ist 0,15 A
-#     (`_cp_pucker_amps` fuer eta-Flaechen); die beiden benachbarten Zustaende dort
-#     sind 0 und 0,15, halbe Weite 0,075  -- exakt `_FOLD_FP_QMIN`.
-#   * Amplitude: `_pucker_candidates` gibt `q_scale` aus {0.0, 1.0} (die Null unter
-#     DELFIN_FFFREE_PUCKER_PLANAR) und multipliziert mit `_ring_pucker._amp(n)`.
-#     Die Leiter ist also {0, _amp(n)}, ihre Weite _amp(n), die halbe Weite
+#   * angle: `_pucker_candidates` draws K = max(8, 2n) phases around the equator,
+#     spacing 360/K, half spacing 180/max(8,2n)  -- exactly the line below.
+#   * floor:  the smallest amplitude the build sets at all is 0.15 A
+#     (`_cp_pucker_amps` for eta faces); the two neighbouring states there
+#     are 0 and 0.15, half spacing 0.075  -- exactly `_FOLD_FP_QMIN`.
+#   * amplitude: `_pucker_candidates` emits `q_scale` from {0.0, 1.0} (the zero under
+#     DELFIN_FFFREE_PUCKER_PLANAR) and multiplies by `_ring_pucker._amp(n)`.
+#     So the ladder is {0, _amp(n)}, its spacing _amp(n), the half spacing
 #
-#         Q_TOL(n) = _amp(n) / 2      n=4 0,175 · n=5 0,200 · n=6 0,315
-#                                     n=7 0,360 · n=8 0,400 · n=12 0,49
+#         Q_TOL(n) = _amp(n) / 2      n=4 0.175 · n=5 0.200 · n=6 0.315
+#                                     n=7 0.360 · n=8 0.400 · n=12 0.49
 #
-#   ⇒ Der Boden ist damit kein zweiter Parameter mehr, sondern derselbe Ausdruck
-#     fuer die eta-Leiter: 0,15/2.  Zwei Konstanten, EIN Gesetz, KEIN freier Knopf.
+#   ⇒ The floor is thereby no longer a second parameter, but the same expression
+#     for the eta ladder: 0.15/2.  Two constants, ONE law, NO free knob.
 #
-# 🔬 DAS ZWEITE INSTRUMENT, und es sagt fast dasselbe.  Eine hergeleitete Zahl ohne
-#   zweite Messung waere eine Behauptung -- also die Gegenprobe:  `_ring_pucker`
-#   entdoppelt seine EIGENEN Faltungskandidaten laengst auf BEIDEN Achsen,
+# 🔬 THE SECOND INSTRUMENT, and it says almost the same.  A derived number without
+#   a second measurement would be a claim -- so the cross-check:  `_ring_pucker`
+#   has long deduplicated its OWN fold candidates on BOTH axes,
 #
-#       `_cp_abstand(_cp,_k) < _cp_tol  UND  |Q_cp - Q_k| < _cp_qtol`   (:1144)
+#       `_cp_abstand(_cp,_k) < _cp_tol  AND  |Q_cp - Q_k| < _cp_qtol`   (:1144)
 #
-#   mit `_cp_tol` = 15 Grad und `_cp_qtol` = 0,15 A -- letzteres NICHT aus dem
-#   Gitter, sondern kristallographisch begruendet (Koordinaten-esd 0,002..0,01 A
-#   als Unter-, die Fehlordnungsgrenze 0,3..0,5 A als Obergrenze).
-#   ⇒ Zwei unabhaengige Wege, EINE Praedikatsform.  Der Fingerabdruck hier war
-#     bis heute die SCHWAECHERE Haelfte davon: er forderte nur den Winkel.
-#   ⇒ Auf dem Winkel treffen sich beide sogar exakt: 180/max(8,2*6) = 15,0 Grad.
-#     Auf der Amplitude ist die hier hergeleitete Zahl um Faktor 1,17 (n=4) bis
-#     2,67 (n=8) GROBER als die kristallographische.  Die Richtung dieser
-#     Abweichung ist die sichere (s.u.); ihre Groesse ist die Rettung, die dieser
-#     Entwurf bewusst liegenlaesst.
+#   with `_cp_tol` = 15 degrees and `_cp_qtol` = 0.15 A -- the latter NOT from the
+#   grid, but crystallographically justified (coordinate esd 0.002..0.01 A
+#   as lower, the disorder limit 0.3..0.5 A as upper bound).
+#   ⇒ Two independent routes, ONE predicate form.  The fingerprint here was
+#     until today the WEAKER half of it: it demanded only the angle.
+#   ⇒ On the angle the two even meet exactly: 180/max(8,2*6) = 15.0 degrees.
+#     On the amplitude the number derived here is by a factor 1.17 (n=4) to
+#     2.67 (n=8) COARSER than the crystallographic one.  The direction of this
+#     deviation is the safe one (see below); its size is the rescue this
+#     draft deliberately leaves on the table.
 #
-# ⚠ WARUM DIE GROBE LEITER UND NICHT DIE FEINE.  `_pucker_space_grid` teilt
-#   dieselbe Strecke in `n_amp` Stufen (Vorgabe 2) und gaebe _amp(n)/4.  Genommen
-#   wird die GROESSERE Toleranz, und zwar aus demselben Grund, aus dem oben die
-#   grobe Winkeltoleranz stehenbleibt: `_fold_same` gibt bei "innerhalb der
-#   Toleranz" True zurueck, und True heisst DOPPELGAENGER -- das alte Verhalten.
-#   Eine zu grobe Toleranz kann nur Rettung liegenlassen, nie faelschlich einen
-#   Frame halten.  Die gemessenen Rettungszahlen sind damit UNTERGRENZEN.
+# ⚠ WHY THE COARSE LADDER AND NOT THE FINE ONE.  `_pucker_space_grid` divides
+#   the same span into `n_amp` steps (default 2) and would give _amp(n)/4.  The
+#   LARGER tolerance is taken, and for the same reason the coarse angle tolerance
+#   above stays in place: `_fold_same` returns True on "within the
+#   tolerance", and True means DUPLICATE -- the old behaviour.
+#   A too-coarse tolerance can only leave rescue on the table, never wrongly keep a
+#   frame.  The measured rescue numbers are thereby LOWER BOUNDS.
 #
-# ⚠ (1) BRAUCHT GAR KEINE TOLERANZ, und darum bekommt es keine.  Der Boden selbst
-#   sagt bereits, was ein Ring unter ihm IST: flach, ohne Faltungsachse.  Ein
-#   flacher und ein gefalteter Ring sind nach genau dieser Definition nicht
-#   dieselbe Faltung -- das ist keine neue Zahl, sondern die fehlende Haelfte
-#   einer Fallunterscheidung, die bisher nur ihren symmetrischen Zweig hatte
-#   ("BEIDE flach -> gleich").
+# ⚠ (1) NEEDS NO TOLERANCE AT ALL, and therefore gets none.  The floor itself
+#   already says what a ring below it IS: flat, without a fold axis.  A
+#   flat and a folded ring are, by exactly this definition, not
+#   the same fold -- that is no new number, but the missing half
+#   of a case distinction that until now had only its symmetric branch
+#   ("BOTH flat -> same").
 #
-# ⚠ DIE AENDERUNG IST MONOTON, und das ist ihre wichtigste Eigenschaft.  Jedes
-#   Paar, das vorher VERSCHIEDEN hiess, heisst weiter verschieden; nur Paare, die
-#   GLEICH hiessen, koennen kippen.  Es geht also keine Rettung verloren, und der
-#   Byte-Beweis bei Vorgabe AUS bleibt derselbe (`_fold_same` ist unerreichbar,
-#   solange `fold_rings is None` -- alle drei Aufrufstellen brechen vorher ab).
-#   ⚠ Nicht nur argumentiert, sondern NACHGEZAEHLT: in der Neumessung steigt die
-#     Rettung in JEDEM Eimer beider Achsen oder bleibt gleich, in keinem faellt sie
-#     -- organisch n=4..7 plus Sessel-gegen-Gegensessel, Metallacyclus n=4..12
-#     plus Sessel-gegen-Gegensessel, dazu die drei Gesamttafeln.
+# ⚠ THE CHANGE IS MONOTONE, and that is its most important property.  Every
+#   pair that was previously called DIFFERENT stays different; only pairs that
+#   were called SAME can flip.  So no rescue is lost, and the
+#   byte proof at default OFF stays the same (`_fold_same` is unreachable
+#   as long as `fold_rings is None` -- all three call sites bail out before).
+#   ⚠ Not only argued, but RECOUNTED: in the re-measurement the rescue
+#     rises in EVERY bucket of both axes or stays equal, in none does it fall
+#     -- organic n=4..7 plus chair-against-counter-chair, metallacycle n=4..12
+#     plus chair-against-counter-chair, plus the three overall tables.
 #
-# 🎯 DASS ES KEIN RAUSCHEN IST, ZEIGT DER VIERRING -- und zwar analytisch, nicht
-#   statistisch.  Ein N-Ring hat N-3 Faltungsfreiheitsgrade; beim VIERRING ist das
-#   GENAU EINER, und der ist die Amplitude.  In `_cp_theta_phi` faellt fuer n=4 der
-#   Term `q2s = -sqrt(2/n) * sum z_j sin(pi j)` identisch auf null (sin(pi j) = 0
-#   fuer ganzzahliges j), also ist phi konstant 0 oder 180, und q2/q3 stehen in
-#   festem Verhaeltnis, also nimmt auch theta nur zwei Werte an.
-#   ⇒ Fuer einen Vierring trug (theta, phi) NIE Information ueber die Falte, nur
-#     ihr VORZEICHEN.  Der alte Fingerabdruck war dort per Konstruktion blind.
-#   ⇒ Und genau dort ist der Sprung am groessten -- gemessen, nicht erwartet:
-#         organisch  n=4   32 -> 78 von 94 gefressenen   34,04 % -> 82,98 %
-#         MC         n=4   67 -> 205 von 356             18,82 % -> 57,58 %
-#     waehrend der Sechsring, wo die Richtung wirklich zwei Freiheitsgrade traegt,
-#     kaum zulegt (organisch 3083 -> 3111 von 3136, 98,31 % -> 99,20 %).
-#   Ein Rauschterm haette gleichmaessig ueber alle Ringgroessen gestreut.  Dieser
-#   trifft die Klasse, von der vorher bekannt war, dass sie blind sein MUSS.
+# 🎯 THAT IT IS NOT NOISE IS SHOWN BY THE FOUR-RING -- and analytically, not
+#   statistically.  An N-ring has N-3 fold degrees of freedom; for the FOUR-RING that
+#   is EXACTLY ONE, and that one is the amplitude.  In `_cp_theta_phi` the term
+#   `q2s = -sqrt(2/n) * sum z_j sin(pi j)` drops identically to zero for n=4 (sin(pi j) = 0
+#   for integer j), so phi is constantly 0 or 180, and q2/q3 stand in a
+#   fixed ratio, so theta too takes only two values.
+#   ⇒ For a four-ring, (theta, phi) NEVER carried information about the fold, only
+#     its SIGN.  The old fingerprint was blind there by construction.
+#   ⇒ And exactly there the jump is largest -- measured, not expected:
+#         organic    n=4   32 -> 78 of 94 eaten            34.04 % -> 82.98 %
+#         MC         n=4   67 -> 205 of 356                18.82 % -> 57.58 %
+#     while the six-ring, where the direction really carries two degrees of freedom,
+#     barely gains (organic 3083 -> 3111 of 3136, 98.31 % -> 99.20 %).
+#   A noise term would have scattered evenly across all ring sizes.  This one
+#   hits the class that was known beforehand to HAVE to be blind.
 #
-# ⚠ IN WELCHE RICHTUNG DIESER ENTWURF IRRT, wenn er irrt: er SPALTET ZU VIEL.
-#   Zwei Ringe knapp beiderseits des Bodens (0,074 gegen 0,076) sind praktisch
-#   beide flach und heissen trotzdem verschieden -- eine Scheinvariante, ein Frame
-#   zu viel.  Das ist die teurere, aber die richtige Fehlerrichtung: ein
-#   ueberzaehliger Konformer kostet Rechenzeit, ein gefressener Zustand ist
-#   unwiederbringlich, und der Nordstern heisst Vollstaendigkeit.  Der Fehler in
-#   der Gegenrichtung bleibt ohnehin bestehen (grobe Toleranz, s.o.).
+# ⚠ IN WHICH DIRECTION THIS DRAFT ERRS, if it errs: it SPLITS TOO MUCH.
+#   Two rings just either side of the floor (0.074 against 0.076) are practically
+#   both flat and are still called different -- a spurious variant, one frame
+#   too many.  That is the more expensive, but the right error direction: a
+#   surplus conformer costs compute time, an eaten state is
+#   irretrievable, and the north star is completeness.  The error in
+#   the opposite direction persists anyway (coarse tolerance, see above).
 
 
 def _fold_same(fa, fb):
-    """True = DIESELBE Faltung (oder kein Urteil moeglich -> altes Verhalten).
+    """True = the SAME fold (or no verdict possible -> old behaviour).
 
-    Verglichen wird mit der GROSSKREISDISTANZ auf der CP-Kugel
-    (``_ring_pucker._cp_abstand``), nicht mit |dtheta|+|dphi|.  Am Pol (theta 0
-    oder 180 -- Sessel und Gegensessel) ist phi bedeutungslos; die naive Metrik
-    haelt zwei identische Sessel mit phi=136 und phi=339 fuer 200 Grad
-    auseinander.  Die Grosskreisdistanz loest das geometrisch, ohne Sonderregel.
+    Comparison uses the GREAT-CIRCLE DISTANCE on the CP sphere
+    (``_ring_pucker._cp_abstand``), not |dtheta|+|dphi|.  At the pole (theta 0
+    or 180 -- chair and counter-chair) phi is meaningless; the naive metric
+    holds two identical chairs with phi=136 and phi=339 to be 200 degrees
+    apart.  The great-circle distance solves that geometrically, without a special rule.
 
-    Die AMPLITUDE geht mit ein -- Herleitung im Block darueber.  Reihenfolge der
-    Tore: erst der Boden (ist die Kugel ueberhaupt zustaendig?), dann die
-    Amplitude (wie TIEF), dann die Richtung (wohin)."""
+    The AMPLITUDE enters as well -- derivation in the block above.  Order of the
+    gates: first the floor (is the sphere responsible at all?), then the
+    amplitude (how DEEP), then the direction (where to)."""
     if not fa or not fb or len(fa) != len(fb):
         return True
     try:
-        from delfin.manta._ring_pucker import _cp_abstand, _amp   # verzoegert, s.o.
+        from delfin.manta._ring_pucker import _cp_abstand, _amp   # deferred, see above
     except Exception:
         return True
     for a, b in zip(fa, fb):
         n = int(a[0])
         if int(b[0]) != n:
-            return True                          # Ringlisten passen nicht: kein Urteil
+            return True                          # ring lists do not match: no verdict
         if max(a[1], b[1]) < _FOLD_FP_QMIN:
-            continue                             # beide flach -> keine Faltungsachse
+            continue                             # both flat -> no fold axis
         if min(a[1], b[1]) < _FOLD_FP_QMIN:
-            return False                         # EINER flach, EINER gefaltet: der
-                                                 # Boden selbst nennt das zwei Zustaende
+            return False                         # ONE flat, ONE folded: the floor
+                                                 # itself calls that two states
         if abs(a[1] - b[1]) > 0.5 * _amp(n):
-            return False                         # Tiefe: halbe Amplitudenstufe des
-                                                 # Erzeugers ({0, _amp(n)})
+            return False                         # depth: half the generator's
+                                                 # amplitude step ({0, _amp(n)})
         if _cp_abstand(a[1:], b[1:]) > 180.0 / max(8, 2 * n):
             return False
     return True
 
 
-# ===== DIE LUECKE DES FINGERABDRUCKS: DER RING UM DAS METALL (26.08.2026) ==========
+# ===== THE FINGERPRINT'S GAP: THE RING AROUND THE METAL (26.08.2026) ==============
 #
-# Der Fingerabdruck oben nimmt seine Ringe aus ``mol.GetRingInfo()`` des LIGANDMOLS.
-# Dort gibt es kein Metall, also gibt es dort auch keinen CHELATRING.  Die Faltung
-# eines Metallacyclus -- die "Stufe" eines Salen-Rings, der Umschlag eines
-# Ethylendiamin-Fuenfrings -- lief bisher ungehindert in dieselbe Komplex-RMSD und
-# wurde dort als Doppelgaenger gefressen.
+# The fingerprint above takes its rings from ``mol.GetRingInfo()`` of the LIGAND MOL.
+# There is no metal there, so there is no CHELATE RING there either.  The fold
+# of a metallacycle -- the "step" of a salen ring, the flip of an
+# ethylenediamine five-ring -- until now ran unhindered into the same complex RMSD and
+# was eaten there as a duplicate.
 #
-# ⚠ DAS IST KEIN RANDFALL, UND DIE ZAHL IST GEMESSEN, NICHT GESCHAETZT
+# ⚠ THIS IS NOT AN EDGE CASE, AND THE NUMBER IS MEASURED, NOT ESTIMATED
 #   (`harness/faltung_fp_rettung_metallacyclus.py`, `archive_gkfam6kb_on`,
-#    Seed 11, dieselben 500 gezogenen Systeme wie beim organischen Mass):
-#       Reichweite   314 von 500 Systemen tragen einen Metallacyclus (62,8 %)
-#       Ringe        816 gefunden, davon 706 nach der Aromatenregel unten
+#    seed 11, the same 500 drawn systems as for the organic measure):
+#       reach        314 of 500 systems carry a metallacycle (62.8 %)
+#       rings        816 found, of which 706 after the aromatics rule below
 #                    (n=5: 336 · n=6: 307 · n=4: 33 · n>=7: 30)
-#       Kandidaten   8520  -- MEHR als die 5754 organischen des Vorgaengermasses
-#       gefressen    5550 von 8520 liegen unter 0,50 A Komplex-Schwer-RMSD
-#       GERETTET     3630 von 5550 (65,41 %) = 42,61 % aller 8520
-#   Zum Vergleich das organische Mass vom selben Tag: 4257 von 4539 (93,79 %).
-#   Der Metallacyclus wird also SELTENER gerettet, aber es sind mehr Kandidaten.
-#   ⚠ Ohne die Aromatenregel waeren es 816 Ringe / 9620 Kandidaten / 4445 von
-#     6621 gerettet.  Die 110 herausgefallenen Ringe sind die Bipyridin-Klasse
-#     (ausser dem Metall vollstaendig aromatisch); sie stehen hier NICHT in der
-#     Hauptzahl, weil der Erzeuger sie gar nicht erst faltet -- s.u.
-#   ⚠ DIESE VIER ZAHLEN SIND DER STAND VOR DER AMPLITUDE.  Der Q-Term im Block
-#     ueber `_fold_same` hat sie noch am selben Tag angehoben; dieselben Werkzeuge,
-#     dasselbe Archiv, derselbe Seed 11, dieselben 500 Systeme -- nur das Praedikat
-#     ist schaerfer (`results/FALTUNG_FP_Q_2026_08_26/`):
-#         Metallacyclus  3630 -> 3913 von 5550   65,41 % -> 70,50 %
-#         dasselbe ohne Aromatenregel
-#                        4445 -> 4780 von 6621   67,13 % -> 72,19 %
-#         organisch      4257 -> 4433 von 4539   93,79 % -> 97,66 %
-#         Sessel gegen Gegensessel am Metallacyclus
-#                          60 ->   79 von   80   75,00 % -> 98,75 %
-#     Die Nenner stehen still, weil sie die RMSD messen und nicht das Urteil --
-#     genau daran ist die Aenderung als reine Praedikatschaerfung zu erkennen.
+#       candidates   8520  -- MORE than the 5754 organic ones of the predecessor measure
+#       eaten        5550 of 8520 lie below 0.50 A complex heavy-atom RMSD
+#       RESCUED      3630 of 5550 (65.41 %) = 42.61 % of all 8520
+#   For comparison the organic measure of the same day: 4257 of 4539 (93.79 %).
+#   So the metallacycle is rescued LESS OFTEN, but there are more candidates.
+#   ⚠ Without the aromatics rule it would be 816 rings / 9620 candidates / 4445 of
+#     6621 rescued.  The 110 dropped rings are the bipyridine class
+#     (fully aromatic apart from the metal); they are NOT in the
+#     headline number here, because the generator does not fold them in the first
+#     place -- see below.
+#   ⚠ THESE FOUR NUMBERS ARE THE STATE BEFORE THE AMPLITUDE.  The Q term in the block
+#     above `_fold_same` raised them on the same day; the same tools,
+#     the same archive, the same seed 11, the same 500 systems -- only the predicate
+#     is sharper (`results/FALTUNG_FP_Q_2026_08_26/`):
+#         metallacycle   3630 -> 3913 of 5550   65.41 % -> 70.50 %
+#         the same without the aromatics rule
+#                        4445 -> 4780 of 6621   67.13 % -> 72.19 %
+#         organic        4257 -> 4433 of 4539   93.79 % -> 97.66 %
+#         chair against counter-chair on the metallacycle
+#                          60 ->   79 of   80   75.00 % -> 98.75 %
+#     The denominators stand still because they measure the RMSD and not the verdict --
+#     exactly by that the change is recognisable as a pure predicate tightening.
 #
-# ⚠ WARUM DIE RINGLISTE UND NICHT DIE MATHEMATIK DAS PROBLEM WAR.  Cremer-Pople
-#   braucht nur eine zyklische Ordnung; das Metall ist ein Ringatom wie jedes
-#   andere, und ``_cp_theta_phi`` ist rein geometrisch.  Das ist geprueft, nicht
-#   angenommen (Ruecklesetest ueber 9620 Setzungen: die Formel liefert fuer jeden
-#   Chelatring ein wohldefiniertes (Q, theta, phi)).
-#   ⚠ Was der Ruecklesetest AUSSERDEM zeigt und was man wissen muss: die GESETZTE
-#     Amplitude wird nicht erreicht -- |Q_abgelesen - Q_gesetzt| im Median 0,155 A
-#     gegen ein gesetztes ``_amp(5)`` = 0,40.  Das ist KEIN Metall-Effekt in der
-#     CP-Rechnung, sondern die eingefrorene Koordinationssphaere: bei einem
-#     Fuenfring M-D-X-Y-D stehen DREI der fuenf Ringatome in ``frozen``, es
-#     bewegen sich nur X und Y.  Fuer den Fingerabdruck ist das egal -- er liest
-#     die ERREICHTE Geometrie, nicht die gewuenschte.
+# ⚠ WHY THE RING LIST AND NOT THE MATHEMATICS WAS THE PROBLEM.  Cremer-Pople
+#   needs only a cyclic order; the metal is a ring atom like any
+#   other, and ``_cp_theta_phi`` is purely geometric.  That is checked, not
+#   assumed (read-back test over 9620 seatings: the formula delivers a
+#   well-defined (Q, theta, phi) for every chelate ring).
+#   ⚠ What the read-back test ALSO shows and what one needs to know: the SET
+#     amplitude is not reached -- |Q_read - Q_set| median 0.155 A
+#     against a set ``_amp(5)`` = 0.40.  That is NOT a metal effect in the
+#     CP calculation, but the frozen coordination sphere: in a
+#     five-ring M-D-X-Y-D THREE of the five ring atoms are in ``frozen``, only
+#     X and Y move.  For the fingerprint that does not matter -- it reads
+#     the ACHIEVED geometry, not the desired one.
 #
-# ⚠ DIE TOLERANZ BLEIBT 180/max(8,2n), UND ZWAR NACH EINER MESSUNG, DIE GEGEN SIE
-#   SPRICHT.  Ihre Herleitung ist die halbe Abtastweite des Aequators, den
-#   ``_pucker_candidates`` zieht (K = max(8,2n) Phasen).  Das unterstellt, dass der
-#   Erzeuger die angeforderte Phasenweite auch ERREICHT.  Am Metallacyclus tut er
-#   das nicht -- gemessen der CP-Abstand BENACHBARTER Aequatorkandidaten,
-#   rueckgelesen:
-#       n=5  Median 11,5 Grad gegen Toleranz 18,0  ->  2678 von 3969 darunter
-#       n=6  Median 18,6 Grad gegen Toleranz 15,0  ->   879 von 3377 darunter
-#   Die Weichheit sitzt eben in den M-D-Bindungen, und die sind eingefroren; der
-#   Erzeuger tastet enger ab, als er glaubt.
-#   ⇒ Die Toleranz ist fuer den Metallacyclus zu GROB.  Sie wird trotzdem NICHT
-#     nachgezogen, und der Grund ist die RICHTUNG des Fehlers: ``_fold_same`` gibt
-#     bei "innerhalb der Toleranz" True zurueck, und True heisst DOPPELGAENGER,
-#     also genau das alte Verhalten.  Eine zu grobe Toleranz kann nur RETTUNG
-#     liegenlassen, nie faelschlich einen Frame halten.  Eine nachgezogene Zahl
-#     waere dagegen ein gefitteter Knopf ohne Herleitung -- und die 4445 oben sind
-#     mit der groben Toleranz gemessen, also eine UNTERGRENZE.
+# ⚠ THE TOLERANCE STAYS 180/max(8,2n), AND THAT AFTER A MEASUREMENT THAT SPEAKS
+#   AGAINST IT.  Its derivation is half the sampling spacing of the equator that
+#   ``_pucker_candidates`` draws (K = max(8,2n) phases).  That presumes that the
+#   generator also REACHES the requested phase spacing.  On the metallacycle it
+#   does not -- measured the CP distance of NEIGHBOURING equator candidates,
+#   read back:
+#       n=5  median 11.5 degrees against tolerance 18.0  ->  2678 of 3969 below
+#       n=6  median 18.6 degrees against tolerance 15.0  ->   879 of 3377 below
+#   The softness sits precisely in the M-D bonds, and those are frozen; the
+#   generator samples more tightly than it believes.
+#   ⇒ The tolerance is too COARSE for the metallacycle.  It is nevertheless NOT
+#     tightened, and the reason is the DIRECTION of the error: ``_fold_same`` returns
+#     True on "within the tolerance", and True means DUPLICATE,
+#     i.e. exactly the old behaviour.  A too-coarse tolerance can only leave RESCUE
+#     on the table, never wrongly keep a frame.  A tightened number,
+#     by contrast, would be a fitted knob without derivation -- and the 4445 above are
+#     measured with the coarse tolerance, hence a LOWER BOUND.
 #
-# ✅ WAS DIESER TERM NICHT KONNTE -- GESCHLOSSEN, NICHT STEHENGELASSEN.  Hier stand
-#   bis heute: ``_fold_same`` vergleicht Q ueberhaupt nicht, nur (theta, phi); liegt
-#   EIN Ring unter dem Amplitudenboden und der andere darueber, urteilt die
-#   Grosskreisdistanz ueber ein bedeutungsloses phi.  Gemessen waren 1191 solcher
-#   Paare, davon 146 (12,26 %) als GLEICH geurteilt -- der planare Chelatringzustand
-#   (`5M:planar`), den das Auge als eigene Mulde zaehlt.
-#   Der Amplitudenblock ueber ``_fold_same`` schliesst das: NACHGEMESSEN mit
-#   demselben Werkzeug, Archiv, Seed und Ziehung stehen jetzt **0 von 1191** (0,00 %)
-#   auf GLEICH.  Es traf, wie hier vorhergesagt, die organische Achse mit -- darum
-#   ist es keine stille Aenderung, sondern eine mit neu erhobenen Zahlen auf BEIDEN
-#   Achsen (s. den Block ueber ``_fold_same`` und die Zahlen oben).
+# ✅ WHAT THIS TERM COULD NOT DO -- CLOSED, NOT LEFT STANDING.  Until today this
+#   stood here: ``_fold_same`` does not compare Q at all, only (theta, phi); if
+#   ONE ring lies below the amplitude floor and the other above, the
+#   great-circle distance judges by a meaningless phi.  Measured were 1191 such
+#   pairs, of which 146 (12.26 %) judged as SAME -- the planar chelate-ring state
+#   (`5M:planar`), which the eye counts as its own basin.
+#   The amplitude block above ``_fold_same`` closes that: RE-MEASURED with
+#   the same tool, archive, seed and draw, now **0 of 1191** (0.00 %) stand
+#   on SAME.  It hit, as predicted here, the organic axis as well -- which is why
+#   it is not a silent change, but one with newly collected numbers on BOTH
+#   axes (see the block above ``_fold_same`` and the numbers above).
 #
-# ⛔ UND JETZT DIE UNBEQUEME REICHWEITENFRAGE, GEPRUEFT STATT ANGENOMMEN.
-#   Der Anlass fuer diesen Term war: "DELFIN_FFFREE_PUCKER_MC erzeugt
-#   Metallacyclus-Faltungen, die anschliessend in dieselbe Komplex-RMSD laufen."
-#   DAS STIMMT NICHT.  Nachgesehen im Emitter statt geglaubt:
-#     `converter_backend._append_ffree_ring_puckers` ruft `_ring_pucker.generate`
-#     (dort sitzt PUCKER_MC) und haengt jede ueberlebende Faltung mit
-#     `results.append(...)` DIREKT an -- :537.  Diese Frames sehen keine der drei
-#     Entdopplungen; die einzige Entdopplung ueber `results` ist ein EXAKTER
-#     Zeichenkettenvergleich gegen den Primaerframe (:2066/:2740/:3065).  Und die
-#     Aufrufstellen (:2098/:2160/:2800/:3103) stehen NACH dem Bau, also nach der
-#     Entdopplung.
-#   ⇒ Dieser Term schuetzt NICHT die Faltungen des Faltungs-Emitters.  Er schuetzt
-#     die Metallacyclus-Faltungen, die SCHON VOR der Entdopplung da sind: die aus
-#     dem Konformerpool je Ligand (`_ligand_confs_from_mol` -> das Kombinations-
-#     produkt in `assemble_from_config`) und die eta-Varianten in `_dedup_builds`.
-#     Das ist eine echte Achse -- die 8520 Kandidaten oben liegen auf ihr --, aber
-#     es ist NICHT die Achse, die den Auftrag ausgeloest hat.
-#   ⚠ Und auf der kleinen Byte-Batterie ist die Wirkung NULL, ehrlich gezaehlt
-#     (`harness/faltung_fp_mc_vergleich.sh`, Zensus beider Laeufe):
-#         MC=0   Ringe je Bau  12,  eine Ringliste ohne Urteil (None)
-#         MC=1   Ringe je Bau  26,  keine Ringliste mehr ohne Urteil
-#                14 Chelatringe in 7 Ringlisten, alle n=5
-#         `_fold_same` in BEIDEN Laeufen: 15 GLEICH / 2 VERSCHIEDEN
-#     Der Schalter ist also nicht dunkel -- er verdoppelt die Ringmenge und gibt
-#     einem Bau ueberhaupt erst ein Urteil --, aber KEIN Frame aendert sich und
-#     kein einziges `_fold_same`-Urteil kippt.  Auf jenen vier Chelatsystemen
-#     variiert das Konformerprodukt die Ligandperipherie, nicht die
-#     Chelatringfaltung -- was zu der P3-Messung oben passt: mit festgenagelten
-#     Donoren bleibt die erreichte Faltungsspreizung am Metallacyclus klein.
-#   ⇒ WER DIESEN SCHALTER EINSCHALTEN WILL, muss ihn auf einem 5000er-A/B messen,
-#     nicht auf einer Batterie -- und die Zahl, die er erwarten darf, ist die aus
-#     der Archivmessung, nicht die aus dem Byte-Lauf.
+# ⛔ AND NOW THE UNCOMFORTABLE REACH QUESTION, CHECKED INSTEAD OF ASSUMED.
+#   The occasion for this term was: "DELFIN_FFFREE_PUCKER_MC produces
+#   metallacycle folds that subsequently run into the same complex RMSD."
+#   THAT IS NOT TRUE.  Looked up in the emitter instead of believed:
+#     `converter_backend._append_ffree_ring_puckers` calls `_ring_pucker.generate`
+#     (PUCKER_MC sits there) and appends every surviving fold with
+#     `results.append(...)` DIRECTLY -- :537.  These frames see none of the three
+#     dedups; the only dedup over `results` is an EXACT
+#     string comparison against the primary frame (:2066/:2740/:3065).  And the
+#     call sites (:2098/:2160/:2800/:3103) stand AFTER the build, i.e. after the
+#     dedup.
+#   ⇒ This term does NOT protect the folds of the fold emitter.  It protects
+#     the metallacycle folds that are there ALREADY BEFORE the dedup: those from
+#     the conformer pool per ligand (`_ligand_confs_from_mol` -> the combination
+#     product in `assemble_from_config`) and the eta variants in `_dedup_builds`.
+#     That is a real axis -- the 8520 candidates above lie on it --, but
+#     it is NOT the axis that triggered the task.
+#   ⚠ And on the small byte battery the effect is ZERO, honestly counted
+#     (`harness/faltung_fp_mc_vergleich.sh`, census of both runs):
+#         MC=0   rings per build  12,  one ring list without verdict (None)
+#         MC=1   rings per build  26,  no ring list without verdict any more
+#                14 chelate rings in 7 ring lists, all n=5
+#         `_fold_same` in BOTH runs: 15 SAME / 2 DIFFERENT
+#     So the switch is not dark -- it doubles the ring set and gives
+#     a build a verdict in the first place --, but NO frame changes and
+#     not a single `_fold_same` verdict flips.  On those four chelate systems
+#     the conformer product varies the ligand periphery, not the
+#     chelate ring fold -- which fits the P3 measurement above: with nailed-down
+#     donors the achieved fold spread on the metallacycle stays small.
+#   ⇒ WHOEVER WANTS TO SWITCH THIS ON must measure it on a 5000-system A/B,
+#     not on a battery -- and the number they may expect is the one from
+#     the archive measurement, not the one from the byte run.
 #
-# Schalter: DELFIN_FFFREE_DEDUP_FOLD_FP_MC (Vorgabe 0).  EIGENER Schalter, obwohl
-# der Elternschalter ohnehin AUS ist -- nur so bleiben die beiden Befunde
-# (organisch / Metallacyclus) getrennt messbar.  ⚠ Die beiden Prozentsaetze, die
-# hier standen -- 73,98 und 65,41 --, sind seit dem Q-Term ueberholt; die gueltigen
-# Zahlen mit ihren Nennern stehen oben in EINEM Block, damit sie nicht an drei
-# Stellen auseinanderlaufen koennen.
+# Switch: DELFIN_FFFREE_DEDUP_FOLD_FP_MC (default 0).  Its OWN switch, although
+# the parent switch is OFF anyway -- only that way do the two findings
+# (organic / metallacycle) stay separately measurable.  ⚠ The two percentages that
+# stood here -- 73.98 and 65.41 -- are superseded since the Q term; the valid
+# numbers with their denominators stand above in ONE block, so that they cannot
+# drift apart at three places.
 
-_FOLD_FP_MCMAX = 8           # Kostendeckel: Metallacyclen je Frame (deterministisch
-                             # sortiert).  Gemessen 816/314 = 2,6 je System.
+_FOLD_FP_MCMAX = 8           # cost cap: metallacycles per frame (deterministically
+                             # sorted).  Measured 816/314 = 2.6 per system.
 
 
 def _fold_fp_mc_enabled():
@@ -3463,26 +3464,26 @@ def _fold_fp_mc_enabled():
 
 
 def _fold_mc_arms(lg):
-    """Die Donoren, mit denen DIESER Ligand einen Chelatring aufspannt -- oder
-    ``None``, wenn er keinen aufspannt.
+    """The donors with which THIS ligand spans a chelate ring -- or
+    ``None`` if it spans none.
 
-    ⚠ eta-Liganden sind AUSGESCHLOSSEN, und das ist kein Vorbehalt, sondern
-      Geometrie: eine eta-Flaeche ist keine Folge von sigma-Donoren, sondern EINE
-      pi-Bindung.  ``assemble_hapto`` friert dort auch die ganze Ringmenge ein
-      (``fixed.update(...eta_local_idxs)``) und meldet nur EINEN Vertreter als
-      Donor (:3902).  Ein "Ring" M-C1-C2-C3 waere der zerschnittene Cp-Ring, kein
-      Metallacyclus -- und sein mittleres Atom ist selbst metallgebunden, was der
-      Minimalitaetstest in ``_fold_mc_rings`` ohnehin faengt.
-    ⚠ ``_canonical_arm_order`` statt ``donor_local_idxs``: das ist die Liste, die
-      der Bauer TATSAECHLICH auf Vertices setzt (:3954 im hapto-Zweig, :5340 im
-      Konfigurationszweig).  ``donor_local_idxs`` kann laenger als die Zahnigkeit
-      sein -- daraus entstuenden Ringe, die niemand koordiniert hat."""
+    ⚠ eta ligands are EXCLUDED, and that is not a reservation but
+      geometry: an eta face is not a sequence of sigma donors, but ONE
+      pi bond.  ``assemble_hapto`` also freezes the whole ring set there
+      (``fixed.update(...eta_local_idxs)``) and reports only ONE representative as
+      donor (:3902).  A "ring" M-C1-C2-C3 would be the cut-open Cp ring, not a
+      metallacycle -- and its middle atom is itself metal-bound, which the
+      minimality test in ``_fold_mc_rings`` catches anyway.
+    ⚠ ``_canonical_arm_order`` instead of ``donor_local_idxs``: that is the list the
+      builder ACTUALLY seats on vertices (:3954 in the hapto branch, :5340 in the
+      configuration branch).  ``donor_local_idxs`` can be longer than the denticity
+      -- that would produce rings nobody has coordinated."""
     try:
         if lg.get("is_eta"):
             return None
         dent = int(lg.get("denticity") or 0)
         if dent < 2:
-            return None                          # ein Donor spannt keinen Ring auf
+            return None                          # one donor spans no ring
         arms = [int(x) for x in _canonical_arm_order(lg, dent)]
         return arms if len(arms) >= 2 else None
     except Exception:
@@ -3490,13 +3491,13 @@ def _fold_mc_arms(lg):
 
 
 def _lig_path(mol, a, b, maxlen):
-    """Kuerzester Weg ``a`` -> ``b`` IM LIGANDGRAPHEN, als Liste lokaler Indizes.
+    """Shortest path ``a`` -> ``b`` IN THE LIGAND GRAPH, as a list of local indices.
 
-    Der Ligandmol traegt kein Metall, der Weg kann also nicht ueber das Metall
-    abkuerzen -- genau die Eigenschaft, die einen Chelatring definiert.  Nachbarn
-    aufsteigend besucht -> bei gleich langen Wegen deterministisch.  H wird als
-    Zwischenatom uebersprungen (es ist endstaendig und kann nie auf einem
-    kuerzesten Weg zwischen zwei Schweratomen liegen)."""
+    The ligand mol carries no metal, so the path cannot shortcut via the metal
+    -- exactly the property that defines a chelate ring.  Neighbours are
+    visited in ascending order -> deterministic for equally long paths.  H is skipped
+    as an intermediate atom (it is terminal and can never lie on a
+    shortest path between two heavy atoms)."""
     a, b = int(a), int(b)
     if a == b:
         return None
@@ -3525,42 +3526,42 @@ def _lig_path(mol, a, b, maxlen):
 
 
 def _fold_mc_rings(blocks, syms, metal_idx=0):
-    """Globale Ringindexlisten der CHELATRINGE, in zyklischer Ordnung.
+    """Global ring index lists of the CHELATE RINGS, in cyclic order.
 
-    ``blocks`` = Folge von ``(global_offset, mol, donor_locals)``.  Der Ring ist
-    ``[metal_idx] + kuerzester Ligandweg(d1 -> d2)`` -- das ist zyklische Ordnung
-    per Konstruktion (M-d1, die Wegbindungen, d2-M), also genau das, was
-    ``_cp_theta_phi`` verlangt.
+    ``blocks`` = sequence of ``(global_offset, mol, donor_locals)``.  The ring is
+    ``[metal_idx] + shortest ligand path(d1 -> d2)`` -- that is cyclic order
+    by construction (M-d1, the path bonds, d2-M), i.e. exactly what
+    ``_cp_theta_phi`` demands.
 
-    ⚠ MINIMALITAET STATT ALLER PAARE.  Bei einem Tridentaten gibt es drei
-      Donorpaare, aber nur zwei Chelatringe: das dritte Paar laeuft ueber den
-      mittleren Donor und ist die VERKETTUNG der beiden.  Ein Weg, der einen
-      dritten Donor desselben Liganden beruehrt, wird darum verworfen.
+    ⚠ MINIMALITY INSTEAD OF ALL PAIRS.  A tridentate has three
+      donor pairs, but only two chelate rings: the third pair runs via the
+      middle donor and is the CONCATENATION of the two.  A path that touches a
+      third donor of the same ligand is therefore rejected.
 
-    ⚠ DER METALLINDEX WIRD GEPRUEFT, NICHT GEGLAUBT.  Alle Aufrufer schreiben das
-      Metall auf Index 0 (``out_syms = [metal]`` :3262/:5042, ``off = 1`` in
-      ``_hapto_fold_rings``), aber ein Versatzmodell ist eine Annahme -- also
-      steht hier ``_elements.is_metal`` davor, und jedes Ringatom wird wie in
-      ``_fold_rings_from_blocks`` gegen sein Elementsymbol im Frame geprueft.
-      Passt etwas nicht: ``None``, und das Praedikat faellt auf die reine RMSD
-      zurueck.
+    ⚠ THE METAL INDEX IS CHECKED, NOT BELIEVED.  All callers write the
+      metal to index 0 (``out_syms = [metal]`` :3262/:5042, ``off = 1`` in
+      ``_hapto_fold_rings``), but an offset model is an assumption -- so
+      ``_elements.is_metal`` stands in front here, and every ring atom is checked,
+      as in ``_fold_rings_from_blocks``, against its element symbol in the frame.
+      If anything does not fit: ``None``, and the predicate falls back to the pure
+      RMSD.
 
-    ⚠ AROMATISCH IST HIER EIN ANDERES KRITERIUM ALS AM ORGANISCHEN RING.  Dort
-      kippt EIN aromatisches Ringatom den ganzen Ring (flache, starre Flaeche).
-      Ein Salen-Chelatring hat aromatische Phenolat-Kohlenstoffe und faltet
-      trotzdem -- an den M-D-Bindungen.  Ausgeschlossen wird darum nur, was
-      GANZ aromatisch ist ausser dem Metall -- Bipyridin, Terpyridin,
-      Metallabenzol.  Das ist buchstaeblich die Regel, die
-      ``_ring_pucker._is_puckerable`` unter DELFIN_FFFREE_PUCKER_MC anwendet,
-      nicht eine zweite Meinung dazu, und sie ist HIER RICHTIG HERUM: der
-      Erzeuger faltet solche Ringe nie, also gibt es dort auch nichts zu retten.
-      Ein Fingerabdruck, der sie traegt, waere strenger als der Erzeuger und
-      hielte Frames, die sich in nichts unterscheiden.
-      GEMESSEN, was die Regel kostet (`harness/faltung_fp_mc_selbsttest.py` und
-      die 500er-Messung): 110 von 816 Chelatringen fallen weg, alle vom
-      Bipyridin-Typ; Salicylaldiminat (M-O-C(ar)-C(ar)-C=N) bleibt drin, weil N
-      und O nicht aromatisch sind -- genau der Fall, den der `_ring_pucker`-
-      Kommentar als "Stufe bzw. Umbrella-Faltung" nennt."""
+    ⚠ AROMATIC IS A DIFFERENT CRITERION HERE THAN ON THE ORGANIC RING.  There
+      ONE aromatic ring atom tips the whole ring (flat, rigid face).
+      A salen chelate ring has aromatic phenolate carbons and folds
+      nonetheless -- at the M-D bonds.  Therefore only what is ENTIRELY
+      aromatic apart from the metal is excluded -- bipyridine, terpyridine,
+      metallabenzene.  That is literally the rule that
+      ``_ring_pucker._is_puckerable`` applies under DELFIN_FFFREE_PUCKER_MC,
+      not a second opinion on it, and it is THE RIGHT WAY ROUND HERE: the
+      generator never folds such rings, so there is nothing to rescue there either.
+      A fingerprint that carried them would be stricter than the generator and
+      would keep frames that differ in nothing.
+      MEASURED what the rule costs (`harness/faltung_fp_mc_selbsttest.py` and
+      the 500-system measurement): 110 of 816 chelate rings drop out, all of the
+      bipyridine type; salicylaldiminate (M-O-C(ar)-C(ar)-C=N) stays in, because N
+      and O are not aromatic -- exactly the case the `_ring_pucker`
+      comment calls "step or umbrella fold"."""
     try:
         from delfin.manta import _elements as _EL
     except Exception:
@@ -3568,7 +3569,7 @@ def _fold_mc_rings(blocks, syms, metal_idx=0):
     try:
         mi = int(metal_idx)
         if mi < 0 or mi >= len(syms) or not _EL.is_metal(syms[mi]):
-            return None                          # kein Metall dort: kein Urteil
+            return None                          # no metal there: no verdict
         ringe = []
         gesehen = set()
         for off, mol, dons in blocks:
@@ -3581,13 +3582,13 @@ def _fold_mc_rings(blocks, syms, metal_idx=0):
                 for bi in range(ai + 1, len(arme)):
                     weg = _lig_path(mol, arme[ai], arme[bi], _FOLD_FP_RINGMAX)
                     if not weg or len(weg) < 3:
-                        continue                 # kein Weg / Ringgroesse < 4
+                        continue                 # no path / ring size < 4
                     if len(weg) + 1 > _FOLD_FP_RINGMAX:
                         continue
                     if any(j in dset for j in weg[1:-1]):
-                        continue                 # dritter Donor: nicht minimal
+                        continue                 # third donor: not minimal
                     if all(mol.GetAtomWithIdx(int(j)).GetIsAromatic() for j in weg):
-                        continue                 # Metallabenzol: planar-starr
+                        continue                 # metallabenzene: planar-rigid
                     g = [mi] + [off + int(j) for j in weg]
                     if min(g) < 0 or max(g) >= len(syms):
                         return None
@@ -3603,18 +3604,18 @@ def _fold_mc_rings(blocks, syms, metal_idx=0):
         return None
     if not ringe:
         return None
-    ringe.sort()                                 # deterministisch
+    ringe.sort()                                 # deterministic
     return ringe[:_FOLD_FP_MCMAX]
 
 
 def _fold_rings_with_mc(blocks, syms, metal_idx=0):
-    """Die Ringmenge des Fingerabdrucks: organische Ringe wie bisher, plus die
-    Chelatringe, wenn ``DELFIN_FFFREE_DEDUP_FOLD_FP_MC`` an ist.
+    """The fingerprint's ring set: organic rings as before, plus the
+    chelate rings when ``DELFIN_FFFREE_DEDUP_FOLD_FP_MC`` is on.
 
-    ``blocks`` = ``(offset, mol, donor_locals)``; ``donor_locals=None`` schaltet
-    den Metallacyclus fuer diesen Block ab.  ⛔ MC-Schalter AUS -> der Rueckgabe-
-    wert ist buchstaeblich ``_fold_rings_from_blocks(...)``, also byte-identisch
-    zu dem Zustand, in dem das organische Mass erhoben wurde."""
+    ``blocks`` = ``(offset, mol, donor_locals)``; ``donor_locals=None`` switches
+    the metallacycle off for this block.  ⛔ MC switch OFF -> the return
+    value is literally ``_fold_rings_from_blocks(...)``, i.e. byte-identical
+    to the state in which the organic measure was collected."""
     org = _fold_rings_from_blocks([(o, m) for (o, m, _d) in blocks], syms)
     if not _fold_fp_mc_enabled():
         return org
@@ -3623,9 +3624,9 @@ def _fold_rings_with_mc(blocks, syms, metal_idx=0):
         return org
     if org is None:
         return mc
-    # ⚠ ANGEHAENGT, NICHT EINSORTIERT.  `_fold_same` laeuft mit `zip` ueber zwei
-    #   Fingerabdruecke, die aus DERSELBEN Ringliste stammen; jede stabile
-    #   Reihenfolge tut es, aber sie muss zwischen den Frames dieselbe sein.
+    # ⚠ APPENDED, NOT SORTED IN.  `_fold_same` runs with `zip` over two
+    #   fingerprints that come from THE SAME ring list; any stable
+    #   order will do, but it must be the same between the frames.
     return org + mc
 
 
@@ -3852,30 +3853,30 @@ def assemble_heteroleptic_ensemble(metal: str, geometry: str, vertex_specs,
         eval_order = combos[:MAX_EVAL]
 
     frames = []                                      # (syms, P) kept (deduped)
-    # FALTUNGS-FINGERABDRUCK (s. Block bei `_fold_fp_enabled`).  Vorgabe AUS ->
-    # `_fold_rings` bleibt None -> das Praedikat unten ist buchstaeblich das alte.
-    # `block_specs` traegt hier bereits (globaler Versatz, lmol, Donor-lokal).
+    # FOLD FINGERPRINT (see block at `_fold_fp_enabled`).  Default OFF ->
+    # `_fold_rings` stays None -> the predicate below is literally the old one.
+    # `block_specs` here already carries (global offset, lmol, donor-local).
     #
-    # ⛔ HIER WIRD DER METALLACYCLUS-FINGERABDRUCK (DELFIN_FFFREE_DEDUP_FOLD_FP_MC)
-    #    BEWUSST NICHT VERDRAHTET, und der Grund ist strukturell, nicht Vorsicht:
-    #    das Metall STEHT auf Index 0 (`out_syms = [metal]` :3262), es fehlt also
-    #    nicht.  Was fehlt, ist der ZWEITE Donor.  `vertex_specs` ist eine Folge
-    #    von `(frag, di)` mit GENAU EINEM Donorindex je Vertex (:3270/:3276), und
-    #    beide Aufrufer bauen sie aus `lig_ref[lab] = (lg["mol"],
-    #    lg["donor_local_idx"])` -- Einzahl -- im MONODENTAT-Zweig von
-    #    `converter_backend` (:2615, Aufrufe :2727/:3050).  Chelate erreichen
-    #    diesen Zweig nicht, sie gehen vorher nach `assemble_from_config`.
-    #    Ein Chelatring braucht zwei Donoren AUS DEMSELBEN Block; zwei Vertices
-    #    sind zwei getrennte Bloecke ohne Bindung zwischeneinander.
-    #    ⇒ Eine Verdrahtung hier koennte nie feuern.  Sie waere genau der Fehler,
-    #      den diese Kampagne seit dem 19.08. fuenfmal an einem Tag gefunden hat:
-    #      ein Mechanismus, der eingebaut ist und dessen Reichweite null ist.
-    #      Wird `vertex_specs` je mehrzaehnig, gehoert `_fold_rings_with_mc` hier
-    #      hin -- vorher nicht.
+    # ⛔ THE METALLACYCLE FINGERPRINT (DELFIN_FFFREE_DEDUP_FOLD_FP_MC) IS
+    #    DELIBERATELY NOT WIRED HERE, and the reason is structural, not caution:
+    #    the metal IS at index 0 (`out_syms = [metal]` :3262), so it is not
+    #    missing.  What is missing is the SECOND donor.  `vertex_specs` is a sequence
+    #    of `(frag, di)` with EXACTLY ONE donor index per vertex (:3270/:3276), and
+    #    both callers build it from `lig_ref[lab] = (lg["mol"],
+    #    lg["donor_local_idx"])` -- singular -- in the MONODENTATE branch of
+    #    `converter_backend` (:2615, calls :2727/:3050).  Chelates do not reach
+    #    this branch, they go to `assemble_from_config` beforehand.
+    #    A chelate ring needs two donors FROM THE SAME block; two vertices
+    #    are two separate blocks without a bond between them.
+    #    ⇒ A wiring here could never fire.  It would be exactly the mistake
+    #      this campaign has found five times in one day since 19.08.:
+    #      a mechanism that is built in and whose reach is zero.
+    #      If `vertex_specs` ever becomes multidentate, `_fold_rings_with_mc` belongs
+    #      here -- not before.
     _fold_rings = (_fold_rings_from_blocks([(o, m) for (o, m, _dl) in block_specs],
                                            out_syms)
                    if _fold_fp_enabled() else None)
-    _fold_kept = []                                  # Fingerabdruck je gehaltenem Frame
+    _fold_kept = []                                  # fingerprint per kept frame
     for cb in eval_order:
         blocks = [np.zeros((1, 3))]
         placed_P = [np.zeros(3)]; placed_syms = [metal]
@@ -3904,11 +3905,11 @@ def assemble_heteroleptic_ensemble(metal: str, geometry: str, vertex_specs,
             continue
         # complex-level RMSD dedup vs already-kept frames
         dup = False
-        _fp = None                                   # verzoegert: erst bei RMSD-Naehe
+        _fp = None                                   # lazy: only on RMSD proximity
         for _ki, (_, Pk) in enumerate(frames):
             if Pk.shape == P.shape and _complex_rmsd(out_syms, P, Pk) < rmsd_dedup:
                 if _fold_rings is None:
-                    dup = True                       # Schalter AUS -> altes Praedikat
+                    dup = True                       # switch OFF -> old predicate
                     break
                 if _fp is None:
                     _fp = _fold_fp(P, _fold_rings)
@@ -3920,7 +3921,7 @@ def assemble_heteroleptic_ensemble(metal: str, geometry: str, vertex_specs,
         if dup:
             continue
         frames.append((list(out_syms), P))
-        _fold_kept.append(None)                      # gleiche Laenge wie `frames`
+        _fold_kept.append(None)                      # same length as `frames`
         if len(frames) >= n_frames:
             break
     if not frames:
@@ -4581,39 +4582,39 @@ def _rmsd_aligned(A, B):
 
 
 def _hapto_fold_rings(d, syms):
-    """Globale Ringindexlisten fuer die eta-Bauten -- die Versatzrechnung von
-    ``assemble_hapto`` NACHVOLLZOGEN und dann an der Wirklichkeit GEPRUEFT.
+    """Global ring index lists for the eta builds -- the offset arithmetic of
+    ``assemble_hapto`` RETRACED and then CHECKED against reality.
 
-    ``assemble_hapto`` gibt nur ``(syms, P, donors, exempt)`` zurueck; die Versaetze
-    bleiben dort lokal.  Nachgerechnet wird darum genau so, wie sie dort entstehen:
-      * Emissionsreihenfolge ist NICHT die Listenreihenfolge von ``d["ligands"]``,
-        sondern eta-Liganden zuerst, dann der Rest, je aufsteigend (Zeile 3621).
-      * Blockgroesse ist ``Chem.AddHs(lg["mol"]).GetNumAtoms()``, NICHT
-        ``lg["mol"].GetNumAtoms()`` -- die Ring-H stehen in ``lg["mol"]`` nur als
-        NumExplicitHs-Eigenschaft und werden erst durch AddHs zu Atomen.
-      * Index 0 ist das Metall, der erste Ligand beginnt also bei 1.
+    ``assemble_hapto`` returns only ``(syms, P, donors, exempt)``; the offsets
+    stay local there.  They are therefore recomputed exactly as they arise there:
+      * emission order is NOT the list order of ``d["ligands"]``,
+        but eta ligands first, then the rest, each ascending (line 3621).
+      * block size is ``Chem.AddHs(lg["mol"]).GetNumAtoms()``, NOT
+        ``lg["mol"].GetNumAtoms()`` -- the ring H exist in ``lg["mol"]`` only as a
+        NumExplicitHs property and become atoms only through AddHs.
+      * index 0 is the metal, so the first ligand starts at 1.
 
-    ⚠ NACHRECHNEN IST EINE ANNAHME, ALSO WIRD SIE GEPRUEFT.  Stimmt die Gesamtzahl
-      der Atome nicht, gibt es KEIN Urteil (``None``) und das Praedikat faellt auf
-      die reine RMSD zurueck -- genau der Fall, den der Kekulize-Umweg
-      (DELFIN_FFFREE_KEKULIZE_SPLIT) erzeugen kann, wenn er ein aromatisches N+
-      neutralisiert und damit die H-Zahl aendert.  ``_fold_rings_from_blocks``
-      prueft danach noch jedes einzelne Ringatom gegen sein Elementsymbol."""
+    ⚠ RECOMPUTING IS AN ASSUMPTION, SO IT IS CHECKED.  If the total number
+      of atoms does not match, there is NO verdict (``None``) and the predicate falls
+      back to the pure RMSD -- exactly the case the kekulize detour
+      (DELFIN_FFFREE_KEKULIZE_SPLIT) can produce when it neutralises an aromatic N+
+      and thereby changes the H count.  ``_fold_rings_from_blocks``
+      afterwards still checks every single ring atom against its element symbol."""
     try:
         ligs = d["ligands"]
         order = sorted(range(len(ligs)),
                        key=lambda i: (0 if ligs[i].get("is_eta") else 1, i))
         blocks = []
-        off = 1                                    # Index 0 ist das Metall
+        off = 1                                    # index 0 is the metal
         for i in order:
             m = Chem.AddHs(ligs[i]["mol"])
-            # dritter Eintrag = die Chelatarme fuer den Metallacyclus-Fingerabdruck
-            # (``None`` bei eta und bei Zahnigkeit 1 -> kein Ring).  MC-Schalter AUS
-            # -> `_fold_rings_with_mc` liest ihn nie an.
+            # third entry = the chelate arms for the metallacycle fingerprint
+            # (``None`` for eta and for denticity 1 -> no ring).  MC switch OFF
+            # -> `_fold_rings_with_mc` never reads it.
             blocks.append((off, m, _fold_mc_arms(ligs[i])))
             off += m.GetNumAtoms()
         if off != len(syms):
-            return None                            # Versatzmodell passt nicht: kein Urteil
+            return None                            # offset model does not fit: no verdict
         return _fold_rings_with_mc(blocks, syms, 0)
     except Exception:
         return None
@@ -4626,23 +4627,23 @@ def _dedup_builds(builds, rmsd_tol=0.25, fold_rings=None):
     Deterministic.  Distinct-by-atom-count builds (ring-slip changes nothing in the
     atom list, so counts always match) are compared directly.
 
-    ⚠ WARUM HIER EIN FALTUNGS-FINGERABDRUCK NOETIG IST.  Die Variantenliste, die in
-      diese Funktion laeuft, enthaelt ``_cp_pucker_amps``: die Cremer-Pople-Faltung
-      der eta-Flaeche mit einer Amplitude von nur +/-0,15 A, verglichen ueber ALLE
-      Atome des Komplexes.  Das liegt sicher unter ``rmsd_tol`` = 0,25 -- die
-      eta-Faltungsachse wurde an dieser Stelle vollstaendig gefressen, und beide
-      Aufrufer (RIGID_HAPTO, HAPTO_AXIS_ROT) sind Champion-Schalter.
-      ``fold_rings=None`` (Vorgabe) -> Praedikat byte-identisch zu vorher."""
+    ⚠ WHY A FOLD FINGERPRINT IS NEEDED HERE.  The variant list that runs into
+      this function contains ``_cp_pucker_amps``: the Cremer-Pople fold
+      of the eta face with an amplitude of only +/-0.15 A, compared over ALL
+      atoms of the complex.  That lies safely below ``rmsd_tol`` = 0.25 -- the
+      eta fold axis was completely eaten at this site, and both
+      callers (RIGID_HAPTO, HAPTO_AXIS_ROT) are champion switches.
+      ``fold_rings=None`` (default) -> predicate byte-identical to before."""
     kept = []
-    fps = []                                       # Fingerabdruck je Gehaltenem
+    fps = []                                       # fingerprint per kept build
     for b in builds:
         P = b[1]
         dup = False
-        fp = None                                  # verzoegert: erst bei RMSD-Naehe
+        fp = None                                  # lazy: only on RMSD proximity
         for ki, kb in enumerate(kept):
             if kb[1].shape == P.shape and _rmsd_aligned(kb[1], P) < rmsd_tol:
                 if fold_rings is None:
-                    dup = True                     # Schalter AUS -> altes Praedikat
+                    dup = True                     # switch OFF -> old predicate
                     break
                 if fp is None:
                     fp = _fold_fp(P, fold_rings)
@@ -4717,7 +4718,7 @@ def assemble_hapto_ensemble(metal, geometry, d, max_builds=30):
         builds.append(b)
     if not builds:
         return None
-    # Vorgabe AUS -> `fold_rings` bleibt None -> Entdopplung byte-identisch.
+    # Default OFF -> `fold_rings` stays None -> dedup byte-identical.
     builds = _dedup_builds(
         builds,
         fold_rings=(_hapto_fold_rings(d, builds[0][0]) if _fold_fp_enabled() else None))
@@ -4758,7 +4759,7 @@ def assemble_hapto_axis_rotants(metal, geometry, d, n_axis=8, max_builds=60):
                 break
     if not builds:
         return []
-    # Vorgabe AUS -> `fold_rings` bleibt None -> Entdopplung byte-identisch.
+    # Default OFF -> `fold_rings` stays None -> dedup byte-identical.
     builds = _dedup_builds(
         builds,
         fold_rings=(_hapto_fold_rings(d, builds[0][0]) if _fold_fp_enabled() else None))
@@ -4996,101 +4997,101 @@ def _global_donor_seat(syms, P, blocks):
     return Xc
 
 
-# ===== DER HALBE BAILAR-TWIST, FF-FREI ZURUECKGEDREHT ========================
-# Gemessen 18.08.2026 auf 30921 Systemen: netto +988 Systeme fliessen vom Oktaeder
-# ins trigonale Prisma (McNemar X2 = 860,8 auf 1 df).  TPR-6 wird 2,99 mal so oft
-# gebaut wie es real vorkommt, waehrend JEDE andere Form zwischen 0,86 und 1,29
-# liegt -- der groesste Einzeldefekt der Polyederachse, 3,7 mal die Masse des
-# zweitgroessten Paares.
+# ===== THE HALF BAILAR TWIST, TURNED BACK FF-FREE ===========================
+# Measured 18.08.2026 on 30921 systems: net +988 systems flow from the octahedron
+# into the trigonal prism (McNemar X2 = 860.8 on 1 df).  TPR-6 is built 2.99 times
+# as often as it really occurs, while EVERY other shape lies between 0.86 and 1.29
+# -- the largest single defect of the polyhedron axis, 3.7 times the mass of the
+# second-largest pair.
 #
-# DREI MESSUNGEN SAGEN, WAS ES NICHT IST:
-#   * Es ist KEIN Ligandenfeld-Effekt.  Metall flach, d-Zahl flach; das Signal ist
-#     allein die VERZAHNUNG durch Chelatringe, monoton von 2,49 % bei null Ringen
-#     auf 16,12 % bei fuenf (6,5-fach).  Also Geometrie, nicht Chemie.
-#   * Es sind KEINE echten Prismen.  CShM(OC-6) liegt im Median bei 11,03 statt bei
-#     16,7, wie ein ideales TPR es haette -- ein HALBER Bailar-Twist, auf halbem Weg
-#     stehengeblieben.
-#   * Es ist KEINE Auswahlfrage.  poly_match ist in 1061 von 1061 Faellen false,
-#     obwohl das Auge poly_build als Minimum ueber ALLE realistischen Frames liest.
-#     Im ganzen Manifold gibt es kein Oktaeder -- es wird also keines gebaut.
+# THREE MEASUREMENTS SAY WHAT IT IS NOT:
+#   * It is NOT a ligand-field effect.  Metal flat, d-count flat; the signal is
+#     solely the INTERLOCKING by chelate rings, monotone from 2.49 % at zero rings
+#     to 16.12 % at five (6.5-fold).  So geometry, not chemistry.
+#   * They are NOT real prisms.  CShM(OC-6) lies at a median of 11.03 instead of
+#     16.7, as an ideal TPR would have -- a HALF Bailar twist, stopped
+#     halfway.
+#   * It is NOT a selection question.  poly_match is false in 1061 of 1061 cases,
+#     although the eye reads poly_build as the minimum over ALL realistic frames.
+#     In the whole manifold there is no octahedron -- so none is built.
 #
-# ⛔ WARUM DIE VORHANDENE REPARATUR NICHT REICHT.  Es gibt sie zweimal, beide in
-# smiles_converter.py: DELFIN_FFFREE_CN6_OH_ADD (:27452) beginnt mit `apply_uff and`,
-# und DELFIN_FFFREE_CN6_OH_ANGLES (:38153) steckt in
-# _build_coordination_constraints_from_xyz, also in der UFF-Zwangsmaschinerie.  Beide
-# geben UFF oktaedrische Winkelziele (90/180 Grad), damit UFF den Twist herausrelaxiert.
-# Auf dem FF-freien Pfad laeuft kein UFF ⇒ Reichweite null.  Sie lassen sich nicht
-# verdrahten; sie muessen konstruktionsseitig neu entstehen, und das ist dieser Block.
+# ⛔ WHY THE EXISTING REPAIR IS NOT ENOUGH.  It exists twice, both in
+# smiles_converter.py: DELFIN_FFFREE_CN6_OH_ADD (:27452) begins with `apply_uff and`,
+# and DELFIN_FFFREE_CN6_OH_ANGLES (:38153) sits in
+# _build_coordination_constraints_from_xyz, i.e. in the UFF constraint machinery.  Both
+# give UFF octahedral angle targets (90/180 degrees) so that UFF relaxes the twist out.
+# On the FF-free path no UFF runs ⇒ reach zero.  They cannot be
+# wired in; they must arise anew on the construction side, and that is this block.
 #
-# ⚠ WAS HIER BEWUSST UEBERNOMMEN IST, UND WARUM.  Die drei Sicherungen der UFF-Fassung
-# sind nicht Beiwerk, sie sind der Grund, warum sie isomersicher ist:
-#   1) Die drei trans-Paare kommen aus dem FRAME SELBST (greedy: jeder Donor mit seinem
-#      am meisten gegenueberliegenden), NICHT aus einer Enumerator-Permutation.  Die
-#      PERM-Variante ist am 2026-07-14 gemessen worden und hat Isomere KOLLABIERT
-#      (VOYWUD verlor all-trans + trans-OH) -- sie zwingt manchen Anordnungen den
-#      falschen trans-Satz auf.  Was das Frame schon hat, bleibt: fac bleibt fac,
-#      cis bleibt cis.  Es ist eine Twist-Korrektur, keine Anordnungsaenderung.
-#   2) Nur wenn ALLE drei Paare klar trans sind (min > 120 Grad).  Ein gueltiges
-#      TPR/OC-Frame sitzt bei 140-180; ein mehrdeutiges nicht -> uebersprungen, damit
-#      nichts kollabiert.
-#   3) Nur bei CN 6 und _PREFERRED_CN6_GEOMETRY.get(metal, 'OH') == 'OH'.
+# ⚠ WHAT IS DELIBERATELY CARRIED OVER HERE, AND WHY.  The three safeguards of the UFF
+# version are not trimmings, they are the reason it is isomer-safe:
+#   1) The three trans pairs come from the FRAME ITSELF (greedy: each donor with its
+#      most opposite one), NOT from an enumerator permutation.  The
+#      PERM variant was measured on 2026-07-14 and COLLAPSED isomers
+#      (VOYWUD lost all-trans + trans-OH) -- it forces the wrong trans set on some
+#      arrangements.  What the frame already has stays: fac stays fac,
+#      cis stays cis.  It is a twist correction, not an arrangement change.
+#   2) Only if ALL three pairs are clearly trans (min > 120 degrees).  A valid
+#      TPR/OC frame sits at 140-180; an ambiguous one does not -> skipped, so that
+#      nothing collapses.
+#   3) Only at CN 6 and _PREFERRED_CN6_GEOMETRY.get(metal, 'OH') == 'OH'.
 #
-# ⚠ UND WAS ANDERS IST -- das ist der Grund, warum dies landen kann.  Nach dem am
-# 18.08. an drei Punkten gemessenen Kostengesetz kostet Ordnung/Auswahl rund 0,
-# Isometrie +0,98 pp, eine starre Drehung mit NEUER Konformation +6,57 pp und eine
-# Neueinbettung +11,9 pp.  Was HINZUFUEGT, ohne neue Geometrie zu erfinden, landet.
-# Deshalb wird hier der GANZE Ligandenarm STARR um das Metall gedreht und nicht das
-# einzelne Donoratom verschoben: eine Drehung um das Metall laesst r(M-D) exakt und
-# den Biss exakt, sie erfindet keine Konformation.  Einzelne Donoren zu verschieben
-# risse Bindungen -- genau die Neueinbettung, die am teuersten gemessen wurde.
+# ⚠ AND WHAT IS DIFFERENT -- that is the reason why this can land.  By the cost law
+# measured on 18.08. at three points, ordering/selection costs about 0,
+# isometry +0.98 pp, a rigid rotation with NEW conformation +6.57 pp and a
+# re-embedding +11.9 pp.  What ADDS, without inventing new geometry, lands.
+# That is why here the WHOLE ligand arm is rotated RIGIDLY about the metal and not the
+# single donor atom shifted: a rotation about the metal leaves r(M-D) exact and
+# the bite exact, it invents no conformation.  Shifting single donors
+# would tear bonds -- exactly the re-embedding that was measured to be the most expensive.
 #
-# Ein Chelat mit 78-Grad-Biss KANN kein perfektes Oktaeder geben, und das soll es
-# auch nicht: der Kabsch-Fit legt seine Donoren so nah an die Idealrichtungen, wie
-# sein Biss es zulaesst, und der Biss gewinnt.  Das Ziel ist nicht CShM 0, das Ziel
-# ist "kein halber Twist mehr".
-_OC6_TRANS_MIN = 120.0   # Grad; darunter ist das Paar nicht eindeutig trans -> Abbruch
-_OC6_AXIS_MIN = 0.20     # kleinster Singulaerwert der drei Achsen: darunter sind sie
-                         # fast koplanar und die Orthonormalisierung waere geraten
-_OC6_RIGID_TOL = 1e-6    # Angstroem; Nachmessung von r(M-D) und Biss NACH der Drehung
+# A chelate with a 78-degree bite CANNOT give a perfect octahedron, and it is not
+# meant to: the Kabsch fit puts its donors as close to the ideal directions as
+# its bite allows, and the bite wins.  The goal is not CShM 0, the goal
+# is "no more half twist".
+_OC6_TRANS_MIN = 120.0   # degrees; below it the pair is not unambiguously trans -> abort
+_OC6_AXIS_MIN = 0.20     # smallest singular value of the three axes: below it they are
+                         # almost coplanar and the orthonormalisation would be guessed
+_OC6_RIGID_TOL = 1e-6    # Angstrom; re-measurement of r(M-D) and bite AFTER the rotation
 
-# ⚠ EIN AUSGANG, EINE ZEILE -- und `call` ganz vorn.  Die Funktion hat zehn Wege, mit
-# None zurueckzukommen, und jeder einzelne heisst etwas anderes: "nicht mein Fall",
-# "mehrdeutig, Finger weg", "gedreht, aber es hat nichts gebracht".  Ohne den Nenner
-# waeren sie im Bericht alle dieselbe Null -- der Fehler, der hier am 10.08. und noch
-# einmal am 14.08. gemacht wurde.  Nur beschrieben, wenn der Korrektor ueberhaupt
-# gerufen wird, also nur hinter oc6_twist=True.  Gelesen von _self_test_oc6_twist und
-# vom Geschwister-Selbsttest in converter_backend.
+# ⚠ ONE EXIT, ONE LINE -- and `call` right at the front.  The function has ten ways
+# to come back with None, and every single one means something different: "not my case",
+# "ambiguous, hands off", "rotated, but it achieved nothing".  Without the denominator
+# they would all be the same zero in the report -- the mistake that was made here on
+# 10.08. and once more on 14.08.  Only recorded if the corrector is called at all,
+# i.e. only behind oc6_twist=True.  Read by _self_test_oc6_twist and by the
+# sibling self-test in converter_backend.
 _OC6_SEAT_CENSUS = dict.fromkeys(
     ("call", "not_oc6", "metal_pref", "shape", "book", "not_cn6", "zero_md",
      "ambiguous", "coplanar_axes", "rot_bad", "rigid_broken", "cshm_flat", "ok"), 0)
-# (CShM vor, CShM nach, kleinster trans-Winkel) je Aufruf -- die Rohzahlen, an denen
-# abzulesen ist, OB die Setzung ueberhaupt verdreht ist.  Ein Zaehler allein koennte
-# das nicht sagen: "nicht verbessert" heisst entweder "schon richtig" oder "zu
-# schlecht zum Retten", und das sind gegensaetzliche Befunde.  Nur hinter oc6_twist.
+# (CShM before, CShM after, smallest trans angle) per call -- the raw numbers from
+# which to read WHETHER the seating is twisted at all.  A counter alone could not
+# say that: "not improved" means either "already correct" or "too
+# bad to rescue", and those are opposite findings.  Only behind oc6_twist.
 _OC6_SEAT_CSHM = []
-_OC6_CSHM_KEEP = 4096   # Deckel; die Zaehler oben bleiben vollstaendig, nur die
-                        # Rohwertliste hoert irgendwann auf zu wachsen
+_OC6_CSHM_KEEP = 4096   # cap; the counters above stay complete, only the
+                        # raw-value list stops growing at some point
 
 
 def _oc6_twist_seat_enabled() -> bool:
-    """DIE eine Lesestelle von DELFIN_FFFREE_OC6_TWIST_SEAT (Vorgabe 0 -> byte-identisch).
+    """THE one read site of DELFIN_FFFREE_OC6_TWIST_SEAT (default 0 -> byte-identical).
 
-    Sie entscheidet NICHT ueber das Primaerframe.  ``assemble_from_config`` fuehrt die
-    Korrektur ausschliesslich auf das Schluesselwort ``oc6_twist=True`` hin aus, das
-    per Vorgabe False ist -- der gebaute Primaerframe ist also byte-identisch, ganz
-    gleich was in der Umgebung steht.  Dieser Schalter sagt nur, ob der Aufrufer
-    zusaetzlich ein GESCHWISTERFRAME baut."""
+    It does NOT decide about the primary frame.  ``assemble_from_config`` executes the
+    correction exclusively on the keyword ``oc6_twist=True``, which
+    is False by default -- so the built primary frame is byte-identical, no
+    matter what is in the environment.  This switch only says whether the caller
+    additionally builds a SIBLING FRAME."""
     return os.environ.get("DELFIN_FFFREE_OC6_TWIST_SEAT", "0") == "1"
 
 
 def _oc6_trans_pairs(u, donors):
-    """Die drei trans-Paare aus dem Frame selbst: jeder Donor mit seinem am meisten
-    gegenueberliegenden, greedy in fester Indexreihenfolge (deterministisch, kein RNG).
+    """The three trans pairs from the frame itself: each donor with its most
+    opposite one, greedy in fixed index order (deterministic, no RNG).
 
-    ``u``: dict Donorindex -> Einheitsvektor vom Metall aus.  Rueckgabe
-    ``(paare, kleinster_trans_winkel_grad)`` oder ``(None, 0.0)``.  Wortgleich die
-    Paarung der UFF-Fassung in smiles_converter.py:38160 -- nicht aus Bequemlichkeit,
-    sondern weil GENAU diese Paarung die isomersichere ist (siehe Kopfnotiz)."""
+    ``u``: dict donor index -> unit vector from the metal.  Returns
+    ``(pairs, smallest_trans_angle_deg)`` or ``(None, 0.0)``.  Word for word the
+    pairing of the UFF version in smiles_converter.py:38160 -- not out of convenience,
+    but because EXACTLY this pairing is the isomer-safe one (see head note)."""
     rem = list(donors)
     pairs = []
     min_trans = 180.0
@@ -5108,19 +5109,19 @@ def _oc6_trans_pairs(u, donors):
 
 
 def _oc6_ideal_axes(u, pairs):
-    """Die drei gemessenen trans-Achsen, auf das NAECHSTGELEGENE orthonormale Dreibein
-    gezogen (Polarzerlegung, ``A = U S Vt`` -> ``U Vt``).
+    """The three measured trans axes, pulled onto the NEAREST orthonormal triad
+    (polar decomposition, ``A = U S Vt`` -> ``U Vt``).
 
-    WARUM POLARZERLEGUNG UND NICHT GRAM-SCHMIDT: Gram-Schmidt ist reihenfolgeabhaengig
-    -- die erste Achse bliebe unangetastet, die dritte truege den ganzen Fehler.  Die
-    Polarzerlegung minimiert die Summe der Quadrate ueber alle drei gleichzeitig und
-    ist damit unabhaengig davon, welches Paar zuerst gefunden wurde.  Das ist wichtig,
-    weil die greedy-Paarung oben eine Indexreihenfolge hat, die Chemie aber nicht.
+    WHY POLAR DECOMPOSITION AND NOT GRAM-SCHMIDT: Gram-Schmidt is order-dependent
+    -- the first axis would stay untouched, the third would carry the whole error.  The
+    polar decomposition minimises the sum of squares over all three simultaneously and
+    is thereby independent of which pair was found first.  That matters,
+    because the greedy pairing above has an index order, but the chemistry does not.
 
-    Die Haendigkeit wird NICHT korrigiert.  Gesucht sind drei zueinander senkrechte
-    Einheitsvektoren; {±e1, ±e2, ±e3} ist derselbe Oktaeder, ob das Dreibein rechts-
-    oder linkshaendig ist.  Eine det-Korrektur waere hier kein Schutz, sondern eine
-    zusaetzliche, unnoetige Drehung.  Rueckgabe ``(E, kleinster_singulaerwert)``."""
+    The handedness is NOT corrected.  What is sought are three mutually perpendicular
+    unit vectors; {±e1, ±e2, ±e3} is the same octahedron whether the triad is right-
+    or left-handed.  A det correction would be no protection here, but an
+    additional, unnecessary rotation.  Returns ``(E, smallest_singular_value)``."""
     A = []
     for a, b in pairs:
         ax = u[a] - u[b]
@@ -5139,40 +5140,40 @@ def _oc6_ideal_axes(u, pairs):
 
 
 def _oc6_twist_seat(syms, P, blocks, metal, geometry):
-    """Dreh den halben Twist heraus -- starr, ligandweise, um das Metall.
+    """Rotate the half twist out -- rigidly, ligand by ligand, about the metal.
 
-    ``blocks``: je gesetztem Liganden ein ``(start, n_atome, [globale Donorindizes])``,
-    dieselbe Buchhaltung, die ``_global_donor_seat`` benutzt; Atom 0 ist das Metall.
-    Rueckgabe: der korrigierte Frame, oder ``None``, wenn eine der Sicherungen
-    anspricht ODER die Korrektur den Twist nicht messbar verkleinert.  Der Aufrufer
-    behaelt dann den gesetzten Frame woertlich.
+    ``blocks``: per seated ligand one ``(start, n_atoms, [global donor indices])``,
+    the same bookkeeping ``_global_donor_seat`` uses; atom 0 is the metal.
+    Returns: the corrected frame, or ``None`` if one of the safeguards
+    triggers OR the correction does not measurably reduce the twist.  The caller
+    then keeps the seated frame verbatim.
 
-    Ablauf:
-      1) CN 6, OC-6 angefordert, Metall bevorzugt OH -- sonst nichts.
-      2) trans-Paare aus dem Frame, alle drei klar trans (> 120 Grad).
-      3) die drei Achsen orthonormalisieren -> das dem Frame NAECHSTE Oktaeder.
-         Nicht das Laborachsen-Oktaeder: das naechste ist das, zu dem am wenigsten
-         bewegt werden muss, und Bewegung ist genau das, was nach dem Kostengesetz
-         bezahlt wird.
-      4) je Ligand EINE starre Drehung um das Metall, die seine Donoren im
-         Kabsch-Sinn auf ihre Zielrichtungen legt.  Ein einzaehniger Ligand bekommt
-         die minimale Drehung (Rodrigues), ab zwei Donoren den Kabsch-Fit -- der ist
-         bei zwei Punkten NICHT entartet, weil das Metall im Ursprung mitgehalten
-         wird und die Kovarianz damit Rang 2 hat, deren Nullrichtung eindeutig ist.
-      5) NACHMESSEN statt vertrauen: r(M-D) und jeder ligandinterne Donor-Donor-
-         Abstand muessen auf 1e-6 unveraendert sein, und CShM(OC-6) muss STRIKT
-         gefallen sein.  Beides sind Messungen am Ergebnis, keine auf einen Pool
-         eingestellten Schwellen -- eine Drehung, die den Twist nicht verkleinert,
-         wird verworfen, statt sie schoenzurechnen."""
+    Procedure:
+      1) CN 6, OC-6 requested, metal prefers OH -- otherwise nothing.
+      2) trans pairs from the frame, all three clearly trans (> 120 degrees).
+      3) orthonormalise the three axes -> the octahedron NEAREST to the frame.
+         Not the lab-axes octahedron: the nearest is the one requiring the least
+         movement, and movement is exactly what is paid for under the cost
+         law.
+      4) per ligand ONE rigid rotation about the metal that puts its donors onto
+         their target directions in the Kabsch sense.  A monodentate ligand gets
+         the minimal rotation (Rodrigues), from two donors on the Kabsch fit -- which
+         is NOT degenerate for two points, because the metal at the origin is held
+         along and the covariance thus has rank 2, whose null direction is unique.
+      5) RE-MEASURE instead of trust: r(M-D) and every intra-ligand donor-donor
+         distance must be unchanged to 1e-6, and CShM(OC-6) must have STRICTLY
+         fallen.  Both are measurements on the result, not thresholds tuned to a
+         pool -- a rotation that does not reduce the twist
+         is rejected, instead of being dressed up."""
     def _no(reason):
         _OC6_SEAT_CENSUS[reason] += 1
         return None
 
     _OC6_SEAT_CENSUS["call"] += 1
     if not str(geometry).startswith("OC-6"):
-        return _no("not_oc6")              # ein ANGEFORDERTES TPR-6 bleibt ein TPR-6
-    # Metallpraeferenz.  Verzoegerter Import wie in _finish_config_frame; faellt das
-    # Modul aus, gilt die Vorgabe 'OH' -- dieselbe, die die Tabelle selbst gibt.
+        return _no("not_oc6")              # a REQUESTED TPR-6 stays a TPR-6
+    # Metal preference.  Deferred import as in _finish_config_frame; if the
+    # module fails, the default 'OH' applies -- the same the table itself gives.
     try:
         from delfin.smiles_converter import _PREFERRED_CN6_GEOMETRY as _PCN6
         if _PCN6.get(str(metal), 'OH') != 'OH':
@@ -5189,10 +5190,10 @@ def _oc6_twist_seat(syms, P, blocks, metal, geometry):
     donors = []
     for st, ln, dn in blocks:
         if st < 1 or st + ln > n:
-            return _no("book")             # Buchhaltung passt nicht -> nichts tun
+            return _no("book")             # bookkeeping does not fit -> do nothing
         donors += [int(x) for x in dn]
     if len(donors) != 6 or len(set(donors)) != 6:
-        return _no("not_cn6")              # CN 6, und jeder Donor genau einmal
+        return _no("not_cn6")              # CN 6, and every donor exactly once
     M = X0[0].copy()
     u = {}
     r = {}
@@ -5205,10 +5206,10 @@ def _oc6_twist_seat(syms, P, blocks, metal, geometry):
         r[d] = nv
     pairs, min_trans = _oc6_trans_pairs(u, sorted(donors))
     if pairs is None or min_trans <= _OC6_TRANS_MIN:
-        return _no("ambiguous")            # mehrdeutig -> ueberspringen, nichts kollabiert
+        return _no("ambiguous")            # ambiguous -> skip, nothing collapses
     E, smin = _oc6_ideal_axes(u, pairs)
     if E is None or smin < _OC6_AXIS_MIN:
-        return _no("coplanar_axes")        # fast koplanare Achsen -> das Dreibein waere geraten
+        return _no("coplanar_axes")        # almost coplanar axes -> the triad would be guessed
     tgt = {}
     for i, (a, b) in enumerate(pairs):
         e = np.asarray(E[i], float)
@@ -5217,7 +5218,7 @@ def _oc6_twist_seat(syms, P, blocks, metal, geometry):
             return _no("coplanar_axes")
         e = e / ne
         if float(np.dot(u[a], e)) < 0.0:
-            e = -e                         # die Achse zeigt zu a, nicht von a weg
+            e = -e                         # the axis points towards a, not away from a
         tgt[a] = e * r[a]
         tgt[b] = -e * r[b]
     Xc = X0.copy()
@@ -5236,26 +5237,26 @@ def _oc6_twist_seat(syms, P, blocks, metal, geometry):
         Xc[st:st + ln] = (X0[st:st + ln] - M) @ R.T + M
     if not np.all(np.isfinite(Xc)):
         return _no("rot_bad")
-    # 5a) die beiden Invarianten NACHMESSEN.  Eine Drehung um das Metall haelt sie
-    #     mathematisch; gemessen wird trotzdem, weil eine entartete Kabsch-Matrix
-    #     genau hier stillschweigend eine Spiegelung einschleusen koennte.
+    # 5a) RE-MEASURE the two invariants.  A rotation about the metal holds them
+    #     mathematically; they are measured anyway, because a degenerate Kabsch matrix
+    #     could silently smuggle in a mirroring exactly here.
     for st, ln, dn in blocks:
         dn = [int(x) for x in dn]
         for i, da in enumerate(dn):
             if abs(float(np.linalg.norm(Xc[da] - M)) - r[da]) > _OC6_RIGID_TOL:
-                return _no("rigid_broken")             # r(M-D) gebrochen
+                return _no("rigid_broken")             # r(M-D) broken
             for db in dn[i + 1:]:
                 if abs(float(np.linalg.norm(Xc[da] - Xc[db]))
                        - float(np.linalg.norm(X0[da] - X0[db]))) > _OC6_RIGID_TOL:
-                    return _no("rigid_broken")         # Biss gebrochen
-    # 5b) und die eine Zahl, um die es geht.  Faellt sie nicht, hat der Block nichts
-    #     zu bieten und gibt den Frame unveraendert zurueck (der Aufrufer behaelt ihn).
+                    return _no("rigid_broken")         # bite broken
+    # 5b) and the one number that matters.  If it does not fall, the block has nothing
+    #     to offer and returns the frame unchanged (the caller keeps it).
     try:
         from delfin.manta import polyhedra as _PH
         before = _PH.cshm([X0[d] - M for d in sorted(donors)], "OC-6 octahedron")
         after = _PH.cshm([Xc[d] - M for d in sorted(donors)], "OC-6 octahedron")
-        if len(_OC6_SEAT_CSHM) < _OC6_CSHM_KEEP:      # gedeckelt: ein 30-Stunden-Lauf
-            _OC6_SEAT_CSHM.append(                    # soll keine Liste mitschleppen
+        if len(_OC6_SEAT_CSHM) < _OC6_CSHM_KEEP:      # capped: a 30-hour run
+            _OC6_SEAT_CSHM.append(                    # must not drag a list along
                 (float(before), float(after), float(min_trans)))
     except Exception:
         return _no("cshm_flat")
@@ -5265,66 +5266,66 @@ def _oc6_twist_seat(syms, P, blocks, metal, geometry):
     return Xc
 
 
-# ===== DER LETZTE FREIHEITSGRAD DES LIGANDEN =================================
-# DER BEFUND, DER DIESEN BLOCK ERZWINGT (18.08., 492 saubere Restsysteme).
-# `org_bond` -- die groesste Fehlmasse der Organogeometrie -- haengt NICHT an der
-# Bindungsklasse (molekuelintern ist die Lokalisierung massiv, zwischen Treffern und
-# Fehlschlaegen aber identisch, max |delta| 0,14).  Zwei Groessen reichern echt an:
-# `worst_n` (Zahl gleichzeitig verbogener Organobindungen) 3,83x, und die
-# KOORDINATIONSZAHL 1,62x (CN>=5 51,3 % gegen CN<=4 31,7 %).  Und CN wirkt DURCH
-# `worst_n`: mittleres `worst_n` steigt 3,46 -> 7,07 (CN 2..6) bei praktisch
-# konstanter Molekuelgroesse, mit KORREKT gebautem Polyeder 3,6 gegen 7,1.
-# ⇒ Bei gleicher Ligandgroesse verbiegt ein CN-6-Zentrum doppelt so viele
-# Organobindungen wie ein CN-4-Zentrum.  Der Polyeder wird erzwungen, der Ligand zahlt.
+# ===== THE LIGAND'S LAST DEGREE OF FREEDOM ===================================
+# THE FINDING THAT FORCES THIS BLOCK (18.08., 492 clean remaining systems).
+# `org_bond` -- the largest defect mass of the organic geometry -- does NOT hang on
+# the bond class (within a molecule the localisation is massive, but identical between
+# hits and failures, max |delta| 0.14).  Two quantities genuinely enrich:
+# `worst_n` (number of simultaneously bent organic bonds) 3.83x, and the
+# COORDINATION NUMBER 1.62x (CN>=5 51.3 % against CN<=4 31.7 %).  And CN acts THROUGH
+# `worst_n`: mean `worst_n` rises 3.46 -> 7.07 (CN 2..6) at practically
+# constant molecule size, with a CORRECTLY built polyhedron 3.6 against 7.1.
+# ⇒ At equal ligand size a CN-6 centre bends twice as many
+# organic bonds as a CN-4 centre.  The polyhedron is enforced, the ligand pays.
 #
-# DIE DOF-BILANZ DES BAUERS (nachgemessen, siehe _self_test_ligand_dof):
-#   * Ein Ligandblock wird STARR gesetzt -- 6 Starrkoerper-DOF.
-#   * Monodentat: `_rot_align(lp, -Vunit)` legt 5 davon fest (3 Translation ueber
-#     `+ Vunit*md`, 2 Richtung ueber die Rodrigues-Drehung).  Der SECHSTE -- der
-#     Azimut um die M-D-Achse -- ist chemisch voellig unbestimmt und wird trotzdem
-#     festgenagelt, naemlich auf den Zufallswert, den die MINIMALE Drehung von
-#     `_rot_align` gerade liefert.  Er wird auf dem Konfigurationspfad NIE abgetastet.
-#   * Bidentat: der Kabsch-Fit in `_orient_chelate_to_vertices` setzt beide Donoren
-#     auf ihre Vertices; uebrig bleibt exakt EINE Drehung -- um die Donor-Donor-Achse.
-#     Der Fit kann sie nicht sehen (beide Donoren liegen AUF der Achse).  Sie wird
-#     heute nur von `_lp_orient_seated_bidentate` benutzt, um einen BINDUNGSwinkel zu
-#     optimieren (Vorgabe AUS, als Setzung negativ gemessen) -- fuer die PACKUNG hat
-#     sie noch nie jemand benutzt.
-#   * Tridentat und hoeher: drei nicht-kollineare Donoren legen den Starrkoerper
-#     VOLLSTAENDIG fest.  NULL freie Drehung.  Das Register hat recht: 0 DOF.
+# THE BUILDER'S DOF BALANCE (re-measured, see _self_test_ligand_dof):
+#   * A ligand block is seated RIGIDLY -- 6 rigid-body DOF.
+#   * Monodentate: `_rot_align(lp, -Vunit)` fixes 5 of them (3 translation via
+#     `+ Vunit*md`, 2 direction via the Rodrigues rotation).  The SIXTH -- the
+#     azimuth about the M-D axis -- is chemically completely undetermined and is
+#     nonetheless nailed down, namely to the random value that the MINIMAL rotation of
+#     `_rot_align` happens to deliver.  It is NEVER sampled on the configuration path.
+#   * Bidentate: the Kabsch fit in `_orient_chelate_to_vertices` puts both donors
+#     onto their vertices; exactly ONE rotation remains -- about the donor-donor axis.
+#     The fit cannot see it (both donors lie ON the axis).  Today it is
+#     used only by `_lp_orient_seated_bidentate` to optimise a BOND angle
+#     (default OFF, measured negative as a seating) -- for the PACKING nobody
+#     has ever used it.
+#   * Tridentate and higher: three non-collinear donors fix the rigid body
+#     COMPLETELY.  ZERO free rotation.  The register is right: 0 DOF.
 #
-# WAS DIESE ACHSE ERHAELT -- und das ist der Grund, aus dem sie gebaut wird.  Beide
-# Faelle drehen um eine Linie, die JEDEN Donor dieses Blocks ENTHAELT.  Die Donoren
-# sind damit PUNKTWEISE fix: M-D-Abstand, M-D-RICHTUNG, Biss, Vertexwinkel und CShM
-# aendern sich nicht um ein Bit.  Es ist eine Isometrie des Ligandblocks auf einer
-# bereits gebauten Konformation -- keine neue Einbettung, keine neue Konformation.
-# Nach dem an vier Punkten gemessenen Kostengesetz (Ordnung/Auswahl ~0, Isometrie
-# +0,98 pp, starre Drehung mit NEUER Konformation +6,57 pp, Neueinbettung +11,9 pp)
-# ist das die billigste Klasse, die ueberhaupt etwas an der Packung aendern kann.
+# WHAT THIS AXIS PRESERVES -- and that is the reason it is built.  Both
+# cases rotate about a line that CONTAINS EVERY donor of this block.  The donors
+# are thereby POINTWISE fixed: M-D distance, M-D DIRECTION, bite, vertex angles and CShM
+# do not change by one bit.  It is an isometry of the ligand block on an
+# already built conformation -- no new embedding, no new conformation.
+# By the cost law measured at four points (ordering/selection ~0, isometry
+# +0.98 pp, rigid rotation with NEW conformation +6.57 pp, re-embedding +11.9 pp)
+# that is the cheapest class that can change anything about the packing at all.
 #
-# ⚠ ABGRENZUNG ZU DELFIN_FFFREE_LIGAND_SWING (joint_declash.py:305).  Der Schwenk ist
-# eine ANDERE Bewegung an einer ANDEREN Stelle: er dreht den ganzen Liganden um die
-# Achse M -> Donorschwerpunkt, NACH der Montage, im Declash-Pass, und dabei BEWEGEN
-# SICH DIE DONOREN -- deshalb braucht er eine 3-Grad-Kappe und ein CShM-Budget, und
-# deshalb kann er den Polyeder ueberhaupt beschaedigen (bei 8 Grad hat er es).  Diese
-# Achse hier bewegt die Donoren nicht, braucht darum keine Winkelkappe und darf den
-# vollen Kreis abtasten; und sie greift bei der AUSWAHL, wo der Kandidat noch
-# entschieden wird, nicht hinterher am fertigen Frame.  Der Schwenk erweitern hiesse
-# ihn zu einer Bewegung umbauen, die er nicht ist -- und in einer Datei, die zu diesem
-# Revier nicht gehoert.  Deshalb zweite Achse, nicht Erweiterung.
-_LIGAND_DOF_AXIS_TOL = 1.0e-6      # Kollinearitaet der Donoren / Achsennaehe (Angstroem)
+# ⚠ DISTINCTION FROM DELFIN_FFFREE_LIGAND_SWING (joint_declash.py:305).  The swing is
+# a DIFFERENT movement at a DIFFERENT place: it rotates the whole ligand about the
+# axis M -> donor centroid, AFTER assembly, in the declash pass, and in doing so THE
+# DONORS MOVE -- that is why it needs a 3-degree cap and a CShM budget, and
+# that is why it can damage the polyhedron at all (at 8 degrees it did).  This
+# axis here does not move the donors, therefore needs no angle cap and may sample the
+# full circle; and it acts at the SELECTION, where the candidate is still being
+# decided, not afterwards on the finished frame.  Extending the swing would mean
+# rebuilding it into a movement it is not -- and in a file that does not belong to this
+# territory.  Hence a second axis, not an extension.
+_LIGAND_DOF_AXIS_TOL = 1.0e-6      # collinearity of the donors / axis proximity (Angstrom)
 
 
 def _ligand_dof_seat_enabled() -> bool:
-    """DIE eine Stelle, an der DELFIN_FFFREE_LIGAND_DOF_SEAT gelesen wird
-    (Vorgabe 0 -> byte-identisch)."""
+    """THE one place where DELFIN_FFFREE_LIGAND_DOF_SEAT is read
+    (default 0 -> byte-identical)."""
     return os.environ.get("DELFIN_FFFREE_LIGAND_DOF_SEAT", "0") == "1"
 
 
 def _ligand_dof_seat_steps() -> int:
-    """Zahl der abgetasteten Winkel auf dem vollen Kreis (Vorgabe 6, wie die schon
-    vorhandene CN2-Achsendrehung DELFIN_FFFREE_CN2_SPINS).  Nur gelesen, wenn der
-    Schalter oben an ist."""
+    """Number of sampled angles on the full circle (default 6, like the already
+    existing CN2 axis rotation DELFIN_FFFREE_CN2_SPINS).  Only read when the
+    switch above is on."""
     try:
         n = int(os.environ.get("DELFIN_FFFREE_LIGAND_DOF_SEAT_N", "6"))
     except Exception:
@@ -5333,20 +5334,20 @@ def _ligand_dof_seat_steps() -> int:
 
 
 def _free_rigid_axis(Q, donor_locals, metal_pos):
-    """Die EINZIGE Linie, um die dieser gesetzte Ligandblock noch starr gedreht werden
-    darf, ohne die Koordinationssphaere auch nur um ein Bit zu aendern -- oder ``None``.
+    """The ONLY line about which this seated ligand block may still be rotated
+    rigidly without changing the coordination sphere by even one bit -- or ``None``.
 
-    Bedingung: die Achse muss JEDEN Donor des Blocks enthalten, dann sind alle Donoren
-    punktweise fix und damit M-D-Abstand, M-D-Richtung, Biss und CShM exakt erhalten.
-      * 1 Donor  -> die Linie M--D (unter allen Linien durch den Donor die einzige, die
-                    zusaetzlich JEDEN M-X-Abstand des Liganden erhaelt, weil das Metall
-                    dann selbst auf der Achse liegt -- der Ligand kann nicht ins Metall
-                    schwenken).
-      * >=2 Donoren -> die Linie durch die Donoren, aber NUR wenn sie kollinear sind.
-      * sonst    -> ``None``.  Drei nicht-kollineare Donoren legen den Starrkoerper
-                    vollstaendig fest; hier etwas zu drehen hiesse den Polyeder anfassen.
-    Rueckgabe ``(origin, unit_axis)``; ``origin`` ist ein Donorpunkt, damit dieser Donor
-    unter der Drehung BITGENAU stehenbleibt.
+    Condition: the axis must contain EVERY donor of the block, then all donors are
+    pointwise fixed and thus M-D distance, M-D direction, bite and CShM exactly preserved.
+      * 1 donor  -> the line M--D (among all lines through the donor the only one that
+                    additionally preserves EVERY M-X distance of the ligand, because the
+                    metal then lies on the axis itself -- the ligand cannot swing into
+                    the metal).
+      * >=2 donors -> the line through the donors, but ONLY if they are collinear.
+      * otherwise -> ``None``.  Three non-collinear donors fix the rigid body
+                    completely; rotating anything here would mean touching the polyhedron.
+    Returns ``(origin, unit_axis)``; ``origin`` is a donor point, so that this donor
+    stays BIT-EXACT under the rotation.
     """
     try:
         d = [np.asarray(Q[int(i)], float) for i in donor_locals]
@@ -5374,19 +5375,19 @@ def _free_rigid_axis(Q, donor_locals, metal_pos):
 
 def _free_dof_reseat(Q, lsyms, donor_locals, existing, existing_syms, base_clash,
                      metal_pos=None):
-    """Tastet den einen freien Freiheitsgrad dieses Ligandblocks ab und gibt
-    ``(Q_gedreht, clash)`` zurueck -- oder ``None``, wenn nichts STRIKT besser ist.
+    """Samples the one free degree of freedom of this ligand block and returns
+    ``(Q_rotated, clash)`` -- or ``None`` if nothing is STRICTLY better.
 
-    NEVER-WORSE PER KONSTRUKTION, an drei Stellen:
-      1) Schalter aus -> sofort ``None``, der Aufrufer sieht nichts.  Byte-identisch.
-      2) Es wird dieselbe Groesse gemessen, die die Auswahl ohnehin als ersten
-         Schluessel liest (`_clash_count` gegen die bereits gesetzten Atome) -- kein
-         neues Kriterium, das gegen das alte gewinnen koennte.
-      3) Nur ein STRIKT kleinerer Clash wird genommen; bei Gleichstand bleibt die
-         historische Pose stehen.  Und angefasst wird ueberhaupt nur ein Block, der
-         SCHON kollidiert (`base_clash > 0`) -- eine kollisionsfreie Setzung bleibt
-         unberuehrt, dort ist an der Packung nichts zu gewinnen.
-    Deterministisch: feste Winkelliste, kleinster Index gewinnt bei Gleichstand.
+    NEVER-WORSE BY CONSTRUCTION, at three places:
+      1) Switch off -> immediately ``None``, the caller sees nothing.  Byte-identical.
+      2) The same quantity is measured that the selection reads anyway as its first
+         key (`_clash_count` against the already seated atoms) -- no
+         new criterion that could win against the old one.
+      3) Only a STRICTLY smaller clash is taken; on a tie the
+         historic pose stays.  And only a block that ALREADY collides
+         (`base_clash > 0`) is touched at all -- a collision-free seating stays
+         untouched, there is nothing to gain in the packing there.
+    Deterministic: fixed angle list, smallest index wins on a tie.
     """
     if not _ligand_dof_seat_enabled():
         return None
@@ -5400,7 +5401,7 @@ def _free_dof_reseat(Q, lsyms, donor_locals, existing, existing_syms, base_clash
     W = np.asarray(Q, float) - o
     perp = W - np.outer(W @ u, u)
     if float(np.max(np.linalg.norm(perp, axis=1))) < _LIGAND_DOF_AXIS_TOL:
-        return None                     # alles liegt AUF der Achse -> Drehung = Identitaet
+        return None                     # everything lies ON the axis -> rotation = identity
     n = _ligand_dof_seat_steps()
     best = None
     for k in range(1, n):
@@ -5416,24 +5417,24 @@ def _free_dof_reseat(Q, lsyms, donor_locals, existing, existing_syms, base_clash
             best = (Qk, ck)
     if best is None:
         return None
-    # DIE ZUSICHERUNG WIRD NACHGEMESSEN, NICHT BEHAUPTET.  Mathematisch haelt eine
-    # Drehung um eine Achse durch alle Donoren jeden Donorpunkt fest -- gemessen wird
-    # es trotzdem, denn genau hier koennte eine entartete Achse still etwas anderes
-    # tun, und der Preis waere die Koordinationssphaere.  Bricht die Zusicherung, wird
-    # die Drehung VERWORFEN (der Aufrufer behaelt seine historische Pose).
+    # THE ASSERTION IS RE-MEASURED, NOT CLAIMED.  Mathematically a rotation about an
+    # axis through all donors holds every donor point fixed -- it is measured
+    # anyway, because exactly here a degenerate axis could silently do something
+    # else, and the price would be the coordination sphere.  If the assertion breaks,
+    # the rotation is REJECTED (the caller keeps its historic pose).
     _mp = np.zeros(3) if metal_pos is None else np.asarray(metal_pos, float)
     for _d in donor_locals:
         _d = int(_d)
         if float(np.linalg.norm(best[0][_d] - Q[_d])) > 1.0e-9:
-            return None                                   # Donor hat sich bewegt
+            return None                                   # donor has moved
         if abs(float(np.linalg.norm(best[0][_d] - _mp))
                - float(np.linalg.norm(np.asarray(Q[_d], float) - _mp))) > 1.0e-9:
-            return None                                   # r(M-D) gebrochen
+            return None                                   # r(M-D) broken
     _tp = os.environ.get("DELFIN_LIGAND_DOF_TRACE", "")
     if _tp and _tp != "0":
-        # ⚠️ SPUR, WEIL "byte-identisch" HIER MEHRERE URSACHEN HAT: der Block laeuft
-        # nicht, es gibt keine freie Achse, nichts kollidierte, oder die Drehung fand
-        # keine bessere Pose.  Ohne diese Zeile waere nicht zu sagen, welche zutrifft.
+        # ⚠️ TRACE, BECAUSE "byte-identical" HAS SEVERAL CAUSES HERE: the block does
+        # not run, there is no free axis, nothing collided, or the rotation found
+        # no better pose.  Without this line one could not say which applies.
         try:
             with open(_tp, "a") as _fh:
                 _fh.write("[LIGDOF] ndon=%d nat=%d clash %d -> %d\n"
@@ -5484,36 +5485,36 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
     per_lig_cands = []        # per ligand: [(Q, clash_vs_metal), ...] sorted best-first
     per_lig_syms = []         # per ligand: lsyms (for combo assembly)
     metal_P = np.zeros((1, 3)); metal_sym = [metal]
-    # ===== DER STARRSTE LIGAND ZUERST ========================================
-    # Bis 18.08.2026 lief diese Schleife in der Einfuegereihenfolge von `config`,
-    # also in VERTEX-Reihenfolge -- ein Monodentat konnte vor einem Tetradentaten
-    # gesetzt werden.  Das ist die Umkehrung dessen, was die Aufgabe verlangt:
+    # ===== THE MOST RIGID LIGAND FIRST =======================================
+    # Until 18.08.2026 this loop ran in the insertion order of `config`,
+    # i.e. in VERTEX order -- a monodentate could be seated before a tetradentate.
+    # That is the reverse of what the task demands:
     #
-    #   * Ein bereits gesetztes Monodentat zaehlt fuer JEDEN spaeteren Kandidaten in
-    #     `_clash_count`.  Der Tetradentat kommt dann mit fast keiner Freiheit an --
-    #     sein Biss fixiert vier Vertices -- und der Kandidat, der die Auswahl
-    #     gewinnt, ist der, der sich WEGDREHT.
-    #   * Umgekehrt sitzt der starre Ligand zuerst auf seinen Idealvertices, und die
-    #     Monodentaten haben volle Drehfreiheit, ihm auszuweichen.  Ein Monodentat
-    #     kann fast immer ausweichen, ein Chelatring nie.
+    #   * An already seated monodentate counts for EVERY later candidate in
+    #     `_clash_count`.  The tetradentate then arrives with almost no freedom --
+    #     its bite fixes four vertices -- and the candidate that wins the
+    #     selection is the one that TWISTS AWAY.
+    #   * Conversely the rigid ligand sits first on its ideal vertices, and the
+    #     monodentates have full rotational freedom to dodge it.  A monodentate
+    #     can almost always dodge, a chelate ring never.
     #
-    # Das ist die klassische Regel "am staerksten eingeschraenkte Variable zuerst",
-    # und sie passt exakt zum gemessenen Signal: die Fehlerrate der
-    # Oktaeder-nach-Prisma-Verwechslung ist MONOTON in der Zahl der Chelatringe --
-    # 2,49 % bei null, 8,38 % bei drei, 16,12 % bei fuenf (30921 Systeme, netto +988
-    # Systeme, McNemar X2 = 860,8).  Je mehr starre Liganden um dieselben Vertices
-    # konkurrieren, desto oefter verdreht sich das Polyeder.
+    # That is the classic rule "most constrained variable first",
+    # and it fits the measured signal exactly: the error rate of the
+    # octahedron-to-prism confusion is MONOTONE in the number of chelate rings --
+    # 2.49 % at zero, 8.38 % at three, 16.12 % at five (30921 systems, net +988
+    # systems, McNemar X2 = 860.8).  The more rigid ligands compete for the same
+    # vertices, the more often the polyhedron twists.
     #
-    # ⚠ WARUM DAS DIE BILLIGSTE KLASSE UEBERHAUPT IST: es aendert nur die
-    # REIHENFOLGE, in der bereits vorhandene Kandidaten bewertet werden.  Keine
-    # neue Geometrie, nicht einmal eine neue Auswahlgroesse.  Nach dem heute an drei
-    # Punkten gemessenen Gesetz (Isometrie +0,98 pp, starre Drehung +6,57 pp,
-    # Neueinbettung +11,9 pp) liegt das noch unter der Isometrie.
+    # ⚠ WHY THIS IS THE CHEAPEST CLASS OF ALL: it only changes the
+    # ORDER in which already existing candidates are evaluated.  No
+    # new geometry, not even a new selection quantity.  By the law measured today at
+    # three points (isometry +0.98 pp, rigid rotation +6.57 pp,
+    # re-embedding +11.9 pp) that lies even below isometry.
     #
-    # ⚠ DETERMINISMUS: der Zweitschluessel ist der Ligandindex, nicht der Zufall.
-    # Gleiche Zaehnigkeit -> gleiche Reihenfolge wie bisher.
+    # ⚠ DETERMINISM: the secondary key is the ligand index, not chance.
+    # Same denticity -> same order as before.
     #
-    # DELFIN_FFFREE_SEAT_RIGID_FIRST (Vorgabe 0 -> byte-identisch).
+    # DELFIN_FFFREE_SEAT_RIGID_FIRST (default 0 -> byte-identical).
     _lig_order = list(by_lig.items())
     if os.environ.get("DELFIN_FFFREE_SEAT_RIGID_FIRST", "0") == "1":
         def _dent_of(_li):
@@ -5523,13 +5524,13 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                 return len(by_lig[_li])
         _before = [kv[0] for kv in _lig_order]
         _lig_order.sort(key=lambda kv: (-_dent_of(kv[0]), kv[0]))
-        # ⚠️ SPUR, WEIL "byte-identisch" HIER DREI URSACHEN HAT: der Block laeuft
-        # nicht, die Reihenfolge stand schon richtig, oder sie aendert sich und das
-        # Ergebnis konvergiert trotzdem.  Der erste Rauchtest lieferte 19 von 19
-        # identisch -- ohne diese Zeile waere nicht zu sagen, welche davon zutrifft,
-        # und "bringt nichts" waere eine Behauptung statt einer Messung.
-        # Der Fall "stand schon richtig" ist dabei kein Misserfolg, sondern die
-        # Antwort: dann tut der Bauer es bereits implizit.
+        # ⚠️ TRACE, BECAUSE "byte-identical" HAS THREE CAUSES HERE: the block does
+        # not run, the order was already right, or it changes and the
+        # result converges anyway.  The first smoke test delivered 19 of 19
+        # identical -- without this line one could not say which of them applies,
+        # and "achieves nothing" would be a claim instead of a measurement.
+        # The case "was already right" is not a failure, but the
+        # answer: then the builder already does it implicitly.
         _tp = os.environ.get("DELFIN_SEAT_ORDER_TRACE", "")
         if _tp and _tp != "0":
             _after = [kv[0] for kv in _lig_order]
@@ -5729,15 +5730,15 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
             "DELFIN_FFFREE_BETA_AWARE_SELECT", "0") == "1"
         best_Q, best_clash = None, 1e18
         best_coll = True                            # a collapsed pick loses to a clean one
-        best_pol = 10 ** 9                          # ... dann die Polyedertreue (18.08.)
+        best_pol = 10 ** 9                          # ... then the polyhedron fidelity (18.08.)
         best_beta = float("inf")                    # ... and among equals, the flatter donor
-        # Vorgabe AUS -> _pol ist fuer JEDEN Kandidaten 0, der Tupelvergleich faellt
-        # damit exakt auf die historische Reihenfolge zurueck: byte-identisch.
+        # Default OFF -> _pol is 0 for EVERY candidate, so the tuple compare falls
+        # back exactly onto the historic order: byte-identical.
         _polysel = os.environ.get("DELFIN_FFFREE_POLY_FIDELITY_SEAT", "0") == "1"
         cands = []                                  # (Q, clash_vs_metal) for ensemble
         seen_local = []                             # intra-ligand RMSD dedup
         for lP in coords_list:
-            dent_targets = None       # nur der polydentate Zweig setzt Zielvertices
+            dent_targets = None       # only the polydentate branch sets target vertices
             if lg["denticity"] == 1:
                 v = va[0][0]
                 Vunit = ref[v] / np.linalg.norm(ref[v])
@@ -5774,8 +5775,8 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                            * MSB.md_distance(metal, lsyms[dons_d[i]],
                                              atom=lg["mol"].GetAtomWithIdx(int(dons_d[i])),
                                              mol=lg["mol"]) for i in range(dent)]
-                # Die Zielvertices dieses Chelats -- ab hier weiss die Auswahl, WO die
-                # Donoren eigentlich hingehoeren, und kann Treue dazu bewerten.
+                # The target vertices of this chelate -- from here on the selection knows
+                # WHERE the donors actually belong, and can score fidelity to that.
                 dent_targets = targets
                 # config-faithful seating is only meaningful for ASYMMETRIC chelates
                 # (distinct donor elements); for symmetric chelates every arm seating
@@ -5881,11 +5882,11 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
             if not np.all(np.isfinite(Q)):
                 continue
             cl = _clash_count(Q, np.array(placed), lsyms, placed_syms)
-            # DER FREIE FREIHEITSGRAD, AUFRUFSTELLE 1 von 2 (die Hauptstrasse: dieser
-            # Pfad baut jede Chelat-Konfiguration).  Er greift NUR, wenn dieser Block
-            # schon mit etwas bereits Gesetztem kollidiert -- genau der Fall, in dem
-            # das Register sagt "der Ligand zahlt".  Vorgabe AUS -> `_fd` ist immer
-            # None, `Q` und `cl` bleiben unangetastet: byte-identisch.
+            # THE FREE DEGREE OF FREEDOM, CALL SITE 1 of 2 (the main road: this
+            # path builds every chelate configuration).  It acts ONLY if this block
+            # already collides with something already seated -- exactly the case in
+            # which the register says "the ligand pays".  Default OFF -> `_fd` is always
+            # None, `Q` and `cl` stay untouched: byte-identical.
             _fd = _free_dof_reseat(Q, lsyms, dons, np.array(placed), placed_syms, cl)
             if _fd is not None:
                 Q, cl = _fd
@@ -5895,47 +5896,47 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
             # historic `cl < best_clash` exactly -- byte-identical.
             _coll = bool(_csel and _collapsed_heavy_bonds_strict(lsyms, Q))
             _bta = _beta_score(lsyms, Q, dons) if _bsel else 0.0
-            # ===== POLYEDERTREUE ALS AUSWAHLKRITERIUM ==========================
-            # DER BEFUND, DER DIESEN TERM ERZWINGT (18.08., 30921 Systeme): netto
-            # +988 Systeme fliessen vom Oktaeder ins trigonale Prisma, McNemar
-            # X2 = 860,8; der Bauer erzeugt 2,99 mal zu viele Prismen, waehrend jede
-            # andere Form zwischen 0,86 und 1,29 bleibt.  Es sind keine Prismen --
-            # CShM-Median 11,03 statt 16,7, also ein HALBER Bailar-Twist.  Und das
-            # Signal ist die VERZAHNUNG, monoton von 2,49 % bei null Chelatringen auf
-            # 16,12 % bei fuenf.  Metall und d-Zahl sind flach.
+            # ===== POLYHEDRON FIDELITY AS A SELECTION CRITERION ================
+            # THE FINDING THAT FORCES THIS TERM (18.08., 30921 systems): net
+            # +988 systems flow from the octahedron into the trigonal prism, McNemar
+            # X2 = 860.8; the builder produces 2.99 times too many prisms, while every
+            # other shape stays between 0.86 and 1.29.  They are not prisms --
+            # CShM median 11.03 instead of 16.7, i.e. a HALF Bailar twist.  And the
+            # signal is the INTERLOCKING, monotone from 2.49 % at zero chelate rings to
+            # 16.12 % at five.  Metal and d-count are flat.
             #
-            # ⚠ WARUM HIER UND NICHT IN DER RELAXATION -- das ist heute ENTSCHIEDEN,
-            # nicht vermutet.  Das Zusicherungsprotokoll wurde an alle vier
-            # refine-Aufrufstellen gehaengt und fing den Twist sechsmal (109 Aufrufe,
-            # alle sechs trans).  Trotzdem blieben 19 von 19 Archivdateien
-            # byte-identisch.  Der Diskriminator: die Ruecknahme zusaetzlich um 100
-            # Angstroem verschoben -- ein Frame, den jedes Tor verwirft und jeder
-            # Byte-Vergleich saehe.  Das Archiv blieb identisch.  ⇒ Die Frames, deren
-            # Zusicherung bricht, werden ohnehin verworfen; die UEBERLEBENDEN sind
-            # schon verdreht, wenn sie bei refine ankommen.  Die Relaxation ist als
-            # Ursache damit ausgeschlossen -- der Chelatzug greift HIER, bei der
-            # Platzierung.
+            # ⚠ WHY HERE AND NOT IN THE RELAXATION -- that is DECIDED today,
+            # not suspected.  The assertion protocol was hung on all four
+            # refine call sites and caught the twist six times (109 calls,
+            # all six trans).  Nevertheless 19 of 19 archive files stayed
+            # byte-identical.  The discriminator: the rollback additionally shifted by 100
+            # Angstrom -- a frame that every gate rejects and every
+            # byte comparison would see.  The archive stayed identical.  ⇒ The frames whose
+            # assertion breaks are rejected anyway; the SURVIVORS are
+            # already twisted when they arrive at refine.  The relaxation is thereby
+            # excluded as the cause -- the chelate pull acts HERE, at
+            # placement.
             #
-            # Der Bauer setzt die Donoren auf `targets` (ideale Vertices mal
-            # md_distance), aber ein starrer Chelatring kann sie nicht alle erreichen:
-            # _orient_chelate_to_vertices legt ihn so gut wie moeglich an, und der
-            # Rest ist Abweichung.  Bisher entschied darueber NICHTS -- die Auswahl
-            # las (Kollaps, Clash, Beta).  Ein Konformer, der das Polyeder um 30 Grad
-            # verdreht, gewann gegen einen treuen, sobald er einen Clash weniger
-            # hatte oder auch nur frueher kam.
+            # The builder puts the donors onto `targets` (ideal vertices times
+            # md_distance), but a rigid chelate ring cannot reach them all:
+            # _orient_chelate_to_vertices lays it on as well as possible, and the
+            # rest is deviation.  Until now NOTHING decided about that -- the selection
+            # read (collapse, clash, beta).  A conformer that twists the polyhedron by 30
+            # degrees won against a faithful one as soon as it had one clash less
+            # or even just came earlier.
             #
-            # ⚠ WARUM DAS BILLIG IST: reine AUSWAHL unter bereits gebauten
-            # Kandidaten -- es entsteht keine neue Geometrie.  Nach dem heute
-            # gemessenen Gesetz (Isometrie +0,98 pp, starre Drehung +6,57 pp,
-            # Neueinbettung +11,9 pp) ist das die guenstigste Klasse ueberhaupt.
+            # ⚠ WHY THIS IS CHEAP: pure SELECTION among already built
+            # candidates -- no new geometry arises.  By the law measured
+            # today (isometry +0.98 pp, rigid rotation +6.57 pp,
+            # re-embedding +11.9 pp) that is the cheapest class of all.
             #
-            # ⚠ WARUM GEBINNT: `_pol` ist eine Gleitkommazahl.  Ungebinnt entschiede
-            # sie praktisch jeden Vergleich und `_bta` kaeme nie wieder zum Zug --
-            # das waere eine stille Abschaltung eines gelandeten Terms.  Das Band von
-            # 0,05 Angstroem laesst sie nur sprechen, wenn der Unterschied gross
-            # genug ist, um chemisch etwas zu heissen.
+            # ⚠ WHY BINNED: `_pol` is a floating-point number.  Unbinned it would decide
+            # practically every comparison and `_bta` would never get its turn again --
+            # that would be a silent switch-off of a landed term.  The band of
+            # 0.05 Angstrom lets it speak only when the difference is large
+            # enough to mean something chemically.
             #
-            # DELFIN_FFFREE_POLY_FIDELITY_SEAT (Vorgabe 0 -> byte-identisch).
+            # DELFIN_FFFREE_POLY_FIDELITY_SEAT (default 0 -> byte-identical).
             _pol = 0
             if _polysel and dent_targets is not None:
                 try:
@@ -5994,13 +5995,13 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
     donors = sorted(fixed - {0})              # global indices of the constructed donor atoms
     if not ensemble:
         P = np.vstack([np.zeros((1, 3))] + [np.array(placed[1:], float)])
-        # OC-6 TWIST-KORREKTUR IN DER SETZUNG (nur auf ``oc6_twist=True``; das
-        # Schluesselwort ist per Vorgabe False, der Primaerframe also byte-identisch,
-        # unabhaengig von jeder Umgebungsvariablen).  Sie steht VOR der globalen
-        # Donorsetzung, weil die dort erlaubte Drift (0,05 A) gegen den Frame gemessen
-        # wird, den sie vorfindet: erst das Polyeder richtigstellen, dann entzerren --
-        # umgekehrt muesste die Entzerrung ihre eigene Arbeit noch einmal aufgeben.
-        # Und VOR _finish_config_frame, weil die Relaxation dort die Donoren festnagelt.
+        # OC-6 TWIST CORRECTION IN THE SEATING (only on ``oc6_twist=True``; the
+        # keyword is False by default, so the primary frame is byte-identical,
+        # independent of any environment variable).  It stands BEFORE the global
+        # donor seating, because the drift permitted there (0.05 A) is measured against
+        # the frame it finds: first set the polyhedron right, then de-distort --
+        # the other way round the de-distortion would have to give up its own work again.
+        # And BEFORE _finish_config_frame, because the relaxation there nails down the donors.
         if oc6_twist:
             _t = _oc6_twist_seat(out_syms, P, lig_blocks, metal, geometry)
             if _t is not None:
@@ -6035,17 +6036,17 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
     combos.sort(key=lambda cb: (sum(cb), cb))      # deterministic; frame 0 = all-best
     MAX_EVAL = 64
     frames = []                                    # (syms, P) kept (deduped)
-    # FALTUNGS-FINGERABDRUCK (s. Block bei `_fold_fp_enabled`).  Vorgabe AUS ->
-    # `_fold_rings` bleibt None -> das Praedikat unten ist buchstaeblich das alte.
-    # `relax_frags` traegt (AddHs(lg.mol), LIGANDEN-ONLY-Versatz); global ist der
-    # Block ab `lig_offset + 1`, weil Index 0 das Metall ist -- dieselbe Konvention,
-    # die `_collect_exempt` und `_finish_config_frame` schon benutzen.
-    # DRITTER EINTRAG = die Chelatarme fuer den Metallacyclus (Schalter s.o.).  Der
-    # Ligand dazu steht in `ligands[_lig_order[i][0]]`: die Schleife oben haengt je
-    # Durchlauf GENAU EINEN `relax_frags`-Eintrag an (:5550, kein `continue`
-    # davor), Index i ist also derselbe.  ⚠ Das ist eine Annahme ueber die
-    # Schleife, darum wird sie GEPRUEFT -- passt die Laenge nicht, gibt es keine
-    # Chelatarme und der Fingerabdruck ist genau der organische von vorher.
+    # FOLD FINGERPRINT (see block at `_fold_fp_enabled`).  Default OFF ->
+    # `_fold_rings` stays None -> the predicate below is literally the old one.
+    # `relax_frags` carries (AddHs(lg.mol), LIGANDS-ONLY offset); globally the
+    # block starts at `lig_offset + 1`, because index 0 is the metal -- the same convention
+    # `_collect_exempt` and `_finish_config_frame` already use.
+    # THIRD ENTRY = the chelate arms for the metallacycle (switch, see above).  The
+    # ligand for it is in `ligands[_lig_order[i][0]]`: the loop above appends per
+    # iteration EXACTLY ONE `relax_frags` entry (:5550, no `continue`
+    # before it), so index i is the same.  ⚠ That is an assumption about the
+    # loop, therefore it is CHECKED -- if the length does not match, there are no
+    # chelate arms and the fingerprint is exactly the organic one from before.
     _fold_rings = None
     if _fold_fp_enabled():
         _fb = [(int(o) + 1, m, None) for (m, o) in relax_frags]
@@ -6053,7 +6054,7 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
             _fb = [(int(o) + 1, m, _fold_mc_arms(ligands[_lig_order[i][0]]))
                    for i, (m, o) in enumerate(relax_frags)]
         _fold_rings = _fold_rings_with_mc(_fb, out_syms, 0)
-    _fold_kept = []                                # Fingerabdruck je gehaltenem Frame
+    _fold_kept = []                                # fingerprint per kept frame
     for cb in combos[:MAX_EVAL]:
         blocks = [np.zeros((1, 3))]
         ok = True
@@ -6063,9 +6064,9 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
         Pc = np.vstack(blocks)
         if not np.all(np.isfinite(Pc)):
             continue
-        # dieselbe Twist-Korrektur fuer die Ensemble-Kombinationen: die Ligandenspannen
-        # sind ueber alle Kombinationen gleich (gleiche Konformer-Atomzahlen), lig_blocks
-        # gilt also unveraendert.  Wieder nur auf das Schluesselwort hin.
+        # the same twist correction for the ensemble combinations: the ligand spans
+        # are the same across all combinations (same conformer atom counts), so lig_blocks
+        # applies unchanged.  Again only on the keyword.
         if oc6_twist:
             _t = _oc6_twist_seat(out_syms, Pc, lig_blocks, metal, geometry)
             if _t is not None:
@@ -6080,11 +6081,11 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
         if not np.all(np.isfinite(Pc)):
             continue
         dup = False
-        _fp = None                                 # verzoegert: erst bei RMSD-Naehe
+        _fp = None                                 # lazy: only on RMSD proximity
         for _ki, (_, Pk) in enumerate(frames):
             if Pk.shape == Pc.shape and _complex_rmsd(out_syms, Pc, Pk) < rmsd_dedup:
                 if _fold_rings is None:
-                    dup = True                     # Schalter AUS -> altes Praedikat
+                    dup = True                     # switch OFF -> old predicate
                     break
                 if _fp is None:
                     _fp = _fold_fp(Pc, _fold_rings)
@@ -6096,7 +6097,7 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
         if dup:
             continue
         frames.append((list(out_syms), Pc))
-        _fold_kept.append(None)                    # gleiche Laenge wie `frames`
+        _fold_kept.append(None)                    # same length as `frames`
         if len(frames) >= int(n_frames):
             break
     if not frames:
@@ -6357,22 +6358,22 @@ def _run_self_tests() -> None:
 
 
 def _self_test_ligand_dof() -> None:
-    """WIEVIEL FREIHEIT HAT DER LIGAND NOCH -- und kostet ihre Nutzung die Sphaere?
+    """HOW MUCH FREEDOM DOES THE LIGAND STILL HAVE -- and does using it cost the sphere?
 
-    Vier Fragen, und jede darf NEIN sagen:
-      1) ZENSUS: wieviele freie Starrkoerperdrehungen bleiben je Zaehnigkeit uebrig?
-         Erwartung aus der Codelesung: monodentat 1, bidentat 1, tridentat 0.
-      2) ERHALTUNG: bleiben unter dieser Drehung Donorposition, M-D-Abstand, Biss und
-         die GESAMTE innere Ligandgeometrie exakt?  Gemessen wird in Angstroem, nicht
-         behauptet.  (Isometrie: es duerfen nur Rundungsreste stehenbleiben.)
-      3) VORGABE AUS: liefert `_free_dof_reseat` ohne Schalter garantiert None?
-      4) REICHWEITE AN: loest die Drehung an einem ECHTEN, wirklich kollidierenden
-         Ligandpaar Ueberlapp auf -- oder findet sie nichts?  Beides ist ein Befund.
+    Four questions, and each may say NO:
+      1) CENSUS: how many free rigid-body rotations remain per denticity?
+         Expectation from reading the code: monodentate 1, bidentate 1, tridentate 0.
+      2) PRESERVATION: under this rotation do donor position, M-D distance, bite and
+         the ENTIRE internal ligand geometry stay exact?  Measured in Angstrom, not
+         claimed.  (Isometry: only rounding residues may remain.)
+      3) DEFAULT OFF: does `_free_dof_reseat` without the switch guarantee None?
+      4) REACH ON: does the rotation resolve overlap on a REAL, truly colliding
+         ligand pair -- or does it find nothing?  Either is a finding.
     """
     print("\nfreier Ligand-Freiheitsgrad -- Zensus, Erhaltung, Vorgabe, Reichweite")
     metal = "Fe"
     ref = MSB._ref_vectors("OC-6 octahedron")
-    _ANG = 137.0                       # krummer Winkel: kein Symmetriezufall
+    _ANG = 137.0                       # odd angle: no symmetry coincidence
 
     def _seat_mono(smi, want=("N", "P", "S", "O")):
         lsyms, lP, lmol = _ligand_3d(smi)
@@ -6435,7 +6436,7 @@ def _self_test_ligand_dof() -> None:
         print(f"{label:>30} | {len(dons):4d} | {'1 (%.0f Grad)' % _ANG:>11} | "
               f"{d_don:9.2e} | {d_md:8.2e} | {d_bite:8.2e} | {d_int:9.2e}")
 
-    # --- 3) VORGABE AUS ------------------------------------------------------
+    # --- 3) DEFAULT OFF ------------------------------------------------------
     _prev = os.environ.pop("DELFIN_FFFREE_LIGAND_DOF_SEAT", None)
     try:
         _off = None
@@ -6448,10 +6449,10 @@ def _self_test_ligand_dof() -> None:
         if _prev is not None:
             os.environ["DELFIN_FFFREE_LIGAND_DOF_SEAT"] = _prev
 
-    # --- 4) REICHWEITE: ein ECHTES kollidierendes Ligandpaar ------------------
-    # Zwei sperrige Phosphine auf BENACHBARTEN Oktaedervertices.  Beide werden genau
-    # so gesetzt, wie es assemble_from_config tut (VSEPR + _rot_align), das zweite
-    # sieht das erste in `_clash_count` -- und hat danach nur noch den Azimut.
+    # --- 4) REACH: a REAL colliding ligand pair -------------------------------
+    # Two bulky phosphines on ADJACENT octahedron vertices.  Both are seated exactly
+    # as assemble_from_config does it (VSEPR + _rot_align), the second
+    # sees the first in `_clash_count` -- and afterwards has only the azimuth left.
     try:
         smi = "P(C(C)(C)C)(C(C)(C)C)C(C)(C)C"
         lsyms, lP, lmol = _ligand_3d(smi)
@@ -6489,22 +6490,22 @@ def _self_test_ligand_dof() -> None:
 
 
 def _self_test_oc6_twist() -> None:
-    """Dreht der Korrektor den halben Twist wirklich heraus -- und laesst er dabei
-    alles stehen, was er stehenlassen muss?
+    """Does the corrector really rotate the half twist out -- and in doing so leave
+    everything standing that it must leave standing?
 
-    Gemessen wird an SYNTHETISCHEN Frames, deren Wahrheit bekannt ist, nicht an einem
-    Pool: ein Oktaeder, das um die C3-Achse um einen bekannten Winkel verdreht wurde.
-    phi = 0 ist das Oktaeder, phi = 60 Grad das ideale trigonale Prisma, und der
-    gemessene Median CShM 11,03 liegt dazwischen -- der halbe Twist, um den es geht.
+    Measured on SYNTHETIC frames whose truth is known, not on a
+    pool: an octahedron twisted about the C3 axis by a known angle.
+    phi = 0 is the octahedron, phi = 60 degrees the ideal trigonal prism, and the
+    measured median CShM 11.03 lies in between -- the half twist this is about.
 
-    Fuenf Fragen, und jede davon kann NEIN sagen:
-      1) faellt CShM(OC-6) -- und zwar auf ~0, nicht nur ein bisschen?
-      2) bleibt r(M-D) exakt (die Drehung ist um das Metall)?
-      3) bleibt der Biss exakt (der Arm dreht sich STARR)?
-      4) laesst er ein ANGEFORDERTES TPR-6 in Ruhe?  (sonst zerstoert er ein Isomer)
-      5) laesst er ein mehrdeutiges Frame in Ruhe (min-trans <= 120 Grad)?
-    Und die sechste, die keine Frage, sondern die Vorgabe ist: mit Schalter AUS
-    passiert ueberhaupt nichts.
+    Five questions, and each of them can say NO:
+      1) does CShM(OC-6) fall -- and to ~0, not just a bit?
+      2) does r(M-D) stay exact (the rotation is about the metal)?
+      3) does the bite stay exact (the arm rotates RIGIDLY)?
+      4) does it leave a REQUESTED TPR-6 alone?  (otherwise it destroys an isomer)
+      5) does it leave an ambiguous frame alone (min-trans <= 120 degrees)?
+    And the sixth, which is not a question but the default: with the switch OFF
+    nothing happens at all.
     """
     from delfin.manta import polyhedra as _PH
     print("\nOC-6 Twist-Korrektor -- der halbe Bailar-Twist, FF-frei zurueckgedreht")
@@ -6512,12 +6513,12 @@ def _self_test_oc6_twist() -> None:
           f"{_oc6_twist_seat_enabled()}  (Vorgabe muss False sein)")
 
     def _twisted_oct(phi_deg, rad=2.10):
-        """Ein Oktaeder, um die C3-Achse [1,1,1] verdreht: die obere Dreiecksflaeche
-        um +phi/2, die untere um -phi/2.  phi=0 -> OC-6, phi=60 -> ideales TPR-6."""
+        """An octahedron twisted about the C3 axis [1,1,1]: the upper triangular face
+        by +phi/2, the lower by -phi/2.  phi=0 -> OC-6, phi=60 -> ideal TPR-6."""
         V = _PH.ref_vectors("OC-6 octahedron")
         c3 = np.array([1.0, 1.0, 1.0]) / math.sqrt(3.0)
         top, bot = [], []
-        for v in V:                       # die zwei zur C3-Achse senkrechten Dreiecke
+        for v in V:                       # the two triangles perpendicular to the C3 axis
             (top if float(np.dot(v, c3)) > 0 else bot).append(v)
         Rt = _axis_rot(c3, math.radians(+phi_deg / 2.0))
         Rb = _axis_rot(c3, math.radians(-phi_deg / 2.0))
@@ -6525,8 +6526,8 @@ def _self_test_oc6_twist() -> None:
                 + [np.asarray(v) @ Rb.T * rad for v in bot])
 
     def _mk_monodentate_frame(dirs):
-        """Metall + sechs einzaehnige Arme (Donor + ein Rueckgratatom nach aussen), so
-        dass jeder Block wirklich einen KOERPER hat, den die Drehung mitnehmen muss."""
+        """Metal + six monodentate arms (donor + one backbone atom pointing outwards), so
+        that every block really has a BODY that the rotation must carry along."""
         syms = ["Fe"]
         P = [np.zeros(3)]
         blocks = []
@@ -6535,7 +6536,7 @@ def _self_test_oc6_twist() -> None:
             syms.append("N")
             P.append(np.asarray(v, float))
             syms.append("C")
-            P.append(np.asarray(v, float) * 1.65)          # radial nach aussen
+            P.append(np.asarray(v, float) * 1.65)          # radially outward
             blocks.append((st, 2, [st]))
         return syms, np.asarray(P, float), blocks
 
@@ -6554,16 +6555,16 @@ def _self_test_oc6_twist() -> None:
                        else "uebersprungen")
             print(f"{'OC-6 twist %4.1f' % phi:>26} | {_mt:8.1f}d | {before:9.3f} | "
                   f"{'--':>9} | {'--':>8} | {verdict}")
-            # phi=0 ist BEREITS das Oktaeder -> CShM kann nicht fallen -> None ist richtig
+            # phi=0 is ALREADY the octahedron -> CShM cannot fall -> None is correct
             if phi == 0.0 and before < 1e-6:
                 continue
             if _mt > _OC6_TRANS_MIN and before > 1.0:
-                ok_all = False              # haette greifen muessen
+                ok_all = False              # should have acted
             continue
         after = _PH.cshm([Xc[b[2][0]] for b in blocks], "OC-6 octahedron")
         dmd = max(abs(float(np.linalg.norm(Xc[b[2][0]]))
                       - float(np.linalg.norm(P[b[2][0]]))) for b in blocks)
-        # der Arm muss MITGEKOMMEN sein: das Rueckgratatom haelt seinen Abstand zum Donor
+        # the arm must have COME ALONG: the backbone atom keeps its distance to the donor
         darm = max(abs(float(np.linalg.norm(Xc[b[0]] - Xc[b[0] + 1]))
                        - float(np.linalg.norm(P[b[0]] - P[b[0] + 1]))) for b in blocks)
         good = (after < before - 1e-9) and dmd < 1e-6 and darm < 1e-6
@@ -6572,7 +6573,7 @@ def _self_test_oc6_twist() -> None:
               f"{after:9.3f} | {dmd:8.1e} | {'OK' if good else 'FEHLER'}"
               f"  (Arm {darm:.1e})")
 
-    # 4) ein ANGEFORDERTES TPR-6 muss unangetastet bleiben -- sonst faellt ein Isomer
+    # 4) a REQUESTED TPR-6 must stay untouched -- otherwise an isomer is lost
     dirs = [np.asarray(v, float) * 2.10 for v in _PH.ref_vectors("TPR-6 trigonal prism")]
     syms, P, blocks = _mk_monodentate_frame(dirs)
     tpr = _oc6_twist_seat(syms, P, blocks, "Fe", "TPR-6 trigonal prism")
@@ -6580,8 +6581,8 @@ def _self_test_oc6_twist() -> None:
           f"{'OK (nicht angefasst)' if tpr is None else 'FEHLER: Isomer zerstoert'}")
     ok_all = ok_all and (tpr is None)
 
-    # 5) mehrdeutig: ein Frame, dessen beste Paarung unter 120 Grad bleibt (alle sechs
-    #    Donoren in EINE Halbkugel gedraengt) -- der Korrektor darf nicht raten
+    # 5) ambiguous: a frame whose best pairing stays below 120 degrees (all six
+    #    donors crowded into ONE hemisphere) -- the corrector must not guess
     amb = []
     for k in range(6):
         a = 2.0 * math.pi * k / 6.0
@@ -6595,8 +6596,8 @@ def _self_test_oc6_twist() -> None:
           f"{'--':>8} | {'OK (uebersprungen)' if ambr is None else 'FEHLER: geraten'}")
     ok_all = ok_all and (ambr is None)
 
-    # 6) ein CHELAT: zwei Donoren an EINEM starren Koerper.  Er darf sich nur STARR
-    #    drehen -- der Biss ist Ligandengeometrie, nicht Polyedergeometrie.
+    # 6) a CHELATE: two donors on ONE rigid body.  It may only rotate RIGIDLY
+    #    -- the bite is ligand geometry, not polyhedron geometry.
     dirs = _twisted_oct(30.0)
     syms = ["Fe"]; P = [np.zeros(3)]; blocks = []
     for i in range(0, 6, 2):
@@ -6779,15 +6780,15 @@ _REAL_FRAME_CASES = [
 
 
 def _real_frame_hashes() -> None:
-    """ECHTE Frames, nicht synthetische: baut jedes System des Satzes ueber den
-    normalen Konverterpfad und druckt je System einen SHA1 ueber ALLE emittierten
-    XYZ-Strings.  Zwei Verwendungen:
+    """REAL frames, not synthetic ones: builds every system of the set via the
+    normal converter path and prints per system a SHA1 over ALL emitted
+    XYZ strings.  Two uses:
 
-      * BYTE-IDENTITAET.  Derselbe Aufruf gegen den unveraenderten Stand (Schalter
-        nicht gesetzt) muss Zeichen fuer Zeichen dieselben Hashes liefern.
-      * DER EINFRIER-ZENSUS.  Pro System: wieviele Atome nagelt der Bauer fest
-        (Metall + Donoren, siehe `fixed` in assemble_from_config) und wieviele
-        bleiben beweglich?  Das ist die Zahl, um die es in der DOF-Frage geht.
+      * BYTE IDENTITY.  The same call against the unchanged state (switch
+        not set) must deliver character for character the same hashes.
+      * THE FREEZE CENSUS.  Per system: how many atoms does the builder nail down
+        (metal + donors, see `fixed` in assemble_from_config) and how many
+        stay movable?  That is the number the DOF question is about.
     """
     import hashlib
     from delfin.manta import converter_backend as CB

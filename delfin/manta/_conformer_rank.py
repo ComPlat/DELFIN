@@ -550,8 +550,8 @@ def rank_isomers(isomers: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
 # ---------------------------------------------------------------------------
 # BEST-FIRST *DEFECT* ORDERING (DELFIN_FRAME_RANK_QUALITY, default-OFF → byte-id)
 # ---------------------------------------------------------------------------
-# Root of the 2026-07-28 finding ("die besten Frames werden nicht nach vorne
-# sortiert"): :func:`_frame_score` scores ONLY steric overlap — it starts at 100
+# Root of the 2026-07-28 finding ("the best frames are not sorted to the
+# front"): :func:`_frame_score` scores ONLY steric overlap — it starts at 100
 # and subtracts clash terms — so
 #   * a TORN / decoordinated / exploded frame has no overlap at all, scores the
 #     PERFECT 100.0 and sorts to the FRONT, and

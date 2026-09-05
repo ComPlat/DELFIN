@@ -168,9 +168,9 @@ _XYZ_LINE_RE = re.compile(
 
 def _is_metal_sym(sym: str) -> bool:
     """Return True if ``sym`` is a transition-metal / main-group-metal symbol."""
-    # EINE QUELLE (14.08.2026): delfin/manta/_elements.py.  Vorgabe AUS -> byte-identisch.
-    # ⚠ Selbstwiderspruch: _METAL_Z_RANGES deckt Ce..Lu ab, _Z_BY_SYMBOL springt von
-    # La 57 auf Hf 72 -> alle Lanthanoide ausser La sind hier keine Metalle.
+    # ONE SOURCE (14.08.2026): delfin/manta/_elements.py.  Default OFF -> byte-identical.
+    # ⚠ Self-contradiction: _METAL_Z_RANGES covers Ce..Lu, _Z_BY_SYMBOL jumps from
+    # La 57 to Hf 72 -> every lanthanide except La is not a metal here.
     from delfin.manta import _elements as _EL
     if _EL.unified_enabled():
         return _EL.is_metal(sym)

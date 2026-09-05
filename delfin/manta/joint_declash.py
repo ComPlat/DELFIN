@@ -98,42 +98,42 @@ _CLASH_F = 0.75
 # H-H and X-H contacts kept as a LIGHT secondary tie-breaker: the self-gate
 # rejects on HEAVY-HEAVY only, so heavy-heavy must dominate the objective.
 #
-# ⚠ 25.08.2026 -- DIE BEGRUENDUNG IN DER ZEILE DARUEBER IST WIDERLEGT.  Sie sagt, das
-# Selbstgate verwerfe nur auf Schwer-Schwer, also muesse Schwer-Schwer dominieren.
-# Gemessen ueber ALLE 7631 Kollisionspaare aus `archive_aromrad6k_off`:
-#     Schwer-Schwer-Paare                          1103  (min 1,733 A, Median 2,231 A)
-#       davon unter GROSS_OVERLAP (0,60 x Sigma_kov)   0   (0,00 %)
-#       davon unter dem refine-Boden (0,78 x Sigma)    0   (0,00 %)
-#       davon unter dem Kollapsboden (0,82 x Sigma)    0   (0,00 %)
-#     H-beteiligte Paare                           6528  (Selbstgate ueberspringt H)
-#   ⇒ vom Selbstgate erreichbar: 0 von 7631.
-# Das Selbstgate verwirft also NICHT auf Schwer-Schwer -- es verwirft ueberhaupt
-# nicht.  Seine Schwellen liegen auf der BINDUNGSskala (C-C 0,92 A), der Detektor
-# auf der VDW-Skala (C-C 2,38 A).  Damit traegt die Praemisse fuer 1/20 nicht mehr.
+# ⚠ 25.08.2026 -- THE JUSTIFICATION IN THE LINE ABOVE IS REFUTED.  It says the
+# self-gate rejects only on heavy-heavy, so heavy-heavy must dominate.
+# Measured over ALL 7631 clash pairs from `archive_aromrad6k_off`:
+#     heavy-heavy pairs                            1103  (min 1.733 A, median 2.231 A)
+#       of which below GROSS_OVERLAP (0.60 x Sigma_cov)   0   (0.00 %)
+#       of which below the refine floor (0.78 x Sigma)    0   (0.00 %)
+#       of which below the collapse floor (0.82 x Sigma)  0   (0.00 %)
+#     H-involving pairs                            6528  (self-gate skips H)
+#   ⇒ reachable by the self-gate: 0 of 7631.
+# So the self-gate does NOT reject on heavy-heavy -- it does not reject at
+# all.  Its thresholds sit on the BOND scale (C-C 0.92 A), the detector's on
+# the VDW scale (C-C 2.38 A).  With that, the premise for 1/20 no longer holds.
 #
-# WAS DAS KOSTET, gemessen: 85,5 % der Kollisionspaare tragen mindestens ein H
-# (C-H 3751, H-H 1723); von den 3341 Frames mit Kollision haben 2507 = 75,0 %
-# AUSSCHLIESSLICH H-beteiligte Paare.  Auf drei Vierteln der betroffenen Frames
-# sieht dieser Declasher den ganzen Defekt mit einem Zwanzigstel Gewicht, und sein
-# Ruecknahmeboden `hdmin` (nur schwer) merkt davon gar nichts.  Poolweit sind das
-# rund 9,98 % ALLER Bau-Frames.
-# Der Kristall sagt dazu 0,00 % auf 509 sauberen Strukturen -- auch fuer die
-# H-Paare; ein H...H unter 1,68 A gibt es in echten Kristallen nicht.  Die
-# Gewichtung 1/20 ist eine Bauerannahme, keine Chemie.
+# WHAT THIS COSTS, measured: 85.5 % of the clash pairs carry at least one H
+# (C-H 3751, H-H 1723); of the 3341 frames with a clash, 2507 = 75.0 % have
+# EXCLUSIVELY H-involving pairs.  On three quarters of the affected frames this
+# declasher sees the whole defect at one twentieth of the weight, and its
+# rollback floor `hdmin` (heavy only) notices nothing of it at all.  Pool-wide
+# that is around 9.98 % of ALL build frames.
+# The crystal says 0.00 % to this on 509 clean structures -- for the H pairs
+# too; an H...H below 1.68 A does not exist in real crystals.  The 1/20
+# weighting is a builder assumption, not chemistry.
 #
-# ⛔ VORGABE UNVERAENDERT 0.05 -> byte-identisch.  Scharf nur mit
-# `DELFIN_FFFREE_DECLASH_H_FULL=1`.  Grund fuer den Schalter: JOINT_DECLASH ist im
-# Champion AN und hat drei Aufrufstellen auf dem FF-freien Pfad -- eine stille
-# Aenderung waere sofort in jedem laufenden Bau und in keinem A/B trennbar.
+# ⛔ DEFAULT UNCHANGED 0.05 -> byte-identical.  Live only with
+# `DELFIN_FFFREE_DECLASH_H_FULL=1`.  Reason for the switch: JOINT_DECLASH is ON
+# in the champion and has three call sites on the FF-free path -- a silent
+# change would be in every running build at once and separable in no A/B.
 _H_WEIGHT = 0.05
 
 
 def _jd_h_voll() -> bool:
-    """Zaehlen H-Kontakte voll -- und zaehlt der Ruecknahmeboden sie mit?
+    """Do H contacts count in full -- and does the rollback floor count them too?
 
-    Zur AUFRUFZEIT gelesen, nicht beim Import: ein Schalter, dessen Wirkung an der
-    Importreihenfolge haengt, ist in diesem Projekt schon zweimal als dunkler
-    Schalter geendet (zuletzt PLANAR_KEEP, zwei Laeufe mit Reichweite 0/24)."""
+    Read at CALL time, not at import: a switch whose effect depends on the import
+    order has already ended up as a dark switch twice in this project (most
+    recently PLANAR_KEEP, two runs with reach 0/24)."""
     return os.environ.get("DELFIN_FFFREE_DECLASH_H_FULL", "0") == "1"
 
 
@@ -248,12 +248,12 @@ def _objective(P: np.ndarray, heavy: np.ndarray, light: np.ndarray,
     over_l = np.where(light, rsum - dist, 0.0)
     over_l = np.where(over_l > 0.0, over_l, 0.0)
     loss = float((over_h * over_h).sum()) + _jd_h_gewicht() * float((over_l * over_l).sum())
-    # ⚠ DER RUECKNAHMEBODEN MUSS MITZIEHEN, sonst ist die Gewichtung folgenlos.
-    # `hdmin` ist das Minimum ueber die SCHWEREN Paare; ein Schritt, der einen
-    # H-Kontakt zerdrueckt, unterschreitet diesen Boden nie und wird angenommen.
-    # Ein hoeheres H-Gewicht in der Zielfunktion, dessen Wache H nicht kennt, waere
-    # ein halber Mechanismus -- genau die Bauart, die heute schon viermal aufgeflogen
-    # ist.  Mit dem Schalter zaehlt der Boden ALLE nichtgebundenen Paare.
+    # ⚠ THE ROLLBACK FLOOR MUST FOLLOW, otherwise the weighting has no effect.
+    # `hdmin` is the minimum over the HEAVY pairs; a step that crushes an H
+    # contact never drops below this floor and is accepted.
+    # A higher H weight in the objective whose guard does not know H would be
+    # half a mechanism -- exactly the construction that has already been exposed
+    # four times today.  With the switch, the floor counts ALL non-bonded pairs.
     hd = dist[heavy] if not _jd_h_voll() else dist[heavy | light]
     hdmin = float(hd.min()) if hd.size else float("inf")
     return loss, hdmin
@@ -311,73 +311,73 @@ def declash(syms: Sequence[str], P, frozen: Iterable[int],
     excl = _TR._excl_1_2_3(adj, n)
     lig = _ligand_of_atom(n, syms, bond_pairs, P0)
 
-    # ===== LIGAND-SCHWENK (DELFIN_FFFREE_LIGAND_SWING, default OFF -> byte-identisch) =====
+    # ===== LIGAND SWING (DELFIN_FFFREE_LIGAND_SWING, default OFF -> byte-identical) =====
     #
-    # DIE ÜBERBESTIMMUNG.  Dieser Pass friert Metall UND ALLE DONOREN als ATOME ein; der
-    # Polyeder ist dadurch "invariant by construction".  Genau deshalb hat ein STARRES
-    # Chelat (acac, bipy, phen) hier NULL Freiheitsgrade: seine zwei Donoren legen die
-    # Ligandlage vollstaendig fest, innere Torsionen gibt es nicht, und identify_dofs
-    # verwirft jede Drehung, deren bewegte Haelfte einen eingefrorenen Donor enthaelt.
-    # Was beim Setzen kollidiert, kollidiert damit fuer immer.
+    # THE OVER-DETERMINATION.  This pass freezes the metal AND ALL DONORS as ATOMS; the
+    # polyhedron is thereby "invariant by construction".  That is exactly why a RIGID
+    # chelate (acac, bipy, phen) has ZERO degrees of freedom here: its two donors fix
+    # the ligand position completely, there are no internal torsions, and identify_dofs
+    # rejects every rotation whose moving half contains a frozen donor.
+    # Whatever clashes at seating thus clashes forever.
     #
-    # GEMESSEN, 185 869 Frames des 1000er-Pools: intclash_pair 18,01 % gegen 0,00 % im
-    # Kristall -- der groesste Einzelposten der ganzen Ausgabe, und im Kristall existiert
-    # er nicht.  Echte Kristalle loesen ihn, indem sie den Polyeder ein paar Grad
-    # VERBIEGEN.  Wir koennen das nicht, weil wir die ATOME festhalten statt der GROESSE,
-    # die chemisch wirklich invariant ist.
+    # MEASURED, 185 869 frames of the 1000-pool: intclash_pair 18.01 % against 0.00 % in
+    # the crystal -- the largest single item of the whole output, and in the crystal it
+    # does not exist.  Real crystals resolve it by BENDING the polyhedron a few
+    # degrees.  We cannot, because we hold the ATOMS fixed instead of the QUANTITY
+    # that is chemically truly invariant.
     #
-    # DER FEHLENDE BEWEGUNGSTYP.  Eine Starrkoerperdrehung eines GANZEN Liganden um das
-    # METALLZENTRUM erhaelt JEDEN M-D-Abstand exakt (Drehung um M laesst alle Radien
-    # unveraendert) und aendert ausschliesslich die M-D-RICHTUNGEN.  Damit ist die
-    # chemisch harte Groesse -- die Bindungslaenge -- weiter exakt gehalten, waehrend die
-    # weiche Groesse -- der Vertexwinkel -- innerhalb eines Bandes nachgeben darf.
-    # Fuer einen Monodentaten ist das die schon vorhandene M-D-Achsendrehung; fuer ein
-    # CHELAT ist es neu: es schwenkt die Chelatebene um die Achse M -> Donorschwerpunkt.
+    # THE MISSING MOVE TYPE.  A rigid-body rotation of a WHOLE ligand about the
+    # METAL CENTRE preserves EVERY M-D distance exactly (rotation about M leaves all
+    # radii unchanged) and changes exclusively the M-D DIRECTIONS.  With that, the
+    # chemically hard quantity -- the bond length -- stays exactly held, while the
+    # soft quantity -- the vertex angle -- may yield within a band.
+    # For a monodentate this is the already existing M-D axis rotation; for a
+    # CHELATE it is new: it swings the chelate plane about the axis M -> donor centroid.
     #
-    # Der Schwenk ist eng gedeckelt (LIGAND_SWING_DEG).  Die Vorgabe war 8 Grad und der
-    # Kommentar hier sagte selbst, das sei "keine gemessene Kalibrierung".
+    # The swing is tightly capped (LIGAND_SWING_DEG).  The default was 8 degrees and the
+    # comment here itself said that this was "not a measured calibration".
     #
-    # ⚠ 2026-08-09: SIE IST JETZT GEMESSEN, ALSO STEHT SIE HIER.  Die Kurve vom 07.08.
-    # (8 -> 3 -> 1 Grad, gleicher Pool, gleiches Auge):
-    #     8 Grad   poly_cshm_regressed 2 · poly_lost 1 · poly_type_lost 1
-    #     3 Grad   alle drei NULL, capability +3/-0, 21:8, mean -0,517
-    #     1 Grad   zu eng, der Freiheitsgrad traegt nicht mehr
-    # Die 8 stand also nicht nur unbelegt da, sie war WIDERLEGT -- und wer den Schwenk
-    # ohne DELFIN_FFFREE_LIGAND_SWING_DEG=3 einschaltet, bekommt die schlechtere Zahl.
-    # Genau die Klasse Fehler, die MONO_REACH_18 war: eine Schwelle neben der Verteilung.
-    # Vorgabe daher 3; byte-identisch, solange der Schalter aus ist.
+    # ⚠ 2026-08-09: IT IS NOW MEASURED, SO IT STANDS HERE.  The curve from 07.08.
+    # (8 -> 3 -> 1 degrees, same pool, same eye):
+    #     8 degrees   poly_cshm_regressed 2 · poly_lost 1 · poly_type_lost 1
+    #     3 degrees   all three ZERO, capability +3/-0, 21:8, mean -0.517
+    #     1 degree    too tight, the degree of freedom no longer contributes
+    # So the 8 did not merely stand there unsupported, it was REFUTED -- and whoever
+    # turns the swing on without DELFIN_FFFREE_LIGAND_SWING_DEG=3 gets the worse number.
+    # Exactly the class of error that MONO_REACH_18 was: a threshold beside the distribution.
+    # Default therefore 3; byte-identical as long as the switch is off.
     #
-    # Die beiden CShM-Schranken bleiben bewusst per Env und ohne Vorgabe: sie sind aus
-    # CCDC-Kristallen abgeleitet und duerfen nicht in dieses Repo (Lizenz).
+    # The two CShM bounds deliberately stay per env and without a default: they are
+    # derived from CCDC crystals and must not go into this repo (license).
     if _TR._env_int("DELFIN_FFFREE_LIGAND_SWING", 0, 0, 1):
         _swing_deg = _TR._env_int("DELFIN_FFFREE_LIGAND_SWING_DEG", 3, 1, 30)
-        # ===== DIE POLYEDER-SCHRANKE, GEMESSEN STATT GERATEN (2026-08-07) =====
-        # Die Winkelkappe oben ist eine GERATENE Zahl, und der erste Lauf hat sie widerlegt:
-        # bei 8 Grad rissen poly_cshm_regressed 2, poly_lost 1, poly_type_lost 1; bei 3 Grad
-        # waren alle drei weg (capability +3/-0, 21:8, mean -0,517).  Enger war auf JEDER
-        # Achse besser -- die Kappe war das Problem, nicht der Bewegungstyp.
+        # ===== THE POLYHEDRON BOUND, MEASURED INSTEAD OF GUESSED (2026-08-07) =====
+        # The angle cap above is a GUESSED number, and the first run refuted it:
+        # at 8 degrees poly_cshm_regressed 2, poly_lost 1, poly_type_lost 1 tripped; at 3
+        # degrees all three were gone (capability +3/-0, 21:8, mean -0.517).  Tighter was
+        # better on EVERY axis -- the cap was the problem, not the move type.
         #
-        # Die richtige Groesse ist nicht ein Winkel, sondern DIE, DIE DAS TOR MISST: die
-        # Abweichung des Donorsatzes vom Idealpolyeder (CShM), denn `poly_cshm_regressed`
-        # ist der Term, der gerissen ist.  Und der Bauer kann sie selbst rechnen --
-        # polyhedra.cshm ist reine Geometrie, keine Referenzdaten.
+        # The right quantity is not an angle but THE ONE THE GATE MEASURES: the
+        # deviation of the donor set from the ideal polyhedron (CShM), because
+        # `poly_cshm_regressed` is the term that tripped.  And the builder can compute
+        # it itself -- polyhedra.cshm is pure geometry, no reference data.
         #
-        # DIE SCHRANKE: der Schwenk darf den Polyeder nicht WEITER verzerren als er ohnehin
-        # schon ist.  Vorgabe 0.0 = strikt never-worse, ohne jede geratene Zahl.  Ein
-        # groesseres Budget ist per Env setzbar und dann eine MESSFRAGE, kein Gefuehl.
+        # THE BOUND: the swing may not distort the polyhedron any FURTHER than it already
+        # is.  Default 0.0 = strictly never-worse, without any guessed number.  A larger
+        # budget can be set per env and is then a MEASUREMENT QUESTION, not a feeling.
         #
-        # ⚠ Zur Kalibrierung, und warum sie NICHT hier steht: 553 Kristalle sitzen selbst
-        # nicht auf dem Ideal (p50 0,37 · p90 3,65 · p99 8,0 CShM gegen den eigenen
-        # Idealpolyeder).  Ein Budget in dieser Groessenordnung waere also chemisch
-        # gedeckt -- aber die Zahl ist CCDC-abgeleitet und gehoert nicht in dieses Repo.
-        # Sie steht im privaten Arbeitsbereich; hier bleibt die Vorgabe bei 0.
+        # ⚠ On the calibration, and why it is NOT here: 553 crystals themselves do not
+        # sit on the ideal (p50 0.37 · p90 3.65 · p99 8.0 CShM against their own ideal
+        # polyhedron).  A budget of this order of magnitude would therefore be
+        # chemically covered -- but the number is CCDC-derived and does not belong in
+        # this repo.  It lives in the private workspace; here the default stays at 0.
         _swing_cshm = float(os.environ.get("DELFIN_FFFREE_LIGAND_SWING_CSHM", "0") or 0.0)
         _swings = []
         for _lid in sorted({int(x) for x in lig if int(x) >= 0}):
             _atoms = [i for i in range(n) if int(lig[i]) == _lid]
             _don = [i for i in _atoms if i in frozen_set]
             if len(_don) < 2:
-                continue          # monodentat: die M-D-Achsendrehung deckt es schon ab
+                continue          # monodentate: the M-D axis rotation already covers it
             _m = next((i for i in metals), None)
             if _m is None:
                 continue
@@ -388,8 +388,8 @@ def declash(syms: Sequence[str], P, frozen: Iterable[int],
                             "rotating": _atoms, "max_deg": int(_swing_deg),
                             "cshm_budget": _swing_cshm,
                             "score": 10_000 + len(_atoms)})
-        # Schwenks ZUERST: sie bewegen die meiste Masse und loesen Interligand-Ueberlapp
-        # am direktesten -- dieselbe Begruendung, aus der die M-D-Spins vorne stehen.
+        # Swings FIRST: they move the most mass and relieve inter-ligand overlap
+        # most directly -- the same reasoning that puts the M-D spins up front.
         ordered = _swings + ordered
     heavy, light = _inter_mask(syms, lig, excl)
     if not heavy.any() and not light.any():
@@ -417,14 +417,14 @@ def declash(syms: Sequence[str], P, frozen: Iterable[int],
             pivot = dof["pivot"]
             rot = dof["rotating"]
             origin = Pcur[anchor]
-            # Ein Ligand-Schwenk bringt seine Achse als VEKTOR mit (M -> Donorschwerpunkt);
-            # er laesst sich nicht als Atompaar ausdruecken, weil der Schwerpunkt kein Atom
-            # ist.  Alle uebrigen DOFs bleiben unveraendert atompaar-definiert.
+            # A ligand swing brings its axis along as a VECTOR (M -> donor centroid);
+            # it cannot be expressed as an atom pair, because the centroid is not an
+            # atom.  All remaining DOFs stay atom-pair-defined, unchanged.
             _av = dof.get("axis_vec")
             axis = np.asarray(_av, dtype=float) if _av is not None else (Pcur[pivot] - Pcur[anchor])
             if float(np.linalg.norm(axis)) < 1e-9:
                 continue
-            # Gedeckelter Schwenk: nur das enge Winkelfenster abtasten, nicht der Vollkreis.
+            # Capped swing: sample only the narrow angle window, not the full circle.
             _md = dof.get("max_deg")
             if _md:
                 _step = max(1, int(_md) // 4)
@@ -442,10 +442,10 @@ def declash(syms: Sequence[str], P, frozen: Iterable[int],
                     continue
                 if not _TR._md_ok(base_md, trial, md_tol):
                     continue
-                # POLYEDER-SCHRANKE fuer den Ligand-Schwenk: dieselbe Groesse, die das Tor
-                # misst.  Der M-D-ABSTAND ist durch die Drehung um M exakt erhalten, aber die
-                # RICHTUNGEN aendern sich -- und genau das hat bei 8 Grad poly_cshm_regressed
-                # gerissen.  Also hier pruefen statt hinterher feststellen.
+                # POLYHEDRON BOUND for the ligand swing: the same quantity the gate
+                # measures.  The M-D DISTANCE is exactly preserved by the rotation about M,
+                # but the DIRECTIONS change -- and exactly that tripped poly_cshm_regressed
+                # at 8 degrees.  So check here instead of finding out afterwards.
                 _cb = dof.get("cshm_budget")
                 if _cb is not None and geom:
                     try:
@@ -455,34 +455,34 @@ def declash(syms: Sequence[str], P, frozen: Iterable[int],
                             _m0 = next((i for i in metals), 0)
                             _c_before = _PLY.cshm([Pcur[i] - Pcur[_m0] for i in _don_idx],
                                                   geom)
-                            # ===== KEIN SCHWENK AUF UNSICHERER AUSGANGSFORM (2026-08-08) =====
-                            # GEMESSEN, ligswing1k auf dem 1000er-Pool: von den 9 geschaedigten
-                            # Systemen hatten 5 (56 %) bereits den FALSCHEN Polyeder gebaut,
-                            # in der unbeschaedigten Vergleichsgruppe nur 7 von 43 (16 %) --
-                            # eine 3,5-fache Anreicherung.  (Auf dem kleineren 180er-Pool war
-                            # das Signal noch 43 % gegen 32 % und damit nicht belastbar; erst
-                            # das groessere Sample trennt.)
+                            # ===== NO SWING ON AN UNSAFE STARTING SHAPE (2026-08-08) =====
+                            # MEASURED, ligswing1k on the 1000-pool: of the 9 damaged
+                            # systems, 5 (56 %) had already built the WRONG polyhedron,
+                            # in the undamaged comparison group only 7 of 43 (16 %) --
+                            # a 3.5-fold enrichment.  (On the smaller 180-pool the signal
+                            # was still 43 % against 32 % and thus not robust; only the
+                            # larger sample separates.)
                             #
-                            # Physikalisch ist das zwingend: wer schon die falsche Form gebaut
-                            # hat, optimiert den Schwenk INNERHALB einer Form, die nicht stimmt.
-                            # Jede Bewegung fuehrt dann genauso wahrscheinlich vom Kristall weg
-                            # wie hin -- die Clash-Zielfunktion weiss nichts darueber.
+                            # Physically this is inescapable: whoever has already built the
+                            # wrong shape optimises the swing WITHIN a shape that is not right.
+                            # Every move then leads away from the crystal just as likely as
+                            # towards it -- the clash objective knows nothing about that.
                             #
-                            # Der Bauer kann das ohne Kristall pruefen: sitzt der Donorsatz
-                            # schon WEITER vom eigenen Idealpolyeder entfernt als ein reales
-                            # Kristall im p90 (CShM 3,65 ueber 553 Kristalle), ist die
-                            # Ausgangsform keine vertrauenswuerdige Basis.  Die Schranke kommt
-                            # per Env, weil die Zahl CCDC-abgeleitet ist; Vorgabe 0 = aus.
+                            # The builder can check this without a crystal: if the donor set
+                            # already sits FURTHER from its own ideal polyhedron than a real
+                            # crystal at the p90 (CShM 3.65 over 553 crystals), the
+                            # starting shape is no trustworthy basis.  The bound comes
+                            # per env, because the number is CCDC-derived; default 0 = off.
                             _c_floor = float(os.environ.get(
                                 "DELFIN_FFFREE_LIGAND_SWING_MAX_START_CSHM", "0") or 0.0)
                             if _c_floor > 0.0 and _c_before > _c_floor:
-                                continue          # unsichere Ausgangsform -> gar nicht schwenken
+                                continue          # unsafe starting shape -> do not swing at all
                             _c_after = _PLY.cshm([trial[i] - trial[_m0] for i in _don_idx],
                                                  geom)
                             if _c_after > _c_before + float(_cb) + 1e-9:
-                                continue          # wuerde den Polyeder weiter verzerren
+                                continue          # would distort the polyhedron further
                     except Exception:
-                        pass                      # nicht beurteilbar -> alte Sicherungen gelten
+                        pass                      # not assessable -> the old safeguards apply
                 tl, thd = _objective(trial, heavy, light, rsum)
                 if thd < hdmin_floor:
                     continue                          # would worsen worst heavy contact
@@ -527,51 +527,51 @@ def declash_if_enabled(syms: Sequence[str], P, frozen: Iterable[int],
         return P
 
 
-# ===== DIE ADDITIVE FASSUNG DER M-D-DREHUNG ==================================
-# (DELFIN_FFFREE_MD_SPIN_SIBLINGS, Vorgabe 0)
+# ===== THE ADDITIVE VERSION OF THE M-D ROTATION ==============================
+# (DELFIN_FFFREE_MD_SPIN_SIBLINGS, default 0)
 #
-# WARUM ES DIESE FUNKTION GIBT.  `declash` oben KANN die Drehung um M-D bereits --
-# `md_spins` (:259) sammelt genau die Freiheitsgrade, deren Anker das Metall ist, und
-# stellt sie nach vorn.  Sie ist im Champion AN (DELFIN_FFFREE_JOINT_DECLASH).  Aber sie
-# ist ein REPARATEUR:
-#   * sie feuert nur, wenn bereits eine Interligand-Kollision vorliegt, und
-#   * sie ERSETZT die Pose, statt eine zweite anzuhaengen.
-# Ein Monodentat, dessen Azimut bloss willkuerlich, aber kollisionsfrei gesetzt ist,
-# erzeugt damit KEIN zusaetzliches Frame -- und der Rueckgrat-Bin des Auges bleibt leer.
+# WHY THIS FUNCTION EXISTS.  `declash` above CAN already do the rotation about M-D --
+# `md_spins` (:259) collects exactly the degrees of freedom whose anchor is the metal,
+# and puts them up front.  It is ON in the champion (DELFIN_FFFREE_JOINT_DECLASH).  But
+# it is a REPAIRER:
+#   * it fires only when an inter-ligand clash is already present, and
+#   * it REPLACES the pose instead of appending a second one.
+# A monodentate whose azimuth is set merely arbitrarily, but clash-free, thus
+# produces NO additional frame -- and the eye's backbone bin stays empty.
 #
-# GEMESSEN 20.08. auf rows_HIST1KV2_268f120a (969 Systeme): von 384 Systemen, die
-# ccdc_backbone verfehlen, scheitern 128 (33,3 %) AUSSCHLIESSLICH an metallhaltigen
-# Torsionen.  Von den 60 darunter, die ueberhaupt eine Koordinationszahl tragen, liegen
-# 44 (73 %) bei CN 4/5/6.  Es fehlt also nicht die BEWEGUNG, es fehlt die AUSGABEFORM.
+# MEASURED 20.08. on rows_HIST1KV2_268f120a (969 systems): of 384 systems that miss
+# ccdc_backbone, 128 (33.3 %) fail EXCLUSIVELY on metal-containing torsions.  Of the
+# 60 among them that carry a coordination number at all, 44 (73 %) are at CN 4/5/6.
+# So it is not the MOVE that is missing, it is the OUTPUT FORM.
 #
-# ⚠ WARUM ADDITIV UND NICHT "BESSER REPARIEREN".  Das Register ist auf diesem Punkt
-# eindeutig: was HINZUFUEGT landet, was WAEHLT stirbt (03.08.).  Und das Kostengesetz
-# (vier Punkte, 19.08.) nennt die Drehung um eine Achse DURCH das Metall eine ISOMETRIE:
-# sie laesst jeden Abstand zu M exakt unveraendert -- numerisch geprueft, groesste
-# |M-D|-Aenderung 0,000000 A.  Preis +0,98 pp, die billigste anhaengende Klasse.
+# ⚠ WHY ADDITIVE AND NOT "REPAIR BETTER".  The register is unambiguous on this
+# point: what ADDS lands, what CHOOSES dies (03.08.).  And the cost law (four points,
+# 19.08.) calls the rotation about an axis THROUGH the metal an ISOMETRY: it leaves
+# every distance to M exactly unchanged -- numerically checked, largest |M-D| change
+# 0.000000 A.  Price +0.98 pp, the cheapest appending class.
 #
-# VORBILD, das hier abgeschrieben wird statt neu erfunden: `_cn2_spins`
-# (assemble_complex.py:2839) -- feste Azimutschritte, RMSD-dedupliziert, Primaerframe
-# unberuehrt.  Damit ist `cap_lost` per Konstruktion unmoeglich: es wird nichts
-# weggenommen, nur danebengestellt.
+# MODEL that is copied here instead of reinvented: `_cn2_spins`
+# (assemble_complex.py:2839) -- fixed azimuth steps, RMSD-deduplicated, primary frame
+# untouched.  With that, `cap_lost` is impossible by construction: nothing is taken
+# away, only placed alongside.
 #
-# ⚠ BYTE-IDENTITAET IST HIER KEINE BEHAUPTUNG, SONDERN STRUKTUR: diese Funktion hat im
-# ganzen Baum NULL Aufrufstellen.  Sie kann nichts aendern, solange sie niemand ruft.
-# Der Schalter unten ist fuer den Tag, an dem eine Aufrufstelle dazukommt -- die gehoert
-# an die Stelle, an der auch `_cn2_spins` seine Geschwister abgibt, NICHT hierher.
+# ⚠ BYTE-IDENTITY IS NOT A CLAIM HERE BUT STRUCTURE: this function has ZERO call
+# sites in the whole tree.  It cannot change anything as long as nobody calls it.
+# The switch below is for the day a call site is added -- that belongs at the place
+# where `_cn2_spins` also hands off its siblings, NOT here.
 def md_spin_siblings(syms, P, frozen, bond_pairs=None, n_steps=6, max_dofs=4):
-    """Geschwisterposen durch Drehung ganzer Liganden um ihre M-D-Achse.
+    """Sibling poses by rotating whole ligands about their M-D axis.
 
-    Gibt eine LISTE zusaetzlicher Posen zurueck (ohne die Eingangspose).  Leere Liste,
-    wenn der Schalter aus ist, keine M-D-Achse existiert oder jede Drehung entartet ist.
+    Returns a LIST of additional poses (without the input pose).  Empty list if
+    the switch is off, no M-D axis exists, or every rotation is degenerate.
 
-    KEINE Kollisionsvorbedingung -- das ist der ganze Unterschied zu `declash`.  Der
-    Azimut eines Monodentaten ist auch dann unterbestimmt, wenn nichts kollidiert; genau
-    diese Faelle fehlen dem Manifold heute.
+    NO clash precondition -- that is the whole difference from `declash`.  The
+    azimuth of a monodentate is underdetermined even when nothing clashes; exactly
+    these cases are missing from the manifold today.
 
-    Die Auswahl, welche Pose taugt, trifft NICHT diese Funktion, sondern das Selbstgate
-    des Aufrufers -- wie bei jedem Geschwister.  Wer hier schon filtert, baut wieder
-    einen Auswaehler.
+    The selection of which pose is fit is NOT made by this function but by the
+    caller's self-gate -- as with every sibling.  Whoever filters here already
+    builds a chooser again.
     """
     if os.environ.get("DELFIN_FFFREE_MD_SPIN_SIBLINGS", "0") != "1":
         return []
@@ -589,9 +589,9 @@ def md_spin_siblings(syms, P, frozen, bond_pairs=None, n_steps=6, max_dofs=4):
         if not dofs:
             return []
         metals = {i for i in range(n) if _is_center(syms[i])}
-        # NUR die M-D-Achsen.  Innere Torsionen sind eine andere Achse mit anderem
-        # Preis (starre Drehung mit neuer Konformation, +6,57 pp) und gehoeren nicht
-        # in dieselbe Ausgabe -- sonst ist ein Verdikt hinterher nicht zuordenbar.
+        # ONLY the M-D axes.  Internal torsions are a different axis with a different
+        # price (rigid rotation with a new conformation, +6.57 pp) and do not belong
+        # in the same output -- otherwise a verdict cannot be attributed afterwards.
         spins = [d for d in dofs if d.get("anchor") in metals]
         if not spins:
             return []
@@ -615,9 +615,9 @@ def md_spin_siblings(syms, P, frozen, bond_pairs=None, n_steps=6, max_dofs=4):
                     continue
                 if trial is None or not np.all(np.isfinite(trial)):
                     continue
-                # RMSD-Deduplizierung gegen ALLE bisherigen, nicht nur die Eingangspose:
-                # bei einem C2-symmetrischen Liganden faellt die halbe Drehung mit der
-                # Ausgangslage zusammen, und ein Duplikat mit Etikett ist kein Frame.
+                # RMSD dedup against ALL previous ones, not only the input pose:
+                # for a C2-symmetric ligand the half rotation coincides with the
+                # starting position, and a duplicate with a label is not a frame.
                 if any(float(np.sqrt(np.mean(np.sum((trial - q) ** 2, axis=1)))) < 0.25
                        for q in seen):
                     continue

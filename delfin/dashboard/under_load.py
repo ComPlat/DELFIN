@@ -112,7 +112,7 @@ def past_the_minimum(energies: Sequence[float], *, fell: float,
     energy bottomed out.  A bond breaking is one such bottom and is caught on
     the bond graph; a reaction that leaves the bonding alone -- a ring
     flipping, a torsion turning over -- is caught here, on the energy, which is
-    what "geht ueber das Minimum hinaus" was about: a cyclohexane pushed to a
+    what "goes beyond the minimum" was about: a cyclohexane pushed to a
     lower conformer and then, level after level, over 190 kcal past it.
 
     Armed only once the energy has come down into a basin *fell* below the

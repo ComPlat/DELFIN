@@ -30,23 +30,23 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 
-# ===== DIE METALLLISTE WAR EINE GEKUERZTE HANDKOPIE (2026-08-14) =====
-# Kanonisch ist smiles_converter._METALS mit 68 Elementen.  Hier standen 37, und die
-# 33 fehlenden sind keine Exoten, sondern ganze Bloecke:
-#     s-Block      Li Na K Rb Cs Be Mg Ca Sr Ba          (vollstaendig)
-#     Lanthanoide  Pr Nd Pm Sm Eu Gd Tb Dy Ho Er Tm Yb   (12 von 15; nur La/Ce/Lu waren da)
-#     Actinoide    Ac Th Pa U Np Pu                      (VOLLSTAENDIG gefehlt)
-#     p-Block      Al Ga In Tl Po
+# ===== THE METAL LIST WAS A TRUNCATED HAND COPY (2026-08-14) =====
+# Canonical is smiles_converter._METALS with 68 elements.  Here there were 37, and the
+# 33 missing ones are no exotics but whole blocks:
+#     s-block      Li Na K Rb Cs Be Mg Ca Sr Ba          (complete)
+#     lanthanides  Pr Nd Pm Sm Eu Gd Tb Dy Ho Er Tm Yb   (12 of 15; only La/Ce/Lu were there)
+#     actinides    Ac Th Pa U Np Pu                      (COMPLETELY missing)
+#     p-block      Al Ga In Tl Po
 #
-# WAS DAS ANRICHTET: _is_metal("U") gab False.  Damit galt eine U-O-Koordinations-
-# bindung als gewoehnliche Schwer-Schwer-Bindung, bekam ueber _COV.get(s, 0.9) einen
-# erfundenen Radius und wurde vom Dekollaps-Korrektor "repariert" -- das sind die 32
-# erfundenen Bindungen, davon 22 Uranyl.  Ein Metall, das nicht als Metall erkannt
-# wird, wird auch nicht eingefroren (frozen-Menge weiter unten haengt an _is_metal).
+# WHAT DAMAGE THIS DOES: _is_metal("U") returned False.  A U-O coordination bond thus counted
+# as an ordinary heavy-heavy bond, got an invented radius via _COV.get(s, 0.9) and was
+# "repaired" by the decollapse corrector -- those are the 32 invented bonds, 22 of them
+# uranyl.  A metal that is not recognised as a metal is also not frozen (the frozen set
+# further down hangs on _is_metal).
 #
-# ⚠ NICHT importiert, weil smiles_converter seinerseits manta-Module zieht (Zirkel).
-# Die Liste wird deshalb hier gefuehrt UND von harness/polyhedra_audit.py gegen die
-# kanonische geprueft, damit die Kopie nicht wieder unbemerkt auseinanderlaeuft.
+# ⚠ NOT imported, because smiles_converter in turn pulls manta modules (cycle).
+# The list is therefore kept here AND checked by harness/polyhedra_audit.py against the
+# canonical one, so that the copy cannot drift apart unnoticed again.
 _METALS_HIST = set("Sc Ti V Cr Mn Fe Co Ni Cu Zn Y Zr Nb Mo Tc Ru Rh Pd Ag Cd "
                    "Hf Ta W Re Os Ir Pt Au Hg La Ce Lu Sn Pb Ge Sb Bi".split())
 _METALS_ADDED = set("Li Na K Rb Cs Be Mg Ca Sr Ba "
@@ -59,44 +59,44 @@ _COV = {'C':0.76,'N':0.71,'O':0.66,'H':0.31,'S':1.05,'Cl':1.02,'P':1.07,'F':0.57
 _MD_TOL = 0.05          # M-D invariant tolerance (Å)
 _MD_FACTOR = 1.30       # M-D bond detection factor
 _NONBOND_FLOOR = 0.78   # non-bonded heavy pair < this·Σcov → push apart
-# ===== DER KOLLAPS-BODEN, AB 2026-08-11 AN EINER STELLE UND SCHALTBAR =====
-# Er stand als Literal 0.82 an DREI Stellen (hier in _count_collapsed, in
-# converter_backend._coll_floor, als Vorgabe von assemble_complex._collapsed_heavy_bonds_strict)
-# und war damit weder auffindbar noch messbar.  Vorgabe unveraendert 0.82 -> byte-identisch.
+# ===== THE COLLAPSE FLOOR, SINCE 2026-08-11 IN ONE PLACE AND SWITCHABLE =====
+# It stood as the literal 0.82 in THREE places (here in _count_collapsed, in
+# converter_backend._coll_floor, as the default of assemble_complex._collapsed_heavy_bonds_strict)
+# and was thus neither findable nor measurable.  Default unchanged 0.82 -> byte-identical.
 #
-# WARUM ER GEMESSEN GEHOERT.  Gemessen am 11.08. an 8974 CCDC-Kristallen mit 287043
-# Schweratom-Bindungen (Radien und Bindungserkennung exakt wie hier):
-#     Verteilung d/Sigma_cov   p0.1 = 0.768   p1 = 0.808   Median 0.919   Minimum 0.511
-# Der Selbstgate verwirft ein GANZES Config, sobald EINE Bindung darunter liegt.  Je
-# Kristall gerechnet heisst das:
-#     Boden 0.82 -> 1558 von 8974 Kristallen betroffen = 17,4 %
+# WHY IT NEEDS TO BE MEASURED.  Measured on 11.08. on 8974 CCDC crystals with 287043
+# heavy-atom bonds (radii and bond detection exactly as here):
+#     distribution d/Sigma_cov   p0.1 = 0.768   p1 = 0.808   median 0.919   minimum 0.511
+# The self-gate rejects an ENTIRE config as soon as ONE bond lies below it.  Counted per
+# crystal that means:
+#     floor 0.82 -> 1558 of 8974 crystals affected = 17,4 %
 #           0.78 ->  549 = 6,1 %      0.75 -> 77 = 0,9 %      0.72 -> 34 = 0,4 %
-# Der Boden wuerde also jeden sechsten EXPERIMENTELL BESTIMMTEN Kristall als kollabiert
-# verwerfen -- gegen die stehende Regel, dass das Auge auf sauberen CCDC-Strukturen
-# schweigt.  Dazu passen zwei unabhaengige Messungen derselben Woche: 94,5 % ALLER
-# Selbstgate-Ablehnungen sind COLLAPSED_BOND, und 193 von 996 Systemen sterben an dieser
-# einen Zahl.  17,4 % gegen 19,4 % -- das deckt sich.
+# The floor would thus reject every sixth EXPERIMENTALLY DETERMINED crystal as collapsed
+# -- against the standing rule that the eye stays silent on clean CCDC structures.  Two
+# independent measurements from the same week fit this: 94,5 % of ALL self-gate
+# rejections are COLLAPSED_BOND, and 193 of 996 systems die on this one number.
+# 17,4 % against 19,4 % -- that matches.
 #
-# ⚠ UND DER CODE WIDERSPRACH SICH SELBST: refine.py:93 baut gegen _COLLAPSE = 0.70, der
-# Nichtbindungsboden hier steht auf 0.78, geurteilt wurde mit 0.82.  Der Bauer wurde
-# strenger gemessen, als er gebaut hat.
+# ⚠ AND THE CODE CONTRADICTED ITSELF: refine.py:93 builds against _COLLAPSE = 0.70, the
+# non-bond floor here stands at 0.78, judgement was passed with 0.82.  The builder was
+# measured more strictly than it built.
 #
-# ⚠ DIE 0.82 IST DAMIT NICHT WIDERLEGT.  Die Kristallmessung sagt, wie viele ECHTE
-# Bindungen der Boden trifft -- nicht, wie viele FALSCHE er noch faengt.  Ihn allein
-# darauf abzusenken waere genau der Goodhart-Fehler, den dieses Repo sonst jagt.  Die
-# Entscheidung faellt ein A/B 0.82 gegen 0.75 unter UNION, Kriterium ccdc_isomer_realized
-# und defektfreie Manifolds -- nicht die Frameanzahl.
+# ⚠ THE 0.82 IS THUS NOT REFUTED.  The crystal measurement says how many REAL bonds the
+# floor hits -- not how many FALSE ones it still catches.  Lowering it on that basis
+# alone would be exactly the Goodhart error this repo otherwise hunts.  The decision is
+# made by an A/B 0.82 against 0.75 under UNION, criterion ccdc_isomer_realized and
+# defect-free manifolds -- not the frame count.
 #
-# ZWEI SCHALTER, und der Grund ist die Harness-Mechanik: `loop.py --on FLAG` setzt einen
-# Schalter immer auf "1" und kann deshalb keinen WERT schalten.  Ein A/B ueber einen
-# Zahlenwert braucht darum eine BOOLESCHE Achse -- sonst muesste der Wert in BEIDEN Armen
-# stehen, und genau daran ist cap10swingunion gescheitert ("UNDECLARED AXIS: beide Arme
-# tragen ihn, das A/B kann ihn nicht sehen").
-#   DELFIN_FFFREE_COLLAPSE_FLOOR_CAL=1  -> der kristallkalibrierte Boden 0.75  (A/B-Achse)
-#   DELFIN_FFFREE_COLLAPSE_FLOOR=<zahl> -> ueberschreibt beides  (Sweep von Hand)
-# 0.75 ist nicht frei gewaehlt: es ist die Schwelle mit 0,9 % Falsch-Positiven auf den
-# 8974 Kristallen UND zugleich die untere Grenze des Verzerrungsbandes in refine.py:139
-# (dev < -0.25).  Bei diesem Wert sagt der Code an drei Stellen dasselbe.
+# TWO SWITCHES, and the reason is the harness mechanics: `loop.py --on FLAG` always sets
+# a switch to "1" and therefore cannot switch a VALUE.  An A/B over a numeric value
+# therefore needs a BOOLEAN axis -- otherwise the value would have to stand in BOTH arms,
+# and that is exactly where cap10swingunion failed ("UNDECLARED AXIS: both arms carry
+# it, the A/B cannot see it").
+#   DELFIN_FFFREE_COLLAPSE_FLOOR_CAL=1    -> the crystal-calibrated floor 0.75  (A/B axis)
+#   DELFIN_FFFREE_COLLAPSE_FLOOR=<number> -> overrides both  (manual sweep)
+# 0.75 is not chosen freely: it is the threshold with 0,9 % false positives on the 8974
+# crystals AND at the same time the lower bound of the distortion band in refine.py:139
+# (dev < -0.25).  At this value the code says the same thing in three places.
 _CAL = os.environ.get("DELFIN_FFFREE_COLLAPSE_FLOOR_CAL", "0") == "1"
 try:
     COLLAPSE_FLOOR = float(os.environ.get("DELFIN_FFFREE_COLLAPSE_FLOOR",
@@ -131,20 +131,20 @@ _ANGLE_MIN_DEG = 70.0   # optional angle proxy: heavy-heavy-heavy angle < this =
 _F20_OOP_TOL = 0.20     # ring-H out-of-plane tolerance (Å)   (matches detector)
 _F20_RING_TOL = 0.10    # ring planarity tolerance (Å)        (matches detector)
 _F20_AROMATIC = {"C", "N", "O", "S"}
-# ===== DIE SCHWELLE STAND DREIMAL IM BAUM (19.08.2026) ================================
-# Hier stand ein eigenes Literal 1.46 mit dem Kommentar "matches
-# _arom_planarize._AROMATIC_BOND_MAX" -- also ein handgepflegter Abgleich, und genau so
-# einer laeuft auseinander: am 18.08. traf die sp3-Reparatur zwei der drei Kopien, diese
-# dritte nicht.  Die Zahl kommt jetzt aus ``_arom_criterion``, und dort haengt auch der
-# Schalter ``DELFIN_FFFREE_AROM_CRITERION_RADII`` (Vorgabe 0 -> byte-identisch).
+# ===== THE THRESHOLD STOOD THREE TIMES IN THE TREE (19.08.2026) =======================
+# Here stood a literal 1.46 of its own with the comment "matches
+# _arom_planarize._AROMATIC_BOND_MAX" -- i.e. a hand-maintained alignment, and exactly
+# such a thing drifts apart: on 18.08. the sp3 repair hit two of the three copies, this
+# third one not.  The number now comes from ``_arom_criterion``, and that is also where
+# the switch ``DELFIN_FFFREE_AROM_CRITERION_RADII`` hangs (default 0 -> byte-identical).
 #
-# ⚠ DER IMPORT BRICHT DIE ZIRKELFREIHEIT DIESES MODULS NICHT.  ``_arom_criterion`` zieht
-# auf Modulebene NUR ``os`` und ``typing``; die Radientabelle holt es erst beim ersten
-# normiert bewerteten Ring.  Damit verschiebt dieser Import auch keinen import-zeitigen
-# env-Lesevorgang (``polyhedra`` liest DELFIN_FFFREE_COV_COMPLETE beim Import, und
-# _bond_decollapse wird frueh gezogen -- deshalb ist die Lazy-Bauart dort Pflicht).
-# ``_AROMATIC_BOND_MAX`` wird nur weitergereicht (der Name bleibt erhalten),
-# entschieden wird in ``ring_rejected_by_length``.
+# ⚠ THE IMPORT DOES NOT BREAK THIS MODULE'S CYCLE-FREENESS.  ``_arom_criterion`` pulls
+# ONLY ``os`` and ``typing`` at module level; it fetches the radii table only at the
+# first normalised ring evaluation.  This import therefore also shifts no import-time
+# env read (``polyhedra`` reads DELFIN_FFFREE_COV_COMPLETE at import, and
+# _bond_decollapse is pulled early -- which is why the lazy construction is mandatory there).
+# ``_AROMATIC_BOND_MAX`` is only passed through (the name is preserved),
+# the decision is made in ``ring_rejected_by_length``.
 from delfin.manta._arom_criterion import (   # noqa: E402,F401
     _AROMATIC_BOND_MAX,
     ring_rejected_by_length,
@@ -173,16 +173,16 @@ def _ideal_bond(a: str, b: str, aromatic: bool = False) -> float:
             t = None
         if t is not None:
             return t
-    # DIE METALLE, DIE HIER NIE STANDEN (Schalter und Tabelle in `_elements`, Vorgabe
-    # AUS -> byte-identisch; die Lesestelle bleibt dort die EINZIGE).  `_COV` unten
-    # fuehrt 15 Elemente und KEIN Metall: fuer Fe-N liefert es 0.90 + 0.71 = 1.61 A --
-    # eine erfundene Zahl, die das SELBSTGATE traegt und die sieben Augen-Detektoren
-    # durch aufgeblaehte Faktoren kompensieren.
-    # ⚠ MIT DEM SCHALTER SIND DIESE FAKTOREN DOPPELT KOMPENSIERT: metric_md_direction
+    # THE METALS THAT NEVER STOOD HERE (switch and table in `_elements`, default
+    # OFF -> byte-identical; the read site there remains the ONLY one).  `_COV` below
+    # carries 15 elements and NO metal: for Fe-N it yields 0.90 + 0.71 = 1.61 A --
+    # an invented number that carries the SELF-GATE and that the seven eye detectors
+    # compensate for through inflated factors.
+    # ⚠ WITH THE SWITCH THESE FACTORS ARE DOUBLY COMPENSATED: metric_md_direction
     # (1.40), metric_donor_collapse / metric_h_axis / metric_md_angle_realism (1.45)
-    # und metric_coord_geom / metric_coord_shape (1.65) lesen dieselbe Funktion und
-    # fassen dann ZU WEIT.  Das ist KEIN Nulltest -- der erste Lauf misst die KOPPLUNG,
-    # nicht den Nutzen, und die Faktoren gehoeren im selben Schritt auf 1.30 zurueck.
+    # and metric_coord_geom / metric_coord_shape (1.65) read the same function and
+    # then reach TOO FAR.  This is NOT a null test -- the first run measures the COUPLING,
+    # not the benefit, and the factors belong back at 1.30 in the same step.
     from delfin.manta import _elements as _EL
     if _EL.cov_radii_enabled():
         return _EL.covalent_radius(a) + _EL.covalent_radius(b)
@@ -190,12 +190,13 @@ def _ideal_bond(a: str, b: str, aromatic: bool = False) -> float:
 
 
 def _is_metal(s: str) -> bool:
-    # EINE QUELLE (14.08.2026): delfin/manta/_elements.py, 68 Elemente.  Vorgabe AUS ->
-    # byte-identisch.  Diese Stelle hat die groesste Hebelwirkung im ganzen Baum: rund 25
-    # Augen-Praedikate zeigen OHNE eigenen Fallback hierher (eye.py:61 und die metric_*),
-    # und sie kennt per Vorgabe nur 37 Elemente -- im Standardlauf sind Na, K, Ca, Mg, U,
-    # Th und Al im AUGE also keine Metalle.  Der Import steht in der Funktion, weil ein
-    # Modulimport hier einen Zirkel baute; nach dem ersten Aufruf kostet er nichts.
+    # ONE SOURCE (14.08.2026): delfin/manta/_elements.py, 68 elements.  Default OFF ->
+    # byte-identical.  This spot has the greatest leverage in the whole tree: around 25
+    # eye predicates point here WITHOUT a fallback of their own (eye.py:61 and the
+    # metric_*), and by default it knows only 37 elements -- in the standard run Na, K,
+    # Ca, Mg, U, Th and Al are therefore not metals in the EYE.  The import sits inside
+    # the function because a module import built a cycle here; after the first call it
+    # costs nothing.
     from delfin.manta import _elements as _EL
     if _EL.unified_enabled():
         return _EL.is_metal(s)
@@ -203,18 +204,18 @@ def _is_metal(s: str) -> bool:
 
 
 def _norm_iso(sym: str) -> str:
-    """D/T auf H abbilden -- NUR fuer die Geometrie-Logik (2026-08-14).
+    """Map D/T onto H -- ONLY for the geometry logic (2026-08-14).
 
-    Deuterium wurde nirgends als Wasserstoff erkannt: `_COV` kennt kein 'D', also gab
-    `_COV.get('D', 0.9)` einen Radius von 0.9 statt 0.31 -- fast das Dreifache --, und
-    saemtliche Abfragen `syms[i] == 'H'` (H-Elternzuordnung, vdW-Zaehlung, Winkeltor,
-    Kollapszaehlung) verfehlten es.  Ein D-Atom galt damit als SCHWERATOM mit einem
-    erfundenen Radius: es zog Phantombindungen an und loeste Kollapsbefunde aus, die
-    keine sind.  Betroffen: 219 von 307370 Kristallen.
+    Deuterium was nowhere recognised as hydrogen: `_COV` knows no 'D', so
+    `_COV.get('D', 0.9)` gave a radius of 0.9 instead of 0.31 -- almost three times --,
+    and all queries `syms[i] == 'H'` (H parent assignment, vdW counting, angle gate,
+    collapse counting) missed it.  A D atom thus counted as a HEAVY ATOM with an
+    invented radius: it attracted phantom bonds and triggered collapse findings that
+    are not real.  Affected: 219 of 307370 crystals.
 
-    ⚠ Die AUSGABE bleibt unberuehrt: der Zusammenbau unten schreibt `p[0]`, also das
-    ORIGINALSYMBOL aus der Eingabezeile.  Aus einem D wird hier kein H, es wird nur
-    endlich wie eines GERECHNET.
+    ⚠ The OUTPUT stays untouched: the reassembly below writes `p[0]`, i.e. the
+    ORIGINAL SYMBOL from the input line.  A D does not become an H here, it is only
+    finally COMPUTED as one.
     """
     if sym in ("D", "T") and os.environ.get("DELFIN_FFFREE_DECOLLAPSE_ISOTOPES", "0") == "1":
         return "H"
@@ -291,29 +292,29 @@ def _geometric_bonds(syms, P) -> List[Tuple[int, int]]:
 
 
 def _cut_geminal(syms, P, bonds):
-    """Geminale 1-3-Paare aus der Bindungsliste werfen -- ueber den WINKEL, nicht den Abstand.
+    """Throw geminal 1-3 pairs out of the bond list -- via the ANGLE, not the distance.
 
-    DAS PROBLEM.  Oben entscheidet allein `d < 1.30 * Sigma_cov`.  Auf einer IDEALEN
-    Geometrie ist das harmlos: ein C-C-C-Paar faellt erst unter ~80 Grad unter die
-    Schwelle.  Dieses Modul arbeitet aber genau auf KOLLABIERTEN Frames -- und wenn die
-    Bindungen kurz sind, schrumpft der 1-3-Abstand mit.  Bei 1.2-A-Bindungen liegt ein
-    85-Grad-Paar schon bei 1.62 A und wird als Bindung gezaehlt.  Danach zaehlt
-    _count_collapsed diese PHANTOMBINDUNG als Kollaps, und der Korrektor "repariert"
-    etwas, das gar keine Bindung ist.
+    THE PROBLEM.  Above, `d < 1.30 * Sigma_cov` alone decides.  On an IDEAL geometry
+    that is harmless: a C-C-C pair only drops below the threshold under ~80 degrees.
+    But this module works precisely on COLLAPSED frames -- and when the bonds are
+    short, the 1-3 distance shrinks with them.  With 1.2-A bonds an 85-degree pair
+    already lies at 1.62 A and is counted as a bond.  Then _count_collapsed counts this
+    PHANTOM BOND as a collapse, and the corrector "repairs" something that is not a
+    bond at all.
 
-    WARUM DER WINKEL UND NICHT DIE SCHWELLE.  Am 11.08. wurde der Skalar 1.30 gesweept:
-    KEIN Wert erreicht 0 Fehlbefunde bei 0 Verlusten, denn echte Bindungen reichen bis
-    1.290 * Sigma_cov -- es gibt keine Luecke.  Der Fehler ist STRUKTURELL, nicht
-    schwellenwertig.  Der Winkel dagegen UEBERLEBT DEN KOLLAPS: schrumpfen alle Bindungen
-    um denselben Faktor, bleibt A-X-B unveraendert.  Er ist damit die einzige Groesse
-    hier, die noch etwas aussagt, wenn die Laengen schon nichts mehr aussagen.
+    WHY THE ANGLE AND NOT THE THRESHOLD.  On 11.08. the scalar 1.30 was swept: NO value
+    reaches 0 false findings at 0 losses, because real bonds extend up to
+    1.290 * Sigma_cov -- there is no gap.  The error is STRUCTURAL, not a matter of the
+    threshold.  The angle, by contrast, SURVIVES THE COLLAPSE: if all bonds shrink by
+    the same factor, A-X-B stays unchanged.  It is thus the only quantity here that
+    still says something when the lengths no longer say anything.
 
-    DIE TRENNUNG.  Ein ECHTER Dreiring (Cyclopropan) hat am Apex ~60 Grad und seine A-B
-    Bindung MUSS bleiben.  Ein geminales Paar hat >= 85 Grad.  Gemessen liegt zwischen
-    82.0 und 84.4 Grad NICHTS -- die Trennung ist leer, der Schnitt also nicht kalibriert,
-    sondern abgelesen.  Wirkung: `smiles_topology` 6/509 -> 0.
+    THE SEPARATION.  A REAL three-membered ring (cyclopropane) has ~60 degrees at the
+    apex and its A-B bond MUST stay.  A geminal pair has >= 85 degrees.  Measured, there
+    is NOTHING between 82.0 and 84.4 degrees -- the separation is empty, so the cut is
+    not calibrated but read off.  Effect: `smiles_topology` 6/509 -> 0.
 
-    Vorgabe AUS -> byte-identisch.  Schwelle ueber DELFIN_FFFREE_GEMINAL_CUT_DEG sweepbar.
+    Default OFF -> byte-identical.  Threshold sweepable via DELFIN_FFFREE_GEMINAL_CUT_DEG.
     """
     if os.environ.get("DELFIN_FFFREE_GEMINAL_CUT", "0") != "1":
         return bonds
@@ -324,8 +325,8 @@ def _cut_geminal(syms, P, bonds):
         adj.setdefault(j, set()).add(i)
     drop = set()
     for i, j in bonds:
-        # Gemeinsame Nachbarn = Dreiecke im Kandidatengraphen.  NUR dort kann ein
-        # 1-3-Paar ueberhaupt als Bindung erscheinen; 1-4 und weiter teilen keinen.
+        # Common neighbours = triangles in the candidate graph.  ONLY there can a
+        # 1-3 pair appear as a bond at all; 1-4 and beyond share none.
         for k in adj.get(i, ()) & adj.get(j, ()):
             va, vb = P[i] - P[k], P[j] - P[k]
             na = float(np.linalg.norm(va)); nb = float(np.linalg.norm(vb))
@@ -345,16 +346,16 @@ def _aromatic_ring_bonds(syms, P, bonds) -> set:
     aromatic band; used only to select the aromatic spring target; returns the
     empty set unless the seat flag is on (caller guards).
 
-    ⚠ DER RINGSUCHER IST WEITER EIGEN, NUR DAS TOR IST GEMEINSAM (19.08.2026).
-    Diese Kopie sieht eine ANDERE Ringmenge als ``_arom_planarize``, und zwar aus
-    zwei nachweisbaren Gruenden:
-      * die Bindungswahrnehmung ist eine andere -- hier ``d < 1.30 * _ideal_bond``
-        (fuer C-C also 1.98 A), dort ``d < Sigma_r_cov + 0.25`` (1.77 A).  Diese
-        Kopie sieht damit systematisch MEHR Kanten und mehr Ringe.
-      * jeder Ring, der die Koordinationssphaere BERUEHRT, faellt hier ganz heraus
-        (LUMTAP never-worse scope) -- dort wird er verankert und mitbehandelt.
-    Der Ringsucher bleibt deshalb, wo er ist; gemeinsam ist ab jetzt allein die
-    Frage "ist diese Ringlaengen-Signatur aromatisch", und die steht in
+    ⚠ THE RING FINDER REMAINS SEPARATE, ONLY THE GATE IS SHARED (19.08.2026).
+    This copy sees a DIFFERENT ring set than ``_arom_planarize``, for two
+    demonstrable reasons:
+      * the bond perception is a different one -- here ``d < 1.30 * _ideal_bond``
+        (for C-C thus 1.98 A), there ``d < Sigma_r_cov + 0.25`` (1.77 A).  This
+        copy therefore systematically sees MORE edges and more rings.
+      * every ring that TOUCHES the coordination sphere drops out entirely here
+        (LUMTAP never-worse scope) -- there it is anchored and treated as well.
+    The ring finder therefore stays where it is; shared from now on is solely the
+    question "is this ring-length signature aromatic", and that lives in
     ``_arom_criterion.ring_rejected_by_length``."""
     n = len(syms)
     arom_nbr: List[List[int]] = [[] for _ in range(n)]
@@ -407,8 +408,8 @@ def _aromatic_ring_bonds(syms, P, bonds) -> set:
                 if j in rset and j > i:
                     lens.append(float(np.linalg.norm(P[i] - P[j])))
                     edges.append((i, j))
-        # EINE QUELLE (siehe Import oben): Schalter AUS = alter Vergleich
-        # ``mittel >= 1.46``, Schalter AN = Mittel von d/(r_i+r_j) >= 0.939.
+        # ONE SOURCE (see import above): switch OFF = old comparison
+        # ``mittel >= 1.46``, switch ON = mean of d/(r_i+r_j) >= 0.939.
         if not lens or ring_rejected_by_length(syms, edges, lens):
             continue                       # saturated / non-aromatic ring
         for (i, j) in edges:

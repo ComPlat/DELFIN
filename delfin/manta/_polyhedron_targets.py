@@ -131,31 +131,31 @@ def _build_ideal_vectors() -> Dict[str, np.ndarray]:
     # See-saw / C2v (e.g. SF4-type) — 2 axial + 2 equatorial bent
     # axial on z, equatorial in xz plane, equatorial bent ~30° down off +x/-x
     #
-    # ===== DIESE VORGABE IST KEINE WIPPE (nachgerechnet 16.08.2026) =====
-    # Alle vier Vektoren unten haben y = 0, sind also KOPLANAR.  Die Winkel daraus:
-    #     ax-ax 180.0   eq-eq 150.0   ax-eq 105.0 (x2) und 75.0 (x2)
-    # Eine Wippe hat ZWEI fast-trans-Paare nicht -- das ist die Topologie einer
-    # QUADRATEBENE.  Dieselbe Verwechslung steckt in `smiles_converter._TOPO_GEOMETRY_
-    # VECTORS['SS']` (koplanar, eq-eq 157.4) und in der Formreferenz des Auges
-    # (`metric_coord_shape`, eq-eq 160.4 UND 168.6 -- dort sogar zwei).
+    # ===== THIS DEFAULT IS NOT A SEESAW (recomputed 16.08.2026) =====
+    # All four vectors below have y = 0, i.e. they are COPLANAR.  The angles that follow:
+    #     ax-ax 180.0   eq-eq 150.0   ax-eq 105.0 (x2) and 75.0 (x2)
+    # A seesaw does not have TWO near-trans pairs -- that is the topology of a
+    # SQUARE PLANE.  The same confusion sits in `smiles_converter._TOPO_GEOMETRY_
+    # VECTORS['SS']` (coplanar, eq-eq 157.4) and in the eye's shape reference
+    # (`metric_coord_shape`, eq-eq 160.4 AND 168.6 -- there even two of them).
     #
-    # DIE WIRKLICHKEIT (SF4-Typ, C2v: trigonale Bipyramide mit einem freien
-    # Elektronenpaar auf einer AEQUATORIALEN Position):
+    # THE REALITY (SF4 type, C2v: trigonal bipyramid with a lone electron pair
+    # on an EQUATORIAL position):
     #     ax-ax  ~173     eq-eq  ~102     ax-eq  ~87 (x4)
-    # Das freie Paar drueckt die beiden axialen Partner von 180 auf ~173 und die
-    # beiden aequatorialen von 120 auf ~102.  Der eq-eq-Winkel der Vorgabe liegt
-    # damit um 48 Grad ZU WEIT OFFEN -- der groesste Einzelfehler im Eckenbestand.
+    # The lone pair pushes the two axial partners from 180 to ~173 and the two
+    # equatorial ones from 120 to ~102.  The default's eq-eq angle is therefore
+    # 48 degrees TOO WIDE OPEN -- the largest single error in the vertex inventory.
     #
-    # MESSBARER BEZUG: die Verwechslungsmatrix vom 16.08. (677 Systeme mit Bauer- UND
-    # Kristallpolyeder) zeigt `SP-4 square planar` <-> `SS-4 seesaw` mit 25 gegen 21 --
-    # 46 Systeme, und sie ist SYMMETRISCH, also eine Klassifikatorgrenze.  Genau das
-    # erwartet man, wenn die "Wippe" in Wahrheit eine Quadratebene beschreibt.
+    # MEASURABLE REFERENCE: the confusion matrix of 16.08. (677 systems with builder AND
+    # crystal polyhedron) shows `SP-4 square planar` <-> `SS-4 seesaw` at 25 versus 21 --
+    # 46 systems, and it is SYMMETRIC, hence a classifier boundary.  That is exactly what
+    # one expects if the "seesaw" in truth describes a square plane.
     #
-    # Vorgabe AUS -> byte-identisch.  Die Lesestelle des Schalters ist `_elements`.
+    # Default OFF -> byte-identical.  The read site of the switch is `_elements`.
     from delfin.manta import _elements as _EL
     if _EL.seesaw_c2v_enabled():
-        _eq = np.deg2rad(51.0)      # halber eq-eq-Winkel -> 102.0
-        _ax = np.deg2rad(3.5)       # Neigung zur C2-Achse -> ax-ax 173.0
+        _eq = np.deg2rad(51.0)      # half the eq-eq angle -> 102.0
+        _ax = np.deg2rad(3.5)       # tilt toward the C2 axis -> ax-ax 173.0
         d["see_saw"] = _stack([
             _u(np.sin(_ax), 0.0,  np.cos(_ax)),
             _u(np.sin(_ax), 0.0, -np.cos(_ax)),
@@ -231,27 +231,27 @@ def _build_ideal_vectors() -> Dict[str, np.ndarray]:
     # Square antiprism (D4d): top square rotated 45° relative to bottom.
     # On unit sphere with xy-radius cos θ and z = ±sin θ; pick θ=π/4 so both
     # equal √2/2 → unit length.
-    # ===== theta = 45 GRAD IST KEIN GLEICHKANTIGES ANTIPRISMA (nachgerechnet 16.08.2026)
-    # Mit z = xy-Radius = sqrt(2)/2 (also Polarwinkel 45 Grad) ergeben sich:
-    #     Quadratkante 60.0   Quadratdiagonale 90.0   Zwischenkante 98.4   lang 148.6
-    # Die Quadratkante (60) und die Zwischenkante (98.4) sind dann um 38 Grad
-    # VERSCHIEDEN -- ein Antiprisma mit derart ungleichen Kanten gibt es nicht.
+    # ===== theta = 45 DEGREES IS NOT AN EQUAL-EDGE ANTIPRISM (recomputed 16.08.2026)
+    # With z = xy-radius = sqrt(2)/2 (i.e. polar angle 45 degrees) one obtains:
+    #     square edge 60.0   square diagonal 90.0   lateral edge 98.4   long 148.6
+    # The square edge (60) and the lateral edge (98.4) then DIFFER by 38
+    # degrees -- an antiprism with edges that unequal does not exist.
     #
-    # DIE BEDINGUNG fuer gleiche Kanten, mit c = cos^2(theta):
-    #     Quadratkante   cos = c
-    #     Zwischenkante  cos = cos(45 Grad)*sin^2(theta) - cos^2(theta)
+    # THE CONDITION for equal edges, with c = cos^2(theta):
+    #     square edge    cos = c
+    #     lateral edge   cos = cos(45 degrees)*sin^2(theta) - cos^2(theta)
     #     c = 0.7071*(1-c) - c   ->   c*(2+0.7071) = 0.7071   ->   c = 0.26120
-    # also cos(theta) = 0.51108, sin(theta) = 0.85953, und daraus
-    #     Quadratkante 74.86 (x8)   Zwischenkante 74.86 (x8)
-    #     Diagonale   118.53 (x4)   lang          141.57 (x8)
-    # Genau die Werte, die auch die korrigierte Winkeltabelle fuehrt (74.9/118.5/141.6).
+    # hence cos(theta) = 0.51108, sin(theta) = 0.85953, and from that
+    #     square edge 74.86 (x8)   lateral edge 74.86 (x8)
+    #     diagonal   118.53 (x4)   long         141.57 (x8)
+    # Exactly the values the corrected angle table also carries (74.9/118.5/141.6).
     #
-    # Vorgabe AUS -> byte-identisch.  Lesestelle des Schalters: `_elements`.
+    # Default OFF -> byte-identical.  Read site of the switch: `_elements`.
     from delfin.manta import _elements as _EL
     if _EL.sap_equiedge_enabled():
-        _sz, _sr = 0.5110783, 0.8595269      # cos(theta), sin(theta) fuer c = 0.26120
+        _sz, _sr = 0.5110783, 0.8595269      # cos(theta), sin(theta) for c = 0.26120
     else:
-        _sz = _sr = np.sqrt(2.0) / 2.0       # historisch: theta = 45 Grad
+        _sz = _sr = np.sqrt(2.0) / 2.0       # historical: theta = 45 degrees
     sap_top: List[np.ndarray] = []
     sap_bot: List[np.ndarray] = []
     for k in range(4):
@@ -287,24 +287,24 @@ def _build_ideal_vectors() -> Dict[str, np.ndarray]:
     # rectangular faces (between adjacent vertical edges).
     ttp_rows: List[np.ndarray] = []
     # 6 prism vertices on slightly compressed prism (z=±0.5, xy-r normalised)
-    # ===== z = 0.5 IST KEIN GLEICHKANTIGES PRISMA (nachgerechnet 16.08.2026) =====
-    # Mit z = 0.5 (r = 0.866) ergibt sich  Vertikalkante 60.0  gegen  Dreieckskante 97.2
-    # -- 37 Grad auseinander.  Ein Prisma, dessen Kanten so weit auseinanderliegen, ist
-    # keines; und der Kommentar "slightly compressed" verharmlost genau das.
+    # ===== z = 0.5 IS NOT AN EQUAL-EDGE PRISM (recomputed 16.08.2026) =====
+    # With z = 0.5 (r = 0.866) one gets  vertical edge 60.0  versus  triangle edge 97.2
+    # -- 37 degrees apart.  A prism whose edges lie that far apart is no prism;
+    # and the comment "slightly compressed" plays down exactly that.
     #
-    # DIE BEDINGUNG fuer gleiche Kanten (r^2 = 1 - z^2):
-    #     Vertikalkante   cos = r^2 - z^2
-    #     Dreieckskante   cos = -0.5*r^2 + z^2        (Delta phi = 120 Grad)
+    # THE CONDITION for equal edges (r^2 = 1 - z^2):
+    #     vertical edge   cos = r^2 - z^2
+    #     triangle edge   cos = -0.5*r^2 + z^2        (Delta phi = 120 degrees)
     #     r^2 - z^2 = -0.5*r^2 + z^2  ->  1.5*r^2 = 2*z^2  ->  z^2 = 3/7
-    # also z = 0.654654, r = 0.755929, und beide Kanten werden 81.79 Grad; die
-    # Flaechendiagonale wird 135.58.  Das ist die EINZIGE Prismendefinition ohne
-    # freien Parameter -- dieselbe, die die Winkeltabelle des Auges bereits fuehrt.
+    # hence z = 0.654654, r = 0.755929, and both edges become 81.79 degrees; the
+    # face diagonal becomes 135.58.  That is the ONLY prism definition without a
+    # free parameter -- the same one the eye's angle table already carries.
     #
-    # ⚠ BETRIFFT NUR `tricapped_tp` (CN 9).  Der Champion-Teil `TPR6` (CN 6, andere
-    # Tabelle, andere Datei) bleibt UNANGETASTET -- er ist der einzige gelandete
-    # Champion-Teil und wird nicht ohne Entscheidung angefasst.
+    # ⚠ AFFECTS ONLY `tricapped_tp` (CN 9).  The champion part `TPR6` (CN 6, different
+    # table, different file) stays UNTOUCHED -- it is the only landed champion
+    # part and is not touched without a decision.
     #
-    # Vorgabe AUS -> byte-identisch.  Lesestelle des Schalters: `_elements`.
+    # Default OFF -> byte-identical.  Read site of the switch: `_elements`.
     from delfin.manta import _elements as _EL
     z9 = 0.6546537 if _EL.tricapped_equiedge_enabled() else 0.5
     r9 = np.sqrt(1.0 - z9 * z9)  # ensure unit length

@@ -1,8 +1,8 @@
 """Topology Hard-Gate — runtime topology-invariant validation.
 
-Säule 1 of Hybrid-Path (nature_project/15_HYBRID_PATH_FINAL.md).
+Pillar 1 of Hybrid-Path (nature_project/15_HYBRID_PATH_FINAL.md).
 
-Per User-Direktive feedback_md_invariant.md: refined-output MUST preserve
+Per user directive feedback_md_invariant.md: refined-output MUST preserve
 topology vs the SMILES-implied bond network.  Topology loss (detached
 donors, extra fragments, broken M-L bonds) cannot be repaired by UFF /
 MACE / DFT downstream — it changes which molecule was generated.
@@ -146,9 +146,9 @@ def _distance_sq(a: Tuple[str, float, float, float],
 
 
 def _is_metal(symbol: str) -> bool:
-    # EINE QUELLE (14.08.2026): delfin/manta/_elements.py.  Vorgabe AUS -> byte-identisch.
-    # Mit 80 Elementen die WEITESTE Fassung im Baum -- und sie wurde vom Pruefer seit
-    # jeher stumm uebersprungen, weil sie dort als delfin.manta.* eingetragen war.
+    # ONE SOURCE (14.08.2026): delfin/manta/_elements.py.  Default OFF -> byte-identical.
+    # With 80 elements the WIDEST version in the tree -- and the checker had always
+    # silently skipped it, because it was registered there as delfin.manta.*.
     from delfin.manta import _elements as _EL
     if _EL.unified_enabled():
         return _EL.is_metal(symbol)
@@ -288,7 +288,7 @@ def validate_topology_invariant(
 
     Mathematical reference:
         nature_project/02_MATHEMATICAL_SPEC.md (Section: Topology Invariant)
-        nature_project/15_HYBRID_PATH_FINAL.md (Säule 1)
+        nature_project/15_HYBRID_PATH_FINAL.md (Pillar 1)
     """
     radii = _radii_table()
     atoms = _parse_xyz(xyz)

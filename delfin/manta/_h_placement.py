@@ -1,81 +1,81 @@
-"""_h_placement -- EINE Wasserstoff-Reparatur, gebaut fuer den FF-freien Pfad.
+"""_h_placement -- ONE hydrogen repair, built for the FF-free path.
 
-DIE MESSUNG, DIE DIESES MODUL BEGRUENDET (19.08.2026, 9 Pools, 248 099 Frames).
-Vier Detektorfamilien tragen zusammen rund 45 000 harte Frames = 28 % der
-Haertemasse, und keine von ihnen hatte einen aktiven Mechanismus:
+THE MEASUREMENT THAT JUSTIFIES THIS MODULE (19.08.2026, 9 pools, 248 099 frames).
+Four detector families together carry around 45 000 hard frames = 28 % of the
+hardness mass, and none of them had an active mechanism:
 
-    xh_hh_clash + core_hhclash   16 881   10,7 %   H...H unter dem Kristallboden
-    xh_stretch  + xh_orphan      14 165    9,0 %   X-H-Laenge / kein Elternteil
-    methyl_broken                10 049    6,4 %   H-C-H mehr als 15 Grad daneben
-    h_axis_H_proximal_via_donor   7 205    4,6 %   Donor-H zeigt AUF das Metall
+    xh_hh_clash + core_hhclash   16 881   10.7 %   H...H below the crystal floor
+    xh_stretch  + xh_orphan      14 165    9.0 %   X-H length / no parent
+    methyl_broken                10 049    6.4 %   H-C-H more than 15 degrees off
+    h_axis_H_proximal_via_donor   7 205    4.6 %   donor H points AT the metal
 
-Es ist EIN physikalischer Fehler unter sechs Namen: das Schweratomgeruest wird
-gesetzt, gedreht, radial korrigiert -- und der Wasserstoff bleibt liegen, wo die
-Einbettung ihn hingelegt hatte.  Beleg ist der garantierte Frame-Ueberlapp
-(Schubfachschluss, Untergrenze): methyl_broken & smiles_hyb-angle 68,4 %,
-smiles_topology & xh_hh_clash 68,1 %, smiles_hyb-angle & xh_hh_clash 67,8 %.
+It is ONE physical error under six names: the heavy-atom skeleton is seated,
+rotated, radially corrected -- and the hydrogen stays lying where the
+embedding had put it.  The evidence is the guaranteed frame overlap
+(pigeonhole argument, lower bound): methyl_broken & smiles_hyb-angle 68.4 %,
+smiles_topology & xh_hh_clash 68.1 %, smiles_hyb-angle & xh_hh_clash 67.8 %.
 
-WARUM DIESE BEWEGUNGSKLASSE UND KEINE ANDERE.  Das Kostengesetz ist an vier
-Punkten gemessen: Ordnung ~0 · Isometrie +0,98 pp · starre Drehung mit neuer
-Konformation +6,57 pp · Neueinbettung +11,9 pp harte Frames.  Alle drei Stufen
-hier ruehren AUSSCHLIESSLICH Wasserstoffatome an; jedes Schweratom und jedes
-Metall bleibt byte-genau stehen (am Ende geprueft, nicht behauptet).  Das ist die
-billigste Klasse ueberhaupt -- eine Neueinbettung waere die teuerste und muesste
-nach demselben Gesetz scheitern.
+WHY THIS MOTION CLASS AND NO OTHER.  The cost law is measured at four
+points: ordering ~0 · isometry +0.98 pp · rigid rotation with a new
+conformation +6.57 pp · re-embedding +11.9 pp hard frames.  All three stages
+here touch EXCLUSIVELY hydrogen atoms; every heavy atom and every metal
+stays put byte-exactly (checked at the end, not asserted).  That is the
+cheapest class of all -- a re-embedding would be the most expensive and would
+have to fail by the same law.
 
-DIE DREI STUFEN, in dieser Reihenfolge:
+THE THREE STAGES, in this order:
 
-  A  DACH (methyl_broken).  Delegiert an ``_vsepr_repair.repair_terminal_groups``
-     -- den vorhandenen, XYZ-only, nie widerlegten EX3-Reparateur -- und
-     UEBERNIMMT danach ausschliesslich die Wasserstoffe.  Jede Schweratom-
-     Verschiebung (CF3, SO3) wird verworfen.  Stufe A ist damit KEIN Neubau,
-     sondern das Anschliessen eines vorhandenen Mechanismus.
+  A  UMBRELLA (methyl_broken).  Delegates to ``_vsepr_repair.repair_terminal_groups``
+     -- the existing, XYZ-only, never-refuted EX3 repairer -- and afterwards
+     TAKES OVER exclusively the hydrogens.  Every heavy-atom
+     displacement (CF3, SO3) is rejected.  Stage A is therefore NOT a new build,
+     but the hooking-up of an existing mechanism.
 
-  B  LAENGE (xh_stretch, xh_orphan).  Setzt die X-H-Distanz auf die
-     Kovalenzradiensumme, RADIAL entlang der bestehenden Richtung.  Es aendert
-     sich kein einziger Winkel, also auch kein Vorzeichenvolumen: Stufe B kann
-     Stereochemie mathematisch nicht anfassen.
+  B  LENGTH (xh_stretch, xh_orphan).  Sets the X-H distance to the sum of the
+     covalent radii, RADIALLY along the existing direction.  Not a single
+     angle changes, hence no signed volume either: stage B mathematically
+     cannot touch stereochemistry.
 
-  C  ROTOR (xh_hh_clash, h_axis_H_proximal_via_donor).  Dreht die H-Gruppe eines
-     Rotors (Schweratom mit GENAU EINEM schweren Nachbarn: CH3, NH2, OH, SH)
-     starr um die X-Y-Achse auf den Rasterwinkel, der den engsten Kontakt
-     maximiert.  Bindungslaengen und Bindungswinkel bleiben exakt erhalten.
+  C  ROTOR (xh_hh_clash, h_axis_H_proximal_via_donor).  Rotates the H group of a
+     rotor (heavy atom with EXACTLY ONE heavy neighbour: CH3, NH2, OH, SH)
+     rigidly about the X-Y axis onto the grid angle that maximises the closest
+     contact.  Bond lengths and bond angles are preserved exactly.
 
-STEREOCHEMIE IST HIER BEWEISBAR UNVERSEHRT, nicht hoffentlich.  Am 19.08. hat
-eine Ebenenprojektion 61 sp3-Zentren plattgedrueckt und zwei Vorzeichen gekippt;
-genau das kann hier nicht passieren:
-  * Stufe A feuert nur auf Zentren mit DREI terminalen Nachbarn desselben
-    Elements.  Drei konstitutionell gleiche Substituenten -> das Zentrum ist per
-    Definition kein Stereozentrum.
-  * Stufe B aendert nur Radien, keine Richtungen -> das Vorzeichen der
-    Determinante ist invariant.
-  * Stufe C feuert nur auf Zentren mit GENAU EINEM schweren Nachbarn; alle
-    uebrigen Substituenten sind Wasserstoffe, also gleich -> kein Stereozentrum.
-Gemessen wird es trotzdem: ``stereo_signature`` / ``stereo_delta`` vergleichen
-das Vorzeichenvolumen vorher und nachher, und der Zensus druckt es mit.
+STEREOCHEMISTRY IS PROVABLY INTACT HERE, not hopefully.  On 19.08. a plane
+projection flattened 61 sp3 centres and flipped two signs; exactly that
+cannot happen here:
+  * Stage A fires only on centres with THREE terminal neighbours of the same
+    element.  Three constitutionally identical substituents -> the centre is by
+    definition not a stereocentre.
+  * Stage B changes only radii, no directions -> the sign of the
+    determinant is invariant.
+  * Stage C fires only on centres with EXACTLY ONE heavy neighbour; all
+    remaining substituents are hydrogens, hence identical -> no stereocentre.
+It is measured anyway: ``stereo_signature`` / ``stereo_delta`` compare
+the signed volume before and after, and the census prints it alongside.
 
-SCHWELLEN.  Die AUSLOESEschwellen liegen absichtlich INNERHALB der Detektorbaender
-des Auges (0,85/1,15 gegen die Detektorgrenzen 0,75/1,25), damit nie auf der
-Kante repariert wird.  Die ZIELwerte sind physikalisch -- die Cordero-Kovalenz-
-radiensumme aus ``_elements.COV_R``, dieselbe Konvention wie im Auge
-(``find_xh_integrity``), und die referenzfreie Messung ueber 296 696 X-H-Bindungen
-des Champion-Archivs bestaetigt sie als MEDIAN (aromatisch C-H 1,080 gegen Summe
-1,07; N-H 1,034 gegen 1,02; O-H 0,990 gegen 0,97).  Falsch ist nicht die Regel,
-falsch ist der SCHWANZ -- und genau den korrigiert Stufe B.  Es wird kein
-Detektorwert nachgebaut und keine Schwelle angepeilt.
+THRESHOLDS.  The FIRING thresholds deliberately lie INSIDE the detector bands
+of the eye (0.85/1.15 against the detector limits 0.75/1.25), so that a repair
+never happens on the edge.  The TARGET values are physical -- the Cordero
+covalent-radius sum from ``_elements.COV_R``, the same convention as in the eye
+(``find_xh_integrity``), and the reference-free measurement over 296 696 X-H bonds
+of the champion archive confirms it as the MEDIAN (aromatic C-H 1.080 against sum
+1.07; N-H 1.034 against 1.02; O-H 0.990 against 0.97).  What is wrong is not the
+rule, what is wrong is the TAIL -- and that is exactly what stage B corrects.  No
+detector value is rebuilt and no threshold is aimed at.
 
-NAMENSGEBUNG.  Alle modulinternen Helfer tragen das Praefix ``_hp_``.  Das ist
-kein Stil, sondern eine Lehre: die generischen Namen (`_adjacency`, `_is_metal`,
-`_parse_xyz`) existieren im Doppelbaum ein Dutzend Mal mit LEICHT
-verschiedener Semantik, und genau daran ist am 16.08. der Radienzensus haengen
-geblieben.  Ein eindeutiger Name macht die Kopie sichtbar, statt sie zu tarnen.
+NAMING.  All module-internal helpers carry the prefix ``_hp_``.  That is
+not style but a lesson: the generic names (`_adjacency`, `_is_metal`,
+`_parse_xyz`) exist a dozen times in the twin tree with SLIGHTLY
+different semantics, and that is exactly where the radius census got stuck on
+16.08.  An unambiguous name makes the copy visible instead of disguising it.
 
-VERDRAHTUNG.  Vorgabe AUS (``DELFIN_FFFREE_H_PLACEMENT``), und dieses Modul hat
-heute NULL Aufrufstellen -- der Bau ist damit byte-identisch, weil im Baupfad
-keine einzige Zeile anders ist.  Die noetige Aufrufstelle steht in
-``smiles_converter.py`` unmittelbar vor dem FF-freien ``return _ff, None``, neben
-``_apply_mirror_enum_if_enabled``; sie ist im Bericht benannt und wegen des
-Dateireviers bewusst NICHT gebaut.
+WIRING.  Default OFF (``DELFIN_FFFREE_H_PLACEMENT``), and this module has
+ZERO call sites today -- the build is therefore byte-identical, because not a
+single line in the build path is different.  The required call site is in
+``smiles_converter.py`` immediately before the FF-free ``return _ff, None``, next to
+``_apply_mirror_enum_if_enabled``; it is named in the report and deliberately
+NOT built because of file territory.
 """
 from __future__ import annotations
 
@@ -86,58 +86,58 @@ import numpy as np
 
 from delfin.manta import _elements as _el
 
-# --- Schalter -------------------------------------------------------------
-# DIE EINE LESESTELLE.  Ein zweiter os.environ.get auf denselben Namen ist genau
-# die Bauart, an der der Feuerzensus am 14.08. gescheitert ist.
+# --- Switch ---------------------------------------------------------------
+# THE ONE READ SITE.  A second os.environ.get on the same name is exactly
+# the construction on which the fire census failed on 14.08.
 FLAG = "DELFIN_FFFREE_H_PLACEMENT"
 
-# --- Schwellen ------------------------------------------------------------
-# Ausloesung INNERHALB der Detektorbaender (Auge: collision < 0,75 · stretch > 1,25).
+# --- Thresholds -----------------------------------------------------------
+# Firing INSIDE the detector bands (eye: collision < 0.75 · stretch > 1.25).
 _XH_FIRE_LO = 0.85
 _XH_FIRE_HI = 1.15
-# Kristallboden fuer H...H; identisch zu find_xh_integrity (1,50 A).
+# Crystal floor for H...H; identical to find_xh_integrity (1.50 A).
 _HH_FLOOR = 1.50
-# Echte Ueberlappung H gegen schweres Nichtmetall: 0,85 x vdW-Summe, aber NUR
-# fuer wirklich nichtgebundene Paare (Graphabstand >= 4).  Ohne diese Bedingung
-# meldet jeder normale 1,3-Kontakt eine Verletzung.
+# Real overlap of H against a heavy non-metal: 0.85 x vdW sum, but ONLY
+# for genuinely non-bonded pairs (graph distance >= 4).  Without this condition
+# every normal 1,3 contact reports a violation.
 _H_HEAVY_FRAC = 0.85
 _NONBONDED_MIN_HOPS = 4
-# Elternerkennung: identisch zu metric_h_axis._HEAVY_PARENT_BOND.
+# Parent detection: identical to metric_h_axis._HEAVY_PARENT_BOND.
 _PARENT_FACTOR = 1.45
-# Bindungsgraph (nur Nichtmetalle), Faktor wie _bond_criterion / _isolated_reseat.
+# Bond graph (non-metals only), factor as in _bond_criterion / _isolated_reseat.
 _BOND_FACTOR = 1.30
-# Ein H weiter weg als das ist nicht "liegengeblieben", sondern verloren;
-# es 1,5 A weit zu ziehen waere keine Isometrie mehr.
+# An H farther away than this is not "left lying" but lost;
+# pulling it 1.5 A would no longer be an isometry.
 _MAX_PULL = 2.20
-# Kriterium des Auges fuer "Donor-H zeigt auf das Metall" (metric_h_axis).
+# The eye's criterion for "donor H points at the metal" (metric_h_axis).
 _PROX_H_M_MAX = 2.00
 _PROX_DELTA = 0.05
-# Hydriderkennung: NICHT "irgendein Metall in Reichweite", sondern "das NAECHSTE
-# Schweratom IST ein Metall" -- exakt die Regel, mit der find_xh_integrity ein
-# M-H als Hydrid fuehrt und aus der X-H-Achse herausnimmt.
+# Hydride detection: NOT "some metal within reach", but "the NEAREST
+# heavy atom IS a metal" -- exactly the rule by which find_xh_integrity files
+# an M-H as a hydride and takes it out of the X-H axis.
 #
-# WARUM DIE ERSTE FASSUNG FALSCH WAR.  Sie schloss jedes H aus, dem IRGENDEIN
-# Metall naeher als 2,00 A kam -- und der Befund ``h_axis_H_proximal_via_donor``
-# IST per Definition ein H mit d(M,H) < 2,00.  Die Regel schloss also genau die
-# Klasse aus, fuer die Stufe C gebaut ist; der modulinterne Zensus konnte sie
-# nie anders als mit 0 melden, und das sah wie "kommt nicht vor" aus.
+# WHY THE FIRST VERSION WAS WRONG.  It excluded every H that ANY metal
+# came closer to than 2.00 A -- and the finding ``h_axis_H_proximal_via_donor``
+# IS by definition an H with d(M,H) < 2.00.  So the rule excluded exactly the
+# class that stage C is built for; the module-internal census could never
+# report it as anything but 0, and that looked like "does not occur".
 #
-# ⚠ EIN REST BLEIBT, und er gehoert hierher und nicht in eine Fussnote.  Auf den
-# 2144 gemessenen Frames faellt ``xh_n_m_hydride`` 21 -> 18, und die Ursache ist
-# NICHT diese Regel, sondern eine METALLDEFINITION, die auseinandergeht:
-# ``_elements.METALS`` fuehrt Te und Sb als METALLOIDE, ``find_xh_integrity``
-# fuehrt sie als METALLE.  In ALEKOS sitzt ein H bei 1,249 A von Te und 1,281 A
-# von C -- 0,03 A entscheiden, wer Elternteil ist.  Das Modul liest Te-H, setzt
-# es auf die Kovalenzsumme 1,690 (Lehrbuch Te-H 1,65-1,70), und danach ist C mit
-# 1,150 A das naechste Schweratom, also kein Hydrid mehr.  ``n_m_hydride_bad``
-# bleibt in BEIDEN Armen 13, Stretch/Kollision/Waise sinken -- zerstoert wurde
-# nichts.  Aber "naechstes Schweratom" ist auf gequetschten Frames FRAGIL, und
-# das ist eine offene Schwaeche, keine erledigte Frage.
-# Rotorraster: 24 Schritte a 15 Grad.  Fest, deterministisch, keine Optimierung.
+# ⚠ A REMAINDER STAYS, and it belongs here and not in a footnote.  On the
+# 2144 measured frames ``xh_n_m_hydride`` drops 21 -> 18, and the cause is
+# NOT this rule but a METAL DEFINITION that diverges:
+# ``_elements.METALS`` files Te and Sb as METALLOIDS, ``find_xh_integrity``
+# files them as METALS.  In ALEKOS an H sits at 1.249 A from Te and 1.281 A
+# from C -- 0.03 A decide who is the parent.  The module reads Te-H, sets
+# it to the covalent sum 1.690 (textbook Te-H 1.65-1.70), and after that C at
+# 1.150 A is the nearest heavy atom, hence no longer a hydride.  ``n_m_hydride_bad``
+# stays 13 in BOTH arms, stretch/collision/orphan drop -- nothing was
+# destroyed.  But "nearest heavy atom" is FRAGILE on squashed frames, and
+# that is an open weakness, not a settled question.
+# Rotor grid: 24 steps of 15 degrees.  Fixed, deterministic, no optimisation.
 _ROTOR_STEPS = 24
-# Eine Verbesserung unter diesem Wert ist Rauschen und wird verworfen.
+# An improvement below this value is noise and is rejected.
 _EPS_GAIN = 1e-3
-# Detektorschwellen fuer den modulinternen Zensus (siehe _hp_frame_census).
+# Detector thresholds for the module-internal census (see _hp_frame_census).
 _DET_ORPHAN_MAX = 1.6
 _DET_COLL_FRAC = 0.75
 _DET_COLL_ABS = 0.90
@@ -147,7 +147,7 @@ _DET_METHYL_DEG = 15.0
 _TETRA_DEG = 109.471
 
 _VDW: Dict[str, float] = {}
-try:                                     # pragma: no cover - Importweg
+try:                                     # pragma: no cover - import path
     from delfin.manta._vdw_radii import VDW_RADII as _VDW  # type: ignore
 except Exception:                        # pragma: no cover
     _VDW = {}
@@ -155,7 +155,7 @@ _VDW_DEFAULT = 1.80
 
 
 # ---------------------------------------------------------------------------
-# XYZ-Ein/Ausgabe -- Kopfzeilen und Atomreihenfolge bleiben unangetastet.
+# XYZ input/output -- header lines and atom order stay untouched.
 # ---------------------------------------------------------------------------
 def _hp_atom_line(line: str) -> bool:
     parts = line.split()
@@ -169,11 +169,11 @@ def _hp_atom_line(line: str) -> bool:
 
 
 def _hp_read(xyz_str: str) -> Tuple[List[str], np.ndarray, List[str]]:
-    """Symbole, Koordinaten und die ORIGINALZEILEN.
+    """Symbols, coordinates and the ORIGINAL LINES.
 
-    Es wird nichts umsortiert und nichts weggeworfen: ``_hp_write`` schreibt
-    ausschliesslich die Zahlen der Atomzeilen neu, jede andere Zeile (Anzahl,
-    Kommentar, Leerzeile) geht unveraendert durch.
+    Nothing is reordered and nothing is thrown away: ``_hp_write`` rewrites
+    exclusively the numbers of the atom lines; every other line (count,
+    comment, blank line) passes through unchanged.
     """
     syms: List[str] = []
     pts: List[List[float]] = []
@@ -204,14 +204,14 @@ def _hp_write(orig_lines: Sequence[str], syms: Sequence[str],
 
 
 # ---------------------------------------------------------------------------
-# Elementwissen -- KEINE weitere Radientabelle.  _elements ist der Kanon.
+# Element knowledge -- NO further radius table.  _elements is the canon.
 # ---------------------------------------------------------------------------
 def _hp_cov(sym: str) -> float:
     return _el.covalent_radius(sym)
 
 
 def _hp_metal(sym: str) -> bool:
-    """Delegiert an den Kanon ``_elements.is_metal`` -- kein eigenes Praedikat."""
+    """Delegates to the canon ``_elements.is_metal`` -- no predicate of its own."""
     return _el.is_metal(sym)
 
 
@@ -220,7 +220,7 @@ def _hp_vdw(sym: str) -> float:
 
 
 def _hp_xh_target(parent_sym: str) -> float:
-    """Sollaenge einer X-H-Bindung = Kovalenzradiensumme (Cordero)."""
+    """Target length of an X-H bond = sum of covalent radii (Cordero)."""
     return _hp_cov("H") + _hp_cov(parent_sym)
 
 
@@ -236,14 +236,14 @@ def _hp_metals(syms: Sequence[str]) -> List[int]:
 
 
 def _hp_graph(syms: Sequence[str], P: np.ndarray) -> List[List[int]]:
-    """Bindungsgraph ueber Kovalenzradien; Metalle bleiben ausserhalb.
+    """Bond graph via covalent radii; metals stay outside.
 
-    Metalle werden bewusst NICHT verknuepft: die M-D-Bindung ist keine kovalente
-    Bindung im Sinne dieser Abstandsregel, und sie mitzunehmen wuerde die halbe
-    Koordinationssphaere zum 1,3-Nachbarn machen.  Anders als
-    ``_isolated_reseat._adjacency`` (Metalle drin) und
-    ``_vsepr_repair._adjacency`` (15 Elemente, Rueckfall 0,90) liest dieser Graph
-    den Kanon ``_elements.COV_R``.
+    Metals are deliberately NOT linked: the M-D bond is not a covalent bond in
+    the sense of this distance rule, and taking it along would turn half the
+    coordination sphere into 1,3 neighbours.  Unlike
+    ``_isolated_reseat._adjacency`` (metals included) and
+    ``_vsepr_repair._adjacency`` (15 elements, fallback 0.90) this graph reads
+    the canon ``_elements.COV_R``.
     """
     n = len(syms)
     adj: List[List[int]] = [[] for _ in range(n)]
@@ -263,16 +263,16 @@ def _hp_graph(syms: Sequence[str], P: np.ndarray) -> List[List[int]]:
 
 
 def _hp_link_parents(adj: List[List[int]], parents: Dict[int, int]) -> None:
-    """Die Elternbindung IN den Graphen eintragen -- und warum das noetig ist.
+    """Enter the parent bond INTO the graph -- and why that is necessary.
 
-    GEMESSEN im Selbsttest, und es ist kein Sonderfall, sondern der Regelfall
-    dieses Moduls: ein gestrecktes C-H bei 1,60 A liegt UEBER der Bindungsgrenze
-    des Graphen (1,30 x 1,07 = 1,39), also gilt das H dort als ungebunden.  Dann
-    ist sein 1,3-Nachbar nicht ausgeschlossen, der Nachbar zaehlt als echter
-    nichtgebundener Kontakt -- und die Rueckrollung verwirft genau die Korrektur,
-    die den Fehler behoben haette.  Der Reparateur haette sich an seinem eigenen
-    Defekt blockiert.  ``parents_of_h`` kennt die Bindung (es zieht die weitere
-    Grenze), also traegt sie sie hier nach.
+    MEASURED in the self-test, and it is not a special case but the regular
+    case of this module: a stretched C-H at 1.60 A lies ABOVE the bond limit
+    of the graph (1.30 x 1.07 = 1.39), so the H counts as unbonded there.  Then
+    its 1,3 neighbour is not excluded, the neighbour counts as a genuine
+    non-bonded contact -- and the rollback rejects exactly the correction
+    that would have fixed the error.  The repairer would have blocked itself
+    on its own defect.  ``parents_of_h`` knows the bond (it draws the wider
+    limit), so it is entered here after the fact.
     """
     for h, p in parents.items():
         if p not in adj[h]:
@@ -282,35 +282,34 @@ def _hp_link_parents(adj: List[List[int]], parents: Dict[int, int]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# DAS LOCH IM EIGENEN BEWEIS -- und der Weg, der NICHT genommen wurde.
+# THE HOLE IN THE MODULE'S OWN PROOF -- and the path that was NOT taken.
 #
-# Gemessen 19.08. auf 2144 Frames: EIN echter Stereokandidat unter 1076 kippte
-# sein Vorzeichen, bei unveraenderter Nachbarschaft.  Der Beweis "Stufe B
-# aendert nur Radien, also kann das Vorzeichen nicht kippen" gilt nur, wenn das
-# H genau EIN Schweratom als Nachbarn hat.  Ein gequetschtes H zwischen zwei
-# Schweratomen ist im Abstandsgraphen an BEIDE gebunden; radial zu seinem
-# Elternteil ist dann NICHT radial zum anderen Zentrum, und dessen Determinante
-# darf kippen.
+# Measured 19.08. on 2144 frames: ONE genuine stereo candidate among 1076 flipped
+# its sign, with unchanged neighbourhood.  The proof "stage B changes only
+# radii, so the sign cannot flip" holds only if the H has exactly ONE heavy
+# atom as neighbour.  A squashed H between two heavy atoms is bonded to BOTH
+# in the distance graph; radial to its parent is then NOT radial to the other
+# centre, and that centre's determinant may flip.
 #
-# ⛔ DER NAHELIEGENDE WEG WURDE GEMESSEN UND VERWORFEN.  "Solche H einfach
-# auslassen" (ein Filter auf genau einen schweren Graphnachbarn) macht das Modul
-# sicher und gleichzeitig fast wirkungslos -- denn die mehrdeutigen H SIND die
-# Kollisionen.  Auf denselben 2144 Frames, Auge ``find_xh_integrity``:
-#     ohne Filter   xh_n_collision 80 -> 48,  hh_n_hard 225 -> 142
-#     mit  Filter   xh_n_collision 80 -> 77,  hh_n_hard 225 -> 212
-# Der Filter kostet also rund 90 % der Wirkung auf der haertesten Stufe, um
-# EINEN Frame von 2144 zu schuetzen.  Das ist der falsche Handel.
+# ⛔ THE OBVIOUS PATH WAS MEASURED AND REJECTED.  "Simply skip such H"
+# (a filter on exactly one heavy graph neighbour) makes the module safe and
+# at the same time almost ineffective -- because the ambiguous H ARE the
+# collisions.  On the same 2144 frames, eye ``find_xh_integrity``:
+#     without filter   xh_n_collision 80 -> 48,  hh_n_hard 225 -> 142
+#     with    filter   xh_n_collision 80 -> 77,  hh_n_hard 225 -> 212
+# So the filter costs around 90 % of the effect on the hardest stage in order
+# to protect ONE frame out of 2144.  That is the wrong trade.
 #
-# ✅ STATTDESSEN EIN TOR STATT EINES VERBOTS: das Vorzeichenvolumen wird vor und
-# nach der Reparatur gemessen, und ein Frame, in dem ein ECHTER Stereokandidat
-# kippt oder plattgedrueckt wird, wird als GANZES verworfen.  Reichweite bleibt,
-# der Schaden wird unmoeglich statt unwahrscheinlich -- dieselbe Bauart wie die
-# Rueckrollungen in _isolated_reseat und _fix_sp3_h_tetrahedrality.
+# ✅ INSTEAD, A GATE RATHER THAN A PROHIBITION: the signed volume is measured
+# before and after the repair, and a frame in which a GENUINE stereo candidate
+# flips or is flattened is rejected as a WHOLE.  Reach stays, the damage
+# becomes impossible instead of unlikely -- the same construction as the
+# rollbacks in _isolated_reseat and _fix_sp3_h_tetrahedrality.
 # ---------------------------------------------------------------------------
 
 
 def _hp_within(adj: Sequence[Sequence[int]], start: int, hops: int) -> Set[int]:
-    """Alle Atome bis ``hops`` Bindungen entfernt (inklusive ``start``)."""
+    """All atoms up to ``hops`` bonds away (including ``start``)."""
     seen = {int(start)}
     front = [int(start)]
     for _ in range(hops):
@@ -327,15 +326,15 @@ def _hp_within(adj: Sequence[Sequence[int]], start: int, hops: int) -> Set[int]:
 
 
 def parents_of_h(syms: Sequence[str], P: np.ndarray) -> Dict[int, int]:
-    """H-Index -> Index des schweren Elternatoms (Nichtmetall).
+    """H index -> index of the heavy parent atom (non-metal).
 
-    Drei Regeln, alle drei aus dem Auge uebernommen statt neu erfunden:
-      * Ist das NAECHSTE Schweratom ein METALL, ist das H ein Hydrid und bekommt
-        gar keinen Elternteil -- exakt die Klassifikation von
-        ``find_xh_integrity``.  Hydride sind nicht unser Fehler.
-      * Sonst ist der Elternteil das naechste schwere Nichtmetall.
-      * Es zaehlt, wenn d < 1,45 x Sollaenge (normale Bindung) ODER
-        d <= 2,20 A (liegengebliebenes H, das noch erreichbar ist).
+    Three rules, all three taken over from the eye instead of newly invented:
+      * If the NEAREST heavy atom is a METAL, the H is a hydride and gets
+        no parent at all -- exactly the classification of
+        ``find_xh_integrity``.  Hydrides are not our error.
+      * Otherwise the parent is the nearest heavy non-metal.
+      * It counts if d < 1.45 x target length (normal bond) OR
+        d <= 2.20 A (H left lying that is still reachable).
     """
     out: Dict[int, int] = {}
     n = len(syms)
@@ -353,16 +352,16 @@ def parents_of_h(syms: Sequence[str], P: np.ndarray) -> Dict[int, int]:
             if sj == "H":
                 continue
             d = float(np.linalg.norm(P[h] - P[j]))
-            if d < near_d:                 # naechstes Schweratom, Metall inklusive
+            if d < near_d:                 # nearest heavy atom, metals included
                 near_d = d
                 near_j = j
             if _hp_metal(sj):
                 continue
-            if d < best_d:                 # naechstes schweres NICHTmetall
+            if d < best_d:                 # nearest heavy NON-metal
                 best_d = d
                 best_j = j
         if near_j >= 0 and _hp_metal(syms[near_j]):
-            continue                       # Hydrid -> unberuehrt
+            continue                       # hydride -> untouched
         if best_j < 0:
             continue
         if (best_d < _PARENT_FACTOR * _hp_xh_target(syms[best_j])
@@ -372,20 +371,20 @@ def parents_of_h(syms: Sequence[str], P: np.ndarray) -> Dict[int, int]:
 
 
 # ---------------------------------------------------------------------------
-# Freiraum -- die EINE Zielgroesse aller drei Stufen.
+# Clearance -- the ONE objective of all three stages.
 # ---------------------------------------------------------------------------
 def _hp_clearance(syms: Sequence[str], P: np.ndarray, h: int, parent: int,
                   skip: Set[int]) -> float:
-    """Kleinster NORMIERTER Abstand des H zu allem, was ihn angeht.
+    """Smallest NORMALISED distance of the H to everything that concerns it.
 
-    Normiert heisst d / Boden: >= 1 ist sauber, < 1 ist eine Verletzung.
-    Drei Boeden, jeder aus dem Detektor, den er bedient:
-      H...H            1,50 A                  (find_xh_integrity)
-      H...Schweratom   0,85 x vdW-Summe        (nur bei Graphabstand >= 4)
-      H...Metall       min(2,00, d(M,X)-0,05)  (metric_h_axis: das H darf dem
-                       Metall nicht naeher sein als sein eigener Elternteil)
-    Ein weit entferntes Metall bindet die Zielgroesse von selbst nicht -- der
-    Quotient wird dann gross, ohne dass es dafuer eine Sonderregel braucht.
+    Normalised means d / floor: >= 1 is clean, < 1 is a violation.
+    Three floors, each from the detector it serves:
+      H...H            1.50 A                  (find_xh_integrity)
+      H...heavy atom   0.85 x vdW sum          (only at graph distance >= 4)
+      H...metal        min(2.00, d(M,X)-0.05)  (metric_h_axis: the H may not be
+                       closer to the metal than its own parent)
+    A far-away metal does not constrain the objective by itself -- the
+    quotient then becomes large without needing a special rule for it.
     """
     worst = 1e9
     for j in range(len(syms)):
@@ -409,17 +408,17 @@ def _hp_clearance(syms: Sequence[str], P: np.ndarray, h: int, parent: int,
 
 def _hp_metal_clear(syms: Sequence[str], P: np.ndarray, h: int,
                     parent: int) -> float:
-    """NUR die Metallachse, als EIGENE Zahl -- und warum sie eine sein muss.
+    """ONLY the metal axis, as a SEPARATE number -- and why it has to be one.
 
-    GEMESSEN 19.08. auf 2144 Frames: mit der Metallachse INNERHALB des Minimums
-    von ``_hp_clearance`` stieg ``h_prox_donor`` von 48 auf 51.  Der Grund ist
-    kein Chemiefehler, sondern Arithmetik: ein Minimum verdeckt seine
-    Unterachsen.  Stand der engste Kontakt eines H bei 0,60 (H...H), durfte eine
-    Korrektur die Metallachse von 1,20 auf 0,80 druecken -- das Minimum stieg
-    trotzdem von 0,60 auf 0,80, die Rueckrollung sah eine Verbesserung, und der
-    Donor-H-am-Metall-Befund war neu erzeugt.  Dieselbe Form wie
-    "ein Mittelwert kann keine tote Klasse sehen": die Achse braucht ihr eigenes
-    Tor, nicht einen Platz in einer Summe.
+    MEASURED 19.08. on 2144 frames: with the metal axis INSIDE the minimum of
+    ``_hp_clearance``, ``h_prox_donor`` rose from 48 to 51.  The reason is
+    not a chemistry error but arithmetic: a minimum hides its
+    sub-axes.  If the closest contact of an H stood at 0.60 (H...H), a
+    correction was allowed to push the metal axis from 1.20 to 0.80 -- the
+    minimum still rose from 0.60 to 0.80, the rollback saw an improvement, and
+    the donor-H-at-metal finding was newly created.  The same shape as
+    "a mean cannot see a dead class": the axis needs its own gate,
+    not a place in a sum.
     """
     worst = 1e9
     for j in range(len(syms)):
@@ -437,13 +436,13 @@ def _hp_metal_clear(syms: Sequence[str], P: np.ndarray, h: int,
 
 def _hp_skip(syms: Sequence[str], adj: Sequence[Sequence[int]], h: int,
              parent: int, extra: Sequence[int] = ()) -> Set[int]:
-    """Was fuer dieses H nicht als Kontakt zaehlt.
+    """What does not count as a contact for this H.
 
-    Der eigene Elternteil, die mitgegebenen Gruppenmitglieder -- und alle
-    SCHWERATOME innerhalb von drei Bindungen (nichtgebunden zaehlt ab vier).
-    Wasserstoffe bleiben immer im Test: 1,3- und 1,4-H...H sind genau die
-    Kontakte, die der Rotor entdrehen soll, und ihr Boden (1,50 A) liegt weit
-    unter jedem gesunden geminalen Abstand (~1,78 A).
+    Its own parent, the group members passed in -- and all
+    HEAVY ATOMS within three bonds (non-bonded counts from four onwards).
+    Hydrogens always remain in the test: 1,3 and 1,4 H...H are exactly the
+    contacts the rotor is meant to rotate away, and their floor (1.50 A) lies
+    well below any healthy geminal distance (~1.78 A).
     """
     out: Set[int] = set(int(x) for x in extra)
     if parent >= 0:
@@ -455,21 +454,21 @@ def _hp_skip(syms: Sequence[str], adj: Sequence[Sequence[int]], h: int,
 
 
 # ---------------------------------------------------------------------------
-# STUFE A -- das Dach (methyl_broken).  Vorhandener Mechanismus, H-only gemacht.
+# STAGE A -- the umbrella (methyl_broken).  Existing mechanism, made H-only.
 # ---------------------------------------------------------------------------
 def _hp_stage_umbrella(syms: List[str], P: np.ndarray,
                        tol_deg: float = _DET_METHYL_DEG) -> int:
-    """``_vsepr_repair.repair_terminal_groups`` anwenden -- NUR die H behalten.
+    """Apply ``_vsepr_repair.repair_terminal_groups`` -- keep ONLY the H.
 
-    Der vorhandene Reparateur setzt eine verzerrte terminale EX3-Gruppe auf ihre
-    ideale VSEPR-Lage und laesst Zentrum und Anker stehen.  Bewegt werden also
-    ausschliesslich Gruppenmitglieder, und die sind entweder alle H (CH3, NH3)
-    oder alle schwer (CF3, SO3).  Indem hier jedes Nicht-H verworfen wird,
-    bleibt exakt der H-Anteil uebrig; das Schweratomgeruest ist unberuehrt.
+    The existing repairer sets a distorted terminal EX3 group onto its ideal
+    VSEPR position and leaves centre and anchor standing.  So only group
+    members are moved, and those are either all H (CH3, NH3)
+    or all heavy (CF3, SO3).  By rejecting every non-H here,
+    exactly the H share remains; the heavy-atom skeleton is untouched.
 
-    ``tol_deg`` = 15 ist die Schwelle des Detektors ``methyl_broken`` selbst;
-    die Modulvorgabe des Reparateurs (20) wuerde einen Teil der gemeldeten
-    Faelle nicht anfassen.
+    ``tol_deg`` = 15 is the threshold of the detector ``methyl_broken`` itself;
+    the repairer's module default (20) would leave part of the reported
+    cases untouched.
     """
     try:
         from delfin.manta import _vsepr_repair as _vr
@@ -489,7 +488,7 @@ def _hp_stage_umbrella(syms: List[str], P: np.ndarray,
         moved = 0
         for i, s in enumerate(syms):
             if _el.normalise(s) != "H":
-                continue                   # Schweratome bleiben, wo sie sind
+                continue                   # heavy atoms stay where they are
             if float(np.linalg.norm(f_P[i] - P[i])) <= 1e-9:
                 continue
             P[i] = f_P[i]
@@ -500,18 +499,18 @@ def _hp_stage_umbrella(syms: List[str], P: np.ndarray,
 
 
 # ---------------------------------------------------------------------------
-# STUFE B -- die Laenge (xh_stretch, xh_orphan).
+# STAGE B -- the length (xh_stretch, xh_orphan).
 # ---------------------------------------------------------------------------
 def _hp_stage_length(syms: List[str], P: np.ndarray, parents: Dict[int, int],
                      adj: Sequence[Sequence[int]]) -> int:
-    """X-H radial auf die Sollaenge setzen.  Richtung bleibt, Winkel bleiben."""
+    """Set X-H radially to the target length.  Direction stays, angles stay."""
     moved = 0
     for h in sorted(parents):
         p = parents[h]
         v = P[h] - P[p]
         d = float(np.linalg.norm(v))
         if d < 1e-6:
-            continue                      # entartet: es gibt keine Richtung
+            continue                      # degenerate: there is no direction
         target = _hp_xh_target(syms[p])
         if target <= 1e-6:
             continue
@@ -524,9 +523,9 @@ def _hp_stage_length(syms: List[str], P: np.ndarray, parents: Dict[int, int],
         P[h] = P[p] + v / d * target
         after = _hp_clearance(syms, P, h, p, skip)
         after_m = _hp_metal_clear(syms, P, h, p)
-        # ZWEI Rueckrollungen, nicht eine.  Die erste schuetzt den engsten
-        # Kontakt ueberhaupt, die zweite die Metallachse als eigene Groesse --
-        # sonst verdeckt das Minimum sie (siehe _hp_metal_clear).
+        # TWO rollbacks, not one.  The first protects the closest contact
+        # of all, the second the metal axis as a quantity of its own --
+        # otherwise the minimum hides it (see _hp_metal_clear).
         if (after < min(1.0, before) - _EPS_GAIN
                 or after_m < min(1.0, before_m) - _EPS_GAIN):
             P[h] = old
@@ -536,17 +535,17 @@ def _hp_stage_length(syms: List[str], P: np.ndarray, parents: Dict[int, int],
 
 
 # ---------------------------------------------------------------------------
-# STUFE C -- der Rotor (xh_hh_clash, h_axis_H_proximal_via_donor).
+# STAGE C -- the rotor (xh_hh_clash, h_axis_H_proximal_via_donor).
 # ---------------------------------------------------------------------------
 def rotor_groups(syms: Sequence[str], parents: Dict[int, int],
                  adj: Sequence[Sequence[int]]
                  ) -> List[Tuple[int, int, List[int]]]:
-    """(Zentrum, schwerer Nachbar, H-Liste) fuer Zentren mit GENAU EINEM schweren
-    Nachbarn und mindestens einem H.
+    """(centre, heavy neighbour, H list) for centres with EXACTLY ONE heavy
+    neighbour and at least one H.
 
-    Diese Bedingung ist zugleich der Stereobeweis: alle uebrigen Substituenten
-    des Zentrums sind Wasserstoffe, also konstitutionell gleich -- ein solches
-    Zentrum kann kein Stereozentrum sein.
+    This condition is at the same time the stereo proof: all remaining
+    substituents of the centre are hydrogens, hence constitutionally identical
+    -- such a centre cannot be a stereocentre.
     """
     h_of: Dict[int, List[int]] = {}
     for h, p in parents.items():
@@ -562,7 +561,7 @@ def rotor_groups(syms: Sequence[str], parents: Dict[int, int],
 
 def _hp_rotate(pts: np.ndarray, origin: np.ndarray, axis: np.ndarray,
                ang: float) -> np.ndarray:
-    """Rodrigues -- starre Drehung; Laengen und Winkel bleiben exakt erhalten."""
+    """Rodrigues -- rigid rotation; lengths and angles are preserved exactly."""
     k = axis / float(np.linalg.norm(axis))
     v = pts - origin
     c = float(np.cos(ang))
@@ -573,7 +572,7 @@ def _hp_rotate(pts: np.ndarray, origin: np.ndarray, axis: np.ndarray,
 
 def _hp_stage_rotor(syms: List[str], P: np.ndarray, parents: Dict[int, int],
                     adj: Sequence[Sequence[int]]) -> int:
-    """Rotor-H starr um die Zentrum-Nachbar-Achse auf den besten Rasterwinkel."""
+    """Rotor H rigidly about the centre-neighbour axis onto the best grid angle."""
     moved = 0
     for centre, nb, hs in rotor_groups(syms, parents, adj):
         axis = P[centre] - P[nb]
@@ -591,7 +590,7 @@ def _hp_stage_rotor(syms: List[str], P: np.ndarray, parents: Dict[int, int],
         base = _group_clear()
         base_m = _group_metal()
         if base >= 1.0:
-            continue                       # nichts verletzt -> nichts anfassen
+            continue                       # nothing violated -> touch nothing
         orig = P[hs].copy()
         best_ang = 0.0
         best_val = base
@@ -599,7 +598,7 @@ def _hp_stage_rotor(syms: List[str], P: np.ndarray, parents: Dict[int, int],
             ang = 2.0 * np.pi * step / _ROTOR_STEPS
             P[hs] = _hp_rotate(orig, P[centre], axis, ang)
             if _group_metal() < min(1.0, base_m) - _EPS_GAIN:
-                continue                   # Metallachse eigenstaendig geschuetzt
+                continue                   # metal axis protected independently
             val = _group_clear()
             if val > best_val + _EPS_GAIN:
                 best_val = val
@@ -613,28 +612,28 @@ def _hp_stage_rotor(syms: List[str], P: np.ndarray, parents: Dict[int, int],
 
 
 # ---------------------------------------------------------------------------
-# Stereochemie -- Vorzeichenvolumen, damit der Beweis eine Messung hat.
+# Stereochemistry -- signed volume, so that the proof has a measurement.
 # ---------------------------------------------------------------------------
 def stereo_signature(syms: Sequence[str], P: np.ndarray
                      ) -> List[Tuple[int, int, float, int, Tuple[int, ...]]]:
-    """(Zentrum, Vorzeichen, |Volumen|, Anzahl H, Nachbarn) je 4-Nachbar-Zentrum.
+    """(centre, sign, |volume|, number of H, neighbours) per 4-neighbour centre.
 
-    Die drei Nachbarn mit den kleinsten Indizes spannen die Determinante auf.
-    Da dieses Modul die Atomreihenfolge nie aendert, sind vorher und nachher
-    direkt vergleichbar.
+    The three neighbours with the smallest indices span the determinant.
+    Since this module never changes the atom order, before and after are
+    directly comparable.
 
-    ⚠ DIE ANZAHL H IST NICHT SCHMUCK, SIE IST DIE HALBE MESSUNG.  Ein Zentrum
-    mit ZWEI oder mehr Wasserstoffen hat zwei konstitutionell gleiche
-    Substituenten und ist damit KEIN Stereozentrum -- sein Determinanten-
-    vorzeichen bedeutet nichts, und ein Methyl umzuklappen kippt es
-    zwangslaeufig.  Erste Messung auf 50 Archivsystemen: 12 Vorzeichenwechsel
-    ueber 2204 Zentren, und die Frage "an welchen" beantwortet nur dieses Feld.
-    Wer nur die Gesamtzahl liest, liest ein Artefakt.
+    ⚠ THE NUMBER OF H IS NOT DECORATION, IT IS HALF THE MEASUREMENT.  A centre
+    with TWO or more hydrogens has two constitutionally identical
+    substituents and is therefore NOT a stereocentre -- its determinant
+    sign means nothing, and flipping a methyl over inevitably flips it.
+    First measurement on 50 archive systems: 12 sign changes
+    over 2204 centres, and the question "at which ones" is answered only by this field.
+    Whoever reads only the total reads an artefact.
     """
     adj = _hp_graph(syms, P)
-    # Dieselbe Elternnachtragung wie im Reparateur -- sonst haette ein Zentrum
-    # mit gestrecktem X-H vorher DREI und nachher VIER Nachbarn, und der
-    # Vorher/Nachher-Vergleich betraefe verschiedene Mengen.
+    # The same parent back-filling as in the repairer -- otherwise a centre
+    # with a stretched X-H would have THREE neighbours before and FOUR after, and
+    # the before/after comparison would concern different sets.
     _hp_link_parents(adj, parents_of_h(syms, P))
     out: List[Tuple[int, int, float]] = []
     for c in range(len(syms)):
@@ -655,21 +654,21 @@ def stereo_signature(syms: Sequence[str], P: np.ndarray
 
 
 def stereo_delta(before, after) -> Tuple[int, int, int, int, int, int]:
-    """(gemeinsam, Wechsel, platt, Kandidaten, Wechsel_Kandidaten, Nachbarwechsel).
+    """(common, flips, flat, candidates, candidate_flips, neighbour_changes).
 
-    "Kandidat" = Zentrum mit HOECHSTENS EINEM Wasserstoff.  Nur dort kann ein
-    Vorzeichen ueberhaupt Chemie bedeuten; ab zwei H sind zwei Substituenten
-    gleich, und die Determinante ist eine Nummerierungsfrage.
-    "plattgedrueckt" = |Volumen| faellt unter 10 % seines Ausgangswerts -- die
-    Signatur der Ebenenprojektion, die am 19.08. 61 Zentren zerstoert hat.
+    "Candidate" = centre with AT MOST ONE hydrogen.  Only there can a sign
+    mean chemistry at all; from two H onwards two substituents are
+    identical, and the determinant is a numbering question.
+    "flattened" = |volume| falls below 10 % of its initial value -- the
+    signature of the plane projection that destroyed 61 centres on 19.08.
 
-    ⚠ EIN ZENTRUM MIT GEAENDERTER NACHBARSCHAFT WIRD NICHT ALS WECHSEL GEZAEHLT,
-    sondern eigens gemeldet.  Gemessen 19.08.: ein einziger scheinbarer Wechsel
-    unter 1077 Kandidaten, und er kam daher, dass ein gequetschtes H seinen
-    Elternteil wechselte (Te 1,249 A gegen C 1,281 A -- die Regel "naechstes
-    Schweratom" entscheidet dort mit 0,03 A).  Damit spannen vorher und nachher
-    VERSCHIEDENE Dreibeine auf; das Vorzeichen zu vergleichen waere sinnlos.
-    Die Zahl verschwindet dadurch nicht, sie steht nur unter dem richtigen Namen.
+    ⚠ A CENTRE WITH A CHANGED NEIGHBOURHOOD IS NOT COUNTED AS A FLIP,
+    but reported separately.  Measured 19.08.: a single apparent flip
+    among 1077 candidates, and it came from a squashed H changing its
+    parent (Te 1.249 A against C 1.281 A -- the rule "nearest
+    heavy atom" decides there by 0.03 A).  Thus before and after span
+    DIFFERENT tripods; comparing the sign would be meaningless.
+    The number does not disappear because of this, it just stands under the right name.
     """
     b = {t[0]: t for t in before}
     common = flips = flat = cand = cand_flips = nb_changed = 0
@@ -694,19 +693,19 @@ def stereo_delta(before, after) -> Tuple[int, int, int, int, int, int]:
 
 
 # ---------------------------------------------------------------------------
-# Oeffentliche Schnittstelle.
+# Public interface.
 # ---------------------------------------------------------------------------
 def h_placement_enabled() -> bool:
-    """DIE EINE Lesestelle von DELFIN_FFFREE_H_PLACEMENT (Vorgabe 0)."""
+    """THE ONE read site of DELFIN_FFFREE_H_PLACEMENT (default 0)."""
     return os.environ.get(FLAG, "0") == "1"
 
 
 def repair_xyz(xyz: str, *, stats: Optional[dict] = None) -> str:
-    """Ungattert reparieren -- fuer Selbsttest und Messung, NICHT im Baupfad.
+    """Repair ungated -- for self-test and measurement, NOT in the build path.
 
-    Gibt das EINGABEOBJEKT unveraendert zurueck, wenn kein H bewegt wurde, und
-    ebenso, wenn die Schlusspruefung ein bewegtes Schweratom findet: dann ist
-    der Lauf ungueltig, und ein ungueltiger Lauf darf nichts kosten.
+    Returns the INPUT OBJECT unchanged if no H was moved, and likewise
+    if the final check finds a moved heavy atom: then the run is
+    invalid, and an invalid run must not cost anything.
     """
     if not xyz:
         return xyz
@@ -723,7 +722,7 @@ def repair_xyz(xyz: str, *, stats: Optional[dict] = None) -> str:
         _hp_link_parents(adj, parents)
         n_b = _hp_stage_length(syms, P, parents, adj)
         n_c = _hp_stage_rotor(syms, P, parents, adj)
-        # Der Anspruch dieses Moduls, geprueft statt behauptet.
+        # This module's claim, checked instead of asserted.
         for i, s in enumerate(syms):
             if _el.normalise(s) != "H" and float(
                     np.linalg.norm(P[i] - frozen[i])) > 1e-9:
@@ -739,12 +738,12 @@ def repair_xyz(xyz: str, *, stats: Optional[dict] = None) -> str:
                               "moved": 0, "aborted_heavy_moved": 0,
                               "aborted_stereo": 0})
             return xyz
-        # DAS STEREOTOR.  Kein Verbot vorab, ein Urteil danach: kippt in diesem
-        # Frame ein ECHTER Stereokandidat (hoechstens ein H am Zentrum) sein
-        # Vorzeichen, oder wird ein Zentrum plattgedrueckt, faellt der GANZE
-        # Frame zurueck.  Siehe den Block ueber _hp_within: der billigere Weg
-        # (solche H gar nicht erst anfassen) kostet ~90 % der Wirkung auf der
-        # haertesten Stufe und wurde deshalb verworfen.
+        # THE STEREO GATE.  No prohibition up front, a verdict afterwards: if in
+        # this frame a GENUINE stereo candidate (at most one H at the centre)
+        # flips its sign, or a centre is flattened, the WHOLE frame falls
+        # back.  See the block above _hp_within: the cheaper path
+        # (not touching such H in the first place) costs ~90 % of the effect on
+        # the hardest stage and was therefore rejected.
         _, _, _flat, _, _cand_flips, _ = stereo_delta(
             sig_before, stereo_signature(syms, P))
         if _cand_flips or _flat:
@@ -763,18 +762,18 @@ def repair_xyz(xyz: str, *, stats: Optional[dict] = None) -> str:
 
 
 def apply_xyz(xyz: str) -> str:
-    """Gattert reparieren.  AUS -> das Eingabeobjekt, unveraendert."""
+    """Repair gated.  OFF -> the input object, unchanged."""
     if not h_placement_enabled():
         return xyz
     return repair_xyz(xyz)
 
 
 def apply_to_results(results):
-    """Frameliste (xyz, label, ...) -> Frameliste.  Gattert, ausfallsicher.
+    """Frame list (xyz, label, ...) -> frame list.  Gated, fail-safe.
 
-    Form wie ``_h_vsepr_realism.correct_results`` und ``_me_bond_snap``, damit
-    die Aufrufstelle am FF-freien Ausgang wie ihre Nachbarn aussieht.  Die
-    Frameanzahl aendert sich nie: dies ist ein Korrektor, kein Enumerator.
+    Same shape as ``_h_vsepr_realism.correct_results`` and ``_me_bond_snap``, so
+    that the call site at the FF-free exit looks like its neighbours.  The
+    frame count never changes: this is a corrector, not an enumerator.
     """
     if not results or not h_placement_enabled():
         return results
@@ -788,15 +787,15 @@ def apply_to_results(results):
 
 
 # ---------------------------------------------------------------------------
-# Zensus im Modul -- Richtungsanzeige, KEIN Ersatz fuer das Auge.
+# Census inside the module -- direction indicator, NO substitute for the eye.
 # ---------------------------------------------------------------------------
 def _hp_frame_census(syms: Sequence[str], P: np.ndarray) -> Dict[str, int]:
-    """Die Defektfamilien nach den VEROEFFENTLICHTEN Schwellen des Auges.
+    """The defect families by the PUBLISHED thresholds of the eye.
 
-    ⚠ Dies ist eine NACHBILDUNG der Schwellen aus ``find_xh_integrity``,
-    ``full_verdict.adapt_methyl_quality`` und ``metric_h_axis`` -- keine zweite
-    Meinung des Auges.  Sie zeigt die RICHTUNG der Wirkung im Modul selbst; das
-    Urteil faellt der echte Detektor auf den geschriebenen Framepaaren.
+    ⚠ This is a REPLICA of the thresholds from ``find_xh_integrity``,
+    ``full_verdict.adapt_methyl_quality`` and ``metric_h_axis`` -- not a second
+    opinion of the eye.  It shows the DIRECTION of the effect inside the module
+    itself; the verdict is passed by the real detector on the written frame pairs.
     """
     n = len(syms)
     res = {"xh_stretch": 0, "xh_collision": 0, "xh_orphan": 0,
@@ -812,7 +811,7 @@ def _hp_frame_census(syms: Sequence[str], P: np.ndarray) -> Dict[str, int]:
             if d < best_d:
                 best_d, best_j = d, j
         if best_j < 0 or _hp_metal(syms[best_j]):
-            continue                       # M-H ist ein eigener Befund
+            continue                       # M-H is a finding of its own
         if best_d > _DET_ORPHAN_MAX:
             res["xh_orphan"] += 1
             continue
@@ -857,7 +856,7 @@ def _hp_frame_census(syms: Sequence[str], P: np.ndarray) -> Dict[str, int]:
 
 
 def split_frames(text: str) -> List[str]:
-    """Mehrframe-XYZ (aneinandergehaengt) in Einzelframes zerlegen."""
+    """Split a multi-frame XYZ (concatenated) into single frames."""
     lines = text.splitlines()
     frames: List[str] = []
     i = 0
@@ -875,7 +874,7 @@ def split_frames(text: str) -> List[str]:
 
 
 # ---------------------------------------------------------------------------
-# Selbsttest.
+# Self-test.
 # ---------------------------------------------------------------------------
 def _hp_selftest() -> int:
     fails = 0
@@ -935,8 +934,8 @@ def _hp_selftest() -> int:
             f"{c0['xh_orphan']} -> {c1['xh_orphan']}")
 
     print("== Stufe A: Dach ==")
-    # C2 haengt an C1, damit C1 KEINE terminale Gruppe ist -- sonst haelt
-    # repair_terminal_groups das Zentrum fuer ankerlos und ruehrt es nicht an.
+    # C2 hangs on C1 so that C1 is NOT a terminal group -- otherwise
+    # repair_terminal_groups considers the centre anchorless and does not touch it.
     broken = ("6\ntest\n"
               "C       0.000000     0.000000     0.000000\n"
               "C       1.520000     0.000000     0.000000\n"
@@ -956,9 +955,9 @@ def _hp_selftest() -> int:
             and float(np.linalg.norm(Pb1[1] - Pb[1])) < 1e-9)
 
     print("== Stufe C: Rotor ==")
-    # Methyl an C0-C1-C2, dazu ein N-H, dessen H genau auf einem Methyl-H sitzt
-    # (1,09 A, unter dem Kristallboden 1,50).  Alle X-H stehen exakt auf ihrer
-    # Sollaenge, damit die Stufen A und B nachweislich nichts beitragen.
+    # Methyl on C0-C1-C2, plus an N-H whose H sits exactly on a methyl H
+    # (1.09 A, below the crystal floor 1.50).  All X-H stand exactly at their
+    # target length, so that stages A and B demonstrably contribute nothing.
     import math as _m
     _rows = ["9", "test",
              f"C    {0.0:12.6f} {0.0:12.6f} {0.0:12.6f}",
@@ -1010,8 +1009,8 @@ def _hp_selftest() -> int:
     _expect("kein Vorzeichenwechsel", flips == 0 and cand_flips == 0,
             f"Wechsel={flips}/{cand_flips}")
     _expect("nicht plattgedrueckt", flat == 0, f"flach={flat}")
-    # Ein Methyl ist KEIN Stereozentrum -- es muss als Nicht-Kandidat gelten,
-    # sonst zaehlt der Zensus jedes entdrehte Methyl als Stereoschaden.
+    # A methyl is NOT a stereocentre -- it must count as a non-candidate,
+    # otherwise the census counts every rotated-away methyl as stereo damage.
     _mc = [t for t in stereo_signature(sb, Pb) if t[3] >= 2]
     _expect("Methylzentrum ist kein Stereokandidat", len(_mc) >= 1,
             f"Zentren mit >=2 H: {len(_mc)}")
@@ -1021,15 +1020,15 @@ def _hp_selftest() -> int:
     _expect("zweiter Lauf aendert nichts mehr", once == repair_xyz(once))
 
     print("== Metallnaehe ==")
-    # naechstes Schweratom IST das Metall -> Hydrid, tabu.
+    # nearest heavy atom IS the metal -> hydride, off limits.
     hydride = ("3\ntest\n"
                "Fe      0.000000     0.000000     0.000000\n"
                "H       1.600000     0.000000     0.000000\n"
                "C       3.500000     0.000000     0.000000\n")
     _expect("terminales Hydrid wird nicht angefasst",
             repair_xyz(hydride) == hydride)
-    # Donor-H, das AUF das Metall zeigt: naechstes Schweratom ist der Donor,
-    # also KEIN Hydrid -- diese Klasse muss der Reparateur sehen koennen.
+    # Donor H that points AT the metal: nearest heavy atom is the donor,
+    # hence NOT a hydride -- the repairer must be able to see this class.
     prox = ("5\ntest\n"
             "Fe      0.000000     0.000000     0.000000\n"
             "N       2.150000     0.000000     0.000000\n"
@@ -1127,13 +1126,13 @@ def _hp_run_census(paths: List[str], limit: int = 0) -> None:
 
 
 def _hp_byteid(paths: List[str], limit: int = 0) -> int:
-    """AUS-Beweis auf ECHTEN Frames: identisches OBJEKT, nicht nur gleicher Text.
+    """OFF proof on REAL frames: identical OBJECT, not just equal text.
 
-    Der Schalter wird hier NICHT gesetzt.  Geprueft wird die gattierte
-    Schnittstelle (``apply_xyz`` / ``apply_to_results``) -- also genau das, was
-    eine kuenftige Aufrufstelle benutzen wuerde.  ``is``-Vergleich statt ``==``:
-    ein gleicher String waere schon gut, dasselbe Objekt ist besser, weil es
-    beweist, dass nicht einmal neu formatiert wurde.
+    The switch is NOT set here.  What is checked is the gated
+    interface (``apply_xyz`` / ``apply_to_results``) -- i.e. exactly what
+    a future call site would use.  ``is`` comparison instead of ``==``:
+    an equal string would already be good, the same object is better, because
+    it proves that not even a reformat took place.
     """
     import glob as _glob
     files: List[str] = []
@@ -1168,7 +1167,7 @@ def _hp_byteid(paths: List[str], limit: int = 0) -> int:
 
 def _hp_write_pairs(paths: List[str], out_before: str, out_after: str,
                     limit: int = 0) -> None:
-    """Vorher/Nachher als zwei Verzeichnisse -- damit der ECHTE Detektor urteilt."""
+    """Before/after as two directories -- so that the REAL detector judges."""
     import glob as _glob
     files: List[str] = []
     for p in paths:

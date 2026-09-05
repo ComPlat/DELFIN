@@ -103,18 +103,18 @@ def planarize_sp2_carbon(xyz: str, mol,
         return xyz, report
     if mol.GetNumAtoms() != len(syms):
         return xyz, report
-    # REIHENFOLGE, NICHT NUR ANZAHL (16.08.2026) -- derselbe Riegel wie im Zwilling
-    # `_fix_sp2n_planarize`.  `detect_planar_sp2c_groups` liefert `mol`-ATOMINDIZES, die
-    # gleich auf die XYZ-Koordinaten angewandt werden; eine reine Anzahlpruefung laesst
-    # eine vertauschte Reihenfolge durch, und dann verflacht der Korrektor die FALSCHEN
-    # Atome.  Auf dem legacy-Pfad ist die Pruefung immer wahr (XYZ stammt aus demselben
-    # `mol`) und damit byte-identisch; sie ist die Vorbedingung, ihn woanders anzuschliessen.
-    # SEIT 16.08. ABENDS: STATT AUFGEBEN -- UEBERSETZEN.  Derselbe Weg wie im Zwilling
-    # `_fix_sp2n_planarize`: stimmt die Reihenfolge, bleibt es die Identitaet und damit
-    # byte-identisch; stimmt sie nicht, wird die Zuordnung rekonstruiert
-    # (`_frame_atom_map`, echte Graphisomorphie mit generischen Bindungen).  Ist sie nicht
-    # bestimmbar, wird weiterhin abgebrochen -- eine FALSCHE Zuordnung waere schlimmer als
-    # keine, sie liesse den Korrektor die falschen Atome verflachen.
+    # ORDER, NOT JUST COUNT (16.08.2026) -- the same guard as in the twin
+    # `_fix_sp2n_planarize`.  `detect_planar_sp2c_groups` returns `mol` ATOM INDICES, which
+    # are applied directly to the XYZ coordinates; a pure count check lets a permuted
+    # order through, and then the corrector flattens the WRONG atoms.  On the legacy path
+    # the check is always true (XYZ stems from the same `mol`) and thus byte-identical; it
+    # is the precondition for wiring the corrector in anywhere else.
+    # SINCE THE EVENING OF 16.08.: INSTEAD OF GIVING UP -- TRANSLATE.  The same route as in
+    # the twin `_fix_sp2n_planarize`: if the order matches, it stays the identity and thus
+    # byte-identical; if it does not, the mapping is reconstructed (`_frame_atom_map`, true
+    # graph isomorphism with generic bonds).  If it cannot be determined, we still abort --
+    # a WRONG mapping would be worse than none: it would let the corrector flatten the
+    # wrong atoms.
     _fmap = None
     try:
         _same_order = [a.GetSymbol() for a in mol.GetAtoms()] == list(syms)
@@ -137,10 +137,10 @@ def planarize_sp2_carbon(xyz: str, mol,
         groups = detect_planar_sp2c_groups(mol)
     except Exception:
         return xyz, report
-    # Gruppen tragen `mol`-Indizes -> bei abweichender Reihenfolge EINMAL uebersetzen.
-    # Generisch ueber die Schluesselnamen, damit eine spaeter hinzukommende Indexart nicht
-    # stillschweigend unuebersetzt bleibt; faellt ein Index aus der Zuordnung, wird die
-    # Gruppe verworfen statt falsch angewandt.
+    # Groups carry `mol` indices -> if the order differs, translate ONCE.
+    # Generic over the key names, so that an index kind added later does not silently
+    # stay untranslated; if an index falls out of the mapping, the group is rejected
+    # instead of being applied wrongly.
     if _fmap is not None:
         _tr = []
         for g in groups:

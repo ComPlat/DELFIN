@@ -29,8 +29,8 @@ _USE_COD_BONDS = os.environ.get("DELFIN_FFFREE_COD_BONDS", "0") == "1"
 # Iter 30 (User 2026-05-28, RUJSIY eye-validation): when a heavy atom (C/N/O of a ring)
 # is moved by the refiner, the H atoms bonded to it MUST move along (rigid-H drag),
 # else the X–H bond stretches from 1.08 Å to ~1.3 Å as the heavy drifts away — user
-# observed "in den frames bewegen sich nur die C und N atome im ring aber die H bleiben
-# an ihrer stelle und dadurch entstehen unrealitische strukturen".  Env-gated default
+# observed "in the frames only the C and N atoms in the ring move, but the H atoms stay
+# in place, and that produces unrealistic structures".  Env-gated default
 # OFF (byte-identical when unset); the propagation copies the heavy's accumulated
 # displacement onto its bonded H atoms before the step is applied.
 _RIGID_H_DRAG = os.environ.get("DELFIN_FFFREE_RIGID_H_DRAG", "0") == "1"
@@ -46,8 +46,8 @@ _RIGID_H_DRAG = os.environ.get("DELFIN_FFFREE_RIGID_H_DRAG", "0") == "1"
 # the current behaviour.  This is the metal-path lever the post-hoc corrector
 # (_arom_bond_length, which now skips all coordinated rings) cannot reach.
 _AROM_SEAT = os.environ.get("DELFIN_FFFREE_AROM_SEAT", "0") == "1"
-# Planaritaets-Verschlechterungsverbot im Abstieg (Vorgabe AUS -> bit-identisch).
-# Begruendung und Messung stehen am Term selbst in _violations().
+# Planarity-degradation ban in the descent (default OFF -> bit-identical).
+# Rationale and measurement are at the term itself in _violations().
 _PLANAR_KEEP = os.environ.get("DELFIN_FFFREE_PLANAR_KEEP", "0") == "1"
 try:
     _PLANAR_TOL = float(os.environ.get("DELFIN_FFFREE_PLANAR_KEEP_TOL", "2.0"))
@@ -118,42 +118,42 @@ def _walsh_sums(syms, P, adj):
     for i, nb in enumerate(adj):
         if syms[i] == "H" or bd._is_metal(syms[i]):
             continue
-        # ⚠ 25.08.2026 -- HIER STAND "GENAU DREI SCHWERE NACHBARN, H HINAUS", UND DAS
-        # HAT DAS GANZE VERBOT BLIND GEMACHT.  Ein sp2-C-H (aromatisch, Imin, Vinyl,
-        # Aldehyd) hat ZWEI schwere Nachbarn und EIN H -- es fiel damit durch dieses
-        # Tor, und in dieser Ligandenchemie ist das die MEHRHEIT der sp2-Zentren.
-        # Bewacht wurden nur voll substituierte Zentren.
+        # ⚠ 25.08.2026 -- THIS USED TO READ "EXACTLY THREE HEAVY NEIGHBOURS, H EXCLUDED",
+        # AND THAT MADE THE WHOLE BAN BLIND.  An sp2 C-H (aromatic, imine, vinyl,
+        # aldehyde) has TWO heavy neighbours and ONE H -- so it fell through this
+        # gate, and in this ligand chemistry that is the MAJORITY of sp2 centres.
+        # Only fully substituted centres were guarded.
         #
-        # DASSELBE TOR IST AUF DER DETEKTORSEITE SCHON EINMAL GEFUNDEN UND BEHOBEN
-        # WORDEN, im Klartext (`find_pyramidalization.py:427-430`):
+        # THE SAME GATE HAS ALREADY BEEN FOUND AND FIXED ONCE ON THE DETECTOR SIDE,
+        # in plain words (`find_pyramidalization.py:427-430`):
         #     "An sp2 C-H ... has 2 HEAVY + 1 H neighbours, so the OLD 3-HEAVY-only
         #      candidate gate made EVERY sp2 C-H INVISIBLE (NAYKOQ C36 N=CH-C: 2 heavy
         #      nbrs -> skipped, Walsh 19 unseen)."
-        # Der Bauer trug es noch.  Beide Detektoren, die diese Defektklasse zaehlen,
-        # rechnen H als vollen sigma-Nachbarn (`find_pyramidalization.py:457`,
-        # `smiles_geometry_check.py:191-193`) -- der Waechter tat es nicht.  Ein Verbot,
-        # das eine andere Menge bewacht als die, die gemessen wird, kann per
-        # Konstruktion nichts verhindern.
+        # The builder still carried it.  Both detectors that count this defect class
+        # treat H as a full sigma neighbour (`find_pyramidalization.py:457`,
+        # `smiles_geometry_check.py:191-193`) -- the guard did not.  A ban that
+        # guards a different set than the one being measured cannot, by
+        # construction, prevent anything.
         #
-        # BELEG, DASS DIES DER VERBLEIBENDE GRUND IST: `results/reach_history.jsonl`
-        # Zeilen 35/36 zeigen PLANAR_KEEP zweimal mit 0/24 Reichweite -- der zweite
-        # Lauf (delfin_commit be0bf462) lief BEREITS mit der Reparatur "Schalter zur
-        # Aufrufzeit lesen".  Die dort notierte Erklaerung ist damit verbraucht.
+        # EVIDENCE THAT THIS IS THE REMAINING CAUSE: `results/reach_history.jsonl`
+        # lines 35/36 show PLANAR_KEEP twice with 0/24 reach -- the second
+        # run (delfin_commit be0bf462) ALREADY ran with the repair "read the switch at
+        # call time".  The explanation noted there is thereby used up.
         #
-        # Jetzt: genau DREI sigma-Nachbarn (schwer + H), davon mindestens EIN schwerer.
-        # Die Verbotssemantik bleibt unveraendert -- Bezug ist weiter der eigene
-        # Eingangswert, echte sp3-Zentren (vier Nachbarn) bleiben unangetastet.
-        # ⚠ ERSTER ANLAUF WAR EINE VERENGUNG STATT EINER ERWEITERUNG, und die eigene
-        # Gegenprobe hat es gefangen (`harness/walsh_wachpopulation.py`): mit
-        # "genau 3 sigma" fielen 468 Zentren HERAUS, die vorher bewacht waren --
-        # jedes mit 3 SCHWEREN Nachbarn PLUS einem H, also vier sigma.  Das sind
-        # sp3-Zentren, deren Schweratom-Geruest der alte Term sehr wohl bewachte.
-        # Ein Verbot enger zu machen, waehrend man es zu erweitern glaubt, ist genau
-        # die Sorte stille Verschlechterung, gegen die dieses Projekt Gegenproben hat.
+        # Now: exactly THREE sigma neighbours (heavy + H), of which at least ONE heavy.
+        # The semantics of the ban are unchanged -- the reference is still the atom's own
+        # incoming value, true sp3 centres (four neighbours) remain untouched.
+        # ⚠ THE FIRST ATTEMPT WAS A NARROWING INSTEAD OF A WIDENING, and our own
+        # cross-check caught it (`harness/walsh_wachpopulation.py`): with
+        # "exactly 3 sigma", 468 centres DROPPED OUT that were guarded before --
+        # each with 3 HEAVY neighbours PLUS one H, i.e. four sigma.  Those are
+        # sp3 centres whose heavy-atom skeleton the old term did very much guard.
+        # Making a ban narrower while believing you are widening it is exactly
+        # the kind of silent degradation this project has cross-checks against.
         #
-        # Jetzt eine echte OBERMENGE: das Dreieck wird nach Vorrang gewaehlt --
-        #   3 schwere Nachbarn  -> die schweren (wie bisher, sp3-Geruest bleibt bewacht)
-        #   sonst 3 sigma, >=1 schwer -> alle drei (das sp2-C-H, das bisher fehlte)
+        # Now a true SUPERSET: the triangle is chosen by precedence --
+        #   3 heavy neighbours  -> the heavy ones (as before, sp3 skeleton stays guarded)
+        #   else 3 sigma, >=1 heavy -> all three (the sp2 C-H that was missing until now)
         _schwer = [k for k in nb if syms[k] != "H" and not bd._is_metal(syms[k])]
         _sigma = [k for k in nb if not bd._is_metal(syms[k])]
         if len(_schwer) == 3:
@@ -246,47 +246,47 @@ def _violations(syms, P, bonded, adj, arom_targets=None, planar_ref=None):
     # in Å — always far smaller than a unit clash/collapse/H-overcoord defect, so
     # it never overrides coordination integrity, and any partial seating strictly
     # lowers the loss so the accept-if-better gate settles it monotonically.
-    # ===== PLANARITAETS-VERSCHLECHTERUNGSVERBOT (planar_ref; None -> bit-identisch) =====
+    # ===== PLANARITY-DEGRADATION BAN (planar_ref; None -> bit-identical) =====
     #
-    # DER BEFUND, gemessen 11.08.2026 ueber 9586 Systeme (rows_foldrev, 49-Adapter-Batterie):
-    #   smiles_hyb-angle  48109 Frames / 3791 Systeme
-    #   pyramidal_sp2     37122 Frames / 3013 Systeme
-    # zusammen die groesste Defektfamilie ueberhaupt, und beide messen dasselbe: ein sp2-Zentrum
-    # steht pyramidal statt flach (pyramidal_sp2 ist der Walsh-Winkel eines JEDEN sp2-Zentrums).
+    # THE FINDING, measured 11.08.2026 over 9586 systems (rows_foldrev, 49-adapter battery):
+    #   smiles_hyb-angle  48109 frames / 3791 systems
+    #   pyramidal_sp2     37122 frames / 3013 systems
+    # together the largest defect family of all, and both measure the same thing: an sp2 centre
+    # sits pyramidal instead of flat (pyramidal_sp2 is the Walsh angle of EVERY sp2 centre).
     #
-    # WARUM ES NICHT AM FEHLENDEN FLATTENER LIEGT.  Der Bauer hat laengst einen UNIVERSELLEN
-    # sp2-Flattener: smiles_converter._flatten_sp2_atoms_xyz projiziert jedes nicht-metallische
-    # 3-bindige sp2-Atom auf die Ebene seiner Nachbarn, und assemble_complex ruft ihn auf BEIDEN
-    # Spuren. Er laeuft also. Nur laeuft DANACH dieser Verfeinerer -- und dessen Verlustfunktion
-    # kennt genau vier Terme: Zusammenstoesse, kollabierte Bindungen, Bindungsverzerrung,
-    # H-Ueberkoordination. KEINEN Planaritaetsterm. Der gedaempfte Abstieg darf ein flachgelegtes
-    # Zentrum also frei wieder aus der Ebene schieben, um einen Zusammenstoss zu entspannen, und
-    # niemand haelt dagegen. Das ist die Wurzel vom 31.07. in ihrer konkretesten Form: nicht die
-    # Konstruktion ist schuld, sondern dass NACH ihr optimiert wird.
+    # WHY IT IS NOT DUE TO A MISSING FLATTENER.  The builder has long had a UNIVERSAL
+    # sp2 flattener: smiles_converter._flatten_sp2_atoms_xyz projects every non-metallic
+    # 3-bonded sp2 atom onto the plane of its neighbours, and assemble_complex calls it on BOTH
+    # tracks. So it does run. Only, AFTERWARDS this refiner runs -- and its loss function
+    # knows exactly four terms: clashes, collapsed bonds, bond distortion,
+    # H over-coordination. NO planarity term. The damped descent is therefore free to push a
+    # flattened centre back out of the plane to relax a clash, and
+    # nothing holds against it. That is the root of 31.07. in its most concrete form: it is not
+    # the construction that is to blame, but that optimisation happens AFTER it.
     #
-    # WARUM ES EIN VERBOT IST UND KEIN ANSPRUCH.  Der Term fordert NICHT, dass ein Zentrum flach
-    # wird -- er verbietet nur, dass es flacher ANKOMMT und pyramidaler GEHT. Deshalb braucht er
-    # keine Hybridisierung, keine Bindungsordnung, kein SMILES: ein echtes sp3-Amin, ein
-    # Sulfoxid-S, ein pyramidaler Donor behalten ihren Winkel, weil ihr Referenzwert ihr eigener
-    # Startwert ist. Ein Term, der Planaritaet FORDERT, haette genau die Kollateralschaeden
-    # erzeugt, gegen die _flatten_sp2_atoms_xyz seine zwei Schutzschalter braucht
+    # WHY IT IS A BAN AND NOT A DEMAND.  The term does NOT require that a centre become flat
+    # -- it only forbids that it ARRIVES flatter and LEAVES more pyramidal. That is why it needs
+    # no hybridisation, no bond order, no SMILES: a true sp3 amine, a
+    # sulfoxide S, a pyramidal donor keep their angle, because their reference value is their
+    # own starting value. A term that DEMANDS planarity would have produced exactly the collateral
+    # damage against which _flatten_sp2_atoms_xyz needs its two protective switches
     # (DONOR_PYRAMIDAL, DONOR_SIGMA_COUNT).
     #
-    # Die Strafe ist wie beim Aromaten-Term ein STETIGER Betrag in Grad/180, also strukturell
-    # kleiner als ein ganzer Zusammenstoss- oder Kollaps-Defekt: Koordinationsintegritaet
-    # gewinnt weiter, die Planaritaet entscheidet nur zwischen sonst gleichwertigen Schritten.
+    # As with the aromatic term, the penalty is a CONTINUOUS amount in degrees/180, i.e.
+    # structurally smaller than a whole clash or collapse defect: coordination integrity
+    # still wins, planarity only decides between otherwise equivalent steps.
     if planar_ref:
         for i, ref in planar_ref.items():
-            # ⚠ DIESELBE BEDINGUNG WIE IN `_walsh_sums` -- sie MUSS mitgezogen werden.
-            # Haette ich nur dort H zugelassen, waere die Referenz fuer jedes sp2-C-H
-            # zwar berechnet, hier aber wieder verworfen worden: ein Wert ohne Wirkzeile,
-            # dieselbe Bauart, die heute schon dreimal aufgeflogen ist (Ruecknahmetor,
-            # kappa3-Werkzeug, _pk_gefiltert).  Eine Bedingung an ZWEI Stellen ist eine
-            # Bedingung -- sie auseinanderlaufen zu lassen ist der Fehler.
-            # WORTGLEICH dieselbe Vorrangwahl wie in `_walsh_sums` -- laufen die beiden
-            # auseinander, waere die Referenz fuer eine Atomsorte berechnet und fuer eine
-            # andere abgefragt, und das Verbot urteilte ueber ein anderes Dreieck als das,
-            # das es gemessen hat.
+            # ⚠ THE SAME CONDITION AS IN `_walsh_sums` -- it MUST be carried along.
+            # Had I admitted H only there, the reference for every sp2 C-H would have
+            # been computed but discarded again here: a value without an acting line,
+            # the same construction that has already been exposed three times today
+            # (retraction gate, kappa3 tool, _pk_gefiltert).  A condition in TWO places
+            # is one condition -- letting them drift apart is the mistake.
+            # WORD-FOR-WORD the same precedence choice as in `_walsh_sums` -- if the two
+            # drift apart, the reference would be computed for one atom kind and queried
+            # for another, and the ban would judge a different triangle than the one
+            # it measured.
             _s = [k for k in adj[i] if syms[k] != "H" and not bd._is_metal(syms[k])]
             _g = [k for k in adj[i] if not bd._is_metal(syms[k])]
             if len(_s) == 3:
@@ -294,7 +294,7 @@ def _violations(syms, P, bonded, adj, arom_targets=None, planar_ref=None):
             elif len(_g) == 3 and len(_s) >= 1:
                 nb = _g
             else:
-                continue                      # Bindungsbild hat sich geaendert -> nicht vergleichbar
+                continue                      # bonding pattern has changed -> not comparable
             cur = 0.0
             ok = True
             for a in range(3):
@@ -308,9 +308,9 @@ def _violations(syms, P, bonded, adj, arom_targets=None, planar_ref=None):
                 if not ok:
                     break
             if not ok or cur >= ref - _PLANAR_TOL:
-                continue                      # nicht schlechter als angekommen -> kein Defekt
-            loss += (ref - cur) / 180.0       # stetig, immer < 1 -> nie ueber einem harten Defekt
-            # Zurueck in Richtung Nachbarebene: entlang der Normalen um den Ueberstand.
+                continue                      # not worse than on arrival -> no defect
+            loss += (ref - cur) / 180.0       # continuous, always < 1 -> never above a hard defect
+            # Back toward the neighbour plane: along the normal by the out-of-plane excess.
             e1 = P[nb[1]] - P[nb[0]]; e2 = P[nb[2]] - P[nb[0]]
             nrm = np.cross(e1, e2)
             ln = float(np.linalg.norm(nrm))
@@ -514,23 +514,23 @@ def _refine_core(syms, P, fixed, arom_targets, max_passes: int, damp: float):
     P = np.array(P, float).copy()
     n = len(syms)
     _, bonded, adj = _bonds_adj(syms, P)
-    # Referenz EINMAL, auf dem EINGANGSframe: das ist der Zustand, den der Abstieg nicht
-    # verschlechtern darf.  Pro Durchgang neu zu messen hiesse, jede erreichte Verschlechterung
-    # sofort zur neuen Norm zu erklaeren -- dann verbietet der Term gar nichts mehr.
-    # ⚠ ZUR AUFRUFZEIT LESEN, NICHT BEIM IMPORT (20.08.2026, teuer gelernt).
-    # `_PLANAR_KEEP` (:51) wird auf MODULEBENE aus der Umgebung gelesen, also EINMAL beim
-    # Import.  Ein `--ab`-Lauf setzt die Achsenvariable aber in einem Prozess, der `refine`
-    # laengst geladen hat -- der ON-Arm bekam den Schalter NIE.  Ergebnis: `pkeep6k` baute
-    # 24/24 Sondensysteme in BEIDEN Armen byte-identisch und starb an der Nullreichweiten-
-    # Sperre (rc=3).  Die Sonde hat nicht versagt, sie hat den Nulltest entlarvt.
-    # Und es erklaert den Widerspruch zur Feuerspur: die zaehlt, dass die ZEILE erreicht
-    # wird (346 von 993 Systemen), nicht dass der SCHALTER wirkt -- zwei verschiedene
-    # Dinge, die sie nicht trennen kann.
-    # ⚠ DASSELBE MUSTER steht zwei Zeilen ueber `_PLANAR_KEEP` bei `_AROM_SEAT` (:48) und
-    # in `_COD_BONDS` (:27).  Wie viele als "Reichweite 0" abgeheftete Achsen daran
-    # gestorben sind, ist eine eigene, billige Frage.
-    # `_PLANAR_TOL` (:53) bleibt bewusst auf Modulebene: es ist ein STELLWERT, kein Schalter,
-    # und `:254` wird ohnehin nur erreicht, wenn `planar_ref` gesetzt ist.
+    # Reference ONCE, on the INCOMING frame: that is the state the descent must not
+    # degrade.  Re-measuring every pass would mean declaring every degradation reached
+    # the new norm at once -- then the term would forbid nothing at all any more.
+    # ⚠ READ AT CALL TIME, NOT AT IMPORT (20.08.2026, learned the expensive way).
+    # `_PLANAR_KEEP` (:51) is read from the environment at MODULE LEVEL, i.e. ONCE at
+    # import.  But an `--ab` run sets the axis variable in a process that has long since
+    # loaded `refine` -- the ON arm NEVER got the switch.  Result: `pkeep6k` built
+    # 24/24 probe systems byte-identical in BOTH arms and died on the zero-reach
+    # block (rc=3).  The probe did not fail, it exposed the null test.
+    # And it explains the contradiction with the fire trace: that counts that the LINE is
+    # reached (346 of 993 systems), not that the SWITCH takes effect -- two different
+    # things it cannot separate.
+    # ⚠ THE SAME PATTERN sits two lines above `_PLANAR_KEEP` at `_AROM_SEAT` (:48) and
+    # in `_COD_BONDS` (:27).  How many axes filed away as "reach 0" died of it
+    # is a separate, cheap question.
+    # `_PLANAR_TOL` (:53) deliberately stays at module level: it is a TUNING VALUE, not a
+    # switch, and `:254` is only reached anyway when `planar_ref` is set.
     planar_ref = (_walsh_sums(syms, P, adj)
                   if os.environ.get("DELFIN_FFFREE_PLANAR_KEEP", "0") == "1" else None)
     best_loss, _ = _violations(syms, P, bonded, adj, arom_targets, planar_ref)
@@ -569,11 +569,11 @@ def _refine_core(syms, P, fixed, arom_targets, max_passes: int, damp: float):
                     disp[hi] = disp[par]      # rigid drag: H rides with its heavy parent
         trial = P + damp * disp
         _, tb, ta = _bonds_adj(syms, trial)
-        # ⚠ planar_ref MUSS hier mit: das Annahmetor entscheidet ueber den Schritt, und ein Tor,
-        # das gegen ein anderes Ziel misst als der Abstieg, nimmt genau die Schritte an, die der
-        # neue Term verhindern soll -- ein Zusammenstoss weniger, ein flachgelegtes Zentrum
-        # verdreht, Verlust gesunken, angenommen.  Dann waere der Term wirkungslos und wuerde als
-        # "gemessen ohne Effekt" durchgehen.
+        # ⚠ planar_ref MUST come along here: the acceptance gate decides on the step, and a gate
+        # that measures against a different objective than the descent accepts exactly the steps
+        # the new term is meant to prevent -- one clash fewer, a flattened centre
+        # twisted, loss decreased, accepted.  Then the term would be ineffective and would pass
+        # as "measured without effect".
         tloss, _ = _violations(syms, trial, tb, ta, arom_targets, planar_ref)
         if tloss < best_loss:          # accept-if-better gate
             P = trial; best_loss = tloss

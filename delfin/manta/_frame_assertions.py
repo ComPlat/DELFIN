@@ -1,45 +1,45 @@
-"""delfin.manta._frame_assertions — WAS DIE KONSTRUKTION ZUGESICHERT HAT.
+"""delfin.manta._frame_assertions — WHAT THE CONSTRUCTION HAS ASSERTED.
 
-DAS PROBLEM, dreimal unabhaengig gemessen (17.08.2026)
-------------------------------------------------------
-Der Bauer setzt Atome MIT ABSICHT: dieser Ring ist konjugiert, also flach; dieser Donor
-ist sp2, also trigonal; diese M=O-Bindung ist 1,63 A.  Was danach kommt -- UFF, MMFF,
-Reembeds, Korrektoren -- weiss davon NICHTS und zerstoert es:
+THE PROBLEM, measured three times independently (17.08.2026)
+------------------------------------------------------------
+The builder seats atoms WITH INTENT: this ring is conjugated, hence flat; this donor
+is sp2, hence trigonal; this M=O bond is 1.63 A.  Whatever comes afterwards -- UFF, MMFF,
+reembeds, correctors -- knows NOTHING of that and destroys it:
 
-  * `pyramidal_sp2` 15,7 % gegen 1,0 % (31.07.) und `dhyb1` **463 planar_pyramidalised**
-    (16.08.): der Bauer setzt planar, das Kraftfeld pyramidalisiert.  Es kennt keine
-    pi-Konjugation.
-  * **218 planare Metallacyclen** fehlen (17.08.), und `_is_puckerable` glaubt sogar
-    ausdruecklich, konjugierte Ringe SEIEN schon flach -- eine Bauer-Ueberzeugung, die
-    der Optimierer nie erhalten hat.
-  * `me42d` (17.08.): eine NACHTRAEGLICHE Einzelbindungs-Korrektur zog ein terminales
-    Re=O von 2,0 auf 1,63 A und kostete **2 CCDC-Isomere und 2 Polyeder** -- weil die
-    SETZUNG die Koordinationssphaere bereits um die alte Laenge herum gebaut hatte.
-  * `bbrefix` (17.08.): angehaengte Reembed-Frames kosten **+11,9 pp harte Frames**,
-    weil der Erzeuger je Ligand faltet OHNE zu wissen, was die Setzung zugesichert hat.
+  * `pyramidal_sp2` 15.7 % versus 1.0 % (31.07.) and `dhyb1` **463 planar_pyramidalised**
+    (16.08.): the builder seats planar, the force field pyramidalises.  It knows no
+    pi conjugation.
+  * **218 planar metallacycles** are missing (17.08.), and `_is_puckerable` even believes
+    explicitly that conjugated rings ARE already flat -- a builder conviction that the
+    optimiser never received.
+  * `me42d` (17.08.): a SUBSEQUENT single-bond correction pulled a terminal
+    Re=O from 2.0 to 1.63 A and cost **2 CCDC isomers and 2 polyhedra** -- because the
+    SEATING had already built the coordination sphere around the old length.
+  * `bbrefix` (17.08.): appended reembed frames cost **+11.9 pp hard frames**,
+    because the generator folds per ligand WITHOUT knowing what the seating asserted.
 
-Vier Befunde, EINE Wurzel: **die Zusicherung reist nicht mit dem Frame.**
+Four findings, ONE root: **the assertion does not travel with the frame.**
 
-WAS ES SCHON GIBT -- und warum das nicht reicht
-------------------------------------------------
-Traeger existieren, aber VERSTREUT und je Mechanismus neu erfunden:
-  `torsion_relax._md_pairs` / `._md_ok`  -- M-D-Laengen, nur dort
-  `_ring_pucker(frozen=...)`             -- eingefrorene Indizes, nur dort
-  `converter_backend(donors=...)`        -- Donorindizes, nur dort
-Kein Modul kennt die Zusicherungen der anderen, und keines kann PRUEFEN, ob eine
-fremde Zusicherung verletzt wurde.  Genau das leistet dieses Modul.
+WHAT ALREADY EXISTS -- and why that is not enough
+--------------------------------------------------
+Carriers exist, but SCATTERED and reinvented per mechanism:
+  `torsion_relax._md_pairs` / `._md_ok`  -- M-D lengths, only there
+  `_ring_pucker(frozen=...)`             -- frozen indices, only there
+  `converter_backend(donors=...)`        -- donor indices, only there
+No module knows the assertions of the others, and none can CHECK whether a
+foreign assertion was violated.  That is exactly what this module provides.
 
-WAS ES TUT -- UND WAS BEWUSST NICHT
-------------------------------------
-Es traegt eine **Zusicherung** (was die Konstruktion behauptet) und **misst Verletzungen**.
-Es erzwingt NICHTS.  Das ist Absicht und folgt der Regel "erst messen, dann bauen":
-bevor irgendein Relaxer gefesselt wird, muss die Zahl auf dem Tisch liegen, WIE OFT und
-WIE STARK die eigenen Zusicherungen stromabwaerts gebrochen werden.  Diese Zahl gibt es
-bis heute nicht.
+WHAT IT DOES -- AND WHAT IT DELIBERATELY DOES NOT
+--------------------------------------------------
+It carries an **assertion** (what the construction claims) and **measures violations**.
+It enforces NOTHING.  That is intentional and follows the rule "measure first, then build":
+before any relaxer is shackled, the number must be on the table of HOW OFTEN and
+HOW STRONGLY the construction's own assertions are broken downstream.  That number does
+not exist to this day.
 
-Deterministisch, geometrieonly, kein Kraftfeld, kein `mol` -- die Zusicherung wird aus dem
-FRAME abgeleitet, damit die Atomreihenfolge-Falle (an der der Ring-Pucker-Emitter und die
-sp2-Planarisierer schon gescheitert sind) gar nicht erst entsteht.
+Deterministic, geometry-only, no force field, no `mol` -- the assertion is derived from the
+FRAME, so that the atom-order trap (on which the ring-pucker emitter and the
+sp2 planarisers have already failed) never arises in the first place.
 """
 from __future__ import annotations
 
@@ -55,14 +55,14 @@ from delfin.manta._coord_angle_corrector import (
     _parse_xyz,
 )
 
-# Toleranzen.  Bewusst GROSSZUEGIG: dies misst, ob eine Zusicherung GEBROCHEN wurde,
-# nicht ob sie perfekt eingehalten ist.  Ein zu enger Wert erzeugt Rauschen und macht
-# die Zahl unbrauchbar -- derselbe Fehler wie bei zu scharfen Augen-Schwellen.
-_TRANS_MIN_DEG = 150.0    # ab hier gilt ein Donorpaar als gegenueberstehend
-_TRANS_DROP_DEG = 15.0    # zulaessiger Abfall des groessten D-M-D-Winkels
-_MD_TOL_A = 0.10          # Angstroem, M-D-Laenge
-_PLANAR_TOL_A = 0.20      # Angstroem, Abstand des Zentrums von der Ebene seiner Nachbarn
-_FROZEN_TOL_A = 0.05      # Angstroem, Bewegung eines eingefrorenen Atoms
+# Tolerances.  Deliberately GENEROUS: this measures whether an assertion was BROKEN,
+# not whether it is kept perfectly.  Too tight a value produces noise and makes
+# the number useless -- the same mistake as with eye thresholds that are too sharp.
+_TRANS_MIN_DEG = 150.0    # from here on a donor pair counts as opposite each other
+_TRANS_DROP_DEG = 15.0    # permissible drop of the largest D-M-D angle
+_MD_TOL_A = 0.10          # Angstrom, M-D length
+_PLANAR_TOL_A = 0.20      # Angstrom, distance of the centre from the plane of its neighbours
+_FROZEN_TOL_A = 0.05      # Angstrom, movement of a frozen atom
 
 
 def _env_float(name: str, default: float) -> float:
@@ -73,21 +73,21 @@ def _env_float(name: str, default: float) -> float:
 
 
 def derive(xyz, frozen=None) -> Optional[Dict]:
-    """Die Zusicherung, die ein fertig konstruierter Frame TRAEGT.
+    """The assertion that a fully constructed frame CARRIES.
 
-    Abgeleitet aus dem Frame selbst -- kein `mol`, keine Atomindizes von aussen:
-      * ``frozen``  : Metall + alle seine Donoren (die Koordinationssphaere, die JEDER
-                      nachgelagerte Pass laut seinem eigenen Docstring stehen laesst)
-      * ``md``      : (metall, donor, laenge) fuer jede M-D-Bindung
-      * ``planar``  : jedes dreifach koordinierte C/N/O/B, das HIER flach steht -- der
-                      Bauer hat es so gesetzt, also ist es eine Behauptung
+    Derived from the frame itself -- no `mol`, no atom indices from outside:
+      * ``frozen``  : metal + all of its donors (the coordination sphere that EVERY
+                      downstream pass leaves standing, according to its own docstring)
+      * ``md``      : (metal, donor, length) for every M-D bond
+      * ``planar``  : every three-coordinate C/N/O/B that stands flat HERE -- the
+                      builder seated it that way, so it is a claim
     """
     if not xyz:
         return None
     try:
-        # Auch ``(syms, P)`` direkt: der Bauer haelt seine Frames als Arrays und muesste
-        # sonst fuer jede Pruefung eine XYZ-Zeichenkette bauen und wieder zerlegen --
-        # zweimal Formatierung pro Frame, nur damit die Signatur stimmt.
+        # ``(syms, P)`` directly as well: the builder holds its frames as arrays and would
+        # otherwise have to build an XYZ string and parse it again for every check --
+        # formatting twice per frame, just so that the signature fits.
         if isinstance(xyz, tuple):
             syms, P = xyz[0], np.asarray(xyz[1], float)
         else:
@@ -120,27 +120,27 @@ def derive(xyz, frozen=None) -> Optional[Dict]:
         if oop is not None and oop <= _env_float("DELFIN_ASSERT_PLANAR_TOL", _PLANAR_TOL_A):
             planar.append((i, (heavy[0], heavy[1], heavy[2])))
 
-    # ===== DIE ANORDNUNG DER DONOREN IST AUCH EINE BEHAUPTUNG =====================
-    # Gemessen 2026-08-18 auf 30921 Systemen: netto 988 Systeme fliessen vom Oktaeder
-    # ins trigonale Prisma (McNemar X2 = 860,8).  Der Bauer erzeugt 2,99 mal zu viele
-    # Prismen, waehrend jede andere Form zwischen 0,86 und 1,29 bleibt -- und der
-    # Zufluss ins Prisma ist exakt so gross wie der Abfluss aus dem Oktaeder.
+    # ===== THE ARRANGEMENT OF THE DONORS IS ALSO A CLAIM ==========================
+    # Measured 2026-08-18 on 30921 systems: a net 988 systems flow from the octahedron
+    # into the trigonal prism (McNemar X2 = 860.8).  The builder produces 2.99 times too many
+    # prisms, while every other shape stays between 0.86 and 1.29 -- and the
+    # inflow into the prism is exactly as large as the outflow from the octahedron.
     #
-    # Es sind aber KEINE Prismen: die CShM-Masse gegen OC-6 liegt unimodal bei 8 bis 12
-    # (Median 11,03), waehrend ein ideales TPR-6 bei 16,7 laege.  Es sind Oktaeder auf
-    # halbem Weg -- ein unvollstaendiger Bailar-Twist.  Und es ist keine Auswahl: in
-    # 1061 von 1061 Faellen ist poly_match false, obwohl das Auge den BESTEN Frame ueber
-    # den ganzen Manifold liest.  Im ganzen Manifold gibt es kein Oktaeder.
+    # But they are NOT prisms: the CShM mass against OC-6 is unimodal at 8 to 12
+    # (median 11.03), whereas an ideal TPR-6 would lie at 16.7.  They are octahedra
+    # halfway along -- an incomplete Bailar twist.  And it is not a selection: in
+    # 1061 of 1061 cases poly_match is false, although the eye reads the BEST frame over
+    # the whole manifold.  In the whole manifold there is no octahedron.
     #
-    # Das Signal ist die VERZAHNUNG, monoton: 2,49 % bei null Chelatringen, 16,12 % bei
-    # fuenf.  Metall und d-Zahl sind flach.  Der Chelatzug dreht das Polyeder, nachdem
-    # die Setzung es richtig gestellt hat.
+    # The signal is the INTERLOCKING, monotonic: 2.49 % at zero chelate rings,
+    # 16.12 % at five.  Metal and d count are flat.  The chelate pull turns the polyhedron
+    # after the seating has put it right.
     #
-    # DIE INVARIANTE, die das festhaelt, ist billig und richtungsscharf: die Zahl der
-    # TRANS-PAARE je Metall.  Ein Oktaeder hat drei, ein trigonales Prisma null.  Ein
-    # halber Twist senkt sie.  Kein CShM, keine Referenzform, keine Schwelle mit
-    # Feinabstimmung -- nur "was der Bauer an gegenueberliegenden Donoren gesetzt hat,
-    # darf die Relaxation nicht verlieren".
+    # THE INVARIANT that pins this down is cheap and sharp in direction: the number of
+    # TRANS PAIRS per metal.  An octahedron has three, a trigonal prism zero.  A
+    # half twist lowers it.  No CShM, no reference shape, no threshold with
+    # fine-tuning -- only "what the builder seated as opposite donors,
+    # the relaxation must not lose".
     trans: Dict[int, Tuple[int, float]] = {}
     _tmin = _env_float("DELFIN_ASSERT_TRANS_MIN_DEG", _TRANS_MIN_DEG)
     for m in metals:
@@ -148,17 +148,17 @@ def derive(xyz, frozen=None) -> Optional[Dict]:
                if syms[d] != "H" and not _is_metal_sym(syms[d])]
         trans[m] = _trans_stats(P, m, _dn, _tmin)
 
-    # ⚠️ WELCHE MENGE IST EINGEFROREN -- DIE ABGELEITETE ODER DIE ZUGESAGTE?
-    # Gemessen 18.08. auf den Oktaederfaellen: der erste Treffer der Zusicherung war
-    # `frozen=2` bei einer Bewegung von 0,194 Angstroem.  Das sieht nach Defekt aus --
-    # kann aber genauso eine DEFINITIONSLUECKE sein: derive() leitet Metall plus
-    # geometrische Nachbarn ab, waehrend refine() vom Bauer die Menge `fixed`
-    # bekommt.  Fallen die auseinander, meldet die Zusicherung einen Bruch fuer ein
-    # Atom, das nie zugesagt war -- und der Ruecknahme-Schalter wuerde auf einem
-    # Messfehler ausloesen.
-    # Darum nimmt derive() jetzt die Menge des Bauers entgegen.  Dann ist die
-    # Invariante exakt sein eigener Vertrag ("diese Atome haelst du fest") und nicht
-    # meine Rekonstruktion davon.  Ohne Argument bleibt alles wie bisher.
+    # ⚠️ WHICH SET IS FROZEN -- THE DERIVED ONE OR THE PROMISED ONE?
+    # Measured 18.08. on the octahedron cases: the first hit of the assertion was
+    # `frozen=2` at a movement of 0.194 Angstrom.  That looks like a defect --
+    # but can just as well be a DEFINITION GAP: derive() derives metal plus
+    # geometric neighbours, while refine() receives the set `fixed` from the
+    # builder.  If those diverge, the assertion reports a break for an
+    # atom that was never promised -- and the rollback switch would fire on a
+    # measurement error.
+    # That is why derive() now accepts the builder's set.  Then the
+    # invariant is exactly the builder's own contract ("these atoms you hold fixed") and not
+    # my reconstruction of it.  Without the argument, everything stays as before.
     _frozen = (sorted({int(i) for i in frozen if 0 <= int(i) < len(syms)})
                if frozen is not None else sorted({*metals, *donors}))
 
@@ -169,17 +169,17 @@ def derive(xyz, frozen=None) -> Optional[Dict]:
 
 
 def _trans_stats(P, m: int, donors, tmin_deg: float) -> Tuple[int, float]:
-    """``(Zahl der Paare ueber der Schwelle, groesster D-M-D-Winkel)`` am Metall m.
+    """``(number of pairs above the threshold, largest D-M-D angle)`` at metal m.
 
-    ⚠ WARUM BEIDES UND NICHT NUR DIE ZAHL.  Der erste Entwurf zaehlte nur Paare
-    ueber 150 Grad -- und der eigene Selbsttest hat ihn widerlegt: ein HALBER
-    Bailar-Twist (30 Grad) bewegt einen trans-Winkel von 180 auf 155,6 Grad, bleibt
-    also ueber der Schwelle, waehrend ein ganzer Twist (60 Grad) auf 131,8 faellt.
-    Gemessen ist aber genau der halbe -- die CShM-Masse der 1061 Faelle liegt bei
-    8 bis 12 statt bei 16,7.  Eine Schwellenzaehlung haette den gemessenen Defekt
-    komplett uebersehen und dabei "keine Verletzung" gemeldet.
-    Der groesste Winkel faellt beim halben Twist um 24,4 Grad und ist damit das
-    richtige Mass; die Zaehlung bleibt als zweites, grobes Signal daneben.
+    ⚠ WHY BOTH AND NOT ONLY THE COUNT.  The first draft counted only pairs
+    above 150 degrees -- and its own self-test refuted it: a HALF
+    Bailar twist (30 degrees) moves a trans angle from 180 to 155.6 degrees, so it
+    stays above the threshold, whereas a full twist (60 degrees) drops to 131.8.
+    But what is measured is precisely the half one -- the CShM mass of the 1061 cases
+    lies at 8 to 12 instead of at 16.7.  A threshold count would have missed the measured
+    defect completely and reported "no violation" while doing so.
+    The largest angle drops by 24.4 degrees under the half twist and is therefore the
+    right measure; the count stays alongside as a second, coarse signal.
     """
     n, mx = 0, 0.0
     for a in range(len(donors)):
@@ -199,7 +199,7 @@ def _trans_stats(P, m: int, donors, tmin_deg: float) -> Tuple[int, float]:
 
 
 def _oop(P, c: int, a: int, b: int, d: int) -> Optional[float]:
-    """Abstand des Zentrums c von der Ebene durch a,b,d (Angstroem)."""
+    """Distance of the centre c from the plane through a,b,d (Angstrom)."""
     try:
         nrm = np.cross(P[b] - P[a], P[d] - P[a])
         ln = float(np.linalg.norm(nrm))
@@ -211,10 +211,10 @@ def _oop(P, c: int, a: int, b: int, d: int) -> Optional[float]:
 
 
 def violations(assertion: Optional[Dict], xyz_after: str) -> Optional[Dict]:
-    """Welche Zusicherungen hat ein spaeterer Frame GEBROCHEN, und wie stark?
+    """Which assertions has a later frame BROKEN, and how strongly?
 
-    Gibt Zaehler und die groessten Abweichungen.  ``None``, wenn nicht vergleichbar
-    (andere Atomzahl -- dann ist es kein "spaeterer Frame desselben Baus").
+    Returns counters and the largest deviations.  ``None`` if not comparable
+    (different atom count -- then it is not a "later frame of the same build").
     """
     if not assertion or xyz_after is None or (
             not isinstance(xyz_after, tuple) and not xyz_after):
@@ -257,9 +257,9 @@ def violations(assertion: Optional[Dict], xyz_after: str) -> Optional[Dict]:
             n_fr += 1
             worst_fr = max(worst_fr, mv)
 
-    # TRANS-PAARE: nur der VERLUST zaehlt.  Ein Pass, der aus einem verzerrten Frame ein
-    # regelmaessigeres macht, gewinnt Paare hinzu -- das ist kein Bruch, das ist der
-    # Zweck der Relaxation.  Nur die Gegenrichtung ist der gemessene Defekt.
+    # TRANS PAIRS: only the LOSS counts.  A pass that turns a distorted frame into a
+    # more regular one gains pairs -- that is not a break, that is the
+    # purpose of the relaxation.  Only the opposite direction is the measured defect.
     _tmin = _env_float("DELFIN_ASSERT_TRANS_MIN_DEG", _TRANS_MIN_DEG)
     _tdrop = _env_float("DELFIN_ASSERT_TRANS_DROP_DEG", _TRANS_DROP_DEG)
     n_tr, worst_tr = 0, 0.0
@@ -289,18 +289,18 @@ def violations(assertion: Optional[Dict], xyz_after: str) -> Optional[Dict]:
 
 
 def holds(assertion: Optional[Dict], xyz_after: str) -> bool:
-    """True, wenn der spaetere Frame KEINE Zusicherung bricht.
+    """True if the later frame breaks NO assertion.
 
-    Fuer einen umformenden Pass, der sich selbst pruefen will, BEVOR er sein Ergebnis
-    zurueckgibt -- statt dass jeder Mechanismus seine eigene Teil-Invariante nachbaut.
-    Nicht vergleichbar -> True (ein Pruefer, der nicht pruefen kann, darf nichts blockieren).
+    For a reshaping pass that wants to check itself BEFORE it returns its
+    result -- instead of every mechanism rebuilding its own partial invariant.
+    Not comparable -> True (a checker that cannot check must not block anything).
     """
     v = violations(assertion, xyz_after)
     return True if v is None else not v["any_broken"]
 
 
 # ---------------------------------------------------------------------------
-# Selbsttest:  python delfin/manta/_frame_assertions.py
+# Self-test:  python delfin/manta/_frame_assertions.py
 # ---------------------------------------------------------------------------
 def _self_test() -> int:
     def _xyz(rows):
@@ -310,7 +310,7 @@ def _self_test() -> int:
         return "\n".join(out) + "\n"
 
     fails = 0
-    # Ein quadratisch-planarer Pt mit zwei Cl und zwei N, dazu ein planares sp2-C.
+    # A square-planar Pt with two Cl and two N, plus a planar sp2 C.
     base = _xyz([("Pt", 0.0, 0.0, 0.0),
                  ("Cl", 2.30, 0.0, 0.0), ("Cl", -2.30, 0.0, 0.0),
                  ("N", 0.0, 2.05, 0.0), ("N", 0.0, -2.05, 0.0),
@@ -323,14 +323,14 @@ def _self_test() -> int:
           f"  {'OK' if ok else 'FEHLER'}")
     fails += 0 if ok else 1
 
-    # 2) Derselbe Frame bricht nichts.
+    # 2) The same frame breaks nothing.
     v = violations(a, base)
     ok = v is not None and not v["any_broken"]
     print(f"2 identischer Frame bricht nichts: {'OK' if ok else 'FEHLER'}")
     fails += 0 if ok else 1
 
-    # 3) EINE M-D-Bindung um 0,4 A verkuerzt -> md_broken UND frozen_moved.
-    #    (Genau der me42d-Fall: ein Atom gezogen, Rest steht.)
+    # 3) ONE M-D bond shortened by 0.4 A -> md_broken AND frozen_moved.
+    #    (Exactly the me42d case: one atom pulled, the rest stays put.)
     pulled = _xyz([("Pt", 0.0, 0.0, 0.0),
                    ("Cl", 1.90, 0.0, 0.0), ("Cl", -2.30, 0.0, 0.0),
                    ("N", 0.0, 2.05, 0.0), ("N", 0.0, -2.05, 0.0),
@@ -342,8 +342,8 @@ def _self_test() -> int:
           f"frozen_moved={v['frozen_moved']}  {'OK' if ok else 'FEHLER'}")
     fails += 0 if ok else 1
 
-    # 4) Ein planares sp2-C pyramidalisiert -> planar_broken.
-    #    (Genau der dhyb1-Fall: 463 planar_pyramidalised.)
+    # 4) A planar sp2 C pyramidalises -> planar_broken.
+    #    (Exactly the dhyb1 case: 463 planar_pyramidalised.)
     pyr = _xyz([("Pt", 0.0, 0.0, 0.0),
                 ("Cl", 2.30, 0.0, 0.0), ("Cl", -2.30, 0.0, 0.0),
                 ("N", 0.0, 2.05, 0.0), ("N", 0.0, -2.05, 0.0),
@@ -355,10 +355,10 @@ def _self_test() -> int:
           f"worst={v['planar_worst']}  {'OK' if ok else 'FEHLER'}")
     fails += 0 if ok else 1
 
-    # 5) Eine STARRE DREHUNG des ganzen Frames bricht NICHTS -- die Zusicherung darf
-    #    nicht auf Koordinaten, sondern nur auf Geometrie reagieren.  ⚠ Ausnahme:
-    #    `frozen` vergleicht Positionen, also muss die Drehung dort anschlagen; das ist
-    #    korrekt und gewollt (ein eingefrorenes Atom SOLL sich nicht bewegen).
+    # 5) A RIGID ROTATION of the whole frame breaks NOTHING -- the assertion must
+    #    react not to coordinates but only to geometry.  ⚠ Exception:
+    #    `frozen` compares positions, so the rotation has to trigger there; that is
+    #    correct and intended (a frozen atom is SUPPOSED not to move).
     import math
     th = math.radians(37.0)
     rot = []
@@ -373,32 +373,32 @@ def _self_test() -> int:
           f"(frozen_moved={v['frozen_moved']}, erwartet >0)  {'OK' if ok else 'FEHLER'}")
     fails += 0 if ok else 1
 
-    # 6) holds() als Schutzschild fuer einen umformenden Pass.
+    # 6) holds() as a shield for a reshaping pass.
     ok = holds(a, base) and not holds(a, pulled)
     print(f"6 holds() trennt sauber: {'OK' if ok else 'FEHLER'}")
     fails += 0 if ok else 1
 
-    # 7) Andere Atomzahl -> nicht vergleichbar -> None, und holds() blockiert NICHT.
+    # 7) Different atom count -> not comparable -> None, and holds() does NOT block.
     ok = violations(a, _xyz(rot[:5])) is None and holds(a, _xyz(rot[:5]))
     print(f"7 nicht vergleichbar -> None, holds() blockiert nicht: {'OK' if ok else 'FEHLER'}")
     fails += 0 if ok else 1
 
-    # 8) DER GEMESSENE DEFEKT: Oktaeder -> halber Bailar-Twist.  Ein reines OC-6 hat drei
-    #    Trans-Paare; dreht man das untere Dreieck um 30 Grad Richtung Prisma, verliert es
-    #    alle drei.  Genau das ist die Bewegung, die 988 Systeme netto ins Prisma traegt
-    #    (McNemar X2 = 860,8 auf 30921 Systemen), und ihre CShM-Masse liegt bei 8 bis 12
-    #    statt 16,7 -- also HALBER Twist, nicht ganzer.
+    # 8) THE MEASURED DEFECT: octahedron -> half Bailar twist.  A pure OC-6 has three
+    #    trans pairs; turning the lower triangle by 30 degrees towards the prism loses
+    #    all three.  That is exactly the movement that carries a net 988 systems into the
+    #    prism (McNemar X2 = 860.8 on 30921 systems), and its CShM mass lies at 8 to 12
+    #    instead of 16.7 -- so a HALF twist, not a full one.
     def _oct(twist_deg):
         rows = [("Fe", 0.0, 0.0, 0.0)]
-        r, zh = 2.00, 1.1547           # r*cos(54,7 Grad); ergibt exakt 90/180 Grad
-        rho = 1.63299                  # r*sin(54,7 Grad)
+        r, zh = 2.00, 1.1547           # r*cos(54.7 degrees); yields exactly 90/180 degrees
+        rho = 1.63299                  # r*sin(54.7 degrees)
         for k, (ph, zs) in enumerate([(0.0, +1), (120.0, +1), (240.0, +1),
                                       (60.0, -1), (180.0, -1), (300.0, -1)]):
             a = math.radians(ph + (twist_deg if zs < 0 else 0.0))
             rows.append(("N", rho * math.cos(a), rho * math.sin(a), zs * zh))
         return _xyz(rows)
     a8 = derive(_oct(0.0))
-    v8 = violations(a8, _oct(30.0))            # 30 Grad = halbe Strecke zum Prisma
+    v8 = violations(a8, _oct(30.0))            # 30 degrees = halfway to the prism
     v8b = violations(a8, _oct(0.0))
     ok = (a8 is not None and a8["trans"].get(0, (0, 0.0))[0] == 3
           and abs(a8["trans"][0][1] - 180.0) < 0.5

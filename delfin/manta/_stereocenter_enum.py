@@ -61,29 +61,28 @@ _SIGN_EPS = 1e-6
 # specific.  (Chalcogen / other centres are a separate axis needing their own eye + validation.)
 _STEREO_DONOR_ELEMENTS = frozenset({"N", "P", "As", "Sb", "Bi"})
 
-# ===== CHALKOGENE: DIE ZWEITE HAELFTE DERSELBEN ACHSE (20.08.2026) =====
-# Der Ausschluss oben sagt "Oxygen / chalcogen X-H stereocentres invert essentially
-# barrierlessly" und belegt ihn mit ZWEI Faellen: WIPHOW [OOOO] und JAJMUG [CC].  Das sind
-# SAUERSTOFF und KOHLENSTOFF.  **Schwefel und Selen wurden nie geprueft** -- sie sind per
-# Analogie unter "chalcogen" mitgefallen, und die Analogie ist chemisch schwach: die
-# Inversionsbarriere am KOORDINIERTEN Thioether liegt weit ueber der am Ether, weshalb
-# S-konfigurierte Komplexe als getrennte Diastereomere isolierbar sind.  Die Zeile oben
-# raeumt es selbst ein: "Chalcogen / other centres are a separate axis needing their own
-# eye + validation".
+# ===== CHALCOGENS: THE SECOND HALF OF THE SAME AXIS (20.08.2026) =====
+# The exclusion above says "Oxygen / chalcogen X-H stereocentres invert essentially
+# barrierlessly" and backs it with TWO cases: WIPHOW [OOOO] and JAJMUG [CC].  Those are
+# OXYGEN and CARBON.  **Sulfur and selenium were never tested** -- they were swept along
+# under "chalcogen" by analogy, and the analogy is chemically weak: the inversion barrier
+# at a COORDINATED thioether lies far above the one at an ether, which is why S-configured
+# complexes are isolable as separate diastereomers.  The line above admits it itself:
+# "Chalcogen / other centres are a separate axis needing their own eye + validation".
 #
-# 🔑 DAS AUGE FORDERT SIE BEREITS.  find_isomer_coverage._stereo_kind ist per Vorgabe
-# ELEMENTFREI (:759) -- es zaehlt jeden Donor als Zentrum und verlangt beide Faltungen.
-# Dort steht dazu: "on 38 of the 83 systems that carry a sign it demands a fold ... the
+# 🔑 THE EYE ALREADY DEMANDS THEM.  find_isomer_coverage._stereo_kind is by default
+# ELEMENT-FREE (:759) -- it counts every donor as a centre and demands both folds.
+# It says there: "on 38 of the 83 systems that carry a sign it demands a fold ... the
 # builder deliberately refuses to make.  Two instruments, never held against each other."
-# Gemessene Folge: Systeme mit solchem Zentrum realisieren das Naturisomer in 52 % der
-# Faelle gegen 90 % sonst.  Diese Achse schliesst die Haelfte des Streits, fuer die es
-# KEIN Gegenbeispiel gibt -- O und C bleiben ausgeschlossen.
+# Measured consequence: systems with such a centre realise the natural isomer in 52 % of
+# cases against 90 % otherwise.  This axis closes the half of the dispute for which there
+# is NO counterexample -- O and C stay excluded.
 #
-# NENNER, vor dem Bau gemessen (harness/prochiral_zensus.py auf pool_full_10000):
-#   272 von 10000 Systemen = 2,72 % tragen >=1 unterscheidbares Chalkogen-Zentrum
-#   457 Zentren, davon 410 = 89,7 % mit hoechstens EINEM Arm im Chelatring
-#   (zum Vergleich: die schon abgedeckten Pnictogene sind nur zu 34,9 % so guenstig)
-# Eichung des Zensus: Pnictogene 3,42 % gegen den bekannten Zensus 3,03 %.
+# DENOMINATOR, measured before building (harness/prochiral_zensus.py on pool_full_10000):
+#   272 of 10000 systems = 2.72 % carry >=1 distinguishable chalcogen centre
+#   457 centres, of which 410 = 89.7 % have at most ONE arm in the chelate ring
+#   (for comparison: the pnictogens already covered are only 34.9 % that favourable)
+# Calibration of the census: pnictogens 3.42 % against the known census of 3.03 %.
 _STEREO_CHALCOGEN_ELEMENTS = frozenset({"S", "Se"})
 
 
@@ -190,11 +189,11 @@ def _center_plane_normal(pts: np.ndarray, c: dict):
     and D, so it exactly negates the triple product.  Returns None if the plane is degenerate."""
     D = pts[c["d"]]
     M = pts[c["m"]]
-    # `plane_ref` waehlt die IN-EBENE-Referenz getrennt von `keyed`.  Gebraucht wird das nur
-    # vom Chalkogenzweig mit EINEM Chelatarm: dort muss die Ebene den CHELATARM enthalten,
-    # damit der Ring exakt stehenbleibt und nur der freie Arm kippt.  `keyed` bleibt davon
-    # unberuehrt, weil es die Vorzeichenkonvention des Auges traegt.  Fehlt der Schluessel,
-    # ist der Ausdruck buchstaeblich der alte -> byte-identisch.
+    # `plane_ref` selects the IN-PLANE reference separately from `keyed`.  Only the chalcogen
+    # branch with ONE chelate arm needs it: there the plane must contain the CHELATE ARM so
+    # that the ring stays exactly in place and only the free arm tips over.  `keyed` is left
+    # untouched by this, because it carries the eye's sign convention.  If the key is absent,
+    # the expression is literally the old one -> byte-identical.
     ref = (np.mean(pts[c["heavy"]], axis=0) if c["type"] == "XH"
            else pts[c.get("plane_ref", c["keyed"][0])])
     n = np.cross(M - D, ref - D)
@@ -217,24 +216,24 @@ def _find_centers(syms: List[str], pts: np.ndarray, nbrs: List[List[int]],
     def _pkey(x):
         return (syms[x], tuple(sorted(syms[y] for y in nbrs[x] if y not in metal_set)))
     centers: List[dict] = []
-    # ===== SB UND BI STANDEN IN DER DONORLISTE UND WURDEN ALS METALL UEBERSPRUNGEN =====
-    # Gemessen 18.08.2026 auf 620 Diastereomer-Faellen: _STEREO_DONOR_ELEMENTS (:61) fuehrt
-    # N, P, As, Sb, Bi -- aber ``metal_set`` kommt aus _coord_angle_corrector._is_metal_sym,
-    # und dessen _METAL_Z_RANGES (:69-73) enthaelt Z 51 (Sb) und Z 83 (Bi).  Die
-    # Metallpruefung steht ZWEI ZEILEN VOR der Elementpruefung, also waren Sb und Bi
-    # unerreichbar: sie sind in der Liste, aber der Pfad kommt nie bei ihnen an.  Wirksam
-    # war {N, P, As}, nicht {N, P, As, Sb, Bi}.
-    # Betroffen: 33 Zentren in 26 Systemen, davon 19 freie SbR3-Donoren ohne Ring -- genau
-    # der XR-Fall, fuer den der Zweig unten gebaut wurde.
+    # ===== SB AND BI WERE IN THE DONOR LIST AND WERE SKIPPED AS METAL =====
+    # Measured 18.08.2026 on 620 diastereomer cases: _STEREO_DONOR_ELEMENTS (:61) lists
+    # N, P, As, Sb, Bi -- but ``metal_set`` comes from _coord_angle_corrector._is_metal_sym,
+    # and its _METAL_Z_RANGES (:69-73) contains Z 51 (Sb) and Z 83 (Bi).  The metal check
+    # stands TWO LINES BEFORE the element check, so Sb and Bi were unreachable: they are in
+    # the list, but the path never arrives at them.  What was in effect was {N, P, As},
+    # not {N, P, As, Sb, Bi}.
+    # Affected: 33 centres in 26 systems, of which 19 are free SbR3 donors without a ring --
+    # exactly the XR case the branch below was built for.
     #
-    # DELFIN_STEREOCENTER_PNICTOGEN_METALLOID (Vorgabe 0 -> byte-identisch) laesst die
-    # Elementpruefung vorgehen.  Ein Sb, das SELBST das Zentralmetall ist, faellt trotzdem
-    # heraus: der Test ``ms`` weiter unten verlangt einen Metallnachbarn, und die Nachbarn
-    # eines Zentralmetalls sind Donoren.
+    # DELFIN_STEREOCENTER_PNICTOGEN_METALLOID (default 0 -> byte-identical) lets the element
+    # check take precedence.  An Sb that is ITSELF the central metal still drops out: the
+    # test ``ms`` further down demands a metal neighbour, and the neighbours of a central
+    # metal are donors.
     _pnict_metalloid = (os.environ.get(
         "DELFIN_STEREOCENTER_PNICTOGEN_METALLOID", "0") == "1")
-    # Vorgabe 0 -> `_donor_elems` IST `_STEREO_DONOR_ELEMENTS`, der Chalkogenzweig unten ist
-    # unerreichbar, und der Lauf bleibt byte-identisch.
+    # Default 0 -> `_donor_elems` IS `_STEREO_DONOR_ELEMENTS`, the chalcogen branch below is
+    # unreachable, and the run stays byte-identical.
     _chalc = (os.environ.get("DELFIN_STEREOCENTER_CHALCOGEN", "0") == "1")
     _donor_elems = (_STEREO_DONOR_ELEMENTS | _STEREO_CHALCOGEN_ELEMENTS) if _chalc \
         else _STEREO_DONOR_ELEMENTS
@@ -243,7 +242,7 @@ def _find_centers(syms: List[str], pts: np.ndarray, nbrs: List[List[int]],
                                    and syms[d] in _donor_elems):
             continue
         if syms[d] not in _donor_elems:
-            continue                                   # nur stabile Donorzentren
+            continue                                   # stable donor centres only
         nb = nbrs[d]
         ms = [x for x in nb if x in metal_set]
         if not ms:
@@ -268,30 +267,30 @@ def _find_centers(syms: List[str], pts: np.ndarray, nbrs: List[List[int]],
         elif (_chalc and syms[d] in _STEREO_CHALCOGEN_ELEMENTS
               and len(hs) == 0 and len(heavy) == 2
               and len({_pkey(x) for x in heavy}) == 2):
-            # ===== CHALKOGEN: ZWEI ARME + METALL + FREIES ELEKTRONENPAAR =====
-            # Pyramidal wie ein Pnictogen, aber mit einem Arm weniger.  Die Inversion
-            # schiebt das freie Paar auf die andere Seite -- das Metall wechselt die
-            # Flaeche.  Drei Faelle, und nur der Chelatring entscheidet, nicht "im Ring":
+            # ===== CHALCOGEN: TWO ARMS + METAL + LONE PAIR =====
+            # Pyramidal like a pnictogen, but with one arm fewer.  The inversion pushes
+            # the lone pair to the other side -- the metal switches faces.  Three cases,
+            # and only the chelate ring decides, not "in a ring":
             chel = [x for x in heavy if _reaches_metal(nbrs, x, d, metal_set)]
             if len(chel) == 2:
-                # BEIDE Arme fuehren zum Metall zurueck.  Dann ist die "Inversion" nichts
-                # anderes als die RINGFALTUNG des Chelats -- sie gehoert auf die
-                # Faltungsachse (DELFIN_STEREOCENTER_FAMILY_PARTITION), nicht hierher.
-                # Beides zu bauen waere doppelt gezaehlte Vollstaendigkeit.
-                # Gemessen: nur 47 von 457 Zentren, also 10,3 %.
+                # BOTH arms lead back to the metal.  Then the "inversion" is nothing
+                # other than the RING FOLD of the chelate -- it belongs on the fold
+                # axis (DELFIN_STEREOCENTER_FAMILY_PARTITION), not here.  Building
+                # both would be double-counted completeness.
+                # Measured: only 47 of 457 centres, i.e. 10.3 %.
                 continue
             blocked = {d} | metal_set
             subs = [_subtree(nbrs, x, blocked) for x in heavy]
             if len(subs[0] | subs[1]) != sum(len(s) for s in subs):
-                continue                               # Arme haengen zusammen (Carbocyclus)
-            keyed = sorted(heavy, key=_pkey)           # Reihenfolge == die des Auges
+                continue                               # arms interconnect (carbocycle)
+            keyed = sorted(heavy, key=_pkey)           # order == the eye's
             if len(chel) == 1:
-                # EIN Arm im Chelat: der Ring bleibt STEHEN, gespiegelt wird nur der freie
-                # Arm an der Ebene durch M, D und den Chelatarm.  _center_plane_normal haelt
-                # M und D fest, also ist das eine echte Isometrie -- innere Ligandgeometrie
-                # unberuehrt, Preis +0,98 pp.  `plane_ref` waehlt die Ebene, `keyed` bleibt
-                # die Reihenfolge des Auges: wuerde man dafuer umsortieren, kippte das
-                # Vorzeichen im Kreuzprodukt und der Bau widerspraeche dem Fingerabdruck.
+                # ONE arm in the chelate: the ring STAYS in place, only the free arm is
+                # mirrored across the plane through M, D and the chelate arm.
+                # _center_plane_normal holds M and D fixed, so this is a true isometry --
+                # inner ligand geometry untouched, price +0.98 pp.  `plane_ref` selects the
+                # plane, `keyed` stays the eye's order: re-sorting for this would flip the
+                # sign in the cross product and the build would contradict the fingerprint.
                 frei = [x for x in heavy if x not in chel][0]
                 centers.append({"type": "XR", "d": d, "m": ms[0], "heavy": heavy,
                                 "keyed": keyed, "plane_ref": chel[0],
@@ -478,81 +477,78 @@ def _build_fold(A: dict, target: List[str], h_heavy_min: float, h_h_min: float):
 
 
 # ---------------------------------------------------------------------------
-# MEHRZENTREN-FALTUNGEN JENSEITS VON KMAX (DELFIN_STEREOCENTER_MULTI_CENTRE)
+# MULTI-CENTRE FOLDS BEYOND KMAX (DELFIN_STEREOCENTER_MULTI_CENTRE)
 # ---------------------------------------------------------------------------
 #
-# DER BEFUND (18.08.2026).  Das Korpus traegt KEINE Stereochemie: 9 von 129 314
-# SMILES.  Haendigkeit ist damit zu 100 % ERZEUGUNGSPFLICHT -- es gibt nichts zu
-# uebertragen.  Die Fehlrate ist flach (sp3 20,7 % / Metall 22,4 %), also ist eine
-# ALLGEMEINE Erzeugung gefragt und keine Sonderregel.  620 Diastereomer-Teilfaelle
-# deckt heute kein Mechanismus ab.
+# THE FINDING (18.08.2026).  The corpus carries NO stereochemistry: 9 of 129 314
+# SMILES.  Handedness is therefore 100 % a GENERATION DUTY -- there is nothing to
+# carry over.  The failure rate is flat (sp3 20.7 % / metal 22.4 %), so what is
+# called for is GENERAL generation and not a special rule.  620 diastereomer
+# sub-cases are covered by no mechanism today.
 #
-# DIE LUECKE STEHT IN EINER EINZIGEN VERZWEIGUNG.  Bei k > KMAX faellt die
-# Enumeration von 2^k auf k zurueck -- "single-centre flips only".  Ein Einzelflip
-# ist per Definition der Fall, in dem sich GENAU EIN Zentrum unterscheidet.  Ein
-# Diastereomer, das sich an ZWEI oder mehr Zentren unterscheidet, ist danach nicht
-# mehr im Topf.  Der Rueckfall wirft also nicht "ein paar seltene" Faelle weg,
-# sondern der Bauart nach GENAU die Mehrzentren-Diastereomere -- und das ist die
-# Klasse, die oben als ungedeckt gemessen wurde.
+# THE GAP SITS IN A SINGLE BRANCH.  For k > KMAX the enumeration falls back from
+# 2^k to k -- "single-centre flips only".  A single flip is by definition the case
+# in which EXACTLY ONE centre differs.  A diastereomer that differs at TWO or more
+# centres is no longer in the pot after that.  So the fallback does not throw away
+# "a few rare" cases, but by construction EXACTLY the multi-centre diastereomers --
+# and that is the class that was measured above as uncovered.
 #
-# DIE ANTWORT IST AUSDUENNEN, NICHT WEGWERFEN.  2^k ist bei k = 12 schon 4096 und
-# damit jenseits jedes Deckels; die Frage ist nie "alle oder keine", sondern WELCHE
-# Teilmenge.  Diese Auswahl muss zwei Eigenschaften haben:
+# THE ANSWER IS THINNING, NOT DISCARDING.  2^k is already 4096 at k = 12 and thus
+# beyond any cap; the question is never "all or none", but WHICH subset.  This
+# selection must have two properties:
 #
-#   1. DETERMINISTISCH.  Das Projekt prueft Byte-Determinismus ganzer Pools.  Eine
-#      Menge (`set`) in der AUSGABEREIHENFOLGE laesst den Lauf durchfallen, darum
-#      steht `seen` hier nur in der Dublettenpruefung, nie in der Reihenfolge.
+#   1. DETERMINISTIC.  The project checks byte-determinism of whole pools.  A set
+#      (`set`) in the OUTPUT ORDER makes the run fail, which is why `seen` here
+#      appears only in the duplicate check, never in the ordering.
 #
-#   2. AUSGEWOGEN -- und genau das kann die naheliegende Loesung nicht.  Nimmt man
-#      `itertools.combinations` in lexikographischer Ordnung und schneidet beim
-#      Deckel ab, dann sind bei k = 10 und Deckel 32 die Paare (0,1)..(0,9),
-#      (1,2)..(1,9), (2,3)..(2,9), (3,4)..(3,9), (4,5), (4,6).  Beteiligung je
-#      Zentrum, gemessen im Selbsttest: [9, 9, 9, 9, 6, 5, 5, 4, 4, 4] -- die
-#      hinteren Donoren kommen weniger als halb so oft vor, und ein Tripel kommt
-#      nie.  Der Deckel waere damit keine Kuerzung, sondern eine stille VORAUSWAHL
-#      zugunsten der niedrigen Donorindizes -- also derselbe Fehler, den
-#      `dofs = dofs[:4]` und `_WELL_MAX_SIBLINGS = 12` schon gemacht haben.
+#   2. BALANCED -- and that is exactly what the obvious solution cannot do.  Take
+#      `itertools.combinations` in lexicographic order and cut off at the cap, and
+#      at k = 10 with cap 32 the pairs are (0,1)..(0,9), (1,2)..(1,9), (2,3)..(2,9),
+#      (3,4)..(3,9), (4,5), (4,6).  Participation per centre, measured in the
+#      self-test: [9, 9, 9, 9, 6, 5, 5, 4, 4, 4] -- the rear donors appear less
+#      than half as often, and a triple never appears.  The cap would then be no
+#      truncation but a silent PRE-SELECTION in favour of the low donor indices --
+#      i.e. the same mistake that `dofs = dofs[:4]` and `_WELL_MAX_SIBLINGS = 12`
+#      already made.
 #
-# ZIRKULANT STATT LEXIKOGRAPHISCH.  Eine Kombination wird als STARTINDEX i plus
-# SCHRITTVEKTOR (s_1..s_{r-1}) modulo k erzeugt.  Fuer festen Schrittvektor laeuft
-# i ueber alle k Zentren, also steht jedes Zentrum in genau r Kombinationen dieser
-# Familie -- die Auswahl ist nach JEDER vollen Familie exakt ausgewogen und
-# innerhalb einer angefangenen Familie um hoechstens eine Kombination unausgewogen.
-# Der Deckel kuerzt damit gleichmaessig statt einseitig.  Gemessen im Selbsttest:
-# k = 10, Deckel 32 -> Beteiligung je Zentrum [8, 7, 7, 7, 8, 7, 7, 7, 7, 7]
-# (der Antipode steuert jedem Zentrum die eine bei, die zirkulanten Paare den Rest).
+# CIRCULANT INSTEAD OF LEXICOGRAPHIC.  A combination is generated as a START INDEX i
+# plus a STEP VECTOR (s_1..s_{r-1}) modulo k.  For a fixed step vector, i runs over
+# all k centres, so every centre appears in exactly r combinations of this family
+# -- the selection is exactly balanced after EVERY complete family and unbalanced
+# by at most one combination within a family that has been started.  The cap thus
+# truncates evenly instead of one-sidedly.  Measured in the self-test:
+# k = 10, cap 32 -> participation per centre [8, 7, 7, 7, 8, 7, 7, 7, 7, 7]
+# (the antipode contributes the one to every centre, the circulant pairs the rest).
 #
-# REIHENFOLGE (die Ausduennung schneidet immer von HINTEN, also stehen die am
-# besten begruendeten Ziele vorn):
-#   * zuerst alle k EINZELFLIPS -- unveraendert, damit jedes Zentrum weiterhin
-#     garantiert beide Vorzeichen ANGEBOTEN bekommt (das Vollstaendigkeitsgesetz);
-#   * dann der ANTIPODE (alle k Zentren gekippt).  Er ist die einzige
-#     Mehrfachkombination, deren Partner CHEMISCH GARANTIERT existiert: das
-#     antipodische Vorzeichenmuster ist die enantiomere Konfiguration der Basis,
-#     gleiche Energie, gleiche Sterik.  Er steht vor den Paaren, damit kein Deckel
-#     ihn je wegschneiden kann;
-#   * dann Paare, dann Tripel, ... , jeweils zirkulante Familien nach Schrittsumme
-#     (enge Nachbarschaften zuerst) und lexikographisch innerhalb der Summe.
-#     Kleine Flipzahlen zuerst, weil eine Faltung mit weniger gleichzeitig
-#     gekippten Zentren die Klemmpruefung `_flip_clash` haeufiger ueberlebt.
+# ORDER (the thinning always cuts from the BACK, so the best-justified targets
+# stand at the front):
+#   * first all k SINGLE FLIPS -- unchanged, so that every centre is still
+#     guaranteed to be OFFERED both signs (the completeness law);
+#   * then the ANTIPODE (all k centres flipped).  It is the only multi-combination
+#     whose partner is CHEMICALLY GUARANTEED to exist: the antipodal sign pattern
+#     is the enantiomeric configuration of the base, same energy, same sterics.
+#     It stands before the pairs so that no cap can ever cut it away;
+#   * then pairs, then triples, ... , each as circulant families by step sum
+#     (tight neighbourhoods first) and lexicographic within the sum.
+#     Small flip counts first, because a fold with fewer simultaneously flipped
+#     centres survives the clash check `_flip_clash` more often.
 #
-# VOLLSTAENDIGKEIT BLEIBT ERREICHBAR: die Erzeugung laeuft ueber ALLE r-Teilmengen
-# (jede r-Teilmenge von Z_k ist eine Rotation eines Schrittvektors mit Summe <= k-1),
-# der Deckel ist also eine TRUNKIERUNG einer vollstaendigen Aufzaehlung und keine
-# eingeschraenkte Familie.  Der Selbsttest prueft genau das: mit grossem Deckel
-# kommen bei k = 5 exakt die 2^5 - 1 - 5 = 26 Mehrfachkombinationen heraus.
+# COMPLETENESS STAYS REACHABLE: the generation runs over ALL r-subsets (every
+# r-subset of Z_k is a rotation of a step vector with sum <= k-1), so the cap is a
+# TRUNCATION of a complete enumeration and not a restricted family.  The self-test
+# checks exactly that: with a large cap, k = 5 yields exactly the
+# 2^5 - 1 - 5 = 26 multi-combinations.
 #
-# ⚠ VORGABE AUS.  Mit DELFIN_STEREOCENTER_MULTI_CENTRE = 0 ist `_fold_targets` in
-# BEIDEN Zweigen zeichengleich mit dem alten Code, inklusive der alten Warnung.
+# ⚠ DEFAULT OFF.  With DELFIN_STEREOCENTER_MULTI_CENTRE = 0, `_fold_targets` is
+# character-identical to the old code in BOTH branches, including the old warning.
 
 def _step_vectors(m: int, span: int):
-    """Alle Schrittvektoren (s_1..s_m) mit s_j >= 1 und Summe <= ``span``, faul
-    erzeugt und stabil sortiert nach (Summe, lexikographisch).
+    """All step vectors (s_1..s_m) with s_j >= 1 and sum <= ``span``, generated
+    lazily and stably sorted by (sum, lexicographic).
 
-    Die Summe steht vorn, weil sie der Spannweite der Kombination auf dem Kreis der
-    Zentren entspricht: enge Gruppen zuerst.  Kompositionen werden ueber Schnitt-
-    punkte erzeugt (`combinations` ist lexikographisch, also ist es die Ausgabe
-    auch)."""
+    The sum comes first because it corresponds to the span of the combination on
+    the circle of centres: tight groups first.  Compositions are generated via cut
+    points (`combinations` is lexicographic, so the output is too)."""
     if m < 1:
         return
     for total in range(m, span + 1):
@@ -567,18 +563,18 @@ def _step_vectors(m: int, span: int):
 
 
 def _multi_flip_combos(k: int, limit: int) -> List[Tuple[int, ...]]:
-    """Deterministische, ausgewogene Auswahl von MEHRFACHFLIP-Kombinationen ueber k
-    Zentren: aufsteigend sortierte Indextupel der Laenge >= 2, hoechstens ``limit``
-    Stueck, in der oben begruendeten Reihenfolge (Antipode, dann zirkulante Paare,
-    Tripel, ...).  Faul erzeugt -- bei grossem k wird nie die volle Potenzmenge
-    aufgebaut, es wird beim Deckel abgebrochen."""
+    """Deterministic, balanced selection of MULTI-FLIP combinations over k centres:
+    ascending-sorted index tuples of length >= 2, at most ``limit`` of them, in the
+    order justified above (antipode, then circulant pairs, triples, ...).  Generated
+    lazily -- for large k the full power set is never built up, generation stops at
+    the cap."""
     out: List[Tuple[int, ...]] = []
     if k < 2 or limit <= 0:
         return out
-    seen = set()                                   # NUR Dublettenpruefung, nie Reihenfolge
+    seen = set()                                   # duplicate check ONLY, never ordering
 
     def _emit_combo(idx) -> bool:
-        """Nimmt eine Kombination auf; True heisst 'Deckel erreicht, aufhoeren'."""
+        """Takes in one combination; True means 'cap reached, stop'."""
         t = tuple(sorted(idx))
         if len(t) < 2 or t in seen:
             return False
@@ -586,9 +582,9 @@ def _multi_flip_combos(k: int, limit: int) -> List[Tuple[int, ...]]:
         out.append(t)
         return len(out) >= limit
 
-    if _emit_combo(range(k)):                      # der Antipode zuerst -- unkuerzbar
+    if _emit_combo(range(k)):                      # the antipode first -- cannot be cut
         return out
-    for r in range(2, k):                          # r == k ist der Antipode, schon drin
+    for r in range(2, k):                          # r == k is the antipode, already in
         for steps in _step_vectors(r - 1, k - 1):
             for i in range(k):
                 idx = [i]
@@ -597,20 +593,20 @@ def _multi_flip_combos(k: int, limit: int) -> List[Tuple[int, ...]]:
                     pos = (pos + s) % k
                     idx.append(pos)
                 if len(set(idx)) != r:
-                    continue                       # kann bei Summe <= k-1 nicht auftreten
+                    continue                       # cannot occur with sum <= k-1
                 if _emit_combo(idx):
                     return out
     return out
 
 
 def _fold_targets(base: List[str], kmax: int, multi_centre: int, multi_max: int):
-    """Die Zielvorzeichenmuster fuer EINE Anordnungsfamilie.
+    """The target sign patterns for ONE arrangement family.
 
-    Rueckgabe ``(targets, multi_info)``.  ``multi_info`` ist None, wenn dieser
-    Aufruf nichts ausgeduennt hat (k <= KMAX, oder Schalter aus -- dann ist die
-    Ausgabe zeichengleich mit dem Verhalten vor dem 18.08.2026); sonst
-    ``(k, gebaut, moeglich)`` fuer die Meldezeile.  Ein Deckel, der nicht meldet,
-    liest sich hinterher wie 'mehr gab es nicht'."""
+    Returns ``(targets, multi_info)``.  ``multi_info`` is None when this call
+    thinned nothing (k <= KMAX, or switch off -- then the output is
+    character-identical to the behaviour before 18.08.2026); otherwise
+    ``(k, built, possible)`` for the report line.  A cap that does not report
+    reads afterwards like 'there were no more'."""
     k = len(base)
     if k <= kmax:
         return [["+" if (combo >> i) & 1 else "-" for i in range(k)]
@@ -647,8 +643,8 @@ def expand_results(results):
     kmax = _env_int("DELFIN_STEREOCENTER_KMAX", 8)
     h_heavy_min = _env_float("DELFIN_STEREOCENTER_H_HEAVY_MIN", 1.45)
     h_h_min = _env_float("DELFIN_STEREOCENTER_H_H_MIN", 1.25)
-    # Mehrzentren-Faltungen jenseits von KMAX -- Begruendung im Block ueber
-    # `_step_vectors`.  Vorgabe 0 -> byte-identisch.
+    # Multi-centre folds beyond KMAX -- rationale in the block above
+    # `_step_vectors`.  Default 0 -> byte-identical.
     multi_centre = _env_int("DELFIN_STEREOCENTER_MULTI_CENTRE", 0)
     multi_max = _env_int("DELFIN_STEREOCENTER_MULTI_MAX", 32)
 
@@ -727,8 +723,8 @@ def expand_results(results):
     out = list(results)                                # additive: keep every original frame
     added = 0
     capped = False
-    multi_built = 0                                    # Zaehlzeile: aufgenommene Mehrfachflips
-    multi_dropped = 0                                  # Zaehlzeile: vom Deckel weggeschnittene
+    multi_built = 0                                    # tally line: multi-flips taken in
+    multi_dropped = 0                                  # tally line: those cut away by the cap
     for g, (A, lbl, _order) in reps.items():
         base = A["base_signs"]
         k = len(base)
@@ -738,9 +734,9 @@ def expand_results(results):
                 "stereocenter_enum: %d centres > KMAX=%d -> single-centre flips only "
                 "(full 2^k fold set not enumerated; raise DELFIN_STEREOCENTER_KMAX)", k, kmax)
         elif multi_info is not None:
-            # ⚠ KEINE STILLE KAPPUNG.  Ein Deckel, der nicht meldet, sieht hinterher
-            # aus wie "es gab nicht mehr" -- genau die Verwechslung, die `dofs[:4]`
-            # und `_WELL_MAX_SIBLINGS = 12` in diesem Projekt erzeugt haben.
+            # ⚠ NO SILENT CAPPING.  A cap that does not report looks afterwards like
+            # "there were no more" -- exactly the confusion that `dofs[:4]` and
+            # `_WELL_MAX_SIBLINGS = 12` produced in this project.
             _k, _n_built, _n_possible = multi_info
             multi_built += _n_built
             multi_dropped += max(0, _n_possible - _n_built)
@@ -781,36 +777,36 @@ def expand_results(results):
             "stereocenter_enum: added capped at %d folds (DELFIN_STEREOCENTER_MAX_ADDED); "
             "some feasible folds not emitted", max_added)
     if multi_built or multi_dropped:
-        # EINE Zeile fuer den ganzen Lauf, damit ein grep die Gesamtbilanz gibt und
-        # nicht nur die Meldung der einzelnen Familie.
+        # ONE line for the whole run, so that a grep yields the overall tally and
+        # not only the report of the individual family.
         _LOG.info("stereocenter_enum: Mehrzentren-Faltungen: %d angeboten, %d gedeckelt "
                   "(DELFIN_STEREOCENTER_MULTI_MAX=%d)", multi_built, multi_dropped, multi_max)
     return out
 
 
 # ---------------------------------------------------------------------------
-# Selbsttest:  python delfin/manta/_stereocenter_enum.py
+# Self-test:  python delfin/manta/_stereocenter_enum.py
 # ---------------------------------------------------------------------------
 
 def _synthetic_frame() -> str:
-    """Ein synthetischer oktaedrischer fac-[Co(NHR2)3Cl3] mit DREI koordinations-
-    erzeugten N-H-Stereozentren.  Jedes N traegt das Metall, ein H und zwei C.
+    """A synthetic octahedral fac-[Co(NHR2)3Cl3] with THREE coordination-created
+    N-H stereocentres.  Every N carries the metal, one H and two C.
 
-    ⚠ Die Azimute der drei N-Substituenten sind ABSICHTLICH unsymmetrisch
-    (0 / 100 / 215 Grad statt 0 / 120 / 240).  Bei symmetrischer Anordnung liegen
-    H, der Schwerpunkt der beiden C und die M-N-Achse in EINER Ebene; das
-    Spatprodukt in `_center_sign` ist dann exakt 0, das Zentrum ist entartet und
-    wird zu Recht verworfen.  Ein symmetrisch gebautes Testmolekuel haette also
-    'kein Zentrum gefunden' gemeldet und wie ein Fehlschlag des Mechanismus
-    ausgesehen, obwohl es der Testfall selbst war -- die Symmetrie IST die
-    Abwesenheit von Haendigkeit.
+    ⚠ The azimuths of the three N substituents are DELIBERATELY asymmetric
+    (0 / 100 / 215 degrees instead of 0 / 120 / 240).  With a symmetric arrangement,
+    H, the centroid of the two C and the M-N axis lie in ONE plane; the triple
+    product in `_center_sign` is then exactly 0, the centre is degenerate and is
+    rightly rejected.  A symmetrically built test molecule would therefore have
+    reported 'no centre found' and looked like a failure of the mechanism, although
+    it was the test case itself -- the symmetry IS the absence of handedness.
 
-    Die C tragen bewusst keine H: geprueft wird die Verzweigung, nicht die Chemie,
-    und je duenner das Geruest, desto sicher kollisionsfrei die Faltungen."""
+    The C deliberately carry no H: what is tested is the branching, not the
+    chemistry, and the thinner the scaffold, the more surely the folds are
+    collision-free."""
     axes = [(np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0]), np.array([0.0, 0.0, 1.0])),
             (np.array([0.0, 1.0, 0.0]), np.array([0.0, 0.0, 1.0]), np.array([1.0, 0.0, 0.0])),
             (np.array([0.0, 0.0, 1.0]), np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0]))]
-    tet = np.radians(70.53)                            # 109.47 Grad gegen die M-Richtung
+    tet = np.radians(70.53)                            # 109.47 degrees against the M direction
     rows = [("Co", np.zeros(3))]
     for u, e1, e2 in axes:
         d = 2.10 * u
@@ -828,8 +824,8 @@ def _synthetic_frame() -> str:
 
 
 def _targets_before_18_08(base, kmax):
-    """WORTGLEICHE Nachbildung des Zweiges vor dem 18.08.2026 -- die Messlatte fuer
-    'mit Schalter 0 byte-identisch'.  Wird nur im Selbsttest gebraucht."""
+    """VERBATIM replica of the branch before 18.08.2026 -- the yardstick for
+    'byte-identical with switch 0'.  Needed only in the self-test."""
     k = len(base)
     if k <= kmax:
         return [["+" if (combo >> i) & 1 else "-" for i in range(k)] for combo in range(1 << k)]
@@ -841,9 +837,9 @@ def _targets_before_18_08(base, kmax):
     return targets
 
 
-def _self_test_folds() -> int:                         # pragma: no cover -- Selbsttest
+def _self_test_folds() -> int:                         # pragma: no cover -- self-test
     class _Catcher(logging.Handler):
-        """Faengt die Meldezeilen ab -- eine Kappung, die nicht meldet, ist der Fehler."""
+        """Catches the report lines -- a capping that does not report is the failure."""
 
         def __init__(self):
             super().__init__()
@@ -861,7 +857,7 @@ def _self_test_folds() -> int:                         # pragma: no cover -- Sel
         print(f"{state['n']:2d} {name}: {'OK' if ok else 'FEHLER'}"
               + (f"  [{extra}]" if extra else ""))
 
-    # === 1. VORGABE AUS = ZEICHENGLEICH mit dem Zweig vor dem 18.08. ==============
+    # === 1. DEFAULT OFF = CHARACTER-IDENTICAL to the branch before 18.08. =========
     same = True
     detail = ""
     for k in (1, 3, 5, 8, 9, 10, 14):
@@ -875,7 +871,7 @@ def _self_test_folds() -> int:                         # pragma: no cover -- Sel
     _pruefe("Schalter AUS ist zeichengleich mit dem alten Zweig (k=1..14, KMAX=2/8)",
             same, detail)
 
-    # === 2. k <= KMAX bleibt die volle 2^k-Aufzaehlung, der Schalter aendert nichts
+    # === 2. k <= KMAX stays the full 2^k enumeration, the switch changes nothing ==
     b3 = ["+", "-", "+"]
     t_off, i_off = _fold_targets(b3, 8, 0, 32)
     t_on, i_on = _fold_targets(b3, 8, 1, 32)
@@ -883,7 +879,7 @@ def _self_test_folds() -> int:                         # pragma: no cover -- Sel
             t_off == t_on and len(t_off) == 8 and i_off is None and i_on is None,
             f"aus {len(t_off)} / ein {len(t_on)}")
 
-    # === 3. k > KMAX: Einzelflips PLUS ausgeduennte Mehrfachflips =================
+    # === 3. k > KMAX: single flips PLUS thinned multi-flips =======================
     b10 = ["+" if i % 2 else "-" for i in range(10)]
     t10_off, _i = _fold_targets(b10, 8, 0, 32)
     t10_on, info10 = _fold_targets(b10, 8, 1, 32)
@@ -894,20 +890,20 @@ def _self_test_folds() -> int:                         # pragma: no cover -- Sel
             and info10 == (10, 32, (1 << 10) - 1 - 10),
             f"aus {len(t10_off)} / ein {len(t10_on)} / Meldung {info10}")
 
-    # === 4. DETERMINISMUS: zwei Laeufe, dieselbe Reihenfolge =====================
+    # === 4. DETERMINISM: two runs, the same order ================================
     det = (_multi_flip_combos(11, 40) == _multi_flip_combos(11, 40)
            and _multi_flip_combos(7, 200) == _multi_flip_combos(7, 200)
            and _fold_targets(b10, 8, 1, 32)[0] == t10_on)
     _pruefe("Determinismus: identische Reihenfolge bei Wiederholung", det)
 
-    # === 5. TRUNKIERUNG, KEINE EINGESCHRAENKTE FAMILIE ===========================
+    # === 5. TRUNCATION, NOT A RESTRICTED FAMILY ==================================
     full5 = _multi_flip_combos(5, 10 ** 6)
     want5 = {c for r in range(2, 6) for c in itertools.combinations(range(5), r)}
     _pruefe("mit grossem Deckel kommen bei k=5 ALLE 26 Mehrfachkombinationen",
             len(full5) == 26 and set(full5) == want5 and len(set(full5)) == len(full5),
             f"{len(full5)} von {len(want5)}")
 
-    # === 6. AUSGEWOGENHEIT: der Deckel darf kein Zentrum aushungern ===============
+    # === 6. BALANCE: the cap must not starve any centre ==========================
     combos10 = _multi_flip_combos(10, 32)
     load = [sum(1 for c in combos10 if i in c) for i in range(10)]
     lex = []
@@ -923,12 +919,12 @@ def _self_test_folds() -> int:                         # pragma: no cover -- Sel
             max(load) - min(load) <= 1 and max(load_lex) - min(load_lex) > 1,
             f"zirkulant {load} / lexikographisch {load_lex}")
 
-    # === 7. DER ANTIPODE STEHT VORN und ueberlebt jeden Deckel ====================
+    # === 7. THE ANTIPODE STANDS AT THE FRONT and survives every cap ==============
     _pruefe("der Antipode (alle Zentren gekippt) ist die erste Mehrfachkombination",
             _multi_flip_combos(9, 1) == [tuple(range(9))]
             and _multi_flip_combos(12, 3)[0] == tuple(range(12)))
 
-    # === 8. DER MECHANISMUS ERREICHT DEN BAU (Ende zu Ende) ======================
+    # === 8. THE MECHANISM REACHES THE BUILD (end to end) =========================
     frame = _synthetic_frame()
     A = _analyze_frame(frame)
     _pruefe("synthetischer Komplex traegt 3 nicht-entartete N-H-Zentren",
@@ -940,7 +936,7 @@ def _self_test_folds() -> int:                         # pragma: no cover -- Sel
     prev = {kk: os.environ.get(kk) for kk in
             ("DELFIN_STEREOCENTER_KMAX", "DELFIN_STEREOCENTER_MULTI_CENTRE",
              "DELFIN_STEREOCENTER_MULTI_MAX")}
-    os.environ["DELFIN_STEREOCENTER_KMAX"] = "2"       # k=3 ist damit der Fall k > KMAX
+    os.environ["DELFIN_STEREOCENTER_KMAX"] = "2"       # k=3 is thereby the case k > KMAX
     os.environ["DELFIN_STEREOCENTER_MULTI_CENTRE"] = "0"
     out_off = expand_results(res)
     os.environ["DELFIN_STEREOCENTER_MULTI_CENTRE"] = "1"
@@ -949,7 +945,7 @@ def _self_test_folds() -> int:                         # pragma: no cover -- Sel
     _LOG.addHandler(cat)
     out_on = expand_results(res)
     _LOG.removeHandler(cat)
-    os.environ["DELFIN_STEREOCENTER_KMAX"] = "8"       # k=3 <= KMAX -> volle 2^k
+    os.environ["DELFIN_STEREOCENTER_KMAX"] = "8"       # k=3 <= KMAX -> full 2^k
     os.environ["DELFIN_STEREOCENTER_MULTI_CENTRE"] = "0"
     out_full = expand_results(res)
 
@@ -963,7 +959,7 @@ def _self_test_folds() -> int:                         # pragma: no cover -- Sel
             sorted(l for _x, l in out_on) == sorted(l for _x, l in out_full),
             " ".join(sorted(l for _x, l in out_on)))
 
-    # === 9. DIE KAPPUNG MELDET SICH =============================================
+    # === 9. THE CAPPING REPORTS ITSELF ===========================================
     bilanz = [r for r in cat.records if "Mehrzentren-Faltungen" in r.getMessage()]
     _pruefe("ungekappt: genau eine Bilanzzeile im Log, keine Warnung",
             len(bilanz) == 1 and not [r for r in cat.records
@@ -972,7 +968,7 @@ def _self_test_folds() -> int:                         # pragma: no cover -- Sel
 
     os.environ["DELFIN_STEREOCENTER_KMAX"] = "2"
     os.environ["DELFIN_STEREOCENTER_MULTI_CENTRE"] = "1"
-    os.environ["DELFIN_STEREOCENTER_MULTI_MAX"] = "2"  # 2 von 4 -> MUSS warnen
+    os.environ["DELFIN_STEREOCENTER_MULTI_MAX"] = "2"  # 2 of 4 -> MUST warn
     cat2 = _Catcher()
     _LOG.addHandler(cat2)
     out_cap = expand_results(res)
@@ -989,7 +985,7 @@ def _self_test_folds() -> int:                         # pragma: no cover -- Sel
         else:
             os.environ[kk] = vv
 
-    # === 10. DIE ZAHLENTAFEL FUER DEN BERICHT ===================================
+    # === 10. THE NUMBER TABLE FOR THE REPORT =====================================
     print("\n   Zusatzziele je Anordnungsfamilie (KMAX=8, MULTI_MAX=32):")
     print("     k    AUS    EIN   Zusatz   moegliche Mehrfachflips")
     for k in (3, 5, 10):
@@ -1003,7 +999,7 @@ def _self_test_folds() -> int:                         # pragma: no cover -- Sel
     return 1 if state["bad"] else 0
 
 
-if __name__ == "__main__":                             # pragma: no cover -- Selbsttest
+if __name__ == "__main__":                             # pragma: no cover -- self-test
     import sys as _sys
     logging.basicConfig(level=logging.INFO, format="   %(levelname)s %(message)s")
     _sys.exit(_self_test_folds())

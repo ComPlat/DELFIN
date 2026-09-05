@@ -51,38 +51,38 @@ except Exception:                                    # pragma: no cover
 # lets each candidate fall into the nearest genuine minimum, and a Cremer-Pople
 # dedup distils the candidates to the DISTINCT populated conformers for THIS
 # ring.  This works uniformly for N = 5, 6, 7, 8, 9, ... with no per-size table.
-# Ringe, die NUR den flachen Zustand bekommen (konjugierte Metallacyclen, die
-# `_is_puckerable` ablehnt).  Wird je `generate`-Aufruf neu befuellt; ein Ring
-# hierin erhaelt in `_ring_pucker_states` AUSSCHLIESSLICH den Q=0-Kandidaten,
-# damit ein konjugierter Ring begradigt und nicht gefaltet wird.
+# Rings that get ONLY the flat state (conjugated metallacycles that
+# `_is_puckerable` rejects).  Refilled on every `generate` call; a ring in
+# here receives EXCLUSIVELY the Q=0 candidate in `_ring_pucker_states`,
+# so that a conjugated ring is straightened and not folded.
 _FLAT_ONLY: set = set()
 
 
 def _pucker_candidates(n: int) -> List[Tuple[float, Optional[float], float]]:
-    """(q_scale, theta, phi) je Kandidat.  `q_scale` multipliziert `_amp(n)`.
+    """(q_scale, theta, phi) per candidate.  `q_scale` multiplies `_amp(n)`.
 
-    ⚠ WARUM DIE TUPEL JETZT DREI WERTE HABEN (17.08.2026).  Bis hierher tastete diese
-    Funktion die Cremer-Pople-Kugel bei FESTEM RADIUS ab: `_amp(n)` gibt 0.40 A (5-Ring)
-    bis 0.80 A (8-Ring) und wurde an beiden Aufrufstellen unveraendert uebergeben.  Der
-    Kandidat `(0.0, 0.0)` unten ist **theta = 0**, also der SESSEL (Polkappe) -- **nicht**
-    Q = 0.  **Der Mittelpunkt der Kugel, die EBENE, war kein Kandidat.**  Fuer ungerade
-    Ringe war es noch enger: nur die aequatoriale Pseudorotation (`theta=None`), also
-    Umschlag und Twist, nie flach.
+    ⚠ WHY THE TUPLES NOW HAVE THREE VALUES (17.08.2026).  Up to here this function
+    sampled the Cremer-Pople sphere at FIXED RADIUS: `_amp(n)` gives 0.40 A (5-ring)
+    to 0.80 A (8-ring) and was passed through unchanged at both call sites.  The
+    candidate `(0.0, 0.0)` below is **theta = 0**, i.e. the CHAIR (polar cap) -- **not**
+    Q = 0.  **The centre of the sphere, the PLANE, was not a candidate.**  For odd
+    rings it was even narrower: only the equatorial pseudorotation (`theta=None`), i.e.
+    envelope and twist, never flat.
 
-    GEMESSEN am 16./17.08. (`folds`, 965 Systeme): von 326 fehlenden Ringmotiven sind
-    **218 PLANAR** -- `5M:planar` 126, `6M:planar` 55, `4M:planar` 37 -- gegen `6M:boat` 30,
-    `6:chair` 25, `5M:puckered` 19, die dieser Generator alle erzeugen kann.  **Zwei Drittel
-    der Luecke sind genau der eine Zustand, den er per Konstruktion nicht kennt.**
+    MEASURED on 16./17.08. (`folds`, 965 systems): of 326 missing ring motifs,
+    **218 are PLANAR** -- `5M:planar` 126, `6M:planar` 55, `4M:planar` 37 -- against `6M:boat` 30,
+    `6:chair` 25, `5M:puckered` 19, all of which this generator can produce.  **Two thirds
+    of the gap are exactly the one state it does not know by construction.**
 
-    Chemisch ist das kein Randfall: ein fuenfgliedriger Chelatring mit sp2-Donoren liegt oft
-    FLACH; der Generator behandelt ihn wie Cyclopentan.
+    Chemically this is no edge case: a five-membered chelate ring with sp2 donors often lies
+    FLAT; the generator treats it like cyclopentane.
 
-    `_set_pucker` braucht dafuer KEINE Aenderung: mit Q = 0 werden q2 und q3 null, zj = 0,
-    und jedes nicht eingefrorene Ringatom wird auf die Mittelebene projiziert -- Metall und
-    Donoren bleiben stehen, weil sie in `frozen` sind.  Das ist exakt der planare Zustand.
+    `_set_pucker` needs NO change for this: with Q = 0, q2 and q3 become zero, zj = 0,
+    and every non-frozen ring atom is projected onto the mean plane -- metal and
+    donors stay put because they are in `frozen`.  That is exactly the planar state.
 
-    Vorgabe AUS -> die Liste ist identisch zu vorher (alle q_scale = 1.0), also
-    byte-identisch.
+    Default OFF -> the list is identical to before (all q_scale = 1.0), hence
+    byte-identical.
     """
     cands: List[Tuple[float, Optional[float], float]] = []
     even = (n % 2 == 0)
@@ -97,48 +97,48 @@ def _pucker_candidates(n: int) -> List[Tuple[float, Optional[float], float]]:
         cands.append((1.0, 0.0, 0.0))
         cands.append((1.0, 180.0, 0.0))
     if _os.environ.get("DELFIN_FFFREE_PUCKER_PLANAR", "0") == "1":
-        # DER FLACHE ZUSTAND.  Q = 0 -> alle nicht eingefrorenen Ringatome in die
-        # Mittelebene.  EIN Kandidat je Ring, nicht K -- die Ebene hat kein phi.
+        # THE FLAT STATE.  Q = 0 -> all non-frozen ring atoms onto the
+        # mean plane.  ONE candidate per ring, not K -- the plane has no phi.
         cands.append((0.0, 0.0, 0.0))
     return cands
 
 
 def _amp(n: int) -> float:
-    """Cremer-Pople-Faltungsamplitude (Angstrom) als GESETZ statt Tabelle.
+    """Cremer-Pople puckering amplitude (Angstrom) as a LAW instead of a table.
 
-    ⚠ DIE ALTE FASSUNG WIDERSPRACH SICH SELBST.  Sie fuehrte eine kalibrierte Tabelle
-    fuer 5..8 UND einen linearen Fallback `0.45 + 0.06*n` fuer alles andere -- und der
-    Fallback liegt UEBERALL ueber der Tabelle:
+    ⚠ THE OLD VERSION CONTRADICTED ITSELF.  It carried a calibrated table
+    for 5..8 AND a linear fallback `0.45 + 0.06*n` for everything else -- and the
+    fallback lies EVERYWHERE above the table:
 
-        n     Tabelle   Fallback
-        5      0,40      0,75      <- fast doppelt
-        6      0,63      0,81
-        7      0,72      0,87
-        8      0,80      0,93
+        n     table     fallback
+        5      0.40      0.75      <- almost double
+        6      0.63      0.81
+        7      0.72      0.87
+        8      0.80      0.93
 
-    Aufgefallen ist das nie, weil `_is_puckerable` jeden Ring ausserhalb 5..8 abwies:
-    der Fallback ist NIE GELAUFEN.  Ein dunkler Zweig mit einer falschen Zahl darin.
+    This was never noticed because `_is_puckerable` rejected every ring outside 5..8:
+    the fallback NEVER RAN.  A dark branch with a wrong number in it.
 
-    Die Tabellenwerte saettigen (Zuwaechse 0,23 / 0,09 / 0,08) -- ein grosser Ring
-    faltet nicht beliebig tief, die Amplitude laeuft gegen eine Schranke.  Ein
-    linearer Fallback ist damit qualitativ falsch, nicht nur numerisch daneben.
+    The table values saturate (increments 0.23 / 0.09 / 0.08) -- a large ring
+    does not fold arbitrarily deep, the amplitude approaches a bound.  A
+    linear fallback is thus qualitatively wrong, not merely numerically off.
 
-    Ersatz: EIN saettigendes Gesetz fuer alle N, das die kalibrierten Werte
-    reproduziert (max. Abweichung 0,04 A):
+    Replacement: ONE saturating law for all N that reproduces the calibrated
+    values (max. deviation 0.04 A):
 
-        Q_max(N) = 1,15 * (N-4) / (N-4+1,6)
-        N=5 0,44 · N=6 0,64 · N=7 0,75 · N=8 0,82 · N=12 0,98 · N=24 1,07
+        Q_max(N) = 1.15 * (N-4) / (N-4+1.6)
+        N=5 0.44 · N=6 0.64 · N=7 0.75 · N=8 0.82 · N=12 0.98 · N=24 1.07
 
-    ⚠ Ab N=9 ist das EXTRAPOLATION, keine Kalibrierung -- ehrlich gesagt, nicht
-      versteckt.  Und es ist ohnehin nur die OBERGRENZE: `_pucker_space_grid` tastet
-      die Amplitude von 0 bis hierher ab, der Relax entscheidet, was ueberlebt.
+    ⚠ From N=9 on this is EXTRAPOLATION, not calibration -- stated honestly, not
+      hidden.  And it is only the UPPER BOUND anyway: `_pucker_space_grid` samples
+      the amplitude from 0 up to here, the relax decides what survives.
 
-    ⛔ DIE KALIBRIERTEN WERTE BLEIBEN EXAKT STEHEN.  `_amp` wird auch vom LEGACY-Pfad
-      gelesen (`_set_pucker(..., _qs * _amp(n), ...)`).  Wuerde das Gesetz sie
-      ersetzen, waere die Vorgabe NICHT byte-identisch -- bei N=5 stuende 0,44 statt
-      0,40.  Das Gesetz greift darum nur dort, wo bisher der falsche Fallback stand:
-      ausserhalb 5..8.  Byte-Identitaet ist keine Formsache, sie ist die Bedingung
-      dafuer, dass ein A/B den Mechanismus misst und nicht das Instrument.
+    ⛔ THE CALIBRATED VALUES STAY EXACTLY AS THEY ARE.  `_amp` is also read by the LEGACY
+      path (`_set_pucker(..., _qs * _amp(n), ...)`).  If the law replaced them,
+      the default would NOT be byte-identical -- at N=5 it would read 0.44 instead of
+      0.40.  The law therefore applies only where the wrong fallback used to stand:
+      outside 5..8.  Byte-identity is not a formality, it is the condition
+      for an A/B measuring the mechanism and not the instrument.
     """
     _kal = {5: 0.40, 6: 0.63, 7: 0.72, 8: 0.80}
     if n in _kal:
@@ -210,7 +210,7 @@ def _set_pucker(conf, ring, Q, theta, phi, frozen: Optional[Set[int]] = None):
 
 
 def _prod_laenge(per_ring_states) -> int:
-    """Groesse des vollen Kreuzprodukts (inkl. Grundzustand)."""
+    """Size of the full cross product (incl. the ground state)."""
     n = 1
     for s in per_ring_states:
         n *= max(1, len(s))
@@ -218,26 +218,26 @@ def _prod_laenge(per_ring_states) -> int:
 
 
 def _ring_bahnen(mol, rings, max_aut: int = 20000):
-    """Zerlege die Ringe in BAHNEN unter der Automorphismengruppe des Molekuels.
+    """Decompose the rings into ORBITS under the automorphism group of the molecule.
 
-    Zwei Ringe liegen in derselben Bahn, wenn ein Automorphismus den einen als
-    ATOMMENGE auf den anderen abbildet.  Nur dann sind sie ununterscheidbar, und
-    nur dann darf ihre Zustandsreihenfolge zusammengelegt werden.
+    Two rings lie in the same orbit if an automorphism maps one onto the other
+    as an ATOM SET.  Only then are they indistinguishable, and only then may
+    their state ordering be merged.
 
-    ⛔ WARUM NICHT DIE RANGMULTIMENGE, die viel billiger waere.  Gleiche
-    kanonische Raenge sind NOTWENDIG fuer Aequivalenz, aber nicht HINREICHEND.
-    Am 27.08. von Hand nachgerechnet: von 27 Ringpaaren mit gleicher Rangmenge
-    waren 26 echte Bahn und EINES nicht (3,7 %).  Ueber die Rangmenge zu
-    reduzieren haette bei diesem einen Paar einen REALEN Zustand geloescht.  Ein
-    Doppelgaenger zuviel kostet Rechenzeit; ein fehlender Zustand kostet
-    Vollstaendigkeit -- und die ist der Nordstern.
+    ⛔ WHY NOT THE RANK MULTISET, which would be much cheaper.  Equal
+    canonical ranks are NECESSARY for equivalence, but not SUFFICIENT.
+    Recomputed by hand on 27.08.: of 27 ring pairs with equal rank set,
+    26 were a genuine orbit and ONE was not (3.7 %).  Reducing via the rank
+    set would have deleted a REAL state for that one pair.  One
+    duplicate too many costs compute time; a missing state costs
+    completeness -- and that is the north star.
 
-    ⚠ DECKEL.  `GetSubstructMatches(mol, mol)` kann bei hochsymmetrischen
-    Molekuelen explodieren (am 27.08. lief CONPUS in 200 000 Treffer).  Wird der
-    Deckel erreicht, liefert die Funktion None -> KEINE Reduktion, volles
-    Produkt.  Der Rueckfall ist immer die GROESSERE Menge, nie die kleinere.
+    ⚠ CAP.  `GetSubstructMatches(mol, mol)` can explode for highly symmetric
+    molecules (on 27.08. CONPUS ran into 200 000 matches).  If the cap is
+    reached, the function returns None -> NO reduction, full
+    product.  The fallback is always the LARGER set, never the smaller.
 
-    Rueckgabe: Liste von Listen von Ringindizes, oder None (nicht reduzieren).
+    Return: list of lists of ring indices, or None (do not reduce).
     """
     try:
         treffer = mol.GetSubstructMatches(mol, uniquify=False,
@@ -246,14 +246,14 @@ def _ring_bahnen(mol, rings, max_aut: int = 20000):
     except Exception:
         return None
     if not treffer or len(treffer) >= max_aut:
-        return None                      # Deckel erreicht -> nicht reduzieren
+        return None                      # cap reached -> do not reduce
     if len(treffer) == 1:
-        return None                      # nur die Identitaet -> nichts zu holen
+        return None                      # only the identity -> nothing to gain
 
     ring_mengen = [frozenset(int(i) for i in r) for r in rings]
     index_von = {m: i for i, m in enumerate(ring_mengen)}
     if len(index_von) != len(ring_mengen):
-        return None                      # doppelte Ringmengen -> Haende weg
+        return None                      # duplicate ring sets -> hands off
 
     eltern = list(range(len(rings)))
 
@@ -279,26 +279,26 @@ def _ring_bahnen(mol, rings, max_aut: int = 20000):
     gruppen = {}
     for i in range(len(rings)):
         gruppen.setdefault(_wurzel(i), []).append(i)
-    # Deterministische Reihenfolge -- sonst haengt die Aufzaehlung an der
-    # Hash-Reihenfolge und der Lauf ist nicht reproduzierbar.
+    # Deterministic order -- otherwise the enumeration depends on the
+    # hash order and the run is not reproducible.
     return [sorted(v) for _k, v in sorted(gruppen.items())]
 
 
 def _cp_abstand(a, b) -> float:
-    """Winkelabstand zweier Faltungszustaende AUF der Cremer-Pople-Kugel (Grad).
+    """Angular distance of two pucker states ON the Cremer-Pople sphere (degrees).
 
-    a, b sind (Q, theta, phi).  Benutzt wird die Grosskreisdistanz
+    a, b are (Q, theta, phi).  The great-circle distance is used
 
         cos d = cos(th_a) cos(th_b) + sin(th_a) sin(th_b) cos(ph_a - ph_b)
 
-    ⚠ WARUM NICHT EINFACH |dtheta| + |dphi|.  Am POL (theta = 0 oder 180) ist phi
-      BEDEUTUNGSLOS -- ein Ring im Sessel hat keine Phase.  Eine naive Metrik haelt
-      zwei Sessel mit phi = 136 und phi = 339 fuer 200 Grad auseinander, obwohl sie
-      DERSELBE Zustand sind.  Genau das steht in der Messung vom 26.08.:
-          theta=180,0  phi=136,4
-          theta=180,0  phi=338,6      <- identisch, nur die Phase ist Rauschen
-      Die Grosskreisdistanz erledigt das von selbst: bei sin(theta) = 0 faellt der
-      phi-Term heraus.  Die Geometrie loest das Problem, nicht eine Sonderregel.
+    ⚠ WHY NOT SIMPLY |dtheta| + |dphi|.  At the POLE (theta = 0 or 180) phi is
+      MEANINGLESS -- a ring in the chair has no phase.  A naive metric holds
+      two chairs with phi = 136 and phi = 339 to be 200 degrees apart, although they
+      are THE SAME state.  Exactly that is in the measurement of 26.08.:
+          theta=180.0  phi=136.4
+          theta=180.0  phi=338.6      <- identical, only the phase is noise
+      The great-circle distance takes care of this by itself: at sin(theta) = 0 the
+      phi term drops out.  Geometry solves the problem, not a special rule.
     """
     ta, pa = _np.radians(a[1]), _np.radians(a[2])
     tb, pb = _np.radians(b[1]), _np.radians(b[2])
@@ -308,32 +308,32 @@ def _cp_abstand(a, b) -> float:
 
 
 def _set_pucker_general(conf, ring, qs, phis, frozen: Optional[Set[int]] = None):
-    """Cremer-Pople-Umkehr in VOLLER Allgemeinheit -- fuer JEDE Ringgroesse.
+    """Cremer-Pople inversion in FULL generality -- for EVERY ring size.
 
-    ``_set_pucker`` oben deckt nur m = 2 plus den Alternierungsterm ab.  Das ist fuer
-    N = 4, 5, 6 vollstaendig und ab N = 7 LUECKENHAFT: ein Siebenring hat vier
-    Faltungsfreiheitsgrade (q2, phi2, q3, phi3), ein Achtring fuenf.  Die Paare mit
-    m >= 3 fehlten dort ersatzlos, und der Alternierungsterm wurde fest als q3
-    gefuehrt -- beim Achtring ist es aber q4.
+    ``_set_pucker`` above covers only m = 2 plus the alternation term.  That is
+    complete for N = 4, 5, 6 and INCOMPLETE from N = 7 on: a seven-ring has four
+    puckering degrees of freedom (q2, phi2, q3, phi3), an eight-ring five.  The pairs with
+    m >= 3 were missing there without replacement, and the alternation term was fixed as q3
+    -- but for the eight-ring it is q4.
 
-    DER RAUM, exakt.  Ein Ring mit N Atomen hat N-3 Faltungsfreiheitsgrade:
-        N gerade:  Paare (q_m, phi_m) fuer m = 2 .. N/2-1,  plus EIN q_(N/2)
+    THE SPACE, exactly.  A ring with N atoms has N-3 puckering degrees of freedom:
+        N even:  pairs (q_m, phi_m) for m = 2 .. N/2-1,  plus ONE q_(N/2)
                    2*(N/2-2) + 1 = N-3
-        N ungerade: Paare (q_m, phi_m) fuer m = 2 .. (N-1)/2
+        N odd:   pairs (q_m, phi_m) for m = 2 .. (N-1)/2
                    2*((N-1)/2 - 1) = N-3
-    Die Auslenkung des j-ten Ringatoms aus der Mittelebene ist
+    The displacement of the j-th ring atom from the mean plane is
 
         z_j = sqrt(2/N) * SUM_m  q_m * cos(phi_m + 2*pi*m*j/N)
-              + [N gerade]  sqrt(1/N) * q_(N/2) * (-1)^j
+              + [N even]  sqrt(1/N) * q_(N/2) * (-1)^j
 
-    Die benannten Formen sind PUNKTE darauf, keine eigenen Faelle: Sessel an den Polen
-    (q2 = 0), Wanne und Twist am Aequator (q3 = 0), Half-Chair und Envelope
-    DAZWISCHEN -- genau der Bereich, den die alte Kandidatenliste nie abgetastet hat.
+    The named forms are POINTS on it, not separate cases: chair at the poles
+    (q2 = 0), boat and twist at the equator (q3 = 0), half-chair and envelope
+    IN BETWEEN -- exactly the region the old candidate list never sampled.
 
-    ``qs``/``phis``: Abbildungen m -> Wert.  Reduziert sich fuer N <= 6 exakt auf
-    ``_set_pucker``; die Formel ist dieselbe, nur nicht mehr auf m = 2 verkuerzt.
-    ⚠ ``frozen`` bleibt unberuehrt -- Metall und Donoren stehen, nur das Rueckgrat
-    faltet.  Reiner Erzeuger.
+    ``qs``/``phis``: mappings m -> value.  Reduces exactly to ``_set_pucker`` for
+    N <= 6; the formula is the same, just no longer truncated to m = 2.
+    ⚠ ``frozen`` remains untouched -- metal and donors stay put, only the backbone
+    folds.  Pure generator.
     """
     n = len(ring)
     P = conf.GetPositions()
@@ -362,52 +362,52 @@ def _set_pucker_general(conf, ring, qs, phis, frozen: Optional[Set[int]] = None)
 
 
 def _pucker_space_grid(n: int, n_amp: int, n_phase: int):
-    """SYSTEMATISCHES Gitter ueber den GANZEN Faltungsraum eines N-Rings.
+    """SYSTEMATIC grid over the ENTIRE pucker space of an N-ring.
 
-    Liefert Kandidaten als ``(qs, phis)`` -- Abbildungen m -> Wert -- fuer
-    ``_set_pucker_general``.  Statt benannter Formen wird der (N-3)-dimensionale
-    Cremer-Pople-Raum abgetastet; Sessel, Wanne, Twist, Half-Chair und Envelope
-    fallen als Gitterpunkte von selbst an.
+    Yields candidates as ``(qs, phis)`` -- mappings m -> value -- for
+    ``_set_pucker_general``.  Instead of named forms, the (N-3)-dimensional
+    Cremer-Pople space is sampled; chair, boat, twist, half-chair and envelope
+    arise by themselves as grid points.
 
-    ⚠ VOLLSTAENDIGKEIT IST EINE AUFLOESUNGSFRAGE, keine Ja/Nein-Frage.  Ein
-    kontinuierlicher Raum laesst sich nicht "ganz" abtasten.  Was hier steht, ist die
-    ehrliche Fassung: der Raum wird VOLLSTAENDIG bei der ANGEGEBENEN Aufloesung
-    ueberdeckt, und die Aufloesung steht in der Spur.  Keine Ecke wird ausgelassen,
-    keine Richtung bevorzugt -- der Unterschied zur alten Liste, die nur Aequator und
-    Pole kannte und die Amplitude nie variierte.
+    ⚠ COMPLETENESS IS A QUESTION OF RESOLUTION, not a yes/no question.  A
+    continuous space cannot be sampled "entirely".  What stands here is the
+    honest version: the space is covered COMPLETELY at the STATED resolution,
+    and the resolution is in the trace.  No corner is left out,
+    no direction preferred -- the difference from the old list, which knew only equator and
+    poles and never varied the amplitude.
 
-    ⚠ PREIS: die Kandidatenzahl waechst wie (n_amp+1)^(#q) * n_phase^(#phi).
-    Sechsring bei n_amp=2, n_phase=8: 3 * 8 * 5 = 120 je Ring.  Achtring: deutlich
-    mehr.  Darum sind beide Aufloesungen Env-Parameter und stehen im Protokoll.
+    ⚠ PRICE: the candidate count grows like (n_amp+1)^(#q) * n_phase^(#phi).
+    Six-ring at n_amp=2, n_phase=8: 3 * 8 * 5 = 120 per ring.  Eight-ring: considerably
+    more.  That is why both resolutions are env parameters and appear in the log.
 
-    ===== DIE AUFLOESUNG MUSS MIT DER DIMENSION FALLEN (26.08.2026) ================
+    ===== THE RESOLUTION MUST FALL WITH THE DIMENSION (26.08.2026) =================
 
-    GERECHNET, nicht geschaetzt.  Die Zahl der Kandidaten ist
+    COMPUTED, not estimated.  The number of candidates is
 
-        prod ueber m_pairs von (1 + n_amp * n_phase)   mal   (2*n_amp+1) bei geradem n
+        prod over m_pairs of (1 + n_amp * n_phase)   times   (2*n_amp+1) for even n
 
-    und damit bei n_amp=2, n_phase=8:
+    and thus at n_amp=2, n_phase=8:
 
         n= 8    845          n=10   24 565        n=12     417 605
         n= 9  4 913          n=11   83 521        n=16  120 687 845
 
-    Ein 16-Ring haette also 1,2e8 Kandidaten je Ring bekommen, jeden mit Relax und
-    Kollisionstor.  Das ist kein langsamer Lauf, das ist ein Lauf, der stirbt und
-    NULL Faltungen liefert.  Genau so war `foldspace6k` eingereiht (NAMP=2 NPHASE=8).
-    ⇒ Unendliche Feinheit ist nicht Vollstaendigkeit, sie ist Undurchfuehrbarkeit.
+    A 16-ring would thus have received 1.2e8 candidates per ring, each with relax and
+    collision gate.  That is not a slow run, that is a run that dies and
+    delivers ZERO folds.  Exactly so was `foldspace6k` queued (NAMP=2 NPHASE=8).
+    ⇒ Infinite fineness is not completeness, it is infeasibility.
 
-    WAS HIER **NICHT** PASSIERT: es wird kein Ergebnis abgeschnitten.  Die Liste
-    bleibt das VOLLSTAENDIGE Produkt der gewaehlten Aufloesung -- reduziert wird die
-    ABTASTDICHTE, und zwar zuerst dort, wo sie physikalisch am wenigsten traegt.
-    Cremer-Pople-Amplituden q_m fallen mit m: die hohen m sind die feine Kraeuselung
-    mit kleiner Auslenkung, m=2 ist die dominante Falte.  Darum wird die Phasenzahl
-    beim GROESSTEN m zuerst halbiert und m=2 zuletzt angetastet.
+    WHAT DOES **NOT** HAPPEN HERE: no result is truncated.  The list
+    remains the COMPLETE product of the chosen resolution -- what is reduced is the
+    SAMPLING DENSITY, and first where it carries the least physically.
+    Cremer-Pople amplitudes q_m fall with m: the high m are the fine ripple
+    with small displacement, m=2 is the dominant fold.  Therefore the phase count
+    is halved at the LARGEST m first and m=2 is touched last.
 
-    ⚠ Und es geschieht NICHT still: `_grid_res` traegt die je-m gewaehlte Aufloesung,
-      der Aufrufer schreibt sie unter DELFIN_FFFREE_PUCKER_TRACE ins Protokoll.  Ob
-      die gewaehlte Dichte reicht, sagt nicht dieser Code, sondern
-      `selbsttest_konvergenz` -- die Zahl der UNTERSCHEIDBAREN Zustaende, nicht die
-      Zahl der Gitterpunkte, ist das Mass.
+    ⚠ And it does NOT happen silently: `_grid_res` carries the per-m chosen resolution,
+      the caller writes it into the log under DELFIN_FFFREE_PUCKER_TRACE.  Whether
+      the chosen density suffices is not said by this code, but by
+      `selbsttest_konvergenz` -- the number of DISTINGUISHABLE states, not the
+      number of grid points, is the measure.
     """
     if n < 4:
         return []
@@ -416,31 +416,31 @@ def _pucker_space_grid(n: int, n_amp: int, n_phase: int):
     m_last = (n // 2) if even else None
     amp = _amp(n)
     _budget = max(1, int(_os.environ.get("DELFIN_FFFREE_PUCKER_BUDGET", "50000") or 50000))
-    # ===== WELCHE MODEN SIND UEBERHAUPT ANGEREGT?  (26.08.2026) =====================
+    # ===== WHICH MODES ARE EXCITED AT ALL?  (26.08.2026) ============================
     #
-    # Der Selbsttest hat die Sparstelle selbst gefunden: beim 21-Ring (Kronenether,
-    # z.B. VEDCOA) reichte das Budget nur, wenn auch m=2 heruntergerechnet wurde --
-    # und m=2 ist die DOMINANTE Falte.  Am falschen Ende gespart.
+    # The self-test found the saving point itself: for the 21-ring (crown ether,
+    # e.g. VEDCOA) the budget only sufficed if m=2 was reduced as well --
+    # and m=2 is the DOMINANT fold.  Saved at the wrong end.
     #
-    # Die Ursache ist nicht die Phasenzahl, sondern die ZAHL DER PAARE: sie waechst
-    # wie N/2, und schon die blosse Amplitudenauswahl kostet 3^(N/2-1).  Bei N=30
-    # sind das 8 Millionen Punkte, BEVOR eine einzige Phase abgetastet ist.
+    # The cause is not the phase count but the NUMBER OF PAIRS: it grows
+    # like N/2, and the mere amplitude selection alone costs 3^(N/2-1).  At N=30
+    # that is 8 million points BEFORE a single phase is sampled.
     #
-    # Cremer-Pople-Amplituden realer Ringe fallen scharf mit m: die niedrigen Moden
-    # tragen die Faltung, die hohen sind feine Kraeuselung nahe null.  Grosse Ringe
-    # werden in der Literatur genau darum durch wenige niedrige Moden beschrieben.
-    # ⇒ Moden oberhalb M_MAX werden auf Amplitude 0 gesetzt -- die Aussage ist
-    #   "diese Mode ist NICHT ANGEREGT", nicht "diese Mode wurde uebersprungen".
-    #   Der Freiheitsgrad bleibt in der Parametrisierung, er steht nur auf null.
+    # Cremer-Pople amplitudes of real rings fall sharply with m: the low modes
+    # carry the fold, the high ones are fine ripple near zero.  Large rings
+    # are described in the literature by a few low modes for exactly this reason.
+    # ⇒ Modes above M_MAX are set to amplitude 0 -- the statement is
+    #   "this mode is NOT EXCITED", not "this mode was skipped".
+    #   The degree of freedom stays in the parametrisation, it is merely at zero.
     #
-    # ⚠ DAS IST EINE MODELLANNAHME, KEINE MESSUNG.  Sie ist pruefbar und MUSS geprueft
-    #   werden: M_MAX erhoehen und `selbsttest_konvergenz` fragen, ob die Zahl der
-    #   UNTERSCHEIDBAREN Zustaende sich aendert.  Aendert sie sich, ist M_MAX zu klein.
-    #   Bis dahin steht sie in der Spur und traegt ihren Namen.
+    # ⚠ THIS IS A MODEL ASSUMPTION, NOT A MEASUREMENT.  It is testable and MUST be
+    #   tested: raise M_MAX and ask `selbsttest_konvergenz` whether the number of
+    #   DISTINGUISHABLE states changes.  If it changes, M_MAX is too small.
+    #   Until then it is in the trace and carries its name.
     _mmax = max(2, int(_os.environ.get("DELFIN_FFFREE_PUCKER_MMAX", "4") or 4))
     _aktiv = [m for m in m_pairs if m <= _mmax]
     _ruhend = [m for m in m_pairs if m > _mmax]
-    # Phasenzahl je m; Start ueberall gleich, dann von oben herunter halbieren.
+    # Phase count per m; start equal everywhere, then halve from the top down.
     _ph_m = {m: max(1, int(n_phase)) for m in _aktiv}
     m_pairs = _aktiv
 
@@ -453,24 +453,24 @@ def _pucker_space_grid(n: int, n_amp: int, n_phase: int):
     while _zahl() > _budget:
         _kand = [m for m in m_pairs if _ph_m[m] > 1]
         if not _kand:
-            break                                  # schon bei Phase 1 -- nichts mehr zu holen
-        _hoch = max(_kand)                         # groesstes m zuerst: kleinste Amplitude
+            break                                  # already at phase 1 -- nothing more to gain
+        _hoch = max(_kand)                         # largest m first: smallest amplitude
         _ph_m[_hoch] = max(1, _ph_m[_hoch] // 2)
-    # ⚠ `m_last` (der Alternierungsterm q_{N/2}) bleibt IMMER aktiv und wird nie
-    #   ruhend gestellt: beim Sechsring IST er der Sessel.  Er kostet auch nichts --
-    #   ein einzelner signierter Amplitudenfaktor (2*n_amp+1), nicht exponentiell.
+    # ⚠ `m_last` (the alternation term q_{N/2}) ALWAYS stays active and is never
+    #   set dormant: for the six-ring it IS the chair.  It costs nothing either --
+    #   a single signed amplitude factor (2*n_amp+1), not exponential.
     _pucker_space_grid._grid_res = {"n": n, "n_amp": n_amp, "n_phase_je_m": dict(_ph_m),
                                     "kandidaten": _zahl(), "budget": _budget,
                                     "m_max": _mmax, "ruhende_moden": list(_ruhend),
                                     "m_last": m_last,
                                     "reduziert": (any(v < n_phase for v in _ph_m.values())
                                                   or bool(_ruhend))}
-    # Amplitudenstufen je Paar: 0 (Achse flach) bis n_amp * amp.  Die Null MUSS dabei
-    # sein -- sie ist der planare Zustand, und genau der fehlte (218 von 326 Motiven).
+    # Amplitude steps per pair: 0 (axis flat) up to n_amp * amp.  The zero MUST be
+    # included -- it is the planar state, and exactly that was missing (218 of 326 motifs).
     lv_pair = [amp * k / max(1, n_amp) for k in range(0, n_amp + 1)]
-    # Der Alternierungsterm laeuft SIGNIERT: +q ist der Sessel, -q der invertierte.
+    # The alternation term runs SIGNED: +q is the chair, -q the inverted one.
     lv_last = [amp * k / max(1, n_amp) for k in range(-n_amp, n_amp + 1)]
-    # Phasen JE m -- gleiche Formel, nur mit der fuer dieses m gewaehlten Dichte.
+    # Phases PER m -- same formula, just with the density chosen for this m.
     _phasen = {m: [360.0 * k / _ph_m[m] for k in range(_ph_m[m])] for m in m_pairs}
 
     out = []
@@ -479,7 +479,7 @@ def _pucker_space_grid(n: int, n_amp: int, n_phase: int):
         if i < len(m_pairs):
             m = m_pairs[i]
             for q in lv_pair:
-                if q == 0.0:                      # Amplitude 0 -> Phase bedeutungslos
+                if q == 0.0:                      # amplitude 0 -> phase meaningless
                     _rek(i + 1, {**qs, m: 0.0}, {**phis, m: 0.0})
                 else:
                     for ph in _phasen[m]:
@@ -492,7 +492,7 @@ def _pucker_space_grid(n: int, n_amp: int, n_phase: int):
             out.append((dict(qs), dict(phis)))
 
     _rek(0, {}, {})
-    # den Nullpunkt (alles flach) genau EINMAL behalten -- er ist der planare Zustand
+    # keep the zero point (everything flat) exactly ONCE -- it is the planar state
     _seen = set()
     uniq = []
     for qs, phis in out:
@@ -649,39 +649,39 @@ def _has_clash(mol, frac: float = 0.60) -> bool:
 
 
 def _bindungs_ausreisser(mol, tol_lang: float = 1.30) -> frozenset:
-    """Die Bindungen des GRAPHEN, deren LAENGE keine Bindung mehr beschreibt.
+    """The bonds of the GRAPH whose LENGTH no longer describes a bond.
 
-    ===== WARUM DAS DRITTE TOR UEBERHAUPT FEHLT (26.08.2026) ==========================
+    ===== WHY THE THIRD GATE IS MISSING AT ALL (26.08.2026) ==========================
 
-    `generate` hat zwei Tore: `_has_clash` sieht NICHT gebundene Paare, die zu nah
-    stehen, `_has_bad_angles` sieht Winkel.  Die BINDUNGSLAENGE selbst prueft keines
-    von beiden.  Eine Faltung, die eine Bindung auseinanderzieht, kommt damit durch.
-    Genau das ist am 18.08. passiert und steht protokolliert: "in einem Frame riss
-    eine Bindung".
+    `generate` has two gates: `_has_clash` sees NON-bonded pairs that stand too
+    close, `_has_bad_angles` sees angles.  The BOND LENGTH itself is checked by
+    neither.  A fold that pulls a bond apart thus gets through.
+    Exactly that happened on 18.08. and is on record: "in one frame a bond
+    broke".
 
-    ⚠ UND DAS SELBSTGATE KANN ES NICHT AUFFANGEN -- per Konstruktion, nicht aus
-      Nachlaessigkeit.  `assemble_complex._collapsed_heavy_bonds_strict` laeuft ueber
-      alle Schweratom-PAARE und entscheidet aus dem ABSTAND, ob sie gebunden sind:
+    ⚠ AND THE SELF-GATE CANNOT CATCH IT -- by construction, not out of
+      carelessness.  `assemble_complex._collapsed_heavy_bonds_strict` runs over
+      all heavy-atom PAIRS and decides from the DISTANCE whether they are bonded:
 
-          if d > 1.30 * ideal:   continue        # "also gar nicht gebunden"
+          if d > 1.30 * ideal:   continue        # "so not bonded at all"
 
-      Eine auf das 1,4-fache gedehnte Bindung faellt damit AUS DER PRUEFUNG HERAUS.
-      Sie wird nicht als kaputt gemeldet, sondern als nicht vorhanden.  Der Kollaps
-      (zu kurz) wird gesehen, der Bruch (zu lang) ist ein blinder Fleck.
+      A bond stretched to 1.4 times its length thus DROPS OUT OF THE CHECK.
+      It is not reported as broken but as absent.  The collapse
+      (too short) is seen, the rupture (too long) is a blind spot.
 
-    HIER liegt der Bindungsgraph vor.  Damit ist "gebunden" keine Abstandsfrage mehr,
-    und dieselbe Zahl 1,30 wird von einem AUSSCHLUSSkriterium zur BRUCHschwelle.  Es
-    wird nichts erfunden: Boden (`_bd.COLLAPSE_FLOOR`, 0,82) und Decke (1,30) sind
-    exakt die beiden Zahlen, mit denen das Selbstgate ohnehin schon rechnet, und
-    `_ideal_bond` ist dieselbe Quelle.
+    HERE the bond graph is available.  Thus "bonded" is no longer a distance question,
+    and the same number 1.30 turns from an EXCLUSION criterion into the RUPTURE threshold.  Nothing
+    is invented: floor (`_bd.COLLAPSE_FLOOR`, 0.82) and ceiling (1.30) are
+    exactly the two numbers the self-gate already computes with anyway, and
+    `_ideal_bond` is the same source.
 
-    ⚠ MENGE STATT WAHRHEITSWERT, und das ist der ganze Unterschied zwischen Filter und
-      Urteil.  Ein Nitril sitzt bei 1,20 A gegen ein Einfachbindungs-Ideal von 1,52 --
-      Verhaeltnis 0,79, unter dem Boden.  Ein absolutes Ja/Nein wuerde JEDE Faltung
-      JEDES nitrilhaltigen Molekuels verwerfen, und der Befund hiesse "das Tor hat
-      keine Reichweite" aus dem falschen Grund.  Der Aufrufer zieht darum die Menge
-      des GRUNDZUSTANDS ab: verworfen wird nur, was die Faltung NEU EINBRINGT.  Das ist
-      dieselbe never-worse-Form, die `converter_backend` seinen Geschwistern auferlegt.
+    ⚠ SET INSTEAD OF BOOLEAN, and that is the whole difference between filter and
+      verdict.  A nitrile sits at 1.20 A against a single-bond ideal of 1.52 --
+      ratio 0.79, below the floor.  An absolute yes/no would reject EVERY fold
+      of EVERY nitrile-containing molecule, and the finding would read "the gate has
+      no reach" for the wrong reason.  The caller therefore subtracts the set
+      of the GROUND STATE: only what the fold NEWLY INTRODUCES is rejected.  That is
+      the same never-worse form that `converter_backend` imposes on its siblings.
     """
     try:
         from delfin.manta import _bond_decollapse as _bd
@@ -699,10 +699,10 @@ def _bindungs_ausreisser(mol, tol_lang: float = 1.30) -> frozenset:
             si = mol.GetAtomWithIdx(i).GetSymbol()
             sj = mol.GetAtomWithIdx(j).GetSymbol()
             if si == "H" or sj == "H":
-                continue                       # H wie im Selbstgate: nicht beurteilt
+                continue                       # H as in the self-gate: not judged
             try:
                 if _bd._is_metal(si) or _bd._is_metal(sj):
-                    continue                   # M-D-Ideal ist erfunden, s. `_ideal_bond`
+                    continue                   # M-D ideal is made up, see `_ideal_bond`
             except Exception:
                 pass
             try:
@@ -730,19 +730,19 @@ def _is_puckerable(mol, ring) -> bool:
     a saturated centre is 4-coordinate tetrahedral or 3-coordinate pyramidal,
     an aromatic/sp2 centre is 3-coordinate planar)."""
     n = len(ring)
-    # ===== DAS GROESSENFENSTER 5..8 IST EINE FESSEL, KEIN GESETZ (26.08.2026) =======
+    # ===== THE SIZE WINDOW 5..8 IS A SHACKLE, NOT A LAW (26.08.2026) ================
     #
-    # Cremer-Pople gilt fuer JEDEN Ring ab N = 4: die Zahl der Faltungsfreiheitsgrade
-    # ist N-3, und `_set_pucker_general` traegt sie inzwischen alle.  Das Fenster hier
-    # schnitt trotzdem bei 8 ab -- ein Vierring (1 DOF, echte Schmetterlingsfaltung)
-    # und JEDER Makrozyklus ab 9 waren damit per Konstruktion unfaltbar.
-    # Porphyrine, Calixarene, Kronenether, grosse Chelatringe: null Faltung, nicht
-    # weil die Mathematik fehlt, sondern weil eine Zahl im Weg stand.
-    # ⚠ Nebenbefund: `_amp` fuehrt eine Tabelle fuer 5..8 UND einen Fallback fuer den
-    #   Rest -- und der Fallback liegt UEBERALL ueber der Tabelle (n=5: 0,75 gegen
-    #   0,40, fast doppelt).  Weil dieses Fenster jeden anderen Ring abwies, ist der
-    #   Fallback NIE gelaufen.  Er wird mit dem Fenster zusammen korrigiert.
-    # ⛔ Vorgabe AUS -> altes Fenster -> byte-identisch.
+    # Cremer-Pople holds for EVERY ring from N = 4: the number of puckering degrees of freedom
+    # is N-3, and `_set_pucker_general` by now carries all of them.  The window here
+    # nevertheless cut off at 8 -- a four-ring (1 DOF, genuine butterfly fold)
+    # and EVERY macrocycle from 9 on were thus unfoldable by construction.
+    # Porphyrins, calixarenes, crown ethers, large chelate rings: zero folds, not
+    # because the mathematics is missing, but because a number stood in the way.
+    # ⚠ Side finding: `_amp` carries a table for 5..8 AND a fallback for the
+    #   rest -- and the fallback lies EVERYWHERE above the table (n=5: 0.75 against
+    #   0.40, almost double).  Because this window rejected every other ring, the
+    #   fallback NEVER ran.  It is corrected together with the window.
+    # ⛔ Default OFF -> old window -> byte-identical.
     if _os.environ.get("DELFIN_FFFREE_PUCKER_SPACE", "0") == "1":
         if n < 4:
             return False
@@ -752,32 +752,32 @@ def _is_puckerable(mol, ring) -> bool:
         P = mol.GetConformer().GetPositions()
     except Exception:
         P = None
-    # ===== DER METALLACYCLUS FAELLT AN EINEM KRITERIUM, DAS NICHT FUER IHN GILT =====
+    # ===== THE METALLACYCLE FAILS ON A CRITERION THAT DOES NOT APPLY TO IT ==========
     #
-    # GEMESSEN 26.08. auf 400 Systemen (`find_conformer_coverage`):
-    #     Ringe gesamt 1707 · METALL uebersprungen 352 = 20,6 %
-    #     Sechsringe 176, erreichen den Sessel 57  ->  67,6 % NIE
+    # MEASURED 26.08. on 400 systems (`find_conformer_coverage`):
+    #     rings total 1707 · METAL skipped 352 = 20.6 %
+    #     six-rings 176, reaching the chair 57  ->  67.6 % NEVER
     #
-    # Die beiden Bedingungen unten sind fuer einen ORGANISCHEN Ring richtig und fuer
-    # einen METALLACYCLUS falsch, und zwar aus demselben Grund: sie suchen die
-    # Weichheit an den RINGATOMEN.  Bei einem Chelatring sitzt sie in den M-D-BINDUNGEN
-    # -- 2,0 bis 2,4 A lang, weich, mit niedriger Torsionsbarriere.  Ein Salen-Ring
-    # M-N=C-C(ar)-C(ar)-O faltet real an genau diesen beiden Bindungen (die "Stufe"
-    # bzw. Umbrella-Faltung), obwohl sein organischer Teil starr und aromatisch ist.
+    # The two conditions below are right for an ORGANIC ring and wrong for
+    # a METALLACYCLE, and for the same reason: they look for the
+    # softness at the RING ATOMS.  In a chelate ring it sits in the M-D BONDS
+    # -- 2.0 to 2.4 A long, soft, with a low torsion barrier.  A salen ring
+    # M-N=C-C(ar)-C(ar)-O really folds at exactly these two bonds (the "step"
+    # or umbrella fold), although its organic part is rigid and aromatic.
     #
-    #   * `GetIsAromatic() -> return False` kippt den GANZEN Ring, sobald EIN Atom
-    #     aromatisch ist.  Beim fusionierten Salen-Metallacyclus sind das die
-    #     Phenolat-Kohlenstoffe -> sofortiger Ausschluss.
-    #   * `n_sat >= 3` verlangt drei sp3-Ringatome.  Ein konjugierter Chelatring hat
-    #     sie nicht und braucht sie auch nicht.
+    #   * `GetIsAromatic() -> return False` tips the WHOLE ring as soon as ONE atom
+    #     is aromatic.  In the fused salen metallacycle those are the
+    #     phenolate carbons -> immediate exclusion.
+    #   * `n_sat >= 3` demands three sp3 ring atoms.  A conjugated chelate ring does
+    #     not have them and does not need them either.
     #
-    # ⇒ Fuer einen Ring MIT Metall gilt: aromatisch ist nur dann ein Ausschluss, wenn
-    #   ALLE Nicht-Metall-Ringatome aromatisch sind (dann ist der Ring wirklich
-    #   planar-starr, z.B. ein Metallabenzol).  Und die sp3-Schwelle faellt auf 1,
-    #   weil das Metall selbst das Scharnier stellt, nicht ein sp3-Zentrum.
-    # ⚠ Die Koordinationssphaere bleibt unberuehrt: `frozen` haelt Metall UND Donoren
-    #   fest, es bewegen sich nur die Ringatome dazwischen.  Reiner Erzeuger.
-    # ⛔ Vorgabe AUS -> Ringmenge unveraendert -> byte-identisch.
+    # ⇒ For a ring WITH a metal: aromatic is an exclusion only if
+    #   ALL non-metal ring atoms are aromatic (then the ring really is
+    #   planar-rigid, e.g. a metallabenzene).  And the sp3 threshold drops to 1,
+    #   because the metal itself provides the hinge, not an sp3 centre.
+    # ⚠ The coordination sphere remains untouched: `frozen` holds metal AND donors
+    #   fixed, only the ring atoms in between move.  Pure generator.
+    # ⛔ Default OFF -> ring set unchanged -> byte-identical.
     _mc = False
     if _os.environ.get("DELFIN_FFFREE_PUCKER_MC", "0") == "1":
         try:
@@ -789,7 +789,7 @@ def _is_puckerable(mol, ring) -> bool:
             _nonmetal = [int(i) for i in ring
                          if not _EL.is_metal(mol.GetAtomWithIdx(int(i)).GetSymbol())]
             if _nonmetal and all(mol.GetAtomWithIdx(i).GetIsAromatic() for i in _nonmetal):
-                return False          # vollstaendig aromatischer Metallacyclus: starr
+                return False          # fully aromatic metallacycle: rigid
     n_sat = 0
     for idx in ring:
         a = mol.GetAtomWithIdx(int(idx))
@@ -816,8 +816,8 @@ def _is_puckerable(mol, ring) -> bool:
             ln = float(_np.linalg.norm(nrm))
             if ln > 1e-9 and abs(float(_np.dot(c - q0, nrm / ln))) > 0.25:
                 n_sat += 1   # pyramidal -> sp3-like
-    # ⚠ Beim Metallacyclus stellt das METALL das Scharnier, nicht ein sp3-Zentrum --
-    #   die Schwelle 3 ist dort ein organisches Kriterium am falschen Objekt.
+    # ⚠ In the metallacycle the METAL provides the hinge, not an sp3 centre --
+    #   there the threshold 3 is an organic criterion applied to the wrong object.
     return n_sat >= (1 if _mc else 3)
 
 
@@ -867,209 +867,209 @@ def _tfd(acc_mol, id_a: int, id_b: int) -> float:
         return 1.0     # no torsions / failure -> treat as distinct (keep)
 
 
-# ===== DIE RINGLOKALE TFD (26.08.2026) =============================================
+# ===== THE RING-LOCAL TFD (26.08.2026) =============================================
 #
-# GEMESSEN (`selbsttest_trennschaerfe`, Verduennungsreihe): derselbe Cyclohexanring an
-# einem wachsenden starren Acen, Zustaende JE RING --
-#     Cyclohexylbenzol      Ringanteil 50,0 %   TFD 0,05 -> 11   TFD 0,005 -> 62
-#     Cyclohexylnaphthalin             37,5 %                6                49
-#     Cyclohexylanthracen              30,0 %                1                23
-#     Cyclohexyltetracen               25,0 %                1                10
-# Die Faltungen sind DA -- bei 0,005 kommen sie zurueck.  TFD verschmilzt sie.
+# MEASURED (`selbsttest_trennschaerfe`, dilution series): the same cyclohexane ring on
+# a growing rigid acene, states PER RING --
+#     cyclohexylbenzene      ring share 50.0 %   TFD 0.05 -> 11   TFD 0.005 -> 62
+#     cyclohexylnaphthalene             37.5 %                6                49
+#     cyclohexylanthracene              30.0 %                1                23
+#     cyclohexyltetracene               25.0 %                1                10
+# The folds are THERE -- at 0.005 they come back.  TFD merges them.
 #
-# DIE URSACHE STEHT IN RDKITS EIGENER FORMEL, und sie ist SCHAERFER als "mittelt".
-# `CalculateTFD` bildet sum(d_i * w_i) / sum(w_i) ueber ALLE Torsionen des Molekuels.
-# Bewegt sich nur der eine Ring, ist d_i = 0 fuer jede andere Torsion, und es bleibt
-#     TFD_global = d_Ring * w_Ring / sum(w)
-# `CalculateTorsionWeights` setzt w = exp(-beta * d^2) mit d = topologischer Abstand zur
-# ZENTRALSTEN Bindung des Molekuels.  Ein angehaengter Cyclohexylring rutscht mit jedem
-# weiteren Acenring weiter an den Rand -- sein Gewichtsanteil faellt EXPONENTIELL, nicht
-# wie 1/N.  Gemessen an denselben vier MMFF-optimierten Proben (w_Ring / sum(w)):
-#     Cyclohexylbenzol      0,1875   ->   5,3-fache Verduennung
-#     Cyclohexylnaphthalin  0,0548   ->  18,3-fache
-#     Cyclohexylanthracen   0,0166   ->  60,2-fache
-#     Cyclohexyltetracen    0,0069   -> 146,0-fache
-# 0,05 / 146 = 0,00034 ist damit die Schwelle, die der Ring im Tetracen EFFEKTIV sieht.
-# Genau deshalb kommen die Zustaende erst bei 0,005 zurueck, und genau deshalb faellt
-# die Zahl monoton mit der Geruestgroesse.
+# THE CAUSE IS IN RDKIT'S OWN FORMULA, and it is SHARPER than "averages".
+# `CalculateTFD` forms sum(d_i * w_i) / sum(w_i) over ALL torsions of the molecule.
+# If only the one ring moves, d_i = 0 for every other torsion, and what remains is
+#     TFD_global = d_ring * w_ring / sum(w)
+# `CalculateTorsionWeights` sets w = exp(-beta * d^2) with d = topological distance to the
+# MOST CENTRAL bond of the molecule.  An appended cyclohexyl ring slides further to the
+# edge with every additional acene ring -- its weight share falls EXPONENTIALLY, not
+# like 1/N.  Measured on the same four MMFF-optimised samples (w_ring / sum(w)):
+#     cyclohexylbenzene      0.1875   ->   5.3-fold dilution
+#     cyclohexylnaphthalene  0.0548   ->  18.3-fold
+#     cyclohexylanthracene   0.0166   ->  60.2-fold
+#     cyclohexyltetracene    0.0069   -> 146.0-fold
+# 0.05 / 146 = 0.00034 is thus the threshold the ring in the tetracene EFFECTIVELY sees.
+# That is exactly why the states only come back at 0.005, and exactly why the
+# number falls monotonically with the scaffold size.
 #
-# ⇒ Wort fuer Wort der RMSD-Fehler eine Ebene hoeher -- und der Effekt WAECHST mit der
-#   Ligandgroesse, trifft also am haertesten die Systeme, um die es geht.
+# ⇒ Word for word the RMSD error one level up -- and the effect GROWS with the
+#   ligand size, so it hits hardest the systems that matter.
 #
-# DIE REPARATUR NIMMT RDKITS EIGENEN WEG, keinen Nachbau: `CalculateTorsionLists` gibt
-# Nichtring- und Ringtorsionen GETRENNT zurueck, `CalculateTorsionAngles` und
-# `CalculateTFD` nehmen genau solche Listen entgegen.  Es wird also nur GEFILTERT: der
-# Eintrag des betrachteten Rings bleibt, alles andere faellt weg.
+# THE REPAIR TAKES RDKIT'S OWN ROUTE, no re-implementation: `CalculateTorsionLists` returns
+# non-ring and ring torsions SEPARATELY, `CalculateTorsionAngles` and
+# `CalculateTFD` accept exactly such lists.  So it is only FILTERED: the
+# entry of the ring under consideration stays, everything else drops out.
 #
-# ⚠ DIE SYMMETRIEFALTUNG UEBERLEBT -- der Punkt, an dem der Versuch vom 26.08. gestorben
-#   ist, TFD durch eine reine CP-Distanz zu ERSETZEN (n=5 ging von 3,3,3 auf 9,13,14,
-#   weil phi an der Atomnummerierung haengt).  Hier wird nichts nachgebaut: RDKits
-#   Ringeintrag ist der MITTELWERT von |Torsion| ueber den ganzen Ring, also eine Zahl,
-#   die unter Drehung UND Spiegelung der Ringnummerierung invariant ist.  Diese
-#   Invarianz IST die Faltung.  Gemessen: unsubstituierter Fuenfring liefert ringlokal
-#   3 Zustaende -- exakt wie global.
+# ⚠ THE SYMMETRY FOLDING SURVIVES -- the point at which the attempt of 26.08. died,
+#   to REPLACE TFD by a pure CP distance (n=5 went from 3,3,3 to 9,13,14,
+#   because phi depends on the atom numbering).  Nothing is re-implemented here: RDKit's
+#   ring entry is the MEAN of |torsion| over the whole ring, i.e. a number
+#   that is invariant under rotation AND reflection of the ring numbering.  This
+#   invariance IS the folding.  Measured: unsubstituted five-ring yields ring-locally
+#   3 states -- exactly as globally.
 #
-# ⚠ DIE SCHWELLE BLEIBT 0,05, und das ist keine Setzung, sondern eine IDENTITAET.  Ein
-#   unsubstituierter Einringer hat KEINE Nichtringtorsion und GENAU EINEN Ringeintrag;
-#   sum(w) ist dann w_Ring, der Bruch kuerzt sich, und global TFD = ringlokal TFD auf
-#   jedem Konformerpaar.  GEMESSEN, Nenner 760 Konformerpaare (n=5,6,7,8 zu je 190):
-#   groesste Differenz 5,6e-17 -- das ist Fliesskommarauschen, nicht ein kleiner
-#   Unterschied.  Auf der Kalibrierprobe sind die beiden Masse also nicht aehnlich
-#   geeicht, sondern DASSELBE; die Bedeutung von 0,05 aendert sich dort um exakt null.
-#   Die Zustandszahlen bestaetigen es Zeile fuer Zeile (3/9/11/16 bei 0,05 und
-#   6/22/64/103 bei 0,005, global wie ringlokal).  `selbsttest_tfd_lokal` misst beides.
+# ⚠ THE THRESHOLD STAYS 0.05, and that is not a setting but an IDENTITY.  An
+#   unsubstituted single-ring molecule has NO non-ring torsion and EXACTLY ONE ring entry;
+#   sum(w) is then w_ring, the fraction cancels, and global TFD = ring-local TFD on
+#   every conformer pair.  MEASURED, denominator 760 conformer pairs (n=5,6,7,8 with 190 each):
+#   largest difference 5.6e-17 -- that is floating-point noise, not a small
+#   difference.  On the calibration sample the two measures are thus not similarly
+#   calibrated but THE SAME; the meaning of 0.05 changes there by exactly zero.
+#   The state counts confirm it line by line (3/9/11/16 at 0.05 and
+#   6/22/64/103 at 0.005, global as ring-local).  `selbsttest_tfd_lokal` measures both.
 #
-# ⚠ WAS DIESE FASSUNG DAFUER BEZAHLT, und es steht hier, damit es niemand spaeter als
-#   Ueberraschung findet: RDKits Ringeintrag ist EINE Zahl je Ring.  Dieselbe
-#   Invarianz, die die Symmetrie faltet, macht das Mass eindimensional -- zwei
-#   wirklich verschiedene Faltungen mit demselben Mittelwert von |Torsion| werden
-#   zusammengezogen.  Die Faltungsachse selbst (theta, phi) sieht das Mass NICHT.
-#   ⇒ Ringlokale TFD ist eine schaerfere Entdopplung, KEIN vollstaendiger
-#     Faltungsdeskriptor.  Wer die Achse braucht, braucht `_cp_theta_phi` dazu -- und
-#     die faltet die Symmetrie NICHT (Messung 26.08.), taugt also nur als ZWEITES
-#     Instrument neben diesem, nie als Ersatz.
-# ⚠ OHNE GEWICHTE, wenn mehrere Ringe ausgewaehlt sind.  Die Gewichte SIND der
-#   Verduennungsmechanismus (Abstand zur zentralsten Bindung); sie ringlokal wieder
-#   hereinzuholen holte den Effekt zurueck, den diese Fassung entfernt.  Bei EINEM Ring
-#   ist es ohnehin gleichgueltig -- ein Gewicht kuerzt sich gegen sich selbst.
-# ⛔ Vorgabe AUS -> `_tfd_distinct` laeuft die alte Zeile -> byte-identisch.
+# ⚠ WHAT THIS VERSION PAYS FOR IT, and it is stated here so nobody finds it later as a
+#   surprise: RDKit's ring entry is ONE number per ring.  The same
+#   invariance that folds the symmetry makes the measure one-dimensional -- two
+#   genuinely different folds with the same mean of |torsion| are
+#   merged.  The fold axis itself (theta, phi) is NOT seen by the measure.
+#   ⇒ Ring-local TFD is a sharper dedup, NOT a complete
+#     fold descriptor.  Whoever needs the axis needs `_cp_theta_phi` in addition -- and
+#     that does NOT fold the symmetry (measurement 26.08.), so it is fit only as a SECOND
+#     instrument alongside this one, never as a replacement.
+# ⚠ WITHOUT WEIGHTS when several rings are selected.  The weights ARE the
+#   dilution mechanism (distance to the most central bond); bringing them back in
+#   ring-locally would bring back the effect this version removes.  For ONE ring
+#   it is irrelevant anyway -- a weight cancels against itself.
+# ⛔ Default OFF -> `_tfd_distinct` runs the old line -> byte-identical.
 
 
 def _tfd_lokal_listen(mol, ringe):
-    """RDKits Ringtorsionsliste, GEFILTERT auf die uebergebenen Ringe.
+    """RDKit's ring torsion list, FILTERED to the rings passed in.
 
-    ⚠ ZUGEORDNET WIRD UEBER DIE ATOMMENGE, nicht ueber den Listenindex.
-      `tors_list_rings` kommt aus `Chem.GetSymmSSSR`, die Ringe des Aufrufers aus
-      `RingInfo.AtomRings()`.  Beide liefern dieselben Ringe -- sich auf ihre
-      Indexgleichheit zu VERLASSEN waere aber eine Annahme, und ein falsch
-      zugeordneter Ring waere hier nicht als Fehler zu erkennen, sondern nur als
-      "der andere Ring hat sich eben nicht bewegt".  Der Aufrufer prueft darum die
-      LAENGE der Rueckgabe gegen die Zahl der gewuenschten Ringe.
+    ⚠ ASSIGNMENT IS BY ATOM SET, not by list index.
+      `tors_list_rings` comes from `Chem.GetSymmSSSR`, the caller's rings from
+      `RingInfo.AtomRings()`.  Both deliver the same rings -- but RELYING on their
+      index equality would be an assumption, and a wrongly
+      assigned ring would not be recognisable here as an error, only as
+      "the other ring simply did not move".  The caller therefore checks the
+      LENGTH of the return value against the number of requested rings.
     """
     from rdkit.Chem import TorsionFingerprints as _TF
     _tl, _tlr = _TF.CalculateTorsionLists(mol)
     ziel = {frozenset(int(a) for a in r) for r in ringe}
-    # Ringeintrag k besteht aus den N aufeinanderfolgenden Vierergruppen des Rings; die
-    # ERSTEN Atome dieser Gruppen sind genau die N Ringatome (RDKit baut sie so).
+    # Ring entry k consists of the N consecutive quadruples of the ring; the
+    # FIRST atoms of these groups are exactly the N ring atoms (RDKit builds them so).
     return [(q, d) for q, d in _tlr if frozenset(int(t[0]) for t in q) in ziel]
 
 
 def _tfd_lokal(acc_mol, listen, id_a: int, id_b: int) -> float:
-    """TFD ueber NUR die uebergebenen Torsionseintraege -- kein Geruest im Nenner."""
+    """TFD over ONLY the torsion entries passed in -- no scaffold in the denominator."""
     from rdkit.Chem import TorsionFingerprints as _TF
     t_a = _TF.CalculateTorsionAngles(acc_mol, [], listen, confId=id_a)
     t_b = _TF.CalculateTorsionAngles(acc_mol, [], listen, confId=id_b)
     return float(_TF.CalculateTFD(t_a, t_b, weights=None))
 
 
-# ⚠ ZWEI SCHALTER FUER EIN MASS, und das ist keine Knopfvermehrung.  Dasselbe Mass
-#   bewegt die Zahl an den beiden Aufrufstellen in ENTGEGENGESETZTE Richtungen:
-#     `_ring_pucker_states` (je Ring)   Cyclohexyltetracen  1 -> 11 Zustaende
-#     `generate` (je Kombination)       Decalin            22 ->  8 Frames
-#   Haengen beide an EINEM Schalter, misst ein A/B ihre SUMME und niemand kann sagen,
-#   welcher Anteil woher kam -- genau die Bauform, an der in diesem Projekt schon
-#   Verdikte gescheitert sind.  Getrennt geschaltet sind es zwei Messungen.
-# ⚠ DER BEFUND HAENGT AM ERSTEN.  Gemessen wurde die Verduennung an den Zustaenden JE
-#   RING; die Kombinationsebene ist eine EXTRAPOLATION davon und steht darum unter
-#   ihrem eigenen, ebenfalls ausgeschalteten Schalter.
+# ⚠ TWO SWITCHES FOR ONE MEASURE, and that is not knob proliferation.  The same measure
+#   moves the number at the two call sites in OPPOSITE directions:
+#     `_ring_pucker_states` (per ring)         cyclohexyltetracene  1 -> 11 states
+#     `generate` (per combination)             decalin             22 ->  8 frames
+#   If both hang on ONE switch, an A/B measures their SUM and nobody can say
+#   which share came from where -- exactly the design on which verdicts in this
+#   project have already failed.  Switched separately they are two measurements.
+# ⚠ THE FINDING HANGS ON THE FIRST.  The dilution was measured on the states PER
+#   RING; the combination level is an EXTRAPOLATION from that and therefore stands under
+#   its own switch, likewise switched off.
 def _tfd_distinct(acc_mol, cid: int, kept_ids, thr: float, ringe=None,
                   schalter: str = "DELFIN_FFFREE_PUCKER_TFD_LOCAL") -> bool:
     if ringe and _os.environ.get(schalter, "0") == "1":
         try:
             _listen = _tfd_lokal_listen(acc_mol, ringe)
-            # ⚠ ALLE ODER KEINER.  Findet die Zuordnung nur EINEN Teil der Ringe
-            #   wieder, misst der ringlokale Vergleich stillschweigend weniger Ringe
-            #   als der Aufrufer gemeint hat -- und die fehlenden faenden nirgends
-            #   statt.  Eine halbe Messung sieht von aussen aus wie eine ganze; das ist
-            #   genau die Bauform, die in diesem Projekt schon mehrfach als Befund
-            #   durchgegangen ist.  Lieber ganz zurueck auf das globale Mass.
+            # ⚠ ALL OR NONE.  If the assignment recovers only PART of the rings,
+            #   the ring-local comparison silently measures fewer rings
+            #   than the caller meant -- and the missing ones would take place
+            #   nowhere.  Half a measurement looks like a whole one from outside; that is
+            #   exactly the design that has already passed as a finding several times
+            #   in this project.  Better to fall back entirely to the global measure.
             if len(_listen) == len({frozenset(int(a) for a in r) for r in ringe}):
-                # ⚠ EIGENE SCHWELLE NUR, WENN JEMAND SIE SETZT.  Die Messung sagt: auf
-                #   dem unsubstituierten Ring sind beide Masse identisch, 0,05 behaelt
-                #   also seine Bedeutung.  Der Knopf ist zum NACHMESSEN da, nicht zum
-                #   Nachjustieren -- leer heisst "unveraendert".
+                # ⚠ OWN THRESHOLD ONLY IF SOMEONE SETS IT.  The measurement says: on
+                #   the unsubstituted ring both measures are identical, so 0.05 keeps
+                #   its meaning.  The knob is there for RE-MEASURING, not for
+                #   re-tuning -- empty means "unchanged".
                 _s = _os.environ.get("DELFIN_FFFREE_PUCKER_TFD_LOCAL_THR", "")
                 _thr = float(_s) if _s.strip() else thr
-                # Die Liste EINMAL je Kandidat, nicht je Paar: `GetTFDBetweenConformers`
-                # baut sie im globalen Pfad bei JEDEM Aufruf neu -- ringlokal ist damit
-                # auch billiger, nicht nur schaerfer.
+                # The list ONCE per candidate, not per pair: `GetTFDBetweenConformers`
+                # rebuilds it in the global path on EVERY call -- ring-local is thus
+                # also cheaper, not only sharper.
                 return all(_tfd_lokal(acc_mol, _listen, k, cid) >= _thr
                            for k in kept_ids)
         except Exception:
-            pass          # Rueckfall auf das globale Mass -- nie stillschweigend leer
+            pass          # fall back to the global measure -- never silently empty
     return all(_tfd(acc_mol, k, cid) >= thr for k in kept_ids)
 
 
-# ===== DIE UNTERSCHEIDBARKEIT IST EIN MAXIMUM, KEIN MITTELWERT (26.08.2026) =========
+# ===== DISTINGUISHABILITY IS A MAXIMUM, NOT A MEAN (26.08.2026) =====================
 #
-# Der Fehler von RMSD ist NICHT, dass es Geometrie misst.  Er ist, dass es MITTELT --
-# und eine Ringfaltung ist ein LOKALES Ereignis in einem grossen Molekuel.  Mit unseren
-# eigenen Zahlen an einem gefalteten Sechsring durchgerechnet:
+# The error of RMSD is NOT that it measures geometry.  It is that it AVERAGES --
+# and a ring fold is a LOCAL event in a large molecule.  Worked through with our
+# own numbers on a folded six-ring:
 #
-#     Ringatome laufen 0,203 A im Median (groesste Einzelauslenkung 0,33)
-#     Ringanteil an den schweren Atomen 13,2 %
-#     ⇒ Gesamt-RMSD = sqrt(0,132) * 0,203 = 0,086 A
+#     ring atoms move 0.203 A in the median (largest single displacement 0.33)
+#     ring share of the heavy atoms 13.2 %
+#     ⇒ total RMSD = sqrt(0.132) * 0.203 = 0.086 A
 #
-# 0,086 liegt UNTER jeder Entdopplungsschwelle, die dieses Projekt fuehrt (`_DEDUP_RMSD`
-# 0,30 · `rmsd_dedup` 0,5).  Die Faltung verschwindet also nicht, weil sie klein waere,
-# sondern weil sie durch 87 % unbewegte Atome geteilt wird.  Die groesste Auslenkung
-# nach Kabsch-Ausrichtung bleibt bei 0,33 -- FAKTOR 4 zwischen den beiden Zahlen, an
-# derselben Geometrie gemessen.
+# 0.086 lies BELOW every dedup threshold this project carries (`_DEDUP_RMSD`
+# 0.30 · `rmsd_dedup` 0.5).  So the fold does not vanish because it is small,
+# but because it is divided by 87 % unmoved atoms.  The largest displacement
+# after Kabsch alignment stays at 0.33 -- FACTOR 4 between the two numbers, measured on
+# the same geometry.
 #
-# WAS EIN KRISTALLOGRAPH STATTDESSEN LIEST.  In der Differenz-Fourier-Karte steht die
-# GROESSTE unmodellierte Abweichung als Restdichte-Maximum; der Mittelwert ueber alle
-# Atome kommt darin nicht vor.  Zwei Modelle, deren groesste Atomauslenkung unter der
-# Aufloesung liegt, waeren an denselben Daten NICHT ZU UNTERSCHEIDEN -- sie sind EIN
-# Eintrag im Manifold, nicht zwei.
+# WHAT A CRYSTALLOGRAPHER READS INSTEAD.  In the difference Fourier map the
+# LARGEST unmodelled deviation appears as the residual-density maximum; the mean over all
+# atoms does not occur in it.  Two models whose largest atomic displacement lies below the
+# resolution would be INDISTINGUISHABLE on the same data -- they are ONE
+# entry in the manifold, not two.
 #
-# DIE SCHWELLE, begruendet statt gesetzt:
-#   * Koordinaten-esd einer Routinestruktur liegt bei 0,002 bis 0,01 A.  Das ist die
-#     UNTERgrenze -- darunter ist jede Differenz Rauschen der Verfeinerung.
-#   * Fehlordnung wird ab etwa 0,3 bis 0,5 A ueberhaupt erst als ZWEI Lagen modelliert.
-#     Das ist die OBERgrenze -- darueber sieht der Kristallograph zwei Konformere.
-#   0,15 A liegt dazwischen: Faktor 15 bis 75 ueber dem esd, Faktor 2 bis 3 unter der
-#   Fehlordnungsgrenze.  Gross genug, um nicht Rauschen zu zaehlen; klein genug, um
-#   nichts zu verschmelzen, was ein Kristallograph noch getrennt modellieren wuerde.
-# ⚠ SIE IST ENV-PARAMETER, weil sie eine KONVENTION ist und keine Naturkonstante -- die
-#   Aufloesung haengt am Datensatz, und wer sie verschiebt, soll das messen koennen.
+# THE THRESHOLD, justified instead of set:
+#   * Coordinate esd of a routine structure lies at 0.002 to 0.01 A.  That is the
+#     LOWER bound -- below it every difference is refinement noise.
+#   * Disorder is only modelled as TWO sites from about 0.3 to 0.5 A on.
+#     That is the UPPER bound -- above it the crystallographer sees two conformers.
+#   0.15 A lies in between: factor 15 to 75 above the esd, factor 2 to 3 below the
+#   disorder limit.  Large enough not to count noise; small enough not to
+#   merge anything a crystallographer would still model separately.
+# ⚠ IT IS AN ENV PARAMETER because it is a CONVENTION and not a natural constant -- the
+#   resolution depends on the dataset, and whoever shifts it should be able to measure that.
 #
-# ⚠ WAS DIESE METRIK **NICHT** TUT: sie rangiert nicht.  Sie sagt "ununterscheidbar"
-#   oder "unterscheidbar", nie "besser".  Ein Rang braeuchte eine Energie; das ist
-#   Stufe (3) und steht aus gutem Grund AUS.
+# ⚠ WHAT THIS METRIC DOES **NOT** DO: it does not rank.  It says "indistinguishable"
+#   or "distinguishable", never "better".  A rank would need an energy; that is
+#   stage (3) and is OFF for good reason.
 
 
 def _kabsch_max_rmsd(A, B) -> Tuple[float, float]:
-    """(GROESSTE Auslenkung, RMSD) zweier Punktsaetze nach Kabsch-Ausrichtung.
+    """(LARGEST displacement, RMSD) of two point sets after Kabsch alignment.
 
-    Beide Zahlen aus DERSELBEN Ausrichtung -- sonst waere der Vergleich der beiden
-    Masse keiner.  Kabsch minimiert das RMSD; das Maximum wird also gegen die fuer
-    RMSD GUENSTIGSTE Ueberlagerung gemessen und ist damit eher zu klein als zu gross.
+    Both numbers from THE SAME alignment -- otherwise the comparison of the two
+    measures would be none.  Kabsch minimises the RMSD; the maximum is thus measured against
+    the superposition MOST FAVOURABLE for RMSD and is therefore rather too small than too large.
 
-    ⚠ NUR SCHWERE ATOME, und das ist kein Sparen.  Roentgenbeugung sieht ELEKTRONEN-
-      DICHTE; ein Wasserstoff traegt ein Elektron und wird in einer Routinestruktur
-      GERECHNET, nicht gefunden.  Eine Metrik, die vorgibt, H-Lagen zu unterscheiden,
-      urteilt ueber etwas, das in den Daten gar nicht steht.  Der Aufrufer uebergibt
-      darum bereits gefilterte Koordinaten.
+    ⚠ HEAVY ATOMS ONLY, and that is not economising.  X-ray diffraction sees ELECTRON
+      DENSITY; a hydrogen carries one electron and in a routine structure is
+      CALCULATED, not found.  A metric that pretends to distinguish H positions
+      judges something that is not in the data at all.  The caller therefore passes
+      already filtered coordinates.
 
-    ⚠ KEINE SYMMETRIEFALTUNG, absichtlich.  Beide Punktsaetze stammen aus DERSELBEN
-      Molekuelinstanz in DERSELBEN Atomreihenfolge; die Entartung "zwei Nummerierungen
-      desselben Konformers" erledigt in `generate` das TFD davor, und TFD kann das,
-      weil es die Topologiesymmetrie mitfaltet (die CP-Distanz konnte es nicht -- der
-      Versuch vom 26.08. ist genau daran gescheitert).  Wer hier zusaetzlich ueber
-      Automorphismen minimierte, zahlte N! und maesse dasselbe.
+    ⚠ NO SYMMETRY FOLDING, deliberately.  Both point sets come from THE SAME
+      molecule instance in THE SAME atom order; the degeneracy "two numberings
+      of the same conformer" is handled in `generate` by the TFD before it, and TFD can do that
+      because it folds in the topological symmetry (the CP distance could not -- the
+      attempt of 26.08. failed on exactly that).  Whoever additionally minimised over
+      automorphisms here would pay N! and measure the same thing.
     """
     v = _kabsch_abweichungen(A, B)
     return float(v.max()), float(_np.sqrt(float((v ** 2).mean())))
 
 
 def _kabsch_abweichungen(A, B):
-    """Die Abweichung JE ATOM nach Kabsch-Ausrichtung -- der gemeinsame Rohstoff.
+    """The deviation PER ATOM after Kabsch alignment -- the common raw material.
 
-    ⚠ EINE Ausrichtung, dann beide Masse daraus.  Wuerde man Maximum und RMSD je
-      einzeln ausrichten lassen, verglichen sie zwei verschiedene Ueberlagerungen und
-      der Faktor zwischen ihnen waere teils Instrument, teils Ausrichtung.  Kabsch
-      minimiert das RMSD -- das Maximum wird also gegen die fuer den Gegner
-      GUENSTIGSTE Ueberlagerung gemessen und ist eher zu klein als zu gross.
+    ⚠ ONE alignment, then both measures from it.  If maximum and RMSD were each
+      aligned individually, they would compare two different superpositions and
+      the factor between them would be partly instrument, partly alignment.  Kabsch
+      minimises the RMSD -- the maximum is thus measured against the superposition
+      MOST FAVOURABLE for the opponent and is rather too small than too large.
     """
     Am = A.mean(0)
     Bm = B.mean(0)
@@ -1100,46 +1100,46 @@ def _ring_pucker_states(mol_with_conf, ring, frozen: Set[int],
     acc = Chem.Mol(mol_with_conf)
     kept_ids = [acc.GetConformer().GetId()]
     n = len(ring)
-    # ===== ENTDOPPELN IN CP STATT IN TFD (26.08.2026) ================================
+    # ===== DEDUP IN CP INSTEAD OF IN TFD (26.08.2026) ================================
     #
-    # GEMESSEN am eigenen Konvergenztest.  Die TFD-Schwelle 0,05 splittet ueber:
-    #     n=6, NPHASE=16 -> 10 Zustaende, kleinste paarweise CP-Distanz  5,0 Grad
-    #     n=7, NPHASE=16 -> 12 Zustaende, kleinste paarweise CP-Distanz  1,8 Grad
-    # Zwei Faltungen, die 1,8 Grad auseinanderliegen, sind DIESELBE.  Und zwei
-    # Eintraege standen bei theta = 180 mit phi = 136 und phi = 339 -- am Pol ist phi
-    # bedeutungslos, also beweisbar derselbe Zustand.
+    # MEASURED on our own convergence test.  The TFD threshold 0.05 over-splits:
+    #     n=6, NPHASE=16 -> 10 states, smallest pairwise CP distance  5.0 degrees
+    #     n=7, NPHASE=16 -> 12 states, smallest pairwise CP distance  1.8 degrees
+    # Two folds that lie 1.8 degrees apart are THE SAME.  And two
+    # entries stood at theta = 180 with phi = 136 and phi = 339 -- at the pole phi is
+    # meaningless, so provably the same state.
     #
-    # ⚠️ DAS IST KEINE KOSMETIK.  Die Zustandszahl JE RING ist die Basis des
-    #    Kreuzprodukts ueber alle Ringe (gemessen: 4,3 Ringe je System):
-    #         3 Zustaende, 4 Ringe ->      81 Kombinationen   rechenbar
-    #        10 Zustaende, 4 Ringe ->  10 000                 nicht rechenbar
-    #    Uebersplittung macht die VOLLSTAENDIGE Kombinatorik unbezahlbar.  Wer den
-    #    ganzen Faltungsraum will, muss zuerst aufhoeren, Rauschen als Mulde zu
-    #    zaehlen -- sonst kommt die Kappe durch die Hintertuer zurueck.
+    # ⚠️ THIS IS NOT COSMETICS.  The state count PER RING is the base of the
+    #    cross product over all rings (measured: 4.3 rings per system):
+    #         3 states, 4 rings ->      81 combinations   computable
+    #        10 states, 4 rings ->  10 000                not computable
+    #    Over-splitting makes the COMPLETE combinatorics unaffordable.  Whoever wants the
+    #    whole pucker space must first stop counting noise as a basin
+    #    -- otherwise the cap comes back through the back door.
     #
-    # Chemischer Massstab: Cyclohexan hat Sessel + Twist-Boat-Familie, nach
-    # Symmetriefaltung 2-3 Klassen.  Der Fuenfring konvergiert von selbst auf 3.
+    # Chemical yardstick: cyclohexane has chair + twist-boat family, after
+    # symmetry folding 2-3 classes.  The five-ring converges to 3 by itself.
     #
-    # Entdoppelt wird darum auf der KUGEL, mit der Grosskreisdistanz -- die
-    # Pol-Entartung loest sich dort von selbst (siehe `_cp_abstand`).
-    # ⛔ Vorgabe AUS -> TFD wie bisher -> byte-identisch.
+    # Dedup therefore happens on the SPHERE, with the great-circle distance -- the
+    # pole degeneracy resolves itself there (see `_cp_abstand`).
+    # ⛔ Default OFF -> TFD as before -> byte-identical.
     _cpd = _os.environ.get("DELFIN_FFFREE_PUCKER_CPDEDUP", "0") == "1"
     _cp_tol = float(_os.environ.get("DELFIN_FFFREE_PUCKER_CPTOL", "15") or 15.0)
     _cp_qtol = float(_os.environ.get("DELFIN_FFFREE_PUCKER_CPQTOL", "0.15") or 0.15)
     _cp_kept: List[Tuple[float, float, float]] = []
-    # ===== (2) DIESELBE UNUNTERSCHEIDBARKEIT, ABER JE RING (26.08.2026) ==============
+    # ===== (2) THE SAME INDISTINGUISHABILITY, BUT PER RING (26.08.2026) ==============
     #
-    # ⚠ HIER LIEGT DER HEBEL, NICHT IM KREUZPRODUKT.  Die Zustandszahl JE RING geht
-    #   POTENZIERT in die Kombinatorik ein (gemessen 4,3 Ringe je System): ein Zustand
-    #   weniger je Ring spart mehr als jede Regel weiter unten, weil unten schon
-    #   relaxiert wurde.  Ein Tor hinter dem Relax toetet das Ergebnis, nicht die
-    #   Kosten -- das steht seit dem 26.08. im Docstring von `selbsttest_kombinatorik`
-    #   und gilt fuer den Defektfilter genauso wie fuer die Ununterscheidbarkeit.
-    # ⚠ OB ES WIRKLICH REDUZIERT, IST EINE MESSUNG UND KEINE HOFFNUNG.  Das Maximum ist
-    #   gegen Verduennung unempfindlich (ein Maximum kennt keinen Nenner), also spricht
-    #   nichts dafuer, dass es echte Ringmulden zusammenzieht -- die liegen weit
-    #   auseinander.  `selbsttest_trennschaerfe` Schritt 3 zaehlt nach.
-    # ⛔ Vorgabe AUS -> byte-identisch.
+    # ⚠ THE LEVER IS HERE, NOT IN THE CROSS PRODUCT.  The state count PER RING enters
+    #   the combinatorics as a POWER (measured 4.3 rings per system): one state
+    #   fewer per ring saves more than any rule further down, because down there the
+    #   relax has already happened.  A gate behind the relax kills the result, not the
+    #   cost -- that has been in the docstring of `selbsttest_kombinatorik` since 26.08.
+    #   and applies to the defect filter just as to the indistinguishability.
+    # ⚠ WHETHER IT REALLY REDUCES IS A MEASUREMENT AND NOT A HOPE.  The maximum is
+    #   insensitive to dilution (a maximum knows no denominator), so nothing
+    #   suggests it merges genuine ring basins -- those lie far
+    #   apart.  `selbsttest_trennschaerfe` step 3 counts it.
+    # ⛔ Default OFF -> byte-identical.
     _xrd_r = _os.environ.get("DELFIN_FFFREE_PUCKER_XRD", "0") == "1"
     _xrd_r_tol = float(_os.environ.get("DELFIN_FFFREE_PUCKER_XRDTOL", "0.15") or 0.15)
     _schwer_r: List[int] = []
@@ -1151,35 +1151,35 @@ def _ring_pucker_states(mol_with_conf, ring, frozen: Set[int],
             _xrd_r_kept = [mol_with_conf.GetConformer().GetPositions()[_schwer_r]]
         except Exception:
             _xrd_r = False
-    # ===== DER GANZE FALTUNGSRAUM STATT DREI STELLEN DARAUF (26.08.2026) ============
+    # ===== THE WHOLE PUCKER SPACE INSTEAD OF THREE SPOTS ON IT (26.08.2026) =========
     #
-    # Die alte Kandidatenliste tastet die Cremer-Pople-Kugel an genau drei Orten ab:
-    # den AEQUATOR (theta = 90, K Phasen), und bei geraden Ringen die beiden POLE.
-    # `q_scale` ist dabei konstant 1,0.
-    #   ⇒ theta zwischen 0 und 90 wird NIE abgetastet -- dort liegen Half-Chair
-    #     (theta ~50) und Envelope (theta ~55).
-    #   ⇒ die Amplitude wird NIE variiert -- nur EINE Kugelschale.
-    #   ⇒ ungerade Ringe bekommen `theta=None`, also reine Pseudorotation.
-    # Die fehlenden Formen sind damit nicht "nicht implementiert", sondern NICHT
-    # ABGETASTET -- ein Unterschied, der die Reparatur billig macht.
+    # The old candidate list samples the Cremer-Pople sphere at exactly three places:
+    # the EQUATOR (theta = 90, K phases), and for even rings the two POLES.
+    # `q_scale` is constant 1.0 throughout.
+    #   ⇒ theta between 0 and 90 is NEVER sampled -- that is where half-chair
+    #     (theta ~50) and envelope (theta ~55) lie.
+    #   ⇒ the amplitude is NEVER varied -- only ONE spherical shell.
+    #   ⇒ odd rings get `theta=None`, i.e. pure pseudorotation.
+    # The missing forms are thus not "not implemented" but NOT
+    # SAMPLED -- a difference that makes the repair cheap.
     #
-    # Mit `DELFIN_FFFREE_PUCKER_SPACE=1` wird stattdessen der (N-3)-dimensionale
-    # Raum systematisch ueberdeckt (`_pucker_space_grid`), fuer JEDE Ringgroesse und
-    # ueber `_set_pucker_general`, das auch die Paare m >= 3 kennt -- ohne die war
-    # jeder Ring ab N = 7 unvollstaendig parametrisiert.
-    # ⚠ Vollstaendigkeit ist hier eine AUFLOESUNGSfrage: der Raum ist kontinuierlich.
-    #   Ueberdeckt wird er vollstaendig bei der angegebenen Aufloesung, und die steht
-    #   in der Spur -- keine Ecke ausgelassen, keine Richtung bevorzugt.
-    # ⛔ Vorgabe AUS -> alte Liste -> byte-identisch.
+    # With `DELFIN_FFFREE_PUCKER_SPACE=1` the (N-3)-dimensional space is instead
+    # covered systematically (`_pucker_space_grid`), for EVERY ring size and
+    # via `_set_pucker_general`, which also knows the pairs m >= 3 -- without those
+    # every ring from N = 7 on was incompletely parametrised.
+    # ⚠ Completeness here is a question of RESOLUTION: the space is continuous.
+    #   It is covered completely at the stated resolution, and that is
+    #   in the trace -- no corner left out, no direction preferred.
+    # ⛔ Default OFF -> old list -> byte-identical.
     _raum = _os.environ.get("DELFIN_FFFREE_PUCKER_SPACE", "0") == "1"
     if _raum:
         _namp = max(1, int(_os.environ.get("DELFIN_FFFREE_PUCKER_NAMP", "2") or 2))
         _nph = max(1, int(_os.environ.get("DELFIN_FFFREE_PUCKER_NPHASE", "8") or 8))
         _cands = _pucker_space_grid(n, _namp, _nph)
         if _os.environ.get("DELFIN_FFFREE_PUCKER_TRACE", "0") == "1":
-            # ⚠ DIE ABTASTDICHTE STEHT MIT IM PROTOKOLL.  Ohne sie liesse sich eine
-            # reduzierte Aufloesung spaeter nicht von einer vollen unterscheiden --
-            # und genau das waere eine stille Kappe.
+            # ⚠ THE SAMPLING DENSITY GOES INTO THE LOG TOO.  Without it a
+            # reduced resolution could not later be told from a full one --
+            # and exactly that would be a silent cap.
             _res = getattr(_pucker_space_grid, "_grid_res", None)
             print("[pucker] RAUM n=%d: %d Kandidaten (%d-dim, Amplitudenstufen %d, "
                   "Phasen %d)" % (n, len(_cands), max(0, n - 3), _namp, _nph))
@@ -1189,7 +1189,7 @@ def _ring_pucker_states(mol_with_conf, ring, frozen: Set[int],
     else:
         _cands = _pucker_candidates(n)
     if frozenset(ring) in _FLAT_ONLY:
-        # NUR begradigen, nicht falten -- s. den Block in `generate`.
+        # ONLY straighten, do not fold -- see the block in `generate`.
         _cands = [({}, {})] if _raum else [(0.0, 0.0, 0.0)]
     for _cand in _cands:
         try:
@@ -1205,16 +1205,16 @@ def _ring_pucker_states(mol_with_conf, ring, frozen: Set[int],
                 continue
             _Pr = None
             if _xrd_r:
-                # Ununterscheidbar vom Grundzustand ODER von einem schon behaltenen
-                # Zustand -> derselbe Eintrag, kein zweiter Ringzustand.
+                # Indistinguishable from the ground state OR from an already kept
+                # state -> the same entry, not a second ring state.
                 _Pr = m2.GetConformer().GetPositions()[_schwer_r]
                 if any(_kabsch_max_rmsd(_Pa, _Pr)[0] < _xrd_r_tol
                        for _Pa in _xrd_r_kept):
                     continue
             if _cpd:
-                # NACH dem Relax messen, nicht die SOLL-Werte vergleichen: der Relax
-                # zieht den Startpunkt in die naechste echte Mulde, und genau deren
-                # Lage entscheidet, ob es eine neue ist.
+                # Measure AFTER the relax, do not compare the TARGET values: the relax
+                # pulls the starting point into the nearest genuine basin, and exactly its
+                # location decides whether it is a new one.
                 _cp = _cp_theta_phi(m2.GetConformer().GetPositions(), ring)
                 if any(_cp_abstand(_cp, _k) < _cp_tol and abs(_cp[0] - _k[0]) < _cp_qtol
                        for _k in _cp_kept):
@@ -1225,17 +1225,17 @@ def _ring_pucker_states(mol_with_conf, ring, frozen: Set[int],
                 states.append(_cand if _raum else (_qs, theta, phi))
                 continue
             cid = _add_conf(acc, m2)
-            # ⚠ HIER IST DIE MESSSTELLE DES BEFUNDS.  `ringe` benennt den EINEN Ring,
-            #   der hier gefaltet wird; mit dem Schalter AN zaehlt nur noch seine
-            #   Torsion, das Geruest steht nicht mehr im Nenner.  Schalter AUS -> das
-            #   Argument wird in `_tfd_distinct` gar nicht angesehen.
+            # ⚠ HERE IS THE MEASURING POINT OF THE FINDING.  `ringe` names the ONE ring
+            #   that is folded here; with the switch ON only its torsion
+            #   counts, the scaffold is no longer in the denominator.  Switch OFF -> the
+            #   argument is not even looked at in `_tfd_distinct`.
             if _tfd_distinct(acc, cid, kept_ids, tfd_thr, ringe=(ring,)):
                 kept_ids.append(cid)
                 if _xrd_r and _Pr is not None:
                     _xrd_r_kept.append(_Pr)
-                # Im Raum-Modus ist der Zustand das Koordinatenpaar selbst; die
-                # Legacy-Form bleibt ein 3-Tupel.  `generate` indiziert nur, es liest
-                # den Inhalt nicht -- beide Formen sind dort gleichwertig.
+                # In space mode the state is the coordinate pair itself; the
+                # legacy form stays a 3-tuple.  `generate` only indexes, it does not
+                # read the content -- both forms are equivalent there.
                 states.append(_cand if _raum else (_qs, theta, phi))
             else:
                 acc.RemoveConformer(cid)
@@ -1245,23 +1245,23 @@ def _ring_pucker_states(mol_with_conf, ring, frozen: Set[int],
 
 
 def _neuer_zaehler() -> dict:
-    """Frischer Zaehlersatz fuer ``generate(..., _zaehler=...)``.
+    """Fresh counter set for ``generate(..., _zaehler=...)``.
 
-    ⚠ WARUM DIE MESSSTELLE IN `generate` SITZT UND NICHT IN EINER KOPIE.  Die Frage,
-      wie gross das Kreuzprodukt NACH der Physik ist, laesst sich nur an dem Code
-      beantworten, der die Frames auch wirklich baut.  Eine nachgebaute Schleife misst
-      den Nachbau -- in diesem Projekt ist genau das schon mehrfach als Befund
-      durchgegangen und war keiner.  Der Preis ist ein `if _zaehler is not None`
-      an sechs Stellen; der Vorgabepfad (`_zaehler is None`) laeuft unveraendert.
+    ⚠ WHY THE MEASURING POINT SITS IN `generate` AND NOT IN A COPY.  The question
+      of how large the cross product is AFTER the physics can only be answered on the
+      code that actually builds the frames.  A re-implemented loop measures
+      the re-implementation -- in this project exactly that has already passed as a finding
+      several times and was none.  The price is an `if _zaehler is not None`
+      at six places; the default path (`_zaehler is None`) runs unchanged.
     """
     return {"ringgroessen": [], "zustaende_je_ring": [], "kreuzprodukt": 0,
             "gemeinsame_atome": 0, "gem_max": 0, "aufzaehlung": 0, "gebaut": 0,
             "relax_fehler": 0, "kollision": 0, "winkel": 0, "tor_ueberlebt": 0,
             "tfd_doppelt": 0, "ausnahme": 0, "energien": [],
-            # (1) Defektfilter und (2) kristallographische Ununterscheidbarkeit bekommen
-            # EIGENE Zaehler.  Sie mit `kollision`/`tfd_doppelt` zu verrechnen, waere
-            # genau der Fehler, den dieses Projekt schon dreimal gemacht hat: ein
-            # Detektorname, der zwei Mechanismen deckt, ist keine Messung.
+            # (1) defect filter and (2) crystallographic indistinguishability get
+            # counters OF THEIR OWN.  Lumping them into `kollision`/`tfd_doppelt` would be
+            # exactly the mistake this project has already made three times: a
+            # detector name that covers two mechanisms is not a measurement.
             "bindung": 0, "xrd_doppelt": 0}
 
 
@@ -1271,11 +1271,11 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
              _zaehler: Optional[dict] = None) -> List[Tuple[str, str]]:
     """Construct the COMBINATORIAL ring-pucker conformers from a base conformer.
 
-    ``_zaehler``: optionaler Zaehlersatz (`_neuer_zaehler()`).  Ist er gesetzt, traegt
-    dieser Lauf mit, wie viele Kombinationen aufgezaehlt, gebaut, am Kollisions- bzw.
-    Winkeltor verworfen und von TFD zusammengezogen wurden -- die Messung, die
-    `selbsttest_kombinatorik` auswertet.  ``None`` (Vorgabe) = kein einziger Zaehler
-    wird angefasst, der Bau ist byte-identisch zu vorher.
+    ``_zaehler``: optional counter set (`_neuer_zaehler()`).  If set, this run
+    records how many combinations were enumerated, built, rejected at the collision or
+    angle gate and merged by TFD -- the measurement that
+    `selbsttest_kombinatorik` evaluates.  ``None`` (default) = not a single counter
+    is touched, the build is byte-identical to before.
 
     ``mol_with_conf`` carries ONE embedded conformer (a chain/rotamer pose whose
     rings sit at their base pucker).  Every puckerable ring's distinct pucker
@@ -1303,47 +1303,47 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
     frozen = frozen or set()
     rings = [_ring_order(mol_with_conf, r) for r in rings_raw
              if _is_puckerable(mol_with_conf, r)]
-    # ===== DER FLACHE ZUSTAND FUER KONJUGIERTE RINGE (18.08.2026) =====================
-    # GEMESSEN (16./17.08., `folds`, 965 Systeme): von 326 fehlenden Ringmotiven sind
-    # **218 PLANAR** -- 5M 126 - 6M 55 - 4M 37 -- und ALLE drei Klassen sind
-    # METALLACYCLEN (`find_conformer_completeness:254` baut den Namen als
+    # ===== THE FLAT STATE FOR CONJUGATED RINGS (18.08.2026) ===========================
+    # MEASURED (16./17.08., `folds`, 965 systems): of 326 missing ring motifs,
+    # **218 are PLANAR** -- 5M 126 - 6M 55 - 4M 37 -- and ALL three classes are
+    # METALLACYCLES (`find_conformer_completeness:254` builds the name as
     # f"{sz}{'M' if is_metallacycle else ''}:{basin}").
     #
-    # `_is_puckerable` laesst genau diese nicht herein: es verlangt "kein aromatisches
-    # Ringatom" und ">= 3 sp3-Ringatome", und begruendet das damit, ein konjugierter Ring
-    # SEI ohnehin planar und rigide.  Das Auge misst das Gegenteil: der Kristall-
-    # Planarzustand FEHLT im Bau.  Beides zusammen heisst -- der Ring wird von etwas
-    # anderem gefaltet, und das einzige Modul, das ihn absichtlich flach setzen koennte,
-    # darf ihn nicht anfassen.  `planar138` und `pktrace` haben das bestaetigt
-    # (affected 0, auch mit bewusst umgangener Reichweitensperre).
+    # `_is_puckerable` does not let exactly these in: it demands "no aromatic
+    # ring atom" and ">= 3 sp3 ring atoms", and justifies that by claiming a conjugated ring
+    # IS planar and rigid anyway.  The eye measures the opposite: the crystal
+    # planar state is MISSING in the build.  Both together mean -- the ring is folded by
+    # something else, and the only module that could deliberately set it flat
+    # is not allowed to touch it.  `planar138` and `pktrace` confirmed this
+    # (affected 0, even with the reach barrier deliberately bypassed).
     #
-    # ⚠ NUR DER Q=0-ZUSTAND, kein Pucker.  Diese Ringe sollen nicht gefaltet, sondern
-    # BEGRADIGT werden; `_ring_pucker_states` bietet ihnen darum ausschliesslich die
-    # Projektion in die Mittelebene an.  Metall und Donoren stehen in `frozen` und
-    # bewegen sich nicht -- die Koordinationssphaere bleibt unberuehrt.
+    # ⚠ ONLY THE Q=0 STATE, no pucker.  These rings are not to be folded but
+    # STRAIGHTENED; `_ring_pucker_states` therefore offers them exclusively the
+    # projection onto the mean plane.  Metal and donors are in `frozen` and
+    # do not move -- the coordination sphere remains untouched.
     #
-    # ⚠ KLASSE: ENUMERATOR, kein Reparateur (Modulzensus 18.08.).  Er PROJIZIERT bei
-    # eingefrorenem Kern, statt neu zu erzeugen -- dieselbe Klasse wie der
-    # Spiegelabschluss (+1,0 pp), nicht die von BACKBONE_REEMBED (+11,9 pp).
+    # ⚠ CLASS: ENUMERATOR, not a repairer (module census 18.08.).  It PROJECTS with
+    # a frozen core instead of generating anew -- the same class as the
+    # mirror closure (+1.0 pp), not that of BACKBONE_REEMBED (+11.9 pp).
     #
-    # Vorgabe AUS -> Ringmenge unveraendert -> byte-identisch.
-    # ⚠️ HIER, NICHT IN _set_pucker -- ein Fehler von mir, am 18.08. gemessen.
-    # `_FLAT_ONLY.clear()` stand in `_set_pucker`, also in der Funktion, die je
-    # RING einmal laeuft.  Folge: Ring 0 wurde korrekt flach gehalten, danach war
-    # die Menge leer, und JEDER weitere Ring bekam die volle Faltleiter bei
-    # Q = 0,63 Angstroem.  Der Mechanismus hat den konjugierten Chelatring also
-    # GEFALTET, statt ihn zu BEGRADIGEN -- das genaue Gegenteil seines Zwecks.
+    # Default OFF -> ring set unchanged -> byte-identical.
+    # ⚠️ HERE, NOT IN _set_pucker -- a mistake of mine, measured on 18.08.
+    # `_FLAT_ONLY.clear()` stood in `_set_pucker`, i.e. in the function that runs
+    # once per RING.  Consequence: ring 0 was correctly held flat, after that the
+    # set was empty, and EVERY further ring got the full fold ladder at
+    # Q = 0.63 Angstrom.  So the mechanism FOLDED the conjugated chelate ring
+    # instead of STRAIGHTENING it -- the exact opposite of its purpose.
     #
-    # Der Beweis stand in den Etiketten: 246 von 256 Pucker-Etiketten beginnen mit
-    # `r0:base` (nur Ring 0 blieb flach), und die Zustandsindizes an Ringen ab 1
-    # laufen bis 15 -- ein flat-only-Ring kann hoechstens Index 1 haben, und 15 ist
-    # exakt die volle Kandidatenzahl eines Sechsrings.
-    # Chemisch gemessen an vier Salicylaldiminato-Chelaten: Walsh-Winkel am
-    # Azomethin-Kohlenstoff 13,1 bis 17,5 Grad, waehrend der Kristall dieselben
-    # Zentren bei hoechstens 1,4 Grad haelt; in einem Frame riss eine Bindung.
+    # The proof was in the labels: 246 of 256 pucker labels begin with
+    # `r0:base` (only ring 0 stayed flat), and the state indices on rings from 1 on
+    # run up to 15 -- a flat-only ring can have at most index 1, and 15 is
+    # exactly the full candidate count of a six-ring.
+    # Chemically measured on four salicylaldiminato chelates: Walsh angle at the
+    # azomethine carbon 13.1 to 17.5 degrees, while the crystal holds the same
+    # centres at no more than 1.4 degrees; in one frame a bond broke.
     #
-    # ⇒ Der Torterm `smiles_ccdc_regressed`, an dem `planarA` blockierte, hatte
-    # RECHT.  Ihn zu lockern haette den Baufehler einzementiert.
+    # ⇒ The gate term `smiles_ccdc_regressed`, on which `planarA` was blocked, was
+    # RIGHT.  Loosening it would have cemented the build error in.
     if _os.environ.get("DELFIN_FFFREE_PUCKER_PLANAR", "0") == "1":
         _FLAT_ONLY.clear()
         _have = {frozenset(r) for r in rings}
@@ -1367,26 +1367,26 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
     per_ring_states = [_ring_pucker_states(mol_with_conf, ring, frozen, tfd_thr)
                        for ring in rings]
     if _zaehler is not None:
-        # ⚠ DIE ZEIT IST DIE EIGENTLICHE ANTWORT auf "bezahlbar?".  Sie zerfaellt in
-        #   zwei Posten, die sich voellig verschieden skalieren: die Zustaende je Ring
-        #   kosten LINEAR in der Ringzahl, das Kreuzprodukt kostet EXPONENTIELL.  Wer
-        #   nur die Gesamtzeit misst, sieht den Unterschied nicht.
+        # ⚠ THE TIME IS THE ACTUAL ANSWER to "affordable?".  It splits into
+        #   two items that scale completely differently: the states per ring
+        #   cost LINEARLY in the ring count, the cross product costs EXPONENTIALLY.  Whoever
+        #   measures only the total time does not see the difference.
         _zaehler["t_zustaende"] = _t.perf_counter() - _zaehler["t0"]
-        # (a) und (b) der Messung -- und die KOPPLUNGSZAHL dazu.  Gemeinsame Atome
-        # zwischen zwei Ringen sind die unabhaengige Variable des ganzen Tests:
-        # kondensiert = 2, spiro = 1, unabhaengig = 0.  Sie wird hier aus DERSELBEN
-        # Ringliste gezaehlt, die der Bau benutzt -- nicht aus dem SMILES nachgeschaut.
+        # (a) and (b) of the measurement -- and the COUPLING NUMBER with them.  Shared atoms
+        # between two rings are the independent variable of the whole test:
+        # fused = 2, spiro = 1, independent = 0.  It is counted here from THE SAME
+        # ring list the build uses -- not looked up from the SMILES.
         _zaehler["ringgroessen"] = [len(r) for r in rings]
         _zaehler["zustaende_je_ring"] = [len(s) for s in per_ring_states]
         _p = 1
         for _s in per_ring_states:
             _p *= len(_s)
         _zaehler["kreuzprodukt"] = _p
-        # ⚠ SUMME UND MAXIMUM SIND ZWEI VERSCHIEDENE AUSSAGEN, und nur das MAXIMUM
-        #   benennt die KopplungsART.  Ein Paar teilt 0 Atome (getrennt), 1 (spiro),
-        #   2 (kondensiert, eine gemeinsame Bindung) oder >= 3 (verbrueckt).  Die Summe
-        #   ueber alle Paare waechst dagegen einfach mit der Ringzahl und verwechselt
-        #   drei lose Ringe mit einem Kaefig.
+        # ⚠ SUM AND MAXIMUM ARE TWO DIFFERENT STATEMENTS, and only the MAXIMUM
+        #   names the KIND of coupling.  A pair shares 0 atoms (separate), 1 (spiro),
+        #   2 (fused, one shared bond) or >= 3 (bridged).  The sum
+        #   over all pairs, by contrast, simply grows with the ring count and confuses
+        #   three loose rings with a cage.
         _gem, _gmax = 0, 0
         for _i in range(len(rings)):
             for _j in range(_i + 1, len(rings)):
@@ -1399,43 +1399,43 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
     # cartesian product of state indices, deterministic order, budget-capped;
     # skip the all-base (identity) combination; fewest-changed rings first.
     import itertools as _it
-    # ===== SYMMETRIEREDUKTION (27.08.2026, DELFIN_FFFREE_PUCKER_SYMM) ==============
+    # ===== SYMMETRY REDUCTION (27.08.2026, DELFIN_FFFREE_PUCKER_SYMM) ===============
     #
-    # WARUM HIER.  Zwei Ringe, die unter der Automorphismengruppe des Molekuels in
-    # EINER Bahn liegen, sind ununterscheidbar.  Dann ist (s1,s2) DIESELBE STRUKTUR
-    # wie (s2,s1) -- das Kreuzprodukt erzeugt dort Doppelgaenger, die spaeter die
-    # RMSD-Entdopplung wieder wegwirft, nachdem sie Relax und Clash-Tor bezahlt haben.
+    # WHY HERE.  Two rings that lie in ONE orbit under the automorphism group of the
+    # molecule are indistinguishable.  Then (s1,s2) is THE SAME STRUCTURE
+    # as (s2,s1) -- the cross product generates duplicates there, which the
+    # RMSD dedup later throws away again, after they have paid for relax and clash gate.
     #
-    # GEMESSEN 27.08. mit ZWEI unabhaengigen Instrumenten:
-    #   bauseitig     534 Systeme mit >=2 faltbaren Ringen -> 371 (69,5 %) mit Bahn
-    #   kristallseitig (CCDC clean_v2, DELFIN-unabhaengig)
-    #                1757 mit >=2 gefalteten Ringen -> 1393 (79,3 %) mit Bahn
+    # MEASURED 27.08. with TWO independent instruments:
+    #   build side     534 systems with >=2 foldable rings -> 371 (69.5 %) with orbit
+    #   crystal side  (CCDC clean_v2, DELFIN-independent)
+    #                1757 with >=2 folded rings -> 1393 (79.3 %) with orbit
     #
-    # DER EIGENTLICHE GEWINN IST NICHT RECHENZEIT, SONDERN ABDECKUNG.  Der Deckel
-    # dreissig Zeilen weiter unten (`combos[:budget]`) schneidet nach Faltungstiefe
-    # ab -- bei >2 flexiblen Ringen wird der Zustand "alle gleichzeitig gefaltet" NIE
-    # gebaut.  Schrumpft das Produkt unter das Budget, hoert die Kappe auf zu beissen,
-    # und genau die tiefen Zustaende entstehen wieder.  Die Reduktion nimmt also
-    # Doppelgaenger weg und gibt dafuer ECHTE Zustaende zurueck.
+    # THE ACTUAL GAIN IS NOT COMPUTE TIME BUT COVERAGE.  The cap
+    # thirty lines further down (`combos[:budget]`) cuts off by fold depth
+    # -- with >2 flexible rings the state "all folded simultaneously" is NEVER
+    # built.  If the product shrinks below the budget, the cap stops biting,
+    # and exactly the deep states arise again.  So the reduction takes
+    # duplicates away and gives back GENUINE states in return.
     #
-    # ⛔ NIE-SCHLECHTER, UND ZWAR STRENG.  Zusammengelegt wird nur, was ein ECHTER
-    # Automorphismus aufeinander abbildet -- nicht, was nur dieselbe Rangmultimenge
-    # traegt.  Der Unterschied ist gemessen: von 27 handgepruften Ringpaaren waren
-    # 26 echte Bahn und EINES nur ranggleich (3,7 %).  Haette ich die Rangmenge
-    # genommen, waere dieses eine Paar zusammengelegt worden und ein realer Zustand
-    # HAETTE GEFEHLT.  Bei Vollstaendigkeit als Nordstern ist das der schlimmere
-    # Fehler von beiden.
-    # ⛔ UND WENN DIE AUTOMORPHISMENSUCHE NICHT TRAEGT, wird NICHT reduziert (voller
-    # Produktzweig).  Fallback ist immer die groessere Menge, nie die kleinere.
-    # ⛔ Vorgabe AUS -> byte-identisch.
+    # ⛔ NEVER-WORSE, AND STRICTLY SO.  Only what a GENUINE automorphism maps
+    # onto each other is merged -- not what merely carries the same rank multiset.
+    # The difference is measured: of 27 hand-checked ring pairs,
+    # 26 were a genuine orbit and ONE was merely rank-equal (3.7 %).  Had I taken the
+    # rank set, this one pair would have been merged and a real state
+    # WOULD HAVE BEEN MISSING.  With completeness as the north star that is the worse
+    # mistake of the two.
+    # ⛔ AND IF THE AUTOMORPHISM SEARCH DOES NOT HOLD, there is NO reduction (full
+    # product branch).  Fallback is always the larger set, never the smaller.
+    # ⛔ Default OFF -> byte-identical.
     _symm = _os.environ.get("DELFIN_FFFREE_PUCKER_SYMM", "0") == "1"
     _bahnen = None
     if _symm and len(rings) > 1:
         _bahnen = _ring_bahnen(mol_with_conf, rings)
     if _bahnen and any(len(b) > 1 for b in _bahnen):
-        # Je Bahn MULTIMENGEN statt geordneter Tupel: aus n^k wird C(n+k-1, k).
-        # Die Zustandslisten einer Bahn sind gleich lang (gleiche Ringgroesse,
-        # gleiche Umgebung) -- geprueft, sonst faellt die Bahn zurueck auf Produkt.
+        # Per orbit MULTISETS instead of ordered tuples: n^k becomes C(n+k-1, k).
+        # The state lists of an orbit have equal length (same ring size,
+        # same environment) -- checked, otherwise the orbit falls back to the product.
         _pro_bahn = []
         for _b in _bahnen:
             _n = len(per_ring_states[_b[0]])
@@ -1466,56 +1466,56 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
         combos = [c for c in _it.product(*[range(len(s)) for s in per_ring_states])
                   if any(c)]
     combos.sort(key=lambda c: (sum(1 for x in c if x), c))
-    # ===== DIE ABSCHNEIDUNG WAR DER SCHADEN, NICHT DER DECKEL (26.08.2026) ==========
+    # ===== THE TRUNCATION WAS THE DAMAGE, NOT THE CAP (26.08.2026) ==================
     #
-    # `combos[:budget]` nimmt die ERSTEN 48 einer Liste, die nach "wie viele Ringe
-    # weichen vom Grundzustand ab" sortiert ist.  Das heisst: erst ALLE
-    # Ein-Ring-Aenderungen, dann alle Zwei-Ring-Kombinationen -- und dann ist Schluss.
-    # Der Zustand, in dem ALLE Ringe gleichzeitig gefaltet sind, wird bei mehr als
-    # zwei flexiblen Ringen NIE gebaut.  Vier Ringe zu je drei Mulden sind 80
-    # Kombinationen; 48 davon decken Tiefe 1 und 2 ab, Tiefe 3 und 4 fallen weg.
+    # `combos[:budget]` takes the FIRST 48 of a list sorted by "how many rings
+    # deviate from the ground state".  That means: first ALL
+    # one-ring changes, then all two-ring combinations -- and then it stops.
+    # The state in which ALL rings are folded simultaneously is NEVER built
+    # with more than two flexible rings.  Four rings with three basins each are 80
+    # combinations; 48 of them cover depth 1 and 2, depth 3 and 4 drop out.
     #
-    # GEMESSEN 26.08. auf 400 Systemen -- die Verteilung ist genau die eines
-    # abgeschnittenen Produkts:
-    #     realisierte Konformere je System: 1:25 · 2:57 · 3:26 · 4:7 · 5:4 · 6:2 · 7:1 · 9:1
-    #     82 von 123 Systemen haben EIN ODER ZWEI Konformere, bei 2,18 Mulden je Ring.
+    # MEASURED 26.08. on 400 systems -- the distribution is exactly that of a
+    # truncated product:
+    #     realised conformers per system: 1:25 · 2:57 · 3:26 · 4:7 · 5:4 · 6:2 · 7:1 · 9:1
+    #     82 of 123 systems have ONE OR TWO conformers, at 2.18 basins per ring.
     #
-    # ⇒ Mit `DELFIN_FFFREE_PUCKER_FULL=1` wird NICHT abgeschnitten: das vollstaendige
-    #   Produkt wird gebaut, jede Faltungstiefe entsteht.  Der Deckel bleibt als
-    #   Vorgabe erhalten (byte-identisch), aber er ist ab jetzt NIE STILL -- was er
-    #   wegwirft, steht unter der Spur.  Eine stillschweigend gekappte Abdeckung liest
-    #   sich wie Vollstaendigkeit und ist keine.
-    # ⚠ PREIS, ehrlich: das Produkt waechst exponentiell mit der Ringzahl (8 Ringe zu
-    #   je 3 Mulden = 6561 Kombinationen, jede mit Relax und Clash-Tor).  Darum steht
-    #   die Vollversion hinter einem Schalter und nicht in der Vorgabe.
+    # ⇒ With `DELFIN_FFFREE_PUCKER_FULL=1` there is NO truncation: the complete
+    #   product is built, every fold depth arises.  The cap stays as the
+    #   default (byte-identical), but from now on it is NEVER SILENT -- what it
+    #   throws away is in the trace.  A silently capped coverage reads
+    #   like completeness and is none.
+    # ⚠ PRICE, honestly: the product grows exponentially with the ring count (8 rings with
+    #   3 basins each = 6561 combinations, each with relax and clash gate).  That is why
+    #   the full version is behind a switch and not in the default.
     _n_voll = len(combos)
-    # ══ ADD, NEVER REPLACE -- AN DER KAPPE, NICHT AN DER REDUKTION ═════════════
-    # (04.09.2026, Nutzerentscheidung.)
+    # ══ ADD, NEVER REPLACE -- AT THE CAP, NOT AT THE REDUCTION ═════════════════
+    # (04.09.2026, user decision.)
     #
-    # BEFUND (Register #305/#315).  `symmfold6k` sperrt an RONSIW mit
-    # `broken_regressed`: 12 Frames vorher, 12 nachher -- und trotzdem EINES neu.
+    # FINDING (register #305/#315).  `symmfold6k` blocks at RONSIW with
+    # `broken_regressed`: 12 frames before, 12 after -- and yet ONE new.
     #     off   SP-4-chelate-1-pucker r0:base+r1:1+r2:3+r3:base
     #     on    SP-4-chelate-1-pucker r0:3+r1:base+r2:4+r3:base
     #
-    # ⛔ MEINE ERSTE ERKLAERUNG WAR FALSCH.  Ich hielt das fuer eine
-    #    Ersetzungs-Entscheidung der Symmetriereduktion.  Es ist eine KAPPEN-
-    #    Folge: die Reduktion macht Plaetze unter `combos[:budget]` frei, also
-    #    rutschen ANDERE Kombinationen herein.  Die Reduktion ersetzt nichts --
-    #    die Kappe tut es.  Deshalb sitzt die Wache HIER und nicht dort.
+    # ⛔ MY FIRST EXPLANATION WAS WRONG.  I took this for a
+    #    replacement decision of the symmetry reduction.  It is a CAP
+    #    consequence: the reduction frees up places under `combos[:budget]`, so
+    #    OTHER combinations slide in.  The reduction replaces nothing --
+    #    the cap does.  That is why the guard sits HERE and not there.
     #
-    # DIE FOLGE.  Der Champion-Satz ist keine Teilmenge des reduzierten Satzes:
-    # ein Zustand, den der Champion baute, faellt heraus, und wenn der
-    # hereingerutschte schlechter einbettet, steigt `broken_frac` (RONSIW
-    # 0,250 -> 0,333).
+    # THE CONSEQUENCE.  The champion set is not a subset of the reduced set:
+    # a state the champion built drops out, and if the one that slid in
+    # embeds worse, `broken_frac` rises (RONSIW
+    # 0.250 -> 0.333).
     #
-    # DIE WACHE.  Erst der Satz, den der Champion gebaut haette, dann mit dem
-    # reduzierten aufgefuellt.  Damit ist die Champion-Framemenge BY
-    # CONSTRUCTION enthalten und die Achse never-worse.
-    # ⚠️ PREIS, ehrlich: die Vereinigung wird bis zu doppelt so gross wie die
-    #    Kappe.  Das IST der Punkt -- die Reduktion soll TIEFERE Zustaende
-    #    erreichbar machen, nicht flachere verdraengen.  Wer die Kappe halten
-    #    will, laesst die Wache aus.
-    # ⚠️ Vorgabe AUS -> byte-identisch.
+    # THE GUARD.  First the set the champion would have built, then filled up
+    # with the reduced one.  Thus the champion frame set is contained BY
+    # CONSTRUCTION and the axis is never-worse.
+    # ⚠️ PRICE, honestly: the union becomes up to twice as large as the
+    #    cap.  That IS the point -- the reduction is meant to make DEEPER states
+    #    reachable, not to displace shallower ones.  Whoever wants to hold the cap
+    #    leaves the guard off.
+    # ⚠️ Default OFF -> byte-identical.
     if (_symm and _bahnen and any(len(b) > 1 for b in _bahnen)
             and _os.environ.get("DELFIN_FFFREE_PUCKER_SYMM_ADD", "0") == "1"
             and _os.environ.get("DELFIN_FFFREE_PUCKER_FULL", "0") != "1"):
@@ -1530,15 +1530,15 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
             _zaehler["symm_add_champion"] = len(_champ)
             _zaehler["symm_add_gesamt"] = len(combos)
     elif _os.environ.get("DELFIN_FFFREE_PUCKER_FULL", "0") == "1":
-        pass                                    # alle Faltungen, keine Kappe
+        pass                                    # all folds, no cap
     else:
         combos = combos[:max(0, int(budget))]
     if _zaehler is not None:
-        # ⚠ ZWEI VERSCHIEDENE ZAHLEN, und die Verwechslung waere der ganze Irrtum.
-        #   `aufzaehlung` ist das Kreuzprodukt OHNE den Grundzustand -- was aufgezaehlt
-        #   werden MUESSTE.  `gebaut` ist, was nach der Kappe wirklich durch Relax und
-        #   Tor geht.  Nur die zweite Zahl kostet Rechenzeit, nur die erste ist die
-        #   Vollstaendigkeitsfrage.
+        # ⚠ TWO DIFFERENT NUMBERS, and confusing them would be the whole error.
+        #   `aufzaehlung` is the cross product WITHOUT the ground state -- what WOULD HAVE
+        #   to be enumerated.  `gebaut` is what really goes through relax and
+        #   gate after the cap.  Only the second number costs compute time, only the first is the
+        #   completeness question.
         _zaehler["aufzaehlung"] = _n_voll
         _zaehler["gebaut"] = len(combos)
     if len(combos) < _n_voll and _os.environ.get("DELFIN_FFFREE_PUCKER_TRACE", "0") == "1":
@@ -1550,34 +1550,34 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
     acc = Chem.Mol(mol_with_conf)
     kept_ids = [acc.GetConformer().GetId()]
     out: List[Tuple[str, str]] = []
-    # ===== (1) DEFEKTFILTER: DAS DRITTE TOR, ALS MENGENDIFFERENZ (26.08.2026) ========
+    # ===== (1) DEFECT FILTER: THE THIRD GATE, AS A SET DIFFERENCE (26.08.2026) =======
     #
-    # Kollision und Winkel stehen unten schon.  Was fehlt, ist die BINDUNGSLAENGE --
-    # s. `_bindungs_ausreisser`: das Selbstgate haelt eine gedehnte Bindung fuer eine
-    # nicht vorhandene und meldet sie nie.
-    # ⚠ RANG WAERE HIER FALSCH.  Ein Defekt ist kein "schlechter", er ist ein "nicht
-    #   real".  Deshalb Filter, kein Score -- und deshalb gemessen gegen den
-    #   GRUNDZUSTAND: verworfen wird nur, was die Faltung NEU einbringt.  Ein Molekuel,
-    #   das schon vor der Faltung eine ungewoehnliche Bindung fuehrt (Nitril, Carben,
-    #   ein schlecht eingebetteter Kern), verliert damit nicht alle seine Faltungen.
-    # ⛔ Vorgabe AUS -> das Tor wird nie befragt -> byte-identisch.
+    # Collision and angle are already below.  What is missing is the BOND LENGTH --
+    # see `_bindungs_ausreisser`: the self-gate takes a stretched bond for an
+    # absent one and never reports it.
+    # ⚠ A RANK WOULD BE WRONG HERE.  A defect is not a "worse", it is a "not
+    #   real".  Hence filter, not score -- and hence measured against the
+    #   GROUND STATE: only what the fold NEWLY introduces is rejected.  A molecule
+    #   that already carries an unusual bond before the fold (nitrile, carbene,
+    #   a badly embedded core) thus does not lose all its folds.
+    # ⛔ Default OFF -> the gate is never consulted -> byte-identical.
     _defekt = _os.environ.get("DELFIN_FFFREE_PUCKER_DEFEKT", "0") == "1"
     _basis_bind = _bindungs_ausreisser(mol_with_conf) if _defekt else frozenset()
-    # ===== (2) KRISTALLOGRAPHISCHE UNUNTERSCHEIDBARKEIT (26.08.2026) =================
+    # ===== (2) CRYSTALLOGRAPHIC INDISTINGUISHABILITY (26.08.2026) ====================
     #
-    # Zwei Faltungen, deren GROESSTE Atomauslenkung unter der Aufloesung liegt, sind
-    # EIN Eintrag im Manifold -- s. den Block bei `_kabsch_max_rmsd`.
-    # ⚠ ZUSAETZLICH ZU TFD, nicht statt dessen, und das ist keine Vorsicht sondern eine
-    #   Arbeitsteilung: TFD faltet die Molekuelsymmetrie mit und toetet damit die
-    #   Nummerierungsdubletten; das Maximum kann das nicht (es hat keine Topologie) und
-    #   toetet dafuer die unterschwelligen Dubletten, die TFD nicht sieht.  Der Versuch
-    #   vom 26.08., TFD durch eine reine Geometriedistanz zu ERSETZEN, ist genau daran
-    #   gescheitert (n=5: 3,3,3 -> 9,13,14).
-    # ⚠ REIHENFOLGE: das Maximum steht VOR dem TFD, weil es billiger ist -- Kabsch auf
-    #   den Schweratomen gegen einen Torsionsfingerabdruck gegen alle Behaltenen.  Am
-    #   Ergebnis aendert die Reihenfolge nichts: behalten wird, was BEIDE Pruefungen
-    #   besteht, und die Menge der Behaltenen waechst in beiden Reihenfolgen gleich.
-    # ⛔ Vorgabe AUS -> byte-identisch.
+    # Two folds whose LARGEST atomic displacement lies below the resolution are
+    # ONE entry in the manifold -- see the block at `_kabsch_max_rmsd`.
+    # ⚠ IN ADDITION TO TFD, not instead of it, and that is not caution but a
+    #   division of labour: TFD folds in the molecular symmetry and thereby kills the
+    #   numbering duplicates; the maximum cannot do that (it has no topology) and
+    #   instead kills the sub-threshold duplicates that TFD does not see.  The attempt
+    #   of 26.08. to REPLACE TFD by a pure geometric distance failed on exactly
+    #   that (n=5: 3,3,3 -> 9,13,14).
+    # ⚠ ORDER: the maximum comes BEFORE the TFD because it is cheaper -- Kabsch on
+    #   the heavy atoms versus a torsion fingerprint against all kept ones.  The
+    #   order changes nothing in the result: what passes BOTH checks is kept,
+    #   and the set of kept ones grows identically in both orders.
+    # ⛔ Default OFF -> byte-identical.
     _xrd = _os.environ.get("DELFIN_FFFREE_PUCKER_XRD", "0") == "1"
     _xrd_tol = float(_os.environ.get("DELFIN_FFFREE_PUCKER_XRDTOL", "0.15") or 0.15)
     _schwer: List[int] = []
@@ -1602,14 +1602,14 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
                 st = per_ring_states[ri_i][st_i]
                 if st is None:
                     continue
-                # ⚠ ZWEI ZUSTANDSFORMEN, und das blinde Entpacken war eine Falle.
-                #   Legacy: (q_scale, theta, phi) -- drei Werte.
-                #   Raum:   (qs, phis) -- zwei Abbildungen m -> Wert.
-                #   Ein `_qs2, theta, phi = st` auf die Raumform wirft ValueError, und
-                #   der umgebende `except Exception: continue` haette das STILL
-                #   verschluckt: jede Mehrring-Kombination waere lautlos ausgefallen
-                #   und der Lauf haette "keine Wirkung" gemeldet.  Genau die Bauform,
-                #   die heute schon dreimal eine Nullmessung erzeugt hat.
+                # ⚠ TWO STATE FORMS, and the blind unpacking was a trap.
+                #   Legacy: (q_scale, theta, phi) -- three values.
+                #   Space:  (qs, phis) -- two mappings m -> value.
+                #   A `_qs2, theta, phi = st` on the space form throws ValueError, and
+                #   the surrounding `except Exception: continue` would have swallowed that
+                #   SILENTLY: every multi-ring combination would have failed without a sound
+                #   and the run would have reported "no effect".  Exactly the design
+                #   that has already produced a null measurement three times today.
                 if len(st) == 2 and isinstance(st[0], dict):
                     _set_pucker_general(conf, rings[ri_i], st[0], st[1], frozen)
                 else:
@@ -1634,16 +1634,16 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
                 if _has_clash(m2) or _has_bad_angles(m2, skip=angle_skip):
                     continue
                 if _defekt and (_bindungs_ausreisser(m2) - _basis_bind):
-                    continue                    # NEU eingebrachter Bindungsdefekt
+                    continue                    # NEWLY introduced bond defect
             else:
-                # ⚠ IM MESSMODUS WERDEN BEIDE TORE GEFRAGT, im Vorgabepfad nicht.
-                #   `or` ist kurzschluessig: feuert die Kollision, wird das Winkeltor
-                #   NIE befragt -- die beiden Ursachen liessen sich dann nicht trennen.
-                #   Genau ihre Trennung ist bei kondensierten Ringen der ganze Befund:
-                #   dort teilen zwei Ringe Atome, das Winkeltor sieht die Spannung an
-                #   den Fusionszentren, und das Kollisionstor ist per Konstruktion
-                #   blind dafuer (s. `_has_bad_angles`).  Ein zweiter Toraufruf kostet
-                #   Zeit -- darum nur, wenn jemand misst.
+                # ⚠ IN MEASUREMENT MODE BOTH GATES ARE ASKED, in the default path not.
+                #   `or` short-circuits: if the collision fires, the angle gate is
+                #   NEVER consulted -- the two causes could then not be separated.
+                #   Exactly their separation is the whole finding for fused rings:
+                #   there two rings share atoms, the angle gate sees the strain at
+                #   the fusion centres, and the collision gate is blind to it by
+                #   construction (see `_has_bad_angles`).  A second gate call costs
+                #   time -- hence only when someone is measuring.
                 _kl = _has_clash(m2)
                 _wk = _has_bad_angles(m2, skip=angle_skip)
                 _bi = bool(_bindungs_ausreisser(m2) - _basis_bind) if _defekt else False
@@ -1656,7 +1656,7 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
                 if _kl or _wk or _bi:
                     continue
                 _zaehler["tor_ueberlebt"] = _zaehler.get("tor_ueberlebt", 0) + 1
-            # (2) UNUNTERSCHEIDBARKEIT vor der Entdopplung -- s. den Block oben.
+            # (2) INDISTINGUISHABILITY before the dedup -- see the block above.
             _Pk = None
             if _xrd:
                 try:
@@ -1668,15 +1668,15 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
                 except Exception:
                     _Pk = None
             cid = _add_conf(acc, m2)
-            # Auf der Kombinationsebene falten MEHRERE Ringe gleichzeitig -- ringlokal
-            # heisst hier "alle gefalteten Ringe, aber nur sie".  ⚠ Das ist eine
-            # ANDERE Aussage als eine Stufe hoeher: hier faellt auch die exocyclische
-            # Torsion aus dem Vergleich, zwei Kombinationen, die sich NUR in ihr
-            # unterscheiden, werden also zusammengezogen.  Das ist gewollt (dieses
-            # Modul faltet Ringe) und steht hier, damit es niemand spaeter als
-            # Nebenwirkung entdeckt.
-            # ⚠ EIGENER SCHALTER, weil die Wirkung hier das andere Vorzeichen hat als
-            #   eine Stufe hoeher -- s. den Block bei `_tfd_distinct`.
+            # At the combination level SEVERAL rings fold simultaneously -- ring-local
+            # here means "all folded rings, but only those".  ⚠ That is a
+            # DIFFERENT statement than one level up: here the exocyclic torsion
+            # also drops out of the comparison, so two combinations that differ ONLY
+            # in it are merged.  That is intended (this
+            # module folds rings) and is stated here so nobody discovers it later as
+            # a side effect.
+            # ⚠ OWN SWITCH, because the effect here has the opposite sign from
+            #   one level up -- see the block at `_tfd_distinct`.
             if not _tfd_distinct(acc, cid, kept_ids, tfd_thr, ringe=rings,
                                  schalter="DELFIN_FFFREE_PUCKER_TFD_LOCAL_KOMBI"):
                 acc.RemoveConformer(cid)
@@ -1687,14 +1687,14 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
             if _xrd and _Pk is not None:
                 _xrd_kept.append(_Pk)
             if _zaehler is not None:
-                # ⚠ DIE ENERGIE IST DIE ZWEITE ANTWORT auf dieselbe Frage.  Bleibt (d)
-                #   gross, muss die Auswahl ueber ENERGIE laufen und nicht ueber RMSD
-                #   (Nutzerregel).  Damit dieser Satz nicht nur eine Absicht ist, steht
-                #   hier die Zahl: UFF-Energie des fertigen Frames, in kcal/mol, in der
-                #   Reihenfolge der behaltenen Konformere.
-                #   ⚠ UFF ist hier eine ORDNUNG, keine Thermochemie -- dieselbe Kraft,
-                #     die auch relaxiert hat, also wenigstens in sich konsistent.  Wer
-                #     daraus Populationen macht, ueberdehnt sie.
+                # ⚠ THE ENERGY IS THE SECOND ANSWER to the same question.  If (d)
+                #   stays large, the selection must run on ENERGY and not on RMSD
+                #   (user rule).  So that this sentence is not merely an intention, the
+                #   number is here: UFF energy of the finished frame, in kcal/mol, in the
+                #   order of the kept conformers.
+                #   ⚠ UFF is an ORDERING here, not thermochemistry -- the same force
+                #     that also relaxed, so at least self-consistent.  Whoever
+                #     turns it into populations overstretches it.
                 try:
                     _zaehler.setdefault("energien", []).append(
                         float(AllChem.UFFGetMoleculeForceField(m2).CalcEnergy()))
@@ -1706,9 +1706,9 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
             out.append((_conf_to_xyz(m2), label))
         except Exception:
             if _zaehler is not None:
-                # Der stille Ausfall bekommt eine Zahl.  Ohne sie liesse sich
-                # "das Tor hat verworfen" nicht von "es ist etwas geplatzt"
-                # unterscheiden -- zwei voellig verschiedene Befunde.
+                # The silent failure gets a number.  Without it,
+                # "the gate rejected" could not be told from "something blew up"
+                # -- two completely different findings.
                 _zaehler["ausnahme"] = _zaehler.get("ausnahme", 0) + 1
             continue
     if _zaehler is not None:
@@ -1717,17 +1717,17 @@ def generate(mol_with_conf, frozen: Optional[Set[int]] = None,
 
 
 def selbsttest_raum() -> int:
-    """Beweist, dass das CP-Gitter den Faltungsraum wirklich ueberdeckt.
+    """Proves that the CP grid really covers the pucker space.
 
-    Aufruf:  python -m delfin.manta._ring_pucker
-    Ohne diesen Test waere `_pucker_space_grid` eine Behauptung -- und der Fehler
-    faellt in `generate` in ein `except Exception: continue`, also STILL.
+    Invocation:  python -m delfin.manta._ring_pucker
+    Without this test `_pucker_space_grid` would be an assertion -- and the error
+    falls in `generate` into an `except Exception: continue`, i.e. SILENTLY.
     """
     import itertools as _itt
     fehler = 0
     print("=== Selbsttest: der Faltungsraum ===")
 
-    # 1 DIMENSIONSZAHL.  Ein N-Ring hat genau N-3 Faltungsfreiheitsgrade.
+    # 1 DIMENSION COUNT.  An N-ring has exactly N-3 puckering degrees of freedom.
     for n in range(4, 9):
         even = (n % 2 == 0)
         n_paare = len(range(2, (n // 2) if even else ((n - 1) // 2) + 1))
@@ -1737,7 +1737,7 @@ def selbsttest_raum() -> int:
     if not fehler:
         print("  ✓ 1 DIMENSION: N-3 Freiheitsgrade fuer N=4..8 (1,2,3,4,5)")
 
-    # 2 DER PLANARE ZUSTAND ist im Gitter -- er fehlte der alten Liste (218 Motive).
+    # 2 THE PLANAR STATE is in the grid -- the old list lacked it (218 motifs).
     for n in (5, 6, 7):
         g = _pucker_space_grid(n, 2, 8)
         if not any(all(v == 0.0 for v in qs.values()) for qs, _ in g):
@@ -1745,7 +1745,7 @@ def selbsttest_raum() -> int:
     if fehler == 0:
         print("  ✓ 2 PLANAR: Q=0 ist Gitterpunkt fuer n=5,6,7")
 
-    # 3 SESSEL UND INVERSER SESSEL.  Beim Sechsring die beiden Pole: q2=0, q3=+/-.
+    # 3 CHAIR AND INVERTED CHAIR.  For the six-ring the two poles: q2=0, q3=+/-.
     g6 = _pucker_space_grid(6, 2, 8)
     pole = [qs for qs, _ in g6 if qs.get(2, 0.0) == 0.0 and qs.get(3, 0.0) != 0.0]
     if len([1 for qs in pole if qs[3] > 0]) < 1 or len([1 for qs in pole if qs[3] < 0]) < 1:
@@ -1753,33 +1753,33 @@ def selbsttest_raum() -> int:
     else:
         print("  ✓ 3 POLE: Sessel UND inverser Sessel (q3 mit beiden Vorzeichen)")
 
-    # 4 DER ZWISCHENBEREICH -- genau das, was die alte Liste NIE abtastete.
-    #   Half-Chair/Envelope liegen zwischen Pol und Aequator: q2>0 UND q3!=0.
+    # 4 THE INTERMEDIATE REGION -- exactly what the old list NEVER sampled.
+    #   Half-chair/envelope lie between pole and equator: q2>0 AND q3!=0.
     zwischen = [qs for qs, _ in g6 if qs.get(2, 0.0) > 0 and qs.get(3, 0.0) != 0]
     if not zwischen:
         print("  ✗ 4 ZWISCHENBEREICH leer -- Half-Chair/Envelope unerreichbar"); fehler += 1
     else:
         print("  ✓ 4 ZWISCHENBEREICH: %d Punkte mit q2>0 UND q3!=0" % len(zwischen))
 
-    # 5 HOEHERE PAARE ab n=7 -- ohne sie ist der Siebenring unvollstaendig.
+    # 5 HIGHER PAIRS from n=7 on -- without them the seven-ring is incomplete.
     g7 = _pucker_space_grid(7, 2, 8)
     if not any(qs.get(3, 0.0) != 0.0 for qs, _ in g7):
         print("  ✗ 5 m=3 fehlt beim Siebenring"); fehler += 1
     else:
         print("  ✓ 5 HOEHERE PAARE: m=3 wird beim Siebenring belegt")
 
-    # 6 KEINE DOPPELTEN Gitterpunkte (sonst blaeht das Produkt ohne Gewinn).
+    # 6 NO DUPLICATE grid points (otherwise the product bloats without gain).
     for n in (5, 6, 7, 8):
         g = _pucker_space_grid(n, 2, 6)
         keys = [tuple(sorted((m, round(q, 6)) for m, q in qs.items())) for qs, _ in g]
         print("     n=%d: %4d Kandidaten (%d-dim)" % (n, len(g), n - 3))
 
-    # 7 DER MAKROZYKLUS DARF DEN ZWEIG NICHT ZUM STEHEN BRINGEN.
-    #   Ohne Budget waeren es bei n=16 rund 1,2e8 Kandidaten JE RING, jeder mit Relax
-    #   und Kollisionstor -- der Lauf stirbt und liefert NULL Faltungen.  Undurchfuehr-
-    #   barkeit ist das Gegenteil von Vollstaendigkeit.  Geprueft wird zweierlei:
-    #   die Zahl bleibt unter dem Budget, UND der Ring wird trotzdem gefaltet
-    #   (m=2 behaelt volle Phasenaufloesung, es faellt nur die feine Kraeuselung).
+    # 7 THE MACROCYCLE MUST NOT BRING THE BRANCH TO A HALT.
+    #   Without a budget there would be about 1.2e8 candidates PER RING at n=16, each with relax
+    #   and collision gate -- the run dies and delivers ZERO folds.  Infeasibility
+    #   is the opposite of completeness.  Two things are checked:
+    #   the number stays under the budget, AND the ring is folded nevertheless
+    #   (m=2 keeps full phase resolution, only the fine ripple drops out).
     print("     -- Makrozyklen (Budget %s) --"
           % _os.environ.get("DELFIN_FFFREE_PUCKER_BUDGET", "50000"))
     _budget_soll = max(1, int(_os.environ.get("DELFIN_FFFREE_PUCKER_BUDGET", "50000") or 50000))
@@ -1790,7 +1790,7 @@ def selbsttest_raum() -> int:
             print("  ✗ 7 n=%d: %d Kandidaten UEBER Budget %d" % (n, len(g), _budget_soll))
             fehler += 1
             continue
-        # m=2 ist die dominante Falte und muss ihre volle Phasenzahl behalten
+        # m=2 is the dominant fold and must keep its full phase count
         if res.get("n_phase_je_m", {}).get(2) != 8:
             print("  ✗ 7 n=%d: m=2 wurde reduziert (%s) -- die dominante Falte"
                   % (n, res.get("n_phase_je_m", {}).get(2)))
@@ -1800,7 +1800,7 @@ def selbsttest_raum() -> int:
             print("  ✗ 7 n=%d: keine einzige gefaltete Konfiguration" % n)
             fehler += 1
             continue
-        # der Alternierungsterm ist beim geraden Ring der Sessel -- er darf nie fehlen
+        # the alternation term is the chair for the even ring -- it must never be missing
         if n % 2 == 0 and not any(qs.get(n // 2, 0.0) != 0 for qs, _ in g):
             print("  ✗ 7 n=%d: Alternierungsterm q_%d fehlt -- kein Sessel" % (n, n // 2))
             fehler += 1
@@ -1816,30 +1816,30 @@ def selbsttest_raum() -> int:
 
 
 def selbsttest_tfd_sweep(sizes=(5, 6, 7, 8)) -> int:
-    """DIE SCHWELLE, NICHT DAS INSTRUMENT.  Splittet TFD bei 0,05 ueber?
+    """THE THRESHOLD, NOT THE INSTRUMENT.  Does TFD over-split at 0.05?
 
-    VORGESCHICHTE.  `selbsttest_konvergenz` meldet fuer n=6 und n=7, dass die Zahl
-    der Zustaende mit der Aufloesung weiter waechst (8->9->10 bzw. 11->11->12), bei
-    kleinsten CP-Abstaenden von 5,0 und 1,8 Grad.  Zwei Ursachen sind moeglich und
-    haben ENTGEGENGESETZTE Reparaturen:
-        (a) echte Mulden, Gitter zu grob   -> feiner abtasten
-        (b) Uebersplittung durch TFD       -> Schwelle anheben
-    Der erste Versuch, das ueber CP-Entdopplung zu klaeren, ist GESCHEITERT und die
-    Messung steht: n=5 ging von 3,3,3 auf 9,13,14.  TFD faltet die MOLEKUELSYMMETRIE
-    mit, die CP-Distanz nicht -- phi haengt an der Ringnummerierung.  CP ist kein
-    Ersatz.  Also bleibt genau dieser Weg: dasselbe Instrument, andere Schwelle.
+    BACKGROUND.  `selbsttest_konvergenz` reports for n=6 and n=7 that the number
+    of states keeps growing with the resolution (8->9->10 and 11->11->12 respectively), at
+    smallest CP distances of 5.0 and 1.8 degrees.  Two causes are possible and
+    have OPPOSITE repairs:
+        (a) genuine basins, grid too coarse   -> sample finer
+        (b) over-splitting by TFD             -> raise threshold
+    The first attempt to settle this via CP dedup FAILED and the
+    measurement stands: n=5 went from 3,3,3 to 9,13,14.  TFD folds in the MOLECULAR
+    SYMMETRY, the CP distance does not -- phi depends on the ring numbering.  CP is no
+    replacement.  So exactly this route remains: the same instrument, different threshold.
 
-    WARUM DAS UEBER DIE KOMBINATORIK ENTSCHEIDET.  Gemessen 4,3 Ringe je System.
-    Das Kreuzprodukt ueber die Ringe waechst wie (Zustaende je Ring)^(Ringe):
-        3 Zustaende, 4 Ringe  ->      81 Kombinationen   rechenbar
-       10 Zustaende, 4 Ringe  ->  10 000                 nicht rechenbar
-    Ist 0,05 zu fein, wird die vollstaendige Kombinatorik dadurch bezahlbar -- ohne
-    dass irgendwo abgeschnitten wird.  Ist sie richtig, ist der Preis echt und die
-    Kappe kaeme sonst durch die Hintertuer zurueck.
+    WHY THIS DECIDES THE COMBINATORICS.  Measured 4.3 rings per system.
+    The cross product over the rings grows like (states per ring)^(rings):
+        3 states, 4 rings  ->      81 combinations   computable
+       10 states, 4 rings  ->  10 000                not computable
+    If 0.05 is too fine, the complete combinatorics becomes affordable through this -- without
+    truncating anywhere.  If it is right, the price is real and the
+    cap would otherwise come back through the back door.
 
-    ⚠ DIESER TEST URTEILT NICHT UEBER CHEMIE.  Er misst an UNSUBSTITUIERTEN Ringen,
-      deren Symmetrie hoch ist; ein substituierter Ring hat legitim mehr Zustaende.
-      Was er zeigt, ist die OBERGRENZE der Uebersplittung, nicht die Produktionszahl.
+    ⚠ THIS TEST DOES NOT JUDGE CHEMISTRY.  It measures on UNSUBSTITUTED rings,
+      whose symmetry is high; a substituted ring legitimately has more states.
+      What it shows is the UPPER BOUND of the over-splitting, not the production number.
     """
     if not (_RDKIT and _np is not None):
         print("=== TFD-Sweep: RDKit fehlt, uebersprungen ==="); return 0
@@ -1856,7 +1856,7 @@ def selbsttest_tfd_sweep(sizes=(5, 6, 7, 8)) -> int:
         _os.environ["DELFIN_FFFREE_PUCKER_NAMP"] = "2"
         _os.environ["DELFIN_FFFREE_PUCKER_NPHASE"] = "8"
         _os.environ["DELFIN_FFFREE_PUCKER_TRACE"] = "0"
-        _os.environ.pop("DELFIN_FFFREE_PUCKER_CPDEDUP", None)   # reines TFD messen
+        _os.environ.pop("DELFIN_FFFREE_PUCKER_CPDEDUP", None)   # measure pure TFD
         for n in sizes:
             try:
                 m = Chem.AddHs(Chem.MolFromSmiles("C1" + "C" * (n - 1) + "1"))
@@ -1887,7 +1887,7 @@ def selbsttest_tfd_sweep(sizes=(5, 6, 7, 8)) -> int:
     if not tabelle:
         print("=== TFD-Sweep: nichts gemessen ==="); return 1
 
-    # ---- WAS DAS KOSTET.  4,3 Ringe je System, gemessen auf 400 Systemen.
+    # ---- WHAT THIS COSTS.  4.3 rings per system, measured on 400 systems.
     print()
     print("    Kreuzprodukt bei 4 Ringen je System (Zustaende^4):")
     i05 = schwellen.index(0.05)
@@ -1896,18 +1896,18 @@ def selbsttest_tfd_sweep(sizes=(5, 6, 7, 8)) -> int:
         print("      n=%-3d  Schwelle 0,05 -> %8d      Schwelle 0,10 -> %8d"
               % (n, max(0, s05) ** 4, max(0, s10) ** 4))
 
-    # ---- URTEIL.  Ueber-Splittung heisst: die Zahl faellt stark und BLEIBT dann flach.
-    #      Faellt sie gleichmaessig weiter, verschmilzt die hoehere Schwelle echte
-    #      Mulden -- dann ist nicht 0,05 zu fein, sondern die Schwelle das falsche
-    #      Werkzeug.  Genau diese Unterscheidung ist der Sinn des Sweeps.
+    # ---- VERDICT.  Over-splitting means: the number falls sharply and then STAYS flat.
+    #      If it keeps falling uniformly, the higher threshold merges genuine
+    #      basins -- then 0.05 is not too fine, rather the threshold is the wrong
+    #      tool.  Exactly this distinction is the point of the sweep.
     print()
     print("    URTEIL je Ringgroesse:")
     verdacht = 0
     for n, zeile in sorted(tabelle.items()):
         if min(zeile) < 0 or zeile[i05] <= 0:
             print("      n=%-3d  nicht messbar" % n); continue
-        _sturz = 1.0 - (zeile[i05 + 1] / float(zeile[i05]))       # 0,05 -> 0,10
-        _rest = 1.0 - (zeile[-1] / float(max(1, zeile[i05 + 1])))  # 0,10 -> 0,30
+        _sturz = 1.0 - (zeile[i05 + 1] / float(zeile[i05]))       # 0.05 -> 0.10
+        _rest = 1.0 - (zeile[-1] / float(max(1, zeile[i05 + 1])))  # 0.10 -> 0.30
         if _sturz >= 0.34 and _rest <= _sturz:
             print("      n=%-3d  UEBERSPLITTUNG: %d -> %d bei 0,05 -> 0,10 (%.0f %%), "
                   "danach nur noch %.0f %% -- der Sturz sitzt AN der Schwelle"
@@ -1926,23 +1926,23 @@ def selbsttest_tfd_sweep(sizes=(5, 6, 7, 8)) -> int:
 
 
 def selbsttest_konvergenz(sizes=(5, 6, 7)) -> int:
-    """KONVERGENZ statt Behauptung: waechst die Zahl der Minima noch mit der Aufloesung?
+    """CONVERGENCE instead of assertion: does the number of minima still grow with the resolution?
 
-    DIE FRAGE, die das beantwortet.  Der Parameterraum (q_m, phi_m) ist KONTINUIERLICH
-    -- jede reelle Kombination ist eine gueltige Geometrie.  Der KONFORMERraum ist es
-    nicht: ein Ring hat endlich viele Energieminima.  Das Gitter ist darum kein
-    Ergebnis, sondern eine STARTPUNKTverteilung; `_relax_hold_pucker` zieht jeden
-    Punkt ins naechste echte Minimum, TFD entdoppelt.
+    THE QUESTION this answers.  The parameter space (q_m, phi_m) is CONTINUOUS
+    -- every real combination is a valid geometry.  The CONFORMER space is
+    not: a ring has finitely many energy minima.  The grid is therefore not a
+    result but a distribution of STARTING POINTS; `_relax_hold_pucker` pulls every
+    point into the nearest genuine minimum, TFD dedups.
 
-    ⇒ Vollstaendigkeit ist ERREICHBAR, nicht nur annaeherbar: das Gitter muss fein
-      genug sein, dass jedes Einzugsgebiet mindestens einmal getroffen wird.  Ob das
-      der Fall ist, sagt genau eine Messung -- die Zahl der distinkten Zustaende
-      gegen die Aufloesung.  Waechst sie nicht mehr, ist der Raum ueberdeckt.
+    ⇒ Completeness is REACHABLE, not merely approachable: the grid must be fine
+      enough that every basin of attraction is hit at least once.  Whether that
+      is the case is told by exactly one measurement -- the number of distinct states
+      against the resolution.  If it no longer grows, the space is covered.
 
-    ⚠ WARUM DAS HIER STEHT.  `conformer_enum.py:7-9` behauptet dasselbe ("finer grid
-    stops adding distinct minima") und hat KEINE Messstelle dafuer.  Eine Behauptung
-    ohne Beleg ist genau die Bauform, die in diesem Projekt schon mehrfach eine
-    falsche Zahl getragen hat.
+    ⚠ WHY THIS IS HERE.  `conformer_enum.py:7-9` asserts the same ("finer grid
+    stops adding distinct minima") and has NO measuring point for it.  An assertion
+    without evidence is exactly the design that has already carried a
+    wrong number several times in this project.
     """
     if not (_RDKIT and _np is not None):
         print("=== Konvergenz: RDKit fehlt, uebersprungen ==="); return 0
@@ -1956,14 +1956,14 @@ def selbsttest_konvergenz(sizes=(5, 6, 7)) -> int:
         _os.environ["DELFIN_FFFREE_PUCKER_SPACE"] = "1"
         _os.environ["DELFIN_FFFREE_PUCKER_NAMP"] = "2"
         _os.environ["DELFIN_FFFREE_PUCKER_TRACE"] = "0"
-        # Mit CP-Entdopplung gegenrechnen, wenn der Aufrufer sie gesetzt hat --
-        # sonst misst der Test die alte Uebersplittung nach.
-        # ⚠ EINMAL LESEN, EINMAL BENENNEN.  Die erste Fassung las den Schalter hier
-        #   und nannte ihn unten `_cpd_an` -- ein Name, den es nie gab.  Der
-        #   NameError fiel in das `except Exception` der CP-Streuung und wurde als
-        #   "nicht messbar" gedruckt: das moduskorrigierte Urteil lief damit KEIN
-        #   einziges Mal, und der Test meldete trotzdem etwas.  Ein verschluckter
-        #   Fehler ist eine Nullmessung, die wie ein Befund aussieht.
+        # Cross-check with CP dedup if the caller has set it --
+        # otherwise the test re-measures the old over-splitting.
+        # ⚠ READ ONCE, NAME ONCE.  The first version read the switch here
+        #   and called it `_cpd_an` below -- a name that never existed.  The
+        #   NameError fell into the `except Exception` of the CP scatter and was
+        #   printed as "not measurable": the mode-corrected verdict thus ran NOT
+        #   a single time, and the test still reported something.  A swallowed
+        #   error is a null measurement that looks like a finding.
         _cpd_an = _os.environ.get("DELFIN_FFFREE_PUCKER_CPDEDUP") == "1"
         if _cpd_an:
             print("    (CP-Entdopplung AN, Toleranz %s Grad / %s A)"
@@ -1996,21 +1996,21 @@ def selbsttest_konvergenz(sizes=(5, 6, 7)) -> int:
                      "JA" if ok else "NEIN -- siehe CP-Streuung"))
             if not ok:
                 fehler += 1
-                # ---- WARUM waechst die Zahl?  Zwei Ursachen, ENTGEGENGESETZTE Fixes --
-                # (1) Raum noch nicht ueberdeckt -> die Zustaende liegen in CP-
-                #     Koordinaten WEIT auseinander -> feiner abtasten.
-                # (2) TFD-Schwelle trennt chemisch GLEICHE Zustaende -> sie liegen
-                #     DICHT beieinander -> die Lupe ist zu fein, nicht das Gitter grob.
+                # ---- WHY does the number grow?  Two causes, OPPOSITE fixes --
+                # (1) space not yet covered -> the states lie FAR apart in CP
+                #     coordinates -> sample finer.
+                # (2) TFD threshold separates chemically IDENTICAL states -> they lie
+                #     CLOSE together -> the magnifier is too fine, not the grid coarse.
                 #
-                # ⚠️ DAS IST KEINE AKADEMISCHE FRAGE.  Die Zahl der Zustaende JE RING
-                #    geht als Basis in das Kreuzprodukt ueber alle Ringe ein:
-                #        3 Zustaende, 4 Ringe ->      81 Kombinationen  (rechenbar)
-                #       10 Zustaende, 4 Ringe ->  10 000                (nicht rechenbar)
-                #    Gemessen sind 4,3 Ringe je System.  Uebersplittung macht die
-                #    VOLLSTAENDIGE Kombinatorik unbezahlbar -- Konvergenzanomalie und
-                #    Rechenbarkeit sind dasselbe Problem.
-                # Chemischer Massstab: Cyclohexan hat Sessel + Twist-Boat-Familie,
-                # nach Symmetriefaltung 2-3 Klassen.  Der Fuenfring konvergiert auf 3.
+                # ⚠️ THIS IS NOT AN ACADEMIC QUESTION.  The number of states PER RING
+                #    enters the cross product over all rings as the base:
+                #        3 states, 4 rings ->      81 combinations  (computable)
+                #       10 states, 4 rings ->  10 000                (not computable)
+                #    Measured are 4.3 rings per system.  Over-splitting makes the
+                #    COMPLETE combinatorics unaffordable -- convergence anomaly and
+                #    computability are the same problem.
+                # Chemical yardstick: cyclohexane has chair + twist-boat family,
+                # after symmetry folding 2-3 classes.  The five-ring converges to 3.
                 _os.environ["DELFIN_FFFREE_PUCKER_NPHASE"] = "16"
                 try:
                     cps = []
@@ -2036,10 +2036,10 @@ def selbsttest_konvergenz(sizes=(5, 6, 7)) -> int:
                             dmin = d if dmin is None else min(dmin, d)
                     if dmin is not None:
                         print("        kleinste paarweise CP-Distanz: %.1f Grad" % dmin)
-                        # ⚠ DAS URTEIL MUSS WISSEN, WELCHER MODUS LIEF.  Erste Fassung
-                        #   war fest an `dmin` gekoppelt und behauptete "TFD zu fein"
-                        #   auch dann, wenn die CP-Entdopplung lief -- also ein Urteil
-                        #   ueber ein Instrument, das gar nicht im Einsatz war.
+                        # ⚠ THE VERDICT MUST KNOW WHICH MODE RAN.  The first version
+                        #   was hard-coupled to `dmin` and claimed "TFD too fine"
+                        #   even when the CP dedup was running -- i.e. a verdict
+                        #   about an instrument that was not in use at all.
                         if _cpd_an:
                             print("        URTEIL: CP-Entdopplung laeuft und liefert MEHR"
                                   " Zustaende als TFD.  Grund: TFD faltet die MOLEKUEL-"
@@ -2068,27 +2068,27 @@ def selbsttest_konvergenz(sizes=(5, 6, 7)) -> int:
     return 1 if fehler else 0
 
 
-# ===== DIE PROBEN: EIN KOPPLUNGSGRADIENT, KEINE SAMMLUNG ==========================
+# ===== THE SAMPLES: A COUPLING GRADIENT, NOT A COLLECTION =========================
 #
-# Die Frage ist nicht "wie viele Faltungen hat Molekuel X", sondern WOVON es abhaengt,
-# wie viel vom Kreuzprodukt uebrig bleibt.  Das kann nur eine VARIABLE beantworten, die
-# von Probe zu Probe systematisch anders steht -- hier die Zahl der GEMEINSAMEN ATOME
-# zwischen zwei Ringen.  Sie laeuft ueber die Liste von 2 nach 0:
+# The question is not "how many folds does molecule X have", but WHAT it depends on
+# how much of the cross product remains.  Only a VARIABLE can answer that, one that
+# stands systematically different from sample to sample -- here the number of SHARED ATOMS
+# between two rings.  It runs down the list from 2 to 0:
 #
-#   2 gemeinsame Atome, drei Bruecken   verbrueckt (Bicyclo[2.2.2]octan, Norbornan)
-#                                       -- der steifste Fall, den es gibt
-#   2 gemeinsame Atome, eine Bindung    kondensiert (Decalin, Perhydroanthracen)
-#   1 gemeinsames Atom                  spiro (Spiro[5.5]undecan)
-#   0, direkte Ring-Ring-Bindung        nur STERISCH gekoppelt (Bicyclohexyl)
-#   0, zwei CH2 dazwischen              praktisch unabhaengig (1,2-Dicyclohexylethan)
-#   0, drei Ringe an einem P            Tricyclohexylphosphin -- der Fall, den der
-#                                       `generate`-Docstring selbst als Beispiel
-#                                       fuehrt, und ein echter Ligand
+#   2 shared atoms, three bridges       bridged (bicyclo[2.2.2]octane, norbornane)
+#                                       -- the stiffest case there is
+#   2 shared atoms, one bond            fused (decalin, perhydroanthracene)
+#   1 shared atom                       spiro (spiro[5.5]undecane)
+#   0, direct ring-ring bond            only STERICALLY coupled (bicyclohexyl)
+#   0, two CH2 in between               practically independent (1,2-dicyclohexylethane)
+#   0, three rings on one P             tricyclohexylphosphine -- the case the
+#                                       `generate` docstring itself cites as an
+#                                       example, and a real ligand
 #
-# Cyclohexan steht als NULLPUNKT dabei: EIN Ring, also gar kein Kreuzprodukt.  Ohne ihn
-# waere nicht zu trennen, was die KOPPLUNG kostet und was schon der einzelne Ring kostet.
-# Perhydroanthracen und das Phosphin sind die einzigen DREIringigen Proben -- erst bei
-# drei Ringen zeigt sich, ob die Kurve exponentiell oder gedeckelt laeuft.
+# Cyclohexane stands as the ZERO POINT: ONE ring, so no cross product at all.  Without it
+# one could not separate what the COUPLING costs from what the single ring already costs.
+# Perhydroanthracene and the phosphine are the only THREE-ring samples -- only at
+# three rings does it show whether the curve runs exponentially or capped.
 _KOMBI_PROBEN = (
     ("Cyclohexan",            "C1CCCCC1",                      "1 Ring -- Nullpunkt"),
     ("Bicyclo[2.2.2]octan",   "C1CC2CCC1CC2",                  "verbrueckt, 3 Bruecken"),
@@ -2104,39 +2104,39 @@ _KOMBI_PROBEN = (
 
 def selbsttest_kombinatorik(proben=None, deckel_s: float = 900.0,
                             max_kombis: int = 4000) -> int:
-    """WIE GROSS IST DAS KREUZPRODUKT **NACH** DER PHYSIK?
+    """HOW LARGE IS THE CROSS PRODUCT **AFTER** THE PHYSICS?
 
-    DIE FRAGE, die ueber die vollstaendige Ringfaltung entscheidet.  Gemessen sind 4,3
-    Ringe je System und -- mit dem CP-Raumgitter -- 9 bis 16 Faltungszustaende je Ring
-    (`selbsttest_tfd_sweep`, Schwelle 0,05).  Das naive Kreuzprodukt ist damit 6500 bis
-    65000 Kombinationen je System.  Aber Ringe eines Molekuels sind NICHT unabhaengig:
-    kondensierte und verbrueckte Ringe teilen Atome, faltet man den einen, ist der
-    andere festgelegt.  Das Kreuzprodukt ist eine Obergrenze der AUFZAEHLUNG -- die
-    Frage ist, was davon das Realismustor ueberlebt.
+    THE QUESTION that decides the complete ring folding.  Measured are 4.3
+    rings per system and -- with the CP space grid -- 9 to 16 pucker states per ring
+    (`selbsttest_tfd_sweep`, threshold 0.05).  The naive cross product is thus 6500 to
+    65000 combinations per system.  But rings of a molecule are NOT independent:
+    fused and bridged rings share atoms; fold one, and the
+    other is fixed.  The cross product is an upper bound of the ENUMERATION -- the
+    question is what of it survives the realism gate.
 
-    ⚠ DER ENTSCHEIDENDE UNTERSCHIED, den dieser Test sichtbar macht: das Tor toetet das
-      ERGEBNIS, aber nicht die KOSTEN.  Jede Kombination wird erst gesetzt, dann mit
-      gehaltenen Faltungen relaxiert und ERST DANN verworfen.  Wer "(c) ist klein, also
-      billig" liest, hat die Reihenfolge verwechselt.  Darum stehen hier ZWEI Zahlen
-      nebeneinander: (b) ist der Preis, (d) ist die Ausbeute.
+    ⚠ THE DECISIVE DIFFERENCE this test makes visible: the gate kills the
+      RESULT, but not the COST.  Every combination is first set, then relaxed with
+      held folds and ONLY THEN rejected.  Whoever reads "(c) is small, hence
+      cheap" has confused the order.  That is why TWO numbers stand side by side
+      here: (b) is the price, (d) is the yield.
 
-    ⚠ ZWEI TORE, NICHT EINS.  `_has_clash` sieht nur ueberlappende vdW-Kugeln.  Bei
-      KONDENSIERTEN Ringen entsteht der Widerspruch aber an den geteilten Atomen, und
-      dort stimmt der VSEPR-Winkel nicht mehr, ohne dass irgendetwas kollidiert --
-      genau dafuer existiert `_has_bad_angles`.  Welches der beiden Tore feuert, ist
-      deshalb selbst ein Befund und wird getrennt gezaehlt.
+    ⚠ TWO GATES, NOT ONE.  `_has_clash` sees only overlapping vdW spheres.  For
+      FUSED rings, however, the contradiction arises at the shared atoms, and
+      there the VSEPR angle is no longer right without anything colliding --
+      exactly for that `_has_bad_angles` exists.  Which of the two gates fires is
+      therefore itself a finding and is counted separately.
 
-    ⚠ WAS DIESER TEST NICHT MISST.  Er laeuft auf METALLFREIEN Kohlenwasserstoffen mit
-      hoher Symmetrie.  Ein substituierter Ring hat legitim mehr Zustaende, ein echtes
-      DELFIN-System ist groesser und damit je Kombination teurer.  Die Zeiten hier sind
-      eine UNTERGRENZE der Kosten, nicht die Produktionszahl.
+    ⚠ WHAT THIS TEST DOES NOT MEASURE.  It runs on METAL-FREE hydrocarbons with
+      high symmetry.  A substituted ring legitimately has more states, a real
+      DELFIN system is larger and thus more expensive per combination.  The times here are
+      a LOWER BOUND of the cost, not the production number.
 
-    ``max_kombis``: Testgrenze.  (a) und (b) werden IMMER bestimmt -- sie kosten nur den
-    linearen Posten.  Liegt (b) darueber, werden (c) und (d) NICHT gemessen und genau
-    das wird gedruckt, statt eine gekappte Zahl auszugeben.  ⚠ Eine Kappe waere hier
-    besonders heimtueckisch: `combos` ist nach FALTUNGSTIEFE sortiert, ein Praefix davon
-    enthaelt nur flache Kombinationen und haette systematisch zu hohe Ueberlebensquoten.
-    ``0`` = keine Grenze (dann kann ein einzelner Mehrringer Stunden laufen).
+    ``max_kombis``: test limit.  (a) and (b) are ALWAYS determined -- they cost only the
+    linear item.  If (b) lies above it, (c) and (d) are NOT measured and exactly
+    that is printed, instead of outputting a capped number.  ⚠ A cap would be
+    especially insidious here: `combos` is sorted by FOLD DEPTH, a prefix of it
+    contains only shallow combinations and would have systematically too high survival rates.
+    ``0`` = no limit (then a single multi-ring molecule can run for hours).
     """
     if not (_RDKIT and _np is not None):
         print("=== Kombinatorik: RDKit fehlt, uebersprungen ==="); return 0
@@ -2153,15 +2153,15 @@ def selbsttest_kombinatorik(proben=None, deckel_s: float = 900.0,
     zeilen = []
     fehler = 0
     try:
-        # ===== 0 DER VORGABEPFAD MUSS UNVERAENDERT BLEIBEN -- GEMESSEN, NICHT BEHAUPTET
+        # ===== 0 THE DEFAULT PATH MUST REMAIN UNCHANGED -- MEASURED, NOT ASSERTED
         #
-        # `generate` traegt jetzt einen optionalen Zaehlersatz.  Die Behauptung "bei
-        # `_zaehler=None` aendert sich nichts" ist genau die Sorte Behauptung, die in
-        # diesem Projekt schon mehrfach falsch war.  Also wird sie gemessen: dasselbe
-        # Molekuel, derselbe Vorgabepfad (alle Schalter AUS, Kappe AN), einmal ohne und
-        # einmal mit Zaehler -- die zurueckgegebenen Frames muessen ZEICHENGLEICH sein.
-        # ⚠ Im Messmodus werden beide Tore gefragt statt kurzschluessig eines; wuerde
-        #   `_has_bad_angles` etwas veraendern, faellt es genau hier auf.
+        # `generate` now carries an optional counter set.  The assertion "with
+        # `_zaehler=None` nothing changes" is exactly the kind of assertion that has
+        # already been wrong several times in this project.  So it is measured: the same
+        # molecule, the same default path (all switches OFF, cap ON), once without and
+        # once with counters -- the returned frames must be CHARACTER-IDENTICAL.
+        # ⚠ In measurement mode both gates are asked instead of one short-circuited; if
+        #   `_has_bad_angles` changed anything, it would show up exactly here.
         for _k in _alt:
             _os.environ[_k] = "0"
         _mv = Chem.AddHs(Chem.MolFromSmiles("C1CCC2CCCCC2C1"))    # Decalin
@@ -2183,7 +2183,7 @@ def selbsttest_kombinatorik(proben=None, deckel_s: float = 900.0,
         _os.environ["DELFIN_FFFREE_PUCKER_SPACE"] = "1"
         _os.environ["DELFIN_FFFREE_PUCKER_NAMP"] = "2"
         _os.environ["DELFIN_FFFREE_PUCKER_NPHASE"] = "8"
-        _os.environ["DELFIN_FFFREE_PUCKER_FULL"] = "1"     # keine Kappe -- ganzes Produkt
+        _os.environ["DELFIN_FFFREE_PUCKER_FULL"] = "1"     # no cap -- whole product
         _os.environ["DELFIN_FFFREE_PUCKER_TRACE"] = "0"
         print()
         print("    %-22s %2s %4s  %-14s %8s %7s %7s %7s %8s"
@@ -2203,14 +2203,14 @@ def selbsttest_kombinatorik(proben=None, deckel_s: float = 900.0,
             except Exception as e:
                 print("    %-22s Aufbau fehlgeschlagen: %s" % (name, type(e).__name__))
                 continue
-            # ---- DIE TESTGRENZE: (a) und (b) ZUERST, getrennt vom Bau.  Der Bau kostet
-            #      JE Kombination einen Relax plus zwei Tore; ob er bezahlbar ist,
-            #      entscheidet (b) -- also muss (b) bekannt sein, BEVOR gebaut wird.
-            #      ⚠ Der Vorlauf bestimmt die Zustaende ein zweites Mal (`generate` tut
-            #        es gleich nochmal).  Das ist der LINEARE Posten, also der billige --
-            #        aber bezahlt wird er trotzdem, darum laeuft er NUR, wenn die Grenze
-            #        ueberhaupt gesetzt ist.  Bei `max_kombis=0` gibt es keinen Vorlauf
-            #        und damit auch keine doppelte Arbeit in der Zeitmessung.
+            # ---- THE TEST LIMIT: (a) and (b) FIRST, separate from the build.  The build costs
+            #      one relax plus two gates PER combination; whether it is affordable
+            #      is decided by (b) -- so (b) must be known BEFORE building.
+            #      ⚠ The pre-pass determines the states a second time (`generate` does
+            #        it again right after).  That is the LINEAR item, i.e. the cheap one --
+            #        but it is paid nonetheless, which is why it runs ONLY if the limit
+            #        is set at all.  With `max_kombis=0` there is no pre-pass
+            #        and thus no duplicated work in the timing either.
             if max_kombis:
                 _t_vor = _time.perf_counter()
                 try:
@@ -2256,9 +2256,9 @@ def selbsttest_kombinatorik(proben=None, deckel_s: float = 900.0,
             _b = int(z.get("aufzaehlung", 0))
             _c = int(z.get("tor_ueberlebt", 0))
             _d = len(out)
-            # ⚠ NIE EIN PROZENTSATZ OHNE NENNER.  Der Nenner ist hier (b), die Zahl der
-            #   aufgezaehlten Kombinationen ohne den Grundzustand -- nicht das
-            #   Kreuzprodukt selbst, denn der Grundzustand wird nie gebaut.
+            # ⚠ NEVER A PERCENTAGE WITHOUT A DENOMINATOR.  The denominator here is (b), the number of
+            #   enumerated combinations without the ground state -- not the
+            #   cross product itself, because the ground state is never built.
             _cb = ("%6.1f%%" % (100.0 * _c / _b)) if _b else "   n/a"
             print("    %-22s %2d %4d  %-14s %8d %7d %7d %7s %8.1f"
                   % (name, len(z.get("ringgroessen") or []),
@@ -2298,14 +2298,14 @@ def selbsttest_kombinatorik(proben=None, deckel_s: float = 900.0,
     if not zeilen:
         print("=== Kombinatorik: nichts gemessen ==="); return 1
 
-    # ---- 1 KOPPLUNG GEGEN UEBERLEBEN.
-    # ⚠ PARTITION, KEIN MITTELWERT.  "gekoppelt gegen unabhaengig" waere die falsche
-    #   Zweiteilung: sie wirft ein kondensiertes Ringpaar (eine gemeinsame BINDUNG) mit
-    #   einem Kaefig (vier gemeinsame Atome) in einen Topf, und deren Ueberlebensquoten
-    #   liegen zwei Groessenordnungen auseinander.  Ein Mittelwert kann eine tote Klasse
-    #   nicht sehen -- nur eine Partition kann das.  Geteilt wird darum nach der Zahl der
-    #   Atome, die sich das ENGSTE Ringpaar teilt; das ist zugleich der chemische Name
-    #   der Kopplung.
+    # ---- 1 COUPLING VERSUS SURVIVAL.
+    # ⚠ PARTITION, NOT MEAN.  "coupled versus independent" would be the wrong
+    #   dichotomy: it throws a fused ring pair (one shared BOND) into one pot with
+    #   a cage (four shared atoms), and their survival rates
+    #   lie two orders of magnitude apart.  A mean cannot see a dead class
+    #   -- only a partition can.  Therefore the split is by the number of
+    #   atoms the TIGHTEST ring pair shares; that is at the same time the chemical name
+    #   of the coupling.
     mehr = [r for r in zeilen if r["ringe"] >= 2 and r["b"] > 0]
 
     def _klasse(r):
@@ -2330,11 +2330,11 @@ def selbsttest_kombinatorik(proben=None, deckel_s: float = 900.0,
             print("      %-22s keine Probe" % _NAMEN[_kl]); continue
         _b, _c, _q = _quote(_g)
         _quoten[_kl] = _q
-        # ⚠ (a) MUSS MIT DASTEHEN, sonst ist c/b nicht interpretierbar.  Ein verbrueckter
-        #   Ring kann schon WENIGER Zustaende haben -- dann ist (b) klein, weil die
-        #   Kopplung frueher gewirkt hat, und nicht, weil das Tor mehr toetet.  Zwei
-        #   verschiedene Wege zum selben kleinen Produkt, und nur beide zusammen sagen,
-        #   welcher es war.
+        # ⚠ (a) MUST BE SHOWN ALONGSIDE, otherwise c/b is not interpretable.  A bridged
+        #   ring may already have FEWER states -- then (b) is small because the
+        #   coupling acted earlier, and not because the gate kills more.  Two
+        #   different routes to the same small product, and only both together say
+        #   which one it was.
         _zust = [v for r in _g for v in r["zustaende"]]
         print("      %-22s %d Probe(n) · %6d von %6d ueberleben = %5.1f %% · (a) im "
               "Mittel %.1f je Ring (%d Ringe) · %s"
@@ -2344,15 +2344,15 @@ def selbsttest_kombinatorik(proben=None, deckel_s: float = 900.0,
     if len(_quoten) >= 2:
         _hi = max(_quoten.values())
         _lo = min(_quoten.values())
-        # ⚠ Der Befund ist die SPANNE ueber die Partition, nicht ein Gruppenmittel.
+        # ⚠ The finding is the RANGE across the partition, not a group mean.
         print("      ⇒ Spanne ueber die Kopplungsklassen: %.1f %% bis %.1f %% -- %s"
               % (_lo, _hi,
                  "die Kopplungsart entscheidet, nicht die Kopplung an sich"
                  if _hi - _lo > 20.0 else
                  "die Kopplungsart macht kaum einen Unterschied"))
 
-    # ---- 2 WELCHES TOR FEUERT.  Kollision und Winkel getrennt, sonst ist "das Tor"
-    #      ein Name fuer zwei verschiedene Mechanismen (Detektorname != Messung).
+    # ---- 2 WHICH GATE FIRES.  Collision and angle separately, otherwise "the gate"
+    #      is a name for two different mechanisms (detector name != measurement).
     print()
     print("    ===== 2 WELCHES TOR TOETET =====")
     for _kl in (0, 1, 2, 3):
@@ -2366,10 +2366,10 @@ def selbsttest_kombinatorik(proben=None, deckel_s: float = 900.0,
               "Winkel %6d (%5.1f %%)"
               % (_NAMEN[_kl], _b, _k, 100.0 * _k / _b if _b else 0.0,
                  _w, 100.0 * _w / _b if _b else 0.0))
-    # ⚠ EIN TORNAME IST KEINE MESSUNG.  Wenn "das Kollisionstor" in Wahrheit nie feuert
-    #   und die ganze Selektion vom Winkeltor kommt, dann steht jede Aussage ueber "die
-    #   Sterik schneidet das Produkt" auf dem falschen Mechanismus -- und eine Reparatur
-    #   am Kollisionstor waere wirkungslos, bevor sie geschrieben ist.
+    # ⚠ A GATE NAME IS NOT A MEASUREMENT.  If "the collision gate" in truth never fires
+    #   and the whole selection comes from the angle gate, then every statement about "the
+    #   sterics cut the product" rests on the wrong mechanism -- and a repair
+    #   at the collision gate would be ineffective before it is written.
     _kges = sum(r["kollision"] for r in mehr)
     _wges = sum(r["winkel"] for r in mehr)
     _bges = sum(r["b"] for r in mehr)
@@ -2387,7 +2387,7 @@ def selbsttest_kombinatorik(proben=None, deckel_s: float = 900.0,
                   % (_kges, _bges, 100.0 * _kges / _bges,
                      _wges, _bges, 100.0 * _wges / _bges))
 
-    # ---- 3 BEZAHLBARKEIT.  Die Kosten haengen an (b), nicht an (d).
+    # ---- 3 AFFORDABILITY.  The cost hangs on (b), not on (d).
     _sum_b = sum(r["b"] for r in zeilen)
     _sum_t = sum(r["t_kombis"] for r in zeilen)
     print()
@@ -2403,29 +2403,29 @@ def selbsttest_kombinatorik(proben=None, deckel_s: float = 900.0,
           "Proben, %.1f s gesamt)" % (_ms, _sum_b, len(zeilen), _sum_t))
     print("      ⚠ UNTERGRENZE: metallfreie Kohlenwasserstoffe, 7 bis 21 Schweratome. "
           "Ein echtes System ist groesser und je Kombination teurer.")
-    # ⚠ DIE KOSTEN JE KOMBINATION SIND KEINE KONSTANTE, und die Streuung gehoert
-    #   dazugesagt.  Sie steigt mit der UEBERLEBENSQUOTE: was das Tor passiert, wird
-    #   gegen JEDEN bereits behaltenen Konformer per TFD geprueft, also quadratisch.
-    #   Ein Molekuel, dessen Kombinationen alle ueberleben, ist damit doppelt teuer --
-    #   mehr Kandidaten UND teurere Pruefung je Kandidat.
+    # ⚠ THE COST PER COMBINATION IS NOT A CONSTANT, and the scatter must be
+    #   stated with it.  It rises with the SURVIVAL RATE: what passes the gate is
+    #   checked by TFD against EVERY already kept conformer, i.e. quadratically.
+    #   A molecule whose combinations all survive is thus doubly expensive --
+    #   more candidates AND a more expensive check per candidate.
     _je = sorted((1000.0 * r["t_kombis"] / r["b"], r["name"])
                  for r in zeilen if r["b"] > 0 and r["t_kombis"] > 0.0)
     if len(_je) >= 2:
         print("      Streuung je Kombination: %.1f ms (%s) bis %.1f ms (%s) -- sie "
               "steigt mit der Ueberlebensquote, weil TFD gegen alle Behaltenen prueft."
               % (_je[0][0], _je[0][1], _je[-1][0], _je[-1][1]))
-    # ⚠ ZWEI KOSTENPOSTEN MIT VERSCHIEDENEM WACHSTUM.  Die Zustaende je Ring kosten
-    #   LINEAR in der Ringzahl (jeder Ring einmal), das Kreuzprodukt EXPONENTIELL.  Steht
-    #   der Aufzaehlungsposten heute noch klein da, heisst das nichts fuer 6 Ringe --
-    #   der andere ist der, der explodiert.
+    # ⚠ TWO COST ITEMS WITH DIFFERENT GROWTH.  The states per ring cost
+    #   LINEARLY in the ring count (each ring once), the cross product EXPONENTIALLY.  If
+    #   the enumeration item still looks small today, that means nothing for 6 rings --
+    #   the other one is the one that explodes.
     _t_zust = sum(r["t_zust"] for r in zeilen)
     print("      Aufteilung: Zustaende je Ring %.1f s (linear in der Ringzahl) · "
           "Kreuzprodukt %.1f s (exponentiell) -- Summe %.1f s ueber %d Proben"
           % (_t_zust, _sum_t, _t_zust + _sum_t, len(zeilen)))
-    # ⚠ DIE HOCHRECHNUNG DARF NICHT MIT EINER ERFUNDENEN ZUSTANDSZAHL LAUFEN.  Was hier
-    #   gemessen wurde, steht daneben -- und die gemessene Spanne reicht ueber das
-    #   hinaus, was die Sweep-Tabelle an UNSUBSTITUIERTEN Ringen findet: ein Ring in
-    #   einem Kaefig ist symmetriearm und splittet weiter auf.
+    # ⚠ THE EXTRAPOLATION MUST NOT RUN WITH AN INVENTED STATE COUNT.  What was
+    #   measured here stands beside it -- and the measured range extends beyond
+    #   what the sweep table finds on UNSUBSTITUTED rings: a ring in
+    #   a cage is symmetry-poor and splits further.
     _az = [v for r in zeilen for v in r["zustaende"]]
     if _az:
         print("      Gemessene (a): %d bis %d Zustaende je Ring, Mittel %.1f (Nenner: "
@@ -2437,22 +2437,22 @@ def selbsttest_kombinatorik(proben=None, deckel_s: float = 900.0,
     for _z in _stufen:
         _n = _z ** 4.3
         _s = _n * _ms / 1000.0
-        # ⚠ DER DECKEL GEHOERT NICHT DIESEM MECHANISMUS ALLEIN.  `deckel_s` ist die
-        #   Frist fuer den GANZEN Bau eines Systems; die Ringfaltung ist einer von
-        #   vielen Schritten darin.  "Unter dem Deckel" ist deshalb noch kein "geht" --
-        #   erst der ANTEIL sagt, ob daneben noch etwas Platz hat.
+        # ⚠ THE CAP DOES NOT BELONG TO THIS MECHANISM ALONE.  `deckel_s` is the
+        #   deadline for the WHOLE build of a system; the ring folding is one of
+        #   many steps in it.  "Under the cap" is therefore not yet a "works" --
+        #   only the SHARE says whether anything else still has room beside it.
         print("        %2d Zustaende je Ring -> %10.0f Kombinationen -> %10.0f s "
               "= %6.1f h  = %6.1f %% des Arm-Deckels (%.0f s)%s"
               % (_z, _n, _s, _s / 3600.0, 100.0 * _s / deckel_s, deckel_s,
                  "" if _s <= deckel_s else "   UEBER dem Deckel"))
 
-    # ---- 4 URTEIL.  Zwei Seiten, und sie fallen verschieden aus.
-    # ⚠ DAS URTEIL RECHNET MIT DER GEMESSENEN ZUSTANDSZAHL, nicht mit der angenommenen.
-    #   Die Annahme, aus der diese Messung hervorging, war "9 bis 16 Zustaende je Ring"
-    #   -- eine Zahl vom SWEEP an UNSUBSTITUIERTEN Ringen.  In echten Mehrringern misst
-    #   dieser Test 4 bis 26 mit Mittel um 14: die Umgebung bricht die Ringsymmetrie,
-    #   und TFD trennt dann mehr.  Mit der angenommenen Zahl zu urteilen, waehrend die
-    #   eigene daneben steht, waere die Schoenrechnung in Reinform.
+    # ---- 4 VERDICT.  Two sides, and they come out differently.
+    # ⚠ THE VERDICT COMPUTES WITH THE MEASURED STATE COUNT, not with the assumed one.
+    #   The assumption this measurement arose from was "9 to 16 states per ring"
+    #   -- a number from the SWEEP on UNSUBSTITUTED rings.  In real multi-ring molecules
+    #   this test measures 4 to 26 with a mean around 14: the environment breaks the ring symmetry,
+    #   and TFD then separates more.  Judging with the assumed number while our
+    #   own stands beside it would be cooking the books in its purest form.
     _zmit = (sum(_az) / float(len(_az))) if _az else 9.0
     _smess = (_zmit ** 4.3) * _ms / 1000.0
     _s3 = (3 ** 4.3) * _ms / 1000.0
@@ -2478,10 +2478,10 @@ def selbsttest_kombinatorik(proben=None, deckel_s: float = 900.0,
               "%.0f s je System gegen einen Deckel von %.0f s." % (_s3, deckel_s))
     print("      ERGEBNIS: groesste gemessene Ausbeute (d) einer einzelnen Probe: %d "
           "Konformere." % _dmax)
-    # ⚠ WAS NICHT GEMESSEN WURDE, MUSS IM URTEIL STEHEN.  Eine Probe, die wegen ihrer
-    #   Groesse uebersprungen wurde, ist der staerkste Fall gegen die Bezahlbarkeit --
-    #   sie stillschweigend aus der Bilanz zu lassen, waere genau die Schoenrechnung,
-    #   gegen die dieser Test gebaut ist.
+    # ⚠ WHAT WAS NOT MEASURED MUST APPEAR IN THE VERDICT.  A sample that was skipped
+    #   because of its size is the strongest case against affordability --
+    #   leaving it silently out of the balance would be exactly the book-cooking
+    #   this test is built against.
     _uv = [r for r in zeilen if r.get("ungemessen")]
     if _uv:
         print("      ⚠ %d von %d Proben UNGEMESSEN, weil (b) ueber der Testgrenze %d "
@@ -2490,10 +2490,10 @@ def selbsttest_kombinatorik(proben=None, deckel_s: float = 900.0,
                                       for r in _uv)))
         print("        Das ist selbst ein Befund: bei diesen Systemen ist das volle "
               "Produkt schon zu gross, um es ueberhaupt einmal zu bauen.")
-    # ---- DIE DREI FILTER HINTEREINANDER, jeder mit seinem eigenen Nenner.
-    # ⚠ Das ist die Kernaussage des ganzen Tests, und sie ist erst als KETTE lesbar:
-    #   welcher der drei Filter das Produkt tatsaechlich klein macht, ist eine Messung
-    #   und keine Vermutung -- und die Vermutung war, es sei der erste.
+    # ---- THE THREE FILTERS IN SEQUENCE, each with its own denominator.
+    # ⚠ This is the core statement of the whole test, and it is readable only as a CHAIN:
+    #   which of the three filters actually makes the product small is a measurement
+    #   and not a guess -- and the guess was that it is the first one.
     _sum_c = sum(r["c"] for r in zeilen)
     _sum_d = sum(r["d"] for r in zeilen)
     _alle_en = [r for r in zeilen if len(r["energien"]) >= 2]
@@ -2509,7 +2509,7 @@ def selbsttest_kombinatorik(proben=None, deckel_s: float = 900.0,
     if _ges:
         print("        3 ENERGIE (<= 10 kcal/mol)      (d)->(e)  %6d von %6d = %5.1f %%"
               % (_in10, _ges, 100.0 * _in10 / _ges))
-        # Der schaerfste Filter ist der mit der KLEINSTEN Durchlassquote.
+        # The sharpest filter is the one with the SMALLEST pass rate.
         _kette = (("die PHYSIK", 100.0 * _sum_c / max(1, _sum_b)),
                   ("die TFD-Entdopplung", 100.0 * _sum_d / max(1, _sum_c)),
                   ("die ENERGIE", 100.0 * _in10 / _ges))
@@ -2522,54 +2522,54 @@ def selbsttest_kombinatorik(proben=None, deckel_s: float = 900.0,
     return 1 if fehler else 0
 
 
-# Der Vergleichswert, gegen den Schritt 0 die Byte-Identitaet prueft.  Er stammt aus
-# `selbsttest_kombinatorik` Schritt 0 (Decalin, alle Schalter AUS, budget=48) und ist
-# damit die Zahl VOR den Aenderungen vom 26.08.  Ihn hier als Konstante zu fuehren, ist
-# der Unterschied zwischen "zweimal dasselbe gerechnet" und "gegen den Stand von vorher
-# gerechnet": zwei identische Laeufe des NEUEN Codes beweisen gar nichts.
+# The reference value against which step 0 checks byte-identity.  It comes from
+# `selbsttest_kombinatorik` step 0 (decalin, all switches OFF, budget=48) and is
+# thus the number BEFORE the changes of 26.08.  Carrying it here as a constant is
+# the difference between "computed the same thing twice" and "computed against the
+# previous state": two identical runs of the NEW code prove nothing at all.
 _REF_DECALIN_FRAMES = 22
-# Dieselbe Rolle fuer das Kandidatengitter -- `_pucker_space_grid(n, 2, 6)`.
+# The same role for the candidate grid -- `_pucker_space_grid(n, 2, 6)`.
 _REF_GITTER = {5: 13, 6: 65, 7: 169, 8: 845}
 
-# ===== DIE PROBEN FUER DIE TRENNSCHAERFE ==========================================
-# Nur MEHRRINGER, und zwar aus einem Grund, der die ganze Messung traegt: die Frage
-# lautet, ob zwei FALTUNGSVERSCHIEDENE Frames desselben Molekuels von den beiden
-# Massen gleich beurteilt werden.  Ein Einringer liefert zu wenige Frames, um eine
-# Paarstatistik zu tragen, und vor allem ist bei ihm der Ringanteil an den schweren
-# Atomen nahe 1 -- genau der Fall, in dem RMSD und Maximum NICHT auseinanderlaufen.
-# Der Effekt, um den es geht, ist ein VERDUENNUNGSeffekt; er braucht Atome, die sich
-# nicht bewegen.  Ihn an Cyclohexan zu messen, hiesse ihn wegzudefinieren.
+# ===== THE SAMPLES FOR THE DISCRIMINATION TEST ====================================
+# Only MULTI-RING molecules, and for a reason that carries the whole measurement: the question
+# is whether two frames of the same molecule that DIFFER IN FOLD are judged the same
+# by the two measures.  A single-ring molecule delivers too few frames to carry a
+# pair statistic, and above all its ring share of the heavy atoms is
+# near 1 -- exactly the case in which RMSD and maximum do NOT diverge.
+# The effect at stake is a DILUTION effect; it needs atoms that do
+# not move.  Measuring it on cyclohexane would mean defining it away.
 _TRENN_PROBEN = tuple(p for p in _KOMBI_PROBEN if p[0] != "Cyclohexan")
 
-# ===== DIE VERDUENNUNGSREIHE: DIE UNABHAENGIGE VARIABLE DES GANZEN ENTWURFS =========
+# ===== THE DILUTION SERIES: THE INDEPENDENT VARIABLE OF THE WHOLE DESIGN ===========
 #
-# ⚠ DER ERSTE LAUF HAT DIE EIGENE PROBENWAHL WIDERLEGT.  `_KOMBI_PROBEN` sind reine
-#   Ringkohlenwasserstoffe -- gemessener Ringanteil an den schweren Atomen: 100 % bei
-#   sechs von acht Proben.  Der Effekt, um den es geht, ist aber ein VERDUENNUNGS-
-#   effekt: RMSD teilt die Ringauslenkung durch ALLE Atome, das Maximum durch keines.
-#   Bei Ringanteil 1 gibt es nichts zu verduennen, und die Messung sieht folgerichtig
-#   nur Faktor 1,6 bis 2,1 statt der erwarteten 4.  Sie hat den Effekt nicht widerlegt,
-#   sie hat ihn WEGDEFINIERT -- an Proben, in denen er per Konstruktion nicht auftritt.
+# ⚠ THE FIRST RUN REFUTED ITS OWN SAMPLE CHOICE.  `_KOMBI_PROBEN` are pure
+#   ring hydrocarbons -- measured ring share of the heavy atoms: 100 % for
+#   six of eight samples.  But the effect at stake is a DILUTION
+#   effect: RMSD divides the ring displacement by ALL atoms, the maximum by none.
+#   At ring share 1 there is nothing to dilute, and the measurement consequently sees
+#   only a factor 1.6 to 2.1 instead of the expected 4.  It did not refute the effect,
+#   it DEFINED IT AWAY -- on samples in which it does not occur by construction.
 #
-# DIE REPARATUR ist eine Reihe, in der genau EINE Groesse laeuft: derselbe gefaltete
-# Cyclohexanring, an ein immer groesseres STARRES Geruest gehaengt, das ausserdem
-# EINGEFROREN wird.  Der Ringanteil faellt von 50 % auf 25 %, die Faltung bleibt
-# dieselbe.  Was sich dann zwischen Maximum und RMSD auftut, ist der Effekt.
-#   Cyclohexyl + Acen:  6 / (6 + C_Acen) schwere Atome
-#   Benzol 50,0 % · Naphthalin 37,5 % · Anthracen 30,0 % · Tetracen 25,0 %
+# THE REPAIR is a series in which exactly ONE quantity varies: the same folded
+# cyclohexane ring, attached to an ever larger RIGID scaffold, which moreover
+# is FROZEN.  The ring share falls from 50 % to 25 %, the fold stays
+# the same.  What then opens up between maximum and RMSD is the effect.
+#   cyclohexyl + acene:  6 / (6 + C_acene) heavy atoms
+#   benzene 50.0 % · naphthalene 37.5 % · anthracene 30.0 % · tetracene 25.0 %
 #
-# ⚠ WARUM ACENE UND NICHT OLIGOPHENYLE.  Erster Versuch war Cyclohexyl-Oligophenyl bis
-#   zum Sexiphenyl (bis 14,3 % Ringanteil).  GESCHEITERT, und zwar messbar: das
-#   Maximum wuchs ueber die Reihe von 1,19 auf 2,41 A, obwohl in allen Gliedern
-#   DIESELBE Faltung steckt.  Ein Maximum, das mit dem Geruest waechst, misst das
-#   Geruest -- die Biaryl-Torsionen sind frei und die Kette klappt beim Relax um.
-#   Ein kondensiertes Acen hat diese Freiheitsgrade nicht.
-# ⚠ DIE REIHE REICHT NICHT BIS 13,2 %, und das wird nicht mit einem noch groesseren
-#   Molekuel erzwungen (Heptacen waere geometrisch brauchbar und chemisch Unsinn).
-#   Statt dessen wird an diesen vier Punkten das GESETZ geprueft -- RMSD faellt wie
-#   sqrt(Ringanteil), das Maximum bleibt stehen -- und dann auf die 1227 Paare der
-#   Kopplungsproben angewandt.  Ein an vier Punkten bestaetigtes Gesetz auf gemessene
-#   Paare anzuwenden ist etwas anderes als eine Kurve zu verlaengern.
+# ⚠ WHY ACENES AND NOT OLIGOPHENYLS.  The first attempt was cyclohexyl-oligophenyl up
+#   to sexiphenyl (down to 14.3 % ring share).  FAILED, and measurably so: the
+#   maximum grew over the series from 1.19 to 2.41 A, although all members
+#   contain THE SAME fold.  A maximum that grows with the scaffold measures the
+#   scaffold -- the biaryl torsions are free and the chain flips over during the relax.
+#   A fused acene does not have these degrees of freedom.
+# ⚠ THE SERIES DOES NOT REACH DOWN TO 13.2 %, and that is not forced with an even larger
+#   molecule (heptacene would be geometrically usable and chemically nonsense).
+#   Instead the LAW is checked at these four points -- RMSD falls like
+#   sqrt(ring share), the maximum stays put -- and then applied to the 1227 pairs of the
+#   coupling samples.  Applying a law confirmed at four points to measured
+#   pairs is something other than extending a curve.
 _VERD_PROBEN = (
     ("Cyclohexylbenzol",     "C1CCCCC1c1ccccc1"),
     ("Cyclohexylnaphthalin", "C1CCCCC1c1ccc2ccccc2c1"),
@@ -2579,11 +2579,11 @@ _VERD_PROBEN = (
 
 
 def _xyz_schwer(txt: str):
-    """Schweratomkoordinaten aus einem Frame, wie ihn `generate` zurueckgibt.
+    """Heavy-atom coordinates from a frame as `generate` returns it.
 
-    ⚠ AUS DEM AUSGABETEXT, nicht aus einem parallel gehaltenen Conformer.  Was das
-      Modul ausliefert, ist dieser Text; jede Metrik, die auf etwas anderem rechnet,
-      misst eine Zwischenstufe, die so nie beim Aufrufer ankommt.
+    ⚠ FROM THE OUTPUT TEXT, not from a conformer kept in parallel.  What the
+      module delivers is this text; any metric that computes on something else
+      measures an intermediate stage that never reaches the caller in this form.
     """
     P = []
     for ln in txt.splitlines():
@@ -2598,11 +2598,11 @@ def _xyz_schwer(txt: str):
 
 
 def _greedy_eintraege(frames, index: int, tol: float) -> int:
-    """Wie viele MANIFOLD-EINTRAEGE bleiben, wenn mit ``tol`` entdoppelt wird.
+    """How many MANIFOLD ENTRIES remain when deduping with ``tol``.
 
-    ``index`` 0 = groesste Auslenkung, 1 = RMSD.  Gierig und in EMISSIONSREIHENFOLGE
-    -- genau so entdoppelt `generate`, und genau so entdoppeln die RMSD-Filter des
-    Projekts.  Eine optimale Ueberdeckung waere eine andere Zahl und eine andere Frage.
+    ``index`` 0 = largest displacement, 1 = RMSD.  Greedy and in EMISSION ORDER
+    -- exactly how `generate` dedups, and exactly how the project's RMSD filters
+    dedup.  An optimal covering would be a different number and a different question.
     """
     kept = []
     for P in frames:
@@ -2615,32 +2615,32 @@ def _greedy_eintraege(frames, index: int, tol: float) -> int:
 def selbsttest_trennschaerfe(proben=None, tol: float = 0.15,
                              rmsd_projekt: float = 0.30,
                              max_kombis: int = 800) -> int:
-    """TRENNT DAS MAXIMUM, WAS DER MITTELWERT VERSCHMILZT?  Mit Nenner.
+    """DOES THE MAXIMUM SEPARATE WHAT THE MEAN MERGES?  With denominator.
 
-    DIE FRAGE.  Der Entwurf behauptet: RMSD mittelt eine Ringfaltung weg, die groesste
-    Auslenkung nach Kabsch-Ausrichtung tut es nicht.  Die Rechnung dazu steht bei
-    `_kabsch_max_rmsd` (0,203 A Ringauslenkung, 13,2 % Ringanteil, 0,086 A RMSD gegen
-    0,33 A Maximum -- Faktor 4).  Eine Rechnung ist aber keine Messung: sie unterstellt
-    einen Ringanteil und eine Auslenkung, die an echten Mehrringmolekuelen anders
-    ausfallen koennen.  Dieser Test rechnet sie an gebauten Frames nach.
+    THE QUESTION.  The design claims: RMSD averages a ring fold away, the largest
+    displacement after Kabsch alignment does not.  The calculation for it is at
+    `_kabsch_max_rmsd` (0.203 A ring displacement, 13.2 % ring share, 0.086 A RMSD versus
+    0.33 A maximum -- factor 4).  But a calculation is not a measurement: it assumes
+    a ring share and a displacement that can come out differently on real multi-ring
+    molecules.  This test recomputes them on built frames.
 
-    GEMESSEN WIRD AN PAAREN, nicht an Frames.  "Trennschaerfe" ist eine Aussage ueber
-    zwei Zustaende, nicht ueber einen; der Nenner ist darum die Zahl der PAARE
-    faltungsverschiedener Frames, und der steht ueberall dabei.
+    MEASURED ON PAIRS, not on frames.  "Discrimination" is a statement about
+    two states, not about one; the denominator is therefore the number of PAIRS
+    of frames differing in fold, and it is stated everywhere.
 
-    ⚠ ZWEI VERGLEICHE, und nur der erste isoliert das INSTRUMENT:
-        (A) gleiche Schwelle, beide 0,15 -- misst allein den Unterschied zwischen
-            Maximum und Mittelwert.
-        (B) Maximum 0,15 gegen die im Projekt gefuehrte RMSD-Schwelle 0,30 -- misst,
-            was heute wirklich passiert, aber vermischt Instrument und Schwelle.
-      Wer nur (B) zeigt, kann jeden gewuenschten Effekt durch die Schwellenwahl
-      erzeugen.  Wer nur (A) zeigt, redet an der Praxis vorbei.
+    ⚠ TWO COMPARISONS, and only the first isolates the INSTRUMENT:
+        (A) same threshold, both 0.15 -- measures solely the difference between
+            maximum and mean.
+        (B) maximum 0.15 against the RMSD threshold 0.30 carried in the project -- measures
+            what really happens today, but mixes instrument and threshold.
+      Whoever shows only (B) can produce any desired effect through the choice of
+      threshold.  Whoever shows only (A) talks past practice.
 
-    ⚠ DIE GEGENRICHTUNG WIRD MITGEMESSEN, obwohl sie null sein MUSS: das Maximum ist
-      nie kleiner als das quadratische Mittel derselben Abweichungen.  Ein Paar, das
-      das Maximum verschmilzt, verschmilzt der RMSD bei gleicher Schwelle also
-      zwingend auch.  Faellt diese Zahl NICHT null aus, ist ein Rechenfehler im Spiel
-      und nicht ein Befund -- deshalb steht sie da.
+    ⚠ THE REVERSE DIRECTION IS MEASURED TOO, although it MUST be zero: the maximum is
+      never smaller than the root mean square of the same deviations.  A pair that
+      the maximum merges is therefore necessarily also merged by the RMSD at the same
+      threshold.  If this number does NOT come out zero, a calculation error is in play
+      and not a finding -- that is why it is there.
     """
     if not (_RDKIT and _np is not None):
         print("=== Trennschaerfe: RDKit fehlt, uebersprungen ==="); return 0
@@ -2655,7 +2655,7 @@ def selbsttest_trennschaerfe(proben=None, tol: float = 0.15,
              "DELFIN_FFFREE_PUCKER_XRD", "DELFIN_FFFREE_PUCKER_XRDTOL")}
     zeilen = []
     try:
-        # ===== 0 VORGABE AUS -> BYTE-IDENTISCH.  Gegen den Stand VOR dem 26.08. =======
+        # ===== 0 DEFAULT OFF -> BYTE-IDENTICAL.  Against the state BEFORE 26.08. ======
         for _k in _alt:
             _os.environ[_k] = "0"
         _os.environ["DELFIN_FFFREE_PUCKER_XRDTOL"] = "0.15"
@@ -2687,9 +2687,9 @@ def selbsttest_trennschaerfe(proben=None, tol: float = 0.15,
                 print("    ✓ 0 VORGABE UNVERAENDERT: Decalin %d Frames (Referenz %d), "
                       "mit und ohne Zaehler zeichengleich"
                       % (len(_aus), _REF_DECALIN_FRAMES))
-            # ... und der Beweis, dass die neuen Schalter ueberhaupt REICHWEITE haben.
-            # Ein Schalter, der nichts aendert, ist von einem nicht verdrahteten nicht
-            # zu unterscheiden -- in diesem Projekt schon fuenfmal an einem Tag passiert.
+            # ... and the proof that the new switches have any REACH at all.
+            # A switch that changes nothing cannot be told from one that is not
+            # wired up -- has happened five times in one day in this project.
             _os.environ["DELFIN_FFFREE_PUCKER_XRD"] = "1"
             _os.environ["DELFIN_FFFREE_PUCKER_XRDTOL"] = "0.15"
             _mit_xrd = generate(_mv, budget=48)
@@ -2705,10 +2705,10 @@ def selbsttest_trennschaerfe(proben=None, tol: float = 0.15,
                       "kein Fehler, aber es beweist an Decalin nichts.  Die Reichweite "
                       "muss dann aus den Proben unten kommen.")
 
-        # ===== 1 DIE PAARSTATISTIK ====================================================
-        _os.environ["DELFIN_FFFREE_PUCKER_FULL"] = "1"     # keine Kappe: alle Tiefen
-        _os.environ["DELFIN_FFFREE_PUCKER_DEFEKT"] = "1"   # (1) Defektfilter AN
-        _os.environ["DELFIN_FFFREE_PUCKER_XRD"] = "0"      # (2) hier NOCH nicht
+        # ===== 1 THE PAIR STATISTICS ==================================================
+        _os.environ["DELFIN_FFFREE_PUCKER_FULL"] = "1"     # no cap: all depths
+        _os.environ["DELFIN_FFFREE_PUCKER_DEFEKT"] = "1"   # (1) defect filter ON
+        _os.environ["DELFIN_FFFREE_PUCKER_XRD"] = "0"      # (2) NOT yet here
         print()
         print("    Kandidatenliste wie in der Vorgabe (SPACE=0), Kappe AUS, "
               "(1) Defektfilter AN, (2) noch AUS.")
@@ -2726,7 +2726,7 @@ def selbsttest_trennschaerfe(proben=None, tol: float = 0.15,
             except Exception as e:
                 print("    %-22s Aufbau fehlgeschlagen: %s" % (name, type(e).__name__))
                 continue
-            # Vorlauf: (b) VOR dem Bau kennen, sonst laeuft eine Probe stundenlang.
+            # Pre-pass: know (b) BEFORE the build, otherwise a sample runs for hours.
             try:
                 _rings = [_ring_order(m, set(r)) for r in m.GetRingInfo().AtomRings()
                           if _is_puckerable(m, r)]
@@ -2749,12 +2749,12 @@ def selbsttest_trennschaerfe(proben=None, tol: float = 0.15,
                 print("    %-22s generate() geplatzt: %s" % (name, type(e).__name__))
                 continue
             _dt = _time.perf_counter() - _t0
-            # Der GRUNDZUSTAND ist selbst ein Manifold-Eintrag und gehoert in die
-            # Paarmenge: eine Faltung, die vom Ausgangsframe nicht zu unterscheiden ist,
-            # ist genauso ein Doppel wie zwei ununterscheidbare Faltungen.
+            # The GROUND STATE is itself a manifold entry and belongs in the
+            # pair set: a fold that cannot be told from the starting frame
+            # is just as much a duplicate as two indistinguishable folds.
             _frames = [_xyz_schwer(_conf_to_xyz(m))] + [_xyz_schwer(x) for x, _l in _out]
             _frames = [P for P in _frames if P.size and P.shape == _frames[0].shape]
-            # Ringanteil an den schweren Atomen -- die Verduennung, um die es geht.
+            # Ring share of the heavy atoms -- the dilution at stake.
             try:
                 _ring_at = set()
                 for _r in m.GetRingInfo().AtomRings():
@@ -2787,12 +2787,12 @@ def selbsttest_trennschaerfe(proben=None, tol: float = 0.15,
                      len(_frames[0]) if _frames else 0,
                      int(_z.get("kollision", 0)), int(_z.get("winkel", 0)),
                      int(_z.get("bindung", 0)), int(_z.get("tfd_doppelt", 0))))
-            # ---- LAUF B: DIESELBE PROBE MIT (2) AN.  Das ist die Zahl fuer (c), und
-            #      sie wird GEBAUT und nicht aus Lauf A hochgerechnet: mit (2) an
-            #      entdoppelt schon `_ring_pucker_states` je Ring, das Kreuzprodukt (b)
-            #      ist also ein anderes.  Wer das aus den Frames von Lauf A greedy
-            #      nachbildet, misst den Nachbau -- der Fehler, den dieses Projekt
-            #      schon mehrfach als Befund durchgehen liess.
+            # ---- RUN B: THE SAME SAMPLE WITH (2) ON.  That is the number for (c), and
+            #      it is BUILT and not extrapolated from run A: with (2) on,
+            #      `_ring_pucker_states` already dedups per ring, so the cross product (b)
+            #      is a different one.  Whoever greedily re-creates that from the frames
+            #      of run A measures the re-creation -- the mistake this project
+            #      has already let pass as a finding several times.
             _os.environ["DELFIN_FFFREE_PUCKER_XRD"] = "1"
             _zb = _neuer_zaehler()
             _t1 = _time.perf_counter()
@@ -2824,19 +2824,19 @@ def selbsttest_trennschaerfe(proben=None, tol: float = 0.15,
             else:
                 _os.environ[k] = v
 
-    # ===== 1b DIE VERDUENNUNGSREIHE ================================================
-    # Getrennt gelaufen, getrennt berichtet -- sie beantwortet eine ANDERE Frage als
-    # die Kopplungsproben oben (dort: welche Paare trennt wer; hier: WOVON der
-    # Unterschied ueberhaupt abhaengt).  Zusammengeworfen waeren beide unlesbar.
+    # ===== 1b THE DILUTION SERIES ==================================================
+    # Run separately, reported separately -- it answers a DIFFERENT question than
+    # the coupling samples above (there: which pairs are separated by whom; here: WHAT the
+    # difference depends on at all).  Thrown together, both would be unreadable.
     verd, _verd_tfd = [], []
     _altv = {k: _os.environ.get(k) for k in
              ("DELFIN_FFFREE_PUCKER_FULL", "DELFIN_FFFREE_PUCKER_DEFEKT",
               "DELFIN_FFFREE_PUCKER_XRD", "DELFIN_FFFREE_PUCKER_SPACE",
               "DELFIN_FFFREE_PUCKER_NAMP", "DELFIN_FFFREE_PUCKER_NPHASE")}
     try:
-        # ⚠ RAUMGITTER AN, damit der EINE Ring genug Zustaende liefert -- eine
-        #   Paarstatistik aus drei Paaren waere keine.  Es ist derselbe Ring in allen
-        #   sechs Molekuelen, also aendert das an der unabhaengigen Variablen nichts.
+        # ⚠ SPACE GRID ON so that the ONE ring delivers enough states -- a
+        #   pair statistic from three pairs would be none.  It is the same ring in all
+        #   six molecules, so this changes nothing about the independent variable.
         _os.environ["DELFIN_FFFREE_PUCKER_SPACE"] = "1"
         _os.environ["DELFIN_FFFREE_PUCKER_NAMP"] = "2"
         _os.environ["DELFIN_FFFREE_PUCKER_NPHASE"] = "8"
@@ -2869,7 +2869,7 @@ def selbsttest_trennschaerfe(proben=None, tol: float = 0.15,
                 _hv = [i for i in range(m.GetNumAtoms())
                        if m.GetAtomWithIdx(i).GetSymbol() != "H"]
                 _rp = [k for k, i in enumerate(_hv) if i in _ring_at]
-                # frei = der Ring und SEINE Wasserstoffe; alles andere steht fest.
+                # free = the ring and ITS hydrogens; everything else is fixed.
                 _frei = set(_ring_at)
                 for _i in list(_ring_at):
                     for _nb in m.GetAtomWithIdx(int(_i)).GetNeighbors():
@@ -2881,27 +2881,27 @@ def selbsttest_trennschaerfe(proben=None, tol: float = 0.15,
                       % (name, type(e).__name__)); continue
             if not _ring_at or not _hv:
                 print("      %-24s kein faltbarer Ring" % name); continue
-            # ===== TFD MITTELT AUCH -- UND ES IST DAS INSTRUMENT IM EINSATZ ==========
+            # ===== TFD AVERAGES TOO -- AND IT IS THE INSTRUMENT IN USE ================
             #
-            # Diese Reihe hat es beim Bauen selbst aufgedeckt: Anthracen und Tetracen
-            # lieferten NULL Faltungen, und zwar nicht am Realismustor, sondern schon
-            # bei den Zustaenden JE RING -- (b) war 0, das Kreuzprodukt also 1x nichts.
-            # Der Ring ist derselbe wie im Cyclohexylbenzol, das 55 Paare liefert.
+            # This series uncovered it itself during the build: anthracene and tetracene
+            # delivered ZERO folds, and not at the realism gate but already
+            # at the states PER RING -- (b) was 0, so the cross product was 1x nothing.
+            # The ring is the same as in cyclohexylbenzene, which delivers 55 pairs.
             #
-            # Die Ursache ist dieselbe Krankheit eine Ebene hoeher: TFD vergleicht ALLE
-            # Torsionen des Molekuels und MITTELT ueber sie.  Ein grosses starres
-            # Geruest bringt viele Torsionen mit, die sich nicht aendern -- der Beitrag
-            # der sechs Ringtorsionen wird durch sie geteilt und faellt unter die
-            # Schwelle 0,05.  Die Faltung verschwindet im Mittel, genau wie beim RMSD.
+            # The cause is the same disease one level up: TFD compares ALL
+            # torsions of the molecule and AVERAGES over them.  A large rigid
+            # scaffold brings along many torsions that do not change -- the contribution
+            # of the six ring torsions is divided by them and falls below the
+            # threshold 0.05.  The fold vanishes in the mean, exactly as with RMSD.
             #
-            # ⚠ DAS IST KEIN NEBENBEFUND.  TFD ist das Entdopplungsmass, das HEUTE im
-            #   Bau laeuft.  Wenn es mit der Ligandgroesse unschaerfer wird, dann
-            #   verliert der Manifold Faltungen genau bei den Systemen, um die es geht
-            #   -- grosse Liganden, kleiner Ringanteil.
-            # Gemessen wird das mit dem einzigen Mittel, das die beiden Ursachen trennt:
-            # dieselben Kandidaten, zwei Schwellen.  Steigt (a) bei 0,005 stark an, war
-            # es die Schwelle (also die Verduennung); bleibt es gleich, sind die
-            # Zustaende wirklich nicht da.
+            # ⚠ THIS IS NOT A SIDE FINDING.  TFD is the dedup measure that runs in the
+            #   build TODAY.  If it gets blurrier with ligand size, then
+            #   the manifold loses folds exactly on the systems that matter
+            #   -- large ligands, small ring share.
+            # It is measured with the only means that separates the two causes:
+            # the same candidates, two thresholds.  If (a) rises sharply at 0.005, it was
+            # the threshold (i.e. the dilution); if it stays the same, the
+            # states are really not there.
             try:
                 _a05 = len(_ring_pucker_states(m, _ring_ord, _fr, 0.05))
                 _a005 = len(_ring_pucker_states(m, _ring_ord, _fr, 0.005))
@@ -2916,9 +2916,9 @@ def selbsttest_trennschaerfe(proben=None, tol: float = 0.15,
             _frames = [_xyz_schwer(_conf_to_xyz(m))] + [_xyz_schwer(x) for x, _l in _out]
             _frames = [P for P in _frames if P.size and P.shape == _frames[0].shape]
             if len(_frames) < 2:
-                # ⚠ EINE NULL BEKOMMT IHREN GRUND.  "erzeugt und verworfen" sieht von
-                #   aussen genauso aus wie "nie gebaut" -- der Fehlschluss, der am
-                #   14.08. den Feuerzensus wertlos gemacht hat.
+                # ⚠ A ZERO GETS ITS REASON.  "generated and rejected" looks from
+                #   outside exactly like "never built" -- the fallacy that on
+                #   14.08. rendered the firing census worthless.
                 print("      %-24s %6d %6.1f%% %7d %7d      -- nur %d Frame(e), (b)=%d"
                       % (name, len(_hv),
                          100.0 * len(_rp) / float(len(_hv)) if _hv else 0.0,
@@ -2937,13 +2937,13 @@ def selbsttest_trennschaerfe(proben=None, tol: float = 0.15,
                     _a = float(_v.max())
                     _b = float(_np.sqrt(float((_v ** 2).mean())))
                     _mx.append(_a); _rm.append(_b); _pa.append((_a, _b))
-                    # ⚠ EINFROSTPROBE OHNE KABSCH, und das ist der Punkt.  Beide Frames
-                    #   stehen im SELBEN Bezugssystem -- es wurde nichts neu eingebettet,
-                    #   nur relaxiert.  "Steht das Geruest?" ist damit eine Frage an die
-                    #   ROHEN Koordinaten.  Nach Kabsch waere sie unbeantwortbar: die
-                    #   Ausrichtung minimiert das Gesamt-RMSD und verteilt den Fehler auf
-                    #   ALLE Atome, also auch auf festgehaltene -- eine erste Fassung hat
-                    #   genau daraus 1,4 A Geruestbewegung gemeldet, die es nicht gab.
+                    # ⚠ FREEZE CHECK WITHOUT KABSCH, and that is the point.  Both frames
+                    #   stand in the SAME reference frame -- nothing was re-embedded,
+                    #   only relaxed.  "Does the scaffold stand?" is thus a question to the
+                    #   RAW coordinates.  After Kabsch it would be unanswerable: the
+                    #   alignment minimises the total RMSD and distributes the error over
+                    #   ALL atoms, including held ones -- a first version reported
+                    #   exactly from that 1.4 A of scaffold motion that did not exist.
                     if _nicht_ring:
                         _roh = _np.linalg.norm(_frames[_i][_nicht_ring]
                                                - _frames[_j][_nicht_ring], axis=1)
@@ -2964,7 +2964,7 @@ def selbsttest_trennschaerfe(proben=None, tol: float = 0.15,
             else:
                 _os.environ[k] = v
     if verd:
-        # ---- PRUEFUNG: HAT DAS EINFRIEREN GEHALTEN?  Roh, ohne Ausrichtung.
+        # ---- CHECK: DID THE FREEZING HOLD?  Raw, without alignment.
         _gmax = max(r["geruest"] for r in verd)
         if _gmax < 1e-6:
             print("      ✓ EINFROSTPROBE (rohe Koordinaten): groesste Geruestauslenkung "
@@ -2975,7 +2975,7 @@ def selbsttest_trennschaerfe(proben=None, tol: float = 0.15,
                   "Reihe misst NICHT nur Verduennung." % _gmax)
             fehler += 1
     if _verd_tfd:
-        # ---- DAS EIGENTLICHE ERGEBNIS DIESER REIHE, und es war nicht das gesuchte.
+        # ---- THE ACTUAL RESULT OF THIS SERIES, and it was not the one sought.
         print()
         print("      ===== TFD MITTELT GENAUSO -- und TFD laeuft heute im Bau =====")
         for r in _verd_tfd:
@@ -3032,25 +3032,25 @@ def selbsttest_trennschaerfe(proben=None, tol: float = 0.15,
           % (_B, _N, 100.0 * _B / _N if _N else 0.0))
     print("      GEGENRICHTUNG (muss 0 sein, das Maximum ist nie kleiner als das "
           "quadratische Mittel): %d" % _G)
-    # ---- DIE ZAHL, DIE FUER ECHTE SYSTEME GILT.
-    # ⚠ DIE PROBEN OBEN HABEN 86 BIS 100 %% RINGANTEIL -- der Verduennungseffekt kommt
-    #   darin per Konstruktion nicht vor.  Was sie liefern, ist die UNTERGRENZE der
-    #   Trennschaerfe.  Ein reales DELFIN-System hat einen Metallkern, aromatische
-    #   Rueckgrate und Substituenten; die Vorgabe nennt 13,2 % Ringanteil.
-    #   Angewandt wird das oben an vier Punkten BESTAETIGTE Gesetz: das Maximum bleibt,
-    #   der RMSD faellt wie sqrt(Anteil).  Kein neues Molekuel, keine Kurve verlaengert
-    #   -- dieselben gemessenen Paare, mit dem Nenner eines realen Systems.
-    # ---- DER RINGANTEIL IST DIE UNABHAENGIGE VARIABLE, und beide Punkte sind GEMESSEN.
-    # ⚠ HIER STAND EINMAL EINE HOCHRECHNUNG AUF 13,2 % -- zweimal, und beide Male
-    #   falsch.  (i) "RMSD faellt wie sqrt(Ringanteil)" gilt nur bei IDENTISCHER
-    #   Ausrichtung; Kabsch richtet aber aus und verteilt den Fehler um.  (ii) Das Paar
-    #   mit starren Kopien aufzufuellen und neu zu ueberlagern hat den Fehler nur
-    #   verschoben: das Geruest lag auf dem Molekuel und band die Ausrichtung so hart,
-    #   dass das Maximum von 0,94 auf 3,95 A stieg -- gemessen wurde der Wechsel des
-    #   AUSRICHTUNGSREGIMES, nicht die Verduennung.  Beide Versuche sind entfernt.
-    #   Was bleibt, sind zwei GEMESSENE Punkte an echten Molekuelen; die Reihe 1b
-    #   reicht nicht bis 13,2 %, und der Grund dafuer ist selbst der Befund (TFD
-    #   liefert dort keine Frames mehr).
+    # ---- THE NUMBER THAT APPLIES TO REAL SYSTEMS.
+    # ⚠ THE SAMPLES ABOVE HAVE 86 TO 100 %% RING SHARE -- the dilution effect does
+    #   not occur in them by construction.  What they deliver is the LOWER BOUND of the
+    #   discriminating power.  A real DELFIN system has a metal core, aromatic
+    #   backbones and substituents; the premise names 13.2 % ring share.
+    #   What is applied is the law CONFIRMED above at four points: the maximum stays,
+    #   the RMSD falls like sqrt(share).  No new molecule, no curve extended
+    #   -- the same measured pairs, with the denominator of a real system.
+    # ---- THE RING SHARE IS THE INDEPENDENT VARIABLE, and both points are MEASURED.
+    # ⚠ AN EXTRAPOLATION TO 13.2 % ONCE STOOD HERE -- twice, and wrong both times.
+    #   (i) "RMSD falls like sqrt(ring share)" holds only under IDENTICAL
+    #   alignment; Kabsch, however, aligns and redistributes the error.  (ii) Padding
+    #   the pair with rigid copies and re-superimposing only shifted the error:
+    #   the scaffold lay on the molecule and bound the alignment so hard
+    #   that the maximum rose from 0.94 to 3.95 A -- what was measured was the change
+    #   of the ALIGNMENT REGIME, not the dilution.  Both attempts are removed.
+    #   What remains are two MEASURED points on real molecules; series 1b
+    #   does not reach 13.2 %, and the reason for that is itself the finding (TFD
+    #   no longer delivers any frames there).
     _vp2 = [p for r in verd for p in r["paare"]]
     if _vp2:
         _vA2 = sum(1 for a, b in _vp2 if b < tol <= a)
@@ -3067,10 +3067,10 @@ def selbsttest_trennschaerfe(proben=None, tol: float = 0.15,
     if _G:
         print("      ✗ GEGENRICHTUNG NICHT NULL -- Rechenfehler, kein Befund."); fehler += 1
 
-    # ---- 2 WAS DAS FUER DIE ZAHL DER MANIFOLD-EINTRAEGE HEISST.
-    # ⚠ Eine Prozentzahl ueber Paare sagt noch nicht, wie viele EINTRAEGE entstehen:
-    #   Entdopplung ist gierig und transitiv-unsauber, drei paarweise knappe Frames
-    #   koennen zu einem oder zu zweien werden.  Also nachzaehlen statt hochrechnen.
+    # ---- 2 WHAT THAT MEANS FOR THE NUMBER OF MANIFOLD ENTRIES.
+    # ⚠ A percentage over pairs does not yet say how many ENTRIES arise:
+    #   dedup is greedy and not cleanly transitive, three pairwise-close frames
+    #   can become one or two.  So count instead of extrapolating.
     print()
     print("    ===== 2 EINTRAEGE JE MOLEKUEL, je Kriterium =====")
     print("      %-22s %7s %8s %8s %8s %8s"
@@ -3098,16 +3098,16 @@ def selbsttest_trennschaerfe(proben=None, tol: float = 0.15,
               "geloescht %d." % (rmsd_projekt, _sum["r_proj"], _sum["max"],
                                  100.0 * _sum["r_proj"] / _sum["max"],
                                  _sum["max"] - _sum["r_proj"]))
-    # ---- 3 WAS (1)+(2) DIE KOMBINATORIK KOSTEN -- ODER SPAREN.
-    # ⚠ DIE ENTSCHEIDENDE UNTERSCHEIDUNG, und sie ist leicht zu verfehlen: (1) und (2)
-    #   koennen an ZWEI Stellen wirken, und nur eine davon spart Rechenzeit.
-    #     JE RING  (`_ring_pucker_states`)  -> senkt (a), also (b) POTENZIERT: der
-    #                                          einzige Ort, an dem etwas billiger wird.
-    #     JE KOMBINATION (`generate`)       -> senkt nur die Zahl der EINTRAEGE.  Der
-    #                                          Relax ist da schon bezahlt; das Tor
-    #                                          waehlt aus, es spart nichts.
-    #   Ein Filter, der nur unten wirkt, macht die vollstaendige Faltung NICHT
-    #   bezahlbar, egal wie scharf er ist.  Darum stehen (a) und (b) hier nebeneinander.
+    # ---- 3 WHAT (1)+(2) COST THE COMBINATORICS -- OR SAVE.
+    # ⚠ THE DECISIVE DISTINCTION, and it is easy to miss: (1) and (2)
+    #   can act at TWO places, and only one of them saves compute time.
+    #     PER RING  (`_ring_pucker_states`)  -> lowers (a), hence (b) RAISED TO A POWER:
+    #                                           the only place where anything gets cheaper.
+    #     PER COMBINATION (`generate`)       -> lowers only the number of ENTRIES.  The
+    #                                           relax is already paid for there; the gate
+    #                                           selects, it saves nothing.
+    #   A filter that acts only at the bottom does NOT make the complete fold
+    #   affordable, no matter how sharp it is.  That is why (a) and (b) stand side by side here.
     print()
     print("    ===== 3 KOMBINATORIK MIT (1)+(2) -- (a) je Ring und (b) das Produkt =====")
     print("      %-22s %-12s %-12s %8s %8s %7s %7s"
@@ -3121,12 +3121,12 @@ def selbsttest_trennschaerfe(proben=None, tol: float = 0.15,
                  "x".join(str(v) for v in r["zustaende2"]) or "-",
                  r["b"], r["b2"], r["d"], r["d2"]))
         _sb += r["b"]; _sb2 += r["b2"]; _sd += r["d"]; _sd2 += r["d2"]
-        # ⚠ EINE NULL IN (d) MUSS IHREN GRUND NENNEN, sonst liest sie sich wie ein
-        #   Defekt.  Bei Norbornan ist sie das GEWOLLTE Ergebnis: seine groesste
-        #   Faltungsauslenkung liegt bei 0,139 A, also UNTER der Aufloesungsschwelle.
-        #   Ein starr verbrueckter Bicyclus HAT keine zweite Faltung -- (2) sagt genau
-        #   das, und der Manifold behaelt den Grundzustand (der nie durch dieses Tor
-        #   geht).  Aus Sicht des Kristallographen ist ein Eintrag richtig, nicht drei.
+        # ⚠ A ZERO IN (d) MUST NAME ITS REASON, otherwise it reads like a
+        #   defect.  For norbornane it is the INTENDED result: its largest
+        #   fold displacement lies at 0.139 A, i.e. BELOW the resolution threshold.
+        #   A rigidly bridged bicycle HAS no second fold -- (2) says exactly
+        #   that, and the manifold keeps the ground state (which never passes through this
+        #   gate).  From the crystallographer's point of view one entry is right, not three.
         if r["d"] > 0 and r["d2"] == 0:
             print("        %-20s (d) faellt auf 0: alle %d Faltungen liegen unter %.2f A "
                   "Maximalauslenkung -- ununterscheidbar vom Grundzustand, EIN Eintrag."
@@ -3138,11 +3138,11 @@ def selbsttest_trennschaerfe(proben=None, tol: float = 0.15,
               % (_sb, _sb2, 100.0 * (_sb2 - _sb) / _sb))
         print("      ⇒ (d), die EINTRAEGE und damit das ERGEBNIS: %d -> %d = %+.1f %%."
               % (_sd, _sd2, 100.0 * (_sd2 - _sd) / max(1, _sd)))
-        # ⚠ PARTITION, KEIN MITTELWERT.  Ein Gesamtprozentsatz ueber acht Proben kann
-        #   nicht sagen, ob (2) ueberall ein bisschen spart oder bei zwei Proben viel
-        #   und bei sechs gar nichts -- und das sind voellig verschiedene Mechanismen.
-        #   Der zweite Fall waere KEIN allgemeiner Kostenhebel, sondern ein Befund
-        #   ueber eine Klasse.  Geteilt wird nach der Zahl der Proben mit Wirkung.
+        # ⚠ PARTITION, NOT AN AVERAGE.  An overall percentage over eight samples cannot
+        #   say whether (2) saves a little everywhere or a lot on two samples
+        #   and nothing at all on six -- and those are completely different mechanisms.
+        #   The second case would be NO general cost lever, but a finding
+        #   about a class.  The split is by the number of samples with an effect.
         _wirkt = [r for r in zeilen if r["b2"] < r["b"]]
         _still = [r for r in zeilen if r["b2"] >= r["b"]]
         print("      ⇒ PARTITION: (2) senkt (b) bei %d von %d Proben (%s); bei den "
@@ -3176,12 +3176,12 @@ def selbsttest_trennschaerfe(proben=None, tol: float = 0.15,
             print("        ✓ Das NEUE Bindungstor feuert %d mal -- es ist verdrahtet und "
                   "hat Reichweite; es sieht genau den Bruch, den das Selbstgate per "
                   "Konstruktion fuer 'nicht gebunden' haelt." % _sbi)
-    # ---- 4 BRAUCHT ES STUFE (3), DIE ENERGIE?
-    # ⚠ DIE FRAGE IST NICHT "waere Energie schoen", sondern "loest sie das Problem, das
-    #   (1) und (2) offen lassen".  Und das Problem ist der PREIS (b), nicht die Zahl
-    #   der Eintraege (d).  Eine Energie wird -- wie jedes andere Tor hier -- NACH dem
-    #   Relax ausgewertet; sie kann (b) also gar nicht senken.  Ein Mechanismus, der
-    #   den Engpass per Konstruktion nicht erreicht, wird nicht gebaut, sondern benannt.
+    # ---- 4 IS STAGE (3), THE ENERGY, NEEDED?
+    # ⚠ THE QUESTION IS NOT "would energy be nice", but "does it solve the problem that
+    #   (1) and (2) leave open".  And the problem is the PRICE (b), not the number
+    #   of entries (d).  An energy is -- like every other gate here -- evaluated AFTER the
+    #   relax; so it cannot lower (b) at all.  A mechanism that
+    #   by construction does not reach the bottleneck is not built, but named.
     print()
     print("    ===== 4 BRAUCHT ES DIE ENERGIE? =====")
     print("      Der Engpass ist (b) = %d Kombinationen, jede mit einem Relax BEVOR "
@@ -3197,21 +3197,21 @@ def selbsttest_trennschaerfe(proben=None, tol: float = 0.15,
     return 1 if fehler else 0
 
 
-# Die unsubstituierten Kalibrierringe.  Sie sind der EINZIGE Ort, an dem sich die
-# Bedeutung der Schwelle pruefen laesst: dort hat das Molekuel kein Geruest, das
-# verduennen koennte, und beide Masse muessen deshalb DASSELBE sagen.  Faellt das aus,
-# ist die ringlokale Fassung nicht "anders geeicht", sondern ein anderes Instrument.
+# The unsubstituted calibration rings.  They are the ONLY place where the
+# meaning of the threshold can be checked: there the molecule has no scaffold that
+# could dilute, and both measures must therefore say THE SAME.  If that fails,
+# the ring-local version is not "calibrated differently", but a different instrument.
 _LOKAL_KALIBER = (("Cyclopentan", "C1CCCC1"), ("Cyclohexan", "C1CCCCC1"),
                   ("Cycloheptan", "C1CCCCCC1"), ("Cyclooctan", "C1CCCCCCC1"))
 
 
 def _lokal_ringlage(mol):
-    """(erster faltbarer Ring in Ringreihenfolge, Ringatome, eingefrorenes Geruest).
+    """(first puckerable ring in ring order, ring atoms, frozen scaffold).
 
-    Dieselbe Vorbereitung wie in der Verduennungsreihe von `selbsttest_trennschaerfe`
-    -- ⚠ und das ist der Zweck: die Reparatur muss an DERSELBEN Messung geprueft
-    werden, die den Fehler gezeigt hat.  Eine zweite, leicht andere Vorbereitung
-    vergliche zwei Messungen statt zweier Masse.
+    The same preparation as in the dilution series of `selbsttest_trennschaerfe`
+    -- ⚠ and that is the purpose: the repair must be checked on THE SAME measurement
+    that showed the error.  A second, slightly different preparation
+    would compare two measurements instead of two measures.
     """
     ring_at, ring_ord = set(), []
     for r in mol.GetRingInfo().AtomRings():
@@ -3230,35 +3230,35 @@ def _lokal_ringlage(mol):
 
 
 def selbsttest_tfd_lokal() -> int:
-    """FAEHRT DIE VERDUENNUNGSTABELLE NACH -- global gegen ringlokal, dieselben Proben.
+    """RE-RUNS THE DILUTION TABLE -- global against ring-local, the same samples.
 
-    VORGESCHICHTE.  `selbsttest_trennschaerfe` hat beim Bauen einen Befund abgeworfen,
-    den es gar nicht gesucht hatte: derselbe Cyclohexanring liefert an wachsendem
-    starrem Acen immer weniger Zustaende (11 -> 6 -> 1 -> 1 bei TFD 0,05), und bei
-    0,005 kommen sie zurueck (62 -> 49 -> 23 -> 10).  Die Faltungen sind also DA und
-    werden vom Entdopplungsmass verschmolzen.
+    HISTORY.  `selbsttest_trennschaerfe` threw off a finding while being built
+    that it had not been looking for at all: the same cyclohexane ring yields fewer
+    and fewer states on a growing rigid acene (11 -> 6 -> 1 -> 1 at TFD 0.05), and at
+    0.005 they come back (62 -> 49 -> 23 -> 10).  So the folds ARE THERE and
+    are merged by the dedup measure.
 
-    DIESER TEST BEANTWORTET VIER FRAGEN, und zwar in dieser Reihenfolge, weil jede
-    naechste sinnlos waere, wenn die davor ausfaellt:
-        0  Ist der Vorgabepfad unveraendert?          (Gitter, Decalin)
-        1  WORAN liegt die Verduennung genau?         (RDKits Gewichte, gerechnet)
-        2  Ueberlebt die Symmetriefaltung?            (unsubstituierter Ring)
-        3  Verschwindet der Gradient?                 (die vier Acene)
+    THIS TEST ANSWERS FOUR QUESTIONS, and in this order, because each
+    next one would be pointless if the one before fails:
+        0  Is the default path unchanged?             (grid, decalin)
+        1  WHAT exactly causes the dilution?          (RDKit's weights, computed)
+        2  Does the symmetry folding survive?         (unsubstituted ring)
+        3  Does the gradient vanish?                  (the four acenes)
 
-    ⚠ SCHRITT 2 IST DAS ABBRUCHKRITERIUM, nicht Schritt 3.  Am 26.08. ist schon ein
-      Ersatz fuer TFD daran gestorben, dass er die Molekuelsymmetrie nicht mitfaltete
-      -- n=5 ging von 3,3,3 auf 9,13,14.  Eine Fassung, die den Gradienten beseitigt
-      und dabei den Fuenfring aufsplittet, ist KEINE Reparatur, sondern derselbe
-      Fehlschluss mit einem anderen Vorzeichen.
+    ⚠ STEP 2 IS THE ABORT CRITERION, not step 3.  On 26.08. a replacement for TFD
+      already died because it did not fold in the molecular symmetry
+      -- n=5 went from 3,3,3 to 9,13,14.  A version that removes the gradient
+      and in doing so splits the five-ring is NOT a repair, but the same
+      fallacy with a different sign.
 
-    Aufruf:  python -m delfin.manta._ring_pucker tfdlokal
+    Invocation:  python -m delfin.manta._ring_pucker tfdlokal
     """
     if not (_RDKIT and _np is not None):
         print("=== Ringlokale TFD: RDKit fehlt, uebersprungen ==="); return 0
     from rdkit.Chem import TorsionFingerprints as _TF
     fehler = 0
-    # ⚠ VOR dem `try`, nicht darin.  Platzt Schritt 0, liefe sonst das Urteil unten in
-    #   einen NameError -- ein Absturz, der wie "kein Befund" aussieht.
+    # ⚠ BEFORE the `try`, not inside it.  If step 0 blows up, the verdict below would
+    #   otherwise run into a NameError -- a crash that looks like "no finding".
     _reihe = []
     print("=== Selbsttest: die ringlokale TFD ===")
     _alt = {k: _os.environ.get(k) for k in
@@ -3269,7 +3269,7 @@ def selbsttest_tfd_lokal() -> int:
              "DELFIN_FFFREE_PUCKER_TFD_LOCAL", "DELFIN_FFFREE_PUCKER_TFD_LOCAL_KOMBI",
              "DELFIN_FFFREE_PUCKER_TFD_LOCAL_THR")}
     try:
-        # ===== 0 VORGABE AUS -> BYTE-IDENTISCH =======================================
+        # ===== 0 DEFAULT OFF -> BYTE-IDENTICAL =======================================
         for _k in _alt:
             _os.environ[_k] = "0"
         _os.environ["DELFIN_FFFREE_PUCKER_TFD_LOCAL_THR"] = ""
@@ -3295,12 +3295,12 @@ def selbsttest_tfd_lokal() -> int:
             else:
                 print("  ✓ 0 VORGABE UNVERAENDERT: Decalin %d Frames (Referenz %d)"
                       % (len(_aus), _REF_DECALIN_FRAMES))
-            # ⚠ EIN SCHALTER OHNE REICHWEITE IST VON EINEM UNVERDRAHTETEN NICHT ZU
-            #   UNTERSCHEIDEN.  In diesem Projekt fuenfmal an einem Tag passiert --
-            #   darum steht die Gegenprobe direkt neben der Identitaet.
-            # ⚠ DIE BEIDEN SCHALTER EINZELN, nie zusammen.  Ihre Wirkungen haben
-            #   entgegengesetztes Vorzeichen; gemeinsam gemessen ergaebe die Summe eine
-            #   Zahl, aus der sich kein Anteil mehr zurueckrechnen laesst.
+            # ⚠ A SWITCH WITHOUT REACH CANNOT BE DISTINGUISHED FROM AN UNWIRED
+            #   ONE.  Happened five times in one day in this project --
+            #   that is why the counter-check stands right next to the identity.
+            # ⚠ THE TWO SWITCHES INDIVIDUALLY, never together.  Their effects have
+            #   opposite signs; measured jointly, the sum would give a
+            #   number from which no share can be computed back.
             _za = _neuer_zaehler()
             generate(_mv, budget=48, _zaehler=_za)
             _os.environ["DELFIN_FFFREE_PUCKER_TFD_LOCAL"] = "1"
@@ -3325,11 +3325,11 @@ def selbsttest_tfd_lokal() -> int:
                 print("      ✗ NICHT ZURUECKSCHALTBAR -- ein Schalter hinterlaesst Zustand")
                 fehler += 1
             if len(_kom) == len(_aus):
-                # ⚠ EIN SCHALTER OHNE GEMESSENE WIRKUNG WIRD ALS SOLCHER BENANNT.  Auf
-                #   Decalin ist die Null sogar VORHERSAGBAR -- zwei gleichwertige Ringe,
-                #   keine acyclische Torsion, Gewichte 1:1: global und ringlokal rechnen
-                #   dort buchstaeblich dieselbe Zahl.  Das erklaert die Null, es belegt
-                #   den Schalter aber nicht.  Wer ihn benutzt, misst ihn zuerst.
+                # ⚠ A SWITCH WITHOUT A MEASURED EFFECT IS NAMED AS SUCH.  On
+                #   decalin the zero is even PREDICTABLE -- two equivalent rings,
+                #   no acyclic torsion, weights 1:1: global and ring-local compute
+                #   literally the same number there.  That explains the zero, but it does
+                #   not substantiate the switch.  Whoever uses it measures it first.
                 print("      ⚠ DER KOMBINATIONSSCHALTER ist auf Decalin wirkungslos, und "
                       "das ist vorhersagbar: zwei gleichwertige Ringe, keine acyclische "
                       "Torsion, Gewichte 1:1 -- beide Masse rechnen dieselbe Zahl.  Er "
@@ -3339,19 +3339,19 @@ def selbsttest_tfd_lokal() -> int:
                 print("      ⚠ BEIDE ohne Wirkung -- die Reichweite muss dann aus "
                       "Schritt 3 kommen.")
             else:
-                # ⚠ HIER FAELLT DIE ZAHL, WAEHREND SIE IN SCHRITT 3 STEIGT, und das ist
-                #   kein Widerspruch, sondern DIESELBE Aussage von zwei Seiten.
-                #   Ringlokal heisst "nur die Torsion DIESES Rings" -- und das entfernt
-                #   ZWEI Verunreinigungen auf einmal:
-                #     (a) das starre Geruest im NENNER  -> Acene, Zustaende STEIGEN
-                #     (b) die Bewegung des NACHBARRINGS -> Decalin, Zustaende FALLEN
-                #   Bei (b) zaehlte der globale Vergleich Zustaende von Ring 1 als
-                #   Zustaende von Ring 0 mit; das Kreuzprodukt zaehlt sie DANACH noch
-                #   einmal.  Decalin hat kein Geruest zum Verduennen (Ringanteil 100 %,
-                #   keine acyclische Torsion, Gewichte 1:1), also bleibt hier nur (b).
-                # ⚠ NICHT BEWIESEN ist damit, dass die entfallenen Frames Doppelgaenger
-                #   WAREN -- gezeigt ist nur, WO die Zahl sich aendert.  Wer das Urteil
-                #   will, braucht das Auge, nicht diesen Test.
+                # ⚠ HERE THE NUMBER FALLS, WHILE IN STEP 3 IT RISES, and that is
+                #   no contradiction, but THE SAME statement from two sides.
+                #   Ring-local means "only the torsion of THIS ring" -- and that removes
+                #   TWO contaminations at once:
+                #     (a) the rigid scaffold in the DENOMINATOR -> acenes, states RISE
+                #     (b) the motion of the NEIGHBOURING RING -> decalin, states FALL
+                #   In (b) the global comparison counted states of ring 1 as
+                #   states of ring 0; the cross product counts them AFTERWARDS once
+                #   more.  Decalin has no scaffold to dilute (ring share 100 %,
+                #   no acyclic torsion, weights 1:1), so only (b) remains here.
+                # ⚠ NOT PROVEN by this is that the dropped frames WERE
+                #   duplicates -- shown is only WHERE the number changes.  Whoever wants
+                #   the verdict needs the eye, not this test.
                 print("      ⚠ HIER FAELLT die Zahl, in Schritt 3 STEIGT sie.  Dieselbe "
                       "Aussage von zwei Seiten: ringlokal entfernt das Geruest aus dem "
                       "Nenner (Acene: mehr Zustaende) UND die Bewegung des Nachbarrings "
@@ -3359,10 +3359,10 @@ def selbsttest_tfd_lokal() -> int:
                       "kein Geruest -- Ringanteil 100 %, keine acyclische Torsion, "
                       "Gewichte 1:1 -- also bleibt hier nur der zweite Anteil.")
 
-        # ===== 1 WORAN DIE VERDUENNUNG LIEGT -- RDKITS EIGENE GEWICHTE ================
-        # ⚠ GERECHNET, NICHT GESCHAETZT.  `CalculateTFD` bildet sum(d_i*w_i)/sum(w_i).
-        #   Bewegt sich nur EIN Ring, bleibt d_Ring * w_Ring / sum(w) -- der Quotient
-        #   w_Ring/sum(w) IST also der Verduennungsfaktor, ohne jede Modellannahme.
+        # ===== 1 WHAT CAUSES THE DILUTION -- RDKIT'S OWN WEIGHTS =====================
+        # ⚠ COMPUTED, NOT ESTIMATED.  `CalculateTFD` forms sum(d_i*w_i)/sum(w_i).
+        #   If only ONE ring moves, d_ring * w_ring / sum(w) remains -- the quotient
+        #   w_ring/sum(w) therefore IS the dilution factor, without any model assumption.
         print()
         print("  ===== 1 DER VERDUENNUNGSFAKTOR STEHT IN RDKITS GEWICHTEN =====")
         print("    %-24s %7s %6s %6s %10s %12s"
@@ -3408,10 +3408,10 @@ def selbsttest_tfd_lokal() -> int:
                   "Torsionseintrag, Gewichtsanteil 1,0000 -- dort gibt es per "
                   "Konstruktion nichts zu verduennen.")
 
-        # ===== 2 SYMMETRIEFALTUNG UND SCHWELLE AUF DEM KALIBERRING ====================
-        # (2a) DIE ZAHLEN SELBST: sind global und ringlokal auf dem unsubstituierten
-        #      Ring DASSELBE?  Nicht "aehnlich" -- die Herleitung behauptet Gleichheit,
-        #      also wird Gleichheit gemessen, mit Nenner.
+        # ===== 2 SYMMETRY FOLDING AND THRESHOLD ON THE CALIBRATION RING ===============
+        # (2a) THE NUMBERS THEMSELVES: are global and ring-local THE SAME on the
+        #      unsubstituted ring?  Not "similar" -- the derivation claims equality,
+        #      so equality is measured, with a denominator.
         print()
         print("  ===== 2 SYMMETRIEFALTUNG UND SCHWELLE (unsubstituierte Ringe) =====")
         _paare_ges, _dmax_ges = 0, 0.0
@@ -3447,7 +3447,7 @@ def selbsttest_tfd_lokal() -> int:
                   "in Schritt 1 ist falsch." % (_dmax_ges, _paare_ges))
             fehler += 1
 
-        # (2b) DIE ZUSTANDSZAHL -- der Test, an dem der CP-Ersatz gestorben ist.
+        # (2b) THE STATE COUNT -- the test on which the CP replacement died.
         _os.environ["DELFIN_FFFREE_PUCKER_SPACE"] = "1"
         _os.environ["DELFIN_FFFREE_PUCKER_NAMP"] = "2"
         _os.environ["DELFIN_FFFREE_PUCKER_NPHASE"] = "8"
@@ -3492,7 +3492,7 @@ def selbsttest_tfd_lokal() -> int:
                   "Zustaende -- derselbe Fehlschluss wie beim CP-Ersatz." % _n5)
             fehler += 1
 
-        # ===== 3 DIE VERDUENNUNGSREIHE NACHGEFAHREN ==================================
+        # ===== 3 THE DILUTION SERIES RE-RUN ==========================================
         print()
         print("  ===== 3 DIESELBE TABELLE, GLOBAL GEGEN RINGLOKAL =====")
         print("    Geruest EINGEFROREN, Raumgitter NAMP=2 NPHASE=8 -- exakt die "
@@ -3532,13 +3532,13 @@ def selbsttest_tfd_lokal() -> int:
             else:
                 _os.environ[_k] = _v
 
-    # ---- DAS URTEIL.  ⚠ ES DARF AUCH GEGEN DIE REPARATUR AUSFALLEN -- eine ringlokale
-    #      Fassung, die den Gradienten NICHT beseitigt, ist ein Befund und kein Fehler.
+    # ---- THE VERDICT.  ⚠ IT MAY ALSO GO AGAINST THE REPAIR -- a ring-local
+    #      version that does NOT remove the gradient is a finding and not an error.
     if len(_reihe) >= 2:
         _g = [r["g05"] for r in _reihe]
         _l = [r["l05"] for r in _reihe]
-        _gf = _g[-1] < _g[0]                       # global faellt ueber die Reihe
-        _lf = _l[-1] < _l[0]                       # ringlokal auch?
+        _gf = _g[-1] < _g[0]                       # global falls over the series
+        _lf = _l[-1] < _l[0]                       # ring-local too?
         print()
         if not _gf:
             print("  ⇒ KEIN GRADIENT IN DER GLOBALEN SPALTE (%s) -- der Befund, den "
@@ -3574,35 +3574,35 @@ def selbsttest_tfd_lokal() -> int:
 
 
 if __name__ == "__main__":
-    # ⚠ AM DATEIENDE, und das ist keine Kosmetik.  Auf MODULEBENE zaehlt die
-    #   Reihenfolge: steht dieser Block vor einer der Testfunktionen, ist ihr Name
-    #   zur Ausfuehrungszeit noch ungebunden -> NameError.  (Innerhalb einer
-    #   Funktion gilt das nicht -- genau die Verwechslung, die am 09.08. den
-    #   [Z4]-Totenschein erzeugt hat, nur andersherum.)
+    # ⚠ AT THE END OF THE FILE, and that is not cosmetic.  At MODULE LEVEL the
+    #   order counts: if this block stands before one of the test functions, its name
+    #   is still unbound at execution time -> NameError.  (Inside a
+    #   function that does not apply -- exactly the confusion that produced the
+    #   [Z4] death certificate on 09.08., only the other way round.)
     import sys as _sys
-    # Ohne Argument laeuft alles -- ein Name laesst genau einen Test laufen.  Das ist
-    # keine Bequemlichkeit: `selbsttest_kombinatorik` BAUT, und wer sie waehrend einer
-    # Aenderung nachmessen will, soll dafuer nicht dreimal den TFD-Sweep bezahlen.
+    # Without an argument everything runs -- a name runs exactly one test.  That is
+    # not a convenience: `selbsttest_kombinatorik` BUILDS, and whoever wants to re-measure
+    # it during a change should not have to pay for the TFD sweep three times for that.
     _TESTS = (("raum", selbsttest_raum),
               ("konvergenz", selbsttest_konvergenz),
-              # Der Sweep steht NACH der Konvergenz, weil er ihre offene Frage
-              # beantwortet: sie meldet "Zustaende liegen dicht", er misst, ob das an
-              # der Schwelle liegt.
+              # The sweep stands AFTER the convergence, because it answers its open
+              # question: it reports "states lie close together", the sweep measures whether
+              # that is due to the threshold.
               ("sweep", selbsttest_tfd_sweep),
-              # Die Trennschaerfe steht vor der Kombinatorik: sie entscheidet, WELCHES
-              # Mass die Kombinatorik ueberhaupt entdoppeln soll.  Ein Kostenurteil mit
-              # dem falschen Entdopplungsmass waere ein Urteil ueber das Instrument.
+              # The discriminating power stands before the combinatorics: it decides WHICH
+              # measure the combinatorics is supposed to dedup with at all.  A cost verdict with
+              # the wrong dedup measure would be a verdict about the instrument.
               ("trennschaerfe", selbsttest_trennschaerfe),
-              # Direkt DAHINTER, weil die Trennschaerfe den Befund abwirft, den dieser
-              # Test repariert: sie misst, dass derselbe Ring an wachsendem Geruest
-              # immer weniger Zustaende bekommt, er misst dieselbe Reihe noch einmal
-              # mit ringlokaler TFD.  Getrennt gelaufen waeren es zwei Messungen; so
-              # ist es eine Messung und ihre Gegenprobe.
+              # Directly BEHIND IT, because the discriminating power throws off the finding that
+              # this test repairs: it measures that the same ring on a growing scaffold
+              # gets fewer and fewer states, this one measures the same series once more
+              # with ring-local TFD.  Run separately they would be two measurements; this way
+              # it is one measurement and its counter-check.
               ("tfdlokal", selbsttest_tfd_lokal),
-              # Zuletzt die Kombinatorik: sie baut Relax + Tor JE Kombination und ist
-              # damit der teuerste der vier.  Sie beantwortet, was die drei davor
-              # aufwerfen -- die Zustandszahl je Ring ist nur interessant, weil sie
-              # potenziert wird.
+              # Last the combinatorics: it builds relax + gate PER combination and is
+              # thereby the most expensive of the four.  It answers what the three before
+              # raise -- the state count per ring is only interesting because it
+              # is raised to a power.
               ("kombinatorik", selbsttest_kombinatorik))
     _wahl = [a for a in _sys.argv[1:] if not a.startswith("-")]
     _unbekannt = [a for a in _wahl if a not in dict(_TESTS)]
@@ -3610,9 +3610,9 @@ if __name__ == "__main__":
         print("unbekannter Test: %s -- bekannt: %s"
               % (", ".join(_unbekannt), ", ".join(n for n, _ in _TESTS)))
         _sys.exit(2)
-    # `--ohne-grenze` hebt die Testgrenze der Kombinatorik auf.  Dann wird JEDE Probe
-    # vollstaendig gebaut -- auch die, deren Kreuzprodukt fuenfstellig ist.  Das ist die
-    # Messung, keine Vorgabe: sie laeuft Stunden und gehoert nicht in einen Regellauf.
+    # `--ohne-grenze` lifts the test limit of the combinatorics.  Then EVERY sample is
+    # built completely -- including those whose cross product is five digits.  That is the
+    # measurement, not the default: it runs for hours and does not belong in a regular run.
     _ohne_grenze = "--ohne-grenze" in _sys.argv[1:]
     _rc = 0
     for _name, _fn in _TESTS:

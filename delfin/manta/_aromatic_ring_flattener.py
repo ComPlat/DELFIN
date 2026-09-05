@@ -40,11 +40,11 @@ from delfin.manta._pi_h_projector import (
     project_ring_h_atoms,
     _MD_INVARIANT_TOL,
 )
-# EINE QUELLE fuer das Laengentor (19.08.2026) -- dieselbe, die
-# ``_arom_planarize`` und ``_bond_decollapse._aromatic_ring_bonds`` benutzen.
-# Schalter ``DELFIN_FFFREE_AROM_CRITERION_RADII`` (Vorgabe 0 -> byte-identisch).
-# ``_AROMATIC_BOND_MAX`` wird nur weitergereicht (der Name bleibt erhalten),
-# entschieden wird in ``ring_rejected_by_length``.
+# ONE SOURCE for the length gate (19.08.2026) -- the same one that
+# ``_arom_planarize`` and ``_bond_decollapse._aromatic_ring_bonds`` use.
+# Switch ``DELFIN_FFFREE_AROM_CRITERION_RADII`` (default 0 -> byte-identical).
+# ``_AROMATIC_BOND_MAX`` is only passed through (the name is kept);
+# the decision is made in ``ring_rejected_by_length``.
 from delfin.manta._arom_criterion import (   # noqa: F401
     _AROMATIC_BOND_MAX,
     ring_rejected_by_length,
@@ -65,11 +65,11 @@ def _detect_aromatic_rings(
     length.  Saturated rings (mean bond ~1.54) and metal-containing rings
     are excluded.  Returns canonical sorted ring tuples.
 
-    EINE QUELLE (19.08.2026): das sp3-Verbot steht in ``_arom_planarize`` und wird
-    hier GEHOLT, nicht kopiert.  Der Mittelwert oben laesst ein Oxazolin durch und
-    dieser Zwilling wuerde es genauso verflachen; drei unabhaengige Kopien desselben
-    Kriteriums sind genau die Bauart, an der schon einmal nur eine von ihnen
-    repariert wurde.  Vorgabe des Schalters AUS -> byte-identisch."""
+    ONE SOURCE (19.08.2026): the sp3 veto lives in ``_arom_planarize`` and is
+    FETCHED here, not copied.  The mean value above lets an oxazoline through and
+    this twin would flatten it just the same; three independent copies of the same
+    criterion are exactly the construction in which, once before, only one of them
+    got repaired.  Switch default OFF -> byte-identical."""
     from delfin.manta._arom_planarize import (
         ring_carries_sp3_centre as _has_sp3, sp3_veto_enabled as _veto_on,
     )
@@ -113,12 +113,12 @@ def _detect_aromatic_rings(
                     bond_edges.append((i, j))
         if not bond_lens:
             continue
-        # EINE QUELLE (siehe Import oben): Schalter AUS = alter Vergleich
-        # ``mittel >= 1.46``, Schalter AN = Mittel von d/(r_i+r_j) >= 0.939.
+        # ONE SOURCE (see import above): switch OFF = old comparison
+        # ``mean >= 1.46``, switch ON = mean of d/(r_i+r_j) >= 0.939.
         if ring_rejected_by_length(syms, bond_edges, bond_lens):
             continue  # saturated ring — leave its (correct) pucker alone
         if _sp3_veto and _has_sp3(syms, nbrs, ring):
-            continue  # traegt ein sp3-Zentrum -> kein Aromat, nicht verflachen
+            continue  # carries an sp3 centre -> not aromatic, do not flatten
         out.append(ring)
     return out
 

@@ -413,7 +413,7 @@ def is_total_row_label(label: Any) -> bool:
 # ---------------------------------------------------------------------------
 #
 # The read side of this framework detects decimal commas and day-first
-# dates. The write side was ``str(value)``, so a Serienbrief went to a
+# dates. The write side was ``str(value)``, so a mail-merge letter went to a
 # customer reading "1234.5 EUR ... fällig am 2026-07-31 00:00:00" and the
 # run reported ok. These are the two primitives that stop that.
 

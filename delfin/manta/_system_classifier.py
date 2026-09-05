@@ -119,8 +119,8 @@ def _is_metal(z: int) -> bool:
     that is not H/C/N/O/F/Ne/.../noble-gas/typical-non-metal and that
     can act as a coordination centre.
     """
-    # EINE QUELLE (14.08.2026): delfin/manta/_elements.py.  Vorgabe AUS -> byte-identisch.
-    # Diese Fassung fuehrt 79 Elemente, also Fr, Ra und Am..Lr zusaetzlich.
+    # ONE SOURCE (14.08.2026): delfin/manta/_elements.py.  Default OFF -> byte-identical.
+    # This version lists 79 elements, i.e. additionally Fr, Ra and Am..Lr.
     from delfin.manta import _elements as _EL
     if _EL.unified_enabled():
         return _EL.is_metal_z(z)

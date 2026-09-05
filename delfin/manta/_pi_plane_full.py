@@ -1,147 +1,144 @@
-"""PI-PLANE-FULL — die GANZE konjugierte Ebene, nicht nur der Ring.
+"""PI-PLANE-FULL — the WHOLE conjugated plane, not just the ring.
 
-WOZU (gemessen 19.08.2026 auf 930 Systemen aus einem 9600er-Lauf):
+WHY (measured 19.08.2026 on 930 systems from a 9600-system run):
 
-    konjugierte Achse NICHT planar   395 von 732   54,0 %   (654 Achsen)
-    Metall aus der pi-Ebene > 0,2 A   89           9,6 %    (Mittel 0,65 A)
-    sp2-Donor ausserhalb der Ebene    47           5,1 %    (81 Donoren)
-    Biaryl UEBERplanarisiert          20           --       (GEGENRICHTUNG)
+    conjugated axis NOT planar        395 of 732    54.0 %   (654 axes)
+    metal out of the pi plane > 0.2 A  89           9.6 %    (mean 0.65 A)
+    sp2 donor out of the plane         47           5.1 %    (81 donors)
+    biaryl OVER-planarized             20           --       (OPPOSITE DIRECTION)
 
-Heute planarisiert DELFIN den *Ring* (``_arom_planarize``, ``_aromatic_ring_flattener``)
-und einzelne sp2-Zentren (``_fix_sp2n_planarize``, ``_fix_sp2c_planarize``).  Ein
-durchkonjugiertes System reicht weiter: die exocyclische C=O/C=N, der Amid-Stickstoff,
-die verbrueckende C=C zwischen zwei Ringen liegen mit dem Ring in EINER Ebene, nicht in
-mehreren Ringebenen.  Genau diese Ebene baut dieses Modul.
+Today DELFIN planarizes the *ring* (``_arom_planarize``, ``_aromatic_ring_flattener``)
+and individual sp2 centers (``_fix_sp2n_planarize``, ``_fix_sp2c_planarize``).  A fully
+conjugated system reaches further: the exocyclic C=O/C=N, the amide nitrogen, the
+bridging C=C between two rings lie in ONE plane together with the ring, not in several
+ring planes.  Exactly this plane is what this module builds.
 
-NAMENSREGEL IN DIESER DATEI.  Alles, was mit ``_axis_type``, ``_pi_lobe_normal``,
+NAMING RULE IN THIS FILE.  Everything that starts with ``_axis_type``, ``_pi_lobe_normal``,
 ``_fold_deg``, ``_rings_5_6_aromatic``, ``_conj_bond_cut``, ``_biaryl_dihedrals_indexed``
-beginnt, ist eine WOERTLICHE Kopie einer Detektor-Definition des Auges -- absichtlich
-umbenannt, damit im Namen sichtbar bleibt, was Messbegriff und was eigene Regel ist.
-Das Auge selbst wird nur GELESEN, nie geaendert.
+is a VERBATIM copy of a detector definition of the eye -- deliberately renamed so that the
+name keeps visible what is a measurement term and what is our own rule.
+The eye itself is only READ, never changed.
 
-GEGEN WELCHE DEFINITION GEBAUT WIRD
+WHICH DEFINITION THIS IS BUILT AGAINST
 ------------------------------------
 ``MANTA2/weddell/detectors/conjugated_torsion.py``
-  * ``_plane_normal``            :234  pi-Lobe = kleinste-Varianz-Achse (SVD) der auf
-                                       Laenge 1 normierten Bindungsvektoren zu den
-                                       SCHWEREN NICHT-METALL-Nachbarn (>= 2 noetig).
-  * ``_twist`` / ``_twist_h``    :439/:523  Faltung = Winkel zwischen den beiden
-                                       pi-Lobe-Normalen, gefaltet nach [0, 90].
+  * ``_plane_normal``            :234  pi lobe = smallest-variance axis (SVD) of the
+                                       bond vectors, normalized to length 1, to the
+                                       HEAVY NON-METAL neighbors (>= 2 required).
+  * ``_twist`` / ``_twist_h``    :439/:523  fold = angle between the two
+                                       pi-lobe normals, folded into [0, 90].
   * ``classify_axis``            :382  amide / ester / amidinate / aryl_nitro /
                                        aryl_carboxyl / enone / biaryl.
   * ``_donor_axis`` :533, ``_generic_conj`` :565  arylamine / aryl_ether / "conj".
-  * ``_FOLD_MIN = 12.0``         :166  darunter: thermisches Rauschen, NIE gemeldet.
-  * ``_PLANAR_DELTA_TOL``        :171  |Faltung_bau - Faltung_kristall| Toleranz,
-                                       28-38 Grad, BEIDSEITIG (auch ueberplanarisiert!).
-  * ``_JAG_TOL``                 :190  referenzfreies Fenster; STRAFF nur bei
-                                       amide 47,6 / ester 22,9 / aryl_nitro 47,8,
-                                       WEIT (84-89) bei biaryl/conj/enone/arylamine.
+  * ``_FOLD_MIN = 12.0``         :166  below that: thermal noise, NEVER reported.
+  * ``_PLANAR_DELTA_TOL``        :171  |fold_build - fold_crystal| tolerance,
+                                       28-38 degrees, TWO-SIDED (over-planarized too!).
+  * ``_JAG_TOL``                 :190  reference-free window; TIGHT only for
+                                       amide 47.6 / ester 22.9 / aryl_nitro 47.8,
+                                       WIDE (84-89) for biaryl/conj/enone/arylamine.
 ``MANTA2/weddell/detectors/find_ligand_quality.py``
-  * ``sp2_donor_metal_oop``      :313  Metall-Abstand von der Ebene, die der Donor
-                                       (N/O, 0,5 < d(M,D) < 2,75 A) mit den ERSTEN ZWEI
-                                       Nachbarn im Aromatenfenster 1,24-1,44 A aufspannt.
+  * ``sp2_donor_metal_oop``      :313  metal distance from the plane that the donor
+                                       (N/O, 0.5 < d(M,D) < 2.75 A) spans with the FIRST TWO
+                                       neighbors in the aromatic window 1.24-1.44 A.
   * ``sp2_donor_planarity``      :348  ``oop_cut = 0.40`` A -> n_sp2_donor_out_of_plane;
-                                       BEST-OF ueber die Frames.
-  * ``biaryl_dihedrals``         :38   Biaryl-Bindung = C-C 1,44-1,53 A, beide C mit
-                                       >= 2 Nachbarn im Aromatenfenster; Diederwinkel
-                                       ra[0]-a-b-rb[0], gefaltet nach [0, 90].
-  * ``_OVER_TOL = 8.0``          :25   ab 8 Grad Unterschied zum Kristall = ueberplanarisiert.
+                                       BEST-OF over the frames.
+  * ``biaryl_dihedrals``         :38   biaryl bond = C-C 1.44-1.53 A, both C with
+                                       >= 2 neighbors in the aromatic window; dihedral
+                                       ra[0]-a-b-rb[0], folded into [0, 90].
+  * ``_OVER_TOL = 8.0``          :25   from 8 degrees difference to the crystal = over-planarized.
 
-DIE ENTSCHEIDENDE FOLGERUNG AUS DER TOLERANZ.  Der kristallverankerte Arm des Auges ist
-BEIDSEITIG mit 28-38 Grad Toleranz.  Wer eine Achse blind flachdrueckt, deren Kristall
-40 Grad verdreht ist, erzeugt genau den Defekt, den er zu heilen glaubt.  Darum ist jede
-Scharnier-Drehung hier auf ``MAXFOLD`` (Vorgabe 25 Grad) GEDECKELT: 25 < 28 heisst, die
-Korrektur kann eine bisher STILLE Achse nicht zum Feuern bringen -- sie kann nur eine
-Achse heilen, deren Delta zwischen 28 und 53 Grad liegt.  Das ist keine Kalibrierung,
-das ist eine Schranke.
+THE DECISIVE CONSEQUENCE OF THE TOLERANCE.  The crystal-anchored arm of the eye is
+TWO-SIDED with a 28-38 degree tolerance.  Whoever blindly flattens an axis whose crystal
+is twisted by 40 degrees produces exactly the defect they believe they are healing.  That is
+why every hinge rotation here is CAPPED at ``MAXFOLD`` (default 25 degrees): 25 < 28 means
+the correction cannot make a hitherto SILENT axis fire -- it can only heal an axis whose
+delta lies between 28 and 53 degrees.  That is not a calibration, that is a bound.
 
-WAS GEBAUT WIRD -- drei Stufen, nach Masse, jede mit eigenem Rueckfall
+WHAT IS BUILT -- three stages, by mass, each with its own fallback
 ----------------------------------------------------------------------
-A1  BLATT-PROJEKTION (die 395).  Ein "Blatt" ist die maximale Atommenge, die durch
-    CHEMISCH STARRE Bindungen verbunden ist: Ringbindungen eines aromatischen Rings,
-    echte Doppelbindungen (exocyclische C=O / C=N / N=O und die verbrueckende C=C
-    zwischen zwei Ringen) und die straffen konjugierten Einfachbindungen amide / ester /
-    aryl_nitro / amidinate.  Alle Atome eines Blatts MUESSEN koplanar sein -- das ist
-    Chemie, keine Statistik.  Die Abweichung ist INTERN (Pyramidalisierung, Restknick);
-    keine Starrkoerperbewegung kann sie beheben, also wird PROJIZIERT.  Billigste Form
-    nach dem Kostengesetz (Ordnung ~ 0 < Isometrie +0,98 pp < starre Drehung mit neuer
-    Konformation +6,57 pp < Neueinbettung +11,9 pp).
-    Gedeckelt auf ``MAXPROJ`` (0,25 A): ein staerker gefaltetes Blatt ist kein
-    Planaritaetsdefekt mehr, sondern eine Torsion -- die gehoert nach A2, und eine
-    Projektion wuerde dort die Bindungslaengen stauchen.
+A1  SHEET PROJECTION (the 395).  A "sheet" is the maximal set of atoms connected by
+    CHEMICALLY RIGID bonds: ring bonds of an aromatic ring, genuine double bonds
+    (exocyclic C=O / C=N / N=O and the bridging C=C between two rings) and the tight
+    conjugated single bonds amide / ester / aryl_nitro / amidinate.  All atoms of a sheet
+    MUST be coplanar -- that is chemistry, not statistics.  The deviation is INTERNAL
+    (pyramidalization, residual kink); no rigid-body motion can remove it, so it is
+    PROJECTED.  Cheapest form under the cost law (ordering ~ 0 < isometry +0.98 pp <
+    rigid rotation with new conformation +6.57 pp < re-embedding +11.9 pp).
+    Capped at ``MAXPROJ`` (0.25 A): a more strongly folded sheet is no longer a
+    planarity defect but a torsion -- that belongs to A2, and a projection there would
+    compress the bond lengths.
 
-A2  SCHARNIER-DREHUNG (der Rest der 395).  Zwischen zwei Blaettern sitzt eine
-    konjugierte EINFACHbindung.  Hier wird die kleinere Seite STARR um die Bindungsachse
-    gedreht -- bindungslaengen-exakt, gedeckelt auf ``MAXFOLD``.
-    ⚠ BIARYL IST AUSGENOMMEN.  Ein Biaryl ist um seine Achse verdrillt und darf nicht
-    eben sein; ``n_biaryl_overplanar`` ist die Gegenrichtung.  Zusaetzlich wacht ein
-    harter Riegel: aendert sich IRGENDEIN Biaryl-Diederwinkel (Definition des Auges,
-    ``biaryl_dihedrals``) um mehr als ``BIARYL_TOL`` (Vorgabe 5 Grad), wird der Zug
-    zurueckgerollt.
+A2  HINGE ROTATION (the rest of the 395).  Between two sheets sits a conjugated
+    SINGLE bond.  Here the smaller side is rotated RIGIDLY about the bond axis --
+    bond-length-exact, capped at ``MAXFOLD``.
+    ⚠ BIARYL IS EXCLUDED.  A biaryl is twisted about its axis and must not be planar;
+    ``n_biaryl_overplanar`` is the opposite direction.  In addition a hard latch keeps
+    watch: if ANY biaryl dihedral (definition of the eye, ``biaryl_dihedrals``) changes
+    by more than ``BIARYL_TOL`` (default 5 degrees), the move is rolled back.
 
-B   METALL IN DIE EBENE (die 89).  ⚠ HIER ENTSCHEIDET DIE CHEMIE, NICHT DIE GEOMETRIE
-    ALLEIN, und ein Mechanismus, der beide Faelle gleich behandelt, zerstoert den einen,
-    waehrend er den anderen repariert:
-      * sigma-gebundener sp2-Donor (Pyridin-N, Imin-N, Carboxylat-O): das freie
-        Elektronenpaar zeigt IN der Ebene nach aussen -> das Metall liegt IN der Ebene.
-      * eta-Koordination (eta5-Cp, eta6-Aren): das Metall sitzt auf der Achse SENKRECHT
-        durch den Ringschwerpunkt -> es liegt gerade NICHT in der Ebene.
-    Die Unterscheidung ist DREIFACH abgesichert, siehe ``_is_sigma_donor``.
+B   METAL INTO THE PLANE (the 89).  ⚠ HERE THE CHEMISTRY DECIDES, NOT THE GEOMETRY
+    ALONE, and a mechanism that treats both cases alike destroys the one while it
+    repairs the other:
+      * sigma-bound sp2 donor (pyridine N, imine N, carboxylate O): the lone pair
+        points outward IN the plane -> the metal lies IN the plane.
+      * eta coordination (eta5-Cp, eta6-arene): the metal sits on the axis PERPENDICULAR
+        through the ring centroid -> it is precisely NOT in the plane.
+    The distinction is TRIPLY safeguarded, see ``_is_sigma_donor``.
 
-WAS DIESES MODUL NICHT NEU ERFINDET (Regel: vor jedem Neubau die dunklen Schalter pruefen)
+WHAT THIS MODULE DOES NOT REINVENT (rule: before every new build, check the dark switches)
 ------------------------------------------------------------------------------------------
-Stufe B ueberschneidet sich mit ``_pi_coplanar_final`` (DELFIN_FFFREE_PI_COPLANAR_FINAL),
-``_pi_inplane_final`` (DELFIN_FFFREE_PI_RIGID_PLACE) und ``_pi_coplanar_m``
-(DELFIN_FFFREE_PI_COPLANAR_M) -- alle drei sind gebaut, verdrahtet und AUSGESCHALTET.
-Der eta-Diskriminator ``_face_on`` wird von dort IMPORTIERT, nicht nachgebaut, damit
-beide Mechanismen dieselbe Grenze ziehen.  Neu an Stufe B ist allein, dass die Ebene das
-GANZE Blatt ist (Ring + exocyclische Konjugation) statt nur der verschmolzenen 5/6-Ringe.
-Darum hat Stufe B eine EIGENE Vorgabe AUS -- sie ist der Zweitbau, nicht der Erstbau.
+Stage B overlaps with ``_pi_coplanar_final`` (DELFIN_FFFREE_PI_COPLANAR_FINAL),
+``_pi_inplane_final`` (DELFIN_FFFREE_PI_RIGID_PLACE) and ``_pi_coplanar_m``
+(DELFIN_FFFREE_PI_COPLANAR_M) -- all three are built, wired and SWITCHED OFF.
+The eta discriminator ``_face_on`` is IMPORTED from there, not rebuilt, so that both
+mechanisms draw the same boundary.  The only thing new in stage B is that the plane is the
+WHOLE sheet (ring + exocyclic conjugation) instead of only the fused 5/6-rings.
+That is why stage B has its OWN default OFF -- it is the second build, not the first.
 
-GEMESSEN 19.08.2026 (250 Champion-Systeme aus ``results/archive_builderAB_champ``,
-alle Zahlen mit den DETEKTOREN DES AUGES selbst erhoben, ``--measure``)
+MEASURED 19.08.2026 (250 champion systems from ``results/archive_builderAB_champ``,
+all numbers collected with the DETECTORS OF THE EYE themselves, ``--measure``)
 ------------------------------------------------------------------------------------------
-    veraendert                            94 von 250   (37,6 %)
-    Blaetter gesehen 20905, projiziert       239       (abgelehnt: 347 zu stark gefaltet,
-                                                        162 sp3-Riegel, 2196 Metallkontakt
-                                                        -- der Rest ist bereits eben)
-    Scharniere gesehen 6888, gedreht        1626       (1345 beidseitig am Metall)
-    [1] Achsen mit Faltung > 12 Grad   6301 -> 5989    (-312, -5,0 %)
-        Systeme mit >= 1 solcher Achse  154 ->  152
-    [2] Metall-oop best-of Mittel     0,116 -> 0,116   (KEINE Wirkung, siehe unten)
-    [3] sp2-Donoren oop > 0,40 A       5307 -> 5280
-    [4] Biaryl > 8 Grad bewegt                  0      (47-mal hat der Riegel gehalten)
+    changed                               94 of 250    (37.6 %)
+    sheets seen 20905, projected             239       (rejected: 347 too strongly folded,
+                                                        162 sp3 latch, 2196 metal contact
+                                                        -- the rest is already planar)
+    hinges seen 6888, rotated               1626       (1345 at the metal on both sides)
+    [1] axes with fold > 12 degrees    6301 -> 5989    (-312, -5.0 %)
+        systems with >= 1 such axis     154 ->  152
+    [2] metal-oop best-of mean        0.116 -> 0.116   (NO effect, see below)
+    [3] sp2 donors oop > 0.40 A        5307 -> 5280
+    [4] biaryl moved > 8 degrees                0      (the latch held 47 times)
 
-ZWEI BEFUNDE, DIE DER BAU ERZWUNGEN HAT
+TWO FINDINGS THAT THE BUILD FORCED
 ---------------------------------------
-1. DIE 395 SIND EIN TORSIONS-, KEIN FLAECHENPROBLEM.  Von 20905 Blaettern sind nur 347
-   staerker als 0,25 A in sich gefaltet; die uebrigen sind bereits eben.  Die nicht-planare
-   konjugierte Achse sitzt fast immer im SCHARNIER zwischen zwei ebenen Blaettern, nicht
-   in der Flaeche.  Wer hier "besser planarisieren" sagt, meint in Wahrheit "die Torsion
-   richtig stellen" -- und das ist eine Drehung, keine Projektion.
-2. STUFE B IST EIN ZWEITBAU MIT NULL WIRKUNG, DER ERSTBAU IST NUR AUSGESCHALTET.
-   Gemessen mit ``--dark`` auf DENSELBEN 250 Systemen laesst ``_pi_coplanar_final``
-   (DELFIN_FFFREE_PI_COPLANAR_FINAL, Vorgabe 0, NICHT im Champion):
-       veraendert 75 von 250 (30,0 %)
-       Metall-oop best-of Mittel   0,116 -> 0,095 A
-       Systeme best-of > 0,20 A       28 -> 22
-       Systeme Frame-0  > 0,20 A       90 -> 77
-   Stufe B hier bewegt dagegen NICHTS (154 Treffer, best-of unveraendert): ``_movable_arm``
-   verweigert, sobald ein ZWEITER Metallkontakt im beweglichen Teil liegt, und genau das
-   ist beim Chelat der Normalfall (5085 ``second_metal``, 4130 ``eta_multi_contact``).
-   Wer die 89 Systeme will, schaltet DELFIN_FFFREE_PI_COPLANAR_FINAL ein -- er baut nichts.
+1. THE 395 ARE A TORSION PROBLEM, NOT A SURFACE PROBLEM.  Of 20905 sheets only 347 are
+   folded within themselves by more than 0.25 A; the rest are already planar.  The
+   non-planar conjugated axis almost always sits in the HINGE between two planar sheets,
+   not in the surface.  Whoever says "planarize better" here really means "set the torsion
+   right" -- and that is a rotation, not a projection.
+2. STAGE B IS A SECOND BUILD WITH ZERO EFFECT; THE FIRST BUILD IS MERELY SWITCHED OFF.
+   Measured with ``--dark`` on THE SAME 250 systems, ``_pi_coplanar_final``
+   (DELFIN_FFFREE_PI_COPLANAR_FINAL, default 0, NOT in the champion) gives:
+       changed 75 of 250 (30.0 %)
+       metal-oop best-of mean      0.116 -> 0.095 A
+       systems best-of > 0.20 A       28 -> 22
+       systems frame-0  > 0.20 A       90 -> 77
+   Stage B here, by contrast, moves NOTHING (154 hits, best-of unchanged): ``_movable_arm``
+   refuses as soon as a SECOND metal contact lies in the movable part, and precisely that
+   is the normal case for a chelate (5085 ``second_metal``, 4130 ``eta_multi_contact``).
+   Whoever wants the 89 systems switches on DELFIN_FFFREE_PI_COPLANAR_FINAL -- and builds nothing.
 
-VORGABE AUS.  ``DELFIN_FFFREE_PI_PLANE_FULL`` ist 0; dann ist jede Einstiegsfunktion die
-Identitaet auf dem Eingabetext (byte-identisch, nicht "gleich rund").  Nachgewiesen an
-27903 echten Champion-Frames aus 995 Archiven: 0 Abweichungen (``--identity``).
+DEFAULT OFF.  ``DELFIN_FFFREE_PI_PLANE_FULL`` is 0; then every entry function is the
+identity on the input text (byte-identical, not "roughly equal").  Proven on
+27903 real champion frames from 995 archives: 0 deviations (``--identity``).
 
-⚠ ERREICHBARKEIT HEUTE: NULL.  Dieses Modul hat KEINE Aufrufstelle.  Die gebrauchte Zeile
-steht in ``delfin/smiles_converter.py`` (fremdes Revier, darum hier nur benannt): in der
-aeussersten oeffentlichen Kette bei :32325/:32327, direkt neben ``_apply_pi_coplanar_final``
-(dessen Verteiler bei :31600 steht) -- diese Kette laeuft ueber BEIDE Pfade (der FF-freie
-Zweig verlaesst ``_impl`` bei :32703 und kommt dort wieder an), sie braucht kein ``mol``
-und faellt darum nicht in die Atomreihenfolge-Falle, vor der ``_ffree_shared_tail`` warnt.
-Gebraucht wird ein Verteiler nach dem Muster von ``_apply_pi_coplanar_final``:
+⚠ REACH TODAY: ZERO.  This module has NO call site.  The line that is needed belongs in
+``delfin/smiles_converter.py`` (foreign territory, hence only named here): in the
+outermost public chain at :32325/:32327, right next to ``_apply_pi_coplanar_final``
+(whose dispatcher is at :31600) -- this chain runs through BOTH paths (the FF-free
+branch leaves ``_impl`` at :32703 and arrives back there), it needs no ``mol``
+and therefore does not fall into the atom-order trap that ``_ffree_shared_tail`` warns about.
+What is needed is a dispatcher following the pattern of ``_apply_pi_coplanar_final``:
 
     def _apply_pi_plane_full(isomers):
         if not isomers or os.environ.get("DELFIN_FFFREE_PI_PLANE_FULL", "0") != "1":
@@ -152,9 +149,9 @@ Gebraucht wird ein Verteiler nach dem Muster von ``_apply_pi_coplanar_final``:
         except Exception:
             return isomers
 
-und sein Aufruf in beiden Ketten, unmittelbar um ``_apply_pi_coplanar_final(...)`` herum.
+and its call in both chains, immediately around ``_apply_pi_coplanar_final(...)``.
 
-Selbsttest / Messung (kein inline-python):
+Self-test / measurement (no inline python):
     PYTHONPATH=/home/qmchem_max/DELFIN_dev python -m delfin.manta._pi_plane_full
     PYTHONPATH=... python -m delfin.manta._pi_plane_full --measure <xyz-dir> [N]
     PYTHONPATH=... python -m delfin.manta._pi_plane_full --identity <xyz-dir> [N]
@@ -170,22 +167,22 @@ import numpy as np
 from delfin.manta._fix_sp2n_planarize import _format_xyz, _parse_xyz, _is_metal_sym
 
 # ---------------------------------------------------------------------------------------
-# SCHALTER.  Vorgabe 0 -> Identitaet -> byte-identisch.
+# SWITCHES.  Default 0 -> identity -> byte-identical.
 # ---------------------------------------------------------------------------------------
 ENV_MAIN = "DELFIN_FFFREE_PI_PLANE_FULL"
-ENV_STAGE_A1 = "DELFIN_FFFREE_PI_PLANE_FULL_SHEET"     # Blatt-Projektion    (Vorgabe an)
-ENV_STAGE_A2 = "DELFIN_FFFREE_PI_PLANE_FULL_HINGE"     # Scharnier-Drehung   (Vorgabe an)
-ENV_STAGE_B = "DELFIN_FFFREE_PI_PLANE_FULL_METAL"      # Metall in die Ebene (Vorgabe AUS,
-#                                                        _pi_coplanar_final kann das schon)
+ENV_STAGE_A1 = "DELFIN_FFFREE_PI_PLANE_FULL_SHEET"     # sheet projection    (default on)
+ENV_STAGE_A2 = "DELFIN_FFFREE_PI_PLANE_FULL_HINGE"     # hinge rotation      (default on)
+ENV_STAGE_B = "DELFIN_FFFREE_PI_PLANE_FULL_METAL"      # metal into the plane (default OFF,
+#                                                        _pi_coplanar_final can already do that)
 ENV_MAXPROJ = "DELFIN_FFFREE_PI_PLANE_FULL_MAXPROJ_A"  # 0.25 A
-ENV_MAXFOLD = "DELFIN_FFFREE_PI_PLANE_FULL_MAXFOLD"    # 25.0 Grad (< 28 = kleinste Auge-Toleranz)
-ENV_MAXROT = "DELFIN_FFFREE_PI_PLANE_FULL_MAXROT"      # 30.0 Grad
-ENV_BIARYL_TOL = "DELFIN_FFFREE_PI_PLANE_FULL_BIARYL_TOL"   # 5.0 Grad
+ENV_MAXFOLD = "DELFIN_FFFREE_PI_PLANE_FULL_MAXFOLD"    # 25.0 degrees (< 28 = smallest eye tolerance)
+ENV_MAXROT = "DELFIN_FFFREE_PI_PLANE_FULL_MAXROT"      # 30.0 degrees
+ENV_BIARYL_TOL = "DELFIN_FFFREE_PI_PLANE_FULL_BIARYL_TOL"   # 5.0 degrees
 
 # ---------------------------------------------------------------------------------------
-# KONSTANTEN -- WOERTLICH aus dem Auge uebernommen (conjugated_torsion.py :67-:97, :151,
-# :166, :371; find_ligand_quality.py :22-:25, :348), damit dieselbe Definition gemessen
-# und repariert wird.  Aendert das Auge seine Zahlen, muessen diese mitwandern.
+# CONSTANTS -- taken VERBATIM from the eye (conjugated_torsion.py :67-:97, :151,
+# :166, :371; find_ligand_quality.py :22-:25, :348), so that the same definition is measured
+# and repaired.  If the eye changes its numbers, these must move with them.
 # ---------------------------------------------------------------------------------------
 _COV_R: Dict[str, float] = {
     "H": 0.31, "Li": 1.28, "Be": 0.96, "B": 0.84, "C": 0.76, "N": 0.71,
@@ -214,23 +211,23 @@ _AROM_MIN, _AROM_MAX = 1.24, 1.44        # find_ligand_quality.py :23
 _BIARYL_MIN, _BIARYL_MAX = 1.44, 1.53    # find_ligand_quality.py :22
 _SP2_OOP_CUT = 0.40                      # find_ligand_quality.py :348 (oop_cut)
 
-# Bindungen, die eine konjugierte Ebene chemisch ERZWINGEN (Blatt-Bildung, Stufe A1).
-# amidinate ist dabei: das NCN ist delokalisiert und planar; das WEITE Auge-Fenster (86,1)
-# kommt von der Metallkoordination, nicht von echter Drehbarkeit.
+# Bonds that chemically FORCE a conjugated plane (sheet formation, stage A1).
+# amidinate is included: the NCN is delocalized and planar; the WIDE eye window (86.1)
+# comes from the metal coordination, not from genuine rotatability.
 _STIFF_AXES = frozenset(("amide", "ester", "aryl_nitro", "amidinate"))
-# Achsen mit GENUINER Drehbarkeit -> niemals starr verbinden, und biaryl auch nicht drehen.
+# Axes with GENUINE rotatability -> never connect rigidly, and do not rotate biaryl either.
 _NEVER_TOUCH_AXES = frozenset(("biaryl",))
 
-# Waechter-Schwellen
-_BOND_TOL_A = 0.05          # max. Aenderung einer 1-2-Bindungslaenge
-_MD_TOL_A = 0.02            # max. Aenderung einer Metall-Donor-Laenge
-_CLASH_SLACK_A = 0.02       # nicht-bindender Mindestabstand darf um so viel sinken ...
-_CLASH_SAFE_A = 2.20        # ... oder er liegt ohnehin ueber diesem Wert
-_CHIR_KEEP = 0.25           # signiertes Volumen darf nicht unter diesen Bruchteil fallen
+# Guard thresholds
+_BOND_TOL_A = 0.05          # max. change of a 1-2 bond length
+_MD_TOL_A = 0.02            # max. change of a metal-donor length
+_CLASH_SLACK_A = 0.02       # non-bonded minimum distance may drop by this much ...
+_CLASH_SAFE_A = 2.20        # ... or it lies above this value anyway
+_CHIR_KEEP = 0.25           # signed volume must not fall below this fraction
 
 
 # ---------------------------------------------------------------------------------------
-# Umgebung
+# Environment
 # ---------------------------------------------------------------------------------------
 def _env_flag(name: str, default: str = "0") -> bool:
     return str(os.environ.get(name, default)).strip().lower() in ("1", "true", "yes", "on")
@@ -244,19 +241,19 @@ def _env_float(name: str, default: float) -> float:
 
 
 def pi_plane_full_enabled() -> bool:
-    """Der EINE Lesepunkt des Hauptschalters."""
+    """The ONE read point of the main switch."""
     return _env_flag(ENV_MAIN, "0")
 
 
 # ---------------------------------------------------------------------------------------
-# Graph + Geometrie -- Spiegel von conjugated_torsion._Mol
+# Graph + geometry -- mirror of conjugated_torsion._Mol
 # ---------------------------------------------------------------------------------------
 def _pair_key(a: str, b: str) -> Tuple[str, str]:
     return (a, b) if a <= b else (b, a)
 
 
 def _double_bond_cut(a: str, b: str) -> Optional[float]:
-    """Wortgleich conjugated_torsion._double_cut (:202)."""
+    """Verbatim conjugated_torsion._double_cut (:202)."""
     k = _pair_key(a, b)
     if k in _DOUBLE_CUT:
         return _DOUBLE_CUT[k]
@@ -265,7 +262,7 @@ def _double_bond_cut(a: str, b: str) -> Optional[float]:
 
 
 def _conj_bond_cut(a: str, b: str) -> Optional[float]:
-    """Wortgleich conjugated_torsion._conj_cut (:210)."""
+    """Verbatim conjugated_torsion._conj_cut (:210)."""
     k = _pair_key(a, b)
     if k in _CONJ_CUT:
         return _CONJ_CUT[k]
@@ -274,7 +271,7 @@ def _conj_bond_cut(a: str, b: str) -> Optional[float]:
 
 
 def _conj_axis_len_ok(a: str, b: str, d: float) -> bool:
-    """Wortgleich conjugated_torsion._conj_axis_ok (:374)."""
+    """Verbatim conjugated_torsion._conj_axis_ok (:374)."""
     lim = _CONJ_AXIS_MAX.get(_pair_key(a, b))
     if lim is not None:
         return d <= lim
@@ -284,9 +281,9 @@ def _conj_axis_len_ok(a: str, b: str, d: float) -> bool:
 
 def _pi_lobe_normal(P: np.ndarray, center: int,
                     neighbors: Sequence[int]) -> Optional[np.ndarray]:
-    """pi-Lobe = kleinste-Varianz-Achse der normierten Bindungsvektoren.
-    Wortgleich conjugated_torsion._plane_normal (:234) -- dieselbe Groesse, die das Auge
-    misst; jede andere Definition wuerde etwas anderes reparieren als gemessen wird."""
+    """pi lobe = smallest-variance axis of the normalized bond vectors.
+    Verbatim conjugated_torsion._plane_normal (:234) -- the same quantity the eye
+    measures; any other definition would repair something other than what is measured."""
     if len(neighbors) < 2:
         return None
     V = P[list(neighbors)] - P[center]
@@ -302,7 +299,7 @@ def _pi_lobe_normal(P: np.ndarray, center: int,
 
 
 def _angle_sum_deg(P: np.ndarray, center: int, neighbors: Sequence[int]) -> float:
-    """Wortgleich conjugated_torsion._sum_neighbor_angles (:256)."""
+    """Verbatim conjugated_torsion._sum_neighbor_angles (:256)."""
     if len(neighbors) < 3:
         return 0.0
     s = 0.0
@@ -319,7 +316,7 @@ def _angle_sum_deg(P: np.ndarray, center: int, neighbors: Sequence[int]) -> floa
 
 def _rings_5_6_aromatic(nbr: List[List[int]], syms: Sequence[str],
                         P: np.ndarray) -> List[FrozenSet[int]]:
-    """Aromaten-artige 5/6-Ringe -- wortgleich conjugated_torsion._rings (:271)."""
+    """Aromatic-like 5/6-rings -- verbatim conjugated_torsion._rings (:271)."""
     arom_el = {"C", "N", "O", "S", "Se"}
     adjA = {i: [k for k in nbr[i] if syms[k] in arom_el]
             for i in range(len(syms)) if syms[i] in arom_el}
@@ -353,7 +350,7 @@ def _rings_5_6_aromatic(nbr: List[List[int]], syms: Sequence[str],
 
 
 class _Frame:
-    """Graph + Geometrie EINES Frames.  Spiegel von conjugated_torsion._Mol (:304)."""
+    """Graph + geometry of ONE frame.  Mirror of conjugated_torsion._Mol (:304)."""
 
     def __init__(self, syms: Sequence[str], P: np.ndarray):
         self.syms = list(syms)
@@ -381,7 +378,7 @@ class _Frame:
             for a in rg:
                 self.ring_of[a].append(rg)
 
-    # -- Praedikate, wortgleich zum Auge ------------------------------------------------
+    # -- Predicates, verbatim from the eye ----------------------------------------------
     def is_sp2(self, i: int) -> bool:
         s = self.syms[i]
         if self.metal[i] or s == "H":
@@ -419,7 +416,7 @@ class _Frame:
 
 
 def _axis_type(fr: _Frame, i: int, j: int) -> Optional[str]:
-    """Konjugationstyp der Bindung i-j.  Wortgleiche Kopie von
+    """Conjugation type of the bond i-j.  Verbatim copy of
     conjugated_torsion.classify_axis (:382)."""
     si, sj = fr.syms[i], fr.syms[j]
     d_ij = float(fr.D[i, j])
@@ -453,7 +450,7 @@ def _axis_type(fr: _Frame, i: int, j: int) -> Optional[str]:
 
 
 def _axis_type_generic(fr: _Frame, i: int, j: int) -> Optional[str]:
-    """Wortgleiche Kopie von conjugated_torsion._generic_conj (:565)."""
+    """Verbatim copy of conjugated_torsion._generic_conj (:565)."""
     si, sj = fr.syms[i], fr.syms[j]
     if fr.share_ring(i, j):
         return None
@@ -471,8 +468,8 @@ def _axis_type_generic(fr: _Frame, i: int, j: int) -> Optional[str]:
 
 
 def _fold_deg(fr: _Frame, P: np.ndarray, i: int, j: int) -> Optional[float]:
-    """Faltung in Grad, [0, 90] -- wortgleich conjugated_torsion._twist (:439), aber auf
-    EINER uebergebenen Koordinatenmatrix, damit vorher/nachher vergleichbar ist."""
+    """Fold in degrees, [0, 90] -- verbatim conjugated_torsion._twist (:439), but on
+    ONE passed-in coordinate matrix, so that before/after are comparable."""
     ni = _pi_lobe_normal(P, i, fr.hnm[i])
     nj = _pi_lobe_normal(P, j, fr.hnm[j])
     if ni is None or nj is None:
@@ -482,20 +479,20 @@ def _fold_deg(fr: _Frame, P: np.ndarray, i: int, j: int) -> Optional[float]:
 
 
 # ---------------------------------------------------------------------------------------
-# BLAETTER: die maximale Atommenge, die durch chemisch STARRE Bindungen verbunden ist
+# SHEETS: the maximal set of atoms connected by chemically RIGID bonds
 # ---------------------------------------------------------------------------------------
 def _is_rigid_bond(fr: _Frame, i: int, j: int) -> bool:
-    """Erzwingt die Bindung i-j eine gemeinsame Ebene?
+    """Does the bond i-j force a common plane?
 
-    Drei Quellen, jede chemisch (nicht statistisch):
-      1. Ringbindung eines aromatischen/konjugierten 5/6-Rings -> die Ringebene;
-      2. echte DOPPELbindung zwischen zwei sp2-Zentren -> exocyclische C=O / C=N / N=O
-         und die verbrueckende C=C zwischen zwei Ringen (die pi-Bindung hat keine
-         Drehachse -- E/Z ist eine Konfiguration, keine Konformation);
-      3. eine der STRAFFEN konjugierten Einfachbindungen (amide/ester/aryl_nitro/
-         amidinate), die das Auge selbst mit einem engen Fenster misst.
-    Alles andere -- biaryl, enone, aryl_carboxyl, arylamine, generisch konjugiert --
-    dreht sich in echten Kristallen und wird NICHT starr verbunden."""
+    Three sources, each chemical (not statistical):
+      1. ring bond of an aromatic/conjugated 5/6-ring -> the ring plane;
+      2. genuine DOUBLE bond between two sp2 centers -> exocyclic C=O / C=N / N=O
+         and the bridging C=C between two rings (the pi bond has no rotation
+         axis -- E/Z is a configuration, not a conformation);
+      3. one of the TIGHT conjugated single bonds (amide/ester/aryl_nitro/
+         amidinate), which the eye itself measures with a narrow window.
+    Everything else -- biaryl, enone, aryl_carboxyl, arylamine, generically conjugated --
+    rotates in real crystals and is NOT connected rigidly."""
     if fr.metal[i] or fr.metal[j]:
         return False
     if fr.syms[i] == "H" or fr.syms[j] == "H":
@@ -505,12 +502,12 @@ def _is_rigid_bond(fr: _Frame, i: int, j: int) -> bool:
     d = float(fr.D[i, j])
     dc = _double_bond_cut(fr.syms[i], fr.syms[j])
     if dc is not None and d <= dc:
-        # ⚠ EIN TERMINALES =O IST NICHT "sp2" IM SINNE DES AUGES.  ``is_sp2`` (und mit ihm
-        # ``_Mol.is_sp2`` im Detektor) verlangt DREI oder ZWEI Nachbarn -- ein Carbonyl- oder
-        # Nitro-Sauerstoff hat EINEN.  Das ist im Auge folgerichtig (sein ``_twist`` braucht
-        # ohnehin >= 2 Nachbarn, um eine Ebene zu spannen), waere hier aber ein Loch: genau
-        # dieses O ist der dritte Substituent des sp2-Zentrums und liegt per Definition in
-        # dessen Ebene.  Also: der PARTNER muss sp2 sein, das terminale Atom darf es sein.
+        # ⚠ A TERMINAL =O IS NOT "sp2" IN THE SENSE OF THE EYE.  ``is_sp2`` (and with it
+        # ``_Mol.is_sp2`` in the detector) demands THREE or TWO neighbors -- a carbonyl or
+        # nitro oxygen has ONE.  That is consistent within the eye (its ``_twist`` needs
+        # >= 2 neighbors anyway to span a plane), but here it would be a hole: precisely
+        # this O is the third substituent of the sp2 center and by definition lies in
+        # its plane.  So: the PARTNER must be sp2, the terminal atom may be.
         ok_i = fr.is_sp2(i) or len(fr.hnm[i]) <= 1
         ok_j = fr.is_sp2(j) or len(fr.hnm[j]) <= 1
         if ok_i and ok_j and (fr.is_sp2(i) or fr.is_sp2(j)):
@@ -519,8 +516,8 @@ def _is_rigid_bond(fr: _Frame, i: int, j: int) -> bool:
 
 
 def _pi_sheets(fr: _Frame, min_atoms: int = 4) -> List[List[int]]:
-    """Zusammenhangskomponenten ueber die starren Bindungen (Union-Find).
-    Nur Blaetter mit >= min_atoms schweren Atomen -- drei Atome sind trivial eben."""
+    """Connected components over the rigid bonds (union-find).
+    Only sheets with >= min_atoms heavy atoms -- three atoms are trivially planar."""
     parent = list(range(fr.n))
 
     def find(a: int) -> int:
@@ -548,12 +545,12 @@ def _pi_sheets(fr: _Frame, min_atoms: int = 4) -> List[List[int]]:
             continue
         groups.setdefault(find(i), []).append(i)
     out = [sorted(v) for v in groups.values() if len(v) >= min_atoms]
-    out.sort(key=lambda g: (-len(g), g[0]))     # deterministisch
+    out.sort(key=lambda g: (-len(g), g[0]))     # deterministic
     return out
 
 
 def _sheet_with_h(fr: _Frame, sheet: Sequence[int]) -> List[int]:
-    """Blatt + die daran haengenden H (ein H an einem sp2-Zentrum liegt in dessen Ebene)."""
+    """Sheet + the H attached to it (an H on an sp2 center lies in its plane)."""
     s = set(sheet)
     out = list(sheet)
     for a in sheet:
@@ -571,7 +568,7 @@ def _fit_plane(pts: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
 
 
 # ---------------------------------------------------------------------------------------
-# WAECHTER -- jeder Zug wird zurueckgerollt, wenn einer davon anschlaegt
+# GUARDS -- every move is rolled back if one of them trips
 # ---------------------------------------------------------------------------------------
 def _bond_pairs(fr: _Frame) -> List[Tuple[int, int]]:
     return [(i, j) for i in range(fr.n) for j in fr.nbr[i] if j > i]
@@ -579,8 +576,8 @@ def _bond_pairs(fr: _Frame) -> List[Tuple[int, int]]:
 
 def _min_nonbonded(P: np.ndarray, syms: Sequence[str], nbr: List[List[int]],
                    metal: Sequence[bool]) -> float:
-    """Kleinster nicht-bindender Schwer-Schwer-Abstand (1-2 und 1-3 ausgenommen).
-    Gleiche Bauart wie _pi_coplanar_final._global_nb_heavy_min (:229)."""
+    """Smallest non-bonded heavy-heavy distance (1-2 and 1-3 excluded).
+    Same construction as _pi_coplanar_final._global_nb_heavy_min (:229)."""
     n = len(syms)
     near = [set(nbr[i]) for i in range(n)]
     for i in range(n):
@@ -603,9 +600,9 @@ def _min_nonbonded(P: np.ndarray, syms: Sequence[str], nbr: List[List[int]],
 
 
 def _chirality_volumes(fr: _Frame, P: np.ndarray) -> Dict[int, float]:
-    """Signiertes Volumen jedes 4-bindigen Zentrums.  DAS ist die Pruefung, die beim
-    Aromatenfall gefehlt hat -- eine Projektion darf ein sp3-Stereozentrum weder spiegeln
-    noch flach druecken."""
+    """Signed volume of every 4-coordinate center.  THIS is the check that was missing
+    in the aromatic case -- a projection may neither mirror an sp3 stereocenter nor
+    press it flat."""
     out: Dict[int, float] = {}
     for i in range(fr.n):
         if fr.metal[i] or fr.syms[i] == "H":
@@ -620,7 +617,7 @@ def _chirality_volumes(fr: _Frame, P: np.ndarray) -> Dict[int, float]:
 
 def _torsion_folded(p1: np.ndarray, p2: np.ndarray, p3: np.ndarray,
                     p4: np.ndarray) -> float:
-    """Diederwinkel, gefaltet nach [0, 90] -- wortgleich find_ligand_quality._dihedral (:29)."""
+    """Dihedral angle, folded into [0, 90] -- verbatim find_ligand_quality._dihedral (:29)."""
     b1, b2, b3 = p2 - p1, p3 - p2, p4 - p3
     n1 = np.cross(b1, b2)
     n2 = np.cross(b2, b3)
@@ -631,9 +628,9 @@ def _torsion_folded(p1: np.ndarray, p2: np.ndarray, p3: np.ndarray,
 
 
 def _biaryl_dihedrals_indexed(fr: _Frame, P: np.ndarray) -> Dict[Tuple[int, int], float]:
-    """Biaryl-Diederwinkel NACH DER DEFINITION DES AUGES (find_ligand_quality.py :38),
-    aber indexstabil: Schluessel ist das C-C-Paar, damit vorher/nachher vergleichbar ist.
-    Das ist der Riegel gegen die GEGENRICHTUNG (n_biaryl_overplanar)."""
+    """Biaryl dihedrals ACCORDING TO THE DEFINITION OF THE EYE (find_ligand_quality.py :38),
+    but index-stable: the key is the C-C pair, so that before/after are comparable.
+    This is the latch against the OPPOSITE DIRECTION (n_biaryl_overplanar)."""
     S = fr.syms
     n = fr.n
     D = np.sqrt(((P[:, None, :] - P[None, :, :]) ** 2).sum(-1))
@@ -655,7 +652,7 @@ def _biaryl_dihedrals_indexed(fr: _Frame, P: np.ndarray) -> Dict[Tuple[int, int]
 
 
 class _Guard:
-    """Der Zustand VOR dem Zug; ``verdict(neu)`` sagt, ob der Zug bleiben darf."""
+    """The state BEFORE the move; ``verdict(new)`` says whether the move may stay."""
 
     def __init__(self, fr: _Frame):
         self.fr = fr
@@ -701,7 +698,7 @@ class _Guard:
 
 
 # ---------------------------------------------------------------------------------------
-# STUFE A1 -- BLATT-PROJEKTION
+# STAGE A1 -- SHEET PROJECTION
 # ---------------------------------------------------------------------------------------
 def _stage_sheet_projection(fr: _Frame, P: np.ndarray, guard: _Guard,
                             report: Dict) -> np.ndarray:
@@ -712,21 +709,21 @@ def _stage_sheet_projection(fr: _Frame, P: np.ndarray, guard: _Guard,
         cen, nrm = _fit_plane(pts)
         worst = float(np.abs((pts - cen) @ nrm).max())
         if worst <= 0.05:
-            continue                                    # schon eben
+            continue                                    # already planar
         if worst > maxproj:
             report["n_sheet_too_folded"] += 1
-            continue                                    # das ist eine Torsion -> Stufe A2
+            continue                                    # that is a torsion -> stage A2
         move = _sheet_with_h(fr, sheet)
-        # sp3-RIEGEL vor jeder Projektion: ein 4-bindiges Zentrum wird nie projiziert.
-        # ⚠ METALLE ZAEHLEN NICHT MIT.  Gemessen 19.08. auf 250 Systemen: mit ``fr.nbr``
-        # (das den Metallkontakt enthaelt) schlug der Riegel 976-mal an -- fast alles
-        # eta-Ringkohlenstoffe (2 Ring + 1 H + 1 Metall = 4), also KEINE sp3-Zentren.
-        # Ein Riegel, der beim falschen Fall anschlaegt, verdeckt den Fall, den er meint.
+        # sp3 LATCH before every projection: a 4-coordinate center is never projected.
+        # ⚠ METALS DO NOT COUNT.  Measured 19.08. on 250 systems: with ``fr.nbr``
+        # (which contains the metal contact) the latch tripped 976 times -- almost all
+        # eta ring carbons (2 ring + 1 H + 1 metal = 4), i.e. NO sp3 centers.
+        # A latch that trips on the wrong case hides the case it is meant for.
         if any(sum(1 for k in fr.nbr[a] if not fr.metal[k]) >= 4
                and fr.syms[a] != "H" and not fr.metal[a] for a in move):
             report["n_sheet_sp3_block"] += 1
             continue
-        # ein an ein Metall gebundenes Blattatom darf nicht wandern (M-D bleibt exakt)
+        # a sheet atom bound to a metal must not move (M-D stays exact)
         if any(any(fr.metal[k] for k in fr.nbr[a]) for a in move):
             report["n_sheet_metal_block"] += 1
             continue
@@ -747,7 +744,7 @@ def _stage_sheet_projection(fr: _Frame, P: np.ndarray, guard: _Guard,
 
 
 # ---------------------------------------------------------------------------------------
-# STUFE A2 -- SCHARNIER-DREHUNG
+# STAGE A2 -- HINGE ROTATION
 # ---------------------------------------------------------------------------------------
 def _rot_matrix(axis: np.ndarray, theta_deg: float) -> np.ndarray:
     a = np.asarray(axis, float)
@@ -763,8 +760,8 @@ def _rot_matrix(axis: np.ndarray, theta_deg: float) -> np.ndarray:
 
 
 def _bond_sides(fr: _Frame, i: int, j: int) -> Optional[Tuple[List[int], List[int]]]:
-    """Beide Seiten der Bindung i-j im Ligandgraphen (Metalle sind KEINE Bruecke).
-    None, wenn die Bindung in einem Zyklus liegt -- dann ist keine Drehung moeglich."""
+    """Both sides of the bond i-j in the ligand graph (metals are NOT a bridge).
+    None if the bond lies in a cycle -- then no rotation is possible."""
     def bfs(start: int) -> Set[int]:
         seen = {start}
         stack = [start]
@@ -782,13 +779,13 @@ def _bond_sides(fr: _Frame, i: int, j: int) -> Optional[Tuple[List[int], List[in
 
     si = bfs(i)
     if j in si:
-        return None                                     # Ring -> nicht drehbar
+        return None                                     # ring -> not rotatable
     return sorted(si), sorted(bfs(j))
 
 
 def _hinge_bonds(fr: _Frame) -> List[Tuple[int, int, str]]:
-    """Konjugierte EINFACHbindungen zwischen zwei Blaettern, die das Auge als
-    planaritaets-bevorzugend fuehrt -- OHNE biaryl (die Gegenrichtung)."""
+    """Conjugated SINGLE bonds between two sheets that the eye lists as
+    planarity-preferring -- WITHOUT biaryl (the opposite direction)."""
     out: List[Tuple[int, int, str]] = []
     for i in range(fr.n):
         if fr.metal[i] or fr.syms[i] == "H":
@@ -797,12 +794,12 @@ def _hinge_bonds(fr: _Frame) -> List[Tuple[int, int, str]]:
             if j <= i or fr.metal[j]:
                 continue
             if _is_rigid_bond(fr, i, j):
-                continue                                # innerhalb eines Blatts
+                continue                                # inside a sheet
             t = _axis_type(fr, i, j) or _axis_type_generic(fr, i, j)
             if t is None or t in _NEVER_TOUCH_AXES:
                 continue
             if len(fr.hnm[i]) < 2 or len(fr.hnm[j]) < 2:
-                continue                                # terminaler Donor: Ebene haengt am H
+                continue                                # terminal donor: plane depends on the H
             out.append((i, j, t))
     out.sort()
     return out
@@ -823,7 +820,7 @@ def _stage_hinge(fr: _Frame, P: np.ndarray, guard: _Guard, report: Dict) -> np.n
         mj = any(any(fr.metal[k] for k in fr.nbr[a]) for a in sj)
         if mi and mj:
             report["n_hinge_metal_block"] += 1
-            continue                                    # beide Seiten am Metall -> gespannt
+            continue                                    # both sides at the metal -> strained
         if mi:
             mov, piv_a, piv_b = sj, i, j
         elif mj:
@@ -861,9 +858,9 @@ def _stage_hinge(fr: _Frame, P: np.ndarray, guard: _Guard, report: Dict) -> np.n
 
 
 # ---------------------------------------------------------------------------------------
-# STUFE B -- DAS METALL IN DIE EBENE.  Hier entscheidet die Chemie.
+# STAGE B -- THE METAL INTO THE PLANE.  Here the chemistry decides.
 # ---------------------------------------------------------------------------------------
-try:                                    # DERSELBE eta-Diskriminator wie _pi_coplanar_final
+try:                                    # the SAME eta discriminator as _pi_coplanar_final
     from delfin.manta._pi_coplanar_final import _face_on as _face_on
 except Exception:                       # pragma: no cover
     def _face_on(M, pts):               # type: ignore[misc]
@@ -878,24 +875,24 @@ except Exception:                       # pragma: no cover
 
 def _is_sigma_donor(fr: _Frame, P: np.ndarray, sheet: Sequence[int],
                     m: int, donors: Sequence[int]) -> Tuple[bool, str]:
-    """sigma-Donor oder eta-Koordination?  DREI unabhaengige Kriterien, ALLE muessen fuer
-    sigma sprechen -- ein Mechanismus, der die beiden Faelle verwechselt, zerstoert den
-    einen, waehrend er den anderen repariert.
+    """sigma donor or eta coordination?  THREE independent criteria, ALL must speak for
+    sigma -- a mechanism that confuses the two cases destroys the one while it
+    repairs the other.
 
-    (1) ZAEHLEN (die Haptizitaets-Kennzeichnung, so wie sie in einem Frame ueberhaupt
-        ablesbar ist -- ueber die Kontakte, nicht ueber ein Etikett).  Ein sigma-Donor ist
-        GENAU EIN Kontaktatom des Blatts zum Metall; eta2 hat zwei, eta5-Cp fuenf,
-        eta6-Aren sechs.
-    (2) LOTFUSSPUNKT (``_face_on``, WOERTLICH von _pi_coplanar_final :174 importiert).
-        Faellt die Projektion des Metalls auf die Ringebene INNERHALB des Rings (naeher
-        als 0,7 Ringradien am Schwerpunkt), sitzt das Metall UEBER der Flaeche -> eta.
-        Ein sigma-Donor hat das Metall AUSSERHALB des Rings auf der Verlaengerung des
-        freien Elektronenpaars, also etwa einen Ringradius vom Schwerpunkt entfernt.
-    (3) RICHTUNG DES FREIEN PAARS.  Beim sigma-Donor zeigt D->M nach AUSSEN, weg vom
-        Ringschwerpunkt: (D->M) . (Schwerpunkt->D) > 0,20.  Beim eta-Fall zeigt D->M im
-        Wesentlichen entlang der Normalen, die radiale Komponente ist klein oder negativ.
+    (1) COUNTING (the hapticity marker, as far as it can be read off a frame at
+        all -- via the contacts, not via a label).  A sigma donor is EXACTLY ONE
+        contact atom of the sheet to the metal; eta2 has two, eta5-Cp five,
+        eta6-arene six.
+    (2) FOOT OF THE PERPENDICULAR (``_face_on``, imported VERBATIM from _pi_coplanar_final :174).
+        If the projection of the metal onto the ring plane falls INSIDE the ring (closer
+        than 0.7 ring radii to the centroid), the metal sits ABOVE the face -> eta.
+        A sigma donor has the metal OUTSIDE the ring on the extension of the lone
+        pair, i.e. about one ring radius away from the centroid.
+    (3) DIRECTION OF THE LONE PAIR.  For the sigma donor D->M points OUTWARD, away from
+        the ring centroid: (D->M) . (centroid->D) > 0.20.  In the eta case D->M points
+        essentially along the normal; the radial component is small or negative.
 
-    Rueckgabe (ist_sigma, grund)."""
+    Returns (is_sigma, reason)."""
     if len(donors) != 1:
         return False, "eta_multi_contact"
     d = int(donors[0])
@@ -923,9 +920,9 @@ def _is_sigma_donor(fr: _Frame, P: np.ndarray, sheet: Sequence[int],
 
 
 def _movable_arm(fr: _Frame, sheet: Sequence[int], donor: int) -> Optional[List[int]]:
-    """Das Teilstueck, das mit dem Blatt mitgedreht werden darf: das Blatt plus alle daran
-    haengenden Fragmente.  None, wenn dabei ein ZWEITER Metallkontakt eingeschlossen
-    wuerde -- die Drehung wuerde dann eine andere M-D-Bindung zerreissen."""
+    """The piece that may be rotated along with the sheet: the sheet plus all fragments
+    hanging off it.  None if a SECOND metal contact would be included -- the rotation
+    would then tear apart another M-D bond."""
     s = set(sheet)
     stack = list(sheet)
     while stack:
@@ -944,9 +941,9 @@ def _movable_arm(fr: _Frame, sheet: Sequence[int], donor: int) -> Optional[List[
 
 
 def _metal_oop(P: np.ndarray, m: int, d: int, fr: _Frame) -> Optional[float]:
-    """Metall-Abstand von der Donorebene -- WOERTLICH die Groesse, die
-    find_ligand_quality.sp2_donor_metal_oop (:313) misst: Ebene aus dem Donor und den
-    ERSTEN ZWEI Nachbarn im Aromatenfenster 1,24-1,44 A, in Indexreihenfolge."""
+    """Metal distance from the donor plane -- VERBATIM the quantity that
+    find_ligand_quality.sp2_donor_metal_oop (:313) measures: plane from the donor and the
+    FIRST TWO neighbors in the aromatic window 1.24-1.44 A, in index order."""
     D = np.sqrt(((P[d] - P) ** 2).sum(-1))
     ring = [k for k in range(fr.n)
             if k not in (m, d) and fr.syms[k] != "H" and _AROM_MIN <= D[k] <= _AROM_MAX]
@@ -984,7 +981,7 @@ def _stage_metal_in_plane(fr: _Frame, P: np.ndarray, guard: _Guard,
                 continue
             u = u / nu
             theta = math.degrees(math.acos(max(-1.0, min(1.0, abs(float(np.dot(nrm, u)))))))
-            delta = 90.0 - theta                        # so viel fehlt zur In-Ebenen-Lage
+            delta = 90.0 - theta                        # this much is missing to the in-plane position
             if abs(delta) < 3.0:
                 continue
             arm = _movable_arm(fr, sheet, d)
@@ -1026,7 +1023,7 @@ def _stage_metal_in_plane(fr: _Frame, P: np.ndarray, guard: _Guard,
 
 
 # ---------------------------------------------------------------------------------------
-# EINSTIEG
+# ENTRY
 # ---------------------------------------------------------------------------------------
 def _new_report() -> Dict:
     return {"n_sheets": 0, "n_sheet_fixed": 0, "n_sheet_too_folded": 0,
@@ -1038,9 +1035,9 @@ def _new_report() -> Dict:
 
 
 def correct_xyz(block: str, force: bool = False) -> Tuple[str, Dict]:
-    """EIN Frame.  ``(neuer_text, bericht)``.  Ohne Schalter -> Eingabe unveraendert.
-    Gleiche Signaturfamilie wie ``_pi_coplanar_final.correct_xyz`` / ``_pi_coplanar_m``,
-    damit die Verdrahtung dieselbe Form hat wie bei den Geschwistern."""
+    """ONE frame.  ``(new_text, report)``.  Without the switch -> input unchanged.
+    Same signature family as ``_pi_coplanar_final.correct_xyz`` / ``_pi_coplanar_m``,
+    so that the wiring has the same shape as for the siblings."""
     report = _new_report()
     if not block or not (force or pi_plane_full_enabled()):
         return block, report
@@ -1066,7 +1063,7 @@ def correct_xyz(block: str, force: bool = False) -> Tuple[str, Dict]:
         return block, report
     if not np.all(np.isfinite(P)):
         return block, report
-    okk, why = guard.verdict(P)             # Gesamtriegel ueber ALLE Zuege zusammen
+    okk, why = guard.verdict(P)             # overall latch over ALL moves together
     if not okk:
         report["rollback"]["final_" + why] = report["rollback"].get("final_" + why, 0) + 1
         return block, report
@@ -1077,13 +1074,13 @@ def correct_xyz(block: str, force: bool = False) -> Tuple[str, Dict]:
 
 
 def correct_isomer_results(isomers, force: bool = False):
-    """``[(xyz, label), ...]`` -> dieselbe Liste, Anzahl und Reihenfolge unveraendert.
+    """``[(xyz, label), ...]`` -> the same list, count and order unchanged.
 
-    Ohne Schalter die IDENTITAET (dasselbe Objekt), damit ein Aufruf byte-identisch ist.
-    Heisst absichtlich NICHT ``correct_results`` wie die Geschwister (_pi_coplanar_final,
-    _isolated_reseat, _aromatic_ring_flattener): der Name soll beim Verdrahten zeigen,
-    dass hier ein ANDERER Korrektor haengt und nicht versehentlich der gleichnamige.
-    DAS ist die Funktion, die eine Aufrufstelle braucht (siehe Modulkopf)."""
+    Without the switch the IDENTITY (the same object), so that a call is byte-identical.
+    Deliberately NOT named ``correct_results`` like the siblings (_pi_coplanar_final,
+    _isolated_reseat, _aromatic_ring_flattener): the name should show, when wiring,
+    that a DIFFERENT corrector hangs here and not accidentally the one of the same name.
+    THIS is the function that needs a call site (see module header)."""
     if not isomers or not (force or pi_plane_full_enabled()):
         return isomers
     out = []
@@ -1105,7 +1102,7 @@ def correct_isomer_results(isomers, force: bool = False):
 
 
 # =======================================================================================
-# SELBSTTEST / MESSUNG -- kein inline-python, alles im Modul
+# SELF-TEST / MEASUREMENT -- no inline python, everything in the module
 # =======================================================================================
 def _ring_coords(n: int, r: float, z: float = 0.0) -> np.ndarray:
     return np.array([[r * math.cos(2 * math.pi * k / n), r * math.sin(2 * math.pi * k / n), z]
@@ -1120,7 +1117,7 @@ def _mk_xyz(syms: Sequence[str], P: np.ndarray, comment: str = "test") -> str:
 
 
 def _mk_benzamide(twist_deg: float) -> Tuple[List[str], np.ndarray]:
-    """Benzol + exocyclisches C(=O)NH2, das Amid um die Ring-C-Bindung verdreht."""
+    """Benzene + exocyclic C(=O)NH2, the amide twisted about the ring-C bond."""
     ring = _ring_coords(6, 1.39)
     syms = ["C"] * 6
     P = [ring[k] for k in range(6)]
@@ -1142,9 +1139,9 @@ def _mk_benzamide(twist_deg: float) -> Tuple[List[str], np.ndarray]:
 
 
 def _mk_nitrobenzene(tilt_deg: float) -> Tuple[List[str], np.ndarray]:
-    """Nitrobenzol -- der Lehrbuchfall fuer "die Ebene reicht ueber den Ring hinaus":
-    C(Ring)-N ist ``aryl_nitro`` (straffe Achse), N=O sind Doppelbindungen, also gehoeren
-    Ring + N + O + O in EIN Blatt.  ``tilt_deg`` kippt die NO2-Gruppe um die C-N-Achse."""
+    """Nitrobenzene -- the textbook case for "the plane extends beyond the ring":
+    C(ring)-N is ``aryl_nitro`` (tight axis), N=O are double bonds, so ring + N + O + O
+    belong in ONE sheet.  ``tilt_deg`` tilts the NO2 group about the C-N axis."""
     ring = _ring_coords(6, 1.39)
     syms = ["C"] * 6
     P = [ring[k] for k in range(6)]
@@ -1166,7 +1163,7 @@ def _mk_nitrobenzene(tilt_deg: float) -> Tuple[List[str], np.ndarray]:
 def _mk_biphenyl(twist_deg: float) -> Tuple[List[str], np.ndarray]:
     A = _ring_coords(6, 1.39)
     R = _rot_matrix(np.array([1.0, 0.0, 0.0]), twist_deg)
-    B = (A @ R.T) + np.array([2.87, 0.0, 0.0])   # C1-C1' = 1.48 A entlang x
+    B = (A @ R.T) + np.array([2.87, 0.0, 0.0])   # C1-C1' = 1.48 A along x
     return ["C"] * 12, np.vstack([A, B])
 
 
@@ -1182,8 +1179,8 @@ def _mk_cp_metal() -> Tuple[List[str], np.ndarray]:
 
 
 def _mk_pyridine_metal(tilt_deg: float) -> Tuple[List[str], np.ndarray]:
-    """Pyridin mit N auf Index 0, Metall auf der Aussenrichtung, um ``tilt`` aus der
-    Ringebene gekippt -- das ist der 89-Systeme-Defekt in Reinform."""
+    """Pyridine with N at index 0, metal in the outward direction, tilted out of the
+    ring plane by ``tilt`` -- that is the 89-system defect in its purest form."""
     A = _ring_coords(6, 1.39)
     syms = ["N"] + ["C"] * 5
     outward = A[0] / np.linalg.norm(A[0])
@@ -1298,13 +1295,13 @@ def _selftest() -> int:
     syms = ["C", "H", "F", "Cl", "Br"]
     dirs = np.array([[1.0, 1.0, 1.0], [1.0, -1.0, -1.0],
                      [-1.0, 1.0, -1.0], [-1.0, -1.0, 1.0]]) / math.sqrt(3.0)
-    lens = [1.09, 1.35, 1.77, 1.94]              # echte Bindungslaengen -> alle vier binden
+    lens = [1.09, 1.35, 1.77, 1.94]              # real bond lengths -> all four bond
     P = np.vstack([np.zeros(3)] + [dirs[k] * lens[k] for k in range(4)])
     frx = _Frame(syms, P)
     _ck("Zentrum hat vier Nachbarn", len(frx.nbr[0]) == 4, f"({len(frx.nbr[0])})")
     g = _Guard(frx)
     flip = P.copy()
-    flip[:, 2] *= -1.0                                  # Spiegelung = Vorzeichenwechsel
+    flip[:, 2] *= -1.0                                  # mirroring = sign change
     okk, why = g.verdict(flip)
     _ck("Spiegelung wird abgelehnt", (not okk) and "chirality" in why, f"({why})")
 
@@ -1312,7 +1309,7 @@ def _selftest() -> int:
     return bad
 
 
-# --- Messung gegen die Detektoren des Auges (NUR lesend) --------------------------------
+# --- Measurement against the detectors of the eye (READ-ONLY) ---------------------------
 def _load_eye_detectors():
     import sys
     p = "/home/qmchem_max/agent_workspace/MANTA2/weddell/detectors"
@@ -1324,7 +1321,7 @@ def _load_eye_detectors():
 
 
 def _split_frames(text: str) -> List[str]:
-    """Multi-Frame-XYZ -> Liste von Einzelframe-Bloecken."""
+    """Multi-frame XYZ -> list of single-frame blocks."""
     lines = text.splitlines()
     out: List[str] = []
     k = 0
@@ -1423,7 +1420,7 @@ def _measure_against_eye(dirpath: str, limit: int) -> None:
         t["off1"] += a1
         t["soff0"] += 1 if a0 else 0
         t["soff1"] += 1 if a1 else 0
-        m0 = min(oops0) if oops0 else 0.0          # best-of, wie sp2_donor_planarity
+        m0 = min(oops0) if oops0 else 0.0          # best-of, like sp2_donor_planarity
         m1 = min(oops1) if oops1 else 0.0
         t["oop0"] += m0
         t["oop1"] += m1
@@ -1453,10 +1450,10 @@ def _measure_against_eye(dirpath: str, limit: int) -> None:
 
 
 def _measure_dark_sibling(dirpath: str, limit: int) -> None:
-    """VOR JEDEM NEUBAU DIE DUNKLEN SCHALTER PRUEFEN.  Misst, was der bereits gebaute,
-    aber AUSGESCHALTETE ``_pi_coplanar_final`` (DELFIN_FFFREE_PI_COPLANAR_FINAL) auf
-    denselben Frames am Metall-oop bewegt -- damit im Bericht eine ZAHL steht statt einer
-    Vermutung, ob Stufe B ueberhaupt gebraucht wird."""
+    """BEFORE EVERY NEW BUILD, CHECK THE DARK SWITCHES.  Measures what the already built
+    but SWITCHED-OFF ``_pi_coplanar_final`` (DELFIN_FFFREE_PI_COPLANAR_FINAL) moves on
+    the same frames in metal-oop -- so that the report carries a NUMBER instead of a
+    guess as to whether stage B is needed at all."""
     import glob
     _CT, FLQ = _load_eye_detectors()
     from delfin.manta._pi_coplanar_final import correct_xyz as _pcf
@@ -1487,7 +1484,7 @@ def _measure_dark_sibling(dirpath: str, limit: int) -> None:
             w1 = max((x[1] for x in FLQ.sp2_donor_metal_oop(_atom_tuples(new))), default=0.0)
             best0.append(w0)
             best1.append(w1)
-            if k == 0:                       # der AUSGELIEFERTE Frame, nicht best-of
+            if k == 0:                       # the DELIVERED frame, not best-of
                 f0_bad += 1 if w0 > 0.20 else 0
                 f1_bad += 1 if w1 > 0.20 else 0
         m0 = min(best0) if best0 else 0.0
@@ -1506,7 +1503,7 @@ def _measure_dark_sibling(dirpath: str, limit: int) -> None:
 
 
 def _check_identity_off(dirpath: str, limit: int) -> int:
-    """Mit Schalter AUS muss JEDES Frame byte-identisch bleiben."""
+    """With the switch OFF, EVERY frame must remain byte-identical."""
     import glob
     os.environ.pop(ENV_MAIN, None)
     files = sorted(glob.glob(os.path.join(dirpath, "*.xyz")))[:limit]

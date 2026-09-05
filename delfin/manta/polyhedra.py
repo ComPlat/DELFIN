@@ -64,25 +64,25 @@ def _ref_polyhedra():
     # C4 in polya_isomer_count._spy_group (1->2->3->4) is a real geometric symmetry of
     # this vertex set -> chelate cis-edge enumeration & isomer dedup are consistent with
     # placement (the index space here IS the one assemble_from_config places into).
-    # SPY-5 APEX-KORREKTUR (DELFIN_FFFREE_SPY5_APEX, Vorgabe "0" -> byte-identisch).
+    # SPY-5 APEX CORRECTION (DELFIN_FFFREE_SPY5_APEX, default "0" -> byte-identical).
     #
-    # Der gebaute Basalvektor (1, 1, +0.2) hat eine Komponente ZUM Apex hin.  Nachgerechnet
-    # (harness/polyhedra_audit.py) ergibt das:
-    #       Apex-Basal  81.95 Grad      basal-cis  88.88      basal-trans  163.90
-    # Eine echte C4v-Quadratpyramide (VO(acac)2, [CuCl5]3-, [Ni(CN)5]3-) hat dagegen
-    #       Apex-Basal  100-105         basal-cis  86-88      basal-trans  150-155
-    # -- die Basalatome biegen sich VOM Apex WEG, der Winkel ist GROESSER als 90, nicht
-    # kleiner.  Der Bauer liegt also um 20.5 Grad daneben, und zwar auf JEDEM System, das
-    # als SPY-5 gesetzt wird.
+    # The built basal vector (1, 1, +0.2) has a component TOWARDS the apex.  Recomputed
+    # (harness/polyhedra_audit.py) this gives:
+    #       apex-basal  81.95 deg       basal-cis  88.88      basal-trans  163.90
+    # A real C4v square pyramid (VO(acac)2, [CuCl5]3-, [Ni(CN)5]3-) has instead
+    #       apex-basal  100-105         basal-cis  86-88      basal-trans  150-155
+    # -- the basal atoms bend AWAY FROM the apex, the angle is LARGER than 90, not
+    # smaller.  So the builder is off by 20.5 degrees, and on EVERY system that is
+    # seated as SPY-5.
     #
-    # ⚠ NUR DAS VORZEICHEN ZU DREHEN REICHT NICHT.  z = -0.2 gibt Apex 98.05 (schon besser),
-    # laesst basal-trans aber bei 163.90 stehen.  Erst z = -0.3135 bringt ALLE DREI
-    # Winkelklassen gleichzeitig in den Kristallbereich: 102.50 / 87.32 / 155.00.
+    # ⚠ FLIPPING THE SIGN ALONE IS NOT ENOUGH.  z = -0.2 gives apex 98.05 (already better),
+    # but leaves basal-trans standing at 163.90.  Only z = -0.3135 brings ALL THREE
+    # angle classes into the crystal range at the same time: 102.50 / 87.32 / 155.00.
     #
-    # WARUM DAS KEIN A/B GEFUNDEN HAT: die Tabelle ist in BEIDEN Armen dieselbe.  Ein
-    # falscher Sollwert ist eine KONSTANTE, kein Test -- er verschwindet in jeder Differenz.
-    # Deshalb prueft polyhedra_audit die Tabelle direkt gegen die Geometrie, statt zu hoffen,
-    # dass ein Vergleich zweier gleich falscher Arme ihn zeigt.
+    # WHY NO A/B FOUND THIS: the table is the same in BOTH arms.  A wrong
+    # target value is a CONSTANT, not a test -- it vanishes in every difference.
+    # That is why polyhedra_audit checks the table directly against the geometry, instead
+    # of hoping that a comparison of two equally wrong arms would show it.
     _spy5_z = 0.2
     if os.environ.get("DELFIN_FFFREE_SPY5_APEX", "0") == "1":
         _spy5_z = float(os.environ.get("DELFIN_FFFREE_SPY5_Z", "-0.3135"))
@@ -143,50 +143,50 @@ COV = {
     "Ir": 1.41, "Pt": 1.36, "Au": 1.36, "Hg": 1.32, "La": 2.07,
 }
 
-# ===== DIE TABELLE WAR ABGESCHNITTEN, NICHT FALSCH ====================================
-# Gemessen 2026-08-18 gegen 30735 Kristalle: die Radiensumme ist global fast unverzerrt
-# (sigma-Klasse, 260172 Bindungen, mittlerer vorzeichenbehafteter Fehler +0,014 A).  Der
-# Fehler sitzt nicht in den EINTRAEGEN, sondern in den LUECKEN -- md_distance faellt bei
-# jedem unbekannten Metall auf COV.get(metal, 1.5) zurueck, und der GESAMTE f-Block ausser
-# La fehlt:
-#     Dy 2834 Bindungen -0,232 A | U 2479 -0,239 | Eu 1758 -0,259 | Yb 1690 -0,207
-#     Tb 1687 -0,232 | Gd 1568 -0,251 | Sm 1174 -0,262 | Nd 964 -0,285 | Ce 738 -0,295
-#     Pr 620 -0,303 | Th 313 -0,226 | Np/Pu 187 ~ -0,30
-# Rund 18600 Kristallbindungen sind systematisch 0,20 bis 0,30 A zu kurz, und zwar aus
-# einem einzigen dict.get-Vorgabewert.  Kein Modell, kein Mechanismus -- eine Luecke.
+# ===== THE TABLE WAS TRUNCATED, NOT WRONG =============================================
+# Measured 2026-08-18 against 30735 crystals: the radii sum is globally almost unbiased
+# (sigma class, 260172 bonds, mean signed error +0.014 A).  The
+# error does not sit in the ENTRIES but in the GAPS -- md_distance falls back to
+# COV.get(metal, 1.5) for every unknown metal, and the ENTIRE f-block except
+# La is missing:
+#     Dy 2834 bonds -0.232 A | U 2479 -0.239 | Eu 1758 -0.259 | Yb 1690 -0.207
+#     Tb 1687 -0.232 | Gd 1568 -0.251 | Sm 1174 -0.262 | Nd 964 -0.285 | Ce 738 -0.295
+#     Pr 620 -0.303 | Th 313 -0.226 | Np/Pu 187 ~ -0.30
+# Around 18600 crystal bonds are systematically 0.20 to 0.30 A too short, and all from
+# a single dict.get default value.  No model, no mechanism -- a gap.
 #
-# Die vorhandenen Werte SIND Cordero et al. (Dalton Trans. 2008, 2832) -- Sc 1,70, Ti 1,60,
-# V 1,53, Zr 1,75, Y 1,90, La 2,07 stimmen ziffernweise, und Mn/Fe/Co stehen auf dem
-# Mittel aus low- und high-spin.  Diese Ergaenzung setzt dieselbe Quelle fort und fuegt
-# keine neue Systematik hinzu.  OFFENE LITERATUR, keine CCDC-Zahl -- die Datei bleibt
-# oeffentlich lizenzsauber.
+# The existing values ARE Cordero et al. (Dalton Trans. 2008, 2832) -- Sc 1.70, Ti 1.60,
+# V 1.53, Zr 1.75, Y 1.90, La 2.07 match digit for digit, and Mn/Fe/Co stand at the
+# mean of low- and high-spin.  This completion continues the same source and adds
+# no new systematics.  OPEN LITERATURE, no CCDC number -- the file stays
+# publicly licence-clean.
 #
-# DELFIN_FFFREE_COV_COMPLETE (Vorgabe 0 -> byte-identisch).  Der Schalter ist noetig, weil
-# die Ergaenzung Champion-Verhalten aendert: ein Dy-Komplex wird um 0,42 A weiter gesetzt.
-# Das ist chemisch richtig und trotzdem ein A/B wert -- die Setzung darf sich nicht
-# unbemerkt verschieben.
+# DELFIN_FFFREE_COV_COMPLETE (default 0 -> byte-identical).  The switch is needed because
+# the completion changes champion behaviour: a Dy complex is seated 0.42 A further out.
+# That is chemically right and still worth an A/B -- the seating must not
+# shift unnoticed.
 _COV_CORDERO_REST = {
-    # Alkali / Erdalkali
+    # alkali / alkaline earth
     "Li": 1.28, "Be": 0.96, "Na": 1.66, "Mg": 1.41, "K": 2.03, "Ca": 1.76,
     "Rb": 2.20, "Sr": 1.95, "Cs": 2.44, "Ba": 2.15,
-    # Hauptgruppen-Metalle und Metalloide (auch als DONOR relevant, s. _donor_cov)
+    # main-group metals and metalloids (also relevant as DONOR, see _donor_cov)
     "B": 0.84, "Al": 1.21, "Si": 1.11, "Ga": 1.22, "Ge": 1.20,
     "In": 1.42, "Sn": 1.39, "Sb": 1.39, "Te": 1.38,
     "Tl": 1.45, "Pb": 1.46, "Bi": 1.48, "Po": 1.40, "At": 1.50,
-    # das eine fehlende d-Metall
+    # the one missing d-metal
     "Tc": 1.47,
-    # Lanthanoide -- der groesste Block der Fehlmasse
+    # lanthanides -- the largest block of the missing mass
     "Ce": 2.04, "Pr": 2.03, "Nd": 2.01, "Pm": 1.99, "Sm": 1.98, "Eu": 1.98,
     "Gd": 1.96, "Tb": 1.94, "Dy": 1.92, "Ho": 1.92, "Er": 1.89, "Tm": 1.90,
     "Yb": 1.87, "Lu": 1.87,
-    # Actinoide
+    # actinides
     "Ac": 2.15, "Th": 2.06, "Pa": 2.00, "U": 1.96, "Np": 1.90, "Pu": 1.87,
     "Am": 1.80, "Cm": 1.69,
 }
 
 if os.environ.get("DELFIN_FFFREE_COV_COMPLETE", "0") == "1":
-    # setdefault, nicht update: ein vorhandener Eintrag ist gemessen oder bewusst gesetzt
-    # und wird NIE ueberschrieben.  Die Ergaenzung kann damit nur Luecken schliessen.
+    # setdefault, not update: an existing entry is measured or deliberately set
+    # and is NEVER overwritten.  The completion can therefore only close gaps.
     for _el, _r in _COV_CORDERO_REST.items():
         COV.setdefault(_el, _r)
 
@@ -526,13 +526,13 @@ def md_distance(metal: str, donor: str, atom=None, mol=None, cn=None) -> float:
     # our own frames FIVE TIMES BETTER than reality (ratio 0.20); swapping it for the
     # measured band took the crystal force from 52833 to 67.39, a factor of 784.  Here the
     # same number is used one step earlier, where it costs nothing to be right.
-    # ⚠ BEIDE SCHREIBWEISEN LESEN (26.08.2026).  `cli_manta.py:293` setzt den Champion
-    #   als DELFIN_FFFREE_ mit DREI F; dieser Schalter wurde als DELFIN_FFREE_ mit ZWEI
-    #   geschrieben und konnte damit per Konstruktion NIE in den Champion, bei
-    #   gemessenen 19,9 Prozent Reichweite.  Der alte Name bleibt lesbar, weil 31 von
-    #   1286 Achsendateien ihn setzen -- ein Umbenennen machte diese Archive
-    #   unreproduzierbar.  Vorgabe unter BEIDEN Namen AUS -> byte-identisch.
-    #   Gleiche Reparatur wie `assemble_complex._ffree_flag`, dort steht die Herleitung.
+    # ⚠ READ BOTH SPELLINGS (26.08.2026).  `cli_manta.py:293` sets the champion
+    #   as DELFIN_FFFREE_ with THREE F; this switch was written as DELFIN_FFREE_ with TWO
+    #   and could therefore, by construction, NEVER make it into the champion, at
+    #   a measured 19.9 percent reach.  The old name stays readable because 31 of
+    #   1286 axis files set it -- renaming would make those archives
+    #   unreproducible.  Default OFF under BOTH names -> byte-identical.
+    #   Same repair as `assemble_complex._ffree_flag`; the derivation is there.
     if (os.environ.get("DELFIN_FFFREE_MD_MEASURED", "0") == "1"
             or os.environ.get("DELFIN_FFREE_MD_MEASURED", "0") == "1"):
         _m = _measured_md(metal, donor, cn=(cn if cn else _CURRENT_CN))

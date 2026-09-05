@@ -1,65 +1,65 @@
-"""delfin.manta._mirror_enum — DER SPIEGELABSCHLUSS des Manifolds.
+"""delfin.manta._mirror_enum — THE MIRROR CLOSURE of the manifold.
 
-DER BEFUND (gemessen 17.08.2026 auf `rows_census50k`, 38 556 Saetze)
--------------------------------------------------------------------
-**Das Korpus traegt keine Stereochemie.**  9 von 129 314 SMILES haben eine
-Chiralitaetsmarke `@` (0,007 %), 2 eine Doppelbindungsmarke.  Geprueft auf den 2269
-Fehlschlaegen (0 mit `@`), den 588 reinen C-Faellen (0) UND den 5726 Erfolgen (0) --
-gleiche Grundrate, also eine Eigenschaft der Grundgesamtheit, kein Merkmal der Fehler.
+THE FINDING (measured 17.08.2026 on `rows_census50k`, 38 556 records)
+---------------------------------------------------------------------
+**The corpus carries no stereochemistry.**  9 of 129 314 SMILES have a
+chirality mark `@` (0.007 %), 2 a double-bond mark.  Checked on the 2269
+failures (0 with `@`), the 588 pure-C cases (0) AND the 5726 successes (0) --
+same base rate, hence a property of the population, not a feature of the failures.
 
-=> Der Bauer bekommt an KEINEM Zentrum eine Vorgabe.  Jede Haendigkeit ist freie Wahl.
-Die Vollstaendigkeitsregel ("immer + und - bauen") ist damit nicht eine Zusatzforderung,
-sondern der EINZIGE Mechanismus, der die Kristallhaendigkeit je treffen kann.
+=> The builder gets a prescription at NO center.  Every handedness is a free choice.
+The completeness rule ("always build + and -") is therefore not an additional demand,
+but the ONLY mechanism that can ever hit the crystal handedness.
 
-Die Fehlrate ist FLACH ueber alle Zentrenarten -- C[sp3] 21,4 % · N[sp3] 19,0 % ·
-P 24,9 % · Cu 16,7 % · Zn 24,9 % · Co 21,2 %; Summe sp3 20,7 % gegen Metall 22,4 %.
-Flach heisst: es ist die allgemeine Erzeugung, keine Regel eines Moduls.  Und die
-Ursache ist ABDECKUNG, nicht Auswahl: von 2269 Fehlschlaegen sind **1946 (85,8 %)
-"Haendigkeit NIE gebaut"**, nur 323 sind `joint`.
+The failure rate is FLAT across all center types -- C[sp3] 21.4 % · N[sp3] 19.0 % ·
+P 24.9 % · Cu 16.7 % · Zn 24.9 % · Co 21.2 %; sum sp3 20.7 % against metal 22.4 %.
+Flat means: it is the general generation, not a rule of one module.  And the
+cause is COVERAGE, not selection: of 2269 failures, **1946 (85.8 %) are
+"handedness NEVER built"**, only 323 are `joint`.
 
-WARUM GERADE DIE GESAMTSPIEGELUNG
----------------------------------
-Von den 1946 fehlen bei **1326 (68,1 %) ALLE** Zentren des Systems -- dort ist das
-Spiegelbild EXAKT der fehlende Isomer.  1166 (59,9 %) haben ueberhaupt nur ein Zentrum.
-**889 der 1326 (67 %) bauen <= 5 Frames**, dort ist ein Zusatzframe am billigsten.
+WHY THE WHOLE-MOLECULE MIRRORING IN PARTICULAR
+----------------------------------------------
+Of the 1946, **1326 (68.1 %) are missing ALL** centers of the system -- there the
+mirror image is EXACTLY the missing isomer.  1166 (59.9 %) have only a single center at all.
+**889 of the 1326 (67 %) build <= 5 frames**, where an extra frame is cheapest.
 
-Und es ist die EINZIGE Operation, die fuer Kohlenstoff, Stickstoff und Metall gleich
-funktioniert -- sie fragt nicht, was das Zentrum IST.  Das zaehlt, weil die drei Klassen
-sonst drei Module braechten: `_stereocenter_enum` deckt per Elementzeile (`:191`) nur
-N/P/As/Sb/Bi ab und verlangt Metallbindung (`:195`); Kohlenstoff (41 % der fehlenden
-Zentren) und Metalle (40 %) haben GAR KEINEN Enumerator.
+And it is the ONLY operation that works the same way for carbon, nitrogen and metal
+-- it does not ask what the center IS.  That counts, because the three classes
+would otherwise need three modules: `_stereocenter_enum` covers, by its element line (`:191`), only
+N/P/As/Sb/Bi and requires a metal bond (`:195`); carbon (41 % of the missing
+centers) and metals (40 %) have NO enumerator AT ALL.
 
-Eine Spiegelung ist eine ISOMETRIE: jede Bindungslaenge, jeder Winkel, jeder
-M-D-Abstand, jeder Torsionsbetrag bleibt exakt erhalten -- nur die Vorzeichen kippen.
-Keine Relaxation noetig, kein Clash moeglich, kein Qualitaetsrisiko.  Ein Frame je
-Struktur.
+A mirroring is an ISOMETRY: every bond length, every angle, every
+M-D distance, every torsion magnitude is preserved exactly -- only the signs flip.
+No relaxation needed, no clash possible, no quality risk.  One frame per
+structure.
 
-VORPRUEFUNG (17.08., im Quelltext belegt): BEIDE Entdopplungen sind chiralitaetssicher
-GEBAUT und lassen ein Spiegelbild stehen --
+PRE-CHECK (17.08., documented in the source): BOTH dedups are BUILT
+chirality-safe and leave a mirror image standing --
   * `permute_dedup._kabsch_rmsd_perm:197` "proper rotation only ... reflections
-    FORBIDDEN ... enantiomeric frames never align and are KEPT" (und ohnehin AUS)
+    FORBIDDEN ... enantiomeric frames never align and are KEPT" (and OFF anyway)
   * `assemble_complex._kabsch_rot:63` "determinant-corrected to forbid reflection"
 
-GRENZEN, AUSDRUECKLICH
-----------------------
-* Die **620 Teilfaelle** (im Mittel 3,74 Zentren, davon 1,67 falsch; haeufigstes Muster
-  **2 Zentren / 1 fehlend**, 196x) trifft dieser Pass NICHT.  Die Spiegelung verbindet
-  RR<->SS, nicht RR<->RS.  Diastereomere brauchen zentrumsweise Inversion -- ein anderer
-  Mechanismus, hier bewusst NICHT mitgebaut.
-* Ein ACHIRALES Molekuel ist auf sein Spiegelbild abbildbar; der Zusatzframe waere eine
-  Dublette.  Der Test dagegen ist ein Kabsch mit VERBOTENER Spiegelung in FESTER
-  Atomreihenfolge (`assemble_complex._kabsch_rot`).  ⚠ Er UNTERerkennt Achiralitaet,
-  wenn die Deckabbildung eine Atompermutation braucht -- dann bleibt eine Dublette
-  stehen, die die nachgelagerte Entdopplung faengt.  Das ist die sichere Richtung:
-  nie ein fehlender Frame, gelegentlich ein ueberfluessiger.
-* REIHENFOLGE: dieser Pass gehoert ZULETZT.  `_stereocenter_enum` liest `present`, BEVOR
-  es ergaenzt -- genau so hat `trans208` (29 gemischte trans-Anordnungen) die
-  Stereozentren-Falten verdraengt und ein CCDC-Isomer gekostet, obwohl beide Paesse
-  additiv sind.  Der FF-freie Anschluss sitzt darum im `_ffree_shared_tail` (Aufruf
-  :32429), also NACH der Faltenenumeration (:32361).
+LIMITS, EXPLICITLY
+------------------
+* The **620 partial cases** (on average 3.74 centers, 1.67 of them wrong; most frequent pattern
+  **2 centers / 1 missing**, 196x) are NOT hit by this pass.  The mirroring connects
+  RR<->SS, not RR<->RS.  Diastereomers need center-wise inversion -- a different
+  mechanism, deliberately NOT built here.
+* An ACHIRAL molecule can be mapped onto its mirror image; the extra frame would be a
+  duplicate.  The test for that is a Kabsch with FORBIDDEN reflection in FIXED
+  atom order (`assemble_complex._kabsch_rot`).  ⚠ It UNDER-detects achirality
+  when the superposition needs an atom permutation -- then a duplicate is left
+  standing, which the downstream dedup catches.  That is the safe direction:
+  never a missing frame, occasionally a superfluous one.
+* ORDER: this pass belongs LAST.  `_stereocenter_enum` reads `present` BEFORE
+  it adds -- exactly this is how `trans208` (29 mixed trans arrangements) displaced the
+  stereocenter folds and cost a CCDC isomer, although both passes are
+  additive.  The FF-free hookup therefore sits in `_ffree_shared_tail` (call
+  :32429), i.e. AFTER the fold enumeration (:32361).
 
-Additiv (Originale bleiben unberuehrt), deterministisch (kein RNG, feste Reihenfolge),
-FF-frei (reine Koordinatenoperation, kein Kraftfeld).  Vorgabe AUS -> byte-identisch.
+Additive (originals stay untouched), deterministic (no RNG, fixed order),
+FF-free (pure coordinate operation, no force field).  Default OFF -> byte-identical.
 """
 from __future__ import annotations
 
@@ -73,9 +73,9 @@ from delfin.manta._coord_angle_corrector import _format_xyz, _parse_xyz
 
 _LOG = logging.getLogger(__name__)
 
-# Spiegelung an der xy-Ebene.  JEDE uneigentliche Operation taugt (det = -1); diese ist
-# die einfachste und braucht keine Zentrierung, weil eine Ebenenspiegelung durch den
-# Ursprung alle paarweisen Abstaende ohnehin erhaelt.
+# Reflection through the xy-plane.  ANY improper operation will do (det = -1); this is
+# the simplest and needs no centering, because a plane reflection through the
+# origin preserves all pairwise distances anyway.
 _MIRROR = np.diag([1.0, 1.0, -1.0])
 
 
@@ -99,12 +99,12 @@ def _is_enabled() -> bool:
 
 
 def _self_mirror_rmsd(syms: List[str], P: np.ndarray, Pm: np.ndarray) -> Optional[float]:
-    """Schwer-Atom-RMSD zwischen Frame und Spiegelbild unter EIGENTLICHER Rotation.
+    """Heavy-atom RMSD between frame and mirror image under a PROPER rotation.
 
-    Nahe null => das Molekuel ist (in dieser Atomreihenfolge) achiral, der Spiegelframe
-    waere eine Dublette.  Nutzt `assemble_complex._kabsch_rot`, das Spiegelungen per
-    Determinantenkorrektur VERBIETET -- ohne das waere jeder Frame trivial auf sein
-    Spiegelbild abbildbar und der Test wertlos.
+    Near zero => the molecule is (in this atom order) achiral, the mirror frame
+    would be a duplicate.  Uses `assemble_complex._kabsch_rot`, which FORBIDS reflections
+    via determinant correction -- without that every frame would trivially map onto its
+    mirror image and the test would be worthless.
     """
     try:
         from delfin.manta.assemble_complex import _kabsch_rot
@@ -123,7 +123,7 @@ def _self_mirror_rmsd(syms: List[str], P: np.ndarray, Pm: np.ndarray) -> Optiona
 
 
 def mirror_frame(xyz: str) -> Optional[str]:
-    """Das Spiegelbild EINES Frames, oder None wenn es keines gibt / achiral ist."""
+    """The mirror image of ONE frame, or None if there is none / it is achiral."""
     if not xyz:
         return None
     try:
@@ -139,7 +139,7 @@ def mirror_frame(xyz: str) -> Optional[str]:
     min_rmsd = _env_float("DELFIN_MIRROR_MIN_RMSD", 0.10)
     r = _self_mirror_rmsd(syms, P, Pm)
     if r is not None and r < min_rmsd:
-        return None                       # achiral in dieser Reihenfolge -> kein Zugewinn
+        return None                       # achiral in this order -> no gain
     try:
         return _format_xyz(lines, syms, Pm)
     except Exception:
@@ -147,29 +147,29 @@ def mirror_frame(xyz: str) -> Optional[str]:
 
 
 def _hat_stereozentrum(xyz) -> Optional[bool]:
-    """Traegt das MOLEKUEL mindestens ein Stereozentrum?  None = nicht lesbar.
+    """Does the MOLECULE carry at least one stereocenter?  None = not readable.
 
-    ⚠ WARUM DIESE FRAGE UEBERHAUPT NOETIG IST.  `_self_mirror_rmsd` prueft, ob ein
-    Frame in FESTER ATOMREIHENFOLGE auf sein Spiegelbild passt -- der Docstring
-    dort sagt es selbst ("in dieser Atomreihenfolge").  Ein weicher Konformer tut
-    das praktisch nie, egal ob das Molekuel chiral ist.  Der Test misst also
-    KONFORMER-Haendigkeit, nicht MOLEKUEL-Chiralitaet.
+    ⚠ WHY THIS QUESTION IS NEEDED AT ALL.  `_self_mirror_rmsd` checks whether a
+    frame fits onto its mirror image in FIXED ATOM ORDER -- the docstring
+    there says so itself ("in this atom order").  A soft conformer practically
+    never does, regardless of whether the molecule is chiral.  So the test measures
+    CONFORMER handedness, not MOLECULE chirality.
 
-    GEMESSEN 27.08. auf 4069 legacy gebauten Systemen: `expand_results` haengt bei
-    4069 von 4069 = 100 % etwas an.  Dubletten erklaeren das nicht (gegen alle
-    uebrigen Frames desselben Systems bleiben 99,8 % neu; unter `permute_dedup`
-    mit echten Automorphismen ueberleben 900 von 988).  Aufgeteilt nach dem
-    MOLEKUEL:
+    MEASURED 27.08. on 4069 legacy-built systems: `expand_results` appends
+    something on 4069 of 4069 = 100 %.  Duplicates do not explain that (against all
+    remaining frames of the same system 99.8 % stay new; under `permute_dedup`
+    with real automorphisms 900 of 988 survive).  Split by the
+    MOLECULE:
 
-        >=1 Stereozentrum   1325 / 4069 = 32,6 %   Spiegel = ECHTES neues Isomer
-        kein Stereozentrum  2744 / 4069 = 67,4 %   nur ein zweiter Konformer
+        >=1 stereocenter    1325 / 4069 = 32.6 %   mirror = REAL new isomer
+        no stereocenter     2744 / 4069 = 67.4 %   only a second conformer
 
-    Auf einem zweiten Archiv bestaetigt: 32,8 %, Abweichung 0,2 pp.
-    ⇒ 68 % der angehaengten Frames bringen NULL Isomergewinn.
+    Confirmed on a second archive: 32.8 %, deviation 0.2 pp.
+    ⇒ 68 % of the appended frames bring ZERO isomer gain.
 
-    Gelesen wird ueber die Bindungsperzeption aus dem Frame selbst -- ein SMILES
-    liegt an dieser Stelle nicht vor.  Nicht lesbar -> None -> das Tor laesst
-    durch (nie WENIGER bauen, wenn die Messung fehlt).
+    Read via bond perception from the frame itself -- a SMILES is
+    not available at this point.  Not readable -> None -> the gate lets
+    through (never build LESS when the measurement is missing).
     """
     try:
         from rdkit import Chem
@@ -199,53 +199,53 @@ def _hat_stereozentrum(xyz) -> Optional[bool]:
 
 
 def expand_results(results):
-    """ADDITIV: haengt je Frame sein Spiegelbild an.  Originale bleiben unberuehrt.
+    """ADDITIVE: appends to each frame its mirror image.  Originals stay untouched.
 
-    ``results`` ist die Liste von ``(xyz, label)`` des FF-freien Pfads.  Bit-genauer
-    No-op, wenn der Schalter aus ist oder kein Frame ein Spiegelbild hat.
+    ``results`` is the list of ``(xyz, label)`` of the FF-free path.  Bit-exact
+    no-op if the switch is off or no frame has a mirror image.
 
-    ZWEI TORE, beide EINZELN schaltbar, beide Vorgabe AUS -> byte-identisch:
+    TWO GATES, each INDIVIDUALLY switchable, both default OFF -> byte-identical:
 
-      DELFIN_MIRROR_STEREO_GATE=1   nur Systeme mit >=1 Stereozentrum spiegeln.
-          Streicht 67,4 % der Systeme und damit 68 % des Preises, bei NULL
-          Isomerverlust.
+      DELFIN_MIRROR_STEREO_GATE=1   mirror only systems with >=1 stereocenter.
+          Drops 67.4 % of the systems and thereby 68 % of the price, at ZERO
+          isomer loss.
 
-      DELFIN_MIRROR_ONE_PER_SYSTEM=1   EIN Repraesentant statt je Konformer.
-          Fuer die ISOMERabdeckung genuegt ein Frame mit gekippter Haendigkeit;
-          jeden Konformer zu spiegeln verdoppelt das Archiv, ohne ein Isomer mehr
-          zu treffen.  Gemessen: 1325 statt 39 254 Zusatzframes = +1,0 % statt
-          +93,7 %.
+      DELFIN_MIRROR_ONE_PER_SYSTEM=1   ONE representative instead of one per conformer.
+          For ISOMER coverage one frame with flipped handedness suffices;
+          mirroring every conformer doubles the archive without hitting one
+          more isomer.  Measured: 1325 instead of 39 254 extra frames = +1.0 % instead of
+          +93.7 %.
 
-      DELFIN_MIRROR_QUALITY_GATE=1   nur HEILE Frames spiegeln.
+      DELFIN_MIRROR_QUALITY_GATE=1   mirror only INTACT frames.
 
-          WARUM (01.09.2026, gemessen an mirrleg6k, 1571 Systeme).  Der Pass hat
-          bis heute KEINE Qualitaetspruefung: er spiegelt und haengt an, ohne je
-          zu fragen, ob die Vorlage heil ist.  Ergebnis: von 2645 angehaengten
-          Frames tragen 1727 einen HARTEN Befund (65,3 %).
+          WHY (01.09.2026, measured on mirrleg6k, 1571 systems).  To this day the pass
+          has had NO quality check: it mirrors and appends without ever
+          asking whether the template is intact.  Result: of 2645 appended
+          frames, 1727 carry a HARD finding (65.3 %).
 
-          🔑 UND DAS IST REINE VERERBUNG, KEIN NEUER SCHADEN.  `mirror_frame`
-          ist eine REFLEXION (`P @ _MIRROR`) und damit eine ISOMETRIE: alle
-          Abstaende und Winkel sind exakt invariant, nur Torsionsvorzeichen
-          kippen.  Ein Spiegel kann also weder eine Kollision noch eine
-          Bindungslaenge verschlechtern -- er ist genau dann hart, wenn seine
-          VORLAGE hart war.  Die Zahlen bestaetigen es: 65,3 % der Spiegel gegen
-          68,7 % im Bestand.
+          🔑 AND THAT IS PURE INHERITANCE, NO NEW DAMAGE.  `mirror_frame`
+          is a REFLECTION (`P @ _MIRROR`) and thereby an ISOMETRY: all
+          distances and angles are exactly invariant, only torsion signs
+          flip.  So a mirror can worsen neither a clash nor a
+          bond length -- it is hard exactly when its
+          TEMPLATE was hard.  The numbers confirm it: 65.3 % of the mirrors against
+          68.7 % in the existing stock.
 
-          ⇒ Darum prueft dieses Tor die VORLAGE, nicht den Spiegel.  Das ist
-          nicht nur billiger, es ist die einzig richtige Stelle: `_rg_score` ist
-          reflexionsinvariant, am Spiegel gemessen kaeme dasselbe heraus.
+          ⇒ That is why this gate checks the TEMPLATE, not the mirror.  This is
+          not only cheaper, it is the only correct place: `_rg_score` is
+          reflection-invariant, measured on the mirror it would give the same result.
 
-          WAS ES KOSTET.  Der Spiegel eines kaputten Frames ist ein zweiter
-          kaputter Frame -- er traegt kein Isomer bei, das zaehlt (Nutzerregel:
-          "nur mit sehr schlechter Geometrie erreichbare Isomere zaehlen NICHT").
-          GEMESSEN auf mirrleg6k: auf allen 8 sperrenden Systemen sind die
-          angehaengten Frames ausnahmslos hart; 1032 von 1566 Systemen bekommen
-          AUSSCHLIESSLICH harte Spiegel.
+          WHAT IT COSTS.  The mirror of a broken frame is a second
+          broken frame -- it contributes no isomer that counts (user rule:
+          "isomers reachable only with very poor geometry do NOT count").
+          MEASURED on mirrleg6k: on all 8 blocking systems the
+          appended frames are hard without exception; 1032 of 1566 systems get
+          EXCLUSIVELY hard mirrors.
 
-    ⚠ DIE TORE SIND GETRENNT, weil sie VERSCHIEDENE Fragen beantworten -- das
-      erste "welche Systeme", das zweite "wie viele Frames je System", das dritte
-      "welche Vorlagen ueberhaupt".  Sie zu buendeln machte jedes Verdikt
-      unzuordenbar.
+    ⚠ THE GATES ARE SEPARATE because they answer DIFFERENT questions -- the
+      first "which systems", the second "how many frames per system", the third
+      "which templates at all".  Bundling them would make every verdict
+      unattributable.
     """
     if not results or not _is_enabled():
         return results
@@ -255,22 +255,22 @@ def expand_results(results):
     _qual_tor = _env_int("DELFIN_MIRROR_QUALITY_GATE", 0) == 1
     _rg = None
     if _qual_tor:
-        # SPAET importiert: `_refine_gate` zieht `_h_placement` nach, und ein
-        # Modulimport auf Dateiebene waere ein Zyklus.  Faellt der Import aus,
-        # ist das Tor AUS -- eine fehlende Abhaengigkeit darf nie stillschweigend
-        # Frames streichen.
+        # Imported LATE: `_refine_gate` pulls in `_h_placement`, and a
+        # module-level import would be a cycle.  If the import fails,
+        # the gate is OFF -- a missing dependency must never silently
+        # drop frames.
         try:
             from delfin.manta._refine_gate import _rg_score as _rg
-        except Exception as _e:          # pragma: no cover - Verdrahtungsschutz
+        except Exception as _e:          # pragma: no cover - wiring guard
             _LOG.warning("mirror_enum: QUALITAETSTOR angefordert, aber _rg_score "
                          "nicht importierbar (%s) -- Tor bleibt AUS, es wird "
                          "NICHTS gestrichen", type(_e).__name__)
             _qual_tor = False
 
     if _stereo_tor:
-        # EINMAL je System fragen, nicht je Frame: die Stereozentren des MOLEKUELS
-        # aendern sich zwischen Konformeren nicht.  Der erste lesbare Frame
-        # entscheidet; ist keiner lesbar, laesst das Tor durch.
+        # Ask ONCE per system, not per frame: the stereocenters of the MOLECULE
+        # do not change between conformers.  The first readable frame
+        # decides; if none is readable, the gate lets through.
         _hat = None
         for (xyz, _lab) in results:
             _hat = _hat_stereozentrum(xyz)
@@ -285,25 +285,25 @@ def expand_results(results):
     n_failed = 0
     n_already = 0
     n_kaputt = 0
-    # ── EIN REPRAESENTANT HEISST EINER JE SYSTEM, NICHT EINER JE AUFRUF ─────────────
-    # GEMESSEN (01.09.2026, `LOOP_FIRE_TRACE` auf ABUSAU und JEJROI, beide Arme):
-    # der Legacy-Aufruf `smiles_converter.py:35932` laeuft ZWEIMAL je System, beide
-    # Male im Wiedereintritt der Konformer-Vollstaendigkeit
+    # ── ONE REPRESENTATIVE MEANS ONE PER SYSTEM, NOT ONE PER CALL ──────────────────
+    # MEASURED (01.09.2026, `LOOP_FIRE_TRACE` on ABUSAU and JEJROI, both arms):
+    # the legacy call `smiles_converter.py:35932` runs TWICE per system, both
+    # times in the re-entry of conformer completeness
     # (`outermost = not _CONF_COMPLETE_ACTIVE.value`).
     #
-    # Die Idempotenz-Pruefung unten (`endswith("_mirror")`) verhindert nur, dass ein
-    # SPIEGEL gespiegelt wird.  Sie verhindert NICHT, dass der zweite Aufruf die
-    # naechste unberuehrte Vorlage spiegelt -- unter `_einer` bricht die Schleife
-    # nach dem ersten Anhaengen ab, also liefert jeder Aufruf einen weiteren Spiegel.
-    # Im Archiv sichtbar als ZWEI `..._mirror`-Etiketten je System, und ABUSAU
-    # kommt auf 58 + 2 - 1 = 59 Frames: der zweite Spiegel kostet einen Basis-Frame
-    # (`...Δ-conf4_stereo-u` verschwindet).
+    # The idempotency check below (`endswith("_mirror")`) only prevents a
+    # MIRROR from being mirrored.  It does NOT prevent the second call from mirroring
+    # the next untouched template -- under `_einer` the loop breaks
+    # after the first append, so every call delivers one more mirror.
+    # Visible in the archive as TWO `..._mirror` labels per system, and ABUSAU
+    # ends up at 58 + 2 - 1 = 59 frames: the second mirror costs a base frame
+    # (`...Δ-conf4_stereo-u` disappears).
     #
-    # ⚠ NICHT der Aufrufer wurde geschuetzt.  Ein `outermost`-Tor dort schaltet die
-    #   Achse auf dem Legacy-Pfad GANZ ab (gemessen an `addroot10`: 58 -> 58, null
-    #   Spiegel) -- ein stiller Faehigkeitsverlust, zurueckgenommen als b424e6cd.
-    #   Der Vertrag gehoert dorthin, wo er formuliert ist: EIN Repraesentant JE
-    #   SYSTEM.  Liegt schon einer vor, ist dieser Pass fertig.
+    # ⚠ It was NOT the caller that was guarded.  An `outermost` gate there switches the
+    #   axis on the legacy path off ENTIRELY (measured on `addroot10`: 58 -> 58, zero
+    #   mirrors) -- a silent capability loss, reverted as b424e6cd.
+    #   The contract belongs where it is formulated: ONE representative PER
+    #   SYSTEM.  If one is already present, this pass is done.
     if _einer and any(str(_l).endswith("_mirror") for _x, _l in results):
         _LOG.debug("mirror_enum: EIN-REPRAESENTANT -- es liegt bereits ein Spiegel "
                    "vor, dieser Aufruf haengt nichts an (Wiedereintritt)")
@@ -311,43 +311,43 @@ def expand_results(results):
     for (xyz, label) in results:
         if len(added) >= max_added:
             break
-        # ===== IDEMPOTENZ (18.08.2026) ==========================================
-        # Der Pass war NICHT idempotent: das Spiegelbild eines Spiegelbildes ist
-        # wieder das Original, und die Dublettenpruefung ``m == xyz`` sieht das
-        # nicht, weil sie gegen die EINGABE vergleicht, nicht gegen die Menge.
-        # Zweimaliges Anwenden haette also jedes Original ein zweites Mal
-        # angehaengt.  Das war bisher folgenlos, weil es genau EINE Aufrufstelle
-        # gab -- und genau das aendert sich mit der zweiten, die den Pass vom
-        # Schalter DELFIN_FFFREE_SHARED_TAIL unabhaengig macht.
-        # Eine Bedingung, die nur unter der heutigen Verdrahtung stimmt, ist eine
-        # Falle fuer die naechste.
+        # ===== IDEMPOTENCY (18.08.2026) =========================================
+        # The pass was NOT idempotent: the mirror image of a mirror image is
+        # the original again, and the duplicate check ``m == xyz`` does not see
+        # that, because it compares against the INPUT, not against the set.
+        # Applying it twice would therefore have appended every original a second
+        # time.  That had no consequence so far, because there was exactly ONE call
+        # site -- and exactly that changes with the second one, which makes the pass
+        # independent of the switch DELFIN_FFFREE_SHARED_TAIL.
+        # A condition that only holds under today's wiring is a
+        # trap for the next one.
         if str(label).endswith("_mirror"):
             n_already += 1
             continue
         if _qual_tor:
-            # DIE VORLAGE ENTSCHEIDET, nicht der Spiegel (Isometrie, s. Docstring).
-            # ⚠ `(-1, ...)` heisst UNLESBAR, nicht "kaputt" -- ein unlesbarer Frame
-            #   wird DURCHGELASSEN.  Wer Unlesbarkeit als Defekt zaehlt, streicht
-            #   auf einer Nichtmessung, und das ist genau die Bauform, die hier
-            #   schon dreimal eine stille Null erzeugt hat.
+            # THE TEMPLATE DECIDES, not the mirror (isometry, see docstring).
+            # ⚠ `(-1, ...)` means UNREADABLE, not "broken" -- an unreadable frame
+            #   is LET THROUGH.  Whoever counts unreadability as a defect drops
+            #   on a non-measurement, and that is exactly the construction that
+            #   has already produced a silent zero three times here.
             try:
                 _sc = _rg(xyz)
             except Exception:
                 _sc = None
-            # ⚠ NUR die KOLLISION vetoiert, NICHT `n_bond_out`.
+            # ⚠ ONLY the CLASH vetoes, NOT `n_bond_out`.
             #
-            # GEMESSEN 01.09. im Selbsttest, und es hat den ersten Entwurf gekippt:
-            #     "heile"  Testvorlage -> _rg_score = (0, 4)
-            #     "kaputte" Testvorlage -> _rg_score = (0, 2)
-            # Die heile scort SCHLECHTER.  `n_bond_out` zaehlt jede Bindung ausser
-            # halb des Zielbands und ist auf handgebauten wie auf echten Frames
-            # dicht besetzt -- als ABSOLUTE Schwelle ist es unbrauchbar.
+            # MEASURED 01.09. in the self-test, and it toppled the first draft:
+            #     "intact" test template -> _rg_score = (0, 4)
+            #     "broken" test template -> _rg_score = (0, 2)
+            # The intact one scores WORSE.  `n_bond_out` counts every bond outside
+            # the target band and is densely populated on hand-built as well as on real
+            # frames -- as an ABSOLUTE threshold it is unusable.
             #
-            # 🔑 `_rg_score` ist ein VERGLEICHSMASS ("wurde es schlechter?", so
-            #    benutzt es `keep_better`), keine Schwelle.  Wer es absolut liest,
-            #    liest einen Detektornamen statt einer Messung.
-            #    `n_clash` dagegen ist eine Zaehlung echter Ueberlappungen und
-            #    braucht keine Kalibrierung: 0 heisst keine, >0 heisst welche.
+            # 🔑 `_rg_score` is a COMPARATIVE measure ("did it get worse?", that is how
+            #    `keep_better` uses it), not a threshold.  Whoever reads it absolutely
+            #    reads a detector name instead of a measurement.
+            #    `n_clash`, by contrast, is a count of real overlaps and
+            #    needs no calibration: 0 means none, >0 means some.
             if _sc is not None and len(_sc) >= 1 and _sc[0] > 0:
                 n_kaputt += 1
                 continue
@@ -357,23 +357,23 @@ def expand_results(results):
             continue
         if m == xyz:
             n_failed += 1
-            continue                      # sollte nicht vorkommen; nie eine Dublette anhaengen
+            continue                      # should not happen; never append a duplicate
         added.append((m, f"{label}_mirror"))
         if _einer:
-            # EIN REPRAESENTANT.  Fuer die Isomerabdeckung genuegt ein Frame mit
-            # gekippter Haendigkeit -- weitere Spiegel sind Konformere DESSELBEN
-            # Spiegelisomers und treffen kein Isomer mehr.
-            # ⚠ Der Abbruch steht NACH dem Anhaengen, nicht davor: sonst bricht er
-            #   auch dann ab, wenn `mirror_frame` gerade None geliefert hat, und
-            #   das System bekaeme GAR keinen Spiegel.  Genau die Bauform, die
-            #   heute schon dreimal eine stille Nullmessung erzeugt hat.
+            # ONE REPRESENTATIVE.  For isomer coverage one frame with
+            # flipped handedness suffices -- further mirrors are conformers OF THE SAME
+            # mirror isomer and hit no further isomer.
+            # ⚠ The break comes AFTER the append, not before: otherwise it
+            #   would also break when `mirror_frame` has just returned None, and
+            #   the system would get NO mirror at all.  Exactly the construction that
+            #   has already produced a silent null measurement three times today.
             _LOG.debug("mirror_enum: EIN-REPRAESENTANT -- 1 Spiegelframe statt %d",
                        len(results))
             break
     if _qual_tor and n_kaputt:
-        # KEINE STILLE STREICHUNG.  Wer nicht sagt, wie viel er weggelassen hat,
-        # liest sich hinterher wie "mehr gab es nicht" -- dieselbe Falle wie beim
-        # Deckel unten und bei den Faltungen.
+        # NO SILENT DROPPING.  Whoever does not say how much they left out
+        # reads afterwards like "there was no more" -- the same trap as with the
+        # cap below and with the folds.
         _LOG.info("mirror_enum: QUALITAETSTOR -- %d von %d Vorlagen nicht gespiegelt "
                   "(kaputt laut _rg_score); %d Spiegel angehaengt",
                   n_kaputt, len(results), len(added))
@@ -383,8 +383,8 @@ def expand_results(results):
                          "-- dieses System bekommt KEINEN Spiegel", n_kaputt)
         return results
     if len(added) >= max_added:
-        # KEINE STILLE KUERZUNG.  Ein Deckel, der nicht meldet, liest sich hinterher wie
-        # "mehr gab es nicht" -- derselbe Fehler wie bei den Faltungen.
+        # NO SILENT TRUNCATION.  A cap that does not report reads afterwards like
+        # "there was no more" -- the same mistake as with the folds.
         _LOG.warning("mirror_enum: bei %d Spiegelframes gedeckelt "
                      "(DELFIN_MIRROR_MAX_ADDED); %d Frames nicht mehr geprueft",
                      max_added, max(0, len(results) - max_added))
@@ -394,7 +394,7 @@ def expand_results(results):
 
 
 # ---------------------------------------------------------------------------
-# Selbsttest:  python delfin/manta/_mirror_enum.py
+# Self-test:  python delfin/manta/_mirror_enum.py
 # ---------------------------------------------------------------------------
 def _self_test() -> int:
     def _xyz(rows):
@@ -414,7 +414,7 @@ def _self_test() -> int:
     fails = 0
     os.environ["DELFIN_MIRROR_ENUM"] = "1"
 
-    # Ein CHIRALES Zentrum: C mit vier verschiedenen Substituenten.
+    # One CHIRAL center: C with four different substituents.
     chiral = _xyz([("C", 0.0, 0.0, 0.0),
                    ("F", 1.10, 0.0, 0.30),
                    ("Cl", -0.55, 0.95, 0.30),
@@ -439,7 +439,7 @@ def _self_test() -> int:
               f"{'OK' if ok else 'FEHLER'}")
         fails += 0 if ok else 1
 
-    # Ein ACHIRALES Molekuel (planar, quadratisch): Spiegelbild ist deckungsgleich.
+    # An ACHIRAL molecule (planar, square): mirror image is superimposable.
     planar = _xyz([("Pt", 0.0, 0.0, 0.0),
                    ("Cl", 2.30, 0.0, 0.0),
                    ("Cl", -2.30, 0.0, 0.0),
@@ -449,20 +449,20 @@ def _self_test() -> int:
     print(f"4 achiral (planar) wird uebersprungen: {'OK' if ok else 'FEHLER'}")
     fails += 0 if ok else 1
 
-    # ADDITIV: Originale bleiben, genau ein Spiegelframe kommt dazu.
+    # ADDITIVE: originals stay, exactly one mirror frame is added.
     res = [(chiral, "iso0")]
     out = expand_results(res)
     ok = (len(out) == 2 and out[0] == res[0] and out[1][1] == "iso0_mirror")
     print(f"5 additiv, Original unberuehrt, Label 'iso0_mirror': {'OK' if ok else 'FEHLER'}")
     fails += 0 if ok else 1
 
-    # AUSGESCHALTET -> byte-identisch (dieselbe Liste, unveraendert).
+    # SWITCHED OFF -> byte-identical (the same list, unchanged).
     os.environ["DELFIN_MIRROR_ENUM"] = "0"
     ok = (expand_results(res) == res)
     print(f"6 ausgeschaltet byte-identisch: {'OK' if ok else 'FEHLER'}")
     fails += 0 if ok else 1
 
-    # Zweimal spiegeln ergibt wieder das Original (Involution).
+    # Mirroring twice yields the original again (involution).
     os.environ["DELFIN_MIRROR_ENUM"] = "1"
     back = mirror_frame(m) if m else None
     ok = back is not None and np.max(np.abs(_dmat(back) - _dmat(chiral))) < 1e-9 \
@@ -470,21 +470,21 @@ def _self_test() -> int:
     print(f"7 zweimal gespiegelt = Original (Involution): {'OK' if ok else 'FEHLER'}")
     fails += 0 if ok else 1
 
-    # ===== QUALITAETSTOR (01.09.2026) =========================================
-    # ⚠ ALS SKRIPT gestartet liegt `delfin` NICHT im Pfad -- `_refine_gate` waere
-    #   dann nicht importierbar und das Tor schaltete sich (korrekt) selbst ab.
-    #   Genau das ist beim ersten Lauf passiert: der Selbsttest haette das Tor
-    #   fuer kaputt gehalten, obwohl die Fail-safe arbeitete.  Im Paketbetrieb
-    #   gibt es das Problem nicht; hier wird die Wurzel nachgetragen.
+    # ===== QUALITY GATE (01.09.2026) ==========================================
+    # ⚠ Started AS A SCRIPT, `delfin` is NOT on the path -- `_refine_gate` would
+    #   then not be importable and the gate would (correctly) switch itself off.
+    #   Exactly that happened on the first run: the self-test would have taken the
+    #   gate for broken, although the fail-safe was working.  In package operation
+    #   the problem does not exist; here the root is patched in.
     import sys as _sys, os.path as _op
     _root = _op.dirname(_op.dirname(_op.dirname(_op.abspath(__file__))))
     if _root not in _sys.path:
         _sys.path.insert(0, _root)
-    # Zwei Proben, und die zweite ist die wichtigere: ein Tor, das nur streicht,
-    # ist kein Tor -- es muss eine HEILE Vorlage auch durchlassen.
+    # Two probes, and the second is the more important one: a gate that only drops
+    # is no gate -- it must also let an INTACT template through.
     os.environ["DELFIN_MIRROR_ENUM"] = "1"
     os.environ["DELFIN_MIRROR_QUALITY_GATE"] = "1"
-    # (a) HEILE Vorlage -> wird gespiegelt.  `chiral` ist die Probe aus Test 1.
+    # (a) INTACT template -> gets mirrored.  `chiral` is the probe from test 1.
     try:
         from delfin.manta._refine_gate import _rg_score as _dbg0
         _sc_gut = _dbg0(chiral)
@@ -496,13 +496,13 @@ def _self_test() -> int:
           f"   [_rg_score={_sc_gut}]")
     fails += 0 if ok else 1
 
-    # (b) KAPUTTE Vorlage -> wird NICHT gespiegelt.  Zwei Kohlenstoffe auf 0,40 A
-    #     sind eine Kollision, die `_rg_score` sicher sieht.
-    # ECHTE Kollision: zwei SUBSTITUENTEN uebereinander.  Cl und Br haengen beide
-    # am C, sind untereinander NICHT gebunden und liegen 0,12 A auseinander -- das
-    # ist eine Ueberlappung, keine kurze Bindung.  (Der erste Entwurf setzte zwei
-    # Kohlenstoffe auf 0,40 A; der Graph machte daraus eine BINDUNG und n_clash
-    # blieb null.  Eine Probe, die den Detektor nicht ausloest, prueft nichts.)
+    # (b) BROKEN template -> is NOT mirrored.  Two carbons at 0.40 A
+    #     are a clash that `_rg_score` reliably sees.
+    # REAL clash: two SUBSTITUENTS on top of each other.  Cl and Br both hang
+    # on the C, are NOT bonded to each other and lie 0.12 A apart -- that
+    # is an overlap, not a short bond.  (The first draft put two
+    # carbons at 0.40 A; the graph turned that into a BOND and n_clash
+    # stayed zero.  A probe that does not trigger the detector checks nothing.)
     kaputt = _xyz([("C", 0.0, 0.0, 0.0), ("H", 0.0, 1.09, 0.0),
                    ("F", 1.03, -0.36, 0.0), ("Cl", -0.51, -0.36, 1.55),
                    ("Br", -0.51, -0.36, 1.67)])
@@ -511,9 +511,9 @@ def _self_test() -> int:
         _sc_dbg = _dbg(kaputt)
     except Exception as _e:
         _sc_dbg = f"IMPORT-FEHLER {type(_e).__name__}: {_e}"
-    # ⚠ EHRLICHKEITSPRUEFUNG VOR DER PROBE.  Ist die Vorlage gar nicht spiegelbar,
-    #   haengt `expand_results` auch OHNE Tor nichts an -- ein "zurueckgehalten"
-    #   waere dann ein Fehlschluss.  Genau das ist beim zweiten Entwurf passiert.
+    # ⚠ HONESTY CHECK BEFORE THE PROBE.  If the template is not mirrorable at all,
+    #   `expand_results` appends nothing even WITHOUT the gate -- a "held back"
+    #   would then be a false conclusion.  Exactly that happened with the second draft.
     os.environ["DELFIN_MIRROR_QUALITY_GATE"] = "0"
     _spiegelbar = len(expand_results([(kaputt, "iso0")])) == 2
     _hat_clash = isinstance(_sc_dbg, tuple) and len(_sc_dbg) >= 1 and _sc_dbg[0] > 0
@@ -531,10 +531,10 @@ def _self_test() -> int:
               f"{'OK' if ok else 'FEHLER'}   [_rg_score={_sc_dbg}]")
         fails += 0 if ok else 1
 
-    # ── 10  EIN REPRAESENTANT JE SYSTEM, AUCH BEI ZWEI AUFRUFEN ────────────────────
-    # Der Fall, der `ABUSAU` einen Frame gekostet hat: der Legacy-Pfad ruft den Pass
-    # ZWEIMAL (gemessen mit LOOP_FIRE_TRACE), und ohne diese Probe haengt der zweite
-    # Aufruf einen weiteren Spiegel an.
+    # ── 10  ONE REPRESENTATIVE PER SYSTEM, EVEN WITH TWO CALLS ─────────────────────
+    # The case that cost `ABUSAU` a frame: the legacy path calls the pass
+    # TWICE (measured with LOOP_FIRE_TRACE), and without this probe the second
+    # call appends a further mirror.
     _alt_einer = os.environ.get("DELFIN_MIRROR_ONE_PER_SYSTEM")
     try:
         os.environ["DELFIN_MIRROR_ONE_PER_SYSTEM"] = "1"
@@ -550,8 +550,8 @@ def _self_test() -> int:
         print(f"10 ZWEITER Aufruf haengt NICHTS an: erst {len(_erst)}, dann "
               f"{len(_zweit)} Frames  {'OK' if ok else 'FEHLER'}")
         fails += 0 if ok else 1
-        # Gegenprobe: OHNE den Ein-Repraesentant-Schalter darf er sehr wohl erneut
-        # anhaengen -- sonst waere die Probe oben nur ein abgeschalteter Pass.
+        # Counter-probe: WITHOUT the one-representative switch it may very well append
+        # again -- otherwise the probe above would just be a switched-off pass.
         os.environ["DELFIN_MIRROR_ONE_PER_SYSTEM"] = "0"
         _drei = expand_results(_erst)
         ok2 = len(_drei) > len(_erst)

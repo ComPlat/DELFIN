@@ -1,49 +1,49 @@
-"""_oxidation_state.py — Oxidationsstufe und d-Elektronenzahl aus der LIGANDENBILANZ.
+"""_oxidation_state.py — Oxidation state and d-electron count from the LIGAND BALANCE.
 
-WOZU (16.08.2026, User).  Drei gemessene Baustellen haengen an derselben fehlenden Zahl:
+WHY (16.08.2026, user).  Three measured open work items hang on the same missing number:
 
-  1. `smiles_converter._PREFERRED_CN4_GEOMETRY` fuehrt `'Cu': 'TH'` -- Tetraeder.  Das gilt
-     fuer Cu(I) d10.  **Cu(II) ist d9 und quadratisch-planar bis JT-gestreckt-oktaedrisch**,
-     und Cu(II) ist der weit haeufigere Fall.  Dieselbe Zeile fuer beide Stufen.  Ebenso
-     `'Au': 'SQ'` -- richtig fuer Au(III) d8, falsch fuer Au(I) d10, das LINEAR ist.
-     Der Bauer denkt bereits in d-Zahlen (die Kommentare dort sagen "d8 metals",
-     "d6 low-spin", "d0-d5, d7, d10") -- aber als fest verdrahtete ELEMENTLISTE.
-  2. JAHN-TELLER ist genau bei ungleicher e_g-Besetzung stark: **d4 HS, d7 LS, d9**.  Die
-     e_g-Orbitale zeigen auf die Liganden, die Verzerrung liegt bei 0.2-0.4 A -- messbar.
-     (Die t2g-Faelle d1/d2/d4 LS/d5 LS/d6 HS/d7 HS liegen bei ~0.05 A und verschwinden im
-     Rauschen.)  Gemessen am 16.08. auf `_ml_prior.json`: **Cu-N Schiefe 3.7x bei n=12339,
-     Cu-O 3.3x bei n=7987** -- der lange obere Schwanz der "zwei langen" Bindungen.  Mn und
-     Cr zeigen ihn NICHT (0.9x / 1.2x), weil sie in der CSD ueberwiegend als Mn(II) d5 und
-     Cr(III) d3 vorkommen -- **nicht JT-aktiv**.  Am ELEMENT ist das nicht zu entscheiden,
-     nur an der STUFE.
-  3. Der M-D-Laengenschluessel: HS und LS unterscheiden sich um 0.1-0.2 A (Co(II) HS ~2.1,
-     Co(III) LS ~1.9).  Die Bauer-Tabelle fuehrt EINEN Wert je (Metall, Donor).
+  1. `smiles_converter._PREFERRED_CN4_GEOMETRY` lists `'Cu': 'TH'` -- tetrahedral.  That holds
+     for Cu(I) d10.  **Cu(II) is d9 and square-planar up to JT-elongated octahedral**,
+     and Cu(II) is by far the more common case.  The same row for both states.  Likewise
+     `'Au': 'SQ'` -- correct for Au(III) d8, wrong for Au(I) d10, which is LINEAR.
+     The builder already thinks in d-counts (the comments there say "d8 metals",
+     "d6 low-spin", "d0-d5, d7, d10") -- but as a hard-wired ELEMENT LIST.
+  2. JAHN-TELLER is strong exactly for unequal e_g occupation: **d4 HS, d7 LS, d9**.  The
+     e_g orbitals point at the ligands, the distortion lies at 0.2-0.4 A -- measurable.
+     (The t2g cases d1/d2/d4 LS/d5 LS/d6 HS/d7 HS lie at ~0.05 A and vanish in the
+     noise.)  Measured on 16.08. on `_ml_prior.json`: **Cu-N skew 3.7x at n=12339,
+     Cu-O 3.3x at n=7987** -- the long upper tail of the "two long" bonds.  Mn and
+     Cr do NOT show it (0.9x / 1.2x), because in the CSD they occur predominantly as Mn(II) d5
+     and Cr(III) d3 -- **not JT-active**.  This cannot be decided at the ELEMENT,
+     only at the STATE.
+  3. The M-D length key: HS and LS differ by 0.1-0.2 A (Co(II) HS ~2.1,
+     Co(III) LS ~1.9).  The builder table carries ONE value per (metal, donor).
 
-⚠ WARUM NICHT AUS DER FORMALLADUNG.  DELFIN schreibt Formalladungen, die der SMILES-Schreiber
-zur VALENZERFUELLUNG setzt: `[Cu-2]`, `[Re-2]`, `[Ti-2]`, `[O-][Re]`.  Das sind keine
-physikalischen Oxidationsstufen -- das Metall traegt dort eine NEGATIVE Formalladung, waehrend
-es real positiv ist.  Die SUMME aller Formalladungen ist dagegen korrekt: sie ist die
-Gesamtladung des Komplexes.
+⚠ WHY NOT FROM THE FORMAL CHARGE.  DELFIN writes formal charges that the SMILES writer
+sets for VALENCE SATISFACTION: `[Cu-2]`, `[Re-2]`, `[Ti-2]`, `[O-][Re]`.  These are not
+physical oxidation states -- the metal carries a NEGATIVE formal charge there, while
+in reality it is positive.  The SUM of all formal charges, by contrast, is correct: it is the
+total charge of the complex.
 
-DIE RECHNUNG ist die klassische ionische Zaehlung:
+THE CALCULATION is the classical ionic counting:
 
-    OS(Metall)  =  Gesamtladung(Komplex)  -  Summe(Ligandenladungen)
+    OS(metal)  =  total charge(complex)  -  sum(ligand charges)
 
-    Beispiel [Cu(acac)2], neutral:  0 - (-1 -1) = +2  ->  Cu(II), d9   ✓
-    Beispiel [Re(=O)Cl3(PPh3)2]:    0 - (-2 -3 +0) = +5 -> Re(V), d2   ✓
+    Example [Cu(acac)2], neutral:   0 - (-1 -1) = +2  ->  Cu(II), d9   ✓
+    Example [Re(=O)Cl3(PPh3)2]:     0 - (-2 -3 +0) = +5 -> Re(V), d2   ✓
 
-    d-Zahl = Gruppennummer - OS
+    d-count = group number - OS
 
-⚠⚠ DIE WICHTIGSTE REGEL: IM ZWEIFEL NICHTS.  Ist auch nur EIN Donor nicht klassifizierbar,
-liefert dieses Modul `None` -- keine geschaetzte Stufe.  Eine FALSCHE Oxidationsstufe ist
-schlechter als keine, weil sie die Geometriewahl aktiv verdirbt: sie wuerde ein Cu(I) d10 als
-d9 behandeln und ihm eine JT-Streckung aufzwingen, die es nicht hat.  Der Aufrufer faellt bei
-`None` auf das heutige Verhalten zurueck, und das ist per Konstruktion byte-identisch.
+⚠⚠ THE MOST IMPORTANT RULE: WHEN IN DOUBT, NOTHING.  If even ONE donor cannot be classified,
+this module returns `None` -- no estimated state.  A WRONG oxidation state is
+worse than none, because it actively spoils the geometry choice: it would treat a Cu(I) d10 as
+d9 and force a JT elongation on it that it does not have.  On `None` the caller falls
+back to today's behaviour, and that is byte-identical by construction.
 
-Ebenso `None` bei MEHREREN Metallen: die Gesamtladung laesst sich dann nicht eindeutig
-verteilen (ein gemischtvalentes Fe(II)/Fe(III) waere sonst zwei Mal Fe(2.5)).
+Likewise `None` for SEVERAL metals: the total charge can then not be distributed
+unambiguously (a mixed-valence Fe(II)/Fe(III) would otherwise be Fe(2.5) twice).
 
-Geometrie-frei, deterministisch, ohne Kristall, ohne Elementtabelle mit Radien.
+Geometry-free, deterministic, without crystal, without an element table with radii.
 """
 from __future__ import annotations
 
@@ -52,24 +52,24 @@ from typing import Dict, Optional, Tuple
 
 _LOG = logging.getLogger(__name__)
 
-# Gruppennummer der Uebergangsmetalle -- d-Zahl = Gruppe - OS.
+# Group number of the transition metals -- d-count = group - OS.
 _OX_GROUP: Dict[str, int] = {
     "Sc": 3, "Ti": 4, "V": 5, "Cr": 6, "Mn": 7, "Fe": 8, "Co": 9, "Ni": 10, "Cu": 11, "Zn": 12,
     "Y": 3, "Zr": 4, "Nb": 5, "Mo": 6, "Tc": 7, "Ru": 8, "Rh": 9, "Pd": 10, "Ag": 11, "Cd": 12,
     "La": 3, "Hf": 4, "Ta": 5, "W": 6, "Re": 7, "Os": 8, "Ir": 9, "Pt": 10, "Au": 11, "Hg": 12,
 }
 
-# JT-STARK: ungleiche e_g-Besetzung.  (d-Zahl, low_spin) -> True.
-# d4 HS (t2g3 eg1) | d7 LS (t2g6 eg1) | d9 (t2g6 eg3, ein Loch).
-# d9 ist spinunabhaengig -- es gibt nur eine Besetzung.
+# JT-STRONG: unequal e_g occupation.  (d-count, low_spin) -> True.
+# d4 HS (t2g3 eg1) | d7 LS (t2g6 eg1) | d9 (t2g6 eg3, one hole).
+# d9 is spin-independent -- there is only one occupation.
 _OX_JT_STRONG = {(4, False), (7, True), (9, True), (9, False)}
 
 
 def _ox_donor_charge(atom, metal_idx: int) -> Optional[int]:
-    """Ionische Ladung EINES Donoratoms.  None = nicht klassifizierbar -> Abbruch.
+    """Ionic charge of ONE donor atom.  None = not classifiable -> abort.
 
-    Klassifiziert wird ueber das Element, die schweren Nicht-Metall-Nachbarn und die
-    H-Zahl -- nicht ueber die Formalladung, die hier gerade unbrauchbar ist.
+    Classification is by the element, the heavy non-metal neighbours and the
+    H count -- not by the formal charge, which is exactly what is unusable here.
     """
     sym = atom.GetSymbol()
     nh = atom.GetTotalNumHs()
@@ -78,78 +78,78 @@ def _ox_donor_charge(atom, metal_idx: int) -> Optional[int]:
     nheavy = len(heavy)
 
     if sym in ("F", "Cl", "Br", "I"):
-        return -1 if (nheavy == 0 and nh == 0) else None      # Halogenid; sonst organisch gebunden
+        return -1 if (nheavy == 0 and nh == 0) else None      # halide; otherwise organically bound
 
     if sym == "O":
         if nheavy == 0 and nh == 0:
-            return -2                                          # terminales Oxo
+            return -2                                          # terminal oxo
         if nheavy == 0 and nh == 1:
-            return -1                                          # Hydroxid
+            return -1                                          # hydroxide
         if nheavy == 0 and nh == 2:
-            return 0                                           # Aqua
+            return 0                                           # aqua
         if nheavy == 1 and nh == 0:
-            return -1                                          # Alkoxid / Carboxylat-O / Phenolat
+            return -1                                          # alkoxide / carboxylate O / phenolate
         if nheavy == 2 and nh == 0:
-            return 0                                           # Ether
+            return 0                                           # ether
         return None
 
     if sym == "S":
         if nheavy == 0 and nh == 0:
-            return -2                                          # Sulfido
+            return -2                                          # sulfido
         if nheavy == 1 and nh == 0:
-            return -1                                          # Thiolat
+            return -1                                          # thiolate
         if nheavy == 2 and nh == 0:
-            return 0                                           # Thioether
+            return 0                                           # thioether
         return None
 
     if sym == "N":
         if nheavy == 0 and nh == 0:
-            return -3                                          # Nitrido
+            return -3                                          # nitrido
         if atom.GetIsAromatic():
-            return 0                                           # Pyridin / Imidazol -- L-Typ
-        # ⚠ AMID GEGEN AMMIN -- der Selbsttest hat es aufgedeckt (Cisplatin las sich als
-        # Pt(IV) d6 statt Pt(II) d8).  Ein metallgebundenes NH3 und ein NR2-Amid haben im
-        # Graphen BEIDE "zwei Reste neben dem Metall"; die Bindung zum Metall verbraucht
-        # eine Valenz.  Unterschieden wird am WASSERSTOFF: traegt das N ein H, ist es in
-        # diesen SMILES praktisch immer ein neutrales Amin/Ammin -- ein deprotoniertes Amid
-        # wuerde mit expliziter Ladung geschrieben.  Nur ein N mit ZWEI schweren Resten und
-        # KEINEM H ist ein Amid.
+            return 0                                           # pyridine / imidazole -- L-type
+        # ⚠ AMIDE VERSUS AMMINE -- the self-test exposed it (cisplatin read as
+        # Pt(IV) d6 instead of Pt(II) d8).  A metal-bound NH3 and an NR2 amide BOTH have
+        # "two substituents next to the metal" in the graph; the bond to the metal consumes
+        # one valence.  The distinction is made at the HYDROGEN: if the N carries an H, in
+        # these SMILES it is practically always a neutral amine/ammine -- a deprotonated amide
+        # would be written with an explicit charge.  Only an N with TWO heavy substituents and
+        # NO H is an amide.
         if nh > 0:
-            return 0                                           # Ammin / Amin / Imin -- L-Typ
+            return 0                                           # ammine / amine / imine -- L-type
         if nheavy == 1:
-            return -2                                          # Imido
+            return -2                                          # imido
         if nheavy == 2:
-            return -1                                          # Amid
+            return -1                                          # amide
         if nheavy == 3:
-            return 0                                           # tertiaeres Amin -- L-Typ
+            return 0                                           # tertiary amine -- L-type
         return None
 
     if sym == "P":
         if nheavy + nh == 3:
-            return 0                                           # Phosphan -- L-Typ
+            return 0                                           # phosphane -- L-type
         if nheavy + nh == 2:
-            return -1                                          # Phosphid
+            return -1                                          # phosphide
         return None
 
     if sym == "C":
-        # Carbonyl (C mit terminalem O) und Isonitril sind L-Typ; Alkyl/Aryl sind X-Typ.
+        # Carbonyl (C with terminal O) and isonitrile are L-type; alkyl/aryl are X-type.
         for n in heavy:
             if n.GetSymbol() == "O" and len([q for q in n.GetNeighbors()
                                              if q.GetSymbol() != "H"]) == 1:
                 return 0                                       # CO
         if atom.GetIsAromatic() or nheavy + nh >= 1:
-            return -1                                          # Alkyl / Aryl / Cyclopentadienyl-C
+            return -1                                          # alkyl / aryl / cyclopentadienyl C
         return None
 
-    return None                                                # unbekannter Donor -> Abbruch
+    return None                                                # unknown donor -> abort
 
 
 def oxidation_state(mol, metal_idx: int) -> Optional[Tuple[int, int]]:
-    """(Oxidationsstufe, d-Elektronenzahl) oder None.
+    """(oxidation state, d-electron count) or None.
 
-    None heisst AUSDRUECKLICH "nicht bestimmbar", nicht "null" -- der Aufrufer muss dann auf
-    sein heutiges Verhalten zurueckfallen.  Gruende fuer None: mehrere Metalle, unbekannter
-    Donor, unbekanntes Metall, unphysikalisches Ergebnis.
+    None means EXPLICITLY "not determinable", not "zero" -- the caller must then fall
+    back to its current behaviour.  Reasons for None: several metals, unknown
+    donor, unknown metal, unphysical result.
     """
     if mol is None:
         return None
@@ -160,17 +160,17 @@ def oxidation_state(mol, metal_idx: int) -> Optional[Tuple[int, int]]:
             return None
         metals = [a.GetIdx() for a in mol.GetAtoms() if a.GetSymbol() in _OX_GROUP]
         if len(metals) != 1:
-            return None                       # Verteilung auf mehrere Zentren ist nicht eindeutig
+            return None                       # distribution over several centres is not unambiguous
         total = int(sum(a.GetFormalCharge() for a in mol.GetAtoms()))
         lig = 0
         for n in m.GetNeighbors():
             q = _ox_donor_charge(n, int(metal_idx))
             if q is None:
-                return None                   # EIN unbekannter Donor genuegt -- nichts raten
+                return None                   # ONE unknown donor is enough -- guess nothing
             lig += q
         os_ = total - lig
         if os_ < 0 or os_ > 8:
-            return None                       # unphysikalisch -> die Bilanz stimmt nicht
+            return None                       # unphysical -> the balance does not add up
         d = _OX_GROUP[msym] - os_
         if d < 0 or d > 10:
             return None
@@ -182,17 +182,17 @@ def oxidation_state(mol, metal_idx: int) -> Optional[Tuple[int, int]]:
 
 
 
-# ⚠ EINE JT-ABFRAGE STEHT HIER BEWUSST NOCH NICHT.  Sie haette heute keinen Aufrufer -- die
-# JT-Enumeration (drei Streckachsen je Oktaeder) ist nicht gebaut.  Der Reichweiten-Waechter
-# hat genau das gemeldet, und er hat recht: unerreichbarer Code kann nichts aendern, und ihn
-# trotzdem zu schreiben ist derselbe Fehler, den dieses Projekt heute dreimal gefunden hat.
-# `_OX_JT_STRONG` oben traegt das Wissen als DATEN; die Abfrage kommt mit ihrem Verbraucher.
+# ⚠ A JT QUERY IS DELIBERATELY NOT HERE YET.  It would have no caller today -- the
+# JT enumeration (three elongation axes per octahedron) is not built.  The reach guard
+# reported exactly that, and it is right: unreachable code cannot change anything, and writing
+# it anyway is the same mistake this project found three times today.
+# `_OX_JT_STRONG` above carries the knowledge as DATA; the query comes with its consumer.
 
 
-if __name__ == "__main__":  # pragma: no cover -- Selbsttest an bekannten Faellen
-    # Jeder Fall ist von Hand nachgerechnet; die erwartete Stufe steht aus der Chemie fest,
-    # nicht aus einem frueheren Lauf dieses Moduls.  Ein Selbsttest, der nur die eigene
-    # Ausgabe von gestern bestaetigt, prueft nichts.
+if __name__ == "__main__":  # pragma: no cover -- self-test on known cases
+    # Every case is recomputed by hand; the expected state is fixed by the chemistry,
+    # not by an earlier run of this module.  A self-test that only confirms its own
+    # output from yesterday tests nothing.
     from rdkit import Chem, RDLogger
     RDLogger.DisableLog("rdApp.*")
     CASES = [

@@ -1,39 +1,39 @@
-"""_frame_atom_map.py — Atomzuordnung FRAME -> MOL fuer den FF-freien Pfad.
+"""_frame_atom_map.py — Atom mapping FRAME -> MOL for the FF-free path.
 
-DAS PROBLEM, GEMESSEN AM 16.08.2026.  Die post-hoc-Korrektoren des Bauers brauchen
-`mol`-ATOMINDIZES und wenden sie auf XYZ-KOORDINATEN an.  Auf dem legacy-Pfad stimmt das,
-weil das XYZ aus demselben `mol` stammt.  Auf dem FF-FREIEN Pfad nicht: dort liegt das
-Metall auf 0, danach ein `AddHs`-Block je Ligand in BAUREIHENFOLGE
-(`converter_backend._heteroleptic_block_offsets`, `_config_block_offsets`) -- eine voellig
-andere Ordnung als RDKits.
+THE PROBLEM, MEASURED ON 16.08.2026.  The builder's post-hoc correctors need
+`mol` ATOM INDICES and apply them to XYZ COORDINATES.  On the legacy path that is correct,
+because the XYZ comes from the same `mol`.  On the FF-FREE path it is not: there the
+metal sits at 0, followed by one `AddHs` block per ligand in BUILD ORDER
+(`converter_backend._heteroleptic_block_offsets`, `_config_block_offsets`) -- a completely
+different ordering from RDKit's.
 
-WAS DAS ANRICHTET.  `_ffree_shared_tail` warnt woertlich davor; derselbe Bruch hat dort schon
-den Ring-Pucker-Emitter zum Nullhebel gemacht (185 von 187 Systemen byte-identisch).  Und die
-Wache der Planarisierer prueft nur die ANZAHL der Atome: bei gleicher Anzahl und vertauschter
-Ordnung haetten sie die FALSCHEN Atome verflacht -- keine stille Wirkungslosigkeit, sondern
-stille Zerstoerung.  (Seit 16.08. prueft dort ein Riegel die Reihenfolge, `864cba3f`.)
+WHAT DAMAGE THIS DOES.  `_ffree_shared_tail` warns about it in so many words; the same break
+has already turned the ring-pucker emitter there into a null lever (185 of 187 systems
+byte-identical).  And the planarizers' guard checks only the NUMBER of atoms: with the same
+count and a permuted order they would have flattened the WRONG atoms -- not silent
+ineffectiveness, but silent destruction.  (Since 16.08. a latch there checks the order,
+`864cba3f`.)
 
-⚠ WARUM NICHT DIE ZUORDNUNG MITFUEHREN.  Naheliegend waere, die zur BAUZEIT bekannten Offsets
-mit dem Frame zu transportieren.  Zwei Gruende dagegen: die XYZ-Kommentarzeile traegt bereits
-das LABEL ("BEBGUL frame0 alt-bind-C"), und Labels werden stromabwaerts geparst
-(`_arrangement_key`, Anordnungsfamilien) -- dort etwas anzuhaengen gefaehrdet sie.  Und die
-Tupelbreite `(xyz, label)` ist an vielen Stellen angenommen.
+⚠ WHY NOT CARRY THE MAPPING ALONG.  The obvious approach would be to transport the offsets
+known at BUILD TIME together with the frame.  Two reasons against it: the XYZ comment line
+already carries the LABEL ("BEBGUL frame0 alt-bind-C"), and labels are parsed downstream
+(`_arrangement_key`, arrangement families) -- appending anything there endangers them.  And
+the tuple width `(xyz, label)` is assumed in many places.
 
-DER WEG HIER: REKONSTRUIEREN, NICHT RATEN.  Aus der Geometrie des Frames wird ein Graph
-gebaut (dieselbe Adjazenz, die die Korrektoren ohnehin benutzen), daraus ein RDKit-Molekuel
-mit GENERISCHEN Bindungen, und dann sucht RDKit die Untergraph-Uebereinstimmung.  Ein
-VOLLSTAENDIGER Substruktur-Treffer ueber alle Atome IST die Isomorphie -- er erhaelt Elemente
-und Konnektivitaet per Definition.  Das ist keine Heuristik mit Rueckfallkette.
+THE WAY TAKEN HERE: RECONSTRUCT, DO NOT GUESS.  From the frame's geometry a graph is
+built (the same adjacency the correctors use anyway), from that an RDKit molecule
+with GENERIC bonds, and then RDKit searches for the subgraph match.  A
+COMPLETE substructure match over all atoms IS the isomorphism -- it preserves elements
+and connectivity by definition.  This is not a heuristic with a fallback chain.
 
-⚠⚠ GENERISCHE BINDUNGEN SIND PFLICHT.  Der Frame-Graph kennt nur "gebunden ja/nein" (er kommt
-aus Abstaenden), `mol` kennt Einfach/Doppel/aromatisch/dativ.  Ein Abgleich mit Bindungsordnung
-wuerde IMMER scheitern -- und zwar still, als "keine Zuordnung".  `makeBondsGeneric` hebt das
-auf.
+⚠⚠ GENERIC BONDS ARE MANDATORY.  The frame graph only knows "bonded yes/no" (it comes
+from distances), `mol` knows single/double/aromatic/dative.  A match with bond orders
+would ALWAYS fail -- and silently, as "no mapping".  `makeBondsGeneric` lifts that.
 
-IM ZWEIFEL NICHTS.  Kein Treffer, mehrdeutiger Treffer, ungleiche Atomzahl oder fehlendes
-RDKit -> `None`.  Der Aufrufer faellt dann auf sein heutiges Verhalten zurueck, und das ist
-byte-identisch.  Eine FALSCHE Zuordnung waere schlimmer als keine: sie liesse die Korrektoren
-genau die falschen Atome anfassen -- der Fehler, den der Riegel vom 16.08. abfaengt.
+WHEN IN DOUBT, NOTHING.  No match, ambiguous match, unequal atom count or missing
+RDKit -> `None`.  The caller then falls back to its current behavior, and that is
+byte-identical.  A WRONG mapping would be worse than none: it would let the correctors
+touch exactly the wrong atoms -- the error that the latch from 16.08. catches.
 """
 from __future__ import annotations
 
@@ -44,12 +44,12 @@ _LOG = logging.getLogger(__name__)
 
 
 def frame_to_mol_map(mol, syms: Sequence[str], nbrs: List[List[int]]) -> Optional[List[int]]:
-    """Zuordnung FRAME-Index -> MOL-Index, oder None.
+    """Mapping FRAME index -> MOL index, or None.
 
-    ``nbrs`` ist die Adjazenz des Frames (aus `_build_geometric_adjacency`), also genau der
-    Graph, mit dem die Korrektoren ohnehin arbeiten -- keine zweite Bindungsdefinition.
+    ``nbrs`` is the frame's adjacency (from `_build_geometric_adjacency`), i.e. exactly the
+    graph the correctors work with anyway -- no second bond definition.
 
-    Rueckgabe: ``m[frame_idx] = mol_idx``.  None heisst AUSDRUECKLICH "nicht bestimmbar".
+    Returns: ``m[frame_idx] = mol_idx``.  None EXPLICITLY means "not determinable".
     """
     if mol is None:
         return None
@@ -60,7 +60,7 @@ def frame_to_mol_map(mol, syms: Sequence[str], nbrs: List[List[int]]) -> Optiona
     n = len(syms)
     if n == 0 or mol.GetNumAtoms() != n:
         return None
-    # Frame-Graph als Molekuel nachbauen -- Elemente und Kanten, keine Ordnungen.
+    # Rebuild the frame graph as a molecule -- elements and edges, no bond orders.
     try:
         rw = Chem.RWMol()
         for s in syms:
@@ -78,8 +78,8 @@ def frame_to_mol_map(mol, syms: Sequence[str], nbrs: List[List[int]]) -> Optiona
     except Exception as exc:
         _LOG.debug("frame-map: Frame-Graph nicht baubar: %s", exc)
         return None
-    # Generische Bindungen auf BEIDEN Seiten: der Frame kennt keine Ordnungen, `mol` schon.
-    # Ohne das scheitert der Abgleich immer -- und zwar still.
+    # Generic bonds on BOTH sides: the frame knows no bond orders, `mol` does.
+    # Without this the match always fails -- and silently.
     try:
         params = Chem.AdjustQueryParameters.NoAdjustments()
         params.makeBondsGeneric = True
@@ -100,9 +100,9 @@ def frame_to_mol_map(mol, syms: Sequence[str], nbrs: List[List[int]]) -> Optiona
     m = list(matches[0])
     if len(m) != n:
         return None
-    # Elementgleichheit ist durch die Suche garantiert; hier wird sie trotzdem geprueft.  Eine
-    # Zuordnung, die man nicht nachrechnet, ist eine Behauptung -- und genau daran ist heute
-    # schon einmal eine Messung gescheitert.
+    # Element equality is guaranteed by the search; it is checked here anyway.  A
+    # mapping that is not recomputed is a claim -- and a measurement has already failed
+    # on exactly that once today.
     try:
         for fi, mi in enumerate(m):
             if mol.GetAtomWithIdx(int(mi)).GetSymbol() != syms[fi]:
@@ -112,11 +112,11 @@ def frame_to_mol_map(mol, syms: Sequence[str], nbrs: List[List[int]]) -> Optiona
     return m
 
 
-if __name__ == "__main__":  # pragma: no cover -- Selbsttest
-    # ZWEI FAELLE, und der zweite ist der eigentliche:
-    #   (a) gleiche Reihenfolge  -> die Zuordnung MUSS die Identitaet sein
-    #   (b) VERTAUSCHTE Reihenfolge -> sie muss die Vertauschung zurueckgeben
-    # Faellt (b) durch, ist das Modul wertlos: genau dafuer existiert es.
+if __name__ == "__main__":  # pragma: no cover -- self-test
+    # TWO CASES, and the second is the real one:
+    #   (a) same order      -> the mapping MUST be the identity
+    #   (b) PERMUTED order  -> it must return the permutation
+    # If (b) fails, the module is worthless: that is exactly what it exists for.
     from rdkit import Chem, RDLogger
     RDLogger.DisableLog("rdApp.*")
     from delfin.manta._coord_angle_corrector import _build_geometric_adjacency
@@ -140,7 +140,7 @@ if __name__ == "__main__":  # pragma: no cover -- Selbsttest
     ident = (m == list(range(len(syms)))) if m else False
     print(f"  (a) gleiche Ordnung  -> {'IDENTITAET' if ident else m if m else 'None'}")
 
-    # (b) Frame umsortieren: Metall nach vorn, wie es der FF-freie Bauer tut.
+    # (b) Reorder the frame: metal to the front, as the FF-free builder does.
     mi = next(i for i, s in enumerate(syms) if s == "Cu")
     order = [mi] + [i for i in range(len(syms)) if i != mi]
     inv = {old: new for new, old in enumerate(order)}

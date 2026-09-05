@@ -464,20 +464,20 @@ def _append_ffree_ring_puckers(results, metal, lig_groups, base_syms, base_P, ba
         _out = _rpuck.generate(m, frozen=frozen, budget=int(budget), angle_skip={0})
     except Exception:
         return
-    # ===== ZAEHLUNG DER VERWERFUNGSGRUENDE (17.08.2026) ==============================
-    # GEMESSEN am 16.08. (`folds`, 965 Systeme): **1055 von 1766 Ringidentitaeten =
-    # 59,7 % tragen ueber den GANZEN Manifold nur EINE Faltung** -- und das MIT diesem
-    # laufenden Emitter (RING_PUCKER ist Champion-Flag #24, und der FF-freie Pfad ist
-    # 98,8 % der Faelle, Feuerzensus 14.08.).  Der Bauer existiert also, er laeuft, und
-    # die Luecke bleibt.
+    # ===== COUNT OF THE REJECTION REASONS (17.08.2026) ==============================
+    # MEASURED on 16.08. (`folds`, 965 systems): **1055 of 1766 ring identities =
+    # 59.7 % carry only ONE fold across the WHOLE manifold** -- and that WITH this
+    # emitter running (RING_PUCKER is champion flag #24, and the FF-free path is
+    # 98.8 % of the cases, fire census 14.08.).  So the builder exists, it runs, and
+    # the gap remains.
     #
-    # Die Frage ist damit nicht "wie bauen wir die zweite Faltung", sondern **an welchem
-    # der sechs Tore sie stirbt**.  Von aussen sieht "erzeugt und verworfen" genauso aus
-    # wie "nie gebaut" -- derselbe Fehlschluss wie beim Feuerzensus am 14.08.
+    # The question is therefore not "how do we build the second fold" but **at which
+    # of the six gates it dies**.  From the outside, "generated and rejected" looks exactly
+    # like "never built" -- the same fallacy as in the fire census on 14.08.
     #
-    # Reine INSTRUMENTIERUNG: zaehlt und meldet einmal, aendert am Verhalten nichts.
-    # Die Meldung haengt an DELFIN_FFFREE_PUCKER_TRACE (Vorgabe aus), damit sie in
-    # Produktionslaeufen nicht mitlaeuft.
+    # Pure INSTRUMENTATION: counts and reports once, changes nothing about the behaviour.
+    # The report hangs on DELFIN_FFFREE_PUCKER_TRACE (default off) so that it does not
+    # run along in production runs.
     _pk = {"erzeugt": len(_out or []), "cap": 0, "anzahl": 0, "reihenfolge": 0,
            "unclean": 0, "kollaps": 0, "beta": 0, "clash": 0, "akzeptiert": 0}
     for _px, _plab in (_out or []):
@@ -538,9 +538,9 @@ def _append_ffree_ring_puckers(results, metal, lig_groups, base_syms, base_P, ba
             results.append((_xyz(_ps, _pP), f"{base_label}-{_plab}"))
         except Exception:
             continue
-    # EINMAL melden, welches Tor die Faltungen kostet.  Ohne diese Zeile ist "erzeugt und
-    # verworfen" von "nie gebaut" nicht zu unterscheiden -- genau der Fehlschluss, der am
-    # 14.08. den Feuerzensus wertlos gemacht hat.  Vorgabe AUS.
+    # Report ONCE which gate costs the folds.  Without this line, "generated and
+    # rejected" cannot be told apart from "never built" -- exactly the fallacy that made
+    # the fire census worthless on 14.08.  Default OFF.
     if os.environ.get("DELFIN_FFFREE_PUCKER_TRACE", "0") == "1" and _pk["erzeugt"]:
         try:
             import logging as _lg
@@ -658,81 +658,81 @@ def _append_ffree_torsion_wells(results, metal, lig_groups, base_syms, base_P, b
     exists is altered or dropped."""
     if os.environ.get("DELFIN_FFFREE_TORSION_WELLS", "0") != "1" or not lig_groups:
         return
-    # ===== SIEBEN AUSGAENGE, SECHS DAVON STUMM ================================
+    # ===== SEVEN EXITS, SIX OF THEM SILENT ================================
     #
-    # 🔴 DIE ERSTE FASSUNG DIESES BLOCKS (18.08., 12:56) STAND AUF EINER FALSCHEN
-    # PRAEMISSE.  Sie hielt fest: "diese Funktion hat im GESAMTEN Korpus null Frames
-    # angehaengt -- 2739 Dateien in archive_tors10k_on, 0 Etiketten `-well`", und
-    # schloss daraus auf zwei Verdaechtige im Rumpf ((A) `dofs` leer wegen `IsInRing`
-    # auf den DATIV geschlossenen Chelatringen, (B) die 0,95x-base_min-Latte).
+    # 🔴 THE FIRST VERSION OF THIS BLOCK (18.08., 12:56) STOOD ON A FALSE
+    # PREMISE.  It recorded: "this function has appended zero frames in the ENTIRE
+    # corpus -- 2739 files in archive_tors10k_on, 0 labels `-well`", and from that
+    # inferred two suspects in the body ((A) `dofs` empty because of `IsInRing`
+    # on the DATIVELY closed chelate rings, (B) the 0.95x-base_min bar).
     #
-    # DAS ARCHIV IST ECHT UND DIE NULL IST ECHT -- die SCHLUSSFOLGERUNG war falsch.
-    # Nachgeprueft 18.08. an den Laufmetadaten selbst:
+    # THE ARCHIVE IS REAL AND THE ZERO IS REAL -- the CONCLUSION was wrong.
+    # Re-checked 18.08. against the run metadata themselves:
     #   results/log_tors10k.txt : ... --label tors10k --config champion
     #                             --on DELFIN_FFFREE_TORSION_RELAX --off  --ab
-    #   axis_tors10k_on.json / axis_tors10k_off.json : "TORSION_WELLS" kommt
-    #                             NULL mal vor; das einzige TORSION-Flag im ganzen
-    #                             Lauf ist DELFIN_FFFREE_TORSION_RELAX, und in der
-    #                             Champion-Flagliste (30 Flags) steht WELLS nicht.
-    # ⇒ `DELFIN_FFFREE_TORSION_WELLS` war in BEIDEN Armen von tors10k AUS.  Die null
-    # `-well`-Etiketten sind der Ausgang 1 (der Schalter) und sonst nichts.  Gemessen
-    # wurde `torsion_relax` -- ein UMFORMENDER Pass, der laut seiner eigenen
-    # Vorregistrierung "nichts anhaengt"; auch die "3 von 24 Systeme geaendert" der
-    # Reichweitensonde gehoeren ihm, nicht dieser Funktion.  Zwei Mechanismen mit
-    # aehnlichem Namen, ein Laufetikett: TORSION_RELAX ist nicht TORSION_WELLS.
-    # Die Achse hier ist damit UNGEMESSEN, nicht widerlegt.
+    #   axis_tors10k_on.json / axis_tors10k_off.json : "TORSION_WELLS" occurs
+    #                             ZERO times; the only TORSION flag in the whole
+    #                             run is DELFIN_FFFREE_TORSION_RELAX, and WELLS is not
+    #                             in the champion flag list (30 flags).
+    # ⇒ `DELFIN_FFFREE_TORSION_WELLS` was OFF in BOTH arms of tors10k.  The zero
+    # `-well` labels are exit 1 (the switch) and nothing else.  What was measured
+    # was `torsion_relax` -- a RESHAPING pass which, according to its own
+    # pre-registration, "appends nothing"; the "3 of 24 systems changed" of the
+    # reach probe also belong to it, not to this function.  Two mechanisms with
+    # similar names, one run label: TORSION_RELAX is not TORSION_WELLS.
+    # The axis here is therefore UNMEASURED, not refuted.
     #
-    # GEGENPROBE, damit die Nullmeldung nicht wieder nur eine Behauptung ist
-    # (`python delfin/manta/converter_backend.py wells`, Zaehler unten):
-    #   BIQCOV (Ta, k3, iPr/tBu-Arme) 2 Aufrufe, dof_n=8, cand=24, ADDED=24
-    #   Co-Fall mit haengendem Aminoethyl 3 Aufrufe, dof_n=6, cand=27, ADDED=21
-    #   ABEZAJ (Ti, k3, Cyclohexyl) 1 Aufruf, dof_n=2, cand=6, ADDED=2
-    # Der Mechanismus laeuft, er wird erreicht, und er HAENGT AN.  Verdacht (A) und
-    # (B) sind damit beide vom Tisch; was tatsaechlich bindet, ist `_WELL_MAX_SIBLINGS`
-    # (auf BIQCOV in beiden Aufrufen) -- und der Deckel meldet sich jetzt.
+    # COUNTER-CHECK, so that the zero report is not once again merely a claim
+    # (`python delfin/manta/converter_backend.py wells`, counter below):
+    #   BIQCOV (Ta, k3, iPr/tBu arms) 2 calls, dof_n=8, cand=24, ADDED=24
+    #   Co case with a dangling aminoethyl 3 calls, dof_n=6, cand=27, ADDED=21
+    #   ABEZAJ (Ti, k3, cyclohexyl) 1 call, dof_n=2, cand=6, ADDED=2
+    # The mechanism runs, it is reached, and it APPENDS.  Suspects (A) and
+    # (B) are thereby both off the table; what actually binds is `_WELL_MAX_SIBLINGS`
+    # (on BIQCOV in both calls) -- and the cap now reports itself.
     #
-    # ⇒ ES GAB GENAU ZWEI LAEUFE MIT WELLS=1, UND BEIDE FIELEN INS NAMEERROR-FENSTER.
-    # 1234 `axis_*.json` durchsucht; `TORSION_WELLS` steht in genau zweien:
-    #   `wells`     03.08. 07:30, pool_ffonly (187):  affected=0, byte-identisch=187,
-    #               0 `-well`-Etiketten in archive_wells_on -> gelesen als "keine Reichweite"
-    #   `torswells` 07.08. 06:24, pool_ffree_built:   REACH 0/24, von der Sonde
-    #               abgebrochen -- es entstand nicht einmal ein Archiv
-    # Der Dateistand zu BEIDEN Zeitpunkten (622f4075 bzw. 4cc5dc48): `_INTERLIG_VDW_FLOOR`
-    # NULL mal definiert, aber in `_interlig_clash_ok` benutzt -- Commit a9b82598 vom 02.08.
-    # loeschte die Konstante und liess die Benutzung stehen.  Der Aufruf steht hier
-    # INNERHALB des `try` mit `except Exception: continue`, also starb JEDER Kandidat
-    # lautlos am NameError, bevor irgendetwas angehaengt werden konnte.  Exakt der Fehler,
-    # den Commit 41255fee am 17.08. fuer `_append_reembed` benannt hat -- nur teilte diese
-    # Funktion sich denselben Konsumenten, und den zweiten Ort hat niemand mitgezaehlt.
-    # Die Konstante ist seit 17.08. 10:59 zurueck; seither hat NIEMAND die Achse gefahren.
+    # ⇒ THERE WERE EXACTLY TWO RUNS WITH WELLS=1, AND BOTH FELL INTO THE NAMEERROR WINDOW.
+    # 1234 `axis_*.json` searched; `TORSION_WELLS` appears in exactly two:
+    #   `wells`     03.08. 07:30, pool_ffonly (187):  affected=0, byte-identical=187,
+    #               0 `-well` labels in archive_wells_on -> read as "no reach"
+    #   `torswells` 07.08. 06:24, pool_ffree_built:   REACH 0/24, aborted by the
+    #               probe -- not even an archive came into existence
+    # The file state at BOTH points in time (622f4075 and 4cc5dc48): `_INTERLIG_VDW_FLOOR`
+    # defined ZERO times, but used in `_interlig_clash_ok` -- commit a9b82598 of 02.08.
+    # deleted the constant and left the use standing.  The call sits here
+    # INSIDE the `try` with `except Exception: continue`, so EVERY candidate died
+    # silently of the NameError before anything could be appended.  Exactly the error
+    # that commit 41255fee named on 17.08. for `_append_reembed` -- only this
+    # function shared the same consumer, and nobody counted the second site.
+    # The constant has been back since 17.08. 10:59; since then NOBODY has run the axis.
     #
-    # ⇒ ALLE drei Nullbefunde sind erklaert, und keiner widerlegt den Mechanismus:
-    # zweimal NameError unter einem breiten except, einmal der falsche Schalter.
+    # ⇒ ALL three zero findings are explained, and none of them refutes the mechanism:
+    # twice a NameError under a broad except, once the wrong switch.
     #
-    # LEHRE, teuer bezahlt: ein Archiv beweist nur, was der Lauf eingeschaltet hatte.
-    # Vor jedem "der Mechanismus liefert nichts" gehoert der Blick in die
-    # Laufmetadaten -- war sein Schalter AN?  "Lief und scheiterte" ist nicht
-    # "lief nie", und beides sieht im Archiv gleich aus.
+    # LESSON, dearly paid for: an archive only proves what the run had switched on.
+    # Before any "the mechanism delivers nothing" comes the look into the
+    # run metadata -- was its switch ON?  "Ran and failed" is not
+    # "never ran", and both look the same in the archive.
     #
-    # ⚠ 18.08.2026, ZWEITE RUNDE.  Der Zaehler von 12:56 war ausserdem ein RUMPF: das Woerterbuch
-    # stand da, aber nur `import` und `tmpl_none` wurden je gesetzt, und `_wtrace()` wurde
-    # auf dem NORMALEN Weg nie gerufen -- also meldete er genau die zwei Faelle, die
-    # ohnehin nicht vorkommen, und schwieg zu den fuenf, um die es geht.  Ein Zaehler, der
-    # nur an den unwahrscheinlichen Ausgaengen haengt, ist kein Zaehler.  Jetzt haengt an
-    # JEDEM Ausgang einer, und `enter` ist der NENNER: ohne ihn ist "keine Zeile" nicht von
-    # "nie betreten" zu unterscheiden -- derselbe Fehlschluss wie am 14.08.
+    # ⚠ 18.08.2026, SECOND ROUND.  The counter of 12:56 was moreover a STUB: the dictionary
+    # was there, but only `import` and `tmpl_none` were ever set, and `_wtrace()` was
+    # never called on the NORMAL path -- so it reported exactly the two cases that
+    # do not occur anyway, and stayed silent on the five that matter.  A counter that
+    # hangs only on the improbable exits is not a counter.  Now one hangs on
+    # EVERY exit, and `enter` is the DENOMINATOR: without it, "no row" cannot be told
+    # apart from "never entered" -- the same fallacy as on 14.08.
     #
-    # DIE SIEBEN AUSGAENGE (Funktionsebene), in Reihenfolge:
-    #   1 switch      Schalter aus oder keine lig_groups  (vor dem Zaehler, kein stiller Fall)
-    #   2 import      rdkit/numpy/assemble_complex nicht importierbar
-    #   3 tmpl_none   _config_template_mol passt nicht auf den Frame (Anzahl/Reihenfolge)
-    #   4 base_exc    die LATTE des Primaerframes ist nicht berechenbar
-    #   5 dof_exc     die Bindungsschleife wirft
-    #   6 no_dof      keine drehbare Bindung uebrig  (gemessen: NICHT der Killer)
-    #   7 conf_exc    der Konformer laesst sich nicht auf den Frame setzen
-    # ... und die sechs VERWUERFE pro Kandidat: same/unclean/collapse/beta/clash/exc.
+    # THE SEVEN EXITS (function level), in order:
+    #   1 switch      switch off or no lig_groups  (before the counter, no silent case)
+    #   2 import      rdkit/numpy/assemble_complex not importable
+    #   3 tmpl_none   _config_template_mol does not fit the frame (count/order)
+    #   4 base_exc    the BAR of the primary frame cannot be computed
+    #   5 dof_exc     the bond loop throws
+    #   6 no_dof      no rotatable bond left  (measured: NOT the killer)
+    #   7 conf_exc    the conformer cannot be seated onto the frame
+    # ... and the six REJECTIONS per candidate: same/unclean/collapse/beta/clash/exc.
     #
-    # DELFIN_FFFREE_WELLS_TRACE=<pfad>, sonst still und kostenlos.
+    # DELFIN_FFFREE_WELLS_TRACE=<path>, otherwise silent and free.
     _wk = {"enter": 1, "cand": 0, "no_dof": 0, "tmpl_none": 0, "import": 0, "same": 0,
            "unclean": 0, "collapse": 0, "beta": 0, "clash": 0, "exc": 0,
            "added": 0, "dof_n": 0, "base_exc": 0, "dof_exc": 0, "conf_exc": 0,
@@ -780,7 +780,7 @@ def _append_ffree_torsion_wells(results, metal, lig_groups, base_syms, base_P, b
         for b in m.GetBonds():
             if b.GetBondType() != _Chem.BondType.SINGLE or b.IsInRing():
                 continue
-            _wk["nrot"] += 1        # Nenner VOR den Freiheitsgrad-Filtern
+            _wk["nrot"] += 1        # denominator BEFORE the degree-of-freedom filters
             i, j = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
             if m.GetAtomWithIdx(i).GetAtomicNum() == 1 or m.GetAtomWithIdx(j).GetAtomicNum() == 1:
                 continue
@@ -810,10 +810,10 @@ def _append_ffree_torsion_wells(results, metal, lig_groups, base_syms, base_P, b
         _wk["no_dof"] = 1
         _wtrace()
         return _scope_no("WELLS_NO_DOF", "nrot=%d" % _wk["nrot"])
-    # ⚠ KEINE STILLE KAPPUNG.  Der Deckel meldet sich, wenn er bindet -- sonst liest sich
-    # das Ergebnis hinterher als "mehr Freiheitsgrade gab es nicht", und genau diese
-    # Verwechslung ist der Grund, warum diese Funktion vierzehn Tage lang als "ohne
-    # Reichweite" galt.  Vorgabe still: nur ueber den Trace-Kanal des Moduls.
+    # ⚠ NO SILENT CAPPING.  The cap reports itself when it binds -- otherwise the result
+    # reads afterwards as "there were no more degrees of freedom", and exactly this
+    # confusion is the reason this function counted as "without reach" for fourteen
+    # days.  Default silent: only via the module's trace channel.
     if len(dofs) > 4:
         _wk["dof_cap"] = len(dofs) - 4
         _ff_trace_write("[WELL_DOF_CAP] dofs=%d cap=4 dropped=%d lab=%s"
@@ -833,7 +833,7 @@ def _append_ffree_torsion_wells(results, metal, lig_groups, base_syms, base_P, b
     n_added = 0
     for combo in _it.product(*[d[4] for d in dofs]):
         if n_added >= _WELL_MAX_SIBLINGS:
-            # zweite Kappung, dieselbe Regel: sie meldet sich, wenn sie bindet.
+            # second cap, same rule: it reports itself when it binds.
             _wk["sib_cap"] = 1
             _ff_trace_write("[WELL_SIB_CAP] added=%d cap=%d lab=%s"
                             % (n_added, _WELL_MAX_SIBLINGS, base_label))
@@ -872,8 +872,8 @@ def _append_ffree_torsion_wells(results, metal, lig_groups, base_syms, base_P, b
         except Exception:
             _wk["exc"] += 1
             continue
-    # Der REGULAERE Ausgang -- ohne diese Zeile meldete der Zaehler nur die zwei
-    # unwahrscheinlichen Faelle und schwieg genau dann, wenn es interessant wird.
+    # The REGULAR exit -- without this line the counter reported only the two
+    # improbable cases and stayed silent exactly when it gets interesting.
     _wtrace()
 # vdW-level inter-ligand clash floor (Å) for the NEW-frame never-worse gate below.
 # A re-embedded / re-seated conformer must not introduce a non-bonded heavy-heavy
@@ -882,34 +882,34 @@ def _append_ffree_torsion_wells(results, metal, lig_groups, base_syms, base_P, b
 # uses fires — measured: ACEQUY Fe(N(Dipp)(SiMe3))3 reembed frames at 1.98-2.01 Å
 # inter-ligand C-C, base frame 2.07-2.38 Å).
 #
-# ⚠ WIEDERHERGESTELLT 17.08.2026 — DIESE ZWEI ZEILEN WAREN FUENFZEHN TAGE WEG.
-# Commit a9b82598 (02.08., "Ring-Pucker an die Stelle, die die Atomreihenfolge des
-# Frames kennt") loeschte sie und liess die zwei Benutzungen in `_interlig_clash_ok`
-# stehen.  Seither warf die Funktion bei JEDEM Aufruf einen NameError, den das
-# `except Exception: continue` in `_append_reembed` verschluckte -- und damit fiel
-# JEDER Frame, der das Selbstgate bestanden hatte, lautlos heraus.
+# ⚠ RESTORED 17.08.2026 — THESE TWO LINES WERE GONE FOR FIFTEEN DAYS.
+# Commit a9b82598 (02.08., "ring pucker at the place that knows the atom order of
+# the frame") deleted them and left the two uses in `_interlig_clash_ok`
+# standing.  Since then the function threw a NameError on EVERY call, which the
+# `except Exception: continue` in `_append_reembed` swallowed -- and with that
+# EVERY frame that had passed the self-gate dropped out silently.
 #
-# GEMESSEN am 17.08. mit zwei Feuerspuren ueber `pool_ffonly` (187 Systeme):
-#   :938 reembed gerufen ........ 367 Treffer / 183 Systeme
-#   :951 Frame in der Schleife .. 2446 / 182
-#   :952 Selbstgate gerufen ..... 2446 / 182
-#   :953 Selbstgate verwirft .... 1156 / 99
-#   :954 Selbstgate BESTANDEN ... 1290 / 146     <- 2446-1156 = 1290, exakt
-#   :955 vdW verwirft ...........    0 / 0
-#   :956 angehaengt .............    0 / 0       <- kein einziger, je
-# 1290 Frames verschwanden zwischen 954 und 956, also IN dieser Funktion.
+# MEASURED on 17.08. with two fire traces over `pool_ffonly` (187 systems):
+#   :938 reembed called ......... 367 hits / 183 systems
+#   :951 frame in the loop ...... 2446 / 182
+#   :952 self-gate called ....... 2446 / 182
+#   :953 self-gate rejects ...... 1156 / 99
+#   :954 self-gate PASSED ....... 1290 / 146     <- 2446-1156 = 1290, exactly
+#   :955 vdW rejects ............    0 / 0
+#   :956 appended ...............    0 / 0       <- not a single one, ever
+# 1290 frames vanished between 954 and 956, i.e. IN this function.
 #
-# WAS ES GEKOSTET HAT: `BACKBONE_REEMBED` hatte am 01.08. Reichweite 135/187 = 72 %
-# (Byte-Vergleich der actsweep-Arme) und am 17.08. 0/24.  Der Mechanismus zielt auf
-# `ccdc_backbone`, die ZWEITGROESSTE Fehlmasse (411 von 840).  Er war nie kaputt --
-# er erzeugt weiterhin 2446 Frames auf 182 von 187 Systemen.  Es wurde nur nichts
-# davon angenommen.
+# WHAT IT COST: `BACKBONE_REEMBED` had reach 135/187 = 72 % on 01.08.
+# (byte comparison of the actsweep arms) and 0/24 on 17.08.  The mechanism targets
+# `ccdc_backbone`, the SECOND-LARGEST defect mass (411 of 840).  It was never broken --
+# it still generates 2446 frames on 182 of 187 systems.  Just none of them
+# was accepted.
 #
-# ⚠ DIE LEHRE STEHT SCHON IM REGISTER, und sie hat hier fuenfzehn Tage gekostet:
-# ein Fehler unter einem breiten `except` ist unsichtbar, bis jemand ZAEHLT.  Ein
-# Zensus ueber die Reichweite haette es am 02.08. gefunden; es gab keinen Verlauf,
-# gegen den ein Abfall haette auffallen koennen.  Genau dafuer gibt es seit heute
-# `harness/reach_watch.py` und `results/reach_history.jsonl`.
+# ⚠ THE LESSON IS ALREADY IN THE REGISTER, and here it cost fifteen days:
+# an error under a broad `except` is invisible until somebody COUNTS.  A
+# census of the reach would have found it on 02.08.; there was no history
+# against which a drop could have stood out.  That is exactly what
+# `harness/reach_watch.py` and `results/reach_history.jsonl` exist for as of today.
 _INTERLIG_VDW_FLOOR = 2.0
 _INTERLIG_VDW_TOL = 0.05
 
@@ -950,57 +950,57 @@ def _min_nonbonded_heavy(syms, P) -> float:
     return best
 
 
-# ══ DAS NEUE PAAR, NICHT DAS GLOBALE MINIMUM (01.09.2026, gemessen) ═══════════════
-# ANLASS.  `bbre6k` (BACKBONE_REEMBED) haengt Frames an und ist dabei STRENG ADDITIV
-# -- kein Frame verschwindet.  Trotzdem steigt `broken_frac` auf 295 von 1220
-# messbaren Systemen (24,2 %); der Kaputtanteil im ZUWACHS ist 37,7 % gegen 17,3 %
-# im Bestand (Faktor 2,18; zweites, unabhaengiges Feld sagt 2,31).  Dominanter
-# Befund des Schiedsrichters: `intclash_pair` auf 186 Systemen.
+# ══ THE NEW PAIR, NOT THE GLOBAL MINIMUM (01.09.2026, measured) ═══════════════
+# OCCASION.  `bbre6k` (BACKBONE_REEMBED) appends frames and is STRICTLY ADDITIVE
+# in doing so -- no frame disappears.  Nevertheless `broken_frac` rises on 295 of 1220
+# measurable systems (24.2 %); the broken share in the INCREMENT is 37.7 % against 17.3 %
+# in the existing stock (factor 2.18; a second, independent field says 2.31).  Dominant
+# finding of the arbiter: `intclash_pair` on 186 systems.
 #
-# WARUM DAS BESTEHENDE TOR ES NICHT FAENGT -- es war AN, es misst nur anders:
-#     HIER   `_interlig_clash_ok`:  EIN globales Minimum gegen max(2,0 ; base_min·0,95)
-#     DORT   metric_inter_ligand_clash.py:26:  d(i,j) < 0,65·(vdW_i + vdW_j)  JE PAAR
-# Fuer C-C ist die dortige Schranke 0,65·3,40 = 2,21 A.  Ein C-C-Kontakt bei 2,10 A
-# besteht hier (ueber dem 2,0-Boden) und faellt dort.  Das ist die Luecke in Zahlen:
-# ein SKALARER Test auf einen PAARWEISEN Defekt.
-# ⚠️ Ein aktives Tor sieht aus wie Schutz.  Bei jedem "es gibt doch schon ein Tor"
-#    gehoert die Frage dazu: PRUEFT ES DIE GROESSE, UM DIE ES GEHT?
+# WHY THE EXISTING GATE DOES NOT CATCH IT -- it was ON, it just measures differently:
+#     HERE   `_interlig_clash_ok`:  ONE global minimum against max(2.0 ; base_min·0.95)
+#     THERE  metric_inter_ligand_clash.py:26:  d(i,j) < 0.65·(vdW_i + vdW_j)  PER PAIR
+# For C-C the bound there is 0.65·3.40 = 2.21 A.  A C-C contact at 2.10 A
+# passes here (above the 2.0 floor) and fails there.  That is the gap in numbers:
+# a SCALAR test for a PAIRWISE defect.
+# ⚠️ An active gate looks like protection.  Every "but there already is a gate"
+#    has to come with the question: DOES IT CHECK THE QUANTITY AT ISSUE?
 #
-# DIE FORM DER HEILUNG.  Nicht "keine engen Kontakte" -- das verwuerfe auch Frames,
-# deren Enge schon im Basis-Frame steht und die diese Achse nicht zu verantworten
-# hat.  Sondern NEVER-WORSE JE PAAR: verworfen wird nur, was ein Paar unter die
-# Schranke drueckt, das im BASIS-Frame darueber lag.  Vorbestehende Enge bleibt
-# erlaubt; die Achse wird fuer den Bestand nicht haftbar gemacht.
+# THE SHAPE OF THE CURE.  Not "no tight contacts" -- that would also reject frames
+# whose tightness is already in the base frame and for which this axis is not
+# responsible.  Instead NEVER-WORSE PER PAIR: rejected is only what pushes a pair
+# below the bound that lay above it in the BASE frame.  Pre-existing tightness stays
+# permitted; the axis is not held liable for the existing stock.
 #
-# ⚠️ DIE ZAHL 0,65 IST CHEMIE, NICHT GESCHMACK.  Der Detektor nennt ihre Herkunft:
-#    an COD validiert, echte Zwischenligand-Kontakte liegen selten unter 0,70·vdW-
-#    Summe; 0,78 gab 8 % Falschpositive, 0,65 faengt die chemisch unmoeglichen
-#    Faelle.  Sie wird hier NICHT importiert (getrennte Baeume), sondern mit
-#    Zeigerkommentar gespiegelt -- weicht eine ab, faellt es beim Vergleich auf.
-# ⚠️ GESPIEGELT WIRD DIE FALSCHE DATEI (gemessen 03.09.2026, Register #299).
-#    `metric_inter_ligand_clash.py` nennt `full_verdict.py:1732` selbst eine
-#    DUBLETTE des verdrahteten `find_inter_ligand_clash` -- und verdrahtet ist
-#    laut `full_verdict.py:1531` die Schwelle **0,70**, nicht 0,65.  Ein Bautor
-#    UNTER der Augenschwelle kann das Auge per Konstruktion nie befriedigen:
-#    jedes Paar im Band [0,65 · 0,70)·vdW ist fuer das Auge eine Kollision und
-#    fuer das Tor unsichtbar.  Gemessen an den 194 Schadenssystemen von
-#    `bbre6k`: 99 von 163 verfehlten Systemen (60,7 %) liegen genau in diesem
-#    Band, GABYIS mit beiden ueberlebenden Frames darunter.
+# ⚠️ THE NUMBER 0.65 IS CHEMISTRY, NOT TASTE.  The detector names its origin:
+#    validated on COD, real inter-ligand contacts rarely lie below 0.70·vdW
+#    sum; 0.78 gave 8 % false positives, 0.65 catches the chemically impossible
+#    cases.  It is NOT imported here (separate trees) but mirrored with a
+#    pointer comment -- if one drifts, it stands out in the comparison.
+# ⚠️ THE WRONG FILE IS BEING MIRRORED (measured 03.09.2026, register #299).
+#    `metric_inter_ligand_clash.py` itself calls `full_verdict.py:1732` a
+#    DUPLICATE of the wired-in `find_inter_ligand_clash` -- and according to
+#    `full_verdict.py:1531` the wired-in threshold is **0.70**, not 0.65.  A build gate
+#    BELOW the eye's threshold can by construction never satisfy the eye:
+#    every pair in the band [0.65 · 0.70)·vdW is a collision for the eye and
+#    invisible for the gate.  Measured on the 194 damaged systems of
+#    `bbre6k`: 99 of 163 missed systems (60.7 %) lie exactly in this
+#    band, GABYIS with both surviving frames below it.
 #
-#    UEBERSCHREIBBAR STATT HART GESETZT, und das ist kein Zoegern:
-#    `pairgate6k` lief am 04.09. bei 5075/6000 und baut jedes System in einem
-#    NEUEN Unterprozess, der diese Datei frisch importiert.  Ein harter Wechsel
-#    haette die restlichen ~925 Systeme mit 0,70 und die ersten 5075 mit 0,65
-#    gebaut -- ein gemischtes Archiv und ein unbrauchbarer Lauf.  Mit Vorgabe
-#    0,65 ist JEDER bestehende Lauf byte-identisch; der neue setzt 0,70.
+#    OVERRIDABLE INSTEAD OF HARD-SET, and that is not hesitation:
+#    `pairgate6k` was at 5075/6000 on 04.09. and builds every system in a
+#    NEW subprocess that imports this file afresh.  A hard change
+#    would have built the remaining ~925 systems with 0.70 and the first 5075 with 0.65
+#    -- a mixed archive and an unusable run.  With default
+#    0.65 EVERY existing run is byte-identical; the new one sets 0.70.
 #
-#    ⚠️ Die Schwelle ist KEIN monotoner Knopf.  Dieselbe Zahl steht auch in der
-#    Bedingung `d_base >= tgt` ("lag das Paar vorher darueber"), und die wird
-#    mit steigendem Faktor SCHWERER.  Simuliert ueber 295 Schadenssysteme:
-#        0,65 -> heilt  81   0,68 -> 139   0,70 -> 200   0,72 -> 190
-#    0,70 ist das Maximum, und das ist kein Zufall: dort fragt das Tor exakt
-#    "verletzt dieses Frame das AUGENkriterium neu?".  Wer hoeher dreht, misst
-#    weniger.
+#    ⚠️ The threshold is NOT a monotonic knob.  The same number also appears in the
+#    condition `d_base >= tgt` ("did the pair lie above it before"), and that one gets
+#    HARDER with a rising factor.  Simulated over 295 damaged systems:
+#        0.65 -> heals  81   0.68 -> 139   0.70 -> 200   0.72 -> 190
+#    0.70 is the maximum, and that is no coincidence: there the gate asks exactly
+#    "does this frame newly violate the EYE criterion?".  Whoever turns it higher
+#    measures less.
 _IL_CLASH_FACTOR = float(os.environ.get("DELFIN_FFFREE_INTERLIG_PAIR_FACTOR", "0.65"))
 _IL_VDW = {"H": 1.20, "C": 1.70, "N": 1.55, "O": 1.52, "F": 1.47, "P": 1.80,
            "S": 1.80, "Cl": 1.75, "Br": 1.85, "I": 1.98, "B": 1.92, "Si": 2.10,
@@ -1013,27 +1013,27 @@ def _il_vdw(s):
 
 
 def _pairwise_gate_enabled() -> bool:
-    """Paarweises Nie-Schlechter-Tor fuer ANGEHAENGTE Frames.
-    `DELFIN_FFFREE_INTERLIG_PAIR_GATE`, Vorgabe AUS -> byte-identisch.
-    Wirkt nur, wo ueberhaupt Frames angehaengt werden (reembed/reseat); ohne
-    diese Flags entsteht kein Zusatzframe, das es filtern koennte -> no-op."""
+    """Pairwise never-worse gate for APPENDED frames.
+    `DELFIN_FFFREE_INTERLIG_PAIR_GATE`, default OFF -> byte-identical.
+    Acts only where frames are appended at all (reembed/reseat); without
+    those flags no extra frame arises that it could filter -> no-op."""
     return os.environ.get("DELFIN_FFFREE_INTERLIG_PAIR_GATE", "0") == "1"
 
 
 def _neues_paar_zu_eng(syms, P, base_P, bericht=False):
-    """Fuehrt das NEUE Frame ein Schweratom-Paar unter 0,65·vdW-Summe, das im
-    BASIS-Frame darueber lag?
+    """Does the NEW frame introduce a heavy-atom pair below 0.65·vdW sum that lay
+    above it in the BASE frame?
 
-    JE PAAR, nicht ueber ein globales Minimum -- das ist der ganze Unterschied zu
-    `_interlig_clash_ok`.  Nicht gebundene Schweratom-Paare nach demselben
-    graphfreien Kriterium wie `_min_nonbonded_heavy` (d >= 1,30·ideal_bond),
-    Wasserstoff und Metalle ausgenommen.
+    PER PAIR, not via a global minimum -- that is the whole difference from
+    `_interlig_clash_ok`.  Non-bonded heavy-atom pairs by the same
+    graph-free criterion as `_min_nonbonded_heavy` (d >= 1.30·ideal_bond),
+    hydrogen and metals excluded.
 
-    ⚠️ Verlangt IDENTISCHE Atomreihenfolge in beiden Frames -- beim Re-Embed ist
-       der Kern eingefroren und die Atomzahl unveraendert.  Stimmt die Form nicht,
-       wird NICHT geurteilt (False = durchlassen): lieber ein Frame zu viel als
-       ein stilles Verwerfen aus einem Vergleich, der gar nicht moeglich war.
-       Eine Null aus einem unmoeglichen Vergleich ist keine Messung.
+    ⚠️ Requires IDENTICAL atom order in both frames -- in the re-embed the
+       core is frozen and the atom count unchanged.  If the shape does not match,
+       NO verdict is given (False = let through): better one frame too many than
+       a silent rejection from a comparison that was not possible at all.
+       A zero from an impossible comparison is not a measurement.
     """
     P = np.asarray(P, dtype=float)
     B = np.asarray(base_P, dtype=float)
@@ -1048,19 +1048,19 @@ def _neues_paar_zu_eng(syms, P, base_P, bericht=False):
                 continue
             d_new = float(np.linalg.norm(P[i] - P[j]))
             if d_new < 1.30 * _bd._ideal_bond(syms[i], syms[j]):
-                continue                                  # gebunden -> kein Kontakt
+                continue                                  # bonded -> not a contact
             tgt = _IL_CLASH_FACTOR * (_il_vdw(syms[i]) + _il_vdw(syms[j]))
             if d_new >= tgt:
                 continue
-            # Lag das Paar im Basis-Frame schon darunter, ist die Enge NICHT von
-            # diesem Frame verursacht -> kein Grund zu verwerfen.
+            # If the pair already lay below it in the base frame, the tightness is NOT
+            # caused by this frame -> no reason to reject.
             if float(np.linalg.norm(B[i] - B[j])) >= tgt:
-                # `bericht=True` liefert das AUSLOESENDE Paar statt nur "ja" --
-                # rein diagnostisch, ohne Verhaltensaenderung: der Bau ruft ohne
-                # Argument auf und bekommt weiter True/False.  Gebraucht, weil
-                # "WARUM verwirft das Tor?" sonst nur mit einer ZWEITEN
-                # Nachbaufassung des Kriteriums zu beantworten waere, und zwei
-                # Fassungen sind hier schon dreimal auseinandergelaufen.
+                # `bericht=True` returns the TRIGGERING pair instead of just "yes" --
+                # purely diagnostic, no change in behaviour: the build calls without
+                # the argument and keeps getting True/False.  Needed because
+                # "WHY does the gate reject?" could otherwise only be answered with a
+                # SECOND re-implementation of the criterion, and two
+                # versions have already drifted apart three times here.
                 return (i, j) if bericht else True
     return None if bericht else False
 
@@ -1229,11 +1229,11 @@ def _append_reembed(results, metal, lig_groups, base_syms, base_P, base_label,
     # frame must not introduce a worse (closer) inter-ligand contact.
     _gate = _interlig_vdw_gate_enabled()
     base_min = _min_nonbonded_heavy(base_syms, base_P) if _gate else None
-    # ⚠ ZWEITES, PAARWEISES TOR (Vorgabe AUS).  Das erste vergleicht ein globales
-    #   Minimum, dieses ein PAAR gegen sein eigenes Gegenstueck im Basis-Frame.
-    #   Gemessen: 295 von 1220 Systemen bekamen ueber `bbre6k` kaputte ANGEHAENGTE
-    #   Frames, dominant `intclash_pair` -- genau die Klasse, die ein skalares
-    #   Minimum nicht sieht.  Siehe Blockkommentar bei `_neues_paar_zu_eng`.
+    # ⚠ SECOND, PAIRWISE GATE (default OFF).  The first compares a global
+    #   minimum, this one a PAIR against its own counterpart in the base frame.
+    #   Measured: 295 of 1220 systems received broken APPENDED frames via `bbre6k`,
+    #   dominantly `intclash_pair` -- exactly the class a scalar minimum
+    #   does not see.  See the block comment at `_neues_paar_zu_eng`.
     _pgate = _pairwise_gate_enabled()
     try:
         from delfin.manta._refine_gate import ZAEHLER as _PZ
@@ -1244,16 +1244,16 @@ def _append_reembed(results, metal, lig_groups, base_syms, base_P, base_label,
     for fi, (syms, P) in enumerate(frames):
         try:
             syms, P = _maybe_relax(syms, P)
-            # ⚠️ GRAPHANKER, DURCHGEREICHT STATT NEU GEBAUT (04.09.2026).
-            #    `_build_is_clean` nimmt `graph_bonds` seit langem; fuenf
-            #    Aufrufstellen uebergeben ihn, DIESE nicht -- gemessen in
-            #    Register #299.  Ohne ihn urteilt der Selbsttest hier
-            #    GRAPHFREI: ein Schweratompaar, das auf Bindungsabstand
-            #    zusammenfaellt, sieht fuer ein rein geometrisches Kriterium
-            #    wie eine Bindung aus und wird durchgelassen.  Genau dafuer
-            #    hat das AUGE seinen SMILES-Anker
+            # ⚠️ GRAPH ANCHOR, PASSED THROUGH INSTEAD OF REBUILT (04.09.2026).
+            #    `_build_is_clean` has taken `graph_bonds` for a long time; five
+            #    call sites pass it, THIS one did not -- measured in
+            #    register #299.  Without it the self-test here judges
+            #    GRAPH-FREE: a heavy-atom pair that collapses onto bond
+            #    distance looks like a bond to a purely geometric criterion
+            #    and is let through.  That is exactly what the EYE has its
+            #    SMILES anchor for
             #    (`find_inter_ligand_clash.py:265-280`).
-            #    Vorgabe: der Aufrufer uebergibt None -> byte-identisch.
+            #    Default: the caller passes None -> byte-identical.
             if not _build_is_clean(syms, P, cn=cn, geom=geom, donors=donors,
                                    graph_bonds=graph_bonds):
                 continue
@@ -1262,7 +1262,7 @@ def _append_reembed(results, metal, lig_groups, base_syms, base_P, base_label,
             if _pgate and _neues_paar_zu_eng(syms, P, base_P):
                 if _PZ is not None:
                     _PZ["pairgate_verworfen"] += 1
-                continue                    # NEUES zu enges Paar -> nicht anhaengen
+                continue                    # NEW too-tight pair -> do not append
             results.append((_xyz(syms, P), f"{base_label}-reembed{fi+1}"))
         except Exception:
             continue
@@ -1466,11 +1466,11 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None,
         return True
     P = np.asarray(P, dtype=float)
     if P.size == 0 or not np.all(np.isfinite(P)):
-        # 14.08.2026: war ein NACKTES `return False`.  Sechs Verwerfungsgruende tragen einen
-        # Namen und erscheinen im Verwurfszensus, dieser nicht -- er fiel damit stillschweigend
-        # in die Restmenge und war von "kein Isomer enumeriert" nicht zu unterscheiden.
-        # Das ist der teuerste Grund von allen, den man NICHT sehen will: eine nicht-endliche
-        # Koordinate ist ein BAUFEHLER, kein Chemieurteil, und gehoert getrennt gezaehlt.
+        # 14.08.2026: was a BARE `return False`.  Six rejection reasons carry a
+        # name and appear in the rejection census, this one did not -- it thereby fell silently
+        # into the remainder set and could not be told apart from "no isomer enumerated".
+        # That is, of all reasons, the most expensive one NOT to see: a non-finite
+        # coordinate is a BUILD ERROR, not a chemistry verdict, and belongs counted separately.
         return _gate_no("NONFINITE_COORDS")
     syms = list(syms)
     bonds = _bd._geometric_bonds(syms, P)
@@ -1572,15 +1572,15 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None,
                 continue
             if float(np.linalg.norm(P[i] - P[j])) > _torn_f * _bd._ideal_bond(syms[i], syms[j]):
                 return _gate_no("TORN_BOND")                              # the graph requires this bond; it is torn
-    # ⚠ 2026-08-07 VERENGT.  Die erste Fassung schlug bei JEDER wahrgenommenen Bindung an, die
-    # der Graph nicht fuehrt -- und war damit zu grob: tpr6spur verlor 7 Isomere und riss
-    # ccdc_isomer_lost, ccdc_arrangement_lost und ccdc_backbone_lost, also SCHLECHTER als ohne.
-    # Grund: die geometrische Wahrnehmung sieht auch LIGANDINTERN Bindungen, die der
-    # Blockgraph nicht auffuehrt (Ringschluesse, Perzeptionsrand), und die sind harmlos.
-    # Die physikalische Ursache im Prisma ist enger: die Dreiecksflaechen stehen auf Deckung,
-    # also kollidieren VERSCHIEDENE LIGANDEN miteinander.  Genau darauf wird jetzt geprueft --
-    # eine wahrgenommene Bindung zwischen zwei verschiedenen Ligandbloecken kann es chemisch
-    # nicht geben, denn jeder Block ist ein eigenes Molekuel.
+    # ⚠ 2026-08-07 NARROWED.  The first version fired on EVERY perceived bond that
+    # the graph does not carry -- and was thereby too coarse: tpr6spur lost 7 isomers and tripped
+    # ccdc_isomer_lost, ccdc_arrangement_lost and ccdc_backbone_lost, i.e. WORSE than without.
+    # Reason: the geometric perception also sees INTRA-LIGAND bonds that the
+    # block graph does not list (ring closures, perception edge), and those are harmless.
+    # The physical cause in the prism is narrower: the triangular faces stand in register,
+    # so DIFFERENT LIGANDS collide with each other.  Exactly that is now checked --
+    # a perceived bond between two different ligand blocks cannot exist chemically,
+    # because each block is a molecule of its own.
     if (block_bounds and graph_bonds
             and os.environ.get("DELFIN_FFFREE_SPURIOUS_BOND", "0") == "1"):
         _req = {(min(i, j), max(i, j)) for i, j in graph_bonds}
@@ -1601,7 +1601,7 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None,
                 continue
             _bi, _bj = _blk(i), _blk(j)
             if _bi >= 0 and _bj >= 0 and _bi != _bj:
-                return _gate_no("SPURIOUS_INTERLIG_BOND")   # zwei getrennte Molekuele, verschmolzen
+                return _gate_no("SPURIOUS_INTERLIG_BOND")   # two separate molecules, fused together
     bset = {(min(i, j), max(i, j)) for i, j in bonds}
     n = len(syms)
     for i in range(n):
@@ -1690,10 +1690,10 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None,
                             for j in sel])
             try:
                 if PLY.cshm(obs, geom) > _shmax:
-                    # 14.08.2026: war ein NACKTES `return False` -- der EINZIGE Verwurf des
-                    # Selbstgates, der auf die Polyedergestalt zielt, und der einzige ohne
-                    # Namen.  Genau der fehlt in jeder Verwurfsrangliste, an der entschieden
-                    # wird, welcher Defekt als naechstes drankommt.
+                    # 14.08.2026: was a BARE `return False` -- the ONLY rejection of the
+                    # self-gate that targets the polyhedron shape, and the only one without
+                    # a name.  Exactly that one is missing from every rejection ranking on which
+                    # it is decided which defect comes next.
                     return _gate_no("SHAPE_CSHM")
             except Exception:
                 pass
@@ -1748,23 +1748,23 @@ def _ff_trace_on():
 def _ff_trace_write(line):
     """Write one trace line -- to a FILE when the flag names a path, else stderr.
 
-    ⚠ 2026-08-09, DER GRUND.  Dieser Trace wurde am 01.08. gebaut, um genau EINE Frage zu
-    beantworten: warum faellt die Mehrheit der Systeme aus dem FF-freien Bauer heraus.  Der
-    Docstring von _scope_no sagt es woertlich ("808 anonymous fall-throughs into a ranked
-    work list").  Er hat nie eine Zeile geliefert -- weil er nach STDERR schreibt, und
-    loop.py verwirft den stderr der Bau-Worker (er landet nur in results/debug_<rid>.log,
-    und nur wenn --debug auf genau dieses System zeigt).
+    ⚠ 2026-08-09, THE REASON.  This trace was built on 01.08. to answer exactly ONE
+    question: why does the majority of systems fall out of the FF-free builder.  The
+    docstring of _scope_no says it verbatim ("808 anonymous fall-throughs into a ranked
+    work list").  It never delivered a single line -- because it writes to STDERR, and
+    loop.py discards the stderr of the build workers (it lands only in results/debug_<rid>.log,
+    and only when --debug points at exactly this system).
 
-    Fuer den CLEANGATE-Trace ist derselbe Fehler am 04.08. schon einmal behoben worden --
-    dort steht der Kommentar "A FILE, not stderr ... measured: 139 of 142 systems built, ZERO
-    trace lines".  Die Korrektur wurde nur nicht auf den Nachbartrace uebertragen, und so hat
-    das wichtigste Diagnoseinstrument des Projekts eine Woche lang ins Leere geschrieben.
+    For the CLEANGATE trace the same error was already fixed once on 04.08. --
+    there the comment reads "A FILE, not stderr ... measured: 139 of 142 systems built, ZERO
+    trace lines".  The fix was just never carried over to the neighbouring trace, and so
+    the project's most important diagnostic instrument wrote into the void for a week.
 
-    DELFIN_FFFREE_ISO_TRACE=1        wie bisher: stderr
-    DELFIN_FFFREE_ISO_TRACE=<pfad>   O_APPEND, eine kurze Zeile pro Aufruf; das ist ueber
-                                     parallele Worker hinweg atomar genug.
-    DELFIN_FFFREE_TRACE_RID          optional, wird vorangestellt, damit aus der Verteilung
-                                     ein POOL werden kann und nicht nur eine Rangliste.
+    DELFIN_FFFREE_ISO_TRACE=1        as before: stderr
+    DELFIN_FFFREE_ISO_TRACE=<path>   O_APPEND, one short line per call; that is atomic
+                                     enough across parallel workers.
+    DELFIN_FFFREE_TRACE_RID          optional, is prepended so that the distribution
+                                     can become a POOL and not just a ranking.
     """
     _v = os.environ.get("DELFIN_FFFREE_ISO_TRACE", "0")
     if not _v or _v == "0":
@@ -1786,8 +1786,8 @@ def _scope_no(reason, detail=""):
 
     Returns None exactly as the bare `return None` did, and is silent unless the trace is on.
 
-    THE MEASUREMENT THIS EXISTS FOR (User 2026-08-01: "ausrollen ... bis alle fffree laufen
-    und besser als legacy sind").  On the shipped champion the FF-free builder fires for 187
+    THE MEASUREMENT THIS EXISTS FOR (User 2026-08-01: "roll out ... until all fffree run
+    and are better than legacy").  On the shipped champion the FF-free builder fires for 187
     of 995 systems -- the other 808 fall through to legacy, and NOTHING recorded why.  That
     matters more than the quality gap does: measured on 934 identical systems with an
     identical denominator and an isomer counted only when a CLEAN frame realises it, FF-free
@@ -1803,10 +1803,10 @@ def _scope_no(reason, detail=""):
 
 
 def _rescue_first_config_enabled() -> bool:
-    """Darf das ERSTE Config eines Systems die letzte Rettungssprosse benutzen?
+    """May the FIRST config of a system use the last rescue rung?
 
-    (DELFIN_FFFREE_RESCUE_FIRST_CONFIG, Vorgabe AUS -> byte-identisch.)  Wirkt nur, wenn der
-    Aufrufer zugleich `union=True` durchreicht -- die Begruendung steht an der Sperre selbst.
+    (DELFIN_FFFREE_RESCUE_FIRST_CONFIG, default OFF -> byte-identical.)  Acts only when the
+    caller passes `union=True` through at the same time -- the justification is at the lock itself.
     """
     return os.environ.get("DELFIN_FFFREE_RESCUE_FIRST_CONFIG", "0") == "1"
 
@@ -1931,25 +1931,25 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers, union: bool = False):
                 # legacy.  That is the additivity the heteroleptic branch could not have,
                 # and the difference is exactly what trilatresc measured.
                 #
-                # ===== DIE PRAEMISSE DIESER SPERRE FAELLT IM UNION-MODUS WEG (2026-08-09) =====
-                # Der Satz oben nennt den Grund selbst: sie schuetzt davor, dass ein gerettetes
-                # ERSTES Config das System von legacy WEGZIEHT.  Laeuft der Aufrufer im
-                # Vereinigungsmodus, gibt es dieses Wegziehen nicht -- legacy baut zu Ende und
-                # seine Frames bleiben stehen, unsere kommen daneben.  Die Sperre verteidigt
-                # dann gegen eine Gefahr, die nicht mehr existiert.
+                # ===== THE PREMISE OF THIS LOCK DISAPPEARS IN UNION MODE (2026-08-09) =====
+                # The sentence above names the reason itself: it protects against a rescued
+                # FIRST config PULLING the system AWAY from legacy.  If the caller runs in
+                # union mode, there is no such pulling away -- legacy builds to the end and
+                # its frames stay put, ours come alongside.  The lock then defends
+                # against a danger that no longer exists.
                 #
-                # WAS SIE KOSTET, gemessen am 09.08. aus der Bauspur ueber 40 Systeme mit
-                # Chelat-Enumeration: 309 Isomere enumeriert, 236 vom Bauer selbst verworfen
-                # = 76 Prozent.  Und die Sprossen darueber stehen im Champion alle auf AUS
-                # (DECOLLAPSE aus, CONFORMER_SEATING aus und global negativ mit cap_lost 78).
-                # Fuer das erste Config eines Systems gibt es damit heute UEBERHAUPT KEINE
-                # Rettung; scheitern alle Configs daran, verliert das System den FF-freien
-                # Bauer ganz -- CHELATE_EMPTY, gemessen 35 von 136 Systemen.
+                # WHAT IT COSTS, measured on 09.08. from the build trace over 40 systems with
+                # chelate enumeration: 309 isomers enumerated, 236 rejected by the builder itself
+                # = 76 percent.  And the rungs above it are all OFF in the champion
+                # (DECOLLAPSE off, CONFORMER_SEATING off and globally negative with cap_lost 78).
+                # For the first config of a system there is thus today NO rescue AT ALL;
+                # if all configs fail on it, the system loses the FF-free
+                # builder entirely -- CHELATE_EMPTY, measured 35 of 136 systems.
                 #
-                # ⛔ Die Bedingung ist eine UND-Verknuepfung, nicht bloss Dokumentation: ohne
-                # Union ist die Praemisse echt und die Sperre richtig.  Dieselbe Lehre wie am
-                # 07.08. -- MULTIBOND_LENGTH_EXEMPT allein cap_lost 40, mit Union cap_lost 0
-                # und gained 26.  Nicht der Hebel war der Schaden, das Entweder-Oder war es.
+                # ⛔ The condition is an AND conjunction, not mere documentation: without
+                # union the premise is real and the lock is right.  The same lesson as on
+                # 07.08. -- MULTIBOND_LENGTH_EXEMPT alone cap_lost 40, with union cap_lost 0
+                # and gained 26.  It was not the lever that did the damage, it was the either-or.
                 if reseated is None and (results
                                          or (union and _rescue_first_config_enabled())):
                     reseated = _trilat_rescue(
@@ -1962,9 +1962,9 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers, union: bool = False):
                 syms, P = reseated
         _lab = f"{geom_tag}-chelate-{k+1}"
         results.append((_xyz(syms, P), _lab))
-        # Saat fuer das Kreuzprodukt Konformer x Faltung -- siehe die lange Begruendung
-        # am Ende dieser Schleife.  Pro akzeptiertem Frame frisch, nie ueber Frames
-        # hinweg gesammelt: der Faltungspass braucht die Atomreihenfolge SEINES Frames.
+        # Seed for the cross product conformer x fold -- see the long justification
+        # at the end of this loop.  Fresh per accepted frame, never collected across
+        # frames: the fold pass needs the atom order of ITS frame.
         _prod_on = os.environ.get("DELFIN_FFFREE_MANIFOLD_PRODUCT", "0") == "1"
         _prod_seeds = []
         # BETA AS A SIBLING, NOT AS A REPLACEMENT (DELFIN_FFFREE_BETA_SIBLING, default OFF).
@@ -2031,12 +2031,12 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers, union: bool = False):
                     if _ok:
                         results.append((_bx, f"{_lab}-beta"))
                         if _prod_on:
-                            # Saat fuer das Kreuzprodukt -- siehe die Begruendung am Ende
-                            # dieser Schleife.  Gemessen 18.08.: `conf x beta` ist die
-                            # ZWEITGROESSTE fehlende Kombination (223 Systeme bedienen
-                            # beide Achsen, 0 bauen das Produkt; rund 1870 fehlende
-                            # Etiketten), und `ccdc_backbone` ist dort in 33,3 % der
-                            # Faelle unrealisiert gegen einen Boden von 30,1 %.
+                            # Seed for the cross product -- see the justification at the end
+                            # of this loop.  Measured 18.08.: `conf x beta` is the
+                            # SECOND-LARGEST missing combination (223 systems serve
+                            # both axes, 0 build the product; around 1870 missing
+                            # labels), and `ccdc_backbone` is unrealized there in 33.3 % of
+                            # the cases against a floor of 30.1 %.
                             _prod_seeds.append((_bs, _bP, f"{_lab}-beta", donors))
         # LONE-PAIR ORIENTATION AS A SIBLING (DELFIN_FFFREE_LP_SIBLING, default OFF).
         #
@@ -2082,53 +2082,53 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers, union: bool = False):
                     if _better and _nocoll:
                         results.append((_lx, f"{_lab}-lp"))
                         if _prod_on:
-                            # `conf x lp` ist die FUENFTGROESSTE fehlende Kombination
-                            # (112 Systeme bedienen beide, 0 bauen das Produkt; rund 1210
-                            # fehlende Etiketten).  Dieselbe Saat wie oben.
+                            # `conf x lp` is the FIFTH-LARGEST missing combination
+                            # (112 systems serve both, 0 build the product; around 1210
+                            # missing labels).  The same seed as above.
                             _prod_seeds.append((_ls, _lP, f"{_lab}-lp", _dl))
-        # DER HALBE TWIST ALS GESCHWISTER (DELFIN_FFFREE_OC6_TWIST_SEAT, Vorgabe AUS).
+        # THE HALF TWIST AS A SIBLING (DELFIN_FFFREE_OC6_TWIST_SEAT, default OFF).
         #
-        # Gemessen 18.08. auf 30921 Systemen: netto +988 Systeme vom Oktaeder ins
-        # trigonale Prisma, McNemar X2 = 860,8 -- der groesste Einzeldefekt der
-        # Polyederachse.  Und es ist KEINE Auswahlfrage: poly_match ist 1061 von 1061
-        # false, obwohl das Auge poly_build als Minimum ueber ALLE realistischen Frames
-        # liest.  Im ganzen Manifold gibt es kein Oktaeder -- also muss eines HINEIN,
-        # und genau das tut ein Geschwister.
+        # Measured 18.08. on 30921 systems: net +988 systems from the octahedron into the
+        # trigonal prism, McNemar X2 = 860.8 -- the largest single defect of the
+        # polyhedron axis.  And it is NOT a question of selection: poly_match is 1061 of 1061
+        # false, although the eye reads poly_build as the minimum over ALL realistic
+        # frames.  In the whole manifold there is no octahedron -- so one has to go IN,
+        # and that is exactly what a sibling does.
         #
-        # ⚠ WARUM ADDITIV UND NICHT AN DER PRIMAERSTELLE.  Die lange Notiz am
-        # -beta-Geschwister oben sagt es fuer diesen Pfad bereits mit Zahlen: was hier
-        # ERSETZT, stirbt (die Setzung mit gedrehtem Rueckgrat kollidiert, das Config
-        # faellt, das System geht an legacy -- reach 49 von 187, cap_LOST 2, valid
-        # 28 -> 27); was HINZUFUEGT, landet.  Der Primaerframe bleibt hier woertlich
-        # stehen; das Schluesselwort ``oc6_twist`` in assemble_from_config ist per
-        # Vorgabe False, der Bau des Primaerframes ist also byte-identisch, unabhaengig
-        # von dieser Umgebungsvariablen.  Kippt der gedrehte Frame um, kostet das
-        # nichts, weil nichts weggenommen wurde.
+        # ⚠ WHY ADDITIVE AND NOT AT THE PRIMARY SITE.  The long note at the
+        # -beta sibling above already says it with numbers for this path: what
+        # REPLACES here, dies (the seating with a twisted backbone collides, the config
+        # falls, the system goes to legacy -- reach 49 of 187, cap_LOST 2, valid
+        # 28 -> 27); what ADDS, lands.  The primary frame stays here literally
+        # as it is; the keyword ``oc6_twist`` in assemble_from_config is False by
+        # default, so the build of the primary frame is byte-identical, independent
+        # of this environment variable.  If the twisted frame falls over, it costs
+        # nothing, because nothing was taken away.
         #
-        # ⚠ UND ER MUSS DIESELBE LATTE NEHMEN WIE DER FRAME, AN DEM ER HAENGT.  Das
-        # Selbstgate fragt "ist das baubar", nicht "ist das so gut wie das, was wir
-        # schon haben" -- deshalb hier dieselben drei Nachweise wie beim -beta-Zweig
-        # (kein neuer Kollaps, keine schlechtere Bindung, kein neu verbogenes sp2) und
-        # dazu der eine, um den es geht: das Polyeder muss NACH der Nachrelaxation
-        # immer noch naeher am Oktaeder sein als das Primaerframe.  Der Korrektor misst
-        # das schon vor _finish_config_frame; hier wird es am ENDPRODUKT nachgemessen,
-        # weil die Relaxation danach laeuft und den Twist zurueckdrehen kann.  Ein
-        # Geschwister, das den Twist nicht wirklich verkleinert, ist ein Duplikat mit
-        # Etikett und wird nicht aufgenommen.
+        # ⚠ AND IT MUST CLEAR THE SAME BAR AS THE FRAME IT HANGS OFF.  The
+        # self-gate asks "is this buildable", not "is this as good as what we
+        # already have" -- hence here the same three proofs as in the -beta branch
+        # (no new collapse, no worse bond, no newly bent sp2) and
+        # in addition the one at issue: the polyhedron must AFTER the post-relaxation
+        # still be closer to the octahedron than the primary frame.  The corrector measures
+        # that already before _finish_config_frame; here it is re-measured on the END PRODUCT,
+        # because the relaxation runs afterwards and can turn the twist back.  A
+        # sibling that does not really reduce the twist is a duplicate with a
+        # label and is not admitted.
         if AC._oc6_twist_seat_enabled():
-            # ⚠ DER NENNER, UND ZWAR AN JEDEM AUSGANG.  Am 10.08. hat ein Feuerzensus
-            # zwei von dreizehn Ausgaengen verdrahtet und daraus "58 von 64" erfunden;
-            # am 14.08. hat derselbe Zensus auf Docstrings gezaehlt und "erreicht 0"
-            # neben "feuert 990" gestellt.  Deshalb bekommt HIER jeder Ausgang seine
-            # eigene Zeile und `enter` steht ganz vorn: ohne ihn ist "nichts gebaut"
-            # nicht von "nie betreten" zu unterscheiden.  Reine Buchhaltung -- sie
-            # laeuft nur, wenn der Schalter an ist, und aendert keinen Frame.
+            # ⚠ THE DENOMINATOR, AND AT EVERY EXIT.  On 10.08. a fire census
+            # wired two of thirteen exits and invented "58 of 64" from that;
+            # on 14.08. the same census counted on docstrings and put "reached 0"
+            # next to "fires 990".  That is why HERE every exit gets its
+            # own line and `enter` stands at the very front: without it, "nothing built"
+            # cannot be told apart from "never entered".  Pure bookkeeping -- it
+            # runs only when the switch is on, and changes no frame.
             _OC6_CENSUS["enter"] += 1
-            # dieselbe Zahl am FERTIGEN Primaerframe, auf den ECHTEN Donorindizes --
-            # nicht auf "den sechs naechsten Schweratomen", was bei einem Chelat das
-            # Rueckgrat trifft und Unsinn misst.  Sie ist der Gegenpol zur Setzungszahl.
+            # the same number on the FINISHED primary frame, on the REAL donor indices --
+            # not on "the six nearest heavy atoms", which on a chelate hits the
+            # backbone and measures nonsense.  It is the counterpart to the seating number.
             try:
-                if len(_OC6_FINAL_CSHM) < AC._OC6_CSHM_KEEP:     # derselbe Deckel
+                if len(_OC6_FINAL_CSHM) < AC._OC6_CSHM_KEEP:     # the same cap
                     _OC6_FINAL_CSHM.append(
                         _shell_cshm(d, (list(syms), P,
                                         sorted(int(x) for x in (donors or [])))))
@@ -2147,7 +2147,7 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers, union: bool = False):
                 _ts, _tP = _maybe_relax(_ts, _tP)
                 _tx = _xyz(_ts, _tP)
                 if _tx == _xyz(syms, P):
-                    _OC6_CENSUS["same_xyz"] += 1      # Korrektor hat nichts geaendert
+                    _OC6_CENSUS["same_xyz"] += 1      # corrector changed nothing
                 elif max_isomers and len(results) >= max_isomers:
                     _OC6_CENSUS["iso_cap"] += 1
                 elif not _build_is_clean(_ts, _tP, cn=d.get("cn"), geom=d.get("geometry"),
@@ -2156,18 +2156,18 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers, union: bool = False):
                 else:
                     try:
                         _tdl = sorted(int(x) for x in (_td or []))
-                        # die eine Zahl, um die es geht -- am fertigen Frame gemessen,
-                        # mit demselben Instrument, das schon der CN5- und der
-                        # Koplanar-Vergleich benutzen (+inf bei Fehlschlag, ein
-                        # misslungener Frame gewinnt also nie).
+                        # the one number at issue -- measured on the finished frame,
+                        # with the same instrument the CN5 and the coplanar
+                        # comparison already use (+inf on failure, so a
+                        # failed frame never wins).
                         _c_new = _shell_cshm(d, (_ts, _tP, _tdl))
                         _c_old = _shell_cshm(d, (list(syms), P,
                                                  sorted(int(x) for x in (donors or []))))
                         _tok = _c_new < _c_old - 1e-9
                         if not _tok:
                             _OC6_CENSUS["cshm_flat"] += 1
-                        # ... und dieselben drei Nachweise, die das -beta-Geschwister
-                        # tragen: nichts, was der Primaerframe nicht auch hat.
+                        # ... and the same three proofs the -beta sibling
+                        # carries: nothing the primary frame does not also have.
                         if _tok and (AC._collapsed_heavy_bonds_strict(_ts, _tP)
                                      and not AC._collapsed_heavy_bonds_strict(syms, P)):
                             _tok = False
@@ -2180,7 +2180,7 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers, union: bool = False):
                             _tok = False
                             _OC6_CENSUS["sp2"] += 1
                     except Exception:
-                        _tok = False                  # nicht beweisbar besser -> nicht aufnehmen
+                        _tok = False                  # not provably better -> do not admit
                         _OC6_CENSUS["bar_exc"] += 1
                     if _tok:
                         _OC6_CENSUS["added"] += 1
@@ -2251,55 +2251,55 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers, union: bool = False):
                                     max_isomers=max_isomers)
         # Backbone re-embed (env DELFIN_FFFREE_BACKBONE_REEMBED, default OFF): add
         # core-preserving global-fold variants of this accepted chelate frame.
-        # ⚠️ NUR HIER, NICHT AN DER ZWEITEN AUFRUFSTELLE (:2933).  Der Basisframe
-        #    DIESES Zweiges wird bei :2225/:2233 selbst MIT `graph_bonds=_gb`
-        #    geprueft -- Basis und Geschwister liegen also an derselben Latte.
-        #    Im Zweig `_fffree_isomers` gibt es vor dem Anhaengen gar keinen
-        #    Graphanker (der Primaerframe wird bei :2694 ohne geprueft); dort
-        #    waere es ein UNGLEICHER Massstab, und der Blockkommentar bei :2911
-        #    hat das fuer den Faltungspfad bereits ausbuchstabiert.
-        #    DELFIN_FFFREE_GRAPH_ANCHOR_APPEND, Vorgabe 0 -> None -> byte-identisch.
+        # ⚠️ ONLY HERE, NOT AT THE SECOND CALL SITE (:2933).  The base frame
+        #    of THIS branch is itself checked WITH `graph_bonds=_gb` at :2225/:2233
+        #    -- so base and siblings lie against the same bar.
+        #    In the `_fffree_isomers` branch there is no graph anchor at all before
+        #    appending (the primary frame is checked without one at :2694); there
+        #    it would be an UNEQUAL yardstick, and the block comment at :2911
+        #    has already spelled that out for the fold path.
+        #    DELFIN_FFFREE_GRAPH_ANCHOR_APPEND, default 0 -> None -> byte-identical.
         _append_reembed(results, d["metal"], _clg,
                         syms, P, _lab, cn=d.get("cn"), geom=d.get("geometry"),
                         donors=donors,
                         graph_bonds=(_gb if os.environ.get(
                             "DELFIN_FFFREE_GRAPH_ANCHOR_APPEND", "0") == "1" else None))
-        # ===== DER MANIFOLD WAR EINE SUMME, KEIN PRODUKT ==========================
-        # Gemessen 2026-08-18 an 143904 Frame-Etiketten aus fuenf Archiven: die
-        # Kombination "Konformer UND Ringfaltung" existiert NULL mal, obwohl beide
-        # Achsen einzeln reichlich vertreten sind (6518 Faltungs- gegen 94191
-        # Konformer-Etiketten).  107 Systeme bedienen beide Achsen -- keines baut ein
-        # einziges Kreuzprodukt:
-        #     CECWEM  1 primaer + 1 conf + 9 pucker = 11 gebaut,  Produkt waere 20
-        #     QILQUX  4 + 17 + 10                   = 39 gebaut,  Produkt waere 231
-        #     XIZTOS  2 + 15 + 6                    = 23 gebaut,  Produkt waere 119
-        # Die Ursache steht drei Aufrufe weiter oben: die Geschwister-Erzeuger bekommen
-        # alle `syms, P`, also das UNVERAENDERTE Primaerframe.  Sie schreiben in
-        # `results`, lesen es aber nie.  Die Nachpaesse in smiles_converter sind dagegen
-        # eine echte Kette (_ff = f(_ff)) -- deshalb komponieren nur die.
+        # ===== THE MANIFOLD WAS A SUM, NOT A PRODUCT ==========================
+        # Measured 2026-08-18 on 143904 frame labels from five archives: the
+        # combination "conformer AND ring fold" exists ZERO times, although both
+        # axes individually are amply represented (6518 fold against 94191
+        # conformer labels).  107 systems serve both axes -- none builds a
+        # single cross product:
+        #     CECWEM  1 primary + 1 conf + 9 pucker = 11 built,  product would be 20
+        #     QILQUX  4 + 17 + 10                   = 39 built,  product would be 231
+        #     XIZTOS  2 + 15 + 6                    = 23 built,  product would be 119
+        # The cause is three calls further up: the sibling generators all receive
+        # `syms, P`, i.e. the UNCHANGED primary frame.  They write into
+        # `results` but never read it.  The post-passes in smiles_converter, by contrast,
+        # are a real chain (_ff = f(_ff)) -- which is why only those compose.
         #
-        # DELFIN_FFFREE_MANIFOLD_PRODUCT (Vorgabe 0 -> byte-identisch) laesst die
-        # Faltungs- und Torsionspaesse zusaetzlich ueber die AKZEPTIERTEN
-        # Konformer-Geschwister laufen.  Aus 1 + 1 + 9 wird 1 + 1 + 9 + 9.
+        # DELFIN_FFFREE_MANIFOLD_PRODUCT (default 0 -> byte-identical) additionally lets
+        # the fold and torsion passes run over the ACCEPTED
+        # conformer siblings.  1 + 1 + 9 becomes 1 + 1 + 9 + 9.
         #
-        # ⚠ WARUM NUR DIE KONFORMER-SAAT UND NICHT AUCH -beta/-lp/-reembed:
-        # der gemessene Befund ist "pucker x conf = 0"; -beta und -lp sind klein
-        # (Einzelframes), und _append_reembed ist gemessen SCHMUTZIG (bbrefix: +11,9 pp
-        # harte Frames).  Ein Produkt ueber eine schmutzige Achse vervielfacht den
-        # Schmutz.  Die Erweiterung auf weitere Saaten gehoert hinter das
-        # Zusicherungsprotokoll, nicht hierhin.
+        # ⚠ WHY ONLY THE CONFORMER SEED AND NOT ALSO -beta/-lp/-reembed:
+        # the measured finding is "pucker x conf = 0"; -beta and -lp are small
+        # (single frames), and _append_reembed is measured DIRTY (bbrefix: +11.9 pp
+        # hard frames).  A product over a dirty axis multiplies the
+        # dirt.  The extension to further seeds belongs behind the
+        # assertion protocol, not here.
         #
-        # ⚠ KEINE STILLE KAPPUNG.  Der Deckel meldet sich, wenn er bindet -- eine stille
-        # Kappung liest sich hinterher als "mehr gab es nicht", und genau dieser Fehler
-        # steckt schon in dofs[:4] und _WELL_MAX_SIBLINGS.
+        # ⚠ NO SILENT CAPPING.  The cap reports itself when it binds -- a silent
+        # cap reads afterwards as "there was no more", and exactly this error
+        # already sits in dofs[:4] and _WELL_MAX_SIBLINGS.
         if _prod_on and _prod_seeds:
-            # Der Deckel ist ein BACKSTOP, kein Auswahlmittel: 24 liegt ueber der
-            # groessten beobachteten Saatzahl (QILQUX, 17).  Er meldet sich ueber den
-            # Trace-Kanal dieses Moduls -- also sichtbar, sobald
-            # DELFIN_FFFREE_ISO_TRACE auf eine Datei zeigt, und sonst nicht.  Das ist
-            # bewusst hier notiert: eine Kappung, von der man nur unter einem zweiten
-            # Schalter erfaehrt, ist halb still, und wer die Zahlen liest, muss das
-            # wissen.  Die eigentliche Schranke bleibt max_isomers.
+            # The cap is a BACKSTOP, not a means of selection: 24 lies above the
+            # largest observed seed count (QILQUX, 17).  It reports itself via the
+            # trace channel of this module -- i.e. visible as soon as
+            # DELFIN_FFFREE_ISO_TRACE points at a file, and otherwise not.  That is
+            # deliberately noted here: a cap one only learns about under a second
+            # switch is half silent, and whoever reads the numbers has to know
+            # that.  The actual bound remains max_isomers.
             _pmax = max(1, int(os.environ.get(
                 "DELFIN_FFFREE_MANIFOLD_PRODUCT_MAX", "24")))
             if len(_prod_seeds) > _pmax:
@@ -2322,15 +2322,15 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers, union: bool = False):
     return results or None
 
 
-# Ausgangszaehler des OC-6-Twist-Geschwisters.  Nur beschrieben, wenn
-# DELFIN_FFFREE_OC6_TWIST_SEAT an ist; `enter` ist der NENNER, ohne den "nichts
-# gebaut" und "nie betreten" dieselbe Zeile waeren.  Gelesen von _oc6_twist_selftest.
+# Exit counter of the OC-6 twist sibling.  Only written to when
+# DELFIN_FFFREE_OC6_TWIST_SEAT is on; `enter` is the DENOMINATOR without which "nothing
+# built" and "never entered" would be the same line.  Read by _oc6_twist_selftest.
 _OC6_CENSUS = dict.fromkeys(
     ("enter", "build_exc", "build_none", "same_xyz", "iso_cap", "unclean",
      "cshm_flat", "collapse", "org_bond", "sp2", "bar_exc", "added"), 0)
-# CShM(OC-6) des FERTIGEN Primaerframes, auf den echten Donorindizes.  Gegen die
-# Setzungszahl in assemble_complex._OC6_SEAT_CSHM gehalten sagt sie, WO der Twist
-# entsteht -- die eine Frage, die ein Zaehler nicht beantworten kann.
+# CShM(OC-6) of the FINISHED primary frame, on the real donor indices.  Held against
+# the seating number in assemble_complex._OC6_SEAT_CSHM it says WHERE the twist
+# arises -- the one question a counter cannot answer.
 _OC6_FINAL_CSHM = []
 
 
@@ -2689,11 +2689,11 @@ def _coord_filter(results):
 
 def _fffree_isomers(smiles: str, max_isomers: int = 50, union: bool = False
                     ) -> Optional[List[Tuple[str, str]]]:
-    # `union`: der Aufrufer sagt, ob er unsere Frames NEBEN die von legacy stellt statt
-    # statt ihrer.  Bewusst ein Argument und keine zweite Lesung des Vereinigungs-Schalters
-    # -- dessen Lesestelle in smiles_converter traegt die Zusage, die EINZIGE zu sein, und
-    # ein Repo mit neun verschiedenen Metall-Praedikaten hat sich diese Regel verdient.
-    # Wirkung an genau EINER Stelle: der letzten Rettungssprosse im Chelat-Pfad.
+    # `union`: the caller says whether it places our frames ALONGSIDE legacy's instead
+    # of in their place.  Deliberately an argument and not a second read of the union switch
+    # -- its read site in smiles_converter carries the promise of being the ONLY one, and
+    # a repo with nine different metal predicates has earned this rule.
+    # Effect at exactly ONE place: the last rescue rung in the chelate path.
     d = DEC.decompose(smiles)
     if d is None:
         return _scope_no("DECOMPOSE_NONE")
@@ -2923,28 +2923,28 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50, union: bool = False
                 except Exception:
                     continue                # cannot prove equivalence -> do not add
                 results.append((_exyz, f"{base_label}-conf{_efi+1}"))
-        # ===== DER FALTER SAH DEN MONODENTATEN PFAD NIE =========================
-        # `_append_ffree_ring_puckers` hatte genau ZWEI Aufrufstellen, beide in
-        # `_fffree_chelate_isomers`.  Ein Komplex ohne Chelatring bekam damit NULL
-        # Ringfaltung -- obwohl sein Ligand sehr wohl Ringe traegt (Cyclohexyl,
-        # Piperidin, Zucker); "kein Chelatring" heisst nicht "kein Ring".
+        # ===== THE FOLDER NEVER SAW THE MONODENTATE PATH =========================
+        # `_append_ffree_ring_puckers` had exactly TWO call sites, both in
+        # `_fffree_chelate_isomers`.  A complex without a chelate ring thus got ZERO
+        # ring folding -- although its ligand very much carries rings (cyclohexyl,
+        # piperidine, sugars); "no chelate ring" does not mean "no ring".
         #
-        # Alle neun Groessen liegen hier vor: `_lg` (Zeile 2693) ist genau das
-        # lig_groups-Layout, das `_config_template_mol` erwartet -- Metall auf 0,
-        # dann AddHs(frag)-Bloecke in vertex_specs-Reihenfolge --, und die Donoren
-        # folgen daraus deterministisch (Blockanfang + donor_local), dieselbe
-        # Rechnung, die der Ensemble-Zweig oben als `_hdons` inline fuehrt.
+        # All nine quantities are available here: `_lg` (line 2693) is exactly the
+        # lig_groups layout that `_config_template_mol` expects -- metal at 0,
+        # then AddHs(frag) blocks in vertex_specs order --, and the donors
+        # follow from it deterministically (block start + donor_local), the same
+        # computation the ensemble branch above carries out inline as `_hdons`.
         #
-        # ⚠ KEIN graph_bonds, mit Absicht: der Primaerframe dieses Rumpfes wird
-        # ebenfalls ohne geprueft (:2694).  Ein Geschwister an einer SCHAERFEREN
-        # Latte zu messen als das Frame, an dem es haengt, waere kein additiver
-        # Test, sondern ein zweiter -- und der wuerde als "keine Reichweite"
-        # ablesen, was in Wahrheit ein ungleicher Massstab ist.
-        # ⚠ Der Falter liest zusaetzlich DELFIN_FFFREE_RING_PUCKER; ist der aus,
-        # passiert auch hier nichts.  Doppelt getort ist Absicht: der eine Schalter
-        # sagt "der Falter laeuft", der neue sagt "auf welchen Pfaden".
+        # ⚠ NO graph_bonds, on purpose: the primary frame of this body is
+        # likewise checked without one (:2694).  Measuring a sibling against a STRICTER
+        # bar than the frame it hangs off would not be an additive
+        # test but a second one -- and it would read as "no reach"
+        # what is in truth an unequal yardstick.
+        # ⚠ The folder additionally reads DELFIN_FFFREE_RING_PUCKER; if that is off,
+        # nothing happens here either.  Double-gated on purpose: the one switch
+        # says "the folder runs", the new one says "on which paths".
         #
-        # DELFIN_FFFREE_PUCKER_ALLPATHS (Vorgabe 0 -> byte-identisch).
+        # DELFIN_FFFREE_PUCKER_ALLPATHS (default 0 -> byte-identical).
         if os.environ.get("DELFIN_FFFREE_PUCKER_ALLPATHS", "0") == "1":
             try:
                 _pdon = sorted(int(_g["global_idxs"][0]) + int(_dl)
@@ -2969,30 +2969,30 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50, union: bool = False
     # but early-TM Mo/W CN6 prefer TPR — coverage gap previously missed (no TPR-6 in
     # the FF-free Pólya enumerator).  Additive, env-gated default OFF (byte-identical
     # when unset).  Same pattern as CN5 SPY-5: best-effort, never bails OC-6 result.
-    # GELTUNGSBEREICH (DELFIN_FFFREE_TPR6_EARLY_TM, default OFF -> byte-identisch).
-    # Der Hebel oben feuert auf JEDEM CN6-System, dessen Primaergeometrie nicht schon TPR ist.
-    # Seine eigene Begruendung ist viel enger: "early-TM Mo/W CN6 prefer TPR".  Beim spaeten
-    # Uebergangsmetall ist das trigonale Prisma chemisch unrealistisch -- und genau dort reisst
-    # der Bau.  GEMESSEN an tpr6cn6 (69 CN6-Systeme, FF-frei gebaut): 40 von 40 Systemen besser,
-    # keines schlechter, mean -8,45, capability_lost 0 -- blockiert allein daran, dass die
-    # hinzugefuegten Prismen-Frames zu 28 % hart sind gegen einen Boden von 4,7 %, mit
-    # smiles_topology 17 gegen 1 und core_torn 3 gegen 0 als Defekttypen.
+    # SCOPE (DELFIN_FFFREE_TPR6_EARLY_TM, default OFF -> byte-identical).
+    # The lever above fires on EVERY CN6 system whose primary geometry is not already TPR.
+    # Its own justification is much narrower: "early-TM Mo/W CN6 prefer TPR".  For a late
+    # transition metal the trigonal prism is chemically unrealistic -- and exactly there the
+    # build tears.  MEASURED on tpr6cn6 (69 CN6 systems, built FF-free): 40 of 40 systems better,
+    # none worse, mean -8.45, capability_lost 0 -- blocked solely by the fact that the
+    # added prism frames are 28 % hard against a floor of 4.7 %, with
+    # smiles_topology 17 against 1 and core_torn 3 against 0 as defect types.
     #
-    # Beide vorhandenen Gates scheiden aus: TORN_GATE sieht nur die FEHLENDE Bindung (zweimal
-    # REACH 0/24), der Konsens-Gate TOPOLOGY_GATE verwirft die Prismen KOMPLETT (isomers_lost 9,
-    # jedes betroffene System 3 -> 2 Isomere) -- er kann "anderes Isomer" nicht von "Artefakt"
-    # unterscheiden.  Bleibt: das Prisma dort NICHT bauen, wo es chemisch nicht vorkommt.
+    # Both existing gates are out: TORN_GATE sees only the MISSING bond (twice
+    # REACH 0/24), the consensus gate TOPOLOGY_GATE rejects the prisms COMPLETELY (isomers_lost 9,
+    # every affected system 3 -> 2 isomers) -- it cannot tell "different isomer" from "artefact".
+    # What remains: NOT building the prism where it does not occur chemically.
     #
-    # Die Menge ist elementbasiert und universell -- kein SMILES, kein Refcode, kein System.
-    # d0-d2-Uebergangsmetalle der Gruppen 3-7, fuer die trigonal-prismatisches CN6 dokumentiert
-    # ist (klassisch Mo/W-Dithiolene, dazu Nb/Ta/V/Zr/Hf/Re).  Eine Ladung steht am
-    # Zerlegungs-Dict nicht zur Verfuegung, deshalb Element statt d-Zahl.
+    # The set is element-based and universal -- no SMILES, no refcode, no system.
+    # d0-d2 transition metals of groups 3-7, for which trigonal-prismatic CN6 is documented
+    # (classically Mo/W dithiolenes, plus Nb/Ta/V/Zr/Hf/Re).  A charge is not available
+    # on the decomposition dict, hence element instead of d count.
     _TPR6_EARLY_TM = frozenset((
-        "Sc", "Y", "La",       # Gruppe 3
-        "Ti", "Zr", "Hf",      # Gruppe 4
-        "V", "Nb", "Ta",       # Gruppe 5
-        "Cr", "Mo", "W",       # Gruppe 6
-        "Mn", "Tc", "Re",      # Gruppe 7
+        "Sc", "Y", "La",       # group 3
+        "Ti", "Zr", "Hf",      # group 4
+        "V", "Nb", "Ta",       # group 5
+        "Cr", "Mo", "W",       # group 6
+        "Mn", "Tc", "Re",      # group 7
     ))
     _tpr6_on = os.environ.get("DELFIN_FFFREE_TPR6", "0") == "1"
     if _tpr6_on and os.environ.get("DELFIN_FFFREE_TPR6_EARLY_TM", "0") == "1":
@@ -3057,24 +3057,24 @@ def _enumerate_geometry(d, geom_key, geom_name, lig_ref, lab_elem, spec, max_iso
     for k, coloring in enumerate(colorings[:max_isomers]):
         vertex_specs = [lig_ref[lab] for lab in coloring]
         _ex = _exempt_from_blocks(_heteroleptic_block_offsets(vertex_specs))   # #279/#281
-        # GRAPH-ANKER FUER DEN ADDITIVEN PFAD (2026-08-06).  Der Selbst-Gate bekam hier
-        # `exempt_pairs`, aber NIE `graph_bonds` -- und sein Riss-Test haengt an genau dieser
-        # Vorbedingung (`if graph_bonds and DELFIN_FFFREE_TORN_GATE`).  Auf allen additiv
-        # enumerierten Frames war der Gate damit STRUKTURELL unerreichbar, obwohl sein eigener
-        # Kommentar ihn "the single largest blind direction we have" nennt.
-        # GEMESSEN: tpr6cn6 (TPR6 auf 69 CN6-Systemen) verbesserte 40 von 40 Systemen,
-        # mean -8,45, cap_lost 0 -- und scheiterte allein daran, dass die hinzugefuegten
-        # Prismen-Frames zu 28 % hart sind gegen einen Boden von 4,7 %.  Die Defekttypen
-        # sagen warum: smiles_topology 17 gegen 1, core_torn 3 gegen 0.  Die Liganden REISSEN.
-        # tpr6torn (TPR6+TORN_GATE gegen TPR6) meldete dann 0/24 Reichweite -- der Gate kam
-        # gar nicht an.  Diese Zeile ist der Grund.
-        # `_graph_bonds_from_blocks` nimmt laut eigenem Docstring genau dasselbe
-        # (ligand_mol, block_offset)-Layout wie `_exempt_from_blocks` -- gleiche Quelle,
-        # gleiche Zeile, keine neue Annahme.  Ohne TORN_GATE bleibt alles byte-identisch,
-        # denn der Gate liest den Parameter nur unter seinem eigenen Env-Schalter.
+        # GRAPH ANCHOR FOR THE ADDITIVE PATH (2026-08-06).  The self-gate received
+        # `exempt_pairs` here, but NEVER `graph_bonds` -- and its tear test hangs on exactly this
+        # precondition (`if graph_bonds and DELFIN_FFFREE_TORN_GATE`).  On all additively
+        # enumerated frames the gate was thereby STRUCTURALLY unreachable, although its own
+        # comment calls it "the single largest blind direction we have".
+        # MEASURED: tpr6cn6 (TPR6 on 69 CN6 systems) improved 40 of 40 systems,
+        # mean -8.45, cap_lost 0 -- and failed solely because the added
+        # prism frames are 28 % hard against a floor of 4.7 %.  The defect types
+        # say why: smiles_topology 17 against 1, core_torn 3 against 0.  The ligands TEAR.
+        # tpr6torn (TPR6+TORN_GATE against TPR6) then reported 0/24 reach -- the gate never
+        # arrived at all.  This line is the reason.
+        # `_graph_bonds_from_blocks` takes, according to its own docstring, exactly the same
+        # (ligand_mol, block_offset) layout as `_exempt_from_blocks` -- same source,
+        # same line, no new assumption.  Without TORN_GATE everything stays byte-identical,
+        # because the gate reads the parameter only under its own env switch.
         _gb = _graph_bonds_from_blocks(_heteroleptic_block_offsets(vertex_specs))
-        # Blockgrenzen fuer die Interligand-Pruefung: jeder Ligand belegt einen
-        # zusammenhaengenden Atombereich, Metall auf 0.  Gleiche Quelle wie _gb.
+        # Block bounds for the inter-ligand check: every ligand occupies a
+        # contiguous atom range, metal at 0.  Same source as _gb.
         _bb = []
         for _frag, _off in _heteroleptic_block_offsets(vertex_specs):
             _bb.append((_off, _off + Chem.AddHs(_frag).GetNumAtoms()))
@@ -3089,49 +3089,49 @@ def _enumerate_geometry(d, geom_key, geom_name, lig_ref, lab_elem, spec, max_iso
         if not _build_is_clean(syms, P, cn=d.get("cn"), geom=geom_name, exempt_pairs=_ex,
                                graph_bonds=_gb, block_bounds=_bb):
             continue
-        # ===== TOPOLOGIE-FILTER AUF DEM ERGAENZTEN FRAME (2026-08-08) =====
-        # ⛔ GEMESSEN UND WIDERLEGT -- NICHT WIEDER EINSCHALTEN OHNE NEUES KRITERIUM.
+        # ===== TOPOLOGY FILTER ON THE SUPPLEMENTED FRAME (2026-08-08) =====
+        # ⛔ MEASURED AND REFUTED -- DO NOT SWITCH ON AGAIN WITHOUT A NEW CRITERION.
         #
-        #   topoenvsolo (TOPO_ENV ALLEIN gegen den Champion, 40er-Sonde, CN6-Pool):
+        #   topoenvsolo (TOPO_ENV ALONE against the champion, 40-system probe, CN6 pool):
         #     ccdc_arrangement_lost 3   LIBNAO, LIBNES, URUTEH
         #     isomers_lost 4            HOQVAN, LIBNAO, LIBNES, URUTEH
-        #     1 besser / 4 schlechter
-        #   tpr6topoenv (mit TPR6 zusammen): exakt DIESELBEN Systeme, exakt dieselben Terme.
+        #     1 better / 4 worse
+        #   tpr6topoenv (together with TPR6): exactly the SAME systems, exactly the same terms.
         #
-        # Der ganze Schaden kommt vom Filter ALLEIN.  Meine erste Erklaerung -- er treffe ueber
-        # die gemeinsame Funktion auch die CN4_BOTH-Ergaenzungen des Champions -- war FALSCH:
-        # die Isolation zeigt, dass es nicht der Ort ist, sondern das KRITERIUM.  Der Vergleich
-        # der Nachbar-Element-MENGE feuert auf Frames, die reale Arrangements und Isomere
-        # tragen; die geometrische Perzeption sieht dort Nachbarschaften, die der Blockgraph
-        # nicht auffuehrt, ohne dass etwas kaputt waere.
+        # The whole damage comes from the filter ALONE.  My first explanation -- that via
+        # the shared function it also hits the champion's CN4_BOTH supplements -- was WRONG:
+        # the isolation shows that it is not the place but the CRITERION.  The comparison
+        # of the neighbour-element SET fires on frames that carry real arrangements and
+        # isomers; the geometric perception sees neighbourhoods there that the block graph
+        # does not list, without anything being broken.
         #
-        # Zum Vergleich, ohne diesen Filter:  tpr6final = BLOCKER 0, 17 von 17 Systemen besser,
-        # historischer Boden bestanden.  Der Filter macht aus null Blockern zwei.
+        # For comparison, without this filter:  tpr6final = BLOCKERS 0, 17 of 17 systems better,
+        # historic floor passed.  The filter turns zero blockers into two.
         #
-        # Der Code bleibt stehen (Projektregel: nie loeschen), aber die Tarnung ist weg: wer
-        # ihn einschaltet, weiss jetzt, dass er gemessen und schlechter ist.
-        # DELFIN_FFFREE_TOPO_ENV, default OFF -> byte-identisch.
+        # The code stays (project rule: never delete), but the camouflage is gone: whoever
+        # switches it on now knows that it is measured and worse.
+        # DELFIN_FFFREE_TOPO_ENV, default OFF -> byte-identical.
         #
-        # WARUM HIER UND NICHT IM SELBST-GATE.  Ein Versuch, dasselbe in _build_is_clean zu
-        # pruefen (SPURIOUS_BOND), traf AUCH die primaeren Frames und verlor Isomere:
-        # tpr6spur2 meldete isomers_lost 4 und ccdc_arrangement_lost 3, also SCHLECHTER als
-        # ohne.  Hier laeuft der Test ausschliesslich auf dem ERGAENZTEN Frame -- er kann
-        # damit nur eine Ergaenzung verwerfen, nie ein bestehendes Isomer.  Das ist dieselbe
-        # Bauform wie jede Landung dieses Projekts: ADD, never replace.
+        # WHY HERE AND NOT IN THE SELF-GATE.  An attempt to check the same thing in
+        # _build_is_clean (SPURIOUS_BOND) hit the primary frames TOO and lost isomers:
+        # tpr6spur2 reported isomers_lost 4 and ccdc_arrangement_lost 3, i.e. WORSE than
+        # without.  Here the test runs exclusively on the SUPPLEMENTED frame -- it can
+        # thus only reject a supplement, never an existing isomer.  That is the same
+        # construction as every landing of this project: ADD, never replace.
         #
-        # WAS ER PRUEFT.  Der gemessene Rest von tpr6final war ausschliesslich das: 187
-        # ergaenzte Frames, davon 53 hart, Defekttyp smiles_topology 17 und core_torn 3.
-        # Das Auge definiert smiles_topology so: aus dem Molekuel steht fest, welche
-        # SCHWER-NACHBARSCHAFT ein Atom haben MUSS; ein Frame-Atom, dessen wahrgenommene
-        # Nachbarschaft davon abweicht, traegt einen Topologiebruch.
+        # WHAT IT CHECKS.  The measured remainder of tpr6final was exclusively this: 187
+        # supplemented frames, 53 of them hard, defect type smiles_topology 17 and core_torn 3.
+        # The eye defines smiles_topology like this: from the molecule it is fixed which
+        # HEAVY NEIGHBOURHOOD an atom MUST have; a frame atom whose perceived
+        # neighbourhood deviates from that carries a topology break.
         #
-        # graph_bonds liegt hier bereits in FRAME-Indizes vor (aus denselben Bloecken wie
-        # exempt_pairs), also entfaellt das Zuordnungsproblem, an dem der Mechanismus in
-        # smiles_converter:31880 einmal gestorben ist ("they never coincide, so it returned 0
-        # every time").  Verglichen wird pro Atom die MENGE der Nachbar-Elemente; eine
-        # Perzeptionsrandbedingung, die nur die ANZAHL gleicher Elemente aendert, bleibt
-        # damit unauffaellig, waehrend ein abgeloester Substituent oder ein verschmolzener
-        # Kontakt die Menge veraendert.
+        # graph_bonds is already available here in FRAME indices (from the same blocks as
+        # exempt_pairs), so the mapping problem on which the mechanism in
+        # smiles_converter:31880 once died ("they never coincide, so it returned 0
+        # every time") does not arise.  Compared per atom is the SET of neighbour elements; a
+        # perception edge condition that only changes the COUNT of equal elements thereby
+        # stays inconspicuous, while a detached substituent or a merged
+        # contact changes the set.
         if _topo_env_on and _gb:
             try:
                 from collections import Counter as _te_C
@@ -3152,51 +3152,51 @@ def _enumerate_geometry(d, geom_key, geom_name, lig_ref, lab_elem, spec, max_iso
                     if _s == "H" or _bd._is_metal(_s):
                         continue
                     if _i not in _req_nb:
-                        continue          # kein Sollwert -> nicht beurteilbar
+                        continue          # no target value -> not judgeable
                     if set(_te_C(_got_nb.get(_i, []))) != set(_te_C(_req_nb[_i])):
                         _broken = True
                         break
                 if _broken:
-                    continue              # ergaenzter Frame mit gebrochener Topologie
+                    continue              # supplemented frame with broken topology
             except Exception:
-                pass                      # nicht beurteilbar -> alte Sicherungen gelten
+                pass                      # not judgeable -> the old safeguards apply
         vertex_elems = [lab_elem[lab] for lab in coloring]
         name = _classify_coloring(geom_key, vertex_elems)
         label = f"{name}-{geom_tag}-{k+1}" if name else f"{geom_tag}-{k+1}"
         out.append((_xyz(syms, P), label))
-        # ===== DIE ERGAENZTEN POLYEDER BEKAMEN NIE EINEN KONFORMER ==============
-        # Gemessen 18.08.2026 ueber 423720 Frame-Etiketten aus sechs Archiven:
+        # ===== THE SUPPLEMENTED POLYHEDRA NEVER GOT A CONFORMER ==============
+        # Measured 18.08.2026 over 423720 frame labels from six archives:
         #
-        #   OC-6 (primaer)   11575 Etiketten, davon 82,9 % mit -conf
-        #   TBP-5 (primaer)   1899 Etiketten, davon 84,5 %
-        #   TPR-6  (nur hier)  1855 Etiketten, davon   0,0 %
-        #   SPY-5  (nur hier)   333 Etiketten, davon   0,0 %
+        #   OC-6 (primary)   11575 labels, of which 82.9 % with -conf
+        #   TBP-5 (primary)   1899 labels, of which 84.5 %
+        #   TPR-6  (only here) 1855 labels, of which   0.0 %
+        #   SPY-5  (only here)  333 labels, of which   0.0 %
         #
-        # Und der Beleg, der "diese Systeme haben eben keine Konformere"
-        # ausschliesst: auf denselben 147 Systemen, die OC-6 UND TPR-6 bauen,
-        # traegt OC-6 81,7 % Konformere und TPR-6 NULL.  Bei 928 Systemen mit T-4
-        # UND SP-4 (CN4_BOTH, Champion) gibt es NULL Systeme, in denen beide
-        # Familien einen Konformer tragen.
+        # And the evidence that rules out "these systems simply have no conformers":
+        # on the same 147 systems that build OC-6 AND TPR-6,
+        # OC-6 carries 81.7 % conformers and TPR-6 ZERO.  Among 928 systems with T-4
+        # AND SP-4 (CN4_BOTH, champion) there are ZERO systems in which both
+        # families carry a conformer.
         #
-        # Der Grund ist eine Auslassung, kein Entwurf: diese Funktion hat genau EIN
-        # `out.append` und ruft KEINEN Geschwister-Erzeuger -- obwohl der aufrufende
-        # Rumpf sechzig Zeilen hoeher beide stehen hat.  Alle betroffenen Flags
-        # (SIGMA_ENSEMBLE, CN4_BOTH, TPR6) sind Champion, alle liegen auf DEMSELBEN
-        # Pfad.  Es ist die groesste der gemessenen Summe-statt-Produkt-Luecken,
-        # rund 9700 fehlende Etiketten.
+        # The reason is an omission, not a design: this function has exactly ONE
+        # `out.append` and calls NO sibling generator -- although the calling
+        # body sixty lines higher has both.  All affected flags
+        # (SIGMA_ENSEMBLE, CN4_BOTH, TPR6) are champion, all lie on the SAME
+        # path.  It is the largest of the measured sum-instead-of-product gaps,
+        # around 9700 missing labels.
         #
-        # ⚠ WARUM EIGENER SCHALTER UND NICHT MANIFOLD_PRODUCT: der Prismenpfad ist
-        # im Kommentar bei :2474-2478 bereits als "28 % hart gegen einen Boden von
-        # 4,7 %" vermessen.  Mehr Frames auf einem HARTEN Polyeder verschieben die
-        # harte Quote -- das ist ausdruecklich NICHT als "additiv, also sicher" zu
-        # buchen, sondern gegen den Champion zu messen.  Ein eigener Schalter haelt
-        # die beiden Befunde trennbar.
+        # ⚠ WHY ITS OWN SWITCH AND NOT MANIFOLD_PRODUCT: the prism path is
+        # already surveyed in the comment at :2474-2478 as "28 % hard against a floor of
+        # 4.7 %".  More frames on a HARD polyhedron shift the
+        # hard quota -- that is expressly NOT to be booked as "additive, hence safe",
+        # but to be measured against the champion.  A switch of its own keeps
+        # the two findings separable.
         #
-        # ⚠ geom_name, NICHT d["geometry"]: diese Funktion baut ein ANDERES Polyeder
-        # als das des Systems.  Ein kopierter Block mit d["geometry"] wuerde das
-        # Prisma gegen das Oktaeder messen und alles verwerfen.
+        # ⚠ geom_name, NOT d["geometry"]: this function builds a DIFFERENT polyhedron
+        # than the system's.  A copied block with d["geometry"] would measure the
+        # prism against the octahedron and reject everything.
         #
-        # DELFIN_FFFREE_ENUM_GEOM_SIBLINGS (Vorgabe 0 -> byte-identisch).
+        # DELFIN_FFFREE_ENUM_GEOM_SIBLINGS (default 0 -> byte-identical).
         if os.environ.get("DELFIN_FFFREE_ENUM_GEOM_SIBLINGS", "0") == "1":
             try:
                 _ens = AC.assemble_heteroleptic_ensemble(
@@ -3215,11 +3215,11 @@ def _enumerate_geometry(d, geom_key, geom_name, lig_ref, lab_elem, spec, max_iso
                     continue
                 _exyz = _xyz(_es, _eP)
                 if _exyz == _pxyz:
-                    continue                      # das ist der Primaerframe selbst
-                # DIESELBE LATTE WIE DER PRIMAERFRAME.  Das Selbstgate bekommt
-                # graph_bonds und block_bounds -- genau die zwei Argumente, deren
-                # Fehlen an anderer Stelle zu ergaenzten Frames mit gebrochener
-                # Topologie gefuehrt hat.
+                    continue                      # that is the primary frame itself
+                # THE SAME BAR AS THE PRIMARY FRAME.  The self-gate receives
+                # graph_bonds and block_bounds -- exactly the two arguments whose
+                # absence elsewhere has led to supplemented frames with broken
+                # topology.
                 try:
                     if not _build_is_clean(_es, _eP, cn=d.get("cn"), geom=geom_name,
                                            donors=_ed, exempt_pairs=_ex,
@@ -3231,22 +3231,22 @@ def _enumerate_geometry(d, geom_key, geom_name, lig_ref, lab_elem, spec, max_iso
                 except Exception:
                     continue
                 out.append((_exyz, "%s-conf%d" % (label, _ei + 1)))
-        # ===== DIESELBE AUSLASSUNG, ZWEITE ACHSE: DIE FALTUNG ===================
-        # Der Konformer-Block direkt darueber schloss die eine Luecke dieser
-        # Funktion; die Ringfaltung hatte sie genauso.  `_append_ffree_ring_puckers`
-        # wird an genau zwei Stellen gerufen, beide im Chelatpfad -- also trugen
-        # SPY-5, TPR-6, T-3 und SP-3 NULL Faltung, und TPR-6 ist Champion.
+        # ===== THE SAME OMISSION, SECOND AXIS: THE FOLD ===================
+        # The conformer block directly above closed the one gap of this
+        # function; the ring fold had it just the same.  `_append_ffree_ring_puckers`
+        # is called at exactly two places, both in the chelate path -- so
+        # SPY-5, TPR-6, T-3 and SP-3 carried ZERO fold, and TPR-6 is champion.
         #
-        # ⚠ geom_name, NICHT d["geometry"] -- aus demselben Grund, der beim
-        # Konformer-Block oben schon steht: diese Funktion baut ein ANDERES
-        # Polyeder als das des Systems, und der Selbstgate im Falter wuerde ein
-        # Prisma gegen das Oktaeder messen und jede Faltung verwerfen.
-        # ⚠ `_gb` und `_ex` sind DIESELBEN wie beim Primaerframe (:2905), die Latte
-        # ist also gleich; `_bb` kann der Falter nicht entgegennehmen, und ein
-        # neuer Parameter waere hier eine Aenderung an einer fremden Signatur.
-        # ⚠ Der Falter liest zusaetzlich DELFIN_FFFREE_RING_PUCKER.
+        # ⚠ geom_name, NOT d["geometry"] -- for the same reason already stated at
+        # the conformer block above: this function builds a DIFFERENT
+        # polyhedron than the system's, and the self-gate in the folder would measure a
+        # prism against the octahedron and reject every fold.
+        # ⚠ `_gb` and `_ex` are the SAME as for the primary frame (:2905), so the bar
+        # is equal; `_bb` the folder cannot accept, and a
+        # new parameter would here be a change to a foreign signature.
+        # ⚠ The folder additionally reads DELFIN_FFFREE_RING_PUCKER.
         #
-        # DELFIN_FFFREE_PUCKER_ALLPATHS (Vorgabe 0 -> byte-identisch).
+        # DELFIN_FFFREE_PUCKER_ALLPATHS (default 0 -> byte-identical).
         if os.environ.get("DELFIN_FFFREE_PUCKER_ALLPATHS", "0") == "1":
             try:
                 _plg = _lig_groups_from_vertex_specs(vertex_specs)
@@ -3262,19 +3262,19 @@ def _enumerate_geometry(d, geom_key, geom_name, lig_ref, lab_elem, spec, max_iso
 
 
 def _wells_selftest():
-    """Wo sterben die Torsionsmulden?  `python delfin/manta/converter_backend.py wells`.
+    """Where do the torsional wells die?  `python delfin/manta/converter_backend.py wells`.
 
-    Kein inline-python (per Hook gesperrt), also lebt die Diagnose IM Modul.  Sie
-    faehrt den echten Bauer ueber echte Chelatsysteme, mit dem Schalter AN und dem
-    Zaehler auf eine Datei, und liest hinterher ab, an WELCHEM der sieben Ausgaenge
-    die Mulden verloren gehen.  Ohne den Nenner `enter` waere "keine Zeile" nicht von
-    "nie betreten" zu unterscheiden -- das ist der ganze Zweck.
+    No inline python (blocked by a hook), so the diagnostic lives IN the module.  It
+    drives the real builder over real chelate systems, with the switch ON and the
+    counter pointed at a file, and afterwards reads off at WHICH of the seven exits
+    the wells are lost.  Without the denominator `enter`, "no row" could not be told
+    apart from "never entered" -- that is the whole purpose.
     """
     import tempfile
-    # Chelate aus der Testsuite (dort dokumentiert und lauffaehig).  Absicht der
-    # Mischung: EN ist starr (Rueckgrat komplett im Chelatring, also die erwartete
-    # Null), BIQCOV/ABEZAJ tragen iPr-, tBu- und Cyclohexyl-ARME -- das ist genau die
-    # Klasse, fuer die die Funktion laut Docstring gebaut wurde.
+    # Chelates from the test suite (documented and runnable there).  Intent of the
+    # mix: EN is rigid (backbone completely in the chelate ring, hence the expected
+    # zero), BIQCOV/ABEZAJ carry iPr, tBu and cyclohexyl ARMS -- that is exactly the
+    # class the function was built for according to its docstring.
     cases = [
         ("Co(en)2Cl2", "[NH2]CC[NH2][Co]1([NH2]CC[NH2]1)([Cl])[Cl]"),
         ("Pt(en)(NCCN)", "NCCN[Pt]1NCCN1"),
@@ -3295,7 +3295,7 @@ def _wells_selftest():
     os.environ["DELFIN_FFFREE_CHELATE_BACKBONE"] = "1"
 
     def _run(smi, on):
-        """Ein Lauf; gibt (Frames, well-Etiketten, Zaehlerzeilen, Summe, Hash) zurueck."""
+        """One run; returns (frames, well labels, counter rows, sum, hash)."""
         os.environ["DELFIN_FFFREE_TORSION_WELLS"] = "1" if on else "0"
         try:
             open(tf, "w").close()
@@ -3328,8 +3328,8 @@ def _wells_selftest():
         return r, nwell, lines, agg, h.hexdigest()[:16]
 
     for label, smi in cases:
-        # AUS-Arm zuerst -- er ist die Kontrolle.  Erreicht ein Zaehler ihn oder taucht
-        # ein `-well`-Etikett auf, ist die Vorgabe verletzt und alles andere egal.
+        # OFF arm first -- it is the control.  If a counter reaches it or a
+        # `-well` label shows up, the default is violated and nothing else matters.
         r0, w0, l0, _a0, h0 = _run(smi, False)
         r1, w1, l1, a1, h1 = _run(smi, True)
         print("%-14s AUS frames=%-4s well=%-2d aufrufe=%-2d sig=%s" % (
@@ -3345,32 +3345,32 @@ def _wells_selftest():
 
 
 def _oc6_twist_selftest():
-    """Erreicht die OC-6-Twist-Korrektur den FF-freien Bauer -- und ist der AUS-Arm
-    wirklich still?  `python delfin/manta/converter_backend.py oc6twist`.
+    """Does the OC-6 twist correction reach the FF-free builder -- and is the OFF arm
+    really silent?  `python delfin/manta/converter_backend.py oc6twist`.
 
-    Dieselbe Bauart wie `_wells_selftest` daneben und aus demselben Grund: kein
-    inline-python, also lebt die Diagnose IM Modul und faehrt den ECHTEN Bauer ueber
-    ECHTE Chelatsysteme.  Zwei Arme, und der AUS-Arm ist die Kontrolle.
-    Die Systeme sind aus der Testsuite uebernommen (dort dokumentiert und lauffaehig),
-    mit dem Schwerpunkt auf CN 6 -- das ist die Klasse, um die es geht.
+    The same construction as `_wells_selftest` next to it and for the same reason: no
+    inline python, so the diagnostic lives IN the module and drives the REAL builder over
+    REAL chelate systems.  Two arms, and the OFF arm is the control.
+    The systems are taken from the test suite (documented and runnable there),
+    with the emphasis on CN 6 -- that is the class at issue.
 
-    Abgelesen wird genau dreierlei, und jedes davon kann NEIN sagen:
-      * BYTE-IDENTITAET -- die Frames des AUS-Arms muessen im AN-Arm Zeichen fuer
-        Zeichen und in derselben Reihenfolge wieder auftauchen.  Ein Geschwister darf
-        nur HINTEN drankommen; verschiebt sich etwas davor, ist es kein Geschwister
-        mehr, sondern ein Ersatz.
-      * REICHWEITE -- taucht ueberhaupt ein `-oc6`-Etikett auf?  Ohne diese Zeile
-        waere "keine Wirkung" nicht von "nie erreicht" zu unterscheiden, und genau
-        diese Verwechslung hat in diesem Projekt schon fuenf Mechanismen gekostet.
-      * DIE ZAHL, UM DIE ES GEHT -- CShM(OC-6) des Primaerframes gegen die des
-        Geschwisters.  Faellt sie nicht, ist das Geschwister ein Duplikat mit
-        Etikett und wird vom Bauer ohnehin nicht aufgenommen.
+    Exactly three things are read off, and each of them can say NO:
+      * BYTE IDENTITY -- the frames of the OFF arm must reappear in the ON arm character
+        for character and in the same order.  A sibling may only come
+        at the END; if something before it shifts, it is no longer a sibling
+        but a replacement.
+      * REACH -- does an `-oc6` label show up at all?  Without this line
+        "no effect" could not be told apart from "never reached", and exactly
+        this confusion has already cost this project five mechanisms.
+      * THE NUMBER AT ISSUE -- CShM(OC-6) of the primary frame against that of the
+        sibling.  If it does not drop, the sibling is a duplicate with a
+        label and is not admitted by the builder anyway.
     """
     import hashlib
-    # ALLE aus dem Bestand dieses Repos (Testsuite / Regressionsfaelle), damit sie
-    # nachweislich zerlegbar sind -- und nach der Zahl der CHELATRINGE gestaffelt, weil
-    # GENAU das die gemessene Achse ist: 2,49 % Fehlrate bei null Ringen, 16,12 % bei
-    # fuenf.  Ein Pool ohne Verzahnung koennte den Defekt gar nicht zeigen.
+    # ALL from the stock of this repo (test suite / regression cases), so that they
+    # are demonstrably decomposable -- and staggered by the number of CHELATE RINGS, because
+    # EXACTLY that is the measured axis: 2.49 % failure rate at zero rings, 16.12 % at
+    # five.  A pool without interlocking could not show the defect at all.
     cases = [
         ("Co(en)2Cl2   k2", "Cl[Co+3]12(Cl)(NCCN1)NCCN2"),
         ("Fe(dmpe)2(MeCN)2 k2", "CC#[N+][Fe-4]12([P+](C)(CC[P+]1(C)C)C)"
@@ -3407,9 +3407,9 @@ def _oc6_twist_selftest():
         return r, h.hexdigest()[:16]
 
     def _cshm_of(xyz):
-        """CShM(OC-6) der Koordinationsschale, direkt aus dem XYZ-Text zurueckgerechnet:
-        Metall = Atom 0 (der Bauer legt es dorthin), Donoren = die sechs naechsten
-        Schweratome.  Grob, aber es ist genau die Groesse, um die gestritten wird."""
+        """CShM(OC-6) of the coordination shell, computed back directly from the XYZ text:
+        metal = atom 0 (the builder puts it there), donors = the six nearest
+        heavy atoms.  Rough, but it is exactly the quantity being argued about."""
         try:
             lines = [ln.split() for ln in xyz.splitlines()[2:] if ln.strip()]
             pts = [(t[0], np.array([float(t[1]), float(t[2]), float(t[3])]))
@@ -3430,8 +3430,8 @@ def _oc6_twist_selftest():
     n_reach = 0
     n_break = 0
     for label, smi in cases:
-        # Was der Zerleger UEBERHAUPT anfordert -- ohne diese Zeile ist "kein
-        # Geschwister" nicht von "gar kein CN6-Oktaeder im Pool" zu unterscheiden.
+        # What the decomposer requests AT ALL -- without this line "no
+        # sibling" cannot be told apart from "no CN6 octahedron in the pool whatsoever".
         try:
             _dd = DEC.decompose(smi)
             _dg = "cn=%s geom=%r chelat=%s" % (
@@ -3439,11 +3439,11 @@ def _oc6_twist_selftest():
                 else "decompose -> None"
         except Exception as _e:
             _dg = "decompose RAISED %s" % type(_e).__name__
-        r0, h0 = _run(smi, False)          # AUS-Arm zuerst: er ist die Kontrolle
-        # ⚠ Marke VOR dem AN-Lauf setzen.  Ohne sie zeigt `[-1]` den Wert des
-        # VORIGEN Systems weiter, sobald der Korrektor bei diesem gar nicht gerufen
-        # wurde -- eine geerbte Zahl, die wie eine Messung aussieht.  Genau die
-        # Sorte stiller Falschmeldung, die hier einen 30-Stunden-Lauf kostet.
+        r0, h0 = _run(smi, False)          # OFF arm first: it is the control
+        # ⚠ Set the mark BEFORE the ON run.  Without it, `[-1]` keeps showing the value of
+        # the PREVIOUS system as soon as the corrector was not called at all on this
+        # one -- an inherited number that looks like a measurement.  Exactly the
+        # kind of silent false report that costs a 30-hour run here.
         _m_seat = len(AC._OC6_SEAT_CSHM)
         _m_fin = len(_OC6_FINAL_CSHM)
         r1, h1 = _run(smi, True)
@@ -3451,7 +3451,7 @@ def _oc6_twist_selftest():
         l0 = [lab for _, lab in (r0 or [])]
         l1 = [lab for _, lab in (r1 or [])]
         new = [lab for lab in l1 if lab.endswith("-oc6")]
-        # der AUS-Arm muss im AN-Arm woertlich und in der Reihenfolge wieder auftauchen
+        # the OFF arm must reappear in the ON arm literally and in the same order
         prefix_ok = (r0 or []) == (r1 or [])[:len(r0 or [])]
         if not prefix_ok:
             n_break += 1
@@ -3461,12 +3461,12 @@ def _oc6_twist_selftest():
         print("%-14s AN  frames=%-3d sig=%s   neu=%s" % ("", len(r1 or []), h1, new or "-"))
         print("               Vorlaeufer zeichengleich: %s%s" % (
             prefix_ok, "" if prefix_ok else "   🔴 VORGABE VERLETZT"))
-        # ⚠ DIE ENTSCHEIDENDE GEGENUEBERSTELLUNG: dieselbe Zahl an ZWEI Punkten.
-        # links, was der Korrektor in der SETZUNG vorfindet (vor _finish_config_frame);
-        # rechts, was am FERTIGEN Frame ankommt.  Sind sie verschieden, entsteht der
-        # Twist NICHT in der Setzung, sondern danach -- und dann steht dieser Block an
-        # der falschen Stelle, egal wie gut er rechnet.
-        _seats = AC._OC6_SEAT_CSHM[_m_seat:]          # NUR was dieses System erzeugt hat
+        # ⚠ THE DECISIVE JUXTAPOSITION: the same number at TWO points.
+        # left, what the corrector finds in the SEATING (before _finish_config_frame);
+        # right, what arrives at the FINISHED frame.  If they differ, the
+        # twist does NOT arise in the seating but afterwards -- and then this block stands
+        # at the wrong place, no matter how well it computes.
+        _seats = AC._OC6_SEAT_CSHM[_m_seat:]          # ONLY what this system produced
         _fins = _OC6_FINAL_CSHM[_m_fin:]
         if not _seats:
             print("               (Korrektor bei diesem System nicht gerufen -- "

@@ -1,64 +1,64 @@
-"""_refine_gate.py — DAS RUECKNAHMETOR.  Ein FILTER, kein Korrektor.
+"""_refine_gate.py — THE ROLLBACK GATE.  A FILTER, not a corrector.
 
-WOZU (24.08.2026, aus der Frage des Users).  Ein Verfeinerer, der Atome bewegt, gewinnt auf
-vielen Systemen und verliert auf wenigen.  Das Landetor kennt 33 Verbotsterme, alle auf der
-VERLUSTSEITE, und `capability_gained` wird berechnet, gedruckt -- und fliesst in keine
-einzige Blockierentscheidung ein.  Ein netto positiver Verfeinerer kann damit nie landen.
+WHY (24.08.2026, from the user's question).  A refiner that moves atoms wins on many systems
+and loses on a few.  The landing gate knows 33 forbidding terms, all on the LOSS SIDE, and
+`capability_gained` is computed, printed -- and feeds into not a single blocking decision.
+A net-positive refiner can therefore never land.
 
-DIE ANTWORT IST NICHT, DAS TOR ZU LOCKERN.  Ein Mittelwert kann keine tote Klasse sehen, und
-das Auge selbst aendert sich -- never-worse ist das einzige Kriterium, das einen Augenwechsel
-ueberlebt.  Die Antwort ist, dem Verfeinerer den Verlust WEGZUNEHMEN:
+THE ANSWER IS NOT TO LOOSEN THE GATE.  A mean cannot see a dead class, and the eye itself
+changes -- never-worse is the only criterion that survives a change of eye.  The answer is to
+TAKE THE LOSS AWAY from the refiner:
 
-    nach der Kette ist KEIN Frame schlechter als davor.
+    after the chain, NO frame is worse than before.
 
-Dann ist "Atome so bewegen, dass sie besser stehen" genau das, was passiert -- ohne
-Kollateralschaden, und never-worse gilt PER KONSTRUKTION statt im Schnitt.
+Then "move atoms so that they sit better" is exactly what happens -- without collateral
+damage, and never-worse holds BY CONSTRUCTION instead of on average.
 
-⛔ DREI REGELN, DIE DIE BAUART BESTIMMEN (User, 24.08.):
+⛔ THREE RULES THAT DETERMINE THE DESIGN (user, 24.08.):
 
- 1. **KEIN KORREKTOR EINES KORREKTORS.**  Dieses Modul schreibt NIE Koordinaten.  Es waehlt
-    zwischen zwei bereits vorhandenen Frames -- Ergebnis oder Original.  Ein Korrektor, der
-    einen Korrektor gutmacht, ist ein Zeichen, dass einer von beiden falsch ist; dann gehoert
-    der eine richtig gemacht, nicht ein dritter daneben gestellt.
+ 1. **NO CORRECTOR OF A CORRECTOR.**  This module NEVER writes coordinates.  It chooses
+    between two frames that already exist -- result or original.  A corrector that fixes up
+    a corrector is a sign that one of the two is wrong; then that one should be made right,
+    not a third one placed beside it.
 
- 2. **KEINE AUFBLAEHUNG.**  EINE oeffentliche Funktion, EIN Modul, und ZWEI Zeilen je
-    Verfeinerungskette -- nicht je Verfeinerer.  Es gibt ueber zwanzig `_apply_*`-Stellen;
-    jede einzeln zu umwickeln waere genau die Aufblaehung, die hier ausgeschlossen ist.
-    Und es werden KEINE Radien, Schwellen oder Graphen neu definiert: alles kommt aus
-    `_h_placement`, wo es kalibriert steht und gegen die Detektoren begruendet ist.
+ 2. **NO BLOAT.**  ONE public function, ONE module, and TWO lines per refinement chain --
+    not per refiner.  There are more than twenty `_apply_*` sites; wrapping each one
+    individually would be exactly the bloat that is ruled out here.
+    And NO radii, thresholds or graphs are redefined: everything comes from
+    `_h_placement`, where it is calibrated and justified against the detectors.
 
- 3. **GESCHWINDIGKEIT.**  Der Punkt, an dem das billig wird: ein Verfeinerer laesst die
-    meisten Frames BYTE-IDENTISCH.  Ein Stringvergleich davor kostet nichts und schliesst
-    sie aus.  Bewertet wird nur, was sich wirklich geaendert hat -- typisch eine Handvoll
-    Frames je System statt aller.  Ohne diesen Vorfilter waere das Tor teurer als die
-    Verfeinerer, die es bewacht.
+ 3. **SPEED.**  The point at which this becomes cheap: a refiner leaves most frames
+    BYTE-IDENTICAL.  A string comparison up front costs nothing and excludes them.  Only
+    what has really changed is evaluated -- typically a handful of frames per system
+    instead of all of them.  Without this pre-filter the gate would be more expensive than
+    the refiners it guards.
 
-DAS KRITERIUM -- referenzfrei, lokal, ZWEI GANZE ZAHLEN, beide "kleiner ist besser":
+THE CRITERION -- reference-free, local, TWO INTEGERS, both "smaller is better":
 
-    n_clash      Atompaare, die ihren Boden unterschreiten (H...H 1,50 A; H...schwer
-                 0,85 x vdW-Summe; schwer...schwer 0,70 x vdW-Summe), nur fuer wirklich
-                 nichtgebundene Paare ab Graphabstand `_NONBONDED_MIN_HOPS`
-    n_bond_out   kovalente Bindungen ausserhalb [0,85 .. 1,15] x Kovalenzradiensumme
+    n_clash      atom pairs that fall below their floor (H...H 1.50 A; H...heavy
+                 0.85 x vdW sum; heavy...heavy 0.70 x vdW sum), only for truly
+                 non-bonded pairs from graph distance `_NONBONDED_MIN_HOPS` on
+    n_bond_out   covalent bonds outside [0.85 .. 1.15] x sum of covalent radii
 
-Ein Frame gilt als NICHT SCHLECHTER, wenn KEINE der beiden Zahlen steigt.  Zahl gegen Zahl,
-also dimensionsrein -- kein Vergleich einer Schwere mit einer Framezahl, wie er dieses Repo
-schon dreimal in die Irre gefuehrt hat.
+A frame counts as NOT WORSE if NEITHER of the two numbers rises.  Number against number,
+i.e. dimensionally clean -- no comparison of a severity with a frame count, of the kind that
+has led this repo astray three times already.
 
-⚠ DAS KRITERIUM IST NICHT DAS AUGE, und das ist Absicht.  Wer im Bauer das Auge nachbaut,
-uebergibt Goodhart die Schluessel: der Bauer optimiert dann die Messung statt die Geometrie.
-Hier stehen nur physikalische Invarianten, die der Bauer aus sich selbst pruefen kann.
+⚠ THE CRITERION IS NOT THE EYE, and that is deliberate.  Whoever rebuilds the eye inside the
+builder hands Goodhart the keys: the builder then optimizes the measurement instead of the
+geometry.  Only physical invariants stand here, which the builder can check from itself.
 
-⚠ NEUE ETIKETTEN GEHEN UNBERUEHRT DURCH.  Enumeratoren (Spiegel, Faltung, Atropisomer)
-HAENGEN AN; sie koennen per Konstruktion nichts verlieren, und ein angehaengtes Geschwister
-DARF schlechter sein als das Original -- das ist Vollstaendigkeit, keine Regression.  Die
-Zuordnung laeuft ueber das ETIKETT, damit dieses Modul die beiden Mechanismusklassen ohne
-Kenntnis der einzelnen Paesse auseinanderhaelt.
+⚠ NEW LABELS PASS THROUGH UNTOUCHED.  Enumerators (mirror, fold, atropisomer) APPEND;
+they cannot lose anything by construction, and an appended sibling MAY be worse than the
+original -- that is completeness, not a regression.  The matching runs over the LABEL, so
+that this module keeps the two mechanism classes apart without knowledge of the individual
+passes.
 
-⚠ NAMENSGEBUNG `_rg_`: der Wachhund `check_exists_first` hat `_enabled` und `_score` als
-Kollision gemeldet (`joint_declash`, `sphere_flex`, `smiles_converter`).  Dieselbe Lehre wie
-bei `_hp_` und `_atrop_` -- ein eindeutiger Name macht die Kopie sichtbar, statt sie zu tarnen.
+⚠ NAMING `_rg_`: the watchdog `check_exists_first` reported `_enabled` and `_score` as a
+collision (`joint_declash`, `sphere_flex`, `smiles_converter`).  The same lesson as with
+`_hp_` and `_atrop_` -- an unambiguous name makes the copy visible instead of disguising it.
 
-Vorgabe AUS (``DELFIN_FFFREE_REFINE_GATE``) -> byte-identisch.
+Default OFF (``DELFIN_FFFREE_REFINE_GATE``) -> byte-identical.
 """
 from __future__ import annotations
 
@@ -69,7 +69,7 @@ from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 
-# KEINE eigenen Radien, Boeden oder Graphen: alles aus `_h_placement`, wo es kalibriert steht.
+# NO radii, floors or graphs of our own: everything from `_h_placement`, where it is calibrated.
 from delfin.manta._h_placement import (
     _HH_FLOOR,
     _H_HEAVY_FRAC,
@@ -88,70 +88,70 @@ _LOG = logging.getLogger(__name__)
 
 FLAG = "DELFIN_FFFREE_REFINE_GATE"
 
-# Schwer-gegen-schwer ist der EINZIGE Boden, den `_h_placement` nicht braucht (es bewegt nur
-# H).  0,70 x vdW-Summe ist bewusst LOCKER: eine echte Bindung liegt weit darunter und wird
-# ohnehin ueber den Graphabstand ausgeschlossen; gemeint sind nur grobe Durchdringungen.
+# Heavy-against-heavy is the ONLY floor that `_h_placement` does not need (it only moves
+# H).  0.70 x vdW sum is deliberately LOOSE: a real bond lies far below it and is excluded
+# via the graph distance anyway; only gross interpenetrations are meant.
 _RG_HEAVY_HEAVY_FRAC = 0.70
 
 
 def _rg_on() -> bool:
-    """DIE eine Lesestelle.  Ein Schalter, der zweimal gelesen wird, driftet."""
+    """THE one read site.  A switch that is read twice drifts."""
     return os.environ.get(FLAG, "0") == "1"
 
 
-# ── DIE DRITTE KENNZAHL: sp2-Zentren, die pyramidal gebaut wurden ────────────────
+# ── THE THIRD METRIC: sp2 centres that were built pyramidal ──────────────────────
 #
-# WOZU (25.08.2026).  Die Defektrangliste ueber 79 495 Frames (aromrad6k_off, 1618
-# Systeme) sagt, dass die zwei GROESSTEN Klassen dieselbe Chemie sind:
-#     smiles_hyb-angle   22,18 %   Kristall 0,00 %   Masse 3911
-#     pyramidal_sp2      20,02 %   Kristall 0,98 %   Masse 3028
-# Zusammen 6939 -- mehr als die naechsten drei Klassen zusammen, und der Kristall
-# liegt bei null: reiner Baufehler, kein Detektorrauschen.
+# WHY (25.08.2026).  The defect ranking over 79 495 frames (aromrad6k_off, 1618
+# systems) says that the two LARGEST classes are the same chemistry:
+#     smiles_hyb-angle   22.18 %   crystal 0.00 %   mass 3911
+#     pyramidal_sp2      20.02 %   crystal 0.98 %   mass 3028
+# Together 6939 -- more than the next three classes combined, and the crystal
+# sits at zero: pure build error, no detector noise.
 #
-# `_rg_score` war fuer beide BLIND: es kannte nur Kollisionen und Bindungslaengen.
-# Damit konnte das Ruecknahmetor jede Reparatur schuetzen AUSSER der an der
-# groessten Klasse.  Ein Verflacher, der 300 Zentren richtet und 30 verbiegt, wurde
-# vom Tor durchgewinkt und vom Landungstor erschlagen.
+# `_rg_score` was BLIND to both: it knew only clashes and bond lengths.
+# So the rollback gate could protect every repair EXCEPT the one on the
+# largest class.  A flattener that straightens 300 centres and bends 30 was
+# waved through by the gate and struck down by the landing gate.
 #
-# ⚠ DIE GROESSE IST DIE DES AUGES, NICHT MEINE EIGENE.  Erst wollte ich
-# `_frame_assertions._oop` nehmen -- den Abstand des Zentrums von der Ebene seiner
-# drei Nachbarn, in ANGSTROEM.  Das Auge misst aber den WALSH-WINKEL in GRAD
+# ⚠ THE MEASURE IS THE EYE'S, NOT MY OWN.  At first I wanted to take
+# `_frame_assertions._oop` -- the distance of the centre from the plane of its
+# three neighbours, in ANGSTROM.  But the eye measures the WALSH ANGLE in DEGREES
 # (`find_pyramidalization.py:515`):
 #       walsh_deg = atan2(d_oop, r_mean)
-# also genau `_oop`, NORMIERT auf die mittlere Zentrum-Nachbar-Bindungslaenge.  Ein
-# Angstroem-Mass mit einer Grad-Schwelle waere wieder ein Etikett statt einer
-# Messung gewesen -- der Fehler, an dem der Atropisomer-Enumerator bis zum 23.08.
-# lahmlag.  Deshalb steht hier die Formel des Auges, Zeichen fuer Zeichen.
+# i.e. exactly `_oop`, NORMALIZED to the mean centre-neighbour bond length.  An
+# Angstrom measure with a degree threshold would again have been a label instead
+# of a measurement -- the mistake that kept the atropisomer enumerator crippled
+# until 23.08.  That is why the eye's formula stands here, character for character.
 #
-# ⚠ WAS HIER BEWUSST GROEBER IST ALS DAS AUGE, und warum das reicht: das Auge waehlt
-# seine Decke UMGEBUNGSABHAENGIG (`_PYR_ENV`, p99.9 aus 307k Kristallen).  Dieses
-# Tor VERGLEICHT dagegen dasselbe Frame vor und nach der Kette -- dieselben Atome,
-# dieselbe Umgebung.  Fuer ein "ist es schlechter geworden" genuegt ein KONSISTENTES
-# Mass; die absolute Eichung entscheidet nur, welche Zentren ueberhaupt mitzaehlen.
-# Der Boden 12,0 Grad ist trotzdem der des Auges (`find_graph_geometry._PYR_BUILD_MIN`),
-# damit die Zahlen anschlussfaehig bleiben.
+# ⚠ WHAT IS DELIBERATELY COARSER HERE THAN THE EYE, and why that suffices: the eye
+# chooses its ceiling ENVIRONMENT-DEPENDENTLY (`_PYR_ENV`, p99.9 from 307k crystals).
+# This gate, by contrast, COMPARES the same frame before and after the chain -- the
+# same atoms, the same environment.  For a "has it become worse" a CONSISTENT
+# measure suffices; the absolute calibration only decides which centres count at all.
+# The floor 12.0 degrees is nevertheless the eye's (`find_graph_geometry._PYR_BUILD_MIN`),
+# so that the numbers remain comparable.
 #
-# ⚠ mu-BRUECKEN SIND NICHT PYRAMIDAL, SONDERN VERBRUECKEND -- die R3-Regel des Auges
-# (`full_verdict.py:514-525`, auf CCDC belegt).  Ein Leichtatom an ZWEI oder mehr
-# Metallen wird uebersprungen; sonst zaehlte jede mu2-Oxo-Ecke als Defekt.
+# ⚠ mu-BRIDGES ARE NOT PYRAMIDAL BUT BRIDGING -- the eye's R3 rule
+# (`full_verdict.py:514-525`, established on CCDC).  A light atom bonded to TWO or more
+# metals is skipped; otherwise every mu2-oxo corner would count as a defect.
 #
-# ⚠ EIGENER SCHALTER, und das ist keine Vorsicht, sondern Pflicht: `picopgate6k` und
-# `hplacegate6k` laufen SEIT HEUTE MITTAG mit dem Zwei-Tupel, und der Bauer liest
-# seine Datei bei JEDEM System neu.  Ohne eigenen Schalter haette diese Zeile zwei
-# laufende A/B mitten im Lauf veraendert.  Vorgabe AUS -> Zwei-Tupel, byte-identisch.
+# ⚠ SEPARATE SWITCH, and that is not caution but obligation: `picopgate6k` and
+# `hplacegate6k` have been running SINCE NOON TODAY with the two-tuple, and the builder
+# re-reads its file for EVERY system.  Without a separate switch this line would have
+# altered two running A/Bs mid-run.  Default OFF -> two-tuple, byte-identical.
 FLAG_PYR = "DELFIN_FFFREE_REFINE_GATE_PYR"
-_RG_PYR_FLOOR = 12.0                      # Grad -- find_graph_geometry._PYR_BUILD_MIN
+_RG_PYR_FLOOR = 12.0                      # degrees -- find_graph_geometry._PYR_BUILD_MIN
 _RG_PYR_ELEMS = frozenset(("C", "N", "O", "S", "P"))
 
 
 def _rg_pyr_on() -> bool:
-    """DIE eine Lesestelle fuer die dritte Kennzahl."""
+    """THE one read site for the third metric."""
     return os.environ.get(FLAG_PYR, "0") == "1"
 
 
 def _rg_walsh(P, c: int, nb: Sequence[int]) -> Optional[float]:
-    """Walsh-Winkel in Grad, Formel aus `find_pyramidalization.py:501-515`.
-    Planares sp2 -> ~0; je pyramidaler, desto groesser."""
+    """Walsh angle in degrees, formula from `find_pyramidalization.py:501-515`.
+    Planar sp2 -> ~0; the more pyramidal, the larger."""
     a, b, d = int(nb[0]), int(nb[1]), int(nb[2])
     nrm = np.cross(P[b] - P[a], P[d] - P[a])
     ln = float(np.linalg.norm(nrm))
@@ -167,12 +167,12 @@ def _rg_walsh(P, c: int, nb: Sequence[int]) -> Optional[float]:
 
 
 def _rg_pyr_count(syms: Sequence[str], P, adj) -> int:
-    """Wieviele DREIBINDIGE Leichtatom-Zentren sind ueber den Boden pyramidalisiert?
+    """How many THREE-BONDED light-atom centres are pyramidalized beyond the floor?
 
-    Dreibindig, weil ein sp2-Zentrum genau drei sigma-Nachbarn hat -- H zaehlt mit,
-    wie beim Auge ("including every sp2 C-H", `full_verdict.py:507`).  Ohne Bindungs-
-    ordnungen ist "drei Nachbarn an C/N/O/S/P" die beste verfuegbare sp2-Naeherung;
-    ein echtes sp3-Zentrum hat vier und faellt damit von selbst heraus."""
+    Three-bonded, because an sp2 centre has exactly three sigma neighbours -- H counts,
+    as with the eye ("including every sp2 C-H", `full_verdict.py:507`).  Without bond
+    orders, "three neighbours on C/N/O/S/P" is the best available sp2 approximation;
+    a true sp3 centre has four and thus drops out by itself."""
     n_pyr = 0
     for i in range(len(syms)):
         if syms[i] not in _RG_PYR_ELEMS:
@@ -181,7 +181,7 @@ def _rg_pyr_count(syms: Sequence[str], P, adj) -> int:
         if len(nb) != 3:
             continue
         if sum(1 for j in nb if _hp_metal(syms[j])) >= 2:
-            continue                      # mu-Bruecke, keine Fehlplanarisierung (R3)
+            continue                      # mu-bridge, not a mis-planarization (R3)
         w = _rg_walsh(P, i, nb)
         if w is not None and w > _RG_PYR_FLOOR:
             n_pyr += 1
@@ -189,13 +189,13 @@ def _rg_pyr_count(syms: Sequence[str], P, adj) -> int:
 
 
 def _rg_score(xyz: str) -> Tuple[int, ...]:
-    """(n_clash, n_bond_out[, n_pyr]) -- alle "kleiner ist besser".
+    """(n_clash, n_bond_out[, n_pyr]) -- all "smaller is better".
 
-    Die dritte Stelle kommt nur mit `DELFIN_FFFREE_REFINE_GATE_PYR=1` dazu; ohne sie
-    ist der Rueckgabewert das alte Zwei-Tupel.  Der Vergleich in `keep_better` ist
-    ein Tupelvergleich und traegt beide Laengen -- solange BEIDE Seiten aus demselben
-    Lauf stammen, und das tun sie per Konstruktion (derselbe Prozess, dieselbe
-    Umgebung).  `(-1, -1)` bzw. `(-1, -1, -1)` heisst unlesbar."""
+    The third position is added only with `DELFIN_FFFREE_REFINE_GATE_PYR=1`; without it
+    the return value is the old two-tuple.  The comparison in `keep_better` is a tuple
+    comparison and carries both lengths -- as long as BOTH sides come from the same
+    run, and they do by construction (same process, same environment).
+    `(-1, -1)` or `(-1, -1, -1)` means unreadable."""
     _pyr = _rg_pyr_on()
     try:
         syms, P, _lines = _hp_read(xyz)
@@ -216,14 +216,14 @@ def _rg_score(xyz: str) -> Tuple[int, ...]:
             r = float(np.linalg.norm(P[i] - P[j])) / tgt
             if r < _XH_FIRE_LO or r > _XH_FIRE_HI:
                 n_bond_out += 1
-    # Kollisionen: nur wirklich nichtgebundene Paare, sonst meldet jeder normale
-    # 1,3-Kontakt eine Verletzung.
+    # Clashes: only truly non-bonded pairs, otherwise every normal 1,3-contact
+    # reports a violation.
     nah: List[Set[int]] = [_hp_within(adj, i, _NONBONDED_MIN_HOPS - 1) for i in range(n)]
     n_clash = 0
     for i in range(n):
         si = syms[i]
         if _hp_metal(si):
-            continue                          # die M-D-Sphaere ist keine Kollisionsfrage
+            continue                          # the M-D sphere is not a clash question
         for j in range(i + 1, n):
             if j in nah[i]:
                 continue
@@ -244,16 +244,16 @@ def _rg_score(xyz: str) -> Tuple[int, ...]:
 
 
 def keep_better(before: Sequence, after: Sequence):
-    """Nach der Verfeinerungskette ist KEIN Frame schlechter als davor.
+    """After the refinement chain, NO frame is worse than before.
 
-    `before` ist die Liste VOR der Kette, `after` die danach; beide (xyz, etikett).
-    Zurueck kommt eine Liste derselben Laenge wie `after`:
-      * Etikett war vorher da UND der Text hat sich geaendert UND die Bewertung ist
-        schlechter -> das ORIGINAL,
-      * sonst unveraendert das Ergebnis der Kette.
+    `before` is the list BEFORE the chain, `after` the one after it; both (xyz, label).
+    Returned is a list of the same length as `after`:
+      * label existed before AND the text has changed AND the score is
+        worse -> the ORIGINAL,
+      * otherwise the result of the chain, unchanged.
 
-    Byte-identische Frames werden ueber einen Stringvergleich ausgeschlossen, BEVOR
-    irgendetwas gerechnet wird -- der Grund, warum dieses Tor im Bau fast nichts kostet.
+    Byte-identical frames are excluded via a string comparison BEFORE anything is
+    computed -- the reason why this gate costs almost nothing in the build.
     """
     if not _rg_on() or not before or not after:
         return after
@@ -283,20 +283,21 @@ def keep_better(before: Sequence, after: Sequence):
         l, x = _rg_lbl(e), _rg_xyz(e)
         alt = vorher.get(l)
         if alt is None or x is None or alt == x:
-            continue                          # neu (Enumerator) oder unveraendert -> frei
+            continue                          # new (enumerator) or unchanged -> free
         n_geprueft += 1
         s_alt, s_neu = _rg_score(alt), _rg_score(x)
-        # ⚠ BEIDE ZEILEN WAREN AUF DAS ZWEI-TUPEL FESTGENAGELT (bemerkt 25.08., bevor
-        # die dritte Kennzahl je lief).  `== (-1, -1)` ist fuer `(-1, -1, -1)` FALSCH,
-        # also waere ein unlesbares Frame nicht mehr uebersprungen worden; und der
-        # Vergleich las nur Index 0 und 1, also waere `n_pyr` berechnet und dann
-        # WEGGEWORFEN worden -- ein Zaehler ohne Wirkzeile, genau die Bauart, die hier
-        # schon mehrfach als "dunkler Schalter" geendet ist.  Jetzt laengenunabhaengig.
+        # ⚠ BOTH LINES WERE NAILED TO THE TWO-TUPLE (noticed 25.08., before the
+        # third metric ever ran).  `== (-1, -1)` is FALSE for `(-1, -1, -1)`,
+        # so an unreadable frame would no longer have been skipped; and the
+        # comparison read only index 0 and 1, so `n_pyr` would have been computed
+        # and then THROWN AWAY -- a counter without an effect line, exactly the
+        # design that has ended up as a "dark switch" here several times already.
+        # Now length-independent.
         if -1 in s_alt or -1 in s_neu:
-            continue                          # unlesbar -> nicht urteilen, durchlassen
+            continue                          # unreadable -> do not judge, pass through
         if len(s_alt) != len(s_neu):
-            continue                          # kann nur bei Schalterwechsel MITTEN im
-            # Lauf passieren; dann ist kein Vergleich moeglich und Durchlassen richtig.
+            continue                          # can only happen on a switch change in the
+            # MIDDLE of a run; then no comparison is possible and passing through is right.
         if any(b > a for a, b in zip(s_alt, s_neu)):
             try:
                 out[k] = ((alt,) + tuple(e[1:])) if isinstance(e, tuple) else ([alt] + list(e[1:]))
@@ -305,17 +306,17 @@ def keep_better(before: Sequence, after: Sequence):
             n_rueck += 1
     ZAEHLER["keep_better_zurueck"] += n_rueck
     if n_rueck:
-        # WARNING, NICHT INFO (01.09.2026).  Gemessen: `refine-gate` steht in
-        # **0 von 2031** Lauf-Logs -- die INFO-Stufe des Bauers erreicht das
-        # Lauf-Log nicht, `mirror_enum` ist dort nur sichtbar, weil es `warning`
-        # benutzt.  Dieses Tor war damit seit seinem Bau UNBEOBACHTBAR: seine
-        # Wirkung war angenommen, nie gesehen.
-        # ⚠ Und die Folge war schlimmer als fehlende Neugier: bei `addroot3` konnte
-        #   ich aus dem Schweigen NICHT ablesen, ob das Tor nichts fand oder gar
-        #   nicht lief.  Genau die Unterscheidung, die `loop.py:_fire_out` mit
-        #   "gemessen und nichts getroffen ist eine ANDERE Aussage als nicht
-        #   gemessen" zur Regel erhebt.
-        # ⇒ Ein Ereignis wird gemeldet, Schweigen heisst ab jetzt "nichts getan".
+        # WARNING, NOT INFO (01.09.2026).  Measured: `refine-gate` appears in
+        # **0 of 2031** run logs -- the builder's INFO level does not reach the
+        # run log; `mirror_enum` is visible there only because it uses `warning`.
+        # This gate was therefore UNOBSERVABLE since it was built: its effect
+        # was assumed, never seen.
+        # ⚠ And the consequence was worse than missing curiosity: with `addroot3` I
+        #   could NOT tell from the silence whether the gate found nothing or did
+        #   not run at all.  Exactly the distinction that `loop.py:_fire_out` raises
+        #   to a rule with "measured and hit nothing is a DIFFERENT statement than
+        #   not measured".
+        # ⇒ An event is reported; from now on silence means "nothing done".
         _LOG.warning("refine-gate: %d von %d veraenderten Frames zurueckgenommen "
                      "(Kollisionen oder Bindungslaengen wurden schlechter)",
                      n_rueck, n_geprueft)
@@ -324,108 +325,107 @@ def keep_better(before: Sequence, after: Sequence):
 
 FLAG_ADD = "DELFIN_FFFREE_ADD_NEVER_REPLACE"
 
-# ── ZAEHLER STATT PROTOKOLL (01.09.2026) ────────────────────────────────────────
-# GEMESSEN: `refine-gate` steht in 0 von 2031 Lauf-Logs.  Ich habe daraufhin die
-# Meldungen von INFO auf WARNING gehoben -- und auf `addroot4` nachgemessen: es
-# erreicht ueberhaupt KEINE Bauer-Warnung das Lauf-Log, auch `mirror_enum` nicht,
-# das sicher gefeuert hat.  Der Bauer laeuft als Unterprozess, dessen Logstrom
-# verworfen wird; das Protokoll ist der falsche Kanal, egal auf welcher Stufe.
+# ── COUNTERS INSTEAD OF LOG (01.09.2026) ─────────────────────────────────────────
+# MEASURED: `refine-gate` appears in 0 of 2031 run logs.  I thereupon raised the
+# messages from INFO to WARNING -- and re-measured on `addroot4`: NO builder
+# warning at all reaches the run log, not even `mirror_enum`, which certainly
+# fired.  The builder runs as a subprocess whose log stream is discarded; the
+# log is the wrong channel, no matter at which level.
 #
-# DER RICHTIGE KANAL ist die JSON-Zeile, die der Bauer je System ohnehin schreibt
-# (loop.py:406).  Daneben steht `_fire_out()` mit genau dieser Begruendung:
-# "IMMER mitgeben, auch leer: 'gemessen und nichts getroffen' ist eine ANDERE
-#  Aussage als 'nicht gemessen'".
+# THE RIGHT CHANNEL is the JSON line the builder writes per system anyway
+# (loop.py:406).  Next to it stands `_fire_out()` with exactly this justification:
+# "ALWAYS pass it along, even empty: 'measured and hit nothing' is a DIFFERENT
+#  statement than 'not measured'".
 #
-# ⚠ `gelaufen` wird UNABHAENGIG von `getroffen` gezaehlt.  Ohne das ist eine Null
-#   nicht lesbar -- und genau daran ist die Frage "fand das Tor nichts, oder lief
-#   es gar nicht?" bei `addroot3` und `addroot4` gescheitert.
+# ⚠ `gelaufen` (ran) is counted INDEPENDENTLY of `getroffen` (hit).  Without that a
+#   zero is not readable -- and that is exactly where the question "did the gate find
+#   nothing, or did it not run at all?" failed on `addroot3` and `addroot4`.
 ZAEHLER = {
-    "keep_better_gelaufen": 0,      # Aufrufe, bei denen das Tor AN war
-    "keep_better_zurueck": 0,       # tatsaechlich zurueckgenommene Frames
-    "keep_all_gelaufen": 0,         # Aufrufe, bei denen das Tor AN war
-    "keep_all_wieder": 0,           # tatsaechlich wiederhergestellte Frames
-    # ── Dual-Parse-Vereinigung (smiles_converter.py:~35092), 01.09.2026 ──────────
-    # Der Bau laeuft bei Metall-SMILES mit `canonical != input` ZWEIMAL; die
-    # beiden Ergebnismengen werden ueber eine XYZ-Signatur vereinigt.  Diese
-    # Signatur laesst WASSERSTOFFE WEG und sortiert die Schweratomzeilen -- zwei
-    # Frames, die sich nur in H-Positionen unterscheiden (Stereozentrum gegen
-    # Spiegelbild), bekommen denselben Schluessel.  Die Zuweisung behaelt den
-    # SPAETEREN.  Das ist die einzige gefundene Stufe mit umgekehrter
-    # Vorzugsregel und H-blindem Schluessel.
-    # ⚠ HIER WIRD NUR GEZAEHLT, NICHTS GEAENDERT.  Die These ist erst dann
-    #   belegt, wenn `dual_sig_kollision` auf ABUSAU/JEJROI ungleich null steht
-    #   UND mit dem Spiegel verschwindet.
-    "dual_parse_gelaufen": 0,       # zweiter Bau ueberhaupt ausgefuehrt
-    "dual_sig_kollision": 0,        # Frames, die einen bestehenden Schluessel UEBERSCHREIBEN
-    # ── Paarweises Tor fuer angehaengte Frames (converter_backend, 01.09.2026) ──
-    # `gelaufen` getrennt von `verworfen`, aus demselben Grund wie oben: eine Null
-    # bei gelaufen>0 heisst "geprueft, nichts zu verwerfen", eine Null bei
-    # gelaufen==0 heisst "das Tor lief nicht". Ohne die Trennung ist sie unlesbar.
-    "pairgate_gelaufen": 0,         # Aufrufe von `_append_reembed` mit Tor AN
-    "pairgate_verworfen": 0,        # angehaengte Frames, die ein NEUES zu enges Paar brachten
+    "keep_better_gelaufen": 0,      # calls in which the gate was ON
+    "keep_better_zurueck": 0,       # frames actually rolled back
+    "keep_all_gelaufen": 0,         # calls in which the gate was ON
+    "keep_all_wieder": 0,           # frames actually restored
+    # ── Dual-parse union (smiles_converter.py:~35092), 01.09.2026 ────────────────
+    # For metal SMILES with `canonical != input` the build runs TWICE; the two
+    # result sets are united via an XYZ signature.  This signature LEAVES OUT
+    # HYDROGENS and sorts the heavy-atom lines -- two frames that differ only in
+    # H positions (stereocentre against mirror image) get the same key.  The
+    # assignment keeps the LATER one.  This is the only stage found with a
+    # reversed preference rule and an H-blind key.
+    # ⚠ HERE ONLY COUNTING HAPPENS, NOTHING IS CHANGED.  The thesis is proven only
+    #   once `dual_sig_kollision` is non-zero on ABUSAU/JEJROI AND disappears
+    #   with the mirror.
+    "dual_parse_gelaufen": 0,       # second build executed at all
+    "dual_sig_kollision": 0,        # frames that OVERWRITE an existing key
+    # ── Pairwise gate for appended frames (converter_backend, 01.09.2026) ──────
+    # `gelaufen` (ran) separate from `verworfen` (rejected), for the same reason as
+    # above: a zero with gelaufen>0 means "checked, nothing to reject", a zero with
+    # gelaufen==0 means "the gate did not run".  Without the separation it is unreadable.
+    "pairgate_gelaufen": 0,         # calls of `_append_reembed` with gate ON
+    "pairgate_verworfen": 0,        # appended frames that brought a NEW too-close pair
 }
 
 
 def _ka_on() -> bool:
-    """DIE eine Lesestelle -- wie `_rg_on`.  Ein Schalter, zweimal gelesen, driftet."""
+    """THE one read site -- like `_rg_on`.  A switch, read twice, drifts."""
     return os.environ.get(FLAG_ADD, "0") == "1"
 
 
 def keep_all(before: Sequence, after: Sequence):
-    """ADD, NEVER REPLACE: kein Frame aus `before` darf am Ende FEHLEN.
+    """ADD, NEVER REPLACE: no frame from `before` may be MISSING at the end.
 
-    Geschwister von `keep_better`.  Jenes setzt durch *"kein Frame ist schlechter
-    als vorher"*, dieses *"kein Frame ist WEG"* -- zwei Haelften desselben
-    Vertrages, und die zweite war bis heute nicht durchgesetzt.
+    Sibling of `keep_better`.  That one enforces *"no frame is worse than
+    before"*, this one *"no frame is GONE"* -- two halves of the same
+    contract, and the second was not enforced until today.
 
-    ANLASS (01.09.2026, gemessen an `mirrleg6k`).  `harness/frame_keys_additiv.py`
-    hat die acht Sperrer des besten Landekandidaten auf INHALTSEBENE geprueft:
+    OCCASION (01.09.2026, measured on `mirrleg6k`).  `harness/frame_keys_additiv.py`
+    checked the eight blockers of the best landing candidate at CONTENT LEVEL:
 
-        LIYGAC QOYTEE XUFHEM XUFHIQ FEDDEA VAPNEI   nur_basis 0   streng additiv
-        ABUSAU  58 -> 59 Frames                     nur_basis 1   INHALT WEG
-        JEJROI  89 -> 90 Frames                     nur_basis 1   INHALT WEG
+        LIYGAC QOYTEE XUFHEM XUFHIQ FEDDEA VAPNEI   nur_basis 0   strictly additive
+        ABUSAU  58 -> 59 frames                     nur_basis 1   CONTENT GONE
+        JEJROI  89 -> 90 frames                     nur_basis 1   CONTENT GONE
 
-    Auf ABUSAU und JEJROI verschwindet je EIN Frame, obwohl `_mirror_enum.
-    expand_results` per Konstruktion additiv ist (`:370  return list(results) +
-    added`; der einzige andere Ausgang gibt `results` unveraendert zurueck).
-    Der Verlust entsteht also STROMABWAERTS, in einer Stufe die AUSWAEHLT.
-    Die Etiketten sagen, was es trifft:
+    On ABUSAU and JEJROI ONE frame each disappears, although `_mirror_enum.
+    expand_results` is additive by construction (`:370  return list(results) +
+    added`; the only other exit returns `results` unchanged).
+    So the loss arises DOWNSTREAM, in a stage that SELECTS.
+    The labels say what it hits:
 
-        ABUSAU  weg: ...Br-N2-D-conf4_stereo-u    neu: ...Br-N2-L-conf3_mirror (2x)
-        JEJROI  weg: all-cis-L-conf3-2_stereo-uu  neu: Isomer 2_mirror         (2x)
+        ABUSAU  gone: ...Br-N2-D-conf4_stereo-u    new: ...Br-N2-L-conf3_mirror (2x)
+        JEJROI  gone: all-cis-L-conf3-2_stereo-uu  new: Isomer 2_mirror         (2x)
 
-    In beiden Faellen faellt ein STEREOZENTREN-Frame, waehrend Spiegel dazukommen --
-    und die Spiegelung kehrt Lambda/Delta um, die neuen Frames sind also nahe
-    Verwandte der gefallenen.  Zwei additive Paesse verdraengen einander ueber eine
-    Auswahlstufe.  Dieselbe Bauart hat `trans208` ein CCDC-Isomer gekostet (Notiz
-    an der Spiegel-Aufrufstelle, smiles_converter.py:32621).
+    In both cases a STEREOCENTRE frame falls while mirrors are added --
+    and mirroring inverts Lambda/Delta, so the new frames are close relatives
+    of the fallen ones.  Two additive passes displace each other through a
+    selection stage.  The same design cost `trans208` a CCDC isomer (note at
+    the mirror call site, smiles_converter.py:32621).
 
-    WAS DIESES TOR NICHT TUT.  Es sagt NICHT, welche Stufe den Frame nimmt -- es
-    stellt ihn wieder her.  Die Wurzel bleibt offen und wird als eigene Aufgabe
-    gefuehrt; ein Vertrag, der erst am Ende der Kette durchgesetzt wird, ist eine
-    NAHT und keine Heilung.
+    WHAT THIS GATE DOES NOT DO.  It does NOT say which stage takes the frame -- it
+    restores it.  The root remains open and is tracked as a separate task; a
+    contract that is enforced only at the end of the chain is a SEAM and
+    not a cure.
 
-    UND ES KANN EINEN FRAME ZURUECKHOLEN, DEN EINE AUSWAHL BEWUSST VERWARF.
-    Das ist gewollt: der Vertrag sagt, ein ENUMERATOR darf keinen Frame kosten.
-    Wer eine Auswahl will, muss sie VOR dem Enumerator treffen, nicht danach.
-    Wer das anders sieht, laesst das Tor aus -- es ist Vorgabe AUS.
+    AND IT CAN BRING BACK A FRAME THAT A SELECTION DELIBERATELY REJECTED.
+    That is intended: the contract says an ENUMERATOR may not cost a frame.
+    Whoever wants a selection must make it BEFORE the enumerator, not after.
+    Whoever sees it differently leaves the gate off -- it is default OFF.
 
-    ⚠️ KORREKTUR 01.09.2026, spaeter am Tag: hier stand `_gfnff_ensemble_rank_filter`
-       als Verdaechtiger, "im Champion an".  DAS WAR FALSCH.  `_CHAMPION_FLAGS`
-       (cli_manta.py:42-281) hat 20 Eintraege, `GFNFF_RANK` ist keiner davon; mein
-       Treffer stammte aus Kommentartext neben der Definition.  Der Taeter ist
-       weiterhin UNBEKANNT -- und `harness/kettenzaehler.py` hat inzwischen die
-       ganze AEUSSERE Kette (14 Stufen) ausgeschlossen: die Framezahl faellt dort
-       nirgends.  Was dieses Tor tut, haengt also nicht an jener Vermutung.
+    ⚠️ CORRECTION 01.09.2026, later in the day: `_gfnff_ensemble_rank_filter` stood
+       here as the suspect, "on in the champion".  THAT WAS WRONG.  `_CHAMPION_FLAGS`
+       (cli_manta.py:42-281) has 20 entries, `GFNFF_RANK` is not one of them; my
+       hit came from comment text next to the definition.  The culprit is
+       still UNKNOWN -- and `harness/kettenzaehler.py` has meanwhile ruled out the
+       whole OUTER chain (14 stages): the frame count falls nowhere there.
+       So what this gate does does not depend on that conjecture.
 
-    ZUORDNUNG UEBER DAS ETIKETT-MULTISET, nicht ueber den Text: Stufen dazwischen
-    formatieren Koordinaten um; ein Stringvergleich meldete dann "weg", wo nur
-    anders gedruckt wurde, und das Tor haengte DUBLETTEN an.  Etiketten sind stabil
-    (Paesse haengen Suffixe an, sie schreiben nicht um).  MULTISET, weil doppelte
-    Etiketten der Normalfall sind -- ABUSAU traegt 20 davon im Basisarm; eine
-    MENGE statt eines Zaehlers wuerde den zweiten Frame nie vermissen.
+    MATCHING OVER THE LABEL MULTISET, not over the text: stages in between
+    reformat coordinates; a string comparison then reported "gone" where it was
+    only printed differently, and the gate appended DUPLICATES.  Labels are stable
+    (passes append suffixes, they do not rewrite).  MULTISET, because duplicate
+    labels are the normal case -- ABUSAU carries 20 of them in the base arm; a
+    SET instead of a counter would never miss the second frame.
 
-    Byte-identisch, solange `DELFIN_FFFREE_ADD_NEVER_REPLACE != 1`.
+    Byte-identical as long as `DELFIN_FFFREE_ADD_NEVER_REPLACE != 1`.
     """
     if not _ka_on() or not before or not after:
         return after
@@ -449,15 +449,15 @@ def keep_all(before: Sequence, after: Sequence):
         if not fehlt:
             return after
 
-        # WELCHE Vorkommnis wiederherstellen?  Das Etikett sagt WIE VIELE fehlen,
-        # nicht WELCHE.  Steht ein Etikett zweimal in `before` und einmal in
-        # `after`, und man nimmt einfach die erste, haengt man eine DUBLETTE des
-        # vorhandenen Frames an -- und der wirklich fehlende bleibt verloren.
-        # (Genau daran ist die erste Fassung im Selbsttest gescheitert.)
-        # Also: Inhalte, die `after` schon fuehrt, einmal abstreichen; bevorzugt
-        # wiederhergestellt wird, was danach uebrig ist.  Der Textvergleich taugt
-        # HIER, weil er nur AUSWAEHLT -- ob ueberhaupt etwas fehlt, hat das
-        # Etikett-Multiset schon entschieden.
+        # WHICH occurrence to restore?  The label says HOW MANY are missing,
+        # not WHICH.  If a label appears twice in `before` and once in
+        # `after`, and one simply takes the first, one appends a DUPLICATE of
+        # the frame that is present -- and the one really missing stays lost.
+        # (Exactly this is what the first version failed on in the self-test.)
+        # So: contents that `after` already carries are struck off once; what
+        # remains afterwards is restored preferentially.  The text comparison is
+        # fit for use HERE because it only SELECTS -- whether anything is missing
+        # at all has already been decided by the label multiset.
         vorhanden: Dict[str, int] = {}
         for e in after:
             try:
@@ -478,49 +478,49 @@ def keep_all(before: Sequence, after: Sequence):
             except Exception:
                 _k = None
             if _k is not None and vorhanden.get(_k, 0) > 0:
-                vorhanden[_k] -= 1          # dieser Inhalt steht schon da
-                nachrang.append(e)          # nur als Rueckfall aufheben
+                vorhanden[_k] -= 1          # this content is already there
+                nachrang.append(e)          # keep only as a fallback
                 continue
             rest.append(e)
             offen[l] -= 1
-        # Rueckfall: bleiben Plaetze offen (alle Kandidaten waren inhaltsgleich),
-        # dann ist die Zahl trotzdem einzuhalten -- sonst waere das Tor je nach
-        # Datenlage still.
+        # Fallback: if slots remain open (all candidates were identical in content),
+        # the count must still be honoured -- otherwise the gate would be silent
+        # depending on the data.
         for e in nachrang:
             l = _lbl(e)
             if offen.get(l, 0) > 0:
                 rest.append(e)
                 offen[l] -= 1
-        # KEINE STILLE WIEDERHERSTELLUNG, und WARNING statt INFO -- aus demselben
-        # gemessenen Grund wie bei `keep_better` oben: INFO aus dem Bauer erreicht
-        # das Lauf-Log nicht (0 von 2031).  Bei `addroot3` hat mich genau das um
-        # die Antwort gebracht, ob dieses Tor nichts fand oder nicht lief.
+        # NO SILENT RESTORATION, and WARNING instead of INFO -- for the same
+        # measured reason as with `keep_better` above: INFO from the builder does not
+        # reach the run log (0 of 2031).  With `addroot3` exactly that robbed me of
+        # the answer whether this gate found nothing or did not run.
         ZAEHLER["keep_all_wieder"] += sum(fehlt.values())
         _LOG.warning("ADD-never-replace: %d Frame(s) wiederhergestellt, die die "
                      "Kette verloren hatte (%d Etikett(en): %s)",
                      sum(fehlt.values()), len(fehlt), ", ".join(sorted(fehlt)[:4]))
         return rest
-    except Exception as exc:                  # pragma: no cover - Fail-safe
+    except Exception as exc:                  # pragma: no cover - fail-safe
         _LOG.warning("ADD-never-replace nicht angewandt (%s) -- es wird NICHTS "
                      "wiederhergestellt", type(exc).__name__)
         return after
 
 
-def _rg_selbsttest() -> int:  # pragma: no cover - Werkzeug, kein Produktivpfad
-    """Behauptungen dieses Moduls gegen Zahlen, nicht gegen Zuversicht.
+def _rg_selbsttest() -> int:  # pragma: no cover - tool, not a production path
+    """This module's claims against numbers, not against confidence.
 
         python -m delfin.manta._refine_gate
 
-    Geprueft wird, was schiefgehen KANN, nicht was bequem ist:
-      1. Vorgabe AUS  -> `_rg_score` liefert ein ZWEI-Tupel.  Ohne das waeren die
-         laufenden A/B `picopgate6k` und `hplacegate6k` mitten im Lauf veraendert.
-      2. Schalter AN  -> DREI-Tupel, und die dritte Zahl UNTERSCHEIDET flach von
-         pyramidal.  Ein Zaehler, der auf beiden Formen dasselbe sagt, ist eine
-         Tabellenkonstante und kein Detektor.
-      3. Der Walsh-Winkel trifft die Zahlen des AUGES: planares Formaldehyd ~0 Grad,
-         und die Formel ist `atan2(d_oop, r_mean)`, nicht `d_oop` allein.
-      4. `keep_better` NIMMT eine Verschlechterung der dritten Zahl ZURUECK -- sonst
-         waere sie berechnet und weggeworfen.
+    What is checked is what CAN go wrong, not what is convenient:
+      1. Default OFF  -> `_rg_score` returns a TWO-tuple.  Without that, the
+         running A/Bs `picopgate6k` and `hplacegate6k` would have been altered mid-run.
+      2. Switch ON    -> THREE-tuple, and the third number DISTINGUISHES flat from
+         pyramidal.  A counter that says the same on both forms is a
+         table constant and not a detector.
+      3. The Walsh angle matches the EYE's numbers: planar formaldehyde ~0 degrees,
+         and the formula is `atan2(d_oop, r_mean)`, not `d_oop` alone.
+      4. `keep_better` ROLLS BACK a worsening of the third number -- otherwise
+         it would be computed and thrown away.
     """
     import numpy as _np
 
@@ -528,10 +528,10 @@ def _rg_selbsttest() -> int:  # pragma: no cover - Werkzeug, kein Produktivpfad
         return "%d\ntest\n" % len(rows) + "\n".join(
             f"{s} {x:.6f} {y:.6f} {z:.6f}" for s, x, y, z in rows) + "\n"
 
-    # Formaldehyd-artig: C mit drei Nachbarn, exakt planar (z = 0 fuer alle)
+    # formaldehyde-like: C with three neighbours, exactly planar (z = 0 for all)
     flach = _xyz([("C", 0.0, 0.0, 0.0), ("O", 0.0, 1.21, 0.0),
                   ("H", 0.94, -0.54, 0.0), ("H", -0.94, -0.54, 0.0)])
-    # dasselbe C, aber 0.35 A aus der Ebene gezogen -> deutlich pyramidal
+    # the same C, but pulled 0.35 A out of the plane -> clearly pyramidal
     pyr = _xyz([("C", 0.0, 0.0, 0.35), ("O", 0.0, 1.21, 0.0),
                 ("H", 0.94, -0.54, 0.0), ("H", -0.94, -0.54, 0.0)])
 
@@ -561,7 +561,7 @@ def _rg_selbsttest() -> int:  # pragma: no cover - Werkzeug, kein Produktivpfad
         _urteil("die beiden Formen sind UNTERSCHEIDBAR (kein konstanter Zaehler)",
                 len(s_flach) == 3 and len(s_pyr) == 3 and s_flach[2] != s_pyr[2])
 
-        # Walsh-Winkel gegen die Formel des Auges nachgerechnet
+        # Walsh angle recomputed against the eye's formula
         P = _np.array([[0.0, 0.0, 0.35], [0.0, 1.21, 0.0],
                        [0.94, -0.54, 0.0], [-0.94, -0.54, 0.0]])
         w = _rg_walsh(P, 0, [1, 2, 3])
@@ -572,13 +572,13 @@ def _rg_selbsttest() -> int:  # pragma: no cover - Werkzeug, kein Produktivpfad
         wf = _rg_walsh(Pf, 0, [1, 2, 3])
         _urteil("planar ergibt ~0 Grad", wf is not None and wf < 1.0, f"{wf:.2f} Grad")
 
-        # keep_better muss die Verschlechterung der DRITTEN Zahl zurueckholen.
-        # ⚠ ZWEI SCHALTER, und der erste Testentwurf setzte nur EINEN -- die Probe
-        # schlug fehl und sah wie ein Codefehler aus.  `keep_better` steigt in Zeile
-        # 258 als ERSTES an `_rg_on()` aus, also am HAUPTSCHALTER; `FLAG_PYR` allein
-        # bewirkt nichts.  Das ist keine Testkosmetik: ein Lauf, der nur
-        # DELFIN_FFFREE_REFINE_GATE_PYR setzt, misst NICHTS und meldete es als
-        # "keine Wirkung".  Die Warteschlangenzeile muss BEIDE tragen.
+        # keep_better must roll back the worsening of the THIRD number.
+        # ⚠ TWO SWITCHES, and the first test draft set only ONE -- the check
+        # failed and looked like a code error.  `keep_better` bails out at line
+        # 258 FIRST on `_rg_on()`, i.e. on the MAIN SWITCH; `FLAG_PYR` alone
+        # does nothing.  This is not test cosmetics: a run that sets only
+        # DELFIN_FFFREE_REFINE_GATE_PYR measures NOTHING and would report it as
+        # "no effect".  The queue line must carry BOTH.
         os.environ[FLAG] = "1"
         vor = [(flach, "f0")]
         nach = [(pyr, "f0")]
@@ -586,8 +586,8 @@ def _rg_selbsttest() -> int:  # pragma: no cover - Werkzeug, kein Produktivpfad
         _urteil("keep_better nimmt die Pyramidalisierung ZURUECK",
                 bool(zurueck) and zurueck[0][0] == flach)
 
-        # und bei AUS darf es genau das NICHT tun (der Beweis, dass es an der
-        # dritten Zahl lag und nicht an Kollisionen oder Bindungslaengen)
+        # and when OFF it must NOT do exactly that (the proof that it was due to the
+        # third number and not to clashes or bond lengths)
         os.environ[FLAG_PYR] = "0"
         zurueck_aus = keep_better(vor, nach)
         _urteil("bei Vorgabe AUS bleibt dieselbe Aenderung STEHEN",
@@ -601,9 +601,9 @@ def _rg_selbsttest() -> int:  # pragma: no cover - Werkzeug, kein Produktivpfad
                 os.environ[_f] = _v
 
     # ── ADD, NEVER REPLACE ──────────────────────────────────────────────────────
-    # Nachgebaut wird ABUSAU: doppelte Etiketten sind der Normalfall (20 im
-    # Basisarm), EIN Frame verschwindet, zwei kommen dazu.  Ein Tor, das nur den
-    # einfachen Fall kann, faellt genau hier um.
+    # ABUSAU is rebuilt: duplicate labels are the normal case (20 in the
+    # base arm), ONE frame disappears, two are added.  A gate that can only handle
+    # the simple case falls over exactly here.
     _alt_add = os.environ.get(FLAG_ADD)
     try:
         vor = [("A", "L-conf3"), ("B", "L-conf3"), ("C", "D-conf4_stereo-u")]
@@ -625,14 +625,14 @@ def _rg_selbsttest() -> int:  # pragma: no cover - Werkzeug, kein Produktivpfad
         _urteil("nichts wird doppelt angehaengt (Multiset, nicht Menge)",
                 len(her) == 5, "4 vorhandene + genau 1 wiederhergestellter")
 
-        # DIE GEGENPROBE, ohne die die Zahl nichts wert waere: fehlt NICHTS,
-        # darf das Tor auch nichts anfassen -- sonst waechst der Manifold bei
-        # jedem Aufruf.
+        # THE COUNTER-CHECK, without which the number would be worth nothing: if
+        # NOTHING is missing, the gate must not touch anything either -- otherwise
+        # the manifold grows on every call.
         _urteil("fehlt nichts, bleibt die Liste unveraendert",
                 keep_all(vor, list(vor)) == list(vor))
 
-        # Und der Fall, an dem eine MENGE statt eines Zaehlers scheitern wuerde:
-        # ein Etikett steht zweimal vorher und nur einmal nachher.
+        # And the case on which a SET instead of a counter would fail:
+        # a label appears twice before and only once after.
         vor2 = [("A", "dup"), ("B", "dup")]
         nach2 = [("A", "dup")]
         her2 = keep_all(vor2, nach2)

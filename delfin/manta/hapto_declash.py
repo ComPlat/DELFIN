@@ -95,9 +95,9 @@ _SYM_Z = {s: i for i, s in enumerate(_ELEMENTS) if s}
 
 
 def _is_metal(sym: str) -> bool:
-    # EINE QUELLE (14.08.2026): delfin/manta/_elements.py.  Vorgabe AUS -> byte-identisch.
-    # Diese Fassung fuehrt 79 Elemente, also Sb, Te und Am..Lr zusaetzlich -- die
-    # Metalloide sind im Bau aber bereits als DONOREN gefuehrt.
+    # ONE SOURCE (14.08.2026): delfin/manta/_elements.py.  Default OFF -> byte-identical.
+    # This version carries 79 elements, i.e. Sb, Te and Am..Lr in addition -- but the
+    # metalloids are already carried as DONORS in the build.
     from delfin.manta import _elements as _EL
     if _EL.unified_enabled():
         return _EL.is_metal(sym)

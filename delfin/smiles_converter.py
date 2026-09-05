@@ -557,7 +557,7 @@ _apply_mh_table_fallback()
 # Welle-3 T3.3 (2026-05-15) — 84 new M-L pairs (As/Sb/Te/B/Se/La extras).
 # Gated by DELFIN_NEW_ML_PAIRS (default 0).  Welle-5g Step-0 targeted revert
 # per 5f-A bisect: a3edabe always-on inclusion attributed ~70% of -4064 NET
-# (hapto -767 voll-pool).  Default-OFF restores 9b1f541-equivalent behaviour.
+# (hapto -767 full-pool).  Default-OFF restores 9b1f541-equivalent behaviour.
 # ---------------------------------------------------------------------------
 _METAL_LIGAND_BOND_LENGTHS_T33: Dict[Tuple[str, str], float] = {
     # M-As donors (arsine, CSD 2.30-2.65 A)
@@ -765,36 +765,35 @@ _METALLOID_MD_DONORS = frozenset({"Sb", "As", "Bi", "Te", "Se", "Ge", "Sn", "Pb"
 _METALLOID_MD_FORCE_SHORT = threading.local()
 
 
-_ML_ME_MIN_N = 50          # Mindeststichprobe je Paar -- s. _ml_me_band
-_ML_ME_CACHE = {}          # Pfad -> {(Metall, Donor): mu}
+_ML_ME_MIN_N = 50          # minimum sample size per pair -- see _ml_me_band
+_ML_ME_CACHE = {}          # path -> {(metal, donor): mu}
 
 
 def _ml_me_band(metal_symbol: str, donor_symbol: str):
-    """Terminale M=E MEHRFACHBINDUNGS-Laenge, falls eine kalibrierte Tabelle gereicht wird.
+    """Terminal M=E MULTIPLE-BOND length, if a calibrated table is supplied.
 
-    WOZU (gemessen 16.08.2026).  `ml_len_realized` verfehlt 192 von 953 Systemen, und die
-    Zerlegung nach Elementpaaren ist extrem scharf:
-        O-Re  8.86x | N-Re 7.88x | C-Ir 6.89x | O-V, O-W, O-Rh: NUR Fehler
-        Fe-N  0.25x | Mn-N 0.27x  (geschuetzt -- dort gibt es keine Mehrfachbindung)
-    Es sind durchweg terminale OXO- und NITRIDO-Bindungen an hochvalenten Metallen.  Ursache:
-    DELFIN schreibt sie als EINFACHBINDUNG mit geladenem Endatom (`[O-][Re]`), die
-    Bindungsordnung steht NICHT im RDKit-Graphen -- und `_get_ml_bond_length` schlaegt allein
-    ueber (Metall, Donorelement) nach.  Ein terminales Re=O bekommt damit exakt die Laenge
-    eines verbrueckenden Re-O.
+    WHAT FOR (measured 16.08.2026).  `ml_len_realized` misses 192 of 953 systems, and the
+    breakdown by element pair is extremely sharp:
+        O-Re  8.86x | N-Re 7.88x | C-Ir 6.89x | O-V, O-W, O-Rh: ONLY failures
+        Fe-N  0.25x | Mn-N 0.27x  (protected -- there is no multiple bond there)
+    They are, throughout, terminal OXO and NITRIDO bonds on high-valent metals.  Cause:
+    DELFIN writes them as a SINGLE BOND with a charged end atom (`[O-][Re]`), the bond
+    order is NOT in the RDKit graph -- and `_get_ml_bond_length` looks up solely by
+    (metal, donor element).  A terminal Re=O thereby gets exactly the length of a
+    bridging Re-O.
 
-    ⚠ WARUM KEIN EINHEITLICHER FAKTOR.  Aus fuenf Lehrbuchfaellen sah ~0.80 plausibel aus.
-    Auf den Kristallen gemessen (76 Paare mit n >= 50) ist die Verkuerzung PAARSPEZIFISCH:
+    ⚠ WHY NO UNIFORM FACTOR.  From five textbook cases ~0.80 looked plausible.
+    Measured on the crystals (76 pairs with n >= 50) the shortening is PAIR-SPECIFIC:
         U=O 0.743 (n=1100) | Re=O 0.813 | W=O 0.850 | V=O 0.890 | Mo=O 0.895 (n=4014)
-        die MEHRHEIT 0.98-1.02 -- KEINE Verkuerzung
-        Os=C 1.102, W=C 1.055 -- VERLAENGERUNG
-    Nur 10 von 76 Paaren verkuerzen ueberhaupt.  Ein pauschaler 0.80-Faktor erzeugte bei
-    S/Se/C 0.4-0.5 A Fehler, wo heute keiner ist.  Darum: der WERT wird nachgeschlagen, nicht
-    gerechnet.
+        the MAJORITY 0.98-1.02 -- NO shortening
+        Os=C 1.102, W=C 1.055 -- LENGTHENING
+    Only 10 of 76 pairs shorten at all.  A blanket 0.80 factor produced 0.4-0.5 A errors at
+    S/Se/C where today there is none.  Hence: the VALUE is looked up, not computed.
 
-    ⚠ LIZENZ.  Die Werte sind CCDC-abgeleitet und bleiben PRIVAT -- in dieser Datei steht
-    KEINE Zahl daraus.  Der Pfad kommt ueber `DELFIN_ML_ME_BANDS`; fehlt er oder fehlt die
-    Datei, liefert diese Funktion None und das Verhalten ist unveraendert.  Dasselbe Muster
-    wie bei den Torsionsbaendern.
+    ⚠ LICENSE.  The values are CCDC-derived and remain PRIVATE -- this file contains NO
+    number from them.  The path comes via `DELFIN_ML_ME_BANDS`; if it is missing or the
+    file is missing, this function returns None and the behaviour is unchanged.  The same
+    pattern as for the torsion bands.
     """
     path = os.environ.get("DELFIN_ML_ME_BANDS", "")
     if not path:
@@ -811,9 +810,9 @@ def _ml_me_band(metal_symbol: str, donor_symbol: str):
                     if len(f) < 6 or f[0] == "metal":
                         continue
                     try:
-                        # Die Schwelle wird HIER noch einmal erzwungen, nicht nur beim
-                        # Erzeugen: eine handbearbeitete Tabelle darf keine Zeile mit
-                        # winziger Stichprobe einschmuggeln.
+                        # The threshold is enforced HERE once more, not only at
+                        # generation time: a hand-edited table must not smuggle in a
+                        # row with a tiny sample.
                         if int(f[5]) < _ML_ME_MIN_N:
                             continue
                         tbl[(f[0], f[1])] = float(f[2])
@@ -826,25 +825,25 @@ def _ml_me_band(metal_symbol: str, donor_symbol: str):
 
 
 def _ml_bond_kind(mol, metal_idx: int, donor_idx: int) -> str:
-    """"me" fuer eine TERMINALE Mehrfachbindung (Oxo/Nitrido/Carbin), sonst "sigma".
+    """"me" for a TERMINAL multiple bond (oxo/nitrido/carbyne), otherwise "sigma".
 
-    DAS KRITERIUM IST STRUKTURELL, NICHT AUS DEM SMILES.  DELFIN schreibt terminales Oxo als
-    `[O-][Re]` -- eine EINFACHBINDUNG mit geladenem Endatom --, die Mehrfachbindungsordnung
-    steht also gar nicht im Graphen.  Genau darum erkennt auch das Auge sie strukturell:
-    ein Donor, dessen EINZIGER schwerer Nachbar das Metall ist, kann nur terminal sein, und
-    ein terminaler O/N/C-Donor an einem Metall ist chemisch eine Mehrfachbindung.
+    THE CRITERION IS STRUCTURAL, NOT FROM THE SMILES.  DELFIN writes terminal oxo as
+    `[O-][Re]` -- a SINGLE BOND with a charged end atom --, so the multiple-bond order
+    is not in the graph at all.  That is exactly why the eye, too, detects them
+    structurally: a donor whose ONLY heavy neighbour is the metal can only be terminal, and
+    a terminal O/N/C donor on a metal is chemically a multiple bond.
 
-    Wasserstoff zaehlt nicht als schwerer Nachbar; ein OH oder NH2 ist damit korrekt KEIN
-    Oxo.  Nur die Elemente, fuer die es ueberhaupt terminale M=E-Chemie gibt.
+    Hydrogen does not count as a heavy neighbour; an OH or NH2 is thus correctly NOT an
+    oxo.  Only the elements for which terminal M=E chemistry exists at all.
 
-    Vorgabe AUS -> byte-identisch (der Schalter wird beim Aufrufer geprueft).
+    Default OFF -> byte-identical (the switch is checked at the caller).
     """
     try:
         a = mol.GetAtomWithIdx(donor_idx)
         if a.GetSymbol() not in ("O", "N", "C"):
             return "sigma"
         if a.GetTotalNumHs() > 0:
-            return "sigma"                       # OH / NH2 ist kein Oxo/Imido
+            return "sigma"                       # OH / NH2 is not an oxo/imido
         heavy = [n.GetIdx() for n in a.GetNeighbors() if n.GetSymbol() != "H"]
         return "me" if heavy == [metal_idx] else "sigma"
     except Exception:
@@ -852,26 +851,26 @@ def _ml_bond_kind(mol, metal_idx: int, donor_idx: int) -> str:
 
 
 def _apply_h_placement_if_enabled(results):
-    """H-Platzierung fuer den FF-freien Pfad (19.08.2026, DELFIN_FFFREE_H_PLACEMENT).
+    """H placement for the FF-free path (19.08.2026, DELFIN_FFFREE_H_PLACEMENT).
 
-    Braucht KEIN ``mol``: alle drei Stufen arbeiten auf dem XYZ-Text, damit entfaellt die
-    Atomreihenfolge-Falle, vor der der Docstring von ``_ffree_shared_tail`` warnt.  Genau
-    daran scheitert ``FIX_F19``, dessen Bewegungsklasse eigentlich die beste im Baum ist --
-    er liest RDKit-Hybridisierung und braucht ``frame_to_mol_map``.
+    Needs NO ``mol``: all three stages work on the XYZ text, so the atom-order trap that
+    the docstring of ``_ffree_shared_tail`` warns about does not apply.  That is exactly
+    what ``FIX_F19`` fails on, although its motion class is actually the best in the tree --
+    it reads RDKit hybridisation and needs ``frame_to_mol_map``.
 
-    ⚠ DEN SCHALTER PRUEFT DAS MODUL SELBST.  Bewusst NICHT hier noch einmal: ein Schalter,
-    der an zwei Stellen gelesen wird, driftet.
+    ⚠ THE MODULE CHECKS THE SWITCH ITSELF.  Deliberately NOT again here: a switch that is
+    read in two places drifts.
 
-    ⚠ WARUM DAS SICHER IST: Schweratome werden byte-genau festgehalten und am Ende
-    geprueft (``aborted_heavy_moved``); bewegt werden ausschliesslich H.  Stufe B haelt
-    die RICHTUNG und aendert nur die Laenge, kann also weder Winkel noch Vorzeichen
-    kippen.  Fuer Stufe A und C steht ein Stereotor: kippt in einem Frame ein echter
-    Kandidat oder wird ein Zentrum plattgedrueckt, faellt der GANZE Frame zurueck.
-    Gemessen: von 1076 echten Kandidaten kippte genau einer, und das Tor kostet nichts.
+    ⚠ WHY THIS IS SAFE: heavy atoms are pinned byte-exactly and checked at the end
+    (``aborted_heavy_moved``); only H are moved.  Stage B keeps the DIRECTION and
+    changes only the length, so it can flip neither an angle nor a sign.  For stages A
+    and C there is a stereo gate: if in a frame a real candidate flips or a centre gets
+    flattened, the WHOLE frame rolls back.  Measured: of 1076 real candidates exactly one
+    flipped, and the gate costs nothing.
 
-    ⚠ STUFE A BAUT NICHTS NACH, sie DELEGIERT an ``_vsepr_repair`` -- den einzigen der
-    sieben vorhandenen H-Mechanismen, der unwiderlegt ist und nur wegen seiner Position
-    (3038 Zeilen hinter dem FF-freien return) nie FF-frei feuerte.
+    ⚠ STAGE A REBUILDS NOTHING, it DELEGATES to ``_vsepr_repair`` -- the only one of the
+    seven existing H mechanisms that is unrefuted and that, solely because of its position
+    (3038 lines behind the FF-free return), never fired FF-free.
     """
     try:
         from delfin.manta import _h_placement as _hp
@@ -884,28 +883,28 @@ def _apply_h_placement_if_enabled(results):
 
 
 def _apply_mirror_enum_if_enabled(results):
-    """Spiegelabschluss des Manifolds (17.08.2026).
+    """Mirror completion of the manifold (17.08.2026).
 
-    Haengt je Frame sein Spiegelbild an.  Braucht KEIN ``mol``: eine Spiegelung ist eine
-    reine Koordinatenoperation, damit entfaellt die Atomreihenfolge-Falle, vor der der
-    Docstring von ``_ffree_shared_tail`` warnt.
+    Appends to each frame its mirror image.  Needs NO ``mol``: a mirroring is a pure
+    coordinate operation, so the atom-order trap that the docstring of
+    ``_ffree_shared_tail`` warns about does not apply.
 
-    ⚠ DEN SCHALTER PRUEFT DAS MODUL SELBST (``_mirror_enum._is_enabled``).  Bewusst NICHT
-    hier noch einmal: ein Schalter, der an zwei Stellen gelesen wird, driftet -- und die
-    Verwechslung "Stellwert fuer Modulschalter gehalten" (``TORSION_GRID`` gegen
-    ``TORSION_RELAX``, 17.08.) kam genau aus einer solchen Doppelung.
+    ⚠ THE MODULE CHECKS THE SWITCH ITSELF (``_mirror_enum._is_enabled``).  Deliberately NOT
+    again here: a switch that is read in two places drifts -- and the mix-up "setting value
+    mistaken for module switch" (``TORSION_GRID`` versus ``TORSION_RELAX``, 17.08.) came
+    from exactly such a duplication.
 
-    ⚠ WARUM DAS SICHER IST: eine Spiegelung ist eine ISOMETRIE.  Jede Bindungslaenge,
-    jeder Winkel, jeder M-D-Abstand bleibt EXAKT (Selbsttest: Abstandsmatrix-Delta 0.0);
-    nur die Vorzeichen kippen.  Keine Relaxation, kein Clash moeglich.
+    ⚠ WHY THIS IS SAFE: a mirroring is an ISOMETRY.  Every bond length, every angle,
+    every M-D distance stays EXACT (self-test: distance-matrix delta 0.0); only the signs
+    flip.  No relaxation, no clash possible.
 
-    ⚠ UND WARUM DER FRAME UEBERLEBT: beide Entdopplungen sind determinantenkorrigiert
-    und verbieten Spiegelungen ausdruecklich (``permute_dedup._kabsch_rmsd_perm:197``,
-    ``assemble_complex._kabsch_rot:63``) -- ein Enantiomer richtet sich nie aus und wird
-    darum NICHT als Dublette verworfen.  Ohne diese Eigenschaft waere der Pass ein
-    Nulltest gewesen; sie wurde VOR dem Bau im Quelltext geprueft, nicht angenommen.
+    ⚠ AND WHY THE FRAME SURVIVES: both dedups are determinant-corrected and explicitly
+    forbid mirrorings (``permute_dedup._kabsch_rmsd_perm:197``,
+    ``assemble_complex._kabsch_rot:63``) -- an enantiomer never aligns and is therefore
+    NOT rejected as a duplicate.  Without this property the pass would have been a null
+    test; it was checked in the source BEFORE building, not assumed.
 
-    Vorgabe des Modulschalters ist 0 -> byte-identisch.
+    Default of the module switch is 0 -> byte-identical.
     """
     if not results:
         return results
@@ -921,25 +920,25 @@ def _apply_mirror_enum_if_enabled(results):
 
 
 def _apply_me_bond_snap_if_enabled(results):
-    """Terminale M=E Mehrfachbindungen auf dem FF-FREIEN Pfad setzen (17.08.2026).
+    """Set terminal M=E multiple bonds on the FF-FREE path (17.08.2026).
 
-    Ruft ``delfin.manta._me_bond_snap.snap_me_bonds`` je Frame.  Das Modul arbeitet
-    ausschliesslich auf dem Frame (Symbole + Koordinaten + geometrische Adjazenz) und
-    braucht KEIN ``mol`` -- damit entfaellt die Atomreihenfolge-Falle, an der der
-    Ring-Pucker-Emitter an genau dieser Stelle schon einmal zum Nulltest wurde.
+    Calls ``delfin.manta._me_bond_snap.snap_me_bonds`` per frame.  The module works
+    exclusively on the frame (symbols + coordinates + geometric adjacency) and needs
+    NO ``mol`` -- so the atom-order trap, on which the ring-pucker emitter once already
+    became a null test at exactly this position, does not apply.
 
-    ⚠ DER SCHALTER IST DERSELBE wie fuer die Legacy-Setzstellen
-    (``DELFIN_FFFREE_ME_BOND_LEN``), nicht ein zweiter.  Eine Achse, ein Schalter --
-    sonst misst ein A/B nicht den Mechanismus, sondern die Verdrahtung.
+    ⚠ THE SWITCH IS THE SAME as for the legacy setting sites
+    (``DELFIN_FFFREE_ME_BOND_LEN``), not a second one.  One axis, one switch --
+    otherwise an A/B measures not the mechanism but the wiring.
 
-    ⚠ OHNE KALIBRIERTE TABELLE PASSIERT NICHTS, und das ist eine Lizenzbedingung, keine
-    Bequemlichkeit: ``_ml_me_band`` liefert ``None``, wenn ``DELFIN_ML_ME_BANDS`` fehlt
-    oder das Paar unter der Mindeststichprobe liegt.  Dann faellt ``_get_ml_bond_length``
-    auf den sigma-Wert zurueck -- die Differenz ist null, und ``_target`` gibt ``None``.
-    Der Vergleich gegen den sigma-Wert ist damit die EINZIGE Stelle, an der entschieden
-    wird, ob ein Paar ueberhaupt ein Band hat; hier steht keine CCDC-Zahl.
+    ⚠ WITHOUT A CALIBRATED TABLE NOTHING HAPPENS, and that is a license condition, not a
+    convenience: ``_ml_me_band`` returns ``None`` when ``DELFIN_ML_ME_BANDS`` is missing
+    or the pair is below the minimum sample size.  Then ``_get_ml_bond_length`` falls
+    back to the sigma value -- the difference is zero, and ``_target`` returns ``None``.
+    The comparison against the sigma value is thus the ONLY place where it is decided
+    whether a pair has a band at all; no CCDC number stands here.
 
-    Vorgabe 0 -> nicht gerufen -> byte-identisch.
+    Default 0 -> not called -> byte-identical.
     """
     if not results:
         return results
@@ -955,7 +954,7 @@ def _apply_me_bond_snap_if_enabled(results):
             except Exception:
                 return None
             if me <= 0.0 or abs(me - sigma) < 1e-9:
-                return None          # kein Band fuer dieses Paar -> nichts tun
+                return None          # no band for this pair -> do nothing
             return me
 
         new_results: List[Tuple[str, str]] = []
@@ -973,23 +972,23 @@ def _apply_me_bond_snap_if_enabled(results):
         return results
 
 
-# M-C-Median aus 40 000 CCDC-Kristallen, je Metall -- der ZIELWERT, nicht geschaetzt.
-# Aufgenommen nur, wo |Bauer - Kristall| >= 0,10 A UND n >= 30 gemessene Bindungen.
-# Erhoben mit `MANTA2/harness/mc_laenge_kristallmedian.py` (Donormenge des AUGES auf dem
-# KRISTALL = die Koordinationssphaere; keine zweite Bindungserkennung).
-# Format: Metall -> (Median in A, n, bisheriger Wert)  -- n und Altwert stehen bewusst
-# daneben, damit jede Zeile ohne Nachschlagen pruefbar ist.
+# M-C median from 40 000 CCDC crystals, per metal -- the TARGET VALUE, not estimated.
+# Included only where |builder - crystal| >= 0.10 A AND n >= 30 measured bonds.
+# Collected with `MANTA2/harness/mc_laenge_kristallmedian.py` (donor set of the EYE on the
+# CRYSTAL = the coordination sphere; no second bond perception).
+# Format: metal -> (median in A, n, previous value)  -- n and the old value stand next to
+# it deliberately, so that every row can be checked without looking anything up.
 _MC_LEN_CRYSTAL_SOURCE = {
-    # Carbonyl-Metalle: alle lagen auf dem glatten Platzhalter 2,10 (Cr 2,05)
+    # carbonyl metals: all sat on the smooth placeholder 2.10 (Cr 2.05)
     "Mn": (1.809, 2137, 2.10), "Os": (1.908, 2834, 2.10), "Re": (1.925, 2453, 2.10),
     "Cr": (1.886, 2078, 2.05), "Tc": (1.918,   31, 2.10),
-    # fruehe Uebergangsmetalle: standen zu KURZ
+    # early transition metals: were too SHORT
     "Ti": (2.403,  875, 2.25), "Zr": (2.548,  751, 2.40), "Nb": (2.408,   97, 2.20),
     "Hf": (2.552,   99, 2.35), "Ta": (2.439,   94, 2.15), "Sc": (2.537,   55, 2.30),
     "V":  (2.281,  199, 2.15), "Y":  (2.670,  223, 2.55),
-    # Lanthanoide: standen zu LANG
+    # lanthanoids: were too LONG
     "La": (2.850,   33, 3.13), "Ce": (2.815,   59, 3.25), "Lu": (2.642,   86, 3.08),
-    # Einzelfall
+    # isolated case
     "Ge": (1.964,  308, 2.46),
 }
 _MC_LEN_CRYSTAL_MEDIAN = {_m: _v[0] for _m, _v in _MC_LEN_CRYSTAL_SOURCE.items()}
@@ -999,14 +998,14 @@ def _get_ml_bond_length(metal_symbol: str, donor_symbol: str,
                         kind: str = "sigma") -> float:
     """Return estimated M-L bond length in Å.
 
-    ``kind`` (16.08.2026): ``"sigma"`` = gewoehnliche dative/kovalente M-L-Bindung (Vorgabe,
-    Verhalten unveraendert); ``"me"`` = TERMINALE Mehrfachbindung (Oxo/Nitrido/Carbin).  Das
-    Strukturkriterium fuer "me" gehoert zum AUFRUFER, nicht hierher: ein Donor, dessen
-    einziger schwerer Nachbar das Metall ist -- genau so erkennt es auch das Auge, weil die
-    Bindungsordnung nicht im Graphen steht.
+    ``kind`` (16.08.2026): ``"sigma"`` = ordinary dative/covalent M-L bond (default,
+    behaviour unchanged); ``"me"`` = TERMINAL multiple bond (oxo/nitrido/carbyne).  The
+    structural criterion for "me" belongs to the CALLER, not here: a donor whose only
+    heavy neighbour is the metal -- exactly how the eye detects it too, because the bond
+    order is not in the graph.
 
     Lookup order:
-    0. kind == "me" und eine kalibrierte Tabelle gereicht -> deren Wert (s. _ml_me_band)
+    0. kind == "me" and a calibrated table supplied -> its value (see _ml_me_band)
     1. Specific (metal, donor) pair in _METAL_LIGAND_BOND_LENGTHS
     2. Sum of covalent radii + 0.5 Å (coordination bond correction)
     3. Default 2.0 Å
@@ -1015,52 +1014,52 @@ def _get_ml_bond_length(metal_symbol: str, donor_symbol: str,
         _me = _ml_me_band(metal_symbol, donor_symbol)
         if _me is not None:
             return float(_me)
-    # ===== M-C AUS DEN KRISTALLEN STATT AUS PLATZHALTERN (24.08.2026) =================
-    # Gemessen an 40 000 CCDC-Kristallen (14 566 mit M-C), Median je Metall gegen den
-    # hier angesetzten Wert -- `harness/mc_laenge_kristallmedian.py`.  Ueber 32 Metalle
-    # liegt der Median der Abweichung bei +0,033 A, die Tabelle ist im Kern also richtig.
-    # Falsch ist sie fuer DREI ZUSAMMENHAENGENDE FAMILIEN, jede in eine Richtung:
-    #   * die Carbonyl-Metalle stehen alle auf dem glatten Platzhalter 2,10 und sind
-    #     damit 0,16-0,29 A ZU LANG   (Mn n=2137, Os 2834, Re 2453, Cr 2078, Tc 31)
-    #   * die fruehen Uebergangsmetalle sind 0,12-0,29 A ZU KURZ, wo M-C wirklich lang
-    #     ist                          (Ti 875, Zr 751, Nb 97, Hf 99, Ta 94, Sc, V, Y)
-    #   * die Lanthanoide sind 0,28-0,44 A ZU LANG            (La 33, Ce 59, Lu 86)
-    #   * Ge ist der Einzelfall mit +0,496
-    # Richtig kalibriert sind ausgerechnet die haeufigsten: Fe (n=11 428) -0,024,
-    # Pt -0,000, Cu -0,001, Rh -0,003, Ir +0,007, Pd/Au -0,014.
+    # ===== M-C FROM THE CRYSTALS INSTEAD OF FROM PLACEHOLDERS (24.08.2026) ============
+    # Measured on 40 000 CCDC crystals (14 566 with M-C), median per metal against the
+    # value assumed here -- `harness/mc_laenge_kristallmedian.py`.  Over 32 metals the
+    # median of the deviation is +0.033 A, so at its core the table is right.
+    # It is wrong for THREE COHERENT FAMILIES, each in one direction:
+    #   * the carbonyl metals all sit on the smooth placeholder 2.10 and are thereby
+    #     0.16-0.29 A TOO LONG        (Mn n=2137, Os 2834, Re 2453, Cr 2078, Tc 31)
+    #   * the early transition metals are 0.12-0.29 A TOO SHORT, where M-C really is
+    #     long                         (Ti 875, Zr 751, Nb 97, Hf 99, Ta 94, Sc, V, Y)
+    #   * the lanthanoids are 0.28-0.44 A TOO LONG              (La 33, Ce 59, Lu 86)
+    #   * Ge is the isolated case with +0.496
+    # Correctly calibrated are, of all things, the most frequent: Fe (n=11 428) -0.024,
+    # Pt -0.000, Cu -0.001, Rh -0.003, Ir +0.007, Pd/Au -0.014.
     #
-    # WARUM DAS ZAEHLT: das Donormodell des Auges laesst C nur bis 1,25 x Idealbindung
-    # als Donor gelten.  Ein um 0,19 A zu langes Os-C rutscht darueber, zaehlt nicht mehr
-    # als Donor, das Metall-CN faellt -- und weil das CN-Tor EXAKT ist, besteht KEIN
-    # Frame mehr die Topologiepruefung.  Gemessen an `ACAHUH`: Kristall CN 4, Bau CN 0
-    # in allen zwoelf Frames, `topo_correct_frame = false`, obwohl die Frames sauber sind.
+    # WHY THIS MATTERS: the eye's donor model accepts C as a donor only up to 1.25 x the
+    # ideal bond.  An Os-C that is 0.19 A too long slips above that, no longer counts as
+    # a donor, the metal CN drops -- and because the CN gate is EXACT, NO frame passes
+    # the topology check any more.  Measured on `ACAHUH`: crystal CN 4, build CN 0 in
+    # all twelve frames, `topo_correct_frame = false`, although the frames are clean.
     #
-    # ⚠ NUR WO DIE EVIDENZ TRAEGT: aufgenommen sind Metalle mit |Delta| >= 0,10 A UND
-    # n >= 30 gemessenen Bindungen.  Der Wert ist der MEDIAN, nicht die Kovalenzsumme
-    # und nicht ein pauschal gestrichener Offset -- ein pauschaler Eingriff waere
-    # derselbe Fehler wie der, den er behebt.
-    # Vorgabe AUS -> byte-identisch.  EINE Lesestelle.
-    # ── DIE TABELLE LAESST SICH AUF EINE METALLLISTE BESCHRAENKEN ────────────────
-    # ANLASS (27.08.2026 abends).  `mclen6k` ist geborgen und beantwortet seine
-    # Vorregistrierung GESPALTEN: `topo_correct_frame` NETTO **+40** (46 gewonnen
-    # gegen 6 verloren) -- die Kette M-C-Laenge -> Donorschnitt -> CN -> Topologie-
-    # tor ist damit BEWIESEN, H0 widerlegt.  Aber der Lauf landet nicht: 2 harte
-    # `ccdc_isomer_lost` (ECOZUV, WIKBOJ, Abdruck in beiden Armen IDENTISCH, also
-    # ECHTE Verluste), 5 Polyeder, 7 isomers_lost.
+    # ⚠ ONLY WHERE THE EVIDENCE HOLDS: included are metals with |delta| >= 0.10 A AND
+    # n >= 30 measured bonds.  The value is the MEDIAN, not the covalent sum and not a
+    # blanket-deleted offset -- a blanket intervention would be the same error as the
+    # one it fixes.
+    # Default OFF -> byte-identical.  ONE read site.
+    # ── THE TABLE CAN BE RESTRICTED TO A LIST OF METALS ──────────────────────────
+    # OCCASION (27.08.2026, evening).  `mclen6k` has been recovered and answers its
+    # pre-registration SPLIT: `topo_correct_frame` NET **+40** (46 won against 6
+    # lost) -- the chain M-C length -> donor cut -> CN -> topology gate is thereby
+    # PROVEN, H0 refuted.  But the run does not land: 2 hard `ccdc_isomer_lost`
+    # (ECOZUV, WIKBOJ, fingerprint IDENTICAL in both arms, hence REAL losses),
+    # 5 polyhedra, 7 isomers_lost.
     #
-    # 🔑 UND DIE VERLUSTE SITZEN NICHT UEBERALL.  Je Metall gezaehlt:
-    #        GEWINNER 46   Re 22 · Mn 14 · Os 6 · Tc 3 · Ti 1
-    #        VERLIERER 6   Os  3 · Cr  1 · Mn 1 · Zr 1
-    #    Re steht 22 : 0, Mn 14 : 1 -- Os dagegen 6 : 3, und Os hat die STAERKSTE
-    #    Kristallevidenz (n=2834).  Vorwissen und A/B widersprechen sich dort.
+    # 🔑 AND THE LOSSES ARE NOT EVERYWHERE.  Counted per metal:
+    #        WINNERS 46    Re 22 · Mn 14 · Os 6 · Tc 3 · Ti 1
+    #        LOSERS  6     Os  3 · Cr  1 · Mn 1 · Zr 1
+    #    Re stands at 22 : 0, Mn 14 : 1 -- Os on the other hand 6 : 3, and Os has the
+    #    STRONGEST crystal evidence (n=2834).  Prior knowledge and A/B contradict there.
     #
-    # ⚠️ DIESE AUSWAHL IST NACHTRAEGLICH.  Sie stammt aus dem Ergebnis desselben
-    #    Laufs, den sie verbessern soll -- das ist Selektion auf dem Testsatz und
-    #    waere als Befund wertlos.  Der Schalter existiert deshalb NUR, damit ein
-    #    NEUER, vorregistrierter Lauf sie bestaetigen oder widerlegen kann.
-    #    Solange der nicht durch ist, ist "Re+Mn ist besser" eine HYPOTHESE.
+    # ⚠️ THIS SELECTION IS POST HOC.  It comes from the result of the very run it is
+    #    supposed to improve -- that is selection on the test set and would be
+    #    worthless as a finding.  The switch therefore exists ONLY so that a NEW,
+    #    pre-registered run can confirm or refute it.
+    #    Until that one is through, "Re+Mn is better" is a HYPOTHESIS.
     #
-    # Vorgabe: leer -> ALLE Metalle der Tabelle -> byte-identisch zu vorher.
+    # Default: empty -> ALL metals of the table -> byte-identical to before.
     if (donor_symbol in ("C", "Si")
             and os.environ.get("DELFIN_FFFREE_MC_LEN_CRYSTAL", "0") == "1"):
         _mc = _MC_LEN_CRYSTAL_MEDIAN.get(metal_symbol)
@@ -1068,7 +1067,7 @@ def _get_ml_bond_length(metal_symbol: str, donor_symbol: str,
         if _mc is not None and _only:
             _erlaubt = {_s.strip() for _s in _only.split(",") if _s.strip()}
             if metal_symbol not in _erlaubt:
-                _mc = None                 # nicht in der Liste -> alter Weg
+                _mc = None                 # not in the list -> old path
         if _mc is not None:
             return float(_mc)
     key = (metal_symbol, donor_symbol)
@@ -1217,26 +1216,26 @@ _PREFERRED_CN4_GEOMETRY: Dict[str, str] = {
 }
 
 def _preferred_cn4_for(metal_symbol: str, mol=None, metal_idx=None) -> str:
-    """Bevorzugte CN4-Geometrie -- mit d-Zahl, wenn sie sich ableiten laesst.
+    """Preferred CN4 geometry -- with d-count, when it can be derived.
 
-    DER GEMESSENE DEFEKT (16.08.2026).  Die Tabelle oben fuehrt `'Cu': 'TH'` -- Tetraeder.
-    Das ist richtig fuer **Cu(I) d10** und falsch fuer **Cu(II) d9**, das quadratisch-planar
-    bis JT-gestreckt-oktaedrisch ist -- und Cu(II) ist der weit haeufigere Fall.  Dieselbe
-    Zeile fuer beide Stufen.  (Ebenso `'Au': 'SQ'`: richtig fuer Au(III) d8, falsch fuer
-    Au(I) d10, das LINEAR ist -- das bleibt hier vorerst unangetastet, weil CN2 eine andere
-    Stelle ist.)
+    THE MEASURED DEFECT (16.08.2026).  The table above lists `'Cu': 'TH'` -- tetrahedron.
+    That is right for **Cu(I) d10** and wrong for **Cu(II) d9**, which is square-planar
+    up to JT-elongated octahedral -- and Cu(II) is by far the more frequent case.  The same
+    row for both oxidation states.  (Likewise `'Au': 'SQ'`: right for Au(III) d8, wrong for
+    Au(I) d10, which is LINEAR -- that stays untouched here for now, because CN2 is a
+    different site.)
 
-    Der Bauer denkt an dieser Stelle bereits in d-Zahlen -- die Kommentare der Tabelle sagen
-    woertlich "d8 metals", "d6 low-spin", "d0-d5, d7, d10".  Nur steht das Ergebnis als fest
-    verdrahtete ELEMENTLISTE da, und ein Element hat mehrere Stufen.
+    The builder already thinks in d-counts at this point -- the comments of the table say
+    verbatim "d8 metals", "d6 low-spin", "d0-d5, d7, d10".  Only the result stands there as
+    a hard-wired ELEMENT LIST, and an element has several oxidation states.
 
-    d8  -> SQ (quadratisch-planar, Ligandenfeld-Stabilisierung)
-    d9  -> SQ (JT-gestreckt; die vier kurzen Bindungen bilden die Ebene)
-    d10 -> TH (keine LFSE, sterisch bestimmt)
+    d8  -> SQ (square-planar, ligand-field stabilisation)
+    d9  -> SQ (JT-elongated; the four short bonds form the plane)
+    d10 -> TH (no LFSE, sterically determined)
 
-    ⚠ NUR wenn die Stufe SICHER ist.  `oxidation_state` liefert `None`, sobald ein Donor
-    nicht klassifizierbar oder mehr als ein Metall vorhanden ist -- dann bleibt es bei der
-    Elementtabelle, also beim heutigen Verhalten.  Vorgabe AUS -> byte-identisch.
+    ⚠ ONLY when the oxidation state is CERTAIN.  `oxidation_state` returns `None` as soon
+    as a donor is not classifiable or more than one metal is present -- then it stays with
+    the element table, i.e. with today's behaviour.  Default OFF -> byte-identical.
     """
     base = _PREFERRED_CN4_GEOMETRY.get(metal_symbol, 'SQ')
     if mol is None or metal_idx is None:
@@ -1709,44 +1708,44 @@ def _hapto_scaffold_primary_enabled() -> bool:
 
 
 def _union_prepend_ffree(results_hapto, ffree_union):
-    """DELFIN_FFFREE_UNION_HAPTO -- Vorgabe 0, also byte-identisch AUS.
+    """DELFIN_FFFREE_UNION_HAPTO -- default 0, i.e. byte-identical OFF.
 
-    DER VERTRAGSBRUCH, DEN DIESER SCHALTER SCHLIESST.  `DELFIN_FFFREE_UNION`
-    sagt *ADD, never replace* zu: der FF-freie Bauer kehrt nicht mehr frueh
-    zurueck, seine Frames werden in ``_ffree_union`` geparkt und ganz am Ende
-    der legacy-Pipeline VORANGESTELLT.  Der Hapto-Zweig kehrt aber ~2700 Zeilen
-    VOR dieser Zusammenfuehrung zurueck.  Auf jedem System mit η-Koordination
-    wird ``_ffree_union`` damit nie gelesen -- UNION mischt dort nicht, es
-    UEBERGIBT das System an den Hapto-Pfad, und der ersetzt den enumerierten
-    Manifold durch ein einziges wiederholtes η-Etikett.
+    THE CONTRACT BREACH THIS SWITCH CLOSES.  `DELFIN_FFFREE_UNION` promises
+    *ADD, never replace*: the FF-free builder no longer returns early, its
+    frames are parked in ``_ffree_union`` and PREPENDED at the very end of the
+    legacy pipeline.  The hapto branch, however, returns ~2700 lines BEFORE
+    this merge.  On every system with η-coordination ``_ffree_union`` is thus
+    never read -- UNION does not merge there, it HANDS the system OVER to the
+    hapto path, and that one replaces the enumerated manifold with a single
+    repeated η label.
 
-    GEMESSEN 28.08.2026 (`harness/union_additiv_zensus.py --hapto`), Etikett-
-    Multiset ueber 9720 Systeme beider Arme von `unioniso10k`:
-        ADDITIV 9684 (99,6 %) · UMSCHALTER 36 (0,4 %)
-        GEWINNER (topo F->T)  204 -> 204 additiv    (100 %)
-        VERLIERER (topo T->F)   3 ->   3 Umschalter (100 %)
-        von den 36 Umschaltern sind 31 im ON-Arm RESTLOS η-etikettiert,
-        darunter ALLE DREI Verlierer: CAZMEX, JACVES, XIDKON.
-    Belegfall HACVOZ: OFF `T-4-hapto-iso1 / iso1-r1 / iso2 / iso2-r1 / iso3`
-    (enumeriert, 5 Etiketten) -> ON `η6-arene` 50x (EIN Etikett).  Gleiche
-    Framezahl, jedes OFF-Etikett fort.  Das ist kein Loeschen, das ist eine
-    Uebergabe -- und genau das soll der Vertrag verhindern.
+    MEASURED 28.08.2026 (`harness/union_additiv_zensus.py --hapto`), label
+    multiset over 9720 systems of both arms of `unioniso10k`:
+        ADDITIVE 9684 (99.6 %) · SWITCHERS 36 (0.4 %)
+        WINNERS (topo F->T)  204 -> 204 additive  (100 %)
+        LOSERS  (topo T->F)    3 ->   3 switchers (100 %)
+        of the 36 switchers, 31 are ENTIRELY η-labelled in the ON arm,
+        among them ALL THREE losers: CAZMEX, JACVES, XIDKON.
+    Evidence case HACVOZ: OFF `T-4-hapto-iso1 / iso1-r1 / iso2 / iso2-r1 / iso3`
+    (enumerated, 5 labels) -> ON `η6-arene` 50x (ONE label).  Same frame
+    count, every OFF label gone.  That is not a deletion, that is a
+    hand-over -- and exactly that is what the contract is supposed to prevent.
 
-    ⚠️ WAS DIESER SCHALTER NICHT TUT.  Er urteilt NICHT darueber, welcher Bauer
-    die bessere η-Geometrie liefert; der analytische Scaffold ist dort gemessen
-    besser (η6 ~84 % sauber gegen ~27 % fuer RIGID_HAPTO, siehe
-    `_hapto_scaffold_primary_enabled`).  Er stellt nur her, was UNION zusagt:
-    BEIDE Manifolds, keiner ersetzt.  Frame 0 bleibt die FF-freie
-    Konstruktion, der vollstaendige Hapto-Manifold folgt dahinter.
+    ⚠️ WHAT THIS SWITCH DOES NOT DO.  It does NOT judge which builder delivers
+    the better η geometry; the analytical scaffold is measured better there
+    (η6 ~84 % clean against ~27 % for RIGID_HAPTO, see
+    `_hapto_scaffold_primary_enabled`).  It only establishes what UNION
+    promises: BOTH manifolds, neither replaced.  Frame 0 stays the FF-free
+    construction, the complete hapto manifold follows behind it.
 
-    ⚠️ BEKANNTE LUECKE, bewusst offen gelassen.  Ist
-    `DELFIN_FFFREE_HAPTO_SCAFFOLD_PRIMARY` an, bleibt ``_ffree_union`` None (die
-    FF-freien Frames liegen dann in ``_hapto_ff_fallback``) und dieser Schalter
-    tut nichts.  Das Flag steht NICHT im Champion; die Kombination ist
-    ungemessen und wird hier nicht stillschweigend mitrepariert.
+    ⚠️ KNOWN GAP, deliberately left open.  If
+    `DELFIN_FFFREE_HAPTO_SCAFFOLD_PRIMARY` is on, ``_ffree_union`` stays None
+    (the FF-free frames then sit in ``_hapto_ff_fallback``) and this switch
+    does nothing.  The flag is NOT in the champion; the combination is
+    unmeasured and is not silently repaired along the way here.
 
-    Entdoppelt wird wie in der Zusammenfuehrung selbst -- ueber den exakten
-    XYZ-Text --, damit kein Frame zweimal im Manifold steht."""
+    Dedup is done as in the merge itself -- over the exact XYZ text --, so
+    that no frame appears twice in the manifold."""
     if not ffree_union or _delfin_env_int("DELFIN_FFFREE_UNION_HAPTO", 0) != 1:
         return results_hapto
     try:
@@ -1758,72 +1757,72 @@ def _union_prepend_ffree(results_hapto, ffree_union):
 
 
 def _hapto_seat_rigid_enabled() -> bool:
-    """DELFIN_FFFREE_HAPTO_SEAT_RIGID -- Vorgabe 0, also byte-identisch AUS.
+    """DELFIN_FFFREE_HAPTO_SEAT_RIGID -- default 0, i.e. byte-identical OFF.
 
-    DIE MESSUNG (19.08.2026, Kandidatenzensus auf den 42 eta-Systemen mit
-    flachem Stereozentrum).  Die Hapto-Saat kommt aus
-    ``smiles_to_xyz(hapto_approx=True)``, und dort waehlt
-    ``_select_best_hapto_candidate`` zwischen zwei Bauarten:
+    THE MEASUREMENT (19.08.2026, candidate census on the 42 eta systems with a
+    flat stereocentre).  The hapto seed comes from
+    ``smiles_to_xyz(hapto_approx=True)``, and there
+    ``_select_best_hapto_candidate`` chooses between two build modes:
 
-      ``scaffold``  -- ``_build_hapto_scaffold``: der eta-Ring wird als regelmaessiges
-                       Polygon gesetzt (korrekt und STARR), ALLES uebrige aber ATOMWEISE
-                       per BFS-VSEPR aus EINEM Elternatom heraus, ohne jede Kollisions-
-                       pruefung (Zeilen 16119-16219).
-      ``hybrid*``   -- ``_build_hybrid_hapto_complex``: dasselbe Geruest, aber jeder
-                       Ligandenast wird SEPARAT eingebettet (ETKDG + UFF) und danach als
-                       STARRER KOERPER auf seine Ankerpunkte gedreht/geschoben
+      ``scaffold``  -- ``_build_hapto_scaffold``: the eta ring is seated as a regular
+                       polygon (correct and RIGID), but EVERYTHING else ATOM BY ATOM
+                       via BFS-VSEPR out of ONE parent atom, without any clash
+                       check (lines 16119-16219).
+      ``hybrid*``   -- ``_build_hybrid_hapto_complex``: the same scaffold, but every
+                       ligand branch is embedded SEPARATELY (ETKDG + UFF) and afterwards
+                       rotated/shifted onto its anchor points as a RIGID BODY
                        (``_embed_hybrid_fragment`` + ``_align_hybrid_fragment_onto_scaffold``).
-                       Die innere Geometrie bleibt dabei unangetastet.
+                       The internal geometry stays untouched in the process.
 
-    Gemessen (kollabierte Bindungen der SAAT, ``_bond_decollapse``-Boden):
-        AHIGUW  starr  1 : atomweise 21      ALEKIM  starr  3 : atomweise 10
-        ALEKOS  starr  2 : atomweise 12      BEXVAC  starr  6 : atomweise 64
-        ABEWUZ  starr 10 : atomweise 47      BAKLAB  starr 54 : atomweise 51
-    In 5 von 6 Faellen traegt der STARRE Bau ein Vielfaches WENIGER Kollaps -- und
-    verliert trotzdem die Auswahl, weil ``_hapto_candidate_quality_score`` gar keinen
-    Kollapsterm hat: sein einziger Ueberlappungstest ``_has_atom_clash`` misst gegen
-    0.80 A, waehrend der Kollapsboden bei C-C 0.82*1.52 = 1.25 A liegt.  Der Score
-    unterscheidet die beiden Bauten um ~0.4 %, die Geometrie um das Drei- bis
-    Zehnfache.
+    Measured (collapsed bonds of the SEED, ``_bond_decollapse`` floor):
+        AHIGUW  rigid  1 : atom-wise 21      ALEKIM  rigid  3 : atom-wise 10
+        ALEKOS  rigid  2 : atom-wise 12      BEXVAC  rigid  6 : atom-wise 64
+        ABEWUZ  rigid 10 : atom-wise 47      BAKLAB  rigid 54 : atom-wise 51
+    In 5 of 6 cases the RIGID build carries a multiple LESS collapse -- and still
+    loses the selection, because ``_hapto_candidate_quality_score`` has no collapse
+    term at all: its only overlap test ``_has_atom_clash`` measures against
+    0.80 A, while the collapse floor for C-C sits at 0.82*1.52 = 1.25 A.  The score
+    distinguishes the two builds by ~0.4 %, the geometry by three- to
+    tenfold.
 
-    WARUM AUSWAHL UND KEIN NEUBAU.  Das Kostengesetz misst Ordnung/Auswahl mit ~0,
-    Neueinbettung mit +11,9 pp.  Der starre Koerper ist bereits gebaut; ihn ein
-    zweites Mal zu bauen waere die teuerste Klasse fuer dasselbe Ergebnis.  Diese
-    Zeile laesst ihn nur ankommen.
+    WHY SELECTION AND NOT A REBUILD.  The cost law measures ordering/selection at ~0,
+    re-embedding at +11.9 pp.  The rigid body is already built; building it a
+    second time would be the most expensive class for the same result.  This
+    line merely lets it arrive.
 
-    ERGEBNIS AN (A/B gegen den Stand vor dem Eingriff, Champion-Umgebung):
-        SAAT, 42 Systeme:  Kollapssumme 677 -> 498, Median 11 -> 9,
-                           11 Systeme besser, 0 schlechter, 31 unberuehrt.
-        FRAMES, 12 Systeme / 330 Frames: Kollapssumme 5560 -> 2048 (-63 %),
-                           6 besser, 0 schlechter.
-        AUS: byte-identisch 42/42 (Saat) und 12/12 (Frames).
+    RESULT ON (A/B against the state before the intervention, champion environment):
+        SEED, 42 systems:  collapse sum 677 -> 498, median 11 -> 9,
+                           11 systems better, 0 worse, 31 untouched.
+        FRAMES, 12 systems / 330 frames: collapse sum 5560 -> 2048 (-63 %),
+                           6 better, 0 worse.
+        OFF: byte-identical 42/42 (seed) and 12/12 (frames).
 
-    ⚠ DER GRUND, WARUM DIESER SCHALTER SO NICHT LANDEN DARF -- DIE FRAMES WERDEN
-    WENIGER.  Auf denselben 12 Systemen faellt die Frame-Zahl von 320 auf 230, und
-    die verlorenen sind samt und sonders die ``hd-ta-*``-Frames des OB-Rotor-
-    Zweigs (AHIGUW 24 -> 4, EQEYIJ 22 -> 1).  Der starre Sitz liefert also
-    SAUBERERE Frames, aber WENIGER -- und Vollstaendigkeit ist die heiligere
-    Achse.  Der Kollapsgewinn ist damit zum Teil ein Zaehlerartefakt (weniger
-    Frames tragen weniger Kollaps); PRO FRAME bleibt der Gewinn trotzdem
-    bestehen (AHIGUW 18,4 -> 5,0; BEXVAC 65,5 -> 10,7; ALEKOS 7,7 -> 1,5).
-    WARUM die Rotor-Frames wegfallen, ist NICHT gemessen -- das ist die naechste
-    Frage, nicht eine erledigte.  Solange sie offen ist, gehoert der richtige
-    Bauplan in die ADDITIVE Form: beide Saaten bauen und BEIDE Frame-Mengen
-    behalten (das UNION-Muster), statt die eine gegen die andere zu tauschen.
+    ⚠ THE REASON WHY THIS SWITCH MUST NOT LAND LIKE THIS -- THE FRAMES BECOME
+    FEWER.  On the same 12 systems the frame count drops from 320 to 230, and
+    the lost ones are one and all the ``hd-ta-*`` frames of the OB rotor
+    branch (AHIGUW 24 -> 4, EQEYIJ 22 -> 1).  The rigid seating thus delivers
+    CLEANER frames, but FEWER -- and completeness is the more sacred
+    axis.  The collapse gain is therefore partly a counter artefact (fewer
+    frames carry less collapse); PER FRAME the gain nevertheless
+    holds (AHIGUW 18.4 -> 5.0; BEXVAC 65.5 -> 10.7; ALEKOS 7.7 -> 1.5).
+    WHY the rotor frames drop out is NOT measured -- that is the next
+    question, not a settled one.  As long as it is open, the right
+    blueprint belongs in the ADDITIVE form: build both seeds and keep BOTH frame
+    sets (the UNION pattern), instead of swapping one for the other.
     """
     return _delfin_env_int("DELFIN_FFFREE_HAPTO_SEAT_RIGID", 0) == 1
 
 
 def _hapto_candidate_collapsed_bonds(cand_mol) -> Optional[int]:
-    """Kollabierte Bindungen eines Hapto-Kandidaten -- EINE Quelle fuer den Boden.
+    """Collapsed bonds of a hapto candidate -- ONE source for the floor.
 
-    Der Boden (``COLLAPSE_FLOOR``, Vorgabe 0.82) und die geometrische Bindungs-
-    erkennung kommen unveraendert aus ``delfin.manta._bond_decollapse``; hier wird
-    NICHTS nachgebaut und keine zweite Schwelle erfunden.  Der Import steht in der
-    Funktion, damit der ausgeschaltete Pfad ihn nie bezahlt.
+    The floor (``COLLAPSE_FLOOR``, default 0.82) and the geometric bond
+    perception come unchanged from ``delfin.manta._bond_decollapse``; NOTHING is
+    rebuilt here and no second threshold is invented.  The import sits inside the
+    function so that the switched-off path never pays for it.
 
-    Rueckgabe ``None`` heisst "nicht messbar" -- der Aufrufer muss das wie "kein
-    Urteil" behandeln, nie wie "null Kollaps".
+    Return ``None`` means "not measurable" -- the caller must treat that like "no
+    verdict", never like "zero collapse".
     """
     if cand_mol is None:
         return None
@@ -2202,24 +2201,24 @@ def _apply_stereocenter_enum_if_enabled(mol, results, dual_parse_done: bool):
 
 
 def _apply_atropisomer_enum_if_enabled(mol, results, dual_parse_done: bool):
-    """AXIALE Vollstaendigkeit -- env-gated, Vorgabe AUS (der Schaltername steht an genau EINER
-    Stelle: `_atropisomer_enum._atrop_enabled`; hier wird nur gefragt, nie geraten).
+    """AXIAL completeness -- env-gated, default OFF (the switch name stands in exactly ONE
+    place: `_atropisomer_enum._atrop_enabled`; here it is only asked, never guessed).
 
-    Haengt zu jeder stereogenen Achse (Biaryl UND mesomeres Aryl-Amid) das FEHLENDE Vorzeichen
-    additiv an, damit `ccdc_atropisomer_realized` von FALSE auf TRUE gehen kann, ohne dass je
-    ein Frame verlorengeht.
+    Additively appends, for every stereogenic axis (biaryl AND mesomeric aryl amide), the
+    MISSING sign, so that `ccdc_atropisomer_realized` can go from FALSE to TRUE without a
+    frame ever being lost.
 
-    WARUM.  Gemessen am 16.08.2026 auf 965 Systemen: die Achse steht bei **0 von 44** -- und
-    die Ursache ist NICHT die Geometrie (mittlere Verdrillung 42.8 Grad ueber 145 Achsen,
-    BIRVUW erreicht 85.2 Grad), sondern die Vollstaendigkeit: **41 % der Achsen tragen nur
-    EINE Haendigkeit**, nur 33 % beide.  Da die Achse verlangt, dass JEDE Achse eines
-    Molekuels ihr Kristallvorzeichen findet, ist bei ~3.3 Achsen je System ein Volltreffer
-    fast ausgeschlossen.
+    WHY.  Measured on 16.08.2026 on 965 systems: the axis stands at **0 of 44** -- and
+    the cause is NOT the geometry (mean twist 42.8 degrees over 145 axes,
+    BIRVUW reaches 85.2 degrees), but completeness: **41 % of the axes carry only
+    ONE handedness**, only 33 % both.  Since the axis demands that EVERY axis of a
+    molecule finds its crystal sign, at ~3.3 axes per system a full hit is
+    almost ruled out.
 
-    Spiegelt den Vertrag von `_apply_stereocenter_enum_if_enabled`: additiv, deterministisch,
-    bit-genauer No-op wenn der Schalter aus ist oder keine stereogene Achse existiert; auf dem
-    inneren Dual-Parse-Aufruf uebersprungen (der Union-Dedup muss EINEN konsistenten
-    Frame-Satz sehen).  ``mol`` ist ungenutzt -- der Korrektor arbeitet nur auf XYZ-Text.
+    Mirrors the contract of `_apply_stereocenter_enum_if_enabled`: additive, deterministic,
+    bit-exact no-op when the switch is off or no stereogenic axis exists; skipped on the
+    inner dual-parse call (the union dedup must see ONE consistent
+    frame set).  ``mol`` is unused -- the corrector works on XYZ text only.
     """
     if not results:
         return results
@@ -3266,8 +3265,8 @@ def _apply_xtb_cascade_if_enabled(mol, results, dual_parse_done: bool):
         return results
     # Class-conditional gate (matches B5 rigid-H / F19 / etc. pattern).
     # Iter-17b 2026-05-18: revert Iter-17a default_classes=["multi_sigma"]
-    # per user-direktive — "die strukturen müssen bestmöglich sein um nach
-    # xtb zu gehen also cascade kommt ganz am ende!"  Pre-xTB pipeline
+    # per user directive — "the structures must be as good as possible before
+    # going to xtb, so cascade comes at the very end!"  Pre-xTB pipeline
     # (scaffold + ETKDG + UFF + bandages) must be optimized first.
     # Cascade is reserved for FINAL phase after all pre-xTB optimizations
     # are stable.  Env-flag opt-in preserved for testing.
@@ -3485,7 +3484,7 @@ def _resolve_top_level_seed_count(mol) -> int:
 
 
 # --- Multi-sigma path V2 (Iter-multi_sigma audit, class-conditional default-ON) ---
-# Forensik 2026-05-13: multi_sigma class shows 30.3%/36.4% (A/B) coverage,
+# Forensics 2026-05-13: multi_sigma class shows 30.3%/36.4% (A/B) coverage,
 # the lowest of any class (n=33).  Root cause is wall-clock budget exhaustion:
 # 23/33 SMILES (70%) hit the external 600 s timeout while the embedding
 # pipeline keeps churning through 20+ ETKDG seeds × 25 s _MULTIEMBED_TIMEOUT
@@ -4971,16 +4970,16 @@ def _manual_metal_embed(smiles: str) -> Tuple[Optional[str], Optional[str]]:
                                         math.cos(theta)))
                 for i, nbr_idx in enumerate(neighbors):
                     donor_sym = mol.GetAtomWithIdx(nbr_idx).GetSymbol()
-                    # TERMINALE M=E-Laenge (16.08.2026).  Vorgabe AUS -> byte-identisch.
-                    # ⚠ DIESE Stelle ist der CN4-PFAD (`_build_xyz_for_4coord_vecs`) und war
-                    # die EINZIGE Verdrahtung im ersten Anlauf -- darum meldete `me42` am
-                    # 16.08. `REACH 0/24` und starb mit rc=3.  Oxo- und Nitridosysteme sind
-                    # ueberwiegend CN5-7.  Die tragende Verdrahtung sitzt seither im M-D-SNAP
-                    # (drei Stellen, ~25180/25265/25471): der schnappt JEDE gebundene
-                    # M-D-Distanz auf ihre Ideallaenge, unabhaengig von der Koordinationszahl,
-                    # und zwar VOR UFF.  Diese Zeile bleibt als CN4-Sonderfall stehen.
-                    # Ohne den Schalter oder ohne gereichte Bandtabelle liefert `kind="me"`
-                    # denselben Wert wie zuvor, weil `_ml_me_band` dann None gibt.
+                    # TERMINAL M=E length (16.08.2026).  Default OFF -> byte-identical.
+                    # ⚠ THIS site is the CN4 PATH (`_build_xyz_for_4coord_vecs`) and was
+                    # the ONLY wiring in the first attempt -- which is why `me42` reported
+                    # `REACH 0/24` on 16.08. and died with rc=3.  Oxo and nitrido systems are
+                    # predominantly CN5-7.  The load-bearing wiring has since sat in the M-D SNAP
+                    # (three sites, ~25180/25265/25471): that one snaps EVERY bonded
+                    # M-D distance to its ideal length, independent of the coordination number,
+                    # and does so BEFORE UFF.  This line stays as the CN4 special case.
+                    # Without the switch or without a supplied band table, `kind="me"` yields
+                    # the same value as before, because `_ml_me_band` then returns None.
                     _kind = "sigma"
                     if _delfin_env_int("DELFIN_FFFREE_ME_BOND_LEN", 0):
                         _kind = _ml_bond_kind(mol, mi, nbr_idx)
@@ -6370,7 +6369,7 @@ def _probe_hapto_groups_from_smiles(smiles: str) -> List[Tuple[int, List[int]]]:
 # Iter-8 FPCFD: per-class function dispatch infrastructure
 # ============================================================================
 #
-# Forensik-Driven Per-Class Champion Function Dispatch (FPCFD) is the Iter-8+
+# Forensics-Driven Per-Class Champion Function Dispatch (FPCFD) is the Iter-8+
 # strategy that replaces the env-flag-stacking approach of Iter-1..7.  Per
 # (chemistry_class × function) cell, the best-known champion's function-body
 # is forward-ported into HEAD with suffix `_<champion_sha>` and dispatched at
@@ -6385,8 +6384,8 @@ def _probe_hapto_groups_from_smiles(smiles: str) -> List[Tuple[int, List[int]]]:
 #
 # Design doctrine (HANDOFF2.md sections 14, 15, 16):
 #   - Champion bodies live permanently in HEAD as named functions.
-#   - Pro call-site: dispatcher selects exactly ONE body per SMILES.
-#   - Forward-only: no revert; bei regression → forward-only fix-commit.
+#   - Per call-site: dispatcher selects exactly ONE body per SMILES.
+#   - Forward-only: no revert; on regression → forward-only fix-commit.
 #   - Per-class Δ-matrix as acceptance gate (no aggregate-trap).
 #
 # This dispatch infrastructure is *pure infrastructure* (Iter-8.0): adding the
@@ -12515,7 +12514,7 @@ def _build_multimetal_hapto_sequential(
     # can re-introduce clashes that Step 6a resolved.
 
     # Phase 6A (2026-05-12): conditional multi-hapto centroid re-correction.
-    # Per Wave-3B forensik (/tmp/wave3b_multihapto_v2.md): secondary-metal
+    # Per Wave-3B forensics (/tmp/wave3b_multihapto_v2.md): secondary-metal
     # placement drags shared hapto atoms (C ∈ Cp(M1) AND σ-donor(M2)) toward
     # M2, collapsing M1-centroid distance.  Fe-Cp-Ni-bimetallic observed:
     # Fe-Cp2 1.65 → 1.012 Å (-39% off target).  This is the CORRECT location
@@ -12765,7 +12764,7 @@ def _build_hybrid_hapto_complex(
     # Phase 5B REVERTED (2026-05-12): unconditional _correct_hapto_geometry
     # caused multi-sigma regression 42.9% → 0% (5 failed instead of 1)
     # because the function disturbs multi-sigma scaffolds that have no
-    # hapto groups.  Per Wave-2C forensik the gate should be
+    # hapto groups.  Per Wave-2C forensics the gate should be
     # CONDITIONAL on Cp-centroid > 20% off target, not unconditional.
     # Reverting to original gate.  Surgical conditional fix is future
     # work; multi-hapto class stays at 0% topology pass for now.
@@ -14167,7 +14166,7 @@ def _correct_hapto_geometry(
                 if ni in ring:
                     sigma_ring_exclude.update(ring)
 
-    # Phase 6B (2026-05-12): per Wave-3A forensik, the BFS below over-extends
+    # Phase 6B (2026-05-12): per Wave-3A forensics, the BFS below over-extends
     # in single-metal-multi-ligand complexes.  Sigma-donors of the SAME metal
     # (and atoms one-hop from them) are pulled into the η-fragment by the
     # existing "if nni in metals and nni != mi" check (only OTHER metals
@@ -16062,8 +16061,8 @@ def _build_hapto_scaffold(
     # coordination sphere.  Audit on 100 hapto SMILES (Welle-3 T7.1):
     # η3: 100%, η4: 64%, η5: 17%, η6: 12% high-OOP (>30°) groups, with
     # 20/44 cases driven by this multi-sub formula pulling the second
-    # sub into the M-cone.  User pattern: "scheitert meist an den
-    # substituenten an den hapto-richten und den hapto-ring-verbindungen".
+    # sub into the M-cone.  User pattern: "mostly fails at the substituents
+    # on the hapto directions and the hapto-ring connections".
     #
     # Fix (DELFIN_HAPTO_SUB_FIX=1, default 0):
     #   * Replace signed tilt by ABS tilt (cos(|t|), sin(|t|)) so both
@@ -17428,10 +17427,10 @@ def _no_spurious_bonds(xyz_delfin: str, original_smiles: str) -> bool:
 # Iter-8.1 multi-hapto safe-fallback (FPCFD per-class extras-filter)
 # ============================================================================
 #
-# Per master_v3 voll-pool (cb0ef52):
+# Per master_v3 full-pool (cb0ef52):
 #   multi-hapto extras=26.61/fr (44% catastrophic) vs cf1d480 13.02 (14%)
 #   hapto       extras= 8.84/fr ( 9% catastrophic) vs cf1d480  5.41 ( 4%)
-# Forensik: results/iter8.1_multihapto_safefallback_design.md.  Two stacked
+# Forensics: results/iter8.1_multihapto_safefallback_design.md.  Two stacked
 # failure modes — broken seed + OB-WRS rotor amplification.  This is a
 # read-only post-filter (no geometry mutation): drop frames with extras > τ
 # AND > 3×median; Best-of-K fallback (K = max(2, ⌈0.3·n⌉)) guarantees ≥2
@@ -17439,8 +17438,8 @@ def _no_spurious_bonds(xyz_delfin: str, original_smiles: str) -> bool:
 
 # Per-class extra-heavy-bond thresholds (Iter-8.1 hybrid filter)
 _ITER8_1_EXTRA_THRESHOLDS = {
-    "multi_hapto": 25,   # voll-pool baseline 26.61 → drop catastrophic tail
-    "hapto":       20,   # voll-pool baseline 8.84 → drop tail
+    "multi_hapto": 25,   # full-pool baseline 26.61 → drop catastrophic tail
+    "hapto":       20,   # full-pool baseline 8.84 → drop tail
     "multi_sigma": 9999, # already at <0.10 — no filter
     "sigma":       9999, # already at <0.16 — no filter
     "no_metal":    9999, # no metal, no extras — no filter
@@ -18303,8 +18302,8 @@ def _verify_topology_from_graph(
                 # (NHC, naphthyridine, salen, pyrazole-bridged etc.) and is
                 # the main cause of D-AQIWAZ 11% isomer coverage.
                 # Welle-5l-rev1 (2026-05-18): default flipped 1 -> 0 (strict).
-                # Per user-direktive "strikt peniebel genau die topologie
-                # prüfen": the previous always-on exemption let UFF-buckled
+                # Per user directive "check the topology strictly and
+                # meticulously": the previous always-on exemption let UFF-buckled
                 # geometries pass the verifier, which collapsed distinct
                 # coordination isomers under fingerprint dedup (D2-ADEKUS
                 # 3 -> 2 frames at scale).  Strict default rejects any
@@ -19468,23 +19467,23 @@ def _flatten_sp2_atoms_xyz(xyz_delfin: str, mol_template) -> str:
                         continue
                 except Exception:
                     pass
-            # DAS METALL IST EIN sigma-PARTNER (DELFIN_FFFREE_DONOR_SIGMA_COUNT, Standard AUS).
+            # THE METAL IS A sigma PARTNER (DELFIN_FFFREE_DONOR_SIGMA_COUNT, default OFF).
             #
-            # heavy_nbrs wirft das Metall ausdruecklich weg.  Ein Donor mit DREI schweren
-            # Nachbarn PLUS Metall hat damit real VIER sigma-Partner -- er ist tetraedrisch --
-            # und wird hier trotzdem auf die Ebene seiner drei Nachbarn projiziert, also
-            # flachgedrueckt.  Das ist die dokumentierte Wurzel in ihrer sichtbarsten Form:
-            # Hybridisierung faellt auf einem METALLFREIEN Graphen, und der Donor zaehlt einen
-            # Partner zu wenig.
+            # heavy_nbrs explicitly throws the metal away.  A donor with THREE heavy
+            # neighbours PLUS metal thus really has FOUR sigma partners -- it is tetrahedral --
+            # and is nevertheless projected here onto the plane of its three neighbours, i.e.
+            # flattened.  That is the documented root in its most visible form:
+            # hybridisation is decided on a METAL-FREE graph, and the donor counts one
+            # partner too few.
             #
-            # Der Schutz darueber greift nur, wenn RDKit den Donor SP3 nennt -- und genau das
-            # tut es nicht, wenn das Metall vor der Typisierung entfernt wurde: mit drei
-            # Nachbarn liest sich das Atom als SP2, und dann ist Flachdruecken per Definition
-            # richtig.  Deshalb hier nicht die Hybridisierungs-MEINUNG, sondern die
-            # sigma-Partner ZAEHLEN, das Metall mitgezaehlt und die H mit.
+            # The protection above only kicks in when RDKit calls the donor SP3 -- and exactly
+            # that it does not do when the metal was removed before typing: with three
+            # neighbours the atom reads as SP2, and then flattening is by definition
+            # right.  Hence here not the hybridisation OPINION, but COUNTING the
+            # sigma partners, the metal counted in and the H too.
             #
-            # Der User sah es an VURMIE: "es ist sp2 trigonal planar muss aber sp3 ran
-            # koordinieren".  Gemessen wird es ab jetzt von find_donor_hybridisation.
+            # The user saw it on VURMIE: "it is sp2 trigonal planar but has to coordinate
+            # as sp3".  From now on it is measured by find_donor_hybridisation.
             _n_metal_nb = 0
             _n_h_nb = 0
             for _nb in atom.GetNeighbors():
@@ -19497,30 +19496,30 @@ def _flatten_sp2_atoms_xyz(xyz_delfin: str, mol_template) -> str:
                 for n in atom.GetNeighbors()
                 if n.GetAtomicNum() > 1 and n.GetSymbol() not in _METAL_SET
             ]
-            # DREI PARTNER AB PERIODE 3 SIND PYRAMIDAL -- das war der Fehler der ersten Fassung.
+            # THREE PARTNERS FROM PERIOD 3 ON ARE PYRAMIDAL -- that was the error of the first version.
             #
-            # Sie schuetzte nur den Fall "vier sigma-Partner -> tetraedrisch" und mass affected=0.
-            # Die neue Achse find_donor_hybridisation hat dann gesagt, wo es wirklich passiert,
-            # statt dass ich es rate -- 14 von 24 auffaelligen Systemen sind pyramidal_flattened,
-            # und die Elemente sprechen fuer sich:
+            # It protected only the case "four sigma partners -> tetrahedral" and measured affected=0.
+            # The new axis find_donor_hybridisation then said where it really happens,
+            # instead of me guessing it -- 14 of 24 conspicuous systems are pyramidal_flattened,
+            # and the elements speak for themselves:
             #     NEYCUP Ti-Se(3sig) 37,42   QADFAC Pd-Se(3sig) 37,42   QADFEG Pt-Se(3sig) 37,42
             #     HIXBIA Pt-Te(3sig) 22,16   HIXBOG Pd-Te(3sig) 22,16
-            # Dreimal bzw. zweimal EXAKT dieselbe Abweichung ueber verschiedene Metalle -- eine
-            # Konstruktionsregel, kein Rauschen.  Se und Te haben mit zwei schweren Nachbarn plus
-            # Metall genau DREI Partner und fielen damit durch das >=4-Raster.
+            # Three times resp. twice EXACTLY the same deviation across different metals -- a
+            # construction rule, not noise.  Se and Te, with two heavy neighbours plus
+            # metal, have exactly THREE partners and thus fell through the >=4 grid.
             #
-            # Die dokumentierte Regel, jetzt vollstaendig abgebildet:
-            #     >= 4 Partner (Metall mitgezaehlt)      -> tetraedrisch, nicht flach
-            #     == 3 Partner, Periode 2 (B,C,N,O,F)    -> planar, Metall IN der Ebene: flach OK
-            #     == 3 Partner, Periode 3+ (P,S,Se,As..) -> PYRAMIDAL, nicht flach
-            # Bestaetigt durch die Kristalle (58770 Stueck): S|3 hat p50 97,77 Grad -- deutlich
-            # unter den 120 Grad einer Ebene -- waehrend N|3 bei 119,94 liegt.
+            # The documented rule, now completely captured:
+            #     >= 4 partners (metal counted in)       -> tetrahedral, not flat
+            #     == 3 partners, period 2 (B,C,N,O,F)    -> planar, metal IN the plane: flat OK
+            #     == 3 partners, period 3+ (P,S,Se,As..) -> PYRAMIDAL, not flat
+            # Confirmed by the crystals (58770 of them): S|3 has p50 97.77 degrees -- clearly
+            # below the 120 degrees of a plane -- while N|3 sits at 119.94.
             _sig_tot = len(heavy_nbrs) + _n_metal_nb + _n_h_nb
             _period3 = atom.GetSymbol() not in ("B", "C", "N", "O", "F", "H")
             if (_n_metal_nb
                     and os.environ.get("DELFIN_FFFREE_DONOR_SIGMA_COUNT", "0") == "1"
                     and (_sig_tot >= 4 or (_sig_tot == 3 and _period3))):
-                continue          # tetraedrisch oder pyramidal -- in beiden Faellen NICHT flach
+                continue          # tetrahedral or pyramidal -- in both cases NOT flat
             if len(heavy_nbrs) != 3:
                 continue
             idx = atom.GetIdx()
@@ -19845,32 +19844,32 @@ _GEOM_IDEAL_ANGLES: Dict[str, List[float]] = {
     'DD': [62.2, 73.7, 117.4, 143.6, 180.0],
 }
 
-# ===== DIE SOLLWINKEL GEGEN DIE REALITAET, NICHT GEGEN DEN BAUER (2026-08-14) =====
-# GRUNDSATZ (User, 14.08.): "realistischere Geometrien muessen IMMER gewinnen."  Genau das
-# war verletzt, und zwar in BEIDE Richtungen -- nachgerechnet mit harness/polyhedra_audit.py:
+# ===== THE TARGET ANGLES AGAINST REALITY, NOT AGAINST THE BUILDER (2026-08-14) =====
+# PRINCIPLE (user, 14.08.): "more realistic geometries must ALWAYS win."  Exactly that
+# was violated, and in BOTH directions -- recomputed with harness/polyhedra_audit.py:
 #
-#   SP (Quadratpyramide).  Hier stand [90, 180].  Der Bauer setzte 82.0/88.9/163.9, die
-#   Realitaet ist 100-105 apikal-basal (VO(acac)2, [CuCl5]3-, [Ni(CN)5]3-).  Mit [90, 180]
-#   bekommt der KORRIGIERTE Bauer 25.0 Grad maximale Abweichung und der FALSCHE nur 16.1 --
-#   das Auge haette die richtige Geometrie bestraft und die falsche belohnt.  Mit den Werten
-#   unten dreht es sich um: 8.9 -> 0.3.  Ein Auge, das den alten Baufehler als Ideal fuehrt,
-#   macht jede Reparatur unlandbar.
+#   SP (square pyramid).  Here stood [90, 180].  The builder set 82.0/88.9/163.9, reality
+#   is 100-105 apical-basal (VO(acac)2, [CuCl5]3-, [Ni(CN)5]3-).  With [90, 180]
+#   the CORRECTED builder gets 25.0 degrees maximum deviation and the WRONG one only 16.1 --
+#   the eye would have punished the right geometry and rewarded the wrong one.  With the
+#   values below it turns around: 8.9 -> 0.3.  An eye that carries the old build error as
+#   the ideal makes every repair unlandable.
 #
-#   SAP (Quadrat-Antiprisma).  Hier stehen 52.4 und 180.0 Grad.  Ein Antiprisma hat KEIN
-#   antipodales Paar -- 180 Grad kann darin nicht vorkommen, 52.4 auch nicht.  Da gegen den
-#   NAECHSTLIEGENDEN Sollwert gemessen wird, machen ueberzaehlige Eintraege das Auge
-#   NACHSICHTIG: eine kollabierte Struktur mit einem 180-Grad-Paar bekaeme Abweichung 0.
-#   Gerechnet fuer das gleichkantige Antiprisma: 74.9 (x16), 118.5 (x4), 141.6 (x8).
+#   SAP (square antiprism).  Here stand 52.4 and 180.0 degrees.  An antiprism has NO
+#   antipodal pair -- 180 degrees cannot occur in it, nor can 52.4.  Since measurement is
+#   against the NEAREST target value, surplus entries make the eye
+#   LENIENT: a collapsed structure with a 180-degree pair would get deviation 0.
+#   Computed for the equilateral antiprism: 74.9 (x16), 118.5 (x4), 141.6 (x8).
 #
-# ⚠ NICHT angefasst, weil noch nicht entschieden:
-#   TPR  -- der Prismenwinkel haengt am Hoehe-Breite-Verhaeltnis, es gibt kein "ideales"
-#           Prisma.  Bauer 70.0/90.4/131.6 gegen Auge 76/82/140 (§2.8b).  ⚠ TPR6 ist der
-#           EINZIGE gelandete Champion-Teil -- hier wird nichts ohne Entscheidung geaendert.
-#   DD   -- fuehrt ebenfalls 180.0; ob ein D2d-Dodekaeder eines hat, ist NICHT nachgerechnet.
-#           Ungeprueft bleibt ungeaendert.
+# ⚠ NOT touched, because not yet decided:
+#   TPR  -- the prism angle depends on the height-to-width ratio, there is no "ideal"
+#           prism.  Builder 70.0/90.4/131.6 against eye 76/82/140 (§2.8b).  ⚠ TPR6 is the
+#           ONLY landed champion part -- nothing is changed here without a decision.
+#   DD   -- also lists 180.0; whether a D2d dodecahedron has one is NOT recomputed.
+#           Unchecked stays unchanged.
 _GEOM_IDEAL_ANGLES_REAL: Dict[str, List[float]] = {
-    'SP':  [87.0, 102.5, 155.0],      # C4v-Quadratpyramide, Kristallwerte
-    'SAP': [74.9, 118.5, 141.6],      # gleichkantiges Antiprisma, gerechnet
+    'SP':  [87.0, 102.5, 155.0],      # C4v square pyramid, crystal values
+    'SAP': [74.9, 118.5, 141.6],      # equilateral antiprism, computed
 }
 if os.environ.get("DELFIN_FFFREE_GEOM_IDEALS_REAL", "0") == "1":
     _GEOM_IDEAL_ANGLES.update(_GEOM_IDEAL_ANGLES_REAL)
@@ -20860,20 +20859,20 @@ def _select_best_hapto_candidate(
     pool.sort(key=lambda item: (item[0], item[2]))
     best_score, best_mol, best_label = pool[0]
 
-    # ---- DER STARRE SITZ DARF ANKOMMEN (DELFIN_FFFREE_HAPTO_SEAT_RIGID) --------
-    # Vorgabe 0 -> dieser Block ist ein einziges `if` und aendert kein Byte.
+    # ---- THE RIGID SEATING MAY ARRIVE (DELFIN_FFFREE_HAPTO_SEAT_RIGID) ----------
+    # Default 0 -> this block is a single `if` and changes no byte.
     #
-    # Der Score kennt keinen Kollapsterm (Begruendung und Zahlen stehen bei
-    # `_hapto_seat_rigid_enabled`).  Wenn der ATOMWEISE Bau (`scaffold`) gewinnt,
-    # obwohl ein STARRER Bau (`hybrid*`) im SELBEN Topf steht und STRIKT weniger
-    # kollabierte Bindungen traegt, dann nimm den starren.
+    # The score knows no collapse term (rationale and numbers are at
+    # `_hapto_seat_rigid_enabled`).  If the ATOM-WISE build (`scaffold`) wins,
+    # although a RIGID build (`hybrid*`) stands in the SAME pool and carries STRICTLY
+    # fewer collapsed bonds, then take the rigid one.
     #
-    # Drei Selbstbeschraenkungen, damit das kein Freibrief wird:
-    #   1. nur INNERHALB desselben Topfes -- ein topologisch kaputter Kandidat
-    #      kann so nie einen topologisch heilen verdraengen.
-    #   2. nur bei STRIKT weniger Kollaps.  BAKLAB (starr 54 : atomweise 51) bleibt
-    #      damit von selbst beim atomweisen Bau -- die Regel begrenzt sich selbst.
-    #   3. `None` (nicht messbar) ist KEIN Urteil und laesst die Auswahl unberuehrt.
+    # Three self-restrictions, so this does not become a blank cheque:
+    #   1. only WITHIN the same pool -- a topologically broken candidate can
+    #      thus never displace a topologically sound one.
+    #   2. only with STRICTLY less collapse.  BAKLAB (rigid 54 : atom-wise 51) thereby
+    #      stays with the atom-wise build on its own -- the rule limits itself.
+    #   3. `None` (not measurable) is NO verdict and leaves the selection untouched.
     if _hapto_seat_rigid_enabled() and str(best_label).startswith("scaffold"):
         _n_atomwise = _hapto_candidate_collapsed_bonds(best_mol)
         if _n_atomwise is not None:
@@ -21047,7 +21046,7 @@ def _enforce_metal_topology(mol, conf_id: int = 0, min_nonbonded: float = 2.5):
     # The "push non-bonded apart" loop above protects topology by repelling
     # spurious near-contacts; it does NOT pull declared M-M sigma bonds back
     # to their ideal length when ETKDG/UFF stretched them.  Agent-3 Wave-5
-    # forensik on the 22-SMILES multi-hapto class showed 17/22 SMILES carry
+    # forensics on the 22-SMILES multi-hapto class showed 17/22 SMILES carry
     # an Sn-Ir / Sn-Rh / Sn-Co main-group-TM sigma bond that ends up at
     # 3.4 A in the output -- above the topology-detector cutoff
     # (r_Sn + r_Ir + 0.45 = 3.25 A) so the M-M bond is dropped from the
@@ -21079,7 +21078,7 @@ def _enforce_metal_topology(mol, conf_id: int = 0, min_nonbonded: float = 2.5):
     ):
         # Welle-5j Agent G (2026-05-17): ``DELFIN_5J_G_MM_RIGID_DRAG``
         # opt-in fixes the documented Sn-Cl drag bug (welle3 T7.2
-        # forensik): when MM_ENFORCE shifts an Sn toward Ir to satisfy
+        # forensics): when MM_ENFORCE shifts an Sn toward Ir to satisfy
         # the M-M target, the legacy metal-only shift leaves Sn's Cl
         # ligands at their original position, collapsing Sn-Cl to
         # 0.59 A.  ``rigid_drag=True`` translates each metal's
@@ -22781,30 +22780,30 @@ def _enumerate_orbits_topo(
                     "Chirality enumerator no-op (orbit, %s, perm=%s): %s",
                     geom_name, perm, _ce_exc,
                 )
-        # ===== THEOREM-D fuer ASYMMETRISCHE Zweizaehner (2026-08-06 verdrahtet) =====
-        # _theorem_d_asymmetric_bidentate.py (327 Zeilen) lag seit dem 18.05. geschrieben,
-        # dokumentiert und mit eigenem Env-Schalter im Baum -- und war NIE IMPORTIERT.
-        # Null Importstellen, keine dynamischen Importe; einer von acht solchen Modulen.
+        # ===== THEOREM-D for ASYMMETRIC bidentates (wired 2026-08-06) =====
+        # _theorem_d_asymmetric_bidentate.py (327 lines) had been sitting in the tree since
+        # 18.05., written, documented and with its own env switch -- and was NEVER IMPORTED.
+        # Zero import sites, no dynamic imports; one of eight such modules.
         #
-        # WAS ES LOEST.  Der vorhandene universelle Klassifikator sortiert die Chelat-Vektoren
-        # nach DONOR-LISTENINDEX.  Bei einem asymmetrischen (A,B)-Chelat ist sein Vorzeichen
-        # damit bedeutungslos: ein (A,B)- und ein (B,A)-Chelat liefern entgegengesetzte
-        # Vorzeichen fuer dieselbe Stereochemie, die Summe hebt sich auf, und die Helizitaet
-        # kollabiert zu ''.  Folge, im Modul an X10-YIVROM belegt: Fe(III) mit drei
-        # asymmetrischen (O,S)-Chelaten hat nach Polya VIER Stereoisomere
-        # (fac-Delta, fac-Lambda, mer-Delta, mer-Lambda) -- gebaut werden DREI.
+        # WHAT IT SOLVES.  The existing universal classifier sorts the chelate vectors
+        # by DONOR LIST INDEX.  For an asymmetric (A,B) chelate its sign is thereby
+        # meaningless: an (A,B) and a (B,A) chelate yield opposite signs for the same
+        # stereochemistry, the sum cancels, and the helicity collapses to ''.
+        # Consequence, documented in the module on X10-YIVROM: Fe(III) with three
+        # asymmetric (O,S) chelates has, by Polya, FOUR stereoisomers
+        # (fac-Delta, fac-Lambda, mer-Delta, mer-Lambda) -- THREE get built.
         #
-        # Theorem-D stellt eine chemisch sinnvolle Orientierung her und haengt ein EIGENES Tag
-        # ('chir_td') an, nicht 'chir'.  Dadurch dienen beide als unabhaengige Split-Keys, wenn
-        # eine Permutation zugleich Lambda-nach-Legacy und Delta-nach-Theorem-D ist.
+        # Theorem-D establishes a chemically meaningful orientation and attaches its OWN tag
+        # ('chir_td'), not 'chir'.  That way both serve as independent split keys when a
+        # permutation is at once Lambda-by-legacy and Delta-by-Theorem-D.
         #
-        # BAUFORM: rein ADDITIV.  Der Wrapper gibt cf unveraendert zurueck, wenn ein Argument
-        # fehlt, der Chelatsatz das Asymmetrie-Tor nicht besteht, oder der Klassifikator ''
-        # liefert.  Er kann also nur eine bisher VERSCHMOLZENE Permutation aufspalten, nie eine
-        # bestehende entfernen -- dieselbe Bauform wie die vier Flags, die je gelandet sind.
-        # Nicht an `chiral` gekoppelt: der Legacy-Pfad kollabiert gerade auf diesen Faellen,
-        # das eigene Tor des Moduls (is_asymmetric_bidentate_set) ist der richtige Filter.
-        # Default OFF -> byte-identisch.
+        # BUILD FORM: purely ADDITIVE.  The wrapper returns cf unchanged when an argument is
+        # missing, the chelate set does not pass the asymmetry gate, or the classifier yields
+        # ''.  So it can only split a previously MERGED permutation, never remove an
+        # existing one -- the same build form as the four flags that have each landed.
+        # Not coupled to `chiral`: the legacy path collapses precisely on these cases,
+        # the module's own gate (is_asymmetric_bidentate_set) is the right filter.
+        # Default OFF -> byte-identical.
         if _delfin_env_int("DELFIN_5L_T62_THEOREM_D_ASYM_BIDENTATE", 0):
             try:
                 from delfin.manta._theorem_d_asymmetric_bidentate import (
@@ -22820,32 +22819,32 @@ def _enumerate_orbits_topo(
         # complete Cauchy-Frobenius count (e.g. CN9 TTP N5O4 → 24).
         results.append((best, cf, list(perm)))
 
-    # ===== REALISIERBARKEIT: was chemisch nicht baubar ist, gar nicht erst enumerieren =====
-    # (2026-08-06 verdrahtet.  _realisability.py, 513 Zeilen, seit Welle-3 im Baum, NIE importiert.)
+    # ===== REALISABILITY: what is chemically unbuildable is not enumerated in the first place =====
+    # (wired 2026-08-06.  _realisability.py, 513 lines, in the tree since Welle-3, NEVER imported.)
     #
-    # DAS ZIEL, in den Worten des Users: alle chemisch realisierbaren Frames -- also die, die
-    # sich OHNE Anomalie bauen lassen.  Isomere und Konformere, die nur mit chemisch
-    # unrealistischen Defekten baubar sind, brauchen wir nicht.
+    # THE GOAL, in the user's words: all chemically realisable frames -- i.e. those that
+    # can be built WITHOUT an anomaly.  Isomers and conformers that are buildable only with
+    # chemically unrealistic defects we do not need.
     #
-    # Polya/Burnside erzeugt ALLE orbit-verschiedenen Faerbungen unter der Punktgruppe.  Viele
-    # davon sind kombinatorisch gueltig und chemisch UNMOEGLICH: ein Fuenfring-Chelat kann kein
-    # 180-Grad-trans-Paar spannen; zwei grosse Sigma-Donoren (P, As, Sb, weitkegeliges NHC)
-    # passen nicht auf benachbarte Vertices, ohne unter 2 x r_vdW zu geraten; ein anellierter
-    # aromatischer Donor kann zwei Vertices nicht spannen, deren Winkel weit vom planaren
-    # Aryl-Ideal abweicht; d-Elektronenzahl und Donor-Sigma-Paare koennen unvereinbar sein.
+    # Polya/Burnside generates ALL orbit-distinct colourings under the point group.  Many
+    # of them are combinatorially valid and chemically IMPOSSIBLE: a five-membered chelate ring
+    # cannot span a 180-degree trans pair; two large sigma donors (P, As, Sb, wide-cone NHC)
+    # do not fit onto adjacent vertices without getting below 2 x r_vdW; an annulated
+    # aromatic donor cannot span two vertices whose angle deviates far from the planar
+    # aryl ideal; d-electron count and donor sigma pairs can be incompatible.
     #
-    # Der Bauer versucht sie heute trotzdem und liefert defekte Frames.  Die zaehlen dann
-    # doppelt schaedlich: sie ziehen jeden Qualitaetsterm (worst_sev liest den SCHLECHTESTEN
-    # Frame ueber den Manifold) UND sie blaehen den Nenner der Isomer-Abdeckung.  Sie hier
-    # wegzulassen senkt also die Defektzahl und macht zugleich die Vollstaendigkeitszahl ehrlich.
+    # The builder tries them today anyway and delivers defective frames.  Those then count
+    # doubly harmful: they drag every quality term (worst_sev reads the WORST
+    # frame over the manifold) AND they inflate the denominator of the isomer coverage.  Leaving
+    # them out here thus lowers the defect count and at the same time makes the completeness number honest.
     #
-    # DAS TOR IST DAFUER SCHON GEBAUT (loop.py:1541, User 2026-07-19): quality-weighted
+    # THE GATE FOR THIS IS ALREADY BUILT (loop.py:1541, user 2026-07-19): quality-weighted
     # completeness -- "all REALISTIC frames AT quality, ANCHORED by the CCDC isomer, NOT every
-    # Polya isomer".  Der generische isomers_lost-Boden ist deshalb weich; alle CCDC-verankerten
-    # Boeden bleiben HART.  Wer hier ein Orbit entfernt, das der Kristall tatsaechlich ist,
-    # faellt an ccdc_isomer_lost durch -- genau die richtige Sperre.
+    # Polya isomer".  The generic isomers_lost floor is therefore soft; all CCDC-anchored
+    # floors stay HARD.  Whoever removes an orbit here that the crystal actually is
+    # fails at ccdc_isomer_lost -- exactly the right lock.
     #
-    # Default OFF (DELFIN_REALISABILITY=0) -> bit-exakt HEAD.
+    # Default OFF (DELFIN_REALISABILITY=0) -> bit-exact HEAD.
     if _delfin_env_int("DELFIN_REALISABILITY", 0) and results:
         try:
             from delfin.manta import _realisability as _realis
@@ -22857,7 +22856,7 @@ def _enumerate_orbits_topo(
                 _kept_perms = {tuple(p) for _c, p in getattr(_rep, "kept", [])}
                 _before = len(results)
                 _filtered = [t for t in results if tuple(t[2]) in _kept_perms]
-                if _filtered:                      # nie den ganzen Manifold ausloeschen
+                if _filtered:                      # never wipe out the whole manifold
                     results = _filtered
                 if len(results) != _before:
                     logger.debug("Realisability: %d von %d Orbits behalten (%s)",
@@ -22956,7 +22955,7 @@ def _enumerate_topological_isomers(
         # trigonal-prismatic CN6 is realistic ONLY for d0-d2 early-TM (dithiolene /
         # tris-S).  For d3-d10 the octahedron is overwhelmingly ligand-field-favoured
         # -> a TPR "isomer" is UNREALISTIC junk that twists rigid meridional ligands
-        # out of the metal's pi-plane (the "schiefe pi-Systeme" bloat) and never
+        # out of the metal's pi-plane (the "skewed pi-systems" bloat) and never
         # matches the crystal.  Drop TPR for d3-d10 so the manifold holds only the
         # realistic (octahedral) isomers.  d0-d2 / unknown keep BOTH (never lose a
         # genuine prism -> the CCDC-isomer HARD floor stays safe).
@@ -24462,7 +24461,7 @@ def _snap_aromatic_rings_to_plane(
                 except Exception:
                     continue
         # Phase 5A (2026-05-12): universal H-bond-length normalization for
-        # non-ring/sp3/methyl/orphan H atoms.  Per Wave-2A forensik, η-isomer
+        # non-ring/sp3/methyl/orphan H atoms.  Per Wave-2A forensics, η-isomer
         # emit paths (HD-TA, OB-WRS) bypass the normal UFF+snap pipeline and
         # produce collapsed C-H bonds (D-JESNAA01 H min 0.54 Å observed).
         # Aromatic-H projection above only fixes ring-attached H; the
@@ -25653,14 +25652,14 @@ def _clamp_metalloid_md_xyz(xyz_delfin: str, mol_template) -> str:
                 if cur_d < 1e-8:
                     continue
                 try:
-                    # ⚠ FEHLERKORREKTUR 17.08.2026: hier stand `_ml_bond_kind(mol, ...)`.
-                    # In DIESEM Rumpf heisst der Parameter `mol_template`; ein `mol` gibt es
-                    # weder lokal noch modulweit.  Mit ME_BOND_LEN=1 flog also ein NameError
-                    # in das `except: continue` darunter -- und uebersprang damit den
-                    # METALLOID-Klemmer GANZ, obwohl `METALLOID_MD_CLAMP` ein Champion-Flag
-                    # ist.  Der neue Schalter schaltete einen alten still ab.  Dieselbe
-                    # Klasse wie der `metal_idx`/`mi`-Fehler in `_manual_metal_embed`:
-                    # ein falscher Name UNTER einem `except` ist unsichtbar, bis man zaehlt.
+                    # ⚠ BUG FIX 17.08.2026: here stood `_ml_bond_kind(mol, ...)`.
+                    # In THIS body the parameter is called `mol_template`; a `mol` exists
+                    # neither locally nor module-wide.  With ME_BOND_LEN=1 a NameError thus flew
+                    # into the `except: continue` below -- and thereby skipped the
+                    # METALLOID clamp ENTIRELY, although `METALLOID_MD_CLAMP` is a champion
+                    # flag.  The new switch silently switched an old one off.  The same
+                    # class as the `metal_idx`/`mi` error in `_manual_metal_embed`:
+                    # a wrong name UNDER an `except` is invisible until one counts.
                     target_d = float(_get_ml_bond_length(m_sym, d_sym, _ml_bond_kind(mol_template, m_idx, d_idx) if _delfin_env_int("DELFIN_FFFREE_ME_BOND_LEN", 0) else "sigma"))
                 except Exception:
                     continue
@@ -27452,8 +27451,8 @@ def _generate_topological_isomers(
             and _cn5_enum_complete_enabled()
             and len(set(donor_labels)) >= 2
         )
-        # COMPLETENESS + QUALITY, NO JUNK (user 2026-07-21 "die Konstruktion soll gar nicht erst schlechte
-        # Geometrien bauen" -> root fix, not post-hoc cull).  The chelate-distance pre-filter over-prunes
+        # COMPLETENESS + QUALITY, NO JUNK (user 2026-07-21 "the construction should not build bad
+        # geometries in the first place" -> root fix, not post-hoc cull).  The chelate-distance pre-filter over-prunes
         # polydentate systems (bis-tridentate Ir: 19 enumerated -> 1 feasible, ALL 4 octahedral arrangements
         # rejected because the one template conformer's rigid bite doesn't fit the ideal OH distance; the
         # fallback only fires when feasible==0, so keeping 1 silently drops the rest).
@@ -27661,7 +27660,7 @@ def _generate_topological_isomers(
         # best-scoring one survives).
         _variant_counter: Dict[Tuple[tuple, tuple], int] = {}
         # PURELY-ADDITIVE d8/CN6 poly siblings (D8_SQ_ADD/CN6_OH_ADD) must NOT crowd the ISOMER budget
-        # out (completeness heilig): count them so the caps below see only the PRIMARY frames.  Without
+        # out (completeness is sacred): count them so the caps below see only the PRIMARY frames.  Without
         # this the OC/SP-4 siblings filled the cap and the isomer loop broke early (measured: VOYWUD
         # 6->5 isomers).  `_n_add_sib` corrects the PRE-UFF caps; `_sib_idxs` (the batch indices of the
         # siblings) corrects the POST-UFF append cap at ~26413 (the same hole, one stage later).
@@ -27954,8 +27953,8 @@ def _generate_topological_isomers(
         # VOYWUD 6->5).  `_n_sib_appended` mirrors the pre-UFF `-_n_add_sib`; empty _sib_idxs (flags
         # off) -> byte-identical to the original `len(results) >= max_isomers`.
         _n_sib_appended = 0
-        # BASE-PRESERVATION via TOPOLOGY, NOT RMSD (user 2026-07-22: "RMSD ist die schlechteste Metrik";
-        # doctrine: Gate = Topologie, NIE RMSD).  A FEAS_PREFERRED recovery is a real win ONLY if it adds
+        # BASE-PRESERVATION via TOPOLOGY, NOT RMSD (user 2026-07-22: "RMSD is the worst metric";
+        # doctrine: gate = topology, NEVER RMSD).  A FEAS_PREFERRED recovery is a real win ONLY if it adds
         # a GENUINELY NEW coordination isomer.  On a RIGID scaffold a reach-recovered arrangement relaxes
         # (UFF) onto an isomer the base set ALREADY built -> its BUILT coordination FINGERPRINT equals a
         # base frame's -> it is redundant, and worse, the downstream fingerprint dedup then drops the GOOD
@@ -28036,8 +28035,8 @@ def _generate_topological_isomers(
                 results.append((xyz, lbl))
                 if not _is_pref_extra:
                     # record the BASE (non-recovery) fingerprint so a later recovery that collapses onto
-                    # this isomer is caught by the topological redundancy test above (keine guten
-                    # verschwinden -- a recovery may never duplicate, and thus displace, a base isomer).
+                    # this isomer is caught by the topological redundancy test above (no good ones
+                    # vanish -- a recovery may never duplicate, and thus displace, a base isomer).
                     _base_fps.add(fp)
                 if _batch_i in _sib_idxs:      # additive sibling -> does not count vs max_isomers
                     _n_sib_appended += 1
@@ -28961,7 +28960,7 @@ def _generate_alternative_binding_modes(
     # wall-clock seconds have elapsed.  Partial results are returned.
     # Default 0 → disabled, bit-exact baseline behaviour.
     import time as _time_mod
-    # Wave-4 (A+D forensik): Phase 4D's universal 60s cap killed large
+    # Wave-4 (A+D forensics): Phase 4D's universal 60s cap killed large
     # bimetallic multi-σ conversions (Sn-Ir, Sn-Rh, Os-Sn, Fe-Fe μ-O,
     # In-Ru). class-conditional: 60s for sigma/hapto (safe), 0s/unlimited
     # for multi_sigma/multi_hapto (needs 100-500s).  Env override still
@@ -28977,7 +28976,7 @@ def _generate_alternative_binding_modes(
                 _cls = "sigma"
             # Multi-sigma V2: opt out of the historical "unlimited" budget
             # for multi-metal sigma — that branch was the second biggest
-            # contributor to the 600 s pool-evaluator timeouts (forensik
+            # contributor to the 600 s pool-evaluator timeouts (forensics
             # 2026-05-13).  Cap to the heavy-atom-scaled wall-clock so
             # alt-binding-mode exploration cannot starve the rest of the
             # pipeline.  Other classes keep their pre-patch budget.
@@ -29008,8 +29007,8 @@ def _generate_alternative_binding_modes(
     # DROPPED under load, so the ISOMER SET itself became load-dependent.  Measured on LATTUW: 14
     # frames under load vs 16 on a free box -- the two missing ones are alt-bind-C isomers.  It passes
     # within-run determinism (both replica builds run under the same load) and only differs ACROSS
-    # runs, which is why the byte-determinism gate never caught it.  That violates both "Vollstaendigkeit
-    # heilig" and the deterministic-manifold claim.  0.0 disables the wall clock; termination falls back
+    # runs, which is why the byte-determinism gate never caught it.  That violates both "completeness is
+    # sacred" and the deterministic-manifold claim.  0.0 disables the wall clock; termination falls back
     # to the deterministic caps, exactly like the siblings.
     if _deterministic_mode():
         _alt_budget_s = 0.0
@@ -30703,25 +30702,25 @@ def _emit_all_trans_by_type_arrangements(
         # or more trans-positions.
         from collections import Counter as _Ctr
         type_counts = _Ctr(donor_labels)
-        # ===== GEMISCHTE trans-PAARE (16.08.2026) ====================================
-        # GEMESSEN auf `rows_spy5geom` (965): der Bauer setzt **cis, wo der Kristall trans
-        # ist** -- `build-cis/crystal-trans` 126 Fehler gegen 82 Treffer (1.39x), die
-        # Gegenrichtung 21 gegen 51 (0.37x).  Das Verhaeltnis ist **3.8x**, also eine
-        # gerichtete Verzerrung, und sie ist genau das, was eine trans-blinde Setzung
-        # erzeugen MUSS: zu jeder ersten Position gibt es im Oktaeder VIER cis-Plaetze und
-        # nur EINEN trans.  Dazu `arrangement_complete = false` bei 1.72x -- fehlt EINE der
-        # beiden Anordnungen, scheitert das System.
+        # ===== MIXED trans PAIRS (16.08.2026) ========================================
+        # MEASURED on `rows_spy5geom` (965): the builder seats **cis where the crystal is
+        # trans** -- `build-cis/crystal-trans` 126 failures against 82 hits (1.39x), the
+        # opposite direction 21 against 51 (0.37x).  The ratio is **3.8x**, i.e. a
+        # directed bias, and it is exactly what a trans-blind seating MUST
+        # produce: for every first position there are FOUR cis sites in the octahedron and
+        # only ONE trans.  On top, `arrangement_complete = false` at 1.72x -- if ONE of the
+        # two arrangements is missing, the system fails.
         #
-        # WARUM DIESER PASS SIE NICHT LIEFERT.  Er verlangt, dass JEDES trans-Paar zwei
-        # Donoren DESSELBEN Typs traegt -- und bricht hier ganz ab, sobald irgendein Typ
-        # eine UNGERADE Anzahl hat.  Ein Cu mit 2 N + 1 O + 1 Cl bekommt damit GAR KEINE
-        # trans-Anordnung.  Die Fehlerliste nennt genau solche Faelle: `Cu-ON` 3.62x,
-        # `CC-Ir` und `CC-W` stehen bei **nur Fehlern**.
+        # WHY THIS PASS DOES NOT DELIVER THEM.  It demands that EVERY trans pair carries two
+        # donors of the SAME type -- and bails out here entirely as soon as any type has an
+        # ODD count.  A Cu with 2 N + 1 O + 1 Cl thereby gets NO trans arrangement
+        # AT ALL.  The failure list names exactly such cases: `Cu-ON` 3.62x,
+        # `CC-Ir` and `CC-W` stand at **only failures**.
         #
-        # Mit `DELFIN_FFFREE_TRANS_MIXED=1` faellt beides weg: ungerade Typzahlen brechen
-        # nicht mehr ab, und unten kommen typ-GEMISCHTE Paare dazu.  Rein ADDITIV -- die
-        # Signatur-Dedup und das Topologietor unten bleiben unveraendert, es wird nichts
-        # ersetzt.  Vorgabe AUS -> byte-identisch.
+        # With `DELFIN_FFFREE_TRANS_MIXED=1` both go away: odd type counts no longer bail
+        # out, and below type-MIXED pairs are added.  Purely ADDITIVE -- the
+        # signature dedup and the topology gate below stay unchanged, nothing is
+        # replaced.  Default OFF -> byte-identical.
         _trans_mixed = bool(_delfin_env_int("DELFIN_FFFREE_TRANS_MIXED", 0))
         if not _trans_mixed and any(c % 2 != 0 for c in type_counts.values()):
             continue
@@ -30800,11 +30799,11 @@ def _emit_all_trans_by_type_arrangements(
                 for di, dj in _it.combinations(dlist, 2):
                     available_type_pairs.append((t, (di, dj)))
 
-            # GEMISCHTE Paare (s. o.).  Ein trans-Paar aus zwei VERSCHIEDENEN Donortypen ist
-            # chemisch der Normalfall -- N trans zu O, C trans zu P -- und war hier bisher
-            # nicht darstellbar.  Sie werden ANGEHAENGT, nicht ersetzt: die gleichtypigen
-            # Partitionen entstehen weiterhin zuerst und behalten ihren Vorrang in der
-            # Aufzaehlung.
+            # MIXED pairs (see above).  A trans pair of two DIFFERENT donor types is
+            # chemically the normal case -- N trans to O, C trans to P -- and was until now
+            # not representable here.  They are APPENDED, not replaced: the same-type
+            # partitions still arise first and keep their precedence in the
+            # enumeration.
             if _trans_mixed:
                 for li in range(len(donor_labels)):
                     for lj in range(li + 1, len(donor_labels)):
@@ -30819,10 +30818,10 @@ def _emit_all_trans_by_type_arrangements(
             # such that every donor-list-index is used at most once and
             # every trans-pair gets one same-type donor pair.  Capped at
             # 12 partitions per (metal, geom) to keep wall-time bounded.
-            # ⚠ KEINE STILLE KUERZUNG.  Mit gemischten Paaren waechst der Raum deutlich
-            # (fuer CN6 von wenigen gleichtypigen auf bis zu 15 Partitionen), darum ein
-            # eigener, hoeherer Deckel -- und er wird PROTOKOLLIERT, wenn er greift.  Ein
-            # Deckel, der schweigt, liest sich hinterher wie "vollstaendig aufgezaehlt".
+            # ⚠ NO SILENT TRUNCATION.  With mixed pairs the space grows markedly
+            # (for CN6 from a few same-type ones to up to 15 partitions), hence a
+            # separate, higher cap -- and it is LOGGED when it binds.  A cap
+            # that stays silent reads afterwards like "completely enumerated".
             _MAX_PARTITIONS = 24 if _trans_mixed else 12
             partitions = []
 
@@ -31004,7 +31003,7 @@ def _rank_emitted_isomers(isomers):
     perfect 100.0 and LEADS, while on a clean ensemble 86 % of all emitted frames
     score exactly 100.0 -> a complete tie -> the delivered order is the ENUMERATION
     order, i.e. no ranking at all (measured over the built census 2026-07-28; user
-    report the same day: "die besten Frames werden nicht nach vorne sortiert").
+    report the same day: "the best frames are not sorted to the front").
 
     DELFIN_FRAME_RANK_QUALITY=1 switches to the DEFECT ordering
     (:func:`delfin.manta._conformer_rank.rank_isomers_quality`): torn / spurious /
@@ -31332,8 +31331,8 @@ def _topology_gate_filter(isomers):
 def _clean_gate_filter(isomers):
     """UNIVERSAL, ASYMMETRIC, PER-FRAME final clean-manifold emission gate.
 
-    Governing invariant (user, verbatim): "nur die SCHLECHTEN aussortieren, nicht
-    die guten".  The gate is ASYMMETRIC: it drops a frame ONLY when that frame is
+    Governing invariant (user, verbatim): "sort out only the BAD ones, not
+    the good ones".  The gate is ASYMMETRIC: it drops a frame ONLY when that frame is
     CERTAINLY bad on its OWN geometry; in any doubt it KEEPS the frame.  A
     surviving good structure matters more than removing a borderline one
     (false-negative acceptable; false-positive -- dropping a good frame --
@@ -31499,7 +31498,7 @@ def _clean_gate_filter(isomers):
         # first lever that lowers the ABSOLUTE defect rate at all.  But it also drops frames
         # that MATCHED THE CRYSTAL: ccdc_backbone_lost 3 (GILKAQ, HOJSUX, UHEJIB),
         # isomers_lost 3 (UHEJIB 10 -> 4 of 38 theory).  That violates the gate's own
-        # governing invariant ("nur die SCHLECHTEN aussortieren, nicht die guten").
+        # governing invariant ("sort out only the BAD ones, not the good ones").
         #
         # Before touching any threshold: find out WHICH of the five criteria does it.  The
         # obvious suspect was the clash factor -- and that guess was WRONG: the gate measures
@@ -31648,7 +31647,7 @@ def _clean_gate_filter(isomers):
                             return True
             return False
 
-        # ============ "LETZTES SEINER ART": EIN BODEN DARF KEIN ISOMER AUSLOESCHEN ============
+        # ============ "LAST OF ITS KIND": A FLOOR MUST NOT WIPE OUT AN ISOMER ============
         # Measured 2026-08-04, twice and independently, and it contradicts a claim written
         # verbatim in this function's own docstring ("NO ensemble consensus"):
         #     pcrejW      24 frames dropped -> smiles_ccdc_regressed 5, pyramid_frame 3, backbone 1
@@ -31671,37 +31670,37 @@ def _clean_gate_filter(isomers):
         _bad_flags = [_certainly_bad(f) for f in frames]
         if os.environ.get("DELFIN_FFFREE_CLEAN_GATE_LAST_OF_KIND", "0") == "1":
             try:
-                # ===== DER FINGERABDRUCK WAR BLIND FUER DIE ANORDNUNG =================
-                # Gemessen 2026-08-18 auf gk10kb (10000 Systeme, 9600 verglichen): der Boden
-                # senkt hard_frame_frac um 6,64 Prozentpunkte -- und verliert dabei
+                # ===== THE FINGERPRINT WAS BLIND TO THE ARRANGEMENT ==================
+                # Measured 2026-08-18 on gk10kb (10000 systems, 9600 compared): the floor
+                # lowers hard_frame_frac by 6.64 percentage points -- and in doing so loses
                 #     isomers_lost 40 | ccdc_arrangement_lost 37 | ccdc_backbone_lost 26
-                # OBWOHL "letztes seiner Art" lief.  Das ist kein Widerspruch, sondern die
-                # Definition der Gruppe: der Schluessel unten ist das sortierte ELEMENT-
-                # MULTISET der ersten Schale.  cis und trans haben dasselbe Multiset.  Eine
-                # ganze Anordnungsfamilie kann also ausgeloescht werden, ohne dass ihre
-                # Gruppe je leer wird -- die Rettung greift nie, weil ein anderes Isomer
-                # denselben Fingerabdruck traegt.
+                # ALTHOUGH "last of its kind" was running.  That is not a contradiction but the
+                # definition of the group: the key below is the sorted ELEMENT
+                # MULTISET of the first shell.  cis and trans have the same multiset.  An
+                # entire arrangement family can thus be wiped out without its group
+                # ever becoming empty -- the rescue never kicks in, because another isomer
+                # carries the same fingerprint.
                 #
-                # Exakt dieselbe Wurzel wie Commit 1caa9123 ("Faltungs-Vollstaendigkeit pro
-                # ANORDNUNGSFAMILIE statt pro Geometrie-Gruppe").  Zum zweiten Mal dieselbe
-                # Verwechslung: "gleiche Elemente" ist nicht "gleiche Anordnung".
+                # Exactly the same root as commit 1caa9123 ("fold completeness per
+                # ARRANGEMENT FAMILY instead of per geometry group").  For the second time the
+                # same mix-up: "same elements" is not "same arrangement".
                 #
-                # DELFIN_FFFREE_CLEAN_GATE_KIND_ARRANGEMENT (Vorgabe 0 -> byte-identisch)
-                # haengt an den Schluessel das Multiset der D-M-D-Winkelklassen: fuer jedes
-                # Donorpaar (Element, Element, Winkelband).  Damit trennen sich cis/trans,
-                # fac/mer und axial/aequatorial.
+                # DELFIN_FFFREE_CLEAN_GATE_KIND_ARRANGEMENT (default 0 -> byte-identical)
+                # attaches to the key the multiset of the D-M-D angle classes: for every
+                # donor pair (element, element, angle band).  With that, cis/trans,
+                # fac/mer and axial/equatorial separate.
                 #
-                # ⚠️ RICHTUNG DER AENDERUNG: ein FEINERER Schluessel erzeugt MEHR Gruppen,
-                # und mehr Gruppen koennen nur MEHR Frames retten, nie weniger.  Die
-                # Aenderung ist damit monoton zugunsten der Vollstaendigkeit und kann kein
-                # Isomer kosten, das der grobe Schluessel gerettet haette.  Der Preis liegt
-                # auf der anderen Seite: der Boden verwirft weniger, der Gewinn an
-                # hard_frame_frac faellt kleiner aus.  Genau das ist zu messen.
+                # ⚠️ DIRECTION OF THE CHANGE: a FINER key produces MORE groups,
+                # and more groups can only rescue MORE frames, never fewer.  The
+                # change is thereby monotone in favour of completeness and cannot cost an
+                # isomer that the coarse key would have rescued.  The price lies
+                # on the other side: the floor rejects less, the gain in
+                # hard_frame_frac turns out smaller.  Exactly that is to be measured.
                 #
-                # Das Winkelband ist bewusst GROB (45 Grad).  Verzerrung darf eine Gruppe
-                # spalten -- das ist die sichere Richtung -- aber Rauschen soll nicht jede
-                # Gruppe in Einzelframes zerlegen.  Ideal-Oktaeder 90/180 -> Baender 2/4,
-                # Tetraeder 109,5 -> 2, trigonale Bipyramide 90/120/180 -> 2/3/4.
+                # The angle band is deliberately COARSE (45 degrees).  Distortion may split a
+                # group -- that is the safe direction -- but noise shall not break every
+                # group down into single frames.  Ideal octahedron 90/180 -> bands 2/4,
+                # tetrahedron 109.5 -> 2, trigonal bipyramid 90/120/180 -> 2/3/4.
                 _kind_arr = (os.environ.get(
                     "DELFIN_FFFREE_CLEAN_GATE_KIND_ARRANGEMENT", "0") == "1")
 
@@ -31961,7 +31960,7 @@ def _permute_dedup_filter(isomers):
     frames by FIXED-ORDER heavy-atom Kabsch RMSD, so two structures identical up
     to relabeling of indistinguishable atoms (identical ligands swapped /
     symmetry-equivalent atoms / any molecular-graph automorphism) are NOT seen as
-    duplicates and BOTH survive -> "sehr viele gleiche Strukturen im Pool".  This
+    duplicates and BOTH survive -> "very many identical structures in the pool".  This
     pass adds the missing layer: two frames are duplicates iff the MIN over graph
     automorphisms of their heavy Kabsch RMSD is below the threshold.  Atoms are
     permuted ONLY within their graph-symmetry orbit, so genuinely-different
@@ -32183,8 +32182,8 @@ def _pointgroup_symmetrize_xyz(xyz, tol):
       * ``has_improper`` False <=> only proper rotations (Cn / Dn) or E (C1) -> genuinely
         CHIRAL -> the caller keeps BOTH hands (the projected S is the proper-symmetrised
         frame of the SAME hand; its exact mirror is the other hand).
-      * |G| == 1 (only E within tol) -> S == F unchanged  ->  C1 SAFE (user: "viele C1
-        dürfen NICHT beeinträchtigt werden").
+      * |G| == 1 (only E within tol) -> S == F unchanged  ->  C1 SAFE (user: "many C1
+        must NOT be affected").
 
     Deterministic; best-effort (``(None, False)`` on any error, never raises)."""
     try:
@@ -32264,7 +32263,7 @@ def _heavy_dist_fp(xyz, bin_a=0.15):
 
 def _enantiomer_mirror_filter(isomers, smiles=None):
     """Add the Δ/Λ MIRROR enantiomer for every CHIRAL coordination frame (user
-    2026-07-21: "wir wollen in den Frames auch die jeweiligen Enantiomere").
+    2026-07-21: "we also want the respective enantiomers in the frames").
 
     An enantiomer IS the exact mirror image -> reflect the built coordinates (free,
     exact) instead of rebuilding in two directions.  A frame is chiral iff its mirror
@@ -32310,8 +32309,8 @@ def _enantiomer_mirror_filter(isomers, smiles=None):
     # polyhedra (measured: poly-distortion 13, ligand-quality 18, ligand-bond-torn 1, tier-2 on 69,
     # holistic +0.513), and the fp-GROUPING collapses DISTINCT isomers that merely share a distance-bin
     # (isomers-lost 10, ccdc-isomer-lost 4).  Post-hoc geometry repair on built atoms is exactly the
-    # Leitspruch antipattern.  So this filter now does ONLY the SAFE, purely-ADDITIVE half of the user's
-    # ask ("wir wollen die Enantiomere in den Frames"): for every GENUINELY chiral coordination frame whose
+    # guiding-principle antipattern.  So this filter now does ONLY the SAFE, purely-ADDITIVE half of the user's
+    # ask ("we want the enantiomers in the frames"): for every GENUINELY chiral coordination frame whose
     # opposite hand is not already built, ADD its EXACT mirror.  A reflection of a good frame is an equally
     # good frame -> zero distortion, zero isomer loss -> never-worse.  The ELIMINATE-where-possible geometry
     # symmetrisation is DEFERRED to the IN-CONSTRUCTION poly-seater (seat donors at ideal symmetric vertices;
@@ -32505,10 +32504,10 @@ def smiles_to_xyz_isomers(*args, **kwargs):
         # frames that decoordinate a donor must be caught here). Byte-id when off.
         _coordint_late = _coord_integrity_filter if outermost else (lambda x: x)
         # ENANTIOMER MIRROR (DELFIN_FFFREE_ENANTIOMER_MIRROR, default off -> byte-identical).
-        # OUTERMOST step so Bild+Spiegelbild stay CONSECUTIVE after ranking.  Adds the Δ/Λ mirror
+        # OUTERMOST step so image+mirror image stay CONSECUTIVE after ranking.  Adds the Δ/Λ mirror
         # ONLY for configurationally-chiral frames -- those NOT reducible to a mirror-symmetric
-        # form within tolerance (user: "nur Systeme die sich nicht in die höchstsymmetrische Form
-        # bringen lassen brauchen beide Frames").  Achiral / symmetrizable frames stay single.
+        # form within tolerance (user: "only systems that cannot be brought into the
+        # highest-symmetry form need both frames").  Achiral / symmetrizable frames stay single.
         _smi = _smiles_arg(args, kwargs)
         _emir = (lambda x: _enantiomer_mirror_filter(x, _smi)) if outermost else (lambda x: x)
         if isinstance(r, tuple) and len(r) == 2 and isinstance(r[0], list):
@@ -32568,90 +32567,90 @@ def _ffree_shared_tail(mol, results, dual_parse_done: bool):
     """
     if not results:
         return results
-    # ===== RUECKNAHMETOR UM DIE GANZE KETTE (24.08.2026) ================================
-    # ZWEI Zeilen fuer FUENF Verfeinerer -- nicht fuenf Wrapper.  Der Schnappschuss ist
-    # eine flache Listenkopie (Etiketten und xyz-Texte sind unveraenderlich), kostet also
-    # nichts.  Am Ende entscheidet `_refine_gate.keep_better` je Frame ueber Ergebnis oder
-    # Original.  Vorgabe AUS -> byte-identisch.
-    # ⚠ ABSICHTLICH UM DIE KETTE, NICHT UM JEDEN PASS.  Das Produkt ist die Kette; wenn sie
-    # als Ganzes ein Frame verschlechtert, gehoert dieses Frame zurueckgenommen.  Wer jeden
-    # Pass einzeln bewacht, bekommt fuenf Tore, die sich gegenseitig gutmachen -- und
-    # genau das ist der Korrektor eines Korrektors, den es hier nicht geben soll.
+    # ===== ROLLBACK GATE AROUND THE WHOLE CHAIN (24.08.2026) ===========================
+    # TWO lines for FIVE refiners -- not five wrappers.  The snapshot is a flat list
+    # copy (labels and xyz texts are immutable), so it costs nothing.  At the end
+    # `_refine_gate.keep_better` decides per frame between result and
+    # original.  Default OFF -> byte-identical.
+    # ⚠ DELIBERATELY AROUND THE CHAIN, NOT AROUND EACH PASS.  The product is the chain; if it
+    # as a whole makes a frame worse, that frame belongs rolled back.  Whoever guards each
+    # pass individually gets five gates that make up for one another -- and
+    # exactly that is the corrector of a corrector, which is not supposed to exist here.
     _rg_before = list(results)
     results = _apply_isolated_reseat_if_enabled(mol, results, dual_parse_done)
     results = _apply_arom_planarize_if_enabled(mol, results, dual_parse_done)
-    # ===== ZWEI WEITERE, UND WARUM SIE JETZT HIERHER GEHOEREN (16.08.2026 abends) ========
-    # Der Docstring oben nennt "nur diese zwei sind champion-aktiv, und nur sie sind hier
-    # verdrahtet".  Das galt, solange die uebrigen sechzehn ausgeschaltet und damit auf
-    # BEIDEN Pfaden No-ops waren.  Fuer die sp2-Planarisierer gilt es nicht mehr:
+    # ===== TWO MORE, AND WHY THEY NOW BELONG HERE (16.08.2026, evening) ================
+    # The docstring above says "only these two are champion-active, and only they are
+    # wired here".  That held as long as the remaining sixteen were switched off and thus
+    # no-ops on BOTH paths.  For the sp2 planarisers it no longer holds:
     #
-    #   GEMESSEN 16.08.: `ccdc_pyramid_realized` verfehlt 131 von 905 -- und das ist der
-    #   EINZIGE Defekt des Tages, der JEDE andere Achse mitzieht: `graph_geom` 6.33x,
-    #   `ccdc_isomer` 2.68x, `coord_angle` 2.32x, `ml_len` 2.09x, `org_bond` 1.63x.  Keine
-    #   Achse steht bei 1.0.  Schwelle: `pyramid_over_worst > 15.9 Grad` deckt 82.4 % ab.
+    #   MEASURED 16.08.: `ccdc_pyramid_realized` misses 131 of 905 -- and that is the
+    #   ONLY defect of the day that drags EVERY other axis along: `graph_geom` 6.33x,
+    #   `ccdc_isomer` 2.68x, `coord_angle` 2.32x, `ml_len` 2.09x, `org_bond` 1.63x.  No
+    #   axis stands at 1.0.  Threshold: `pyramid_over_worst > 15.9 degrees` covers 82.4 %.
     #
-    #   Und der Lauf `pyr131` mass Reichweite **2 von 131** -- nicht weil die Chemie nicht
-    #   traegt, sondern weil beide Korrektoren 2275 Zeilen HINTER dem FF-freien `return`
-    #   stehen (`:32280` gegen `:34555`/`:34558`).
+    #   And the run `pyr131` measured reach **2 of 131** -- not because the chemistry does
+    #   not hold, but because both correctors stand 2275 lines BEHIND the FF-free `return`
+    #   (`:32280` against `:34555`/`:34558`).
     #
-    # ⚠ DIE VORBEDINGUNG WAR DIE ATOMZUORDNUNG, und sie ist seit heute da.  Ohne sie waere
-    # das hier ein Nulltest gewesen: beide Korrektoren brauchen `mol`-Atomindizes, FF-freie
-    # Frames tragen Metall-auf-0 plus AddHs-Bloecke.  `_frame_atom_map.frame_to_mol_map`
-    # rekonstruiert die Zuordnung als echte Graphisomorphie; die Korrektoren UEBERSETZEN
-    # seither, statt aufzugeben (`0486a94e`).  Stimmt die Reihenfolge -> Identitaet, also
-    # byte-identisch; ist sie nicht bestimmbar -> Abbruch wie bisher.
+    # ⚠ THE PRECONDITION WAS THE ATOM MAPPING, and it exists as of today.  Without it this
+    # here would have been a null test: both correctors need `mol` atom indices, FF-free
+    # frames carry metal-at-0 plus AddHs blocks.  `_frame_atom_map.frame_to_mol_map`
+    # reconstructs the mapping as a true graph isomorphism; the correctors TRANSLATE
+    # since then, instead of giving up (`0486a94e`).  If the order matches -> identity, i.e.
+    # byte-identical; if it is not determinable -> abort as before.
     #
-    # Beide haben ihren eigenen Schalter mit Vorgabe 0 -- dieser Anschluss aendert nichts,
-    # solange sie aus sind.  Er macht sie nur ERREICHBAR, wenn jemand sie einschaltet.
+    # Both have their own switch with default 0 -- this hook-up changes nothing
+    # as long as they are off.  It only makes them REACHABLE if someone switches them on.
     results = _apply_fixer_sp2n_planarize_if_enabled(mol, results, dual_parse_done)
     results = _apply_fixer_sp2c_planarize_if_enabled(mol, results, dual_parse_done)
-    # ===== DIE TERMINALEN M=E-BINDUNGEN (17.08.2026) ====================================
-    # GEMESSEN: `me42b` erreichte 2 von 42, `byte_identical` 40 -- und die Ursache ist
-    # NICHT die Chemie, sondern dass der einzige echte Setzer legacy-only ist.  Drei
-    # Verdaechtige wurden einzeln ausgeschlossen: das SMILES-Format nicht (`_ml_bond_kind`
-    # liest die Bindungsordnung gar nicht, es urteilt strukturell), der Pool nicht (28 der
-    # 42 tragen ein echtes terminales O am Metall), die Tabelle nicht (33 von 95 Paaren
-    # sind wirksam kuerzer, darunter Re=O 0.813, W=O 0.850, V=O 0.890, Mo=O 0.895).
+    # ===== THE TERMINAL M=E BONDS (17.08.2026) =========================================
+    # MEASURED: `me42b` reached 2 of 42, `byte_identical` 40 -- and the cause is
+    # NOT the chemistry, but that the only real setter is legacy-only.  Three
+    # suspects were excluded one by one: not the SMILES format (`_ml_bond_kind`
+    # does not read the bond order at all, it judges structurally), not the pool (28 of
+    # the 42 carry a real terminal O on the metal), not the table (33 of 95 pairs
+    # are effectively shorter, among them Re=O 0.813, W=O 0.850, V=O 0.890, Mo=O 0.895).
     #
-    # Es war die Verdrahtung: `_clamp_metalloid_md_xyz` ist metalloid-only,
-    # `_md_distance_in_tolerance` ist ein Praedikat, `_manual_metal_embed` ist der CN4-Pfad
-    # -- und `_snap_md_distances_to_ideal` hat seine einzige Aufrufstelle bei :33066,
-    # hinter dem FF-freien `return` bei :32399.
+    # It was the wiring: `_clamp_metalloid_md_xyz` is metalloid-only,
+    # `_md_distance_in_tolerance` is a predicate, `_manual_metal_embed` is the CN4 path
+    # -- and `_snap_md_distances_to_ideal` has its only call site at :33066,
+    # behind the FF-free `return` at :32399.
     #
-    # ⚠ Dieser Anschluss braucht KEIN `mol` und faellt darum nicht in die Atomreihenfolge-
-    # Falle, vor der der Docstring oben warnt: das Kriterium fuer ein terminales M=E ist
-    # strukturell und aus dem Frame selbst ablesbar.  Verschoben wird genau EIN Atom, das
-    # ausser der M-D-Bindung keine hat.  Eigener Schalter, Vorgabe 0 -> byte-identisch.
+    # ⚠ This hook-up needs NO `mol` and therefore does not fall into the atom-order
+    # trap that the docstring above warns about: the criterion for a terminal M=E is
+    # structural and readable from the frame itself.  Exactly ONE atom is moved, one that
+    # has no bond besides the M-D bond.  Own switch, default 0 -> byte-identical.
     results = _apply_me_bond_snap_if_enabled(results)
-    # ===== DER SPIEGELABSCHLUSS (17.08.2026) -- MUSS ZULETZT STEHEN =====================
-    # GEMESSEN: das Korpus traegt keine Stereochemie (9 von 129 314 SMILES).  Haendigkeit
-    # ist damit zu 100 % Enumerationspflicht, nicht Uebertragung.  Von 2269 Fehlschlaegen
-    # sind 1946 "nie gebaut", und bei 1326 davon (68,1 %) fehlen ALLE Zentren -- dort ist
-    # das Spiegelbild EXAKT der fehlende Isomer.
+    # ===== THE MIRROR COMPLETION (17.08.2026) -- MUST STAND LAST ========================
+    # MEASURED: the corpus carries no stereochemistry (9 of 129 314 SMILES).  Handedness
+    # is thereby 100 % an enumeration duty, not a transfer.  Of 2269 failures,
+    # 1946 are "never built", and for 1326 of those (68.1 %) ALL centres are missing -- there
+    # the mirror image is EXACTLY the missing isomer.
     #
-    # ⚠ DIE POSITION IST TEIL DES MECHANISMUS, nicht Geschmack.  `_stereocenter_enum`
-    # liest `present`, BEVOR es ergaenzt; `trans208` hat genau so mit 29 zusaetzlichen
-    # Anordnungen die Stereozentren-Falten verdraengt und ein CCDC-Isomer gekostet,
-    # obwohl BEIDE Paesse additiv sind.  Die Faltenenumeration laeuft auf dem FF-freien
-    # Pfad bei :32361, dieser Schwanz wird bei :32429 gerufen -- der Spiegelpass sieht
-    # den fertigen Topf und veraendert fuer niemanden mehr das, was `present` meldet.
+    # ⚠ THE POSITION IS PART OF THE MECHANISM, not taste.  `_stereocenter_enum`
+    # reads `present` BEFORE it supplements; `trans208` displaced the stereocentre folds
+    # in exactly this way with 29 additional arrangements and cost a CCDC isomer,
+    # although BOTH passes are additive.  The fold enumeration runs on the FF-free
+    # path at :32361, this tail is called at :32429 -- the mirror pass sees
+    # the finished pool and no longer changes for anyone what `present` reports.
     results = _apply_mirror_enum_if_enabled(results)
-    # Rest des Ruecknahmetors (siehe Schnappschuss am Kettenanfang).  Der Spiegel haengt
-    # NEUE Etiketten an; die gehen unberuehrt durch -- bewertet wird nur, was ein
-    # bestehendes Etikett veraendert hat.
+    # Rest of the rollback gate (see snapshot at the start of the chain).  The mirror appends
+    # NEW labels; those pass through untouched -- only what changed an
+    # existing label is evaluated.
     try:
         from delfin.manta._refine_gate import keep_better as _rg_keep
         results = _rg_keep(_rg_before, results)
     except Exception as _rg_exc:              # pragma: no cover
         logger.debug("refine-gate nicht angewandt: %s", _rg_exc)
-    # ZWEITE HAELFTE DESSELBEN VERTRAGES (01.09.2026).  `keep_better` setzt durch
-    # "kein Frame ist SCHLECHTER"; diese Zeile setzt durch "kein Frame ist WEG".
-    # Gemessen an mirrleg6k: ABUSAU 58->59 und JEJROI 89->90 verlieren je EINEN
-    # Frame, obwohl `_mirror_enum.expand_results` per Konstruktion additiv ist
-    # (:370 `return list(results) + added`) -- eine AUSWAHLSTUFE weiter unten nimmt
-    # ihn.  Vorgabe AUS (DELFIN_FFFREE_ADD_NEVER_REPLACE) -> byte-identisch.
-    # ⚠ NACH `keep_better`, nicht davor: erst Inhalte richtigstellen, dann Fehlendes
-    #   ergaenzen -- umgekehrt bewertete das Ruecknahmetor gerade Wiederhergestelltes.
+    # SECOND HALF OF THE SAME CONTRACT (01.09.2026).  `keep_better` enforces
+    # "no frame is WORSE"; this line enforces "no frame is GONE".
+    # Measured on mirrleg6k: ABUSAU 58->59 and JEJROI 89->90 each lose ONE
+    # frame, although `_mirror_enum.expand_results` is additive by construction
+    # (:370 `return list(results) + added`) -- a SELECTION STAGE further down takes
+    # it.  Default OFF (DELFIN_FFFREE_ADD_NEVER_REPLACE) -> byte-identical.
+    # ⚠ AFTER `keep_better`, not before: first correct contents, then supplement what
+    #   is missing -- the other way round, the rollback gate would evaluate what was just restored.
     try:
         from delfin.manta._refine_gate import keep_all as _rg_all
         results = _rg_all(_rg_before, results)
@@ -32731,10 +32730,10 @@ def _smiles_to_xyz_isomers_impl(
     _hapto_ff_fallback: Optional[List[Tuple[str, str]]] = None
     _ffree_union: Optional[List[Tuple[str, str]]] = None   # DELFIN_FFFREE_UNION, see below
     if has_metal and _delfin_env_int("DELFIN_FFFREE_BUILDER", 0):
-        # EINE Lesung, zwei Verwendungen: hier fuer die Rettungssprosse im FF-freien Bauer,
-        # unten fuer das Zusammenlegen der beiden Manifolds.  Die Zusage "die einzige
-        # Lesestelle" bleibt damit wahr -- sie ist nur nach oben gewandert, weil der Wert
-        # jetzt VOR dem Aufruf gebraucht wird und nicht erst nach seinem Ergebnis.
+        # ONE read, two uses: here for the rescue rung in the FF-free builder,
+        # below for merging the two manifolds.  The promise "the only
+        # read site" thereby stays true -- it has merely moved up, because the value
+        # is now needed BEFORE the call and not only after its result.
         _union_on = _delfin_env_int("DELFIN_FFFREE_UNION", 0)
         try:
             from delfin.manta.converter_backend import _fffree_isomers
@@ -32763,8 +32762,8 @@ def _smiles_to_xyz_isomers_impl(
                 # available at this early return; the corrector is geometry-only and
                 # the flag is a plain integer env-var, so pass mol=None.  Default-OFF
                 # byte-identical (the dispatch returns _ff unchanged when unset).
-                # Schnappschuss fuer das Ruecknahmetor -- flache Listenkopie, kostet
-                # nichts.  Die Gegenzeile steht am Ende dieser Kette, hinter dem Spiegel.
+                # Snapshot for the rollback gate -- flat list copy, costs
+                # nothing.  The counterpart line stands at the end of this chain, behind the mirror.
                 _rg_before_ff = list(_ff)
                 _ff = _apply_pi_coplanar_m_if_enabled(None, _ff, False)
                 # ── THE POST-PASS CHAIN IS UNREACHABLE FROM HERE (found 2026-07-30) ──
@@ -32826,11 +32825,11 @@ def _smiles_to_xyz_isomers_impl(
                 # secondary amines.  Run the fire census on this line before drawing conclusions.
                 if _delfin_env_int("DELFIN_FFFREE_STEREO_ON_FFREE", 0):
                     _ff = _apply_stereocenter_enum_if_enabled(None, _ff, False)
-                # AXIALE Vollstaendigkeit auch hier -- KEIN zweites Tor.  Die Erweiterung ist
-                # ohnehin durch ihren eigenen Schalter gedeckelt (Vorgabe AUS), und ein zweiter
-                # Schalter waere genau die Bauart, an der die Stereozentren-Erweiterung am
-                # 10.08. gescheitert ist: sie stand im Champion und erreichte den FF-freien
-                # Pfad nie.  Aufrufstellen zaehlen, nicht Zeilen.
+                # AXIAL completeness here too -- NO second gate.  The expansion is
+                # capped anyway by its own switch (default OFF), and a second
+                # switch would be exactly the build form on which the stereocentre expansion
+                # failed on 10.08.: it was in the champion and never reached the FF-free
+                # path.  Call sites count, not lines.
                 _ff = _apply_atropisomer_enum_if_enabled(None, _ff, False)
                 # ── THE SHARED TAIL (DELFIN_FFFREE_SHARED_TAIL, default OFF -> byte-identical) ──
                 #
@@ -32858,66 +32857,66 @@ def _smiles_to_xyz_isomers_impl(
                         _tail_mol = None
                     if _tail_mol is not None:
                         _ff = _ffree_shared_tail(_tail_mol, _ff, False)
-                # ===== DER SPIEGELABSCHLUSS BRAUCHT KEINEN FREMDEN SCHALTER ============
-                # Gemessen 18.08.2026: der Pass lag ausschliesslich IM Shared Tail, also
-                # hinter DELFIN_FFFREE_SHARED_TAIL (Vorgabe 0).  Jedes Spiegel-A/B musste
-                # den Schalter deshalb in BEIDEN Armen mitfuehren -- und der Shared Tail
-                # aktiviert nebenbei ISOLATED_SEAT und AROM_PLANARIZE, die beiden
-                # Champion-Flags, die FF-frei sonst nie feuern.  Die Grundlinie war damit
-                # NICHT der ausgelieferte Champion, und loop.py hat das auch gemeldet
+                # ===== THE MIRROR COMPLETION NEEDS NO FOREIGN SWITCH ===================
+                # Measured 18.08.2026: the pass sat exclusively IN the shared tail, i.e.
+                # behind DELFIN_FFFREE_SHARED_TAIL (default 0).  Every mirror A/B therefore
+                # had to carry the switch along in BOTH arms -- and the shared tail
+                # incidentally activates ISOLATED_SEAT and AROM_PLANARIZE, the two
+                # champion flags that otherwise never fire FF-free.  The baseline was thus
+                # NOT the shipped champion, and loop.py reported that too
                 # ("UNDECLARED AXIS ... the arms are NOT the shipped champion").
-                # Ein Mechanismus, der nur unter einem fremden Schalter messbar ist, kann
-                # nicht in den Champion landen -- man landete zwei Dinge auf einmal.
+                # A mechanism that is measurable only under a foreign switch cannot
+                # land in the champion -- one would be landing two things at once.
                 #
-                # Der Spiegel braucht diesen Schalter nicht: er braucht KEIN ``mol`` (eine
-                # Spiegelung ist eine reine Koordinatenoperation), also entfaellt genau der
-                # Grund, aus dem der Shared Tail ueberhaupt gattert -- das teure Parsen.
-                # Hier steht er darum unbedingt, gattert nur durch seinen EIGENEN Schalter
-                # (Vorgabe 0 -> byte-identisch) und ist bei SHARED_TAIL=1 ein No-op, weil
-                # expand_results seit heute idempotent ist (Label-Suffix ``_mirror``).
-                # ── H-PLATZIERUNG (DELFIN_FFFREE_H_PLACEMENT, Vorgabe 0) ──
-                # Die Wasserstoff-Familie traegt 28 % der Haertemasse und hatte bis zum
-                # 19.08. KEINEN aktiven Mechanismus: von sieben vorhandenen sind drei
-                # gemessen widerlegt (5B_VSEPR_H_REALISM, H_FOLLOW, DONOR_FOLLOW), einer
-                # hat null Aufrufstellen im ganzen Baum (H_CLASH_ROTATE) und die uebrigen
-                # liegen HINTER dem FF-freien return -- VSEPR_REPAIR sogar 3038 Zeilen.
+                # The mirror does not need this switch: it needs NO ``mol`` (a
+                # mirroring is a pure coordinate operation), so exactly the reason for
+                # which the shared tail gates at all -- the expensive parsing -- falls away.
+                # Hence it stands here unconditionally, gates only through its OWN switch
+                # (default 0 -> byte-identical) and is a no-op with SHARED_TAIL=1, because
+                # expand_results is idempotent as of today (label suffix ``_mirror``).
+                # ── H PLACEMENT (DELFIN_FFFREE_H_PLACEMENT, default 0) ──
+                # The hydrogen family carries 28 % of the hardness mass and had until
+                # 19.08. NO active mechanism: of seven existing ones, three are
+                # measured refuted (5B_VSEPR_H_REALISM, H_FOLLOW, DONOR_FOLLOW), one
+                # has zero call sites in the whole tree (H_CLASH_ROTATE) and the rest
+                # lie BEHIND the FF-free return -- VSEPR_REPAIR even 3038 lines.
                 #
-                # ⚠️ DIE POSITION IST TEIL DES MECHANISMUS, nicht Geschmack:
-                #   * VOR dem Spiegel, damit BEIDE Haende dieselbe H-Reparatur tragen.
-                #   * NACH _apply_stereocenter_enum_if_enabled, damit dessen `present`-
-                #     Lesung unberuehrt bleibt (genau daran hat trans208 Stereozentren
-                #     verdraengt, obwohl beide Paesse additiv waren).
+                # ⚠️ THE POSITION IS PART OF THE MECHANISM, not taste:
+                #   * BEFORE the mirror, so that BOTH hands carry the same H repair.
+                #   * AFTER _apply_stereocenter_enum_if_enabled, so that its `present`
+                #     read stays untouched (exactly on that, trans208 displaced
+                #     stereocentres although both passes were additive).
                 #
-                # Schweratome bleiben byte-genau fest, und ein Stereotor rollt den GANZEN
-                # Frame zurueck, falls ein echtes Zentrum kippt.  Gemessen mit den
-                # Detektoren des Auges auf 2144 Frames: Kollisionen 80->48, harte
-                # HH-Kontakte 225->142, Methylverstoesse in 133->103 Dateien.
+                # Heavy atoms stay pinned byte-exactly, and a stereo gate rolls back the WHOLE
+                # frame if a real centre flips.  Measured with the eye's detectors on
+                # 2144 frames: clashes 80->48, hard HH contacts 225->142,
+                # methyl violations in 133->103 files.
                 _ff = _apply_h_placement_if_enabled(_ff)
                 _ff = _apply_mirror_enum_if_enabled(_ff)
-                # --- TORSIONSAUFZAEHLUNG, jetzt AUCH auf dem FF-freien Pfad (27.08.) ---
-                # GEZAEHLT, nicht vermutet: `_rotamer_diversity.apply_if_enabled` hatte
-                # GENAU EINE Aufrufstelle, und die liegt bei :35799 im LEGACY-Schwanz.
-                # Der FF-freie Komplexpfad bekam NULL Torsionsaufzaehlung -- dieselbe
-                # Bauform wie am 10.08. ("drei additive Module laufen nur auf Legacy"),
-                # nur diesmal in dieser Richtung.
+                # --- TORSION ENUMERATION, now ALSO on the FF-free path (27.08.) ---
+                # COUNTED, not assumed: `_rotamer_diversity.apply_if_enabled` had
+                # EXACTLY ONE call site, and that lies at :35799 in the LEGACY tail.
+                # The FF-free complex path got ZERO torsion enumeration -- the same
+                # build form as on 10.08. ("three additive modules run only on legacy"),
+                # only this time in this direction.
                 #
-                # ⚠ UND ES IST DER MECHANISMUS, DEN AUFGABE #17 SUCHT.  Der Setzer in
-                # `conformer_enum.py` (0 Aufrufstellen, kappt still bei 7, baut
-                # homoleptisch) ist NICHT der richtige -- dieser hier ist es:
-                #   * DOFs aus dem MOLEKUELGRAPHEN, nie aus SMILES
-                #   * Koordinationsbindungen (M-Donor) ausgeschlossen
-                #   * M-D-INVARIANTE mit Toleranz DELFIN_5L_T6_ROTAMER_MD_TOL (0,05 A)
-                #   * arbeitet auf dem FERTIGEN Frame, also der echten Bauvorlage
+                # ⚠ AND IT IS THE MECHANISM THAT TASK #17 IS LOOKING FOR.  The setter in
+                # `conformer_enum.py` (0 call sites, silently caps at 7, builds
+                # homoleptically) is NOT the right one -- this one here is:
+                #   * DOFs from the MOLECULAR GRAPH, never from SMILES
+                #   * coordination bonds (M-donor) excluded
+                #   * M-D INVARIANT with tolerance DELFIN_5L_T6_ROTAMER_MD_TOL (0.05 A)
+                #   * works on the FINISHED frame, i.e. the real build template
                 #
-                # REICHWEITE: 4411 von 6000 = 73,5 % haben >=1 rotierbare Bindung
-                # (gemessen 27.08., `_rotatable_bonds` selbst benutzt).  FF-frei sind
-                # davon ~1190 von 1616 -- weit ueber der 100er-Schranke.
+                # REACH: 4411 of 6000 = 73.5 % have >=1 rotatable bond
+                # (measured 27.08., using `_rotatable_bonds` itself).  Of those,
+                # ~1190 of 1616 are FF-free -- far above the 100 threshold.
                 #
-                # ⚠ DIE KAPPEN SIND ECHT UND GEHOEREN IN DIE MESSUNG: K=3 Frames je
-                # Isomer, MAX_DOFS=6, GRID_CAP=64.  K=3 heisst AUSWAEHLEN nach Energie,
-                # nicht aufzaehlen -- und was WAEHLT, hat in dieser Kampagne noch nie
-                # gelandet.  Beim Verdikt darauf achten, ob die Kappe bindet.
-                # ⛔ Vorgabe AUS (DELFIN_5L_T6_ROTAMER_DIVERSITY) -> byte-identisch.
+                # ⚠ THE CAPS ARE REAL AND BELONG IN THE MEASUREMENT: K=3 frames per
+                # isomer, MAX_DOFS=6, GRID_CAP=64.  K=3 means SELECTING by energy,
+                # not enumerating -- and what SELECTS has never yet landed in this
+                # campaign.  At the verdict, watch whether the cap binds.
+                # ⛔ Default OFF (DELFIN_5L_T6_ROTAMER_DIVERSITY) -> byte-identical.
                 try:
                     from delfin.manta import _rotamer_diversity as _rot_ff
                     if _rot_ff._is_enabled() and _ff:
@@ -32935,19 +32934,19 @@ def _smiles_to_xyz_isomers_impl(
                 except Exception as _rot_ff_exc:
                     logger.debug("FF-frei Rotamer-Erweiterung fehlgeschlagen: %s",
                                  _rot_ff_exc)
-                # RUECKNAHMETOR fuer die FF-freie Kette (Schnappschuss oben bei
-                # `_rg_before_ff`).  Deckt pi_coplanar_m, baustein6 und h_placement ab --
-                # die Enumeratoren dazwischen (Stereozentren, Atropisomer, Spiegel) haengen
-                # NEUE Etiketten an und gehen unberuehrt durch.
+                # ROLLBACK GATE for the FF-free chain (snapshot above at
+                # `_rg_before_ff`).  Covers pi_coplanar_m, baustein6 and h_placement --
+                # the enumerators in between (stereocentres, atropisomer, mirror) append
+                # NEW labels and pass through untouched.
                 try:
                     from delfin.manta._refine_gate import keep_better as _rg_keep_ff
                     _ff = _rg_keep_ff(_rg_before_ff, _ff)
                 except Exception as _rg_exc_ff:   # pragma: no cover
                     logger.debug("refine-gate (ffree) nicht angewandt: %s", _rg_exc_ff)
-                # ADD, NEVER REPLACE -- die zweite Haelfte des Vertrages, auch hier.
-                # Der Satz drei Zeilen hoeher ("die Enumeratoren haengen NEUE Etiketten
-                # an und gehen unberuehrt durch") war eine ANNAHME; auf ABUSAU und
-                # JEJROI ist sie am 01.09. widerlegt worden.  Vorgabe AUS.
+                # ADD, NEVER REPLACE -- the second half of the contract, here too.
+                # The sentence three lines up ("the enumerators append NEW labels
+                # and pass through untouched") was an ASSUMPTION; on ABUSAU and
+                # JEJROI it was refuted on 01.09.  Default OFF.
                 try:
                     from delfin.manta._refine_gate import keep_all as _rg_all_ff
                     _ff = _rg_all_ff(_rg_before_ff, _ff)
@@ -32999,7 +32998,7 @@ def _smiles_to_xyz_isomers_impl(
                 # early return dropped instead of conditioned: stash our frames, let the
                 # legacy pipeline run to completion, concatenate at the end.  Costs a second
                 # build per system -- and the machine sat half idle all night.
-                if _union_on:                      # dieselbe Lesung wie oben, nicht eine zweite
+                if _union_on:                      # the same read as above, not a second one
                     _ffree_union = _ff
                 else:
                     return _ff, None
@@ -33137,7 +33136,7 @@ def _smiles_to_xyz_isomers_impl(
             # 2910 -> 303 (-89.6%), M_L_intactness 0.979 -> 0.994 (+0.015).
             # Disable via DELFIN_HAPTO_123A_PORT=0 if regression appears.
             #
-            # Iter-7.1 (2026-05-07) multi-metal guard: master_v3 voll-pool data
+            # Iter-7.1 (2026-05-07) multi-metal guard: master_v3 full-pool data
             # (~25%) revealed multi-hapto class M_L 0.996 -> 0.882 (-11.4pp),
             # topology extra-bonds 11.84 -> 24.67 (+108%) with port=1 default-on.
             # Root cause: OB-WRS rotates each metal's Cp/arene independently,
@@ -33195,7 +33194,7 @@ def _smiles_to_xyz_isomers_impl(
                 # n_metals<=1 check was too strict — Sn/Pb/Bi/Sb/Tl-TM(η-Cp)
                 # complexes have n_metals==2 but only ONE hapto-active metal
                 # (main-group is σ-only).  These need the OB-WRS rotor branch.
-                # Forensik: results/iter7.2_multihapto_forensik.md.  The earlier
+                # Forensics: results/iter7.2_multihapto_forensik.md.  The earlier
                 # iter6 baseline MLI=0.996 was metric-cheating: OB-WRS rot-frames
                 # had spurious M-L extra-bonds but MLI counts only missing, so
                 # they appeared "intact" while topology was torn.  Honest
@@ -33219,8 +33218,8 @@ def _smiles_to_xyz_isomers_impl(
             # M-C η-bonds encoded in the SMILES as rotatable torsions and
             # rotates Cp/arene rings as if they were freely-rotating ligands.
             # When σ-donors are also present, those rotations rip the rings
-            # apart and project σ-ligands onto the Cp plane (User 2026-05-04
-            # "alles in einer Ebene"-Pattern).  Skip OB diversity for piano-
+            # apart and project σ-ligands onto the Cp plane (user 2026-05-04
+            # "everything in one plane" pattern).  Skip OB diversity for piano-
             # stool / mixed-coordination complexes; pure Cp/arene sandwiches
             # (no σ-donors) still benefit from rotor diversity.
             # Opt out via DELFIN_HAPTO_NO_OB_WHEN_SIGMA=0 OR
@@ -33405,10 +33404,10 @@ def _smiles_to_xyz_isomers_impl(
                 results_hapto = _apply_bond_decollapse_if_enabled(
                     _mol_hapto_gate, results_hapto, _dual_parse_done
                 )
-                # UNION haelt seinen Vertrag auch hier (DELFIN_FFFREE_UNION_HAPTO,
-                # Vorgabe AUS -> byte-identisch).  Ohne diese Zeile kehrt der
-                # Hapto-Zweig ~2700 Zeilen VOR der Zusammenfuehrung zurueck und
-                # `_ffree_union` wird nie gelesen.
+                # UNION keeps its contract here too (DELFIN_FFFREE_UNION_HAPTO,
+                # default OFF -> byte-identical).  Without this line the
+                # hapto branch returns ~2700 lines BEFORE the merge and
+                # `_ffree_union` is never read.
                 return _union_prepend_ffree(results_hapto, _ffree_union), None
             # Multi-metal hapto: the hapto builder already produced the
             # best possible Cp geometry (perfectly planar rings). ETKDG
@@ -33426,7 +33425,7 @@ def _smiles_to_xyz_isomers_impl(
             results_hapto = _apply_bond_decollapse_if_enabled(
                 _mol_hapto_gate, results_hapto, _dual_parse_done
             )
-            # Dieselbe Vertragszeile fuer den mehrkernigen Hapto-Zweig.
+            # The same contract line for the multi-metal hapto branch.
             return _union_prepend_ffree(results_hapto, _ffree_union), None
 
     # Non-metal molecules: deterministic conformer pool.  Organic
@@ -33839,7 +33838,7 @@ def _smiles_to_xyz_isomers_impl(
     # max_isomers found). Threshold env-configurable.
     # Iter-8.3 multi-σ champion forward-port (5b3e0d2). When env=1 AND class
     # is multi_sigma, bypass _strict_sufficient short-circuit and always run
-    # the relaxed pass. Voll-pool multi-σ %match 49.45 → 63.36 (+13.91 pp),
+    # the relaxed pass. Full-pool multi-σ %match 49.45 → 63.36 (+13.91 pp),
     # frame-ratio 3.54×.
     # Phase 4D default-flip 2026-05-12: 0 → 1 — smoke500 verified
     # +28.6pp multi-sigma + 3.9pp sigma with combined ALT_MODE_BUDGET=60.
@@ -33875,7 +33874,7 @@ def _smiles_to_xyz_isomers_impl(
     _relaxed = _collect_fp_label_pairs(relax_hard_chem_filters=True) if (
         conf_ids and has_metal and not _strict_sufficient
     ) else []
-    # Iter-8.5a: per-class hard-reject merge (M_A from e6761e4 forensik).
+    # Iter-8.5a: per-class hard-reject merge (M_A from e6761e4 forensics).
     # When parent mol's class is in DELFIN_ITER85_HARD_REJECT_CLASSES,
     # skip the relaxed-pass merge entirely and use only the strict-pass
     # output.  e6761e4 ran strict-only on hapto / multi-hapto / multi-σ
@@ -34340,7 +34339,7 @@ def _smiles_to_xyz_isomers_impl(
             #
             # Welle-5g Step-0 targeted revert per 5f-A bisect: a3edabe shipped
             # this race-fix always-on as part of the Correctness-Bundle and
-            # was attributed ~70% of the -4064 NET voll-pool regression
+            # was attributed ~70% of the -4064 NET full-pool regression
             # (hapto -767).  Gated behind DELFIN_5G_T6_1_RACE_FIX (default 0)
             # to restore the legacy shared-mol submission path at default;
             # opt-in via env-flag re-enables the per-worker copy.
@@ -35100,30 +35099,30 @@ def _smiles_to_xyz_isomers_impl(
                         if len(p) >= 4 and p[0] not in ('H', 'h')
                     )
                     return tuple(heavy)
-                # ⚠ NUR ZAEHLEN, NICHT AENDERN (01.09.2026).  Diese Zuweisung ist
-                #   die einzige gefundene Stufe mit UMGEKEHRTER Vorzugsregel: bei
-                #   gleichem Schluessel gewinnt der SPAETERE Frame.  Und `_sig`
-                #   laesst Wasserstoffe weg -- ein Stereozentrum und sein
-                #   Spiegelbild sind fuer sie IDENTISCH.  Ob hier wirklich ein
-                #   Frame verlorengeht, entscheidet die Zahl, nicht die Erzaehlung.
+                # ⚠ ONLY COUNT, DO NOT CHANGE (01.09.2026).  This assignment is
+                #   the only stage found with a REVERSED precedence rule: for an
+                #   equal key the LATER frame wins.  And `_sig` leaves out
+                #   hydrogens -- a stereocentre and its mirror image are
+                #   IDENTICAL to it.  Whether a frame really gets lost here
+                #   is decided by the number, not the narrative.
                 try:
                     from delfin.manta._refine_gate import ZAEHLER as _DPZ
                     _DPZ["dual_parse_gelaufen"] += 1
                 except Exception:
                     _DPZ = None
-                # ── DER FIX (DELFIN_DUALPARSE_KEEP_ALL, Vorgabe AUS) ────────────
-                # `seen_sigs` hat ZWEI Aufgaben, und nur EINE davon ist richtig:
-                #   (1) Nachschlagewerk "habe ich diese Geometrie schon?" fuer die
-                #       Alt-Kandidaten -- korrekt, die Alt-Schleife ueberschreibt nie.
-                #   (2) Traeger der Ergebnisliste (`results = list(seen_sigs.values())`
-                #       weiter unten) -- FALSCH: dabei fallen die EIGENEN Frames des
-                #       Aufrufers zusammen, bevor ueberhaupt ein Alt-Frame geprueft ist.
-                # Dieselbe Datei macht es an DREI anderen Stellen richtig (:29808,
-                # :30260, :30653): dort ist es ein SET, das nur das HINZUFUEGEN
-                # bremst und nie etwas ersetzt.  Der Fix gleicht diese Stelle daran
-                # an -- kein neuer Mechanismus, sondern das hier fehlende Muster.
+                # ── THE FIX (DELFIN_DUALPARSE_KEEP_ALL, default OFF) ────────────
+                # `seen_sigs` has TWO jobs, and only ONE of them is right:
+                #   (1) lookup "do I already have this geometry?" for the
+                #       alt candidates -- correct, the alt loop never overwrites.
+                #   (2) carrier of the result list (`results = list(seen_sigs.values())`
+                #       further down) -- WRONG: in doing so the caller's OWN frames
+                #       collapse together before a single alt frame is even checked.
+                # The same file does it right at THREE other places (:29808,
+                # :30260, :30653): there it is a SET that only brakes the ADDING
+                # and never replaces anything.  The fix aligns this site with
+                # those -- no new mechanism, but the pattern missing here.
                 _keep_all = os.environ.get("DELFIN_DUALPARSE_KEEP_ALL", "0") == "1"
-                _eigene = list(results)   # unangetastet, wenn der Fix AN ist
+                _eigene = list(results)   # untouched when the fix is ON
                 seen_sigs = {}
                 for _dx, _dl in results:
                     _dk = _sig(_dx)
@@ -35210,10 +35209,10 @@ def _smiles_to_xyz_isomers_impl(
                             _eigene.append((reordered_xyz, lbl))
                     except Exception:
                         continue
-                # ⚠ MIT FIX: die eigenen Frames bleiben ALLE, die angenommenen
-                #   Alt-Frames kommen HINTEN dran -- additiv per Konstruktion, die
-                #   Framezahl kann hier nicht mehr FALLEN.
-                #   OHNE FIX: unveraendertes altes Verhalten, Byte fuer Byte.
+                # ⚠ WITH FIX: the own frames ALL stay, the accepted alt frames
+                #   go at the BACK -- additive by construction, the frame count
+                #   can no longer DROP here.
+                #   WITHOUT FIX: unchanged old behaviour, byte for byte.
                 results = _eigene if _keep_all else list(seen_sigs.values())
         except Exception as _dual_exc:
             logger.debug("Dual-parse union failed: %s", _dual_exc)
@@ -35227,7 +35226,7 @@ def _smiles_to_xyz_isomers_impl(
     # -> 70.8 (current HEAD with this call active).
     #
     # Iter-9 H2 (universal aromatic-H post-process) REVERTED 2026-05-01
-    # ~14:35 UTC after voll-pool ≥20% mid-audit revealed catastrophic
+    # ~14:35 UTC after full-pool ≥20% mid-audit revealed catastrophic
     # F20 regression on FUSED ring systems (D-POLTIT_main_Sn_CN3 295 -> 697
     # violations).  The outward-radial projection assumes single-ring H
     # placement: when a ring atom belongs to MULTIPLE rings (fused
@@ -35513,7 +35512,7 @@ def _smiles_to_xyz_isomers_impl(
                             continue
 
                         # Iter-4: try RAW frame against strict gate first.
-                        # e6761e4 forensik: 70%+ of raw enumerator frames pass
+                        # e6761e4 forensics: 70%+ of raw enumerator frames pass
                         # HEAD's strict verify directly.  UFF refinement on TM
                         # systems often WRECKS the frame (Cu+1, Cd-6 etc. are
                         # unrecognized atom types — UFF returns garbage).
@@ -35693,7 +35692,7 @@ def _smiles_to_xyz_isomers_impl(
     # and multi-hapto only.  sigma / multi_sigma / no_metal pass through
     # unchanged.  Best-of-K fallback keeps top K=max(2, ⌈0.3·n⌉) frames if
     # filter would empty result set, guaranteeing ≥2 frames per SMILES.
-    # See results/iter8.1_multihapto_safefallback_design.md for forensik.
+    # See results/iter8.1_multihapto_safefallback_design.md for forensics.
     # Default-on; opt-out via DELFIN_ITER81_FILTER=0.
     try:
         if results and len(results) >= 3:
@@ -35705,7 +35704,7 @@ def _smiles_to_xyz_isomers_impl(
                 )
                 # Iter-8.4c: when DELFIN_SIGMA_TIGHT_THRESHOLD_ITER8=1 AND
                 # class='sigma', override the disabled-default (9999) with
-                # tau=3.  Voll-pool sigma frame median is 0 extras with a
+                # tau=3.  Full-pool sigma frame median is 0 extras with a
                 # thin tail at 3-8 extras representing d8-pincer regression
                 # cases; capping at 3 drops the catastrophic tail without
                 # touching well-formed frames.  Best-of-K fallback below
@@ -35738,12 +35737,12 @@ def _smiles_to_xyz_isomers_impl(
                     # Best-of-K fallback
                     _n_total = len(results)
                     _k_min = max(2, int(round(0.3 * _n_total)))
-                    # Iter-8.10b (2026-05-11, Subagent 1 forensik):
+                    # Iter-8.10b (2026-05-11, Subagent 1 forensics):
                     # preserve frames with DISTINCT base labels — the
                     # extras-filter killed FIRCOY/TIYRUR 5→2 and 3→2 even
                     # though distinct isomer-labels (e.g. all-trans,
                     # N-trans, O-trans, all-cis) were present. Per dual
-                    # contract "alle isomere", every distinct base-label
+                    # contract "all isomers", every distinct base-label
                     # frame must survive regardless of extras-count.
                     # Env-gate DELFIN_ITER81_PRESERVE_DISTINCT_LABELS
                     # default 1 (active); set to 0 for legacy extras-only.
@@ -35819,7 +35818,7 @@ def _smiles_to_xyz_isomers_impl(
     # Welle-5l T5 REVERT of T3-A class-conditional default-flip:
     #   T3-A flipped default to class-conditional ON for {sigma, multi-sigma,
     #   hapto, multi-hapto} based on a SINGLE-SMILES success (29-Ni 12/12
-    #   methyls fixed → 0/12).  T5 broader voll-smoke n=197 then showed at
+    #   methyls fixed → 0/12).  T5 broader full-smoke n=197 then showed at
     #   scale the mechanism REGRESSES: F19 +17.32pp, F20 +4.93pp, F25 +0.97pp,
     #   topo −0.8pp, n_isomers −0.24/SMILES, 3 SMILES drop emission entirely
     #   (Iter-11 antipattern reproduced 4th time).
@@ -35944,40 +35943,40 @@ def _smiles_to_xyz_isomers_impl(
     # no-op when DELFIN_STEREOCENTER_ENUM=0 or no coordination-created X-H stereocentre exists.
     results = _apply_stereocenter_enum_if_enabled(mol, results, _dual_parse_done)
 
-    # --- AXIALE Vollstaendigkeit (Atropisomere), additiv, Vorgabe AUS ---------------------
-    # Direkt hinter der Stereozentren-Erweiterung und aus demselben Grund an dieser Stelle:
-    # NACH dem finalen Dedup (die Gegenhaendigkeit ist schweratomnah an ihrer Basis und wuerde
-    # sonst wegkollabieren) und VOR den Rotamer-/Konformer-Erweiterungen (damit jede Haendigkeit
-    # ihre Konformerdiversitaet bekommt).
-    # ⚠ ZWEITE AUFRUFSTELLE IM FF-FREIEN ZWEIG: am 10.08. lief genau diese Modulfamilie NUR auf
-    # legacy, weil der FF-freie Pfad einen eigenen Rumpf hat.  Darum ist sie von Anfang an
-    # beidseitig verdrahtet -- Aufrufstellen zaehlen, nicht Zeilen.
+    # --- AXIAL completeness (atropisomers), additive, default OFF ---------------------------
+    # Directly behind the stereocentre expansion and at this position for the same reason:
+    # AFTER the final dedup (the opposite handedness is close to the heavy atoms at its base and
+    # would otherwise collapse away) and BEFORE the rotamer/conformer expansions (so that every
+    # handedness gets its conformer diversity).
+    # ⚠ SECOND CALL SITE IN THE FF-FREE BRANCH: on 10.08. exactly this module family ran ONLY on
+    # legacy, because the FF-free path has its own body.  That is why it is wired on both
+    # sides from the start -- call sites count, not lines.
     results = _apply_atropisomer_enum_if_enabled(mol, results, _dual_parse_done)
 
-    # --- SPIEGELABSCHLUSS, jetzt AUCH auf dem Legacy-Pfad (27.08.2026) --------------------
-    # GEZAEHLT, nicht vermutet: `_apply_mirror_enum_if_enabled` hatte 2 Aufrufstellen im
-    # FF-freien Schwanz und NULL hier -- obwohl `_mirror_enum.expand_results(results)`
-    # Frames nimmt und Frames zurueckgibt und gar nicht weiss, wer sie gebaut hat.  Es ist
-    # strukturell pfadneutral.  Und 4069 von 5685 Systemen werden LEGACY gebaut, der
-    # Spiegelabschluss erreichte also 28 % des Pools.
+    # --- MIRROR COMPLETION, now ALSO on the legacy path (27.08.2026) ------------------------
+    # COUNTED, not assumed: `_apply_mirror_enum_if_enabled` had 2 call sites in the
+    # FF-free tail and ZERO here -- although `_mirror_enum.expand_results(results)`
+    # takes frames and returns frames and does not know at all who built them.  It is
+    # structurally path-neutral.  And 4069 of 5685 systems are built LEGACY, so the
+    # mirror completion reached 28 % of the pool.
     #
-    # ⛔ WARUM ERST JETZT, obwohl die Zeile trivial ist: sie ist es NICHT ohne die zwei
-    # Tore darunter.  Gemessen am 27.08. auf beiden Archiven:
-    #     ohne Tore   +122 663 Frames auf 130 882 = +93,7 %   (Archivverdopplung)
-    #     Ursache     `_self_mirror_rmsd` prueft eine FESTE Atomreihenfolge und meldet
-    #                 deshalb bei 4069 von 4069 = 100 % "chiral" -- es misst
-    #                 KONFORMER-Haendigkeit, nicht MOLEKUEL-Chiralitaet
-    #     Trennung    >=1 Stereozentrum  1325 (32,6 %)  -> echtes neues Stereoisomer
-    #                 kein Stereozentrum 2744 (67,4 %)  -> nur ein zweiter Konformer,
-    #                                                      68 % des Preises fuer NULL Gewinn
-    # ⇒ Nur mit DELFIN_MIRROR_STEREO_GATE=1 und DELFIN_MIRROR_ONE_PER_SYSTEM=1 wird aus
-    #   dem Frame-Verdoppler ein Ein-Prozent-Hebel auf 1325 Systeme (+1,0 % statt +93,7 %).
-    #   Beide Tore sind GETRENNT schaltbar, weil sie verschiedene Fragen beantworten --
-    #   "welche Systeme" und "wie viele Frames je System".
+    # ⛔ WHY ONLY NOW, although the line is trivial: it is NOT trivial without the two
+    # gates below it.  Measured on 27.08. on both archives:
+    #     without gates  +122 663 frames on 130 882 = +93.7 %   (archive doubling)
+    #     cause          `_self_mirror_rmsd` checks a FIXED atom order and therefore
+    #                    reports "chiral" for 4069 of 4069 = 100 % -- it measures
+    #                    CONFORMER handedness, not MOLECULAR chirality
+    #     split          >=1 stereocentre  1325 (32.6 %)  -> real new stereoisomer
+    #                    no stereocentre   2744 (67.4 %)  -> only a second conformer,
+    #                                                        68 % of the price for ZERO gain
+    # ⇒ Only with DELFIN_MIRROR_STEREO_GATE=1 and DELFIN_MIRROR_ONE_PER_SYSTEM=1 does the
+    #   frame doubler become a one-percent lever on 1325 systems (+1.0 % instead of +93.7 %).
+    #   Both gates are switchable SEPARATELY, because they answer different questions --
+    #   "which systems" and "how many frames per system".
     #
-    # ⚠ NICHT GEMESSEN: ob die 1325 ihr CCDC-Isomer heute VERFEHLEN.  Ohne diese Zahl ist
-    #   der Nutzen eine Obergrenze, keine Landung.  Das entscheidet das Auge.
-    # ⛔ Vorgabe AUS (DELFIN_MIRROR_ENUM) -> byte-identisch, wie auf dem FF-freien Pfad.
+    # ⚠ NOT MEASURED: whether the 1325 MISS their CCDC isomer today.  Without this number the
+    #   benefit is an upper bound, not a landing.  The eye decides that.
+    # ⛔ Default OFF (DELFIN_MIRROR_ENUM) -> byte-identical, as on the FF-free path.
     results = _apply_mirror_enum_if_enabled(results)
 
     # --- Welle-5l Track-6: rotamer-diversity (env-flag gated, default OFF) ---
@@ -36176,35 +36175,35 @@ def _smiles_to_xyz_isomers_impl(
     # and legacy's spray follows as additional manifold members.  Strictly additive in both
     # directions: neither constructor's frames are altered or dropped.
     #
-    # ═══ SPUR AM MERGE (30.08.2026) -- DELFIN_FFFREE_UNION_TRACE, Vorgabe AUS ═════════
+    # ═══ TRACE AT THE MERGE (30.08.2026) -- DELFIN_FFFREE_UNION_TRACE, default OFF ═════
     #
-    # WOZU.  CAZMEX, JACVES und XIDKON verlieren mit UNION ihre ganze Chelatfamilie
-    # (8 -> 0, 3 -> 0, 9 -> 0).  Sieben Kandidaten sind ausgeschlossen -- zuletzt der
-    # Chelat-Enumerator selbst, dessen Bauspur (`_iso_trace`) in BEIDEN Armen bitgleich
-    # ist: er baut die Chelatframes also auch im Union-Arm.  Und zwischen dem
-    # Beiseitelegen (:32969) und hier steht kein `return` auf Rumpfebene, der Block wird
-    # erreicht.  Damit bleiben genau drei Moeglichkeiten, und keine ist gemessen:
-    #   (1) `_ffree_union` ist hier LEER, obwohl der Enumerator gebaut hat
-    #   (2) `if _ffree_union:` ist falsch aus einem anderen Grund
-    #   (3) die Chelatframes ueberleben den Merge und werden DANACH gefiltert
+    # WHAT FOR.  CAZMEX, JACVES and XIDKON lose their entire chelate family with UNION
+    # (8 -> 0, 3 -> 0, 9 -> 0).  Seven candidates are excluded -- most recently the
+    # chelate enumerator itself, whose build trace (`_iso_trace`) is bit-identical in BOTH
+    # arms: so it builds the chelate frames in the union arm too.  And between the
+    # stashing (:32969) and here there is no `return` at body level, the block is
+    # reached.  That leaves exactly three possibilities, and none is measured:
+    #   (1) `_ffree_union` is EMPTY here, although the enumerator built
+    #   (2) `if _ffree_union:` is false for another reason
+    #   (3) the chelate frames survive the merge and are filtered AFTERWARDS
     #
-    # Drei Zahlen trennen die drei Faelle: wie viele Frames traegt `_ffree_union`, wie
-    # viele `results`, und wie viele davon sind Chelat.  Genau die schreibt diese Zeile.
+    # Three numbers separate the three cases: how many frames `_ffree_union` carries, how
+    # many `results`, and how many of those are chelate.  Exactly those this line writes.
     #
-    # ⚠️ NUR AUSGABE, keine Verzweigung -- der Bau bleibt byte-identisch, wenn der
-    #    Schalter aus ist (und das ist er per Vorgabe).  `os.write(2, ...)` wie beim
-    #    CN4-Debug ein paar Zeilen weiter unten, damit die Zeile auch dann erscheint,
-    #    wenn der Logger im Arbeiterprozess nicht eingerichtet ist.
+    # ⚠️ OUTPUT ONLY, no branching -- the build stays byte-identical when the
+    #    switch is off (and it is, by default).  `os.write(2, ...)` as for the
+    #    CN4 debug a few lines further down, so that the line appears even when
+    #    the logger is not set up in the worker process.
     if os.environ.get("DELFIN_FFFREE_UNION_TRACE", "0") == "1":
-        # ⚠️ MARKER OHNE FEHLERABFANG (30.08.2026, 14:0x).  Die Zahlenzeile darunter
-        #    steht in einem `try/except: pass` -- wirft sie, erscheint NICHTS, und das
-        #    sieht in der Ausgabe exakt aus wie „Block nicht erreicht".  Genau dieser
-        #    Fall trat bei `cazmerge` ein: die ISO-Spur feuerte vollstaendig, die
-        #    Zahlenzeile nirgends.  Ohne diesen Marker sind die beiden Erklaerungen
-        #    -- Block nie erreicht ODER Ausnahme verschluckt -- nicht unterscheidbar.
-        #    Dieser `os.write` steht deshalb VOR dem `try` und ist selbst ungeschuetzt:
-        #    erscheint er, wurde der Block erreicht; erscheint er nicht, wurde er es
-        #    nicht.  Faellt er selbst um, sieht man den Traceback statt Schweigen.
+        # ⚠️ MARKER WITHOUT EXCEPTION TRAPPING (30.08.2026, 14:0x).  The numbers line below
+        #    sits in a `try/except: pass` -- if it throws, NOTHING appears, and that
+        #    looks in the output exactly like "block not reached".  Exactly this
+        #    case occurred with `cazmerge`: the ISO trace fired completely, the
+        #    numbers line nowhere.  Without this marker the two explanations
+        #    -- block never reached OR exception swallowed -- are indistinguishable.
+        #    This `os.write` therefore stands BEFORE the `try` and is itself unguarded:
+        #    if it appears, the block was reached; if it does not appear, it was
+        #    not.  If it falls over itself, one sees the traceback instead of silence.
         os.write(2, b"[UNION_MERGE] ERREICHT\n")
         try:
             _u = _ffree_union or []
@@ -36217,34 +36216,34 @@ def _smiles_to_xyz_isomers_impl(
             pass
     if _ffree_union:
         try:
-            # ⚠ 2026-08-06: _seen_x kam aus `results` -- also aus DERSELBEN Liste, die danach
-            # gefiltert wurde.  `x not in _seen_x` war damit fuer JEDES Element falsch, die
-            # Liste lief restlos leer, und uebrig blieb exakt list(_ffree_union) -- byte-
-            # identisch mit dem OFF-Arm an :31914.  Der Hebel hat die komplette legacy-Pipeline
-            # gefahren (gemessen: 1,76 h gegen 0,05 h auf 24 Systemen, 35x) und ihr Ergebnis
-            # dann verworfen.  Die Reichweiten-Sonde hat es gefangen: 0/24 geaendert.
-            # Der Dedup-Satz muss aus den FF-freien Frames kommen -- das sind die, die
-            # vorangestellt werden, also die, gegen die legacy entdoppelt werden muss.
+            # ⚠ 2026-08-06: _seen_x came from `results` -- i.e. from the SAME list that was
+            # filtered afterwards.  `x not in _seen_x` was thereby false for EVERY element, the
+            # list ran completely empty, and what remained was exactly list(_ffree_union) -- byte-
+            # identical with the OFF arm at :31914.  The lever drove the complete legacy pipeline
+            # (measured: 1.76 h against 0.05 h on 24 systems, 35x) and then discarded its
+            # result.  The reach probe caught it: 0/24 changed.
+            # The dedup set must come from the FF-free frames -- those are the ones that
+            # are prepended, i.e. the ones against which legacy must be deduplicated.
             _seen_x = {x for x, _l in _ffree_union}
             _extra = [(x, l) for x, l in results if x not in _seen_x]
-            # ===== NUR DIE FEHLENDEN ISOMERE (DELFIN_FFFREE_UNION_ISOMERS, default OFF) =====
-            # GEMESSEN 2026-08-06 an union180b, 180 Systeme:
-            #   FF-frei allein            2346 Frames
-            #   Union roh                 9829 Frames   -> 7483 importiert
-            #   davon conf-Kopien         4763           -> 64 % des Imports ist Konformer-Spruehnebel
-            # Der Schaden der Union kam NICHT von legacys Isomeren, sondern von dieser Menge:
-            # smiles_ccdc_regressed und pyramid_frame_regressed ZAEHLEN DEFEKTE FRAMES, und
-            # legacy liefert 6,9 % saubere Manifolds.  Wer seinen Spruehnebel uebernimmt,
-            # uebernimmt diese Quote tausendfach.
+            # ===== ONLY THE MISSING ISOMERS (DELFIN_FFFREE_UNION_ISOMERS, default OFF) =====
+            # MEASURED 2026-08-06 on union180b, 180 systems:
+            #   FF-free alone             2346 frames
+            #   union raw                 9829 frames   -> 7483 imported
+            #   of those conf copies      4763           -> 64 % of the import is conformer spray
+            # The damage of the union came NOT from legacy's isomers, but from this set:
+            # smiles_ccdc_regressed and pyramid_frame_regressed COUNT DEFECTIVE FRAMES, and
+            # legacy delivers 6.9 % clean manifolds.  Whoever takes over its spray
+            # takes over that rate a thousandfold.
             #
-            # Was legacy wirklich beitraegt, ist ISOMER-ABDECKUNG (71,5 % gegen 49,5 %).  Also
-            # genau das uebernehmen und sonst nichts: pro ARRANGEMENT (der Schluessel von
-            # _arrangement_key faltet Konformere und beide Haende zusammen) hoechstens EINEN
-            # Vertreter, und nur wenn FF-frei dieses Arrangement NICHT ohnehin schon hat.
+            # What legacy really contributes is ISOMER COVERAGE (71.5 % against 49.5 %).  So
+            # take over exactly that and nothing else: per ARRANGEMENT (the key of
+            # _arrangement_key folds conformers and both hands together) at most ONE
+            # representative, and only if FF-free does NOT already have this arrangement anyway.
             #
-            # Das ist die Bauform, die der User vorgibt: Vollstaendigkeit ist heilig, aber
-            # "auf Krampf alle" zaehlt nicht, und Konformere gehen nach ENERGIE, nicht nach
-            # Menge.  legacys conf-Spruehnebel ist weder das eine noch das andere.
+            # That is the build form the user prescribes: completeness is sacred, but
+            # "all of them at any cost" does not count, and conformers go by ENERGY, not by
+            # quantity.  legacy's conf spray is neither the one nor the other.
             if _extra and _delfin_env_int("DELFIN_FFFREE_UNION_ISOMERS", 0):
                 _have = set()
                 for _x, _l in _ffree_union:
@@ -36255,64 +36254,64 @@ def _smiles_to_xyz_isomers_impl(
                     try: _k = _arrangement_key(_l)
                     except Exception: _k = str(_l)
                     if _k in _have or _k in _pick:
-                        continue          # FF-frei hat es schon, oder schon einen Vertreter
+                        continue          # FF-free already has it, or already a representative
                     _pick[_k] = (_x, _l)
                     _order.append(_k)
                 _n_before = len(_extra)
                 _extra = [_pick[_k] for _k in _order]
                 _trace_seating("UNION_ISOMERS kept %d of %d legacy frames (%d arrangements already in ffree)"
                                % (len(_extra), _n_before, len(_have)))
-            # ⛔ GEMESSEN UND WIDERLEGT (2026-08-08) -- NICHT WIEDER EINSCHALTEN.
+            # ⛔ MEASURED AND REFUTED (2026-08-08) -- DO NOT SWITCH ON AGAIN.
             #
-            #   unionreach1k  UNION + Reichweite OHNE diesen Filter    8 Blocker, cap 0/+26
-            #   unionqual     dieselben plus UNION_CLEAN              13 Blocker, cap 0/+26
-            #     neu gerissen: ccdc_backbone_lost 6, ccdc_pucker_lost 2,
-            #                   ccdc_hapto_mode_lost 1, ccdc_isomer_lost 1 -> 2
+            #   unionreach1k  UNION + reach WITHOUT this filter        8 blocking terms, cap 0/+26
+            #   unionqual     the same plus UNION_CLEAN                13 blocking terms, cap 0/+26
+            #     newly torn: ccdc_backbone_lost 6, ccdc_pucker_lost 2,
+            #                 ccdc_hapto_mode_lost 1, ccdc_isomer_lost 1 -> 2
             #
-            # Dasselbe Kriterium wurde am selben Tag ein zweites Mal widerlegt, auf einem
-            # ANDEREN Pfad: TOPO_ENV im additiven Enumerator, in Isolation gegen den Champion
-            # (topoenvsolo) -- ccdc_arrangement_lost 3, isomers_lost 4, 1 besser / 4
-            # schlechter.  Zwei Orte, dasselbe Ergebnis: es ist nicht die Platzierung, es ist
-            # das KRITERIUM.  Der Vergleich der Nachbar-Element-Menge feuert auf Frames, die
-            # reale Rueckgrate, Pucker und Haptizitaeten tragen -- die geometrische Perzeption
-            # sieht dort Nachbarschaften, die der Graph nicht auffuehrt, ohne dass etwas
-            # kaputt waere.
+            # The same criterion was refuted a second time on the same day, on a
+            # DIFFERENT path: TOPO_ENV in the additive enumerator, in isolation against the champion
+            # (topoenvsolo) -- ccdc_arrangement_lost 3, isomers_lost 4, 1 better / 4
+            # worse.  Two places, the same result: it is not the placement, it is
+            # the CRITERION.  The comparison of the neighbour-element set fires on frames that
+            # carry real backbones, puckers and hapticities -- the geometric perception
+            # sees neighbourhoods there that the graph does not list, without anything
+            # being broken.
             #
-            # Der beste bekannte Union-Zustand ist damit OHNE Filter: cap_lost 0, cap_gained
-            # 26, 8 Blocker.  Was Union noch kostet, braucht ein anderes Instrument -- und
-            # nach drei gescheiterten Versuchen (TORN_GATE, SPURIOUS_BOND, dieses) ist die
-            # ehrliche Lesart, dass der Bauer die schlechten Import-Frames mit den
-            # vorhandenen Mitteln NICHT von den guten trennen kann.  Das ist die Grenze
-            # "das Auge ist die Obergrenze der Konstruktion", dreifach gemessen.
-            # ===== QUALITAETSFILTER AUF DEM IMPORT (UNION_CLEAN, neu 2026-08-07) =====
+            # The best known union state is thus WITHOUT filter: cap_lost 0, cap_gained
+            # 26, 8 blocking terms.  What union still costs needs a different instrument -- and
+            # after three failed attempts (TORN_GATE, SPURIOUS_BOND, this one) the
+            # honest reading is that the builder CANNOT separate the bad import frames from
+            # the good ones with the available means.  That is the limit
+            # "the eye is the ceiling of construction", measured three times.
+            # ===== QUALITY FILTER ON THE IMPORT (UNION_CLEAN, new 2026-08-07) =====
             #
-            # WARUM DIE ERSTE FASSUNG ZU SCHWACH WAR.  Sie schickte jeden legacy-Frame durch
-            # `_build_is_clean` -- und der war dort BLIND fuer genau die Defektart, die legacy
-            # mitbringt: er bekam kein `graph_bonds`, kannte also weder eine FEHLENDE noch eine
-            # ERFUNDENE Bindung, sondern nur "ist dieser Kontakt zu kurz".  Gemessen: er filterte
-            # 15 % der Frames und senkte die Regressionen um nichts Nennenswertes.
+            # WHY THE FIRST VERSION WAS TOO WEAK.  It sent every legacy frame through
+            # `_build_is_clean` -- and that one was BLIND there to exactly the defect type that legacy
+            # brings along: it got no `graph_bonds`, so it knew neither a MISSING nor an
+            # INVENTED bond, but only "is this contact too short".  Measured: it filtered
+            # 15 % of the frames and lowered the regressions by nothing worth mentioning.
             #
-            # WAS DIE MESSUNG SAGT.  unionreach1k hat bewiesen, dass das Entweder-Oder die ganze
-            # Ursache des Reichweiten-Schadens ist: MULTIBOND_LENGTH_EXEMPT allein cap_lost 40,
-            # mit UNION cap_lost 0 und alle 40 gerettet.  Was UNION selbst noch kostet, ist der
-            # ungefilterte Import: isomers_lost 43, n_good_regressions 23.  Und UNION_ISOMERS
-            # hat gezeigt, dass es NICHT die Menge ist -- Frames 9829 -> 3899, Regressionen nur
-            # -16 %.  Es ist die QUALITAET der importierten Frames.
+            # WHAT THE MEASUREMENT SAYS.  unionreach1k has proven that the either-or is the whole
+            # cause of the reach damage: MULTIBOND_LENGTH_EXEMPT alone cap_lost 40,
+            # with UNION cap_lost 0 and all 40 rescued.  What UNION itself still costs is the
+            # unfiltered import: isomers_lost 43, n_good_regressions 23.  And UNION_ISOMERS
+            # has shown that it is NOT the quantity -- frames 9829 -> 3899, regressions only
+            # -16 %.  It is the QUALITY of the imported frames.
             #
-            # DAS KRITERIUM, und warum es hier ueberhaupt geht.  Ein Vergleich Frame-gegen-SMILES
-            # scheitert normalerweise an der ATOMREIHENFOLGE -- genau daran ist der Mechanismus
-            # zwanzig Zeilen weiter oben schon einmal gestorben ("They never coincide, so it
-            # returned 0 every time").  Das Auge loest es ORDNUNGSFREI: aus dem SMILES steht
-            # fest, welche Schwer-Nachbarschaften ein Element haben DARF (ein Nitrat-N {O,O,O},
-            # ein Acetat-C {C}, ein Ether-O {C,C}).  Ein Frame-Atom, dessen wahrgenommene
-            # Nachbarschaft KEINE der erlaubten ist, traegt einen Topologiebruch -- ohne dass
-            # ein einziges Atom zugeordnet werden muesste.
+            # THE CRITERION, and why it works here at all.  A comparison frame-against-SMILES
+            # normally fails on the ATOM ORDER -- exactly on that the mechanism twenty lines
+            # further up has already died once ("They never coincide, so it
+            # returned 0 every time").  The eye solves it ORDER-FREE: from the SMILES it is
+            # fixed which heavy neighbourhoods an element MAY have (a nitrate N {O,O,O},
+            # an acetate C {C}, an ether O {C,C}).  A frame atom whose perceived
+            # neighbourhood is NONE of the allowed ones carries a topology break -- without
+            # a single atom having to be mapped.
             #
-            # Das faengt beide Richtungen: fehlender Nachbar = abgeloester Substituent oder
-            # gerissene Bindung; zusaetzlicher Nachbar = verschmolzener Kontakt.  Metalle bleiben
-            # auf BEIDEN Seiten aussen vor -- die Koordinationszahl beurteilt der Polyeder, nicht
-            # dieser Test.  Lizenzsauber: RDKit-Parse plus geometrische Perzeption, keine
-            # Referenzdaten.
+            # That catches both directions: missing neighbour = detached substituent or
+            # torn bond; additional neighbour = fused contact.  Metals stay out on
+            # BOTH sides -- the coordination number is judged by the polyhedron, not by
+            # this test.  License-clean: RDKit parse plus geometric perception, no
+            # reference data.
             if _extra and _delfin_env_int("DELFIN_FFFREE_UNION_CLEAN", 0) and mol is not None:
                 try:
                     from delfin.manta import _bond_decollapse as _uq_bd
@@ -36353,22 +36352,22 @@ def _smiles_to_xyz_isomers_impl(
                                     continue
                                 _ok = _allowed.get(_s)
                                 if not _ok:
-                                    continue          # Element nicht im SMILES -> nicht beurteilbar
+                                    continue          # element not in the SMILES -> not assessable
                                 _e = tuple(sorted(_uq_C(_nbrs.get(_k, [])).items()))
                                 if _e not in _ok:
-                                    return False      # Nachbarschaft, die das Molekuel nicht kennt
+                                    return False      # a neighbourhood the molecule does not know
                             return True
                         except Exception:
-                            return False              # nicht beurteilbar -> nicht uebernehmen
+                            return False              # not assessable -> do not take over
                     _n0 = len(_extra)
                     _extra = [t for t in _extra if _uq_ok(t[0])]
                     _trace_seating("UNION_CLEAN(topo) kept %d of %d legacy frames"
                                    % (len(_extra), _n0))
                 except Exception as _uq_exc:
                     _trace_seating("UNION_CLEAN(topo) no-op: %s" % (str(_uq_exc)[:70],))
-            # ZUSAMMENFUEHRUNG: FF-frei zuerst, damit Frame 0 die deterministische
-            # Konstruktion bleibt; legacys geprueftes Extra folgt als weitere
-            # Manifold-Mitglieder.  Keiner der beiden Bauer verliert etwas.
+            # MERGE: FF-free first, so that frame 0 stays the deterministic
+            # construction; legacy's checked extra follows as further
+            # manifold members.  Neither of the two builders loses anything.
             results = list(_ffree_union) + _extra
         except Exception:
             results = list(_ffree_union) + list(results)
@@ -36442,7 +36441,7 @@ def _topology_hard_gate_check(
         1 — log-only: warn on violation but still return xyz.
         2+ — reject: return (None, "topology_hard_gate: ...") on violation.
 
-    Säule 1 of Hybrid-Path. Per nature_project/15_HYBRID_PATH_FINAL.md.
+    Pillar 1 of the Hybrid-Path. Per nature_project/15_HYBRID_PATH_FINAL.md.
     """
     if xyz is None:
         return None, None
@@ -37451,7 +37450,7 @@ def smiles_to_xyz(
             Path(output_path).write_text(xyz_content, encoding='utf-8')
             logger.info(f"Converted SMILES to XYZ using {method}: {output_path}")
 
-        # Säule 1: runtime topology-invariant gate (env-flag-gated, default OFF)
+        # Pillar 1: runtime topology-invariant gate (env-flag-gated, default OFF)
         return _topology_hard_gate_check(xyz_content, smiles)
 
     except Exception as e:
@@ -39308,33 +39307,33 @@ def _geometric_inter_clash_relief(
 
 
 def _apply_template_bond_orders(ob_mol, mol_template) -> int:
-    """Bindungsordnungen aus dem RDKit-Template in die OB-Molekuel schreiben.
+    """Write bond orders from the RDKit template into the OB molecule.
 
-    WARUM.  ``pybel.readstring("xyz", ...)`` uebergibt eine NACKTE Koordinatenliste.
-    OpenBabel muss daraus Bindungen UND Bindungsordnungen selbst erraten
-    (ConnectTheDots + PerceiveBondOrders), und UFF waehlt seine Atomtypen auf Basis
-    dieser Schaetzung.  Die Bindungsordnung ist aber KEINE geometrische Groesse -- sie
-    steht im SMILES, also im Template, und wird hier weggeworfen und danach geraten.
-    ⛔ ACHTUNG, 14.08.2026: DIESE BEGRUENDUNG IST NICHT BESTAETIGT.  Baustelle 2.9 schrieb
-    den unphysikalischen C-S-Abstand (gemessen 1.37 / 1.41 / 1.46 A gegen ein kuerzestes
-    reales C=S von 1.55) dieser fehlenden Bindungsordnung zu.  Nachgeprueft am selben Tag:
-    OB perzipiert C=S an einem isolierten Thioketon bei 1.61, 1.50, 1.433 UND 1.35 A
-    jedesmal KORREKT als Ordnung 2.  Die Ordnung geht also nicht verloren, jedenfalls
-    nicht ohne Metall in der Naehe.  Der DEFEKT ist real, die URSACHE ist offen.
+    WHY.  ``pybel.readstring("xyz", ...)`` hands over a BARE coordinate list.
+    OpenBabel has to guess bonds AND bond orders from it itself
+    (ConnectTheDots + PerceiveBondOrders), and UFF chooses its atom types based on
+    this estimate.  But the bond order is NOT a geometric quantity -- it
+    stands in the SMILES, i.e. in the template, and is thrown away here and guessed afterwards.
+    ⛔ CAUTION, 14.08.2026: THIS RATIONALE IS NOT CONFIRMED.  Work item 2.9 attributed
+    the unphysical C-S distance (measured 1.37 / 1.41 / 1.46 A against a shortest
+    real C=S of 1.55) to this missing bond order.  Re-checked the same day:
+    OB perceives C=S on an isolated thioketone at 1.61, 1.50, 1.433 AND 1.35 A
+    every time CORRECTLY as order 2.  So the order is not lost, at least
+    not without a metal nearby.  The DEFECT is real, the CAUSE is open.
 
-    Dieser Schalter bleibt deshalb AUS und ist KEINE Reparatur von 2.9, sondern eine
-    Hypothese, die noch scheitern kann.  Vor einer Messung erst den Fehler auf einem der
-    drei benannten Frames reproduzieren -- im Metallkomplex, nicht am Modellmolekuel.
-    Was hier trotzdem richtig ist: eine Groesse, die im Template STEHT, sollte man nicht
-    raten lassen.
+    This switch therefore stays OFF and is NOT a repair of 2.9, but a
+    hypothesis that can still fail.  Before a measurement, first reproduce the error on one of
+    the three named frames -- in the metal complex, not on the model molecule.
+    What is nevertheless right here: a quantity that STANDS in the template should not be
+    left to guessing.
 
-    ⚠ STRENGE ZUORDNUNG.  Uebertragen wird NUR, wenn Atomzahl UND Symbolfolge exakt
-    uebereinstimmen.  Die ausgegebene XYZ muss der Template-Reihenfolge nicht folgen
-    (dieselbe Sorge steht in _bond_decollapse woertlich), und eine Bindungsordnung auf
-    das falsche Atompaar zu schreiben waere schlimmer als sie zu raten.  Bei jeder
-    Abweichung: unveraendert lassen und OB perzipieren lassen wie bisher.
+    ⚠ STRICT MAPPING.  Transfer happens ONLY if atom count AND symbol sequence match
+    exactly.  The emitted XYZ need not follow the template order
+    (the same concern is stated verbatim in _bond_decollapse), and writing a bond order onto
+    the wrong atom pair would be worse than guessing it.  On any
+    deviation: leave unchanged and let OB perceive as before.
 
-    Rueckgabe: Zahl der gesetzten Bindungen (0 = nichts angefasst).
+    Return: number of bonds set (0 = nothing touched).
     """
     if mol_template is None or not RDKIT_AVAILABLE:
         return 0
@@ -39356,7 +39355,7 @@ def _apply_template_bond_orders(ob_mol, mol_template) -> int:
                 continue
             ob_b = ob_mol.GetBond(b.GetBeginAtomIdx() + 1, b.GetEndAtomIdx() + 1)
             if ob_b is None:
-                continue                            # OB hat die Bindung nicht perzipiert
+                continue                            # OB did not perceive the bond
             if o == 5:
                 ob_b.SetAromatic(True); ob_b.SetBondOrder(1)
             else:
@@ -39411,7 +39410,7 @@ def _optimize_xyz_openbabel(
     # window of downstream _verify_metal_connectivity.  XYZ-hash-seeded
     # → deterministic same-input → same-jitter.
     # Phase 4D default-flip 2026-05-12: 0 → 1 — smoke500-verified +1.18pp sigma.
-    # Wave-4 voll-pool 11363 (A+B+I+K): jitter causes M-D break +7.71pp,
+    # Wave-4 full-pool 11363 (A+B+I+K): jitter causes M-D break +7.71pp,
     # h-clash files% +11.44pp, poly_mean_dev_Oh +4.17°, F3-bond +7.8%, F19-Td
     # +10.3% across all classes.  Net loss far exceeds sigma gain.
     # Reverted default 1 → 0 (Wave-4 Bundle 1).  Env override still works.
@@ -39449,9 +39448,9 @@ def _optimize_xyz_openbabel(
         # Read into Open Babel
         ob_mol = pybel.readstring("xyz", std_xyz)
 
-        # BINDUNGSORDNUNGEN AUS DEM TEMPLATE STATT AUS DER GEOMETRIE (2026-08-14).
-        # Vorgabe AUS -> byte-identisch; s. _apply_template_bond_orders fuer das Warum
-        # (C-S bei 1.433 A, 249 Systeme, legacy).
+        # BOND ORDERS FROM THE TEMPLATE INSTEAD OF FROM THE GEOMETRY (2026-08-14).
+        # Default OFF -> byte-identical; see _apply_template_bond_orders for the why
+        # (C-S at 1.433 A, 249 systems, legacy).
         if os.environ.get("DELFIN_FFFREE_OB_BOND_ORDERS", "0") == "1":
             _n_bo = _apply_template_bond_orders(ob_mol.OBMol, mol_template)
             if _n_bo:
@@ -40411,10 +40410,10 @@ def smiles_to_xyz_architector(smiles: str) -> Tuple[Optional[str], Optional[str]
 
 
 # ---------------------------------------------------------------------------
-# SELBSTTEST fuer DELFIN_FFFREE_HAPTO_SEAT_RIGID
+# SELF-TEST for DELFIN_FFFREE_HAPTO_SEAT_RIGID
 #   PYTHONPATH=/home/qmchem_max/DELFIN_dev python -m delfin.smiles_converter
-# Ein direkter Dateiaufruf laedt wegen der editable-Installation eine ANDERE
-# Modulkopie -- immer ueber `-m` starten.
+# A direct file invocation loads a DIFFERENT module copy because of the editable
+# installation -- always start via `-m`.
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
     import sys as _sys
@@ -40430,7 +40429,7 @@ if __name__ == "__main__":
 
     print("## Selbsttest HAPTO_SEAT_RIGID")
 
-    # 1. Das Tor ist zu, solange niemand es oeffnet -- und es liest genau EINE Variable.
+    # 1. The gate is closed as long as nobody opens it -- and it reads exactly ONE variable.
     os.environ.pop("DELFIN_FFFREE_HAPTO_SEAT_RIGID", None)
     _pruefe("Vorgabe AUS", _hapto_seat_rigid_enabled(), False)
     os.environ["DELFIN_FFFREE_HAPTO_SEAT_RIGID"] = "1"
@@ -40439,8 +40438,8 @@ if __name__ == "__main__":
     _pruefe("Schalter 0", _hapto_seat_rigid_enabled(), False)
     os.environ.pop("DELFIN_FFFREE_HAPTO_SEAT_RIGID", None)
 
-    # 2. Die Kollapszaehlung urteilt zweiseitig: sie muss den gestauchten Bau
-    #    finden UND den gesunden in Ruhe lassen.
+    # 2. The collapse count judges two-sidedly: it must find the compressed build
+    #    AND leave the healthy one alone.
     if RDKIT_AVAILABLE:
         def _mol_mit(abstand: float):
             m = Chem.RWMol()
@@ -40467,14 +40466,14 @@ if __name__ == "__main__":
         print("   (RDKit fehlt -- Geometrieteil uebersprungen)")
 
     # ------------------------------------------------------------------
-    # SELBSTTEST fuer DELFIN_FFFREE_UNION_HAPTO
-    #   Ein Schalter, der nur beweist, dass er FEUERT, beweist nichts.  Zwei der
-    #   fuenf Faelle sind GEGENLAEUFIG: bei 3 und 5 ist der Schalter AN und die
-    #   Antwort muss trotzdem unveraendert sein.
+    # SELF-TEST for DELFIN_FFFREE_UNION_HAPTO
+    #   A switch that only proves that it FIRES proves nothing.  Two of the
+    #   five cases are CONTRARY: in 3 and 5 the switch is ON and the
+    #   answer must nevertheless be unchanged.
     # ------------------------------------------------------------------
     print("## Selbsttest UNION_HAPTO")
-    _H = [("xH1", "η6-arene"), ("xH2", "η6-arene σ-1")]      # Hapto-Zweig
-    _F = [("xF1", "T-4-hapto-iso1"), ("xF2", "T-4-hapto-iso2")]   # FF-frei
+    _H = [("xH1", "η6-arene"), ("xH2", "η6-arene σ-1")]      # hapto branch
+    _F = [("xF1", "T-4-hapto-iso1"), ("xF2", "T-4-hapto-iso2")]   # FF-free
 
     os.environ.pop("DELFIN_FFFREE_UNION_HAPTO", None)
     _pruefe("1 Vorgabe AUS -> unveraendert",
@@ -40484,16 +40483,16 @@ if __name__ == "__main__":
     _pruefe("2 AN -> FF-frei zuerst, Hapto vollstaendig dahinter",
             _union_prepend_ffree(_H, _F), _F + _H)
 
-    # GEGENLAEUFIG: der Schalter ist an, aber es gibt nichts zu mischen.
+    # CONTRARY: the switch is on, but there is nothing to merge.
     _pruefe("3 AN ohne FF-freie Frames -> unveraendert",
             _union_prepend_ffree(_H, None), _H)
 
-    # Entdopplung ueber den exakten XYZ-Text: der gemeinsame Frame steht EINMAL.
+    # Dedup over the exact XYZ text: the shared frame appears ONCE.
     _pruefe("4 AN mit Ueberlappung -> kein Frame doppelt",
             _union_prepend_ffree([("xF2", "andersherum")] + _H, _F),
             _F + _H)
 
-    # GEGENLAEUFIG: '0' ist AUS, nicht 'irgendein Wert gesetzt'.
+    # CONTRARY: '0' is OFF, not 'some value set'.
     os.environ["DELFIN_FFFREE_UNION_HAPTO"] = "0"
     _pruefe("5 Schalter 0 -> unveraendert",
             _union_prepend_ffree(_H, _F), _H)

@@ -1,48 +1,45 @@
-"""delfin.manta._me_bond_snap — terminale M=E Mehrfachbindungen auf dem FF-FREIEN Pfad.
+"""delfin.manta._me_bond_snap — terminal M=E multiple bonds on the FF-FREE path.
 
-WOZU (gemessen 17.08.2026).  Der Art-Parameter ``kind="me"`` wurde am 16.08. an drei Stellen
-"verdrahtet".  Nachgezaehlt sind die drei nicht drei:
+WHAT FOR (measured 17.08.2026).  The kind parameter ``kind="me"`` was "wired up" at three sites
+on 16.08.  Recounted, the three are not three:
 
-  * ``_clamp_metalloid_md_xyz``   -- METALLOID-only (Sb/As/Bi/Te/Se/Ge/Sn/Pb).  Sieht kein
-    einziges Oxo-Metall; Re/W/V/Mo/Os stehen nicht in ``_METALLOID_MD_DONORS``.
-  * ``_md_distance_in_tolerance`` -- per Signatur ``-> bool``.  Ein PRAEDIKAT, es bewegt
-    kein Atom.
-  * ``_manual_metal_embed``       -- der CN4-Pfad.  Terminale Oxo-Komplexe sind CN5-7.
+  * ``_clamp_metalloid_md_xyz``   -- METALLOID-only (Sb/As/Bi/Te/Se/Ge/Sn/Pb).  Sees not a
+    single oxo metal; Re/W/V/Mo/Os are not in ``_METALLOID_MD_DONORS``.
+  * ``_md_distance_in_tolerance`` -- by signature ``-> bool``.  A PREDICATE, it moves
+    no atom.
+  * ``_manual_metal_embed``       -- the CN4 path.  Terminal oxo complexes are CN5-7.
 
-Uebrig bleibt ``_snap_md_distances_to_ideal`` -- mit GENAU EINER Aufrufstelle
-(``smiles_converter.py:33066``), und die liegt HINTER dem FF-freien Return (``:32399``,
-``return _ff, None``); beide im selben Rumpf ``_smiles_to_xyz_isomers_impl:32156``.
-=> Der einzige echte Setzer ist LEGACY-ONLY, und FF-frei ist 98,8 % der Bauten.
-Gemessene Folge: ``me42b`` erreichte 2 von 42, ``byte_identical`` 40.
+What remains is ``_snap_md_distances_to_ideal`` -- with EXACTLY ONE call site
+(``smiles_converter.py:33066``), and that one lies BEHIND the FF-free return (``:32399``,
+``return _ff, None``); both in the same body ``_smiles_to_xyz_isomers_impl:32156``.
+=> The only real setter is LEGACY-ONLY, and FF-free is 98.8 % of the builds.
+Measured consequence: ``me42b`` reached 2 of 42, ``byte_identical`` 40.
 
-Vierte Instanz des 10.08.-Musters ("drei additive Module nur auf LEGACY -> AUFRUFSTELLEN
-zaehlen, nie Zeilen").  Der Fehler war, FUNDSTELLEN des Art-Parameters zu zaehlen statt
-SETZSTELLEN auf dem lebenden Pfad.
+Fourth instance of the 10.08. pattern ("three additive modules only on LEGACY -> count CALL
+SITES, never lines").  The mistake was counting OCCURRENCES of the kind parameter instead of
+SETTING SITES on the live path.
 
-WARUM DIESES MODUL KEIN ``mol`` NIMMT.  ``_ffree_shared_tail`` warnt woertlich vor der
-Atomreihenfolge: ein aus SMILES geparstes mol traegt RDKits Reihenfolge, FF-freie Frames
-tragen Metall-auf-0 plus AddHs-Bloecke.  Genau daran ist der Ring-Pucker-Emitter an dieser
-Stelle schon einmal zum Nulltest geworden (185 von 187 byte-identisch).  Das Kriterium fuer
-ein terminales M=E braucht den Graphen aber gar nicht -- es ist STRUKTURELL und aus dem
-Frame selbst ablesbar.  Damit entfaellt die Falle, statt umgangen zu werden.
+WHY THIS MODULE TAKES NO ``mol``.  ``_ffree_shared_tail`` warns verbatim about the atom
+order: a mol parsed from SMILES carries RDKit's order, FF-free frames carry metal-at-0 plus
+AddHs blocks.  Precisely on this, the ring-pucker emitter at this spot once already turned
+into a null test (185 of 187 byte-identical).  But the criterion for a terminal M=E does not
+need the graph at all -- it is STRUCTURAL and readable from the frame itself.  Thus the trap
+disappears instead of being worked around.
 
-DAS KRITERIUM ist identisch zu ``smiles_converter._ml_bond_kind``, nur aus der Geometrie
-statt aus dem Graphen gelesen: Donor aus {O, N, C}, KEIN gebundener Wasserstoff, und sein
-EINZIGER schwerer Nachbar ist ein Metall.  Ein OH/NH2 ist damit korrekt kein Oxo/Imido; ein
-verbrueckendes mu-Oxo (zwei Metalle) faellt ueber "genau ein schwerer Nachbar" heraus --
-ebenfalls wie im Original, wo eine einzelne Translation zwei M-D-Ideale ohnehin nicht
-erfuellen koennte.
+THE CRITERION is identical to ``smiles_converter._ml_bond_kind``, only read from the geometry
+instead of from the graph: donor from {O, N, C}, NO bonded hydrogen, and its ONLY heavy
+neighbour is a metal.  An OH/NH2 is thereby correctly not an oxo/imido; a bridging mu-oxo
+(two metals) drops out via "exactly one heavy neighbour" -- likewise as in the original,
+where a single translation could not satisfy two M-D ideals anyway.
 
-WARUM DIE KORREKTUR HIER BESONDERS SICHER IST.  Ein terminaler Donor hat per Definition
-keinen weiteren schweren Nachbarn und keinen Wasserstoff.  Verschoben wird deshalb genau EIN
-Atom -- kein BFS-Fragment, kein Ligandrumpf.  Es kann keine Bindung zerreissen, weil das Atom
-ausser der M-D-Bindung keine hat.
+WHY THE CORRECTION IS PARTICULARLY SAFE HERE.  A terminal donor by definition has no further
+heavy neighbour and no hydrogen.  Hence exactly ONE atom is moved -- no BFS fragment, no
+ligand body.  It cannot tear a bond, because the atom has none apart from the M-D bond.
 
-Vorgabe AUS -> nicht gerufen -> byte-identisch.  Liegt fuer ein Paar kein kalibriertes Band
-vor, gibt der Aufrufer ``None`` und dieses Modul ruehrt nichts an.  LIZENZ: die Werte sind
-CCDC-abgeleitet, stehen NICHT in diesem Repo und werden hier auch nicht gelesen -- der
-Aufrufer reicht sie herein.  Deterministisch (sortierte Reihenfolge, kein RNG), nie eine
-nicht-endliche Koordinate.
+Default OFF -> not called -> byte-identical.  If no calibrated band exists for a pair, the
+caller returns ``None`` and this module touches nothing.  LICENSE: the values are
+CCDC-derived, are NOT in this repo and are not read here either -- the caller passes them
+in.  Deterministic (sorted order, no RNG), never a non-finite coordinate.
 """
 from __future__ import annotations
 
@@ -57,34 +54,34 @@ from delfin.manta._coord_angle_corrector import (
     _parse_xyz,
 )
 
-# Elemente, fuer die es ueberhaupt terminale M=E-Chemie gibt (Oxo / Nitrido / Imido / Carbin).
+# Elements for which terminal M=E chemistry exists at all (oxo / nitrido / imido / carbyne).
 _ME_ELEMENTS = frozenset({"O", "N", "C"})
 
-# Harte Untergrenze fuer einen Schwer-Schwer-Kontakt.  Kommt der Donor durch die Verkuerzung
-# einem DRITTEN Atom naeher als das, wird er zurueckgerollt -- die Verkuerzung zieht ihn ja
-# in die Koordinationssphaere hinein.
+# Hard lower bound for a heavy-heavy contact.  If the shortening brings the donor closer to
+# a THIRD atom than this, it is rolled back -- the shortening does, after all, pull it into
+# the coordination sphere.
 _CLASH_FLOOR_A = 1.30
 
-# Relative Mindestaenderung, damit ueberhaupt gesetzt wird.  Verhindert Rauschen auf Paaren,
-# deren Band praktisch 1.0 ist (62 % der gemessenen Paare liegen zwischen 0.95 und 1.05).
+# Minimum relative change before anything is set at all.  Prevents noise on pairs whose
+# band is practically 1.0 (62 % of the measured pairs lie between 0.95 and 1.05).
 _MIN_REL_DELTA = 0.02
 
 
 def terminal_me_pairs(syms: List[str], nbrs: List[List[int]]) -> List[Tuple[int, int]]:
-    """(metall_idx, donor_idx) fuer jeden strukturell terminalen M=E-Donor, sortiert."""
+    """(metal_idx, donor_idx) for every structurally terminal M=E donor, sorted."""
     out: List[Tuple[int, int]] = []
     for d, s in enumerate(syms):
         if s not in _ME_ELEMENTS:
             continue
         nb = nbrs[d] if d < len(nbrs) else []
         if any(syms[x] == "H" for x in nb):
-            continue                                  # OH / NH2 / CH ist kein Oxo/Imido
+            continue                                  # OH / NH2 / CH is not an oxo/imido
         heavy = [x for x in nb if syms[x] != "H"]
         if len(heavy) != 1:
-            continue                                  # terminal: genau EIN schwerer Nachbar
+            continue                                  # terminal: exactly ONE heavy neighbour
         m = heavy[0]
         if not _is_metal_sym(syms[m]):
-            continue                                  # und der muss das Metall sein
+            continue                                  # and that one must be the metal
         out.append((m, d))
     out.sort()
     return out
@@ -94,13 +91,13 @@ def snap_me_bonds(
     xyz_str: str,
     target_for: Callable[[str, str], Optional[float]],
 ) -> str:
-    """Setze jede terminale M=E-Bindung auf ihre kalibrierte Laenge.
+    """Set every terminal M=E bond to its calibrated length.
 
-    ``target_for(metall_symbol, donor_symbol)`` gibt die Ziellaenge in Angstroem, oder
-    ``None``, wenn fuer das Paar KEIN kalibriertes Band vorliegt.  ``None`` heisst
-    ausdruecklich "nichts tun" -- ohne Tabelle ist der Durchlauf byte-identisch.
+    ``target_for(metal_symbol, donor_symbol)`` returns the target length in Angstrom, or
+    ``None`` if NO calibrated band exists for the pair.  ``None`` explicitly means
+    "do nothing" -- without a table the pass is byte-identical.
 
-    Gibt bei jedem Fehlschlag den unveraenderten Eingang zurueck.
+    Returns the unchanged input on every failure.
     """
     if not xyz_str:
         return xyz_str
@@ -143,14 +140,14 @@ def snap_me_bonds(
         cand = new_pts[m] + v * (target / cur)
         if not np.all(np.isfinite(cand)):
             continue
-        # ROLLBACK: der Donor darf keinem DRITTEN Atom naeher kommen als der harten
-        # Untergrenze.  Das Metall ist ausgenommen -- zu ihm ist die neue Distanz das Ziel.
+        # ROLLBACK: the donor must not come closer to a THIRD atom than the hard
+        # lower bound.  The metal is exempt -- for it, the new distance is the target.
         others = [k for k in range(len(syms)) if k != d and k != m]
         if others:
             before = float(np.min(np.linalg.norm(new_pts[others] - new_pts[d], axis=1)))
             after = float(np.min(np.linalg.norm(new_pts[others] - cand, axis=1)))
             if after < before and after < _CLASH_FLOOR_A:
-                continue                              # verworfen, dieser Donor bleibt
+                continue                              # rejected, this donor stays
         new_pts[d] = cand
         moved = True
 
@@ -163,7 +160,7 @@ def snap_me_bonds(
 
 
 # ---------------------------------------------------------------------------
-# Selbsttest:  python delfin/manta/_me_bond_snap.py
+# Self-test:  python delfin/manta/_me_bond_snap.py
 # ---------------------------------------------------------------------------
 def _self_test() -> int:
     def _xyz(rows):
@@ -178,9 +175,9 @@ def _self_test() -> int:
 
     fails = 0
 
-    # 1) TERMINALES OXO wird auf die Ziellaenge gesetzt.
+    # 1) TERMINAL OXO is set to the target length.
     base = _xyz([("W", 0.0, 0.0, 0.0),
-                 ("O", 2.10, 0.0, 0.0),      # terminal -> soll wandern
+                 ("O", 2.10, 0.0, 0.0),      # terminal -> should move
                  ("Cl", 0.0, 2.30, 0.0),
                  ("Cl", 0.0, -2.30, 0.0),
                  ("Cl", 0.0, 0.0, 2.30)])
@@ -190,13 +187,13 @@ def _self_test() -> int:
     print(f"1 terminales W=O 2.100 -> {d1:.4f} (Ziel 1.905)  {'OK' if ok else 'FEHLER'}")
     fails += 0 if ok else 1
 
-    # 2) OHNE BAND (target None) passiert NICHTS -- byte-identisch.
+    # 2) WITHOUT A BAND (target None) NOTHING happens -- byte-identical.
     same = snap_me_bonds(base, lambda m, d: None)
     ok = (same == base)
     print(f"2 ohne Band byte-identisch: {'OK' if ok else 'FEHLER'}")
     fails += 0 if ok else 1
 
-    # 3) HYDROXO wird NICHT angefasst (O traegt ein H).
+    # 3) HYDROXO is NOT touched (O carries an H).
     oh = _xyz([("W", 0.0, 0.0, 0.0),
                ("O", 2.10, 0.0, 0.0),
                ("H", 2.70, 0.90, 0.0),
@@ -206,7 +203,7 @@ def _self_test() -> int:
     print(f"3 Hydroxo unangetastet: {'OK' if ok else 'FEHLER'}")
     fails += 0 if ok else 1
 
-    # 4) VERBRUECKENDES mu-Oxo (zwei Metalle) wird NICHT angefasst.
+    # 4) BRIDGING mu-oxo (two metals) is NOT touched.
     mu = _xyz([("W", 0.0, 0.0, 0.0),
                ("O", 1.95, 0.0, 0.0),
                ("W", 3.90, 0.0, 0.0),
@@ -216,13 +213,13 @@ def _self_test() -> int:
     print(f"4 mu-Oxo unangetastet: {'OK' if ok else 'FEHLER'}")
     fails += 0 if ok else 1
 
-    # 5) Der ZWEITE Aufruf aendert nichts mehr (idempotent).
+    # 5) The SECOND call changes nothing any more (idempotent).
     twice = snap_me_bonds(got, lambda m, d: 1.905 if (m, d) == ("W", "O") else None)
     ok = (twice == got)
     print(f"5 idempotent: {'OK' if ok else 'FEHLER'}")
     fails += 0 if ok else 1
 
-    # 6) Nur der Donor bewegt sich -- alle uebrigen Atome stehen exakt still.
+    # 6) Only the donor moves -- all other atoms stay exactly still.
     s0, p0, _ = _parse_xyz(base)
     s1, p1, _ = _parse_xyz(got)
     moved = [i for i in range(len(s0)) if float(np.linalg.norm(p0[i] - p1[i])) > 1e-9]
