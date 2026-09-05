@@ -24,19 +24,7 @@ import pytest
 from delfin.agent import sandbox
 
 
-def _bwrap_functional() -> bool:
-    """True only if bwrap is installed AND can sandbox. Unprivileged CI
-    containers ship bwrap but can't create user namespaces (it exits non-zero),
-    so `which("bwrap")` alone would wrongly let the real-bwrap test run + fail."""
-    import subprocess
-    if shutil.which("bwrap") is None:
-        return False
-    try:
-        r = subprocess.run(["bwrap", "--ro-bind", "/", "/", "true"],
-                           capture_output=True, timeout=10)
-        return r.returncode == 0
-    except Exception:
-        return False
+from conftest import requires_a_working_sandbox
 
 
 # ---------------------------------------------------------------------------
@@ -253,17 +241,9 @@ def test_run_agent_command_executes_allowed(monkeypatch, tmp_path):
     assert any('"exit": 0' in line for line in audit)
 
 
-@pytest.mark.skipif(not _bwrap_functional(),
-                    reason="bwrap not installed or not functional (e.g. unprivileged CI container)")
-def test_run_agent_command_via_bwrap_blocks_network(monkeypatch, tmp_path):
-    """End-to-end with real bwrap: --unshare-net should block outbound calls.
-
-    We attempt a TCP-connect to a local high port that is not listening; in
-    a no-network namespace the call fails with EHOSTUNREACH/ENETDOWN very
-    quickly, while without unshare-net it would fail with ECONNREFUSED.
-    The exit-code path differs, but we mainly assert the sandbox actually
-    runs and produces a result (i.e., bwrap didn't refuse to launch).
-    """
+@requires_a_working_sandbox
+def test_run_agent_command_via_bwrap_actually_runs(monkeypatch, tmp_path):
+    """The wrap builds and the command inside it produces its result."""
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
     monkeypatch.setenv("DELFIN_AGENT_SANDBOX", "bwrap")
     res = sandbox.run_agent_command("python -c 'print(1+1)'", tmp_path)
@@ -271,3 +251,51 @@ def test_run_agent_command_via_bwrap_blocks_network(monkeypatch, tmp_path):
     assert res.returncode == 0
     assert res.stdout.strip() == "2"
     assert res.mode == "bwrap"
+
+
+@requires_a_working_sandbox
+def test_run_agent_command_via_bwrap_blocks_network(monkeypatch, tmp_path):
+    """--unshare-net has to actually unshare the network.
+
+    The test of this name asserted only that the wrap launched and that
+    ``print(1+1)`` printed 2 -- its own docstring described a TCP-connect
+    probe that the body never made.
+
+    A connect probe is the wrong instrument anyway, and finding that out
+    is why it is written down here: bwrap brings the loopback interface UP
+    inside the new namespace, so ``connect(('127.0.0.1', 9))`` answers
+    ECONNREFUSED on both sides of the boundary, and an outbound probe
+    cannot tell "no namespace" from "no internet on this host".
+
+    ``/proc/net/dev`` can. ``--proc /proc`` mounts a fresh procfs, so the
+    interface list is the one belonging to the CURRENT network namespace.
+    Unshared it holds ``lo`` and nothing else; on the host it holds every
+    physical and bridge interface the machine has.
+    """
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.setenv("DELFIN_AGENT_SANDBOX", "bwrap")
+
+    host_ifaces = _interfaces_in(Path("/proc/net/dev").read_text())
+    if host_ifaces == {"lo"}:
+        pytest.skip("this host has no interface besides loopback")
+
+    res = sandbox.run_agent_command("cat /proc/net/dev", tmp_path)
+    assert not res.blocked, res.block_reason
+    assert res.mode == "bwrap"
+    assert res.returncode == 0, res.stderr[:300]
+
+    inside = _interfaces_in(res.stdout)
+    assert inside == {"lo"}, (
+        "the sandbox shares the host's network namespace: "
+        f"{sorted(inside)}")
+
+
+def _interfaces_in(proc_net_dev: str) -> set:
+    """Interface names out of a ``/proc/net/dev`` dump (two header lines)."""
+    names = set()
+    for line in proc_net_dev.splitlines()[2:]:
+        name, _, _rest = line.partition(":")
+        name = name.strip()
+        if name:
+            names.add(name)
+    return names

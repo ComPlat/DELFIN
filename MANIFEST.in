@@ -4,7 +4,7 @@ include pyproject.toml
 
 recursive-include delfin *.py
 recursive-include delfin/notebooks *.ipynb
-recursive-include delfin/logo *.png *.PNG
+recursive-include delfin/logo *.png *.PNG *.gif
 recursive-include tests *.py
 
 prune delfin/csp_tools/.build

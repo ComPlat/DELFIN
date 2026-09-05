@@ -39,6 +39,8 @@ class DelfinConfig:
     run_XTB_before_ORCA: str = "auto"
     frequency_calculation: str = "no"
     frequency_calculation_OCCUPIER: str = "no"
+    #: FSPE or G — which energy OCCUPIER ranks configurations by.
+    OCCUPIER_compare: str = "FSPE"
 
     # OCCUPIER selection parameters
     occupier_selection: str = "tolerance"
@@ -159,7 +161,10 @@ class DelfinConfig:
     def is_frequency_calculation_enabled(self, workflow: str = "main") -> bool:
         """Check if frequency calculations are enabled for a workflow."""
         if workflow == "OCCUPIER":
-            return str(self.frequency_calculation_OCCUPIER).lower() == 'yes'
+            # Gibbs free energies only exist after a frequency run, so asking
+            # for a G comparison is what turns frequencies on.
+            return str(getattr(self, "OCCUPIER_compare", "FSPE")).upper() == "G" or \
+                str(self.frequency_calculation_OCCUPIER).lower() == 'yes'
         else:
             return str(self.frequency_calculation).lower() == 'yes'
 

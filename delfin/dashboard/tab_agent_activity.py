@@ -13,11 +13,6 @@ from pathlib import Path
 import ipywidgets as widgets
 
 from delfin.agent.outcome_tracker import CycleOutcome, load_outcomes
-from delfin.dashboard.claude_hooks import discover_hooks, render_hooks_html
-from delfin.dashboard.claude_settings import (
-    discover_settings,
-    render_settings_html,
-)
 from delfin.dashboard.git_worktrees import (
     list_worktrees,
     render_worktrees_html,
@@ -451,8 +446,8 @@ def _render_summary(stats: dict) -> str:
         return (
             '<div style="padding:12px;background:#f9fafb;border-radius:6px;'
             'color:#6b7280;font-size:12px;">'
-            'Keine Outcome-Einträge gefunden. Sobald der Agent Cycles abschließt, '
-            'erscheinen sie hier.</div>'
+            'No outcome entries found. They appear here as soon as the agent '
+            'completes cycles.</div>'
         )
     cards = [
         ("Total runs", str(stats["n"]), "#3b82f6"),
@@ -561,7 +556,7 @@ def _render_timeline(outcomes: list[CycleOutcome], limit: int = 100) -> str:
     """
     if not outcomes:
         return '<div style="padding:12px;color:#6b7280;font-size:12px;">' \
-               'Keine Einträge passen zum Filter.</div>'
+               'No entries match the filter.</div>'
     rows = []
     for o in reversed(outcomes[-limit:]):
         verdict_color = _VERDICT_COLORS.get(o.verdict, "#9ca3af")
@@ -677,7 +672,7 @@ def _render_timeline(outcomes: list[CycleOutcome], limit: int = 100) -> str:
 def _options_with_blank(values: list[str]) -> list[tuple[str, str]]:
     """Build ipywidgets dropdown options with a leading blank entry."""
     seen = sorted({v for v in values if v})
-    return [("(alle)", "")] + [(v, v) for v in seen]
+    return [("(all)", "")] + [(v, v) for v in seen]
 
 
 def create_tab(ctx, history_path: Path | None = None):
@@ -694,27 +689,27 @@ def create_tab(ctx, history_path: Path | None = None):
     title = widgets.HTML(
         value='<h3 style="margin:0;color:#111827;">Agent Activity</h3>'
               '<p style="margin:4px 0 12px 0;color:#6b7280;font-size:12px;">'
-              'Outcome history aller Agent-Cycles (Lese-Modus).</p>'
+              'Outcome history of all agent cycles (read-only).</p>'
     )
     provider_dd = widgets.Dropdown(
-        options=[("(alle)", "")], value="", description="Provider:",
+        options=[("(all)", "")], value="", description="Provider:",
         layout=widgets.Layout(width="200px"),
         style={"description_width": "70px"},
     )
     mode_dd = widgets.Dropdown(
-        options=[("(alle)", "")], value="", description="Mode:",
+        options=[("(all)", "")], value="", description="Mode:",
         layout=widgets.Layout(width="200px"),
         style={"description_width": "70px"},
     )
     verdict_dd = widgets.Dropdown(
-        options=[("(alle)", ""), ("PASS", "PASS"), ("FAIL", "FAIL"),
+        options=[("(all)", ""), ("PASS", "PASS"), ("FAIL", "FAIL"),
                  ("PARTIAL", "PARTIAL")],
         value="", description="Verdict:",
         layout=widgets.Layout(width="200px"),
         style={"description_width": "70px"},
     )
     class_dd = widgets.Dropdown(
-        options=[("(alle)", "")], value="", description="Class:",
+        options=[("(all)", "")], value="", description="Class:",
         layout=widgets.Layout(width="200px"),
         style={"description_width": "70px"},
     )
@@ -727,8 +722,6 @@ def create_tab(ctx, history_path: Path | None = None):
     timeline_html = widgets.HTML(value="")
     cost_html = widgets.HTML(value="")
     mcp_html = widgets.HTML(value="")
-    hooks_html = widgets.HTML(value="")
-    settings_html = widgets.HTML(value="")
     worktrees_html = widgets.HTML(value="")
     schedules_html = widgets.HTML(value="")
 
@@ -738,7 +731,7 @@ def create_tab(ctx, history_path: Path | None = None):
         "_live_timer": None,
         "_live_stop": False,
         # Cached counts so we can update Accordion section titles cheaply
-        "_counts": {"mcp": 0, "hooks": 0, "settings": 0, "worktrees": 0, "schedules": 0},
+        "_counts": {"mcp": 0, "worktrees": 0, "schedules": 0},
     }
 
     # ---- A1: Live snapshot collector + auto-refresher ------------------
@@ -823,24 +816,6 @@ def create_tab(ctx, history_path: Path | None = None):
         except Exception:
             mcp_html.value = ""
             state["_counts"]["mcp"] = 0
-        # Refresh Claude hook inventory (read-only).
-        try:
-            project_path = (Path.cwd() / ".claude" / "settings.json")
-            hooks = discover_hooks(project_path=project_path)
-            hooks_html.value = render_hooks_html(hooks)
-            state["_counts"]["hooks"] = len(hooks or [])
-        except Exception:
-            hooks_html.value = ""
-            state["_counts"]["hooks"] = 0
-        # Refresh Claude settings inventory (read-only).
-        try:
-            project_path = (Path.cwd() / ".claude" / "settings.json")
-            views = discover_settings(project_path=project_path)
-            settings_html.value = render_settings_html(views)
-            state["_counts"]["settings"] = len(views or [])
-        except Exception:
-            settings_html.value = ""
-            state["_counts"]["settings"] = 0
         # Refresh git worktree inventory (read-only).
         try:
             wts = list_worktrees(Path.cwd())
@@ -885,7 +860,7 @@ def create_tab(ctx, history_path: Path | None = None):
     )
     recent_runs = widgets.VBox([filter_row, summary_html, timeline_html])
     cost_insights = widgets.VBox([cost_html])
-    configuration = widgets.VBox([mcp_html, hooks_html, settings_html])
+    configuration = widgets.VBox([mcp_html])
     local_state = widgets.VBox([worktrees_html, schedules_html])
 
     accordion = widgets.Accordion(
@@ -904,10 +879,7 @@ def create_tab(ctx, history_path: Path | None = None):
         # Cost-insights title gets the honest "all-time" total in the badge
         all_time = _outcomes_total_delta(state["all_outcomes"])
         accordion.set_title(1, f"Cost insights ({_fmt_cost(all_time)} all-time)")
-        accordion.set_title(
-            2,
-            f"Configuration ({c['mcp']} MCP · {c['hooks']} hooks · {c['settings']} settings)"
-        )
+        accordion.set_title(2, f"Configuration ({c['mcp']} MCP)")
         accordion.set_title(
             3,
             f"Local state ({c['worktrees']} worktrees · {c['schedules']} schedules)"

@@ -177,7 +177,7 @@ TDDFT Settings:
 TDDFT_TDDFT_maxiter=500
 TDDFT_nroots=15
 TDDFT_maxdim=30
-TDDFT_TDA=FALSE
+TDDFT_TDA=TRUE
 TDDFT_followiroot=true
 TDDFT_SOC=false
 ------------------------------------
@@ -263,11 +263,10 @@ enable_performance_metrics=yes
 OCCUPIER-Settings:
 --------------------
 OCCUPIER_method=auto
-OCCUPIER_tree=own
 OWN_TREE_PURE_WINDOW=3
 OWN_progressive_from=no
 fob_equal_weights=yes
-frequency_calculation_OCCUPIER=no
+OCCUPIER_compare=FSPE
 occupier_selection=tolerance
 occupier_precision=3
 occupier_epsilon=5e-4
@@ -425,7 +424,7 @@ TDDFT Settings:
 TDDFT_TDDFT_maxiter=500
 TDDFT_nroots=15
 TDDFT_maxdim=30
-TDDFT_TDA=FALSE
+TDDFT_TDA=TRUE
 TDDFT_followiroot=true
 TDDFT_SOC=false
 ------------------------------------
@@ -505,11 +504,10 @@ enable_performance_metrics=yes
 OCCUPIER-Settings:
 --------------------
 OCCUPIER_method=auto
-OCCUPIER_tree=own
 OWN_TREE_PURE_WINDOW=3
 OWN_progressive_from=no
 fob_equal_weights=yes
-frequency_calculation_OCCUPIER=no
+OCCUPIER_compare=FSPE
 occupier_selection=tolerance
 occupier_precision=3
 occupier_epsilon=5e-4

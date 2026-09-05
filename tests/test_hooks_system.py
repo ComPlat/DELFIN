@@ -7,6 +7,21 @@ import tempfile
 from pathlib import Path
 
 from delfin.agent import hooks as H
+from delfin.agent import workspace_trust as WT
+
+
+def _trust(workspace: Path) -> None:
+    """Grant hook trust the way the user does.
+
+    A workspace's settings file is executable configuration and is
+    honoured only for a directory the USER has trusted — see
+    ``workspace_trust`` and
+    ``tests/test_a_checked_out_repository_cannot_run_commands.py``.
+    These tests exercise what hooks DO once that decision exists, so
+    they make it explicitly rather than relying on a default that would
+    let any checked-out repository run commands.
+    """
+    WT.trust_workspace(workspace, [WT.KIND_HOOKS], actor=WT.ACTOR_USER)
 
 
 def _write_settings(workspace: Path, hooks_obj: dict) -> None:
@@ -15,12 +30,28 @@ def _write_settings(workspace: Path, hooks_obj: dict) -> None:
     (settings_dir / "settings.json").write_text(
         json.dumps({"hooks": hooks_obj}), encoding="utf-8",
     )
+    _trust(workspace)
 
 
 def test_load_hooks_empty_when_no_settings():
     with tempfile.TemporaryDirectory() as d:
         cfg = H.load_hooks(d)
         assert cfg.is_empty()
+
+
+def test_load_hooks_ignores_an_untrusted_workspace():
+    """The default. A settings file the user never trusted supplies
+    nothing, and says so."""
+    with tempfile.TemporaryDirectory() as d:
+        ws = Path(d)
+        (ws / ".delfin").mkdir()
+        (ws / ".delfin" / "settings.json").write_text(json.dumps({
+            "hooks": {"PreToolUse": [{"matcher": "", "hooks": [
+                {"type": "command", "command": "true"}]}]}
+        }), encoding="utf-8")
+        cfg = H.load_hooks(ws)
+        assert cfg.is_empty()
+        assert cfg.warnings
 
 
 def test_load_hooks_reads_project_settings():
@@ -154,7 +185,7 @@ def test_user_prompt_submit_hook():
             "UserPromptSubmit": [
                 {"matcher": "",
                  "hooks": [{"type": "command",
-                            "command": f"echo $CLAUDE_USER_PROMPT > {marker}"}]}
+                            "command": f"echo $DELFIN_USER_PROMPT > {marker}"}]}
             ]
         })
         cfg = H.load_hooks(ws)
@@ -200,6 +231,7 @@ def test_local_settings_extends_project_settings():
                 {"matcher": "b", "hooks": [{"type": "command", "command": "true"}]}
             ]}
         }), encoding="utf-8")
+        _trust(ws)
         cfg = H.load_hooks(ws)
         matchers = sorted(h.matcher for h in cfg.for_event("PreToolUse"))
         assert matchers == ["a", "b"]
@@ -246,8 +278,8 @@ def test_env_vars_set():
                 {"matcher": ".*",
                  "hooks": [{"type": "command",
                             "command": (
-                                f"echo $CLAUDE_HOOK_EVENT $CLAUDE_TOOL_NAME "
-                                f"$CLAUDE_WORKSPACE > {out}"
+                                f"echo $DELFIN_HOOK_EVENT $DELFIN_TOOL_NAME "
+                                f"$DELFIN_WORKSPACE > {out}"
                             )}]}
             ]
         })
@@ -260,3 +292,135 @@ def test_env_vars_set():
         assert line[0] == "PreToolUse"
         assert line[1] == "edit_file"
         assert str(ws.resolve()) == str(Path(line[2]).resolve())
+
+
+# ---------------------------------------------------------------------------
+# A PostToolUse hook can tell the agent what it found
+# ---------------------------------------------------------------------------
+
+def test_post_tool_hook_output_reaches_the_model():
+    """It went to stderr only, so the most useful hook shape there is --
+    run the linter after every edit and tell the agent what it said -- was
+    impossible. A user could get it only as a BLOCKING PreToolUse, which
+    refuses the edit instead of reporting on it."""
+    from delfin.agent.api_client import _post_hook_note
+
+    class _Outcome:
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    note = _post_hook_note([_Outcome("ruff: 2 issues in mod.py")])
+    assert "ruff: 2 issues" in note
+    assert "[hook]" in note, "the model must be able to tell hook from tool"
+
+
+def test_a_silent_hook_adds_nothing():
+    """The common case: no output, no note, no cost."""
+    from delfin.agent.api_client import _post_hook_note
+
+    class _Outcome:
+        stdout = ""
+
+    assert _post_hook_note([]) == ""
+    assert _post_hook_note([_Outcome()]) == ""
+
+
+def test_a_chatty_hook_cannot_bury_the_tool_result():
+    """The original reason for discarding this output was real and still
+    holds -- it just did not justify throwing the output away."""
+    from delfin.agent.api_client import _post_hook_note
+
+    class _Outcome:
+        stdout = "x" * 50_000
+
+    note = _post_hook_note([_Outcome()])
+    assert len(note) < 2_500
+    assert "omitted" in note, "silent truncation reads as complete output"
+
+
+def test_a_broken_outcome_does_not_break_the_tool_result():
+    from delfin.agent.api_client import _post_hook_note
+
+    assert _post_hook_note(None) == ""
+    assert _post_hook_note([object()]) == ""
+
+
+def test_only_events_that_fire_are_configurable():
+    """"Notification" validated in settings and was raised nowhere: a user
+    could configure a hook for it and nothing would ever run. A declared
+    event that never arrives is worse than an absent one, because it looks
+    configured."""
+    from delfin.agent.hooks import _VALID_EVENTS
+
+    assert "Notification" not in _VALID_EVENTS
+    for event in _VALID_EVENTS:
+        assert event in ("PreToolUse", "PostToolUse", "UserPromptSubmit",
+                         "Stop"), event
+
+
+# ---------------------------------------------------------------------------
+# A skill can run in a sub-agent
+# ---------------------------------------------------------------------------
+
+def _skill_scene():
+    import pathlib
+    import tempfile
+    from delfin.agent import api_client as A
+
+    ws = pathlib.Path(tempfile.mkdtemp(prefix="ws_"))
+    (ws / ".delfin" / "skills").mkdir(parents=True)
+    (ws / ".delfin" / "skills" / "tidy.md").write_text(
+        "---\nname: tidy\ndescription: tidy a folder\n---\n\n"
+        "List the files, then report.\n", encoding="utf-8")
+    perms = A.KitToolPermissions(workspace=ws)
+    perms.mode = "acceptEdits"
+    return A._DocToolExecutor.__new__(A._DocToolExecutor), perms
+
+
+def test_a_skill_still_returns_its_playbook_by_default():
+    import json
+
+    executor, perms = _skill_scene()
+    out = json.loads(executor._execute_skill({"name": "tidy"}, perms))
+    assert out["status"] == "ok"
+    assert "List the files" in out["content"]
+
+
+def test_a_skill_can_be_delegated():
+    """Both halves existed and there was no bridge: a skill returned text
+    for THIS agent to follow, and a sub-agent took a prompt. So a
+    self-contained job could be packaged as a skill or delegated, never
+    both -- and every step of it landed in the parent's context whether or
+    not the parent needed it."""
+    import json
+
+    executor, perms = _skill_scene()
+    captured: dict = {}
+    executor._execute_subagent = lambda args, p: (
+        captured.update(args), '{"status": "delegated"}')[1]
+
+    out = json.loads(
+        executor._execute_skill({"name": "tidy", "delegate": True}, perms))
+    assert out["status"] == "delegated"
+    assert "List the files" in captured["prompt"], (
+        "the delegate must receive the skill body, not just its name")
+    assert captured["description"] == "skill: tidy"
+
+
+def test_delegating_an_unknown_skill_reports_it_rather_than_delegating():
+    import json
+
+    executor, perms = _skill_scene()
+    executor._execute_subagent = lambda args, p: '{"status": "delegated"}'
+    out = json.loads(
+        executor._execute_skill({"name": "nope", "delegate": True}, perms))
+    assert "error" in out
+    assert "available" in out
+
+
+def test_the_flag_is_documented_where_the_model_reads_it():
+    from delfin.agent.api_client import _DOC_TOOLS_OPENAI
+
+    skill = next(t["function"] for t in _DOC_TOOLS_OPENAI
+                 if t["function"]["name"] == "skill")
+    assert "delegate" in skill["parameters"]["properties"]

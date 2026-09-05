@@ -24,6 +24,11 @@ from delfin.common.logging import get_logger
 
 logger = get_logger(__name__)
 
+# How much of the end of an ORCA output is searched for error signatures.
+# ORCA reports what went wrong immediately before it aborts, so the tail is
+# where the evidence is; reading more only costs memory at the worst moment.
+_ERROR_SCAN_TAIL_BYTES = 2 * 1024 * 1024
+
 
 class OrcaErrorType(Enum):
     """Classification of ORCA error types."""
@@ -48,6 +53,17 @@ class OrcaErrorType(Enum):
 
     MPI_CRASH = "mpi_crash"
     """MPI communication failure or process crash."""
+
+    CIS_FAILURE = "cis_failure"
+    """CIS/TD-DFT module aborted (e.g. RPA diagonalization failure)."""
+
+    TDDFT_ROOT_COLLAPSE = "tddft_root_collapse"
+    """TD-DFT excitation energy collapsed to ~0 or went negative.
+
+    Signature of a triplet instability of the closed-shell reference under
+    full TD-DFT (RPA). ORCA does not flag this as an error and happily
+    carries the garbage root through an entire geometry optimization.
+    """
 
     DIIS_ERROR = "diis_error"
     """DIIS convergence acceleration failed."""
@@ -83,6 +99,27 @@ class OrcaErrorDetector:
                 "SCF has not converged",
             ],
             "all_required": True,
+            "priority": 2,
+        },
+        # CIS/TD-DFT module aborts. Must outrank the generic MPI_CRASH
+        # block below: an RPA diagonalization failure also prints the mpirun
+        # "exited on signal" banner, but it is a deterministic numerical
+        # failure, not a parallelization hiccup - retrying it with fewer
+        # cores reproduces it exactly.
+        {
+            "type": OrcaErrorType.CIS_FAILURE,
+            "patterns": [
+                "error termination in CIS",
+            ],
+            "all_required": False,
+            "priority": 2,
+        },
+        {
+            "type": OrcaErrorType.CIS_FAILURE,
+            "patterns": [
+                "TRandomPhaseApproximationDiagonalization",
+            ],
+            "all_required": False,
             "priority": 2,
         },
         # MPI crashes - general process crashes
@@ -124,12 +161,21 @@ class OrcaErrorDetector:
             "all_required": False,
             "priority": 3,
         },
-        # DIIS errors
+        # DIIS errors.
+        # NOTE: "DIIS error" must NOT be listed here. Pattern matching is
+        # case-insensitive and every ORCA SCF settings block prints
+        #     DIIS Error             TolErr          ....  1.000e-06
+        #     Last DIIS Error            ...  1.04e-03  Tolerance : 1.0e-06
+        # so that substring occurs dozens of times in perfectly healthy
+        # output. It made every truncated run (walltime kill, crash) look
+        # like a DIIS failure and misrouted its recovery. Only genuine
+        # failure phrasings belong here; anything not matched falls through
+        # to SCF_NO_CONVERGENCE or UNKNOWN, which is the safer outcome.
         {
             "type": OrcaErrorType.DIIS_ERROR,
             "patterns": [
-                "DIIS error",
                 "Error in DIIS",
+                "DIIS did not converge",
             ],
             "all_required": False,
             "priority": 4,
@@ -155,6 +201,22 @@ class OrcaErrorDetector:
             "priority": 6,
         },
         # Memory errors
+        # Memory exhaustion as ORCA 6.x words it. This needs to outrank the
+        # generic "error termination in LEANSCF" rule below, because ORCA
+        # routes an out-of-memory abort through LEANSCF as well: measured
+        # against ORCA 6.1.1, a run capped at %maxcore 1 was classified as an
+        # MPI crash and answered with MPI fixes, while ORCA had plainly written
+        # what it needed. The message also carries the required MaxCore, which
+        # _memory_error_fixes reads back instead of guessing.
+        {
+            "type": OrcaErrorType.MEMORY_ERROR,
+            "patterns": [
+                "Not enough memory available",
+                "Please increase MaxCore to more than",
+            ],
+            "all_required": False,
+            "priority": 2,
+        },
         {
             "type": OrcaErrorType.MEMORY_ERROR,
             "patterns": [
@@ -187,6 +249,96 @@ class OrcaErrorDetector:
         },
     ]
 
+    # Excitation energies below this are unphysical for any real molecule
+    # and signal a collapsed TD-DFT root rather than a genuinely low-lying
+    # state. Observed values in collapsed runs: 1e-4 .. 7e-4 Eh, and
+    # -7.1e-8 Eh (i.e. negative) for an outright triplet instability.
+    ROOT_COLLAPSE_THRESHOLD_EH = 1.0e-3
+
+    # A root that drops below this fraction of the median root energy of the
+    # same run has collapsed, even if its absolute value looks harmless.
+    _RELATIVE_COLLAPSE_FACTOR = 0.2
+    _MIN_SAMPLES_FOR_RELATIVE_CHECK = 5
+    _MAX_DE_CIS_SAMPLES = 50000
+
+    _DE_CIS_RE = re.compile(
+        r"DE\(CIS\)\s*=\s*(-?\d+\.?\d*(?:[eEdD][-+]?\d+)?)"
+    )
+
+    # Cheap gate before the full-file scan below. Non-TD-DFT runs - the vast
+    # majority - must not pay for it.
+    _TDDFT_TAIL_MARKERS = ("DE(CIS)", "TD-DFT", "ORCA-CIS", "orca_cis")
+
+    @classmethod
+    def _looks_like_tddft(cls, tail: str) -> bool:
+        """True if the output tail shows any sign of a TD-DFT/CIS run."""
+        return any(marker in tail for marker in cls._TDDFT_TAIL_MARKERS)
+
+    @classmethod
+    def _detect_collapsed_root(
+        cls, output_file: Path, terminated_normally: bool
+    ) -> Optional[float]:
+        """Return the offending DE(CIS) value if a TD-DFT root collapsed.
+
+        A run that ended normally is only rejected when its *final* root is
+        collapsed - a transient collapse the optimizer recovered from should
+        not invalidate an otherwise converged result. A run that did not end
+        normally is rejected on the lowest root it ever produced, because a
+        collapse in cycle 12 can leave the optimizer thrashing for another
+        140 cycles and a perfectly healthy-looking tail.
+
+        Unlike pattern matching this cannot work on a bounded tail, so the
+        file is streamed line by line: constant memory, one pass, and the
+        cheap substring guard keeps it fast even on 300k-line outputs.
+        """
+        minimum = None
+        last = None
+        samples = []  # bounded reservoir, only needed for the median
+        try:
+            with open(output_file, 'r', encoding='utf-8', errors='replace') as fh:
+                for line in fh:
+                    if "DE(CIS)" not in line:
+                        continue
+                    match = cls._DE_CIS_RE.search(line)
+                    if not match:
+                        continue
+                    token = match.group(1).replace("D", "E").replace("d", "e")
+                    try:
+                        value = float(token)
+                    except ValueError:
+                        continue
+                    last = value
+                    if minimum is None or value < minimum:
+                        minimum = value
+                    if len(samples) < cls._MAX_DE_CIS_SAMPLES:
+                        samples.append(value)
+        except OSError:
+            return None
+
+        if last is None:
+            return None
+
+        candidate = last if terminated_normally else minimum
+
+        # Absolute criterion: an excitation energy at or below ~0.03 eV is
+        # unphysical for a closed-shell organic chromophore.
+        if candidate <= cls.ROOT_COLLAPSE_THRESHOLD_EH:
+            return candidate
+
+        # Relative criterion. The absolute threshold has to stay tight,
+        # because a genuinely near-degenerate system (diradical, broken-
+        # symmetry metal complex) legitimately has a tiny gap and must not
+        # be flagged. A collapse in an otherwise normal run looks different:
+        # one root drops far below all the others. Compare against the
+        # median, which a handful of collapsed cycles cannot drag down.
+        if len(samples) >= cls._MIN_SAMPLES_FOR_RELATIVE_CHECK:
+            ordered = sorted(samples)
+            median = ordered[len(ordered) // 2]
+            if median > 0 and candidate < cls._RELATIVE_COLLAPSE_FACTOR * median:
+                return candidate
+
+        return None
+
     @classmethod
     def analyze_output(cls, output_file: Path) -> Optional[OrcaErrorType]:
         """Analyze ORCA output file and classify the error.
@@ -216,13 +368,49 @@ class OrcaErrorDetector:
             return None
 
         try:
+            # Read a bounded tail rather than the whole file. ORCA outputs
+            # reach hundreds of MB, and this runs on every failure — often for
+            # several parallel jobs at once, which is exactly when memory is
+            # already tight. 2 MB is more context than the previous "last
+            # 10000 lines" (~1 MB at ORCA's line length) and costs a seek
+            # instead of loading the file into a list of lines.
             with open(output_file, 'r', encoding='utf-8', errors='replace') as f:
-                # Read last 10000 lines for error detection
-                lines = f.readlines()
-                content = '\n'.join(lines[-10000:])
+                size = output_file.stat().st_size
+                if size > _ERROR_SCAN_TAIL_BYTES:
+                    f.seek(size - _ERROR_SCAN_TAIL_BYTES)
+                content = f.read()
+
+            terminated_normally = "ORCA TERMINATED NORMALLY" in content
+
+            # Triplet-instability guard. Must run *before* the
+            # terminated-normally shortcut: a collapsed root does not abort
+            # ORCA, it silently poisons every downstream energy.
+            # The scan below streams the whole file, which the bounded tail
+            # read above deliberately avoids. Only pay that cost when the
+            # tail actually shows a TD-DFT/CIS run.
+            collapsed = (
+                cls._detect_collapsed_root(output_file, terminated_normally)
+                if cls._looks_like_tddft(content)
+                else None
+            )
+            if collapsed is not None:
+                criterion = (
+                    f"<= {cls.ROOT_COLLAPSE_THRESHOLD_EH:.1e} Eh absolute"
+                    if collapsed <= cls.ROOT_COLLAPSE_THRESHOLD_EH
+                    else f"< {cls._RELATIVE_COLLAPSE_FACTOR:g} x median"
+                )
+                logger.error(
+                    "Collapsed TD-DFT root in %s: DE(CIS) = %.3e Eh (%s). "
+                    "This is a triplet instability of the reference under "
+                    "full TD-DFT; the fix is 'tda true', not fewer cores.",
+                    output_file.name,
+                    collapsed,
+                    criterion,
+                )
+                return OrcaErrorType.TDDFT_ROOT_COLLAPSE
 
             # Check for successful termination first
-            if "ORCA TERMINATED NORMALLY" in content:
+            if terminated_normally:
                 return None
 
             # Check error patterns by priority
@@ -287,6 +475,10 @@ class RecoveryStrategy:
         self.attempt = attempt
         self.config = config
         self.parsed_input = None  # Will be set by apply_recovery before get_modifications
+        # Optional: the output that failed. Set by the caller the same way as
+        # parsed_input; when present, strategies can read what ORCA itself
+        # reported instead of guessing. Absent, every strategy behaves as before.
+        self.output_file: Optional[Path] = None
 
     def get_modifications(self) -> Dict:
         """Get input file modifications for this error/attempt combination.
@@ -311,6 +503,12 @@ class RecoveryStrategy:
 
         elif self.error_type == OrcaErrorType.MPI_CRASH:
             return self._mpi_crash_fixes()
+
+        elif self.error_type in (
+            OrcaErrorType.CIS_FAILURE,
+            OrcaErrorType.TDDFT_ROOT_COLLAPSE,
+        ):
+            return self._tddft_instability_fixes()
 
         elif self.error_type == OrcaErrorType.FREQUENCY_FAILURE:
             return self._frequency_failure_fixes()
@@ -624,23 +822,59 @@ class RecoveryStrategy:
                 "keywords_add": ["LooseOpt"],  # Relaxed convergence
             }
 
+    def _tddft_instability_fixes(self) -> Dict:
+        """Fixes for CIS/TD-DFT aborts and collapsed TD-DFT roots.
+
+        Both symptoms share one cause: full TD-DFT (RPA, ``tda false``) on a
+        triplet-unstable closed-shell reference. The RPA eigenvalue problem
+        then has a zero or negative eigenvalue, which either aborts the
+        diagonalizer or yields a garbage root that the optimizer chases
+        across a discontinuous surface for hundreds of cycles.
+
+        The Tamm-Dancoff approximation drops the de-excitation block and is
+        stable in exactly this situation, so TDA is the fix. Reducing cores
+        is not - the failure is deterministic and reproduces exactly.
+        """
+        if self.attempt == 1:
+            return {"tddft_block": {"tda": "true"}}
+        if self.attempt == 2:
+            return {
+                "tddft_block": {"tda": "true"},
+                "scf_block": {"Convergence": "TightSCF"},
+            }
+        # Last resort: TDA plus a larger Davidson subspace and more
+        # iterations, for roots that are merely hard to converge.
+        return {
+            "tddft_block": {"tda": "true", "maxdim": 50, "maxiter": 1000},
+            "scf_block": {"Convergence": "TightSCF"},
+            "reduce_pal": 0.5,
+        }
+
     def _mpi_crash_fixes(self) -> Dict:
-        """Fixes for MPI crashes.
+        """Fixes for MPI crashes, escalating across attempts.
 
         MPI crashes often happen early before orbitals are written.
         DO NOT use MOREAD - it will fail with "No orbitals found".
-        Just reduce cores and retry from scratch.
+
+        The escalation matters: this used to return the same modification on
+        every attempt, so each retry reproduced the identical crash. Combined
+        with the retry budget in orca.py that is three identical runs and
+        hours of walltime for nothing.
         """
-        return {
-            "reduce_pal": 0.5,  # Reduce cores by half
-            "env_vars": {
-                # Keep vader (SHM transport); only disable its CMA single-copy path,
-                # which fails on locked-down kernels (ptrace_scope>=1). Falls back
-                # to double-copy SHM — slower than CMA but still faster than ^vader.
-                "OMPI_MCA_btl_vader_single_copy_mechanism": "none",
-                "OMPI_MCA_btl_base_warn_component_unused": "0",
-            },
+        env = {
+            # Keep vader (SHM transport); only disable its CMA single-copy path,
+            # which fails on locked-down kernels (ptrace_scope>=1). Falls back
+            # to double-copy SHM — slower than CMA but still faster than ^vader.
+            "OMPI_MCA_btl_vader_single_copy_mechanism": "none",
+            "OMPI_MCA_btl_base_warn_component_unused": "0",
         }
+        if self.attempt == 1:
+            return {"reduce_pal": 0.5, "env_vars": env}
+        if self.attempt == 2:
+            return {"reduce_pal": 0.25, "env_vars": env}
+        # Last resort: serial. Slow, but takes every MPI transport and every
+        # parallelization bug out of the picture.
+        return {"force_pal": 1, "env_vars": env}
 
     def _frequency_failure_fixes(self) -> Dict:
         """Fixes for frequency calculation failures."""
@@ -658,28 +892,65 @@ class RecoveryStrategy:
                 "skip_freq": True,  # Skip frequency calculation
             }
 
+    def _required_maxcore_mb(self) -> Optional[int]:
+        """The MaxCore ORCA asked for, if it said so.
+
+        ORCA does not merely report that memory ran out, it prints the figure
+        that would have been enough:
+
+            Error  (ORCA_SCF): Not enough memory available!
+                  ====>        Please increase MaxCore to more than:  29.9 MB
+
+        Reading that back beats halving the core count and hoping, which is
+        what the fallback below does when the message is absent.
+        """
+        if self.output_file is None:
+            return None
+        try:
+            size = self.output_file.stat().st_size
+            with self.output_file.open(encoding="utf-8", errors="replace") as handle:
+                if size > _ERROR_SCAN_TAIL_BYTES:
+                    handle.seek(size - _ERROR_SCAN_TAIL_BYTES)
+                tail = handle.read()
+        except OSError:
+            return None
+
+        matches = re.findall(
+            r"Please increase MaxCore to more than:\s*([0-9]+(?:\.[0-9]+)?)\s*MB",
+            tail,
+            re.IGNORECASE,
+        )
+        if not matches:
+            return None
+        # Several modules can complain in one run; the largest demand is the
+        # one that has to be satisfied. A margin on top keeps the retry from
+        # failing again just short of the mark.
+        return int(max(float(m) for m in matches) * 1.5) + 1
+
     def _memory_error_fixes(self) -> Dict:
         """Fixes for memory errors.
 
         Memory errors often occur with SOSCF (needs Hessian) or high parallelization.
         Strategy:
-        1. Disable SOSCF (most memory-intensive)
-        2. Reduce cores significantly (more memory per core)
-        3. Optionally increase MaxCore
+        1. Raise MaxCore to what ORCA asked for, when it named a figure
+        2. Disable SOSCF (most memory-intensive)
+        3. Reduce cores significantly (more memory per core)
         """
-        if self.attempt == 1:
-            return {
-                "keywords_remove": ["SOSCF"],  # Disable SOSCF keyword if present
-                "scf_block_remove": ["SOSCF", "SOSCFStart", "SOSCFConvFactor", "SOSCFMaxStep", "SOSCFHESSUP"],
-                "reduce_pal": 0.5,  # Half the cores = double memory per core
-            }
-        else:
-            # Attempt 2: Even fewer cores
-            return {
-                "keywords_remove": ["SOSCF"],
-                "scf_block_remove": ["SOSCF", "SOSCFStart", "SOSCFConvFactor", "SOSCFMaxStep", "SOSCFHESSUP"],
-                "reduce_pal": 0.25,  # Quarter cores = 4x memory per core
-            }
+        fixes: Dict = {
+            "keywords_remove": ["SOSCF"],  # Disable SOSCF keyword if present
+            "scf_block_remove": ["SOSCF", "SOSCFStart", "SOSCFConvFactor", "SOSCFMaxStep", "SOSCFHESSUP"],
+            # Attempt 1 halves the cores, attempt 2 quarters them: fewer ranks
+            # means more memory per rank.
+            "reduce_pal": 0.5 if self.attempt == 1 else 0.25,
+        }
+
+        required = self._required_maxcore_mb()
+        if required is not None:
+            fixes["set_maxcore"] = required
+            logger.info(
+                "ORCA reported it needed more MaxCore; retrying with %d MB", required
+            )
+        return fixes
 
 
 
@@ -732,11 +1003,19 @@ class OrcaInputModifier:
             if "geom_block" in mods:
                 parsed = self._modify_geom_block(parsed, mods["geom_block"])
 
-            if mods.get("reduce_pal"):
+            if "tddft_block" in mods:
+                parsed = self._modify_tddft_block(parsed, mods["tddft_block"])
+
+            if mods.get("force_pal"):
+                parsed = self._set_parallelism(parsed, int(mods["force_pal"]))
+            elif mods.get("reduce_pal"):
                 parsed = self._reduce_parallelism(parsed, mods["reduce_pal"])
 
             if mods.get("reduce_maxcore"):
                 parsed = self._reduce_maxcore(parsed, mods["reduce_maxcore"])
+
+            if mods.get("set_maxcore"):
+                parsed = self._set_maxcore(parsed, mods["set_maxcore"])
 
             if mods.get("skip_freq"):
                 parsed = self._remove_freq(parsed)
@@ -1096,6 +1375,19 @@ class OrcaInputModifier:
 
         return None
 
+    @staticmethod
+    def _sets_param(line: str, params) -> bool:
+        """True if an ORCA block line assigns one of ``params``.
+
+        Matches on the first token only. Substring matching would drop
+        unrelated settings - setting ``MaxIter`` would delete an existing
+        ``SOSCFMaxIter`` line, because "maxiter" is a substring of it.
+        """
+        tokens = line.strip().split()
+        if not tokens:
+            return False
+        return tokens[0].lower() in {str(p).lower() for p in params}
+
     def _modify_scf_block(self, parsed: Dict, scf_params: Dict) -> Dict:
         """Modify or create %scf block with new parameters.
 
@@ -1117,29 +1409,22 @@ class OrcaInputModifier:
         # Build new SCF block
         new_scf = ["%scf"]
 
-        # Track which parameters we've added
-        added_params = set()
-
-        # Update existing parameters or add new ones
+        # Drop lines setting a parameter we are about to override; the new
+        # value is appended below. This used to also mark the parameter as
+        # "added", so the old line was removed and the new value never
+        # written - the parameter silently vanished from the input instead of
+        # being updated, and the recovery strategy had no effect.
         for line in scf_lines:
-            # Check if this line sets a parameter we want to modify
-            param_updated = False
-            for param, value in scf_params.items():
-                if param.lower() in line.lower():
-                    param_updated = True
-                    added_params.add(param)
-                    break
+            if self._sets_param(line, scf_params):
+                continue
+            new_scf.append("  " + line.strip())
 
-            if not param_updated:
-                new_scf.append("  " + line.strip())
-
-        # Add new parameters that weren't in original block
+        # Write the requested parameters
         for param, value in scf_params.items():
-            if param not in added_params:
-                if value is True:
-                    new_scf.append(f"  {param}")
-                elif value is not False:
-                    new_scf.append(f"  {param} {value}")
+            if value is True:
+                new_scf.append(f"  {param}")
+            elif value is not False:
+                new_scf.append(f"  {param} {value}")
 
         new_scf.append("end")
 
@@ -1165,26 +1450,94 @@ class OrcaInputModifier:
 
         new_geom = ["%geom"]
 
-        added_params = set()
+        # Same replace-don't-drop semantics as %scf above.
         for line in geom_lines:
-            param_updated = False
-            for param in geom_params:
-                if param.lower() in line.lower():
-                    param_updated = True
-                    added_params.add(param)
-                    break
-            if not param_updated:
-                new_geom.append("  " + line.strip())
+            if self._sets_param(line, geom_params):
+                continue
+            new_geom.append("  " + line.strip())
 
         for param, value in geom_params.items():
-            if param not in added_params:
-                if value is True:
-                    new_geom.append(f"  {param}")
-                else:
-                    new_geom.append(f"  {param} {value}")
+            if value is True:
+                new_geom.append(f"  {param}")
+            else:
+                new_geom.append(f"  {param} {value}")
 
         new_geom.append("end")
         parsed["blocks"]["geom"] = "\n".join(new_geom)
+
+        return parsed
+
+    def _modify_tddft_block(self, parsed: Dict, tddft_params: Dict) -> Dict:
+        """Modify or create the %tddft block.
+
+        Needed so a recovery strategy can flip ``tda false`` to ``tda true``.
+        Unlike the SCF/geom helpers this must genuinely *replace* an existing
+        setting: ``tda`` is always already present in ESD inputs, so merely
+        dropping the old line would leave ORCA on its own default.
+
+        Args:
+            parsed: Parsed input dict
+            tddft_params: TDDFT parameters to set
+
+        Returns:
+            Modified parsed dict
+        """
+        if "tddft" in parsed["blocks"]:
+            existing = parsed["blocks"]["tddft"].split("\n")
+            existing = [
+                l for l in existing
+                if l.strip() and l.strip().lower() not in ["%tddft", "end"]
+            ]
+        else:
+            existing = []
+
+        new_block = ["%tddft"]
+
+        # Keep every line that we are not overriding.
+        for line in existing:
+            if self._sets_param(line, tddft_params):
+                continue
+            new_block.append("  " + line.strip())
+
+        # Then write the overrides.
+        for param, value in tddft_params.items():
+            if value is True:
+                new_block.append(f"  {param} true")
+            elif value is False:
+                new_block.append(f"  {param} false")
+            else:
+                new_block.append(f"  {param} {value}")
+
+        new_block.append("end")
+        parsed["blocks"]["tddft"] = "\n".join(new_block)
+        logger.info(
+            "Set %%tddft parameters: %s",
+            ", ".join(f"{k}={v}" for k, v in tddft_params.items()),
+        )
+
+        return parsed
+
+    def _set_parallelism(self, parsed: Dict, nprocs: int) -> Dict:
+        """Set %pal nprocs to an absolute value (e.g. 1 for a serial rerun).
+
+        Args:
+            parsed: Parsed input dict
+            nprocs: Absolute core count to set
+
+        Returns:
+            Modified parsed dict
+        """
+        nprocs = max(1, int(nprocs))
+        if "pal" in parsed["blocks"]:
+            parsed["blocks"]["pal"] = re.sub(
+                r'nprocs\s+\d+',
+                f'nprocs {nprocs}',
+                parsed["blocks"]["pal"],
+                flags=re.IGNORECASE,
+            )
+        else:
+            parsed["blocks"]["pal"] = f"%pal\n  nprocs {nprocs}\nend"
+        logger.info(f"Set PAL nprocs to {nprocs}")
 
         return parsed
 
@@ -1243,6 +1596,30 @@ class OrcaInputModifier:
             parsed["blocks"]["maxcore"] = f"%maxcore {new_maxcore}"
             logger.info(f"Reduced maxcore: {current_maxcore} → {new_maxcore}")
 
+        return parsed
+
+    def _set_maxcore(self, parsed: Dict, megabytes: int) -> Dict:
+        """Raise maxcore to a figure ORCA named, never lower it.
+
+        The value comes from ORCA's own "Please increase MaxCore to more than"
+        line. Lowering here would be a bug: the retry exists precisely because
+        the previous allocation was too small, and a run that already asks for
+        more per rank must not be given less.
+        """
+        current = 0
+        if "maxcore" in parsed["blocks"]:
+            match = re.search(r"(\d+)", parsed["blocks"]["maxcore"])
+            if match:
+                current = int(match.group(1))
+
+        if megabytes <= current:
+            logger.debug(
+                "Keeping maxcore at %d MB; ORCA asked for %d MB", current, megabytes
+            )
+            return parsed
+
+        parsed["blocks"]["maxcore"] = f"%maxcore {megabytes}"
+        logger.info("Raised maxcore: %d → %d MB", current, megabytes)
         return parsed
 
     def _remove_freq(self, parsed: Dict) -> Dict:

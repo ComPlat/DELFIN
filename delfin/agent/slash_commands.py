@@ -54,13 +54,13 @@ class SlashTemplate:
 
 
 def _search_dirs(workspace: Path | str | None) -> list[Path]:
-    """Order: user-delfin → project-delfin → user-canonical-compat."""
+    """Order: user-delfin → project-delfin. DELFIN only reads its own
+    namespace — other agent frameworks' command dirs are not loaded."""
     out: list[Path] = [
         Path.home() / ".delfin" / "commands",
     ]
     if workspace is not None:
         out.append(Path(workspace) / ".delfin" / "commands")
-    out.append(Path.home() / ".claude" / "commands")
     return out
 
 

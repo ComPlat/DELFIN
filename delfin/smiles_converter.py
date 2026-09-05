@@ -18,7 +18,7 @@ import re
 import threading
 import time
 from pathlib import Path
-from typing import Dict, FrozenSet, List, Optional, Set, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
 from delfin.common.logging import get_logger
 
@@ -285,8 +285,6 @@ _METAL_LIGAND_BOND_LENGTHS: Dict[Tuple[str, str], float] = {
     ('Zr', 'C'): 2.40,
     # Hafnium
     ('Hf', 'C'): 2.35, ('Hf', 'N'): 2.20, ('Hf', 'O'): 2.10, ('Hf', 'Cl'): 2.40,
-    # Ruthenium (S)
-    ('Ru', 'S'): 2.35,
     # Cadmium (d10, larger ionic radius than first-row TMs)
     ('Cd', 'C'): 2.25, ('Cd', 'N'): 2.33, ('Cd', 'O'): 2.30,
     ('Cd', 'P'): 2.55, ('Cd', 'Cl'): 2.55, ('Cd', 'S'): 2.55,
@@ -309,7 +307,7 @@ _METAL_LIGAND_BOND_LENGTHS: Dict[Tuple[str, str], float] = {
     ('Cr', 'P'): 2.30, ('Cr', 'S'): 2.35, ('Cr', 'Br'): 2.50, ('Cr', 'F'): 1.90,
     ('Mn', 'P'): 2.25, ('Mn', 'S'): 2.35, ('Mn', 'Br'): 2.50, ('Mn', 'F'): 1.90,
     ('Fe', 'Br'): 2.40, ('Fe', 'F'): 1.90,
-    ('Co', 'P'): 2.18, ('Co', 'S'): 2.25, ('Co', 'Br'): 2.38, ('Co', 'F'): 1.88,
+    ('Co', 'S'): 2.25, ('Co', 'Br'): 2.38, ('Co', 'F'): 1.88,
     ('Ni', 'S'): 2.20, ('Ni', 'Br'): 2.35, ('Ni', 'F'): 1.85,
     ('Cu', 'Br'): 2.40, ('Cu', 'F'): 1.90,
     # Second-row TM completions
@@ -410,7 +408,7 @@ _METAL_LIGAND_BOND_LENGTHS: Dict[Tuple[str, str], float] = {
     ('Ba', 'F'): 2.60, ('Ba', 'Br'): 3.25, ('Ba', 'I'): 3.45,
     # Y completions
     ('Y',  'P'): 2.75, ('Y',  'S'): 2.65, ('Y',  'F'): 2.05,
-    ('Y',  'Br'): 2.75, ('Y',  'I'): 2.95, ('Y',  'Se'): 2.80,
+    ('Y',  'Br'): 2.75, ('Y',  'Se'): 2.80,
     # Nb / Tc extra (missing C, F, Br)
     ('Nb', 'C'): 2.20, ('Nb', 'F'): 1.95, ('Nb', 'Br'): 2.55,
     ('Mo', 'C'): 2.10,
@@ -16756,7 +16754,12 @@ def is_smiles_string(content: str) -> bool:
 
     # Check for coordinate patterns (element symbol followed by numbers)
     # XYZ format: "C  1.234  5.678  9.012"
-    coord_pattern = re.compile(r'^[A-Z][a-z]?\s+[-+]?\d+\.\d+\s+[-+]?\d+\.\d+\s+[-+]?\d+\.\d+')
+    # The decimal point is not part of what makes a line coordinates: "C 0 0 0"
+    # is a perfectly ordinary way to write an atom at the origin, and it was
+    # read as a SMILES because it has digits in it and starts with a carbon.
+    coord_pattern = re.compile(
+        r'^[A-Z][a-z]?\s+[-+]?\d+(?:\.\d+)?\s+[-+]?\d+(?:\.\d+)?'
+        r'\s+[-+]?\d+(?:\.\d+)?\s*$')
     if coord_pattern.match(first_line):
         return False
 
@@ -16767,8 +16770,14 @@ def is_smiles_string(content: str) -> bool:
     except (ValueError, IndexError):
         pass
 
-    # Check for typical SMILES characters
-    smiles_chars = set('()[]=#@+-/\\>%')
+    # Check for typical SMILES characters. The dot belongs in here: it is how
+    # SMILES separates one molecule from another, which is what a drawing of
+    # two things hands back -- and "CCO.CCO" has no bracket, no aromatic
+    # letter and no ring number, so without it nothing here recognised it and
+    # a two-fragment drawing could not be converted at all. Coordinates cannot
+    # be caught by it: a line of them is turned away above, by the pattern for
+    # an element followed by three numbers and by the atom-count check.
+    smiles_chars = set('()[]=#@+-/\\>%.')
     has_smiles_chars = any(char in first_line for char in smiles_chars)
 
     # Check for aromatic notation (lowercase c, n, o, etc.) which is SMILES-specific
@@ -27224,6 +27233,7 @@ def _generate_topological_isomers(
 
     Returns [(xyz_string, label), …].
     """
+    import numpy as np
     results: List[Tuple[str, str]] = []
     dtype_map = _donor_type_map(mol)
 
@@ -30151,6 +30161,7 @@ def _emit_d8_sp4_variants(mol, results, apply_uff, max_isomers):
     of the donors into their common plane; ligand internals preserved).  The final graph-topology
     gate downstream drops any variant whose flattening introduced a ligand-ligand contact, so this
     is strictly ADDITIVE / never-worse.  Toggle DELFIN_D8_SP4_SEAT (default 0 -> byte-identical)."""
+    import numpy as np
     if not _delfin_env_int("DELFIN_D8_SP4_SEAT", 0):
         return 0
     try:

@@ -21,6 +21,7 @@ from delfin.agent import api_client as A
 def _iso(monkeypatch, tmp_path):
     monkeypatch.setattr(S, "_RUNNING_DIR", tmp_path / "running")
     monkeypatch.setattr(S, "_SESSIONS_DIR", tmp_path / "sessions")
+    monkeypatch.setattr(S, "_PENDING_DIR", tmp_path / "pending")
     monkeypatch.setattr(S, "_TELEMETRY_PATH", tmp_path / "telemetry.jsonl")
     yield
 

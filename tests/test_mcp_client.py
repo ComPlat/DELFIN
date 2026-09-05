@@ -105,6 +105,13 @@ def test_load_configs_merges_user_and_project(monkeypatch):
             "servers": {"proj_srv": {"command": "echo"}},
         }))
         monkeypatch.setattr(M, "_user_config_path", lambda: user_path)
+        # A workspace's server definitions are honoured only for a
+        # directory the USER trusted -- a definition is spawned with the
+        # parent environment before the model emits a token. See
+        # tests/test_a_checked_out_repository_cannot_run_commands.py.
+        from delfin.agent import workspace_trust as WT
+        WT.trust_workspace(Path(proj_d), [WT.KIND_MCP_SERVERS],
+                           actor=WT.ACTOR_USER)
         configs = M._load_configs(Path(proj_d))
         assert "user_srv" in configs
         assert "proj_srv" in configs

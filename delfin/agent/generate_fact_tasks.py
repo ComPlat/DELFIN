@@ -44,7 +44,12 @@ _PACK = _HERE / "pack" / "benchmark"
 #                   because the manual lists many valid keywords per
 #                   block and any subset is a correct answer.
 #   forbid:        common hallucination patterns (validated to NOT be
-#                  real manual keywords).
+#                  real manual keywords).  Entries are either bare
+#                  strings (matched as standalone words) or dicts
+#                  {"kw": ..., "context_required": True} for keywords
+#                  that collide with everyday prose — those only count
+#                  when presented AS a keyword (code ticks, bold,
+#                  ``kw =`` / ``kw:`` assignment, or a table cell).
 #   label:         user-facing description.
 #   min_required:  how many of the pool the model must mention (default 2).
 _PROGRAM_BLOCK_TESTS: dict[str, dict[str, dict[str, Any]]] = {
@@ -60,7 +65,10 @@ _PROGRAM_BLOCK_TESTS: dict[str, dict[str, dict[str, Any]]] = {
     "tddft": {
         "candidate_pool": ["nroots", "tda", "triplets", "maxdim",
                            "etol", "iroot", "tdamod"],
-        "forbid":   ["nstates", "ntdroots", "numroots", "states"],
+        # "states" is a common prose word ("excited states") — only count
+        # it when presented AS a keyword (code ticks / bold / assignment).
+        "forbid":   ["nstates", "ntdroots", "numroots",
+                     {"kw": "states", "context_required": True}],
         "label": "TDDFT excitation",
         "min_required": 2,
     },
@@ -120,6 +128,34 @@ _PROGRAM_BLOCK_TESTS: dict[str, dict[str, dict[str, Any]]] = {
 }
 
 
+def _forbid_entries(cfg: dict[str, Any]) -> list[tuple[str, bool]]:
+    """Normalise the ``forbid`` list to ``(keyword, context_required)``."""
+    out: list[tuple[str, bool]] = []
+    for entry in cfg.get("forbid") or []:
+        if isinstance(entry, dict):
+            out.append((str(entry["kw"]), bool(entry.get("context_required"))))
+        else:
+            out.append((str(entry), False))
+    return out
+
+
+def _forbid_pattern(kw: str, context_required: bool) -> str:
+    """Regex for one forbidden keyword.
+
+    Bare words match anywhere; context-required words only match when
+    presented as a keyword — inside code ticks, bold markers, in a
+    ``kw =`` / ``kw:`` assignment, or alone in a markdown table cell —
+    so ordinary prose mentions of the same word don't count.
+    """
+    esc = re.escape(kw)
+    if not context_required:
+        return rf"(?i)\b{esc}\b"
+    return (
+        rf"(?i)(?:`{esc}`|\*\*{esc}\*\*|\b{esc}\s*[:=]"
+        rf"|\|\s*{esc}\s*\|)"
+    )
+
+
 def _gt_path_for(program: str) -> Path:
     return _PACK / f"keywords_groundtruth_{program}.json"
 
@@ -161,8 +197,8 @@ def _validate_against_manual(
             f"need at least {min_required} to make the test passable. "
             f"Validated pool: {valid_pool}. Original: {pool}."
         )
-    real_in_forbid = [kw for kw in cfg["forbid"]
-                     if kw.lower() in manual_keywords]
+    real_in_forbid = [kw for kw, _ctx in _forbid_entries(cfg)
+                      if kw.lower() in manual_keywords]
     if real_in_forbid:
         raise RuntimeError(
             f"BLOCK '{block_name}': forbid list includes real manual "
@@ -191,7 +227,7 @@ def _task_for_block(
     split the pool into N halves and emit one alternation-pattern
     per half — model must hit each half at least once.
     """
-    forbid = cfg.get("forbid") or []
+    forbid = _forbid_entries(cfg)
     label = cfg["label"]
     min_required = cfg.get("min_required", 2)
     # Split the validated pool into min_required disjoint groups so
@@ -229,8 +265,8 @@ def _task_for_block(
     }
     if forbid:
         task["forbidden_signals"] = [
-            {"pattern": rf"(?i)\b{re.escape(kw)}\b", "against": "text"}
-            for kw in forbid
+            {"pattern": _forbid_pattern(kw, ctx), "against": "text"}
+            for kw, ctx in forbid
         ]
     return task
 

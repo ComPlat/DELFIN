@@ -15,9 +15,15 @@ load_settings = _MODULE.load_settings
 load_remote_archive_enabled = _MODULE.load_remote_archive_enabled
 load_runtime_settings = _MODULE.load_runtime_settings
 load_transfer_settings = _MODULE.load_transfer_settings
+load_viewer_settings = _MODULE.load_viewer_settings
 normalize_local_directory_setting = _MODULE.normalize_local_directory_setting
 save_remote_archive_enabled = _MODULE.save_remote_archive_enabled
 save_transfer_settings = _MODULE.save_transfer_settings
+save_viewer_settings = _MODULE.save_viewer_settings
+get_orca_templates_path = _MODULE.get_orca_templates_path
+load_orca_templates = _MODULE.load_orca_templates
+save_orca_template = _MODULE.save_orca_template
+delete_orca_template = _MODULE.delete_orca_template
 
 
 def test_save_and_load_transfer_settings_roundtrip(tmp_path):
@@ -247,13 +253,72 @@ def test_load_settings_normalizes_ui_tabs_payload(tmp_path):
     assert loaded["ui"]["tabs"]["hidden"] == ["archive"]
 
 
-def test_agent_extras_default_off_and_roundtrip(tmp_path):
+def test_viewer_settings_default_to_ball_and_stick_controls(tmp_path):
+    viewer = load_viewer_settings(tmp_path / "settings.json")
+
+    assert viewer == {
+        "enabled": True,
+        "quality": "high",
+        "representation": "ball_and_stick",
+        "atom_scale": 0.28,
+        "bond_radius": 0.11,
+        "multiple_bonds": True,
+        "depth_fog": True,
+        "ambient_occlusion": False,
+    }
+
+
+def test_viewer_settings_migrate_legacy_quality_representation(tmp_path):
+    settings_path = tmp_path / "settings.json"
+    settings_path.write_text(
+        json.dumps({"ui": {"viewer": {"enabled": True, "quality": "medium"}}}),
+        encoding="utf-8",
+    )
+
+    viewer = load_viewer_settings(settings_path)
+
+    assert viewer["quality"] == "medium"
+    assert viewer["representation"] == "stick"
+    assert viewer["atom_scale"] == 0.28
+    assert viewer["bond_radius"] == 0.11
+    assert viewer["multiple_bonds"] is True
+    assert viewer["depth_fog"] is True
+    assert viewer["ambient_occlusion"] is False
+
+
+def test_viewer_settings_extended_roundtrip(tmp_path):
     settings_path = tmp_path / "settings.json"
 
-    # Token-costing agent features are strictly opt-in (default OFF).
+    saved = save_viewer_settings(
+        True,
+        "low",
+        settings_path,
+        representation="sphere",
+        atom_scale=1.0,
+        bond_radius=0.22,
+        multiple_bonds=False,
+        depth_fog=False,
+        ambient_occlusion=True,
+    )
+
+    assert saved == load_viewer_settings(settings_path)
+    assert saved["quality"] == "low"
+    assert saved["representation"] == "sphere"
+    assert saved["atom_scale"] == 1.0
+    assert saved["bond_radius"] == 0.22
+    assert saved["multiple_bonds"] is False
+    assert saved["depth_fog"] is False
+    assert saved["ambient_occlusion"] is True
+
+
+def test_agent_extras_default_on_and_roundtrip(tmp_path):
+    settings_path = tmp_path / "settings.json"
+
+    # The learning loops are on by default (auto-memory is one cheap-tier
+    # call per session, eval_loop is LLM-free); enabled: false opts out.
     defaults = _MODULE.DEFAULT_SETTINGS["agent"]
-    assert defaults["auto_memory"]["enabled"] is False
-    assert defaults["eval_loop"]["enabled"] is False
+    assert defaults["auto_memory"]["enabled"] is True
+    assert defaults["eval_loop"]["enabled"] is True
 
     # Toggle them on the way the Settings tab's save handlers do —
     # merge into the existing dict instead of replacing it.
@@ -274,3 +339,48 @@ def test_agent_extras_default_off_and_roundtrip(tmp_path):
     assert loaded["agent"]["eval_loop"]["window"] == 300
     # Non-UI keys (hand-edited in the settings file) survive the merge.
     assert loaded["agent"]["eval_loop"]["threshold"] == 3
+
+
+def test_orca_templates_missing_file_returns_empty(tmp_path):
+    path = tmp_path / "orca_templates.json"
+    assert load_orca_templates(path) == {}
+    assert path == get_orca_templates_path(path)
+
+
+def test_orca_templates_save_load_delete_roundtrip(tmp_path):
+    path = tmp_path / "orca_templates.json"
+    payload = {
+        "method": "PBE0", "job_type": "OPT", "basis": "def2-SVP",
+        "extra_input": "%scf maxiter 300 end\n%tddft nroots 10 end",
+        "additional": "TightSCF", "pal": 24, "autoaux": True,
+    }
+    save_orca_template("classic opt", payload, path=path)
+    save_orca_template("tddft", {"method": "wB97X-D3"}, path=path)
+
+    loaded = load_orca_templates(path)
+    assert set(loaded) == {"classic opt", "tddft"}
+    assert loaded["classic opt"] == payload
+    assert path.stat().st_mode & 0o777 == 0o600
+
+    # Same name overwrites the template entry (not a file deletion).
+    save_orca_template("classic opt", {"method": "B3LYP"}, path=path)
+    assert load_orca_templates(path)["classic opt"] == {"method": "B3LYP"}
+
+    delete_orca_template("tddft", path=path)
+    assert set(load_orca_templates(path)) == {"classic opt"}
+    # Deleting a non-existent template is a no-op.
+    delete_orca_template("nope", path=path)
+    assert set(load_orca_templates(path)) == {"classic opt"}
+
+
+def test_orca_templates_empty_name_raises(tmp_path):
+    path = tmp_path / "orca_templates.json"
+    import pytest
+    with pytest.raises(ValueError):
+        save_orca_template("   ", {"method": "PBE0"}, path=path)
+
+
+def test_orca_templates_malformed_file_returns_empty(tmp_path):
+    path = tmp_path / "orca_templates.json"
+    path.write_text("{ not valid json ]", encoding="utf-8")
+    assert load_orca_templates(path) == {}

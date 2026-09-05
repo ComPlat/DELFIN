@@ -37,6 +37,7 @@ from delfin.runtime_setup import (
     resolve_orca_base,
     resolve_submit_templates_dir,
 )
+from delfin.quota import home_usage
 from delfin.user_settings import load_remote_archive_enabled, load_settings
 
 
@@ -63,13 +64,21 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
 
     from .constants import DEFAULT_CONTROL, ONLY_GOAT_TEMPLATE
     from .context import DashboardContext
-    from .helpers import apply_branding, create_busy_css, disable_spellcheck_global
-    from .molecule_viewer import RIGHT_MOUSE_TRANSLATE_PATCH_JS
+    from .helpers import (
+        _append_js,
+        apply_branding,
+        create_busy_css,
+        create_page_css,
+        debounce_input,
+        disable_spellcheck_global,
+    )
+    from .molecule_viewer import RIGHT_MOUSE_TRANSLATE_PATCH_JS, vendored_3dmol_js
 
     from . import (
         tab_agent,
         tab_agent_activity,
         tab_archive_statistics,
+        tab_office,
         tab_calculations_browser,
         tab_literature,
         tab_remote_archive,
@@ -107,6 +116,14 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     else:
         default_calc_dir = home / 'calc'
     default_archive_dir = default_calc_dir.parent / 'archive'
+    # Deliberately NOT derived from the launch directory like calc and
+    # archive: those belong to a project checkout, office documents do not.
+    # The agent keys its memory and its saved sessions by this folder, so a
+    # launch-dependent default would split both in two the moment the
+    # dashboard is started somewhere else — which reads as lost memory
+    # rather than as a second folder. An explicit Office path in the
+    # settings still wins.
+    default_office_dir = home / 'office'
 
     if calc_dir is None:
         calc_dir = configured_paths.get('calculations_dir') or default_calc_dir
@@ -115,6 +132,9 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     archive_dir = configured_paths.get('archive_dir') or default_archive_dir
     archive_dir = Path(archive_dir).expanduser()
     archive_dir.mkdir(parents=True, exist_ok=True)
+    office_dir = configured_paths.get('office_dir') or default_office_dir
+    office_dir = Path(office_dir).expanduser()
+    office_dir.mkdir(parents=True, exist_ok=True)
     agent_dir = Path(configured_paths.get('agent_dir') or Path.home() / 'agent_workspace')
     agent_dir.mkdir(parents=True, exist_ok=True)
 
@@ -151,6 +171,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             qm_tools_root=runtime_settings.get('qm_tools_root', ''),
             orca_base=orca_base,
             csp_tools_root=runtime_settings.get('csp_tools_root', ''),
+            mlp_tools_root=runtime_settings.get('mlp_tools_root', ''),
             tool_binaries=runtime_settings.get('tool_binaries', {}) or {},
         )
 
@@ -178,6 +199,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             qm_tools_root=runtime_settings.get('qm_tools_root', ''),
             orca_base=orca_base,
             csp_tools_root=runtime_settings.get('csp_tools_root', ''),
+            mlp_tools_root=runtime_settings.get('mlp_tools_root', ''),
             tool_binaries=runtime_settings.get('tool_binaries', {}) or {},
         )
         backend_obj = LocalJobBackend(
@@ -202,10 +224,12 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     ctx = DashboardContext(
         calc_dir=calc_dir,
         archive_dir=archive_dir,
+        office_dir=office_dir,
         agent_dir=agent_dir,
         primary_calc_dir=calc_dir,
         default_calc_dir=default_calc_dir,
         default_archive_dir=default_archive_dir,
+        default_office_dir=default_office_dir,
         runtime_settings=runtime_settings,
         runtime_backend=backend,
         notebook_dir=notebook_dir,
@@ -249,11 +273,45 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
 
     tab5, refs5 = tab_calculations_browser.create_tab(ctx)
     ctx.calc_browser_refs = refs5
-    tab6, refs6 = tab_archive_statistics.create_tab(ctx)
+    # A tab hidden in Settings is built anyway today: the preference drops it
+    # from the bar and nothing else. Archive and Office are two more builds of
+    # the calculations browser -- the heaviest thing a cold start does -- so
+    # hiding one and paying for it is the worst of both. They are built when
+    # they are wanted, which for a visible tab is still at startup.
+    try:
+        _hidden_at_start = {
+            str(item) for item in
+            (((load_settings().get('ui', {}) or {}).get('tabs', {}) or {})
+             .get('hidden', []) or [])
+        }
+    except Exception:
+        _hidden_at_start = set()
+
+    refs6, refs_off = {}, {}
+
+    def _clone_of_browser_now(build, refs):
+        """Build one of the browser clones and fill in the refs Settings holds."""
+        widget, made = build(ctx)
+        refs.update(made or {})
+        return widget
+
+    def _clone_of_browser(tab_id, build, refs):
+        """The tab, or None if Settings has it hidden.
+
+        *refs* is the dict the Settings tab is handed further down. It is
+        filled in rather than replaced, because Settings captures it by value
+        and applying a new Archive or Office folder calls back through it.
+        """
+        if tab_id in _hidden_at_start:
+            return None
+        return _clone_of_browser_now(build, refs)
+
+    tab6 = _clone_of_browser('archive', tab_archive_statistics.create_tab, refs6)
+    tab_off = _clone_of_browser('office', tab_office.create_tab, refs_off)
     tab7, refs7 = (tab_remote_archive.create_tab(ctx) if remote_archive_enabled else (None, {}))
     ctx.remote_archive_refs = refs7
-    tab_lit, _refs_lit = tab_literature.create_tab(ctx)
-    tab_ag, refs_ag = tab_agent.create_tab(ctx)
+    tab_lit, _ = tab_literature.create_tab(ctx)
+    tab_ag, _ = tab_agent.create_tab(ctx)
     tab_ag_act = tab_agent_activity.create_tab(ctx)
     # Tools & Platform tab (defensive: never let it break dashboard startup)
     try:
@@ -327,7 +385,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             'default_visible': _agent_backend_available,
             'available': True,
             'fixed': False,
-            'reason': '' if _agent_backend_available else 'Install Claude Code CLI or set ANTHROPIC_API_KEY.',
+            'reason': '' if _agent_backend_available else 'Install the Anthropic CLI or set ANTHROPIC_API_KEY.',
         },
         {
             'id': 'agent_activity',
@@ -337,7 +395,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             'default_visible': _agent_backend_available,
             'available': True,
             'fixed': False,
-            'reason': '' if _agent_backend_available else 'Install Claude Code CLI or set ANTHROPIC_API_KEY.',
+            'reason': '' if _agent_backend_available else 'Install the Anthropic CLI or set ANTHROPIC_API_KEY.',
         },
         {
             'id': 'job_status',
@@ -367,6 +425,20 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             'default_visible': True,
             'available': True,
             'fixed': False,
+            # Hidden in Settings means not built; showing it again builds it.
+            'build': lambda: _clone_of_browser_now(tab_archive_statistics.create_tab, refs6),
+            'reason': '',
+        },
+        {
+            'id': 'office',
+            'title': 'Office',
+            'widget': tab_off,
+            'default_order': 82,
+            'default_visible': True,
+            'available': True,
+            'fixed': False,
+            # Hidden in Settings means not built; showing it again builds it.
+            'build': lambda: _clone_of_browser_now(tab_office.create_tab, refs_off),
             'reason': '',
         },
         {
@@ -436,30 +508,36 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         pass
 
     ctx.tab_specs = tab_specs
-    tab8, _refs8 = tab_settings.create_tab(ctx, calc_refs=refs5, archive_refs=refs6)
+    tab8, _refs8 = tab_settings.create_tab(ctx, calc_refs=refs5, archive_refs=refs6, office_refs=refs_off)
     for spec in ctx.tab_specs:
         if spec['id'] == 'settings':
             spec['widget'] = tab8
             break
 
-    # Run both calc-browser init scripts in ONE ctx.run_js() call.
-    # If called separately, the second call's clear_output() would wipe the
-    # first tab's splitter-init JS before the browser ever executes it.
-    _calc_init = (
-        RIGHT_MOUSE_TRANSLATE_PATCH_JS
-        + '\n'
-        + refs4.get('init_js', '')
-        + '\n'
-        + refs5.get('init_js', '')
-        + '\n'
-        + refs6.get('init_js', '')
-        + '\n'
-        + refs7.get('init_js', '')
-        + '\n'
-        + refs_ag.get('init_js', '')
-        + '\n'
-        + _refs_lit.get('init_js', '')
-    )
+    # Every tab's startup script goes out in ONE ctx.run_js() call: run_js
+    # clears its output first, so a second call would wipe the first tab's
+    # script before the browser ever executed it.
+    #
+    # The scripts are collected from ctx (each tab registered its own via
+    # ctx.add_init_js) rather than listed here. When they were listed here,
+    # the Office tab was added without being added to the list, and its
+    # splitter, upload target and viewer resize silently never bound.
+    # The bundled 3Dmol goes first: every viewer's loader checks for the
+    # library before fetching it, so having it already there is what makes
+    # the dashboard work without outbound network.
+    # Supersampling factor for every viewer on the page, read once here so a
+    # quality change takes effect on the next render rather than per call site.
+    try:
+        from .molecule_viewer import get_viewer_profile
+        _pixel_ratio = float(get_viewer_profile().get('pixel_ratio') or 2.0)
+    except Exception:
+        _pixel_ratio = 2.0
+    _calc_init = '\n'.join([
+        vendored_3dmol_js(),
+        f'window.__delfinViewerPixelRatio = {_pixel_ratio};',
+        RIGHT_MOUSE_TRANSLATE_PATCH_JS,
+        *ctx.init_js_parts,
+    ])
     if _calc_init.strip():
         ctx.run_js(_calc_init)
 
@@ -497,6 +575,26 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
                 if not bool(spec.get('default_visible', True)):
                     hidden.add(tab_id)
         return order, hidden
+
+    def _build_tab_now(spec):
+        """Build a tab that was left out because Settings had it hidden.
+
+        Its startup script cannot go out through ctx.run_js: that clears the
+        output before it writes, which would wipe the script every tab already
+        on the page is running from.
+        """
+        build = spec.pop('build', None)
+        if not callable(build):
+            return
+        already = len(ctx.init_js_parts)
+        try:
+            spec['widget'] = build()
+        except Exception:
+            spec['widget'] = None
+            return
+        fresh = '\n'.join(ctx.init_js_parts[already:])
+        if fresh.strip():
+            _append_js(ctx, fresh)
 
     def _sorted_visible_specs():
         order, hidden = _resolve_tab_preferences()
@@ -546,6 +644,9 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
 
     def _rebuild_dashboard_tabs(selected_title=None):
         specs = _sorted_visible_specs()
+        for spec in specs:
+            if spec.get('widget') is None and callable(spec.get('build')):
+                _build_tab_now(spec)
         children = [spec['widget'] for spec in specs if spec.get('widget') is not None]
         titles = [spec['title'] for spec in specs if spec.get('widget') is not None]
         if ctx.tabs_widget is None:
@@ -563,6 +664,9 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
 
     # Disable spellcheck in all textareas (browser-level red underlines).
     disable_spellcheck_global(ctx)
+    # Text boxes marked 'delfin-debounced' report their value once typing
+    # stops, so a handler that renders on every keystroke runs once instead.
+    debounce_input(ctx)
     logo_data_uri = _load_logo_data_uri()
     apply_branding(ctx, title='DELFIN Dashboard', favicon_data_uri=logo_data_uri)
 
@@ -570,8 +674,6 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     tabs = ctx.tabs_widget
 
     # -- header bar --------------------------------------------------------
-    backend_label = 'Local' if backend == 'local' else 'BwUniCluster'
-
     pull_delfin_btn = widgets.Button(
         description='PULL DELFIN', button_style='info',
         layout=widgets.Layout(width='150px'),
@@ -816,12 +918,16 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             'style="height:46px; width:46px; object-fit:contain;" />'
             if logo_data_uri else ''
         )
-        + f'<h2 style="color:#1976d2; margin:0;">DELFIN ({backend_label})</h2>'
+        # Wordmark in the logo's own blue (#628FBF, sampled from the dolphin
+        # disc) so header and mark read as one unit.
+        + '<h1 style="color:#628FBF; margin:0; font-size:38px; '
+          'font-weight:700; line-height:1; letter-spacing:1px;">DELFIN</h1>'
         + '</div>'
     )
 
     display(widgets.VBox([
         busy_css,
+        create_page_css(),
         widgets.HBox([
             widgets.HTML(title_html),
             widgets.HBox(
@@ -1282,42 +1388,29 @@ def _build_home_usage_widget(home_dir, warn_threshold_gb=400):
             f'{html.escape(message)}</span>'
         )
 
-    def _measure_bytes():
-        commands = (
-            ['du', '-sb', str(home_dir)],
-            ['du', '-sk', str(home_dir)],
-        )
-        for cmd in commands:
-            try:
-                result = subprocess.run(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    check=False,
-                    timeout=1800,
-                )
-            except Exception:
-                continue
-            if result.returncode != 0 or not result.stdout.strip():
-                continue
-            try:
-                value = int(result.stdout.split()[0])
-            except Exception:
-                continue
-            if cmd[1] == '-sk':
-                value *= 1024
-            return value
-        raise RuntimeError('du failed')
-
     def _refresh():
+        # Usage comes from quota accounting, never from a directory walk: on a
+        # shared cluster file system ``du`` costs one metadata RPC per file and
+        # degrades the machine for everyone. See delfin/quota.py.
         try:
-            used_bytes = _measure_bytes()
-            used_gb = used_bytes / (1024 ** 3)
+            usage = home_usage(home_dir)
+        except Exception:
+            usage = None
+        if usage is None:
+            _set_label('HOME: n/a', color='#757575')
+            return
+        used_gb = usage.used_bytes / (1024 ** 3)
+        if usage.soft_limit_bytes:
+            limit_gb = usage.soft_limit_bytes / (1024 ** 3)
+            percent = 100.0 * usage.used_bytes / usage.soft_limit_bytes
+            over = percent >= 85.0 or used_gb >= float(warn_threshold_gb)
+            _set_label(
+                f'HOME: {used_gb:.1f} / {limit_gb:.0f} GB ({percent:.0f}%)',
+                color='#b71c1c' if over else '#455a64',
+            )
+        else:
             color = '#b71c1c' if used_gb >= float(warn_threshold_gb) else '#455a64'
             _set_label(f'HOME: {used_gb:.1f} GB', color=color)
-        except Exception:
-            _set_label('HOME: n/a', color='#757575')
 
     threading.Thread(target=_refresh, daemon=True).start()
     return label

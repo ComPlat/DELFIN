@@ -2024,10 +2024,12 @@ if __name__ == "__main__":  # pragma: no cover
     _loose = sum(len(f["operations"])
                  for f in detect_fragment_orbits(_fc, _fcc, rms_tol=1.0e9))
     print(f"  orbit path : survives the call, E = {_oe:.4f}")
-    print(f"  benzoate   : {_loose} graph automorphism(s), {_nops} accepted   "
-          f"{'OK — the ring flip is NOT a geometric symmetry here (=O vs [O-] are '
-             'distinct and off-axis), and the residual guard rejects it'
-             if _nops == 0 else 'check: something asymmetric was accepted'}")
+    # Python 3.11 (the CI interpreter, requires-python <3.12) forbids a line break
+    # inside an f-string expression; the message is built first, then printed.
+    _bz_msg = ('OK — the ring flip is NOT a geometric symmetry here (=O vs [O-] are '
+               'distinct and off-axis), and the residual guard rejects it'
+               if _nops == 0 else 'check: something asymmetric was accepted')
+    print(f"  benzoate   : {_loose} graph automorphism(s), {_nops} accepted   {_bz_msg}")
     # Positive control: a molecule that really carries the symmetry must keep it.
     for _smi, _what in (("c1ccccc1", "benzene"),
                         ("c1ccc(-c2ccccn2)nc1", "2,2'-bipyridine")):

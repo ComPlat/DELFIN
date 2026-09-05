@@ -13,9 +13,13 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any
+
+from . import german as _german
 
 
 _DEFAULT_PATH = Path.home() / ".delfin" / "agent_memory.json"
@@ -25,12 +29,202 @@ _STOPWORDS = {
 }
 
 
+def _normalise_text(text: str) -> str:
+    return unicodedata.normalize("NFKC", text or "").casefold()
+
+
 def _tokenize(text: str) -> set[str]:
+    """Return deterministic Unicode-aware word tokens for recall and dedup."""
     return {
         token
-        for token in re.split(r"[^a-z0-9]+", (text or "").lower())
+        for token in re.findall(r"[^\W_]+", _normalise_text(text), re.UNICODE)
         if len(token) >= 3 and token not in _STOPWORDS
     }
+
+
+def _jaccard(a: str, b: str) -> float:
+    """Token-set Jaccard similarity in [0, 1]. Deterministic, model-free.
+
+    Used to detect near-duplicate typed memories so the store can merge
+    them instead of accumulating look-alikes. Two empty texts count as
+    identical (1.0); one empty vs. non-empty is 0.0."""
+    ta, tb = _tokenize(a), _tokenize(b)
+    if not ta and not tb:
+        return (
+            1.0
+            if _normalise_text(a).strip() == _normalise_text(b).strip()
+            else 0.0
+        )
+    if not ta or not tb:
+        return 0.0
+    inter = len(ta & tb)
+    union = len(ta | tb)
+    return inter / union if union else 0.0
+
+
+# Similarity at/above this bar => treat as the same fact and merge in place.
+# Read this dynamically so long-running/local-model setups can tune the value
+# without relying on the model to perform deduplication itself.
+_DEFAULT_MERGE_SIMILARITY = 0.72
+
+
+# Words that carry the polarity of a rule. Token SETS cannot encode negation:
+# swapping "never" for "always" in a twenty-token sentence leaves ~0.9 of the
+# tokens in place, which is far above the merge bar — so the store would file
+# the inverse of a rule as the same rule and overwrite the original with it.
+# The markers are compared as SETS, not as a single boolean, because a
+# sentence can carry several ("never … without …") and losing one of them is
+# already a different instruction.
+#
+# German stays German here on purpose: these match what the USER writes.
+_POLARITY_MARKERS: tuple[str, ...] = (
+    # negation — English
+    "never", "not", "no", "don't", "dont", "cannot", "without",
+    # negation — German
+    "nie", "niemals", "nicht", "kein", "keine", "keinen", "keiner", "ohne",
+    # obligation / affirmation — English
+    "always", "must", "only", "every",
+    # obligation / affirmation — German
+    "immer", "stets", "muss", "nur", "jede", "jeden", "jedes",
+)
+
+
+def _polarity_signature(text: str) -> frozenset[str]:
+    """The polarity-bearing words in ``text``, as a set.
+
+    Word-boundary matched on the normalised text so ``nicht`` does not fire
+    inside ``Nichtmetall`` and ``no`` does not fire inside ``node``.
+    """
+    normalised = _normalise_text(text)
+    found = set()
+    for marker in _POLARITY_MARKERS:
+        if re.search(rf"(?<!\w){re.escape(marker)}(?!\w)", normalised):
+            found.add(marker)
+    return frozenset(found)
+
+
+def _inverts_polarity(a: str, b: str) -> bool:
+    """True when two texts do not carry the same polarity words.
+
+    A merge REPLACES the stored body, so two rules that differ only in their
+    polarity words are the two rules the store must never collapse into one.
+    """
+    return _polarity_signature(a) != _polarity_signature(b)
+
+
+def _merge_similarity_threshold() -> float:
+    raw = os.environ.get("DELFIN_MEMORY_MERGE_THRESHOLD", "")
+    if not raw:
+        return _DEFAULT_MERGE_SIMILARITY
+    try:
+        value = float(raw)
+    except ValueError:
+        return _DEFAULT_MERGE_SIMILARITY
+    if 0.0 <= value <= 1.0:
+        return value
+    return _DEFAULT_MERGE_SIMILARITY
+
+
+def _set_file_perms(path: Path) -> None:
+    """Best-effort 0600 on a memory file (per-user, must not be committed)."""
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` atomically (temp file + ``os.replace``).
+
+    Memory files are rewritten on every recall, and a dashboard session and
+    a CLI session can share one repo: a plain ``write_text`` truncates first,
+    so a reader racing the writer would observe an empty or torn file."""
+    import tempfile
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(text)
+        os.replace(tmp, path)
+        _set_file_perms(path)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+# Frontmatter fields the store owns and rewrites itself; anything else found
+# in an existing file (e.g. hand-added by the user) is carried through
+# rewrites unchanged via the ``extras`` mapping.
+_KNOWN_FRONT_FIELDS = frozenset({
+    "name", "description", "created_at", "updated_at", "use_count",
+    "superseded", "type", "domain", "source",
+})
+
+
+# Who wrote the memory. A fact the user typed and a fact the model invented
+# mid-turn were byte-identical on disk, which mattered because `feedback`
+# and `user` entries are exempt from age pruning: an invented one was
+# immortal and recalled into every later session. Recorded on the FILE, like
+# the domain, so the decision does not depend on the model remembering it.
+SOURCE_USER = "user"
+SOURCE_AGENT = "agent"
+
+# Model-written memories decay when they stop earning their place. Recall
+# bumps updated_at, so this is disuse, not age: a memory the agent keeps
+# pulling into prompts survives indefinitely.
+_AGENT_MEMORY_MAX_AGE_DAYS = 90
+
+
+def _normalise_source(value: object) -> str:
+    """Anything that is not explicitly the agent counts as the user.
+
+    Files written before this field existed have no `source:` line; reading
+    them as the user's keeps their existing protection rather than silently
+    scheduling the whole legacy store for deletion.
+    """
+    return (SOURCE_AGENT
+            if str(value or "").strip().lower() == SOURCE_AGENT
+            else SOURCE_USER)
+
+
+def _compose_frontmatter(
+    *,
+    name: str,
+    description: str,
+    created_at: int,
+    updated_at: int,
+    use_count: int,
+    memory_type: str,
+    body: str,
+    superseded: str = "",
+    domain: str = "",
+    source: str = "",
+    extras: dict[str, str] | None = None,
+) -> str:
+    """Serialise a typed memory file (frontmatter + body)."""
+    lines = [
+        "---",
+        f"name: {name}",
+        f"description: {description}",
+        f"created_at: {created_at}",
+        f"updated_at: {updated_at}",
+        f"use_count: {use_count}",
+    ]
+    if domain:
+        lines.append(f"domain: {domain}")
+    if source:
+        lines.append(f"source: {_normalise_source(source)}")
+    if superseded:
+        lines.append(f"superseded: {superseded}")
+    for key, value in (extras or {}).items():
+        if key not in _KNOWN_FRONT_FIELDS:
+            lines.append(f"{key}: {value}")
+    lines += ["metadata:", f"  type: {memory_type}", "---", "", body, ""]
+    return "\n".join(lines)
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -87,6 +281,38 @@ def delete_memory(index: int, path: Path | None = None) -> bool:
     return False
 
 
+def bm25_scores(task_text: str, texts: list[str]) -> list[float]:
+    """BM25 relevance of each text against ``task_text``.
+
+    Per-text score is the sum over the task's query tokens of
+    ``log((N - df + 0.5) / (df + 0.5) + 1)`` times a length-normalised
+    saturation factor (k1=1.2, b=0.75; term frequency is binary because
+    docs are token SETS). Returns all zeros when the task yields no tokens
+    after stopword removal. Deterministic and model-free."""
+    task_tokens = _tokenize(task_text)
+    if not task_tokens or not texts:
+        return [0.0] * len(texts)
+    import math as _math
+    docs = [_tokenize(t) for t in texts]
+    doc_lens = [max(1, len(d)) for d in docs]
+    avgdl = sum(doc_lens) / max(1, len(doc_lens))
+    N = len(docs)
+    df = {tok: sum(1 for d in docs if tok in d) for tok in task_tokens}
+    k1, b = 1.2, 0.75
+    scores: list[float] = []
+    for doc, dlen in zip(docs, doc_lens):
+        score = 0.0
+        for tok in task_tokens:
+            df_t = df.get(tok, 0)
+            if df_t == 0 or tok not in doc:
+                continue
+            idf = _math.log((N - df_t + 0.5) / (df_t + 0.5) + 1.0)
+            norm = (k1 + 1.0) / (1.0 + k1 * (1 - b + b * dlen / avgdl))
+            score += idf * norm
+        scores.append(score)
+    return scores
+
+
 def format_memory_context(
     path: Path | None = None,
     *,
@@ -115,32 +341,13 @@ def format_memory_context(
             for i, fact in enumerate(facts[-max_entries:])
         ]
     else:
-        import math as _math
-        N = len(facts)
-        # Pre-tokenize each fact + compute doc length / avg-doc length.
-        docs = [_tokenize(str(f.get("text", ""))) for f in facts]
-        doc_lens = [max(1, len(d)) for d in docs]
-        avgdl = sum(doc_lens) / max(1, len(doc_lens))
-        # Document frequency for each query token.
-        df: dict[str, int] = {}
-        for tok in task_tokens:
-            df[tok] = sum(1 for d in docs if tok in d)
-        k1, b = 1.2, 0.75
-        scored: list[tuple[float, dict[str, Any]]] = []
-        for i, (fact, doc, dlen) in enumerate(zip(facts, docs, doc_lens)):
-            score = 0.0
-            for tok in task_tokens:
-                df_t = df.get(tok, 0)
-                if df_t == 0 or tok not in doc:
-                    continue
-                idf = _math.log((N - df_t + 0.5) / (df_t + 0.5) + 1.0)
-                # Token frequency is binary here (we don't track tf in a
-                # set), so the saturation curve simplifies to:
-                norm = (k1 + 1.0) / (1.0 + k1 * (1 - b + b * dlen / avgdl))
-                score += idf * norm
-            if score > 0:
-                # Tiebreak on recency: later facts win on equal score.
-                scored.append((score + 1e-6 * i, fact))
+        scores = bm25_scores(task_text, [str(f.get("text", "")) for f in facts])
+        scored: list[tuple[float, dict[str, Any]]] = [
+            # Tiebreak on recency: later facts win on equal score.
+            (score + 1e-6 * i, fact)
+            for i, (score, fact) in enumerate(zip(scores, facts))
+            if score > 0
+        ]
         scored.sort(key=lambda kv: kv[0], reverse=True)
         selected = scored[:max_entries]
 
@@ -176,6 +383,11 @@ _TYPE_PREFIX_RE = re.compile(
     r"^(user|feedback|project|reference)\s*[:\-]\s*", re.IGNORECASE
 )
 
+# "global:" scope prefix — routes the fact to the USER-WIDE store
+# (~/.delfin/memory) regardless of its type ("global: feedback: …" is a
+# user-scoped feedback memory). Colon-only so "global-warming …" survives.
+_GLOBAL_PREFIX_RE = re.compile(r"^global\s*:\s*", re.IGNORECASE)
+
 
 # Heuristic keyword sets for auto-classification when no explicit prefix
 # is supplied. The first matching type wins. Order matters: feedback is
@@ -183,11 +395,20 @@ _TYPE_PREFIX_RE = re.compile(
 # then project (time/deadline cues), then reference (external pointers),
 # then user as the fallback. Patterns are intentionally conservative so a
 # misclassification stays an editable text file the user can re-tag.
+#
+# Matched as WORDS, not as substrings with a trailing space. Every German
+# hint used to end in one, and German puts its negation at the end of the
+# sentence — so "Committe niemals ohne Test", the strongest prohibition a
+# user can write, was filed as background, and "Bitte nicht ohne Test
+# committen" was filed as feedback only because "nicht" happened to have
+# a word after it. "niemals" and "nie" were absent from the list outright.
 _FEEDBACK_HINTS = (
-    "don't ", "do not ", "never ", "stop ", "always ",
-    "nicht ", "keine ", "kein ", "immer ", "stets ",
+    "don't", "do not", "never", "stop", "always", "avoid",
+    "nicht", "nie", "niemals", "keine", "kein", "keinen", "keinesfalls",
+    "immer", "stets", "grundsätzlich", "grundsaetzlich", "unbedingt",
+    "bloß nicht", "bloss nicht", "auf keinen fall", "vermeide",
     "use ... instead", "use x instead of",
-    "prefer ", "should not ", "must not ", "muss nicht ",
+    "prefer", "should not", "must not", "muss nicht", "darf nie",
     "muss immer", "darf nicht", "anti-pattern", "anti pattern",
 )
 _PROJECT_HINTS = (
@@ -205,39 +426,402 @@ _REFERENCE_HINTS = (
 )
 
 
+def _hint_pattern(hints: tuple[str, ...]) -> "re.Pattern[str]":
+    """One word-boundary matcher for a hint set.
+
+    Word-bounded so a hint can sit at the end of a sentence, which is
+    where German puts it. ``...`` in a hint stands for anything up to the
+    end of the line ("use ... instead").
+    """
+    parts = []
+    for hint in hints:
+        pieces = [re.escape(p.strip()) for p in hint.split("...")]
+        parts.append(r"\s.*?\s".join(p for p in pieces if p))
+    return re.compile(r"(?i)(?:^|\b)(?:" + "|".join(parts) + r")(?:\b|$)")
+
+
+_FEEDBACK_RE = _hint_pattern(_FEEDBACK_HINTS)
+_PROJECT_RE = _hint_pattern(_PROJECT_HINTS)
+_REFERENCE_RE = _hint_pattern(_REFERENCE_HINTS)
+
+
 def _classify_by_heuristic(text: str) -> str:
     """Pick a memory type when the user didn't supply a prefix.
 
     Returns one of ``"feedback" | "project" | "reference" | "user"``.
     """
     lowered = (text or "").lower()
-    if any(h in lowered for h in _FEEDBACK_HINTS):
+    if _FEEDBACK_RE.search(lowered):
         return "feedback"
-    if any(h in lowered for h in _PROJECT_HINTS):
+    if _PROJECT_RE.search(lowered):
         return "project"
-    if any(h in lowered for h in _REFERENCE_HINTS):
+    if _REFERENCE_RE.search(lowered):
         return "reference"
     return "user"
 
 
-def parse_memory_type(text: str) -> tuple[str, str]:
-    """Strip a leading ``<type>:`` prefix and return ``(memory_type, body)``.
+def parse_memory_scope(text: str) -> tuple[str, str]:
+    """Strip a leading ``global:`` prefix and return ``(scope, rest)``.
 
-    When no prefix is present we run a keyword heuristic across feedback /
-    project / reference patterns and fall back to ``"user"``. The body is
-    always the original text minus any consumed prefix.
+    ``scope`` is ``"user"`` (user-wide ~/.delfin/memory store) when the
+    prefix is present, else ``"project"``. Any ``<type>:`` prefix in the
+    rest is left untouched for ``parse_memory_type``.
     """
-    m = _TYPE_PREFIX_RE.match(text or "")
+    m = _GLOBAL_PREFIX_RE.match(text or "")
     if m:
-        return m.group(1).lower(), (text[m.end():]).strip()
-    body = (text or "").strip()
+        return "user", (text[m.end():]).strip()
+    return "project", (text or "").strip()
+
+
+def parse_memory_type(text: str) -> tuple[str, str]:
+    """Strip leading ``global:`` / ``<type>:`` prefixes and return
+    ``(memory_type, body)``.
+
+    A ``global:`` scope prefix is consumed first (the scope itself is
+    reported by ``parse_memory_scope``); the remaining prefix is parsed
+    normally. Without any type prefix we run a keyword heuristic across
+    feedback / project / reference patterns and fall back to ``"user"`` —
+    except for a bare ``global:`` fact, which defaults to the ``user``
+    type (a fact that crosses repos is about the user by definition).
+    """
+    scope, rest = parse_memory_scope(text)
+    m = _TYPE_PREFIX_RE.match(rest)
+    if m:
+        return m.group(1).lower(), (rest[m.end():]).strip()
+    body = rest.strip()
+    if scope == "user":
+        return "user", body
     return _classify_by_heuristic(body), body
 
 
+# ---------------------------------------------------------------------------
+# Memory domains — administrative work and technical work must not see
+# each other's memories
+# ---------------------------------------------------------------------------
+#
+# Office mode already has the chemistry and calculation tools removed at the
+# authorisation layer. Memory was the remaining channel through which that
+# subject matter could still reach an office turn: a fact written while
+# working on the code base scores high on text similarity often enough, and
+# once it is in the context window nothing downstream can take it back. The
+# domain is therefore a property OF THE STORED FILE, checked before the file
+# is read into a prompt — not an instruction to the model.
+#
+# The taxonomy is deliberately small: two working domains plus an explicit
+# neutral tier. "code" covers the technical session (source, calculations,
+# methodology) because those are one mode and one workspace in practice;
+# splitting them would only add a classification decision nobody can make
+# reliably.
+
+DOMAIN_OFFICE = "office"
+DOMAIN_CODE = "code"
+DOMAIN_GENERAL = "general"
+MEMORY_DOMAINS = (DOMAIN_OFFICE, DOMAIN_CODE, DOMAIN_GENERAL)
+
+# Files written before domains existed carry no ``domain:`` field. They were
+# necessarily written in a technical session — office mode is newer than the
+# store — so a missing field reads as "code" and NOT as "general". Reading it
+# as neutral would make every pre-existing memory visible to office turns,
+# which is exactly the leak this split closes.
+_LEGACY_DOMAIN = DOMAIN_CODE
+
+_OFFICE_ROLES = frozenset({"office_agent"})
+_OFFICE_MODES = frozenset({"office"})
+
+# Office workspaces seen by this installation. Persisted because the domain
+# of a WRITE is derived from the folder it is written for: a later process
+# (CLI, a fresh dashboard) must resolve the same folder to the same domain,
+# or a convention saved in one session would come back tagged as code work.
+_OFFICE_WS_LOCK = threading.Lock()
+_office_ws_cache: set[str] | None = None
+
+
+def _office_ws_file() -> Path:
+    return Path.home() / ".delfin" / "office_workspaces.json"
+
+
+def _load_office_workspaces() -> set[str]:
+    global _office_ws_cache
+    if _office_ws_cache is not None:
+        return _office_ws_cache
+    known: set[str] = set()
+    try:
+        raw = json.loads(_office_ws_file().read_text(encoding="utf-8"))
+        if isinstance(raw, list):
+            known = {str(p) for p in raw if str(p).strip()}
+    except (OSError, ValueError, TypeError):
+        known = set()
+    _office_ws_cache = known
+    return known
+
+
+def register_office_workspace(path: Path | str) -> None:
+    """Record ``path`` as a folder in which office work happens.
+
+    Called once per turn by the engine while an office session runs. The
+    write path uses it to tag memories saved for that folder, so the tag
+    does not depend on which caller happens to reach the store.
+    Best-effort: a store that cannot be persisted still holds for the
+    running process.
+    """
+    global _office_ws_cache
+    try:
+        candidate = Path(path).expanduser().resolve()
+    except (OSError, TypeError, ValueError):
+        return
+    # It has to be a real directory. Without this check anything whose
+    # str() looked path-shaped was persisted: a run of the suite left 176
+    # entries of the form ".../MagicMock/mock._permissions.workspace/1234"
+    # in the user's registry, because a mocked permissions object's repr
+    # was taken as a workspace. The registry is one of the three carriers
+    # of the office folder lock, so filling it with noise is not merely
+    # untidy -- it decides which folder counts as an office folder.
+    try:
+        if not candidate.is_dir():
+            return
+    except OSError:
+        return
+    resolved = str(candidate)
+    if not resolved:
+        return
+    with _OFFICE_WS_LOCK:
+        known = set(_load_office_workspaces())
+        if resolved in known:
+            return
+        known.add(resolved)
+        _office_ws_cache = known
+        try:
+            f = _office_ws_file()
+            f.parent.mkdir(parents=True, exist_ok=True)
+            _atomic_write(f, json.dumps(sorted(known), ensure_ascii=False))
+        except OSError:
+            pass
+
+
+def is_office_workspace(path: Path | str) -> bool:
+    """True when ``path`` is a registered office folder or lies inside one."""
+    try:
+        target = Path(path).expanduser().resolve()
+    except OSError:
+        return False
+    with _OFFICE_WS_LOCK:
+        known = set(_load_office_workspaces())
+    for entry in known:
+        try:
+            root = Path(entry)
+            if target == root:
+                return True
+            target.relative_to(root)
+            return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
+def domain_for_role(role_id: str = "", mode_id: str = "") -> str:
+    """Domain of a turn, from the role that runs it and the active mode."""
+    if (role_id or "").strip().lower() in _OFFICE_ROLES:
+        return DOMAIN_OFFICE
+    if (mode_id or "").strip().lower() in _OFFICE_MODES:
+        return DOMAIN_OFFICE
+    return DOMAIN_CODE
+
+
+def resolve_memory_domain(
+    repo_root: Path | str, explicit: str | None = None,
+) -> str:
+    """Domain a memory written for ``repo_root`` belongs to.
+
+    A registered office folder always wins over ``explicit``: the write
+    tool does not choose the domain, and an office session must not be
+    able to file a fact where other work would read it.
+    """
+    if is_office_workspace(repo_root):
+        return DOMAIN_OFFICE
+    candidate = (explicit or "").strip().lower()
+    if candidate in MEMORY_DOMAINS:
+        return candidate
+    return DOMAIN_CODE
+
+
+def domain_visible(memory_domain: str, active_domain: str) -> bool:
+    """Whether a memory of ``memory_domain`` may be recalled into a turn
+    running in ``active_domain``.
+
+    Visible when the domains match, or when the memory was deliberately
+    filed as neutral. An empty ``active_domain`` means the caller does not
+    track domains (older entry points, tests) and nothing is filtered.
+    """
+    if not (active_domain or "").strip():
+        return True
+    md = (memory_domain or _LEGACY_DOMAIN).strip().lower() or _LEGACY_DOMAIN
+    ad = active_domain.strip().lower()
+    return md == ad or md == DOMAIN_GENERAL
+
+
+def memory_text_domain(file_text: str) -> str:
+    """Domain of a raw memory file, legacy default applied. Never raises."""
+    try:
+        meta, _ = _parse_frontmatter(file_text or "")
+    except Exception:
+        return _LEGACY_DOMAIN
+    value = (meta.get("domain") or "").strip().lower()
+    return value if value in MEMORY_DOMAINS else _LEGACY_DOMAIN
+
+
+_INDEX_LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+\.md)\)")
+
+
+def filter_memory_index(
+    index_text: str, memory_dir: Path, active_domain: str,
+) -> str:
+    """Drop MEMORY.md lines that are out of domain.
+
+    The index is injected verbatim alongside the memory bodies, and every
+    pointer line carries a one-line hook — filtering only the bodies would
+    still put the SUBJECT of an out-of-domain memory into the prompt.
+
+    Three kinds of line:
+    - a ``[Title](file.md)`` pointer — judged by the target file's domain;
+    - structure (blank lines, headings) — always kept, never counted;
+    - anything else — a fact written straight into the index by hand. It
+      carries no domain, so it is judged as legacy, exactly like a memory
+      file without the field.
+
+    Returns "" when nothing of substance survives, so the caller can skip
+    the store entirely instead of injecting a set of empty headings.
+    """
+    if not (active_domain or "").strip():
+        return index_text
+    kept: list[str] = []
+    survivors = 0
+    for line in (index_text or "").splitlines():
+        match = _INDEX_LINK_RE.search(line)
+        if match is None:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                kept.append(line)
+                continue
+            if domain_visible(_LEGACY_DOMAIN, active_domain):
+                kept.append(line)
+                survivors += 1
+            continue
+        rel = match.group(1).strip()
+        try:
+            target = (memory_dir / rel).resolve()
+            target.relative_to(Path(memory_dir).resolve())
+            text = target.read_text(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            continue
+        if domain_visible(memory_text_domain(text), active_domain):
+            kept.append(line)
+            survivors += 1
+    if not survivors:
+        return ""
+    return "\n".join(kept)
+
+
+# ---------------------------------------------------------------------------
+# Office memory hygiene — conventions may be stored, records may not
+# ---------------------------------------------------------------------------
+#
+# Administrative folders hold names, addresses, salaries and case numbers.
+# A store that accumulates those out of the documents it works on is worse
+# than no store: it persists past the session and outlives the folder. The
+# rule the office domain enforces is that a memory may describe HOW work is
+# done — which template belongs to which list, which column holds the key,
+# which naming pattern was approved — but may not carry a value copied out
+# of a document.
+#
+# The line drawn in code is: a FORMAT may be written, a VALUE may not.
+# "day-first dates (DD.MM.YYYY)" is a convention; "31.07.2026" is a record.
+# The check runs on the way IN, inside the single function every write path
+# reaches, and REJECTS rather than redacting — a silently scrubbed memory
+# would leave the user believing something was stored that was not, and a
+# half-scrubbed record is still a record.
+
+class OfficeMemoryRejected(ValueError):
+    """Raised when an office memory carries document content."""
+
+
+# A convention is a sentence about how work is done. Anything longer is
+# either a pasted excerpt or a summary of the documents themselves.
+_OFFICE_MAX_CHARS = 400
+_OFFICE_MAX_LINES = 6
+
+# Ordered so the most specific description wins the error message.
+_RECORD_VALUE_PATTERNS: tuple[tuple[str, re.Pattern], ...] = (
+    ("an e-mail address", re.compile(r"[^\s@]+@[^\s@]+\.[A-Za-z]{2,}")),
+    ("an IBAN", re.compile(r"\b[A-Z]{2}\d{2}[ ]?[A-Z0-9]{4}(?:[ ]?[A-Z0-9]{4}){2,}\b")),
+    ("a date", re.compile(r"\b\d{1,4}\s*[./-]\s*\d{1,2}\s*[./-]\s*\d{2,4}\b")),
+    ("an amount", re.compile(r"\d[\d.\s]*,\d{2}(?!\d)|\b\d+\.\d{2}(?!\d)")),
+    ("a currency amount", re.compile(
+        r"(?:[€$£]|\b(?:EUR|USD|CHF|GBP)\b)\s*\d"
+        r"|\d\s*(?:[€$£]|\b(?:EUR|USD|CHF|GBP)\b)")),
+    ("a record key", re.compile(r"\b[A-Za-z]{1,4}[-_/]\d{2,}\b")),
+    ("a record number", re.compile(r"\d{4,}")),
+)
+
+# Three or more delimiter-separated fields on one line is the shape of a
+# copied table row, whatever the values in it happen to be.
+_TABLE_ROW_RE = re.compile(r"(?:[;|\t][^;|\t]*){2,}")
+
+
+def check_office_convention(text: str) -> str | None:
+    """Return why ``text`` is not storable as an office convention, or None.
+
+    Pure and side-effect free so the rule can be tested directly and reused
+    by any future write path.
+    """
+    body = (text or "").strip()
+    if not body:
+        return "the memory is empty"
+    if len(body) > _OFFICE_MAX_CHARS:
+        return (
+            f"it is {len(body)} characters long; a convention fits in a "
+            f"sentence (limit {_OFFICE_MAX_CHARS}). Store how the work is "
+            "done, not what the documents contain"
+        )
+    lines = [ln for ln in body.splitlines() if ln.strip()]
+    if len(lines) > _OFFICE_MAX_LINES:
+        return (
+            f"it spans {len(lines)} lines; that is an excerpt, not a "
+            "convention"
+        )
+    if _TABLE_ROW_RE.search(body):
+        return (
+            "it has the shape of a table row (delimiter-separated fields); "
+            "table content belongs in the document, not in memory"
+        )
+    for label, pattern in _RECORD_VALUE_PATTERNS:
+        hit = pattern.search(body)
+        if hit is not None:
+            return (
+                f"it contains {label} ({hit.group(0)!r}). Office memory "
+                "holds conventions, never values out of a document — name "
+                "the format (e.g. DD.MM.YYYY, decimal comma) instead of an "
+                "example taken from the file"
+            )
+    return None
+
+
+def assert_office_convention(text: str, *, what: str = "memory") -> None:
+    """Raise ``OfficeMemoryRejected`` when ``text`` is not a convention."""
+    reason = check_office_convention(text)
+    if reason is not None:
+        raise OfficeMemoryRejected(f"this {what} was not stored: {reason}")
+
+
 def _slugify(text: str, max_len: int = 60) -> str:
-    s = re.sub(r"[^a-z0-9\s\-]", "", (text or "").lower())
-    s = re.sub(r"\s+", "-", s).strip("-")
-    return (s or "memory")[:max_len].rstrip("-") or "memory"
+    """The memory slug. Shared with every other slug in the framework.
+
+    It used to strip anything outside ``[a-z0-9\\s-]``, which DELETES an
+    umlaut instead of spelling it: "Müller GmbH" and "Möller GmbH" both
+    became ``mller-gmbh``. The filename got a numeric suffix, but the
+    slug is what the index shows the user and what a merge and a delete
+    match on, so one customer's note answered for the other's.
+    """
+    return _german.slugify(text, max_len=max_len, fallback="memory")
 
 
 def _project_slug(repo_root: Path) -> str:
@@ -267,6 +851,21 @@ def _delfin_memory_dir(repo_root: Path) -> Path:
     return new
 
 
+def _delfin_global_memory_dir() -> Path:
+    """DELFIN's USER-WIDE memory store: ``~/.delfin/memory``. Same layout
+    as the per-project store (typed files + MEMORY.md index) but holds
+    facts that cross repos — user identity and standing feedback."""
+    return Path.home() / ".delfin" / "memory"
+
+
+def _memory_dir_for_scope(repo_root: Path | str, scope: str) -> Path:
+    """Resolve the store directory for a scope: ``"user"`` → the global
+    ``~/.delfin/memory``; anything else → the per-project store."""
+    if scope == "user":
+        return _delfin_global_memory_dir()
+    return _delfin_memory_dir(Path(repo_root))
+
+
 def _delfin_plans_dir(repo_root: Path) -> Path:
     """Sibling of the memory dir — approved Plan-Mode plans land here so the
     user can re-open them in a later session. Under DELFIN's own ~/.delfin
@@ -278,8 +877,9 @@ def _delfin_plans_dir(repo_root: Path) -> Path:
     return new
 
 
-# Back-compat aliases — the per-project store moved from ~/.claude (Claude
-# Code's namespace) into DELFIN's own ~/.delfin. Old callers/tests keep working.
+# Back-compat aliases — the per-project store moved from the legacy
+# ~/.claude location (another tool's namespace) into DELFIN's own ~/.delfin.
+# Old callers/tests keep working.
 _claude_memory_dir = _delfin_memory_dir
 _claude_plans_dir = _delfin_plans_dir
 
@@ -406,20 +1006,77 @@ def save_typed_memory(
     repo_root: Path | str,
     memory_type: str | None = None,
     title: str | None = None,
+    scope: str = "project",
+    domain: str | None = None,
+    source: str = SOURCE_USER,
+    allow_scope_prefix: bool = False,
 ) -> tuple[Path, str, str]:
     """Persist a typed memory in the .delfin project-memory layout.
 
     Writes:
-    - ``~/.claude/projects/<slug>/memory/<type>_<kebab-slug>.md`` with
-      ``name:``, ``description:`` and ``metadata.type`` frontmatter
+    - ``~/.delfin/projects/<slug>/memory/<type>_<kebab-slug>.md`` with
+      ``name:``, ``description:`` and ``metadata.type`` frontmatter.
+      ``scope="user"`` targets the user-wide ``~/.delfin/memory/`` store
+      instead, so identity/standing-feedback facts cross repos. A leading
+      ``global:`` prefix in the TEXT does the same, but only when the caller
+      passes ``allow_scope_prefix`` — text is the one channel the model
+      controls end to end, and the reach of a memory is not its decision.
     - Prepends a one-line pointer to that file under the matching section
       of ``MEMORY.md``, creating the section if missing.
+
+    Project-scoped bodies containing ``path:line`` references get a short
+    content anchor per ref (the cited line's text) stored in an
+    ``anchors:`` frontmatter mapping so recall can later detect drift.
+
+    Every file records the DOMAIN it was written in (see ``domain_visible``)
+    so recall in another domain cannot reach it. Writes for a registered
+    office folder are forced into the office domain and the project store,
+    and their text must pass ``check_office_convention`` — an office
+    session can neither file a fact where other work would read it nor
+    store a value copied out of a document.
+
+    Raises ``OfficeMemoryRejected`` when an office write carries document
+    content.
 
     Returns ``(file_path, slug, memory_type)``.
     """
     body = (text or "").strip()
+    prefix_scope, body = parse_memory_scope(body)
+    if prefix_scope == "user" and not allow_scope_prefix:
+        # A `global:` prefix reaches the user-wide store that EVERY other
+        # workspace reads. The `remember` tool's schema has no scope
+        # parameter and tells the model it is writing project memory, so
+        # honouring the prefix let the one carrier the model fully controls
+        # widen its own reach without the user ever seeing a choice. Callers
+        # acting on text the user typed themselves (/remember) opt in; the
+        # default refuses, so a write path added later fails closed.
+        #
+        # The prefix is still stripped: it was an instruction, not content.
+        prefix_scope = "project"
+    if prefix_scope == "user":
+        scope = "user"
+    scope = "user" if scope == "user" else "project"
+    source = _normalise_source(source)
+    resolved_domain = resolve_memory_domain(repo_root, domain)
+    if resolved_domain == DOMAIN_OFFICE:
+        # An office convention describes one folder's way of working. The
+        # user-wide store is read by every other workspace, so that route is
+        # closed here rather than left to the caller — including the
+        # ``global:`` prefix, which the text itself could otherwise carry.
+        scope = "project"
+        assert_office_convention(body)
+        if title:
+            assert_office_convention(title, what="memory title")
     if memory_type is None:
-        memory_type, body = parse_memory_type(body)
+        m = _TYPE_PREFIX_RE.match(body)
+        if m:
+            memory_type = m.group(1).lower()
+            body = (body[m.end():]).strip()
+        elif prefix_scope == "user":
+            # A bare "global: …" fact is about the user by definition.
+            memory_type = "user"
+        else:
+            memory_type = _classify_by_heuristic(body)
     memory_type = (memory_type or "user").lower()
     if memory_type not in _TYPE_LABELS:
         memory_type = "user"
@@ -428,27 +1085,138 @@ def save_typed_memory(
     display_title = (title or first_line)[:80].strip() or "memory"
     slug = _slugify(display_title)
 
-    memory_dir = _delfin_memory_dir(Path(repo_root))
+    memory_dir = _memory_dir_for_scope(repo_root, scope)
     memory_dir.mkdir(parents=True, exist_ok=True)
+    index_header = (
+        _GLOBAL_INDEX_HEADER if scope == "user" else _PROJECT_INDEX_HEADER
+    )
 
+    now = int(time.time())
+    description = first_line[:160] or display_title
+
+    # Content anchors: only for the project store — global facts outlive
+    # any single checkout, so repo-relative anchors would rot immediately.
+    anchors_json = ""
+    if scope == "project":
+        try:
+            anchors = collect_reference_anchors(body, repo_root)
+            if anchors:
+                anchors_json = json.dumps(anchors, ensure_ascii=False)
+        except Exception:
+            anchors_json = ""
+
+    # --- Deduplicate: merge into a near-identical same-type memory ---------
+    # Deterministic, model-independent (Jaccard over token sets) so weak /
+    # open models (Qwen, Gemma, local) get the same dedup behaviour as
+    # frontier ones without having to reason about it. We compare against
+    # existing memories of the SAME type in the SAME store only; the
+    # highest-similarity match above the threshold wins and is updated in
+    # place. Domain is part of the identity: merging across domains would
+    # let an office write reopen a file that code turns still recall.
+    #
+    # Two candidates are refused however similar the token sets are:
+    #
+    #   * the incoming text INVERTS the stored one's polarity. Token sets do
+    #     not encode negation, so "never X" and "always X" score far above
+    #     the bar — and a merge REPLACES the body, so the store would answer
+    #     a later recall with the opposite of the rule it was given.
+    #   * the model is writing over something the USER stated. The merge
+    #     rewrites `source` to the incoming writer's, so an agent write
+    #     landing within the similarity bar of a user memory would delete the
+    #     user's wording AND drop the file to agent grade, where the 90-day
+    #     expiry applies. Nothing the model emits may do that; it gets its
+    #     own file instead, and the user's stays as written.
+    #
+    # Both refusals fall through to the next-best candidate rather than
+    # abandoning dedup: an agent restating its own memory still merges.
+    existing = [r for r in list_typed_memories(repo_root, scope=scope)
+                if r["type"] == memory_type
+                and r["domain"] == resolved_domain]
+    threshold = _merge_similarity_threshold()
+    candidates = sorted(
+        ((_jaccard(body, rec["body"]), rec) for rec in existing),
+        key=lambda pair: pair[0], reverse=True,
+    )
+    best: dict | None = None
+    for sim, rec in candidates:
+        if sim < threshold:
+            break
+        if _inverts_polarity(body, rec["body"]):
+            continue
+        if source == SOURCE_AGENT and rec.get("source") != SOURCE_AGENT:
+            continue
+        best = rec
+        break
+
+    if best is not None:
+        # Upsert: refresh the existing file's body + description, bump the
+        # use_count, and stamp updated_at. Keep its original filename/slug so
+        # MEMORY.md pointers and wikilinks stay valid.
+        fpath = Path(best["path"])
+        slug = best["name"] or slug
+        use_count = int(best.get("use_count", 0)) + 1
+        created_at = int(best.get("created_at", now)) or now
+        old_body = str(best.get("body", "")).strip()
+        try:
+            old_meta, _ = _parse_frontmatter(fpath.read_text(encoding="utf-8"))
+        except OSError:
+            old_meta = {}
+        extras = dict(old_meta)
+        if old_body != body:
+            superseded = " ".join(old_body.split())[:160]
+            # Fresh text ⇒ fresh health signal: re-anchor the new body and
+            # drop the rot counter accumulated against the old one.
+            extras.pop("stale_hits", None)
+            if anchors_json:
+                extras["anchors"] = anchors_json
+            else:
+                extras.pop("anchors", None)
+        else:
+            superseded = " ".join(old_meta.get("superseded", "").split())[:160]
+        front = _compose_frontmatter(
+            name=slug, description=description, created_at=created_at,
+            updated_at=now, use_count=use_count, memory_type=memory_type,
+            body=body, superseded=superseded, domain=resolved_domain,
+            # The merged file carries the incoming writer's text, so it
+            # carries the incoming writer's trust. Only ever upward now: the
+            # candidate filter above refuses a merge in which the model would
+            # write over the user, so this can promote an agent file to the
+            # user's when the user restates it, never the reverse.
+            source=source,
+            extras=extras,
+        )
+        _atomic_write(fpath, front)
+        # Refresh the MEMORY.md pointer so its hook matches the merged body
+        # (also re-adds the line if the user hand-pruned it from the index).
+        _remove_memory_index_line(memory_dir, fpath.name)
+        _update_memory_index(
+            memory_dir, memory_type=memory_type, title=display_title,
+            filename=fpath.name, hook=description, header=index_header,
+        )
+        return fpath, slug, memory_type
+
+    # --- New memory -------------------------------------------------------
     fname = f"{memory_type}_{slug}.md"
     fpath = memory_dir / fname
     if fpath.exists():
-        # Don't clobber — disambiguate with a monotonic suffix.
-        fname = f"{memory_type}_{slug}_{int(time.time())}.md"
+        # Same slug but NOT similar enough to merge (distinct fact that
+        # happens to share a title) -> disambiguate with a monotonic suffix.
+        suffix = str(now)
+        fname = f"{memory_type}_{slug}_{suffix}.md"
         fpath = memory_dir / fname
+        counter = 2
+        while fpath.exists():
+            fname = f"{memory_type}_{slug}_{suffix}_{counter}.md"
+            fpath = memory_dir / fname
+            counter += 1
 
-    description = first_line[:160] or display_title
-    front = (
-        "---\n"
-        f"name: {slug}\n"
-        f"description: {description}\n"
-        f"metadata:\n"
-        f"  type: {memory_type}\n"
-        "---\n\n"
-        f"{body}\n"
+    front = _compose_frontmatter(
+        name=slug, description=description, created_at=now,
+        updated_at=now, use_count=1, memory_type=memory_type, body=body,
+        domain=resolved_domain, source=source,
+        extras={"anchors": anchors_json} if anchors_json else None,
     )
-    fpath.write_text(front, encoding="utf-8")
+    _atomic_write(fpath, front)
 
     _update_memory_index(
         memory_dir,
@@ -456,8 +1224,13 @@ def save_typed_memory(
         title=display_title,
         filename=fname,
         hook=description,
+        header=index_header,
     )
     return fpath, slug, memory_type
+
+
+_PROJECT_INDEX_HEADER = "# DELFIN Project Memory"
+_GLOBAL_INDEX_HEADER = "# DELFIN Global Memory (all projects)"
 
 
 def _update_memory_index(
@@ -467,6 +1240,7 @@ def _update_memory_index(
     title: str,
     filename: str,
     hook: str,
+    header: str = _PROJECT_INDEX_HEADER,
 ) -> None:
     """Insert a one-line link under the matching ``## <Label>`` section of
     ``MEMORY.md``. Creates the index file or the section header if missing."""
@@ -478,7 +1252,7 @@ def _update_memory_index(
     if index.exists():
         content = index.read_text(encoding="utf-8")
     else:
-        content = "# DELFIN Project Memory\n\n"
+        content = f"{header}\n\n"
 
     if section_header in content:
         idx = content.index(section_header)
@@ -490,7 +1264,7 @@ def _update_memory_index(
     else:
         content = content.rstrip() + f"\n\n{section_header}\n{line}\n"
 
-    index.write_text(content, encoding="utf-8")
+    _atomic_write(index, content)
 
 
 def _type_from_filename(fname: str) -> str:
@@ -501,7 +1275,7 @@ def _type_from_filename(fname: str) -> str:
 
 
 def _parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
-    """Return ({name, description, type}, body) from a memory file's text."""
+    """Return parsed scalar frontmatter fields and the memory body."""
     meta: dict[str, str] = {}
     body = text
     if text.startswith("---\n"):
@@ -519,13 +1293,31 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
     return meta, body
 
 
-def list_typed_memories(repo_root: Path | str) -> list[dict]:
-    """One record per typed memory file under the project's memory dir.
+def _meta_int(meta: dict[str, str], key: str, default: int = 0) -> int:
+    """Read an integer frontmatter field, tolerating missing / malformed
+    values (old files predate use_count/updated_at). Never raises."""
+    try:
+        return int(str(meta.get(key, default)).strip())
+    except (TypeError, ValueError):
+        return default
 
-    Sorted by type then name. Each record: file, path, name, description,
-    type, body. This is the single source of truth for the agent's learned
+
+def list_typed_memories(
+    repo_root: Path | str, scope: str = "project",
+) -> list[dict]:
+    """One record per typed memory file in the selected store(s).
+
+    ``scope`` picks the store: ``"project"`` (default), ``"user"`` (the
+    global ~/.delfin/memory store) or ``"all"`` (global first, then
+    project). Sorted by type then name within each store. Each record:
+    file, path, name, description, type, scope, body plus usage/decay
+    metadata. This is the single source of truth for the agent's learned
     memories (the legacy flat JSON store is no longer used for recall)."""
-    memory_dir = _delfin_memory_dir(Path(repo_root))
+    if scope == "all":
+        return (list_typed_memories(repo_root, scope="user")
+                + list_typed_memories(repo_root, scope="project"))
+    scope = "user" if scope == "user" else "project"
+    memory_dir = _memory_dir_for_scope(repo_root, scope)
     if not memory_dir.is_dir():
         return []
     out: list[dict] = []
@@ -537,13 +1329,33 @@ def list_typed_memories(repo_root: Path | str) -> list[dict]:
         except OSError:
             continue
         meta, body = _parse_frontmatter(text)
+        try:
+            mtime = int(p.stat().st_mtime)
+        except OSError:
+            mtime = 0
         out.append({
             "file": p.name,
             "path": str(p),
             "name": meta.get("name") or p.stem,
             "description": meta.get("description") or "",
             "type": meta.get("type") or _type_from_filename(p.name) or "user",
+            "scope": scope,
+            # Which kind of work this memory came out of. Absent in files
+            # written before domains existed -> the legacy default.
+            "domain": memory_text_domain(text),
+            # Who wrote it. Legacy files have no `source:` line and read as
+            # the user's, so nothing written before the field existed loses
+            # its protection retroactively.
+            "source": _normalise_source(meta.get("source")),
             "body": body.strip(),
+            # Usage/decay metadata. Old files lack these -> fall back to the
+            # file mtime so LRU pruning still has a sane ordering signal.
+            "use_count": _meta_int(meta, "use_count", 0),
+            "created_at": _meta_int(meta, "created_at", mtime),
+            "updated_at": _meta_int(meta, "updated_at", mtime),
+            # Rot counter: recalls that saw dead/drifted code refs in this
+            # memory. Secondary eviction key in prune_memories.
+            "stale_hits": _meta_int(meta, "stale_hits", 0),
         })
     out.sort(key=lambda r: (r["type"], r["name"]))
     return out
@@ -561,20 +1373,28 @@ def _remove_memory_index_line(memory_dir: Path, filename: str) -> None:
     kept = [ln for ln in lines if f"({filename})" not in ln]
     if len(kept) != len(lines):
         try:
-            index.write_text("".join(kept), encoding="utf-8")
+            _atomic_write(index, "".join(kept))
         except OSError:
             pass
 
 
-def delete_typed_memory(repo_root: Path | str, name_or_file: str) -> Path | None:
+def delete_typed_memory(
+    repo_root: Path | str, name_or_file: str, scope: str = "project",
+) -> Path | None:
     """Delete a typed memory by name / slug / filename and remove its
-    MEMORY.md pointer. Returns the deleted path, or None if not found."""
+    MEMORY.md pointer. ``scope="user"`` addresses the global store;
+    ``"all"`` tries the project store first, then the global one.
+    Returns the deleted path, or None if not found."""
+    if scope == "all":
+        return (delete_typed_memory(repo_root, name_or_file, scope="project")
+                or delete_typed_memory(repo_root, name_or_file, scope="user"))
+    scope = "user" if scope == "user" else "project"
     target = (name_or_file or "").strip().lower()
     if not target:
         return None
-    memory_dir = _delfin_memory_dir(Path(repo_root))
+    memory_dir = _memory_dir_for_scope(repo_root, scope)
     match = None
-    for rec in list_typed_memories(repo_root):
+    for rec in list_typed_memories(repo_root, scope=scope):
         if (rec["file"].lower() == target
                 or rec["file"].lower() == target + ".md"
                 or rec["name"].lower() == target
@@ -590,6 +1410,229 @@ def delete_typed_memory(repo_root: Path | str, name_or_file: str) -> Path | None
         return None
     _remove_memory_index_line(memory_dir, match["file"])
     return p
+
+
+# Feedback/user entries get a larger cap and no age-based pruning because they
+# encode deliberate corrections and identity/preferences. They remain bounded.
+_PRUNE_PROTECTED: frozenset[str] = frozenset({"feedback", "user"})
+_PRUNE_PROTECTION_FACTOR = 4
+_PRUNE_DEFAULT_CAP = 25
+
+
+def prune_memories(
+    repo_root: Path | str,
+    *,
+    max_per_type: int = _PRUNE_DEFAULT_CAP,
+    max_age_days: int | None = None,
+    scope: str = "project",
+) -> list[str]:
+    """Cap prunable memory types via LRU decay; return deleted filenames.
+
+    For each non-protected type, remove entries older than ``max_age_days``
+    (when configured), then keep at most ``max_per_type`` entries. Relevance
+    is ranked by updated_at first and use_count second: recall bumps keep
+    frequently injected memories fresh, while ranking recency first means a
+    just-written memory (use_count 1) always survives the prune that runs
+    right after its save — with use_count first, a saturated store would
+    evict every new memory immediately and fossilise. The ``stale_hits``
+    rot counter breaks remaining ties: of two equally fresh entries the one
+    whose code references rotted is evicted first. ``feedback`` and
+    ``user`` types receive a larger cap and are exempt from age-based
+    pruning; with ``scope="user"`` (the global store) EVERY type gets that
+    protected treatment — global facts are deliberate, identity-grade.
+
+    Neither exemption covers a memory the MODEL wrote (``source: agent``):
+    those expire ``_AGENT_MEMORY_MAX_AGE_DAYS`` after they were last
+    recalled, whatever their type and store, and lose the cap tiebreak to
+    the user's own. The exemptions exist because the user meant it.
+
+    Called after every write path (remember tool, /remember, auto-memory
+    distill) so the store self-limits instead of growing unbounded and
+    drowning BM25 recall in look-alikes. Operates on one store per call.
+    """
+    scope = "user" if scope == "user" else "project"
+    now = int(time.time())
+    cutoff = None
+    if max_age_days is not None and max_age_days >= 0:
+        cutoff = now - (max_age_days * 86_400)
+    # Model-written memories carry their own deadline, independent of the
+    # caller's setting and of the type exemptions: those exemptions exist
+    # because a `feedback` or `user` fact is a deliberate correction from
+    # the user, which is exactly what an invented one is not.
+    agent_cutoff = now - (_AGENT_MEMORY_MAX_AGE_DAYS * 86_400)
+
+    by_type: dict[str, list[dict]] = {}
+    for rec in list_typed_memories(repo_root, scope=scope):
+        by_type.setdefault(rec["type"], []).append(rec)
+
+    def _expired(rec: dict, protected: bool) -> bool:
+        updated = int(rec.get("updated_at", 0))
+        if rec.get("source") == SOURCE_AGENT:
+            return updated < agent_cutoff
+        return cutoff is not None and not protected and updated < cutoff
+
+    deleted: list[str] = []
+    for mtype, recs in by_type.items():
+        protected = scope == "user" or mtype in _PRUNE_PROTECTED
+        type_cap = max_per_type * (_PRUNE_PROTECTION_FACTOR if protected else 1)
+        stale = [rec for rec in recs if _expired(rec, protected)]
+        stale_files = {rec["file"] for rec in stale}
+        survivors = [rec for rec in recs if rec["file"] not in stale_files]
+        survivors.sort(
+            key=lambda r: (
+                int(r.get("updated_at", 0)),
+                int(r.get("use_count", 0)),
+                -int(r.get("stale_hits", 0)),
+                # Last tiebreak: between two memories the store values
+                # equally, the user's own outlives the model's.
+                r.get("source") != SOURCE_AGENT,
+            ),
+            reverse=True,
+        )
+        over_cap = survivors[max(type_cap, 0):]
+        for rec in [*stale, *over_cap]:
+            if delete_typed_memory(repo_root, rec["file"], scope=scope) is not None:
+                deleted.append(rec["file"])
+    return deleted
+
+
+def record_memory_recall(
+    repo_root: Path | str,
+    filenames: list[str] | set[str],
+    *,
+    scope: str = "project",
+) -> int:
+    """Bump use_count + updated_at for the memory files actually injected
+    into a prompt. Returns how many files were updated.
+
+    Called by the prompt loader with the exact set of memory files it pulled
+    into the External Memory block, so the LRU decay signal reflects real
+    RECALL (what the agent actually saw), not just writes. ``scope="user"``
+    addresses the global store. Only the injected files are rewritten, so
+    the per-turn cost is bounded by the recall size, not the whole store.
+    Best-effort: never raises.
+    """
+    wanted = {f for f in (filenames or []) if f and f != "MEMORY.md"}
+    if not wanted:
+        return 0
+    memory_dir = _memory_dir_for_scope(repo_root, scope)
+    if not memory_dir.is_dir():
+        return 0
+    now = int(time.time())
+    updated = 0
+    try:
+        resolved_memory_dir = memory_dir.resolve()
+    except OSError:
+        return 0
+    for fname in wanted:
+        try:
+            p = (resolved_memory_dir / fname).resolve()
+            p.relative_to(resolved_memory_dir)
+        except (OSError, ValueError):
+            continue
+        if not p.is_file():
+            continue
+        try:
+            text = p.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        meta, body = _parse_frontmatter(text)
+        mtype = meta.get("type") or _type_from_filename(fname) or "user"
+        name = meta.get("name") or p.stem
+        description = meta.get("description") or ""
+        use_count = _meta_int(meta, "use_count", 0) + 1
+        created_at = _meta_int(meta, "created_at", now) or now
+        superseded = " ".join(meta.get("superseded", "").split())[:160]
+        front = _compose_frontmatter(
+            name=name, description=description, created_at=created_at,
+            updated_at=now, use_count=use_count, memory_type=mtype,
+            body=body.strip(), superseded=superseded,
+            domain=memory_text_domain(text),
+            # `source` is a field the composer owns, so `extras` skips it;
+            # without carrying it forward here a single recall would erase
+            # the provenance and hand the memory back its exemption.
+            source=meta.get("source", ""),
+            extras=meta,
+        )
+        try:
+            _atomic_write(p, front)
+            updated += 1
+        except OSError:
+            continue
+    return updated
+
+
+def record_stale_hits(
+    repo_root: Path | str,
+    filenames: list[str] | set[str],
+    *,
+    scope: str = "project",
+) -> int:
+    """Bump the ``stale_hits`` rot counter for memory files whose injected
+    body referenced dead or drifted code. Returns how many were updated.
+
+    Carries use_count/updated_at through unchanged: rot is a SEPARATE
+    signal from recall, and the caller records the recall itself (a rotted
+    memory was still injected, so it was still seen). Coupling the two
+    inverted the decay — ``prune_memories`` orders survivors by
+    ``updated_at`` and ``_expired`` tests the same field, so a memory
+    citing ``path:line`` was queued for eviction the moment the cited line
+    moved, while a memory vague enough to name no code could never rot and
+    was refreshed on every recall. Since a memory written to CORRECT an
+    earlier one is exactly the one that cites the code it corrects, the
+    correction died first. The rot counter alone drives that preference
+    now, as a tiebreak between equally fresh entries.
+
+    Best-effort: never raises, and path-traversal filenames are ignored
+    like in ``record_memory_recall``.
+    """
+    wanted = {f for f in (filenames or []) if f and f != "MEMORY.md"}
+    if not wanted:
+        return 0
+    memory_dir = _memory_dir_for_scope(repo_root, scope)
+    if not memory_dir.is_dir():
+        return 0
+    now = int(time.time())
+    updated = 0
+    try:
+        resolved_memory_dir = memory_dir.resolve()
+    except OSError:
+        return 0
+    for fname in wanted:
+        try:
+            p = (resolved_memory_dir / fname).resolve()
+            p.relative_to(resolved_memory_dir)
+        except (OSError, ValueError):
+            continue
+        if not p.is_file():
+            continue
+        try:
+            text = p.read_text(encoding="utf-8")
+            mtime = int(p.stat().st_mtime)
+        except OSError:
+            continue
+        meta, body = _parse_frontmatter(text)
+        extras = dict(meta)
+        extras["stale_hits"] = str(_meta_int(meta, "stale_hits", 0) + 1)
+        front = _compose_frontmatter(
+            name=meta.get("name") or p.stem,
+            description=meta.get("description") or "",
+            created_at=_meta_int(meta, "created_at", mtime) or mtime,
+            updated_at=_meta_int(meta, "updated_at", mtime) or mtime,
+            use_count=_meta_int(meta, "use_count", 0),
+            memory_type=meta.get("type") or _type_from_filename(fname) or "user",
+            body=body.strip(),
+            superseded=" ".join(meta.get("superseded", "").split())[:160],
+            domain=memory_text_domain(text),
+            source=meta.get("source", ""),
+            extras=extras,
+        )
+        try:
+            _atomic_write(p, front)
+            updated += 1
+        except OSError:
+            continue
+    return updated
 
 
 # ---------------------------------------------------------------------------
@@ -659,17 +1702,58 @@ def resolve_wikilinks(text: str, memory_dir: Path) -> str:
     return _WIKILINK_RE.sub(_replace, text)
 
 
-def find_stale_references(text: str, repo_root: Path | str) -> list[str]:
-    """Return a list of ``path[:line]`` references mentioned in the memory
-    text that no longer exist on disk.
+# Content-anchor tuning: anchors are the cited line's stripped text (short,
+# so frontmatter stays one line per memory), drift is searched in a window
+# around the cited line (code shifting a little must not flag), and the
+# recall path caps its filesystem probes per memory (hot path — a handful
+# of exists()/read_text() at most).
+_ANCHOR_MAX_CHARS = 80
+_ANCHOR_WINDOW = 20
+_RECALL_REF_CHECK_CAP = 8
 
-    Used by ``/memories verify`` to flag rotted recommendations. The check
-    is conservative: only entries that *look* like paths (slash- or
-    dot-shaped) are tested, so plain prose like "delete" or "method" is
-    skipped.
+
+# A file suffix: a dot followed by 1-5 letters, at the very end.
+_FILE_SUFFIX_RE = re.compile(r"\.[A-Za-z][A-Za-z0-9]{0,4}$")
+
+
+def _looks_like_a_path(candidate: str) -> bool:
+    """Whether a slash-bearing token is plausibly a filesystem path.
+
+    The pattern accepted ANY token containing a slash. In a
+    quantum-chemistry agent that is catastrophic on its own terms:
+    `functional/basis/dispersion` is simply how a method is named, so
+    every memory mentioning one was checked for a file that never
+    existed and injected carrying "[stale: BP86/def2-TZVP/D3BJ no longer
+    exists]". Measured on the live store: 2441 such hits against 2 real
+    uses of that memory.
+
+    The damage went past noise, because the rotted branch used to skip the
+    recall bookkeeping entirely and freeze ``updated_at`` -- which is the
+    field ``prune_memories`` sorts by. Narrowing what counts as a path
+    removed one class of false verdict; the recall bump now runs for rotted
+    entries too (see ``record_stale_hits``), which removes the mechanism.
+
+    Two ways to qualify: a dotted final segment (``engine.py``,
+    ``config.yaml``), or a prefix that actually exists on disk (which is
+    how a directory reference like ``delfin/agent/`` still counts).
+    Neither is satisfiable by a method string.
     """
-    root = Path(repo_root)
-    stale: list[str] = []
+    text = (candidate or "").rstrip("/")
+    if not text:
+        return False
+    if _FILE_SUFFIX_RE.search(text.rsplit("/", 1)[-1]):
+        return True
+    try:
+        return Path(text).exists()
+    except OSError:
+        return False
+
+
+def _extract_path_refs(text: str) -> list[tuple[str, str, int | None]]:
+    """``(ref, path_part, line)`` for every path-shaped reference in
+    ``text`` (line is None without a ``:NN`` suffix). Applies the URL /
+    version-tag / trivial-fragment filters shared by all ref checks."""
+    out: list[tuple[str, str, int | None]] = []
     for match in _PATH_REF_RE.finditer(text or ""):
         ref = match.group(0)
         path_part = match.group(1)
@@ -678,19 +1762,161 @@ def find_stale_references(text: str, repo_root: Path | str) -> list[str]:
             continue
         if "." not in path_part and "/" not in path_part:
             continue
-        candidate = root / path_part if not Path(path_part).is_absolute() else Path(path_part)
+        if not _looks_like_a_path(path_part):
+            continue
+        line_no: int | None = None
+        if match.group(2):
+            try:
+                line_no = int(match.group(2))
+            except ValueError:
+                line_no = None
+        out.append((ref, path_part, line_no))
+    return out
+
+
+def _resolve_ref_path(path_part: str, root: Path) -> Path:
+    p = Path(path_part)
+    return p if p.is_absolute() else root / path_part
+
+
+def collect_reference_anchors(
+    text: str,
+    repo_root: Path | str,
+    *,
+    max_refs: int = _RECALL_REF_CHECK_CAP,
+) -> dict[str, str]:
+    """Map each ``path:line`` reference in ``text`` to a short content
+    anchor — the cited line's stripped text (≤80 chars) — so a later recall
+    can detect that the code MOVED even though the file still exists.
+
+    Best-effort: refs without a line number, unreadable files and
+    out-of-range lines are skipped; at most ``max_refs`` files are read.
+    """
+    root = Path(repo_root)
+    anchors: dict[str, str] = {}
+    checked = 0
+    for ref, path_part, line_no in _extract_path_refs(text):
+        if checked >= max_refs:
+            break
+        if line_no is None or ref in anchors:
+            continue
+        checked += 1
+        candidate = _resolve_ref_path(path_part, root)
         try:
-            if not candidate.exists():
-                stale.append(ref)
+            lines = candidate.read_text(
+                encoding="utf-8", errors="replace").splitlines()
         except OSError:
-            stale.append(ref)
-    return stale
+            continue
+        if 1 <= line_no <= len(lines):
+            anchor = lines[line_no - 1].strip()[:_ANCHOR_MAX_CHARS]
+            if anchor:
+                anchors[ref] = anchor
+    return anchors
+
+
+def _parse_anchors(meta: dict[str, str]) -> dict[str, str]:
+    """Decode the JSON ``anchors:`` frontmatter mapping. Never raises."""
+    raw = (meta or {}).get("anchors", "")
+    if not raw:
+        return {}
+    try:
+        loaded = json.loads(raw)
+    except (ValueError, TypeError):
+        return {}
+    if not isinstance(loaded, dict):
+        return {}
+    return {str(k): str(v) for k, v in loaded.items()}
+
+
+def find_stale_references(
+    text: str,
+    repo_root: Path | str,
+    *,
+    anchors: dict[str, str] | None = None,
+    with_status: bool = False,
+    max_checks: int | None = None,
+) -> list:
+    """Return the ``path[:line]`` references in ``text`` that no longer
+    check out on disk.
+
+    Two failure classes:
+    - ``stale``   — the referenced path does not exist any more
+    - ``drifted`` — the path exists, but the content anchor captured at
+      save time (``anchors[ref]``) is no longer found within ±20 lines of
+      the cited line (only refs that carry an anchor are drift-checked)
+
+    By default returns the legacy flat list of bad refs (both classes);
+    with ``with_status=True`` returns ``[(ref, status)]`` tuples instead.
+    ``max_checks`` bounds the number of filesystem probes (the recall path
+    passes a small cap). The check is conservative: only entries that
+    *look* like paths (slash- or dot-shaped) are tested, so plain prose
+    like "delete" or "method" is skipped.
+    """
+    root = Path(repo_root)
+    results: list[tuple[str, str]] = []
+    checked = 0
+    for ref, path_part, line_no in _extract_path_refs(text):
+        if max_checks is not None and checked >= max_checks:
+            break
+        checked += 1
+        candidate = _resolve_ref_path(path_part, root)
+        try:
+            exists = candidate.exists()
+        except OSError:
+            exists = False
+        if not exists:
+            results.append((ref, "stale"))
+            continue
+        anchor = (anchors or {}).get(ref, "")
+        if not anchor or line_no is None:
+            continue
+        try:
+            lines = candidate.read_text(
+                encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        lo = max(0, line_no - 1 - _ANCHOR_WINDOW)
+        hi = min(len(lines), line_no + _ANCHOR_WINDOW)
+        if not any(anchor in ln.strip() for ln in lines[lo:hi]):
+            results.append((ref, "drifted"))
+    if with_status:
+        return results
+    return [ref for ref, _status in results]
+
+
+def recall_reference_notes(file_text: str, repo_root: Path | str) -> list[str]:
+    """Inline health annotations for one memory file about to be injected
+    into a prompt: one line per dead/drifted ``path[:line]`` reference in
+    its body (content anchors from the frontmatter honoured). Empty list =
+    healthy. Bounded to a handful of filesystem probes; never raises.
+    """
+    try:
+        meta, body = _parse_frontmatter(file_text)
+        statuses = find_stale_references(
+            body, repo_root, anchors=_parse_anchors(meta),
+            with_status=True, max_checks=_RECALL_REF_CHECK_CAP,
+        )
+        notes: list[str] = []
+        for ref, status in statuses:
+            if status == "drifted":
+                notes.append(
+                    f"[drifted: the cited code at {ref} has changed — "
+                    "re-read it]")
+            else:
+                notes.append(
+                    f"[stale: {ref} no longer exists — verify against the "
+                    "current code before relying on this]")
+        return notes
+    except Exception:
+        return []
 
 
 def verify_typed_memories(repo_root: Path | str) -> list[dict]:
     """Walk every memory file under the project's memory dir and return a
-    list of ``{file, stale_refs}`` records for any file containing one or
-    more dead references. Empty list = everything still resolves.
+    list of ``{file, stale_refs, drifted_refs}`` records for any file whose
+    references no longer check out (``stale_refs`` = path gone,
+    ``drifted_refs`` = path exists but the anchored line moved away).
+    Empty list = everything still resolves.
     """
     memory_dir = _delfin_memory_dir(Path(repo_root))
     if not memory_dir.is_dir():
@@ -703,7 +1929,15 @@ def verify_typed_memories(repo_root: Path | str) -> list[dict]:
             text = p.read_text(encoding="utf-8")
         except OSError:
             continue
-        stale = find_stale_references(text, repo_root)
-        if stale:
-            results.append({"file": p.name, "stale_refs": stale})
+        meta, body = _parse_frontmatter(text)
+        statuses = find_stale_references(
+            body, repo_root, anchors=_parse_anchors(meta), with_status=True)
+        stale = [ref for ref, status in statuses if status == "stale"]
+        drifted = [ref for ref, status in statuses if status == "drifted"]
+        if stale or drifted:
+            results.append({
+                "file": p.name,
+                "stale_refs": stale,
+                "drifted_refs": drifted,
+            })
     return results

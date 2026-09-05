@@ -981,6 +981,7 @@ def run_cli(argv: list[str]) -> int:
             qm_tools_root=_runtime.get("qm_tools_root", ""),
             orca_base=_runtime.get("orca_base", ""),
             csp_tools_root=_runtime.get("csp_tools_root", ""),
+            mlp_tools_root=_runtime.get("mlp_tools_root", ""),
             tool_binaries=_runtime.get("tool_binaries", {}) or {},
         )
     except Exception:

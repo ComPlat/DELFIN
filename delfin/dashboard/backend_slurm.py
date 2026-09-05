@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from delfin.qm_runtime import (
     binary_env_var_name,
@@ -25,6 +25,15 @@ class SlurmJobBackend(JobBackend):
     """SLURM cluster backend (sbatch/squeue/scancel)."""
 
     _auto_detected_cache: dict[str, str] | None = None
+
+    # Minimum seconds between two ``squeue`` calls. Several widgets poll job
+    # state on their own timer -- the agent activity panel ticks every 5 s --
+    # and each uncached call forks a query at the cluster controller, which is
+    # a shared, single-instance service. Queue state does not change on that
+    # scale, so all callers share one result per interval; submit and cancel
+    # drop the cache so the UI still reacts to the user immediately. Sites can
+    # widen or (at their own risk) narrow this via DELFIN_SQUEUE_MIN_INTERVAL.
+    _JOBS_CACHE_SECONDS = 25.0
 
     # Tools with expensive system-wide scans (module spider, deep /opt
     # traversal) that are not needed for auto-export to SLURM jobs.
@@ -100,6 +109,8 @@ class SlurmJobBackend(JobBackend):
             for tool_name, path in self._auto_detected_tools().items():
                 explicit[tool_name] = path
         self.tool_binaries = explicit
+        self._jobs_cache: Optional[List[JobInfo]] = None
+        self._jobs_cache_at: Optional[float] = None
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -278,6 +289,9 @@ class SlurmJobBackend(JobBackend):
             # Silent side effect: never raises, never mutates result.stdout
             # (downstream extracts the job id from its last token).
             self._release_env_hold(result.stdout)
+            # The queue just changed by our own doing -- show it at once
+            # instead of making the user wait out the squeue rate limit.
+            self._invalidate_jobs_cache()
         return result
 
     @staticmethod
@@ -613,7 +627,46 @@ class SlurmJobBackend(JobBackend):
         )
         return SubmitResult(result.returncode, result.stdout, result.stderr)
 
-    def list_jobs(self) -> List[JobInfo]:
+    def _jobs_cache_seconds(self) -> float:
+        raw = os.environ.get('DELFIN_SQUEUE_MIN_INTERVAL', '').strip()
+        if raw:
+            try:
+                return max(0.0, float(raw))
+            except ValueError:
+                pass
+        return self._JOBS_CACHE_SECONDS
+
+    def _invalidate_jobs_cache(self) -> None:
+        """Force the next list_jobs() to ask SLURM again."""
+        self._jobs_cache = None
+        self._jobs_cache_at = None
+
+    def list_jobs(self, force: bool = False) -> List[JobInfo]:
+        """Active jobs of this user, at most one squeue per cache interval.
+
+        Pass ``force=True`` for an explicit user-triggered refresh; periodic
+        widgets must not, or the rate limit has no effect.
+        """
+        # The gate is the time of the last *attempt*, not of the last success:
+        # a failing squeue must be rate-limited too, otherwise a busy
+        # controller gets hit at full tick rate exactly when it can least
+        # afford it.
+        if not force and self._jobs_cache_at is not None:
+            age = time.monotonic() - self._jobs_cache_at
+            if 0.0 <= age < self._jobs_cache_seconds():
+                return list(self._jobs_cache or [])
+
+        jobs = self._query_jobs()
+        self._jobs_cache_at = time.monotonic()
+        if jobs is None:
+            # Hold the last good answer rather than flashing an empty queue
+            # at the user over one hiccup.
+            return list(self._jobs_cache or [])
+        self._jobs_cache = jobs
+        return list(jobs)
+
+    def _query_jobs(self) -> Optional[List[JobInfo]]:
+        """Ask SLURM. Returns None when the query failed, [] when idle."""
         try:
             result = subprocess.run(
                 ['squeue', '-u', os.environ.get('USER', ''),
@@ -621,10 +674,10 @@ class SlurmJobBackend(JobBackend):
                 capture_output=True, text=True, timeout=10,
             )
         except Exception:
-            return []
+            return None
 
         if result.returncode != 0:
-            return []
+            return None
 
         lines = result.stdout.strip().split('\n')
         if len(lines) < 2:
@@ -674,6 +727,7 @@ class SlurmJobBackend(JobBackend):
                 capture_output=True, text=True,
             )
             if result.returncode == 0:
+                self._invalidate_jobs_cache()
                 return True, f'Job {job_id} cancelled successfully.'
             else:
                 return False, f'Error cancelling job {job_id}: {result.stderr or result.stdout}'

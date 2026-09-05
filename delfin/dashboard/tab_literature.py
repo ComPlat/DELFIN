@@ -17,6 +17,8 @@ from pathlib import Path
 
 import ipywidgets as widgets
 
+from . import text_view as _text_view
+
 
 # ---------------------------------------------------------------------------
 # File-type helpers
@@ -846,12 +848,19 @@ def create_tab(ctx):
             return
         try:
             text = path.read_text(encoding='utf-8', errors='replace')
-            escaped = _html.escape(text)
+            # Not as markup: a couple of megabytes of pre-wrap text is seconds
+            # of layout with the main thread stuck. The block viewer lays out
+            # only what is on screen. See delfin/dashboard/text_view.py.
             lit_content.value = (
+                f"<style>{_text_view.text_view_css()}</style>"
                 f"<div style='{_CONTENT_FRAME}'>"
-                f"<div style='white-space:pre-wrap; overflow-wrap:anywhere;"
-                f" word-break:break-word; font-family:monospace; font-size:12px;"
-                f" line-height:1.3;'>{escaped}</div></div>"
+                f"<div class='lit-content-text dtv-text'></div></div>"
+            )
+            _run_js(
+                "setTimeout(function() {"
+                "  const txt = document.querySelector('.lit-content-text');"
+                "  if (txt) " + _text_view.set_text_js('txt', text) +
+                "}, 0);"
             )
         except Exception:
             lit_content.value = (
@@ -1170,4 +1179,6 @@ def create_tab(ctx):
     # ── Initial load ──────────────────────────────────────────────────
     list_directory()
 
-    return tab_widget, {'init_js': _init_js}
+    ctx.add_init_js(_init_js)
+
+    return tab_widget, {}

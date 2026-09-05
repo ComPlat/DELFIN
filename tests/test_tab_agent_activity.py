@@ -128,7 +128,7 @@ def test_aggregate_unrated_excluded_from_rate():
 
 def test_render_summary_empty_message():
     html = tab._render_summary(tab._aggregate_stats([]))
-    assert "Keine Outcome-Einträge" in html
+    assert "No outcome entries" in html
 
 
 def test_render_summary_includes_metrics():
@@ -142,7 +142,7 @@ def test_render_summary_includes_metrics():
 
 def test_render_timeline_empty():
     html = tab._render_timeline([])
-    assert "Keine Einträge" in html
+    assert "No entries" in html
 
 
 def test_render_timeline_includes_data():

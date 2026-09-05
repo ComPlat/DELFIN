@@ -393,7 +393,7 @@ def create_tab(ctx):
         (job_dir / 'coord').write_text(coord_text)
 
         with tm_define_output:
-            clear_output()
+            clear_output(wait=True)
             print(f'Job directory: {job_dir}')
             print('Starting define... (this may take a moment)')
             print('=' * 50)
@@ -634,7 +634,7 @@ def create_tab(ctx):
                 tm_slurm_time.value = s['slurm_time']
             state['pending_replay'] = data.get('define_commands', [])
             with tm_define_output:
-                clear_output()
+                clear_output(wait=True)
                 print(f"Loaded {len(state['pending_replay'])} commands. Start Define, then click Replay.")
             tm_status.value = f'<span style="color:green;">Loaded from {load_dir.name}</span>'
             _hide_control_editor()

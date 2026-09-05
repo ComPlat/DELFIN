@@ -7,6 +7,7 @@ optimisation is data-driven (find the error + latency hotspots), not guessed.
 from __future__ import annotations
 
 import json
+import time
 
 import pytest
 
@@ -76,3 +77,81 @@ def test_empty_and_corrupt_are_safe(tmp_path):
         "not json at all\n", encoding="utf-8")
     rows = tt.aggregate_tools(dir_path=tmp_path)
     assert len(rows) == 1 and rows[0]["tool"] == "bash" and rows[0]["calls"] == 1
+
+
+# ---------------------------------------------------------------------------
+# aggregate_tool_stats — windowed health stats for the eval report
+# ---------------------------------------------------------------------------
+
+def test_tool_stats_windowed_fields(tmp_path, monkeypatch):
+    monkeypatch.setattr(tt, "_DIR", tmp_path)
+    now = time.time()
+    _write(tmp_path, "s1", [
+        {"ts": now - 60, "tool": "bash", "ok": True, "duration_ms": 100},
+        {"ts": now - 120, "tool": "bash", "ok": False, "duration_ms": 300,
+         "error": "exit 1"},
+        # 30 days old — outside the 7-day window, must not count
+        {"ts": now - 30 * 86400, "tool": "bash", "ok": False,
+         "duration_ms": 9, "error": "ancient"},
+    ])
+    stats = tt.aggregate_tool_stats(7, now=now)
+    b = stats["bash"]
+    assert b["calls"] == 2
+    assert b["errors"] == 1
+    assert b["error_rate"] == 0.5
+    assert b["avg_duration_ms"] == 200
+    assert b["top_error_snippets"] == ["exit 1"]
+
+
+def test_tool_stats_spans_sessions_and_ranks_snippets(tmp_path, monkeypatch):
+    monkeypatch.setattr(tt, "_DIR", tmp_path)
+    now = time.time()
+    _write(tmp_path, "a", [
+        {"ts": now, "tool": "read_file", "ok": False, "error": "not found",
+         "duration_ms": 5},
+        {"ts": now, "tool": "read_file", "ok": False, "error": "not found",
+         "duration_ms": 5},
+    ])
+    _write(tmp_path, "b", [
+        {"ts": now, "tool": "read_file", "ok": False, "error": "denied",
+         "duration_ms": 5},
+        {"ts": now, "tool": "read_file", "ok": True, "duration_ms": 5},
+    ])
+    s = tt.aggregate_tool_stats(7, now=now)["read_file"]
+    assert s["calls"] == 4 and s["errors"] == 3
+    assert s["error_rate"] == 0.75
+    assert s["top_error_snippets"] == ["not found", "denied"]   # ranked
+
+
+def test_tool_stats_tolerates_corrupt_lines(tmp_path, monkeypatch):
+    monkeypatch.setattr(tt, "_DIR", tmp_path)
+    now = time.time()
+    (tmp_path / "c.jsonl").write_text(
+        json.dumps({"ts": now, "tool": "bash", "ok": True,
+                    "duration_ms": 10}) + "\n"
+        + "{broken json\n"
+        + "42\n"                                    # valid JSON, not an object
+        + json.dumps({"ts": "not-a-number", "tool": "bash", "ok": False,
+                      "error": "boom", "duration_ms": 30}) + "\n",
+        encoding="utf-8")
+    stats = tt.aggregate_tool_stats(7, now=now)
+    # junk lines skipped; the bad-ts entry stays visible (legacy tolerance)
+    assert stats["bash"]["calls"] == 2
+    assert stats["bash"]["errors"] == 1
+    assert stats["bash"]["top_error_snippets"] == ["boom"]
+
+
+def test_tool_stats_missing_dir_never_raises(tmp_path, monkeypatch):
+    monkeypatch.setattr(tt, "_DIR", tmp_path / "nope")
+    assert tt.aggregate_tool_stats() == {}
+
+
+def test_tool_stats_window_disabled(tmp_path, monkeypatch):
+    monkeypatch.setattr(tt, "_DIR", tmp_path)
+    now = time.time()
+    _write(tmp_path, "s", [
+        {"ts": now - 365 * 86400, "tool": "bash", "ok": True,
+         "duration_ms": 1},
+    ])
+    assert tt.aggregate_tool_stats(0, now=now)["bash"]["calls"] == 1
+    assert tt.aggregate_tool_stats(7, now=now) == {}

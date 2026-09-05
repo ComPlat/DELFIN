@@ -24,37 +24,47 @@ def _format_ms_suffix(trootssl: int) -> str:
 logger = get_logger(__name__)
 
 # Regular expressions for parsing ESD outputs
+#
+# A number the way ORCA writes one: 298.15, -1, 2.5E+10. Spell the class with
+# the hyphen last, where it can only stand for itself. Written the obvious way
+# round — [0-9.+-Ee] — the "+-E" in the middle is a *range* from "+" (0x2B) to
+# "E" (0x45), so the class quietly also accepts ,/:;<=>?@ABCD. A line reading
+# "Temperature used: ABC K" then hands "ABC" to _safe_float, which cannot
+# convert it and returns None: the rate constant does not appear in the report
+# and nothing says it was ever there.
+_NUM = r"[0-9.eE+-]+"
+
 _ISC_RATE_RE = re.compile(
-    r"The\s+calculated\s+ISC\s+rate\s+constant\s+is\s+([0-9.+-Ee]+)\s*s(?:-1|\^-1)",
+    rf"The\s+calculated\s+ISC\s+rate\s+constant\s+is\s+({_NUM})\s*s(?:-1|\^-1)",
     flags=re.IGNORECASE,
 )
 _IC_RATE_RE = re.compile(
-    r"The\s+calculated\s+internal\s+conversion\s+rate\s+constant\s+is\s+([0-9.+-Ee]+)\s*s(?:-1|\^-1)",
+    rf"The\s+calculated\s+internal\s+conversion\s+rate\s+constant\s+is\s+({_NUM})\s*s(?:-1|\^-1)",
     flags=re.IGNORECASE,
 )
 _TEMP_RE = re.compile(
-    r"Temperature\s+used:\s*([0-9.+-Ee]+)\s*K",
+    rf"Temperature\s+used:\s*({_NUM})\s*K",
     flags=re.IGNORECASE,
 )
 _DELE_RE = re.compile(
-    r"0-0\s+energy\s+difference:\s*([0-9.+-Ee]+)\s*cm-1",
+    rf"0-0\s+energy\s+difference:\s*({_NUM})\s*cm-1",
     flags=re.IGNORECASE,
 )
 _SOC_RE = re.compile(
-    r"Reference\s+SOC\s+\(Re\s+and\s+Im\):\s*([0-9.+-Ee]+),\s*([0-9.+-Ee]+)",
+    rf"Reference\s+SOC\s+\(Re\s+and\s+Im\):\s*({_NUM}),\s*({_NUM})",
     flags=re.IGNORECASE,
 )
 _FC_HT_RE = re.compile(
-    r"with\s+([0-9.+-Ee]+)\s+from\s+FC\s+and\s+([0-9.+-Ee]+)\s+from\s+HT",
+    rf"with\s+({_NUM})\s+from\s+FC\s+and\s+({_NUM})\s+from\s+HT",
     flags=re.IGNORECASE,
 )
 
 _FLUOR_RATE_RE = re.compile(
-    r"(?:calculated\s+fluorescence\s+rate\s+constant\s+is|fluorescence\s+rate\s+constant\s+is|k[_\s-]*f)\s*=?\s*([0-9.+-Ee]+)\s*s(?:-1|\^-1)",
+    rf"(?:calculated\s+fluorescence\s+rate\s+constant\s+is|fluorescence\s+rate\s+constant\s+is|k[_\s-]*f)\s*=?\s*({_NUM})\s*s(?:-1|\^-1)",
     flags=re.IGNORECASE,
 )
 _PHOSP_RATE_RE = re.compile(
-    r"(?:calculated\s+phosphorescence\s+rate\s+constant\s+is|phosphorescence\s+rate\s+constant\s+is|k[_\s-]*p)\s*=?\s*([0-9.+-Ee]+)\s*s(?:-1|\^-1)",
+    rf"(?:calculated\s+phosphorescence\s+rate\s+constant\s+is|phosphorescence\s+rate\s+constant\s+is|k[_\s-]*p)\s*=?\s*({_NUM})\s*s(?:-1|\^-1)",
     flags=re.IGNORECASE,
 )
 

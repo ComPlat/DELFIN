@@ -7,10 +7,15 @@ Input: SMILES string OR path to an .xyz file.
 
 Workflow:
     1. Build / load geometry (optional pre-OPT for raw input).
-    2. Run three ORCA single-points at identical geometry:
-         neutral.inp (charge=0,  mult=1)
-         anion.inp   (charge=-1, mult=2, UKS)
-         cation.inp  (charge=+1, mult=2, UKS)
+    2. Run three ORCA single-points at identical geometry. The reference
+       state is the species defined by CONTROL.txt (``charge`` +
+       multiplicity); N+1 and N-1 are formed relative to it:
+         neutral.inp (N electrons,   charge=q)
+         anion.inp   (N+1 electrons, charge=q-1, UKS)
+         cation.inp  (N-1 electrons, charge=q+1, UKS)
+       For an uncharged closed-shell substrate that is the familiar
+       0 / -1 / +1 triple; for a cationic substrate (q=+1) it becomes
+       +1 / 0 / +2.
     3. Parse Mulliken or Loewdin atomic charges per state.
     4. Compute atomic f+/f-/f0 Fukui indices.
     5. Generate 3 density cubes via orca_plot.
@@ -264,7 +269,8 @@ def _build_orca_input(
         geom_key="geom_opt" if is_opt else "",
     )
 
-    # Open-shell SPs (anion / cation of a closed-shell neutral) need UKS.
+    # Any open-shell state (the N+-1 states, or an already open-shell
+    # reference) needs UKS.
     if mult != 1 and "UKS" not in bang.upper():
         bang = bang.replace("!", "! UKS", 1)
 
@@ -420,10 +426,7 @@ def _prepare_geometry_via_pipeline(
         metals, config, config.get("main_basisset"), config.get("metal_basisset"),
     )
     solvent = str(config.get("solvent", "")).strip()
-    try:
-        base_charge = int(str(config.get("charge", 0)).strip())
-    except ValueError:
-        base_charge = 0
+    base_charge = _base_charge(config)
     try:
         base_multiplicity = int(str(config.get("multiplicity_global_opt", 1)).strip())
     except ValueError:
@@ -454,6 +457,115 @@ def _prepare_geometry_via_pipeline(
     return final_xyz, "opt"
 
 
+def _base_charge(config: Dict[str, object]) -> int:
+    """Return the substrate charge from CONTROL.txt (``+1`` style accepted).
+
+    Single source for both the pre-OPT input and the Fukui single-points,
+    so the two can never disagree about which species is being studied.
+    """
+    try:
+        return int(str(config.get("charge", 0)).strip())
+    except (TypeError, ValueError):
+        logger.warning(
+            "unparsable charge %r in CONTROL.txt; falling back to 0",
+            config.get("charge"),
+        )
+        return 0
+
+
+def _count_electrons(coords: str, charge: int) -> int:
+    """Sum atomic numbers over ``coords`` and subtract ``charge``.
+
+    Reuses :data:`delfin.utils._ATOM_ELECTRONS` and the element-symbol
+    regex the classic pipeline's ``calculate_total_electrons_txt`` uses,
+    so Fukui counts electrons exactly like every other DELFIN path.
+    """
+    from delfin.utils import _ATOM_ELECTRONS, _ELEM_FROM_TOKEN
+
+    total = 0
+    for line in coords.splitlines():
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        m = _ELEM_FROM_TOKEN.match(parts[0])
+        if not m:
+            continue
+        sym = m.group(1)
+        sym = sym[0].upper() + (sym[1].lower() if len(sym) > 1 else "")
+        if sym in _ATOM_ELECTRONS:
+            total += _ATOM_ELECTRONS[sym]
+        else:
+            logger.warning("unknown element %r while counting electrons", sym)
+    return total - int(charge)
+
+
+def _resolve_fukui_states(
+    config: Dict[str, object], coords: str,
+) -> List[Tuple[str, int, int]]:
+    """Return ``[(name, charge, mult)]`` for the N / N+1 / N-1 single-points.
+
+    The reference state is whatever CONTROL.txt describes — ``charge``
+    plus an explicit multiplicity if given. Hard-wiring charge 0 here
+    would silently compute the Fukui indices of the wrong redox state
+    for any charged substrate (and make ORCA reject an odd-electron
+    cation outright).
+
+    Multiplicity resolution mirrors ``delfin/cli.py``'s canonical order
+    (``multiplicity_0`` → ``multiplicity_global_opt`` → parity default),
+    so this path and the classic pipeline can never drift apart. The
+    N+-1 states take ``mult - 1`` (or 2 for a closed-shell reference),
+    which always flips parity correctly and keeps the low-spin choice
+    for a high-spin reference instead of forcing every ion to a doublet.
+    """
+    base_charge = _base_charge(config)
+    n_elec = _count_electrons(coords, base_charge)
+
+    base_mult = None
+    for key in ("multiplicity_0", "multiplicity_global_opt"):
+        raw = config.get(key)
+        try:
+            candidate = int(str(raw).strip()) if raw not in (None, "") else None
+        except (TypeError, ValueError):
+            candidate = None
+        if candidate is not None and candidate > 0:
+            base_mult = candidate
+            break
+    if base_mult is None:
+        base_mult = 1 if n_elec % 2 == 0 else 2
+
+    ion_mult = base_mult - 1 if base_mult > 1 else 2
+    return [
+        ("neutral", base_charge, base_mult),
+        ("anion", base_charge - 1, ion_mult),
+        ("cation", base_charge + 1, ion_mult),
+    ]
+
+
+def _validate_charge_mult(name: str, charge: int, mult: int, n_elec: int) -> None:
+    """Reject charge/multiplicity combinations ORCA cannot run.
+
+    ORCA aborts with exit code 55 ("multiplicity is odd and number of
+    electrons is odd -> impossible") only after staging the whole job.
+    Checking here turns that into an immediate, actionable message that
+    names the CONTROL.txt key at fault.
+    """
+    hint = (
+        f"state {name!r}: charge={charge:+d}, mult={mult}, electrons={n_elec}. "
+        "Check 'charge' (and multiplicity_0 / multiplicity_global_opt) in CONTROL.txt."
+    )
+    if n_elec <= 0:
+        raise SystemExit(f"Fukui: non-positive electron count — {hint}")
+    if (n_elec - (mult - 1)) % 2 != 0:
+        raise SystemExit(
+            "Fukui: multiplicity and electron count have incompatible parity "
+            f"({mult - 1} unpaired electrons cannot be formed from {n_elec}) — {hint}"
+        )
+    if n_elec < mult - 1:
+        raise SystemExit(
+            f"Fukui: multiplicity {mult} needs more electrons than the state has — {hint}"
+        )
+
+
 def _run_three_singlepoints(
     workdir: Path,
     geom_xyz: Path,
@@ -472,11 +584,17 @@ def _run_three_singlepoints(
     coords = _strip_xyz_header(geom_xyz.read_text(encoding="utf-8"))
     config = _resolve_fukui_config(workdir, settings, geom_xyz_path=geom_xyz)
     found_metals = _detect_metals(geom_xyz)
-    states = [
-        ("neutral", 0, 1),
-        ("anion", -1, 2),
-        ("cation", +1, 2),
-    ]
+    states = _resolve_fukui_states(config, coords)
+
+    # Validate all three states before submitting any of them — otherwise
+    # a first SP burns minutes only for the second to be rejected.
+    for name, charge, mult in states:
+        _validate_charge_mult(name, charge, mult, _count_electrons(coords, charge))
+    logger.info(
+        "Fukui states (charge/mult): %s",
+        ", ".join(f"{n}={c:+d}/{m}" for n, c, m in states),
+    )
+
     outputs: Dict[str, Path] = {}
     for name, charge, mult in states:
         sub = workdir / name

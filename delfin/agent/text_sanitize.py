@@ -33,6 +33,17 @@ _LEAKED_TOOL = re.compile(
 # Bare leftover ``to=<tool>`` with no JSON (defensive — strip the marker).
 _BARE_TOOL_MARKER = re.compile(r"to=\s*[A-Za-z_][\w\-]*")
 
+# Qwen/Gemma-family native tool-call markup. When the serving chat template
+# (KIT vLLM, Ollama) lacks a tool parser, these models emit their calls as
+# literal ``<tool_call>{json}</tool_call>`` blocks in the TEXT channel.
+_QWEN_TOOL_CALL = re.compile(
+    r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
+
+# A fenced ```json block whose entire payload is ONE call object. Only
+# treated as a call when the object's keys are exactly a call shape
+# (see _call_shape below) — ordinary JSON output must never be executed.
+_FENCED_JSON_CALL = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
+
 # Harmony special-token leftovers that decode as literal words.
 _HARMONY_TOKENS = re.compile(r"\b(?:json_schema|json|constrain)\b(?=[^\sA-Za-z])")
 
@@ -93,11 +104,19 @@ def sanitize_agent_text(text: str) -> SanitizeResult:
         name = m.group(1)
         if name not in leaked:
             leaked.append(name)
+    for m in _QWEN_TOOL_CALL.finditer(text):
+        try:
+            shape = _call_shape(json.loads(m.group(1)))
+        except Exception:
+            shape = None
+        if shape and shape[0] not in leaked:
+            leaked.append(shape[0])
 
     think_stripped = bool(_THINK_BLOCK.search(text) or _THINK_DANGLING.search(text))
     cleaned = _THINK_BLOCK.sub(" ", text)
     cleaned = _THINK_DANGLING.sub(" ", cleaned)
     cleaned = _LEAKED_TOOL.sub(" ", cleaned)
+    cleaned = _QWEN_TOOL_CALL.sub(" ", cleaned)
     cleaned = _BARE_TOOL_MARKER.sub(" ", cleaned)
     cleaned = _HARMONY_TOKENS.sub(" ", cleaned)
 
@@ -117,12 +136,35 @@ def sanitize_agent_text(text: str) -> SanitizeResult:
     )
 
 
+def _call_shape(obj) -> tuple[str, dict] | None:
+    """Return (name, arguments) when ``obj`` is unambiguously a tool-call
+    object: a dict whose keys are exactly a name plus an arguments dict
+    (``arguments`` or ``parameters``). Anything looser must be rejected so
+    ordinary JSON the model *prints* is never mistaken for a call."""
+    if not isinstance(obj, dict):
+        return None
+    keys = set(obj.keys())
+    for args_key in ("arguments", "parameters"):
+        if keys == {"name", args_key}:
+            name = obj.get("name")
+            args = obj.get(args_key)
+            if isinstance(name, str) and name and isinstance(args, dict):
+                return name, args
+    return None
+
+
 def parse_leaked_tool_calls(text: str) -> list[dict]:
     """Best-effort recovery of the JSON args from leaked tool fragments.
 
+    Recognised grammars, in order:
+    - harmony ``to=<tool> {json}`` leaks (gpt-oss / gpt-5 family)
+    - ``<tool_call>{json}</tool_call>`` markup (qwen/gemma family on
+      serving stacks whose chat template lacks a tool parser)
+    - fenced ```json blocks that ARE one strict call object
+
     Returns ``[{"name": str, "arguments": dict}]`` for each parseable
-    fragment.  Used only for diagnostics / future re-dispatch — NOT executed
-    automatically (parsing tool calls out of corrupted text is unsafe).
+    fragment. The caller decides whether to re-dispatch; only cleanly
+    parsed dict arguments are ever returned for the strict grammars.
     """
     out: list[dict] = []
     for m in _LEAKED_TOOL.finditer(text):
@@ -132,4 +174,19 @@ def parse_leaked_tool_calls(text: str) -> list[dict]:
         except Exception:
             args = {}
         out.append({"name": name, "arguments": args})
+    for m in _QWEN_TOOL_CALL.finditer(text):
+        try:
+            shape = _call_shape(json.loads(m.group(1)))
+        except Exception:
+            continue
+        if shape:
+            out.append({"name": shape[0], "arguments": shape[1]})
+    if not out:
+        for m in _FENCED_JSON_CALL.finditer(text):
+            try:
+                shape = _call_shape(json.loads(m.group(1)))
+            except Exception:
+                continue
+            if shape:
+                out.append({"name": shape[0], "arguments": shape[1]})
     return out

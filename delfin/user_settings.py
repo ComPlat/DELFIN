@@ -80,6 +80,12 @@ DEFAULT_SETTINGS = {
         "viewer": {
             "enabled": True,
             "quality": "high",
+            "representation": "ball_and_stick",
+            "atom_scale": 0.28,
+            "bond_radius": 0.11,
+            "multiple_bonds": True,
+            "depth_fog": True,
+            "ambient_occlusion": False,
         },
     },
     "docs": {
@@ -101,6 +107,18 @@ DEFAULT_SETTINGS = {
         # Soft warning when cumulative session cost crosses this USD
         # mark. The agent shows a banner; nothing is blocked.
         "cost_soft_limit_usd": 5.0,
+        # How long the agent's own state under ~/.delfin is kept, in days.
+        # Nothing expired before, so a state tree only ever grew: tool
+        # traces, turn metrics, sub-agent records, archived transcripts,
+        # handoffs, bundles and filed bug reports going back months.
+        #
+        # Two numbers because the two kinds of file are not comparable.
+        # Derived state is telemetry ABOUT work that is already finished.
+        # A saved session is work the user can still resume, so deleting
+        # one costs them something; it keeps the longer default and its
+        # own setting. Either at 0 disables that half of the prune.
+        "state_retention_days": 30,
+        "session_retention_days": 90,
         # Per-turn tool-round budget for the OpenAI/KIT/Ollama agent loop.
         # The agent runs up to this many tool-call rounds in ONE user turn
         # before stopping with a "send continue" notice. 500 is high enough
@@ -108,7 +126,31 @@ DEFAULT_SETTINGS = {
         # forcing manual nudges; the per-turn cost circuit-breaker
         # (cost_hard_limit_usd) and the consecutive-failure abort remain
         # the actual safety nets. 0 → uncapped (cost/fail-abort only).
-        "max_tool_rounds": 500,
+        #
+        # None means "unset", which is what lets the per-model profile
+        # decide. Shipping a number here instead made "unset" impossible
+        # to express, so the profile branch in _resolve_max_tool_rounds
+        # was unreachable and every model got 500 rounds -- including the
+        # small ones whose profiles ask for 10 or 20 precisely so that a
+        # degenerate loop dies early. A user who wants a fixed number
+        # still sets one and it still wins.
+        "max_tool_rounds": None,
+        # Per-run limits for a delegated sub-agent. Wall-clock is the one
+        # that actually binds on a slow endpoint (a build task spends ~30 s
+        # per tool call there); call count and output size have not been
+        # the limit in measured runs. 0 → fall back to the module default.
+        "subagents": {
+            "max_tool_calls": 40,
+            "max_wall_s": 900,
+            "max_output_tokens": 16000,
+        },
+        # Dashboard ACTION rounds: a round that issues at least one NEW
+        # command is progress and only draws on the ceiling; a round that
+        # re-issues what already ran this turn is charged against
+        # action_repeat_limit, so a loop ends after the first repeat while
+        # honest multi-step work runs on. 0 → ceiling disabled.
+        "max_action_rounds": 12,
+        "action_repeat_limit": 2,
         # Auto-verification: don't let the agent finish a turn with broken code.
         # When the model stops after editing .py files, the harness verifies
         # them and — on a problem — forces a bounded fix round (the model can't
@@ -165,15 +207,18 @@ DEFAULT_SETTINGS = {
         # a deliberate manual command. Opt-in.
         # Auto-memory (Roadmap B1): one cheap LLM turn when a session
         # ends distills durable facts into the memory store (BM25 recall
-        # already injects them into future turns). Opt-in — costs one
-        # small call per session; /memorize triggers it manually anytime.
+        # already injects them into future turns). On by default — one
+        # small cheap-tier call per session whose saved memories compound;
+        # /memorize triggers it manually anytime, enabled: false opts out.
         "auto_memory": {
-            "enabled": False,
+            "enabled": True,
             "model": "",
             "max_facts": 5,
         },
+        # LLM-free daily health pass (outcome mining + telemetry report);
+        # on by default, enabled: false opts out.
         "eval_loop": {
-            "enabled": False,
+            "enabled": True,
             "window": 200,
             "threshold": 3,
         },
@@ -277,8 +322,8 @@ def normalize_positive_float_setting(value, label, default, minimum=1.0):
     return float(normalized)
 
 
-def normalize_fraction_setting(value, label, default, *, minimum=0.0, maximum=1.0):
-    """Validate a float setting that must lie within a closed [min, max] range."""
+def normalize_bounded_float_setting(value, label, default, *, minimum, maximum):
+    """Validate a float setting that must lie within a closed range."""
     if value in ("", None):
         return float(default)
     try:
@@ -288,6 +333,17 @@ def normalize_fraction_setting(value, label, default, *, minimum=0.0, maximum=1.
     if normalized < minimum or normalized > maximum:
         raise ValueError(f"{label} must be between {minimum} and {maximum}.")
     return float(normalized)
+
+
+def normalize_fraction_setting(value, label, default, *, minimum=0.0, maximum=1.0):
+    """Validate a float setting that must lie within a closed [min, max] range."""
+    return normalize_bounded_float_setting(
+        value,
+        label,
+        default,
+        minimum=minimum,
+        maximum=maximum,
+    )
 
 
 def normalize_bool_setting(value, default=False):
@@ -363,6 +419,7 @@ def _normalized_settings_dict(payload):
     for key, label in (
         ("calculations_dir", "Calculations path"),
         ("archive_dir", "Archive path"),
+        ("office_dir", "Office path"),
     ):
         normalized_paths[key] = normalize_local_directory_setting(
             paths.get(key, ""),
@@ -568,16 +625,63 @@ def _normalized_settings_dict(payload):
     if not isinstance(viewer, dict):
         raise ValueError("Settings key 'ui.viewer' must be a JSON object.")
     default_viewer = default_ui.get("viewer", {}) or {}
+    quality = normalize_choice_setting(
+        viewer.get("quality", default_viewer.get("quality", "high")),
+        "3D viewer quality",
+        {"low", "medium", "high"},
+        default_viewer.get("quality", "high"),
+    )
+    # Before representation was configurable, the quality dropdown also
+    # selected line/stick/ball-and-stick. Preserve that visual choice when an
+    # existing settings file is migrated to the independent controls.
+    legacy_representation = {
+        "low": "line",
+        "medium": "stick",
+        "high": "ball_and_stick",
+    }[quality]
     normalized_ui["viewer"] = {
         "enabled": normalize_bool_setting(
             viewer.get("enabled", default_viewer.get("enabled", True)),
             default_viewer.get("enabled", True),
         ),
-        "quality": normalize_choice_setting(
-            viewer.get("quality", default_viewer.get("quality", "high")),
-            "3D viewer quality",
-            {"low", "medium", "high"},
-            default_viewer.get("quality", "high"),
+        "quality": quality,
+        "representation": normalize_choice_setting(
+            viewer.get("representation", legacy_representation),
+            "3D viewer representation",
+            {"line", "stick", "ball_and_stick", "sphere"},
+            default_viewer.get("representation", "ball_and_stick"),
+        ),
+        "atom_scale": normalize_bounded_float_setting(
+            viewer.get("atom_scale", default_viewer.get("atom_scale", 0.28)),
+            "3D viewer atom scale",
+            default_viewer.get("atom_scale", 0.28),
+            minimum=0.05,
+            maximum=1.50,
+        ),
+        "bond_radius": normalize_bounded_float_setting(
+            viewer.get("bond_radius", default_viewer.get("bond_radius", 0.11)),
+            "3D viewer bond radius",
+            default_viewer.get("bond_radius", 0.11),
+            minimum=0.02,
+            maximum=0.50,
+        ),
+        "multiple_bonds": normalize_bool_setting(
+            viewer.get(
+                "multiple_bonds",
+                default_viewer.get("multiple_bonds", True),
+            ),
+            default_viewer.get("multiple_bonds", True),
+        ),
+        "depth_fog": normalize_bool_setting(
+            viewer.get("depth_fog", default_viewer.get("depth_fog", True)),
+            default_viewer.get("depth_fog", True),
+        ),
+        "ambient_occlusion": normalize_bool_setting(
+            viewer.get(
+                "ambient_occlusion",
+                default_viewer.get("ambient_occlusion", False),
+            ),
+            default_viewer.get("ambient_occlusion", False),
         ),
     }
     normalized["ui"] = normalized_ui
@@ -708,7 +812,7 @@ def save_remote_archive_enabled(enabled, settings_path=None):
 
 
 def load_viewer_settings(settings_path=None):
-    """Return the ``ui.viewer`` dict ({enabled: bool, quality: str})."""
+    """Return the normalized global 3D-viewer settings."""
     default_viewer = DEFAULT_SETTINGS["ui"]["viewer"]
     try:
         settings = load_settings(settings_path)
@@ -718,10 +822,34 @@ def load_viewer_settings(settings_path=None):
     return {
         "enabled": bool(viewer.get("enabled", default_viewer["enabled"])),
         "quality": str(viewer.get("quality", default_viewer["quality"])),
+        "representation": str(
+            viewer.get("representation", default_viewer["representation"])
+        ),
+        "atom_scale": float(viewer.get("atom_scale", default_viewer["atom_scale"])),
+        "bond_radius": float(viewer.get("bond_radius", default_viewer["bond_radius"])),
+        "multiple_bonds": bool(
+            viewer.get("multiple_bonds", default_viewer["multiple_bonds"])
+        ),
+        "depth_fog": bool(viewer.get("depth_fog", default_viewer["depth_fog"])),
+        "ambient_occlusion": bool(
+            viewer.get("ambient_occlusion", default_viewer["ambient_occlusion"])
+        ),
     }
 
 
-def save_viewer_settings(enabled, quality, settings_path=None):
+def save_viewer_settings(
+    enabled,
+    quality,
+    settings_path=None,
+    *,
+    representation=None,
+    atom_scale=None,
+    bond_radius=None,
+    multiple_bonds=None,
+    depth_fog=None,
+    ambient_occlusion=None,
+):
+    """Persist global viewer settings while keeping the legacy call valid."""
     path = get_settings_path(settings_path)
     settings = load_settings(path)
     ui = settings.get("ui", {}) or {}
@@ -730,10 +858,42 @@ def save_viewer_settings(enabled, quality, settings_path=None):
     viewer["quality"] = normalize_choice_setting(
         quality, "3D viewer quality", {"low", "medium", "high"}, "high"
     )
+    if representation is not None:
+        viewer["representation"] = normalize_choice_setting(
+            representation,
+            "3D viewer representation",
+            {"line", "stick", "ball_and_stick", "sphere"},
+            DEFAULT_SETTINGS["ui"]["viewer"]["representation"],
+        )
+    if atom_scale is not None:
+        viewer["atom_scale"] = normalize_bounded_float_setting(
+            atom_scale,
+            "3D viewer atom scale",
+            DEFAULT_SETTINGS["ui"]["viewer"]["atom_scale"],
+            minimum=0.05,
+            maximum=1.50,
+        )
+    if bond_radius is not None:
+        viewer["bond_radius"] = normalize_bounded_float_setting(
+            bond_radius,
+            "3D viewer bond radius",
+            DEFAULT_SETTINGS["ui"]["viewer"]["bond_radius"],
+            minimum=0.02,
+            maximum=0.50,
+        )
+    if multiple_bonds is not None:
+        viewer["multiple_bonds"] = normalize_bool_setting(multiple_bonds, True)
+    if depth_fog is not None:
+        viewer["depth_fog"] = normalize_bool_setting(depth_fog, True)
+    if ambient_occlusion is not None:
+        viewer["ambient_occlusion"] = normalize_bool_setting(
+            ambient_occlusion,
+            False,
+        )
     ui["viewer"] = viewer
     settings["ui"] = ui
     save_settings(settings, path)
-    return {"enabled": viewer["enabled"], "quality": viewer["quality"]}
+    return load_viewer_settings(path)
 
 
 READ_MARKERS_DIR_NAME = ".delfin_meta"
@@ -837,3 +997,60 @@ def mark_calc_as_read(folder_path, markers_path=None):
         save_read_markers(markers, markers_path)
 
 
+# --- ORCA Builder config templates ------------------------------------------
+# Named, reusable ORCA Builder configurations (level of theory, keys, extra
+# input, resources) so a user can save a setup once and re-apply it to new
+# coordinates. Stored as a single JSON registry keyed by template name.
+ORCA_TEMPLATES_FILE_NAME = ".delfin_orca_templates.json"
+ORCA_TEMPLATES_KIND = "delfin_orca_builder_templates"
+
+
+def get_orca_templates_path(base_path=None):
+    """Return the path to the ORCA Builder templates registry file."""
+    if base_path:
+        return Path(base_path).expanduser()
+    return Path.home() / ORCA_TEMPLATES_FILE_NAME
+
+
+def load_orca_templates(path=None):
+    """Return ``{name: payload_dict}``.
+
+    A missing or unreadable/malformed file yields ``{}`` (never raises), so the
+    dashboard can always build its template dropdown.
+    """
+    p = get_orca_templates_path(path)
+    if not p.exists():
+        return {}
+    try:
+        data = _read_json(p)
+    except Exception:
+        return {}
+    templates = data.get("templates") if isinstance(data, dict) else None
+    if not isinstance(templates, dict):
+        return {}
+    return {str(k): v for k, v in templates.items() if isinstance(v, dict)}
+
+
+def save_orca_template(name, payload, path=None):
+    """Add/overwrite the template ``name`` with ``payload`` and persist atomically."""
+    name = str(name or "").strip()
+    if not name:
+        raise ValueError("Template name must not be empty.")
+    templates = load_orca_templates(path)
+    templates[name] = dict(payload)
+    _write_json_atomic(
+        get_orca_templates_path(path),
+        {"kind": ORCA_TEMPLATES_KIND, "version": 1, "templates": templates},
+    )
+
+
+def delete_orca_template(name, path=None):
+    """Remove the template ``name`` if present and persist atomically."""
+    name = str(name or "").strip()
+    templates = load_orca_templates(path)
+    if name in templates:
+        del templates[name]
+        _write_json_atomic(
+            get_orca_templates_path(path),
+            {"kind": ORCA_TEMPLATES_KIND, "version": 1, "templates": templates},
+        )

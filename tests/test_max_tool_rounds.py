@@ -47,7 +47,10 @@ def test_falls_back_to_500_on_error():
 
 
 def test_default_settings_carries_the_key():
-    # The dashboard Settings tab reads/writes agent.max_tool_rounds; the
-    # baseline default must exist so the widget shows the real fallback.
+    # The dashboard Settings tab reads/writes agent.max_tool_rounds, so
+    # the key has to exist. Its default is None — "unset" — because
+    # shipping a number made unset inexpressible and left every model on
+    # 500 rounds, with the per-model profiles unreachable.
     from delfin.user_settings import DEFAULT_SETTINGS
-    assert DEFAULT_SETTINGS["agent"]["max_tool_rounds"] == 500
+    assert "max_tool_rounds" in DEFAULT_SETTINGS["agent"]
+    assert DEFAULT_SETTINGS["agent"]["max_tool_rounds"] is None

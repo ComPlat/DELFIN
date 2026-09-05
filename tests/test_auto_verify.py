@@ -83,17 +83,162 @@ def test_smart_no_tests_is_syntax_only(tmp_path):
     assert _run_auto_verify([str(ok)], "smart", "", tmp_path) == ""
 
 
-def test_loop_is_wired():
-    src = (Path(__file__).resolve().parent.parent / "delfin" / "agent"
-           / "api_client.py").read_text(encoding="utf-8")
-    assert "_run_auto_verify(" in src
-    assert "force a fix round instead of ending" in src
-    assert 'fn_name in ("edit_file", "multi_edit", "write_file")' in src
-    # Adversarial-review fix: the gate must NOT depend on a per-turn "verified"
-    # flag — that let a model which only ACKNOWLEDGES (no new edit) skip
-    # re-verification and finish with an unfixed problem.
-    assert "_verified_this_turn" not in src
-    assert "_edited_py and _av_mode != \"off\" and _verify_attempts < 2" in src
+# The wiring used to be asserted as five substrings of api_client.py,
+# including a NEGATIVE one -- ``"_verified_this_turn" not in src``. A
+# negative substring is satisfied forever by choosing a different name for
+# the same flag, which is the one change the assertion exists to catch.
+# The others pin an exact expression, so a legitimate refactor breaks them
+# while the behaviour is untouched.
+#
+# What is promised: a model that only ACKNOWLEDGES, without editing
+# anything, is verified again rather than let off. Two acknowledgement
+# rounds are the shape that proves it.
+
+def _loop_over_a_broken_edit(tmp_path, replies_after_the_edit):
+    """Drive the real client loop: one edit that does not compile, then
+    text-only answers. Returns every request the loop sent."""
+    import json
+    from unittest.mock import patch
+
+    from delfin.agent import api_client as A
+    from delfin.agent import mcp_client as _mcp
+    from delfin.agent import model_capabilities as _mc
+
+    class _Delta:
+        def __init__(self, content=None, tool_calls=None):
+            self.content = content
+            self.tool_calls = tool_calls
+            self.reasoning_content = None
+
+    class _Choice:
+        def __init__(self, delta, finish):
+            self.index, self.delta, self.finish_reason = 0, delta, finish
+
+    class _Chunk:
+        def __init__(self, choices):
+            self.choices, self.usage = choices, None
+
+    class _Stream:
+        def __init__(self, chunks):
+            self._chunks = chunks
+
+        def __iter__(self):
+            return iter(self._chunks)
+
+        def close(self):
+            pass
+
+    class _ToolCall:
+        def __init__(self, name, args):
+            self.index, self.id, self.type = 0, "call_1", "function"
+            self.function = type("F", (), {"name": name, "arguments": args})()
+
+    class _NoRegistry:
+        def discover_all(self):
+            return []
+
+        def discover_resources(self):
+            return []
+
+        def discover_prompts(self):
+            return []
+
+    caps = _mc.ModelCapabilities(model="m", provider="ollama",
+                                 context_window=200_000, supports_tools=True)
+    sent: list = []
+    with patch.object(_mc, "resolve", lambda *a, **k: caps), \
+         patch.object(_mcp, "get_registry", lambda *a, **k: _NoRegistry()), \
+         patch.object(A, "_resolve_auto_verify", lambda: ("syntax", "")), \
+         patch.object(A.time, "sleep", lambda *a, **k: None):
+        client = A.create_client(backend="api", provider="ollama",
+                                 model="qwen2.5-coder:32b", cwd=str(tmp_path))
+        perms = A.KitToolPermissions(workspace=tmp_path, mode="acceptEdits")
+        perms.confirm_callback = lambda n, a, prev: True
+        client.set_permissions(perms)
+        rounds = {"n": 0}
+
+        def _create(**kwargs):
+            rounds["n"] += 1
+            sent.append(list(kwargs.get("messages") or []))
+            if rounds["n"] == 1:
+                return _Stream([
+                    _Chunk([_Choice(_Delta(tool_calls=[_ToolCall(
+                        "write_file",
+                        json.dumps({"path": "kaputt.py",
+                                    "content": "def f(:\n    return 1\n"}))]),
+                        None)]),
+                    _Chunk([_Choice(_Delta(), "tool_calls")]),
+                ])
+            i = min(rounds["n"] - 2, len(replies_after_the_edit) - 1)
+            return _Stream([_Chunk([_Choice(
+                _Delta(content=replies_after_the_edit[i]), "stop")])])
+
+        client.client.chat.completions.create = _create
+        list(client.stream_message("sys", [{"role": "user", "content": "los"}],
+                                   max_tokens=64))
+    return sent
+
+
+_VERIFY_FEEDBACK = "Auto-verification of the file(s) you just edited"
+
+
+def _verification_rounds(sent) -> int:
+    """How many times the loop injected the verification feedback."""
+    last = sent[-1] if sent else []
+    return sum(1 for m in last
+               if m.get("role") == "user"
+               and _VERIFY_FEEDBACK in str(m.get("content") or ""))
+
+
+def test_a_broken_edit_forces_a_fix_round(tmp_path):
+    """The turn does not end on the model's word that it is done."""
+    sent = _loop_over_a_broken_edit(
+        tmp_path, ["Fertig, sieht gut aus.", "Ja, erledigt.", "Erledigt."])
+    assert _verification_rounds(sent) >= 1, (
+        "a file that does not compile ended the turn unremarked")
+
+
+def test_a_model_that_only_acknowledges_is_verified_again(tmp_path):
+    """The whole point of the gate: no new edit is not the same fact as
+    no remaining problem. Two acknowledgement rounds, two verifications."""
+    sent = _loop_over_a_broken_edit(
+        tmp_path, ["Fertig, sieht gut aus.", "Ja, ist erledigt.", "Erledigt."])
+    assert _verification_rounds(sent) == 2, (
+        "the second acknowledgement was let off: a per-turn 'already "
+        "verified' flag is back")
+
+
+def test_the_fix_rounds_are_bounded(tmp_path):
+    """A genuinely unfixable failure must not loop forever."""
+    sent = _loop_over_a_broken_edit(
+        tmp_path, ["nope"] * 8)
+    assert _verification_rounds(sent) == 2
+    assert len(sent) <= 5, f"the loop ran {len(sent)} rounds"
+
+
+def test_a_repaired_file_ends_the_turn(tmp_path):
+    """A gate that never lets go would be switched off within a week."""
+    import json
+    from unittest.mock import patch
+
+    from delfin.agent import api_client as A
+
+    real = A._run_auto_verify
+    calls = {"n": 0}
+
+    def _verify(paths, mode, cmd, ws, **kw):
+        calls["n"] += 1
+        # The model "fixed" it between the first and the second check.
+        if calls["n"] == 1:
+            return real(paths, mode, cmd, ws, **kw)
+        return ""
+
+    with patch.object(A, "_run_auto_verify", _verify):
+        sent = _loop_over_a_broken_edit(
+            tmp_path, ["Fertig.", "Jetzt wirklich fertig."])
+    assert calls["n"] == 2, "the verification did not run twice"
+    assert _verification_rounds(sent) == 1, (
+        "a passing check still forced another fix round")
 
 
 def test_auto_verify_scopes_to_edited_package(tmp_path):
@@ -129,3 +274,101 @@ def test_auto_verify_still_catches_failure_inside_the_package(tmp_path):
     prob = _run_auto_verify([str(pkg / "tests" / "test_x.py")], "smart", "",
                             str(tmp_path))
     assert prob != ""
+
+
+# --- Honest auto-verify: timeout → scoped fallback, no silent clean ---------
+
+
+def _ws_with_matching_test(tmp_path):
+    (tmp_path / "mod.py").write_text("def val():\n    return 1\n")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_mod.py").write_text(
+        "from mod import val\ndef test_val():\n    assert val() == 1\n")
+    return tmp_path
+
+
+def test_timeout_falls_back_to_scoped_run(tmp_path, monkeypatch):
+    """A full-suite timeout used to blacklist the workspace and return ''
+    (clean) forever after — verification silently OFF. Now it retries scoped
+    to the edited modules' tests and remembers that command."""
+    from delfin.agent import api_client as A
+    ws = _ws_with_matching_test(tmp_path)
+    calls = []
+
+    def fake_run(cmd, workspace, timeout):
+        calls.append(cmd)
+        if "test_mod.py" in cmd:
+            return f"`{cmd}` failed (exit 1):\nboom", False
+        return "", True                       # full suite: timeout
+
+    monkeypatch.setattr(A, "_run_test_command", fake_run)
+    status: dict = {}
+    prob = A._run_auto_verify([str(ws / "mod.py")], "smart", "", str(ws),
+                              status=status)
+    try:
+        assert "failed" in prob               # scoped result, NOT silent clean
+        assert status.get("scoped") is True
+        assert "test_mod.py" in status.get("command", "")
+        assert str(ws) in A._SLOW_TEST_WS     # full suite stays blacklisted
+        assert "test_mod.py" in A._SLOW_WS_SCOPED_CMD[str(ws)]
+        assert len(calls) == 2                # full (timed out) + scoped
+    finally:
+        A._SLOW_TEST_WS.discard(str(ws))
+        A._SLOW_WS_SCOPED_CMD.pop(str(ws), None)
+
+
+def test_blacklisted_workspace_runs_scoped_not_silent_clean(tmp_path, monkeypatch):
+    from delfin.agent import api_client as A
+    ws = _ws_with_matching_test(tmp_path)
+    A._SLOW_TEST_WS.add(str(ws))
+    monkeypatch.setattr(
+        A, "_run_test_command",
+        lambda cmd, workspace, timeout: (f"`{cmd}` failed (exit 1):\nred", False))
+    try:
+        status: dict = {}
+        prob = A._run_auto_verify([str(ws / "mod.py")], "smart", "", str(ws),
+                                  status=status)
+        assert prob != ""                     # the old behaviour returned ""
+        assert status.get("scoped") is True
+    finally:
+        A._SLOW_TEST_WS.discard(str(ws))
+        A._SLOW_WS_SCOPED_CMD.pop(str(ws), None)
+
+
+def test_blacklisted_workspace_without_scoped_match_reports_skip(tmp_path):
+    from delfin.agent import api_client as A
+    (tmp_path / "lonely.py").write_text("x = 1\n")
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_other.py").write_text(
+        "def test_other():\n    assert True\n")
+    A._SLOW_TEST_WS.add(str(tmp_path))
+    try:
+        status: dict = {}
+        prob = A._run_auto_verify([str(tmp_path / "lonely.py")], "smart", "",
+                                  str(tmp_path), status=status)
+        assert prob == ""
+        assert status.get("skipped") is True  # visible, not silent
+    finally:
+        A._SLOW_TEST_WS.discard(str(tmp_path))
+
+
+def test_no_test_suite_reports_skip_status(tmp_path):
+    from delfin.agent import api_client as A
+    ok = tmp_path / "ok.py"
+    ok.write_text("def f():\n    return 1\n")
+    status: dict = {}
+    assert A._run_auto_verify([str(ok)], "smart", "", str(tmp_path),
+                              status=status) == ""
+    assert status.get("skipped") is True
+    assert "no test suite" in status.get("reason", "")
+
+
+def test_scoped_cmd_resolves_conventional_test_files(tmp_path):
+    from delfin.agent.api_client import _scoped_test_cmd_for_edits
+    ws = _ws_with_matching_test(tmp_path)
+    cmd = _scoped_test_cmd_for_edits([str(ws / "mod.py")], str(ws))
+    assert "pytest" in cmd and "test_mod.py" in cmd
+    # No matching test anywhere → no scoped command.
+    (ws / "orphan.py").write_text("y = 2\n")
+    assert _scoped_test_cmd_for_edits([str(ws / "orphan.py")], str(ws)) \
+        .count("orphan") == 0

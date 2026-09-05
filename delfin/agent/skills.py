@@ -40,12 +40,34 @@ class Skill:
     description: str
     body: str
     source: Path
+    # Where this playbook applies, from the ``domains:`` front-matter key.
+    # Empty means everywhere -- a user's own skill keeps working without
+    # knowing that domains exist, and nothing can lose a skill it has today.
+    domains: tuple[str, ...] = ()
+
+    def applies_to(self, domain: str) -> bool:
+        """Whether this skill belongs in a session working in ``domain``.
+
+        A skill is offered where its TOOLS are. The curated set splits
+        cleanly: the chemistry playbooks call ``search_docs`` and
+        ``search_calcs``, the administrative ones call ``read_document``
+        and ``compare_tables``, and neither role can reach the other's
+        surface -- so offering both to both meant every session was told
+        about playbooks whose first step it could not execute.
+        """
+        if not self.domains:
+            return True
+        d = (domain or "").strip().lower()
+        if not d:
+            return True
+        return d in self.domains
 
     def to_summary(self) -> dict:
         return {
             "name": self.name,
             "description": self.description,
             "source": str(self.source),
+            "domains": list(self.domains),
         }
 
 
@@ -75,6 +97,22 @@ def _parse_frontmatter(text: str) -> tuple[dict, str]:
         k, _, v = line.partition(":")
         meta[k.strip()] = v.strip().strip("\"").strip("'")
     return meta, body
+
+
+def _parse_domains(raw: object) -> tuple[str, ...]:
+    """Read a ``domains:`` value as a tuple of lowercase names.
+
+    Accepts what people actually write: ``office``, ``office, code``, or
+    the inline YAML list ``[office, code]``. Anything unparseable reads as
+    "no domain given", which means universal -- a typo must not be able to
+    hide a skill from every session at once.
+    """
+    if not isinstance(raw, str):
+        return ()
+    text = raw.strip().strip("[]")
+    parts = [p.strip().strip("\"'").lower()
+             for p in text.replace(";", ",").split(",")]
+    return tuple(p for p in parts if p)
 
 
 def _first_heading(body: str) -> str:
@@ -142,14 +180,21 @@ def _load_one(path: Path) -> Skill | None:
         description=description,
         body=body.strip() or text.strip(),
         source=path,
+        domains=_parse_domains(meta.get("domains")),
     )
 
 
-def discover_skills(workspace: Path | str | None = None) -> list[Skill]:
+def discover_skills(
+    workspace: Path | str | None = None, domain: str = "",
+) -> list[Skill]:
     """Return all skills found in user + project directories.
 
     On name collisions the later (project-scoped) skill wins, mirroring
     the canonical "project overrides user" semantics.
+
+    With ``domain`` set, only the skills that apply there are returned.
+    The default returns everything, so a caller that never learned about
+    domains sees exactly what it saw before.
     """
     by_name: dict[str, Skill] = {}
     for d in _skill_dirs(Path(workspace) if workspace else None):
@@ -158,14 +203,23 @@ def discover_skills(workspace: Path | str | None = None) -> list[Skill]:
             if sk is None:
                 continue
             by_name[sk.name] = sk
-    return sorted(by_name.values(), key=lambda s: s.name)
+    found = sorted(by_name.values(), key=lambda s: s.name)
+    if not domain:
+        return found
+    return [s for s in found if s.applies_to(domain)]
 
 
 def get_skill(
-    name: str, workspace: Path | str | None = None,
+    name: str, workspace: Path | str | None = None, domain: str = "",
 ) -> Skill | None:
-    """Look up a single skill by name."""
-    for sk in discover_skills(workspace):
+    """Look up a single skill by name.
+
+    ``domain`` filters the same way as ``discover_skills``. Callers that
+    need to tell "does not exist" apart from "does not apply here" should
+    look it up WITHOUT a domain and ask ``applies_to`` themselves — the
+    two cases deserve different messages.
+    """
+    for sk in discover_skills(workspace, domain=domain):
         if sk.name == name:
             return sk
     return None

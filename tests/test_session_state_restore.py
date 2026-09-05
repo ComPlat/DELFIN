@@ -151,8 +151,9 @@ def test_archive_then_search_combined(fake_home):
 
 
 def test_save_session_writes_atomically_for_concurrent_resume(fake_home):
-    """save_session uses tmp + replace internally elsewhere; verify the
-    final file is always parseable JSON even on a fresh write."""
+    """save_session goes through _atomic_write_text (tmp + os.replace);
+    verify the final file is always parseable JSON and leaves no temp
+    litter behind."""
     p = ss.save_session(
         "sid-atomic", mode="solo",
         chat_messages=[{"role": "user", "content": "x"}],
@@ -162,3 +163,49 @@ def test_save_session_writes_atomically_for_concurrent_resume(fake_home):
     data = json.loads(p.read_text(encoding="utf-8"))
     assert data["session_id"] == "sid-atomic"
     assert data["perm_profile"] == "ask_all"
+    assert not list(p.parent.glob("*.tmp"))
+
+
+def test_crash_resume_cycle_injects_note_once_end_to_end(fake_home):
+    """Full disk round-trip of the crash-recovery path: turn-boundary
+    save, then a mid-turn checkpoint (the process is then killed), then
+    a restore — the recovered note must appear exactly once and the
+    checkpoint must be consumed."""
+    import time
+
+    ss.save_session(
+        "sid-crash", mode="solo",
+        chat_messages=[{"role": "user", "content": "start the migration"}],
+        engine_messages=[
+            {"role": "user", "content": "start the migration"},
+            {"role": "assistant", "content": "beginning now"},
+        ],
+    )
+    time.sleep(0.02)
+    ss.save_turn_checkpoint("sid-crash", {
+        "user_message": "start the migration",
+        "partial_response": "migrated 4 of 9 modules",
+        "tool_calls": 31,
+    })
+
+    # kill -9 here — next dashboard start loads the session:
+    data = ss.load_session("sid-crash")
+    assert data is not None
+
+    from delfin.agent.engine import AgentEngine
+    eng = AgentEngine.__new__(AgentEngine)
+    eng.mode = "solo"
+    eng.messages = []
+    eng._project_dir = ""
+    eng._last_input_tokens = 0
+    eng.restore_state({
+        "mode": "solo",
+        "engine_messages": data["engine_messages"],
+        "session_id": data["session_id"],
+    })
+    notes = [m for m in eng.messages
+             if str(m.get("content", "")).startswith("[recovered]")]
+    assert len(notes) == 1
+    assert "31 tool calls" in notes[0]["content"]
+    assert "migrated 4 of 9 modules" in notes[0]["content"]
+    assert ss.load_turn_checkpoint("sid-crash") is None

@@ -36,7 +36,9 @@ def record_failure(
     """Append one failure record. Best-effort — never raises."""
     p = path or _LOG_PATH
     try:
-        p.parent.mkdir(parents=True, exist_ok=True)
+        from .state_paths import ensure_dir, open_append, secure_file
+        from .state_paths import write_text as _write_secure
+        ensure_dir(p.parent)
         rec = {
             "ts": time.time(),
             "tool": (tool or "")[:80],
@@ -44,15 +46,18 @@ def record_failure(
             "error": (error or "")[:400],
             "session_id": session_id or "",
         }
-        with p.open("a", encoding="utf-8") as f:
+        # Created 0600 by ``open_append``: a chmod after the first write
+        # leaves the file group-readable for the length of that write.
+        with open_append(p) as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        secure_file(p)          # tighten a file that already existed
         # Trim if large; tolerant of trimming failure.
         try:
             if p.stat().st_size > 400_000:
                 lines = p.read_text(encoding="utf-8").splitlines()
                 if len(lines) > _MAX_LINES:
                     tail = lines[-_MAX_LINES:]
-                    p.write_text("\n".join(tail) + "\n", encoding="utf-8")
+                    _write_secure(p, "\n".join(tail) + "\n")
         except OSError:
             pass
     except OSError:

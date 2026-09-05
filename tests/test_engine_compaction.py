@@ -39,14 +39,18 @@ def agent_tree(tmp_path):
     lite_dir = tmp_path / "pack_lite"
     modes = lite_dir / "modes"
     modes.mkdir(parents=True)
-    (modes / "quick.md").write_text("# Mode: quick\nQuick mode.")
+    (modes / "solo.md").write_text("# Mode: quick\nQuick mode.")
+    # Named `solo` because every retired mode name now migrates onto
+    # it; a fixture built around `quick` describes a manifest the
+    # loader no longer has. The multi-role route is kept so the
+    # engine's role advancement stays under test.
     manifest = textwrap.dedent("""\
         pack_name: DELFIN_AGENT_LITE
         version: 1
-        recommended_default_mode: quick
+        recommended_default_mode: solo
         modes:
-          - id: quick
-            file: modes/quick.md
+          - id: solo
+            file: modes/solo.md
             route:
               - solo_agent
     """)
@@ -69,7 +73,7 @@ def _build_engine(agent_tree, *, n_messages=20):
     # long history below crosses the auto-compact threshold; the 12-message
     # floor still protects short conversations from compacting at all.
     engine.context_window_tokens = 10
-    # Long alternating history (must exceed _COMPACTION_THRESHOLD = 12)
+    # Long alternating history — comfortably past the kept tail
     for i in range(n_messages):
         role = "user" if i % 2 == 0 else "assistant"
         engine.messages.append({"role": role, "content": f"msg {i}"})
@@ -168,6 +172,245 @@ def test_prior_summary_survives_second_compaction():
     block2 = eng.messages[0]["content"]
     assert "ORIGINAL_GOAL" in block2      # original intent preserved
     assert "DEEP_CONSTRAINT" in block2    # deep fact no longer truncated away
+
+
+# ---------------------------------------------------------------------------
+# Pinned context regions: msg["_pinned"] protects a message from every
+# destructive compaction stage (slide-trim, hard-clear, full summary), and
+# the pin API validates bounds. Uses the same __new__-based bare engine as
+# the re-compaction tests above.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def fake_home(monkeypatch, tmp_path):
+    """Isolate every session-store side file (elided store, archives)."""
+    from delfin.agent import session_store as ss
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(ss, "_SESSIONS_DIR", tmp_path / ".delfin" / "agent_sessions")
+    return tmp_path
+
+
+def test_pin_api_bounds_validation():
+    eng = _bare_engine()
+    assert eng.pin_message(0) is False          # empty history
+    eng.messages = [
+        {"role": "user", "content": "a"},
+        {"role": "assistant", "content": "b"},
+        {"role": "user", "content": "c"},
+    ]
+    assert eng.pin_message(5) is False           # out of range
+    assert eng.pin_message(-4) is False          # negative out of range
+    assert eng.pin_message("x") is False         # malformed index
+    assert eng.pinned_indices() == []
+    assert eng.pin_message(1) is True
+    assert eng.pin_message(-1) is True           # python-style negative
+    assert eng.pinned_indices() == [1, 2]
+    assert eng.unpin_message(0) is False         # was never pinned
+    assert eng.unpin_message(9) is False         # out of range
+    assert eng.unpin_message(1) is True
+    assert eng.pinned_indices() == [2]
+
+
+def test_pinned_message_survives_slide_trim_and_unpin_restores():
+    eng = _bare_engine()
+    eng.context_window_tokens = 1000
+    pinned_body = "PINNED SPEC " + "p" * 4000
+    eng.messages = [
+        {"role": "user", "content": "goal"},
+        {"role": "assistant", "content": pinned_body},
+        {"role": "assistant", "content": "q" * 4000},
+        # protected recent tail
+        {"role": "user", "content": "r1"},
+        {"role": "assistant", "content": "r2"},
+        {"role": "user", "content": "r3"},
+        {"role": "assistant", "content": "r4"},
+    ]
+    assert eng.pin_message(1) is True
+    eng._shorten_oldest_non_goal_messages()
+    assert eng.messages[1]["content"] == pinned_body          # verbatim
+    assert "trimmed by sliding window" in eng.messages[2]["content"]
+    # Unpin -> the message becomes trimmable again.
+    assert eng.unpin_message(1) is True
+    eng._shorten_oldest_non_goal_messages()
+    assert "trimmed by sliding window" in eng.messages[1]["content"]
+
+
+def test_pinned_message_survives_hard_clear():
+    eng = _bare_engine()
+    eng.context_window_tokens = 100
+    pinned_body = "PINNED OUTPUT " + "z" * 4000
+    eng.messages = [
+        {"role": "assistant", "content": pinned_body, "_pinned": True},
+        {"role": "assistant", "content": "w" * 4000},
+    ]
+    n = eng._stub_oldest_non_goal_messages(eng.messages)
+    assert n == 1
+    assert eng.messages[0]["content"] == pinned_body          # verbatim
+    assert eng.messages[1]["content"].startswith("[cleared:")
+
+
+def test_pinned_message_survives_full_summary_compaction_verbatim():
+    eng = _bare_engine()
+    pinned_body = "PINNED CALC SPEC: CASSCF(12,12)/def2-TZVP, S1 at 2.31 eV"
+    eng.messages = [{"role": "user", "content": "ORIGINAL_GOAL: solver"}]
+    for i in range(6):
+        eng.messages.append({"role": "assistant", "content": f"did {i}: " + "done " * 18})
+        eng.messages.append({"role": "user", "content": f"step {i}: " + "work " * 18})
+    eng.messages.insert(3, {"role": "assistant", "content": pinned_body})
+    assert eng.pin_message(3) is True
+    eng._compact_history()
+    # The summary block replaced the compactable middle ...
+    assert eng.messages[0]["content"].startswith("[Conversation summary")
+    # ... but the pinned message came through VERBATIM, still pinned.
+    kept = [m for m in eng.messages if m.get("content") == pinned_body]
+    assert len(kept) == 1 and kept[0].get("_pinned") is True
+    assert eng.last_compaction_info.get("pinned_kept") == 1
+    # Alternation still holds after the rebuild + sanitize.
+    for a, b in zip(eng.messages, eng.messages[1:]):
+        assert not (a["role"] == b["role"] and a["role"] in ("user", "assistant"))
+
+
+def test_sanitize_keeps_pinned_on_same_role_merge():
+    eng = _bare_engine()
+    eng.messages = [
+        {"role": "user", "content": "PINNED SPEC", "_pinned": True},
+        {"role": "user", "content": "newer user message"},
+    ]
+    eng._sanitize_messages()
+    contents = [m["content"] for m in eng.messages]
+    assert "PINNED SPEC" in contents
+    assert "newer user message" in contents
+    roles = [m["role"] for m in eng.messages]
+    assert roles == ["user", "assistant", "user"]   # filler restores alternation
+
+
+def test_context_status_block_reports_pins():
+    eng = _bare_engine()
+    eng.token_usage = {"input": 0, "output": 0}
+    eng.messages = [
+        {"role": "user", "content": "a"},
+        {"role": "assistant", "content": "b"},
+    ]
+    assert "pinned message(s)" not in eng._build_context_status_block()
+    eng.pin_message(0)
+    eng.pin_message(1)
+    block = eng._build_context_status_block()
+    assert "2 pinned message(s) excluded from compaction" in block
+
+
+def test_wire_messages_strips_private_keys_only_when_present():
+    eng = _bare_engine()
+    eng.messages = [
+        {"role": "user", "content": "a"},
+        {"role": "assistant", "content": "b"},
+    ]
+    # No private keys -> identity (prompt-cache/list-binding friendly).
+    assert eng._wire_messages() is eng.messages
+    eng.pin_message(1)
+    wire = eng._wire_messages()
+    assert wire is not eng.messages
+    assert [m["content"] for m in wire] == ["a", "b"]
+    assert all("_pinned" not in m for m in wire)
+    assert eng.messages[1]["_pinned"] is True       # source untouched
+
+
+def test_pin_flag_round_trips_session_store(fake_home):
+    from delfin.agent import session_store as ss
+    ss.save_session(
+        "sess-pin-rt",
+        engine_messages=[
+            {"role": "user", "content": "keep", "_pinned": True},
+            {"role": "assistant", "content": "ok"},
+        ],
+    )
+    data = ss.load_session("sess-pin-rt")
+    assert data["engine_messages"][0]["_pinned"] is True
+    assert data["engine_messages"][1].get("_pinned") is None
+
+
+# ---------------------------------------------------------------------------
+# Lossless elision: the in-place trim stages persist the FULL original to
+# <sessions_dir>/<session_id>.elided.jsonl and the marker carries the ref.
+# ---------------------------------------------------------------------------
+
+_REF_RE = r"history_get\('elided:([A-Za-z0-9]+)'\)"
+
+
+def test_slide_trim_writes_elided_record_with_matching_ref(fake_home):
+    import re as _re
+    from delfin.agent import history_search as hs
+    from delfin.agent import session_store as ss
+    eng = _bare_engine()
+    eng.session_id = "sess-elide"
+    eng.context_window_tokens = 1000
+    original = "ELIDE ME " + "e" * 4000
+    eng.messages = [
+        {"role": "assistant", "content": original},
+        {"role": "user", "content": "r1"},
+        {"role": "assistant", "content": "r2"},
+        {"role": "user", "content": "r3"},
+        {"role": "assistant", "content": "r4"},
+    ]
+    assert eng._shorten_oldest_non_goal_messages() == 1
+    marker = eng.messages[0]["content"]
+    m = _re.search(_REF_RE, marker)
+    assert m, f"marker lacks retrieval ref: {marker[:200]}"
+    ref = m.group(1)
+    rec = ss.load_elided_record("sess-elide", ref)
+    assert rec["content"] == original
+    assert rec["index"] == 0 and rec["role"] == "assistant"
+    assert rec["reason"] == "sliding_window"
+    # history_get resolves the marker's ref to the full original.
+    got = hs.history_get("sess-elide", f"elided:{ref}", max_chars=10_000)
+    assert got["text"] == original and got["source"] == "elided"
+
+
+def test_hard_clear_writes_elided_record_with_matching_ref(fake_home):
+    import re as _re
+    from delfin.agent import history_search as hs
+    eng = _bare_engine()
+    eng.session_id = "sess-clear"
+    eng.context_window_tokens = 100
+    original = "CLEARED BODY " + "c" * 3000
+    eng.messages = [{"role": "assistant", "content": original}]
+    assert eng._stub_oldest_non_goal_messages(eng.messages) == 1
+    marker = eng.messages[0]["content"]
+    assert marker.startswith("[cleared:")
+    m = _re.search(_REF_RE, marker)
+    assert m, f"marker lacks retrieval ref: {marker[:200]}"
+    got = hs.history_get("sess-clear", f"elided:{m.group(1)}", max_chars=10_000)
+    assert got["text"] == original and got["reason"] == "hard_clear"
+
+
+def test_elision_store_failure_never_breaks_compaction(fake_home, monkeypatch):
+    from delfin.agent import session_store as ss
+
+    def _boom(*a, **k):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(ss, "append_elided_record", _boom)
+    eng = _bare_engine()
+    eng.session_id = "sess-broken"
+    eng.context_window_tokens = 1000
+    eng.messages = [
+        {"role": "assistant", "content": "x" * 4000},
+        {"role": "user", "content": "r1"},
+        {"role": "assistant", "content": "r2"},
+        {"role": "user", "content": "r3"},
+        {"role": "assistant", "content": "r4"},
+    ]
+    assert eng._shorten_oldest_non_goal_messages() == 1          # trim still happened
+    marker = eng.messages[0]["content"]
+    assert "trimmed by sliding window" in marker
+    assert "elided:" not in marker                 # no dangling ref
+    # Hard-clear path degrades the same way.
+    eng2 = _bare_engine()
+    eng2.session_id = "sess-broken"
+    eng2.context_window_tokens = 100
+    eng2.messages = [{"role": "assistant", "content": "y" * 3000}]
+    assert eng2._stub_oldest_non_goal_messages(eng2.messages) == 1
+    assert "elided:" not in eng2.messages[0]["content"]
 
 
 # ---------------------------------------------------------------------------

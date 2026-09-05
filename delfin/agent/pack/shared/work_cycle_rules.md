@@ -20,6 +20,9 @@ These rules apply to every DELFIN work cycle.
 - Break complex work into small stage gates with exit evidence.
 - Do not let builder work begin before scope and criteria are clear.
 - If the current gate fails, stop and surface the blocker.
+- Which language goes where — answers, and what is written into code —
+  is in the honesty addendum. It lives there because THIS file reaches
+  only the four full-context roles, and the rule has to reach every one.
 
 ## DELFIN priority order
 

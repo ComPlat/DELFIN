@@ -282,6 +282,23 @@ def _refuse_insecure_no_token(ip: str) -> str:
     )
 
 
+#: Frontend extensions the browser is not asked to load.  See the comment at
+#: the ``--VoilaConfiguration.extension_denylist`` argument for the measurement.
+DEFAULT_EXTENSION_DENYLIST = ('nglview-js-widgets', 'jupyterlab-plotly')
+
+
+def _extension_denylist() -> list:
+    """Which frontend extensions to leave out, honouring an override.
+
+    ``DELFIN_VOILA_EXTENSION_DENYLIST`` is a comma-separated list; empty means
+    leave everything in.
+    """
+    raw = os.environ.get('DELFIN_VOILA_EXTENSION_DENYLIST')
+    if raw is None:
+        return list(DEFAULT_EXTENSION_DENYLIST)
+    return [name.strip() for name in raw.split(',') if name.strip()]
+
+
 def _validate_access_token(token: str) -> str:
     """Return a validated dashboard token or raise ValueError."""
     value = str(token or "").strip()
@@ -459,6 +476,39 @@ def _prepare_login_template_dir() -> str | None:
         target_dir = _secure_cache_dir("voila-login")
         (target_dir / "login.html").write_text(rendered, encoding="utf-8")
         return str(target_dir)
+    except Exception:
+        return None
+
+
+def _prepare_published_dir() -> str | None:
+    """Create the one directory the server publishes, and return it.
+
+    The drawing editor is a browser application: it has to be fetched over
+    HTTP, so it has to sit somewhere the server will hand out. Until now the
+    only such place was Voilà's root directory — which is whatever directory
+    the dashboard was started in — so thirty megabytes of Ketcher were copied
+    into it, one copy per launch directory, and a user found them in their
+    archive folder next to the calculations.
+
+    A static route of its own fixes that: the editor is loaded from where it
+    is kept, in ``~/.delfin/served``, and nothing is written into the launch
+    directory at all. Returns the directory, or ``None`` if it cannot be made
+    (the editor then falls back to the copy under the root, as before).
+
+    ``/static/`` is served WITHOUT a token — jupyter_server needs it for the
+    login page — which is why what is published gets a directory of its own
+    rather than a route into ``~/.delfin``, where the credentials and the
+    agent's memory live. It holds the editor and nothing else, and the editor
+    is a public open-source bundle. This narrows the surface rather than
+    widening it: ``/voila/files/`` is equally unauthenticated and reaches
+    every .png/.pdf/.html below the launch directory.
+    """
+    try:
+        from delfin.dashboard import ketcher
+
+        published = ketcher.published_root()
+        published.mkdir(parents=True, exist_ok=True)
+        return str(published)
     except Exception:
         return None
 
@@ -745,7 +795,52 @@ def main(argv=None):
         "--ServerApp.answer_yes=True",
         "--ServerApp.websocket_ping_interval=30000",
         "--ServerApp.websocket_ping_timeout=30000",
+        # MathJax's default entry point is a loader shim, and it never stops
+        # loading: it removes and re-appends its own script tag for as long as
+        # the page is open. Measured on the running dashboard, five idle
+        # seconds: 4.90 s of the main thread busy, against 0.06 s once the
+        # request is answered. That is 98% of one core held by a page doing
+        # nothing, which is what every later click had to queue behind.
+        #
+        # This asks for nothing at all rather than for a working MathJax,
+        # because nothing is what the dashboard has today: window.MathJax is
+        # undefined here and no output is typeset. Pointing at a real bundle
+        # would fix the spin and *start* typesetting where there is a network
+        # -- a $ in a job log becoming mathematics is a change in what the
+        # dashboard shows, and this is a speed fix. The rendered document is
+        # identical either way: 7626 elements, 15 script tags.
+        #
+        # The trailing // is load-bearing: Voila appends ?config=... and the
+        # comment swallows it. And it goes through tornado_settings because
+        # the dashboard runs Voila as a jupyter-server extension, where the
+        # Voila app's own mathjax_url trait is never read.
+        '--ServerApp.tornado_settings={"mathjax_url": "data:text/javascript,//"}',
+        # Frontend extensions the browser fetches, parses and evaluates at
+        # every load, for widgets this dashboard never makes.
+        #
+        # nglview: 4.55 MB. The structure viewers are py3Dmol and there is no
+        # `import nglview` in the source; the four mentions of the name are
+        # Python-side package probes for the Settings tab, which this does not
+        # touch. Measured over four interleaved loads each way: blocking 1581
+        # -> 1227 ms, transfer 14.7 -> 10.2 MB.
+        #
+        # jupyterlab-plotly: 192.9 ms of self time in a CPU profile of the
+        # load, 186.4 of it in one function -- the extension evaluating
+        # itself. It is only reachable by a plotly figure rendered as a widget
+        # in this page, and nothing can make one: the agent runs its Python in
+        # subprocesses (sys.executable -c ...), whose output is a file or
+        # text, and Voila has no editable cells. `delfin/tools/` contains no
+        # plotly, FigureWidget or to_html. The Settings probe that reports
+        # whether the plotly *package* is installed is a different question
+        # and still answers it.
+        #
+        # DELFIN_VOILA_EXTENSION_DENYLIST overrides the list, so a machine
+        # that does want either of them back can have it without editing this
+        # file.
+        f"--VoilaConfiguration.extension_denylist={_extension_denylist()!r}",
     ]
+
+    import json
 
     # DELFIN-branded login page: drop our own login.html (logo inlined) onto
     # extra_template_paths so jupyter_server renders it instead of its generic
@@ -753,11 +848,20 @@ def main(argv=None):
     # validates the token/password server-side, so auth is unchanged.
     _login_dir = _prepare_login_template_dir()
     if _login_dir:
-        import json
-
         cmd.append(
             "--ServerApp.extra_template_paths=" + json.dumps([_login_dir])
         )
+
+    # The drawing editor, published from where it is kept instead of being
+    # copied into the directory the dashboard was started in. The dashboard
+    # only takes this route when the variable says the route is there, so a
+    # dashboard started any other way still finds its editor.
+    _published_dir = _prepare_published_dir()
+    if _published_dir:
+        cmd.append(
+            "--ServerApp.extra_static_paths=" + json.dumps([_published_dir])
+        )
+        env["DELFIN_KETCHER_URL"] = "/static/ketcher"
 
     # Token authentication — now actually ENFORCED by jupyter_server. Pass via
     # env var, not CLI: /proc/PID/cmdline is world-readable on shared hosts, so

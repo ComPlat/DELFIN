@@ -43,6 +43,14 @@ class DocSearchEngine:
 
         self._corpus_keys = keys
 
+        # ``max_df=0.95`` is a FRACTION of the corpus: with a single section
+        # the ceiling floors to zero documents, below ``min_df=1``, and the
+        # vectoriser raises "max_df corresponds to < documents than min_df"
+        # — so the first PDF a user indexed broke search_docs outright, on
+        # every call, with an exception rather than an empty result. A
+        # one-section corpus has no common terms to drop anyway.
+        max_df = 0.95 if len(corpus) > 1 else 1.0
+
         # Custom token pattern that preserves hyphenated chemistry terms
         # like def2-TZVP, wB97X-D3, RIJCOSX, SARC/J, etc.
         self._vectorizer = TfidfVectorizer(
@@ -51,16 +59,23 @@ class DocSearchEngine:
             max_features=50000,
             sublinear_tf=True,
             min_df=1,
-            max_df=0.95,
+            max_df=max_df,
         )
         self._tfidf_matrix = self._vectorizer.fit_transform(corpus)
+
+    def provenance(self) -> dict[str, Any]:
+        """When this index was built, how big it is, what failed, what is stale."""
+        from .indexer import index_provenance
+        prov = index_provenance(self._index)
+        prov["corpus_sections"] = len(self._corpus_keys)
+        return prov
 
     def search(
         self,
         query: str,
         doc_filter: str = "",
         max_results: int = 10,
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         """Search the index for sections matching the query.
 
         Parameters
@@ -74,9 +89,27 @@ class DocSearchEngine:
 
         Returns
         -------
-        list of dict
-            Each result: ``{doc_id, section_id, title, doc_title, score, snippet}``.
+        dict
+            ``{"results": [...], "index": {...}}``. Each result:
+            ``{doc_id, section_id, title, doc_title, score, snippet}``.
+
+            The payload carries the index provenance — build time, corpus
+            size, documents that could not be extracted, documents whose
+            source has changed since — because a bare list made "nothing
+            matched your query" and "there is nothing here to match" the
+            same answer, and made a hit from a section deleted from the
+            source last month indistinguishable from a fresh one.
         """
+        return {"results": self._ranked(query, doc_filter, max_results),
+                "index": self.provenance()}
+
+    def _ranked(
+        self,
+        query: str,
+        doc_filter: str = "",
+        max_results: int = 10,
+    ) -> list[dict[str, Any]]:
+        """The ranked hits alone, without the provenance wrapper."""
         self._ensure_built()
 
         if self._vectorizer is None or self._tfidf_matrix is None or not self._corpus_keys:

@@ -56,15 +56,51 @@ _SECTION_MARKERS: dict[str, list[str]] = {
 }
 
 
+# Whether a low hit rate may DELETE a section from the prompt.
+#
+# Off, because the hit rate does not measure use. Read off this machine's
+# own ledger over 500 entries: the honesty addendum was injected 500 times
+# and scored 0 hits, while the agent demonstrably follows it -- it refuses,
+# it grounds its claims, the benchmark measures a 92% verification rate. It
+# simply never writes the word. In this counter a section that works
+# SILENTLY is indistinguishable from one that is ignored, and silent work
+# is what most of these sections do.
+#
+# The one section that survived scored 26% for the opposite reason:
+# repo_map's markers include the literal "delfin/", which appears in nearly
+# every reply in this repository. So the mechanism reliably kept the
+# largest block and deleted the ones whose value is invisible -- including,
+# once the counter reached eight, all three memory blocks at once.
+#
+# The recording stays: the data is worth having, and a real usage signal
+# would need it. Only the deletion is off. Set this True again when there
+# is a signal that can tell use from silence.
+SKIP_UNUSED_SECTIONS = False
+
+
+def is_measurable(section_name: str) -> bool:
+    """Whether this section has markers at all.
+
+    Nine injected names have no entry in the table, so
+    ``any(m in reply for m in [])`` is False by construction -- they were
+    logged as a miss every turn without any check being performed, which is
+    recording nothing as if it were something.
+    """
+    return bool(_SECTION_MARKERS.get(section_name))
+
+
 def _detect_references(
     response_text: str,
     sections_injected: list[str],
 ) -> dict[str, bool]:
-    """Detect which sections the response actually references."""
+    """Which sections the response references. Sections that cannot be
+    measured are absent from the result rather than reported as a miss."""
     lower = (response_text or "").lower()
     hits: dict[str, bool] = {}
     for section in sections_injected:
-        markers = _SECTION_MARKERS.get(section, [])
+        markers = _SECTION_MARKERS.get(section) or []
+        if not markers:
+            continue
         hits[section] = any(m in lower for m in markers)
     return hits
 
@@ -131,7 +167,15 @@ class ContextUsageTracker:
         role_id: str = "",
         provider: str = "",
     ) -> bool:
-        """True if the section has enough data and a low hit rate."""
+        """True if the section has enough data and a low hit rate.
+
+        Always False while ``SKIP_UNUSED_SECTIONS`` is off, and off is the
+        default -- see the constant for the measurement that disqualified
+        this signal. The counting below is kept intact so the decision can
+        be revisited from data rather than rebuilt from scratch.
+        """
+        if not SKIP_UNUSED_SECTIONS or not is_measurable(section_name):
+            return False
         entries = self._load()
         injected_count = 0
         hit_count = 0

@@ -33,6 +33,10 @@ agents:
     prompt_file: agents/test_agent.md
     writes_production_code: false
     purpose: validation and regression protection
+  - id: office_agent
+    prompt_file: agents/office_agent.md
+    writes_production_code: false
+    purpose: documents, tables and administrative work
   - id: research_agent
     prompt_file: agents/research_agent.md
     writes_production_code: false

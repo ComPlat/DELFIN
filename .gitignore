@@ -2,6 +2,7 @@
 docs/*.pdf
 
 # Ignore build artifacts
+build/
 dist/
 *.egg-info/
 own_auto_tree.json
@@ -33,6 +34,18 @@ delfin/qm_tools/.mamba_env/
 delfin/qm_tools/share/
 delfin/qm_tools/third_party/
 delfin/qm_tools/HYPERPOLARIZABILITY_SETUP.txt
+
+# What xtb drops in the directory it is started from. Anchored to the repo
+# root, which is where the dashboard is launched -- a file of one of these
+# names anywhere else is somebody's, not a leftover.
+/gfnff_topo
+/gfnff_charges
+/gfnff_adjacency
+/xtbrestart
+/xtbtopo.mol
+/.xtboptok
+/charges
+/wbo
 
 # Local runtime/build cache
 .runtime_cache/
@@ -100,10 +113,47 @@ scripts/ccdc_exploit/
 *fragment_index*.sqlite
 *fragment_index*.db
 
-# xtb-Laufartefakte -- gehoeren nie ins Repo (Ship-Audit 18.08.2026)
-00_smiles/
-01_xtb_opt/
-02_xtb_thermo/
+# Pipeline step outputs (SMILES -> xtb opt -> thermo) dropped into the repo
+# root when tests run the workflow with a default cwd — never repo content.
+/00_smiles/
+/01_xtb_opt/
+/02_xtb_thermo/
+
+# The isomer-benchmark reference numbers are COMMITTED, not ignored.
+#
+# They were ignored for as long as producing them meant running all 43 pool
+# systems, which had not finished after two hours. A reference that exists
+# only on one developer's disk is not a reference, and while it was absent
+# the benchmark had nothing to compare against in CI and guarded nothing.
+# Measuring each system separately showed the cost was three that never
+# terminate plus a long tail; over the seven the nightly run now measures,
+# the file takes under five minutes to produce. So it exists, and it is
+# here. Re-baseline deliberately with UPDATE_BENCHMARK_BASELINE=1.
+
+# Coverage. The nightly CI job writes these, and so does anyone reproducing
+# it locally, straight into the repository root.
+.coverage
+.coverage.*
+coverage.xml
+/htmlcov/
+
+# ORCA scratch, dropped in the repository root when a test starts ORCA with
+# a default cwd. Root-anchored on purpose: the same suffixes are legitimate
+# under tests/fixtures/ as recorded output to parse, and those must stay
+# committable. A single .gbw is a megabyte, which is how this gets noticed.
+/*.gbw
+/*.densities
+/*.densitiesinfo
+/*.property.txt
+/*.bibtex
+/*.carthess
+/*.cpcm
+/*.cpcm_corr
+/*.engrad
+/*.hostnames
+/*.bas[0-9]*
+/*.tmp.[0-9]*
 
 # PRIVATE Infrastruktur -- die Datei sagt es selbst: never ship in a public release
+# (Ship-Audit 18.08.2026)
 RESTORE/

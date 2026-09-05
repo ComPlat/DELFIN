@@ -23,6 +23,15 @@ import pytest
 from delfin.agent.api_client import KitToolPermissions, _doc_executor
 
 
+@pytest.fixture(autouse=True)
+def _isolate_job_index(tmp_path, monkeypatch):
+    # bash_background persists a job-id -> workspace locator in ~/.delfin —
+    # keep test runs from leaving entries in the user's real index.
+    from delfin.agent import bash_jobs as BJ
+    monkeypatch.setattr(BJ, "_INDEX_PATH", tmp_path / "bash_jobs_index.json")
+    yield
+
+
 @pytest.fixture
 def workspace(tmp_path) -> Path:
     ws = tmp_path / "ws"

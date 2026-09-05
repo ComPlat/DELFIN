@@ -47,6 +47,19 @@ def test_dashboard_prompt_has_guide_orientation():
     assert "Current role: dashboard_agent" in p
 
 
+def test_dashboard_prompt_carries_turn_closing_contract():
+    """End-to-end: the composed dashboard prompt tells the guide to close a
+    satisfied turn with ACTION: /done instead of narrating or asking
+    follow-up questions the user never requested."""
+    p = _prompt("dashboard_agent", ["dashboard_agent"])
+    assert "ACTION: /done" in p
+    assert "A satisfied request is closed, not extended" in p
+    # The legitimate escape paths must survive alongside the contract:
+    # result-dependent chains and genuinely missing information.
+    assert "depends on the RESULT" in p
+    assert "ask ONE concrete question" in p
+
+
 def test_pipeline_role_keeps_scaffolding():
     # Regression guard: the else-branch is unchanged for TRUE pipeline roles.
     p = _prompt("builder_agent",

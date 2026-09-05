@@ -1,18 +1,39 @@
-"""Bug 065503: a plain "Erlauben (1×)" on an outside-workspace access grants
-the directory for THIS session (live perms, non-persisted) so the agent stops
-re-prompting per file. 'Dauerhaft' still persists; bash 1× grants nothing.
+"""Bug 065503: a plain "Erlauben (1×)" on an outside-workspace access stops
+the agent re-prompting for every file in that directory. 'Dauerhaft' still
+persists; bash 1× grants nothing.
+
+The session grant used to be made HERE, by handing the parent directory to
+the live permissions as a WRITABLE root — which is not what the dialog said
+and not what the click means. The read gate now makes the grant itself, and
+makes it read-only (see
+test_an_approved_read_does_not_grant_a_writable_directory.py), so what this
+file pins down is that the broker hands out no directory at all.
 """
 
 from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
 widgets = pytest.importorskip("ipywidgets")
 
 from delfin.agent.kit_confirm import KitConfirmBroker
+
+
+@pytest.fixture(autouse=True)
+def _isolated_attention_home(tmp_path_factory, monkeypatch):
+    """The confirm broker emits durable attention-inbox events on enqueue
+    (delfin.agent.attention); keep them — and desktop notifications — out
+    of the real user home when broker callbacks run in this suite. The
+    fake home is a SIBLING of the tests' tmp_path workspaces — the
+    workspace floor refuses any workspace that is an ancestor of $HOME."""
+    home = tmp_path_factory.mktemp("attn_home")
+    monkeypatch.setattr(Path, "home", lambda: home)
+    import delfin.agent.notify as _notify
+    monkeypatch.setattr(_notify, "send_notification", lambda *a, **k: True)
 
 
 def _broker_with_recorder():
@@ -50,7 +71,7 @@ def _buttons(broker, req):
     return approve, approve_persist, deny
 
 
-def test_plain_allow_grants_dir_for_session(tmp_path):
+def test_plain_allow_hands_out_no_directory(tmp_path):
     broker, calls = _broker_with_recorder()
     f = tmp_path / "data" / "mod.py"
     f.parent.mkdir(parents=True)
@@ -60,11 +81,11 @@ def test_plain_allow_grants_dir_for_session(tmp_path):
     approve.click()                            # "Erlauben (1×)"
     t.join(timeout=5)
 
-    parent = str(f.parent.resolve())
-    assert out["ok"] is True
-    # session grant fired with the parent dir, NOT a persisted extra_dir
-    assert ("extra_dir_session", parent) in calls
-    assert all(k != "extra_dir" for k, _ in calls)
+    assert out["ok"] is True                   # the read is approved
+    # ...and no workspace directory changes hands: neither the persisted
+    # kind nor the session one. The read gate opens the directory for
+    # READS on its own.
+    assert calls == []
 
 
 def test_dauerhaft_persists_and_does_not_double_grant(tmp_path):
@@ -93,6 +114,34 @@ def test_bash_allow_once_grants_no_directory(tmp_path):
     assert out["ok"] is True
     # A bash command grants no directory — only file-access requests do.
     assert all(k not in ("extra_dir_session", "extra_dir") for k, _ in calls)
+
+
+def test_the_dashboard_knows_no_session_directory_kind():
+    """The other end of the same wire. The broker stopped asking for a
+    session-only directory grant, but the dashboard's persist callback
+    still had a branch for it -- dead code that reads like a supported
+    path and invites the grant to be wired back up."""
+    import ast
+    import inspect
+    import pathlib
+
+    from delfin.dashboard import tab_agent
+
+    src = pathlib.Path(inspect.getfile(tab_agent)).read_text(encoding="utf-8")
+    assert "extra_dir_session" not in src
+
+    persist = [n for n in ast.walk(ast.parse(src))
+               if isinstance(n, ast.FunctionDef) and n.name == "_persist"]
+    assert len(persist) == 1
+    kinds = {c.value for n in ast.walk(persist[0])
+             if isinstance(n, ast.Compare)
+             for c in n.comparators
+             if isinstance(c, ast.Constant) and isinstance(c.value, str)}
+    kinds |= {e.value for n in ast.walk(persist[0])
+              if isinstance(n, ast.Compare)
+              for c in n.comparators if isinstance(c, ast.Tuple)
+              for e in c.elts if isinstance(e, ast.Constant)}
+    assert kinds == {"allow", "deny", "extra_dir"}
 
 
 def test_deny_grants_nothing(tmp_path):
@@ -150,17 +199,18 @@ def test_header_says_self_mod_only_for_protected_writes():
 
 
 # --- Adversarial-review fix: don't auto-grant sensitive system/secret dirs ---
+# The rule moved to the read gate together with the grant itself, so it is
+# tested where it now runs (api_client._is_grantable_read_dir).
 
 @pytest.mark.parametrize("path,grantable", [
     ("/tmp/project", True),
-    ("/home/u/ka_xn0397/Porpoise", True),
     ("/etc", False), ("/etc/hostname", False),   # system root + child
     ("/root", False), ("/", False), ("/usr/lib", False), ("/var/log", False),
     ("/home/u/.ssh", False),                     # secret dir
 ])
-def test_is_grantable_session_dir(path, grantable):
-    from delfin.agent.kit_confirm import _is_grantable_session_dir
-    assert _is_grantable_session_dir(path) is grantable
+def test_a_single_read_never_opens_a_sensitive_directory(path, grantable):
+    from delfin.agent.api_client import _is_grantable_read_dir
+    assert _is_grantable_read_dir(path) is grantable
 
 
 def test_approving_a_system_file_does_not_grant_its_dir(tmp_path):
@@ -172,4 +222,4 @@ def test_approving_a_system_file_does_not_grant_its_dir(tmp_path):
     approve.click()
     t.join(timeout=5)
     assert out["ok"] is True                         # the read is allowed
-    assert all(k != "extra_dir_session" for k, _ in calls)   # but no broad grant
+    assert calls == []                               # but no broad grant

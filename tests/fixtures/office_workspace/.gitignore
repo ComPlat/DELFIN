@@ -1,0 +1,16 @@
+# The workbooks are generated, not committed.
+#
+# They are the format the user actually works in, and every trap the
+# office module learned to detect lives in it — merged blocks, a filter
+# left on, a total row, a hand-typed money column, more rows than one
+# read shows. None of that can exist in a CSV.
+#
+# But a binary fixture in a repository is a file nobody can review in a
+# diff. So the content lives in delfin/agent/benchmark_fixtures.py as a
+# spec that reads as a table, and the runner materialises it before the
+# snapshot is taken. Rebuild by hand with:
+#
+#     python -c "from delfin.agent.benchmark_fixtures import \
+#         ensure_office_fixtures as f; print(f())"
+*.xlsx
+.fixture-stamp

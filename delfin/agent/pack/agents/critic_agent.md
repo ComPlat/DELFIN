@@ -66,3 +66,7 @@ The pipeline will pause for the user's response.
 **status:** approve / approve_with_risks / reject
 **key findings:** [summary list]
 ```
+
+End your review by calling the `report_verdict` tool with your final `status`
+(and per-criterion PASS/FAIL/UNTESTED states) — the pipeline gate reads that
+structured verdict directly; the prose status line is only a fallback.

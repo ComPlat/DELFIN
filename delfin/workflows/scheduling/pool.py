@@ -133,6 +133,12 @@ class DynamicCorePool:
         # Track accounting mismatch warnings to avoid spam: job_id -> last_warning_time
         self._accounting_warnings: Dict[str, float] = {}
 
+        # Track jobs whose request had to be clamped to the pool capacity, and
+        # jobs that kept waiting while the pool sat idle. Both are logged once
+        # per job_id so the scheduler loop does not spam the run log.
+        self._capacity_clamp_warnings: Dict[str, bool] = {}
+        self._idle_stall_warnings: Dict[str, bool] = {}
+
         # Track termination attempts: job_id -> {soft_kill_time, warned_before_hard_kill}
         self._termination_state: Dict[str, Dict] = {}
 
@@ -155,6 +161,64 @@ class DynamicCorePool:
             return value.lower() in ('yes', 'true', '1', 'on')
         return bool(value)
 
+    def _clamp_to_pool_capacity(self, job: PoolJob, context: str) -> None:
+        """Clamp a job's request to what this pool can ever provide.
+
+        A job asking for more memory or cores than the pool owns can never be
+        scheduled — not even into a completely empty pool — because
+        `_calculate_optimal_allocation` rejects it on every pass. It is then
+        re-queued forever and the run burns its entire walltime at 0% CPU
+        (job 4646143: PAL=40 × maxcore=4000 = 160000 MB against a 136000 MB
+        budget, 59h idle before the walltime kill).
+
+        Clamping keeps the workflow alive; the ERROR points at the upstream
+        config that should already have been derated by
+        GlobalJobManager._sanitize_resource_config. Note that `memory_mb` is
+        pool bookkeeping only — the ORCA `%maxcore` written into the input
+        comes from the sanitized config, so lowering it here cannot make a
+        job exceed its own memory declaration.
+        """
+        with self._lock:
+            reasons = []
+
+            if job.memory_mb > self.total_memory_mb:
+                reasons.append(
+                    f"memory {job.memory_mb} MB > pool budget {self.total_memory_mb} MB"
+                )
+                job.memory_mb = self.total_memory_mb
+
+            if job.cores_min > self.total_cores:
+                reasons.append(
+                    f"cores_min {job.cores_min} > pool size {self.total_cores} cores"
+                )
+                job.cores_min = self.total_cores
+
+            if not reasons:
+                return
+
+            # Restore cores_min <= cores_optimal <= cores_max after clamping.
+            job.cores_max = max(job.cores_min, min(job.cores_max, self.total_cores))
+            job.cores_optimal = max(job.cores_min, min(job.cores_optimal, job.cores_max))
+
+            if self._capacity_clamp_warnings.get(job.job_id):
+                return
+            self._capacity_clamp_warnings[job.job_id] = True
+            clamped_cores = job.cores_min
+            clamped_memory = job.memory_mb
+
+        logger.error(
+            "Job %s requests more than the pool can ever provide (%s) [%s]. "
+            "Clamped to %d cores / %d MB so the scheduler stays live — without "
+            "this the job would never start and the run would idle until "
+            "walltime. This indicates the resource config was not derated "
+            "before the pool was built.",
+            job.job_id,
+            "; ".join(reasons),
+            context,
+            clamped_cores,
+            clamped_memory,
+        )
+
     def submit_job(self, job: PoolJob) -> str:
         """Submit a job to the dynamic pool.
 
@@ -164,6 +228,10 @@ class DynamicCorePool:
         if self._shutdown:
             logger.warning(f"Pool is shutting down, cannot accept job {job.job_id}")
             raise RuntimeError("Cannot submit job: pool is shutting down")
+
+        # Single choke point for every job entering the pool: never queue a
+        # request that cannot fit, or it will be re-queued forever.
+        self._clamp_to_pool_capacity(job, "submit")
 
         # Auto-detect parent job if not explicitly set
         if job.parent_job_id is None:
@@ -396,6 +464,10 @@ class DynamicCorePool:
         For child jobs, tries to borrow cores from parent if pool resources are insufficient.
         """
         with self._lock:
+            # Catches jobs whose fields were mutated after submit_job (forced
+            # cores, nested OCCUPIER re-init, enforce_sequential_allocation).
+            self._clamp_to_pool_capacity(job, "allocation")
+
             available_cores = self.total_cores - self._allocated_cores
             available_memory = self.total_memory_mb - self._allocated_memory
 
@@ -1007,6 +1079,39 @@ class DynamicCorePool:
                     f"(priority={job.priority.name}). "
                     f"Boosting priority to prevent starvation."
                 )
+
+            # A long wait while nothing runs AND the job would still be
+            # rejected is a wedged pool, not ordinary queueing: either the
+            # request exceeds the totals, or the allocation accounting drifted
+            # and never released. Say so instead of leaving the run log silent
+            # until the walltime kill. Jobs that merely wait their turn — and
+            # jobs about to start on the next scheduler pass — stay quiet.
+            if wait_time > starvation_threshold and not self._running_jobs:
+                free_cores = self.total_cores - self._allocated_cores
+                free_memory = self.total_memory_mb - self._allocated_memory
+                fits = (
+                    free_cores >= job.cores_min
+                    and free_memory >= job.memory_mb
+                    and self.max_concurrent_jobs > 0
+                )
+                if not fits and not self._idle_stall_warnings.get(job.job_id):
+                    self._idle_stall_warnings[job.job_id] = True
+                    logger.error(
+                        "Job %s has waited %.1fh while no job is running, and "
+                        "still does not fit: needs %d cores / %d MB, free are "
+                        "%d cores / %d MB of %d / %d (max_concurrent_jobs=%d). "
+                        "Priority is not the bottleneck — the run cannot make "
+                        "progress in this state.",
+                        job.job_id,
+                        wait_time / 3600,
+                        job.cores_min,
+                        job.memory_mb,
+                        free_cores,
+                        free_memory,
+                        self.total_cores,
+                        self.total_memory_mb,
+                        self.max_concurrent_jobs,
+                    )
 
         if boosted_count > 0:
             logger.info(

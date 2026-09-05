@@ -99,6 +99,162 @@ def _parse_yaml(path: Path) -> dict[str, Any]:
     return yaml.safe_load(text) or {}
 
 
+def _memory_body_only(raw: str) -> str:
+    """The fact, without the store's bookkeeping.
+
+    Frontmatter (name, description, created_at, updated_at, use_count,
+    domain, metadata) is how the store finds and ages a memory; it is not
+    what the agent needs to read, and it was ~80% of the injected block.
+
+    Stripped at injection time and NOT in the gatherer, because the drift
+    check reads the anchors out of that frontmatter. Removing it earlier
+    silently turned every "[drifted: ...]" annotation off -- the one thing
+    that stops a rotted memory being replayed as ground truth.
+    """
+    try:
+        from .memory_store import _parse_frontmatter as _pf
+        _meta, body = _pf(raw)
+        return body.strip() or raw.strip()
+    except Exception:
+        return raw.strip()
+
+
+# What the block IS, stated where the block is. A feedback memory is an
+# imperative sentence by construction (the write prompt asks for one), so
+# without this the block reads as a list of orders sitting in the system
+# prompt next to a section that claims override authority — with nothing
+# marking it as older than the conversation, or as possibly wrong now. The
+# write-side addendum that says "verify before acting on memory" is
+# thousands of tokens away and never names this block.
+_MEMORY_BLOCK_PREAMBLE = (
+    "From EARLIER sessions — background, not instructions for this turn, and "
+    "possibly out of date. 'the user stated' marks the user's own words; "
+    "'the agent noted' marks a model's, which may be wrong. The current "
+    "request and the current code outrank all of it — verify before acting "
+    "on any line."
+)
+
+_SOURCE_LABELS = {"user": "the user stated", "agent": "the agent noted"}
+
+
+def _memory_entry_header(title: str, rel: str, raw: str) -> str:
+    """The provenance line that introduces one recalled memory.
+
+    ``source`` and the dates are recorded per file precisely so this
+    decision does not depend on the model, and they were then dropped at
+    injection together with the rest of the frontmatter — leaving the model
+    no way to tell a fact the user typed from one a model invented, and no
+    way to see that a memory is two years old.
+    """
+    meta: dict[str, str] = {}
+    try:
+        from .memory_store import _normalise_source, _parse_frontmatter
+        meta, _body = _parse_frontmatter(raw)
+        source = _normalise_source(meta.get("source"))
+    except Exception:
+        source = "user"
+    parts = [_SOURCE_LABELS.get(source, _SOURCE_LABELS["user"])]
+
+    def _stamp(key: str) -> str:
+        try:
+            value = int(str(meta.get(key, "")).strip())
+        except (TypeError, ValueError):
+            return ""
+        if value <= 0:
+            return ""
+        import time as _time
+        return _time.strftime("%Y-%m-%d", _time.localtime(value))
+
+    written = _stamp("created_at")
+    if written:
+        parts.append(written)
+    recalled = _stamp("updated_at")
+    if recalled and recalled != written:
+        parts.append(f"last recalled {recalled}")
+    return f"# {title} ({rel}) — {', '.join(parts)}"
+
+
+def _memory_entry_chunk(title: str, rel: str, raw: str) -> str:
+    """One recalled memory: provenance header, body, superseded text.
+
+    The superseded line is what a merge overwrote. Dedup replaces the
+    stored body in place, so without surfacing it the fact that a memory
+    used to say something else is only visible on disk.
+    """
+    chunk = f"{_memory_entry_header(title, rel, raw)}\n{_memory_body_only(raw)}"
+    try:
+        from .memory_store import _parse_frontmatter
+        meta, _ = _parse_frontmatter(raw)
+        superseded = (meta.get("superseded") or "").strip()
+    except Exception:
+        superseded = ""
+    if superseded:
+        chunk += f"\n[this replaced an earlier wording: {superseded}]"
+    return chunk
+
+
+# The index is a pointer list: one line per memory carrying the first ~160
+# characters of it. It used to be appended in full BEFORE any cap was
+# tested, so with the shipped prune caps (~650 files across the two stores,
+# tens of kB of index) the whole char budget went to pointers and NO body
+# was injected at all. Worse, the recall recorder only runs for injected
+# BODIES — so in that state every updated_at froze and the decay signal
+# died exactly when the store was largest. The index now competes for the
+# same budget as everything else, and never takes more than this share.
+_MEMORY_INDEX_BUDGET_SHARE = 0.35
+_MEMORY_INDEX_MIN_CHARS = 300
+
+_INDEX_POINTER_RE = re.compile(r"\[[^\]]+\]\(([^)]+\.md)\)")
+
+
+def _fit_memory_index(
+    index_chunk: str, ranked_rels: list[str], allowance: int,
+) -> str:
+    """Trim a MEMORY.md index chunk to ``allowance`` characters.
+
+    Under the allowance the chunk is returned untouched, so a small store
+    is injected exactly as before. Over it, the pointer lines are re-ordered
+    by the SAME relevance ranking already computed for their target files
+    (the ranking was applied only to the bodies) and cut off with a count of
+    what did not fit — a pointer the model cannot see is worth less than the
+    body of a memory that actually answers the question.
+    """
+    if allowance <= 0 or len(index_chunk) <= allowance:
+        return index_chunk
+    lines = index_chunk.splitlines()
+    label = lines[0] if lines else ""
+    pointers: dict[str, str] = {}
+    loose: list[str] = []
+    for line in lines[1:]:
+        match = _INDEX_POINTER_RE.search(line)
+        if match is not None:
+            pointers.setdefault(match.group(1).strip(), line)
+            continue
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            # A fact the user typed straight into MEMORY.md — it has no file
+            # of its own, so dropping it drops the fact itself.
+            loose.append(line)
+    order = [rel for rel in ranked_rels if rel in pointers]
+    order += [rel for rel in pointers if rel not in set(order)]
+
+    kept = [label]
+    used = len(label)
+    shown = 0
+    for line in [*loose, *(pointers[rel] for rel in order)]:
+        if used + 1 + len(line) > allowance:
+            break
+        kept.append(line)
+        used += 1 + len(line)
+        shown += 1
+    hidden = len(loose) + len(order) - shown
+    if hidden > 0:
+        kept.append(
+            f"... and {hidden} more memories, not listed here — ask about a "
+            "subject to have its memory recalled")
+    return "\n".join(kept)
+
+
 class PromptLoader:
     """Load and cache markdown prompt files from the DELFIN agent packs.
 
@@ -121,14 +277,45 @@ class PromptLoader:
             self.agent_lite_dir = self._MODULE_DIR / "pack_lite"
             self.repo_root = self._MODULE_DIR.parent.parent
         self._cache: dict[str, str] = {}
-        self._prompt_state: dict[tuple[str, str], dict[str, str]] = {}
+        self._prompt_state: dict[tuple[str, str], dict[str, Any]] = {}
+        # The directory the AGENT works in (permissions workspace), set by
+        # AgentEngine. repo_root locates the prompt pack and is the DELFIN
+        # source tree — orientation shown to the model must never use it as
+        # the working directory, or the model writes into DELFIN's own
+        # checkout instead of the user's project.
+        self.workspace_root: Path | None = None
+        # None = unknown (legacy callers keep the previous behaviour);
+        # False suppresses DELFIN's own product context, which neither
+        # applies to nor helps a session working in a user project.
+        self.is_delfin_workspace: bool | None = None
         self._context_tracker: Any = None  # set by AgentEngine
         self._progressive_disclosure: bool = False  # set by AgentEngine
+        # Backend statefulness (set by AgentEngine). Only the persistent CLI
+        # process keeps the first system prompt alive across turns, so stable
+        # sections may be injected once per session there. Stateless chat-API
+        # backends (OpenAI/KIT/Ollama, Anthropic API) rebuild every request
+        # from scratch — "inject once" would silently delete those sections
+        # from turn 2 onward, so the default is to re-inject on every build
+        # (identical bytes in a stable position are what prefix caching
+        # makes nearly free).
+        self.stateful_backend: bool = False
         # Track which sections were injected in the last build (for usage tracking)
         self._last_injected_sections: list[str] = []
+        # Per-session switch for the memory stores on disk (--bare). Read by
+        # _load_external_memory_context before it locates anything, so the
+        # stores are not opened rather than opened and dropped. It lives on
+        # THIS loader, the object that does the reading, and not in a module
+        # global: every engine builds its own loader, so a bare terminal run
+        # cannot switch memory off for a dashboard session sharing the
+        # process. Nothing is written to any settings file — a settings file
+        # belongs to every later session, and this bounds one.
+        self.skip_external_memory: bool = False
 
     def reset_session_prompt_state(self, session_key: str) -> None:
-        """Forget prompt-injection state for a session."""
+        """Forget prompt-injection state for a session.
+
+        Clears both the inject-once digests and the sticky lazy-module set
+        (they live in the same per-(session, role) state dict)."""
         if not session_key:
             return
         stale = [key for key in self._prompt_state if key[0] == session_key]
@@ -170,49 +357,45 @@ class PromptLoader:
         except Exception:
             return ""
 
-    def _load_external_memory_context(
+    def _gather_memory_entries(
         self,
-        max_chars: int = 6000,
-        memory_root: Path | None = None,
-    ) -> str:
-        """Load the user's per-project memory for the current repo.
+        base: Path,
+        task_text: str,
+        label: str = "MEMORY.md",
+        domain: str = "",
+    ) -> tuple[str, list[tuple[str, str, str]]]:
+        """Read one memory store (MEMORY.md index + referenced files).
 
-        Looks at ``~/.delfin/projects/<slug>/memory/MEMORY.md`` (DELFIN's own
-        namespace — migrated from the legacy ~/.claude location) and the
-        ``[Title](file.md)`` references inside it.  Returns a flat
-        markdown string suitable for prompt injection, capped at
-        ``max_chars`` so it can never blow up the context.
+        Returns ``(index_chunk, entries)`` where each entry is
+        ``(title, rel_filename, raw_file_text)`` in BM25-ranked order
+        against ``task_text`` (MEMORY.md order kept on ties / without task
+        tokens). An empty index_chunk means the store contributes nothing.
 
-        The repo is mapped to a slug by replacing ``/`` with ``-``.
-        Empty string if nothing is found.
-
-        Failures (no home dir, missing files, encoding issues) degrade
-        silently to an empty string — this is best-effort context.
+        With a non-empty ``domain`` the store is read through the domain
+        gate: memories written for a different kind of work are dropped
+        before anything about them enters the prompt — index line included,
+        because the pointer hook alone already names the subject. The gate
+        is deliberately not a ranking penalty; a high text similarity must
+        not be able to pull an out-of-domain memory back in.
         """
-        try:
-            home = Path.home()
-        except Exception:
-            return ""
-        repo_root = Path(self.repo_root).resolve()
-        if memory_root is not None:
-            base = memory_root
-        else:
-            # DELFIN's own per-project store under ~/.delfin (migrated from the
-            # legacy ~/.claude location by _delfin_memory_dir).
-            try:
-                from .memory_store import _delfin_memory_dir
-                base = _delfin_memory_dir(repo_root)
-            except Exception:
-                slug = "-" + str(repo_root).replace("/", "-").lstrip("-")
-                base = home / ".delfin" / "projects" / slug / "memory"
         index = base / "MEMORY.md"
         if not index.exists():
-            return ""
-
+            return "", []
         try:
             index_text = index.read_text(encoding="utf-8", errors="replace")
         except OSError:
-            return ""
+            return "", []
+
+        if domain:
+            try:
+                from .memory_store import filter_memory_index
+                index_text = filter_memory_index(index_text, base, domain)
+            except Exception:
+                # A gate that cannot run must not degrade to "recall
+                # everything" — that is the leak it exists to prevent.
+                return "", []
+            if not index_text.strip():
+                return "", []
 
         # Resolve [[name]] wiki-style cross-links to inline markdown links
         # so the agent sees concrete targets instead of opaque braces.
@@ -222,10 +405,10 @@ class PromptLoader:
         except Exception:
             pass
 
-        chunks: list[str] = [f"# MEMORY.md\n{index_text.strip()}"]
         # Pull in every "[Title](file.md)" target referenced from MEMORY.md
         import re as _re
         seen: set[str] = set()
+        entries: list[tuple[str, str, str]] = []  # (title, rel, body)
         for match in _re.finditer(r"\[([^\]]+)\]\(([^)]+\.md)\)", index_text):
             title, rel = match.group(1), match.group(2).strip()
             if rel in seen:
@@ -240,6 +423,16 @@ class PromptLoader:
                 body = target.read_text(encoding="utf-8", errors="replace").strip()
             except (OSError, ValueError):
                 continue
+            # Second, independent domain check on the file itself: the index
+            # is user-editable, so a hand-added pointer must not be able to
+            # smuggle a memory past the gate above.
+            if domain:
+                try:
+                    from .memory_store import domain_visible, memory_text_domain
+                    if not domain_visible(memory_text_domain(body), domain):
+                        continue
+                except Exception:
+                    continue
             # Also resolve wiki-links *inside* the body so the recursive
             # references the user wrote in memory_X.md don't stay as raw
             # "[[Y]]" tokens in the agent's prompt.
@@ -248,12 +441,274 @@ class PromptLoader:
                 body = _resolve_wl(body, base)
             except Exception:
                 pass
-            chunks.append(f"# {title} ({rel})\n{body}")
+            entries.append((title, rel, body))
+
+        # Spend the char budget on what THIS task needs: BM25-rank the
+        # entries against the task text. Stable sort keeps MEMORY.md order
+        # for ties and for tasks with no query tokens (all scores 0).
+        if task_text and len(entries) > 1:
+            try:
+                from .memory_store import bm25_scores
+                scores = bm25_scores(
+                    task_text, [f"{t}\n{b}" for t, _, b in entries])
+                order = sorted(range(len(entries)),
+                               key=lambda i: scores[i], reverse=True)
+                # Rank AND filter. Ranking alone only decides what gets
+                # dropped first when the budget runs out, so with a store
+                # under budget the injected block was byte-identical for
+                # every task -- the same memories recalled whether or not
+                # they had anything to do with the question. format_memory_
+                # context and recall_episodes both already gate on score > 0;
+                # this path is the one that did not.
+                #
+                # Only filter when the query actually matched something. A
+                # task whose words appear in no memory scores 0 across the
+                # board, and dropping everything there would be worse than
+                # falling back to MEMORY.md order.
+                if any(scores[i] > 0 for i in range(len(entries))):
+                    order = [i for i in order if scores[i] > 0]
+                entries = [entries[i] for i in order]
+            except Exception:
+                pass
+        return f"# {label}\n{index_text.strip()}", entries
+
+    def _load_external_memory_context(
+        self,
+        max_chars: int = 6000,
+        memory_root: Path | None = None,
+        task_text: str = "",
+        domain: str = "",
+    ) -> str:
+        """Load the user's memory for the current repo — global store first.
+
+        Merges TWO stores under one ``max_chars`` budget:
+        - ``~/.delfin/memory/`` — the user-wide global store (identity,
+          standing feedback). Injected first, with a guaranteed floor of
+          25% of the budget when it has entries, so a fat project store
+          can never starve it.
+        - ``~/.delfin/projects/<slug>/memory/MEMORY.md`` (DELFIN's own
+          namespace — migrated from the legacy ~/.claude location) and the
+          ``[Title](file.md)`` references inside it.
+
+        With a non-empty ``task_text`` the referenced files are BM25-ranked
+        against it (within each store) before the budget is spent, so the
+        most task-relevant memories are injected first instead of whatever
+        happens to sit at the top of MEMORY.md. The MEMORY.md pointer list
+        is ranked by the SAME scores and capped at a share of the budget —
+        it used to be appended whole, ahead of any cap, which starved the
+        bodies out of a large store entirely.
+
+        Every entry is introduced by the provenance the store records for
+        it (who wrote it, when), and the whole block by a preamble saying
+        it is background rather than instruction — both paid for out of
+        ``max_chars``.
+
+        Project entries get a recall-time provenance check: ``path[:line]``
+        references to files that vanished are annotated ``[stale: …]`` and
+        anchored references whose cited line moved away ``[drifted: …]``,
+        so a rotted memory is not replayed as authoritative ground truth.
+
+        A non-empty ``domain`` restricts BOTH stores to memories written in
+        that kind of work plus the explicitly neutral ones. The user-wide
+        store is the case that needs it most: it is read from every
+        workspace, so without the gate a preference recorded while working
+        on code would surface in an office turn.
+
+        An explicit ``memory_root`` (tests) reads that single store only.
+        Empty string if nothing is found. Failures (no home dir, missing
+        files, encoding issues) degrade silently to an empty string — this
+        is best-effort context.
+
+        A session that switched the memory stores off (``skip_external_
+        memory``) is answered here, in front of every path this method
+        would otherwise read, and gets the same empty string an absent
+        store gives — so no caller needs to learn about the switch.
+        """
+        if self.skip_external_memory:
+            return ""
+        try:
+            home = Path.home()
+        except Exception:
+            return ""
+        repo_root = Path(self.repo_root).resolve()
+        try:
+            from .memory_store import DOMAIN_OFFICE as _DOMAIN_OFFICE
+        except Exception:
+            _DOMAIN_OFFICE = "office"
+        if self.workspace_root:
+            # Memories belong to the folder the work happens in, and that
+            # folder is what the write path keys them by. repo_root locates
+            # the prompt PACK (the DELFIN source tree), so reading the
+            # project store from it looks in a folder the session never
+            # wrote to.
+            #
+            # This was fixed for office and left in place for everything
+            # else, which hid it: development happens inside the DELFIN
+            # checkout, where the two roots coincide and recall appears to
+            # work. Everywhere else the store was write-only -- of 184
+            # project directories on the author's machine, 180 had plans/
+            # and 4 had memory/.
+            try:
+                repo_root = Path(self.workspace_root).resolve()
+            except OSError:
+                pass
+        global_base: Path | None = None
+        if memory_root is not None:
+            base = memory_root
+        else:
+            # DELFIN's own per-project store under ~/.delfin (migrated from the
+            # legacy ~/.claude location by _delfin_memory_dir).
+            try:
+                from .memory_store import _delfin_memory_dir
+                base = _delfin_memory_dir(repo_root)
+            except Exception:
+                slug = "-" + str(repo_root).replace("/", "-").lstrip("-")
+                base = home / ".delfin" / "projects" / slug / "memory"
+            try:
+                from .memory_store import _delfin_global_memory_dir
+                global_base = _delfin_global_memory_dir()
+            except Exception:
+                global_base = None
+
+        proj_index, proj_entries = self._gather_memory_entries(
+            base, task_text, domain=domain)
+        glob_index: str = ""
+        glob_entries: list[tuple[str, str, str]] = []
+        if global_base is not None:
+            try:
+                glob_index, glob_entries = self._gather_memory_entries(
+                    global_base, task_text,
+                    label="GLOBAL MEMORY.md (applies across all projects)",
+                    domain=domain,
+                )
+            except Exception:
+                glob_index, glob_entries = "", []
+        if not proj_index and not glob_index:
+            return ""
+
+        # The qualifying preamble is part of the block, so it is paid for out
+        # of the same budget rather than added on top of it: ``max_chars``
+        # stays the ceiling for everything the block contributes.
+        max_chars = max(0, max_chars - len(_MEMORY_BLOCK_PREAMBLE) - 2)
+
+        # The index competes for the same characters as the bodies now. Each
+        # store's pointer list is capped at a share of the budget so a fat
+        # index can no longer spend it all before a single body is reached.
+        index_allowance = max(
+            _MEMORY_INDEX_MIN_CHARS,
+            int(max_chars * _MEMORY_INDEX_BUDGET_SHARE),
+        )
+        proj_index = _fit_memory_index(
+            proj_index, [rel for _t, rel, _b in proj_entries], index_allowance)
+        glob_index = _fit_memory_index(
+            glob_index, [rel for _t, rel, _b in glob_entries], index_allowance)
+
+        chunks: list[str] = []
+        used = 0
+        glob_injected: set[str] = set()
+        proj_injected: set[str] = set()
+        proj_rotted: set[str] = set()
+
+        if glob_index:
+            # Guaranteed floor for the global store; anything the project
+            # store won't need flows back to it.
+            if proj_index:
+                proj_need = len(proj_index) + sum(
+                    2 + len(_memory_entry_chunk(t, r, b))
+                    for t, r, b in proj_entries)
+                glob_cap = max(int(max_chars * 0.25), max_chars - proj_need)
+            else:
+                glob_cap = max_chars
+            chunks.append(glob_index)
+            used = len(glob_index)
+            for title, rel, body in glob_entries:
+                if used + 2 >= glob_cap:
+                    break
+                chunk = _memory_entry_chunk(title, rel, body)
+                chunks.append(chunk)
+                glob_injected.add(rel)
+                used += 2 + len(chunk)
+
+        if proj_index:
+            if chunks:
+                used += 2
+            chunks.append(proj_index)
+            used += len(proj_index)
+            for title, rel, body in proj_entries:
+                # The final string is prefix-truncated. Once even the
+                # separator would fall outside that prefix, later files
+                # cannot be recalled.
+                if used + 2 >= max_chars:
+                    break
+                # Recall-time provenance check: annotate refs to code that
+                # vanished (stale) or whose anchored line moved (drifted) so
+                # a rotted memory is not replayed as ground truth. Bounded:
+                # only entries that made it into the budget are probed.
+                try:
+                    from .memory_store import recall_reference_notes
+                    notes = recall_reference_notes(body, repo_root)
+                except Exception:
+                    notes = []
+                chunk = _memory_entry_chunk(title, rel, body)
+                if notes:
+                    chunk += "\n" + "\n".join(notes)
+                    proj_rotted.add(rel)
+                proj_injected.add(rel)
+                chunks.append(chunk)
+                used += 2 + len(chunk)
+
+        # Record recall usage per store so the LRU decay signal reflects what
+        # the agent SAW. Rotted entries are recorded as recalled TOO: they
+        # were injected, so they were seen, and withholding the bump made
+        # `updated_at` the punishment for citing code — which is what a
+        # memory written to correct another one does. Their `stale_hits`
+        # counter rises on top, and that counter alone is what makes the
+        # prune prefer evicting them. Best-effort, bounded by the recall size.
+        try:
+            from .memory_store import record_memory_recall, record_stale_hits
+            if proj_injected:
+                record_memory_recall(repo_root, proj_injected)
+            if proj_rotted:
+                record_stale_hits(repo_root, proj_rotted)
+            if glob_injected:
+                record_memory_recall(repo_root, glob_injected, scope="user")
+        except Exception:
+            pass
 
         joined = "\n\n".join(chunks).strip()
-        if len(joined) <= max_chars:
-            return joined
-        return joined[:max_chars] + f"\n\n... [truncated, {len(joined) - max_chars} chars omitted]"
+        if len(joined) > max_chars:
+            joined = (joined[:max_chars]
+                      + f"\n\n... [truncated, {len(joined) - max_chars} "
+                        "chars omitted]")
+        return f"{_MEMORY_BLOCK_PREAMBLE}\n\n{joined}"
+
+    def _load_episode_recall_context(self, task_text: str = "") -> str:
+        """Best-effort recall of similar PAST SESSIONS (episodic memory).
+
+        Bridges the write-only session store: every session save also
+        writes a compact episode record (episodes.save_episode), and this
+        loader BM25-matches those records against the current task so the
+        agent can answer "have I worked on something like this before?".
+        Gated by the ``agent.episodes.enabled`` setting (default on).
+        Empty string on any failure or when nothing matches — this is
+        best-effort context, same contract as the External Memory block.
+        """
+        try:
+            from delfin.user_settings import load_settings
+            cfg = ((load_settings() or {}).get("agent") or {}).get(
+                "episodes") or {}
+            if not bool(cfg.get("enabled", True)):
+                return ""
+        except Exception:
+            pass
+        try:
+            from .episodes import recall_episodes
+            # Same root as the memory store, and for the same reason: the
+            # writer keys episodes by the workspace.
+            return recall_episodes(
+                Path(self.workspace_root or self.repo_root), task_text)
+        except Exception:
+            return ""
 
     def _build_session_env_block(self) -> str:
         """Build a CLI-style environment summary for the system prompt.
@@ -262,10 +717,25 @@ class PromptLoader:
         cwd, git branch, short status, and recent commits.  Keeps the
         block under ~12 lines so it doesn't crowd the prompt.
 
+        Reports the AGENT's workspace — the directory its relative paths
+        resolve against — not the DELFIN source tree. Naming the source
+        tree here misdirects the model into building the user's project
+        inside DELFIN's own checkout (observed in the field).
+
         Failures (no git, detached HEAD, etc.) are degraded gracefully.
         """
-        repo = self.repo_root
+        repo = Path(self.workspace_root or self.repo_root)
         lines: list[str] = [f"cwd: {repo}"]
+        try:
+            if (self.workspace_root
+                    and Path(self.workspace_root).resolve()
+                    != Path(self.repo_root).resolve()):
+                lines.append(
+                    "note: this is your working directory — relative paths "
+                    "resolve here. The DELFIN source tree is a DIFFERENT "
+                    "directory; do not build the user's project inside it.")
+        except Exception:
+            pass
 
         def _git(*args: str) -> str:
             try:
@@ -412,10 +882,17 @@ class PromptLoader:
         state = self._prompt_state.setdefault((session_key, role_id), {})
         digest = str(hash(value))
         state_key = f"{key}_digest"
-        if state.get(state_key) == digest:
-            return False
+        seen_before = state.get(state_key) == digest
         state[state_key] = digest
-        return True
+        # Inject-once is only valid on a STATEFUL backend (persistent CLI
+        # process) where the earlier system prompt is still part of the
+        # conversation. Stateless chat-API backends rebuild every request
+        # from scratch — skipping an unchanged section there would make it
+        # vanish from turn 2 onward, so those always re-inject. The digest
+        # is still recorded either way to track content change.
+        if not self.stateful_backend:
+            return True
+        return not seen_before
 
     def _should_inject_profile_context(
         self,
@@ -541,39 +1018,126 @@ class PromptLoader:
     # ------- Progressive disclosure (lazy-load heavy prompt modules) ------
 
     # Each tuple lists case-insensitive substrings that, when present in the
-    # current task text, activate the corresponding module. Modules that
+    # conversation text, activate the corresponding module. Modules that
     # don't activate get stripped from the role prompt before injection,
     # saving 4-6k tokens on the typical solo-mode turn.
+    #
+    # The sets were originally the IDENTIFIERS the model emits — tool names,
+    # file extensions, config filenames. Nothing a user types looks like
+    # that, so the guidance was missing from exactly the turn that asks for
+    # it: "search the internet for the paper", "open the notebook and run
+    # the cell" and "install the dependencies" all activated nothing, and
+    # ~11 kB of the largest role prompt was unreachable in practice.
+    #
+    # Both languages the users write in are covered, for every module —
+    # this framework's users write German, and only the documents module
+    # had German terms. German phrasings are recognising what the USER
+    # writes, so they stay German (see tests/test_a_prompt_module_...).
+    # Substrings are kept long enough not to fire on an unrelated word
+    # ("formular", not "form", which lives inside "format"; "code-zelle",
+    # not "zelle", which is how a spreadsheet cell is named).
+    # No trigger may be a superstring of another in the same module:
+    # "tabellen" can never decide anything "tabelle" has not already
+    # decided, so it is dead weight that reads as coverage. Twenty of
+    # them were in here, and the test that measured the sets did not see
+    # it because it only ever asked whether a phrase activated. See
+    # tests/test_a_prompt_module_triggers_on_what_a_user_writes.py, which
+    # now requires every single trigger to be load-bearing for a witness
+    # line — deleting any one of them has to change an answer.
     _MODULE_TRIGGERS: dict[str, tuple[str, ...]] = {
         "chemistry": (
             "orca", "dft", "xtb", "calc/", "archive/", ".out",
             "frequencies", "orbital", "imag", "homo", "lumo",
-            "tddft", "uv/vis", "dipole", "scf", "mulliken", "loewdin",
+            "uv/vis", "dipole", "scf", "mulliken", "loewdin",
             "extract_", "search_calcs", "search_docs",
             "explain_delfin_feature", "thermochem", "vibrational",
             "molecule", "complex", "ligand", "ml potential",
+            # English, as a user phrases it
+            "geometry optimi", "transition state", "basis set",
+            "single point", "solvent", "energ", "quantum chem",
+            # German
+            "geometrie", "komplex", "molekül", "molekul",
+            "schwingung", "frequenzrechnung", "übergangszustand",
+            "basissatz", "funktional", "lösungsmittel", "rechenlauf",
+            "quantenchem", "verbindung", "struktur der", "bindungslänge",
+            "ladungsverteilung", "anregung",
         ),
         "web": (
             "http://", "https://", "web_search", "web_fetch",
-            "url", "duckduckgo", "google", "stackoverflow",
-            "documentation online", "look up online",
+            "duckduckgo", "google", "stackoverflow",
+            # English, as a user phrases it
+            "the internet", "the web", "online", "web search",
+            "search for the paper", "look it up", "release notes",
+            "browse to",
+            # German
+            "im internet", "internet nach", "im netz", "im web",
+            "webseite", "web-seite", "nachschlagen", "recherchier",
+            "veröffentlichung", "publikation",
         ),
         "notebook": (
-            ".ipynb", "notebook_read", "notebook_edit", "jupyter",
-            "notebook cell",
+            ".ipynb", "jupyter", "notebook", "kernel",
+            # German
+            "notizbuch", "code-zelle", "codezelle", "zellen ausführen",
+            "markdown-zelle",
+        ),
+        # Office documents. The triggers cover both languages the users
+        # write in — a task phrased "Tabelle auswerten" has to reach the
+        # same module as "evaluate the spreadsheet".
+        "documents": (
+            ".xlsx", ".xlsm", ".csv", ".pdf", ".docx",
+            "spreadsheet", "excel", "tabelle",
+            "formular", "pdf form", "form field", "acroform",
+            "invoice", "rechnung", "vorlage", "template", "serienbrief",
+            "anschreiben", "read_document", "edit_sheet",
+            "fill_pdf_form", "create_docx",
+            # English, as a user phrases it. "the table" and "a letter"
+            # carry their article: bare "table" lives inside "editable"
+            # and "acceptable", and bare "letter" inside "newsletter".
+            "word file", "word document", "fill in the", "fill out the",
+            "column", "worksheet", "the table", "a letter", "mail merge",
+            # German. The office nouns a user names instead of a file
+            # type — a bookkeeping task says "Belege" and "Buchungen"
+            # and never says "spreadsheet".
+            "arbeitsmappe", "word-datei", "pdf-datei", "csv-datei",
+            "ausfüllen", "spalte", "buchung", "beleg", "kostenstelle",
+            "umsatz", "journal", "kontoauszug", "quittung", "mahnung",
+            "gutschrift", "lieferschein", "zeile eintragen",
         ),
         "project_dev": (
             "pyproject.toml", "package.json", "cargo.toml", "go.mod",
             "venv", "pip install", "npm ", "pnpm", "yarn",
             " cargo ", "requirements.txt", "build script",
+            # English, as a user phrases it
+            "dependenc", "virtual environment", "install the",
+            "set up the project", "lockfile", "scaffold",
+            # German
+            "abhängigkeit", "abhaengigkeit", "installier",
+            "projekt aufsetzen", "einrichten", "paket", "umgebung",
         ),
         "kit": (
             "kit-toolbox", "kit_coding", "mcp__kit-coding__",
             "remember_permission", "extra_dir", "kit mode",
+            # English, as a user phrases it
+            "permanently allow", "allow the command", "allowed director",
+            "remember the permission", "sandbox", "auto-allow",
+            # German
+            "immer erlauben", "erlaubte verzeichnis",
+            "erlaubten verzeichnis", "berechtigung", "dauerhaft erlaub",
+            "freigabe", "freigeben", "zugriff erlauben",
+            "nicht mehr fragen",
         ),
         "bash_bg": (
             "bash_background", "long running", "long-running",
             "in the background", "background job", "watch progress",
+            # English, as a user phrases it
+            "long job", "takes a while", "while it runs", "kick it off",
+            "don't block",
+            # German. No "hintergrund laufen": every German sentence that
+            # says it says "im Hintergrund laufen", so it could never
+            # decide anything the shorter one had not already decided.
+            "im hintergrund", "läuft lange",
+            "laeuft lange", "lange laufen", "nebenher", "dauert lange",
+            "parallel", "stunden", "nebenbei", "weiterarbeiten",
         ),
     }
 
@@ -584,20 +1148,41 @@ class PromptLoader:
 
     def _detect_active_modules(
         self, task_text: str, mode_id: str = "",
+        session_key: str = "", role_id: str = "",
+        conversation_text: str = "",
     ) -> set[str]:
         """Pick which lazy modules survive stripping for this task.
 
         Solo + plan mode honour the trigger heuristic; other modes get
         everything (they're pipeline roles that usually need the full
         context anyway and are sensitive to subtle prompt changes).
+
+        Matching runs over ``conversation_text`` as well as the current
+        task line. A task line is one message; what the user is working on
+        was often said two messages ago ("die Tabelle" → "ja, mach das"),
+        and a resumed session starts on a follow-up with the subject only
+        in the history. Callers that hold the transcript pass it; those
+        that hold one line pass nothing and lose nothing.
+
+        With a session_key the set is additionally sticky and monotonic:
+        the UNION of every module that ever triggered in this session stays
+        active, so a trigger-free follow-up can't strip modules the model
+        is actively using mid-task — and the prompt prefix stops
+        oscillating (which would kill prefix caching). The union is cleared
+        by ``reset_session_prompt_state``.
         """
         if mode_id not in ("solo", "plan"):
             return set(self._MODULE_TRIGGERS)
-        s = (task_text or "").lower()
+        s = f"{conversation_text}\n{task_text or ''}".lower()
         active: set[str] = set()
         for name, triggers in self._MODULE_TRIGGERS.items():
             if any(t in s for t in triggers):
                 active.add(name)
+        if session_key:
+            state = self._prompt_state.setdefault((session_key, role_id), {})
+            sticky: set[str] = state.setdefault("active_modules", set())
+            sticky |= active
+            return set(sticky)
         return active
 
     # Models whose attention degrades quickly past 4 k of system prompt.
@@ -736,10 +1321,13 @@ class PromptLoader:
 
     def _strip_lazy_modules(
         self, text: str, *, task_text: str, mode_id: str,
-        model: str = "",
+        model: str = "", session_key: str = "", role_id: str = "",
+        conversation_text: str = "",
     ) -> str:
         """Drop ``<!-- module:X -->``-marked sections whose triggers
-        didn't match the current task text.
+        didn't match the current task text (nor any earlier task text in
+        this session — the active set is session-sticky, see
+        ``_detect_active_modules``).
 
         Each marker starts the module; the module extends until the next
         ``<!-- module:Y -->`` marker OR the next ``## `` H2 header (so
@@ -783,7 +1371,10 @@ class PromptLoader:
             or self._is_weak_model(model)
         )
 
-        active = self._detect_active_modules(task_text, mode_id)
+        active = self._detect_active_modules(
+            task_text, mode_id, session_key=session_key, role_id=role_id,
+            conversation_text=conversation_text,
+        )
         lines = text.splitlines(keepends=True)
         out: list[str] = []
         i = 0
@@ -891,7 +1482,16 @@ class PromptLoader:
 
     # -- system prompt composition -----------------------------------------
 
-    def build_system_prompt(
+    # Layer numbers used by ``compose_sections``. The composition order IS
+    # the layer order: every stable section must precede every volatile one,
+    # so an OpenAI-compatible endpoint (KIT/vLLM) can prefix-cache the whole
+    # stable head of the prompt across the turns of a session.
+    LAYER_STABLE = 0     # byte-identical for every turn of a session
+    LAYER_ROUTE = 1      # depends on mode/route position, not on turn state
+    LAYER_VOLATILE = 2   # changes per turn (git status, memory, live state, …)
+    LAYER_ANCHOR = 3     # static, but deliberately LAST (recency bias)
+
+    def compose_sections(
         self,
         role_id: str,
         mode_id: str,
@@ -905,57 +1505,58 @@ class PromptLoader:
         live_state: str = "",
         model: str = "",
         permission_mode: str = "",
-    ) -> str:
-        """Compose the full system prompt for a given role.
+        conversation_text: str = "",
+    ) -> list[PromptSection]:
+        """Compose the system prompt as an ORDERED list of labelled sections.
 
-        Parameters
-        ----------
-        role_id : str
-            Current agent role (e.g. 'builder_agent').
-        mode_id : str
-            Active mode (e.g. 'default').
-        mode_description : str
-            The mode's markdown description.
-        route : list[str], optional
-            Full route for the mode.
-        role_index : int
-            Current position in the route (0-based).
-        prior_outputs : dict[str, str], optional
-            Outputs from previous roles in this cycle.
-        memory_context : str
-            Persistent memory to inject.
-        task_text : str
-            Current task text used to select a relevant profile playbook.
+        ``build_system_prompt`` is a thin join over this list; the token
+        reporter and the section-order test read the same list, so what is
+        measured is exactly what is sent.
+
+        Ordering contract (see the LAYER_* constants): stable sections first,
+        then route-dependent ones, then per-turn volatile material, then the
+        attention anchor. Prefix caching on OpenAI-compatible endpoints keys
+        on the longest identical PREFIX of a request, so anything that
+        changes between turns must come after everything that does not.
         """
-        sections = []
+        sections: list[PromptSection] = []
         injected: list[str] = []  # track which sections we inject
 
-        # Honesty & grounding addendum (UNIVERSAL — all roles + all models):
-        # verify-before-claim, cite file:line / search_docs, prefer "I'm not
-        # sure — let me check" over a confident guess, never invent paths /
-        # keywords / APIs. Injected first so it stays in the prefix-cached part
-        # of the prompt; matters MOST for weak OSS models that hallucinate more.
-        try:
-            _honesty = self._cached_read(
-                self.agent_dir / "shared" / "honesty_addendum.md"
-            )
-            if _honesty:
-                sections.append(_honesty)
-                injected.append("honesty_addendum")
-        except Exception:
-            pass
-        # Memory: tell the agent to PROACTIVELY save durable facts via the
-        # `remember` tool (so it carries knowledge across sessions, like a human
-        # collaborator would), with the same typed/one-fact discipline.
-        try:
-            _memory = self._cached_read(
-                self.agent_dir / "shared" / "memory_addendum.md"
-            )
-            if _memory:
-                sections.append(_memory)
-                injected.append("memory_addendum")
-        except Exception:
-            pass
+        def add(name: str, layer: int, content: str) -> None:
+            if content:
+                sections.append(
+                    PromptSection(name=name, layer=layer, content=content))
+
+        def _shared(rel: str) -> str:
+            try:
+                return self._cached_read(self.agent_dir / "shared" / rel)
+            except Exception:
+                return ""
+
+        # ---- Layer 0: universal contracts -------------------------------
+        # Stable bytes, identical on every turn — they open the prompt so
+        # the cacheable prefix starts at byte 0.
+        #  * honesty: verify-before-claim, cite file:line / search_docs,
+        #    never invent paths / keywords / APIs.
+        #  * memory: proactively persist durable facts via ``remember``.
+        #  * git workflow: branch, commit, push before merge; worktrees for
+        #    parallel work; disjoint file ownership for subagents.
+        #  * scientific integrity: provenance for every claim, reproducible
+        #    methods, honest uncertainty, no selective reporting.
+        #  * refusal: destructive / out-of-scope requests are refused
+        #    explicitly and never routed around via another mode or tool.
+        for _name, _rel in (
+            ("honesty_addendum", "honesty_addendum.md"),
+            ("memory_addendum", "memory_addendum.md"),
+            ("git_workflow_addendum", "git_workflow_addendum.md"),
+            ("scientific_integrity_addendum",
+             "scientific_integrity_addendum.md"),
+            ("refusal_addendum", "refusal_addendum.md"),
+        ):
+            _text = _shared(_rel)
+            if _text:
+                add(_name, self.LAYER_STABLE, _text)
+                injected.append(_name)
 
         relevant_playbook = self._load_relevant_playbook_context(task_text)
         repo_map_ctx = self._load_repo_map_context(task_text)
@@ -971,149 +1572,191 @@ class PromptLoader:
 
         # Solo mode: role prompt + project context — behave like terminal CLI
         if role_id == "solo_agent":
-            # Layer 0: Role identity (always)
+            # ---- Layer 0 (continued): role identity + project context ----
             role_prompt = self.load_role_prompt(role_id)
             if role_prompt:
                 # Progressive disclosure: strip lazy-module sections (chemistry
                 # decision tree, web-research, notebook handling, KIT sandbox,
                 # etc.) when the task text doesn't signal that they're needed.
-                # Saves 4-6k tokens on the typical turn. Falls back to the
-                # full prompt for any task signal the regex can't classify.
+                # The active set is session-STICKY, so the stripped prompt is
+                # byte-stable across the turns of a session (a new trigger
+                # invalidates the cache once, then it is stable again).
                 try:
                     role_prompt = self._strip_lazy_modules(
                         role_prompt, task_text=task_text, mode_id=mode_id,
-                        model=model,
+                        model=model, session_key=session_key, role_id=role_id,
+                        conversation_text=conversation_text,
                     )
                 except Exception:
                     pass
-                sections.append(role_prompt)
+                add("role_prompt", self.LAYER_STABLE, role_prompt)
+
+            # No mode file is injected for the single-agent modes. The one
+            # that carried operating instructions rather than a dropdown
+            # description was Pipeline, and those instructions are a
+            # procedure -- so they live in the `pipeline-build` skill,
+            # where they cost tokens when they are used instead of on
+            # every turn of a mode someone happened to be in. solo.md and
+            # dashboard.md only tell a human what the entry means;
+            # injecting those would restate the role prompt.
 
             # Plan addendum: the agent must investigate first and finalise via
-            # ExitPlanMode. Triggered either by the legacy "plan" mode_id OR by
+            # exit_plan_mode. Triggered either by the legacy "plan" mode_id OR by
             # the "plan" permission profile — plan is a permission now, so
             # setting Perms = Plan (in any mode) gets the full plan experience.
-            # Mode-stable so it stays high in the prompt where the prefix
-            # cache benefits most.
+            # Session-stable, hence part of the cacheable head.
             if mode_id == "plan" or permission_mode == "plan":
-                plan_addendum = self._cached_read(
-                    self.agent_dir / "shared" / "plan_mode_addendum.md"
-                )
+                plan_addendum = _shared("plan_mode_addendum.md")
                 if plan_addendum:
-                    sections.append(plan_addendum)
+                    add("plan_mode_addendum", self.LAYER_STABLE, plan_addendum)
                     injected.append("plan_mode_addendum")
 
-            # Project context (delfin_context.md) is static — keep near the
-            # top so it caches with the role prompt. Env block + live state
-            # move to the END of this branch (just before the anchor) so
-            # their per-turn variability doesn't invalidate the cached
-            # prefix every send.
-            ctx_text = self._cached_read(
-                self.agent_dir / "shared" / "delfin_context.md"
-            )
-            if ctx_text:
-                sections.append(f"--- Project Context ---\n{ctx_text}")
+            if self.is_delfin_workspace is False:
+                # User project: DELFIN's own product context neither applies
+                # nor is free, and naming its internals invites drift into
+                # the source tree.
+                add("project_context", self.LAYER_STABLE,
+                    "--- Project Context ---\nDELFIN is the "
+                    "quantum-chemistry platform hosting this agent. You are "
+                    "NOT working on DELFIN's own source here — work in the "
+                    "user's workspace shown under Session Environment. "
+                    "DELFIN's chemistry tooling stays available through your "
+                    "tools.")
+            else:
+                ctx_text = _shared("delfin_context.md")
+                if ctx_text:
+                    add("project_context", self.LAYER_STABLE,
+                        f"--- Project Context ---\n{ctx_text}")
 
-            # Layer 1: Task-aware (briefing + decomposition for complex tasks)
+            if progressive:
+                # Static menu of on-demand sections — belongs in the head.
+                add("progressive_note", self.LAYER_STABLE,
+                    self._build_progressive_disclosure_note())
+
+            # ---- Layer 2: per-turn material ------------------------------
+            # Everything below is derived from the current task text, the
+            # working tree or the UI, so it changes between turns.
             if self._should_inject_briefing(role_id, session_key, briefing_ctx):
                 if not self._should_skip_section("briefing", role_id):
-                    sections.append(f"--- Task Briefing ---\n{briefing_ctx}")
+                    add("briefing", self.LAYER_VOLATILE,
+                        f"--- Task Briefing ---\n{briefing_ctx}")
                     injected.append("briefing")
             if decomposition_ctx:
-                sections.append(f"--- Task Decomposition ---\n{decomposition_ctx}")
+                add("decomposition", self.LAYER_VOLATILE,
+                    f"--- Task Decomposition ---\n{decomposition_ctx}")
             if chemistry_reminder:
-                sections.append(f"--- Chemistry Protocol ---\n{chemistry_reminder}")
+                add("chemistry_protocol", self.LAYER_VOLATILE,
+                    f"--- Chemistry Protocol ---\n{chemistry_reminder}")
 
-            # Layer 2: On-demand (repo_map, playbook, profile)
-            if progressive:
-                # Only inject if agent requests via NEED_CONTEXT
-                sections.append(self._build_progressive_disclosure_note())
-            else:
+            if not progressive:
                 if self._should_inject_repo_map(role_id, session_key, repo_map_ctx):
                     if not self._should_skip_section("repo_map", role_id):
-                        sections.append(f"--- Repo Map ---\n{repo_map_ctx}")
+                        add("repo_map", self.LAYER_VOLATILE,
+                            f"--- Repo Map ---\n{repo_map_ctx}")
                         injected.append("repo_map")
                 profile_ctx = self._load_profile_context(mode_id)
                 if self._should_inject_profile_context(role_id, session_key, profile_ctx):
                     if not self._should_skip_section("profile", role_id):
-                        sections.append(f"--- Provider Profile ---\n{profile_ctx}")
+                        add("profile", self.LAYER_VOLATILE,
+                            f"--- Provider Profile ---\n{profile_ctx}")
                         injected.append("profile")
                 if include_playbook:
                     if not self._should_skip_section("playbook", role_id):
-                        sections.append(f"--- Relevant Playbook ---\n{relevant_playbook}")
+                        add("playbook", self.LAYER_VOLATILE,
+                            f"--- Relevant Playbook ---\n{relevant_playbook}")
                         injected.append("playbook")
 
-            # Layer 3: Memory
             if self._should_inject_memory(role_id, session_key, memory_context):
                 if not self._should_skip_section("memory", role_id):
-                    sections.append(f"--- Project Memory ---\n{memory_context}")
+                    add("memory", self.LAYER_VOLATILE,
+                        f"--- Project Memory ---\n{memory_context}")
                     injected.append("memory")
 
-            # Layer 3b: External Memory — bridge to the user's
-            # ~/.claude/projects/<slug>/memory/MEMORY.md so dashboard
-            # solo mode inherits the same memories the terminal CLI uses.
+            # External memory — bridge to the user-level memory file, so
+            # dashboard solo mode inherits the same memories the terminal
+            # CLI uses. Read through the domain gate of the role that is
+            # about to run: administrative and technical work keep separate
+            # memories, and the separation has to hold before the text is
+            # composed, not after.
             try:
-                ext_mem = self._load_external_memory_context()
+                from .memory_store import domain_for_role
+                _mem_domain = domain_for_role(role_id, mode_id)
+            except Exception:
+                _mem_domain = ""
+            try:
+                ext_mem = self._load_external_memory_context(
+                    task_text=task_text, domain=_mem_domain)
             except Exception:
                 ext_mem = ""
             if ext_mem and not self._should_skip_section("memory", role_id):
-                sections.append(f"--- External Memory ---\n{ext_mem}")
+                add("external_memory", self.LAYER_VOLATILE,
+                    f"--- External Memory ---\n{ext_mem}")
                 injected.append("external_memory")
 
-            # ----- Variable tail (changes per turn — kept at the bottom
-            # so the cached prefix above doesn't get invalidated when
-            # git status / live state / context_status drift) -----
+            # Episodic recall — compact records of similar past sessions, so
+            # previously write-only session state becomes answerable.
+            episode_ctx = self._load_episode_recall_context(task_text)
+            if episode_ctx and not self._should_skip_section(
+                    "memory", role_id):
+                add("episodes", self.LAYER_VOLATILE,
+                    f"--- Past Sessions ---\n{episode_ctx}")
+                injected.append("episodes")
 
             # CLI-style environment block: cwd, branch, status, recent
-            # commits. Moved from the top of the prompt to the bottom
-            # because the git status line changes after every commit /
-            # uncommitted edit, which would otherwise break the prefix
-            # cache for everything that came after it.
+            # commits. Kept near the bottom because the git status line
+            # changes after every commit / uncommitted edit, which would
+            # otherwise break the prefix cache for everything after it.
             env_block = self._build_session_env_block()
-            if env_block:
-                sections.append(f"--- Session Environment ---\n{env_block}")
+            add("session_env", self.LAYER_VOLATILE,
+                f"--- Session Environment ---\n{env_block}" if env_block else "")
 
             # Live state (dashboard widgets, calc folder, jobs, the
             # context-status block) — highest per-turn churn, must be
             # last before the anchor.
             if live_state:
-                sections.append(f"--- Live state ---\n{live_state}")
+                add("live_state", self.LAYER_VOLATILE,
+                    f"--- Live state ---\n{live_state}")
                 injected.append("live_state")
 
-            # Attention anchor (always last — recency bias)
-            sections.append(self._build_critical_anchor(role_id))
+            add("critical_anchor", self.LAYER_ANCHOR,
+                self._build_critical_anchor(role_id))
 
             self._last_injected_sections = injected
-            return "\n\n".join(sections)
+            return sections
 
-        # 1. Role prompt (highest attention)
+        # ---- Layer 0: role identity -------------------------------------
         role_prompt = self.load_role_prompt(role_id)
-        if role_prompt:
-            sections.append(role_prompt)
+        add("role_prompt", self.LAYER_STABLE, role_prompt)
 
-        # 2. Shared DELFIN context (full only for roles that modify code
-        #    or make strategic decisions; brief summary for read-only roles)
+        # ---- Layer 0: shared DELFIN context ------------------------------
+        # Full only for roles that modify code or make strategic decisions;
+        # brief summary for read-only roles. The repo map and the relevant
+        # playbook are TASK-derived, so they are only *decided* here and
+        # emitted further down in the volatile tail.
         _FULL_CONTEXT_ROLES = {"session_manager", "chief_agent", "builder_agent", "critic_agent"}
         _PLAYBOOK_ROLES = {"builder_agent", "session_manager", "critic_agent"}
+        want_repo_map = False
+        want_playbook = False
         shared = self.load_shared_context()
         if shared:
             if role_id in _FULL_CONTEXT_ROLES:
-                sections.append(shared)
-                if self._should_inject_repo_map(role_id, session_key, repo_map_ctx):
-                    if not self._should_skip_section("repo_map", role_id):
-                        sections.append(f"--- Repo Map ---\n{repo_map_ctx}")
-                        injected.append("repo_map")
+                add("shared_context", self.LAYER_STABLE, shared)
+                want_repo_map = self._should_inject_repo_map(
+                    role_id, session_key, repo_map_ctx)
                 if role_id in _PLAYBOOK_ROLES:
-                    playbooks = self._cached_read(
-                        self.agent_dir / "shared" / "playbooks.md"
-                    )
-                    if playbooks:
-                        sections.append(playbooks)
-                    if include_playbook:
-                        if not self._should_skip_section("playbook", role_id):
-                            sections.append(
-                                f"--- Relevant Playbook ---\n{relevant_playbook}"
-                            )
-                            injected.append("playbook")
+                    add("playbooks", self.LAYER_STABLE, _shared("playbooks.md"))
+                    want_playbook = include_playbook
+            elif self.is_delfin_workspace is False:
+                # The user works in their OWN project — DELFIN's product
+                # context and module paths are neither applicable nor free.
+                # Naming DELFIN's internals here also invites the model to
+                # drift into the source tree.
+                add("shared_context", self.LAYER_STABLE,
+                    "DELFIN is the quantum-chemistry platform hosting this "
+                    "agent. You are NOT working on DELFIN's own source here "
+                    "— work in the user's workspace shown under Session "
+                    "Environment. DELFIN's chemistry tooling stays available "
+                    "through your tools.")
             else:
                 # Brief context: short intro only. Detailed guidance comes from
                 # the relevant playbook and repo map to keep prompts cheap.
@@ -1124,43 +1767,25 @@ class PromptLoader:
                     "Key paths: delfin/dashboard/, delfin/orca/, "
                     "delfin/slurm/, delfin/agent/, tests/)"
                 )
-                sections.append(brief)
-                if include_playbook:
-                    if not self._should_skip_section("playbook", role_id):
-                        sections.append(
-                            f"--- Relevant Playbook ---\n{relevant_playbook}"
-                        )
-                        injected.append("playbook")
-                if self._should_inject_repo_map(role_id, session_key, repo_map_ctx):
-                    if not self._should_skip_section("repo_map", role_id):
-                        sections.append(f"--- Repo Map ---\n{repo_map_ctx}")
-                        injected.append("repo_map")
+                add("shared_context", self.LAYER_STABLE, brief)
+                want_playbook = include_playbook
+                want_repo_map = self._should_inject_repo_map(
+                    role_id, session_key, repo_map_ctx)
 
-        # 3. Mode description (only for session_manager / chief who need it
-        #    for routing/strategic decisions; other roles get their
-        #    instructions from the role prompt itself)
+        # ---- Layer 0: mode description, routing rules, templates ---------
+        # Mode description only for session_manager / chief who need it for
+        # routing/strategic decisions; other roles get their instructions
+        # from the role prompt itself.
         _MODE_DESC_ROLES = {"session_manager", "chief_agent"}
-        if mode_description:
-            if role_id in _MODE_DESC_ROLES:
-                sections.append(mode_description)
-            # Others skip mode_description — their role prompt is sufficient
+        if mode_description and role_id in _MODE_DESC_ROLES:
+            add("mode_description", self.LAYER_STABLE, mode_description)
 
-        # 4. Routing rules (only for session_manager)
         if role_id == "session_manager":
-            routing = self.load_routing_rules()
-            if routing:
-                sections.append(routing)
+            add("routing_rules", self.LAYER_STABLE, self.load_routing_rules())
+            add("input_template", self.LAYER_STABLE, self.load_input_template())
+            add("verdict_template", self.LAYER_STABLE, self.load_verdict_template())
 
-        # 5. Input/output templates (only for session_manager — others don't need them)
-        if role_id == "session_manager":
-            input_tmpl = self.load_input_template()
-            if input_tmpl:
-                sections.append(input_tmpl)
-            verdict_tmpl = self.load_verdict_template()
-            if verdict_tmpl:
-                sections.append(verdict_tmpl)
-
-        # 6. Cycle context + efficiency rules + collaboration protocol
+        # ---- Layer 1: cycle context + protocol ---------------------------
         if route:
             total = len(route)
             header = (
@@ -1175,11 +1800,10 @@ class PromptLoader:
             # a link in the multi-agent CODING pipeline. Emitting the pipeline
             # collaboration protocol, the git/pytest efficiency rules, a
             # "read DELFIN source anywhere" tool block, or the structured-output
-            # self-reflection here contaminated it into acting like a coder: it
-            # read the whole delfin/manta source tree and self-started a task
-            # (bug 20260708-092217). Its scope, tools and ACTION: mechanics
-            # already live in dashboard_agent.md — keep only a short, CONSISTENT
-            # orientation here so nothing contradicts that role prompt.
+            # self-reflection here contaminated it into acting like a coder. Its
+            # scope, tools and ACTION: mechanics already live in
+            # dashboard_agent.md — keep only a short, CONSISTENT orientation
+            # here so nothing contradicts that role prompt.
             if role_id == "dashboard_agent":
                 cycle_info = header + (
                     "You are a single-step, conversational guide talking "
@@ -1191,7 +1815,7 @@ class PromptLoader:
                     "computations. Always ask before any destructive action "
                     "(submit / recalc / cancel)."
                 )
-                sections.append(cycle_info)
+                add("cycle_info", self.LAYER_ROUTE, cycle_info)
             else:
                 # TRUE multi-agent PIPELINE roles (builder / critic / test /
                 # session_manager / …). NOTE: solo_agent never reaches here — it
@@ -1280,28 +1904,41 @@ class PromptLoader:
                     f"If anything is missing, fix it before submitting."
                 )
 
-                sections.append(cycle_info)
+                add("cycle_info", self.LAYER_ROUTE, cycle_info)
 
-        # 6b. Pre-task briefing (outcome-based insights)
+        # ---- Layer 2: per-turn material ----------------------------------
+        if want_repo_map and not self._should_skip_section("repo_map", role_id):
+            add("repo_map", self.LAYER_VOLATILE,
+                f"--- Repo Map ---\n{repo_map_ctx}")
+            injected.append("repo_map")
+        if want_playbook and not self._should_skip_section("playbook", role_id):
+            add("playbook", self.LAYER_VOLATILE,
+                f"--- Relevant Playbook ---\n{relevant_playbook}")
+            injected.append("playbook")
+
+        # Pre-task briefing (outcome-based insights)
         if self._should_inject_briefing(role_id, session_key, briefing_ctx):
             if not self._should_skip_section("briefing", role_id):
-                sections.append(f"--- Task Briefing ---\n{briefing_ctx}")
+                add("briefing", self.LAYER_VOLATILE,
+                    f"--- Task Briefing ---\n{briefing_ctx}")
                 injected.append("briefing")
 
-        # 6c. Goal decomposition for complex tasks (Feature 3)
+        # Goal decomposition for complex tasks
         if decomposition_ctx and role_id in (
             "session_manager", "builder_agent", "solo_agent",
         ):
-            sections.append(f"--- Task Decomposition ---\n{decomposition_ctx}")
+            add("decomposition", self.LAYER_VOLATILE,
+                f"--- Task Decomposition ---\n{decomposition_ctx}")
 
-        # 6d. Chemistry doc-first protocol (Feature 6)
+        # Chemistry doc-first protocol
         if chemistry_reminder and role_id in (
             "solo_agent", "research_agent", "builder_agent", "dashboard_agent",
         ):
-            sections.append(f"--- Chemistry Protocol ---\n{chemistry_reminder}")
+            add("chemistry_protocol", self.LAYER_VOLATILE,
+                f"--- Chemistry Protocol ---\n{chemistry_reminder}")
 
-        # 7. Prior role outputs (role-aware truncation)
-        # SM plan is critical for Builder/Test — keep most of it
+        # Prior role outputs (role-aware truncation). The SM plan is critical
+        # for Builder/Test — keep most of it.
         _PRIOR_LIMITS = {
             "session_manager": 6000,
             "critic_agent": 4000,
@@ -1318,44 +1955,241 @@ class PromptLoader:
                 if len(output) > limit:
                     truncated += "\n... [truncated]"
                 parts.append(f"## {rid}\n{truncated}")
-            sections.append("\n\n".join(parts))
+            add("prior_outputs", self.LAYER_VOLATILE, "\n\n".join(parts))
             injected.append("prior_outputs")
 
-        # 8. Memory context
+        # Memory context
         if self._should_inject_memory(role_id, session_key, memory_context):
             if not self._should_skip_section("memory", role_id):
-                sections.append(f"--- Project Memory ---\n{memory_context}")
+                add("memory", self.LAYER_VOLATILE,
+                    f"--- Project Memory ---\n{memory_context}")
                 injected.append("memory")
 
-        # 8b. External Memory bridge — same source the terminal CLI reads
-        # (~/.claude/projects/<slug>/memory/MEMORY.md). Solo gets the full
-        # 6 KB cap; dashboard gets a tighter 2 KB cap because its turns are
-        # short and we don't want to drown a haiku-class model in memos.
+        # External memory bridge — same source the terminal CLI reads. Solo
+        # gets the full 6 KB cap; dashboard gets a tighter 2 KB cap because
+        # its turns are short and a guide model should not drown in memos.
         if role_id == "dashboard_agent":
             try:
-                ext_mem = self._load_external_memory_context(max_chars=2000)
+                from .memory_store import domain_for_role
+                _mem_domain = domain_for_role(role_id, mode_id)
+            except Exception:
+                _mem_domain = ""
+            try:
+                ext_mem = self._load_external_memory_context(
+                    max_chars=2000, task_text=task_text, domain=_mem_domain)
             except Exception:
                 ext_mem = ""
             if ext_mem and not self._should_skip_section("memory", role_id):
-                sections.append(f"--- External Memory ---\n{ext_mem}")
+                add("external_memory", self.LAYER_VOLATILE,
+                    f"--- External Memory ---\n{ext_mem}")
                 injected.append("external_memory")
 
-        # 9. Provider profile (success rates, failures, playbooks)
+            # Episodic recall — same bridge as solo, small by construction
+            # (<=2 entries / 1200 chars).
+            episode_ctx = self._load_episode_recall_context(task_text)
+            if episode_ctx and not self._should_skip_section(
+                    "memory", role_id):
+                add("episodes", self.LAYER_VOLATILE,
+                    f"--- Past Sessions ---\n{episode_ctx}")
+                injected.append("episodes")
+
+        # Office recall — the conventions of the folder being worked in:
+        # which template belongs to which list, the mapping that was
+        # confirmed, the naming pattern that was approved, the key column
+        # and how its values are written. Without this the same questions
+        # get asked again every session.
+        #
+        # Deliberately narrower than the other roles: the domain gate is
+        # passed explicitly, and episodic recall is left out because past
+        # SESSIONS are recorded against the source tree and would carry
+        # technical work into an administrative turn.
+        if role_id == "office_agent":
+            try:
+                from .memory_store import domain_for_role
+                _office_domain = domain_for_role(role_id, mode_id)
+            except Exception:
+                _office_domain = "office"
+            try:
+                ext_mem = self._load_external_memory_context(
+                    max_chars=2000, task_text=task_text,
+                    domain=_office_domain)
+            except Exception:
+                ext_mem = ""
+            if ext_mem and not self._should_skip_section("memory", role_id):
+                add("external_memory", self.LAYER_VOLATILE,
+                    f"--- Folder Conventions (remembered) ---\n{ext_mem}")
+                injected.append("external_memory")
+
+        # Provider profile (success rates, failures, playbooks)
         profile_ctx = self._load_profile_context(mode_id)
         if self._should_inject_profile_context(role_id, session_key, profile_ctx):
             if not self._should_skip_section("profile", role_id):
-                sections.append(f"--- Provider Profile ---\n{profile_ctx}")
+                add("profile", self.LAYER_VOLATILE,
+                    f"--- Provider Profile ---\n{profile_ctx}")
                 injected.append("profile")
 
-        # 9b. Live state (per-turn UI snapshot, e.g. Dashboard widgets +
-        # active calc folder). Placed before the attention anchor so it's
-        # the last domain content the model sees.
+        # Live state (per-turn UI snapshot, e.g. dashboard widgets + active
+        # calc folder). Last domain content before the anchor.
         if live_state:
-            sections.append(f"--- Live state ---\n{live_state}")
+            add("live_state", self.LAYER_VOLATILE,
+                f"--- Live state ---\n{live_state}")
             injected.append("live_state")
 
-        # 10. Attention anchor (always last — recency bias)
-        sections.append(self._build_critical_anchor(role_id))
+        # ---- Layer 3: attention anchor (always last — recency bias) ------
+        add("critical_anchor", self.LAYER_ANCHOR,
+            self._build_critical_anchor(role_id))
 
         self._last_injected_sections = injected
-        return "\n\n".join(sections)
+        return sections
+
+    def build_system_prompt(
+        self,
+        role_id: str,
+        mode_id: str,
+        mode_description: str = "",
+        route: list[str] | None = None,
+        role_index: int = 0,
+        prior_outputs: dict[str, str] | None = None,
+        memory_context: str = "",
+        task_text: str = "",
+        session_key: str = "",
+        live_state: str = "",
+        model: str = "",
+        permission_mode: str = "",
+        conversation_text: str = "",
+    ) -> str:
+        """Compose the full system prompt for a given role.
+
+        Thin join over :meth:`compose_sections` — see there for the section
+        order and the prefix-cache contract.
+
+        Parameters
+        ----------
+        role_id : str
+            Current agent role (e.g. 'builder_agent').
+        mode_id : str
+            Active mode (e.g. 'default').
+        mode_description : str
+            The mode's markdown description.
+        route : list[str], optional
+            Full route for the mode.
+        role_index : int
+            Current position in the route (0-based).
+        prior_outputs : dict[str, str], optional
+            Outputs from previous roles in this cycle.
+        memory_context : str
+            Persistent memory to inject.
+        task_text : str
+            Current task text used to select a relevant profile playbook.
+        conversation_text : str
+            Recent transcript text, matched alongside ``task_text`` when
+            deciding which lazy prompt modules this turn needs. Optional:
+            callers that only hold the current line pass nothing.
+        """
+        sections = self.compose_sections(
+            role_id=role_id,
+            mode_id=mode_id,
+            mode_description=mode_description,
+            route=route,
+            role_index=role_index,
+            prior_outputs=prior_outputs,
+            memory_context=memory_context,
+            task_text=task_text,
+            session_key=session_key,
+            live_state=live_state,
+            model=model,
+            permission_mode=permission_mode,
+            conversation_text=conversation_text,
+        )
+        return "\n\n".join(s.content for s in sections)
+
+    # -- prompt size reporting ---------------------------------------------
+
+    def prompt_size_report(self, **kwargs: Any) -> dict[str, Any]:
+        """Break the composed system prompt down per section.
+
+        Accepts the same keyword arguments as :meth:`build_system_prompt`
+        and returns a dict with the per-section chars / estimated tokens
+        plus stable-vs-volatile totals. ``chars // 4`` is the house token
+        estimate (see ``tests/test_prompt_token_budget.py``).
+
+        The stable total is what an OpenAI-compatible endpoint can serve
+        from its prefix cache once the session is warm; the volatile total
+        is what every turn pays for in full.
+        """
+        sections = self.compose_sections(**kwargs)
+        joined_overhead = 2 * max(0, len(sections) - 1)  # the "\n\n" glue
+        rows = [
+            {
+                "name": s.name,
+                "layer": s.layer,
+                "chars": s.char_count,
+                "tokens": estimate_tokens(s.content),
+                "volatile": s.layer >= self.LAYER_VOLATILE,
+            }
+            for s in sections
+        ]
+        total_chars = sum(r["chars"] for r in rows) + joined_overhead
+        stable_chars = sum(
+            r["chars"] for r in rows if r["layer"] < self.LAYER_VOLATILE)
+        return {
+            "role_id": kwargs.get("role_id", ""),
+            "mode_id": kwargs.get("mode_id", ""),
+            "sections": rows,
+            "total_chars": total_chars,
+            "total_tokens": (total_chars + 3) // 4,
+            "stable_chars": stable_chars,
+            "stable_tokens": (stable_chars + 3) // 4,
+            "volatile_chars": total_chars - stable_chars,
+            "volatile_tokens": (total_chars - stable_chars + 3) // 4,
+        }
+
+    def stable_prefix(self, **kwargs: Any) -> str:
+        """The leading, turn-invariant part of the composed prompt.
+
+        Two builds within one session must agree on this prefix byte for
+        byte — that is exactly the span an OpenAI-compatible endpoint can
+        reuse from its prefix cache.
+        """
+        sections = self.compose_sections(**kwargs)
+        stable = [s.content for s in sections if s.layer < self.LAYER_VOLATILE]
+        return "\n\n".join(stable)
+
+
+def estimate_tokens(text: str) -> int:
+    """House token estimate: ``chars // 4`` rounded up.
+
+    Deliberately identical to the estimator in the prompt budget tests so
+    reported numbers and enforced budgets are the same currency.
+    """
+    return (len(text) + 3) // 4
+
+
+def format_prompt_size_report(report: dict[str, Any]) -> str:
+    """Render :meth:`PromptLoader.prompt_size_report` as a text table."""
+    lines = [
+        f"role={report.get('role_id', '?')} "
+        f"mode={report.get('mode_id', '?')}",
+        f"{'section':<30} {'layer':>5} {'chars':>8} {'tokens':>8}  kind",
+        "-" * 68,
+    ]
+    for row in report["sections"]:
+        kind = "volatile" if row["volatile"] else "stable"
+        lines.append(
+            f"{row['name']:<30} {row['layer']:>5} {row['chars']:>8} "
+            f"{row['tokens']:>8}  {kind}"
+        )
+    lines.append("-" * 68)
+    lines.append(
+        f"{'TOTAL':<30} {'':>5} {report['total_chars']:>8} "
+        f"{report['total_tokens']:>8}"
+    )
+    lines.append(
+        f"{'  cacheable prefix (stable)':<30} {'':>5} "
+        f"{report['stable_chars']:>8} {report['stable_tokens']:>8}"
+    )
+    lines.append(
+        f"{'  per-turn (volatile)':<30} {'':>5} "
+        f"{report['volatile_chars']:>8} {report['volatile_tokens']:>8}"
+    )
+    return "\n".join(lines)

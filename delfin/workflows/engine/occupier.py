@@ -8,7 +8,7 @@ import threading
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Set
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional, Set
 
 from delfin.common.logging import get_logger
 from delfin.copy_helpers import read_occupier_file, copy_preferred_files_with_names
@@ -32,6 +32,13 @@ from delfin.workflows.engine.classic import (
     determine_effective_slots,
     normalize_parallel_token,
 )
+from delfin.common.control_validator import resolve_occupier_compare
+
+# scheduler.py imports from this module, so GlobalOrcaScheduler cannot be
+# imported at runtime without a cycle — hence the quoted annotations. This
+# makes the name resolvable for type checkers and linters without creating one.
+if TYPE_CHECKING:
+    from delfin.workflows.engine.scheduler import GlobalOrcaScheduler
 
 logger = get_logger(__name__)
 
@@ -189,9 +196,9 @@ def run_occupier_orca_jobs(
 ) -> bool:
     """Execute OCCUPIER post-processing ORCA jobs with optional parallelization."""
 
-    frequency_mode = str(context.config.get('frequency_calculation_OCCUPIER', 'no')).lower()
+    frequency_mode = "yes" if resolve_occupier_compare(context.config) == "G" else "no"
     if frequency_mode == 'yes':
-        logger.info("frequency_calculation_OCCUPIER=yes → skipping ORCA job scheduling")
+        logger.info("OCCUPIER_compare=G → skipping ORCA job scheduling")
         return True
 
     if jobs is None:
@@ -1836,7 +1843,7 @@ def build_flat_occupier_fob_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
         len(reduction_steps),
     )
     config["_occ_initial_completion_job"] = stage_completion.get("initial")
-    freq_mode = str(config.get("frequency_calculation_OCCUPIER", "no")).strip().lower()
+    freq_mode = "yes" if resolve_occupier_compare(config) == "G" else "no"
     if freq_mode == "yes":
         config["_occ_initial_energy_job"] = stage_completion.get("initial")
     else:
@@ -1861,7 +1868,6 @@ def build_occupier_process_jobs(config: Dict[str, Any]) -> List[WorkflowJob]:
     """
     from delfin.copy_helpers import prepare_occ_folder_only_setup
     from delfin.thread_safe_helpers import prepare_occ_folder_2_only_setup
-    from delfin.occupier import run_OCCUPIER
     import os
 
     jobs: List[WorkflowJob] = []
@@ -2122,10 +2128,10 @@ def build_combined_occupier_and_postprocessing_jobs(config: Dict[str, Any]) -> L
 
     # Check if frequency calculation is done within OCCUPIER
     # If yes, skip post-processing ORCA jobs (they're already done inside OCCUPIER)
-    frequency_mode = str(config.get('frequency_calculation_OCCUPIER', 'no')).lower()
+    frequency_mode = "yes" if resolve_occupier_compare(config) == "G" else "no"
     if frequency_mode == 'yes':
         logger.info(
-            "[combined] frequency_calculation_OCCUPIER=yes → post-processing is done "
+            "[combined] OCCUPIER_compare=G → post-processing is done "
             "within OCCUPIER processes; returning OCCUPIER jobs only"
         )
         return occupier_process_jobs

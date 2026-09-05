@@ -31,11 +31,19 @@ _NEW_SKILLS = (
 
 @pytest.mark.parametrize("name", _NEW_SKILLS)
 def test_skill_exists_and_resolves(name):
+    from delfin.agent.skills import get_skill
+
     p = sr.find_skill_file(name)
     assert p is not None and p.is_file()
-    body = p.read_text(encoding="utf-8")
-    assert body.startswith("# ")                 # title heading
-    assert len(body) > 400                        # substantial protocol
+    # Read the PARSED skill, not the raw file: skills now carry a
+    # ``domains:`` front-matter block that decides which sessions are
+    # offered them, so the raw text no longer starts with the heading.
+    # The guarantee was always about the loaded skill anyway.
+    sk = get_skill(name)
+    assert sk is not None
+    assert sk.body.startswith("# ")               # title heading
+    assert len(sk.body) > 400                     # substantial protocol
+    assert sk.domains, f"{name}: no domain, so every session is offered it"
 
 
 @pytest.mark.parametrize("name", _NEW_SKILLS)

@@ -29,14 +29,18 @@ def agent_tree(tmp_path):
     lite_dir = tmp_path / "pack_lite"
     modes = lite_dir / "modes"
     modes.mkdir(parents=True)
-    (modes / "quick.md").write_text("# quick mode")
+    (modes / "solo.md").write_text("# solo mode")
 
+        # The fixture's mode is named `solo` because that is where every
+        # retired name now migrates to. It keeps a THREE-role route on
+        # purpose: the engine's role-advancement machinery is what these
+        # tests exercise, and a single-role route would stop testing it.
     manifest = textwrap.dedent("""\
         pack_name: DELFIN_AGENT_LITE
         version: 1
         modes:
-          - id: quick
-            file: modes/quick.md
+          - id: solo
+            file: modes/solo.md
             route:
               - session_manager
               - builder_agent

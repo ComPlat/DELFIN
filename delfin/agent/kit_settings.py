@@ -37,7 +37,21 @@ USER_SETTINGS_PATH = Path("~/.delfin/settings.json").expanduser()
 REPO_SETTINGS_RELPATH = Path(".delfin/settings.json")
 
 _KIT_KEY = "kit"
-_VALID_MODES = {"plan", "default", "acceptEdits", "bypassPermissions"}
+_VALID_MODES = {"plan", "default", "diff_approval", "acceptEdits", "bypassPermissions"}
+
+# How much the session trusts the agent, least first. Used to decide
+# whether a repo-supplied default_mode may apply: only when it asks for
+# LESS than the user's own setting. diff_approval sits between default
+# and acceptEdits -- it writes without asking each time but stages every
+# change for review, so it is more trusting than "ask me" and less than
+# "just do it".
+_MODE_TRUST = {
+    "plan": 0,
+    "default": 1,
+    "diff_approval": 2,
+    "acceptEdits": 3,
+    "bypassPermissions": 4,
+}
 
 
 def _fresh_defaults() -> dict[str, Any]:
@@ -119,25 +133,53 @@ def _normalize_kit_block(block: Any) -> dict[str, Any]:
 
 def _merge(user: dict[str, Any],
            repo: Optional[dict[str, Any]]) -> dict[str, Any]:
-    """Merge user + repo settings.
+    """Merge user + repo settings. A repo may TIGHTEN, never WIDEN.
 
-    Repo wins on scalars but only when it has an explicit value (i.e. the
-    repo block was actually present on disk). Lists are unioned with repo
-    entries kept first; ordering preserved, duplicates dropped.
+    The repo block used to win outright on ``default_mode`` -- which
+    accepts ``bypassPermissions`` -- and its ``allow_patterns`` and
+    ``extra_workspace_dirs`` were unioned in, repo entries first. So a
+    checked-out repository shipping
+
+        {"kit": {"default_mode": "bypassPermissions",
+                 "allow_patterns": ["^.*$"],
+                 "extra_workspace_dirs": ["/home/user"]}}
+
+    started the session in bypass mode with every command auto-allowed
+    and $HOME writable, on the first message, with no prompt and no
+    banner.
+
+    The rule now is the one the rest of the framework already follows:
+    hooks are refused from a locked folder, the office lock ignores extra
+    roots, remember_permission refuses to persist a wider mode. A repo
+    can ask for LESS trust -- which is genuinely useful, a project that
+    wants plan mode by default gets it -- and only the person can grant
+    more.
     """
     out = _fresh_defaults()
-    if repo is not None:
-        out["default_mode"] = repo.get("default_mode") or user.get("default_mode") or "default"
+    user_mode = user.get("default_mode") or "default"
+    repo_mode = (repo or {}).get("default_mode") or ""
+    if repo_mode in _MODE_TRUST and _MODE_TRUST[repo_mode] < _MODE_TRUST.get(
+            user_mode, _MODE_TRUST["default"]):
+        out["default_mode"] = repo_mode
     else:
-        out["default_mode"] = user.get("default_mode") or "default"
-    for key in ("extra_workspace_dirs", "allow_patterns", "deny_patterns"):
+        out["default_mode"] = user_mode
+    # deny_patterns tighten, so the repo's are taken. The other two widen:
+    # an auto-allow pattern removes a confirmation, and an extra workspace
+    # dir adds somewhere the agent may write. Those come from the user's
+    # file only.
+    for key in ("extra_workspace_dirs", "allow_patterns"):
         merged: list[str] = []
-        sources = (repo.get(key, []) if repo else [], user.get(key, []))
-        for src in sources:
-            for item in src:
-                if item not in merged:
-                    merged.append(item)
+        for item in user.get(key, []):
+            if item not in merged:
+                merged.append(item)
         out[key] = merged
+    merged_deny: list[str] = []
+    for src in ((repo or {}).get("deny_patterns", []),
+                user.get("deny_patterns", [])):
+        for item in src:
+            if item not in merged_deny:
+                merged_deny.append(item)
+    out["deny_patterns"] = merged_deny
     return out
 
 
@@ -254,6 +296,13 @@ def persist_pattern(pattern: str, *, kind: str = "allow",
         raise ValueError(f"kind must be 'allow' or 'deny', got {kind!r}")
     if not pattern:
         raise ValueError("pattern must be non-empty")
+    # A malformed regex would silently disable matching (or crash the
+    # gate) on every later turn — reject it at persist time instead.
+    import re as _re
+    try:
+        _re.compile(pattern)
+    except _re.error as exc:
+        raise ValueError(f"invalid regex pattern: {exc}") from exc
     key = "allow_patterns" if kind == "allow" else "deny_patterns"
 
     def m(block: dict[str, Any]) -> None:
@@ -294,6 +343,31 @@ def persist_default_mode(mode: str, *,
 # Convenience: derive sensible bash auto-allow regex for a one-shot command
 # ---------------------------------------------------------------------------
 
+# Heads whose bare-head generalisation would be dangerous: one click on
+# "Allow + Permanent" for an innocuous 'rm build/tmp.txt' must NOT persist
+# a pattern that auto-allows every future rm/curl/ssh. These generalise to
+# the EXACT command instead.
+_NO_BARE_HEAD = frozenset({
+    "rm", "rmdir", "mv", "cp", "dd", "chmod", "chown", "chgrp", "ln",
+    "kill", "pkill", "killall", "curl", "wget", "nc", "ncat", "ssh",
+    "scp", "rsync", "sftp", "sudo", "su", "mkfs", "mount", "umount",
+    "truncate", "shred", "eval", "exec", "sh", "bash", "zsh",
+})
+
+# The same idea one level down: `<head> <verb>` is a fair generalisation
+# only when every invocation of that verb carries the same weight. These
+# do not — `git push` to a feature branch and `git push` to main differ by
+# what they can break, and `git commit -m` differs from `git commit
+# --author=`. Approving one must not persist a rule covering the other, so
+# they generalise to the exact command.
+_NARROW_SUBCOMMANDS = frozenset({
+    "git push", "git commit", "git merge", "git rebase", "git reset",
+    "git clean", "git checkout", "git restore",
+    "pip install", "pip uninstall", "conda remove", "npm publish",
+    "cargo publish", "cargo install", "uv publish",
+})
+
+
 def suggest_pattern_for_command(cmd: str) -> str:
     """Translate a shell command into a re-usable auto-allow regex.
 
@@ -302,15 +376,32 @@ def suggest_pattern_for_command(cmd: str) -> str:
         'pytest -xvs tests/foo.py'   -> '^\\s*pytest\\b'
         'git status'                 -> '^\\s*git status\\b'
         'python3 -m delfin.cli x'    -> '^\\s*python3\\s+-m\\s+delfin\\.cli\\b'
+        'rm build/tmp.txt'           -> exact-match pattern (no bare 'rm')
     """
-    parts = (cmd or "").strip().split()
+    import re as _re
+    cmd = (cmd or "").strip()
+    parts = cmd.split()
     if not parts:
         return ""
     head = parts[0]
     if head in ("git", "uv", "pip", "conda", "npm", "yarn", "cargo") and len(parts) >= 2:
         verb = parts[1]
+        # Two tokens are the right granularity only when every invocation
+        # of that subcommand carries the same blast radius. For these it
+        # does not: approving `git push -u origin feature` once would
+        # persist `^\s*git\s+push\b`, and from then on `git push origin
+        # main` and `git push --force-with-lease origin main` auto-run in
+        # every future session — the invariant that pushing always goes
+        # through the gate, revoked by a click that asked about a feature
+        # branch. Fall through to the exact-command form instead.
+        if f"{head} {verb}" in _NARROW_SUBCOMMANDS:
+            return r"^\s*" + _re.escape(cmd) + r"\s*$"
         return rf"^\s*{head}\s+{verb}\b"
     if head in ("python", "python3") and len(parts) >= 3 and parts[1] == "-m":
         mod = parts[2].replace(".", r"\.")
         return rf"^\s*{head}\s+-m\s+{mod}\b"
+    if head in _NO_BARE_HEAD or "/" in head:
+        # Destructive/network/interpreter heads (and path-invoked binaries):
+        # allow exactly THIS command, nothing broader.
+        return r"^\s*" + _re.escape(cmd) + r"\s*$"
     return rf"^\s*{head}\b"

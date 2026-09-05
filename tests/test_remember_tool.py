@@ -1,5 +1,5 @@
 """The agent `remember` tool — proactively save durable facts to project memory
-(mirrors Claude Code's memory behaviour: the agent itself, not just the user,
+(the agent itself, not just the user,
 can persist a typed memory mid-conversation)."""
 
 from __future__ import annotations
@@ -66,3 +66,55 @@ def test_remember_wired_end_to_end():
     pl = (Path(__file__).resolve().parent.parent / "delfin" / "agent"
           / "prompt_loader.py").read_text(encoding="utf-8")
     assert "memory_addendum" in pl                   # injected into the prompt
+
+
+def test_remember_prunes_store_after_saving(tmp_path):
+    """The remember tool self-limits the store (auto-memory distill is
+    opt-in, so this is the only prune trigger many users ever hit)."""
+    home = tmp_path / "home2"
+    home.mkdir()
+    ws = tmp_path / "ws2"
+    ws.mkdir()
+    from delfin.agent import memory_store as ms
+    calls = []
+    with patch.object(Path, "home", lambda: home), \
+            patch.object(ms, "prune_memories",
+                         lambda root, **kw: calls.append(root) or []):
+        out = json.loads(A._doc_executor._execute_remember(
+            {"text": "project: keep the store bounded"}, _perms(ws)))
+    assert out["status"] == "ok"
+    assert calls == [ws]
+
+
+def test_forget_deletes_wrong_memory(tmp_path):
+    """The agent can delete a memory that proved wrong — keeping the store
+    truthful is part of the memory discipline."""
+    home = tmp_path / "home3"
+    home.mkdir()
+    ws = tmp_path / "ws3"
+    ws.mkdir()
+    with patch.object(Path, "home", lambda: home):
+        out = json.loads(A._doc_executor._execute_remember(
+            {"text": "project: the flag --fast exists"}, _perms(ws)))
+        assert out["status"] == "ok"
+        slug = out["slug"]
+        gone = json.loads(A._doc_executor._execute_forget(
+            {"name": slug}, _perms(ws)))
+        assert gone["status"] == "deleted"
+        from delfin.agent.memory_store import list_typed_memories
+        assert list_typed_memories(ws) == []
+        missing = json.loads(A._doc_executor._execute_forget(
+            {"name": "never-existed"}, _perms(ws)))
+        assert "error" in missing
+
+
+def test_scientific_integrity_addendum_ships_and_injects(tmp_path):
+    pack = (Path(__file__).resolve().parent.parent / "delfin" / "agent"
+            / "pack" / "shared" / "scientific_integrity_addendum.md")
+    text = pack.read_text(encoding="utf-8")
+    assert "Provenance" in text
+    assert "Never fabricate" in text
+    assert "Reproducibility" in text
+    pl = (Path(__file__).resolve().parent.parent / "delfin" / "agent"
+          / "prompt_loader.py").read_text(encoding="utf-8")
+    assert "scientific_integrity_addendum" in pl

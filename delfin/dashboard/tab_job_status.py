@@ -390,7 +390,8 @@ def create_tab(ctx):
             clear_output()
 
         try:
-            all_jobs = ctx.backend.list_jobs()
+            # The user asked for the queue, so bypass the rate limit.
+            all_jobs = ctx.backend.list_jobs(force=True)
             state['job_data'] = all_jobs
 
             # Apply state filter (all / running / pending).
@@ -490,7 +491,7 @@ def create_tab(ctx):
 
         except Exception as e:
             with job_status_output:
-                clear_output()
+                clear_output(wait=True)
                 print(f'Error loading jobs: {e}')
 
     def _build_local_table(jobs, dropdown_options):

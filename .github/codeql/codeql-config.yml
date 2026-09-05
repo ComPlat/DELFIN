@@ -1,0 +1,19 @@
+name: DELFIN
+
+# What is scanned, and why the rest is not.
+#
+# The first run returned 44 findings, 38 of them in tests and scripts — and
+# those are there on purpose. test_secrets_do_not_reach_the_disk.py creates
+# world-readable files because that is the condition it exists to refuse;
+# test_state_expires.py and test_cli_voila.py do the same. Flagging them is
+# correct in the abstract and useless in practice: a report that is 86 %
+# by-construction noise stops being read, and the six findings that concern
+# shipped code drown in it.
+#
+# Neither directory reaches a user's machine. Tests are excluded from the
+# wheel, and scripts/ holds developer utilities that talk to a live cluster.
+paths-ignore:
+  - tests
+  - scripts
+  - examples
+  - docs

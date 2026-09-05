@@ -93,3 +93,27 @@ def test_find_sessions_empty_query_returns_all(tmp_sessions_dir):
     _save("b")
     matches = SS.find_sessions("")
     assert len(matches) == 2
+
+
+def test_resume_latest_ignores_turn_checkpoints(tmp_sessions_dir):
+    """A mid-turn crash checkpoint (<sid>.turn.json) lives in the same
+    dir and matches *.json — it must never surface as a phantom session."""
+    SS.save_turn_checkpoint("ghost", {"user_message": "x", "tool_calls": 1})
+    assert SS.resume_latest() is None
+    _save("real", title="Real")
+    time.sleep(0.05)
+    SS.save_turn_checkpoint("real", {"user_message": "x", "tool_calls": 2})
+    latest = SS.resume_latest()
+    assert latest is not None
+    assert latest["session_id"] == "real"
+
+
+def test_cleanup_old_sessions_prunes_stale_checkpoints(tmp_sessions_dir):
+    """Orphaned checkpoints age out with the same 30-day housekeeping."""
+    SS.save_turn_checkpoint("dead", {"user_message": "x", "tool_calls": 1})
+    p = tmp_sessions_dir / "dead.turn.json"
+    old_t = time.time() - 60 * 86_400
+    os.utime(p, (old_t, old_t))
+    n = SS.cleanup_old_sessions(max_age_days=30)
+    assert n == 1
+    assert not p.exists()

@@ -84,18 +84,35 @@ def _git_apply(
 
 
 def _files_in_diff(diff_text: str) -> list[str]:
+    """Every path the diff touches — both sides of every header.
+
+    Taking only the first path of ``diff --git a/old b/new`` reported a
+    RENAME as one file: the old path, which the patch removes. The new
+    path, the only place the content still exists afterwards, was never
+    named, so the caller that journals a pre-image per touched file had
+    nothing to journal it under. Deletions (``+++ /dev/null``) keep
+    naming the old path, which is exactly what a delete has to report.
+    """
     out: list[str] = []
     seen: set[str] = set()
+
+    def _add(candidate: str) -> None:
+        if candidate and candidate != "/dev/null" and candidate not in seen:
+            seen.add(candidate)
+            out.append(candidate)
+
     for line in diff_text.splitlines():
+        # git emits rename headers WITHOUT ---/+++ lines when the file is
+        # unchanged apart from its name.
+        if line.startswith("rename from ") or line.startswith("rename to "):
+            _add(line.split(" ", 2)[2].strip())
+            continue
         m = _FILE_HEADER_RE.match(line)
         if not m:
             continue
         for grp in m.groups():
-            if grp and grp != "/dev/null":
-                if grp not in seen:
-                    seen.add(grp)
-                    out.append(grp)
-                break
+            if grp:
+                _add(grp)
     return out
 
 
@@ -138,6 +155,19 @@ def _apply_python(
                 return {
                     "status": "check_failed",
                     "error": f"cannot read {rel}: {exc}",
+                    "backend": "py",
+                }
+            except UnicodeDecodeError:
+                # Not a refusal to be papered over with errors="replace":
+                # this applier writes back what it decoded, so a lossy
+                # decode would replace every byte it could not read with
+                # U+FFFD and call the patch applied.
+                return {
+                    "status": "check_failed",
+                    "error": (f"{rel} is not valid UTF-8; apply_patch cannot "
+                              "rewrite it without changing bytes it did not "
+                              "touch. Use edit_file, or patch it in a git "
+                              "workspace where `git apply` handles the bytes."),
                     "backend": "py",
                 }
         else:

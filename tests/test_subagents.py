@@ -223,6 +223,132 @@ def test_subagent_tool_no_runner_attached():
     assert "runner not attached" in payload["error"]
 
 
+# ---------------------------------------------------------------------------
+# Memory / instruction inheritance (inherit_context)
+# ---------------------------------------------------------------------------
+
+
+def _child_system_prompt(client) -> str:
+    """The system prompt the child actually streamed with."""
+    assert client.stream_message.call_args is not None
+    return client.stream_message.call_args.kwargs["system"]
+
+
+def _inheritance_workspace(tmp_path, monkeypatch):
+    """A workspace with a DELFIN.md rule + two typed memories under a
+    faked home, so both inheritance blocks have real content."""
+    from pathlib import Path as _P
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setattr(_P, "home", lambda: home)
+    ws = tmp_path / "proj"
+    ws.mkdir()
+    (ws / "DELFIN.md").write_text(
+        "Always run def2-TZVP single points after optimization.",
+        encoding="utf-8")
+    from delfin.agent import memory_store as MS
+    MS.save_typed_memory(
+        "Prefer ORCA 6.1 keywords for every DFT input deck.",
+        repo_root=ws, memory_type="feedback", title="orca-keywords")
+    MS.save_typed_memory(
+        "Dashboard colours should stay colour-blind safe.",
+        repo_root=ws, memory_type="user", title="dashboard-colours")
+    return ws
+
+
+def test_inherit_context_blocks_in_child_system_prompt(tmp_path, monkeypatch):
+    ws = _inheritance_workspace(tmp_path, monkeypatch)
+    perms = KitToolPermissions(workspace=ws, mode="default")
+    client = _fake_client("done exploring")
+    res = SA.run_subagent(
+        subagent_type="explore",
+        description="check dft conventions",
+        prompt="Which ORCA keywords does this project use for DFT?",
+        parent_client=client,
+        parent_perms=perms,
+    )
+    assert res.error == ""
+    sys_prompt = _child_system_prompt(client)
+    assert "Project rules (inherited" in sys_prompt
+    assert "def2-TZVP single points" in sys_prompt
+    assert "Standing memory (inherited)" in sys_prompt
+    assert "ORCA 6.1 keywords" in sys_prompt
+
+
+def test_inherit_context_ranks_memories_by_prompt_relevance(
+        tmp_path, monkeypatch):
+    ws = _inheritance_workspace(tmp_path, monkeypatch)
+    perms = KitToolPermissions(workspace=ws, mode="default")
+    client = _fake_client("ok")
+    SA.run_subagent(
+        subagent_type="explore",
+        description="dft keyword check",
+        prompt="Which ORCA keywords does this project use for DFT?",
+        parent_client=client,
+        parent_perms=perms,
+    )
+    sys_prompt = _child_system_prompt(client)
+    block = sys_prompt.split("Standing memory (inherited)", 1)[1]
+    # BM25 puts the ORCA memory (prompt overlap) before the dashboard one.
+    assert block.index("orca-keywords") < block.index("dashboard-colours")
+
+
+def test_inherit_context_false_omits_blocks(tmp_path, monkeypatch):
+    ws = _inheritance_workspace(tmp_path, monkeypatch)
+    perms = KitToolPermissions(workspace=ws, mode="default")
+    client = _fake_client("done")
+    SA.run_subagent(
+        subagent_type="explore",
+        description="no context please",
+        prompt="Which ORCA keywords does this project use for DFT?",
+        parent_client=client,
+        parent_perms=perms,
+        inherit_context=False,
+    )
+    sys_prompt = _child_system_prompt(client)
+    assert "Project rules (inherited" not in sys_prompt
+    assert "Standing memory (inherited)" not in sys_prompt
+
+
+def test_memory_failure_never_breaks_spawn(tmp_path, monkeypatch):
+    ws = _inheritance_workspace(tmp_path, monkeypatch)
+    perms = KitToolPermissions(workspace=ws, mode="default")
+
+    def _boom(*a, **kw):
+        raise RuntimeError("memory subsystem down")
+
+    monkeypatch.setattr(
+        "delfin.agent.project_memory.load_project_memory", _boom)
+    monkeypatch.setattr(
+        "delfin.agent.memory_store.list_typed_memories", _boom)
+    client = _fake_client("survived without memories")
+    res = SA.run_subagent(
+        subagent_type="explore",
+        description="resilience check",
+        prompt="Long enough prompt for the child task here.",
+        parent_client=client,
+        parent_perms=perms,
+    )
+    assert res.error == ""
+    assert "survived without memories" in res.final_text
+    sys_prompt = _child_system_prompt(client)
+    assert "Project rules (inherited" not in sys_prompt
+    assert "Standing memory (inherited)" not in sys_prompt
+
+
+def test_inherit_context_skipped_without_workspace():
+    client = _fake_client("no workspace, still fine")
+    res = SA.run_subagent(
+        subagent_type="explore",
+        description="perms-less run",
+        prompt="Explore something without any permissions attached.",
+        parent_client=client,
+        parent_perms=None,
+    )
+    assert res.error == ""
+    assert "Project rules (inherited" not in _child_system_prompt(client)
+
+
 def test_runner_is_attached_by_openaiclient_set_permissions():
     """OpenAIClient.set_permissions should bind perms.subagent_runner."""
     from delfin.agent.api_client import OpenAIClient

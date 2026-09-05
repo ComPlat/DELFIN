@@ -32,6 +32,21 @@ _PLACEHOLDER_VALIDATION_VALUES: Dict[str, Any] = {
     "ESD_T1_opt": "uks",
 }
 _PLACEHOLDER_MESSAGES: Dict[str, str] = {
+    # Say what goes in, not only that something has to. A message that names
+    # the accepted values answers the question on the spot; one that says
+    # "replace this" sends the reader looking for a manual.
+    # One line each, and no semicolons: the errors are joined with "; " for
+    # display, so a semicolon inside a message splits it into two entries that
+    # each read as half a sentence.
+    "charge": (
+        "Placeholder [CHARGE] must be replaced with the total charge as a whole "
+        "number, e.g. 0, -1, 2 — the charge before any redox step"
+    ),
+    "solvent": (
+        "Placeholder [SOLVENT] must be replaced with a solvent name, e.g. water, "
+        "acetonitrile, DMF, DMSO, THF, toluene — any solvent ORCA knows for "
+        "CPCM/SMD"
+    ),
     "method": "Placeholder [METHOD] must be set to one of: classic, manually, OCCUPIER",
     "smiles_converter": "Placeholder [SMILES_CONVERTER] must be set to one of: QUICK, NORMAL, GUPPY, ARCHITECTOR",
     "stability_constant_mode": "Placeholder [STABILITY_CONSTANT_MODE] must be set to one of: auto, reaction",

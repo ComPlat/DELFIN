@@ -731,39 +731,56 @@ echo "Python: {python_bin}"
 echo "Repo:   {repo_root}"
 
 # --- Consolidate to single venv in the repo directory ---
+#
+# Two things this used to do to a machine that were not its to do.
+#
+# It rewrote the user's .bashrc with sed, deleting whatever lay between two
+# patterns -- and a login file is not ours to edit blind. The activation lives
+# in a file DELFIN owns now, and .bashrc gets at most one line, appended once,
+# after a copy of it has been put aside.
+#
+# And it deleted $HOME/.venv outright. That may be somebody's environment,
+# built for something else and sharing a name. It is moved aside now, with the
+# date on it, so a wrong guess costs a rename rather than a rebuild.
 BASHRC="{bashrc}"
 DELFIN_VENV="{repo_venv}"
-if [ -f "$BASHRC" ]; then
-    # Replace any old venv activation block with a robust one
-    if grep -q '.venv/bin/activate' "$BASHRC"; then
-        echo "Patching .bashrc venv activation block ..."
-        # Remove old block (between marker comments or the simple if-fi block)
-        sed -i '/# Auto-activate.*venv/,/^unset _DELFIN_VENV$/d' "$BASHRC"
-        sed -i '/# Auto-activate.*venv/,/^fi$/d' "$BASHRC"
-        # Append robust activation block
-        cat >> "$BASHRC" << 'BASHRC_BLOCK'
+ACTIVATE_FILE="$HOME/.delfin_venv.sh"
+STAMP="$(date +%Y%m%d-%H%M%S)"
 
-# Auto-activate DELFIN venv (skip if already the correct one)
+cat > "$ACTIVATE_FILE" << 'ACTIVATE_BLOCK'
+# Written by DELFIN. Activates the environment DELFIN was installed into.
 _DELFIN_VENV="{repo_venv}"
 if [ "$VIRTUAL_ENV" != "$_DELFIN_VENV" ] && [ -f "$_DELFIN_VENV/bin/activate" ]; then
     type deactivate &>/dev/null && deactivate
     source "$_DELFIN_VENV/bin/activate"
 fi
 unset _DELFIN_VENV
-BASHRC_BLOCK
-        echo ".bashrc updated."
+ACTIVATE_BLOCK
+echo "Wrote $ACTIVATE_FILE"
+
+if [ -f "$BASHRC" ]; then
+    if grep -q 'delfin_venv.sh' "$BASHRC"; then
+        echo ".bashrc already sources it; leaving it alone."
+    else
+        cp -p "$BASHRC" "$BASHRC.delfin-$STAMP"
+        echo "Kept a copy of .bashrc as $BASHRC.delfin-$STAMP"
+        printf '\\n# Added by DELFIN\\n[ -f "%s" ] && . "%s"\\n' \\
+            "$ACTIVATE_FILE" "$ACTIVATE_FILE" >> "$BASHRC"
+        echo "Added one line to .bashrc."
     fi
 fi
 
-# Remove old HOME-level venv if it exists (replaced by repo venv)
+# An environment of the same name that may not be ours: put aside, not removed.
 if [ -d "$HOME/.venv" ]; then
-    echo "Removing old \\$HOME/.venv (consolidated into repo) ..."
-    rm -rf "$HOME/.venv"
-    echo "Old \\$HOME/.venv removed."
+    echo "Moving \\$HOME/.venv aside to \\$HOME/.venv.before-delfin-$STAMP ..."
+    mv "$HOME/.venv" "$HOME/.venv.before-delfin-$STAMP"
 fi
 
-echo "Removing old repo .venv ..."
-rm -rf "{repo_root / '.venv'}"
+if [ -d "{repo_root}/.venv" ]; then
+    echo "Moving the previous repo .venv aside ..."
+    rm -rf "{repo_root}/.venv.before-$STAMP"
+    mv "{repo_root}/.venv" "{repo_root}/.venv.before-$STAMP"
+fi
 
 echo "Creating fresh venv ..."
 "{python_bin}" -m venv "{repo_root / '.venv'}"
@@ -778,6 +795,16 @@ echo "Packaging delfin_venv.tar ..."
 rm -f "{repo_root / 'delfin_venv.tar'}"
 tar -cf "{repo_root / 'delfin_venv.tar'}" -C "{repo_root}" .venv
 mkdir -p "{repo_root / '.runtime_cache'}"
+
+# It worked, so the copy that was put aside is not needed. Only ours: the
+# $HOME one keeps its new name, because it was never established that it was
+# DELFIN's to begin with.
+if [ -x "{repo_root}/.venv/bin/python" ]; then
+    rm -rf "{repo_root}/.venv.before-$STAMP"
+else
+    echo "The new venv did not come out usable; the previous one is still at"
+    echo "  {repo_root}/.venv.before-$STAMP"
+fi
 
 echo "=== venv rebuild finished at $(date) ==="
 touch "{done_marker}"
@@ -816,6 +843,13 @@ def run_bwunicluster_installer(
         raise FileNotFoundError("BwUniCluster installer script not found in repo or packaged resources.")
 
     env = os.environ.copy()
+    # The interpreter DELFIN is running in, so a package installed
+    # here is a package the dashboard can import. The installers
+    # otherwise take the first python on the PATH, which on this
+    # machine is 3.13 while the dashboard runs 3.11 -- cclib,
+    # nglview, censo, morfeus and torch were all installed and all
+    # missing at once.
+    env.setdefault("DELFIN_PYTHON", sys.executable)
     if repo_path is not None:
         env["DELFIN_REPO"] = str(repo_path)
     if calc_dir:
@@ -1019,6 +1053,55 @@ def prepare_bwunicluster_user_setup(
     }
 
 
+def _stage_tree(source: Path, target: Path, ignore=None) -> None:
+    """Copy a tool directory over another, links kept as links.
+
+    ``shutil.copytree`` cannot do this.  Following the links is wrong: the
+    ``bin/xtb`` in this tree points into the conda environment xtb was
+    installed in, and copied out of it the binary is 6.4 MB standing on its
+    own, outside the libraries it is linked against -- "libmctc-lib.so.0:
+    cannot open shared object file".  A resolved tool is looked for in this
+    directory before anywhere else, so that copy then beat the working xtb on
+    the PATH and the user had a tool chain that could not start.
+
+    But ``symlinks=True`` creates each link with ``os.symlink``, which refuses
+    a name that is already taken -- and on the second install every one of
+    them is, so the whole staging ended as
+
+        [Errno 17] File exists: '.../.mamba_env/bin/xtb' -> '.../bin/xtb'
+
+    for every tool at once.  ``dirs_exist_ok`` does not help: it overwrites
+    files and says nothing about links.
+
+    So the walk is done here, where a link that is in the way is replaced
+    rather than complained about, and a link whose target has been moved away
+    is carried across as the broken link it is -- for the installer to fix,
+    not for the staging to fall over.
+    """
+    target.mkdir(parents=True, exist_ok=True)
+    entries = sorted(source.iterdir(), key=lambda item: item.name)
+    skip = set(ignore(str(source), [item.name for item in entries])) if ignore else set()
+    for item in entries:
+        if item.name in skip:
+            continue
+        destination = target / item.name
+        if item.is_symlink():
+            # Whatever stands there now -- a link from the last install, a
+            # file, a directory of the same name -- makes way.
+            if destination.is_symlink() or destination.exists():
+                if destination.is_dir() and not destination.is_symlink():
+                    shutil.rmtree(destination, ignore_errors=True)
+                else:
+                    destination.unlink(missing_ok=True)
+            os.symlink(os.readlink(item), destination)
+        elif item.is_dir():
+            _stage_tree(item, destination, ignore)
+        else:
+            if destination.is_symlink():
+                destination.unlink(missing_ok=True)
+            shutil.copy2(item, destination)
+
+
 def stage_packaged_qm_tools(target_dir: str | Path | None = None) -> Path:
     source = get_packaged_qm_tools_dir()
     if not source.is_dir():
@@ -1026,11 +1109,10 @@ def stage_packaged_qm_tools(target_dir: str | Path | None = None) -> Path:
 
     target = get_user_qm_tools_dir(target_dir)
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(
+    _stage_tree(
         source,
         target,
-        dirs_exist_ok=True,
-        ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", "downloads"),
+        shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", "downloads"),
     )
     return target
 
@@ -1047,6 +1129,13 @@ def run_qm_tools_installer(
         raise FileNotFoundError(f"qm_tools installer not found: {installer}")
 
     env = os.environ.copy()
+    # The interpreter DELFIN is running in, so a package installed
+    # here is a package the dashboard can import. The installers
+    # otherwise take the first python on the PATH, which on this
+    # machine is 3.13 while the dashboard runs 3.11 -- cclib,
+    # nglview, censo, morfeus and torch were all installed and all
+    # missing at once.
+    env.setdefault("DELFIN_PYTHON", sys.executable)
     env["DELFIN_QM_ROOT"] = str(target)
     env["DELFIN_QM_TOOLS_ROOT"] = str(target)
     if extra_env:
@@ -1096,6 +1185,13 @@ def run_csp_tools_installer(
         raise FileNotFoundError(f"csp_tools installer not found: {installer}")
 
     env = os.environ.copy()
+    # The interpreter DELFIN is running in, so a package installed
+    # here is a package the dashboard can import. The installers
+    # otherwise take the first python on the PATH, which on this
+    # machine is 3.13 while the dashboard runs 3.11 -- cclib,
+    # nglview, censo, morfeus and torch were all installed and all
+    # missing at once.
+    env.setdefault("DELFIN_PYTHON", sys.executable)
     env["DELFIN_CSP_TOOLS_ROOT"] = str(target)
     if extra_env:
         env.update({str(key): str(value) for key, value in extra_env.items()})
@@ -1140,6 +1236,13 @@ def run_mlp_tools_installer(
         raise FileNotFoundError(f"mlp_tools installer not found: {installer}")
 
     env = os.environ.copy()
+    # The interpreter DELFIN is running in, so a package installed
+    # here is a package the dashboard can import. The installers
+    # otherwise take the first python on the PATH, which on this
+    # machine is 3.13 while the dashboard runs 3.11 -- cclib,
+    # nglview, censo, morfeus and torch were all installed and all
+    # missing at once.
+    env.setdefault("DELFIN_PYTHON", sys.executable)
     env["DELFIN_MLP_TOOLS_ROOT"] = str(target)
     if extra_env:
         env.update({str(key): str(value) for key, value in extra_env.items()})
@@ -1184,6 +1287,13 @@ def run_analysis_tools_installer(
         raise FileNotFoundError(f"analysis_tools installer not found: {installer}")
 
     env = os.environ.copy()
+    # The interpreter DELFIN is running in, so a package installed
+    # here is a package the dashboard can import. The installers
+    # otherwise take the first python on the PATH, which on this
+    # machine is 3.13 while the dashboard runs 3.11 -- cclib,
+    # nglview, censo, morfeus and torch were all installed and all
+    # missing at once.
+    env.setdefault("DELFIN_PYTHON", sys.executable)
     env["DELFIN_ANALYSIS_TOOLS_ROOT"] = str(target)
     if extra_env:
         env.update({str(key): str(value) for key, value in extra_env.items()})
@@ -1228,6 +1338,13 @@ def run_ai_tools_installer(
         raise FileNotFoundError(f"ai_tools installer not found: {installer}")
 
     env = os.environ.copy()
+    # The interpreter DELFIN is running in, so a package installed
+    # here is a package the dashboard can import. The installers
+    # otherwise take the first python on the PATH, which on this
+    # machine is 3.13 while the dashboard runs 3.11 -- cclib,
+    # nglview, censo, morfeus and torch were all installed and all
+    # missing at once.
+    env.setdefault("DELFIN_PYTHON", sys.executable)
     env["DELFIN_AI_TOOLS_ROOT"] = str(target)
     if extra_env:
         env.update({str(key): str(value) for key, value in extra_env.items()})
@@ -1288,7 +1405,7 @@ def _prepend_path_env_once(path_entry: str) -> None:
     )
 
 
-def apply_runtime_environment(*, qm_tools_root: str = "", orca_base: str = "", csp_tools_root: str = "", tool_binaries: dict[str, str] | None = None) -> None:
+def apply_runtime_environment(*, qm_tools_root: str = "", orca_base: str = "", csp_tools_root: str = "", mlp_tools_root: str = "", tool_binaries: dict[str, str] | None = None) -> None:
     qm_root = normalize_runtime_path(qm_tools_root)
     if qm_root:
         os.environ["DELFIN_QM_ROOT"] = qm_root
@@ -1307,6 +1424,15 @@ def apply_runtime_environment(*, qm_tools_root: str = "", orca_base: str = "", c
         csp_bin = Path(csp_root) / "bin"
         if csp_bin.exists():
             _prepend_path_env_once(str(csp_bin))
+
+    # It was a setting that could be saved, had a field in the Settings tab,
+    # and was never exported anywhere -- so choosing it did nothing at all.
+    mlp_root = normalize_runtime_path(mlp_tools_root)
+    if mlp_root:
+        os.environ["DELFIN_MLP_TOOLS_ROOT"] = mlp_root
+        mlp_bin = Path(mlp_root) / "bin"
+        if mlp_bin.exists():
+            _prepend_path_env_once(str(mlp_bin))
 
     orca_root = normalize_runtime_path(orca_base)
     if orca_root:
@@ -1444,7 +1570,7 @@ def collect_runtime_diagnostics(
 
     with temporary_environment(env_updates):
         qm_results = check_tools(
-            ["xtb", "crest", "censo", "anmr", "c2anmr", "nmrplot", "std2", "stda", "xtb4stda", "dftb+"]
+            ["xtb", "crest", "censo", "anmr", "c2anmr", "nmrplot", "std2", "stda", "xtb4stda", "dftb+", "mopac"]
         )
     for name, resolved in qm_results:
         status, detail = _resolved_tool_status(resolved)

@@ -6,9 +6,11 @@ import re
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from delfin.common.logging import get_logger, add_file_handler
+from delfin.common.solvation import build_solvation_keyword
+from delfin.common.control_validator import resolve_occupier_compare
 from delfin.common.paths import resolve_path
 from delfin.global_manager import get_global_manager
 
@@ -381,17 +383,16 @@ def read_and_modify_file_OCCUPIER(from_index, output_file_path, charge, multipli
     )
 
     # Optional implicit solvent token
-    implicit = ""
-    if config.get('implicit_solvation_model') and solvent:
-        implicit = f"{config['implicit_solvation_model']}({solvent})"
-    elif config.get('implicit_solvation_model'):
-        implicit = config['implicit_solvation_model']
+    implicit = build_solvation_keyword(
+        config.get('implicit_solvation_model'), solvent
+    )
 
     # Initial guess (trim accidental trailing text)
     initial_guess = (str(config.get('initial_guess', '')).split() or [''])[0]
 
     # Whether to add FREQ
-    freq_flag = "FREQ" if str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() == 'yes' else ""
+    # G needs a frequency calculation; FSPE does not.
+    freq_flag = "FREQ" if resolve_occupier_compare(config) == "G" else ""
 
     # Build the '!' line
     tokens = ["!"]
@@ -870,17 +871,15 @@ def run_OCCUPIER(work_dir: Optional[Path] = None):
         )
 
         # Optional implicit solvent token
-        implicit = ""
-        if config.get('implicit_solvation_model') and solvent:
-            implicit = f"{config['implicit_solvation_model']}({solvent})"
-        elif config.get('implicit_solvation_model'):
-            implicit = config['implicit_solvation_model']
+        implicit = build_solvation_keyword(
+            config.get('implicit_solvation_model'), solvent
+        )
 
         # Initial guess (trim accidental trailing text)
         initial_guess = (str(config.get('initial_guess', '')).split() or [''])[0]
 
-        # Whether to add FREQ
-        freq_flag = "FREQ" if str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() == 'yes' else ""
+        # Whether to add FREQ: G needs a frequency calculation, FSPE does not.
+        freq_flag = "FREQ" if resolve_occupier_compare(config) == "G" else ""
 
         # Build the '!' line
         tokens = ["!"]
@@ -1121,7 +1120,7 @@ def run_OCCUPIER(work_dir: Optional[Path] = None):
             return parsed
 
         # Energy extractor: FSPE unless frequency run is requested
-        use_gibbs = str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() == 'yes'
+        use_gibbs = resolve_occupier_compare(config) == "G"
         finder = find_G if use_gibbs else find_FSPE
 
         # Parallel OCCUPIER execution
@@ -1251,7 +1250,7 @@ def run_OCCUPIER(work_dir: Optional[Path] = None):
                 logger.debug("[smart_recalc] could not check %s / %s (%s) -> will run", inp_path, out_path, e)
                 return False
 
-        freq_enabled = str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() == 'yes'
+        freq_enabled = resolve_occupier_compare(config) == "G"
         pass_wf_enabled = str(config.get('pass_wavefunction', 'no')).strip().lower() in ('yes', 'true', '1', 'on', 'y')
         raw_apm = config.get("approximate_spin_projection_APMethod")
         apm = str(raw_apm).strip() if raw_apm not in (None, "", 0, "0") else ""

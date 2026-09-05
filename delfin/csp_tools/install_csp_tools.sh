@@ -65,6 +65,18 @@ have() {
 }
 
 detect_python() {
+  # The interpreter DELFIN is actually running in, when the caller says so.
+  #
+  # Taking the first `python` on the PATH was the default, and on a machine
+  # where that is a different environment from the dashboard's -- which it
+  # usually is -- every package installed here landed somewhere the dashboard
+  # cannot import from. Measured: the installer chose Python 3.13 while the
+  # dashboard ran 3.11, so cclib, nglview, censo, morfeus and torch were all
+  # installed and all missing at the same time.
+  if [[ -n "${DELFIN_PYTHON:-}" && -x "${DELFIN_PYTHON}" ]]; then
+    printf "%s\n" "${DELFIN_PYTHON}"
+    return 0
+  fi
   if have python; then
     command -v python
     return 0

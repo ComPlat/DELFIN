@@ -140,7 +140,7 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
                 f"{config.get('ri_soc','')} PAL{config['PAL']} "
                 f"NROOTS {config.get('ESD_nroots', config.get('NROOTS', 15))} "
                 f"DOSOC {config.get('DOSOC', 'FALSE')} "
-                f"TDA {config.get('ESD_TDA', config.get('TDA', 'FALSE'))} "
+                f"TDA {config.get('ESD_TDA', config.get('TDA', 'TRUE'))} "
                 f"MAXCORE({config['maxcore']})"
             ).replace("  ", " ").strip()
 

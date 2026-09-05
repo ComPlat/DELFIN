@@ -53,6 +53,7 @@ except ImportError:
     _list_remote_folder_files = None
 
 from .helpers import disable_spellcheck
+from . import text_view as _text_view
 from .input_processing import is_smiles, smiles_to_xyz_quick
 from .molecule_viewer import (
     DEFAULT_3DMOL_ZOOM,
@@ -64,6 +65,9 @@ from .molecule_viewer import (
     parse_xyz_frames,
     patch_viewer_mouse_controls_js,
     render_fukui_panel,
+    structure_viewer_fullscreen_bootstrap_js,
+    structure_viewer_fullscreen_css,
+    structure_viewer_fullscreen_kind_js,
     viewer_disabled_html,
 )
 
@@ -537,12 +541,24 @@ def create_tab(ctx):
         tooltip="Download a high-resolution PNG from the current 3D view",
     )
     viewer_png_btn.add_class("remote-png-btn")
+    viewer_fullscreen_btn = widgets.Button(
+        description="",
+        icon="expand",
+        layout=widgets.Layout(width="40px", min_width="40px", height="30px"),
+        tooltip="Toggle fullscreen (Esc to exit)",
+    )
+    viewer_fullscreen_btn.add_class("delfin-structure-fullscreen-btn")
+    viewer_fullscreen_btn.add_class("remote-structure-fullscreen-btn")
     viewer_label = widgets.HTML(
         "<div style='height:26px; line-height:26px; margin:0;'>"
         "<b>🔬 Molecule Preview:</b></div>"
     )
+    viewer_header_buttons = widgets.HBox(
+        [viewer_png_btn, viewer_fullscreen_btn],
+        layout=widgets.Layout(gap="6px", align_items="center", flex="0 0 auto"),
+    )
     viewer_header = widgets.HBox(
-        [viewer_label, viewer_png_btn],
+        [viewer_label, viewer_header_buttons],
         layout=widgets.Layout(
             width="100%",
             align_items="flex-start",
@@ -550,6 +566,8 @@ def create_tab(ctx):
             margin="0 0 8px 0",
         ),
     )
+    viewer_header.add_class("delfin-structure-fs-member")
+    viewer_header.add_class("delfin-structure-fs-header")
     frame_label_html = widgets.HTML(value="", layout=widgets.Layout(display="none"))
     frame_input = widgets.BoundedIntText(
         value=1,
@@ -618,6 +636,7 @@ def create_tab(ctx):
         )
     )
     viewer_output.add_class("remote-mol-viewer")
+    viewer_output.add_class("delfin-structure-fs-viewer")
     preview_html = widgets.HTML(
         value="",
         layout=widgets.Layout(width="100%", flex="1 1 0", min_height="0", overflow_x="hidden"),
@@ -1025,6 +1044,9 @@ def create_tab(ctx):
                         window._remoteMolViewStateByScope[previousScope] = previousViewer.getView();
                     }} catch (_e) {{}}
                 }}
+                if (previousViewer && window.__delfinDisposeViewer) {{
+                    window.__delfinDisposeViewer(previousViewer);
+                }}
                 if (window._remoteMolViewerByScope) delete window._remoteMolViewerByScope[scopeKey];
                 if (window._remoteTrajViewerByScope) delete window._remoteTrajViewerByScope[scopeKey];
             }})();
@@ -1146,27 +1168,36 @@ def create_tab(ctx):
             top_spacer_html = f"<div id='remote-chunk-top-spacer' style='height:{top_px}px;'></div>"
             bottom_spacer_html = f"<div id='remote-chunk-bottom-spacer' style='height:{bottom_px}px;'></div>"
             text_opacity = "0"
+        # The text does NOT go into the widget value: as markup it is a second
+        # copy of the file over the comm, megabytes for the HTML parser, and a
+        # layout pass that blocks the main thread for seconds. The box goes up
+        # empty and the block viewer fills it.
         preview_html.value = (
-            "<style>"
-            ".remote-match { background: #fff59d; padding: 0 2px; }"
-            ".remote-match.current { background: #ffcc80; }"
-            "</style>"
+            "<style>" + _text_view.text_view_css() + "</style>"
             "<div id='remote-content-box' style='height:100%; overflow-y:auto; overflow-x:hidden;"
             " border:1px solid #ddd; padding:6px; background:#fafafa; width:100%; box-sizing:border-box;'>"
             f"{note_html}"
             f"{top_spacer_html}"
-            "<div id='remote-content-text' style='white-space:pre-wrap; overflow-wrap:anywhere;"
-            f" word-break:break-word; font-family:monospace; font-size:12px; line-height:1.3; opacity:{text_opacity};'>"
-            f"{html.escape(content)}"
-            "</div>"
+            "<div id='remote-content-text' class='dtv-text'"
+            f" style='opacity:{text_opacity};'></div>"
             f"{bottom_spacer_html}"
             "</div>"
         )
+        # One _run_js call for both scripts: run_js clears its output first, so
+        # a second call would wipe this one before the browser ran it.
+        fill_js = (
+            "setTimeout(function() {"
+            "  const txt = document.getElementById('remote-content-text');"
+            "  if (txt) " + _text_view.set_text_js('txt', content) +
+            "}, 0);"
+        )
+        scroll_js = _scroll_js(scroll_to) if scroll_to else ""
         if chunk_mode:
             file_size_js = int(state.get("selected_file_size") or 0)
             chunk_start_js = int(state.get("file_chunk_start") or 0)
             _run_js(
-                """
+                fill_js
+                + """
                 setTimeout(function() {
                     const box = document.getElementById('remote-content-box');
                     const topSpacer = document.getElementById('remote-chunk-top-spacer');
@@ -1364,12 +1395,12 @@ def create_tab(ctx):
                 """.replace('__FILE_SIZE__', str(file_size_js))
                    .replace('__CHUNK_BYTES__', str(REMOTE_TEXT_CHUNK_BYTES))
                    .replace('__CURRENT_START__', str(chunk_start_js))
+                + scroll_js
             )
             state["chunk_dom_initialized"] = True
         else:
+            _run_js(fill_js + scroll_js)
             state["chunk_dom_initialized"] = False
-        if scroll_to:
-            _scroll_to(scroll_to)
 
     def _render_image_preview(local_path):
         data = Path(local_path).read_bytes()
@@ -1420,7 +1451,7 @@ def create_tab(ctx):
         profile = get_viewer_profile()
         if not profile['enabled']:
             with viewer_output:
-                clear_output()
+                clear_output(wait=True)
                 display(HTML(viewer_disabled_html()))
             return
         mol3d_counter[0] += 1
@@ -1430,6 +1461,7 @@ def create_tab(ctx):
         scope_key_json = json.dumps(scope_id)
         view_scope_json = json.dumps(f"{scope_id}:{state.get('current_relative_path') or '/'}")
         style_js = profile['style_js']
+        viewer_config_js = profile['viewer_config_js']
         volumetric_js = ""
         if volumetric:
             volumetric_js = (
@@ -1437,7 +1469,7 @@ def create_tab(ctx):
                 "viewer.addVolumetricData(molData,'cube',{isoval:-0.02,color:'#b00010',opacity:0.85});"
             )
         with viewer_output:
-            clear_output()
+            clear_output(wait=True)
             display(
                 HTML(
                     f"""
@@ -1459,7 +1491,7 @@ def create_tab(ctx):
                             if (!scopeRoot) scopeRoot = document.querySelector('.{scope_id}');
                             if (!el || typeof $3Dmol === "undefined" || !mv || mv.offsetParent === null) {{
                                 tries += 1;
-                                if (tries < 80) setTimeout(initViewer, 50);
+                                if (tries < 400) setTimeout(initViewer, tries < 40 ? 50 : 250);
                                 return;
                             }}
                             var rightPanel = scopeRoot ? scopeRoot.querySelector('.remote-right') : null;
@@ -1527,7 +1559,10 @@ def create_tab(ctx):
                                 }} catch (_e) {{}}
                             }}
                             var savedView = window._remoteMolViewStateByScope[viewScope] || null;
-                            var viewer = $3Dmol.createViewer(el, {{backgroundColor: "white"}});
+                            if (previousViewer && window.__delfinDisposeViewer) {{
+                                window.__delfinDisposeViewer(previousViewer);
+                            }}
+                            var viewer = window.__delfinCreateViewer(el, {viewer_config_js});
                             {viewer_mouse_patch_js}
                             var molData = {data_json};
                             viewer.addModel(molData, "{fmt}");
@@ -1578,7 +1613,7 @@ def create_tab(ctx):
         profile = get_viewer_profile()
         if not profile['enabled']:
             with viewer_output:
-                clear_output()
+                clear_output(wait=True)
                 display(HTML(viewer_disabled_html()))
             return
         idx = max(0, min(len(frames) - 1, int(state.get("current_xyz_index", 0))))
@@ -1611,8 +1646,9 @@ def create_tab(ctx):
         scope_key_json = json.dumps(scope_id)
         view_scope_json = json.dumps(f"{scope_id}:{state.get('current_relative_path') or '/'}")
         style_js = profile['style_js']
+        viewer_config_js = profile['viewer_config_js']
         with viewer_output:
-            clear_output()
+            clear_output(wait=True)
             display(
                 HTML(
                     f"""
@@ -1634,7 +1670,7 @@ def create_tab(ctx):
                             if (!scopeRoot) scopeRoot = document.querySelector('.{scope_id}');
                             if (!el || typeof $3Dmol === "undefined" || !mv || mv.offsetParent === null) {{
                                 tries += 1;
-                                if (tries < 80) setTimeout(initViewer, 50);
+                                if (tries < 400) setTimeout(initViewer, tries < 40 ? 50 : 250);
                                 return;
                             }}
                             var rightPanel = scopeRoot ? scopeRoot.querySelector('.remote-right') : null;
@@ -1702,7 +1738,10 @@ def create_tab(ctx):
                                 }} catch (_e) {{}}
                             }}
                             var savedView = window._remoteMolViewStateByScope[viewScope] || null;
-                            var viewer = $3Dmol.createViewer(el, {{backgroundColor: "white"}});
+                            if (previousViewer && window.__delfinDisposeViewer) {{
+                                window.__delfinDisposeViewer(previousViewer);
+                            }}
+                            var viewer = window.__delfinCreateViewer(el, {viewer_config_js});
                             {viewer_mouse_patch_js}
                             viewer.addModelsAsFrames(`{full_xyz}`, "xyz");
                             viewer.setStyle({{}}, {style_js});
@@ -2901,7 +2940,7 @@ def create_tab(ctx):
                     current = next;
                     syncFrameValue(next);
                     var viewer = getViewer();
-                    if (viewer) {{
+                    if (viewer && !viewer.__delfinInteracting) {{
                         try {{
                             viewer.setFrame(next - 1);
                             viewer.render();
@@ -3030,6 +3069,10 @@ def create_tab(ctx):
         if not frames:
             return
         state["current_xyz_index"] = max(0, min(len(frames) - 1, int(frame_input.value) - 1))
+        # Browser playback already updates this GLViewer. Avoid a second render
+        # after every widget synchronization, especially while it is dragged.
+        if state.get("traj_playing"):
+            return
         _render_selected_frame()
         _refresh_measure_after_render()
 
@@ -3092,7 +3135,8 @@ def create_tab(ctx):
             int(payload.get("chunk_end", 0) or 0),
         )
 
-    def _update_chunk_dom(content, size_bytes, chunk_start, chunk_end):
+    def _update_chunk_dom(content, size_bytes, chunk_start, chunk_end,
+                          trailing_js=""):
         total_size = max(1, int(size_bytes))
         c_start = max(0, int(chunk_start))
         c_end = max(c_start, int(chunk_end))
@@ -3116,7 +3160,7 @@ def create_tab(ctx):
             txt.style.opacity = '0';
             topSpacer.style.height = '__TOP_PX__px';
             bottomSpacer.style.height = '__BOTTOM_PX__px';
-            txt.textContent = __TEXT_JSON__;
+            __SET_TEXT__
             const maxScroll = Math.max(0, box.scrollHeight - box.clientHeight);
             window.__remoteChunkProgrammaticScroll = true;
             box.scrollTop = Math.floor(targetRatio * maxScroll);
@@ -3135,9 +3179,9 @@ def create_tab(ctx):
               .replace('__BOTTOM_PX__', str(bottom_px))
               .replace('__FALLBACK_RATIO__', f'{fallback_ratio:.12f}')
               .replace('__CHUNK_START__', str(c_start))
-              .replace('__TEXT_JSON__', json.dumps(content))
+              .replace('__SET_TEXT__', _text_view.set_text_js('txt', content))
         )
-        _run_js(js)
+        _run_js(js + (trailing_js or ""))
 
     def _load_text_preview_chunk(start_byte, rerun_search=False, scroll_to=None):
         size = int(state.get("selected_file_size") or 0)
@@ -3168,9 +3212,12 @@ def create_tab(ctx):
         state["file_chunk_end"] = chunk_end
         state["selected_file_chunk_raw"] = raw
         if state.get("chunk_dom_initialized"):
-            _update_chunk_dom(text_content, size, chunk_start, chunk_end)
-            if scroll_to:
-                _scroll_to(scroll_to)
+            # The scroll travels with the update: two run_js calls would race,
+            # and the second one clears the first before the browser runs it.
+            _update_chunk_dom(
+                text_content, size, chunk_start, chunk_end,
+                trailing_js=_scroll_js(scroll_to) if scroll_to else "",
+            )
         else:
             _render_text_preview(
                 text_content,
@@ -3415,35 +3462,18 @@ def create_tab(ctx):
         return len(state.get("file_content", "")) <= REMOTE_HIGHLIGHT_MAX_CHARS
 
     def _apply_highlight_span(local_start, local_end):
+        # Only the block holding the hit is rewritten, not the whole chunk.
         js = r"""
         setTimeout(function() {
             const box = document.getElementById('remote-content-box');
             const el = document.getElementById('remote-content-text');
             if (!el) return;
-            const text = el.textContent || '';
-            const s = __START__;
-            const e = __END__;
-            if (s < 0 || e <= s || s >= text.length) return;
-            function esc(v) {
-                return v.replace(/[&<>"]/g, function(c) {
-                    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];
-                });
-            }
-            const end = Math.min(e, text.length);
-            el.innerHTML =
-                esc(text.slice(0, s))
-                + '<mark class="remote-match current" id="remote-current-match">'
-                + esc(text.slice(s, end))
-                + '</mark>'
-                + esc(text.slice(end));
-            const mark = document.getElementById('remote-current-match');
+            const mark = window.__delfinTextView.markSpan(
+                el, __START__, __END__, {currentId: 'remote-current-match'});
             if (!box || !mark) return;
-            const boxRect = box.getBoundingClientRect();
-            const markRect = mark.getBoundingClientRect();
-            const delta = (markRect.top - boxRect.top) - (box.clientHeight / 2);
             window.__remoteChunkIgnoreScrollUntil = Date.now() + 350;
             window.__remoteChunkProgrammaticScroll = true;
-            box.scrollTop += delta;
+            window.__delfinTextView.centreOn(box, mark);
             setTimeout(function() {
                 window.__remoteChunkProgrammaticScroll = false;
             }, 120);
@@ -3455,82 +3485,30 @@ def create_tab(ctx):
     def _clear_plain_match_marker():
         _run_js("""
         setTimeout(function() {
-            const old = document.getElementById('remote-current-match');
-            if (!old) return;
-            const parent = old.parentNode;
-            if (!parent) return;
-            parent.replaceChild(document.createTextNode(old.textContent || ''), old);
-            parent.normalize();
+            const el = document.getElementById('remote-content-text');
+            if (el) window.__delfinTextView.clearMarks(el);
         }, 0);
         """)
 
     def _focus_plain_match(start_pos, end_pos):
+        """Show one hit in a file too big to highlight every hit in."""
         js = r"""
         setTimeout(function() {
             const box = document.getElementById('remote-content-box');
             const el = document.getElementById('remote-content-text');
             if (!box || !el) return;
-
-            function unwrapCurrent() {
-                const old = document.getElementById('remote-current-match');
-                if (!old) return;
-                const parent = old.parentNode;
-                if (!parent) return;
-                parent.replaceChild(document.createTextNode(old.textContent || ''), old);
-                parent.normalize();
-            }
-
-            function scrollByRatio(startIndex, textLength) {
-                if (textLength <= 0) return;
-                const ratio = Math.max(0, Math.min(1, startIndex / Math.max(1, textLength - 1)));
-                const maxScroll = Math.max(0, box.scrollHeight - box.clientHeight);
-                box.scrollTop = Math.floor(ratio * maxScroll);
-            }
-
-            unwrapCurrent();
-            const text = el.textContent || '';
             const s = __START__;
             const e = __END__;
-            if (s < 0 || e <= s || s >= text.length) return;
-
-            function locate(root, index) {
-                let remaining = index;
-                const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null);
-                let node = walker.nextNode();
-                while (node) {
-                    const len = (node.nodeValue || '').length;
-                    if (remaining <= len) {
-                        return {node: node, offset: remaining};
-                    }
-                    remaining -= len;
-                    node = walker.nextNode();
-                }
-                return null;
-            }
-
-            const endBound = Math.min(e, text.length);
-            const startLoc = locate(el, s);
-            const endLoc = locate(el, endBound);
-            if (!startLoc || !endLoc) {
-                scrollByRatio(s, text.length);
+            const mark = window.__delfinTextView.markSpan(
+                el, s, e, {currentId: 'remote-current-match'});
+            if (mark) {
+                window.__delfinTextView.centreOn(box, mark);
                 return;
             }
-
-            const range = document.createRange();
-            range.setStart(startLoc.node, startLoc.offset);
-            range.setEnd(endLoc.node, endLoc.offset);
-
-            const mark = document.createElement('mark');
-            mark.className = 'remote-match current';
-            mark.id = 'remote-current-match';
-            try {
-                range.surroundContents(mark);
-            } catch (_err) {
-                scrollByRatio(s, text.length);
-                return;
-            }
-
-            mark.scrollIntoView({block: 'center'});
+            const len = window.__delfinTextView.length(el);
+            if (len <= 0) return;
+            const ratio = Math.max(0, Math.min(1, s / Math.max(1, len - 1)));
+            box.scrollTop = Math.floor(ratio * Math.max(0, box.scrollHeight - box.clientHeight));
         }, 0);
         """
         js = js.replace('__START__', str(int(start_pos))).replace('__END__', str(int(end_pos)))
@@ -3611,6 +3589,7 @@ def create_tab(ctx):
         return spans
 
     def _apply_highlight(query, current_index):
+        """Mark every hit, for the files small enough to be worth it."""
         if query is None:
             query = ""
         js = r"""
@@ -3618,63 +3597,46 @@ def create_tab(ctx):
             const box = document.getElementById('remote-content-box');
             const el = document.getElementById('remote-content-text');
             if (!box || !el) return;
-            const text = el.textContent || '';
             const q = __QUERY__;
             if (!q) {
-                el.textContent = text;
+                window.__delfinTextView.clearMarks(el);
                 return;
             }
-            function esc(s) {
-                return s.replace(/[&<>"]/g, function(c) {
-                    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];
-                });
-            }
-            function escapeRegExp(s) {
-                return s.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&');
-            }
-            const re = new RegExp(escapeRegExp(q), 'gi');
-            let html = '';
-            let last = 0;
-            let i = 0;
-            let m;
-            while ((m = re.exec(text)) !== null) {
-                html += esc(text.slice(last, m.index));
-                const cls = (i === __INDEX__) ? 'remote-match current' : 'remote-match';
-                const id = (i === __INDEX__) ? 'remote-current-match' : '';
-                html += `<mark class="${cls}" ${id ? 'id="' + id + '"' : ''}>${esc(m[0])}</mark>`;
-                last = m.index + m[0].length;
-                i++;
-            }
-            html += esc(text.slice(last));
-            el.innerHTML = html;
-            if (__INDEX__ >= 0) {
+            const mark = window.__delfinTextView.markAll(
+                el, q, __INDEX__, {currentId: 'remote-current-match'});
+            if (__INDEX__ >= 0 && mark) {
                 setTimeout(function() {
-                    const mark = document.getElementById('remote-current-match');
-                    if (mark) { mark.scrollIntoView({block: 'center'}); }
+                    window.__delfinTextView.centreOn(box, mark);
                 }, 0);
             }
         })();
         """
-        js = js.replace('__QUERY__', repr(query)).replace('__INDEX__', str(current_index))
+        js = js.replace('__QUERY__', json.dumps(query)).replace('__INDEX__', str(current_index))
         _run_js(js)
 
-    def _scroll_to(target):
+    def _scroll_js(target):
+        """The scroll as a script, so a caller can send it with its own.
+
+        run_js clears its output before each call, so two calls in a row race:
+        the second wipes the first before the browser has run it. Anything that
+        renders and then scrolls has to send one script.
+        """
         if target == "top":
-            _run_js("""
+            return """
             setTimeout(function(){
                 const box = document.getElementById('remote-content-box');
                 if (box) { box.scrollTop = 0; }
             }, 0);
-            """)
-        elif target == "bottom":
-            _run_js("""
+            """
+        if target == "bottom":
+            return """
             setTimeout(function(){
                 const box = document.getElementById('remote-content-box');
                 if (box) { box.scrollTop = box.scrollHeight; }
             }, 0);
-            """)
-        elif target == "match" and state["current_match"] >= 0:
-            _run_js("""
+            """
+        if target == "match" and state["current_match"] >= 0:
+            return """
             setTimeout(function(){
                 const box = document.getElementById('remote-content-box');
                 const el = document.getElementById('remote-current-match');
@@ -3684,7 +3646,13 @@ def create_tab(ctx):
                 const delta = (elRect.top - boxRect.top) - (box.clientHeight / 2);
                 box.scrollTop += delta;
             }, 0);
-            """)
+            """
+        return ""
+
+    def _scroll_to(target):
+        script = _scroll_js(target)
+        if script:
+            _run_js(script)
 
     def _reset_search_state():
         state["search_spans"] = []
@@ -3709,8 +3677,7 @@ def create_tab(ctx):
                 _run_js("""
                 (function() {
                     const el = document.getElementById('remote-content-text');
-                    if (!el) return;
-                    el.textContent = el.textContent || '';
+                    if (el) window.__delfinTextView.clearMarks(el);
                 })();
                 """)
             elif _should_highlight():
@@ -3741,8 +3708,7 @@ def create_tab(ctx):
                 _run_js("""
                 (function() {
                     const el = document.getElementById('remote-content-text');
-                    if (!el) return;
-                    el.textContent = el.textContent || '';
+                    if (el) window.__delfinTextView.clearMarks(el);
                 })();
                 """)
             elif _should_highlight():
@@ -4798,6 +4764,7 @@ def create_tab(ctx):
         layout=widgets.Layout(flex="0 0 auto", min_width="0", width="auto"),
     )
     viewer_wrap.add_class("remote-mol-view-wrap")
+    viewer_wrap.add_class("delfin-structure-fs-view-wrap")
     xyz_tray_controls = widgets.VBox(
         [frame_label_html, xyz_controls, xyz_playback_row, xyz_measure_row],
         layout=widgets.Layout(
@@ -4811,6 +4778,7 @@ def create_tab(ctx):
         ),
     )
     xyz_tray_controls.add_class("remote-xyz-tray-controls")
+    xyz_tray_controls.add_class("delfin-structure-fs-controls")
     viewer_row = widgets.HBox(
         [viewer_wrap, xyz_tray_controls],
         layout=widgets.Layout(
@@ -4822,14 +4790,22 @@ def create_tab(ctx):
         ),
     )
     viewer_row.add_class("remote-mol-view-row")
+    viewer_row.add_class("delfin-structure-fs-member")
+    viewer_row.add_class("delfin-structure-fs-view-row")
     remote_fukui_panel_container = widgets.VBox(
         [],
         layout=widgets.Layout(display="none", margin="8px 0 0 0", width="100%"),
     )
+    # As in the Calculations tab: the numbers that belong to the picture go
+    # fullscreen with it rather than staying behind on the page.
+    remote_fukui_panel_container.add_class("delfin-structure-fs-member")
+    remote_fukui_panel_container.add_class("delfin-structure-fs-panel")
     viewer_container = widgets.VBox(
         [viewer_header, viewer_row, remote_fukui_panel_container],
         layout=widgets.Layout(display="none", margin="0 0 10px 0", width="100%", align_items="stretch"),
     )
+    viewer_container.add_class("delfin-structure-fs-module")
+    viewer_container.add_class("remote-structure-fs-module")
     top_toolbar = widgets.HBox(
         [
             file_info_html,
@@ -4973,7 +4949,8 @@ def create_tab(ctx):
         f".{scope_id} .remote-xyz-tray-controls {{ width:360px !important; min-width:340px !important; max-width:420px !important; }}"
         f".{scope_id} .remote-search-input, .{scope_id} .remote-search-input .widget-input {{ min-width:0 !important; max-width:100% !important; width:100% !important; min-height:26px !important; overflow:visible !important; }}"
         f" .{scope_id} .remote-search-input input {{ min-width:0 !important; max-width:100% !important; width:100% !important; height:26px !important; line-height:26px !important; padding-top:0 !important; padding-bottom:0 !important; box-sizing:border-box !important; }}"
-        "</style>"
+        + structure_viewer_fullscreen_css()
+        + "</style>"
     )
 
     tab_widget = widgets.VBox(
@@ -5071,7 +5048,12 @@ def create_tab(ctx):
     _update_buttons()
     _update_transfer_jobs_visibility()
 
-    init_js = f"""
+    init_js = (
+        structure_viewer_fullscreen_bootstrap_js() + "\n"
+        + structure_viewer_fullscreen_kind_js(
+            'remote', 'remote-archive-scope-',
+            ['_remoteMolViewerByScope', '_remoteTrajViewerByScope'])
+        + "\n") + f"""
     (function() {{
         function resizeRemoteArchiveViewer(scopeRoot) {{
             if (!scopeRoot || scopeRoot.offsetParent === null) return;
@@ -5277,6 +5259,15 @@ def create_tab(ctx):
             }};
             installRemoteArchiveEnter(root);
             installRemoteArchiveSplitter(root);
+            /* Coalesce the resize handler: it is called from viewer creation,
+               the splitter and three separate timers, and each call
+               reallocates the renderer's buffers and draws three times. */
+            if (window.__delfinCoalesce &&
+                !window["{remote_resize_mol_fn}"].__delfinCoalesced) {{
+                window["{remote_resize_mol_fn}"] = window.__delfinCoalesce(
+                    window["{remote_resize_mol_fn}"], 80);
+                window["{remote_resize_mol_fn}"].__delfinCoalesced = true;
+            }}
             window["{remote_resize_mol_fn}"]();
             setTimeout(window["{remote_resize_mol_fn}"], 150);
             setTimeout(window["{remote_resize_mol_fn}"], 450);
@@ -5301,8 +5292,11 @@ def create_tab(ctx):
     }})();
     """
 
+    # First: the preview renderer calls into it, and a file can be opened
+    # before anything else on the page has run.
+    ctx.add_init_js(_text_view.text_view_bootstrap_js() + "\n" + init_js)
+
     return tab_widget, {
-        "init_js": init_js,
         # --- Agent-accessible widgets ---
         # Navigation
         "path_input": path_input,
@@ -5326,6 +5320,7 @@ def create_tab(ctx):
         # Visualization
         "view_toggle": view_toggle,
         "viewer_png_btn": viewer_png_btn,
+        "viewer_fullscreen_btn": viewer_fullscreen_btn,
         # Extract Table
         "table_btn": table_btn,
         "table_file_input": table_file_input,

@@ -1272,6 +1272,7 @@ def _as_aux_jk_rel(value: Any) -> str:
 
 _GEOM_OPT_BASES = {
     "OPT",
+    "OPTTS",
     "TIGHTOPT",
     "VERYTIGHTOPT",
 }
@@ -1290,7 +1291,7 @@ def _as_geom_opt(value: Any) -> str:
         # Allow additional ORCA keywords like NOTRAH, NODIIS, etc.
         return normalized
     raise ValueError(
-        "must start with OPT, TIGHTOPT, or VERYTIGHTOPT (additional keywords allowed)"
+        "must start with OPT, OPTTS, TIGHTOPT, or VERYTIGHTOPT (additional keywords allowed)"
     )
 
 
@@ -1571,6 +1572,62 @@ def _states_include_t1(value: Any) -> bool:
     return any(str(item).upper() == "T1" for item in parsed)
 
 
+def _as_occupier_compare(value: Any) -> str:
+    """Which energy OCCUPIER ranks its candidate configurations by.
+
+    FSPE is the electronic energy ORCA prints as FINAL SINGLE POINT ENERGY. G
+    is the Gibbs free energy, which exists only once a frequency calculation
+    has run — so asking for G is also asking for a frequency calculation on
+    every candidate, and DELFIN adds it. That is the point of naming the key
+    after the decision instead of after the machinery: you say what should be
+    compared, not what should be executed to make the comparison possible.
+
+    The distinction is not cosmetic. Configurations within a few kJ/mol are
+    ordered differently by electronic energy than by free energy, and the
+    Boltzmann weights that decide which configurations seed the next redox
+    step are derived from whichever of the two this selects.
+    """
+    text = str(value or "").strip().lower()
+    if text in {"", "fspe", "spe", "electronic", "e"}:
+        return "FSPE"
+    if text in {"g", "gibbs", "free", "free_energy", "gibbs_free_energy"}:
+        return "G"
+    raise ValueError("must be FSPE or G")
+
+
+def resolve_occupier_compare(config) -> str:
+    """The energy OCCUPIER compares by, honouring the key that was set.
+
+    OCCUPIER_compare replaced frequency_calculation_OCCUPIER, which named the
+    machinery (run frequencies) rather than the decision it drove (compare
+    Gibbs free energies). The old key keeps working: CONTROL files are kept for
+    years and a run from 2024 has to reproduce. Where both are present and
+    disagree, the explicit new key wins and the run says so, because silently
+    picking one would leave a report claiming a comparison that did not happen.
+    """
+    explicit = str(config.get("OCCUPIER_compare", "") or "").strip()
+    legacy_raw = config.get("frequency_calculation_OCCUPIER")
+    legacy_set = str(legacy_raw or "").strip() != ""
+    legacy = "G" if str(legacy_raw or "no").strip().lower() in ("yes", "true", "1", "on") else "FSPE"
+
+    if not explicit:
+        return legacy
+
+    try:
+        resolved = _as_occupier_compare(explicit)
+    except ValueError:
+        return legacy
+
+    if legacy_set and legacy != resolved:
+        logger.warning(
+            "CONTROL sets OCCUPIER_compare=%s and frequency_calculation_OCCUPIER=%s, "
+            "which disagree. Using OCCUPIER_compare=%s; drop the older key to "
+            "settle it.",
+            resolved, legacy_raw, resolved,
+        )
+    return resolved
+
+
 def _as_occupier_method(value: Any) -> str:
     text = str(value or "auto").strip().lower()
     if text in {"manual", "manually"}:
@@ -1578,32 +1635,6 @@ def _as_occupier_method(value: Any) -> str:
     if text == "auto":
         return "auto"
     raise ValueError("must be auto or manually")
-
-
-def _as_occupier_tree(value: Any) -> str:
-    """Coerce user value into a known tree token (flat, deep2, deep3, deep, own)."""
-    # If empty/None, use default "deep"
-    if not value or str(value).strip() == "":
-        return "deep"
-
-    text = str(value).strip().lower()
-    if text in {"deep", "tree"}:
-        return "deep"
-    if text in {"flat", "flatt", "legacy"}:
-        return "flat"
-    if text == "deep2":
-        return "deep2"
-    if text == "deep3":
-        return "deep3"
-    if text in {"deep4", "dee4"}:
-        return "own"
-    if text in {"own", "custom"}:
-        return "own"
-    # Legacy aliases for backwards compatibility - map to "deep"
-    if text in {"deep5", "dee5", "deep6", "dee6"}:
-        return "deep"
-    # Default to "own" for invalid/unrecognized values (including multi-value syntax like "deep|flat|own")
-    return "own"
 
 
 def _as_ap_method(value: Any) -> int | None:
@@ -1675,8 +1706,9 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("method", _as_method, required=True),
     FieldSpec("frequency_calculation", _as_yes_no, default="no"),
     FieldSpec("frequency_calculation_OCCUPIER", _as_yes_no, default="no"),
+    FieldSpec("OCCUPIER_compare", _as_occupier_compare, default="FSPE"),
     FieldSpec("xTB_method", _as_xtb_method, default="XTB2"),
-    FieldSpec("implicit_solvation_model", _as_implicit_solvation_model, default="CPCM"),
+    FieldSpec("implicit_solvation_model", _as_implicit_solvation_model, default=""),
     FieldSpec("solvent", _as_solvent, default=""),
     FieldSpec("functional", _as_functional, default="PBE0"),
     FieldSpec("ri_jkx", _as_ri_jkx, default="RIJCOSX"),
@@ -1698,7 +1730,6 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("calc_potential_method", _as_calc_potential_method, default=2),
     FieldSpec("deltaSCF_SOSCFHESSUP", _as_soscfhessup, default="LSR1"),
     FieldSpec("OCCUPIER_method", _as_occupier_method, default="auto"),
-    FieldSpec("OCCUPIER_tree", _as_occupier_tree, default="deep"),
     FieldSpec("OWN_progressive_from", _as_yes_no, default="no"),
     FieldSpec("OWN_TREE_PURE_WINDOW", _as_int, default=None, allow_none=True),
     FieldSpec("approximate_spin_projection_APMethod", _as_ap_method, default=2),
@@ -1768,12 +1799,6 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
     esd_states_have_t1 = _states_include_t1(config.get("states", ""))
 
     for spec in CONTROL_FIELD_SPECS:
-        # Skip OCCUPIER_tree validation if OCCUPIER_method is 'manually'
-        if spec.name == "OCCUPIER_tree" and occupier_method == "manually":
-            # Just set default without validation when manually mode
-            validated[spec.name] = "deep"
-            continue
-
         # Skip ESD mode selection when ESD is disabled.
         if spec.name == "ESD_modus" and not esd_modul_enabled:
             validated[spec.name] = spec.default
@@ -1957,6 +1982,34 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
             )
         except Exception as exc:  # noqa: BLE001
             errors.append(f"Invalid value for stability_reaction: {exc}")
+
+    # OCCUPIER_compare decides which energy the candidate configurations are
+    # ranked by, and the answer changes which one a run calls preferred. Two
+    # cases have to stay apart.
+    #
+    # Present but emptied: the field is in the template with a value, so an
+    # empty one is somebody having cleared it. Say what belongs there instead
+    # of quietly picking, the way OCCUPIER_method does.
+    #
+    # Absent altogether: a CONTROL file written before this key existed. Those
+    # carry frequency_calculation_OCCUPIER, and the field loop above has by now
+    # filled OCCUPIER_compare with its default — indistinguishable from a user
+    # asking for FSPE. Left at that, a legacy file saying yes would move from
+    # Gibbs free energies to electronic ones with nothing to show for it, so
+    # the value is derived from the old key instead.
+    if "OCCUPIER_compare" in config and not str(config.get("OCCUPIER_compare") or "").strip():
+        # No semicolon in here: the errors are joined with "; " for display.
+        errors.append(
+            "OCCUPIER_compare is empty — set it to FSPE (electronic energy, "
+            "FINAL SINGLE POINT ENERGY) or G (Gibbs free energy, adds a "
+            "frequency run per candidate)"
+        )
+    elif "OCCUPIER_compare" not in config:
+        legacy = str(config.get("frequency_calculation_OCCUPIER", "") or "").strip()
+        if legacy:
+            validated["OCCUPIER_compare"] = (
+                "G" if legacy.lower() in ("yes", "true", "1", "on") else "FSPE"
+            )
 
     if errors:
         raise ValueError("; ".join(errors))

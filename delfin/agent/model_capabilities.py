@@ -67,7 +67,7 @@ _CACHE_VERSION = 2
 # KIT Toolbox hosts many models; only a few are worth driving the agent
 # (strong agentic tool use, large window). Selecting a weak one should warn
 # and point at the best. ``KIT_BEST_MODEL`` is the curated default; the
-# recommended set is the small pool that "lohnt sich" for agent work.
+# recommended set is the small pool that is worth using for agent work.
 KIT_BEST_MODEL = "kit.qwen3.5-397b-A17b"
 _KIT_RECOMMENDED: frozenset[str] = frozenset({
     "kit.qwen3.5-397b-A17b",   # best: strong agentic tool routing, no footguns
@@ -107,6 +107,14 @@ class ModelCapabilities:
     num_ctx_override: int | None = None  # value for options.num_ctx (ollama only)
     source: str = "static"              # "live"|"static"|"heuristic"|"fallback"
     discovered_at: float = 0.0
+    # Provenance/confidence annotation carried over from the static registry
+    # entry that produced (part of) this record. Audit levels used there:
+    #   "endpoint-verified" — the model id was observed on the provider's live
+    #                         /v1/models listing;
+    #   "family-knowledge"  — capability claims from documented family
+    #                         behaviour (not probed on this deployment);
+    #   "conservative-assumed" — uncertain values kept at safe defaults.
+    note: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -132,56 +140,199 @@ _STATIC: dict[str, dict[str, Any]] = {
     "o4-mini": {"context_window": 200_000, "is_reasoning": True,
                 "supports_vision": True, "recommended_effort": "medium"},
     "gpt-4.1": {"context_window": 200_000, "supports_vision": True},
-    # KIT Toolbox (served via vLLM — windows reflect the deployment config)
-    "kit.qwen3.5-397b-A17b": {"context_window": 128_000},
-    "kit.gpt-oss-120b": {"context_window": 128_000},
-    "kit.gemma4-31b-it": {"context_window": 128_000, "recommended_effort": "low"},
+    # KIT Toolbox (served via vLLM — windows reflect the deployment config).
+    # All kit.* / standard-* ids below were observed on the live /v1/models
+    # listing (2026-07-29).
+    "kit.qwen3.5-397b-A17b": {"context_window": 128_000,
+                              "note": "endpoint-verified"},
+    "kit.gpt-oss-120b": {"context_window": 128_000, "is_reasoning": True,
+                         "note": "endpoint-verified; reasoning family — "
+                                 "needs the thinking token floor"},
+    "kit.gemma4-31b-it": {"context_window": 128_000,
+                          "recommended_effort": "low",
+                          "note": "endpoint-verified; native tool calling "
+                                  "unconfirmed for this family "
+                                  "(conservative-assumed: default kept)"},
+    "kit.minimax-m2.7-229b": {"context_window": 128_000,
+                              "is_reasoning": True, "thinking_tagged": True,
+                              "note": "endpoint-verified; family-knowledge: "
+                                      "interleaved think tags, agentic tool "
+                                      "use; window conservative (model max "
+                                      "~200k, deployment unprobed)"},
+    "kit.mistral-small-4-119b-a8b": {"context_window": 128_000,
+                                     "note": "endpoint-verified; "
+                                             "family-knowledge: native "
+                                             "function calling"},
+    # Server-side aliases the KIT gateway routes to a default model; the
+    # target is unknown here, so the window stays conservative and tool
+    # support keeps the default.
+    "standard-extern": {"context_window": 32_768,
+                        "note": "endpoint-verified alias; routing target "
+                                "unknown (conservative-assumed window)"},
+    "standard-local": {"context_window": 32_768,
+                       "note": "endpoint-verified alias; routing target "
+                               "unknown (conservative-assumed window)"},
     # Common Ollama tags (theoretical max; the ollama branch re-caps to num_ctx)
-    "qwen3-coder:32b": {"context_window": 256_000},
+    "qwen3-coder:32b": {"context_window": 256_000,
+                        "is_reasoning": False, "thinking_tagged": False,
+                        "note": "family-knowledge: coder line is "
+                                "non-thinking — pin flags so the qwen3 name "
+                                "heuristic does not mark it thinking-tagged"},
     "qwen2.5-coder:7b": {"context_window": 131_072},
     "qwen2.5-coder:14b": {"context_window": 131_072},
     "qwen2.5-coder:32b": {"context_window": 131_072},
     "llama3.3:70b": {"context_window": 131_072, "supports_vision": False},
     "llama3.1:8b": {"context_window": 131_072},
     "deepseek-r1:7b": {"context_window": 131_072, "is_reasoning": True,
-                       "thinking_tagged": True},
+                       "thinking_tagged": True, "supports_tools": False,
+                       "note": "family-knowledge: R1 distills have no native "
+                               "tool calling; a live probe overrides"},
     "deepseek-r1:32b": {"context_window": 131_072, "is_reasoning": True,
-                        "thinking_tagged": True},
+                        "thinking_tagged": True, "supports_tools": False,
+                        "note": "family-knowledge: R1 distills have no native "
+                                "tool calling; a live probe overrides"},
     "qwq:32b": {"context_window": 131_072, "is_reasoning": True,
                 "thinking_tagged": True},
     "llava:7b": {"context_window": 32_768, "supports_vision": True},
 }
 
-# Longest-prefix fallbacks (provider many-variant families).
+# Longest-prefix fallbacks (provider many-variant families). Prefixes MUST be
+# lowercase — matching lowercases the model name first. Longest match wins,
+# so specific entries ("mistral-small") dominate broad ones ("mistral").
 _STATIC_PREFIX: tuple[tuple[str, dict[str, Any]], ...] = (
     ("azure.gpt-5", {"context_window": 256_000, "is_reasoning": True,
                      "supports_vision": True, "recommended_effort": "low"}),
-    ("kit.gpt-oss", {"context_window": 128_000}),
+    ("kit.gpt-oss", {"context_window": 128_000, "is_reasoning": True,
+                     "note": "endpoint-verified family; reasoning line"}),
     ("gpt-5", {"context_window": 256_000, "is_reasoning": True,
                "supports_vision": True, "recommended_effort": "low"}),
+    ("gpt-oss", {"context_window": 131_072, "is_reasoning": True,
+                 "note": "family-knowledge: open-weight reasoning line, "
+                         "tool-trained, 131k window"}),
+    # Moonshot Kimi K2 — agentic MoE line explicitly trained for native
+    # OpenAI-style tool calling; the thinking variant interleaves reasoning.
+    ("kimi-k2-thinking", {"context_window": 262_144, "is_reasoning": True,
+                          "thinking_tagged": True,
+                          "note": "family-knowledge: reasoning variant, "
+                                  "native tool calling, 256k window"}),
+    ("kimi-k2", {"context_window": 131_072,
+                 "note": "family-knowledge: strong native tool calling; "
+                         "131k conservative (0905 refresh serves 256k)"}),
     ("deepseek-r1", {"context_window": 131_072, "is_reasoning": True,
-                     "thinking_tagged": True}),
+                     "thinking_tagged": True, "supports_tools": False,
+                     "note": "family-knowledge: R1 line trained without "
+                             "native tool calling; a live probe overrides"}),
+    ("deepseek-v3", {"context_window": 131_072,
+                     "note": "family-knowledge: V3 chat line supports "
+                             "function calling; 131k conservative"}),
     ("qwq", {"context_window": 131_072, "is_reasoning": True,
              "thinking_tagged": True}),
-    ("qwen3-coder", {"context_window": 256_000}),
+    ("qwen3-coder", {"context_window": 256_000,
+                     "is_reasoning": False, "thinking_tagged": False,
+                     "note": "family-knowledge: coder line is non-thinking — "
+                             "pin flags against the qwen3 name heuristic"}),
+    ("qwen3.5", {"context_window": 131_072,
+                 "note": "family-knowledge: hybrid-thinking line with native "
+                         "tool calling; 131k conservative, live probe "
+                         "raises to the served window"}),
+    ("qwen3", {"context_window": 131_072,
+               "note": "family-knowledge: hybrid-thinking line with native "
+                       "tool calling"}),
     ("qwen2.5-coder", {"context_window": 131_072}),
+    # Zhipu GLM-4.x — agentic line with reliable native tool calling.
+    ("glm-4.6", {"context_window": 200_000,
+                 "note": "family-knowledge: 200k window, native tool "
+                         "calling"}),
+    ("glm-4", {"context_window": 131_072,
+               "note": "family-knowledge: native tool calling; 131k "
+                       "conservative"}),
     ("llama3", {"context_window": 131_072}),
+    ("llama-3", {"context_window": 131_072,
+                 "note": "family-knowledge: hyphenated serving ids of the "
+                         "llama3 line"}),
+    ("llama4", {"context_window": 131_072,
+                "note": "family-knowledge: tool calling supported; window "
+                        "conservative-assumed (deployments vary widely)"}),
+    ("llama-4", {"context_window": 131_072,
+                 "note": "family-knowledge: tool calling supported; window "
+                         "conservative-assumed (deployments vary widely)"}),
+    # Mistral lines — the family reliably emits OpenAI-style tool calls.
+    ("mistral-small", {"context_window": 131_072,
+                       "note": "family-knowledge: 128k line, native "
+                               "function calling"}),
+    ("mistral-large", {"context_window": 131_072,
+                       "note": "family-knowledge: 128k line, native "
+                               "function calling"}),
+    ("mixtral", {"context_window": 32_768,
+                 "note": "family-knowledge: 32k MoE line"}),
+    ("mistral", {"context_window": 32_768,
+                 "note": "conservative-assumed: unspecific mistral id — "
+                         "32k floor of the 7B line"}),
+    # MiniMax M2 — agentic reasoning MoE; keeps interleaved <think> blocks.
+    ("minimax-m2", {"context_window": 131_072, "is_reasoning": True,
+                    "thinking_tagged": True,
+                    "note": "family-knowledge: interleaved think tags, "
+                            "agentic tool use; 131k conservative "
+                            "(model max ~200k)"}),
+    ("gemma3", {"context_window": 131_072,
+                "note": "family-knowledge: 128k line; native tool calling "
+                        "unconfirmed (conservative-assumed: default kept)"}),
+    ("gemma2", {"context_window": 8_192,
+                "note": "family-knowledge: 8k window line"}),
+    # Hosted multimodal chat lines reachable through gateway prefixes
+    # (google.gemini-*, google.claude-*): windows stay conservative because
+    # the gateway's own cap is unprobed; under-shooting only compacts earlier.
+    ("gemini", {"context_window": 262_144, "supports_vision": True,
+                "note": "family-knowledge: multimodal, native tool calling; "
+                        "model max 1M — conservative-assumed under an "
+                        "unprobed gateway"}),
+    ("claude-haiku", {"context_window": 200_000, "supports_vision": True,
+                      "recommended_effort": "low",
+                      "note": "family-knowledge: 200k multimodal line, "
+                              "small tier"}),
+    ("claude-", {"context_window": 200_000, "supports_vision": True,
+                 "note": "family-knowledge: 200k multimodal line, native "
+                         "tool calling"}),
     ("llava", {"context_window": 32_768, "supports_vision": True}),
 )
 
 
+# Gateway/provider prefixes that a served model id may carry in front of the
+# family name. The KIT gateway lists kit.*, azure.* AND google.* ids, so all
+# three must be stripped before family matching — otherwise a served id
+# silently falls through to the heuristic default and mis-gates tools.
+_PROVIDER_PREFIXES = ("kit.", "azure.", "google.")
+
+
+def _base_name(model: str) -> str:
+    """``model`` with a known gateway prefix removed (case-insensitive)."""
+    low = (model or "").lower()
+    for p in _PROVIDER_PREFIXES:
+        if low.startswith(p):
+            return model[len(p):]
+    return model
+
+
 def _static_spec(model: str) -> dict[str, Any] | None:
-    """Return the static partial spec for ``model`` (exact then prefix)."""
+    """Return the static partial spec for ``model`` (exact then prefix).
+
+    Lookups are case-insensitive: served ids carry mixed case (e.g. the
+    ``…-A17b`` active-parameter suffix) while configs often lowercase them,
+    and a case mismatch must not drop a curated entry.
+    """
     if not model:
         return None
-    if model in _STATIC:
+    if model in _STATIC:                       # fast path: exact, as-written
         return _STATIC[model]
-    base = model.split(".", 1)[-1] if model.startswith(("azure.", "kit.")) else model
-    if base in _STATIC:
-        return _STATIC[base]
+    low = model.lower()
+    base_low = _base_name(model).lower()
+    for key, spec in _STATIC.items():          # exact, case-insensitive
+        k = key.lower()
+        if k == low or k == base_low:
+            return spec
     best: tuple[int, dict[str, Any]] | None = None
-    for prefix, spec in _STATIC_PREFIX:
-        if model.startswith(prefix) or base.startswith(prefix):
+    for prefix, spec in _STATIC_PREFIX:        # prefixes are lowercase
+        if low.startswith(prefix) or base_low.startswith(prefix):
             if best is None or len(prefix) > best[0]:
                 best = (len(prefix), spec)
     return best[1] if best else None
@@ -338,7 +489,7 @@ def nonchat_reason(model: str) -> str | None:
     m = (model or "").strip().lower()
     if not m:
         return None
-    base = m.split(".", 1)[-1] if m.startswith(("kit.", "azure.")) else m
+    base = _base_name(m)
     for rx, reason in _NONCHAT_MODALITY:
         if rx.search(base) or rx.search(m):
             return reason
@@ -369,16 +520,19 @@ def _fetch_openai_models(base_url: str, api_key: str = "") -> list[dict] | None:
 def _model_matches(entry_id: str, model: str) -> bool:
     """Lenient match between a /v1/models id and our model name.
 
-    Handles DELFIN's provider prefixes (``kit.``/``azure.``) which the
-    served id does not carry, plus ``:tag`` suffixes.
+    Handles DELFIN's gateway prefixes (``kit.``/``azure.``/``google.``) on
+    either side (the served id may or may not carry one), plus ``:tag``
+    suffixes.
     """
     a = (entry_id or "").strip().lower()
     b = (model or "").strip().lower()
     if not a or not b:
         return False
-    b_base = b.split(".", 1)[-1] if b.startswith(("kit.", "azure.")) else b
-    a0, b0 = a.split(":")[0], b_base.split(":")[0]
-    return a == b_base or a0 == b0 or b_base in a or a in b_base
+    a_base = _base_name(a)
+    b_base = _base_name(b)
+    a0, b0 = a_base.split(":")[0], b_base.split(":")[0]
+    return a == b_base or a_base == b_base or a0 == b0 \
+        or b_base in a or a in b_base
 
 
 # KIT Toolbox is an Open-WebUI proxy: it does NOT expose a numeric
@@ -490,7 +644,15 @@ def _cache_key(provider: str, model: str, base_url: str,
     # Authed and key-less probes can yield different windows (a 401 falls back
     # to static), so cache them under distinct keys — an authed lookup must not
     # be served a stale key-less miss.
-    return f"{provider}\x1f{model}\x1f{base_url}\x1f{int(authed)}"
+    #
+    # The URL is normalised because the two callers disagree about a trailing
+    # slash: the prewarm reads it back from the OpenAI SDK, which appends one,
+    # while the per-turn path passes the configured string, which has none.
+    # Two keys for one endpoint meant the prewarm filled a slot the turn never
+    # read, so the ~5s authenticated probe it exists to avoid was paid inside
+    # the first turn anyway — the one turn a user is already waiting on.
+    return (f"{provider}\x1f{model}\x1f{(base_url or '').rstrip('/')}"
+            f"\x1f{int(authed)}")
 
 
 def _load_disk_cache() -> None:
@@ -644,6 +806,7 @@ def resolve(
         num_ctx_override=spec.get("num_ctx_override"),
         source=source,
         discovered_at=time.time(),
+        note=str(spec.get("note", "")),
     )
 
     _CACHE[key] = caps
@@ -666,7 +829,7 @@ def kit_recommendation(model: str, caps: "ModelCapabilities") -> str:
     """Warn-and-redirect string for a KIT model not worth the agent.
 
     Empty string when the model is fine. Only the strong, tool-capable,
-    large-window KIT models "lohnen sich"; everything else gets a warning
+    large-window KIT models are worth it; everything else gets a warning
     pointing at :data:`KIT_BEST_MODEL`.
     """
     if model in _KIT_RECOMMENDED:
@@ -676,15 +839,15 @@ def kit_recommendation(model: str, caps: "ModelCapabilities") -> str:
         return ""
     reasons: list[str] = []
     if not caps.supports_tools:
-        reasons.append("kein Tool-Support")
+        reasons.append("no tool support")
     if _is_weak(model):
-        reasons.append("schwaches/kleines Modell")
+        reasons.append("weak/small model")
     if caps.context_window < _KIT_MIN_WINDOW:
-        reasons.append(f"kleines Kontextfenster ({caps.context_window})")
-    why = ", ".join(reasons) or "für Agent-Aufgaben nicht empfohlen"
+        reasons.append(f"small context window ({caps.context_window})")
+    why = ", ".join(reasons) or "not recommended for agent work"
     return (
-        f"KIT-Modell `{model}` lohnt sich für Agent-Aufgaben kaum ({why}). "
-        f"Bestes KIT-Modell: `{KIT_BEST_MODEL}`."
+        f"KIT model `{model}` is hardly worth it for agent work ({why}). "
+        f"Best KIT model: `{KIT_BEST_MODEL}`."
     )
 
 
@@ -712,17 +875,17 @@ def preflight(
         installed = _ollama_installed(root)
         if installed is None:
             return False, (
-                f"Ollama unter {root} nicht erreichbar — läuft `ollama serve`? "
-                f"(Endpoint via OLLAMA_HOST überschreibbar.)"
+                f"Ollama at {root} is not reachable — is `ollama serve` "
+                f"running? (The endpoint can be overridden via OLLAMA_HOST.)"
             )
         # Ollama tags include the ":latest" suffix; match leniently.
         def _match(tag: str) -> bool:
             return tag == model or tag.split(":")[0] == model.split(":")[0]
         if model and not any(_match(t) for t in installed):
-            avail = ", ".join(sorted(installed)[:8]) or "(keine)"
+            avail = ", ".join(sorted(installed)[:8]) or "(none)"
             return False, (
-                f"Modell `{model}` ist in Ollama nicht installiert — "
-                f"`ollama pull {model}`. Verfügbar: {avail}"
+                f"Model `{model}` is not installed in Ollama — "
+                f"`ollama pull {model}`. Available: {avail}"
             )
 
     caps = resolve(provider, model, base_url)
@@ -730,10 +893,10 @@ def preflight(
     # Hard block: agent work with a model that can't call tools at all.
     if needs_tools and not caps.supports_tools:
         return False, (
-            f"Modell `{model}` hat keine native Tool-Unterstützung und kann "
-            f"daher keine Agent-Werkzeuge (bash/edit/read …) ausführen. Wähle "
-            f"ein tool-fähiges Modell (z. B. `qwen2.5-coder`, `llama3.3`, "
-            f"`{KIT_BEST_MODEL}`) oder nutze dieses Modell im reinen Chat-Modus."
+            f"Model `{model}` has no native tool support and therefore cannot "
+            f"run agent tools (bash/edit/read …). Pick a tool-capable model "
+            f"(e.g. `qwen2.5-coder`, `llama3.3`, `{KIT_BEST_MODEL}`) or use "
+            f"this model in pure chat mode."
         )
 
     # Soft warning: a KIT model that works but isn't worth the agent.

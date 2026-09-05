@@ -7,7 +7,7 @@
   <a href="https://github.com/ComPlat/DELFIN/graphs/commit-activity"><img src="https://img.shields.io/badge/Maintained%3F-yes-green.svg?style=for-the-badge" alt="Maintenance"></a>
   <a href="https://github.com/ComPlat/DELFIN/issues"><img src="https://img.shields.io/github/issues/ComPlat/DELFIN.svg?style=for-the-badge" alt="GitHub issues"></a>
   <a href="https://github.com/ComPlat/DELFIN/graphs/contributors"><img src="https://img.shields.io/github/contributors/ComPlat/DELFIN.svg?style=for-the-badge" alt="GitHub contributors"></a>
-  <a href="https://doi.org/10.5281/zenodo.17208145"><img src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.17208145-blue.svg?style=for-the-badge" alt="DOI"></a>
+  <a href="https://doi.org/10.5281/zenodo.21508364"><img src="https://img.shields.io/badge/DOI-10.5281%2Fzenodo.21508364-blue.svg?style=for-the-badge" alt="DOI"></a>
   <a href="https://pypi.org/project/delfin-complat/"><img src="https://img.shields.io/pypi/v/delfin-complat.svg?style=for-the-badge" alt="PyPI version"></a>
 </p>
 
@@ -223,7 +223,7 @@ Subagents run **in parallel** (each isolated, so concurrent runs can't clobber o
 ### Tools, MCP & safety
 
 - **Built-in tools**: read / edit / write files, grep, sandboxed bash (foreground + long-running background jobs), code navigation, test runner, notebooks, web search/fetch, task tracking, scheduling, plus DELFIN-specific calc/manual search.
-- **MCP (Model Context Protocol)**: connect external MCP servers over **stdio or HTTP/SSE** — their tools, resources, and prompts become available to the agent (configured in `~/.delfin/mcp_servers.json`).
+- **MCP (Model Context Protocol)**: connect external MCP servers over **stdio or HTTP/SSE** — their tools, resources, and prompts become available to the agent (configured in `~/.delfin/mcp_servers.json`). A tool reached through MCP runs in a process DELFIN did not launch a command line for, so the shell's sandbox is not around it: give a stdio server `"roots": [...]` (read-write) or `"read_roots": [...]` (read-only) and it is started inside a namespace holding only those paths. Servers that declare neither run uncontained, and the startup banner, `/mcp` and `delfin-agent doctor` all name them as such. DELFIN's own two servers can take their roots from your settings instead of a config entry — `agent.mcp_isolation: "builtin"` binds the calculations, office, workspace and state folders read-write, the archive and the runtime trees read-only, and nothing else; it is off by default because the roots are inferred, and `move_to_archive` is refused while it is on.
 - **Sandboxed execution**: every shell command runs through a layered defense (allow-list + bubblewrap/firejail sandbox + audit log); credential dirs (`~/.ssh`, `~/.aws`, `~/.gnupg`, …) are masked, network is denied by default, and every command lands in `~/.cache/delfin/agent-audit.jsonl`. Configurable via `DELFIN_AGENT_SANDBOX={auto,bwrap,firejail,allowlist,off}`.
 - **Permission modes**: plan / default / acceptEdits / bypass, with per-pattern allow-list rules the agent can remember across sessions.
 
@@ -782,7 +782,7 @@ DELFIN is provided "AS IS" without warranty of any kind. The authors disclaim al
 
 If you use DELFIN in a scientific publication, please cite:
 
-- Hartmann, M. (2026). *DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials* (v1.1.1). Zenodo. https://doi.org/10.5281/zenodo.17208145
+- Hartmann, M. (2026). *DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials* (v1.2.0). Zenodo. https://doi.org/10.5281/zenodo.21508364
 - Hartmann, M. (2025). *DELFIN: Automated prediction of preferred spin states and redox potentials*. ChemRxiv. https://chemrxiv.org/engage/chemrxiv/article-details/68fa0e233e6156d3be78797a
 
 ### BibTeX
@@ -790,11 +790,11 @@ If you use DELFIN in a scientific publication, please cite:
 @software{hartmann2025delfin,
   author  = {Hartmann, Maximilian},
   title   = {DELFIN: Automated DFT-based prediction of preferred spin states and corresponding redox potentials},
-  version = {v1.1.1},
+  version = {v1.2.0},
   year    = {2026},
   publisher = {Zenodo},
-  doi     = {10.5281/zenodo.17208145},
-  url     = {https://doi.org/10.5281/zenodo.17208145}
+  doi     = {10.5281/zenodo.21508364},
+  url     = {https://doi.org/10.5281/zenodo.21508364}
 }
 
 @article{hartmann2025chemrxiv,
@@ -824,8 +824,7 @@ delfin/
 
   # ── Core Workflows ──
   occupier.py              # OCCUPIER workflow (sequence execution + summary)
-  occupier_auto.py         # auto OCCUPIER sequence management and tree navigation
-  deep_auto_tree.py        # adaptive BS evolution tree
+  occupier_auto.py         # auto OCCUPIER sequence rules and populated-state branching
   esd_module.py            # excited-state dynamics (ISC/IC/fluorescence/phosphorescence)
   esd_input_generator.py   # ORCA input builders for ESD states
   tadf_xtb.py              # TADF screening via xTB

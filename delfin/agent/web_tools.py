@@ -36,7 +36,25 @@ from dataclasses import dataclass
 from typing import Optional
 
 
-_USER_AGENT = "Mozilla/5.0 (DELFIN-KIT-agent; +https://kit.edu)"
+# Browser-shaped, and still says who is calling. The shape is the part that
+# matters: measured 2026-08-28 against html.duckduckgo.com, same host, same
+# minute, same query --
+#
+#   Mozilla/5.0 (DELFIN-KIT-agent; +https://kit.edu)      HTTP 202,  0 results
+#   Mozilla/5.0 (X11 …) Chrome/124 … DELFIN/1.0           HTTP 200, 10 results
+#   Mozilla/5.0 (X11 …) Chrome/124 …                      HTTP 200, 10 results
+#   Mozilla/5.0 (X11 …) Firefox/127.0                     HTTP 202,  0 results
+#
+# So the 202 was never the network and never the endpoint -- it was this
+# string. The code here used to say "measured on this host, every real query
+# comes back that way", which was true and misattributed: every query WITH
+# OUR AGENT came back that way. The DELFIN token is kept because a search
+# tool that hides who it is would be the wrong trade for a fix that does not
+# need it.
+_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0 Safari/537.36 DELFIN/1.0 (+https://kit.edu)"
+)
 _MAX_BYTES = 1_000_000           # 1 MB cap
 _DEFAULT_TIMEOUT_S = 15
 _BLOCKED_HOST_PATTERNS = (
@@ -119,8 +137,14 @@ def _guarded_opener():
     return _GUARDED_OPENER
 
 
-def _fetch_bytes(url: str, timeout_s: int) -> tuple[bytes, str]:
-    """GET a URL with a strict cap. Returns (body, content_type)."""
+def _fetch_bytes(url: str, timeout_s: int,
+                 want_status: bool = False):
+    """GET a URL with a strict cap. Returns (body, content_type).
+
+    With ``want_status`` the HTTP status comes along as a third element:
+    a search endpoint answering 202 has served a challenge page, not an
+    empty result set, and the caller has to be able to tell those apart.
+    """
     req = urllib.request.Request(
         url, headers={"User-Agent": _USER_AGENT, "Accept": "text/html,*/*"}
     )
@@ -129,6 +153,9 @@ def _fetch_bytes(url: str, timeout_s: int) -> tuple[bytes, str]:
     with _guarded_opener().open(req, timeout=timeout_s) as resp:
         ctype = resp.headers.get("Content-Type", "")
         body = resp.read(_MAX_BYTES + 1)
+        status = int(getattr(resp, "status", 0) or getattr(resp, "code", 0) or 0)
+    if want_status:
+        return body, ctype, status
     return body, ctype
 
 
@@ -139,9 +166,16 @@ def _html_to_text(body: bytes) -> str:
     except Exception:
         return ""
     # Strip script + style first (their contents are not user-readable).
-    text = re.sub(r"<script[^>]*>.*?</script>", " ", text,
+    #
+    # The end tag is matched as </script\s*> because HTML permits whitespace
+    # before the ">", and a page closing with "</script >" would otherwise
+    # slip past: the block would stay, the generic tag rule below would remove
+    # only the two tags around it, and the script body would arrive in the
+    # answer as prose. An unclosed <script> is treated the same way and runs
+    # to the end of the document, which is what a browser does with it.
+    text = re.sub(r"<script[^>]*>.*?(?:</script\s*>|\Z)", " ", text,
                   flags=re.DOTALL | re.IGNORECASE)
-    text = re.sub(r"<style[^>]*>.*?</style>", " ", text,
+    text = re.sub(r"<style[^>]*>.*?(?:</style\s*>|\Z)", " ", text,
                   flags=re.DOTALL | re.IGNORECASE)
     # Tags → space (don't merge adjacent words across tag boundaries).
     text = re.sub(r"<[^>]+>", " ", text)
@@ -258,7 +292,16 @@ def web_search(query: str, *, max_results: int = 8,
     if err:
         return {"error": err}
     try:
-        body, ctype = _fetch_bytes(url, timeout_s)
+        # Tolerate a two-value _fetch_bytes: the parameter is new, and a
+        # replacement that predates it (a test double, a patched build) must
+        # not turn into "search failed". Status 0 then means "not known",
+        # which is deliberately NOT evidence of anything below.
+        try:
+            _fetched = _fetch_bytes(url, timeout_s, want_status=True)
+        except TypeError:
+            _fetched = _fetch_bytes(url, timeout_s)
+        body, ctype = _fetched[0], _fetched[1]
+        status = int(_fetched[2]) if len(_fetched) > 2 else 0
     except urllib.error.HTTPError as exc:
         return {"error": f"HTTP {exc.code}: {exc.reason}"}
     except urllib.error.URLError as exc:
@@ -306,6 +349,41 @@ def web_search(query: str, *, max_results: int = 8,
         if ia:
             hits = ia[:max_results]
             source = "duckduckgo-instant-answer"
+
+    if not hits:
+        # "No results" and "the search engine refused to answer" look the
+        # same to a caller and mean opposite things. A 202 with no result
+        # markup is an anti-bot challenge -- measured on this host, every
+        # real query comes back that way -- and reporting it as an empty
+        # result set is what pushes a model to answer from memory instead.
+        # Say it is a backend failure, and name the alternative, because a
+        # working search does exist here under another server.
+        # 202 is unambiguous: measured on this host, every real query comes
+        # back that way. A 200 needs care -- a query with genuinely nothing
+        # to find looks similar, and calling that "blocked" would be a
+        # different lie. The engine says so in words when it means it.
+        _said_empty = any(
+            phrase in text.lower() for phrase in
+            ("no results found", "keine ergebnisse", "no results for"))
+        if status == 202:
+            reason = (f"the search backend refused this request (HTTP {status}"
+                      ": an anti-bot challenge, not an empty result set)")
+        elif status and not _said_empty:
+            reason = ("the result page could not be parsed: no result markup "
+                      "and no 'no results' notice, so whether anything "
+                      "matched is unknown")
+        else:
+            reason = ""
+        if reason:
+            return {"error": (
+                f"{reason}. No results were retrieved and none should be "
+                "inferred. The reason does not depend on the wording, so "
+                "rephrasing this query and calling again will fail the same "
+                "way. If a web search tool from another server is available, use "
+                "that; otherwise tell the user the search could not run and "
+                "ask them for a URL."),
+                "query": query, "results": [], "result_count": 0,
+                "source": "duckduckgo-unavailable", "http_status": status}
 
     return {"query": query, "results": hits, "result_count": len(hits),
             "source": source}

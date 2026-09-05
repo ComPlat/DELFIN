@@ -26,8 +26,11 @@ optimising the agent.
 
 from __future__ import annotations
 
+import os
 import re
+import sys
 from dataclasses import dataclass
+from typing import Mapping
 
 
 _KNOWN_MODES = {
@@ -49,7 +52,15 @@ class Issue:
         return f"{icon} [{self.where}] {self.message}"
 
 
-def check_benchmark_tasks() -> list[Issue]:
+def strict_from_env(env: Mapping[str, str] | None = None) -> bool:
+    """True when ``DELFIN_OPTIMIZE_STRICT`` is set to a truthy value
+    (1/true/yes/on, case-insensitive)."""
+    src = os.environ if env is None else env
+    return (str(src.get("DELFIN_OPTIMIZE_STRICT", "")).strip().lower()
+            in {"1", "true", "yes", "on"})
+
+
+def check_benchmark_tasks(*, strict: bool = False) -> list[Issue]:
     issues: list[Issue] = []
     try:
         from delfin.agent.benchmark import load_tasks
@@ -84,7 +95,13 @@ def check_benchmark_tasks() -> list[Issue]:
             except re.error as exc:
                 issues.append(Issue("error", tid, f"bad regex {pat!r}: {exc}"))
             if "TODO" in pat:
-                issues.append(Issue("warn", tid, "expected signal still contains a TODO placeholder"))
+                # In strict mode (A/B gate) an unfilled ground truth is a
+                # FAILURE — the loop must not run against placeholder tasks.
+                sev = "error" if strict else "warn"
+                msg = "expected signal still contains a TODO placeholder"
+                if strict:
+                    msg += " (strict mode: fill in the ground truth first)"
+                issues.append(Issue(sev, tid, msg))
     return issues
 
 
@@ -117,27 +134,33 @@ def check_agent_prompts() -> list[Issue]:
     return issues
 
 
-def run_checks() -> list[Issue]:
+def run_checks(*, strict: bool = False) -> list[Issue]:
+    """All checks. ``strict=True`` escalates TODO-placeholder benchmark
+    tasks from warning to error (the A/B-loop gate)."""
     return (
-        check_benchmark_tasks()
+        check_benchmark_tasks(strict=strict)
         + check_ground_truth()
         + check_agent_prompts()
     )
 
 
-def main() -> int:
-    issues = run_checks()
+def main(argv: list[str] | None = None) -> int:
+    args = list(argv if argv is not None else sys.argv[1:])
+    strict = strict_from_env() or ("--strict" in args)
+    issues = run_checks(strict=strict)
     errors = [i for i in issues if i.severity == "error"]
     warns = [i for i in issues if i.severity == "warn"]
+    mode_note = " (strict mode)" if strict else ""
     for i in issues:
         print(i)
     if errors:
-        print(f"\n❌ {len(errors)} error(s), {len(warns)} warning(s) — NOT safe to ship.")
+        print(f"\n❌ {len(errors)} error(s), {len(warns)} warning(s) — "
+              f"NOT safe to ship.{mode_note}")
         return 1
-    print(f"\n✅ Safe to optimise — 0 errors, {len(warns)} warning(s).")
+    print(f"\n✅ Safe to optimise — 0 errors, {len(warns)} warning(s)."
+          f"{mode_note}")
     return 0
 
 
 if __name__ == "__main__":
-    import sys
     sys.exit(main())

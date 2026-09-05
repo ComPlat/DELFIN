@@ -1,7 +1,7 @@
 """The permission gate must accept the file_path alias, like the executors do.
 
 Bug 2026-06-25 (ka_ew7404, kit.qwen3.5-397b): the model called write_file with
-{"file_path": ...} (the Claude-Code convention). The permission gate read only
+{"file_path": ...} (the CLI-backend convention). The permission gate read only
 "path" and rejected it with "path is required" BEFORE the executor (which DOES
 accept file_path via _get_path_arg) could run — so the agent fell back to bash
 heredoc writes on every file.

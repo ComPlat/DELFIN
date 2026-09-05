@@ -13,7 +13,7 @@ tools (Bash/Edit/Write). These tests verify:
 4. Solo stays in sandbox: never tries to read or write outside the
    tmp tree.
 
-These tests REQUIRE network access to the Claude API via the local
+These tests REQUIRE network access to the Anthropic API via the local
 OAuth-authenticated `claude` CLI. Skipped unless ``DELFIN_AGENT_DRYRUN=1``.
 """
 

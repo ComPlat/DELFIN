@@ -75,16 +75,28 @@ def test_record_turn_outcome_tracks_every_mode_but_skips_empty():
     assert changes == {"success_rate": "dashboard: 90%"}
     engine.record_cycle_outcome.assert_called_once()
 
-    # Empty turns never produce an outcome row.
+    # A turn that produced NOTHING is now recorded as a failure. It used
+    # to be skipped, which is why the pass rate the agent is shown in its
+    # own system prompt excluded every zero-output turn -- the worse the
+    # backend behaved, the cleaner its record looked.
     engine2 = _engine()
-    assert _record_solo_turn_outcome(
+    engine2.record_cycle_outcome.return_value = {}
+    _record_solo_turn_outcome(
         engine2,
         user_task="Inspect dashboard state",
         response_text="",
         state={},
         start_time=1.0,
+    )
+    engine2.record_cycle_outcome.assert_called_once()
+    assert engine2.record_cycle_outcome.call_args.kwargs.get("verdict") == "FAIL"
+
+    # A turn with no QUESTION is still nothing to record.
+    engine3 = _engine()
+    assert _record_solo_turn_outcome(
+        engine3, user_task="", response_text="", state={}, start_time=1.0,
     ) == {}
-    engine2.record_cycle_outcome.assert_not_called()
+    engine3.record_cycle_outcome.assert_not_called()
 
 
 def test_stop_with_minimal_output_records_fail():

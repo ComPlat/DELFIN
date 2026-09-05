@@ -1,7 +1,7 @@
 """Shared + provider-specific learning profiles for the DELFIN agent.
 
 Profiles combine a repo-wide DELFIN baseline (``shared``) with
-provider-specific overlays (Claude, OpenAI/Codex, KIT Toolbox). The
+provider-specific overlays (Anthropic CLI/API, OpenAI/Codex, KIT Toolbox). The
 merged result drives adaptive routing and thinking budget selection,
 while outcome updates stay scoped to the active provider.
 

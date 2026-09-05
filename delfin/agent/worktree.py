@@ -31,7 +31,7 @@ import tempfile
 import time
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -50,6 +50,40 @@ class WorktreeInfo:
     cleaned_up: bool = False
     final_path: Optional[Path] = None    # set if kept after exit
     had_changes: bool = False
+    # Background jobs that were still running inside the tree when a
+    # teardown was attempted; non-empty means the tree was NOT removed.
+    held_by_jobs: list = field(default_factory=list)
+
+
+def jobs_holding_worktree(path: Path | str) -> list:
+    """Background jobs still running inside ``path``.
+
+    ``bash_background`` registers a job under the workspace it was started
+    in, and for an isolated sub-agent that workspace IS the worktree —
+    including the ``.delfin/bash_jobs.json`` that is the only record of the
+    job. The child is started in its own session, so ``git worktree remove
+    --force`` does not stop it: it keeps running with its working directory
+    deleted underneath it, its completion event destroyed with the registry
+    file, and ``bash_status`` answering "unknown job_id", which reads as a
+    typo rather than as a live process holding a shared node.
+
+    Best-effort: a registry that cannot be read reports nothing, so a
+    teardown behaves exactly as it did before this check existed.
+    """
+    try:
+        from .bash_jobs import running_jobs_for_workspace
+        return running_jobs_for_workspace(path) or []
+    except Exception:
+        return []
+
+
+def _held_message(path: Path | str, jobs: list) -> str:
+    ids = ", ".join(str((j or {}).get("job_id") or "?") for j in jobs[:8])
+    return (f"the worktree was NOT removed: {len(jobs)} background job(s) "
+            f"started in it are still running ({ids}). Removing it would "
+            f"delete their working directory and their completion records "
+            f"while the processes keep running. End them with "
+            f"bash_kill(job_id) or wait for them; the tree stays at {path}.")
 
 
 def _run_git(repo: Path, *args: str) -> str:
@@ -131,8 +165,16 @@ def exit_worktree(
     *,
     keep_if_changed: bool = True,
 ) -> WorktreeInfo:
-    """Tear down the worktree. Keep it iff there are changes."""
+    """Tear down the worktree. Keep it iff there are changes — or iff
+    background jobs are still running inside it (see
+    :func:`jobs_holding_worktree`); that check lives here rather than in
+    one caller so every teardown path is covered by it."""
     if info.cleaned_up:
+        return info
+    info.held_by_jobs = jobs_holding_worktree(info.path)
+    if info.held_by_jobs:
+        info.had_changes = _has_changes(info)
+        info.final_path = info.path
         return info
     info.had_changes = _has_changes(info)
     if info.had_changes and keep_if_changed:
@@ -193,8 +235,16 @@ def _cleanup_merged_worktree(info: WorktreeInfo) -> None:
     merge (the changes now live in the target tree, so both are redundant).
     Best-effort — never raises; the worktree must be removed BEFORE the branch
     so git isn't holding the branch checked out. Prevents parallel-writer
-    fan-outs from leaking ``/tmp`` worktrees and orphan branches."""
+    fan-outs from leaking ``/tmp`` worktrees and orphan branches.
+
+    A merge does not stop the jobs the worktree is running, so the same
+    guard applies here: the changes are already in the target tree, and the
+    tree can be removed once the processes using it are done."""
     wt = info.final_path or info.path
+    info.held_by_jobs = jobs_holding_worktree(wt)
+    if info.held_by_jobs:
+        info.final_path = Path(wt)
+        return
     try:
         _run_git(info.repo_dir, "worktree", "remove", "--force", str(wt))
     except WorktreeError:
@@ -254,11 +304,12 @@ def merge_worktree(
     # isolated worktree + its throwaway branch have served their purpose.
     if cleanup:
         _cleanup_merged_worktree(info)
-    return MergeResult(
-        True, True, files,
-        f"merged {len(files)} file(s) into the working tree of {repo}; "
-        f"review with `git -C {repo} diff` and commit.",
-    )
+    message = (f"merged {len(files)} file(s) into the working tree of {repo}; "
+               f"review with `git -C {repo} diff` and commit.")
+    if info.held_by_jobs:
+        message += " " + _held_message(info.final_path or info.path,
+                                       info.held_by_jobs)
+    return MergeResult(True, True, files, message)
 
 
 def diff_summary(info: WorktreeInfo, *, max_chars: int = 2000) -> str:
@@ -301,6 +352,7 @@ __all__ = [
     "MergeResult",
     "enter_worktree",
     "exit_worktree",
+    "jobs_holding_worktree",
     "merge_worktree",
     "diff_summary",
     "worktree_session",

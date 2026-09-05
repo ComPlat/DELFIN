@@ -25,6 +25,7 @@ run-store / event stream plugs in behind without changing callers.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -118,6 +119,28 @@ register({cls}())
 '''
 
 
+_MODULE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def module_name_error(name: Any) -> Optional[str]:
+    """Why *name* may not be used as an adapter module name, or ``None``.
+
+    Exposed so the caller's permission gate can refuse the same names the
+    writer refuses, and say the same thing about them.
+    """
+    text = name if isinstance(name, str) else ""
+    if not text:
+        return "module name is required (a plain Python identifier)"
+    if not _MODULE_NAME_RE.match(text):
+        return (
+            f"invalid module name {text!r}: it becomes a file name under the "
+            "adapters directory and is imported immediately, so it must be a "
+            "plain Python identifier — letters, digits and underscores, not "
+            "starting with a digit. No path separators, no '..', no suffix."
+        )
+    return None
+
+
 def register_module(
     name: str, code: str, *, directory=None, overwrite: bool = True,
 ) -> Dict[str, Any]:
@@ -133,6 +156,15 @@ def register_module(
     * on any failure removes the freshly written file so it can't poison
       discovery, and reports the error instead of raising
 
+    *name* must be a plain Python identifier. It is used as a FILE NAME and
+    the file is imported immediately, so anything else is a write-plus-execute
+    at a caller-chosen location: ``"../x"`` landed one directory above the
+    adapters directory, an absolute name landed wherever it pointed, and the
+    cleanup that removes the file on failure runs only AFTER the import has
+    already executed it. The name is therefore checked before anything is
+    written, and the resolved path is required to stay inside the target
+    directory.
+
     Returns ``{"ok", "name", "path", "provides", "capability", "diagnostics"}``;
     on success the new block is immediately usable in pipelines, shows up in
     ``catalog``/``probe``/the Pipelines tab, and survives restarts.
@@ -141,9 +173,27 @@ def register_module(
     from delfin.tools.manifest import contract_to_dict
 
     diagnostics: List[str] = []
+    name_error = module_name_error(name)
+    if name_error is not None:
+        return {"ok": False, "name": str(name), "path": "", "provides": [],
+                "capability": None, "diagnostics": [name_error]}
+
     target_dir = Path(directory) if directory else _registry._user_adapter_dirs()[0]
     target_dir.mkdir(parents=True, exist_ok=True)
     path = target_dir / f"{name}.py"
+    try:
+        inside = path.resolve().parent == target_dir.resolve()
+    except OSError:
+        inside = False
+    if not inside:
+        return {
+            "ok": False, "name": name, "path": str(path), "provides": [],
+            "capability": None,
+            "diagnostics": [
+                f"refused: {path} resolves outside the adapters directory "
+                f"{target_dir}"
+            ],
+        }
     existed = path.exists()
     if existed and not overwrite:
         return {"ok": False, "name": name, "path": str(path), "provides": [],
@@ -569,6 +619,7 @@ __all__ = [
     "compatible_successors",
     "new_capability_template",
     "register_module",
+    "module_name_error",
     "resolve_spec",
     "scientific_lint",
     # keys + manifest

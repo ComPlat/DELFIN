@@ -1,0 +1,340 @@
+"""The test suite wrote into the user's real state, and into the checkout.
+
+Two user-scoped stores resolve through ``Path.home()``, so the ``tmp_path``
+a test passes as its repo root does not bound them:
+
+  ``~/.delfin/memory``               the user-wide memory store
+  ``~/.delfin/office_workspaces.json``  the office-folder registry
+
+After an ordinary full run the registry held 178 entries. 176 were reprs of
+mock objects that tests had passed where a path was expected, and the
+directories named in them had really been created -- 752 kB of
+``MagicMock/mock._permissions.workspace/<id>/.delfin/`` inside the DELFIN
+checkout. They stayed invisible because a ``.delfin/`` ignore rule covers
+them, so they were never at risk of being committed; they simply
+accumulated.
+
+That registry is one of the carriers of the folder lock: what it contains
+decides which directory counts as an office workspace. The repository root
+was among the 178 entries, which made a full-suite run treat DELFIN's own
+checkout as an office folder -- and one memory test that passes in
+isolation failed in the full run for that reason alone. It looked exactly
+like flakiness and was not: it was a test writing into the state a later
+test reads.
+
+These tests pin the redirect. They assert about the running process, so
+they hold for every test in the suite, not just this file.
+"""
+
+from __future__ import annotations
+
+import pathlib
+
+import pytest
+
+from conftest import _CHECKOUT_ROOT, _GENERATED_ROOTS, _checkout_entries
+from delfin.agent import memory_store as ms
+
+
+_REAL_HOME = pathlib.Path.home() / ".delfin"
+
+
+def _under_real_home(p: pathlib.Path) -> bool:
+    try:
+        p.resolve().relative_to(_REAL_HOME.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+# ---------------------------------------------------------------------------
+# The two user-scoped stores are redirected
+# ---------------------------------------------------------------------------
+
+def test_the_user_wide_memory_store_is_not_the_real_one():
+    assert not _under_real_home(ms._delfin_global_memory_dir())
+
+
+def test_the_office_registry_is_not_the_real_one():
+    assert not _under_real_home(ms._office_ws_file())
+
+
+def test_a_global_memory_does_not_land_in_the_users_home(tmp_path):
+    p, _, _ = ms.save_typed_memory(
+        "user: prefers metric units", repo_root=tmp_path, scope="user")
+    assert not _under_real_home(p)
+
+
+def test_registering_an_office_folder_does_not_touch_the_real_registry(
+    tmp_path,
+):
+    before = _REAL_HOME / "office_workspaces.json"
+    stamp = before.stat().st_mtime if before.exists() else None
+    ms.register_office_workspace(tmp_path)
+    after = before.stat().st_mtime if before.exists() else None
+    assert after == stamp
+    assert str(tmp_path.resolve()) in ms._load_office_workspaces()
+
+
+# ---------------------------------------------------------------------------
+# ...and the redirect does not leak between tests
+# ---------------------------------------------------------------------------
+
+def test_the_registry_cache_does_not_survive_the_previous_test(tmp_path):
+    """A module-global cache would outlive the per-test redirect."""
+    assert str(tmp_path.resolve()) not in ms._load_office_workspaces()
+
+
+@pytest.mark.parametrize("run", [1, 2])
+def test_two_tests_do_not_see_each_others_office_folders(tmp_path, run):
+    known_before = set(ms._load_office_workspaces())
+    ms.register_office_workspace(tmp_path)
+    assert known_before == set() or tmp_path not in known_before
+
+
+# ---------------------------------------------------------------------------
+# The thing that produced the mock directories in the first place
+# ---------------------------------------------------------------------------
+
+def test_a_mock_is_not_accepted_as_an_office_folder():
+    """Registration requires a real directory, whatever it was handed."""
+    from unittest.mock import MagicMock
+    before = set(ms._load_office_workspaces())
+    ms.register_office_workspace(MagicMock().workspace)
+    assert set(ms._load_office_workspaces()) == before
+
+
+def test_a_path_that_does_not_exist_is_not_registered(tmp_path):
+    before = set(ms._load_office_workspaces())
+    ms.register_office_workspace(tmp_path / "never_created")
+    assert set(ms._load_office_workspaces()) == before
+
+
+def test_a_file_is_not_an_office_folder(tmp_path):
+    f = tmp_path / "notes.txt"
+    f.write_text("x", encoding="utf-8")
+    before = set(ms._load_office_workspaces())
+    ms.register_office_workspace(f)
+    assert set(ms._load_office_workspaces()) == before
+
+
+# ---------------------------------------------------------------------------
+# ...and neither does anything else the suite writes to
+# ---------------------------------------------------------------------------
+
+def test_every_writable_user_state_sink_is_redirected(_user_state_targets):
+    """The sink table is resolved once per session; this asserts the running
+    process actually points every one of them somewhere disposable."""
+    assert _user_state_targets, "the sink table resolved to nothing"
+    leaked = [
+        f"{mod.__name__}.{attr}"
+        for mod, attr, _rel in _user_state_targets
+        if _under_real_home(getattr(mod, attr))
+    ]
+    assert not leaked, f"still writing into the user's home: {leaked}"
+
+
+def test_the_locator_index_is_redirected():
+    """203 job records had accumulated here, 141 naming pytest tmp dirs."""
+    from delfin.agent import bash_jobs as bj
+    assert not _under_real_home(bj._INDEX_PATH)
+
+
+def test_a_started_job_does_not_reach_the_real_index(tmp_path):
+    from delfin.agent import bash_jobs as bj
+    real = _REAL_HOME / "bash_jobs_index.json"
+    stamp = real.stat().st_mtime if real.exists() else None
+    bj._note_job_workspace("test-job", str(tmp_path))
+    after = real.stat().st_mtime if real.exists() else None
+    assert after == stamp
+    assert bj._lookup_job_workspace("test-job") == str(tmp_path)
+
+
+# ---------------------------------------------------------------------------
+# The sinks resolved per call, including the one that matters most
+# ---------------------------------------------------------------------------
+
+def test_every_per_call_sink_is_redirected(_user_state_resolvers, tmp_path):
+    assert _user_state_resolvers, "the resolver table resolved to nothing"
+    leaked = []
+    for mod, attr, _rel in _user_state_resolvers:
+        fn = getattr(mod, attr)
+        try:
+            p = fn(tmp_path)
+        except TypeError:
+            p = fn()
+        if _under_real_home(p):
+            leaked.append(f"{mod.__name__}.{attr}")
+    assert not leaked, f"still writing into the user's home: {leaked}"
+
+
+def test_the_project_memory_store_is_not_in_the_users_home(tmp_path):
+    """Its path is ~/.delfin/projects/<slug>/memory, and the slug comes from
+    the repo root -- so passing tmp_path only changed the NAME of the
+    directory it created in the user's home, it did not move it."""
+    p, _, _ = ms.save_typed_memory("project: x", repo_root=tmp_path)
+    assert not _under_real_home(p)
+
+
+def test_the_users_permission_settings_are_not_the_real_file():
+    """A test persisting an allow-rule edited the user's real settings: the
+    file was found holding allow_patterns ["^.*$"] and default_mode
+    "bypassPermissions" -- every command auto-approved, from a fixture."""
+    from delfin.agent import kit_settings as ks
+    assert not _under_real_home(ks.USER_SETTINGS_PATH)
+
+
+def test_persisting_an_allow_rule_does_not_reach_the_real_settings():
+    from delfin.agent import hooks_editor as he
+    real = _REAL_HOME / "settings.json"
+    stamp = real.stat().st_mtime if real.exists() else None
+    he._write_settings({"kit": {"allow_patterns": ["^.*$"]}})
+    after = real.stat().st_mtime if real.exists() else None
+    assert after == stamp
+
+
+# ---------------------------------------------------------------------------
+# ...and the OTHER destination of the same incident: the checkout
+# ---------------------------------------------------------------------------
+# The file above documents the mock directories that landed "inside the
+# DELFIN checkout" and then asserts, in every one of its cases, about
+# ``~/.delfin``. That half was never tested. Re-measured before these
+# tests were written: an ordinary run left 3.1 MB in 560 files under the
+# checkout, and ``git status --porcelain --untracked-files=all MagicMock``
+# printed nothing -- the ``.delfin/`` ignore rule covers the whole shape,
+# so no amount of looking at git would ever have shown it.
+#
+# ``MagicMock.__fspath__`` returns a RELATIVE path, which is why the
+# process CWD is where it lands. Two guards, because they fail at
+# different times: the store refuses the input, and the session fixture
+# in conftest notices any future leak whatever its source.
+
+def test_a_task_store_refuses_a_relative_base_dir():
+    from delfin.agent.agent_tasks import TaskStore
+
+    with pytest.raises(ValueError, match="absolute"):
+        TaskStore(pathlib.Path("relative/workspace"))
+
+
+def test_a_task_store_refuses_a_mock_workspace():
+    """The exact input that produced the 560 files."""
+    from unittest.mock import MagicMock
+
+    from delfin.agent.agent_tasks import TaskStore
+
+    with pytest.raises(ValueError, match="absolute"):
+        TaskStore(MagicMock()._permissions.workspace)
+
+
+def test_a_store_on_a_mock_workspace_creates_nothing_in_the_checkout():
+    """``get_store`` is the reachable entry point; the refusal has to hold
+    there too, and it must not have written before refusing."""
+    from unittest.mock import MagicMock
+
+    from delfin.agent.agent_tasks import get_store
+
+    before = _checkout_entries()
+    with pytest.raises(ValueError):
+        get_store(MagicMock()._permissions.workspace)
+    assert _checkout_entries() - before == set()
+
+
+def test_a_task_store_still_accepts_a_real_directory(tmp_path):
+    """A guard that blocked ordinary use would be reverted within a week."""
+    from delfin.agent.agent_tasks import TaskStore
+
+    store = TaskStore(tmp_path)
+    store.create("etwas zu tun", session_id="s1")
+    assert [t["subject"] for t in store.list(session_id="s1")] == [
+        "etwas zu tun"]
+
+
+def test_the_checkout_snapshot_sees_this_very_file():
+    """The snapshot the session fixture compares has to cover the tree."""
+    entries = _checkout_entries()
+    assert entries, "the checkout snapshot resolved to nothing"
+    assert str(pathlib.Path(__file__).resolve()) in entries
+
+
+def test_the_snapshot_notices_a_stray_entry():
+    """What the fixture does at teardown, done here so the mechanism is
+    tested rather than trusted."""
+    before = _checkout_entries()
+    probe = _CHECKOUT_ROOT / ".delfin_leak_probe"
+    probe.mkdir()
+    try:
+        assert str(probe) in _checkout_entries() - before
+    finally:
+        probe.rmdir()
+    assert _checkout_entries() - before == set()
+
+
+def test_the_snapshot_skips_the_declared_output_locations():
+    """Twice the guard failed a run on the package installing its own
+    toolchain and on fixtures built from a spec. Neither can be reproduced
+    on a machine where both already exist, which is why it took two CI runs
+    to see -- so the exemption is asserted here rather than on a fresh
+    clone."""
+    for rel in _GENERATED_ROOTS:
+        root = _CHECKOUT_ROOT / rel
+        root.mkdir(parents=True, exist_ok=True)
+        before = _checkout_entries()
+        probe = root / "leak_probe_file"
+        probe.write_text("")
+        try:
+            assert _checkout_entries() - before == set(), rel
+        finally:
+            probe.unlink()
+
+
+def test_inside_a_declared_location_git_says_what_belongs_there():
+    """Both declared roots hold tracked source, and one is where the office
+    benchmark writes. Exempting them wholesale would have made that the one
+    place a leak stayed quiet, so inside them the ignore rules -- written by
+    hand, and reviewed -- are what decides."""
+    from conftest import _unexpected_under_a_generated_root
+
+    for rel in _GENERATED_ROOTS:
+        root = _CHECKOUT_ROOT / rel
+        root.mkdir(parents=True, exist_ok=True)
+        before = _unexpected_under_a_generated_root()
+        probe = root / "leak_probe.json"
+        probe.write_text("{}")
+        try:
+            appeared = _unexpected_under_a_generated_root() - before
+            assert any(p.endswith("leak_probe.json") for p in appeared), rel
+            # And the walk still says nothing about it, which is why the
+            # two halves are both needed.
+            assert not any("leak_probe.json" in p for p in _checkout_entries())
+        finally:
+            probe.unlink()
+
+
+def test_what_the_installer_and_the_generator_produce_is_not_reported():
+    """The other half: with the toolchain installed and the workbooks built,
+    which is this machine, git must have nothing to say about either root.
+    When that stops holding, .gitignore has drifted from what the installer
+    writes, and the run should say so."""
+    from conftest import _unexpected_under_a_generated_root
+
+    assert _unexpected_under_a_generated_root() == frozenset()
+
+
+def test_a_sibling_of_a_declared_location_is_not_exempt():
+    """The exemption is containment, not a name that happens to start the
+    same way: a backup or a copy beside a declared root is ordinary tree,
+    and a leak into it has to be reported."""
+    sibling = _CHECKOUT_ROOT / (_GENERATED_ROOTS[0] + "_probe")
+    before = _checkout_entries()
+    sibling.mkdir(parents=True)
+    try:
+        assert str(sibling) in _checkout_entries() - before
+    finally:
+        sibling.rmdir()
+
+
+def test_the_snapshot_ignores_build_noise():
+    """Byte-code caches are created by running the suite at all; failing
+    the run on those would get the guard deleted, not fixed."""
+    assert not [p for p in _checkout_entries() if "__pycache__" in p]
+    assert not [p for p in _checkout_entries() if p.endswith(".pyc")]

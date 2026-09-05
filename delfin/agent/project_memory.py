@@ -1,11 +1,14 @@
 """Project-memory file loader.
 
-Implements ``CLAUDE.md`` auto-loading: walks up from the
+Implements ``DELFIN.MD`` auto-loading: walks up from the
 agent's working directory and concatenates every project-memory file
-it finds. Recognised filenames: ``CLAUDE.md``, ``AGENTS.md``,
-``DELFIN.md``. Walking is deepest-first (closest to cwd wins on
-total budget). Stops at the user's home directory or a filesystem
-root, whichever comes first.
+it finds. Recognised filenames: ``DELFIN.MD`` / ``DELFIN.md``
+(DELFIN's own project-instructions file) and ``AGENTS.md`` (the
+tool-neutral cross-agent standard). Instruction files of other agent
+frameworks are deliberately NOT loaded — DELFIN is standalone and
+must not inherit another tool's rules. Walking is deepest-first
+(closest to cwd wins on total budget). Stops at the user's home
+directory or a filesystem root, whichever comes first.
 
 Each found file is rendered as
 
@@ -23,7 +26,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable
 
-_RECOGNISED_NAMES = ("CLAUDE.md", "AGENTS.md", "DELFIN.md")
+_RECOGNISED_NAMES = ("DELFIN.MD", "DELFIN.md", "AGENTS.md")
 _DEFAULT_MAX_CHARS = 8000
 _PER_FILE_CAP = 6000
 
@@ -57,7 +60,7 @@ def discover_project_memory_files(
     pick up the right rules.
     """
     cwd = Path(cwd or Path.cwd()).resolve()
-    seen: set[Path] = set()
+    seen: set[tuple[int, int]] = set()
     out: list[Path] = []
     anchors: list[Path] = list(_candidate_dirs(cwd))
     for r in extra_roots or ():
@@ -72,9 +75,16 @@ def discover_project_memory_files(
         for name in _RECOGNISED_NAMES:
             p = d / name
             try:
-                if p.is_file() and p not in seen:
-                    seen.add(p)
-                    out.append(p)
+                if not p.is_file():
+                    continue
+                # Dedupe by inode so DELFIN.MD/DELFIN.md don't load twice
+                # on a case-insensitive filesystem.
+                st = p.stat()
+                ident = (st.st_dev, st.st_ino)
+                if ident in seen:
+                    continue
+                seen.add(ident)
+                out.append(p)
             except OSError:
                 continue
     return out

@@ -117,12 +117,65 @@ def _delfin_version() -> str:
         return ""
 
 
-def settings_snapshot(settings: dict | None = None) -> dict:
-    """Return a redacted, debugging-relevant slice of the settings.
+# The agent settings a maintainer needs to reproduce a bad turn. This is an
+# ALLOW-list, and that direction is the whole point: the previous code took
+# the agent block wholesale, so every field anyone ever adds to it was
+# published by default. The live settings file on the audited machine
+# already carried an ``agent.api_key`` field — legacy, empty, read by
+# nothing — which is exactly the shape that would have shipped.
+_AGENT_SETTINGS_ALLOWED = frozenset({
+    "action_repeat_limit", "auto_memory", "auto_verify",
+    "auto_verify_command", "backend", "bash_isolation", "bug_archive_dir",
+    "compact_resets_cli", "cost_soft_limit_usd", "effort", "eval_loop",
+    "job_monitor", "max_action_rounds", "max_background_jobs", "max_tokens",
+    "max_tool_rounds", "output_guard", "permission_mode",
+    "permission_profile", "provider", "model", "role_models", "routing",
+    "session_retention_days", "state_retention_days", "subagents",
+})
 
-    Includes the agent + runtime-backend + transfer-target sections (which
-    shape agent behaviour) but NEVER secrets: no API keys (those live in
-    credentials/env, not settings) and no SSH password fields.
+# Key names whose VALUE is never published, at any depth. The allow-list
+# above governs the top level; several allowed entries are nested dicts
+# (routing, subagents, role_models) that a future release could extend with
+# a per-provider credential, and a nested secret is not something the
+# top-level list can see.
+_SECRET_KEY_HINT = re.compile(
+    r"(?i)(api[_-]?key|apikey|secret|password|passwd|token|credential"
+    r"|passphrase|private[_-]?key|auth)"
+)
+
+_REDACTED = "[redacted:settings-key]"
+
+
+def _scrub_settings_value(value: Any, depth: int = 0) -> Any:
+    """Drop credential-shaped keys at any depth of an allowed value."""
+    if depth > 12:
+        return value
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            if isinstance(k, str) and _SECRET_KEY_HINT.search(k):
+                out[k] = _REDACTED
+            else:
+                out[k] = _scrub_settings_value(v, depth + 1)
+        return out
+    if isinstance(value, list):
+        return [_scrub_settings_value(v, depth + 1) for v in value]
+    return value
+
+
+def settings_snapshot(settings: dict | None = None) -> dict:
+    """Return a debugging-relevant slice of the settings.
+
+    The agent section is filtered through :data:`_AGENT_SETTINGS_ALLOWED`,
+    so a field nobody listed is absent rather than published; every allowed
+    value is then scrubbed of credential-shaped keys at any depth.  The
+    runtime backend and the transfer TARGET (host/user/path/port, never a
+    password) come along because they shape the run.
+
+    This report is made group-readable and rsynced into a shared archive,
+    so "no secrets" has to be a property of the construction, not of a
+    docstring: a report is not the place to find out that a settings field
+    turned out to hold a credential.
     """
     if settings is None:
         try:
@@ -131,7 +184,15 @@ def settings_snapshot(settings: dict | None = None) -> dict:
         except Exception:
             settings = {}
     settings = settings or {}
-    agent = dict((settings.get("agent") or {}))
+    raw_agent = settings.get("agent") or {}
+    agent: dict = {}
+    if isinstance(raw_agent, dict):
+        for key, value in raw_agent.items():
+            if key not in _AGENT_SETTINGS_ALLOWED:
+                continue
+            if _SECRET_KEY_HINT.search(str(key)):
+                continue        # belt and braces: never allow-list a secret
+            agent[key] = _scrub_settings_value(value)
     runtime = settings.get("runtime") or {}
     transfer = settings.get("transfer") or {}
     return {
@@ -144,7 +205,7 @@ def settings_snapshot(settings: dict | None = None) -> dict:
             "remote_path": transfer.get("remote_path", ""),
             "port": transfer.get("port", 22),
         },
-        "features": settings.get("features") or {},
+        "features": _scrub_settings_value(settings.get("features") or {}),
     }
 
 
@@ -162,9 +223,60 @@ def recent_outcomes(limit: int = 10) -> list:
         return []
 
 
-def _bundle_files(referenced: list, report_dir: Path) -> list[dict]:
+def _resolve_referenced(
+    original: str, workspace: Path | None = None
+) -> tuple[Path | None, str]:
+    """Resolve one referenced-file entry against its possible bases.
+
+    The dashboard collects RAW tool-input path strings, which are usually
+    *workspace-relative* (``tetris.py``) — resolving them against the
+    report-writer's CWD silently loses exactly the files the report should
+    preserve.  Resolution order:
+
+    1. absolute path — taken as-is,
+    2. ``workspace / relative`` (the session workspace, when known),
+    3. ``cwd / relative`` (legacy behaviour, kept as fallback).
+
+    A relative candidate must stay INSIDE its base after normalising
+    ``..`` and symlinks — a traversal entry like ``../../etc/passwd``
+    is refused instead of bundled.
+
+    Returns ``(path, via)``: ``via`` is ``"absolute"`` / ``"workspace"`` /
+    ``"cwd"`` on success, ``(None, "outside-workspace")`` for a refused
+    escape, and ``(None, "")`` when no base yields an existing file.
+    """
+    raw = Path(original).expanduser()
+    if raw.is_absolute():
+        return (raw, "absolute") if raw.is_file() else (None, "")
+    bases: list[tuple[str, Path]] = []
+    if workspace is not None:
+        bases.append(("workspace", Path(workspace).expanduser()))
+    bases.append(("cwd", Path.cwd()))
+    escaped = False
+    for via, base in bases:
+        try:
+            base_res = base.resolve()
+            candidate = (base / raw).resolve()
+        except Exception:
+            continue
+        if not candidate.is_file():
+            continue
+        if candidate.is_relative_to(base_res):
+            return candidate, via
+        escaped = True
+    return (None, "outside-workspace") if escaped else (None, "")
+
+
+def _bundle_files(
+    referenced: list, report_dir: Path,
+    *, workspace: str | Path | None = None,
+) -> list[dict]:
     """Copy the files the agent touched into ``report_dir/workspace`` so a
     maintainer has the real inputs for replay, not just the path names.
+
+    Relative entries are resolved via :func:`_resolve_referenced`
+    (absolute → workspace → cwd); each record carries ``resolved_via``
+    so the report shows WHICH base produced the bundled copy.
 
     Size-capped (per-file, count, total) and never raises.  Returns one
     record per referenced path with its bundling ``status``.  A unique
@@ -172,6 +284,8 @@ def _bundle_files(referenced: list, report_dir: Path) -> list[dict]:
     maps bundled name → original absolute path.
     """
     import shutil
+
+    ws_base = Path(workspace).expanduser() if workspace else None
 
     records: list[dict] = []
     paths = [str(p) for p in (referenced or []) if str(p).strip()]
@@ -187,13 +301,15 @@ def _bundle_files(referenced: list, report_dir: Path) -> list[dict]:
     bundled = 0
     used_names: set[str] = set()
     for original in paths:
-        rec = {"original": original, "status": "", "bytes": 0, "bundled": ""}
+        rec = {"original": original, "status": "", "bytes": 0, "bundled": "",
+               "resolved_via": ""}
         try:
-            src = Path(original).expanduser()
-            if not src.is_file():
-                rec["status"] = "missing-or-not-a-file"
+            src, via = _resolve_referenced(original, workspace=ws_base)
+            if src is None:
+                rec["status"] = via or "missing-or-not-a-file"
                 records.append(rec)
                 continue
+            rec["resolved_via"] = via
             size = src.stat().st_size
             rec["bytes"] = size
             if bundled >= _MAX_FILES:
@@ -238,6 +354,34 @@ def _bundle_files(referenced: list, report_dir: Path) -> list[dict]:
     return records
 
 
+def _guarded_write(path: Path, text: str) -> int:
+    """Write a rendered report file with the secret redactor applied.
+
+    Everything that reaches this function is about to be chgrp'ed to the
+    archive's maintainer group, given group-read, and rsynced into a shared
+    archive: the system prompt, the raw traceback, every chat and engine
+    message, and the tool trace with its raw tool outputs.  The output
+    guard existed and ran on the final ANSWER only — nothing inspected any
+    of this.
+
+    Returns the number of redactions.  A failing guard must not cost the
+    report, so on any error the unguarded text is still written: losing the
+    bug report is the worse outcome, and the caller reports the count.
+    """
+    guarded = text
+    findings: list = []
+    try:
+        from .output_guard import run_output_guards
+        result = run_output_guards(text)
+        guarded = result.text
+        findings = [f for f in result.findings
+                    if f.get("check") == "secret_redaction"]
+    except Exception:
+        guarded = text
+    path.write_text(guarded, encoding="utf-8")
+    return len(findings)
+
+
 def _report_dirname(user: str, session_id: str) -> str:
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     sess = _sanitize(session_id[:8], default="nosess")
@@ -265,7 +409,7 @@ def _render_markdown(
     _mode_display = {"solo": "Code", "dashboard": "Dashboard"}
     for key in ("created_at", "user", "host", "mode", "provider", "model",
                 "effort", "perms", "backend", "role", "session_id",
-                "input_tokens", "output_tokens", "cost_usd",
+                "workspace", "input_tokens", "output_tokens", "cost_usd",
                 "delfin_version", "git_head", "python"):
         if key in meta and meta[key] not in (None, ""):
             shown = (_mode_display.get(str(meta[key]), str(meta[key]))
@@ -279,10 +423,12 @@ def _render_markdown(
         lines += [f"- `{c}`" for c in denied_commands]
     if referenced_files:
         lines += ["", "## Referenced workspace files", "",
-                   "| File | Status | Size | bundled |", "|---|---|---|---|"]
+                   "| File | Status | Via | Size | bundled |",
+                   "|---|---|---|---|---|"]
         for r in referenced_files:
             lines.append(
                 f"| `{r.get('original','')}` | {r.get('status','')} | "
+                f"{r.get('resolved_via','') or '—'} | "
                 f"{r.get('bytes',0)} | {r.get('bundled','') or '—'} |"
             )
     if tool_trace:
@@ -354,6 +500,7 @@ def write_bug_report(
     error_text: str = "",
     denied_commands: list | None = None,
     referenced_files: list | None = None,
+    workspace: str | Path | None = None,
     repo_dir: str | None = None,
     extra: dict | None = None,
     settings: dict | None = None,
@@ -364,6 +511,11 @@ def write_bug_report(
     Produces ``report.json`` (machine-readable, full payload incl. the
     raw engine message list) and ``report.md`` (human-readable) inside a
     fresh collision-free sub-directory of the resolved archive root.
+
+    ``workspace`` is the SESSION workspace the agent ran in — relative
+    ``referenced_files`` entries (raw tool-input strings) resolve against
+    it before falling back to the report-writer's CWD (legacy).  When
+    omitted, behaviour is unchanged (cwd-relative only).
     """
     user = _current_user()
     root = Path(archive_dir).expanduser() if archive_dir else resolve_archive_dir(settings)
@@ -418,6 +570,7 @@ def write_bug_report(
         "backend": backend,
         "role": role,
         "session_id": session_id,
+        "workspace": str(workspace) if workspace else "",
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "cost_usd": round(float(cost_usd or 0.0), 4),
@@ -430,7 +583,10 @@ def write_bug_report(
         meta["extra"] = extra
 
     # Bundle the actual files the agent touched (copied under workspace/).
-    bundled_files = _bundle_files(referenced_files or [], report_dir)
+    # Relative entries resolve against the SESSION workspace first — the
+    # report-writer's CWD is not where the agent created them.
+    bundled_files = _bundle_files(referenced_files or [], report_dir,
+                                  workspace=workspace)
 
     # Tool-call trace: the exact sequence of tools the agent ran this session
     # (name / input / output / duration / ok). Shipped so a failed session can
@@ -440,9 +596,10 @@ def write_bug_report(
         from . import tool_trace as _tt
         tool_trace = _tt.read(trace_session or session_id)
         if tool_trace:
-            (report_dir / "tool_trace.jsonl").write_text(
+            _guarded_write(
+                report_dir / "tool_trace.jsonl",
                 "\n".join(json.dumps(e, ensure_ascii=False) for e in tool_trace)
-                + "\n", encoding="utf-8")
+                + "\n")
     except Exception:
         tool_trace = []
 
@@ -454,9 +611,10 @@ def write_bug_report(
         from . import turn_metrics as _tm
         turn_metrics = _tm.read(trace_session or session_id)
         if turn_metrics:
-            (report_dir / "turn_metrics.jsonl").write_text(
-                "\n".join(json.dumps(e, ensure_ascii=False) for e in turn_metrics)
-                + "\n", encoding="utf-8")
+            _guarded_write(
+                report_dir / "turn_metrics.jsonl",
+                "\n".join(json.dumps(e, ensure_ascii=False)
+                          for e in turn_metrics) + "\n")
     except Exception:
         turn_metrics = []
 
@@ -476,10 +634,13 @@ def write_bug_report(
         "last_compaction_info": last_compaction_info or {},
     }
 
-    (report_dir / "report.json").write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8",
-    )
-    (report_dir / "report.md").write_text(
+    # Redact BEFORE _make_group_readable — that call is the moment the
+    # report stops being private.
+    n_redacted = _guarded_write(
+        report_dir / "report.json",
+        json.dumps(payload, ensure_ascii=False, indent=2))
+    n_redacted += _guarded_write(
+        report_dir / "report.md",
         _render_markdown(
             meta, chat_messages or [],
             error_text=error_text,
@@ -489,8 +650,16 @@ def write_bug_report(
             tool_trace=tool_trace,
             turn_metrics=turn_metrics,
         ),
-        encoding="utf-8",
     )
+    if n_redacted:
+        try:
+            (report_dir / "REDACTIONS.txt").write_text(
+                f"{n_redacted} credential-shaped value(s) were redacted from "
+                "this report before it left the writer's machine.\n"
+                "Ask the reporter directly if a redacted value is needed to "
+                "reproduce.\n", encoding="utf-8")
+        except OSError:
+            pass
     _make_group_readable(report_dir)
     return report_dir
 
@@ -572,7 +741,19 @@ def push_report_to_remote(
         build_rsync_transfer_command,
     )
 
-    target_dir = f"{remote_path.rstrip('/')}/{subdir}"
+    # The configured remote path is where the archive lives, and people
+    # configure it BOTH ways: some point at the parent and expect the
+    # subdir appended, some point straight at the archive folder because
+    # that is the folder they were told bugs go in. Appending blindly turns
+    # the second into ``.../AGENT_BUGS/AGENT_BUGS``, one level below where
+    # anything looks -- ``find_unsolved`` iterates the immediate subdirs,
+    # sees a directory with no report.json, and skips it. Observed
+    # 2026-08-28: two reports from a second user sat there unread while the
+    # triage list showed nothing new.
+    _base = remote_path.rstrip("/")
+    _sub = (subdir or "").strip("/")
+    target_dir = (_base if _sub and _base.rsplit("/", 1)[-1] == _sub
+                  else f"{_base}/{_sub}" if _sub else _base)
     try:
         mk = subprocess.run(
             build_ssh_mkdir_command(host, user, target_dir, port),

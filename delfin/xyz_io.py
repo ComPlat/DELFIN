@@ -7,9 +7,11 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from delfin.common.orca_blocks import OrcaInputBuilder, collect_output_blocks, resolve_maxiter
+from delfin.common.solvation import build_solvation_keyword
 
 # import canonical selection helpers from utils
 from .utils import resolve_level_of_theory
+from delfin.common.control_validator import resolve_occupier_compare
 
 # Cache QMMM splits once detected so subsequent geometries (e.g. ORCA outputs without '$')
 # continue to receive the QM/XTB setup.
@@ -344,10 +346,7 @@ def _first_sphere_indices(atoms, metal_indices, scale, radii_map):
 
 def _implicit_token(config, solvent):
     """Build implicit solvent token."""
-    mdl = str(config.get('implicit_solvation_model','') or '').strip()
-    if not mdl:
-        return ""
-    return f"{mdl}({solvent})" if solvent else mdl
+    return build_solvation_keyword(config.get('implicit_solvation_model'), solvent)
 
 
 def _ensure_qmmm_implicit_model(
@@ -543,8 +542,8 @@ def read_and_modify_file(input_file_path, output_file_path, charge, multiplicity
     )
     implicit = _implicit_token(config, solvent)
 
-    # include FREQ only if frequency_calculation_OCCUPIER=yes
-    include_freq = str(config.get('frequency_calculation_OCCUPIER', 'no')).lower() == 'yes'
+    # FREQ only when the comparison is by Gibbs free energy
+    include_freq = resolve_occupier_compare(config) == "G"
     bang = _build_bang_line(
         config,
         rel_token,

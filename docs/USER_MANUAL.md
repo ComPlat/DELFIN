@@ -432,11 +432,10 @@ DELFIN automatically selects relativistic settings when 4d/5d transition metals 
 | Key | Default | Description |
 |-----|---------|-------------|
 | `OCCUPIER_method` | `auto` | OCCUPIER method: `auto` (adaptive tree) or `manually` |
-| `OCCUPIER_tree` | `own` | Tree type |
 | `OWN_TREE_PURE_WINDOW` | `3` | Pure spin state window |
 | `OWN_progressive_from` | `no` | Progressive tree expansion |
 | `fob_equal_weights` | `yes` | Equal weights for FoB calculations |
-| `frequency_calculation_OCCUPIER` | `no` | Run frequencies during OCCUPIER |
+| `OCCUPIER_compare` | `FSPE` | Energy OCCUPIER ranks configurations by: `FSPE` (electronic) or `G` (Gibbs; adds a frequency run per candidate). The former key `frequency_calculation_OCCUPIER` is still accepted. |
 | `occupier_selection` | `tolerance` | Selection method: `tolerance`, `truncation`, or `rounding` |
 | `occupier_precision` | `3` | Precision for selection |
 | `occupier_epsilon` | `5e-4` | Energy tolerance (Hartree) |

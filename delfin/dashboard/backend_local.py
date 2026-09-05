@@ -108,7 +108,18 @@ class LocalJobBackend(JobBackend):
     # Status helpers
     # ------------------------------------------------------------------
     def _list_processes(self):
-        """Return a best-effort snapshot of current processes."""
+        """A snapshot of the running processes.
+
+        It costs a whole ``ps`` -- which reads all of /proc whatever filter it
+        is given -- plus a readlink per process. Cheap on a workstation and
+        not on a shared login node: measured on a 384-core host with 6465
+        processes, 0.67 s a reading.
+
+        Building the dashboard took nine of them, once per tab that lists
+        jobs, and every one was asked only so that RUNNING jobs could be
+        checked. With no job running there was nothing to check and the
+        reading was thrown away, which is why the callers ask first now.
+        """
         try:
             result = subprocess.run(
                 ['ps', '-eo', 'pid=,pgid=,args='],
@@ -139,6 +150,15 @@ class LocalJobBackend(JobBackend):
             processes.append((proc_pid, proc_pgid, parts[2], cwd))
         return processes
 
+    @staticmethod
+    def _any_running(jobs):
+        """Whether any of *jobs* still claims to be running.
+
+        Only a RUNNING job is ever checked against the process table, so with
+        none of them running there is nothing the reading could answer.
+        """
+        return any(job.get('status') == 'RUNNING' for job in (jobs or ()))
+
     def _job_has_active_processes(self, job, process_table=None):
         """Detect live descendants or subprocesses that still belong to a job."""
         job_dir = str(job.get('job_dir') or '').strip()
@@ -156,7 +176,9 @@ class LocalJobBackend(JobBackend):
             wrapper_pgid = None
 
         current_pid = os.getpid()
-        for proc_pid, proc_pgid, args, cwd in (process_table or self._list_processes()):
+        if process_table is None:
+            process_table = self._list_processes()
+        for proc_pid, proc_pgid, args, cwd in process_table:
             if proc_pid == current_pid:
                 continue
             if wrapper_pid is not None and proc_pid == wrapper_pid:
@@ -335,7 +357,8 @@ class LocalJobBackend(JobBackend):
         with self._lock:
             data = self._load_jobs()
             jobs = data.get('jobs', [])
-            process_table = self._list_processes()
+            process_table = (
+                self._list_processes() if self._any_running(jobs) else [])
 
             changed = False
             for job in jobs:
@@ -413,7 +436,9 @@ class LocalJobBackend(JobBackend):
 
         with self._lock:
             data = self._load_jobs()
-            process_table = self._list_processes()
+            process_table = (
+                self._list_processes()
+                if self._any_running(data.get('jobs', [])) else [])
             changed = False
             for job in data.get('jobs', []):
                 if job.get('status') == 'RUNNING':
@@ -520,11 +545,14 @@ class LocalJobBackend(JobBackend):
             },
         )
 
-    def list_jobs(self) -> List[JobInfo]:
+    def list_jobs(self, force: bool = False) -> List[JobInfo]:
+        # Local state lives in a JSON file and the process table; there is no
+        # shared service to protect, so `force` is accepted and ignored.
         with self._lock:
             data = self._load_jobs()
             jobs = data.get('jobs', [])
-            process_table = self._list_processes()
+            process_table = (
+                self._list_processes() if self._any_running(jobs) else [])
             for job in jobs:
                 if job['status'] == 'RUNNING':
                     self._update_job_status(job, process_table=process_table)

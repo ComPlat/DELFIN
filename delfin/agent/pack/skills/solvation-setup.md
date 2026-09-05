@@ -1,3 +1,6 @@
+---
+domains: code
+---
 # Solvation setup
 > Choose and configure implicit solvation (CPCM/SMD) correctly — and say when implicit is not enough.
 

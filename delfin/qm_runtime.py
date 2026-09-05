@@ -149,33 +149,123 @@ _SETTINGS_SELECTABLE_TOOL_NAMES: tuple[str, ...] = tuple(
 )
 
 
+def get_packaged_qm_tools_root() -> Path:
+    """The copy that ships with DELFIN."""
+    return (Path(__file__).resolve().parent / "qm_tools").resolve()
+
+
+def get_user_qm_tools_root() -> Path:
+    """The copy the dashboard's install buttons write into."""
+    return (Path.home() / ".delfin" / "qm_tools").resolve()
+
+
 def get_qm_tools_root() -> Path:
+    """Where a tool is installed to, which must be where it is looked for.
+
+    It was neither, reliably. The Settings tab installs into the user's own
+    copy, the Submit tab's install button and the agent's installer write into
+    the packaged one, and this function answered "the packaged one" unless a
+    setting had been saved. So a user pressed Install, the tools landed in
+    ~/.delfin/qm_tools, and every one of them was then reported missing --
+    measured on a real machine, with dftb+, stda and xtb4stda all present on
+    disk and all reported absent.
+
+    An explicit choice still wins; otherwise the user's own copy is preferred
+    when it holds anything, because that is where the installers put things.
+    """
     env_root = os.environ.get("DELFIN_QM_TOOLS_ROOT") or os.environ.get("DELFIN_QM_ROOT")
     if env_root:
         return Path(env_root).expanduser().resolve()
-    return (Path(__file__).resolve().parent / "qm_tools").resolve()
+    user_root = get_user_qm_tools_root()
+    try:
+        if any((user_root / "bin").iterdir()):
+            return user_root
+    except OSError:
+        pass
+    return get_packaged_qm_tools_root()
+
+
+def iter_qm_tools_bin_dirs() -> tuple:
+    """Every tool directory worth looking in, the chosen one first.
+
+    Both are searched, because a tool installed into either is installed. The
+    alternative -- one of them winning and the other being invisible -- is
+    what made an installed tool read as missing.
+    """
+    seen, out = set(), []
+    for root in (get_qm_tools_root(), get_user_qm_tools_root(),
+                 get_packaged_qm_tools_root()):
+        candidate = root / "bin"
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(candidate)
+    return tuple(out)
 
 
 def get_qm_tools_bin_dir() -> Path:
     return get_qm_tools_root() / "bin"
 
 
-def get_csp_tools_root() -> Path:
-    env_root = os.environ.get("DELFIN_CSP_TOOLS_ROOT")
+def _tools_root(kind: str, env_key: str) -> Path:
+    """The directory for one family of tools, chosen the way qm_tools is.
+
+    An explicit setting wins; otherwise the user's own copy is preferred once
+    it holds anything, because that is where the install buttons put things,
+    and the packaged copy stands behind it.  Written once and used three
+    times, because three roots that each decide for themselves is how a tool
+    ends up installed where nothing looks for it.
+    """
+    env_root = os.environ.get(env_key)
     if env_root:
         return Path(env_root).expanduser().resolve()
-    return (Path(__file__).resolve().parent / "csp_tools").resolve()
+    user_root = (Path.home() / ".delfin" / kind).resolve()
+    try:
+        if any((user_root / "bin").iterdir()):
+            return user_root
+    except OSError:
+        pass
+    return (Path(__file__).resolve().parent / kind).resolve()
+
+
+def _tools_bin_dirs(kind: str, env_key: str) -> tuple:
+    """Both copies, the chosen one first: a tool in either is installed."""
+    seen, out = set(), []
+    roots = [_tools_root(kind, env_key),
+             (Path.home() / ".delfin" / kind).resolve(),
+             (Path(__file__).resolve().parent / kind).resolve()]
+    for root in roots:
+        candidate = root / "bin"
+        if str(candidate) in seen:
+            continue
+        seen.add(str(candidate))
+        out.append(candidate)
+    return tuple(out)
+
+
+def get_csp_tools_root() -> Path:
+    return _tools_root("csp_tools", "DELFIN_CSP_TOOLS_ROOT")
 
 
 def get_csp_tools_bin_dir() -> Path:
     return get_csp_tools_root() / "bin"
 
 
+def iter_csp_tools_bin_dirs() -> tuple:
+    return _tools_bin_dirs("csp_tools", "DELFIN_CSP_TOOLS_ROOT")
+
+
 def get_mlp_tools_root() -> Path:
-    env_root = os.environ.get("DELFIN_MLP_TOOLS_ROOT")
-    if env_root:
-        return Path(env_root).expanduser().resolve()
-    return (Path(__file__).resolve().parent / "mlp_tools").resolve()
+    return _tools_root("mlp_tools", "DELFIN_MLP_TOOLS_ROOT")
+
+
+def get_mlp_tools_bin_dir() -> Path:
+    return get_mlp_tools_root() / "bin"
+
+
+def iter_mlp_tools_bin_dirs() -> tuple:
+    return _tools_bin_dirs("mlp_tools", "DELFIN_MLP_TOOLS_ROOT")
 
 
 _CSP_TOOL_NAMES = frozenset({"gnrs", "genarris"})
@@ -280,15 +370,16 @@ def _iter_locator_candidates(locator: str) -> Iterable[str]:
 
 def _iter_tool_candidates(spec: ToolSpec) -> Iterable[tuple[str, str]]:
     if spec.name in _CSP_TOOL_NAMES or any(a in _CSP_TOOL_NAMES for a in spec.aliases):
-        csp_bin = get_csp_tools_bin_dir() / spec.name
-        if csp_bin.exists():
-            yield str(csp_bin), "csp_tools"
+        for csp_dir in iter_csp_tools_bin_dirs():
+            csp_bin = csp_dir / spec.name
+            if csp_bin.exists():
+                yield str(csp_bin), "csp_tools"
 
-    bin_dir = get_qm_tools_bin_dir()
     if spec.prefer_qm_tools:
-        local_candidate = bin_dir / spec.name
-        if local_candidate.exists():
-            yield str(local_candidate), "qm_tools"
+        for bin_dir in iter_qm_tools_bin_dirs():
+            local_candidate = bin_dir / spec.name
+            if local_candidate.exists():
+                yield str(local_candidate), "qm_tools"
 
     generic_env_key = f"DELFIN_{spec.name.upper().replace('+', 'PLUS').replace('-', '_')}_BINARY"
     for key in (generic_env_key,) + spec.env_vars:
@@ -324,9 +415,10 @@ def _iter_tool_candidates(spec: ToolSpec) -> Iterable[tuple[str, str]]:
         yield candidate.path, source
 
     if not spec.prefer_qm_tools:
-        local_candidate = bin_dir / spec.name
-        if local_candidate.exists():
-            yield str(local_candidate), "qm_tools"
+        for bin_dir in iter_qm_tools_bin_dirs():
+            local_candidate = bin_dir / spec.name
+            if local_candidate.exists():
+                yield str(local_candidate), "qm_tools"
 
 
 def _generic_tool_spec(name: str) -> ToolSpec:
@@ -408,9 +500,19 @@ def _resolve_xtb4stda_home(root: Path) -> str:
 def _prepare_tool_environment(extra_env: Optional[Mapping[str, str]] = None) -> dict[str, str]:
     env = os.environ.copy()
     root = get_qm_tools_root()
-    bin_dir = str(root / "bin")
+    # Every tool directory, not only the QM one. A CREST that calls out to a
+    # tool from the CSP or MLP set found nothing on the PATH: those bins were
+    # written by the installers, named in env.sh, and never put in front of a
+    # subprocess by anything in Python.
+    bins = [str(path) for path in
+            (iter_qm_tools_bin_dirs() + iter_csp_tools_bin_dirs()
+             + iter_mlp_tools_bin_dirs())
+            if path.is_dir()]
+    if not bins:
+        bins = [str(root / "bin")]
     current_path = env.get("PATH", "")
-    env["PATH"] = bin_dir if not current_path else f"{bin_dir}{os.pathsep}{current_path}"
+    joined = os.pathsep.join(bins)
+    env["PATH"] = joined if not current_path else f"{joined}{os.pathsep}{current_path}"
     share_xtb4stda = root / "share" / "xtb4stda"
     if share_xtb4stda.exists():
         env.setdefault("XTB4STDAHOME", _resolve_xtb4stda_home(root))
@@ -440,6 +542,19 @@ def run_tool(
     track_process: bool = False,
 ) -> subprocess.CompletedProcess:
     resolved = resolve_tool(name)
+    if resolved is None:
+        # Needed and not there. For anything DELFIN installs, that is a wait
+        # rather than a wall -- and it is the moment to find out, because the
+        # caller is about to use it. Imported here, not at the top: the health
+        # layer asks this module where things are.
+        try:
+            from delfin.qm_health import ensure_tool
+
+            told = ensure_tool(name)
+            if told.get("ok"):
+                resolved = resolve_tool(name)
+        except Exception:
+            resolved = None
     if resolved is None:
         raise FileNotFoundError(f"QM tool not found: {name}")
 

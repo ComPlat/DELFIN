@@ -70,6 +70,12 @@ def h_catalog(by: str = "category") -> str:
     return _dumps({k: [c.name for c in v] for k, v in grouped.items()})
 
 
+def h_compatible_successors(name: str) -> str:
+    if platform.describe_capability(name) is None:
+        return _dumps({"error": f"unknown capability {name!r}"})
+    return _dumps(platform.compatible_successors(name))
+
+
 def h_new_capability_template(name: str, category: str = "meta") -> str:
     return platform.new_capability_template(name, category=category)
 
@@ -244,9 +250,9 @@ def run_server(argv: Optional[list[str]] = None) -> None:
     """Start the MCP server on stdio."""
     argparse.ArgumentParser(prog="delfin-tools-server").parse_args(argv)
 
-    from mcp.server.fastmcp import FastMCP
+    from ..mcp_compat import load_server_class
 
-    mcp = FastMCP(
+    mcp = load_server_class()(
         "delfin-tools",
         instructions=(
             "DELFIN tools platform. Discover computational-chemistry building "
@@ -297,6 +303,12 @@ def run_server(argv: Optional[list[str]] = None) -> None:
     def catalog(by: str = "category") -> str:
         """Capabilities grouped by 'category', 'produces', or 'consumes'."""
         return h_catalog(by)
+
+    @mcp.tool()
+    def compatible_successors(name: str) -> str:
+        """Which building blocks can run AFTER this one — the blocks whose
+        inputs its outputs satisfy. Use it to order steps in a pipeline."""
+        return h_compatible_successors(name)
 
     @mcp.tool()
     def new_capability_template(name: str, category: str = "meta") -> str:

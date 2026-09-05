@@ -1,0 +1,1571 @@
+"""What a line starting with a punctuation mark means.
+
+Four prefixes and one table. The table is data, not an if-chain, because
+the help text is GENERATED from it — a hand-written help page and a
+command list are one edit away from disagreeing, and `help_gen` exists
+because that already happened once.
+
+Nothing here talks to a terminal. A command handler takes a context and a
+string and returns a CommandResult; the loop decides what to do with it.
+That is what makes every routing rule testable without a PTY, and it is
+the line that keeps this file from becoming the 4 500-line dispatcher it
+replaces.
+"""
+
+from __future__ import annotations
+
+import re
+import shlex
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable
+
+__all__ = [
+    "CommandResult", "ReplCommand", "BUILTINS", "dispatch",
+    "looks_like_command", "palette_rows", "expand_at_references",
+    "complete_path", "SHELL_PREFIX", "MEMORY_PREFIX",
+]
+
+SHELL_PREFIX = "!"
+MEMORY_PREFIX = "#"
+
+
+@dataclass
+class CommandResult:
+    """What the loop should do next."""
+
+    output: str = ""          # printed as chrome
+    prompt: str = ""          # send THIS to the model instead of the raw line
+    quit: bool = False
+    handled: bool = True
+    clear: bool = False       # start a fresh conversation
+
+
+@dataclass(frozen=True)
+class ReplCommand:
+    name: str
+    category: str
+    summary: str
+    handler: Callable[[Any, str], CommandResult]
+    takes_args: bool = False
+
+
+def looks_like_command(text: str) -> bool:
+    """A leading slash is a command only when it cannot be a path.
+
+    The dashboard's predicate, kept identical on purpose: `/home/u/x.py`
+    is a path someone pasted, `/` alone is nothing, and `/help` is a
+    command. Diverging here would mean the same line means two different
+    things on the two surfaces.
+    """
+    text = (text or "").strip()
+    if not text.startswith("/") or len(text) < 2:
+        return False
+    first = text.split()[0]
+    if first.count("/") > 1:            # /home/user/... is a path
+        return False
+    if first.startswith("/."):
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# @path and the file completer
+# ---------------------------------------------------------------------------
+
+def complete_path(fragment: str, workspace: Path) -> list[str]:
+    """Paths under *workspace* matching *fragment*.
+
+    Only under the workspace. Completing outside it would advertise files
+    the agent may not read, which is a worse experience than no
+    completion: it invites a request that is then refused.
+    """
+    fragment = (fragment or "").lstrip("@")
+    try:
+        base = (workspace / fragment).parent if fragment else workspace
+        stem = Path(fragment).name if fragment else ""
+        base = base.resolve()
+        root = workspace.resolve()
+        if base != root and root not in base.parents:
+            return []
+        out = []
+        for entry in sorted(base.iterdir()):
+            if entry.name.startswith(".") and not stem.startswith("."):
+                continue
+            if stem and not entry.name.startswith(stem):
+                continue
+            rel = entry.relative_to(root)
+            out.append(f"{rel}/" if entry.is_dir() else str(rel))
+        return out[:50]
+    except Exception:
+        return []
+
+
+_WS_SPLIT = re.compile(r"(\s+)")
+
+
+def expand_at_references(text: str, workspace: Path) -> str:
+    """Turn `@path` into something the model can act on.
+
+    The path is only ANNOTATED, never read here: reading it would put file
+    contents into the conversation without going through the gate that
+    decides whether they may be read at all.
+    """
+    found: list[str] = []
+    out: list[str] = []
+    # Whitespace is preserved, all of it. This used to split the whole
+    # text and re-join on single spaces, which is not what annotating a
+    # path requires and cost three things that are: the `"""` fence, which
+    # exists to send several lines, delivered one; a pasted stack trace
+    # arrived as a paragraph; and pasted code lost the indentation that
+    # decides what it means. Splitting on a CAPTURING pattern keeps the
+    # separators, so only the `@` tokens are touched.
+    for piece in _WS_SPLIT.split(text):
+        if piece.startswith("@") and len(piece) > 1:
+            rel = piece[1:]
+            target = workspace / rel
+            found.append(rel + ("" if target.exists() else "  (not found)"))
+            out.append(rel)
+        else:
+            out.append(piece)
+    body = "".join(out).rstrip()
+    if found:
+        body += "\n\nFiles referenced: " + ", ".join(found)
+    return body
+
+
+# ---------------------------------------------------------------------------
+# The builtin handlers
+# ---------------------------------------------------------------------------
+
+def _status(ctx, _args: str) -> CommandResult:
+    engine = ctx.engine
+    try:
+        st = engine.get_status() or {}
+    except Exception:
+        st = {}
+    lines = [
+        f"model      {getattr(getattr(engine, 'client', None), 'model', '?')}",
+        f"provider   {st.get('provider', '?')}",
+        f"mode       {st.get('mode', '?')}   role {st.get('role', '?')}",
+        f"approval   {_mode(engine) or '(no gate on this backend)'}",
+        f"workspace  {ctx.workspace}",
+        f"session    {st.get('session_id', '') or '(unsaved)'}",
+        f"tokens     ↑{st.get('input_tokens', 0)} ↓{st.get('output_tokens', 0)}"
+        f"  cached {st.get('cached_tokens', 0)}",
+        f"cost       ${float(st.get('cost_usd', 0.0) or 0.0):.4f}",
+    ]
+    return CommandResult(output="\n".join(lines))
+
+
+def _cost(ctx, _args: str) -> CommandResult:
+    """What the session spent, and how much of it was delegated.
+
+    The first line is the parent model's own spend and means exactly what
+    it always did. The delegated half is added as its own quantity rather
+    than folded into it: a session that is expensive because it delegates
+    and one that is expensive because its own model is are different
+    facts calling for different changes, and a single total cannot say
+    which. A session that delegated nothing prints the one line it always
+    printed -- a "+ $0.0000 delegated" row on every reading is noise.
+    """
+    try:
+        st = ctx.engine.get_status() or {}
+    except Exception:
+        return CommandResult(output="no cost recorded")
+    direct = float(st.get("cost_usd", 0.0) or 0.0)
+    lines = [
+        f"${direct:.4f}  "
+        f"↑{st.get('input_tokens', 0)} ↓{st.get('output_tokens', 0)} "
+        f"cached {st.get('cached_tokens', 0)}"
+    ]
+    delegates = int(st.get("delegate_count", 0) or 0)
+    if delegates:
+        delegated = float(st.get("delegated_cost_usd", 0.0) or 0.0)
+        lines.append(
+            f"+ ${delegated:.4f}  delegated to {delegates} sub-agent(s)  "
+            f"↑{int(st.get('delegated_input_tokens', 0) or 0)} "
+            f"↓{int(st.get('delegated_output_tokens', 0) or 0)}")
+        background = float(
+            st.get("background_delegated_cost_usd", 0.0) or 0.0)
+        if background > 0:
+            lines.append(
+                f"   of which ${background:.4f} ran in the background and "
+                f"finished after the turn that started it — session spend, "
+                f"charged to no turn")
+        unpriced = int(st.get("delegates_unpriced", 0) or 0)
+        if unpriced:
+            lines.append(
+                f"   {unpriced} delegate(s) ran on a model with no published "
+                f"rate and are NOT in the figure above")
+        lines.append(f"= ${direct + delegated:.4f}  this session")
+    return CommandResult(output="\n".join(lines))
+
+
+def _context(ctx, _args: str) -> CommandResult:
+    try:
+        return CommandResult(output=ctx.engine._build_context_status_block())
+    except Exception:
+        return CommandResult(output="context size is not available here")
+
+
+def _compact(ctx, args: str) -> CommandResult:
+    """The engine's own compactor, never a second cruder one."""
+    try:
+        ctx.engine._compact_history(force=True)
+        return CommandResult(output=ctx.engine._compaction_status_line())
+    except Exception as exc:
+        return CommandResult(output=f"compaction failed: {exc}")
+
+
+def _model(ctx, args: str) -> CommandResult:
+    name = args.strip()
+    if not name:
+        current = getattr(getattr(ctx.engine, "client", None), "model", "?")
+        return CommandResult(output=f"model is {current} — /model <name> to switch")
+    client = getattr(ctx.engine, "client", None)
+    switch = getattr(client, "switch_model", None)
+    if not callable(switch):
+        return CommandResult(output="this backend cannot switch model")
+    try:
+        switch(name)
+    except Exception as exc:
+        return CommandResult(output=f"could not switch: {exc}")
+    return CommandResult(output=f"model → {name}")
+
+
+def _mode_cmd(ctx, args: str) -> CommandResult:
+    name = args.strip()
+    if not name:
+        return CommandResult(output=f"mode is {getattr(ctx.engine, 'mode', '?')}")
+    try:
+        ctx.engine._load_mode(name)
+    except Exception as exc:
+        return CommandResult(output=f"could not switch mode: {exc}")
+    return CommandResult(output=f"mode → {name}")
+
+
+def _permissions(ctx, args: str) -> CommandResult:
+    name = args.strip()
+    if not name:
+        return CommandResult(output=(
+            f"approval is {_mode(ctx.engine) or '(no gate)'} — "
+            "/permissions plan|default|acceptEdits, or Shift+Tab"))
+    if name == "bypassPermissions":
+        return CommandResult(output=(
+            "not from here. Unattended execution is reachable only by "
+            "starting with --permission-mode bypassPermissions --unattended, "
+            "so it stays something typed on purpose."))
+    try:
+        ctx.engine.set_kit_permission_mode(name)
+    except Exception as exc:
+        return CommandResult(output=f"could not switch: {exc}")
+    return CommandResult(output=f"approval → {name}")
+
+
+def _effort(ctx, args: str) -> CommandResult:
+    level = args.strip()
+    if not level:
+        return CommandResult(output=f"effort is {getattr(ctx.engine, 'effort', '?')}")
+    try:
+        ctx.engine.effort = level
+        client = getattr(ctx.engine, "client", None)
+        if client is not None and hasattr(client, "effort"):
+            client.effort = level
+    except Exception as exc:
+        return CommandResult(output=f"could not set effort: {exc}")
+    return CommandResult(output=f"effort → {level}")
+
+
+def _doctor(ctx, _args: str) -> CommandResult:
+    try:
+        from . import doctor
+        return CommandResult(
+            output=doctor.format_doctor(doctor.run_doctor(ctx.workspace)))
+    except Exception as exc:
+        return CommandResult(output=f"doctor failed: {exc}")
+
+
+def _init(ctx, _args: str) -> CommandResult:
+    try:
+        from .project_init import init_project
+        result = init_project(ctx.workspace)
+        return CommandResult(output=str(result))
+    except Exception as exc:
+        return CommandResult(output=f"init failed: {exc}")
+
+
+def _session(ctx, args: str) -> CommandResult:
+    from . import session_store as ss
+    parts = shlex.split(args) if args.strip() else ["ls"]
+    action = parts[0]
+    try:
+        if action == "ls":
+            rows = ss.list_sessions(limit=15, workspace=str(ctx.workspace))
+            if not rows:
+                return CommandResult(output="no sessions in this directory")
+            return CommandResult(output="\n".join(
+                f"  {str(r.get('updated_at', ''))[:16]}  "
+                f"{str(r.get('session_id', ''))[:8]}  "
+                f"{str(r.get('title', '') or '(untitled)')[:60]}"
+                for r in rows))
+        if action == "search" and len(parts) > 1:
+            rows = ss.find_sessions(" ".join(parts[1:]), limit=15)
+            if not rows:
+                return CommandResult(output="nothing matched")
+            return CommandResult(output="\n".join(
+                f"  {str(r.get('session_id', ''))[:8]}  "
+                f"{str(r.get('title', '') or '(untitled)')[:60]}" for r in rows))
+    except Exception as exc:
+        return CommandResult(output=f"session lookup failed: {exc}")
+    return CommandResult(output="usage: /session ls | /session search <text>")
+
+
+def _rewind(ctx, _args: str) -> CommandResult:
+    """What the agent changed, and how to take it back."""
+    try:
+        from . import audit_log
+        report = audit_log.build_changes_report(workspace=ctx.workspace)
+        return CommandResult(output=audit_log.format_changes_report(report))
+    except Exception as exc:
+        return CommandResult(output=f"no change report available ({exc})")
+
+
+def _tasks(ctx, _args: str) -> CommandResult:
+    """This session's open work, on demand.
+
+    The banner counts tasks parked by earlier sessions and points here,
+    and Ctrl+T toggles the same list during a turn — both named a command
+    that did not exist, so `/tasks` fell through to the model and came
+    back as an answer about a task list instead of the task list.
+
+    Scoped to THIS session, like every other listing surface: the store
+    is workspace-wide and outlives sessions, and merging them silently is
+    the leak the scoping exists to prevent. Work parked elsewhere is
+    adopted deliberately, not listed as if it were already ours.
+    """
+    try:
+        from . import task_ticker
+        text = task_ticker.render_text(
+            ctx.workspace,
+            session_id=str(getattr(ctx.engine, "session_id", "") or ""))
+    except Exception as exc:
+        return CommandResult(output=f"task list unavailable ({exc})")
+    return CommandResult(output=text or "(no tasks)")
+
+
+def _mcp(ctx, _args: str) -> CommandResult:
+    """Every server that would load, and the file each one came from.
+
+    `effective_servers` takes a WORKSPACE. It was handed a registry
+    object, so every call raised a TypeError that the except below turned
+    into "MCP registry unavailable" — a sentence that reads like a
+    diagnosis and is one, of a defect one line above it. This command has
+    never listed a server.
+
+    The rows are dicts, so they are rendered rather than printed: a raw
+    repr per line was the second half of the same never-run path.
+    """
+    try:
+        from . import mcp_client
+        servers = mcp_client.effective_servers(ctx.workspace)
+        notice = mcp_client.trust_notice(ctx.workspace)
+    except Exception as exc:
+        return CommandResult(output=f"MCP registry unavailable ({exc})")
+    if not servers:
+        return CommandResult(output="no MCP servers configured")
+    lines = []
+    for row in servers:
+        where = row.get("url") or " ".join(
+            [str(row.get("command", ""))] + [str(a) for a in row.get("args") or []]
+        )
+        state = "" if row.get("enabled", True) else "  (disabled)"
+        lines.append(f"  {row.get('name', '?'):<18} {where[:60]}{state}")
+        lines.append(f"  {'':<18} from {row.get('source', '?')}")
+        # Per server, because that is where the answer differs. The
+        # summary line in the banner counts them; this says which roots
+        # the contained ones were given.
+        iso = str(row.get("isolation", "") or "")
+        lines.append(f"  {'':<18} isolation " + (
+            iso if iso else "none — outside the shell's containment"))
+    if notice:
+        lines.append("  " + notice)
+    return CommandResult(output="\n".join(lines))
+
+
+def _trust(ctx, args: str) -> CommandResult:
+    """Read the offers, then grant or withdraw — from here.
+
+    Trusting a digest nobody has read is not consent, so the bare command
+    only ever SHOWS. The grant still goes through hooks_editor /
+    mcp_editor, the two thin wrappers an existing test enumerates as the
+    only call sites of `workspace_trust.trust_workspace`; this command
+    types the user's decision into them and adds no third one. Naming a
+    remedy the terminal cannot reach was the older failure: the text said
+    "the hooks / MCP editors" and nothing here could open either.
+    """
+    action, _, kind = args.strip().lower().partition(" ")
+    kind = kind.strip()
+    if action in ("grant", "revoke"):
+        return _trust_change(ctx, action, kind)
+    if action:
+        return CommandResult(output=(
+            "usage: /trust  |  /trust grant hooks|mcp  |  "
+            "/trust revoke hooks|mcp"))
+    try:
+        from . import workspace_trust
+        notices = workspace_trust.pending_notices(ctx.workspace)
+        if not notices:
+            return CommandResult(output="nothing is being withheld here")
+        body = "\n".join(f"  {n}" for n in notices)
+        return CommandResult(output=(
+            f"{body}\n"
+            "  /trust grant hooks | /trust grant mcp — only you can, and "
+            "only for what is listed above."))
+    except Exception as exc:
+        return CommandResult(output=f"trust state unavailable ({exc})")
+
+
+def _trust_change(ctx, action: str, kind: str) -> CommandResult:
+    """Grant or withdraw trust through the editor wrappers.
+
+    Kept separate so the read path above stays a read: a typo in the
+    subcommand must fall out as usage text, never as a grant.
+    """
+    try:
+        if kind == "hooks":
+            from . import hooks_editor as editor
+        elif kind == "mcp":
+            from . import mcp_editor as editor
+        else:
+            return CommandResult(output="/trust grant|revoke hooks|mcp")
+    except Exception as exc:
+        return CommandResult(output=f"{kind} trust is unavailable here ({exc})")
+    try:
+        if action == "grant":
+            rec = editor.trust_this_workspace(ctx.workspace)
+            counted = (rec or {}).get("kinds", {})
+            return CommandResult(output=(
+                f"{kind} trusted for {ctx.workspace} — "
+                f"{sum(int((v or {}).get('definitions', 0)) for v in counted.values())}"
+                " definition(s). Trust covers exactly this content; a change "
+                "asks again."))
+        gone = editor.untrust_this_workspace(ctx.workspace)
+        return CommandResult(output=(
+            f"{kind} trust withdrawn for {ctx.workspace}" if gone
+            else f"{ctx.workspace} was not trusted for {kind}"))
+    except Exception as exc:
+        return CommandResult(output=f"could not change {kind} trust: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# What the dashboard reaches, reached from here
+#
+# Each handler calls the module that already implements the thing. Where
+# the dashboard's version is inline in a widget closure there is no
+# function to call, and the terminal half is written out minimally and
+# says so — importing the dashboard module would pull the notebook widget
+# stack into a terminal that has none.
+# ---------------------------------------------------------------------------
+
+def _live_session(ctx) -> str:
+    """The id the per-session stores are keyed by.
+
+    The engine keeps one id and copies it onto the tool executor's
+    permissions; reading both means a backend that only sets one still
+    finds its own records instead of silently reporting an empty store.
+    """
+    engine = getattr(ctx, "engine", None)
+    if engine is None:
+        return ""
+    sid = str(getattr(engine, "session_id", "") or "")
+    if sid:
+        return sid
+    perms = getattr(engine, "kit_permissions", None)
+    return str(getattr(perms, "task_session_id", "") or "")
+
+
+def _tools(ctx, args: str) -> CommandResult:
+    """The tool surface the model is offered, read from the catalogue.
+
+    api_client owns both the catalogue and the filter that drops what
+    this context could not execute, so both are called. The dashboard's
+    /tools is a hand-kept table that has to be edited whenever a tool is
+    added; a second copy here would drift the same way.
+    """
+    try:
+        from . import api_client as ac
+        role = ""
+        try:
+            role = str((ctx.engine.get_status() or {}).get("role", "") or "")
+        except Exception:
+            role = ""
+        # The session's own narrowing travels with the role. Building the
+        # context from the role alone listed tools this session has
+        # explicitly denied — the executor refuses them, so nothing could
+        # run, but a listing that answers "what am I offered" with names
+        # that are not offered is the reader-facing half of the same
+        # defect the deny list exists to close.
+        perms = getattr(ctx.engine, "kit_permissions", None)
+        tools = ac.advertisable_tools(
+            list(getattr(ac, "_DOC_TOOLS_OPENAI", None) or []),
+            ac.ToolSurfaceContext(
+                role=role,
+                session_allowed=frozenset(
+                    getattr(perms, "session_allowed_tools", None) or ()),
+                session_denied=frozenset(
+                    getattr(perms, "session_denied_tools", None) or ()),
+            ))
+    except Exception as exc:
+        return CommandResult(output=f"tool catalogue unavailable ({exc})")
+    query = args.strip().lower()
+    rows = []
+    for entry in tools:
+        fn = entry.get("function", {}) if isinstance(entry, dict) else {}
+        name = str(fn.get("name", "") or "")
+        desc = " ".join(str(fn.get("description", "") or "").split())
+        if query and query not in f"{name} {desc}".lower():
+            continue
+        rows.append(f"  {name:<24} {desc[:70]}")
+    if not rows:
+        return CommandResult(output=(
+            f"no tool matches {query!r}" if query else "no tools advertised"))
+    head = f"{len(rows)} tool(s)" + (f" matching {query!r}" if query else "")
+    return CommandResult(output="\n".join([head, *rows]))
+
+
+def _usage(ctx, _args: str) -> CommandResult:
+    """Token and cost detail: /cost plus the rate that produced it.
+
+    The rate comes from `pricing`, the one place model prices are written
+    down, so the rate quoted here cannot contradict the total printed
+    beside it. A model nobody has priced says so instead of showing a
+    zero that reads like "free".
+    """
+    try:
+        st = ctx.engine.get_status() or {}
+    except Exception:
+        return CommandResult(output="no usage recorded yet")
+    inp = int(st.get("input_tokens", 0) or 0)
+    out = int(st.get("output_tokens", 0) or 0)
+    model = str(getattr(getattr(ctx.engine, "client", None), "model", "") or "")
+    provider = str(st.get("provider", "") or "")
+    lines = [
+        f"model      {model or '?'}   provider {provider or '?'}",
+        f"input      {inp:,} tokens",
+        f"output     {out:,} tokens",
+        f"cached     {int(st.get('cached_tokens', 0) or 0):,} tokens",
+        f"messages   {len(getattr(ctx.engine, 'messages', []) or [])} in context",
+    ]
+    try:
+        from . import pricing
+        price = pricing.resolve(model, provider)
+        if price.state == pricing.PRICED:
+            lines.append(f"rate       ${price.input_per_mtok}/MTok in, "
+                         f"${price.output_per_mtok}/MTok out")
+            lines.append(
+                f"cost       ${float(st.get('cost_usd', 0.0) or 0.0):.4f}")
+        elif price.state == pricing.NON_BILLING:
+            lines.append(f"rate       no per-token USD cost ({price.reason})")
+            lines.append(f"spent      {inp + out:,} tokens")
+        else:
+            lines.append(f"rate       unmeasured — {price.reason}")
+            lines.append(f"spent      {inp + out:,} tokens "
+                         "(no rate to convert them)")
+    except Exception as exc:
+        lines.append(f"rate       unavailable ({exc})")
+    # The tokens above are the parent model's alone. Delegated runs are
+    # billed separately and were reported nowhere a user of this command
+    # would look, so a session whose work was done by sub-agents read as
+    # a nearly idle one. Absent entirely when nothing was delegated.
+    delegates = int(st.get("delegate_count", 0) or 0)
+    if delegates:
+        lines.append(
+            f"delegated  {delegates} sub-agent(s)  "
+            f"↑{int(st.get('delegated_input_tokens', 0) or 0):,} "
+            f"↓{int(st.get('delegated_output_tokens', 0) or 0):,} tokens")
+        delegated_usd = float(st.get("delegated_cost_usd", 0.0) or 0.0)
+        if delegated_usd > 0:
+            direct = float(st.get("cost_usd", 0.0) or 0.0)
+            lines.append(
+                f"total      ${direct:.4f} direct + ${delegated_usd:.4f} "
+                f"delegated = ${direct + delegated_usd:.4f}")
+        unpriced = int(st.get("delegates_unpriced", 0) or 0)
+        if unpriced:
+            lines.append(
+                f"           {unpriced} delegate(s) on a model with no "
+                f"published rate — not in the figures above")
+    return CommandResult(output="\n".join(lines))
+
+
+def _export(ctx, _args: str) -> CommandResult:
+    """The conversation as Markdown.
+
+    The dashboard's export is inline in a closure over its own chat
+    widget, so there is no function to call and this is the minimal
+    terminal equivalent: the engine's own messages. It lands under the
+    DELFIN state directory rather than in the workspace, so an export
+    never turns up as a file the agent changed.
+    """
+    messages = getattr(getattr(ctx, "engine", None), "messages", None)
+    if not isinstance(messages, list) or not messages:
+        return CommandResult(output="nothing to export")
+    lines = ["# DELFIN agent session", ""]
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role", "") or "?")
+        lines.append(f"### {role}")
+        lines.append("")
+        lines.append(_message_text(msg.get("content")))
+        lines.append("")
+    try:
+        import time
+        from . import state_paths
+        target = (state_paths.ensure_dir(Path.home() / ".delfin" / "exports")
+                  / f"session_{time.strftime('%Y%m%d_%H%M%S')}.md")
+        state_paths.write_text(target, "\n".join(lines))
+    except Exception as exc:
+        return CommandResult(output=f"export failed: {exc}")
+    return CommandResult(output=f"exported {len(messages)} message(s) → {target}")
+
+
+def _message_text(content) -> str:
+    """One message's text, whatever shape the backend stored it in.
+
+    Content blocks arrive as a list on some backends and a plain string
+    on others; rendering the list's repr would put JSON in the export
+    where the user expects their conversation.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict):
+                parts.append(str(block.get("text", "") or ""))
+            elif isinstance(block, str):
+                parts.append(block)
+        return "\n".join(p for p in parts if p.strip())
+    return str(content or "")
+
+
+def _memories(ctx, args: str) -> CommandResult:
+    """The memory store, through memory_store's own reader."""
+    scope = {"": "project", "global": "user", "all": "all"}.get(
+        args.strip().lower())
+    if scope is None:
+        return CommandResult(output="usage: /memories [global|all]")
+    try:
+        from .memory_store import list_typed_memories
+        mems = list_typed_memories(ctx.workspace, scope=scope)
+    except Exception as exc:
+        return CommandResult(output=f"memory store unavailable ({exc})")
+    if not mems:
+        return CommandResult(output=(
+            "no memories stored — a line starting with # writes one"))
+    lines: list[str] = []
+    last_type = None
+    for mem in mems:
+        if mem.get("type") != last_type:
+            last_type = mem.get("type")
+            lines.append(f"  [{last_type}]")
+        tag = " (global)" if mem.get("scope") == "user" else ""
+        desc = str(mem.get("description") or (mem.get("body") or "")[:80] or "")
+        lines.append(f"    {mem.get('name', '?')}{tag} — {desc.strip()}")
+    lines.append("  /forget <name> deletes one")
+    return CommandResult(output="\n".join(lines))
+
+
+def _forget(ctx, args: str) -> CommandResult:
+    """Delete one memory, by name.
+
+    Both stores are searched and the deletion is reported with the path
+    it removed: a "done" that names nothing cannot be told apart from a
+    no-op, and this one deletes a file.
+    """
+    name = args.strip()
+    if not name:
+        return CommandResult(output="usage: /forget <name>  (see /memories)")
+    try:
+        from .memory_store import delete_typed_memory
+        path = delete_typed_memory(ctx.workspace, name, scope="all")
+    except Exception as exc:
+        return CommandResult(output=f"could not delete: {exc}")
+    if path is None:
+        return CommandResult(output=(
+            f"no memory named {name!r} — /memories lists them"))
+    return CommandResult(output=f"deleted {name} → {path}")
+
+
+def _undo(ctx, _args: str) -> CommandResult:
+    """Drop the last turn from the context.
+
+    The dashboard's /undo is inline in a closure that also rewinds its
+    chat widget; this is the terminal half — the engine's message list
+    only. It restores NO file, and says so, because the two undos are
+    different acts: /undo-file is the one that touches the disk.
+    """
+    messages = getattr(getattr(ctx, "engine", None), "messages", None)
+    if not isinstance(messages, list) or not messages:
+        return CommandResult(output="nothing to undo")
+    start = None
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            start = i
+            break
+    if start is None:
+        # No user turn to cut back to. Popping anyway would empty the
+        # context, which is /clear's job and not what was asked for.
+        return CommandResult(output="nothing to undo")
+    removed = len(messages) - start
+    del messages[start:]
+    return CommandResult(output=(
+        f"dropped {removed} message(s) from the context — no file was "
+        "restored; /undo-file does that"))
+
+
+def _undo_file(ctx, args: str) -> CommandResult:
+    """Restore files from the undo journal — change_journal does the work.
+
+    The rendering is minimal on purpose: the dashboard's formatters live
+    in the widget module, and importing it here would pull the notebook
+    stack into a terminal.
+    """
+    sid = _live_session(ctx)
+    if not sid:
+        return CommandResult(output=(
+            "no active session — there is no change journal yet"))
+    try:
+        from . import change_journal as cj
+    except Exception as exc:
+        return CommandResult(output=f"undo journal unavailable ({exc})")
+    scope = args.strip().lower() or "list"
+    if scope in ("list", "ls"):
+        return _undo_file_listing(cj, sid)
+    if scope not in ("last", "turn", "session"):
+        return CommandResult(output=(
+            f"unknown scope {scope!r} — list | last | turn | session"))
+    turn_seqs: list = []
+    if scope == "turn":
+        try:
+            from .api_client import _doc_executor as executor
+            turn_seqs = list(executor._turn_seqs_for(sid))
+        except Exception:
+            turn_seqs = []
+        if not turn_seqs:
+            return CommandResult(output=(
+                "no file changes recorded in the current turn — try "
+                "/undo-file last or /undo-file session"))
+    try:
+        res = cj.revert(sid, scope=scope, turn_seqs=turn_seqs,
+                        workspace=Path(ctx.workspace))
+    except Exception as exc:
+        return CommandResult(output=f"undo failed: {exc}")
+    _audit_undo(res, sid, scope)
+    return CommandResult(output=_undo_file_result(scope, res))
+
+
+def _undo_file_listing(cj, sid: str) -> CommandResult:
+    """What is in the journal, and what of it can still be undone.
+
+    An entry whose pre-image is gone is marked as such: listing it like
+    any other offers an undo that cannot happen.
+    """
+    try:
+        records = cj.list_changes(sid, last_n=20)
+    except Exception as exc:
+        return CommandResult(output=f"could not read the journal ({exc})")
+    if not records:
+        return CommandResult(output="no file changes recorded this session")
+    lines = []
+    for rec in records:
+        if rec.get("dropped") or rec.get("truncated") or rec.get("lossy"):
+            kind = "no restorable pre-image — cannot undo"
+        elif rec.get("undone"):
+            kind = "already undone"
+        elif rec.get("deleted"):
+            kind = "deleted"
+        elif rec.get("created"):
+            kind = "created"
+        else:
+            kind = "edited"
+        lines.append(f"  [{rec.get('seq', '?')}] {rec.get('path', '?')} ({kind})")
+    lines.append("  /undo-file last | turn | session")
+    return CommandResult(output="\n".join(lines))
+
+
+def _undo_file_result(scope: str, res: dict) -> str:
+    """What the undo did, and for anything it did not do, why.
+
+    A conflict and a missing pre-image are different refusals — one
+    protects the user's own later edit, the other protects the file from
+    being rewritten with content the journal never stored.
+    """
+    out = [f"undo ({scope})"]
+    for key, label in (("reverted", "restored"),
+                       ("conflicts", "conflict — NOT touched"),
+                       ("skipped", "skipped")):
+        for item in (res or {}).get(key) or []:
+            if isinstance(item, dict):
+                why = str(item.get("reason", "") or "").strip()
+                out.append(f"  {label}: {item.get('path', '(no path)')}"
+                           + (f" — {why}" if why else ""))
+            else:
+                out.append(f"  {label}: {item}")
+    if len(out) == 1:
+        out.append("  nothing to undo")
+    return "\n".join(out)
+
+
+def _audit_undo(res: dict, sid: str, scope: str) -> None:
+    """An undo overwrites user files, so it belongs in /rewind's report.
+
+    Without this the restore is invisible to the change report that is
+    supposed to answer "what happened to my files".
+    """
+    try:
+        from . import audit_log
+        for path in (res or {}).get("reverted", []) or []:
+            audit_log.append(audit_log.make_record(
+                tool="undo_changes", decision="ok", path=str(path),
+                session_id=sid, extra={"scope": scope, "source": "terminal"}))
+    except Exception:
+        pass
+
+
+def _pending(ctx, _args: str) -> CommandResult:
+    """The diff-approval queue, rendered by pending_changes itself."""
+    sid = _live_session(ctx)
+    if not sid:
+        return CommandResult(output="no active session — nothing is pending")
+    try:
+        from . import pending_changes
+        return CommandResult(output=pending_changes.render_pending(sid))
+    except Exception as exc:
+        return CommandResult(output=f"pending queue unavailable ({exc})")
+
+
+def _approve(ctx, args: str) -> CommandResult:
+    """Apply a staged diff. Named ids only, never "the newest one"."""
+    arg = args.strip()
+    sid = _live_session(ctx)
+    if not sid or not arg:
+        return CommandResult(output="usage: /approve <id|all>  (see /pending)")
+    try:
+        from . import pending_changes
+        if arg.lower() == "all":
+            res = pending_changes.approve_all(sid, workspace=ctx.workspace)
+            lines = [f"applied {len(res.get('applied') or [])} change(s)"]
+            for conflict in res.get("conflicts") or []:
+                lines.append(f"  conflict #{conflict.get('id')} "
+                             f"{conflict.get('path')}: {conflict.get('reason')}")
+            for err in res.get("errors") or []:
+                lines.append(f"  error: {err}")
+            return CommandResult(output="\n".join(lines))
+        res = pending_changes.approve(sid, arg, workspace=ctx.workspace)
+    except Exception as exc:
+        return CommandResult(output=f"approve failed: {exc}")
+    if res.get("status") == "applied":
+        return CommandResult(output=(
+            f"applied #{res.get('id')} → {res.get('path', '')} "
+            "(covered by the undo journal)"))
+    return _change_verdict(arg, res)
+
+
+def _reject(ctx, args: str) -> CommandResult:
+    """Discard a staged diff without applying it."""
+    arg = args.strip()
+    sid = _live_session(ctx)
+    if not sid or not arg:
+        return CommandResult(output="usage: /reject <id|all>  (see /pending)")
+    try:
+        from . import pending_changes
+        if arg.lower() == "all":
+            res = pending_changes.reject_all(sid)
+            return CommandResult(output=(
+                f"rejected {len(res.get('rejected') or [])} change(s)"))
+        res = pending_changes.reject(sid, arg)
+    except Exception as exc:
+        return CommandResult(output=f"reject failed: {exc}")
+    return _change_verdict(arg, res)
+
+
+def _change_verdict(change_id: str, res: dict) -> CommandResult:
+    """The store's own word on an id it did or did not act on.
+
+    An id that was not found reads as "not found", never as success:
+    a staging queue that reports work it did not do is worse than one
+    that refuses.
+    """
+    status = str((res or {}).get("status", "") or "unknown")
+    reason = str((res or {}).get("reason", "") or "")
+    return CommandResult(output=(
+        f"#{change_id}: {status}" + (f" — {reason}" if reason else "")))
+
+
+_GIT_READ_ONLY: dict[str, str] = {
+    "status": "git status --short",
+    "diff": "git diff --stat",
+    "log": "git log --oneline -15",
+    "branch": "git branch -a --no-color",
+}
+
+
+def _git(ctx, args: str) -> CommandResult:
+    """Read-only git, through the same gate `!` uses.
+
+    The four subcommands are a fixed table, not a pass-through: a /git
+    that forwarded whatever followed it would be a second shell escape
+    wearing a familiar name, and `!git ...` already exists for the rest.
+
+    The gate is asked up front whether it would prompt. It parks its
+    question for the MAIN thread, and a command handler runs ON the main
+    thread — calling into a prompt from here would be the asker waiting
+    for the answerer, i.e. itself. `!` does not have that problem because
+    the loop runs it on a worker, so that is where this points.
+    """
+    sub = (args.strip().split() or [""])[0].lower()
+    command = _GIT_READ_ONLY.get(sub)
+    if command is None:
+        return CommandResult(output="usage: /git status | diff | log | branch")
+    run = getattr(getattr(ctx, "engine", None), "run_gated_bash", None)
+    if not callable(run):
+        return CommandResult(output=(
+            "/git runs through the same gate the agent uses, and this "
+            "backend has none"))
+    perms = getattr(ctx.engine, "kit_permissions", None)
+    try:
+        would_ask = (perms is not None
+                     and getattr(perms, "confirm_callback", None) is not None
+                     and not perms.matches_bash_auto_allow(command))
+    except Exception:
+        would_ask = False
+    if would_ask:
+        return CommandResult(output=(
+            f"the gate wants to approve this one — run `!{command}`, which "
+            "the loop runs where the approval prompt can be answered"))
+    try:
+        out = run(command)
+    except Exception as exc:
+        return CommandResult(output=f"git {sub} failed: {exc}")
+    from .repl import TerminalAgent
+    body = "\n".join(f"  {line}" for line in TerminalAgent._shell_lines(out))
+    return CommandResult(output=body or f"(no output from git {sub})")
+
+
+def _agents(ctx, _args: str) -> CommandResult:
+    """The subagent presets, from the registry that defines them."""
+    try:
+        from . import subagents
+        presets = subagents.list_subagents()
+    except Exception as exc:
+        return CommandResult(output=f"subagent presets unavailable ({exc})")
+    if not presets:
+        return CommandResult(output="no subagent presets registered")
+    lines = [
+        f"  {str(p.get('subagent_type') or p.get('name') or '?'):<18} "
+        f"{str(p.get('description') or '')[:60]}"
+        for p in presets
+    ]
+    try:
+        finished = subagents.list_finished(last_n=5)
+    except Exception:
+        finished = []
+    if finished:
+        lines.append("  recently finished (resume via resume_id):")
+        for rec in finished:
+            lines.append(
+                f"    {str(rec.get('sa_id', '?')):<10} "
+                f"{str(rec.get('subagent_type', '?')):<16} "
+                f"{str(rec.get('description') or '')[:40]}")
+    return CommandResult(output="\n".join(lines))
+
+
+def _skills(ctx, args: str) -> CommandResult:
+    """Discovered skills, and one skill's body on request."""
+    try:
+        from . import skills
+    except Exception as exc:
+        return CommandResult(output=f"skills unavailable ({exc})")
+    name = args.strip()
+    if name:
+        try:
+            skill = skills.get_skill(name, ctx.workspace)
+        except Exception as exc:
+            return CommandResult(output=f"could not read {name}: {exc}")
+        if skill is None:
+            return CommandResult(output=(
+                f"no skill named {name!r} — /skills lists them"))
+        return CommandResult(output=(
+            f"{skill.name} — {skill.description}\n"
+            f"source {skill.source}\n\n{skill.body}"))
+    try:
+        found = skills.discover_skills(ctx.workspace)
+    except Exception as exc:
+        return CommandResult(output=f"could not list skills ({exc})")
+    if not found:
+        return CommandResult(output=(
+            "no skills discovered — drop a SKILL.md under "
+            "~/.delfin/skills/<name>/ or <workspace>/.delfin/skills/"))
+    lines = [f"  /{s.name:<22} {(s.description or '')[:60]}" for s in found]
+    lines.append("  /skills <name> shows the body")
+    return CommandResult(output="\n".join(lines))
+
+
+def _hooks(ctx, _args: str) -> CommandResult:
+    """Which hooks are registered, and what the load could not do.
+
+    List only: adding, removing and dry-running a hook edit settings the
+    user owns, and this surface never does. The warnings are printed
+    because a hook withheld for lack of trust looks exactly like a hook
+    that had nothing to say — see /trust grant hooks.
+    """
+    try:
+        from . import hooks_editor
+        rows = hooks_editor.list_hooks(ctx.workspace)
+        warnings = hooks_editor.hook_warnings(ctx.workspace)
+    except Exception as exc:
+        return CommandResult(output=f"hooks unavailable ({exc})")
+    if not rows and not warnings:
+        return CommandResult(output="no hooks registered")
+    lines: list[str] = []
+    event = ""
+    for row in rows:
+        if row.get("event") != event:
+            event = str(row.get("event", "") or "")
+            lines.append(f"  {event}:")
+        lines.append(f"    [{row.get('index')}] matcher="
+                     f"{str(row.get('matcher', '') or ''):<20} "
+                     f"{str(row.get('command', ''))[:60]}")
+        lines.append(f"        source {row.get('source') or 'unknown'}")
+    for note in warnings:
+        lines.append(f"  ! {note}")
+    return CommandResult(output="\n".join(lines))
+
+
+def _bash(ctx, args: str) -> CommandResult:
+    """Background shell jobs: list them, or kill one by id.
+
+    Kill is the only mutation, and it needs the id: a /bash that killed
+    "the last one" would reach a job the user is not looking at.
+    """
+    try:
+        from . import bash_jobs
+        registry = bash_jobs.get_registry()
+    except Exception as exc:
+        return CommandResult(output=f"job registry unavailable ({exc})")
+    parts = args.strip().split()
+    action = parts[0].lower() if parts else "ls"
+    if action == "kill":
+        if len(parts) < 2:
+            return CommandResult(output="usage: /bash kill <job_id>")
+        try:
+            ok, note = registry.kill(parts[1])
+        except Exception as exc:
+            return CommandResult(output=f"kill failed: {exc}")
+        return CommandResult(output=f"{parts[1]}: {note}" if ok
+                             else f"not killed — {note}")
+    if action not in ("ls", "jobs"):
+        return CommandResult(output="usage: /bash [ls] | /bash kill <job_id>")
+    try:
+        jobs = sorted(registry.list_jobs(), key=lambda j: j.started_at,
+                      reverse=True)
+    except Exception as exc:
+        return CommandResult(output=f"could not list jobs ({exc})")
+    if not jobs:
+        return CommandResult(output="no background bash jobs")
+    lines = []
+    for job in jobs[:20]:
+        try:
+            st = job.status_dict()
+        except Exception:
+            continue
+        flag = "run " if st.get("running") else "done"
+        lines.append(f"  {flag} {st.get('job_id')}  exit={st.get('exit_code')}  "
+                     f"{float(st.get('elapsed_s', 0.0) or 0.0):>7.1f}s  "
+                     f"{str(st.get('command', ''))[:50]}")
+    lines.append("  /bash kill <job_id>")
+    return CommandResult(output="\n".join(lines))
+
+
+def _attention(ctx, args: str) -> CommandResult:
+    """The attention inbox, rendered by the module that owns it.
+
+    Read-only here. Answering and dismissing resolve an item the agent
+    is waiting on, and those belong on the surface that parked it.
+    """
+    try:
+        from . import attention
+        kind = args.strip().lower()
+        if kind and kind not in attention.ATTENTION_KINDS:
+            return CommandResult(output=(
+                "usage: /attention [" + "|".join(
+                    sorted(attention.ATTENTION_KINDS)) + "]"))
+        return CommandResult(output=attention.render_inbox(kind or None))
+    except Exception as exc:
+        return CommandResult(output=f"attention inbox unavailable ({exc})")
+
+
+def _plans(ctx, args: str) -> CommandResult:
+    """Saved plans, and one plan's body on request."""
+    try:
+        from . import memory_store
+    except Exception as exc:
+        return CommandResult(output=f"plan store unavailable ({exc})")
+    name = args.strip()
+    if name:
+        try:
+            rec = memory_store.get_plan(ctx.workspace, name)
+        except Exception as exc:
+            return CommandResult(output=f"could not read {name}: {exc}")
+        if rec is None:
+            return CommandResult(output=(
+                f"no plan matching {name!r} — /plans lists them"))
+        return CommandResult(output=(
+            f"{rec.get('name')} — {rec.get('description', '')}\n"
+            f"source {rec.get('path')}\n\n{rec.get('body', '')}"))
+    try:
+        plans = memory_store.list_plans(ctx.workspace)
+    except Exception as exc:
+        return CommandResult(output=f"could not list plans ({exc})")
+    if not plans:
+        return CommandResult(output=(
+            "no saved plans — one is written when a plan-mode plan is "
+            "approved"))
+    import time
+    lines = []
+    for plan in plans[:25]:
+        stamp = time.strftime("%Y-%m-%d %H:%M",
+                              time.localtime(plan.get("created_at", 0) or 0))
+        lines.append(f"  {stamp}  {str(plan.get('name', '?')):<28} "
+                     f"{str(plan.get('description') or '')[:40]}")
+    lines.append("  /plans <name> shows the body")
+    return CommandResult(output="\n".join(lines))
+
+
+def _commands(ctx, args: str) -> CommandResult:
+    """User-defined slash commands, from the same discovery the router uses.
+
+    Listing them from a second source would let /commands advertise a
+    command the router does not have, or hide one it does.
+    """
+    try:
+        from . import slash_commands
+    except Exception as exc:
+        return CommandResult(output=f"command store unavailable ({exc})")
+    name = args.strip()
+    if name:
+        try:
+            tpl = slash_commands.get_command(name, ctx.workspace)
+        except Exception as exc:
+            return CommandResult(output=f"could not read {name}: {exc}")
+        if tpl is None:
+            return CommandResult(output=(
+                f"no command named {name!r} — /commands lists them"))
+        return CommandResult(output=(
+            f"/{tpl.name} — {tpl.description}\n"
+            f"source {tpl.source}\n\n{tpl.body}"))
+    try:
+        found = slash_commands.discover_commands(ctx.workspace)
+    except Exception as exc:
+        return CommandResult(output=f"could not list commands ({exc})")
+    if not found:
+        return CommandResult(output=(
+            "no custom commands — a markdown file in ~/.delfin/commands/ "
+            "or <workspace>/.delfin/commands/ becomes one"))
+    lines = []
+    for tpl in found:
+        hint = f" {tpl.argument_hint}" if tpl.argument_hint else ""
+        lines.append(f"  /{tpl.name}{hint:<20} {(tpl.description or '')[:60]}")
+    lines.append("  /commands <name> shows the body")
+    return CommandResult(output="\n".join(lines))
+
+
+def _trace(ctx, args: str) -> CommandResult:
+    """The tool calls this session made, as tool_trace records them."""
+    engine = getattr(ctx, "engine", None)
+    session = getattr(engine, "trace_session", None)
+    sid = ""
+    try:
+        sid = str(session() or "") if callable(session) else _live_session(ctx)
+    except Exception:
+        sid = _live_session(ctx)
+    if not sid:
+        return CommandResult(output="no session yet — nothing has been traced")
+    try:
+        from . import tool_trace
+        entries = tool_trace.read(sid)
+        if not entries:
+            return CommandResult(output="no tool calls recorded this session")
+        limit = int(args.strip()) if args.strip().isdigit() else 30
+        return CommandResult(output=(
+            tool_trace.format_summary(entries, limit=limit)
+            + f"\nfull trace: {tool_trace.trace_path(sid)}"))
+    except Exception as exc:
+        return CommandResult(output=f"trace unavailable ({exc})")
+
+
+# ---------------------------------------------------------------------------
+# Writing the prompt somewhere other than the prompt
+# ---------------------------------------------------------------------------
+
+#: The variables a Unix program is expected to read, in the order the
+#: convention assigns them: VISUAL names the full-screen editor, EDITOR the
+#: line editor that also works on a dumb terminal. Reading only one of them
+#: would ignore half the machines that have an editor configured.
+_EDITOR_VARS = ("VISUAL", "EDITOR")
+
+_NO_EDITOR = (
+    "no editor configured — set $VISUAL or $EDITOR (for example "
+    "`export EDITOR=nano`) and run /editor again. Nothing is opened by "
+    "guess: a hard-coded fallback would drop whoever has neither set into "
+    "an editor they may not know how to leave.")
+
+
+def _editor_argv() -> tuple[list[str], str]:
+    """The configured editor as a command line, and the variable it came from.
+
+    The value is split the way a shell splits it, so `EDITOR="code -w"` and
+    `EDITOR="emacs -nw"` work — but it is never handed TO a shell, so a
+    scratch path is one argument no matter what is in it. A variable set to
+    whitespace, or to something with an unbalanced quote, counts as unset:
+    it cannot be started, and reporting "not configured" is the answer that
+    tells the user what to do next.
+    """
+    import os
+
+    for var in _EDITOR_VARS:
+        value = str(os.environ.get(var, "") or "").strip()
+        if not value:
+            continue
+        try:
+            argv = shlex.split(value)
+        except ValueError:
+            argv = []
+        if argv:
+            return argv, var
+    return [], ""
+
+
+def _scratch_prompt_file(template: str) -> Path:
+    """A private scratch file holding the draft, pre-filled with *template*.
+
+    Mode 0600: the draft is what the user is about to say to a model, and
+    the temp directory is world-readable and shared with every other
+    account on the machine. `mkstemp` already creates it that way and the
+    chmod says it a second time, so a later change to how the file is made
+    cannot widen it silently.
+
+    The `.md` suffix is not decoration: it is what makes an editor choose
+    prose wrapping and markdown highlighting instead of treating a
+    multi-paragraph prompt as an unknown blob.
+    """
+    import os
+    import tempfile
+
+    fd, name = tempfile.mkstemp(prefix="delfin-prompt-", suffix=".md")
+    os.close(fd)
+    path = Path(name)
+    os.chmod(path, 0o600)
+    path.write_text(template, encoding="utf-8")
+    return path
+
+
+def _editor(ctx, args: str) -> CommandResult:
+    """Write the next prompt in $VISUAL or $EDITOR instead of at the prompt.
+
+    WHERE THIS RUNS. At the idle prompt, and only there: the turn loop
+    calls `_handle_line` on a finished input line before it starts a turn,
+    and `dispatch` has that one call site. That moment is the only one in
+    which a full-screen editor may take the terminal — the line reader has
+    already returned it, and the renderer and the key decoder that own it
+    during a turn have not been started. Nothing here guards against being
+    called mid-turn because no such path exists; if one is ever added, this
+    handler is one of the things it has to answer for.
+
+    An optional argument pre-fills the file, so `/editor` typed after half
+    a sentence keeps the half sentence.
+
+    Cancelling is the default in every ambiguous case: a non-zero exit, an
+    empty file, and a file that came back exactly as it went in all send
+    nothing. Sending a stale draft the user backed out of would put words
+    in their mouth, and the model cannot tell the difference.
+    """
+    argv, var = _editor_argv()
+    if not argv:
+        return CommandResult(output=_NO_EDITOR)
+    template = (args + "\n") if args.strip() else ""
+    try:
+        path = _scratch_prompt_file(template)
+    except OSError as exc:
+        return CommandResult(output=f"could not create a scratch file: {exc}")
+    try:
+        return _editor_round_trip(argv, var, path, template, ctx.workspace)
+    finally:
+        # Removed here rather than on the way out of each branch: the file
+        # holds an unsent prompt, and a branch added later would otherwise
+        # leave one behind in the temp directory every time /editor failed
+        # in a new way. `finally` also covers the editor raising.
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
+def _editor_round_trip(argv: list[str], var: str, path: Path,
+                       template: str, workspace: Path) -> CommandResult:
+    """Run the editor over *path* and decide what came back.
+
+    Separated from the cleanup above so that every return in here is
+    covered by it, and so the reasons to refuse read as one list.
+    """
+    import subprocess
+
+    try:
+        # stdin/stdout/stderr are inherited on purpose: a full-screen
+        # editor needs the real terminal. Capturing them would leave the
+        # user typing into a pipe with nothing on screen.
+        code = subprocess.call([*argv, str(path)])
+    except FileNotFoundError:
+        return CommandResult(output=(
+            f"${var} names {argv[0]!r}, which is not on PATH — nothing was "
+            "opened and nothing was sent"))
+    except OSError as exc:
+        return CommandResult(output=f"could not start {argv[0]!r}: {exc}")
+    except Exception as exc:                        # noqa: BLE001
+        # Every handler in this table answers with a line. An exception
+        # escaping here would end the line the user was typing, and the
+        # ways an editor can fail are not enumerable from in here.
+        # KeyboardInterrupt is BaseException and still travels: Ctrl+C
+        # during an editor belongs to the loop that installed the handler.
+        return CommandResult(output=f"{argv[0]} failed: {exc}")
+    if code != 0:
+        return CommandResult(output=(
+            f"{argv[0]} exited {code} — nothing was sent"))
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        return CommandResult(output=(
+            "the draft did not come back as UTF-8 text — nothing was sent"))
+    except OSError as exc:
+        return CommandResult(output=(
+            f"could not read the draft back: {exc} — nothing was sent"))
+    if not text.strip():
+        return CommandResult(output="the draft is empty — nothing was sent")
+    if text.strip() == template.strip():
+        # An untouched template is a cancel, the same as an empty file:
+        # someone who quits without editing did not decide to send the
+        # line they started with.
+        return CommandResult(output="the draft is unchanged — nothing was sent")
+    # The same treatment a typed line gets, now that giving it costs
+    # nothing: `expand_at_references` used to re-join on single spaces,
+    # which would have flattened the paragraphs this command exists to
+    # make possible. It preserves whitespace, so `@path` works in a draft
+    # exactly as it does at the prompt — one entry point behaving
+    # differently from another is the surprise this avoids.
+    body = expand_at_references(text.strip(), workspace)
+    return CommandResult(prompt=body, output=(
+        f"sending {len(body.splitlines())} line(s) from {argv[0]}"))
+
+
+def _clear(ctx, _args: str) -> CommandResult:
+    return CommandResult(output="starting a fresh conversation", clear=True)
+
+
+def _exit(ctx, _args: str) -> CommandResult:
+    return CommandResult(quit=True)
+
+
+#: Every key the decoder can produce while a turn is running, with what it
+#: does. Keyed by the constant rather than by the literal so a renamed
+#: event breaks the import instead of quietly dropping a row, and a test
+#: asserts the table covers every event `repl_keys` exports — a key layer
+#: nobody can discover is a key layer nobody uses.
+def _key_rows() -> list[tuple[str, str, str]]:
+    from . import repl_keys as rk
+    return [
+        (rk.INTERRUPT, "esc", "End this turn. A running tool call "
+                              "finishes first."),
+        (rk.SUBMIT, "enter", "Queue what you typed; it goes out when the "
+                             "turn ends."),
+        (rk.STEER, "ctrl+g", "Send what you typed INTO the running turn; "
+                             "the model reads it on its next round."),
+        (rk.CYCLE_MODE, "shift+tab", "Next approval posture (never onto "
+                                     "bypass)."),
+        (rk.EXPAND, "ctrl+o", "Show the last tool result in full."),
+        (rk.TASKS, "ctrl+t", "Show or hide the open task list."),
+        (rk.REDRAW, "ctrl+l", "Redraw the screen."),
+        (rk.EDIT, "backspace / ctrl+u", "Edit or clear the line you are "
+                                        "typing."),
+    ]
+
+
+def _keys(_ctx, _args: str) -> CommandResult:
+    """The keys that work WHILE the agent is running.
+
+    They are only reachable during a turn, which is exactly when nobody
+    is reading documentation — so they need a place to be looked up
+    afterwards.
+    """
+    width = max(len(k) for _e, k, _d in _key_rows())
+    lines = [f"  {key:<{width}}  {desc}" for _e, key, desc in _key_rows()]
+    return CommandResult(output="While a turn is running:\n" + "\n".join(lines))
+
+
+def _help(ctx, args: str) -> CommandResult:
+    from . import help_gen
+    return CommandResult(output=help_gen.generate_help(
+        palette_rows(), search=args.strip()))
+
+
+def _mode(engine) -> str:
+    from .repl import permission_mode
+    return permission_mode(engine)
+
+
+BUILTINS: dict[str, ReplCommand] = {
+    c.name: c for c in [
+        ReplCommand("/help", "session", "List these commands", _help, True),
+        ReplCommand("/keys", "session", "Keys that work while a turn runs",
+                    _keys),
+        ReplCommand("/editor", "session", "Write the next prompt in "
+                    "$VISUAL or $EDITOR", _editor, True),
+        ReplCommand("/status", "session", "Model, mode, tokens, cost", _status),
+        ReplCommand("/cost", "session", "What this session has cost", _cost),
+        ReplCommand("/usage", "session", "Token and cost detail, with the rate",
+                    _usage),
+        ReplCommand("/context", "session", "How much window is left", _context),
+        ReplCommand("/compact", "session", "Summarise history to free space",
+                    _compact, True),
+        ReplCommand("/export", "session", "Write this conversation as Markdown",
+                    _export),
+        ReplCommand("/undo", "session", "Drop the last turn from the context",
+                    _undo),
+        ReplCommand("/trace", "session", "Tool calls made this session",
+                    _trace, True),
+        ReplCommand("/clear", "session", "Start a fresh conversation", _clear),
+        ReplCommand("/exit", "session", "Leave", _exit),
+        ReplCommand("/quit", "session", "Leave", _exit),
+        ReplCommand("/model", "setup", "Show or switch the model", _model, True),
+        ReplCommand("/mode", "setup", "Show or switch the agent mode",
+                    _mode_cmd, True),
+        ReplCommand("/permissions", "setup", "Show or switch the approval "
+                    "posture", _permissions, True),
+        ReplCommand("/effort", "setup", "Show or set reasoning effort",
+                    _effort, True),
+        ReplCommand("/doctor", "setup", "Check the setup", _doctor),
+        ReplCommand("/init", "setup", "Scaffold AGENTS.md and .delfin/", _init),
+        ReplCommand("/mcp", "setup", "Configured MCP servers", _mcp),
+        ReplCommand("/trust", "setup", "What this folder offers and withholds",
+                    _trust, True),
+        ReplCommand("/tools", "setup", "Tools the model is offered",
+                    _tools, True),
+        ReplCommand("/hooks", "setup", "Hooks registered for this workspace",
+                    _hooks),
+        ReplCommand("/agents", "setup", "Subagent presets", _agents),
+        ReplCommand("/skills", "setup", "Discovered skills", _skills, True),
+        ReplCommand("/commands", "setup", "User-defined slash commands",
+                    _commands, True),
+        ReplCommand("/session", "history", "List or search past sessions",
+                    _session, True),
+        ReplCommand("/rewind", "history", "What the agent changed here",
+                    _rewind),
+        ReplCommand("/tasks", "history", "This session's open work", _tasks),
+        ReplCommand("/memories", "history", "Stored memories", _memories, True),
+        ReplCommand("/forget", "history", "Delete one memory by name",
+                    _forget, True),
+        ReplCommand("/plans", "history", "Saved plans", _plans, True),
+        ReplCommand("/undo-file", "changes", "Restore files from the undo "
+                    "journal", _undo_file, True),
+        ReplCommand("/pending", "changes", "Diffs waiting for approval",
+                    _pending),
+        ReplCommand("/approve", "changes", "Apply a staged diff",
+                    _approve, True),
+        ReplCommand("/reject", "changes", "Discard a staged diff",
+                    _reject, True),
+        ReplCommand("/git", "workspace", "status | diff | log | branch",
+                    _git, True),
+        ReplCommand("/bash", "workspace", "Background jobs: list or kill one",
+                    _bash, True),
+        ReplCommand("/attention", "workspace", "The attention inbox",
+                    _attention, True),
+    ]
+}
+
+
+def palette_rows() -> list[tuple[str, str, str, bool]]:
+    """The rows help_gen renders. Derived, so help cannot drift."""
+    seen: set[str] = set()
+    rows = []
+    for cmd in BUILTINS.values():
+        if cmd.summary in seen and cmd.name in ("/quit",):
+            continue
+        seen.add(cmd.summary)
+        rows.append((cmd.category, cmd.name, cmd.summary, cmd.takes_args))
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# The route
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ReplContext:
+    engine: Any = None
+    workspace: Path = field(default_factory=Path.cwd)
+    session_id: str = ""
+
+
+def dispatch(text: str, ctx: ReplContext) -> CommandResult:
+    """Builtin, then user command, then skill, then subagent, then the model.
+
+    The dashboard's order, kept because a `/deploy` that means one thing
+    in the browser and another in a terminal is worse than not having it.
+    """
+    raw = (text or "").strip()
+    if not looks_like_command(raw):
+        return CommandResult(handled=False)
+
+    head, _, args = raw.partition(" ")
+    name = head.lower()
+    args = args.strip()
+
+    cmd = BUILTINS.get(name)
+    if cmd is not None:
+        try:
+            return cmd.handler(ctx, args)
+        except Exception as exc:
+            return CommandResult(output=f"{name} failed: {exc}")
+
+    bare = name.lstrip("/")
+    try:
+        from . import slash_commands
+        tpl = slash_commands.get_command(bare, ctx.workspace)
+        if tpl is not None:
+            return CommandResult(
+                prompt=slash_commands.expand_template(tpl.body, args))
+    except Exception:
+        pass
+
+    try:
+        from . import skills
+        skill = skills.get_skill(bare, ctx.workspace)
+        if skill is not None:
+            return CommandResult(
+                prompt=skills.render_skill_invocation(skill, args))
+    except Exception:
+        pass
+
+    try:
+        from . import slash_commands
+        expanded = slash_commands.builtin_subagent_command(bare, args)
+        if expanded:
+            return CommandResult(prompt=expanded)
+    except Exception:
+        pass
+
+    # Unknown: the literal text goes to the model, which is what the
+    # dashboard does. Refusing here would make a typo unanswerable.
+    return CommandResult(handled=False)

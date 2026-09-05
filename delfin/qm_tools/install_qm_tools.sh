@@ -2,7 +2,15 @@
 
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Where the tools go. Beside this script unless told otherwise -- and it was
+# never told otherwise, which is the whole of the problem: the Settings tab
+# ran a staged copy and filled the user's own directory, the Submit tab ran
+# the packaged copy and filled the package, and only one of the two was being
+# searched. A user pressed Install, the tools arrived, and they were reported
+# missing. Both callers now name the directory the resolver reads.
+ROOT="${DELFIN_QM_TOOLS_ROOT:-${DELFIN_QM_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}}"
+mkdir -p "${ROOT}"
+ROOT="$(cd "${ROOT}" && pwd)"
 BIN_DIR="${ROOT}/bin"
 DOWNLOAD_DIR="${ROOT}/downloads"
 BUILD_DIR="${ROOT}/build"
@@ -11,13 +19,35 @@ XTB4STDA_SHARE_DIR="${SHARE_DIR}/xtb4stda"
 MAMBA_ENV="${ROOT}/.mamba_env"
 ORCA_LOCAL_DIR="${ROOT}/third_party/orca"
 
+# g-xTB ships as a statically linked xtb 6.7.1 of its own -- the method is not
+# in a released tblite yet, and the ordinary xtb accepts --gxtb and silently
+# runs GFN2 -- so it is installed beside xtb rather than instead of it.
+GXTB_TAG="${GXTB_TAG:-v2.0.1}"
+GXTB_ASSET="${GXTB_ASSET:-xtb-6.7.1-gxtb-140526-linux-x86_64.tar.xz}"
+GXTB_URL="${GXTB_URL:-https://github.com/grimme-lab/g-xtb/releases/download/${GXTB_TAG}/${GXTB_ASSET}}"
 XTB4STDA_URL="${XTB4STDA_URL:-https://github.com/grimme-lab/xtb4stda/releases/download/v1.0/xtb4stda}"
 STDA_URL="${STDA_URL:-https://github.com/grimme-lab/xtb4stda/releases/download/v1.0/stda_v1.6.1}"
 XTB4STDA_RUNTIME_BASE_URL="${XTB4STDA_RUNTIME_BASE_URL:-https://raw.githubusercontent.com/grimme-lab/xtb4stda/master}"
 STD2_TAG="${STD2_TAG:-v2.0.1}"
 STD2_SRC_URL="${STD2_SRC_URL:-https://github.com/grimme-lab/std2/archive/refs/tags/${STD2_TAG}.tar.gz}"
 
+# Whether a tool already on this system may stand in for one of ours at all.
 USE_SYSTEM_TOOLS="${USE_SYSTEM_TOOLS:-1}"
+# Whether it is *preferred* over building the managed environment. Off: an
+# install should install. See install_xtb.
+PREFER_SYSTEM_TOOLS="${PREFER_SYSTEM_TOOLS:-0}"
+# The build we know answers. Unpinned, "install xtb" means whatever
+# conda-forge published this morning, so two machines set up a week apart run
+# two different programs -- and a fault inside xtb is a fault of one build, not
+# of the structure. Measured on this one: water GFN2 -5.070325081194 Eh,
+# GFN-FF -0.327252352397 Eh, and a doublet optimisation that finishes.
+# Override to move deliberately, not by accident.
+# The oldest xtb we are willing to run. 6.6.1 has a formatting fault inside
+# its own optimiser -- a doublet optimisation dies with "Fortran runtime
+# error: Missing comma between descriptors" at optimizer.f90:639 while 6.7.1
+# finishes the same job normally. A floor rather than a pin, so newer builds
+# are still taken.
+XTB_MINIMUM="${XTB_MINIMUM:-6.7.1}"
 INSTALL_STD2_FROM_SOURCE="${INSTALL_STD2_FROM_SOURCE:-0}"
 FORCE_REDOWNLOAD="${FORCE_REDOWNLOAD:-0}"
 FORCE_CONDA_UPDATE="${FORCE_CONDA_UPDATE:-0}"
@@ -41,6 +71,18 @@ have() {
 }
 
 detect_python() {
+  # The interpreter DELFIN is actually running in, when the caller says so.
+  #
+  # Taking the first `python` on the PATH was the default, and on a machine
+  # where that is a different environment from the dashboard's -- which it
+  # usually is -- every package installed here landed somewhere the dashboard
+  # cannot import from. Measured: the installer chose Python 3.13 while the
+  # dashboard ran 3.11, so cclib, nglview, censo, morfeus and torch were all
+  # installed and all missing at the same time.
+  if [[ -n "${DELFIN_PYTHON:-}" && -x "${DELFIN_PYTHON}" ]]; then
+    printf "%s\n" "${DELFIN_PYTHON}"
+    return 0
+  fi
   if have python; then
     command -v python
     return 0
@@ -115,78 +157,297 @@ detect_existing_tool() {
   return 1
 }
 
+# Where micromamba actually is, which is not always on the PATH.
+#
+# It is commonly installed as a **shell function** -- that is what its own
+# installer sets up -- so `command -v micromamba` answers in an interactive
+# shell and answers nothing in a script, while the binary sits in the home
+# directory the whole time. Measured on a machine where xtb, crest and dftb+
+# were all installed and mopac would not be: the function was there, the
+# binary was at ~/micromamba/bin/micromamba, and this function found neither.
+#
+# So the places it is usually put are looked in as well, and the variables its
+# own installer exports are honoured.
 ensure_micromamba() {
+  local candidate
+  for candidate in "${MAMBA_EXE:-}" "${CONDA_EXE:-}"; do
+    if [[ -n "${candidate}" && -x "${candidate}" ]]; then
+      printf "%s\n" "${candidate}"
+      return 0
+    fi
+  done
   if have micromamba; then
     printf "%s\n" "$(command -v micromamba)"
     return 0
   fi
+  for candidate in \
+      "${MAMBA_ROOT_PREFIX:-${HOME}/micromamba}/bin/micromamba" \
+      "${HOME}/micromamba/bin/micromamba" \
+      "${HOME}/.local/bin/micromamba" \
+      "${HOME}/bin/micromamba" \
+      "/opt/micromamba/bin/micromamba" \
+      "/usr/local/bin/micromamba"; do
+    if [[ -x "${candidate}" ]]; then
+      printf "%s\n" "${candidate}"
+      return 0
+    fi
+  done
   if have conda; then
     printf "%s\n" "$(command -v conda)"
     return 0
   fi
+  for candidate in \
+      "${ROOT}/bin/micromamba" \
+      "${CONDA_PREFIX:-}/bin/conda" \
+      "${HOME}/miniforge3/bin/conda" \
+      "${HOME}/miniconda3/bin/conda" \
+      "${HOME}/anaconda3/bin/conda" \
+      "/opt/conda/bin/conda"; do
+    if [[ -x "${candidate}" ]]; then
+      printf "%s\n" "${candidate}"
+      return 0
+    fi
+  done
   return 1
 }
 
-install_conda_stack() {
+# One environment per tool, not one environment for all of them.
+#
+# Solved together, conda-forge answers **xtb 6.6.1** -- the build whose
+# optimiser dies with a Fortran format error -- because that is the newest xtb
+# compatible with crest and dftbplus *at the same time*. Solved apart, each
+# tool gets its own newest: xtb 6.7.1, crest 3.0.2, dftbplus 25.1. Measured
+# with three dry runs of the solver, and it is why a user could press Install
+# and end up with a broken xtb while the person beside them, whose xtb came
+# from somewhere else, had no trouble at all.
+#
+# Pinning xtb inside the joint environment would have worked too, and it costs
+# dftbplus 25.1 -> 21.1. Separate environments cost nothing but disk.
+install_conda_tool() {
+  local prog="$1" spec="$2" env_dir="${MAMBA_ENV}/$3" binary="${4:-$1}"
   local mamba
 
-  mamba="$(ensure_micromamba)" || die "micromamba/conda not found; cannot auto-install xtb/crest/dftb+"
+  mamba="$(ensure_micromamba)" || mamba="$(bootstrap_micromamba)" || return 1
 
-  if [[ ! -x "${MAMBA_ENV}/bin/xtb" || ! -x "${MAMBA_ENV}/bin/crest" || ! -x "${MAMBA_ENV}/bin/dftb+" ]]; then
-    log "create local conda env at ${MAMBA_ENV}"
-    if [[ "$(basename "${mamba}")" == "micromamba" ]]; then
-      "${mamba}" create -y -p "${MAMBA_ENV}" -c conda-forge xtb crest dftbplus
-    else
-      "${mamba}" create -y -p "${MAMBA_ENV}" -c conda-forge xtb crest dftbplus
-    fi
+  if [[ ! -x "${env_dir}/bin/${binary}" ]]; then
+    log "create ${prog} environment at ${env_dir}"
+    "${mamba}" create -y -p "${env_dir}" -c conda-forge "${spec}" || return 1
   elif [[ "${FORCE_CONDA_UPDATE}" == "1" ]]; then
-    log "update local conda env at ${MAMBA_ENV}"
-    # Use 'update', not 'install': an unversioned 'install xtb' is a no-op
-    # when xtb is already present (the spec is already satisfied), so it
-    # never upgrades an outdated build.
-    #
-    # Update each tool INDIVIDUALLY. A joint 'update xtb crest dftbplus'
-    # can leave xtb at an old version when the newest builds of the three
-    # are not mutually compatible (the solver then keeps a compatible, but
-    # older, combination). Per-tool updates let each reach the latest
-    # conda-forge build on its own, mirroring a targeted 'install xtb=...'.
-    for _tool in xtb crest dftbplus; do
-      log "updating ${_tool}"
-      "${mamba}" update -y -p "${MAMBA_ENV}" -c conda-forge "${_tool}" \
-        || log "WARNING: update of ${_tool} did not complete"
-    done
+    log "update ${prog} in ${env_dir}"
+    # 'update', not 'install': an unversioned 'install xtb' is a no-op when
+    # xtb is already there -- the spec is satisfied -- so it never replaces an
+    # outdated build.
+    "${mamba}" update -y -p "${env_dir}" -c conda-forge "${spec}" \
+      || log "WARNING: update of ${prog} did not complete"
   fi
 
-  link_into_bin "${MAMBA_ENV}/bin/xtb" xtb
-  link_into_bin "${MAMBA_ENV}/bin/crest" crest
-  link_into_bin "${MAMBA_ENV}/bin/dftb+" dftb+
+  [[ -x "${env_dir}/bin/${binary}" ]] || return 1
+  link_into_bin "${env_dir}/bin/${binary}" "${prog}"
+  # Now that this tool has one of its own, the shared environment may have
+  # nothing left in it worth keeping.
+  retire_legacy_env
+}
+
+# The environment the tools used to share, once nothing points into it.
+#
+# Leaving it costs more than the disk. A binary that is still on disk can
+# still be reached: an explicit path saved in the settings, a PATH somebody
+# exported, a hard-coded fallback. So the xtb whose optimiser dies with
+# "Missing comma between descriptors" can go on being the one that runs, long
+# after a working one has been installed beside it.
+#
+# Removed only after the replacement is in place and only when no link in
+# bin/ resolves into it any more -- a cleanup that runs first would leave a
+# failed install with nothing at all.
+retire_legacy_env() {
+  local marker="${MAMBA_ENV}/conda-meta"
+  [[ -d "${marker}" ]] || return 0
+
+  local link resolved
+  for link in "${BIN_DIR}"/*; do
+    [[ -e "${link}" || -L "${link}" ]] || continue
+    resolved="$(readlink -f "${link}" 2>/dev/null)" || continue
+    case "${resolved}" in
+      "${MAMBA_ENV}/bin/"*)
+        log "keeping the shared environment: ${link##*/} still uses it"
+        return 0
+        ;;
+    esac
+  done
+
+  local freed=""
+  if have du; then
+    freed="$(du -sh "${MAMBA_ENV}/bin" "${MAMBA_ENV}/lib" "${MAMBA_ENV}/share" \
+             2>/dev/null | awk '{s+=$1} END {print ""}')"
+  fi
+  log "removing the shared environment nothing uses any more: ${MAMBA_ENV}"
+  local part
+  for part in bin lib share include conda-meta ssl etc libexec man sbin; do
+    rm -rf "${MAMBA_ENV:?}/${part}"
+  done
+}
+
+install_conda_stack() {
+  # Kept for callers that want all three; each still gets its own environment.
+  local failed=0
+  install_conda_tool xtb "xtb>=${XTB_MINIMUM}" xtb || failed=1
+  install_conda_tool crest crest crest || failed=1
+  install_conda_tool dftb+ dftbplus dftbplus "dftb+" || failed=1
+  return "${failed}"
+}
+
+# Install the build we know, and only adopt somebody else's if we cannot.
+#
+# Adopting first was the default, and it means "install" mostly did not
+# install: it found whatever xtb stood first on the PATH and made a symlink to
+# it. Two accounts on one cluster then run two different xtb builds from the
+# same button -- one of them optimises and the other stops with a Fortran
+# format error inside xtb's own optimiser, on the same structure. Pressing
+# Install again cannot help, because it adopts the same broken build again.
+#
+# So the managed environment comes first and the system tool is the fallback,
+# which keeps the case that made adoption the default in the first place: a
+# cluster with no network and xtb behind a module. Whichever happened is said
+# out loud, because "installed" and "adopted" are not the same claim.
+# Fetch micromamba itself, when there is none and one is needed.
+#
+# Telling a user that Settings can install it, and then not installing it, is
+# the shape of problem this whole layer exists to remove. It is ten megabytes
+# and one file; it goes into the tool directory beside everything else rather
+# than into the home directory, so it is as removable as the tools it builds.
+MICROMAMBA_URL="${MICROMAMBA_URL:-https://micro.mamba.pm/api/micromamba/linux-64/latest}"
+AUTO_MICROMAMBA="${AUTO_MICROMAMBA:-1}"
+
+bootstrap_micromamba() {
+  # Whatever this function prints to stdout is its answer -- the path. Every
+  # word of explanation goes beside it, or the caller runs the explanation:
+  # measured, "[qm_tools] no micromamba on this machine; fetching one" was
+  # captured into the variable and then executed as a command.
+  [[ "${AUTO_MICROMAMBA}" == "1" ]] || return 1
+  have curl || { log >&2 "no curl, so micromamba cannot be fetched either"; return 1; }
+  local target="${ROOT}/bin/micromamba"
+  if [[ -x "${target}" ]]; then
+    printf "%s\n" "${target}"
+    return 0
+  fi
+  log >&2 "no micromamba on this machine; fetching one (about 10 MB)"
+  local work="${ROOT}/downloads/micromamba-$$"
+  mkdir -p "${work}" "${ROOT}/bin"
+  if ! curl -fsSL "${MICROMAMBA_URL}" | tar -xj -C "${work}" bin/micromamba 2>/dev/null; then
+    rm -rf "${work}"
+    log >&2 "micromamba could not be fetched"
+    return 1
+  fi
+  install -m 755 "${work}/bin/micromamba" "${target}"
+  rm -rf "${work}"
+  log >&2 "micromamba is at ${target}"
+  printf "%s\n" "${target}"
+  return 0
+}
+
+install_managed_or_adopt() {
+  local prog="$1" spec="$2" env_name="$3"
+  local path binary="${prog}"
+  if install_conda_tool "${prog}" "${spec}" "${env_name}" "${binary}"; then
+    return 0
+  fi
+  if ! ensure_micromamba >/dev/null 2>&1; then
+    log "WARNING: no micromamba or conda, so no environment can be built for ${prog}"
+  else
+    log "WARNING: no managed environment could be built for ${prog}"
+  fi
+  if path="$(detect_existing_tool "${prog}")"; then
+    log "adopting the ${prog} already on this system: ${path}"
+    log "  (it was not installed by DELFIN, and DELFIN cannot vouch for it)"
+    link_into_bin "${path}" "${prog}"
+    return 0
+  fi
+  die "${prog} could not be installed and none was found on this system"
 }
 
 install_xtb() {
-  local path
-  if path="$(detect_existing_tool xtb)"; then
-    link_into_bin "${path}" xtb
+  if [[ "${PREFER_SYSTEM_TOOLS}" == "1" ]]; then
+    local path
+    if path="$(detect_existing_tool xtb)"; then
+      log "using the xtb already on this system: ${path}"
+      link_into_bin "${path}" xtb
+      return
+    fi
+  fi
+  install_managed_or_adopt xtb "xtb>=${XTB_MINIMUM}" xtb
+}
+
+# MOPAC: PM6, PM7 and PM6-D3H4. Two megabytes from conda-forge, its own
+# environment like the others.
+install_mopac() {
+  if [[ "${PREFER_SYSTEM_TOOLS}" == "1" ]]; then
+    local path
+    if path="$(detect_existing_tool mopac)"; then
+      log "using the mopac already on this system: ${path}"
+      link_into_bin "${path}" mopac
+      return
+    fi
+  fi
+  install_managed_or_adopt mopac mopac mopac
+}
+
+install_gxtb() {
+  local archive="${DOWNLOAD_DIR}/${GXTB_ASSET}"
+  local sums="${archive}.sha256"
+  local target="${ROOT}/third_party/gxtb"
+
+  if [[ -x "${target}/bin/xtb" && "${FORCE_REDOWNLOAD}" != "1" ]]; then
+    log "reuse g-xTB in ${target}"
+    link_into_bin "${target}/bin/xtb" xtb-gxtb
     return
   fi
-  install_conda_stack
+
+  download_file "${GXTB_URL}" "${archive}"
+  # The release publishes a checksum beside the tarball.  A binary fetched
+  # from the network and run on a user's structures is worth the one line it
+  # costs to check that it is the one that was published.
+  download_file "${GXTB_URL}.sha256" "${sums}"
+  if have sha256sum; then
+    local want got
+    want="$(awk '{print $1}' "${sums}")"
+    got="$(sha256sum "${archive}" | awk '{print $1}')"
+    [[ "${want}" == "${got}" ]] || die "g-xTB checksum mismatch: expected ${want}, got ${got}"
+    log "g-xTB checksum verified"
+  else
+    warn "sha256sum not found; the g-xTB download could not be verified"
+  fi
+
+  rm -rf "${target}"
+  mkdir -p "${target}"
+  # One directory deep in the tarball (xtb-6.7.1/), stripped so the layout
+  # here does not depend on the version in its name.
+  tar -xf "${archive}" -C "${target}" --strip-components=1
+  [[ -x "${target}/bin/xtb" ]] || die "g-xTB archive did not contain bin/xtb"
+  link_into_bin "${target}/bin/xtb" xtb-gxtb
 }
 
 install_crest() {
-  local path
-  if path="$(detect_existing_tool crest)"; then
-    link_into_bin "${path}" crest
-    return
+  if [[ "${PREFER_SYSTEM_TOOLS}" == "1" ]]; then
+    local path
+    if path="$(detect_existing_tool crest)"; then
+      log "using the crest already on this system: ${path}"
+      link_into_bin "${path}" crest
+      return
+    fi
   fi
-  install_conda_stack
+  install_managed_or_adopt crest "crest" crest
 }
 
 install_dftbplus() {
-  local path
-  if path="$(detect_existing_tool dftb+)"; then
-    link_into_bin "${path}" dftb+
-    return
+  if [[ "${PREFER_SYSTEM_TOOLS}" == "1" ]]; then
+    local path
+    if path="$(detect_existing_tool dftb+)"; then
+      log "using the dftb+ already on this system: ${path}"
+      link_into_bin "${path}" dftb+
+      return
+    fi
   fi
-  install_conda_stack
+  install_managed_or_adopt dftb+ "dftbplus" dftbplus
 }
 
 install_xtb4stda_bundle() {
@@ -280,7 +541,7 @@ summary() {
   local python_bin=""
 
   log "installation summary"
-  for prog in xtb crest std2 stda xtb4stda dftb+; do
+  for prog in xtb xtb-gxtb crest std2 stda xtb4stda dftb+ mopac; do
     if [[ -x "${BIN_DIR}/${prog}" ]]; then
       printf "  %-12s %s\n" "${prog}" "${BIN_DIR}/${prog}"
     else
@@ -306,40 +567,112 @@ summary() {
   fi
 }
 
+# What each tool was before we touched it, so an update can say what it did.
+#
+# The tool is not always called what its binary is called, and g-xTB is the
+# one where they differ: it is asked for as "gxtb" and installed as
+# "xtb-gxtb", because an ordinary xtb accepts --gxtb and silently runs GFN2,
+# so the two builds must never be confused for one another. Looked for under
+# the name it was asked for there is nothing in bin/ -- so a g-xTB that had
+# just been downloaded, checksummed, unpacked and linked was reported in the
+# closing summary as "gxtb absent", which is the one line a user reads.
+version_of() {
+  local prog="$1" binary
+  case "$1" in
+    gxtb|g-xtb) prog="xtb-gxtb" ;;
+    dftbplus)   prog="dftb+" ;;
+  esac
+  binary="${BIN_DIR}/${prog}"
+  [[ -x "${binary}" ]] || { printf "absent\n"; return; }
+  case "${prog}" in
+    xtb|xtb-gxtb) "${binary}" --version 2>&1 | grep -oE "xtb version [0-9.]+" \
+                    | head -1 | awk '{print $3}' ;;
+    crest)        "${binary}" --version 2>&1 | grep -oiE "version [0-9.]+" \
+                    | head -1 | awk '{print $2}' ;;
+    dftb+)        "${binary}" --version 2>&1 | grep -oE "[0-9]+\.[0-9.]+" | head -1 ;;
+    *)            printf "present\n" ;;
+  esac
+}
+
+# One tool at a time, and one that fails takes only itself down.
+#
+# Everything used to run in one breath under `set -e`: no micromamba and the
+# whole thing stopped at the first tool, so xtb4stda and stda -- which need
+# nothing but curl -- were never even attempted. And std2, which is built from
+# source and wants a compiler, is last, so on a machine without one four
+# successful installs were reported as "exit code 1" with no summary at all.
+# The reverse happened too: tools that quietly installed nothing returned 0.
+#
+# So each one runs in a subshell, its outcome is recorded, and the run goes on.
+INSTALLED=()
+FAILED=()
+
+attempt() {
+  local tool="$1" was
+  was="$(version_of "${tool}")"
+  log "--- ${tool}"
+  if ( set +e; install_one "${tool}" ) ; then
+    local now
+    now="$(version_of "${tool}")"
+    if [[ "${was}" != "${now}" && "${was}" != "absent" ]]; then
+      INSTALLED+=("${tool} ${was} -> ${now}")
+    elif [[ "${was}" == "absent" ]]; then
+      INSTALLED+=("${tool} ${now}")
+    else
+      INSTALLED+=("${tool} ${now} (unchanged)")
+    fi
+  else
+    FAILED+=("${tool}")
+    warn "${tool} could not be installed; the others are still being tried"
+  fi
+}
+
+install_one() {
+  case "$1" in
+    xtb)            install_xtb ;;
+    mopac)          install_mopac ;;
+    gxtb|g-xtb)     install_gxtb ;;
+    crest)          install_crest ;;
+    dftb+|dftbplus) install_dftbplus ;;
+    xtb4stda|stda)  install_xtb4stda_bundle ;;
+    std2)           install_std2 ;;
+    *) die "Unknown tool: $1. Available: xtb, gxtb, crest, dftb+, xtb4stda, stda, std2, all" ;;
+  esac
+}
+
 main() {
   ensure_dirs
 
+  local wanted=()
   if [[ $# -eq 0 ]]; then
-    # No arguments: install everything (legacy behavior).
-    install_xtb
-    install_crest
-    install_dftbplus
-    install_xtb4stda_bundle
-    install_std2
+    wanted=(xtb crest dftb+ xtb4stda std2)
   else
-    # Selective install: only the requested tools.
     for tool in "$@"; do
-      case "${tool}" in
-        xtb)          install_xtb ;;
-        crest)        install_crest ;;
-        dftb+|dftbplus) install_dftbplus ;;
-        xtb4stda|stda) install_xtb4stda_bundle ;;
-        std2)         install_std2 ;;
-        all)
-          install_xtb
-          install_crest
-          install_dftbplus
-          install_xtb4stda_bundle
-          install_std2
-          ;;
-        *)
-          die "Unknown tool: ${tool}. Available: xtb, crest, dftb+, xtb4stda, stda, std2, all"
-          ;;
-      esac
+      if [[ "${tool}" == "all" ]]; then
+        wanted+=(xtb crest dftb+ xtb4stda std2)
+      else
+        wanted+=("${tool}")
+      fi
     done
   fi
 
+  local tool
+  for tool in "${wanted[@]}"; do
+    attempt "${tool}"
+  done
+
   summary
+
+  if ((${#INSTALLED[@]})); then
+    printf "\nInstalled:\n"
+    printf "  %s\n" "${INSTALLED[@]}"
+  fi
+  if ((${#FAILED[@]})); then
+    printf "\nNot installed: %s\n" "${FAILED[*]}"
+    printf "The rest of the list was still installed -- see above.\n"
+    return 1
+  fi
+  return 0
 }
 
 main "$@"

@@ -568,7 +568,7 @@ def test_render_action_confirmation_lists_commands():
         "/control key functional BP86",
         "/orca submit",
     ])
-    assert "2 Aktion" in html
+    assert "2 action" in html
     assert "/control key functional BP86" in html
     assert "/orca submit" in html
 
@@ -623,7 +623,10 @@ def test_suggestion_calculations_tab_offers_skill():
 def test_suggestion_orca_builder_tab():
     out = _suggestion_for_tab("ORCA Builder")
     assert out is not None
-    assert "Input" in out or "Builder" in out
+    # Case-insensitive: the suggestion is a sentence now, so the words the
+    # test cares about sit mid-sentence rather than capitalised.
+    lowered = out.lower()
+    assert "input" in lowered or "builder" in lowered
 
 
 def test_suggestion_silent_tabs_return_none():
@@ -1406,3 +1409,514 @@ def test_record_turn_outcome_runs_for_all_modes():
 def test_record_solo_turn_outcome_alias_still_works():
     """The old name is kept as an alias so external callers don't break."""
     assert _record_solo_turn_outcome is _record_turn_outcome
+
+
+# ---------------------------------------------------------------------------
+# Plan-accept arming heuristic + header wait chip
+# ---------------------------------------------------------------------------
+
+
+def test_greeting_does_not_look_like_a_plan():
+    from delfin.dashboard.tab_agent import _looks_like_plan_response
+    assert not _looks_like_plan_response("Hallo! Ich bin bereit zu helfen.")
+    assert not _looks_like_plan_response("")
+    assert not _looks_like_plan_response("Kurze Antwort ohne Struktur." * 3)
+
+
+def test_numbered_plan_is_recognised():
+    from delfin.dashboard.tab_agent import _looks_like_plan_response
+    plan = (
+        "Hier ist mein Plan für die Umsetzung des Features:\n"
+        "1. Zuerst die bestehende Struktur analysieren und die "
+        "betroffenen Module identifizieren.\n"
+        "2. Danach die neue Funktion implementieren, mit Tests "
+        "für jeden Randfall.\n"
+        "3. Anschließend die Dokumentation aktualisieren.\n"
+        "4. Zum Schluss den vollen Testlauf ausführen.\n"
+    )
+    assert _looks_like_plan_response(plan)
+
+
+def test_bulleted_plan_is_recognised():
+    from delfin.dashboard.tab_agent import _looks_like_plan_response
+    plan = (
+        "Vorgehen für die Migration der Datenbankschicht im Detail:\n"
+        "- Backup der bestehenden Daten anlegen und verifizieren\n"
+        "- Schema-Migration mit Rollback-Pfad implementieren\n"
+        "- Integrationstests gegen die migrierte Datenbank laufen lassen\n"
+    )
+    assert _looks_like_plan_response(plan)
+
+
+def test_short_list_is_not_a_plan():
+    from delfin.dashboard.tab_agent import _looks_like_plan_response
+    assert not _looks_like_plan_response("1. a\n2. b\n")
+
+
+def test_wait_chip_renders_and_clears():
+    from delfin.dashboard.tab_agent import _wait_chip_html
+    assert _wait_chip_html("") == ""
+    # The label is passed IN, so the test should assert the chip renders
+    # whatever it was given rather than pinning one particular label.
+    out = _wait_chip_html("Plan approval")
+    assert "waiting:" in out and "Plan approval" in out
+    long = _wait_chip_html("x" * 100)
+    assert "…" in long
+    # HTML in the wait text must be escaped, not rendered.
+    assert "<script>" not in _wait_chip_html("<script>alert(1)</script>")
+
+
+# ---------------------------------------------------------------------------
+# Honest restore: a "pending" plan that already executed must say so
+# ---------------------------------------------------------------------------
+
+
+def _trace(*tools):
+    return [{"tool": t} for t in tools]
+
+
+def test_post_plan_executions_counted_from_field_case():
+    """Shape of archive case 20260729-112242: plan submitted, then the
+    execution turn ran writes/bash before the host died."""
+    from delfin.dashboard.tab_agent import _count_post_plan_executions
+    entries = _trace(
+        "mcp__kit-coding__project_introspect",
+        "mcp__kit-coding__task_create",
+        "mcp__kit-coding__exit_plan_mode",
+        "mcp__kit-coding__task_update",
+        "mcp__kit-coding__bash",
+        "mcp__kit-coding__write_file",
+        "mcp__kit-coding__bash_background",
+        "mcp__kit-coding__bash_kill",
+    )
+    assert _count_post_plan_executions(entries) == 4
+
+
+def test_no_execution_after_plan_submission_counts_zero():
+    from delfin.dashboard.tab_agent import _count_post_plan_executions
+    assert _count_post_plan_executions(_trace(
+        "mcp__kit-coding__task_create",
+        "mcp__kit-coding__exit_plan_mode",
+        "mcp__kit-coding__task_update",
+    )) == 0
+    # Writes BEFORE the submission belong to an earlier phase.
+    assert _count_post_plan_executions(_trace(
+        "mcp__kit-coding__write_file",
+        "mcp__kit-coding__exit_plan_mode",
+    )) == 0
+    assert _count_post_plan_executions([]) == 0
+    assert _count_post_plan_executions([{}, {"name": ""}]) == 0
+
+
+def test_resubmitted_plan_resets_the_counter():
+    from delfin.dashboard.tab_agent import _count_post_plan_executions
+    assert _count_post_plan_executions(_trace(
+        "mcp__kit-coding__exit_plan_mode",
+        "mcp__kit-coding__bash",
+        "mcp__kit-coding__exit_plan_mode",
+    )) == 0
+
+
+# ---------------------------------------------------------------------------
+# Stale watchdog: prefill is not a stall
+# ---------------------------------------------------------------------------
+
+
+def _watchdog_source() -> str:
+    from pathlib import Path as _P
+    return (_P(__file__).resolve().parent.parent / "delfin" / "dashboard"
+            / "tab_agent.py").read_text(encoding="utf-8")
+
+
+def test_first_token_budget_is_separate_and_larger():
+    """Field case 20260729-122058: a dashboard turn was killed after 121 s
+    of silence although the provider had simply not started yet (measured
+    ~96 s time-to-first-token on the same endpoint for a one-word turn).
+    Waiting for the FIRST token must use its own, much larger budget."""
+    src = _watchdog_source()
+    assert "first_token_kill_after_s" in src
+    assert "waiting_for_first = not state.get(\"_stream_saw_output\")" in src
+    assert "budget = first_token_kill if waiting_for_first else kill_after" in src
+    assert "max(\n            600.0, kill_after * 4.0)" in src
+
+
+def test_stream_output_marks_first_token_for_every_channel():
+    src = _watchdog_source()
+    # text, thinking and tool use all count as "the provider started".
+    assert src.count('state["_stream_saw_output"] = True') >= 3
+    # ... and the flag is reset when a turn starts.
+    assert 'state["_stream_saw_output"] = False' in src
+
+
+def test_watchdog_kill_is_not_reported_as_a_backend_failure():
+    src = _watchdog_source()
+    assert 'state["_watchdog_stopped"] = (' in src
+    assert 'if not state.pop("_watchdog_stopped", "")' in src
+    assert "Turn ended by DELFIN's watchdog" in src
+    # The old wording blamed the CLI for our own stop.
+    assert "The CLI ended the turn" not in src
+
+
+def test_kill_watch_rearms_instead_of_expiring():
+    """The first-token budget outlives the initial timer, so a not-yet-due
+    check must re-arm rather than silently stop watching."""
+    src = _watchdog_source()
+    idx = src.find("def _check_kill():")
+    assert idx > 0
+    block = src[idx:idx + 2000]
+    assert "again = _threading.Timer(" in block
+    assert 'state["_stale_kill_timer"] = again' in block
+
+
+# ---------------------------------------------------------------------------
+# Mid-turn persistence + plan-mode verify exemption
+# ---------------------------------------------------------------------------
+
+
+def test_session_is_checkpointed_before_and_during_a_turn():
+    """Field complaint: after a reload only the plan was there, not the
+    conversation that produced it — auto-save ran only at turn end."""
+    src = _watchdog_source()
+    assert "def _checkpoint_session(" in src
+    # before the turn runs, on every finalized message, and before the
+    # plan-approval block parks the worker
+    assert src.count("_checkpoint_session(") >= 4
+    assert "_checkpoint_session(min_interval_s=0.0)" in src
+
+
+def test_checkpoint_is_throttled_and_never_raises():
+    src = _watchdog_source()
+    idx = src.find("def _checkpoint_session(")
+    block = src[idx:idx + 900]
+    assert "min_interval_s" in block
+    assert "_last_checkpoint_ts" in block
+    assert "except Exception:" in block
+
+
+def test_plan_turns_are_exempt_from_claim_grounding():
+    """A plan names files it INTENDS to create; grounding them against the
+    workspace made every plan a false alarm (field case 20260729-125618:
+    3 flags on tetris_game.py / snake_game.py / game_dashboard.ipynb)."""
+    from pathlib import Path as _P
+    eng = (_P(__file__).resolve().parent.parent / "delfin" / "agent"
+           / "engine.py").read_text(encoding="utf-8")
+    assert "def _turn_describes_intent(" in eng
+    assert 'getattr(self.kit_permissions, "mode", "") or "") == "plan"' in eng
+    assert "exit_plan_mode" in eng
+    # The engine exemption moved INSIDE the guard on 2026-09-02. Gating
+    # ENTRY on it meant a persisted `default_mode: plan` switched off the
+    # whole claim-guard family — measured on one sandbox, one line apart:
+    # with the setting an English question came back in German, without
+    # it in English. The scanners still stand down for a plan; only the
+    # language check no longer does, and language was never what the
+    # exemption was measured for.
+    assert "if self._turn_describes_intent():" in eng
+    assert "loc, qty, conflicts, func, ambiguous = [], [], [], [], []" in eng
+    # The dashboard's own block is all claim scanners and no language
+    # check, so its gate is correct as it stands and is left alone.
+    src = _watchdog_source()
+    assert "_describes_intent = engine._turn_describes_intent()" in src
+    assert "and not _describes_intent" in src
+
+
+# ---------------------------------------------------------------------------
+# ACTION continuation budget — progress vs. repetition
+# ---------------------------------------------------------------------------
+
+def _run_rounds(rounds, ceiling=12, repeat_limit=2):
+    """Drive the pure decision over a list of per-round ACTION sets.
+
+    Mirrors the bookkeeping the continuation loop does (signature history,
+    executed-command set, round counter) and returns
+    ``(rounds_completed, stop_reason)``.
+    """
+    from delfin.dashboard.tab_agent import (
+        _decide_action_round, _normalize_action_command)
+    sigs: list[str] = []
+    seen: set[str] = set()
+    used = 0
+    stale = 0
+    for cmds in rounds:
+        used += 1
+        dec = _decide_action_round(
+            cmds, sigs, seen, rounds_used=used, stale_rounds=stale,
+            ceiling=ceiling, repeat_limit=repeat_limit)
+        sigs.append(dec.signature)
+        if dec.stale:
+            stale += 1
+        for c in cmds:
+            n = _normalize_action_command(c)
+            if n:
+                seen.add(n)
+        if not dec.proceed:
+            return used, dec.reason
+    return used, ""
+
+
+def test_distinct_action_sets_keep_going_up_to_the_ceiling():
+    """Genuine multi-step work — a different command every round — must
+    not be cut short at the old flat cap of 3. The only thing that ends
+    such a sequence is the absolute ceiling."""
+    rounds = [[f"/tab step{i}"] for i in range(20)]
+    used, reason = _run_rounds(rounds, ceiling=12)
+    assert reason == "ceiling"
+    assert used == 12
+
+
+def test_four_distinct_rounds_are_progress_not_a_loop():
+    """The field case: read the error file, open the folder, inspect the
+    input, answer. Four distinct rounds must all be allowed."""
+    used, reason = _run_rounds([
+        ["/tab calc"],
+        ["/calc show job.err"],
+        ["/calc show job.inp"],
+        ["/tab orca"],
+    ], ceiling=12)
+    assert (used, reason) == (4, "")
+
+
+def test_same_action_set_twice_stops():
+    """Two occurrences of the identical set is a loop — stop immediately,
+    do not bleed to the ceiling."""
+    used, reason = _run_rounds([
+        ["/tab orca"],
+        ["/tab orca"],
+        ["/tab orca"],
+    ], ceiling=12)
+    assert reason == "repeat"
+    assert used == 2
+
+
+def test_repeat_detection_ignores_order_and_case_and_spacing():
+    """Same work in a different order (or with cosmetic differences) is
+    still the same work."""
+    used, reason = _run_rounds([
+        ["/tab orca", "/jobs"],
+        ["/JOBS", "/tab   orca"],
+    ], ceiling=12)
+    assert (used, reason) == (2, "repeat")
+
+
+def test_alternating_two_sets_stops_on_the_first_repeat():
+    """A/B/A alternation dodged a previous-round-only comparison; the full
+    per-turn signature history catches it."""
+    used, reason = _run_rounds([
+        ["/tab orca"],
+        ["/jobs"],
+        ["/tab orca"],
+    ], ceiling=12)
+    assert (used, reason) == (3, "repeat")
+
+
+def test_empty_round_stops():
+    """A round that executed no ACTION has nothing to feed back — another
+    model turn would be paid for nothing."""
+    from delfin.dashboard.tab_agent import _decide_action_round
+    dec = _decide_action_round([], [], set(), rounds_used=1)
+    assert dec.proceed is False
+    assert dec.reason == "no_actions"
+    assert dec.new_commands == ()
+
+
+def test_round_of_only_already_executed_commands_is_no_progress():
+    """A reshuffled/partial re-emission is not an identical set, but it
+    still adds nothing new."""
+    from delfin.dashboard.tab_agent import _decide_action_round
+    dec = _decide_action_round(
+        ["/tab orca"], ["/jobs\x1f/tab orca"], {"/tab orca", "/jobs"},
+        rounds_used=2)
+    assert dec.proceed is False
+    assert dec.reason == "no_progress"
+
+
+def test_one_new_command_among_old_ones_is_progress():
+    from delfin.dashboard.tab_agent import _decide_action_round
+    dec = _decide_action_round(
+        ["/tab orca", "/calc show new.err"], ["/tab orca"], {"/tab orca"},
+        rounds_used=1)
+    assert dec.proceed is True
+    assert dec.reason == "progress"
+    assert dec.new_commands == ("/calc show new.err",)
+
+
+def test_repeat_limit_is_clamped_to_at_least_two():
+    """A limit of 1 (or 0) would stop on the very first round and make the
+    loop useless — the helper clamps it."""
+    from delfin.dashboard.tab_agent import _decide_action_round
+    dec = _decide_action_round(
+        ["/tab orca"], [], set(), rounds_used=1, repeat_limit=1)
+    assert dec.proceed is True
+    dec = _decide_action_round(
+        ["/tab orca"], [], set(), rounds_used=1, repeat_limit=0)
+    assert dec.proceed is True
+
+
+def test_higher_repeat_limit_tolerates_one_more_occurrence():
+    """The setting has to actually do something — with a limit of 3 the
+    same set may occur three times before the turn ends."""
+    used, reason = _run_rounds([
+        ["/tab orca"], ["/tab orca"], ["/tab orca"],
+    ], ceiling=12, repeat_limit=3)
+    assert (used, reason) == (3, "repeat")
+
+
+def test_action_round_signature_is_order_insensitive():
+    from delfin.dashboard.tab_agent import _action_round_signature
+    assert (_action_round_signature(["/a", "/b"])
+            == _action_round_signature(["/b", "/a"]))
+    assert _action_round_signature([]) == ""
+    assert _action_round_signature(["/a"]) != _action_round_signature(["/b"])
+
+
+def test_decide_action_round_survives_garbage_limits():
+    """Settings come from a user-editable file — bad values must not raise
+    inside the streaming worker."""
+    from delfin.dashboard.tab_agent import _decide_action_round
+    dec = _decide_action_round(
+        ["/tab orca"], [], set(), rounds_used="x",
+        ceiling="nope", repeat_limit=None)
+    assert dec.proceed is True
+
+
+def test_resolve_action_round_limits_defaults(monkeypatch):
+    """No setting → generous ceiling, repeat limit 2."""
+    from delfin import user_settings
+    from delfin.dashboard import tab_agent as ta
+    monkeypatch.setattr(user_settings, "load_settings", lambda: {})
+    assert ta._resolve_action_round_limits() == (
+        ta._ACTION_ROUND_CEILING_DEFAULT, 2)
+
+
+def test_resolve_action_round_limits_reads_agent_settings(monkeypatch):
+    from delfin import user_settings
+    from delfin.dashboard import tab_agent as ta
+    monkeypatch.setattr(
+        user_settings, "load_settings",
+        lambda: {"agent": {"max_action_rounds": 5,
+                           "action_repeat_limit": 4}})
+    assert ta._resolve_action_round_limits() == (5, 4)
+
+
+def test_resolve_action_round_limits_zero_disables_the_ceiling(monkeypatch):
+    from delfin import user_settings
+    from delfin.dashboard import tab_agent as ta
+    monkeypatch.setattr(
+        user_settings, "load_settings",
+        lambda: {"agent": {"max_action_rounds": 0}})
+    ceiling, repeat = ta._resolve_action_round_limits()
+    assert ceiling >= 10_000
+    assert repeat == 2
+
+
+def test_resolve_action_round_limits_never_raises(monkeypatch):
+    from delfin import user_settings
+    from delfin.dashboard import tab_agent as ta
+
+    def _boom():
+        raise OSError("settings file corrupt")
+
+    monkeypatch.setattr(user_settings, "load_settings", _boom)
+    assert ta._resolve_action_round_limits() == (
+        ta._ACTION_ROUND_CEILING_DEFAULT, 2)
+    monkeypatch.setattr(
+        user_settings, "load_settings",
+        lambda: {"agent": {"max_action_rounds": "many",
+                           "action_repeat_limit": "lots"}})
+    assert ta._resolve_action_round_limits() == (
+        ta._ACTION_ROUND_CEILING_DEFAULT, 2)
+
+
+# -- the stop note ----------------------------------------------------------
+
+def test_ceiling_stop_note_is_honest_and_actionable():
+    """It must name what ran, say the ROUND LIMIT ended the turn (not that
+    the work is done or that the agent misbehaved), and say how to go on."""
+    from delfin.dashboard.tab_agent import _format_action_stop_note
+    note = _format_action_stop_note(
+        "ceiling", ["/tab calc", "/calc show job.err"], 12, [])
+    assert "/tab calc" in note and "/calc show job.err" in note
+    assert "12" in note
+    assert "agent.max_action_rounds" in note
+    assert "continue" in note.lower()
+    # Honesty: no claim that the agent misbehaved, no claim of completion
+    assert "kept emitting" not in note
+    assert "completed" not in note.lower()
+
+
+def test_ceiling_stop_note_lists_unexecuted_commands():
+    from delfin.dashboard.tab_agent import _format_action_stop_note
+    note = _format_action_stop_note(
+        "ceiling", ["/tab calc"], 12, ["/jobs", "/tab orca"])
+    assert "Not executed" in note
+    assert "/jobs" in note and "/tab orca" in note
+
+
+def test_repeat_stop_note_says_the_agent_repeated_itself():
+    from delfin.dashboard.tab_agent import _format_action_stop_note
+    note = _format_action_stop_note("repeat", ["/tab orca"], 12, [])
+    assert "/tab orca" in note
+    assert "already run" in note
+    assert "follow-up" in note
+    for reason in ("repeat", "no_progress"):
+        assert _format_action_stop_note(reason, ["/tab orca"], 12, [])
+
+
+def test_stop_note_is_empty_for_a_turn_that_finished_on_its_own():
+    from delfin.dashboard.tab_agent import _format_action_stop_note
+    assert _format_action_stop_note("progress", ["/tab orca"], 12, []) == ""
+    assert _format_action_stop_note("no_actions", [], 12, []) == ""
+
+
+def test_stop_note_truncates_long_command_lists():
+    from delfin.dashboard.tab_agent import _format_action_stop_note
+    note = _format_action_stop_note(
+        "ceiling", [f"/tab t{i}" for i in range(9)], 12, [])
+    assert "+4 more" in note
+
+
+# ---------------------------------------------------------------------------
+# An exhausted account budget is not a model problem
+# ---------------------------------------------------------------------------
+
+
+def test_exceeded_budget_is_classified_as_quota():
+    """Field case 2026-07-30: the gateway answered 'Error code: 400 -
+    ExceededBudget ... Spend=5.55, Budget=5.0'. The agent read it as a
+    per-call failure and kept improvising against a hard wall."""
+    from delfin.dashboard.tab_agent import _classify_model_error_text as cls
+    for text in (
+        "Error code: 400 - {'detail': 'ExceededBudget: End User=x@kit.edu "
+        "over budget. Spend=5.548, Budget=5.0'}",
+        "insufficient_quota: you exceeded your current quota",
+        "quota exceeded for this project",
+    ):
+        assert cls(text) == "quota", text
+
+
+def test_quota_wins_over_the_other_classes():
+    """A budget message must never be read as a flapping backend or a bad
+    key — those invite a retry or a model switch, which cannot help."""
+    from delfin.dashboard.tab_agent import _classify_model_error_text as cls
+    assert cls("ExceededBudget ... service unavailable, model group=x") == "quota"
+
+
+def test_ordinary_errors_are_not_quota():
+    from delfin.dashboard.tab_agent import _classify_model_error_text as cls
+    assert cls("Error code: 503 - temporarily unavailable") == "temp"
+    assert cls("AuthenticationError: invalid subscription") == "auth"
+    assert cls("Error code: 400 - maximum context length exceeded") == ""
+
+
+def test_spend_amounts_are_extracted_for_the_message():
+    from delfin.dashboard.tab_agent import _QUOTA_SPEND_RE
+    m = _QUOTA_SPEND_RE.search("over budget. Spend=5.548838, Budget=5.0")
+    assert m and m.group(1).startswith("5.54") and m.group(2) == "5.0"
+
+
+def test_quota_message_states_that_switching_models_will_not_help():
+    from pathlib import Path as _P
+    src = (_P(__file__).resolve().parent.parent / "delfin" / "dashboard"
+           / "tab_agent.py").read_text(encoding="utf-8")
+    assert "is_quota_exhausted" in src
+    assert "cap sits on the ACCOUNT" in src
+    assert "does not help either" in src

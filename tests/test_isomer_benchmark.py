@@ -1,4 +1,9 @@
-"""Isomer-coverage benchmark over a curated pool of 12 metal-complex SMILES.
+"""Isomer-coverage benchmark over a curated pool of metal-complex SMILES.
+
+The pool holds 43 systems; a run measures the seven in ``_NIGHTLY_IDS``,
+chosen by measuring each one and then freezing the answer. See the note
+above that tuple for what the other 36 cost and why they are still here.
+
 
 Runs ``smiles_to_xyz_isomers`` on each SMILES with ``quality_mode='normal'``
 and records per-system metrics (N_output, distinct base-labels, mean
@@ -368,9 +373,70 @@ def _collect_metrics(smi: str) -> Dict[str, Any]:
     }
 
 
+# ---------------------------------------------------------------------------
+# What a nightly run measures, and what the pool is for
+# ---------------------------------------------------------------------------
+# The pool is 43 systems. The module docstring said twelve — it grew and the
+# text did not — and running all of them is why this benchmark had never once
+# completed: measured per system on 2026-08-15, three of them do not finish
+# inside ten minutes AND produce nothing while failing to,
+#
+#     >600 s  Fe2(mu-O)(bipy-macrocycle)          n_out=0
+#     >600 s  Fe3(mu-O)3(salen-like)              n_out=0
+#     >600 s  Fe(CNMe)2(dmpe)2                    n_out=0
+#
+# and the other forty sum to 6235 s. So the pool is not uniformly expensive:
+# it is three systems that never terminate and a long tail of two to seven
+# minutes each.
+#
+# NIGHTLY is the affordable slice, chosen by measurement and then frozen —
+# seven systems, 3:02 together, against a nightly run that already takes 58
+# minutes. Four metals, isomer counts from 5 to 59, and the shapes that
+# matter: carbene, pincer, bicyclic, thiadiazole, tetrazolate, alkylidene.
+#
+#   0.6 s   Fe(CO)3(NHC)2                             5 isomers
+#   5.9 s   Ir(carbenyl-phosphine-N-O)Cl              9
+#   5.9 s   Ir(phosphine-N-O-H)Cl-bicyclic            8
+#  36.4 s   Cd(OMe)2(Cl)2(thiadiazole)2              57
+#  36.5 s   W(alkylidene-alkoxide-amide-dipyrrolide) 14
+#  40.6 s   Fe(pyOMe)(CO)3(SAr)(Br)                  13
+#  55.8 s   Cd(triazolopyrimidine)2(H2O)4            59
+#
+# Cheap systems that yield a single isomer were left out although they fit
+# the budget: a coverage benchmark whose entry returns one structure cannot
+# measure coverage, only its disappearance.
+#
+# The other 36 stay in SMILES_POOL. They are curated work and the three that
+# hang are themselves a finding; deleting them would lose both. Run the whole
+# pool deliberately with BENCHMARK_FULL_POOL=1 — it takes over two hours and
+# will not finish under any per-test timeout.
+_NIGHTLY_IDS = (
+    "Fe(CO)3(NHC)2",
+    "Ir(carbenyl-phosphine-N-O)Cl",
+    "Ir(phosphine-N-O-H)Cl-bicyclic",
+    "Cd(OMe)2(Cl)2(thiadiazole)2",
+    "W(alkylidene-alkoxide-amide-dipyrrolide)",
+    "Fe(pyOMe)(CO)3(SAr)(Br)",
+    "Cd(triazolopyrimidine)2(H2O)4",
+)
+
+
+def _selected_pool() -> List[Dict[str, Any]]:
+    if os.environ.get("BENCHMARK_FULL_POOL") == "1":
+        return list(SMILES_POOL)
+    by_id = {e["id"]: e for e in SMILES_POOL}
+    missing = [i for i in _NIGHTLY_IDS if i not in by_id]
+    assert not missing, (
+        f"_NIGHTLY_IDS names systems that are not in SMILES_POOL: {missing}. "
+        "A renamed entry silently drops out of the measured set, and the "
+        "benchmark then compares a smaller pool against a larger baseline."
+    )
+    return [by_id[i] for i in _NIGHTLY_IDS]
+
+
 def _run_benchmark() -> Dict[str, Dict[str, Any]]:
     out: Dict[str, Dict[str, Any]] = {}
-    for entry in SMILES_POOL:
+    for entry in _selected_pool():
         out[entry["id"]] = _collect_metrics(entry["smiles"])
     return out
 
@@ -391,25 +457,52 @@ def _save_baseline(data: Dict[str, Dict[str, Any]]) -> None:
         json.dump(data, fh, indent=2, sort_keys=True)
 
 
+@pytest.mark.timeout(7200)
 def test_isomer_benchmark():
-    """Run the pool, compare against baseline, warn/fail on regressions."""
+    """Run the pool, compare against baseline, warn/fail on regressions.
+
+    Cost, measured 2026-08-14 on a fast multi-core box: the twelve-system
+    pool had NOT finished after 50 minutes. That is not a test running a
+    little long — it is four times any per-test budget, and on a two-core
+    runner it would sit near the job's own 240-minute cap. The timeout above
+    is for somebody running this deliberately; it is not a licence to put
+    the pool on a per-night path.
+
+    The order below matters and used to be the other way round. The baseline
+    fixture is generated, never committed, so in CI — a fresh clone every
+    time — it is always absent. The old order ran the whole pool first and
+    only then noticed there was nothing to compare against: it wrote the
+    snapshot and skipped. Under the nightly run's 600 s per-test limit it
+    never even got that far, so what the run actually reported was a
+    timeout failure, every night, for a comparison that was never going to
+    happen. Ten minutes spent to say nothing.
+
+    Checked first now. Without a baseline this skips immediately and says
+    how to make one. That is honest rather than useful: the benchmark
+    guards nothing in CI until a baseline is committed or the pool is cut
+    to something a night can hold. Both are cost decisions, and neither is
+    made here.
+    """
     if os.environ.get("SKIP_SLOW_TESTS") == "1":
         pytest.skip("SKIP_SLOW_TESTS set")
 
+    update = os.environ.get("UPDATE_BENCHMARK_BASELINE") == "1"
+    baseline = _load_baseline()
+
+    if baseline is None and not update:
+        pytest.skip(
+            f"No baseline at {BASELINE_PATH} and nothing to compare against. "
+            "Running the pool to write one takes over 50 minutes, so it is "
+            "not done as a side effect of a test run: "
+            "UPDATE_BENCHMARK_BASELINE=1 pytest tests/test_isomer_benchmark.py"
+        )
+
     current = _run_benchmark()
 
-    if os.environ.get("UPDATE_BENCHMARK_BASELINE") == "1":
+    if update:
         _save_baseline(current)
         print("\nUpdated baseline ->", BASELINE_PATH)
         return
-
-    baseline = _load_baseline()
-    if baseline is None:
-        _save_baseline(current)
-        pytest.skip(
-            f"No baseline -- wrote initial snapshot to {BASELINE_PATH}. "
-            "Re-run to compare future changes against it."
-        )
 
     regressions: List[str] = []
     warnings: List[str] = []

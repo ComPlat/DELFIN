@@ -83,14 +83,14 @@ def test_full_compaction_keeps_user_goal_and_recent(monkeypatch, tmp_path, tmp_a
 
     goal = "GOALSENTINEL implement the dark-mode toggle end to end"
     msgs = [{"role": "user", "content": goal}]
-    for i in range(13):                            # well over _COMPACTION_THRESHOLD
+    for i in range(13):                            # a long history
         role = "assistant" if i % 2 == 0 else "user"
         msgs.append({"role": role, "content": f"turn {i} chatter " * 5})
     last = "RECENTSENTINEL the very latest exchange"
     msgs[-1] = {"role": "user", "content": last}
     eng.messages = msgs
 
-    assert len(eng.messages) >= eng._COMPACTION_THRESHOLD
+    assert len(eng.messages) > eng._KEEP_RECENT
     assert eng._should_auto_compact()              # token pressure present
     eng._compact_history()
 
@@ -148,7 +148,7 @@ def test_many_short_messages_do_not_compact_at_low_usage(monkeypatch, tmp_path, 
         msgs.append({"role": role, "content": f"step {i}"})
     eng.messages = list(msgs)
 
-    assert len(eng.messages) >= eng._COMPACTION_THRESHOLD
+    assert len(eng.messages) > eng._KEEP_RECENT
     assert not eng._should_auto_compact()        # nowhere near the budget
     eng._compact_history()
 

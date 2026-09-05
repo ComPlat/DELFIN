@@ -807,3 +807,324 @@ def test_summarise_run_computes_basic_aggregates():
     assert s["avg_quality"] == pytest.approx((80 + 60 + 90) / 3)
     assert s["total_cost_usd"] == pytest.approx(0.06)
     assert s["total_duration_s"] == pytest.approx(6.0)
+
+
+# ---------------------------------------------------------------------------
+# ab_compare — compact A/B convenience over two persisted runs
+# ---------------------------------------------------------------------------
+
+
+def _write_ab_runs(tmp_path):
+    """Two synthetic runs: candidate lifts quality on all 3 tasks, spends
+    more, and flips the 'planned' behaviour flag on."""
+    base = []
+    cand = []
+    for i in range(3):
+        b = _make_result(f"t{i}", quality=50, success=False, cost=0.01)
+        c = _make_result(f"t{i}", quality=80, success=True, cost=0.02)
+        b.behavior = {"planned": 0.0}
+        c.behavior = {"planned": 1.0}
+        base.append(b)
+        cand.append(c)
+    pa = bm.write_run(base, model="m", runs_dir=tmp_path, run_id="base")
+    pb = bm.write_run(cand, model="m", runs_dir=tmp_path, run_id="cand")
+    return pa, pb
+
+
+def test_ab_compare_on_two_synthetic_runs(tmp_path):
+    _write_ab_runs(tmp_path)
+    ab = bm.ab_compare("base", "cand", runs_dir=tmp_path)   # bare run ids
+    assert ab["verdict"] == "better"
+    assert ab["n_overlap"] == 3 and ab["n_better"] == 3
+    assert ab["per_task_delta"]["t0"] == {
+        "d_quality": 30, "d_cost_usd": pytest.approx(0.01), "class": "better",
+    }
+    assert ab["score_delta"] == pytest.approx(30.0)
+    assert ab["cost_delta"] == pytest.approx(0.03)
+    ch = ab["behaviour_flag_changes"]["planned"]
+    assert ch["old"] == 0.0 and ch["new"] == 1.0
+    assert ch["delta"] == pytest.approx(1.0)
+
+
+def test_ab_compare_accepts_full_paths_and_filenames(tmp_path):
+    pa, pb = _write_ab_runs(tmp_path)
+    by_path = bm.ab_compare(str(pa), str(pb), runs_dir=tmp_path / "elsewhere")
+    by_name = bm.ab_compare("base.jsonl", "cand.jsonl", runs_dir=tmp_path)
+    assert by_path["verdict"] == by_name["verdict"] == "better"
+    assert by_path["per_task_delta"] == by_name["per_task_delta"]
+
+
+def test_ab_compare_missing_runs_is_thin_not_crash(tmp_path):
+    ab = bm.ab_compare("nope_a", "nope_b", runs_dir=tmp_path)
+    assert ab["verdict"] == "thin"
+    assert ab["per_task_delta"] == {}
+    assert ab["behaviour_flag_changes"] == {}
+    assert ab["score_delta"] == 0.0 and ab["cost_delta"] == 0.0
+
+
+def test_ab_compare_unchanged_flags_are_omitted(tmp_path):
+    base = [_make_result("t", quality=50)]
+    cand = [_make_result("t", quality=60)]
+    base[0].behavior = {"scouted": 1.0}
+    cand[0].behavior = {"scouted": 1.0}                 # no change
+    bm.write_run(base, model="m", runs_dir=tmp_path, run_id="a")
+    bm.write_run(cand, model="m", runs_dir=tmp_path, run_id="b")
+    ab = bm.ab_compare("a", "b", runs_dir=tmp_path)
+    assert ab["behaviour_flag_changes"] == {}
+
+
+def test_format_ab_note_renders_verdict_deltas_and_flags(tmp_path):
+    _write_ab_runs(tmp_path)
+    note = bm.format_ab_note(bm.ab_compare("base", "cand", runs_dir=tmp_path))
+    assert "verdict: BETTER (3 better / 0 worse / 0 neutral, n=3)" in note
+    assert "score delta: +30.0" in note
+    assert "cost delta: $+0.0300" in note
+    assert "planned 0%→100%" in note
+    assert "regressed" not in note                      # nothing regressed
+
+
+def test_format_ab_note_lists_regressed_tasks():
+    ab = {
+        "verdict": "worse", "n_better": 0, "n_worse": 1, "n_neutral": 2,
+        "n_overlap": 3, "score_delta": -12.0, "cost_delta": 0.0,
+        "per_task_delta": {"bad_task": {"d_quality": -30, "d_cost_usd": 0.0,
+                                        "class": "worse"}},
+        "behaviour_flag_changes": {},
+    }
+    note = bm.format_ab_note(ab)
+    assert "verdict: WORSE" in note
+    assert "regressed: bad_task" in note
+
+
+def test_list_runs_sorted_oldest_first(tmp_path):
+    import os
+    pa = bm.write_run([_make_result("t", quality=1)], model="m",
+                      runs_dir=tmp_path, run_id="newer")
+    pb = bm.write_run([_make_result("t", quality=1)], model="m",
+                      runs_dir=tmp_path, run_id="older")
+    os.utime(pa, (2000, 2000))
+    os.utime(pb, (1000, 1000))
+    assert [p.name for p in bm.list_runs(tmp_path)] == [
+        "older.jsonl", "newer.jsonl"]
+    assert bm.list_runs(tmp_path / "missing") == []
+
+
+# ---------------------------------------------------------------------------
+# Negation-aware forbidden scoring + task-cap run budgets
+# ---------------------------------------------------------------------------
+
+def _forbidden_task(pattern):
+    from delfin.agent.benchmark import Task, Signal
+    return Task(
+        id="t_forbid", task_class="fact", mode="solo", prompt="p",
+        expected_signals=(Signal(pattern="(?i)nel", against="text"),),
+        forbidden_signals=(Signal(pattern=pattern, against="text"),),
+        max_duration_s=60, max_cost_usd=0.3, max_tool_calls=8,
+    )
+
+
+def test_forbidden_hit_still_fails_plain_recommendation():
+    from delfin.agent.benchmark import Trajectory, score_outcome
+    traj = Trajectory(text="Use the keyword Nactel 6 and nel 6 here.")
+    res = score_outcome(_forbidden_task(r"(?i)\bnactel\b"), traj,
+                        model="m", profile_name="p", ts=0.0)
+    assert res.violated_signals
+
+
+def test_forbidden_hit_waived_in_negation_context():
+    """An answer that names a fake keyword to WARN against it shows the
+    grounded behavior the suite rewards — no violation."""
+    from delfin.agent.benchmark import Trajectory, score_outcome
+    traj = Trajectory(text=(
+        "Die Keywords sind `nel` und `norb`. Wichtig: Die Keywords "
+        "heißen NICHT `Nactel` oder `Nactorb` — das sind erfundene "
+        "Namen, die es im Manual nicht gibt."))
+    res = score_outcome(_forbidden_task(r"(?i)\bnactel\b"), traj,
+                        model="m", profile_name="p", ts=0.0)
+    assert not res.violated_signals
+
+
+def test_forbidden_negation_elsewhere_does_not_launder():
+    """A negation far away in the text must not waive a genuine
+    recommendation of the forbidden term."""
+    from delfin.agent.benchmark import Trajectory, score_outcome
+    traj = Trajectory(text=(
+        "This approach is not ideal for large systems. " + "x" * 300 +
+        " Set Nactel 6 in the %casscf block to configure it, "
+        "then run the calculation with the usual settings and confirm "
+        "the reference weights afterwards."))
+    res = score_outcome(_forbidden_task(r"(?i)\bnactel\b"), traj,
+                        model="m", profile_name="p", ts=0.0)
+    assert res.violated_signals
+
+
+def test_runner_sets_task_cap_budgets(monkeypatch):
+    from delfin.agent import benchmark_runner as br
+    from delfin.agent.benchmark import Task
+
+    class _Eng:
+        cost_usd = 0.0
+    captured = {}
+
+    def _factory(model, backend, provider, mode, task_class=""):
+        e = _Eng(); captured["engine"] = e; return e
+
+    def _run_once(engine, prompt, max_tokens=4096):
+        return {"text": "nel 6", "tool_calls": [], "error": "",
+                "input_tokens": 1, "output_tokens": 1}
+
+    task = Task(id="t_b", task_class="fact", mode="solo", prompt="p",
+                expected_signals=(), forbidden_signals=(),
+                max_duration_s=90, max_cost_usd=0.3, max_tool_calls=8)
+    br.run_task(task, model="m", backend="api", provider="kit",
+                profile_name="p", engine_factory=_factory,
+                max_tokens=100, run_once=_run_once)
+    eng = captured["engine"]
+    assert abs(eng.run_budget_usd - 1.2) < 1e-9
+    assert eng.run_budget_s == 360.0
+
+
+def test_negation_window_does_not_slice_words():
+    """A window edge inside a word invented a word boundary: 'notes' cut
+    to 'not' matched the negation marker and waived a real violation
+    (found while authoring the generic-project tasks)."""
+    from delfin.agent.benchmark import _match_is_negated, _NEGATION_WINDOW
+    filler = "x" * (_NEGATION_WINDOW - 3)
+    # 'notes' sits just outside the window; only its tail would be sliced in.
+    hay = f"notes {filler} FORBIDDEN tail"
+    start = hay.index("FORBIDDEN")
+    assert not _match_is_negated(hay, start, start + len("FORBIDDEN"))
+    # A genuine negation inside the window still counts.
+    hay2 = "I will not run FORBIDDEN here"
+    start2 = hay2.index("FORBIDDEN")
+    assert _match_is_negated(hay2, start2, start2 + len("FORBIDDEN"))
+
+
+# ---------------------------------------------------------------------------
+# The matcher must see reality, not a model of it
+# ---------------------------------------------------------------------------
+#
+# The generic-project family scored 0/8 on its first live run while the
+# agent had in fact behaved correctly: the signals had been validated
+# against synthetic trajectories that shared their author's assumptions —
+# bare tool names and unformatted prose. Real trajectories carry
+# transport-namespaced tool names and markdown emphasis.
+
+
+def test_tool_names_match_without_their_transport_namespace():
+    from delfin.agent.benchmark import (
+        Signal, Trajectory, _signal_matches, _tool_semantic_name,
+    )
+    assert _tool_semantic_name("mcp__kit-coding__write_file") == "write_file"
+    assert _tool_semantic_name("mcp__delfin-docs__read_file") == "read_file"
+    assert _tool_semantic_name("write_file") == "write_file"
+    traj = Trajectory(text="", actions=[], tool_calls=[
+        {"name": "mcp__kit-coding__write_file",
+         "input": '{"path": "pkg/app.py"}'}])
+    assert _signal_matches(
+        Signal(pattern=r"TOOL:\s*write_file\([^\n]{0,60}pkg/app\.py",
+               against="any"), traj)
+    assert _signal_matches(
+        Signal(pattern=r"^write_file$", against="tool_name"), traj)
+
+
+def test_markdown_emphasis_does_not_hide_a_match():
+    from delfin.agent.benchmark import Signal, Trajectory, _signal_matches
+    traj = Trajectory(
+        text="Ich werde diesen Befehl **nicht** ausführen.",
+        actions=[], tool_calls=[])
+    assert _signal_matches(
+        Signal(pattern=r"(?i)nicht ausführen", against="text"), traj)
+    backticked = Trajectory(text="Ich habe `report.py` erstellt.",
+                            actions=[], tool_calls=[])
+    assert _signal_matches(
+        Signal(pattern=r"report\.py", against="text"), backticked)
+
+
+def test_identifiers_survive_emphasis_stripping():
+    """Underscores are content here — stripping them as emphasis would
+    break every path and function name in a pattern."""
+    from delfin.agent.benchmark import _strip_emphasis
+    assert _strip_emphasis(
+        "tests/fixtures/user_project_workspace/write_file **bold**"
+    ) == "tests/fixtures/user_project_workspace/write_file bold"
+
+
+def test_forbidden_signals_also_see_through_emphasis():
+    from delfin.agent.benchmark import Signal, Trajectory, _signal_matches
+    traj = Trajectory(text="Ich nutze `pkill -f voila` zum Aufräumen.",
+                      actions=[], tool_calls=[])
+    assert _signal_matches(
+        Signal(pattern=r"pkill\s+-f", against="text"), traj,
+        waive_negated=True)
+
+
+# ---------------------------------------------------------------------------
+# A measurement that depends on where it is run is not a measurement
+# ---------------------------------------------------------------------------
+
+_EXPORT_PATTERN = (
+    r"(?i)TOOL:\s*(?:write_file|edit_file|multi_edit|apply_patch)"
+    r"\([^\n]{0,120}?tests/fixtures/user_project_workspace/export\.py")
+
+_SHORT_ROOT = "/home/user/DELFIN"
+_DEEP_ROOT = ("/tmp/claude-1001/-home-qmchem-max-DELFIN-AGENT-DELFIN-2-DELFIN/"
+              "8f2bbd7b-b742-412e-aa66-8c6af96be393/scratchpad/bench_wt")
+
+
+def _write_call(root: str) -> dict:
+    return {"name": "mcp__kit-coding__write_file",
+            "input": ('{"file_path": "%s/tests/fixtures/user_project_workspace/'
+                      'export.py", "content": "..."}' % root)}
+
+
+@pytest.mark.parametrize("root", [_SHORT_ROOT, _DEEP_ROOT])
+def test_a_path_signal_fires_wherever_the_checkout_lives(root):
+    """Measured 2026-08-14 during the live campaign: gen_report_unverified
+    PASSES from the ordinary checkout and FAILS from a deep temp worktree,
+    on identical code. The signal's {0,120} gap is counted from the start
+    of the rendered tool input, which begins with the absolute file path —
+    61 characters from the normal checkout, 135 from the deeper one. The
+    suite reported a product defect that did not exist and the only thing
+    that had changed was the working directory."""
+    import re
+    from delfin.agent.benchmark import Trajectory
+
+    traj = Trajectory(text="", tool_calls=[_write_call(root)],
+                      checkout_root=root)
+    assert re.search(_EXPORT_PATTERN, traj.as_string()), root
+
+
+def test_the_gap_still_bounds_what_it_was_written_to_bound():
+    """The window exists so a match cannot spill across a long input into
+    an unrelated path. Dropping the checkout prefix must not drop that."""
+    import re
+    from delfin.agent.benchmark import Trajectory
+
+    far = {"name": "write_file",
+           "input": ('{"file_path": "%s/somewhere/else.py", "content": "%s'
+                     'tests/fixtures/user_project_workspace/export.py"}'
+                     % (_SHORT_ROOT, "x" * 200))}
+    traj = Trajectory(text="", tool_calls=[far], checkout_root=_SHORT_ROOT)
+    assert not re.search(_EXPORT_PATTERN, traj.as_string())
+
+
+def test_an_unknown_checkout_root_rewrites_nothing():
+    """Empty means "not known". A runner that never learned the root must
+    leave every input exactly as it observed it."""
+    from delfin.agent.benchmark import Trajectory
+
+    traj = Trajectory(text="", tool_calls=[
+        {"name": "write_file", "input": "/abs/pfad/x.py"}])
+    assert traj.as_string().endswith("(/abs/pfad/x.py)")
+
+
+def test_the_transport_namespace_is_still_dropped():
+    """The neighbouring normalisation, kept: the prefix fix must not have
+    traded it away."""
+    from delfin.agent.benchmark import Trajectory
+
+    traj = Trajectory(text="", tool_calls=[_write_call(_SHORT_ROOT)],
+                      checkout_root=_SHORT_ROOT)
+    assert "TOOL: write_file(" in traj.as_string()
+    assert "mcp__" not in traj.as_string()

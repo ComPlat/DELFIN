@@ -702,17 +702,28 @@ collect_sync_results() {
     case "$profile" in
         minimal)
             stamp_path="$SYNC_STAMP_MINIMAL"
+            # .hess/.opt/.engrad are small but are what lets a killed job be
+            # resumed instead of restarted: ORCA reads them back for numerical
+            # Hessian and geometry-optimisation restarts. They therefore belong
+            # in the periodic profile, not only in the final backup.
+            #
+            # GOAT's per-worker intermediates (XTB_GOAT.goat.<iter>.<worker>.*)
+            # are created and deleted continuously while GOAT runs, so listing
+            # them here means rsync is regularly handed files that no longer
+            # exist by the time it reaches them. They stay in the full profile,
+            # so the finished run still contains them.
             local find_filter=(
                 \( -type f -o -type l \)
                 ! -path '*/.orca_iso*/*'
                 ! -path '*/__pycache__/*'
                 ! -path '*/.ipynb_checkpoints/*'
                 ! -name '*.tmp' ! -name '*.pyc' ! -name '*.pyo'
-                ! -name 'XTB_GOAT.goat.*.out'
+                ! -name 'XTB_GOAT.goat.*'
                 \( -name '*.out' -o -name '*.err' -o -name '*.log' -o -name '*.json'
                    -o -name '*.txt' -o -name '*.xyz' -o -name '*.inp' -o -name '*.png'
                    -o -name '*.svg' -o -name '*.pdf' -o -name '*.docx' -o -name '*.csv'
-                   -o -name '*.dat' \)
+                   -o -name '*.dat' -o -name '*.hess' -o -name '*.opt'
+                   -o -name '*.engrad' \)
             )
             if [ -f "$stamp_path" ]; then
                 find "$RUN_DIR" "${find_filter[@]}" -newer "$stamp_path" -printf '%P\n' 2>/dev/null | sort -u > "$list_file" || true
@@ -735,6 +746,31 @@ collect_sync_results() {
     set -o pipefail 2>/dev/null || true
 }
 
+# A 60 h run syncs every 15 min, so an unconditional line per sync buries the
+# job log under hundreds of identical "Copied N result files" entries and any
+# real message with it. Collapse consecutive identical lines into a count and
+# flush that count as soon as something different needs saying.
+_SAY_LAST=""
+_SAY_REPEATS=0
+
+flush_repeats() {
+    if [ "$_SAY_REPEATS" -gt 0 ]; then
+        echo "  (previous line repeated ${_SAY_REPEATS}x)"
+        _SAY_REPEATS=0
+    fi
+}
+
+say_once() {
+    local msg="$1"
+    if [ "$msg" = "$_SAY_LAST" ]; then
+        _SAY_REPEATS=$((_SAY_REPEATS + 1))
+        return 0
+    fi
+    flush_repeats
+    echo "$msg"
+    _SAY_LAST="$msg"
+}
+
 sync_results_back() {
     local sync_label="${1:-sync}"
     local sync_profile="${2:-full}"
@@ -752,7 +788,7 @@ sync_results_back() {
     collect_sync_results "$list_file" "$sync_profile"
 
     if [ ! -s "$list_file" ]; then
-        echo "No updated result files to copy (${sync_label})."
+        say_once "No updated result files to copy (${sync_label})."
         [ "$sync_profile" = "minimal" ] && touch "$SYNC_STAMP_MINIMAL" 2>/dev/null || true
         return 0
     fi
@@ -770,9 +806,20 @@ sync_results_back() {
 
     [ "$sync_profile" = "minimal" ] && touch "$SYNC_STAMP_MINIMAL" 2>/dev/null || true
 
+    # Exit code 24 means "some source files vanished before they could be
+    # transferred". Running ORCA/GOAT/xTB workers delete their own scratch
+    # files constantly, so a file listed a moment earlier being gone by the
+    # time rsync reaches it is expected, not a failure — the next sync picks
+    # up whatever replaced it. Reporting it as a warning trained the eye to
+    # ignore sync warnings, which is exactly the wrong reflex for code 23.
+    if [ "$rsync_rc" -eq 24 ]; then
+        rsync_rc=0
+    fi
+
     if [ "$rsync_rc" -eq 0 ]; then
-        echo "Copied ${file_count} result files (${sync_label}, profile=${sync_profile})."
+        say_once "Copied ${file_count} result files (${sync_label}, profile=${sync_profile})."
     else
+        flush_repeats
         echo "WARNING: rsync exited with code ${rsync_rc} during ${sync_label} sync."
         echo "WARNING: ${file_count} files were scheduled; some may be missing in ${ORIGIN_DIR}."
         if [ -s "$rsync_err" ]; then
@@ -795,6 +842,157 @@ _DELFIN_PID=""
 PERIODIC_COPY_PID=""
 FINAL_BACKUP_PID=""
 
+_slurm_field() {
+    scontrol show job "${SLURM_JOB_ID:-0}" 2>/dev/null \
+        | grep -oP "\\b$1=\\K\\S+" | head -1 || echo ""
+}
+
+_hms_to_seconds() {
+    awk -F'[-:]' '{
+        if (NF==4) print $1*86400 + $2*3600 + $3*60 + $4
+        else if (NF==3) print $1*3600 + $2*60 + $3
+        else if (NF==2) print $1*60 + $2
+        else print 0
+    }' <<< "$1"
+}
+
+# Seconds left before SLURM kills us, or empty when that cannot be determined
+# (no scontrol, unlimited walltime, local run).
+get_remaining_seconds() {
+    local limit runtime
+    limit="$(_slurm_field TimeLimit)"
+    runtime="$(_slurm_field RunTime)"
+    if [ -z "$limit" ] || [ "$limit" = "UNLIMITED" ] || [ -z "$runtime" ]; then
+        echo ""
+        return
+    fi
+    local limit_s runtime_s
+    limit_s="$(_hms_to_seconds "$limit")"
+    runtime_s="$(_hms_to_seconds "$runtime")"
+    if [ "$limit_s" -le 0 ]; then echo ""; return; fi
+    echo $(( limit_s - runtime_s ))
+}
+
+# Hand the deadline to DELFIN as an absolute epoch. The scheduler needs to know
+# how much time is left before it commits to a job that cannot finish in it, and
+# an absolute stamp stays correct however long the process has been running. It
+# is a fallback only: DELFIN asks SLURM directly first, and this covers the case
+# where scontrol/squeue are not reachable from the compute node.
+_DELFIN_REMAINING_AT_START="$(get_remaining_seconds)"
+if [ -n "$_DELFIN_REMAINING_AT_START" ]; then
+    export DELFIN_JOB_END_EPOCH=$(( $(date +%s) + _DELFIN_REMAINING_AT_START ))
+fi
+
+# One compact line per ORCA output that moved since the last heartbeat, so the
+# job log shows what the run is actually doing. Without this the only evidence
+# of 60 h of work was a repeated "Copied N result files", which cannot
+# distinguish a converging optimisation from one that has been stuck on the
+# same gradient for a hundred cycles.
+progress_heartbeat() {
+    [ -d "$RUN_DIR" ] || return 0
+    local remaining_s remaining_txt="unknown"
+    remaining_s="$(get_remaining_seconds)"
+    if [ -n "$remaining_s" ]; then
+        remaining_txt="$((remaining_s / 3600))h $((remaining_s % 3600 / 60))m"
+    fi
+
+    local state_file="${DELFIN_SCRATCH:-/tmp}/.delfin_progress_state"
+    local new_state="${state_file}.new"
+    : > "$new_state"
+
+    local reported=0 out rel line kind counter grad total
+    while IFS= read -r out; do
+        rel="${out#$RUN_DIR/}"
+        line="$(tail -c 200000 "$out" 2>/dev/null | awk '
+            match($0, /GEOMETRY OPTIMIZATION CYCLE +[0-9]+/) {
+                s = substr($0, RSTART, RLENGTH); sub(/.* /, "", s); cycle = s
+            }
+            match($0, /MAX gradient +[0-9.eE+-]+/) {
+                s = substr($0, RSTART, RLENGTH); sub(/.* /, "", s); grad = s
+            }
+            match($0, /displaced geometry +[0-9]+ +\(of +[0-9]+\)/) {
+                s = substr($0, RSTART, RLENGTH)
+                gsub(/[^0-9 ]/, " ", s); n = split(s, p, " ")
+                disp = p[1]; tot = p[n]
+            }
+            match($0, /SCF CONVERGED AFTER +[0-9]+ +CYCLES/) {
+                s = substr($0, RSTART, RLENGTH); gsub(/[^0-9]/, "", s); scf = s
+            }
+            END {
+                # kind|counter|gradient|total — parsed by the caller below.
+                if (disp != "")       printf "hessian|%s|-|%s", disp, tot
+                else if (cycle != "") printf "opt|%s|%s|-", cycle, (grad == "" ? "-" : grad)
+                else if (scf != "")   printf "scf|%s|-|-", scf
+            }')"
+        [ -z "$line" ] && continue
+
+        IFS='|' read -r kind counter grad total <<< "$line"
+
+        local prev prev_counter="" prev_grad="" prev_stall=0 prev_time=""
+        prev="$(grep -F -m1 "$(printf '%s\t' "$rel")" "$state_file" 2>/dev/null)"
+        if [ -n "$prev" ]; then
+            IFS=$'\t' read -r _ _ prev_counter prev_grad prev_stall prev_time <<< "$prev"
+        fi
+        [ -z "$prev_stall" ] && prev_stall=0
+
+        local human note="" stall="$prev_stall"
+        case "$kind" in
+            hessian) human="Hessian ${counter}/${total}" ;;
+            opt)     human="opt cycle ${counter}, MAX grad ${grad}" ;;
+            scf)     human="SCF converged (${counter} cycles)" ;;
+        esac
+
+        # An optimisation whose gradient no longer moves while the cycle count
+        # keeps climbing is not converging slowly, it is stuck: one archived
+        # job spent ~100 cycles on an unchanged MAX gradient of 0.0250 against
+        # a 0.0003 tolerance and would never have finished at any walltime.
+        if [ "$kind" = "opt" ] && [ -n "$prev_counter" ] \
+           && [ "$counter" -gt "$prev_counter" ] 2>/dev/null \
+           && [ "$grad" = "$prev_grad" ] && [ "$grad" != "-" ]; then
+            stall=$((prev_stall + 1))
+            if [ "$stall" -ge 2 ]; then
+                note="  <-- STALLED: gradient unchanged over $((counter - prev_counter)) more cycles"
+            fi
+        elif [ "$kind" = "opt" ]; then
+            stall=0
+        fi
+
+        # For a numerical Hessian the total is known from the first line, so
+        # once two heartbeats are in the rate is measurable and the finish can
+        # be projected against the walltime that is actually left.
+        if [ "$kind" = "hessian" ] && [ -n "$prev_counter" ] && [ -n "$remaining_s" ] \
+           && [ "$counter" -gt "$prev_counter" ] 2>/dev/null && [ -n "$prev_time" ]; then
+            local now elapsed done_now eta
+            now="$(date +%s)"
+            elapsed=$((now - prev_time))
+            done_now=$((counter - prev_counter))
+            if [ "$elapsed" -gt 0 ] && [ "$done_now" -gt 0 ]; then
+                eta=$(( (total - counter) * elapsed / done_now ))
+                human="${human}, ~$((eta / 3600))h left at current rate"
+                if [ "$eta" -gt "$remaining_s" ]; then
+                    note="  <-- WILL NOT FINISH: needs ~$((eta / 3600))h, walltime has ${remaining_txt}"
+                fi
+            fi
+        fi
+
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+            "$rel" "$kind" "$counter" "$grad" "$stall" "$(date +%s)" >> "$new_state"
+
+        if [ "$reported" -eq 0 ]; then
+            flush_repeats
+            echo "[progress] $(date '+%F %T')  walltime left: ${remaining_txt}"
+            reported=1
+        fi
+        echo "[progress]   ${rel}: ${human}${note}"
+    done < <(find "$RUN_DIR" -type f -name '*.out' \
+                 ! -name 'delfin_*.out' ! -name 'XTB_GOAT.goat.*' \
+                 -newermt "-$((SYNC_INTERVAL + 60)) seconds" 2>/dev/null | sort)
+
+    mv -f "$new_state" "$state_file" 2>/dev/null || true
+    [ "$reported" -eq 1 ] && _SAY_LAST=""
+    return 0
+}
+
 periodic_copy() {
     sleep 60
     # Rescue ORCA isolated-dir files first so the .out header (and any
@@ -807,6 +1005,7 @@ periodic_copy() {
         sleep "${SYNC_INTERVAL}"
         [ -d "$RUN_DIR" ] && rescue_iso_files
         [ -d "$RUN_DIR" ] && sync_results_back "periodic" "minimal"
+        progress_heartbeat
     done
 }
 

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 
 import pytest
 
@@ -101,6 +102,85 @@ def test_error_signature_scan_finds_jeromes_venv_case(tmp_path):
 
 def test_signature_scan_handles_missing_folder():
     assert jm.scan_error_signatures("/does/not/exist") == []
+
+
+# ---------------------------------------------------------------------------
+# Agent-registered jobs (per-workspace watch list for the tool layer)
+# ---------------------------------------------------------------------------
+
+def _agent_watch_file(ws):
+    return ws / ".delfin" / "agent_watched_jobs.json"
+
+
+def test_register_agent_job_classifies_and_persists(tmp_path):
+    e1 = jm.register_agent_job(tmp_path, "4976064", "opt freq run")
+    e2 = jm.register_agent_job(tmp_path, "a1b2c3d4", "background xtb scan")
+    assert e1["kind"] == "slurm"
+    assert e2["kind"] == "bash"
+    stored = jm.load_watched(_agent_watch_file(tmp_path))
+    assert set(stored["jobs"]) == {"4976064", "a1b2c3d4"}
+    assert stored["jobs"]["4976064"]["description"] == "opt freq run"
+    assert stored["jobs"]["4976064"]["folder"] == str(tmp_path)
+
+
+def test_check_agent_jobs_reports_slurm_completion_once(tmp_path):
+    jm.register_agent_job(tmp_path, "111", "prod run")
+    run = _fake_run(sacct="111  COMPLETED\n")
+    done = jm.check_agent_jobs(tmp_path, run_fn=run)
+    assert len(done) == 1
+    assert done[0]["job_id"] == "111"
+    assert done[0]["kind"] == "slurm"
+    assert done[0]["ok"] is True and done[0]["state"] == "COMPLETED"
+    # Exactly once — the entry is removed from the persistent watch file,
+    # so even a fresh process after a restart reports nothing.
+    assert jm.check_agent_jobs(tmp_path, run_fn=run) == []
+
+
+def test_check_agent_jobs_failed_slurm_carries_signatures(tmp_path):
+    (tmp_path / "delfin_222.err").write_text(
+        "slurm_script: /x/delfin_venv/bin/activate: "
+        "No such file or directory\n")
+    jm.register_agent_job(tmp_path, "222", "prod run")
+    done = jm.check_agent_jobs(tmp_path, run_fn=_fake_run(sacct="222  FAILED\n"))
+    assert done[0]["ok"] is False and done[0]["state"] == "FAILED"
+    assert "venv-activation-failed" in done[0]["signatures"]
+
+
+def test_check_agent_jobs_running_slurm_not_reported(tmp_path):
+    jm.register_agent_job(tmp_path, "333", "still running")
+    run = _fake_run(squeue="333 RUNNING\n")
+    assert jm.check_agent_jobs(tmp_path, run_fn=run) == []
+    # Entry stays watched for the next check.
+    assert "333" in jm.load_watched(_agent_watch_file(tmp_path))["jobs"]
+
+
+def test_check_agent_jobs_bash_job_roundtrip(tmp_path, monkeypatch):
+    from delfin.agent import bash_jobs as BJ
+    monkeypatch.setattr(BJ, "_INDEX_PATH", tmp_path / "bash_jobs_index.json")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    job = BJ.get_registry().start("echo done", cwd=str(ws), workspace=ws)
+    jm.register_agent_job(ws, job.job_id, "quick check")
+    deadline = time.monotonic() + 10
+    while job.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    done = jm.check_agent_jobs(ws, run_fn=_fake_run())
+    assert len(done) == 1
+    assert done[0]["job_id"] == job.job_id
+    assert done[0]["kind"] == "bash"
+    assert done[0]["state"] == "FINISHED"
+    assert done[0]["exit_code"] == 0 and done[0]["ok"] is True
+    assert jm.check_agent_jobs(ws, run_fn=_fake_run()) == []
+
+
+def test_check_agent_jobs_prunes_stale_entries(tmp_path):
+    jm.register_agent_job(tmp_path, "444", "long forgotten")
+    p = _agent_watch_file(tmp_path)
+    data = jm.load_watched(p)
+    data["jobs"]["444"]["added_at"] = time.time() - 8 * 24 * 3600
+    jm.save_watched(data, p)
+    assert jm.check_agent_jobs(tmp_path, run_fn=_fake_run()) == []
+    assert jm.load_watched(p)["jobs"] == {}
 
 
 # ---------------------------------------------------------------------------
@@ -209,3 +289,45 @@ def test_stale_pid_is_reclaimed(tmp_path):
     pp.write_text("999999999")                       # definitely dead
     assert jm.acquire_pid_lock(pp) is True
     jm.release_pid_lock(pp)
+
+
+# ---------------------------------------------------------------------------
+# Job-kind classification must not depend on the id's shape
+# ---------------------------------------------------------------------------
+
+
+def test_all_digit_bash_job_is_not_mistaken_for_slurm(tmp_path, monkeypatch):
+    """~2 % of 8-hex-char ids are all digits. Classifying by shape filed
+    those as SLURM jobs, so their completion was polled via squeue/sacct
+    forever and never reported (CI flake 2026-07-29, one run in ~43)."""
+    from delfin.agent import bash_jobs as BJ
+    monkeypatch.setattr(BJ, "_INDEX_PATH", tmp_path / "bash_jobs_index.json")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    job = BJ.get_registry().start("echo done", cwd=str(ws), workspace=ws)
+    # Force the pathological shape for this job.
+    digit_id = "48153092"
+    with BJ.get_registry()._lock:
+        BJ.get_registry()._jobs[digit_id] = job
+
+    entry = jm.register_agent_job(ws, digit_id, "digit-shaped bash job")
+    assert entry["kind"] == "bash"
+
+    deadline = time.monotonic() + 10
+    while job.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.05)
+    done = jm.check_agent_jobs(ws, run_fn=_fake_run())
+    assert [d["job_id"] for d in done] == [digit_id]
+    assert done[0]["kind"] == "bash" and done[0]["ok"] is True
+
+
+def test_unknown_numeric_id_still_counts_as_slurm(tmp_path):
+    entry = jm.register_agent_job(tmp_path, "4646143", "a real slurm job")
+    assert entry["kind"] == "slurm"
+
+
+def test_generated_bash_job_ids_are_never_all_digits():
+    from delfin.agent import bash_jobs as BJ
+    reg = BJ.get_registry()
+    for _ in range(200):
+        assert not reg._new_job_id().isdigit()
