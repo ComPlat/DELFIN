@@ -5,6 +5,41 @@ All notable changes to DELFIN will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added — Construction (MANTA champion #24-#30, 2026-08-03 to 2026-09-05)
+
+Seven construction flags landed in `cli_manta._CHAMPION_FLAGS`, each behind a
+never-worse A/B on 1000 to 6000 CCDC systems with the evidence recorded next
+to the flag: `RING_PUCKER` (Cremer-Pople pucker siblings), `LP_SIBLING`
+(lone-pair-oriented sibling), `SIGMA_ENSEMBLE` (ETKDG conformer ensemble as
+siblings), `BETA_SIBLING` (+`_STRICT`, donor-plane sibling), `TPR6`
+(+`_EARLY_TM`, trigonal-prismatic CN6 sibling), and `BACKBONE_REEMBED` with
+`INTERLIG_PAIR_GATE` (ligand backbone re-embedding with a pairwise
+never-worse contact gate in front of it; pool 6000, capability +7/-0, first
+landing written by the loop's own landing gate). All additive: frames are
+appended, never replaced; builds are byte-deterministic.
+
+### Changed
+
+- All German comments and docstrings in the package translated to English;
+  an AST comparison with docstrings stripped proves the code unchanged in
+  every touched file.
+- `_energy_terms.py`: f-string rewritten for Python 3.11 (`requires-python <3.12`).
+- `staged_patches/native_grip_canonical.patch` removed (stale since June).
+
+### Tests
+
+- Six slow tests that document known construction defects are marked
+  `xfail(strict=True)` with the defect named in the reason, so the nightly
+  run is green while the defects stay visible and a root fix is noticed
+  (distibine builds no frame; Cd MA2B2C2 all-trans isomer has one trans pair;
+  Theorem-D flag adds no cf-isomers for YIVROM; D-AQIWAZ pyridine not
+  metal-bonded; cyclam bimetal pucker sibling fails the graph gate).
+- `test_multihapto_patches.py`: the rollback test asserted the pre-wire-in
+  Sn-Ir regression (> 3.25 A); the construction no longer has it (2.194 A
+  with both patches off), so the test now asserts the bonded distance.
+
 ## [1.2.0] - 2026-07-23
 
 ### Added — Agent (long-session continuity + production parity)
