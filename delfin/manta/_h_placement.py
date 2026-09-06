@@ -233,17 +233,33 @@ def _hp_h_contacts(syms: Sequence[str], P: np.ndarray) -> Dict[int, frozenset]:
     repair may change positions, never this set (register #357: when it did, every
     frame of the system lost `topo_correct_frame`)."""
     out: Dict[int, frozenset] = {}
-    n = len(syms)
-    for h in _hp_hydrogens(syms):
+    hs = set(_hp_hydrogens(syms))
+    for h in hs:
+        out[h] = frozenset()
+    # ONE TRUTH, NOT TWO: the eye's topology detector perceives bonds with
+    # `_bond_decollapse._geometric_bonds` (weddell find_smiles_topology_match:73).  The first
+    # version of this gate used this module's own rule (_BOND_FACTOR * COV_R) and caught 4 of
+    # the 5 hplace6k losers but not TAFROI: rotor-moved H land exactly in the margin where the
+    # two rules disagree.  So the gate reads the same perception the verdict reads.
+    try:
+        from delfin.manta._bond_decollapse import _geometric_bonds
+        pairs = _geometric_bonds(list(syms), np.asarray(P, float))
+    except Exception:
+        pairs = None
+    if pairs is None:                      # fallback: this module's own rule
+        n = len(syms)
         rh = _hp_cov("H")
-        bonded = []
-        for j in range(n):
-            if j == h:
-                continue
-            sj = _el.normalise(syms[j])
-            if float(np.linalg.norm(P[h] - P[j])) < _BOND_FACTOR * (rh + _hp_cov(sj)):
-                bonded.append(j)
-        out[h] = frozenset(bonded)
+        pairs = [(h, j) for h in hs for j in range(n) if j != h
+                 and float(np.linalg.norm(P[h] - P[j]))
+                 < _BOND_FACTOR * (rh + _hp_cov(_el.normalise(syms[j])))]
+    acc: Dict[int, set] = {h: set() for h in hs}
+    for i, j in pairs:
+        if i in acc:
+            acc[i].add(j)
+        if j in acc:
+            acc[j].add(i)
+    for h in hs:
+        out[h] = frozenset(acc[h])
     return out
 
 
