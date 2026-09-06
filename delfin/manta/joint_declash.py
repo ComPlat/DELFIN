@@ -64,6 +64,7 @@ import numpy as np
 import delfin.manta._bond_decollapse as _bd
 from delfin.manta import torsion_relax as _TR
 from delfin.manta.refine import _vdw
+from delfin.manta import polyhedra as _PLY
 
 # --- Metalloid-donor awareness (env-gated, default OFF) ----------------------
 # _bond_decollapse._METALS mis-classifies the heavy metalloid sigma-donors
@@ -96,7 +97,48 @@ _CLASH_F = 0.75
 
 # H-H and X-H contacts kept as a LIGHT secondary tie-breaker: the self-gate
 # rejects on HEAVY-HEAVY only, so heavy-heavy must dominate the objective.
+#
+# ⚠ 25.08.2026 -- THE JUSTIFICATION IN THE LINE ABOVE IS REFUTED.  It says the
+# self-gate rejects only on heavy-heavy, so heavy-heavy must dominate.
+# Measured over ALL 7631 clash pairs from `archive_aromrad6k_off`:
+#     heavy-heavy pairs                            1103  (min 1.733 A, median 2.231 A)
+#       of which below GROSS_OVERLAP (0.60 x Sigma_cov)   0   (0.00 %)
+#       of which below the refine floor (0.78 x Sigma)    0   (0.00 %)
+#       of which below the collapse floor (0.82 x Sigma)  0   (0.00 %)
+#     H-involving pairs                            6528  (self-gate skips H)
+#   ⇒ reachable by the self-gate: 0 of 7631.
+# So the self-gate does NOT reject on heavy-heavy -- it does not reject at
+# all.  Its thresholds sit on the BOND scale (C-C 0.92 A), the detector's on
+# the VDW scale (C-C 2.38 A).  With that, the premise for 1/20 no longer holds.
+#
+# WHAT THIS COSTS, measured: 85.5 % of the clash pairs carry at least one H
+# (C-H 3751, H-H 1723); of the 3341 frames with a clash, 2507 = 75.0 % have
+# EXCLUSIVELY H-involving pairs.  On three quarters of the affected frames this
+# declasher sees the whole defect at one twentieth of the weight, and its
+# rollback floor `hdmin` (heavy only) notices nothing of it at all.  Pool-wide
+# that is around 9.98 % of ALL build frames.
+# The crystal says 0.00 % to this on 509 clean structures -- for the H pairs
+# too; an H...H below 1.68 A does not exist in real crystals.  The 1/20
+# weighting is a builder assumption, not chemistry.
+#
+# ⛔ DEFAULT UNCHANGED 0.05 -> byte-identical.  Live only with
+# `DELFIN_FFFREE_DECLASH_H_FULL=1`.  Reason for the switch: JOINT_DECLASH is ON
+# in the champion and has three call sites on the FF-free path -- a silent
+# change would be in every running build at once and separable in no A/B.
 _H_WEIGHT = 0.05
+
+
+def _jd_h_voll() -> bool:
+    """Do H contacts count in full -- and does the rollback floor count them too?
+
+    Read at CALL time, not at import: a switch whose effect depends on the import
+    order has already ended up as a dark switch twice in this project (most
+    recently PLANAR_KEEP, two runs with reach 0/24)."""
+    return os.environ.get("DELFIN_FFFREE_DECLASH_H_FULL", "0") == "1"
+
+
+def _jd_h_gewicht() -> float:
+    return 1.0 if _jd_h_voll() else _H_WEIGHT
 
 # Default coordinate-descent controls (env-overridable; bounded + deterministic).
 _DEF_GRID = 24          # angular grid steps per DOF
@@ -205,8 +247,14 @@ def _objective(P: np.ndarray, heavy: np.ndarray, light: np.ndarray,
     over_h = np.where(over_h > 0.0, over_h, 0.0)
     over_l = np.where(light, rsum - dist, 0.0)
     over_l = np.where(over_l > 0.0, over_l, 0.0)
-    loss = float((over_h * over_h).sum()) + _H_WEIGHT * float((over_l * over_l).sum())
-    hd = dist[heavy]
+    loss = float((over_h * over_h).sum()) + _jd_h_gewicht() * float((over_l * over_l).sum())
+    # ⚠ THE ROLLBACK FLOOR MUST FOLLOW, otherwise the weighting has no effect.
+    # `hdmin` is the minimum over the HEAVY pairs; a step that crushes an H
+    # contact never drops below this floor and is accepted.
+    # A higher H weight in the objective whose guard does not know H would be
+    # half a mechanism -- exactly the construction that has already been exposed
+    # four times today.  With the switch, the floor counts ALL non-bonded pairs.
+    hd = dist[heavy] if not _jd_h_voll() else dist[heavy | light]
     hdmin = float(hd.min()) if hd.size else float("inf")
     return loss, hdmin
 
@@ -219,7 +267,8 @@ def _objective(P: np.ndarray, heavy: np.ndarray, light: np.ndarray,
 def declash(syms: Sequence[str], P, frozen: Iterable[int],
             grid: int = _DEF_GRID, passes: int = _DEF_PASSES,
             md_tol: float = _DEF_MD_TOL, max_dofs: int = _DEF_MAX_DOFS,
-            bond_pairs: Optional[Sequence[Tuple[int, int]]] = None) -> np.ndarray:
+            bond_pairs: Optional[Sequence[Tuple[int, int]]] = None,
+            geom: Optional[str] = None) -> np.ndarray:
     """Joint global INTER-LIGAND heavy-heavy declash of an assembled complex.
 
     ``frozen``: indices that must not move (metal + all donor atoms).
@@ -261,6 +310,87 @@ def declash(syms: Sequence[str], P, frozen: Iterable[int],
     adj, _bonds = _TR._adjacency(syms, P0, bond_pairs)
     excl = _TR._excl_1_2_3(adj, n)
     lig = _ligand_of_atom(n, syms, bond_pairs, P0)
+
+    # ===== LIGAND SWING (DELFIN_FFFREE_LIGAND_SWING, default OFF -> byte-identical) =====
+    #
+    # THE OVER-DETERMINATION.  This pass freezes the metal AND ALL DONORS as ATOMS; the
+    # polyhedron is thereby "invariant by construction".  That is exactly why a RIGID
+    # chelate (acac, bipy, phen) has ZERO degrees of freedom here: its two donors fix
+    # the ligand position completely, there are no internal torsions, and identify_dofs
+    # rejects every rotation whose moving half contains a frozen donor.
+    # Whatever clashes at seating thus clashes forever.
+    #
+    # MEASURED, 185 869 frames of the 1000-pool: intclash_pair 18.01 % against 0.00 % in
+    # the crystal -- the largest single item of the whole output, and in the crystal it
+    # does not exist.  Real crystals resolve it by BENDING the polyhedron a few
+    # degrees.  We cannot, because we hold the ATOMS fixed instead of the QUANTITY
+    # that is chemically truly invariant.
+    #
+    # THE MISSING MOVE TYPE.  A rigid-body rotation of a WHOLE ligand about the
+    # METAL CENTRE preserves EVERY M-D distance exactly (rotation about M leaves all
+    # radii unchanged) and changes exclusively the M-D DIRECTIONS.  With that, the
+    # chemically hard quantity -- the bond length -- stays exactly held, while the
+    # soft quantity -- the vertex angle -- may yield within a band.
+    # For a monodentate this is the already existing M-D axis rotation; for a
+    # CHELATE it is new: it swings the chelate plane about the axis M -> donor centroid.
+    #
+    # The swing is tightly capped (LIGAND_SWING_DEG).  The default was 8 degrees and the
+    # comment here itself said that this was "not a measured calibration".
+    #
+    # ⚠ 2026-08-09: IT IS NOW MEASURED, SO IT STANDS HERE.  The curve from 07.08.
+    # (8 -> 3 -> 1 degrees, same pool, same eye):
+    #     8 degrees   poly_cshm_regressed 2 · poly_lost 1 · poly_type_lost 1
+    #     3 degrees   all three ZERO, capability +3/-0, 21:8, mean -0.517
+    #     1 degree    too tight, the degree of freedom no longer contributes
+    # So the 8 did not merely stand there unsupported, it was REFUTED -- and whoever
+    # turns the swing on without DELFIN_FFFREE_LIGAND_SWING_DEG=3 gets the worse number.
+    # Exactly the class of error that MONO_REACH_18 was: a threshold beside the distribution.
+    # Default therefore 3; byte-identical as long as the switch is off.
+    #
+    # The two CShM bounds deliberately stay per env and without a default: they are
+    # derived from CCDC crystals and must not go into this repo (license).
+    if _TR._env_int("DELFIN_FFFREE_LIGAND_SWING", 0, 0, 1):
+        _swing_deg = _TR._env_int("DELFIN_FFFREE_LIGAND_SWING_DEG", 3, 1, 30)
+        # ===== THE POLYHEDRON BOUND, MEASURED INSTEAD OF GUESSED (2026-08-07) =====
+        # The angle cap above is a GUESSED number, and the first run refuted it:
+        # at 8 degrees poly_cshm_regressed 2, poly_lost 1, poly_type_lost 1 tripped; at 3
+        # degrees all three were gone (capability +3/-0, 21:8, mean -0.517).  Tighter was
+        # better on EVERY axis -- the cap was the problem, not the move type.
+        #
+        # The right quantity is not an angle but THE ONE THE GATE MEASURES: the
+        # deviation of the donor set from the ideal polyhedron (CShM), because
+        # `poly_cshm_regressed` is the term that tripped.  And the builder can compute
+        # it itself -- polyhedra.cshm is pure geometry, no reference data.
+        #
+        # THE BOUND: the swing may not distort the polyhedron any FURTHER than it already
+        # is.  Default 0.0 = strictly never-worse, without any guessed number.  A larger
+        # budget can be set per env and is then a MEASUREMENT QUESTION, not a feeling.
+        #
+        # ⚠ On the calibration, and why it is NOT here: 553 crystals themselves do not
+        # sit on the ideal (p50 0.37 · p90 3.65 · p99 8.0 CShM against their own ideal
+        # polyhedron).  A budget of this order of magnitude would therefore be
+        # chemically covered -- but the number is CCDC-derived and does not belong in
+        # this repo.  It lives in the private workspace; here the default stays at 0.
+        _swing_cshm = float(os.environ.get("DELFIN_FFFREE_LIGAND_SWING_CSHM", "0") or 0.0)
+        _swings = []
+        for _lid in sorted({int(x) for x in lig if int(x) >= 0}):
+            _atoms = [i for i in range(n) if int(lig[i]) == _lid]
+            _don = [i for i in _atoms if i in frozen_set]
+            if len(_don) < 2:
+                continue          # monodentate: the M-D axis rotation already covers it
+            _m = next((i for i in metals), None)
+            if _m is None:
+                continue
+            _c = P0[_don].mean(axis=0) - P0[_m]
+            if float(np.linalg.norm(_c)) < 1e-6:
+                continue
+            _swings.append({"anchor": int(_m), "pivot": -1, "axis_vec": _c,
+                            "rotating": _atoms, "max_deg": int(_swing_deg),
+                            "cshm_budget": _swing_cshm,
+                            "score": 10_000 + len(_atoms)})
+        # Swings FIRST: they move the most mass and relieve inter-ligand overlap
+        # most directly -- the same reasoning that puts the M-D spins up front.
+        ordered = _swings + ordered
     heavy, light = _inter_mask(syms, lig, excl)
     if not heavy.any() and not light.any():
         return P0                                     # nothing inter-ligand to declash
@@ -287,12 +417,24 @@ def declash(syms: Sequence[str], P, frozen: Iterable[int],
             pivot = dof["pivot"]
             rot = dof["rotating"]
             origin = Pcur[anchor]
-            axis = Pcur[pivot] - Pcur[anchor]
+            # A ligand swing brings its axis along as a VECTOR (M -> donor centroid);
+            # it cannot be expressed as an atom pair, because the centroid is not an
+            # atom.  All remaining DOFs stay atom-pair-defined, unchanged.
+            _av = dof.get("axis_vec")
+            axis = np.asarray(_av, dtype=float) if _av is not None else (Pcur[pivot] - Pcur[anchor])
             if float(np.linalg.norm(axis)) < 1e-9:
                 continue
+            # Capped swing: sample only the narrow angle window, not the full circle.
+            _md = dof.get("max_deg")
+            if _md:
+                _step = max(1, int(_md) // 4)
+                _dofs_angles = [math.radians(d) for d in
+                                range(-int(_md), int(_md) + 1, _step) if d != 0]
+            else:
+                _dofs_angles = angles
             local_best_loss = best_loss
             local_best_P = None
-            for ang in angles:
+            for ang in _dofs_angles:
                 if abs(ang) < 1e-12:
                     continue
                 trial = _TR._rotate_subtree(Pcur, origin, axis, ang, rot)
@@ -300,6 +442,47 @@ def declash(syms: Sequence[str], P, frozen: Iterable[int],
                     continue
                 if not _TR._md_ok(base_md, trial, md_tol):
                     continue
+                # POLYHEDRON BOUND for the ligand swing: the same quantity the gate
+                # measures.  The M-D DISTANCE is exactly preserved by the rotation about M,
+                # but the DIRECTIONS change -- and exactly that tripped poly_cshm_regressed
+                # at 8 degrees.  So check here instead of finding out afterwards.
+                _cb = dof.get("cshm_budget")
+                if _cb is not None and geom:
+                    try:
+                        _don_idx = [i for i in range(n) if i in frozen_set
+                                    and not _is_center(syms[i])]
+                        if _don_idx:
+                            _m0 = next((i for i in metals), 0)
+                            _c_before = _PLY.cshm([Pcur[i] - Pcur[_m0] for i in _don_idx],
+                                                  geom)
+                            # ===== NO SWING ON AN UNSAFE STARTING SHAPE (2026-08-08) =====
+                            # MEASURED, ligswing1k on the 1000-pool: of the 9 damaged
+                            # systems, 5 (56 %) had already built the WRONG polyhedron,
+                            # in the undamaged comparison group only 7 of 43 (16 %) --
+                            # a 3.5-fold enrichment.  (On the smaller 180-pool the signal
+                            # was still 43 % against 32 % and thus not robust; only the
+                            # larger sample separates.)
+                            #
+                            # Physically this is inescapable: whoever has already built the
+                            # wrong shape optimises the swing WITHIN a shape that is not right.
+                            # Every move then leads away from the crystal just as likely as
+                            # towards it -- the clash objective knows nothing about that.
+                            #
+                            # The builder can check this without a crystal: if the donor set
+                            # already sits FURTHER from its own ideal polyhedron than a real
+                            # crystal at the p90 (CShM 3.65 over 553 crystals), the
+                            # starting shape is no trustworthy basis.  The bound comes
+                            # per env, because the number is CCDC-derived; default 0 = off.
+                            _c_floor = float(os.environ.get(
+                                "DELFIN_FFFREE_LIGAND_SWING_MAX_START_CSHM", "0") or 0.0)
+                            if _c_floor > 0.0 and _c_before > _c_floor:
+                                continue          # unsafe starting shape -> do not swing at all
+                            _c_after = _PLY.cshm([trial[i] - trial[_m0] for i in _don_idx],
+                                                 geom)
+                            if _c_after > _c_before + float(_cb) + 1e-9:
+                                continue          # would distort the polyhedron further
+                    except Exception:
+                        pass                      # not assessable -> the old safeguards apply
                 tl, thd = _objective(trial, heavy, light, rsum)
                 if thd < hdmin_floor:
                     continue                          # would worsen worst heavy contact
@@ -326,6 +509,7 @@ def declash(syms: Sequence[str], P, frozen: Iterable[int],
 
 
 def declash_if_enabled(syms: Sequence[str], P, frozen: Iterable[int],
+                       geom: Optional[str] = None,
                        bond_pairs: Optional[Sequence[Tuple[int, int]]] = None):
     """Wire-in entry: when ``DELFIN_FFFREE_JOINT_DECLASH=1`` run :func:`declash`,
     else return ``P`` unchanged (byte-identical default-OFF).  ``bond_pairs``
@@ -337,7 +521,108 @@ def declash_if_enabled(syms: Sequence[str], P, frozen: Iterable[int],
         passes = _TR._env_int("DELFIN_FFFREE_JOINT_PASSES", _DEF_PASSES, 1, 32)
         md_tol = _TR._env_float("DELFIN_FFFREE_JOINT_MD_TOL", _DEF_MD_TOL, 0.0, 2.0)
         max_dofs = _TR._env_int("DELFIN_FFFREE_JOINT_MAX_DOFS", _DEF_MAX_DOFS, 1, 256)
-        return declash(syms, P, frozen, grid=grid, passes=passes,
+        return declash(syms, P, frozen, grid=grid, passes=passes, geom=geom,
                        md_tol=md_tol, max_dofs=max_dofs, bond_pairs=bond_pairs)
     except Exception:
         return P
+
+
+# ===== THE ADDITIVE VERSION OF THE M-D ROTATION ==============================
+# (DELFIN_FFFREE_MD_SPIN_SIBLINGS, default 0)
+#
+# WHY THIS FUNCTION EXISTS.  `declash` above CAN already do the rotation about M-D --
+# `md_spins` (:259) collects exactly the degrees of freedom whose anchor is the metal,
+# and puts them up front.  It is ON in the champion (DELFIN_FFFREE_JOINT_DECLASH).  But
+# it is a REPAIRER:
+#   * it fires only when an inter-ligand clash is already present, and
+#   * it REPLACES the pose instead of appending a second one.
+# A monodentate whose azimuth is set merely arbitrarily, but clash-free, thus
+# produces NO additional frame -- and the eye's backbone bin stays empty.
+#
+# MEASURED 20.08. on rows_HIST1KV2_268f120a (969 systems): of 384 systems that miss
+# ccdc_backbone, 128 (33.3 %) fail EXCLUSIVELY on metal-containing torsions.  Of the
+# 60 among them that carry a coordination number at all, 44 (73 %) are at CN 4/5/6.
+# So it is not the MOVE that is missing, it is the OUTPUT FORM.
+#
+# ⚠ WHY ADDITIVE AND NOT "REPAIR BETTER".  The register is unambiguous on this
+# point: what ADDS lands, what CHOOSES dies (03.08.).  And the cost law (four points,
+# 19.08.) calls the rotation about an axis THROUGH the metal an ISOMETRY: it leaves
+# every distance to M exactly unchanged -- numerically checked, largest |M-D| change
+# 0.000000 A.  Price +0.98 pp, the cheapest appending class.
+#
+# MODEL that is copied here instead of reinvented: `_cn2_spins`
+# (assemble_complex.py:2839) -- fixed azimuth steps, RMSD-deduplicated, primary frame
+# untouched.  With that, `cap_lost` is impossible by construction: nothing is taken
+# away, only placed alongside.
+#
+# ⚠ BYTE-IDENTITY IS NOT A CLAIM HERE BUT STRUCTURE: this function has ZERO call
+# sites in the whole tree.  It cannot change anything as long as nobody calls it.
+# The switch below is for the day a call site is added -- that belongs at the place
+# where `_cn2_spins` also hands off its siblings, NOT here.
+def md_spin_siblings(syms, P, frozen, bond_pairs=None, n_steps=6, max_dofs=4):
+    """Sibling poses by rotating whole ligands about their M-D axis.
+
+    Returns a LIST of additional poses (without the input pose).  Empty list if
+    the switch is off, no M-D axis exists, or every rotation is degenerate.
+
+    NO clash precondition -- that is the whole difference from `declash`.  The
+    azimuth of a monodentate is underdetermined even when nothing clashes; exactly
+    these cases are missing from the manifold today.
+
+    The selection of which pose is fit is NOT made by this function but by the
+    caller's self-gate -- as with every sibling.  Whoever filters here already
+    builds a chooser again.
+    """
+    if os.environ.get("DELFIN_FFFREE_MD_SPIN_SIBLINGS", "0") != "1":
+        return []
+    try:
+        P0 = np.array(P, dtype=float)
+    except Exception:
+        return []
+    n = len(syms)
+    if n < 3 or P0.shape != (n, 3) or not np.all(np.isfinite(P0)):
+        return []
+    try:
+        frozen_set = set(int(x) for x in frozen)
+        dofs = _TR.identify_dofs(syms, P0, frozen_set, max_dofs=max_dofs,
+                                 bond_pairs=bond_pairs)
+        if not dofs:
+            return []
+        metals = {i for i in range(n) if _is_center(syms[i])}
+        # ONLY the M-D axes.  Internal torsions are a different axis with a different
+        # price (rigid rotation with a new conformation, +6.57 pp) and do not belong
+        # in the same output -- otherwise a verdict cannot be attributed afterwards.
+        spins = [d for d in dofs if d.get("anchor") in metals]
+        if not spins:
+            return []
+        step = 360.0 / max(2, int(n_steps))
+        out, seen = [], [P0]
+        for d in spins:
+            anchor, pivot = int(d["anchor"]), int(d["pivot"])
+            rot = d.get("rot") or d.get("rotating")
+            if rot is None:
+                continue
+            rot = [int(x) for x in rot]
+            origin = P0[anchor]
+            axis = P0[pivot] - P0[anchor]
+            if float(np.linalg.norm(axis)) < 1e-9:
+                continue
+            for k in range(1, int(n_steps)):
+                ang = step * k
+                try:
+                    trial = _TR._rotate_subtree(P0, origin, axis, ang, rot)
+                except Exception:
+                    continue
+                if trial is None or not np.all(np.isfinite(trial)):
+                    continue
+                # RMSD dedup against ALL previous ones, not only the input pose:
+                # for a C2-symmetric ligand the half rotation coincides with the
+                # starting position, and a duplicate with a label is not a frame.
+                if any(float(np.sqrt(np.mean(np.sum((trial - q) ** 2, axis=1)))) < 0.25
+                       for q in seen):
+                    continue
+                seen.append(trial)
+                out.append(trial)
+        return out
+    except Exception:
+        return []

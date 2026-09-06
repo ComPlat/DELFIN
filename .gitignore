@@ -153,3 +153,7 @@ coverage.xml
 /*.hostnames
 /*.bas[0-9]*
 /*.tmp.[0-9]*
+
+# PRIVATE Infrastruktur -- die Datei sagt es selbst: never ship in a public release
+# (Ship-Audit 18.08.2026)
+RESTORE/

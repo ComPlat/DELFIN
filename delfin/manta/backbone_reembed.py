@@ -426,6 +426,37 @@ def reembed_complex(metal: str, lig_groups: List[Dict], native: Tuple[List[str],
         ch = [min(1, len(p) - 1) for p in per_lig]
         choices.append(ch)
 
+    # ══ THE PRODUCER CHECKS ITS OWN OUTPUT (05.09.2026) ══════════════════════════
+    # `DELFIN_FFFREE_REEMBED_SELF_GATE`, default OFF -> byte-identical.
+    #
+    # MEASURED (register #339).  The downstream pair gate
+    # (`INTERLIG_PAIR_GATE`, in the champion as of today) rejects, WHEN it fires,
+    # in the MEDIAN the ENTIRE gain of a system -- at every threshold from 0.65
+    # to 0.72.  That makes it not a filter but a toggle back to the
+    # champion.  And it is RIGHT to reject: of 573 rejected frames, 74.9 %
+    # trigger a pair in which NO metal is involved (C-C 425, C-N 136);
+    # only 3.8 % are cis donors, i.e. legitimate coordination geometry.
+    #
+    # ⇒ A filter that throws away 100 % on the systems it hits is a finding
+    #   about the PRODUCER.  This is the spot: `choices` contains MORE
+    #   candidates than `max_frames` emits.  Whoever checks right here can take
+    #   the next candidate instead of emitting a frame that gets deleted
+    #   afterwards anyway.  The gate can only DELETE, the producer can
+    #   REPLACE -- construction beats post-filtering (rule of 23.07.).
+    #
+    # ⚠️ The SAME criterion, imported, not re-implemented.  The import is local
+    #    because `converter_backend` loads this module at module level (cycle).
+    # ⚠️ If the import fails, NOTHING is checked and NOTHING is rejected --
+    #    better one frame too many than a silent discard by a test that
+    #    never ran.
+    _selbsttor = os.environ.get("DELFIN_FFFREE_REEMBED_SELF_GATE", "0") == "1"
+    _zu_eng = None
+    if _selbsttor:
+        try:
+            from delfin.manta.converter_backend import _neues_paar_zu_eng as _zu_eng
+        except Exception:
+            _zu_eng = None
+
     for ch in choices:
         Pc = _assemble(ch)
         if Pc is None:
@@ -437,6 +468,8 @@ def reembed_complex(metal: str, lig_groups: List[Dict], native: Tuple[List[str],
                 break
         if dup:
             continue
+        if _zu_eng is not None and _zu_eng(list(syms), Pc, P):
+            continue          # this candidate would be deleted by the gate -> next one
         seen.append(Pc)
         frames.append((list(syms), Pc))
         if len(frames) >= int(max_frames):

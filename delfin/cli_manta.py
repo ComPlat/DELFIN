@@ -117,8 +117,8 @@ _CHAMPION_FLAGS = (
     "ENUM_FEAS_PREFERRED", # #22: ISOMER-COMPLETENESS -- recover the LFSE-preferred coordination isomers the
                           # naive chelate-distance pre-filter over-prunes (bis-tridentate Ir all-cis; GOWFED:
                           # iso_miss 1->0, best_valid_rmsd 1.244->0.442 = a genuinely missing crystal-matching
-                          # isomer).  BASE-PRESERVATION via TOPOLOGY, not RMSD (user 2026-07-22 "RMSD ist die
-                          # schlechteste Metrik"; Gate = Topologie): on a RIGID scaffold a reach-recovered
+                          # isomer).  BASE-PRESERVATION via TOPOLOGY, not RMSD (user 2026-07-22 "RMSD is the
+                          # worst metric"; gate = topology): on a RIGID scaffold a reach-recovered
                           # arrangement relaxes (UFF) onto an isomer the base set ALREADY built -> its built
                           # coordination FINGERPRINT equals a base frame's -> redundant, and the downstream
                           # fingerprint dedup would then drop the GOOD base frame in its favour (AXOKED: +5
@@ -154,6 +154,156 @@ _CHAMPION_FLAGS = (
                           # True).  Only "loss" = BETXAB build-TIMEOUT (aggregate timeouts flat 892 vs 895 = load
                           # jitter, not a slowdown).  Env DELFIN_FFFREE_ISOLATED_SEAT; impl
                           # delfin/manta/_isolated_reseat.py, dispatched at smiles_converter.py final-pass.
+    "RING_PUCKER",        # #24: ADDITIVE ring-conformer completeness.  For 655 of 1000 systems the ligands are
+                          # torsionally RIGID, so the ring pucker IS their conformer space -- and it was never
+                          # enumerated.  Adds the Cremer-Pople pucker siblings NEXT TO the seated frame; the
+                          # primary is untouched, so a system that was already good keeps its good frame and one
+                          # that was missing the crystal's pucker GAINS it.  landed 2026-08-03.
+                          # REACH proven on the FULL pool (ffpuck1k, pool_full_1000): byte-partition affected=7
+                          # + byte-identical=991 -- the flag touches exactly seven systems in the whole
+                          # 1000-pool and NOTHING else, so the 991 are never-worse BY CONSTRUCTION.
+                          # QUALITY on those same seven, eye-measured WITH the roundtrip axis and the CORRECTED
+                          # manifold anchor (DELFIN_EYE_BV_MANIFOLD_MIN), THREE independent runs
+                          # (ffpuck2rt/ffpuck3rt/ffpuck5rt) with identical numbers each time:
+                          #   never_worse_ok=True, roundtrip_axis_measured=True, roundtrip_lost=0, rt_unscored=0,
+                          #   topology_floor_ok=True, quality_agg_regressed=false
+                          #   valid 4->5, cap_LOST=0, cap_gained=1, n_improved=6, n_worse=0, mean_delta -2.584
+                          #   ALL THIRTY regression terms exactly 0 (capability/build/realism/roundtrip/poly/
+                          #   ccdc_*/broken/hard_frames/sp2_donor_oop/pyramid_frame/root_defects/tier2/...).
+                          # The earlier ffpuck1k FALSE came from ONE term -- tier2_regressed on YAGQIG via
+                          # ml_len_bv_sev -- and that run PREDATES the manifold-anchor fix, so the axis was read
+                          # on the min-RMSD frame; with the fix the same system reports tier2=0.
+                          # puck1krt3 was NOT a verdict at all: 501 of 1000 systems lost to the per-system clock
+                          # on an overbooked machine, build_lost_hard empty.
+                          # Env DELFIN_FFFREE_RING_PUCKER; impl delfin/manta/converter_backend.py:427.
+
+    "LP_SIBLING",         # #25: ADDITIVE lone-pair-oriented sibling.  A donor's in-plane lone pair must point AT
+                          # the metal; the seating gets that right and the conformer/re-embed passes tilt it back.
+                          # Adds the lone-pair-oriented pose as a SIBLING (-lp) next to the seated frame instead of
+                          # REPLACING it -- the same lever failed as a seating (commit ee9a1cf3) because replacing
+                          # the frame cost systems their good pose.  landed 2026-08-04, full:1000 (lpsib1k):
+                          #   affected=8 + byte-identical=983, builds SYMMETRIC (off ok 991/timeout 9,
+                          #   on ok 991/timeout 9 -> no build_lost, no build_gained, the compared set is clean)
+                          #   never_worse_ok=True, roundtrip_axis_measured=True, roundtrip_lost=0, rt_unscored=0,
+                          #   topology_floor_ok=True, quality_agg_regressed=false
+                          #   valid 3->4, cap_LOST=0, cap_gained=1, n_improved=4, n_equal=3, n_worse=1,
+                          #   mean_delta -2.09 (BETTER).  EVERY regression term exactly 0.
+                          # Affected: AVUNUC02 BIGDAX JOCCUC MANPAS OVEXIZ REYFOS VURMIE WUDNEQ -- VURMIE is the
+                          # system the user pointed at for sp2-built donors that must coordinate sp3.
+                          # ⚠ PRE-REGISTERED PREDICTION NOT CONFIRMED: the affected set was expected to be
+                          # ENRICHED in the 57 systems whose PRIMARY frame is hard on the donor-elevation axis
+                          # (elev_hard_f0_57.tsv, base rate 5.7 %).  Measured: 1 of 8 = 12.5 %, i.e. MANPAS alone
+                          # -- at n=8 that is ordinary chance (expected 0.46).  So this lever does NOT address
+                          # the tilted-donor class; those 57 need their own lever (DELFIN_FFFREE_PI_RIGID_PLACE,
+                          # measured separately).  Env DELFIN_FFFREE_LP_SIBLING; impl converter_backend.py.
+    "SIGMA_ENSEMBLE",     # #26: ADDITIVE sigma-donor conformer ensemble -- by far the widest lever landed so far
+                          # (152 of 1000 systems touched).  An ETKDG conformer pool is generated for the ligand
+                          # and the resulting poses are APPENDED as siblings next to the seated frame.
+                          # ⚠ IT WAS NOT ALWAYS ADDITIVE.  Until 2026-08-03 two short-circuit branches in
+                          # converter_backend.py REPLACED the primary frame with an ensemble member for 49 of 187
+                          # systems -- which is why every earlier ensemble A/B lost capability.  Both branches are
+                          # deleted; conformers now flow through the normal path and are appended afterwards.
+                          # Containment measured 187/187 (every off-arm frame still present in the on arm).
+                          # landed 2026-08-04, full:1000 (sigmaens1k):
+                          #   affected=152 + byte-identical=842; builds off ok 993/timeout 7, on ok 994/timeout 6
+                          #   (build_gained 1, no build_lost -- the compared set is clean)
+                          #   never_worse_ok=True, roundtrip_axis_measured=True, roundtrip_lost=0, rt_unscored=0,
+                          #   topology_floor_ok=True, quality_agg_regressed=false
+                          #   n=151, valid 119->127 (+8), cap_LOST=0, cap_gained=8, n_improved=82, n_equal=61,
+                          #   n_worse=8, mean_delta -1.286 (BETTER).  EVERY regression term exactly 0.
+                          #   capability gained: DUGWAG HEZPEJ HEZPIN JOCCUC URUTEH VAQPAE WIGFIB XUPGAR
+                          # NOTE it makes manifolds BIGGER, not cleaner: the additive family (this, RING_PUCKER,
+                          # LP_SIBLING) adds frames to manifolds in which 62.7 % of frames already carry a hard
+                          # finding.  The floor at the emit point is the separate work that RAISES quality.
+                          # Env DELFIN_FFFREE_SIGMA_ENSEMBLE; impl delfin/manta/converter_backend.py.
+    "BETA_SIBLING", "BETA_SIBLING_STRICT",
+                          # #27: ADDITIVE donor-plane (beta) sibling, with the sibling bar.  beta is the angle
+                          # between M->D and the plane of the donor's own substituents; the crystals sit at
+                          # 3.4 deg (monodentate) to 4.8 (tetradentate), our builds at 9.3 (bidentate) to 15.9
+                          # (tetradentate).  The lever appends a beta-relaxed pose as a SIBLING instead of
+                          # replacing the frame -- as a SELECTION (betasel/betaband) the same idea cost 4
+                          # capabilities against 3 gained; appending costs none.
+                          # _STRICT is the sibling BAR: a sibling is only emitted if it does not introduce a
+                          # collapsed bond, does not worsen the worst relative covalent-bond deviation
+                          # (_org_bond_worst, band 2 %), and does not worsen sp2 planarity (_sp2_planarity_worst,
+                          # angle sum 360 = planar).  Built 2026-08-03 after the bar was three times measured
+                          # against the WRONG quantity (contact bar: reach 0 because the primary IS the
+                          # clash-minimal frame; _beta_score instead of the sp2 Walsh angle: blockers unchanged;
+                          # a flat 0.82x collapse factor instead of a graded org_bond: AVUNUC02 STRETCHED a bond,
+                          # it did not collapse one).
+                          # landed 2026-08-04, full:1000 (betastr1k):
+                          #   affected=16 + byte-identical=977; builds IDENTICAL in both arms (ok 993 / timeout 7)
+                          #   never_worse_ok=True, roundtrip_axis_measured=True, roundtrip_lost=0, rt_unscored=0,
+                          #   topology_floor_ok=True, quality_agg_regressed=false
+                          #   n=16, valid 10->10, cap_LOST=0, cap_gained=0, n_improved=13, n_equal=2, n_worse=1,
+                          #   mean_delta -2.312 (BETTER).  EVERY regression term exactly 0.
+                          # NOTE this one is PURE QUALITY: it gains no capability and no valid system, it makes
+                          # 13 of 16 touched manifolds better.  That is the rarer and more valuable shape --
+                          # the other additive levers grow the manifold, this one improves it.
+                          # Env DELFIN_FFFREE_BETA_SIBLING(+_STRICT); impl converter_backend.py / assemble_complex.py.
+    "TPR6", "TPR6_EARLY_TM",
+                          # #29: CN6 trigonal-prismatic COMPLETENESS, additive in the clean builder.
+                          # decompose always sets CN6 to OC-6; the trigonal prism was missing from the
+                          # FF-free Polya enumerator entirely.  results += _enumerate_geometry(...) --
+                          # the primary frame stays untouched, a sibling is added.
+                          #
+                          # SCOPE, and why it does not come from the code comment: the lever fired on
+                          # EVERY CN6 system.  Its rationale names "early-TM Mo/W", but the CRYSTALS
+                          # say otherwise -- of 210 CN6 crystals in the 1000-pool, 8 are
+                          # trigonal-prismatic, and their metals are Zr 2, Co 2, Zn 1, Ti 1, Fe 1,
+                          # Cu 1.  The prism is forced by the LIGAND (clathrochelates, dithiolenes),
+                          # not by the metal.  TPR6_EARLY_TM nevertheless restricts to d0-d2 of
+                          # groups 3-7: element-based, universal, no SMILES and no refcode -- and
+                          # MEASURED better than without (without the restriction tier2 broke on 2
+                          # systems and so did the historic floor; with it both are zero).
+                          #
+                          # landed 2026-08-08, pool_ffree_cn6 (69 systems = CN6 intersected with
+                          # what FF-free actually builds), label tpr6final, --reuse-build:
+                          #   n=17, valid 17->17, cap_LOST=0, cap_gained=0, build_lost=0
+                          #   17 better / 0 equal / 0 WORSE, mean_delta -9.209
+                          #   BLOCKER (0) -- all 38 veto terms zero, topology_floor=True
+                          #   historic floor against HIST1K (state as of 01.07.): blocked_by = []
+                          #
+                          # ⚠ HONEST ABOUT THE GATE: landing_gate.ok was FALSE, blocked by exactly one
+                          # term, absolute_not_improved.  It measures a FRACTION: 617 frames with 29
+                          # hard ones become 804 with 82, because 187 frames are added -- 134 CLEAN
+                          # and 53 defective.  Nothing that existed gets worse (the 38 zeros prove
+                          # it), but the fraction rises.  Three attempts to filter the 53 have failed,
+                          # as measured: TORN_GATE (wrong direction, 0/24 reach), SPURIOUS_BOND (also
+                          # hit the primary frames, isomers_lost 4), TOPO_ENV (criterion fires on
+                          # good frames, shown in isolation).
+                          # The USER, after a full presentation of this trade-off, decided to land:
+                          # 17 of 17 systems better and nothing destroyed outweighs an increased fraction.
+                          # That is a DECISION, not a passed gate, and it stands here so that nobody
+                          # later mistakes it for the latter.
+                          # Env DELFIN_FFFREE_TPR6(+_EARLY_TM); impl converter_backend.py:2350ff.
+    "BACKBONE_REEMBED", "INTERLIG_PAIR_GATE",
+                          # #30: backbone re-embedding of ligands WITH the pairwise never-worse gate in
+                          # front of it -- landed together, 2026-09-05, as the first landing written by
+                          # loop.py --ab itself in 683 verdicts (register #338; verdict_pairgate6kv.json).
+                          #   pool_6000, both historic floors: n_compared 5775, judged 1191,
+                          #   valid 1096->1103, cap_LOST=0, cap_gained=7, n_good_regressions=0,
+                          #   never_worse_ok=True (topology_floor=True), landing_gate.ok=True,
+                          #   blocked_by=[] ; HIST1KV2 n=101 all values equal to the control arm,
+                          #   HIST6K n=1191 all values 0.
+                          # ⚠ THREE CAVEATS, stated here so nobody reads the landing as more than it is:
+                          #   (1) improves_absolute=False, hard_frame_frac_delta=+0.0638.  It passed via
+                          #       stock_proven_intact (dilution rule of 2026-08-11): no existing frame is
+                          #       lost on any of the 1325 systems, but the APPENDED frames are broken in
+                          #       35.3 % of cases against 17.1 % in the stock -- denser, not cleaner (#337).
+                          #   (2) two excuses carry it: EKAKIK via _nd_base (nondeterministic, measured
+                          #       twice) and 25 systems via the timeout excuse (machine load).
+                          #   (3) the determinism file came from the first attempt of the same label.
+                          # What the two flags do: BACKBONE_REEMBED alone (bbre6k) appends +4972 frames
+                          # of which 38.2 % are broken and is blocked by WABMOD/ECOQIX/GABYIS, all three
+                          # deterministic (DETBBRE3, 3/3 byte-identical, register #340) -- construction,
+                          # not instrument.  INTERLIG_PAIR_GATE rejects 679 of those appended frames
+                          # (38.2 % -> 35.3 %); it fires on ordinary C-C/C-N ligand-periphery contacts,
+                          # three quarters without any metal involvement, so the rejections are correct
+                          # (#339).  Isomer breadth: +2 isomers on 1191 systems -- density, not breadth.
+                          # Env DELFIN_FFFREE_BACKBONE_REEMBED / DELFIN_FFFREE_INTERLIG_PAIR_GATE;
+                          # impl delfin/manta/backbone_reembed.py, converter_backend.py (pair gate at
+                          # the re-embed loop).
 )
 _BUILDER_FLAGS = ("KAPPA4", "SIGMA_ENSEMBLE", "CONF_ENERGY_RANK")
 

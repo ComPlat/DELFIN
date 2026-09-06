@@ -427,7 +427,7 @@ def tool_get_widget_options(name: str) -> str:
 def tool_validate_orca_input(inp_text: str) -> str:
     """Sanity-check the text of an ORCA .inp and report issues.
 
-    Use this when the user asks "passt alles im ORCA Builder?" — read
+    Use this when the user asks "is everything OK in the ORCA Builder?" — read
     the orca-preview widget value first (via /ui orca-preview show),
     then pass it here. Returns JSON list of
     {severity, code, message, suggestion} entries.
@@ -947,8 +947,8 @@ def tool_list_delfin_features(category: str = "") -> str:
 def tool_explain_delfin_feature(name: str) -> str:
     """Explain a DELFIN concept (CONTROL keys, Smart Recalc, OCCUPIER, …).
 
-    Use when the user asks "wie funktioniert X in DELFIN?" or "was
-    macht <feature>?". Returns curated prose + source-file pointers
+    Use when the user asks "how does X work in DELFIN?" or "what
+    does <feature> do?". Returns curated prose + source-file pointers
     so you can read deeper if needed. Unknown name → JSON with
     candidates and available list.
 
@@ -1042,7 +1042,7 @@ def tool_plot_optimization_convergence(
 
     Two panels: absolute energy (Eh) and ΔE (kcal/mol on symlog).
     Title carries the converged/not-converged status. Direct answer
-    to 'warum hat die Optimierung 50 Schritte gebraucht?'.
+    to 'why did the optimization take 50 steps?'.
     """
     import json as _json
     from dataclasses import asdict as _asdict
@@ -1100,7 +1100,7 @@ def tool_plot_scf_convergence(
     geom step. Set cycle_index >= 0 to plot a single cycle.
     Default = -1 (treat as None → all cycles overlaid).
 
-    Direct answer to 'warum konvergiert der SCF nicht?'.
+    Direct answer to 'why does the SCF not converge?'.
     """
     import json as _json
     from dataclasses import asdict as _asdict
@@ -1145,8 +1145,8 @@ def tool_plot_vibrational_spectrum(
 ) -> str:
     """Lorentzian-broadened IR spectrum from full mode list; PNG.
 
-    Direct answer to 'wie sieht das IR-Spektrum aus?' / 'welche
-    Schwingungsmoden sind IR-aktiv?'.
+    Direct answer to 'what does the IR spectrum look like?' / 'which
+    vibrational modes are IR-active?'.
 
     Args:
         folder: absolute path to a Freq calc folder.
@@ -1209,8 +1209,8 @@ def tool_extract_imaginary_frequencies(folder: str) -> str:
     - ``is_minimum`` (n_imag == 0), ``is_ts`` (n_imag == 1)
     - ``error``: filled when no Freq output is present
 
-    Use this when the user asks "ist X ein Minimum?" / "TS suchen" /
-    "imaginäre Frequenzen vergleichen". Combine with
+    Use this when the user asks "is X a minimum?" / "find the TS" /
+    "compare imaginary frequencies". Combine with
     ``compare_across_functionals`` to scan many folders.
     """
     import json as _json
@@ -1252,8 +1252,8 @@ def tool_compare_across_functionals(
     single_point, zpe, n_imag, is_minimum, status. Sortable by gibbs
     (default), single_point, zpe, functional, or folder.
 
-    Direct answer to "vergleiche imaginäre Frequenzen über Funktionale"
-    or "Welcher Functional gibt das tiefste Minimum?".
+    Direct answer to "compare imaginary frequencies across functionals"
+    or "Which functional gives the lowest minimum?".
 
     Args:
         folders: comma-separated absolute paths.
@@ -1275,7 +1275,7 @@ def tool_extract_orbital_energies(folder: str) -> str:
 
     Returns the full orbital list (index, occupation, energy_eh,
     energy_ev) plus homo_index/lumo_index/homo_ev/lumo_ev/gap_ev.
-    Direct answer to "wo liegt das HOMO?" / "wie groß ist der Gap?".
+    Direct answer to "where is the HOMO?" / "how large is the gap?".
     """
     import json as _json
     from dataclasses import asdict as _asdict
@@ -1319,8 +1319,8 @@ def tool_extract_optimization_trajectory(folder: str) -> str:
 
     Each row carries cycle, energy_eh, delta_e (Δ to previous cycle).
     ``converged`` follows ORCA's OPTIMIZATION RUN DONE / HAS
-    CONVERGED markers. Useful for "warum hat die Optimierung 50
-    Schritte gebraucht?" and trajectory plotting.
+    CONVERGED markers. Useful for "why did the optimization take 50
+    steps?" and trajectory plotting.
     """
     import json as _json
     from dataclasses import asdict as _asdict
@@ -1335,7 +1335,7 @@ def tool_extract_scf_convergence(folder: str) -> str:
 
     Returns one entry per SCF cycle with the full iteration table
     (iteration #, energy, ΔE, max density change). Useful for
-    'warum konvergiert der SCF nicht?' diagnostics + plotting
+    'why does the SCF not converge?' diagnostics + plotting
     energy(iter) curves to spot oscillation / divergence.
     """
     import json as _json
@@ -1351,7 +1351,7 @@ def tool_extract_mulliken_charges(folder: str) -> str:
 
     Returns the LAST Mulliken block (post-optimization). Open-shell
     calculations include spin_population per atom; closed-shell omit
-    it. Direct answer to 'wie ist die Ladungsverteilung?'.
+    it. Direct answer to 'what is the charge distribution?'.
     """
     import json as _json
     from dataclasses import asdict as _asdict
@@ -1396,7 +1396,7 @@ def tool_extract_delfin_json(folder: str) -> str:
 
     Returns workflow_stages, per-stage energies + timings, total
     cost (USD), and raw_keys (for schema-version discovery).
-    Direct answer to 'was hat die Pipeline bisher gemacht?'.
+    Direct answer to 'what has the pipeline done so far?'.
     """
     import json as _json
     from dataclasses import asdict as _asdict

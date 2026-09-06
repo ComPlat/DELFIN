@@ -82,6 +82,37 @@ def _exempt_from_blocks(block_mols_offsets):
     return ex
 
 
+def _local_heavy_bonds(mol):
+    """Local heavy-heavy bond index pairs of one ligand fragment."""
+    out = []
+    for b in mol.GetBonds():
+        a1, a2 = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
+        if mol.GetAtomWithIdx(a1).GetAtomicNum() > 1 and mol.GetAtomWithIdx(a2).GetAtomicNum() > 1:
+            out.append((min(a1, a2), max(a1, a2)))
+    return out
+
+
+def _graph_bonds_from_blocks(block_mols_offsets):
+    """GLOBAL heavy-heavy bonds the SMILES graph REQUIRES, from the same
+    (ligand_mol, block_offset) layout _exempt_from_blocks uses.
+
+    This is the missing half of the self-gate.  `_build_is_clean` perceives its bonds
+    GEOMETRICALLY (`bonds = _bd._geometric_bonds(syms, P)`), so it can only judge bonds
+    that ARE there -- it asks "is this contact too short?" and never "is a bond the
+    molecule requires MISSING?".  A torn ligand is therefore invisible BY CONSTRUCTION:
+    once two bonded atoms drift apart, perception simply stops reporting the bond and
+    there is nothing left to fail.  Measured consequence: `smiles_topology` fires on
+    816 of 941 champion systems (87 %) and `core_torn` on 699, while the construction
+    self-gate reports the build clean.  Anchoring against the graph closes the only
+    direction the gate was blind in."""
+    out = set()
+    for mol, off in block_mols_offsets:
+        for (i, j) in _local_heavy_bonds(mol):
+            gi, gj = off + int(i), off + int(j)
+            out.add((min(gi, gj), max(gi, gj)))
+    return out
+
+
 def _heteroleptic_block_offsets(vertex_specs):
     """Deterministic per-ligand block offsets for the monodentate heteroleptic build
     order (assemble_heteroleptic_from_mols / _ensemble / _enumerate_geometry): metal at
@@ -307,12 +338,578 @@ def _lig_groups_from_config(config, ligands):
     return groups
 
 
+def _config_template_mol(metal, lig_groups, syms):
+    """An RDKit mol in the FRAME'S OWN atom order: metal at 0, then AddHs(ligand)
+    blocks in construction order -- the same layout _lig_groups_from_config derives
+    and backbone_reembed already relies on.
+
+    WHY THIS EXISTS.  Every xyz->mol bridge in the tree (_xyz_to_rdkit_conformer)
+    demands the element symbol to match at EVERY index, and the mol parsed from the
+    SMILES carries RDKit's own order -- so it never matches a frame of ours and every
+    consumer silently gets nothing.  That is exactly how the first attempt at wiring
+    ring pucker into the FF-free path measured 185 of 187 systems byte-identical.
+
+    Built here rather than reused from _finish_config_frame's ``cm`` on purpose: that
+    one is deliberately lossy (atoms recreated from atomic number alone, so charge,
+    aromaticity and chirality are dropped, and M-D is a SINGLE bond), because its only
+    consumer is a bond-graph-only sp2 flattener.  CombineMols keeps all of it, and the
+    M-D bond is DATIVE -- a SINGLE bond would push a neutral 3-coordinate donor N to
+    valence 4, sanitisation would stop at SANITIZE_PROPERTIES, RingInfo would never be
+    initialised, and every ring consumer would read zero rings.
+
+    Returns None unless the result matches ``syms`` symbol-for-symbol -- an aggregate
+    count check would pass a compensating pair of errors."""
+    from rdkit import Chem as _Chem
+    try:
+        m = _Chem.RWMol()
+        m.AddAtom(_Chem.Atom(str(metal)))
+        for g in lig_groups:
+            gh = _Chem.AddHs(g["mol"])
+            base = m.GetNumAtoms()
+            m.InsertMol(gh)
+            for d in g["donor_local"]:
+                m.AddBond(0, base + int(d), _Chem.BondType.DATIVE)
+        mm = m.GetMol()
+        try:
+            _Chem.SanitizeMol(mm, catchErrors=True)
+        except Exception:
+            pass
+        try:
+            _Chem.FastFindRings(mm)          # belt: RingInfo even if sanitize stopped early
+        except Exception:
+            pass
+        # SAY WHY IT FAILED.  A bare `return None` here is a SILENT null lever, and that is
+        # the exact failure mode that cost two wrong conclusions on 2026-08-02: the first
+        # ring-pucker wiring returned 0 for every system and nothing recorded that it had.
+        # Trace-gated, so the default path stays silent and byte-identical.
+        if mm.GetNumAtoms() != len(syms):
+            return _scope_no("PUCKER_TEMPLATE_NATOMS",
+                             "tmpl=%d frame=%d" % (mm.GetNumAtoms(), len(syms)))
+        for i in range(mm.GetNumAtoms()):
+            if mm.GetAtomWithIdx(i).GetSymbol() != syms[i]:
+                return _scope_no("PUCKER_TEMPLATE_ORDER",
+                                 "i=%d tmpl=%s frame=%s" % (
+                                     i, mm.GetAtomWithIdx(i).GetSymbol(), syms[i]))
+        return mm
+    except Exception as _e:
+        return _scope_no("PUCKER_TEMPLATE_RAISED", type(_e).__name__)
+
+
+
+
+def _append_ffree_ring_puckers(results, metal, lig_groups, base_syms, base_P, base_label,
+                               cn=None, geom=None, donors=None, exempt_pairs=None,
+                               graph_bonds=None, max_isomers=0, budget=48):
+    """Append the Cremer-Pople ring-pucker SIBLINGS of one accepted FF-free frame.
+
+    Named apart from smiles_converter._append_ring_puckers on purpose: that one drives
+    the METAL-FREE organic pool off a sanitised ETKDG mol.  This one drives a metal
+    complex off OUR frame, in OUR atom order, with the coordination sphere frozen.
+
+    THE conformer lever, and the biggest by reach: over 1000 systems, 655 are torsionally
+    RIGID (one torsional state), so for two thirds of the space the ring pucker IS the
+    entire conformer manifold -- and the FF-free path has none of it (2.23 frames per
+    system, ZERO with a conformer suffix, against 30.6 elsewhere).  ETKDG cannot supply
+    it either: UFF does not cross the ~10 kcal/mol chair-boat barrier, so every ring stays
+    in whatever basin the random seed happened to hit.
+
+    THE ONE PLACE DELFIN_FFFREE_RING_PUCKER IS READ (default OFF -> byte-identical).
+    An earlier attempt read it in smiles_converter at the FF-free return and measured 185
+    of 187 systems byte-identical: the legacy emitter bridges XYZ to a mol through a
+    symbol-per-index match, and the SMILES-parsed mol carries RDKit's order while our
+    frames carry metal-at-0 plus AddHs(ligand) blocks.  They never coincide.
+
+    Additive by construction: the base frame is never touched, every sibling must pass the
+    SAME self-gate the base passed, and a failing pucker is dropped rather than allowed to
+    replace anything.  ``donors`` are the GLOBAL indices the assembler itself returned, so
+    the frozen set is exact -- the legacy emitter has to guess it back from metal neighbours.
+    """
+    if os.environ.get("DELFIN_FFFREE_RING_PUCKER", "0") != "1" or not lig_groups:
+        return
+    try:
+        from delfin.manta import _ring_pucker as _rpuck
+        from rdkit import Chem as _Chem
+        import numpy as _np
+    except Exception:
+        return
+    m = _config_template_mol(metal, lig_groups, base_syms)
+    if m is None:
+        return
+    try:
+        conf = _Chem.Conformer(m.GetNumAtoms())
+        for i in range(m.GetNumAtoms()):
+            conf.SetAtomPosition(i, [float(base_P[i][0]), float(base_P[i][1]),
+                                     float(base_P[i][2])])
+        m.RemoveAllConformers()
+        m.AddConformer(conf, assignId=True)
+        frozen = {0} | {int(x) for x in (donors or [])}
+        # the PRIMARY's own scores -- the bar every sibling has to clear (see below)
+        _dloc = sorted(int(x) for x in (donors or []))
+        try:
+            from delfin.manta import assemble_complex as _AC
+            _base_bad = (bool(_AC._collapsed_heavy_bonds_strict(list(base_syms), base_P)),
+                         float(_AC._beta_score(list(base_syms), base_P, _dloc)))
+        except Exception:
+            _AC, _base_bad = None, None
+        try:
+            _base_min = _min_nonbonded_heavy(base_syms, base_P)
+        except Exception:
+            _base_min = None
+        # angle_skip = the METAL alone.  Its angles come from the polyhedron, not from
+        # hybridisation: the VSEPR gate sees nh == 4 on a CN4 centre and demands 109.5 deg,
+        # so a square-planar d8's two 180 deg trans pairs read as a 70.5 deg error that no
+        # pucker caused and none can fix.  Without this, EVERY combination of EVERY SP-4
+        # and T-3 complex is rejected -- which reads as "no reach" for entirely the wrong
+        # reason.  Default off in _ring_pucker, so no existing caller changes.
+        _out = _rpuck.generate(m, frozen=frozen, budget=int(budget), angle_skip={0})
+    except Exception:
+        return
+    # ===== COUNT OF THE REJECTION REASONS (17.08.2026) ==============================
+    # MEASURED on 16.08. (`folds`, 965 systems): **1055 of 1766 ring identities =
+    # 59.7 % carry only ONE fold across the WHOLE manifold** -- and that WITH this
+    # emitter running (RING_PUCKER is champion flag #24, and the FF-free path is
+    # 98.8 % of the cases, fire census 14.08.).  So the builder exists, it runs, and
+    # the gap remains.
+    #
+    # The question is therefore not "how do we build the second fold" but **at which
+    # of the six gates it dies**.  From the outside, "generated and rejected" looks exactly
+    # like "never built" -- the same fallacy as in the fire census on 14.08.
+    #
+    # Pure INSTRUMENTATION: counts and reports once, changes nothing about the behaviour.
+    # The report hangs on DELFIN_FFFREE_PUCKER_TRACE (default off) so that it does not
+    # run along in production runs.
+    _pk = {"erzeugt": len(_out or []), "cap": 0, "anzahl": 0, "reihenfolge": 0,
+           "unclean": 0, "kollaps": 0, "beta": 0, "clash": 0, "akzeptiert": 0}
+    for _px, _plab in (_out or []):
+        if max_isomers and len(results) >= max_isomers:
+            _pk["cap"] += 1
+            break
+        try:
+            _lines = [ln.split() for ln in _px.splitlines() if ln.strip()]
+            if len(_lines) != len(base_syms):
+                _pk["anzahl"] += 1
+                continue
+            _ps = [t[0] for t in _lines]
+            if _ps != list(base_syms):
+                _pk["reihenfolge"] += 1
+                continue                      # order must survive; never guess a mapping
+            _pP = _np.array([[float(t[1]), float(t[2]), float(t[3])] for t in _lines])
+            _ps, _pP = _maybe_relax(_ps, _pP)
+            if not _build_is_clean(_ps, _pP, cn=cn, geom=geom, donors=donors,
+                                   exempt_pairs=exempt_pairs, graph_bonds=graph_bonds):
+                _pk["unclean"] += 1
+                continue
+            # NEVER-WORSE PER SIBLING.  _build_is_clean asks "is this buildable", which is a
+            # LOWER bar than "is this good".  Measured 2026-08-02 (ffpuck2): the pass was
+            # strictly additive -- the primary frame stayed BYTE-IDENTICAL on every system --
+            # and it still failed the gate, on exactly two: CAZJEW pyramid_frame_regressed,
+            # YAGQIG quality_agg.  Those are arithmetic: 5 frames instead of 1, so a per-frame
+            # count or mean moves even though nothing that existed got worse.
+            #
+            # The metric is not what is wrong.  The goal is "EVERY frame without an anomaly",
+            # so a sibling that carries a defect the primary does not have is a real cost, and
+            # arguing with the aggregate would be exactly the kind of metric-gaming this
+            # project forbids.  So the sibling has to clear the SAME bar as the frame it hangs
+            # off: no new collapsed bond, and no worse out-of-plane.  Both predicates already
+            # exist and are the ones the gate itself judges by.
+            if _AC is not None and _base_bad is not None:
+                try:
+                    if (_AC._collapsed_heavy_bonds_strict(_ps, _pP)
+                            and not _base_bad[0]):
+                        _pk["kollaps"] += 1; continue   # introduces a collapse the primary lacks
+                    if _AC._beta_score(_ps, _pP, _dloc) > _base_bad[1] + 1e-9:
+                        _pk["beta"] += 1; continue      # flatter donors were the point; worse is not
+                except Exception:
+                    pass
+            # ... and the same never-worse test _append_reembed already applies to ITS extra
+            # frames: a sibling must not bring the closest non-bonded heavy contact in tighter
+            # than the primary has it.  Measured (ffpuck3): the beta+collapse filter removed
+            # CAZJEW from the blockers exactly as intended and left ONE system, YAGQIG, failing
+            # on tier2 and quality_agg -- neither beta nor collapse, so a third quantity.  This
+            # is the cheapest one the eye also judges by, and reusing the pattern beats
+            # inventing a fourth.
+            if _base_min is not None:
+                try:
+                    if not _interlig_clash_ok(_ps, _pP, _base_min):
+                        _pk["clash"] += 1; continue
+                except Exception:
+                    pass
+            _pk["akzeptiert"] += 1
+            results.append((_xyz(_ps, _pP), f"{base_label}-{_plab}"))
+        except Exception:
+            continue
+    # Report ONCE which gate costs the folds.  Without this line, "generated and
+    # rejected" cannot be told apart from "never built" -- exactly the fallacy that made
+    # the fire census worthless on 14.08.  Default OFF.
+    if os.environ.get("DELFIN_FFFREE_PUCKER_TRACE", "0") == "1" and _pk["erzeugt"]:
+        try:
+            import logging as _lg
+            _lg.getLogger(__name__).warning(
+                "[pucker-trace] %s: erzeugt=%d akzeptiert=%d | verworfen: anzahl=%d "
+                "reihenfolge=%d unclean=%d kollaps=%d beta=%d clash=%d cap=%d",
+                base_label, _pk["erzeugt"], _pk["akzeptiert"], _pk["anzahl"],
+                _pk["reihenfolge"], _pk["unclean"], _pk["kollaps"], _pk["beta"],
+                _pk["clash"], _pk["cap"])
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# THE COUNTABLE CONFORMER AXIS
+# ---------------------------------------------------------------------------
+# For ISOMERS this project has Polya: a theory set, hence a denominator, hence
+# completeness as a CHECKABLE quantity.  For CONFORMERS it has nothing of the kind -- the
+# builder embeds, keeps one, and nobody can say how many it should have had.  Measured
+# consequence: the FF-free chelate path emits 2.23 frames per system with ZERO conformer
+# suffixes, against 30.6 on everything else, and ccdc_pucker_realized is false for a
+# quarter of the census.
+#
+# THE LAW THAT MAKES IT COUNTABLE.  A molecule's geometry is fixed by 1-2 (bonds,
+# chemistry), 1-3 (angles, hybridisation) and 1-4 (torsions) -- and the torsions are the
+# ONLY free part, and they are DISCRETE.  Their minima follow from the LOCAL environment
+# of the bond, not from a uniform raster:
+#
+#     sp3-sp3              3    gauche+, anti, gauche-      (syn ~0 is a MAXIMUM)
+#     sp3-sp2              2    the two eclipsing minima at the sp2 centre
+#     sp2-sp2 conjugated   2    s-cis, s-trans
+#     ring bond            0    NO degree of freedom -- ring closure, not torsion
+#     terminal/symmetric   1    a methyl turns but changes nothing distinguishable
+#
+# Choosing a well therefore COMPLETES the specification: after it, nothing is left
+# underdetermined.  A conformer stops being something one SAMPLES and becomes something one
+# INDEXES -- and the index set is countable.  That is the whole point.
+#
+# WHY IT IS TRACTABLE, measured over 1000 systems (conformer_theory.py): 655 are torsionally
+# RIGID (n_theory == 1) -- for two thirds of the space the ring pucker IS the entire
+# conformer manifold, which is why that lever came first.  Of the rest the median is 1 and
+# p90 is 36; only 20 systems explode, and for those the standing rule is to rank by ENERGY,
+# never by RMSD.
+#
+# WHY IT IS BUILT AS SIBLINGS.  Every flag that ever landed in this project ADDS
+# (D8_SQ_ADD "a PURELY ADDITIVE sibling ... the PRIMARY frame is untouched", CN6_OH_ADD,
+# STEREOCENTER_ENUM, CN4_BOTH); everything measured on 2026-08-02 that CHOSE instead of
+# added, died -- 17 A/Bs.  The reason turned out to be measurable: cap_LOST can only be paid
+# by a system we ALREADY build perfectly (a system with broken_frac 1.0 has no capability to
+# lose), so the recurring losers are the CLEANEST systems we have -- manifold_clean 44 % vs
+# 19 % over 953 systems.  The only safe change to a perfect system is one that does not
+# touch it.
+
+_WELL_SP3_SP3 = (60.0, 180.0, 300.0)     # gauche+, anti, gauche-
+_WELL_CONJ = (0.0, 180.0)                # s-cis / s-trans, and the sp2 eclipsing pair
+_WELL_MAX_SIBLINGS = 12                  # bounded: the product is exponential by nature
+
+
+def _sp2_like(atom) -> bool:
+    """sp2 for the purpose of torsional wells: aromatic, or carrying a multiple bond."""
+    try:
+        if atom.GetIsAromatic():
+            return True
+        for b in atom.GetBonds():
+            if b.GetBondTypeAsDouble() > 1.4:
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def _torsion_wells(mol, i, j):
+    """The absolute dihedral minima of the i-j bond, from its LOCAL environment."""
+    try:
+        a, b = mol.GetAtomWithIdx(int(i)), mol.GetAtomWithIdx(int(j))
+    except Exception:
+        return ()
+    s1, s2 = _sp2_like(a), _sp2_like(b)
+    if s1 and s2:
+        return _WELL_CONJ                 # conjugated: s-cis / s-trans
+    if s1 or s2:
+        return _WELL_CONJ                 # sp3-sp2: the two eclipsing minima at the sp2
+    return _WELL_SP3_SP3                  # sp3-sp3
+
+
+def _distal_side(mol, i, j):
+    """Atom indices on j's side of the i-j bond (the half a rotation moves)."""
+    seen, stack = {int(j)}, [int(j)]
+    while stack:
+        cur = stack.pop()
+        for nb in mol.GetAtomWithIdx(cur).GetNeighbors():
+            k = nb.GetIdx()
+            if k == int(i) or k in seen:
+                continue
+            seen.add(k)
+            stack.append(k)
+    return seen
+
+
+def _append_ffree_torsion_wells(results, metal, lig_groups, base_syms, base_P, base_label,
+                                cn=None, geom=None, donors=None, exempt_pairs=None,
+                                graph_bonds=None, max_isomers=0):
+    """Append one SIBLING per distinct torsional well vector of the accepted frame.
+
+    THE ONE PLACE DELFIN_FFFREE_TORSION_WELLS IS READ (default OFF -> byte-identical).
+
+    Only bonds whose MOVING half contains no frozen atom are turned -- the metal and every
+    donor stay exactly put, so the coordination sphere is carried through untouched and only
+    pendant backbone turns.  That is deliberately the same restriction torsion_relax applies,
+    and it is why a rigid chelate contributes nothing here while a large flexible ligand --
+    the 464-system LIGAND_TOO_LARGE class -- contributes most.
+
+    Every sibling must clear the SAME bar as the frame it hangs off: the self-gate, no new
+    collapsed bond, no worse beta, and no tighter closest contact.  Nothing that already
+    exists is altered or dropped."""
+    if os.environ.get("DELFIN_FFFREE_TORSION_WELLS", "0") != "1" or not lig_groups:
+        return
+    # ===== SEVEN EXITS, SIX OF THEM SILENT ================================
+    #
+    # 🔴 THE FIRST VERSION OF THIS BLOCK (18.08., 12:56) STOOD ON A FALSE
+    # PREMISE.  It recorded: "this function has appended zero frames in the ENTIRE
+    # corpus -- 2739 files in archive_tors10k_on, 0 labels `-well`", and from that
+    # inferred two suspects in the body ((A) `dofs` empty because of `IsInRing`
+    # on the DATIVELY closed chelate rings, (B) the 0.95x-base_min bar).
+    #
+    # THE ARCHIVE IS REAL AND THE ZERO IS REAL -- the CONCLUSION was wrong.
+    # Re-checked 18.08. against the run metadata themselves:
+    #   results/log_tors10k.txt : ... --label tors10k --config champion
+    #                             --on DELFIN_FFFREE_TORSION_RELAX --off  --ab
+    #   axis_tors10k_on.json / axis_tors10k_off.json : "TORSION_WELLS" occurs
+    #                             ZERO times; the only TORSION flag in the whole
+    #                             run is DELFIN_FFFREE_TORSION_RELAX, and WELLS is not
+    #                             in the champion flag list (30 flags).
+    # ⇒ `DELFIN_FFFREE_TORSION_WELLS` was OFF in BOTH arms of tors10k.  The zero
+    # `-well` labels are exit 1 (the switch) and nothing else.  What was measured
+    # was `torsion_relax` -- a RESHAPING pass which, according to its own
+    # pre-registration, "appends nothing"; the "3 of 24 systems changed" of the
+    # reach probe also belong to it, not to this function.  Two mechanisms with
+    # similar names, one run label: TORSION_RELAX is not TORSION_WELLS.
+    # The axis here is therefore UNMEASURED, not refuted.
+    #
+    # COUNTER-CHECK, so that the zero report is not once again merely a claim
+    # (`python delfin/manta/converter_backend.py wells`, counter below):
+    #   BIQCOV (Ta, k3, iPr/tBu arms) 2 calls, dof_n=8, cand=24, ADDED=24
+    #   Co case with a dangling aminoethyl 3 calls, dof_n=6, cand=27, ADDED=21
+    #   ABEZAJ (Ti, k3, cyclohexyl) 1 call, dof_n=2, cand=6, ADDED=2
+    # The mechanism runs, it is reached, and it APPENDS.  Suspects (A) and
+    # (B) are thereby both off the table; what actually binds is `_WELL_MAX_SIBLINGS`
+    # (on BIQCOV in both calls) -- and the cap now reports itself.
+    #
+    # ⇒ THERE WERE EXACTLY TWO RUNS WITH WELLS=1, AND BOTH FELL INTO THE NAMEERROR WINDOW.
+    # 1234 `axis_*.json` searched; `TORSION_WELLS` appears in exactly two:
+    #   `wells`     03.08. 07:30, pool_ffonly (187):  affected=0, byte-identical=187,
+    #               0 `-well` labels in archive_wells_on -> read as "no reach"
+    #   `torswells` 07.08. 06:24, pool_ffree_built:   REACH 0/24, aborted by the
+    #               probe -- not even an archive came into existence
+    # The file state at BOTH points in time (622f4075 and 4cc5dc48): `_INTERLIG_VDW_FLOOR`
+    # defined ZERO times, but used in `_interlig_clash_ok` -- commit a9b82598 of 02.08.
+    # deleted the constant and left the use standing.  The call sits here
+    # INSIDE the `try` with `except Exception: continue`, so EVERY candidate died
+    # silently of the NameError before anything could be appended.  Exactly the error
+    # that commit 41255fee named on 17.08. for `_append_reembed` -- only this
+    # function shared the same consumer, and nobody counted the second site.
+    # The constant has been back since 17.08. 10:59; since then NOBODY has run the axis.
+    #
+    # ⇒ ALL three zero findings are explained, and none of them refutes the mechanism:
+    # twice a NameError under a broad except, once the wrong switch.
+    #
+    # LESSON, dearly paid for: an archive only proves what the run had switched on.
+    # Before any "the mechanism delivers nothing" comes the look into the
+    # run metadata -- was its switch ON?  "Ran and failed" is not
+    # "never ran", and both look the same in the archive.
+    #
+    # ⚠ 18.08.2026, SECOND ROUND.  The counter of 12:56 was moreover a STUB: the dictionary
+    # was there, but only `import` and `tmpl_none` were ever set, and `_wtrace()` was
+    # never called on the NORMAL path -- so it reported exactly the two cases that
+    # do not occur anyway, and stayed silent on the five that matter.  A counter that
+    # hangs only on the improbable exits is not a counter.  Now one hangs on
+    # EVERY exit, and `enter` is the DENOMINATOR: without it, "no row" cannot be told
+    # apart from "never entered" -- the same fallacy as on 14.08.
+    #
+    # THE SEVEN EXITS (function level), in order:
+    #   1 switch      switch off or no lig_groups  (before the counter, no silent case)
+    #   2 import      rdkit/numpy/assemble_complex not importable
+    #   3 tmpl_none   _config_template_mol does not fit the frame (count/order)
+    #   4 base_exc    the BAR of the primary frame cannot be computed
+    #   5 dof_exc     the bond loop throws
+    #   6 no_dof      no rotatable bond left  (measured: NOT the killer)
+    #   7 conf_exc    the conformer cannot be seated onto the frame
+    # ... and the six REJECTIONS per candidate: same/unclean/collapse/beta/clash/exc.
+    #
+    # DELFIN_FFFREE_WELLS_TRACE=<path>, otherwise silent and free.
+    _wk = {"enter": 1, "cand": 0, "no_dof": 0, "tmpl_none": 0, "import": 0, "same": 0,
+           "unclean": 0, "collapse": 0, "beta": 0, "clash": 0, "exc": 0,
+           "added": 0, "dof_n": 0, "base_exc": 0, "dof_exc": 0, "conf_exc": 0,
+           "nrot": 0, "dof_cap": 0, "sib_cap": 0, "iso_cap": 0}
+
+    def _wtrace():
+        _p = os.environ.get("DELFIN_FFFREE_WELLS_TRACE", "")
+        if not _p or _p == "0":
+            return
+        try:
+            with open(_p, "a") as _fh:
+                _fh.write("[WELLS] lab=%s " % (base_label,) + " ".join(
+                    "%s=%d" % (k, v) for k, v in sorted(_wk.items())) + "\n")
+        except Exception:
+            pass
+
+    try:
+        from delfin.manta import assemble_complex as _AC
+        from rdkit import Chem as _Chem
+        from rdkit.Chem import rdMolTransforms as _RT
+        import numpy as _np
+        import itertools as _it
+    except Exception:
+        _wk["import"] = 1
+        _wtrace()
+        return
+    m = _config_template_mol(metal, lig_groups, base_syms)
+    if m is None:
+        _wk["tmpl_none"] = 1
+        _wtrace()
+        return
+    frozen = {0} | {int(x) for x in (donors or [])}
+    _dloc = sorted(int(x) for x in (donors or []))
+    try:
+        base_bad = (bool(_AC._collapsed_heavy_bonds_strict(list(base_syms), base_P)),
+                    float(_AC._beta_score(list(base_syms), base_P, _dloc)))
+        base_min = _min_nonbonded_heavy(base_syms, base_P)
+    except Exception:
+        _wk["base_exc"] = 1
+        _wtrace()
+        return
+    # rotatable bonds whose moving half is free of metal AND donors
+    dofs = []
+    try:
+        for b in m.GetBonds():
+            if b.GetBondType() != _Chem.BondType.SINGLE or b.IsInRing():
+                continue
+            _wk["nrot"] += 1        # denominator BEFORE the degree-of-freedom filters
+            i, j = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
+            if m.GetAtomWithIdx(i).GetAtomicNum() == 1 or m.GetAtomWithIdx(j).GetAtomicNum() == 1:
+                continue
+            h1 = sum(1 for n in m.GetAtomWithIdx(i).GetNeighbors() if n.GetAtomicNum() > 1)
+            h2 = sum(1 for n in m.GetAtomWithIdx(j).GetNeighbors() if n.GetAtomicNum() > 1)
+            if h1 < 2 or h2 < 2:
+                continue                      # terminal spin: nothing distinguishable turns
+            for (a, c) in ((i, j), (j, i)):
+                if _distal_side(m, a, c) & frozen:
+                    continue                  # would move the metal or a donor
+                r1 = next((n.GetIdx() for n in m.GetAtomWithIdx(a).GetNeighbors()
+                           if n.GetIdx() != c and n.GetAtomicNum() > 1), None)
+                r2 = next((n.GetIdx() for n in m.GetAtomWithIdx(c).GetNeighbors()
+                           if n.GetIdx() != a and n.GetAtomicNum() > 1), None)
+                if r1 is None or r2 is None:
+                    continue
+                w = _torsion_wells(m, a, c)
+                if len(w) > 1:
+                    dofs.append((r1, a, c, r2, w))
+                break
+    except Exception:
+        _wk["dof_exc"] = 1
+        _wtrace()
+        return
+    _wk["dof_n"] = len(dofs)
+    if not dofs:
+        _wk["no_dof"] = 1
+        _wtrace()
+        return _scope_no("WELLS_NO_DOF", "nrot=%d" % _wk["nrot"])
+    # ⚠ NO SILENT CAPPING.  The cap reports itself when it binds -- otherwise the result
+    # reads afterwards as "there were no more degrees of freedom", and exactly this
+    # confusion is the reason this function counted as "without reach" for fourteen
+    # days.  Default silent: only via the module's trace channel.
+    if len(dofs) > 4:
+        _wk["dof_cap"] = len(dofs) - 4
+        _ff_trace_write("[WELL_DOF_CAP] dofs=%d cap=4 dropped=%d lab=%s"
+                        % (len(dofs), len(dofs) - 4, base_label))
+    dofs = dofs[:4]                           # bound the product; 3^4 = 81 before dedup
+    try:
+        conf0 = _Chem.Conformer(m.GetNumAtoms())
+        for i in range(m.GetNumAtoms()):
+            conf0.SetAtomPosition(i, [float(base_P[i][0]), float(base_P[i][1]),
+                                      float(base_P[i][2])])
+        m.RemoveAllConformers()
+        m.AddConformer(conf0, assignId=True)
+    except Exception:
+        _wk["conf_exc"] = 1
+        _wtrace()
+        return
+    n_added = 0
+    for combo in _it.product(*[d[4] for d in dofs]):
+        if n_added >= _WELL_MAX_SIBLINGS:
+            # second cap, same rule: it reports itself when it binds.
+            _wk["sib_cap"] = 1
+            _ff_trace_write("[WELL_SIB_CAP] added=%d cap=%d lab=%s"
+                            % (n_added, _WELL_MAX_SIBLINGS, base_label))
+            break
+        if max_isomers and len(results) >= max_isomers:
+            _wk["iso_cap"] = 1
+            break
+        _wk["cand"] += 1
+        try:
+            w = _Chem.Mol(m)
+            c = w.GetConformer()
+            for (r1, a, b2, r2, _wl), ang in zip(dofs, combo):
+                _RT.SetDihedralDeg(c, int(r1), int(a), int(b2), int(r2), float(ang))
+            _pP = _np.array(c.GetPositions(), float)
+            _ps = list(base_syms)
+            if _np.allclose(_pP, _np.asarray(base_P, float), atol=1e-6):
+                _wk["same"] += 1
+                continue                      # the base frame already sits in this well
+            _ps, _pP = _maybe_relax(_ps, _pP)
+            if not _build_is_clean(_ps, _pP, cn=cn, geom=geom, donors=donors,
+                                   exempt_pairs=exempt_pairs, graph_bonds=graph_bonds):
+                _wk["unclean"] += 1
+                continue
+            if _AC._collapsed_heavy_bonds_strict(_ps, _pP) and not base_bad[0]:
+                _wk["collapse"] += 1
+                continue
+            if _AC._beta_score(_ps, _pP, _dloc) > base_bad[1] + 1e-9:
+                _wk["beta"] += 1
+                continue
+            if base_min is not None and not _interlig_clash_ok(_ps, _pP, base_min):
+                _wk["clash"] += 1
+                continue
+            results.append((_xyz(_ps, _pP), "%s-well%d" % (base_label, n_added + 1)))
+            n_added += 1
+            _wk["added"] = n_added
+        except Exception:
+            _wk["exc"] += 1
+            continue
+    # The REGULAR exit -- without this line the counter reported only the two
+    # improbable cases and stayed silent exactly when it gets interesting.
+    _wtrace()
 # vdW-level inter-ligand clash floor (Å) for the NEW-frame never-worse gate below.
 # A re-embedded / re-seated conformer must not introduce a non-bonded heavy-heavy
 # contact below this (a backbone folding into a NEIGHBOUR ligand collapses well
 # inside the vdW shell long before the 0.60·Σcov gross-overlap floor _build_is_clean
-# uses fires — measured: ACEQUY Fe(N(Dipp)(SiMe3))3 reembed frames at 1.98-2.01 A
-# inter-ligand C-C, base frame 2.07-2.38 A).
+# uses fires — measured: ACEQUY Fe(N(Dipp)(SiMe3))3 reembed frames at 1.98-2.01 Å
+# inter-ligand C-C, base frame 2.07-2.38 Å).
+#
+# ⚠ RESTORED 17.08.2026 — THESE TWO LINES WERE GONE FOR FIFTEEN DAYS.
+# Commit a9b82598 (02.08., "ring pucker at the place that knows the atom order of
+# the frame") deleted them and left the two uses in `_interlig_clash_ok`
+# standing.  Since then the function threw a NameError on EVERY call, which the
+# `except Exception: continue` in `_append_reembed` swallowed -- and with that
+# EVERY frame that had passed the self-gate dropped out silently.
+#
+# MEASURED on 17.08. with two fire traces over `pool_ffonly` (187 systems):
+#   :938 reembed called ......... 367 hits / 183 systems
+#   :951 frame in the loop ...... 2446 / 182
+#   :952 self-gate called ....... 2446 / 182
+#   :953 self-gate rejects ...... 1156 / 99
+#   :954 self-gate PASSED ....... 1290 / 146     <- 2446-1156 = 1290, exactly
+#   :955 vdW rejects ............    0 / 0
+#   :956 appended ...............    0 / 0       <- not a single one, ever
+# 1290 frames vanished between 954 and 956, i.e. IN this function.
+#
+# WHAT IT COST: `BACKBONE_REEMBED` had reach 135/187 = 72 % on 01.08.
+# (byte comparison of the actsweep arms) and 0/24 on 17.08.  The mechanism targets
+# `ccdc_backbone`, the SECOND-LARGEST defect mass (411 of 840).  It was never broken --
+# it still generates 2446 frames on 182 of 187 systems.  Just none of them
+# was accepted.
+#
+# ⚠ THE LESSON IS ALREADY IN THE REGISTER, and here it cost fifteen days:
+# an error under a broad `except` is invisible until somebody COUNTS.  A
+# census of the reach would have found it on 02.08.; there was no history
+# against which a drop could have stood out.  That is exactly what
+# `harness/reach_watch.py` and `results/reach_history.jsonl` exist for as of today.
 _INTERLIG_VDW_FLOOR = 2.0
 _INTERLIG_VDW_TOL = 0.05
 
@@ -353,6 +950,239 @@ def _min_nonbonded_heavy(syms, P) -> float:
     return best
 
 
+# ══ THE NEW PAIR, NOT THE GLOBAL MINIMUM (01.09.2026, measured) ═══════════════
+# OCCASION.  `bbre6k` (BACKBONE_REEMBED) appends frames and is STRICTLY ADDITIVE
+# in doing so -- no frame disappears.  Nevertheless `broken_frac` rises on 295 of 1220
+# measurable systems (24.2 %); the broken share in the INCREMENT is 37.7 % against 17.3 %
+# in the existing stock (factor 2.18; a second, independent field says 2.31).  Dominant
+# finding of the arbiter: `intclash_pair` on 186 systems.
+#
+# WHY THE EXISTING GATE DOES NOT CATCH IT -- it was ON, it just measures differently:
+#     HERE   `_interlig_clash_ok`:  ONE global minimum against max(2.0 ; base_min·0.95)
+#     THERE  metric_inter_ligand_clash.py:26:  d(i,j) < 0.65·(vdW_i + vdW_j)  PER PAIR
+# For C-C the bound there is 0.65·3.40 = 2.21 A.  A C-C contact at 2.10 A
+# passes here (above the 2.0 floor) and fails there.  That is the gap in numbers:
+# a SCALAR test for a PAIRWISE defect.
+# ⚠️ An active gate looks like protection.  Every "but there already is a gate"
+#    has to come with the question: DOES IT CHECK THE QUANTITY AT ISSUE?
+#
+# THE SHAPE OF THE CURE.  Not "no tight contacts" -- that would also reject frames
+# whose tightness is already in the base frame and for which this axis is not
+# responsible.  Instead NEVER-WORSE PER PAIR: rejected is only what pushes a pair
+# below the bound that lay above it in the BASE frame.  Pre-existing tightness stays
+# permitted; the axis is not held liable for the existing stock.
+#
+# ⚠️ THE NUMBER 0.65 IS CHEMISTRY, NOT TASTE.  The detector names its origin:
+#    validated on COD, real inter-ligand contacts rarely lie below 0.70·vdW
+#    sum; 0.78 gave 8 % false positives, 0.65 catches the chemically impossible
+#    cases.  It is NOT imported here (separate trees) but mirrored with a
+#    pointer comment -- if one drifts, it stands out in the comparison.
+# ⚠️ THE WRONG FILE IS BEING MIRRORED (measured 03.09.2026, register #299).
+#    `metric_inter_ligand_clash.py` itself calls `full_verdict.py:1732` a
+#    DUPLICATE of the wired-in `find_inter_ligand_clash` -- and according to
+#    `full_verdict.py:1531` the wired-in threshold is **0.70**, not 0.65.  A build gate
+#    BELOW the eye's threshold can by construction never satisfy the eye:
+#    every pair in the band [0.65 · 0.70)·vdW is a collision for the eye and
+#    invisible for the gate.  Measured on the 194 damaged systems of
+#    `bbre6k`: 99 of 163 missed systems (60.7 %) lie exactly in this
+#    band, GABYIS with both surviving frames below it.
+#
+#    OVERRIDABLE INSTEAD OF HARD-SET, and that is not hesitation:
+#    `pairgate6k` was at 5075/6000 on 04.09. and builds every system in a
+#    NEW subprocess that imports this file afresh.  A hard change
+#    would have built the remaining ~925 systems with 0.70 and the first 5075 with 0.65
+#    -- a mixed archive and an unusable run.  With default
+#    0.65 EVERY existing run is byte-identical; the new one sets 0.70.
+#
+#    ⚠️ The threshold is NOT a monotonic knob.  The same number also appears in the
+#    condition `d_base >= tgt` ("did the pair lie above it before"), and that one gets
+#    HARDER with a rising factor.  Simulated over 295 damaged systems:
+#        0.65 -> heals  81   0.68 -> 139   0.70 -> 200   0.72 -> 190
+#    0.70 is the maximum, and that is no coincidence: there the gate asks exactly
+#    "does this frame newly violate the EYE criterion?".  Whoever turns it higher
+#    measures less.
+_IL_CLASH_FACTOR = float(os.environ.get("DELFIN_FFFREE_INTERLIG_PAIR_FACTOR", "0.65"))
+_IL_VDW = {"H": 1.20, "C": 1.70, "N": 1.55, "O": 1.52, "F": 1.47, "P": 1.80,
+           "S": 1.80, "Cl": 1.75, "Br": 1.85, "I": 1.98, "B": 1.92, "Si": 2.10,
+           "Se": 1.90, "As": 1.85, "Te": 2.06}
+_IL_VDW_DEFAULT = 1.70
+
+
+def _il_vdw(s):
+    return _IL_VDW.get(s, _IL_VDW_DEFAULT)
+
+
+def _pairwise_gate_enabled() -> bool:
+    """Pairwise never-worse gate for APPENDED frames.
+    `DELFIN_FFFREE_INTERLIG_PAIR_GATE`, default OFF -> byte-identical.
+    Acts only where frames are appended at all (reembed/reseat); without
+    those flags no extra frame arises that it could filter -> no-op."""
+    return os.environ.get("DELFIN_FFFREE_INTERLIG_PAIR_GATE", "0") == "1"
+
+
+def _neues_paar_zu_eng(syms, P, base_P, bericht=False):
+    """Does the NEW frame introduce a heavy-atom pair below 0.65·vdW sum that lay
+    above it in the BASE frame?
+
+    PER PAIR, not via a global minimum -- that is the whole difference from
+    `_interlig_clash_ok`.  Non-bonded heavy-atom pairs by the same
+    graph-free criterion as `_min_nonbonded_heavy` (d >= 1.30·ideal_bond),
+    hydrogen and metals excluded.
+
+    ⚠️ Requires IDENTICAL atom order in both frames -- in the re-embed the
+       core is frozen and the atom count unchanged.  If the shape does not match,
+       NO verdict is given (False = let through): better one frame too many than
+       a silent rejection from a comparison that was not possible at all.
+       A zero from an impossible comparison is not a measurement.
+    """
+    P = np.asarray(P, dtype=float)
+    B = np.asarray(base_P, dtype=float)
+    n = len(syms)
+    if B.shape != P.shape or len(B) != n:
+        return False
+    for i in range(n):
+        if syms[i] == "H" or _bd._is_metal(syms[i]):
+            continue
+        for j in range(i + 1, n):
+            if syms[j] == "H" or _bd._is_metal(syms[j]):
+                continue
+            d_new = float(np.linalg.norm(P[i] - P[j]))
+            if d_new < 1.30 * _bd._ideal_bond(syms[i], syms[j]):
+                continue                                  # bonded -> not a contact
+            tgt = _IL_CLASH_FACTOR * (_il_vdw(syms[i]) + _il_vdw(syms[j]))
+            if d_new >= tgt:
+                continue
+            # If the pair already lay below it in the base frame, the tightness is NOT
+            # caused by this frame -> no reason to reject.
+            if float(np.linalg.norm(B[i] - B[j])) >= tgt:
+                # `bericht=True` returns the TRIGGERING pair instead of just "yes" --
+                # purely diagnostic, no change in behaviour: the build calls without
+                # the argument and keeps getting True/False.  Needed because
+                # "WHY does the gate reject?" could otherwise only be answered with a
+                # SECOND re-implementation of the criterion, and two
+                # versions have already drifted apart three times here.
+                return (i, j) if bericht else True
+    return None if bericht else False
+
+
+_SP2_PLANAR_BAND = 3.0        # deg of angle-sum deficit a sibling may add; same width as the
+                              # gate's own pyramid band (harness/loop.py:1255)
+
+
+def _sp2_planarity_worst(syms, P) -> float:
+    """Worst deviation from planarity (deg) over every THREE-COORDINATE heavy atom.
+
+    THE QUANTITY THE GATE ACTUALLY READS.  pyramid_frame_regressed compares
+    ``pyramid_over_worst`` -- the WORST frame's sp2 Walsh excess -- and it has NO allowance for
+    added frames, deliberately: a manifold is only complete up to frames that are themselves
+    realistic, so a conformer that pyramidalises an sp2 centre is a defect and not coverage.
+
+    The sibling bars first used ``_beta_score`` for this and it did not work: measured on 187
+    systems, adding that test to both ensemble paths left the blocked systems EXACTLY unchanged
+    (LIBCEH, TIBMEX, TIQFAB, XUYXOE before and after).  The two are different quantities.
+    ``_beta_score`` asks whether the METAL lies in a DONOR's plane, scores only donors that
+    have a plane, and counts only the excess over the crystal band; the gate asks whether ANY
+    sp2 centre in the frame -- backbone included -- has been bent out of its own plane.  A
+    conformer can be flawless at both donors and still fold a backbone sp2.
+
+    Geometry only, no mol and no hybridisation label: an atom with exactly three bonded
+    neighbours is planar when its three bond angles sum to 360 deg, and the deficit from 360
+    is the deviation (0 for planar, about 31.5 for a perfect tetrahedral centre).  Atom-
+    specific by construction -- no functional group is named, and a centre nobody has
+    classified reads the same as any other.  Metals are skipped, so the metal-donor bond is
+    never one of the three.
+    """
+    P = np.asarray(P, float)
+    n = len(syms)
+    heavy = [i for i in range(n) if not _bd._is_metal(syms[i])]
+    nbrs = {i: [] for i in heavy}
+    for ai in range(len(heavy)):
+        i = heavy[ai]
+        for bj in range(ai + 1, len(heavy)):
+            j = heavy[bj]
+            if float(np.linalg.norm(P[i] - P[j])) <= 1.30 * _bd._ideal_bond(syms[i], syms[j]):
+                nbrs[i].append(j)
+                nbrs[j].append(i)
+    worst = 0.0
+    for i in heavy:
+        v = nbrs[i]
+        if len(v) != 3 or syms[i] == "H":
+            continue
+        u = []
+        for j in v:
+            d = P[j] - P[i]
+            nd = float(np.linalg.norm(d))
+            if nd < 1e-9:
+                u = []
+                break
+            u.append(d / nd)
+        if len(u) != 3:
+            continue
+        s = 0.0
+        for a, b in ((0, 1), (0, 2), (1, 2)):
+            s += float(np.degrees(np.arccos(max(-1.0, min(1.0, float(np.dot(u[a], u[b])))))))
+        dev = 360.0 - s
+        if dev > worst:
+            worst = dev
+    return worst
+
+
+def _org_bond_worst(syms, P) -> float:
+    """Worst RELATIVE deviation of a bonded heavy-heavy pair from its covalent ideal.
+
+    WHY THIS AND NOT THE COLLAPSE TEST.  The collapse tests fire below 0.82 x ideal, which is a
+    destroyed bond.  The eye's org_bond axis is graded and fires far earlier, and that is what
+    actually blocked the beta sibling: on AVUNUC02 -- the ONE system standing between that
+    lever and the gate -- the added frame carried n_root_defects 0 -> 2 with no collapse and no
+    contact, and the rows say why:
+
+        org_bond_worst_sev   2.22 -> 2.71        (worse)
+        coord_angle_best_maxdev  28.5 -> 22.8    (better)
+        arrangement_worst_dev    87.4 -> 85.1    (better)
+
+    The beta-optimal pick is a DIFFERENT conformer out of the pool, so it brings its own
+    internal bond lengths; it was chosen for being flat at the donor and paid for it with a
+    strained backbone bond.  Flatness does not buy a stretched bond, so a sibling that is worse
+    here is not added.  Symmetric and relative, so it reads the same for any element pair.
+    """
+    P = np.asarray(P, float)
+    n = len(syms)
+    worst = 0.0
+    for i in range(n):
+        if syms[i] == "H" or _bd._is_metal(syms[i]):
+            continue
+        for j in range(i + 1, n):
+            if syms[j] == "H" or _bd._is_metal(syms[j]):
+                continue
+            ideal = _bd._ideal_bond(syms[i], syms[j])
+            d = float(np.linalg.norm(P[i] - P[j]))
+            if d > 1.30 * ideal or ideal <= 0:
+                continue                       # not a bond
+            dev = abs(d - ideal) / ideal
+            if dev > worst:
+                worst = dev
+    return worst
+
+
+_ORG_BOND_BAND = 0.02         # 2 % of the covalent ideal: deterministic wobble, not a defect
+
+
+def _org_bond_ok(syms, P, base_worst) -> bool:
+    """A sibling may not strain a ligand bond further than the frame it hangs off already does."""
+    try:
+        return _org_bond_worst(syms, P) <= float(base_worst) + _ORG_BOND_BAND
+    except Exception:
+        return False
+
+
+def _sp2_planarity_ok(syms, P, base_worst) -> bool:
+    """A sibling may not bend an sp2 centre further than the frame it hangs off already does."""
+    try:
+        return _sp2_planarity_worst(syms, P) <= float(base_worst) + _SP2_PLANAR_BAND
+    except Exception:
+        return False
+
+
 def _interlig_clash_ok(syms, P, base_min) -> bool:
     """NEVER-WORSE inter-ligand vdW gate for a NEW conformer frame (re-embed/re-seat).
 
@@ -375,7 +1205,7 @@ def _interlig_clash_ok(syms, P, base_min) -> bool:
 
 
 def _append_reembed(results, metal, lig_groups, base_syms, base_P, base_label,
-                    cn=None, geom=None, donors=None):
+                    cn=None, geom=None, donors=None, graph_bonds=None):
     """Backbone re-embed source (Task 2026-06-18, env DELFIN_FFFREE_BACKBONE_REEMBED).
 
     Given an ACCEPTED native base frame (base_syms, base_P) and its construction-order
@@ -399,13 +1229,40 @@ def _append_reembed(results, metal, lig_groups, base_syms, base_P, base_label,
     # frame must not introduce a worse (closer) inter-ligand contact.
     _gate = _interlig_vdw_gate_enabled()
     base_min = _min_nonbonded_heavy(base_syms, base_P) if _gate else None
+    # ⚠ SECOND, PAIRWISE GATE (default OFF).  The first compares a global
+    #   minimum, this one a PAIR against its own counterpart in the base frame.
+    #   Measured: 295 of 1220 systems received broken APPENDED frames via `bbre6k`,
+    #   dominantly `intclash_pair` -- exactly the class a scalar minimum
+    #   does not see.  See the block comment at `_neues_paar_zu_eng`.
+    _pgate = _pairwise_gate_enabled()
+    try:
+        from delfin.manta._refine_gate import ZAEHLER as _PZ
+        if _pgate:
+            _PZ["pairgate_gelaufen"] += 1
+    except Exception:
+        _PZ = None
     for fi, (syms, P) in enumerate(frames):
         try:
             syms, P = _maybe_relax(syms, P)
-            if not _build_is_clean(syms, P, cn=cn, geom=geom, donors=donors):
+            # ⚠️ GRAPH ANCHOR, PASSED THROUGH INSTEAD OF REBUILT (04.09.2026).
+            #    `_build_is_clean` has taken `graph_bonds` for a long time; five
+            #    call sites pass it, THIS one did not -- measured in
+            #    register #299.  Without it the self-test here judges
+            #    GRAPH-FREE: a heavy-atom pair that collapses onto bond
+            #    distance looks like a bond to a purely geometric criterion
+            #    and is let through.  That is exactly what the EYE has its
+            #    SMILES anchor for
+            #    (`find_inter_ligand_clash.py:265-280`).
+            #    Default: the caller passes None -> byte-identical.
+            if not _build_is_clean(syms, P, cn=cn, geom=geom, donors=donors,
+                                   graph_bonds=graph_bonds):
                 continue
             if _gate and not _interlig_clash_ok(syms, P, base_min):
                 continue                    # new conformer collapses inter-ligand -> drop
+            if _pgate and _neues_paar_zu_eng(syms, P, base_P):
+                if _PZ is not None:
+                    _PZ["pairgate_verworfen"] += 1
+                continue                    # NEW too-tight pair -> do not append
             results.append((_xyz(syms, P), f"{base_label}-reembed{fi+1}"))
         except Exception:
             continue
@@ -475,6 +1332,48 @@ def _maybe_decollapse(syms, P):
     return syms, P
 
 
+def _trilat_rescue(build_fn, *, cn=None, geom=None, exempt_pairs=None, graph_bonds=None):
+    """LAST RUNG of the seating ladder: re-assemble with trilaterated donor targets.
+
+    Reached only after the rigid build failed the self-gate AND the conformer ladder is
+    exhausted, so whatever this returns replaces a DISCARD -- it can never displace a clean
+    frame.  That makes it additive BY CONSTRUCTION: never-worse holds structurally instead of
+    having to be re-measured on every pool.
+
+    Why a rung and not the primary path (trilatAB2, 995 systems, 2026-08-02): as the primary
+    path trilateration lost 12 systems that were ALL topo_correct before and gained 11 that
+    ALL had no valid frame before -- not one borderline case in either direction.  It repairs
+    what is broken and damages what is whole; the ladder is the shape that fits that.
+
+    Returns (syms, P) or None.  None whenever anything is off, missing, throws, or still
+    fails the gate -- the caller then proceeds exactly as it did before.
+    """
+    if not AC.trilat_rescue_enabled():
+        return None
+    try:
+        with AC.trilaterate_rescue():
+            _b = build_fn()
+    except Exception:
+        return None
+    if not _b:
+        return None
+    # The chelate builder returns (syms, P, donors); the heteroleptic one (syms, P).  Gate the
+    # rescue against the donors IT produced, not the ones the rejected build had.
+    if len(_b) == 3:
+        _s, _P, _don = _b
+    else:
+        _s, _P = _b
+        _don = None
+    try:
+        _s, _P = _maybe_relax(_s, _P)
+        if not _build_is_clean(_s, _P, cn=cn, geom=geom, donors=_don,
+                               exempt_pairs=exempt_pairs, graph_bonds=graph_bonds):
+            return None
+    except Exception:
+        return None
+    return _s, _P
+
+
 def _seat_via_conformers(metal, lig_groups, base_syms, base_P,
                          cn=None, geom=None, donors=None):
     """Conformer-aware seating fallback for a large-ligand build that FAILED the
@@ -512,7 +1411,34 @@ def _seat_via_conformers(metal, lig_groups, base_syms, base_P,
     return None
 
 
-def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None) -> bool:
+# Ideal heavy-heavy multiple/aromatic bond lengths (A) per element pair, LONGEST-BOND-ORDER FIRST:
+# (triple, double, aromatic) where known.  Single source of truth -- the collapse self-gate reads it
+# for its length-based exemption, and the hapto path (assemble_complex._collect_exempt) reads it to
+# emit a LENGTH-GATED exemption instead of an unconditional one.
+MULTIBOND_IDEALS = {("C", "C"): (1.20, 1.34, 1.39), ("C", "N"): (1.16, 1.28, 1.34),
+                    ("C", "O"): (1.13, 1.21, 1.28), ("N", "N"): (1.10, 1.25),
+                    ("N", "O"): (1.21, 1.24), ("C", "S"): (1.55, 1.60),
+                    ("O", "O"): (1.21,), ("N", "S"): (1.54,), ("C", "P"): (1.66, 1.55)}
+
+
+def multibond_ideal(e1, e2, order):
+    """Ideal length (A) for a bond of `order` between elements e1/e2, or None if unknown.
+
+    order >= 2.5 -> triple, >= 1.75 -> double, else aromatic (falling back to the double
+    entry when the pair has no separate aromatic ideal).  Returning None lets the caller
+    keep the historic UNCONDITIONAL exemption for pairs we have no ideal for -- never-worse
+    by construction: an unknown pair behaves exactly as it does today."""
+    tup = MULTIBOND_IDEALS.get((min(e1, e2), max(e1, e2)))
+    if not tup:
+        return None
+    idx = 0 if order >= 2.5 else (1 if order >= 1.75 else 2)
+    if idx >= len(tup):
+        idx = len(tup) - 1
+    return float(tup[idx])
+
+
+def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None,
+                    graph_bonds=None, block_bounds=None) -> bool:
     """Self-gate: reject a build that is destroyed — non-finite coordinates,
     any collapsed heavy-heavy bond, gross steric overlap, or OVER-COORDINATION
     (a non-coordinating atom intruding into the metal's first shell) — so fffree
@@ -540,7 +1466,12 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None)
         return True
     P = np.asarray(P, dtype=float)
     if P.size == 0 or not np.all(np.isfinite(P)):
-        return False
+        # 14.08.2026: was a BARE `return False`.  Six rejection reasons carry a
+        # name and appear in the rejection census, this one did not -- it thereby fell silently
+        # into the remainder set and could not be told apart from "no isomer enumerated".
+        # That is, of all reasons, the most expensive one NOT to see: a non-finite
+        # coordinate is a BUILD ERROR, not a chemistry verdict, and belongs counted separately.
+        return _gate_no("NONFINITE_COORDS")
     syms = list(syms)
     bonds = _bd._geometric_bonds(syms, P)
     # X-H collapse calibration (#306/#281): X-ray C-H/N-H/O-H bonds are legitimately
@@ -559,7 +1490,7 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None)
     def _coll_floor(a, b):
         if _xh and (a == "H" or b == "H"):
             return _xh_frac * _bd._ideal_bond(a, b)
-        return 0.82 * _bd._ideal_bond(a, b)
+        return _bd.COLLAPSE_FLOOR * _bd._ideal_bond(a, b)   # war Literal 0.82; siehe _bond_decollapse
 
     # exempt_pairs (#279/#281, DELFIN_FFFREE_MULTIBOND_EXEMPT): heavy-heavy bonds whose
     # SHORT length is chemically correct (genuine double/triple/aromatic bonds such as a
@@ -600,10 +1531,7 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None)
     # 0.38 A) sits far below every multibond ideal and is still caught.  Tolerance reuses
     # DELFIN_FFFREE_MULTIBOND_TOL.
     _mb_len_exempt = os.environ.get("DELFIN_FFFREE_MULTIBOND_LENGTH_EXEMPT", "0") == "1"
-    _MB_LEN = {("C", "C"): (1.20, 1.34, 1.39), ("C", "N"): (1.16, 1.28, 1.34),
-               ("C", "O"): (1.13, 1.21, 1.28), ("N", "N"): (1.10, 1.25),
-               ("N", "O"): (1.21, 1.24), ("C", "S"): (1.55, 1.60),
-               ("O", "O"): (1.21,), ("N", "S"): (1.54,), ("C", "P"): (1.66, 1.55)}
+    _MB_LEN = MULTIBOND_IDEALS          # hoisted to module level so the hapto path can share it
 
     def _len_is_multibond(a, b, d):
         key = (min(a, b), max(a, b))
@@ -625,7 +1553,55 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None)
             continue                                  # length-matches a multibond ideal -> pass
         n_coll += 1
     if n_coll > 0:
-        return False
+        return _gate_no("COLLAPSED_BOND")
+    # GRAPH ANCHOR (DELFIN_FFFREE_TORN_GATE, default OFF -> byte-identical).  Everything above
+    # judges bonds that geometric perception FOUND -- "is this contact too short?".  Nothing asks
+    # the opposite question: "is a bond the MOLECULE REQUIRES missing?".  A torn ligand is therefore
+    # invisible by construction: once two bonded atoms drift apart, _geometric_bonds stops reporting
+    # them and there is nothing left to fail.  Measured: smiles_topology fires on 816 of 941 champion
+    # systems (87 %) and core_torn on 699, while this gate calls the same builds clean -- it is the
+    # single largest blind direction we have.  The bound mirrors the eye's own torn criterion
+    # (_isolated_reseat._frame_topology_valid: broken above 1.4x the covalent sum); metal bonds are
+    # excluded because M-D distances legitimately vary far more than covalent radii predict.
+    if graph_bonds and os.environ.get("DELFIN_FFFREE_TORN_GATE", "0") == "1":
+        _torn_f = float(os.environ.get("DELFIN_FFFREE_TORN_FACTOR", "1.4"))
+        for i, j in graph_bonds:
+            if i >= len(syms) or j >= len(syms):
+                continue
+            if _bd._is_metal(syms[i]) or _bd._is_metal(syms[j]):
+                continue
+            if float(np.linalg.norm(P[i] - P[j])) > _torn_f * _bd._ideal_bond(syms[i], syms[j]):
+                return _gate_no("TORN_BOND")                              # the graph requires this bond; it is torn
+    # ⚠ 2026-08-07 NARROWED.  The first version fired on EVERY perceived bond that
+    # the graph does not carry -- and was thereby too coarse: tpr6spur lost 7 isomers and tripped
+    # ccdc_isomer_lost, ccdc_arrangement_lost and ccdc_backbone_lost, i.e. WORSE than without.
+    # Reason: the geometric perception also sees INTRA-LIGAND bonds that the
+    # block graph does not list (ring closures, perception edge), and those are harmless.
+    # The physical cause in the prism is narrower: the triangular faces stand in register,
+    # so DIFFERENT LIGANDS collide with each other.  Exactly that is now checked --
+    # a perceived bond between two different ligand blocks cannot exist chemically,
+    # because each block is a molecule of its own.
+    if (block_bounds and graph_bonds
+            and os.environ.get("DELFIN_FFFREE_SPURIOUS_BOND", "0") == "1"):
+        _req = {(min(i, j), max(i, j)) for i, j in graph_bonds}
+
+        def _blk(a):
+            for _b, (_s, _e) in enumerate(block_bounds):
+                if _s <= a < _e:
+                    return _b
+            return -1
+        for i, j in bonds:
+            if i >= len(syms) or j >= len(syms):
+                continue
+            if _bd._is_metal(syms[i]) or _bd._is_metal(syms[j]):
+                continue
+            if syms[i] == "H" or syms[j] == "H":
+                continue
+            if (min(i, j), max(i, j)) in _req:
+                continue
+            _bi, _bj = _blk(i), _blk(j)
+            if _bi >= 0 and _bj >= 0 and _bi != _bj:
+                return _gate_no("SPURIOUS_INTERLIG_BOND")   # two separate molecules, fused together
     bset = {(min(i, j), max(i, j)) for i, j in bonds}
     n = len(syms)
     for i in range(n):
@@ -638,7 +1614,7 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None)
                 continue
             d = float(np.linalg.norm(P[i] - P[j]))
             if d < 0.60 * _bd._ideal_bond(syms[i], syms[j]):   # gross overlap
-                return False
+                return _gate_no("GROSS_OVERLAP")
     mi = next((i for i in range(n) if _bd._is_metal(syms[i])), None)
     donor_set = set(donors) if donors else None
     # UNDER-coordination / decoordination guard (#324b, env DELFIN_FFFREE_COORD_INTEGRITY,
@@ -666,7 +1642,7 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None)
             except Exception:
                 _ideal_md = 2.2
             if float(np.linalg.norm(P[_d] - P[mi])) > _ideal_md + _coord_slack:
-                return False
+                return _gate_no("DONOR_DECOORD")
     # over-coordination / spurious intrusion into the metal's first shell.
     if cn and mi is not None:
         if donor_set is not None:
@@ -680,7 +1656,7 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None)
                 if j == mi or j in donor_set or syms[j] == "H":
                     continue
                 if float(np.linalg.norm(P[j] - P[mi])) < 0.92 * md_min:
-                    return False
+                    return _gate_no("SHELL_INTRUDER")
         else:
             close = 0
             for j in range(n):
@@ -690,7 +1666,7 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None)
                 if float(np.linalg.norm(P[j] - P[mi])) < cutoff:
                     close += 1
             if close > cn + 1:                          # +1 slack for borderline
-                return False
+                return _gate_no("OVERCOORD")
     # #39: reject catastrophic coordination-SHAPE outliers (CShM >> typical sets the
     # worst-case poly_max/cshm_max above UFF; legacy is better for that tail).
     # Threshold sits deep in the valley (p75 0.14 <-> p90 10.7).  Env DELFIN_FFFREE_SHAPE_MAX.
@@ -714,13 +1690,128 @@ def _build_is_clean(syms, P, cn=None, geom=None, donors=None, exempt_pairs=None)
                             for j in sel])
             try:
                 if PLY.cshm(obs, geom) > _shmax:
-                    return False
+                    # 14.08.2026: was a BARE `return False` -- the ONLY rejection of the
+                    # self-gate that targets the polyhedron shape, and the only one without
+                    # a name.  Exactly that one is missing from every rejection ranking on which
+                    # it is decided which defect comes next.
+                    return _gate_no("SHAPE_CSHM")
             except Exception:
                 pass
     return True
 
 
-def _fffree_chelate_isomers(d, geom_key, max_isomers):
+def _gate_no(reason):
+    """Say WHICH self-gate criterion rejected a build, then reject it.
+
+    Behaviour is unchanged: it returns False exactly as the bare `return False` did, and says
+    nothing unless the trace is on -- it delegates that decision to _iso_trace so the flag is
+    read in ONE place (the alternative was a second copy of the env lookup, which is how this
+    codebase ended up with nine different metal predicates).
+
+    WHY THE NAME MATTERS.  The self-gate discards one enumerated isomer in three (measured
+    2026-08-01: 66 enumerated, 24 dropped by the gate, 0 build failures), and that gap IS the
+    distance between the paper's "complete by construction" and the 73 % the FF-free builder
+    realises.  But "the gate said no" is not a root: COLLAPSED_BOND, TORN_BOND, GROSS_OVERLAP,
+    DONOR_DECOORD, SHELL_INTRUDER and OVERCOORD are six different defects with six different
+    fixes, and picking one without the counts would be guessing.
+    """
+    _iso_trace("GATE_" + reason, -1, "-")
+    return False
+
+
+def _iso_trace(reason, k, geom_tag):
+    """Say WHY an enumerated coordination isomer never became a frame.
+
+    DELFIN_FFFREE_ISO_TRACE=1, default silent -> byte-identical.
+
+    THE MEASUREMENT THIS EXISTS FOR.  Against Burnside-Polya theory the FF-free builder
+    realises 73 % of the predicted isomers where it fires, while the legacy path realises
+    97 % (measured 2026-08-01 over 187 systems: 522 vs 692 of 706).  The paper claims
+    "complete by construction", so that 27 % is the gap between the claim and the code.
+    The enumerator is NOT the hole -- enumerate_chelate_configs produces the configs and
+    they are then dropped one by one, either because the build returns None or because the
+    self-gate rejects the geometry.  Which of the two decides where the work goes:
+    a failing BUILD is a constructor problem, a failing SELF-GATE is a SEATING problem --
+    and the seating roots are already measured (metal out of the donor plane at 15.9 deg
+    for tetradentates, bent sp centres, hydrogens left behind by the rescale).
+    Counting is the cheapest way to tell them apart, and nothing counted before.
+    """
+    _ff_trace_write("[ISO_DROP] %s config=%d geom=%s" % (reason, k, geom_tag))
+
+
+def _ff_trace_on():
+    """The ONE place the FF-free trace flag is read (DELFIN_FFFREE_ISO_TRACE)."""
+    _v = os.environ.get("DELFIN_FFFREE_ISO_TRACE", "0")
+    return bool(_v) and _v != "0"
+
+
+def _ff_trace_write(line):
+    """Write one trace line -- to a FILE when the flag names a path, else stderr.
+
+    ⚠ 2026-08-09, THE REASON.  This trace was built on 01.08. to answer exactly ONE
+    question: why does the majority of systems fall out of the FF-free builder.  The
+    docstring of _scope_no says it verbatim ("808 anonymous fall-throughs into a ranked
+    work list").  It never delivered a single line -- because it writes to STDERR, and
+    loop.py discards the stderr of the build workers (it lands only in results/debug_<rid>.log,
+    and only when --debug points at exactly this system).
+
+    For the CLEANGATE trace the same error was already fixed once on 04.08. --
+    there the comment reads "A FILE, not stderr ... measured: 139 of 142 systems built, ZERO
+    trace lines".  The fix was just never carried over to the neighbouring trace, and so
+    the project's most important diagnostic instrument wrote into the void for a week.
+
+    DELFIN_FFFREE_ISO_TRACE=1        as before: stderr
+    DELFIN_FFFREE_ISO_TRACE=<path>   O_APPEND, one short line per call; that is atomic
+                                     enough across parallel workers.
+    DELFIN_FFFREE_TRACE_RID          optional, is prepended so that the distribution
+                                     can become a POOL and not just a ranking.
+    """
+    _v = os.environ.get("DELFIN_FFFREE_ISO_TRACE", "0")
+    if not _v or _v == "0":
+        return
+    _rid = os.environ.get("DELFIN_FFFREE_TRACE_RID", "")
+    _out = ("%s %s" % (_rid, line)) if _rid else line
+    try:
+        if _v == "1":
+            os.write(2, (_out + "\n").encode())
+        else:
+            with open(_v, "a") as _fh:
+                _fh.write(_out + "\n")
+    except Exception:
+        pass
+
+
+def _scope_no(reason, detail=""):
+    """Say WHY the FF-free builder declined a whole system, then decline it.
+
+    Returns None exactly as the bare `return None` did, and is silent unless the trace is on.
+
+    THE MEASUREMENT THIS EXISTS FOR (User 2026-08-01: "roll out ... until all fffree run
+    and are better than legacy").  On the shipped champion the FF-free builder fires for 187
+    of 995 systems -- the other 808 fall through to legacy, and NOTHING recorded why.  That
+    matters more than the quality gap does: measured on 934 identical systems with an
+    identical denominator and an isomer counted only when a CLEAN frame realises it, FF-free
+    reaches 50.5 % against legacy's 54.0 % and holds EIGHT TIMES as many defect-free manifolds
+    (57.2 % vs 6.9 %).  So the distance to dropping legacy is not quality, it is SCOPE -- and
+    a scope you cannot see cannot be rolled out class by class, largest first.
+
+    Every `return None` in _fffree_isomers is a silent decline today; naming them turns 808
+    anonymous fall-throughs into a ranked work list.
+    """
+    _ff_trace_write("[FFREE_SCOPE] %s%s" % (reason, (" " + detail) if detail else ""))
+    return None
+
+
+def _rescue_first_config_enabled() -> bool:
+    """May the FIRST config of a system use the last rescue rung?
+
+    (DELFIN_FFFREE_RESCUE_FIRST_CONFIG, default OFF -> byte-identical.)  Acts only when the
+    caller passes `union=True` through at the same time -- the justification is at the lock itself.
+    """
+    return os.environ.get("DELFIN_FFFREE_RESCUE_FIRST_CONFIG", "0") == "1"
+
+
+def _fffree_chelate_isomers(d, geom_key, max_isomers, union: bool = False):
     """Build all distinct isomers of a chelate-containing complex (mixed bi-/
     monodentate) via the universal chelate-config enumerator + per-config
     geometric assembly.  Returns [(xyz, label), ...] or None."""
@@ -757,6 +1848,8 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
     if not configs:
         return None
     geom_tag = d["geometry"].split()[0]
+    # the denominator: how many isomers the enumerator OFFERED, before any is dropped
+    _iso_trace("ENUMERATED", len(configs[:max_isomers]), geom_tag)
     results = []
     # SIGMA-ensemble (Task A.1): the chelate σ sub-path emits ONE frame per config,
     # but the legacy converter sprays 4-25 frames per refcode (chelate-ring PUCKER +
@@ -780,61 +1873,36 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
         # places ligands in first-appearance config order; offsets mirror that exactly.
         # Empty when DELFIN_FFFREE_MULTIBOND_EXEMPT unset -> byte-identical.
         _ex = _exempt_from_blocks(_config_block_offsets(config, ligands))
-        if _sig_ens:
-            # NEVER-WORSE GUARD: emit the ensemble for a config ONLY IF its
-            # single-frame (clash-minimal) build ALSO passes the self-gate.  This
-            # keeps the ENSEMBLE strictly ADDITIVE to the single-frame path's
-            # accepted-config set: a config that the single-frame path would have
-            # SKIPPED (-> potentially the whole complex falls back to legacy, which
-            # may hold the crystallised structure) must NOT be rescued by the
-            # larger conformer pool, or a refcode that legacy was winning (e.g.
-            # KADZUL: single-frame None -> legacy 0.74Å) would lose its fallback to
-            # a geometrically inferior FF-free frame (2.24Å).  Same self-gate, same
-            # decision; the ensemble only adds conformer DIVERSITY on top.
-            try:
-                single = AC.assemble_from_config(d["metal"], d["geometry"], config, ligands)
-            except Exception:
-                single = None
-            if single is None:
-                continue
-            ssyms, sP, sdonors = single
-            ssyms, sP = _maybe_relax(ssyms, sP)
-            if not _build_is_clean(ssyms, sP, cn=d.get("cn"), geom=d.get("geometry"),
-                                   donors=sdonors, exempt_pairs=_ex):
-                continue                                 # single-frame would skip -> skip
-            try:
-                built = AC.assemble_from_config(d["metal"], d["geometry"], config,
-                                                ligands, n_frames=_n_chel)
-            except Exception:
-                built = None
-            if not built:                                # ensemble failed -> use the single frame
-                results.append((_xyz(ssyms, sP), f"{geom_tag}-chelate-{k+1}"))
-                _append_reembed(results, d["metal"],
-                                _lig_groups_from_config(config, ligands),
-                                ssyms, sP, f"{geom_tag}-chelate-{k+1}",
-                                cn=d.get("cn"), geom=d.get("geometry"), donors=sdonors)
-                continue
-            # re-embed off the canonical single frame (clash-minimal) for this config
-            _append_reembed(results, d["metal"],
-                            _lig_groups_from_config(config, ligands),
-                            ssyms, sP, f"{geom_tag}-chelate-{k+1}",
-                            cn=d.get("cn"), geom=d.get("geometry"), donors=sdonors)
-            for fi, (syms, P, donors) in enumerate(built):
-                syms, P = _maybe_relax(syms, P)
-                if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
-                                       donors=donors, exempt_pairs=_ex):   # per-frame self-gate
-                    continue                             # skip a bad frame, keep clean ones
-                lab = f"{geom_tag}-chelate-{k+1}" + (f"-conf{fi+1}" if fi else "")
-                results.append((_xyz(syms, P), lab))
-            continue
+        _gb = _graph_bonds_from_blocks(_config_block_offsets(config, ligands))
+        # THE ENSEMBLE USED TO SHORT-CIRCUIT THE WHOLE PATH BELOW, AND THAT IS WHAT BROKE IT.
+        #
+        # It built its own canonical frame with assemble_from_config and emitted built[0] under
+        # the PLAIN label -- while the single-frame path below reaches its frame through
+        # _build_config_never_worse plus decollapse plus conformer seating.  Two different
+        # builders under one label: switching the ensemble on REPLACED the primary frame rather
+        # than adding to it, and it could even shift which config came first (CEJPIQ:
+        # OC-6-chelate-2 -> OC-6-chelate-3-conf2).  Its own comment said the ensemble "only adds
+        # conformer DIVERSITY on top"; the code did not do that.
+        #
+        # Measured on the 187-system pool: frame0 changed on 49 systems.  Fixing the sigma path
+        # alone (further down this file) brought it to 22 -- and all 22 remaining were chelates,
+        # i.e. exactly this branch.  ccdc_backbone_lost, which takes a MAX over frames and so
+        # CANNOT fall for a truly additive lever, went 2 -> 0 with that first half of the fix.
+        #
+        # So the branch is gone.  The ordinary path below runs untouched, and the ensemble
+        # conformers are appended as SIBLINGS next to the ring-pucker, torsion-well and beta
+        # siblings, which is where every other conformer axis in this file already lives.  The
+        # primary frame is then byte-identical to the flag-off build BY CONSTRUCTION, not by a
+        # check that has to be trusted.
         built = _build_config_never_worse(d, config, ligands, geom_key)
         if built is None:
+            _iso_trace("BUILD_NONE", k, geom_tag)
             continue
         syms, P, donors = built
         syms, P = _maybe_relax(syms, P)
         _clg = _lig_groups_from_config(config, ligands)
         if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
-                               donors=donors, exempt_pairs=_ex):   # donor-aware self-gate
+                               donors=donors, exempt_pairs=_ex, graph_bonds=_gb):   # donor-aware self-gate
             # Decollapse (DELFIN_FFFREE_CHELATE_DECOLLAPSE, default OFF, byte-id):
             # the seating can squeeze a backbone bond into the metal's shell; the
             # safe firewall mover pulls it back to ideal length (metals+donors frozen,
@@ -844,7 +1912,7 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
             _dc_s, _dc_P = _maybe_decollapse(syms, P)
             if (_dc_P is not P) and _build_is_clean(
                     _dc_s, _dc_P, cn=d.get("cn"), geom=d.get("geometry"),
-                    donors=donors, exempt_pairs=_ex):
+                    donors=donors, exempt_pairs=_ex, graph_bonds=_gb):
                 syms, P = _dc_s, _dc_P
             else:
                 # Conformer-aware seating (DELFIN_FFFREE_CONFORMER_SEATING, default OFF):
@@ -857,17 +1925,413 @@ def _fffree_chelate_isomers(d, geom_key, max_isomers):
                     reseated = _seat_via_conformers(d["metal"], _clg, syms, P,
                                                     cn=d.get("cn"), geom=d.get("geometry"),
                                                     donors=donors)
+                # Last rung -- but ONLY once this system already has an accepted config.
+                # `results` non-empty means FF-free is definitely keeping the system, so a
+                # rescued config can only ADD an isomer; it cannot flip the system away from
+                # legacy.  That is the additivity the heteroleptic branch could not have,
+                # and the difference is exactly what trilatresc measured.
+                #
+                # ===== THE PREMISE OF THIS LOCK DISAPPEARS IN UNION MODE (2026-08-09) =====
+                # The sentence above names the reason itself: it protects against a rescued
+                # FIRST config PULLING the system AWAY from legacy.  If the caller runs in
+                # union mode, there is no such pulling away -- legacy builds to the end and
+                # its frames stay put, ours come alongside.  The lock then defends
+                # against a danger that no longer exists.
+                #
+                # WHAT IT COSTS, measured on 09.08. from the build trace over 40 systems with
+                # chelate enumeration: 309 isomers enumerated, 236 rejected by the builder itself
+                # = 76 percent.  And the rungs above it are all OFF in the champion
+                # (DECOLLAPSE off, CONFORMER_SEATING off and globally negative with cap_lost 78).
+                # For the first config of a system there is thus today NO rescue AT ALL;
+                # if all configs fail on it, the system loses the FF-free
+                # builder entirely -- CHELATE_EMPTY, measured 35 of 136 systems.
+                #
+                # ⛔ The condition is an AND conjunction, not mere documentation: without
+                # union the premise is real and the lock is right.  The same lesson as on
+                # 07.08. -- MULTIBOND_LENGTH_EXEMPT alone cap_lost 40, with union cap_lost 0
+                # and gained 26.  It was not the lever that did the damage, it was the either-or.
+                if reseated is None and (results
+                                         or (union and _rescue_first_config_enabled())):
+                    reseated = _trilat_rescue(
+                        lambda: _build_config_never_worse(d, config, ligands, geom_key),
+                        cn=d.get("cn"), geom=d.get("geometry"),
+                        exempt_pairs=_ex, graph_bonds=_gb)
                 if reseated is None:
+                    _iso_trace("SELFGATE", k, geom_tag)
                     continue                          # skip this config
                 syms, P = reseated
         _lab = f"{geom_tag}-chelate-{k+1}"
         results.append((_xyz(syms, P), _lab))
+        # Seed for the cross product conformer x fold -- see the long justification
+        # at the end of this loop.  Fresh per accepted frame, never collected across
+        # frames: the fold pass needs the atom order of ITS frame.
+        _prod_on = os.environ.get("DELFIN_FFFREE_MANIFOLD_PRODUCT", "0") == "1"
+        _prod_seeds = []
+        # BETA AS A SIBLING, NOT AS A REPLACEMENT (DELFIN_FFFREE_BETA_SIBLING, default OFF).
+        #
+        # Measured 2026-08-02: choosing the flat-beta conformer INSTEAD of the clash-minimal
+        # one lowers pyramidal_sp2 from 19.05 % to 12.70 % (and 37.07 -> 12.77 on the worst
+        # systems) -- but costs 3 to 4 capabilities, because the frame it replaces was better
+        # somewhere else.  Every flag that ever LANDED here adds instead of replacing, and
+        # every one measured that night which replaced, died.  So: build the beta-optimal
+        # frame as well and append it, leaving the primary byte-identical.  The eye's crystal
+        # floors read the BEST frame over the manifold, so a second, flatter frame can only
+        # help them -- and it cannot take anything away, because nothing was removed.
+        #
+        # A SIBLING MUST CLEAR THE SAME BAR AS THE FRAME IT HANGS OFF.  The self-gate alone is
+        # not that bar: it asks "is this buildable", not "is this as good as what we already
+        # have".  Measured 2026-08-03 on the 25-system A/B -- with the eye correction and the
+        # round-trip axis both in place, EVERY term was zero except one, and that one was a
+        # single system:
+        #     AVUNUC02   frames 1 -> 2   n_root_defects 0 -> 2   broken_frac 0.0 -> 0.5
+        # The added beta frame was itself BROKEN, carrying two independent root causes, and the
+        # gate was right to refuse it (the term already forgives a rise up to the number of
+        # frames ADDED; this one exceeded it).  The ring-pucker siblings pass the same gate
+        # cleanly because they already carry these three checks -- so the beta sibling gets
+        # them too: no NEW collapsed bond, no TIGHTER closest contact than the primary already
+        # has.  ("No worse beta" is trivially true here: this frame IS the beta-optimal one.)
+        if os.environ.get("DELFIN_FFFREE_BETA_SIBLING", "0") == "1":
+            try:
+                _bb = AC.assemble_from_config(d["metal"], d["geometry"], config, ligands,
+                                              prefer_beta=True)
+            except Exception:
+                _bb = None
+            if _bb is not None:
+                _bs, _bP, _bd = _bb
+                _bs, _bP = _maybe_relax(_bs, _bP)
+                _bx = _xyz(_bs, _bP)
+                if (_bx != _xyz(syms, P)                      # a DIFFERENT frame, or nothing
+                        and (not max_isomers or len(results) < max_isomers)
+                        and _build_is_clean(_bs, _bP, cn=d.get("cn"), geom=d.get("geometry"),
+                                            donors=_bd, exempt_pairs=_ex, graph_bonds=_gb)):
+                    # NO CONTACT TEST HERE, AND THAT IS MEASURED, NOT ASSUMED.  The bar first
+                    # also demanded "no closer contact than the primary" -- but the primary is
+                    # SELECTED as the clash-minimal frame, so that is a bar almost nothing can
+                    # clear.  With it, betastrict measured affected=0 on 187 systems and the
+                    # ensemble siblings measured 0 of 3 on a probe where the same code without
+                    # it measured 3 of 3.  A sibling is judged on ITS OWN properties -- no new
+                    # collapse -- and the clash question stays where it belongs, in the
+                    # self-gate that every frame passes anyway.
+                    _ok = True
+                    if os.environ.get("DELFIN_FFFREE_BETA_SIBLING_STRICT", "0") == "1":
+                        try:
+                            if (AC._collapsed_heavy_bonds_strict(_bs, _bP)
+                                    and not AC._collapsed_heavy_bonds_strict(syms, P)):
+                                _ok = False                   # a collapse the primary does not have
+                            # ... and the graded bond axis, which is what AVUNUC02 actually
+                            # failed on: no collapse, no contact, a STRAINED ligand bond
+                            # (org_bond_worst_sev 2.22 -> 2.71).  See _org_bond_worst.
+                            if _ok and not _org_bond_ok(_bs, _bP, _org_bond_worst(syms, P)):
+                                _ok = False
+                            if _ok and not _sp2_planarity_ok(_bs, _bP,
+                                                             _sp2_planarity_worst(syms, P)):
+                                _ok = False                   # bends an sp2 the primary keeps flat
+                        except Exception:
+                            _ok = False                       # cannot prove it is as good -> do not add
+                    if _ok:
+                        results.append((_bx, f"{_lab}-beta"))
+                        if _prod_on:
+                            # Seed for the cross product -- see the justification at the end
+                            # of this loop.  Measured 18.08.: `conf x beta` is the
+                            # SECOND-LARGEST missing combination (223 systems serve
+                            # both axes, 0 build the product; around 1870 missing
+                            # labels), and `ccdc_backbone` is unrealized there in 33.3 % of
+                            # the cases against a floor of 30.1 %.
+                            _prod_seeds.append((_bs, _bP, f"{_lab}-beta", donors))
+        # LONE-PAIR ORIENTATION AS A SIBLING (DELFIN_FFFREE_LP_SIBLING, default OFF).
+        #
+        # Seating two donors onto two vertices leaves exactly ONE rotational freedom -- about
+        # the donor-donor axis, which both donors lie ON, so it moves neither of them.  That
+        # one angle decides whether the metal sits in a conjugated donor's pi plane, i.e. beta,
+        # our largest realism gap (18-19 % of frames against 0.98 % of crystals).  Today it is
+        # decided by whatever the Kabsch SVD returns.
+        #
+        # Setting it in the SEATING was measured and is negative: reach 49 of 187, but
+        # cap_LOST 2, valid 28 -> 27, mean +0.181 -- the turned backbone collides, the config
+        # is dropped and the system hands over to legacy.  Guarding that with a collapse test
+        # made it byte-identical instead (affected 0), which the source had already recorded
+        # once as "why the first version changed almost nothing".
+        #
+        # So it is built the way things land here: an EXTRA frame.  The primary keeps the
+        # orientation it has, a second frame carries the lone-pair-aligned one, and the eye's
+        # crystal floors -- which read the BEST frame over the manifold -- can find it.  A
+        # collision in the sibling costs nothing, because nothing was taken away.
+        if os.environ.get("DELFIN_FFFREE_LP_SIBLING", "0") == "1":
+            try:
+                _lb = AC.assemble_from_config(d["metal"], d["geometry"], config, ligands,
+                                              lp_orient=True)
+            except Exception:
+                _lb = None
+            if _lb is not None:
+                _ls, _lP, _ld = _lb
+                _ls, _lP = _maybe_relax(_ls, _lP)
+                _lx = _xyz(_ls, _lP)
+                if (_lx != _xyz(syms, P)
+                        and (not max_isomers or len(results) < max_isomers)
+                        and _build_is_clean(_ls, _lP, cn=d.get("cn"), geom=d.get("geometry"),
+                                            donors=_ld, exempt_pairs=_ex, graph_bonds=_gb)):
+                    try:
+                        _dl = sorted(int(x) for x in (_ld or []))
+                        # it only earns its place if it is FLATTER; an equal one adds nothing
+                        _better = (AC._beta_score(_ls, _lP, _dl)
+                                   < AC._beta_score(list(syms), P, _dl) - 1e-9)
+                        _nocoll = not (AC._collapsed_heavy_bonds_strict(_ls, _lP)
+                                       and not AC._collapsed_heavy_bonds_strict(syms, P))
+                    except Exception:
+                        _better = _nocoll = False
+                    if _better and _nocoll:
+                        results.append((_lx, f"{_lab}-lp"))
+                        if _prod_on:
+                            # `conf x lp` is the FIFTH-LARGEST missing combination
+                            # (112 systems serve both, 0 build the product; around 1210
+                            # missing labels).  The same seed as above.
+                            _prod_seeds.append((_ls, _lP, f"{_lab}-lp", _dl))
+        # THE HALF TWIST AS A SIBLING (DELFIN_FFFREE_OC6_TWIST_SEAT, default OFF).
+        #
+        # Measured 18.08. on 30921 systems: net +988 systems from the octahedron into the
+        # trigonal prism, McNemar X2 = 860.8 -- the largest single defect of the
+        # polyhedron axis.  And it is NOT a question of selection: poly_match is 1061 of 1061
+        # false, although the eye reads poly_build as the minimum over ALL realistic
+        # frames.  In the whole manifold there is no octahedron -- so one has to go IN,
+        # and that is exactly what a sibling does.
+        #
+        # ⚠ WHY ADDITIVE AND NOT AT THE PRIMARY SITE.  The long note at the
+        # -beta sibling above already says it with numbers for this path: what
+        # REPLACES here, dies (the seating with a twisted backbone collides, the config
+        # falls, the system goes to legacy -- reach 49 of 187, cap_LOST 2, valid
+        # 28 -> 27); what ADDS, lands.  The primary frame stays here literally
+        # as it is; the keyword ``oc6_twist`` in assemble_from_config is False by
+        # default, so the build of the primary frame is byte-identical, independent
+        # of this environment variable.  If the twisted frame falls over, it costs
+        # nothing, because nothing was taken away.
+        #
+        # ⚠ AND IT MUST CLEAR THE SAME BAR AS THE FRAME IT HANGS OFF.  The
+        # self-gate asks "is this buildable", not "is this as good as what we
+        # already have" -- hence here the same three proofs as in the -beta branch
+        # (no new collapse, no worse bond, no newly bent sp2) and
+        # in addition the one at issue: the polyhedron must AFTER the post-relaxation
+        # still be closer to the octahedron than the primary frame.  The corrector measures
+        # that already before _finish_config_frame; here it is re-measured on the END PRODUCT,
+        # because the relaxation runs afterwards and can turn the twist back.  A
+        # sibling that does not really reduce the twist is a duplicate with a
+        # label and is not admitted.
+        if AC._oc6_twist_seat_enabled():
+            # ⚠ THE DENOMINATOR, AND AT EVERY EXIT.  On 10.08. a fire census
+            # wired two of thirteen exits and invented "58 of 64" from that;
+            # on 14.08. the same census counted on docstrings and put "reached 0"
+            # next to "fires 990".  That is why HERE every exit gets its
+            # own line and `enter` stands at the very front: without it, "nothing built"
+            # cannot be told apart from "never entered".  Pure bookkeeping -- it
+            # runs only when the switch is on, and changes no frame.
+            _OC6_CENSUS["enter"] += 1
+            # the same number on the FINISHED primary frame, on the REAL donor indices --
+            # not on "the six nearest heavy atoms", which on a chelate hits the
+            # backbone and measures nonsense.  It is the counterpart to the seating number.
+            try:
+                if len(_OC6_FINAL_CSHM) < AC._OC6_CSHM_KEEP:     # the same cap
+                    _OC6_FINAL_CSHM.append(
+                        _shell_cshm(d, (list(syms), P,
+                                        sorted(int(x) for x in (donors or [])))))
+            except Exception:
+                pass
+            try:
+                _tb = AC.assemble_from_config(d["metal"], d["geometry"], config, ligands,
+                                              oc6_twist=True)
+            except Exception:
+                _tb = None
+                _OC6_CENSUS["build_exc"] += 1
+            if _tb is None:
+                _OC6_CENSUS["build_none"] += 1
+            else:
+                _ts, _tP, _td = _tb
+                _ts, _tP = _maybe_relax(_ts, _tP)
+                _tx = _xyz(_ts, _tP)
+                if _tx == _xyz(syms, P):
+                    _OC6_CENSUS["same_xyz"] += 1      # corrector changed nothing
+                elif max_isomers and len(results) >= max_isomers:
+                    _OC6_CENSUS["iso_cap"] += 1
+                elif not _build_is_clean(_ts, _tP, cn=d.get("cn"), geom=d.get("geometry"),
+                                         donors=_td, exempt_pairs=_ex, graph_bonds=_gb):
+                    _OC6_CENSUS["unclean"] += 1
+                else:
+                    try:
+                        _tdl = sorted(int(x) for x in (_td or []))
+                        # the one number at issue -- measured on the finished frame,
+                        # with the same instrument the CN5 and the coplanar
+                        # comparison already use (+inf on failure, so a
+                        # failed frame never wins).
+                        _c_new = _shell_cshm(d, (_ts, _tP, _tdl))
+                        _c_old = _shell_cshm(d, (list(syms), P,
+                                                 sorted(int(x) for x in (donors or []))))
+                        _tok = _c_new < _c_old - 1e-9
+                        if not _tok:
+                            _OC6_CENSUS["cshm_flat"] += 1
+                        # ... and the same three proofs the -beta sibling
+                        # carries: nothing the primary frame does not also have.
+                        if _tok and (AC._collapsed_heavy_bonds_strict(_ts, _tP)
+                                     and not AC._collapsed_heavy_bonds_strict(syms, P)):
+                            _tok = False
+                            _OC6_CENSUS["collapse"] += 1
+                        if _tok and not _org_bond_ok(_ts, _tP, _org_bond_worst(syms, P)):
+                            _tok = False
+                            _OC6_CENSUS["org_bond"] += 1
+                        if _tok and not _sp2_planarity_ok(_ts, _tP,
+                                                          _sp2_planarity_worst(syms, P)):
+                            _tok = False
+                            _OC6_CENSUS["sp2"] += 1
+                    except Exception:
+                        _tok = False                  # not provably better -> do not admit
+                        _OC6_CENSUS["bar_exc"] += 1
+                    if _tok:
+                        _OC6_CENSUS["added"] += 1
+                        results.append((_tx, f"{_lab}-oc6"))
+                        if _prod_on:
+                            _prod_seeds.append((_ts, _tP, f"{_lab}-oc6", _tdl))
+        # SIGMA-ENSEMBLE CONFORMERS, now as siblings of the accepted frame rather than in
+        # place of it (see the long note where the old short-circuit branch used to be).
+        # Every one clears the same per-frame self-gate as before; the one that reproduces
+        # the primary exactly is dropped instead of being emitted twice.
+        if _sig_ens:
+            try:
+                _sens = AC.assemble_from_config(d["metal"], d["geometry"], config,
+                                                ligands, n_frames=_n_chel)
+            except Exception:
+                _sens = None
+            _pxyz = _xyz(syms, P)
+            _pworst = None                            # primary's worst sp2 bend, on first need
+            for _sfi, _sfr in enumerate(_sens or []):
+                if max_isomers and len(results) >= max_isomers:
+                    break
+                _ss, _sP, _sd = _sfr
+                _ss, _sP = _maybe_relax(_ss, _sP)
+                _sxyz = _xyz(_ss, _sP)
+                if _sxyz == _pxyz:
+                    continue                          # this IS the primary frame
+                if not _build_is_clean(_ss, _sP, cn=d.get("cn"), geom=d.get("geometry"),
+                                       donors=_sd, exempt_pairs=_ex, graph_bonds=_gb):
+                    continue                          # skip a bad frame, keep the clean ones
+                # SAME BAR AS THE PRIMARY.  pyramid_frame_regressed reads the WORST frame's
+                # sp2 excess with no allowance for added frames, and deliberately so -- a
+                # manifold is only complete up to frames that are themselves realistic.  So a
+                # conformer that pyramidalises a donor's sp2 centre, collapses a bond or sits
+                # closer than the primary is not completeness, it is a defect with a label.
+                # These are the checks the ring-pucker siblings already carry.
+                try:
+                    if (AC._collapsed_heavy_bonds_strict(_ss, _sP)
+                            and not AC._collapsed_heavy_bonds_strict(syms, P)):
+                        continue
+                    _dloc = sorted(int(x) for x in (_sd or []))
+                    if (AC._beta_score(_ss, _sP, _dloc)
+                            > AC._beta_score(list(syms), P, _dloc) + 1e-9):
+                        continue
+                    if _pworst is None:
+                        _pworst = _sp2_planarity_worst(syms, P)
+                    if not _sp2_planarity_ok(_ss, _sP, _pworst):
+                        continue                      # bends an sp2 the primary keeps flat
+                except Exception:
+                    continue                          # cannot prove equivalence -> do not add
+                results.append((_sxyz, f"{_lab}-conf{_sfi+1}"))
+                if _prod_on:
+                    _prod_seeds.append((_ss, _sP, f"{_lab}-conf{_sfi+1}", _sd))
+        # Ring-pucker siblings of this accepted frame (default OFF -> byte-identical).
+        # Runs HERE, next to the frame it belongs to, because this is where the frame's
+        # own atom order is known -- see the function for why the same call from the
+        # smiles_converter return point measured 185 of 187 systems byte-identical.
+        _append_ffree_ring_puckers(results, d["metal"], _clg, syms, P, _lab,
+                                   cn=d.get("cn"), geom=d.get("geometry"),
+                                   donors=donors, exempt_pairs=_ex, graph_bonds=_gb,
+                                   max_isomers=max_isomers)
+        # ... and the TORSIONAL half of the same axis.  The ring pucker covers the 655 of
+        # 1000 systems that are torsionally rigid; this covers the rest.  Together they are
+        # the countable conformer space: pucker basins x torsional wells, both enumerated,
+        # both emitted as siblings, the primary untouched.
+        _append_ffree_torsion_wells(results, d["metal"], _clg, syms, P, _lab,
+                                    cn=d.get("cn"), geom=d.get("geometry"),
+                                    donors=donors, exempt_pairs=_ex, graph_bonds=_gb,
+                                    max_isomers=max_isomers)
         # Backbone re-embed (env DELFIN_FFFREE_BACKBONE_REEMBED, default OFF): add
         # core-preserving global-fold variants of this accepted chelate frame.
+        # ⚠️ ONLY HERE, NOT AT THE SECOND CALL SITE (:2933).  The base frame
+        #    of THIS branch is itself checked WITH `graph_bonds=_gb` at :2225/:2233
+        #    -- so base and siblings lie against the same bar.
+        #    In the `_fffree_isomers` branch there is no graph anchor at all before
+        #    appending (the primary frame is checked without one at :2694); there
+        #    it would be an UNEQUAL yardstick, and the block comment at :2911
+        #    has already spelled that out for the fold path.
+        #    DELFIN_FFFREE_GRAPH_ANCHOR_APPEND, default 0 -> None -> byte-identical.
         _append_reembed(results, d["metal"], _clg,
                         syms, P, _lab, cn=d.get("cn"), geom=d.get("geometry"),
-                        donors=donors)
+                        donors=donors,
+                        graph_bonds=(_gb if os.environ.get(
+                            "DELFIN_FFFREE_GRAPH_ANCHOR_APPEND", "0") == "1" else None))
+        # ===== THE MANIFOLD WAS A SUM, NOT A PRODUCT ==========================
+        # Measured 2026-08-18 on 143904 frame labels from five archives: the
+        # combination "conformer AND ring fold" exists ZERO times, although both
+        # axes individually are amply represented (6518 fold against 94191
+        # conformer labels).  107 systems serve both axes -- none builds a
+        # single cross product:
+        #     CECWEM  1 primary + 1 conf + 9 pucker = 11 built,  product would be 20
+        #     QILQUX  4 + 17 + 10                   = 39 built,  product would be 231
+        #     XIZTOS  2 + 15 + 6                    = 23 built,  product would be 119
+        # The cause is three calls further up: the sibling generators all receive
+        # `syms, P`, i.e. the UNCHANGED primary frame.  They write into
+        # `results` but never read it.  The post-passes in smiles_converter, by contrast,
+        # are a real chain (_ff = f(_ff)) -- which is why only those compose.
+        #
+        # DELFIN_FFFREE_MANIFOLD_PRODUCT (default 0 -> byte-identical) additionally lets
+        # the fold and torsion passes run over the ACCEPTED
+        # conformer siblings.  1 + 1 + 9 becomes 1 + 1 + 9 + 9.
+        #
+        # ⚠ WHY ONLY THE CONFORMER SEED AND NOT ALSO -beta/-lp/-reembed:
+        # the measured finding is "pucker x conf = 0"; -beta and -lp are small
+        # (single frames), and _append_reembed is measured DIRTY (bbrefix: +11.9 pp
+        # hard frames).  A product over a dirty axis multiplies the
+        # dirt.  The extension to further seeds belongs behind the
+        # assertion protocol, not here.
+        #
+        # ⚠ NO SILENT CAPPING.  The cap reports itself when it binds -- a silent
+        # cap reads afterwards as "there was no more", and exactly this error
+        # already sits in dofs[:4] and _WELL_MAX_SIBLINGS.
+        if _prod_on and _prod_seeds:
+            # The cap is a BACKSTOP, not a means of selection: 24 lies above the
+            # largest observed seed count (QILQUX, 17).  It reports itself via the
+            # trace channel of this module -- i.e. visible as soon as
+            # DELFIN_FFFREE_ISO_TRACE points at a file, and otherwise not.  That is
+            # deliberately noted here: a cap one only learns about under a second
+            # switch is half silent, and whoever reads the numbers has to know
+            # that.  The actual bound remains max_isomers.
+            _pmax = max(1, int(os.environ.get(
+                "DELFIN_FFFREE_MANIFOLD_PRODUCT_MAX", "24")))
+            if len(_prod_seeds) > _pmax:
+                _ff_trace_write(
+                    "[PRODUCT_CAP] seeds=%d cap=%d dropped=%d lab=%s"
+                    % (len(_prod_seeds), _pmax, len(_prod_seeds) - _pmax, _lab))
+            for _ps, _pP, _plab, _pd in _prod_seeds[:_pmax]:
+                if max_isomers and len(results) >= max_isomers:
+                    break
+                _append_ffree_ring_puckers(results, d["metal"], _clg, _ps, _pP, _plab,
+                                           cn=d.get("cn"), geom=d.get("geometry"),
+                                           donors=(_pd if _pd is not None else donors),
+                                           exempt_pairs=_ex, graph_bonds=_gb,
+                                           max_isomers=max_isomers)
+                _append_ffree_torsion_wells(results, d["metal"], _clg, _ps, _pP, _plab,
+                                            cn=d.get("cn"), geom=d.get("geometry"),
+                                            donors=(_pd if _pd is not None else donors),
+                                            exempt_pairs=_ex, graph_bonds=_gb,
+                                            max_isomers=max_isomers)
     return results or None
+
+
+# Exit counter of the OC-6 twist sibling.  Only written to when
+# DELFIN_FFFREE_OC6_TWIST_SEAT is on; `enter` is the DENOMINATOR without which "nothing
+# built" and "never entered" would be the same line.  Read by _oc6_twist_selftest.
+_OC6_CENSUS = dict.fromkeys(
+    ("enter", "build_exc", "build_none", "same_xyz", "iso_cap", "unclean",
+     "cshm_flat", "collapse", "org_bond", "sp2", "bar_exc", "added"), 0)
+# CShM(OC-6) of the FINISHED primary frame, on the real donor indices.  Held against
+# the seating number in assemble_complex._OC6_SEAT_CSHM it says WHERE the twist
+# arises -- the one question a counter cannot answer.
+_OC6_FINAL_CSHM = []
 
 
 def _shell_cshm(d, built):
@@ -1223,18 +2687,35 @@ def _coord_filter(results):
         return results
 
 
-def _fffree_isomers(smiles: str, max_isomers: int = 50
+def _fffree_isomers(smiles: str, max_isomers: int = 50, union: bool = False
                     ) -> Optional[List[Tuple[str, str]]]:
+    # `union`: the caller says whether it places our frames ALONGSIDE legacy's instead
+    # of in their place.  Deliberately an argument and not a second read of the union switch
+    # -- its read site in smiles_converter carries the promise of being the ONLY one, and
+    # a repo with nine different metal predicates has earned this rule.
+    # Effect at exactly ONE place: the last rescue rung in the chelate path.
     d = DEC.decompose(smiles)
     if d is None:
-        return None
+        return _scope_no("DECOMPOSE_NONE")
+    # The coordination number is one number per complex and constant for the whole build,
+    # and it is what actually moves a metal-donor distance: measured, Cd-N runs 2.283 /
+    # 2.342 / 2.357 at CN 4 / 5 / 6.  Record it once here rather than threading it through
+    # all twelve md_distance() call sites; read only behind DELFIN_FFREE_MD_MEASURED, and
+    # a stale or missing value merely falls back to the coarser element-pair band.
+    try:
+        from delfin.manta import polyhedra as _PLY
+        _PLY.set_current_cn(d.get("cn"))
+    except Exception:
+        pass
     geom_key = _GEOM_TO_POLYA.get(d["geometry"])
     if geom_key is None or geom_key not in PIC._GROUPS:
-        return None
+        return _scope_no("GEOM_NOT_IN_POLYA",
+                         "geom=%s cn=%s key=%s" % (d.get("geometry"), d.get("cn"), geom_key))
     if d.get("has_eta"):
-        return _coord_filter(_fffree_hapto_isomers(d, max_isomers))
+        return (_coord_filter(_fffree_hapto_isomers(d, max_isomers))
+                or _scope_no("HAPTO_EMPTY", "cn=%s geom=%s" % (d.get("cn"), d.get("geometry"))))
     if d.get("has_chelate"):
-        chel = _fffree_chelate_isomers(d, geom_key, max_isomers) or []
+        chel = _fffree_chelate_isomers(d, geom_key, max_isomers, union=union) or []
         # CN4 dual-geometry completeness (DELFIN_FFFREE_CN4_BOTH, default OFF ->
         # byte-identical): the chelate path builds only on the single decompose-chosen
         # CN4 shape, so the partner geometry (the one the crystal may actually have --
@@ -1270,14 +2751,18 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
         if os.environ.get("DELFIN_CN4_DEBUG", "0") == "1":
             os.write(2, ("[CN4_BOTH] after _coord_filter: %d (was %d)\n"
                          % (len(_r or []), len(chel))).encode())
-        return _r
+        # A chelate complex that produced nothing falls through to legacy here.  That is the
+        # single most consequential silent decline in the file -- chelates are the bulk of the
+        # corpus -- so it is named like every other one.
+        return _r or _scope_no("CHELATE_EMPTY", "cn=%s geom=%s nchel=%d"
+                               % (d.get("cn"), d.get("geometry"), len(chel)))
     # ligand identity = canonical SMILES of each fragment; group by it
     lig_label, lig_ref, lab_elem = [], {}, {}
     for lg in d["ligands"]:
         try:
             lab = Chem.MolToSmiles(lg["mol"])
         except Exception:
-            return None
+            return _scope_no("LIGAND_SMILES_FAIL", "cn=%s" % d.get("cn"))
         lig_label.append(lab)
         lig_ref.setdefault(lab, (lg["mol"], lg["donor_local_idx"]))
         lab_elem[lab] = lg["donor_elem"]
@@ -1285,9 +2770,10 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
     try:
         colorings = PIC.enumerate_isomers(geom_key, spec)
     except Exception:
-        return None
+        return _scope_no("ENUM_ERROR", "geom=%s cn=%s" % (geom_key, d.get("cn")))
     if not colorings:
-        return None
+        return _scope_no("NO_COLORINGS", "geom=%s cn=%s nlig=%d"
+                         % (geom_key, d.get("cn"), len(lig_label)))
     results: List[Tuple[str, str]] = []
     # CN2-ensemble (iter-32g): the rigid FF-free CN2 path emits ONE frame per coloring,
     # but the legacy multi-frame path sprays ~3-7 conformers, and best-of-ensemble MIN
@@ -1325,37 +2811,35 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
         # #279/#281: genuine short multiple/aromatic bonds (global, length-gated) for the
         # collapse self-gate.  Empty when DELFIN_FFFREE_MULTIBOND_EXEMPT unset -> byte-id.
         _ex = _exempt_from_blocks(_heteroleptic_block_offsets(vertex_specs))
-        if _cn2_ens or _sigma_ens:
-            _nf = _n_ens if _cn2_ens else _n_sigma
-            try:
-                ens = AC.assemble_heteroleptic_ensemble(
-                    d["metal"], d["geometry"], vertex_specs, n_frames=_nf)
-            except Exception:
-                ens = None
-            if not ens:
-                return None
-            kept = 0
-            for fi, (syms, P) in enumerate(ens):
-                syms, P = _maybe_relax(syms, P)
-                if not _build_is_clean(syms, P, cn=d.get("cn"), geom=d.get("geometry"),
-                                       exempt_pairs=_ex):
-                    continue            # skip a bad frame; keep the clean ones
-                lbl = base_label if fi == 0 else f"{base_label}-conf{fi+1}"
-                results.append((_xyz(syms, P), lbl))
-                if fi == 0:             # re-embed off the canonical (clash-minimal) frame
-                    _append_reembed(results, d["metal"],
-                                    _lig_groups_from_vertex_specs(vertex_specs),
-                                    syms, P, lbl, cn=d.get("cn"), geom=d.get("geometry"))
-                kept += 1
-            if kept == 0:               # whole coloring unbuildable -> legacy (never-worse)
-                return None
-            continue
+        # THE ENSEMBLE SHORT-CIRCUIT USED TO SIT HERE, AND IT WAS NEVER ADDITIVE.
+        #
+        # It emitted ens[0] under the PLAIN base_label -- the label the single-frame path below
+        # gives the frame it builds with assemble_heteroleptic_from_mols.  Two different
+        # builders under one label, so switching the ensemble on REPLACED the primary frame
+        # instead of adding to it; and where ens[0] failed the self-gate, the first SURVIVING
+        # frame took the primary slot outright (QAYZUL: OC-6-1 -> OC-6-1-conf8, at an unchanged
+        # frame count of one).  Measured on the 187-system pool: frame0 changed on 49 systems.
+        #
+        # Of the 16 systems blocking that A/B, 9 had a changed primary frame -- a real
+        # regression on an existing frame, nothing an eye correction may excuse -- and only 7
+        # had an untouched primary.  ccdc_backbone_lost proves it independently: that fraction
+        # takes a MAX over frames (weddell/detectors/find_conformer_coverage.py:504-519), so a
+        # genuinely additive lever CANNOT lower it, yet it dropped on 2 systems.
+        #
+        # A first fix kept the branch and rebuilt a canonical frame inside it.  That was the
+        # wrong shape: it left 22 systems still changing, because a canonical frame assembled
+        # here is not the frame the path below reaches through its self-gate and conformer
+        # seating.  So the branch is gone entirely.  The ordinary path runs untouched and the
+        # ensemble is appended as SIBLINGS after it -- the primary is byte-identical to the
+        # flag-off build BY CONSTRUCTION rather than by a check that has to be trusted.
         try:
             built = AC.assemble_heteroleptic_from_mols(d["metal"], d["geometry"], vertex_specs)
         except Exception:
-            return None
+            return _scope_no("ASSEMBLE_EXC", "cn=%s geom=%s k=%d"
+                             % (d.get("cn"), geom_tag, k))
         if built is None:
-            return None
+            return _scope_no("ASSEMBLE_NONE", "cn=%s geom=%s k=%d"
+                             % (d.get("cn"), geom_tag, k))
         syms, P = built
         syms, P = _maybe_relax(syms, P)
         _lg = _lig_groups_from_vertex_specs(vertex_specs)
@@ -1368,15 +2852,109 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
             # (±0.05 A guard) and keep the first clean fold; only large-ligand complexes
             # are re-seated (cheap ligands seat fine rigidly).  No clean fold -> legacy
             # (never-worse).  Byte-identical when the flag is off (this branch returns).
-            if not (_seating_enabled() and _has_large_ligand(_lg)):
-                return None
+            # NO TRILATERATION RESCUE HERE, and the reason is measured (trilatresc, 187
+            # systems, 2026-08-02): this branch RETURNS, i.e. one bad coloring sends the
+            # WHOLE system to legacy.  A rescue here does not fill a discard -- it CANCELS
+            # THE HANDOVER, and legacy was building those systems better (FUBJAP 4 isomers
+            # -> 1, TAJFAP 6 -> 2, REYFEI 3 -> 2).  My "additive by construction" claim was
+            # false in exactly one nameable way: FF-free's failure is not a discard, it is a
+            # handover.  Widening reach here trades coverage for quality, which is the whole
+            # roll-out question and must never be decided by a seating fallback.
+            _tried_seating = _seating_enabled() and _has_large_ligand(_lg)
             reseated = _seat_via_conformers(d["metal"], _lg, syms, P,
-                                            cn=d.get("cn"), geom=d.get("geometry"))
+                                            cn=d.get("cn"), geom=d.get("geometry")) \
+                if _tried_seating else None
             if reseated is None:
-                return None                 # no conformer seats cleanly -> legacy
+                return _scope_no("RESEAT_FAILED" if _tried_seating else "GATE_NO_RESEAT",
+                                 "cn=%s geom=%s k=%d seating=%d"
+                                 % (d.get("cn"), geom_tag, k, int(_seating_enabled())))
             syms, P = reseated
         label = base_label
         results.append((_xyz(syms, P), label))
+        # Ensemble conformers as SIBLINGS of the accepted frame (see the note where the old
+        # short-circuit branch used to be).  Same per-frame self-gate as before; the frame that
+        # reproduces the primary exactly is dropped rather than emitted twice.
+        if _cn2_ens or _sigma_ens:
+            try:
+                _ens = AC.assemble_heteroleptic_ensemble(
+                    d["metal"], d["geometry"], vertex_specs,
+                    n_frames=(_n_ens if _cn2_ens else _n_sigma))
+            except Exception:
+                _ens = None
+            _pxyz = _xyz(syms, P)
+            _hdons = None                   # donor indices, derived once on first need
+            _hworst = None                  # primary's worst sp2 bend, on first need
+            for _efi, _efr in enumerate(_ens or []):
+                if max_isomers and len(results) >= max_isomers:
+                    break
+                _es, _eP = _maybe_relax(_efr[0], _efr[1])
+                _exyz = _xyz(_es, _eP)
+                if _exyz == _pxyz:
+                    continue                # this IS the primary frame
+                if not _build_is_clean(_es, _eP, cn=d.get("cn"), geom=d.get("geometry"),
+                                       exempt_pairs=_ex):
+                    continue                # skip a bad frame; keep the clean ones
+                # Same bar as the primary, for the same reason as in the chelate path above.
+                # The ensemble returns symbols and coordinates only, but the donors ARE known
+                # here: the frame is [metal] + one AddHs block per vertex_spec in order, so
+                # donor i sits at its block start plus its own local index -- the very layout
+                # _heteroleptic_block_offsets already computes.  Measured why it matters: of
+                # the four systems still blocking the additive ensemble on pyramid_frame_
+                # regressed, THREE (LIBCEH, TIQFAB, XUYXOE) build no chelate frame at all and
+                # come through here, where the beta test was missing.
+                try:
+                    if (AC._collapsed_heavy_bonds_strict(_es, _eP)
+                            and not AC._collapsed_heavy_bonds_strict(syms, P)):
+                        continue
+                    if _hdons is None:
+                        _hdons = []
+                        _hp = 1
+                        for _hfrag, _hdi in vertex_specs:
+                            _hdons.append(_hp + int(_hdi))
+                            _hp += Chem.AddHs(_hfrag).GetNumAtoms()
+                        _hdons = sorted(_hdons)
+                    if (AC._beta_score(_es, _eP, _hdons)
+                            > AC._beta_score(list(syms), P, _hdons) + 1e-9):
+                        continue            # a conformer that pyramidalises a donor is a defect
+                    if _hworst is None:
+                        _hworst = _sp2_planarity_worst(syms, P)
+                    if not _sp2_planarity_ok(_es, _eP, _hworst):
+                        continue            # ... and one that bends a BACKBONE sp2 likewise
+                except Exception:
+                    continue                # cannot prove equivalence -> do not add
+                results.append((_exyz, f"{base_label}-conf{_efi+1}"))
+        # ===== THE FOLDER NEVER SAW THE MONODENTATE PATH =========================
+        # `_append_ffree_ring_puckers` had exactly TWO call sites, both in
+        # `_fffree_chelate_isomers`.  A complex without a chelate ring thus got ZERO
+        # ring folding -- although its ligand very much carries rings (cyclohexyl,
+        # piperidine, sugars); "no chelate ring" does not mean "no ring".
+        #
+        # All nine quantities are available here: `_lg` (line 2693) is exactly the
+        # lig_groups layout that `_config_template_mol` expects -- metal at 0,
+        # then AddHs(frag) blocks in vertex_specs order --, and the donors
+        # follow from it deterministically (block start + donor_local), the same
+        # computation the ensemble branch above carries out inline as `_hdons`.
+        #
+        # ⚠ NO graph_bonds, on purpose: the primary frame of this body is
+        # likewise checked without one (:2694).  Measuring a sibling against a STRICTER
+        # bar than the frame it hangs off would not be an additive
+        # test but a second one -- and it would read as "no reach"
+        # what is in truth an unequal yardstick.
+        # ⚠ The folder additionally reads DELFIN_FFFREE_RING_PUCKER; if that is off,
+        # nothing happens here either.  Double-gated on purpose: the one switch
+        # says "the folder runs", the new one says "on which paths".
+        #
+        # DELFIN_FFFREE_PUCKER_ALLPATHS (default 0 -> byte-identical).
+        if os.environ.get("DELFIN_FFFREE_PUCKER_ALLPATHS", "0") == "1":
+            try:
+                _pdon = sorted(int(_g["global_idxs"][0]) + int(_dl)
+                               for _g in (_lg or []) for _dl in _g["donor_local"])
+                _append_ffree_ring_puckers(results, d["metal"], _lg, syms, P, label,
+                                           cn=d.get("cn"), geom=d.get("geometry"),
+                                           donors=_pdon, exempt_pairs=_ex,
+                                           max_isomers=max_isomers)
+            except Exception:
+                pass
         # Backbone re-embed (env DELFIN_FFFREE_BACKBONE_REEMBED, default OFF): add
         # core-preserving global-fold variants of THIS accepted native frame.
         _append_reembed(results, d["metal"], _lg, syms, P, label,
@@ -1391,7 +2969,35 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
     # but early-TM Mo/W CN6 prefer TPR — coverage gap previously missed (no TPR-6 in
     # the FF-free Pólya enumerator).  Additive, env-gated default OFF (byte-identical
     # when unset).  Same pattern as CN5 SPY-5: best-effort, never bails OC-6 result.
-    if d.get("cn") == 6 and os.environ.get("DELFIN_FFFREE_TPR6", "0") == "1" \
+    # SCOPE (DELFIN_FFFREE_TPR6_EARLY_TM, default OFF -> byte-identical).
+    # The lever above fires on EVERY CN6 system whose primary geometry is not already TPR.
+    # Its own justification is much narrower: "early-TM Mo/W CN6 prefer TPR".  For a late
+    # transition metal the trigonal prism is chemically unrealistic -- and exactly there the
+    # build tears.  MEASURED on tpr6cn6 (69 CN6 systems, built FF-free): 40 of 40 systems better,
+    # none worse, mean -8.45, capability_lost 0 -- blocked solely by the fact that the
+    # added prism frames are 28 % hard against a floor of 4.7 %, with
+    # smiles_topology 17 against 1 and core_torn 3 against 0 as defect types.
+    #
+    # Both existing gates are out: TORN_GATE sees only the MISSING bond (twice
+    # REACH 0/24), the consensus gate TOPOLOGY_GATE rejects the prisms COMPLETELY (isomers_lost 9,
+    # every affected system 3 -> 2 isomers) -- it cannot tell "different isomer" from "artefact".
+    # What remains: NOT building the prism where it does not occur chemically.
+    #
+    # The set is element-based and universal -- no SMILES, no refcode, no system.
+    # d0-d2 transition metals of groups 3-7, for which trigonal-prismatic CN6 is documented
+    # (classically Mo/W dithiolenes, plus Nb/Ta/V/Zr/Hf/Re).  A charge is not available
+    # on the decomposition dict, hence element instead of d count.
+    _TPR6_EARLY_TM = frozenset((
+        "Sc", "Y", "La",       # group 3
+        "Ti", "Zr", "Hf",      # group 4
+        "V", "Nb", "Ta",       # group 5
+        "Cr", "Mo", "W",       # group 6
+        "Mn", "Tc", "Re",      # group 7
+    ))
+    _tpr6_on = os.environ.get("DELFIN_FFFREE_TPR6", "0") == "1"
+    if _tpr6_on and os.environ.get("DELFIN_FFFREE_TPR6_EARLY_TM", "0") == "1":
+        _tpr6_on = str(d.get("metal") or "") in _TPR6_EARLY_TM
+    if d.get("cn") == 6 and _tpr6_on \
             and d["geometry"] != "TPR-6 trigonal prism":
         results += _enumerate_geometry(d, "trigonal_prism", "TPR-6 trigonal prism",
                                        lig_ref, lab_elem, spec, max_isomers)
@@ -1432,10 +3038,13 @@ def _fffree_isomers(smiles: str, max_isomers: int = 50
                                        "TPY-3 trigonal pyramidal",
                                        lig_ref, lab_elem, spec, max_isomers)
     # generate-gate-floor: never return zero isomers if the decomposition succeeded
-    return _coord_filter(results) or None
+    return (_coord_filter(results)
+            or _scope_no("COORD_FILTER_EMPTY", "cn=%s geom=%s nres=%d"
+                         % (d.get("cn"), d.get("geometry"), len(results))))
 
 
 def _enumerate_geometry(d, geom_key, geom_name, lig_ref, lab_elem, spec, max_isomers):
+    _topo_env_on = os.environ.get("DELFIN_FFFREE_TOPO_ENV", "0") == "1"
     """Build all clean isomers of `d`'s ligand set on a SPECIFIC polyhedron (geom_name).
     Best-effort: skips isomers that fail to build / fail the self-gate, returns [] on any
     enumeration error.  Used to add SPY-5 alongside TBP-5 for CN5 (polytopal completeness)."""
@@ -1448,6 +3057,27 @@ def _enumerate_geometry(d, geom_key, geom_name, lig_ref, lab_elem, spec, max_iso
     for k, coloring in enumerate(colorings[:max_isomers]):
         vertex_specs = [lig_ref[lab] for lab in coloring]
         _ex = _exempt_from_blocks(_heteroleptic_block_offsets(vertex_specs))   # #279/#281
+        # GRAPH ANCHOR FOR THE ADDITIVE PATH (2026-08-06).  The self-gate received
+        # `exempt_pairs` here, but NEVER `graph_bonds` -- and its tear test hangs on exactly this
+        # precondition (`if graph_bonds and DELFIN_FFFREE_TORN_GATE`).  On all additively
+        # enumerated frames the gate was thereby STRUCTURALLY unreachable, although its own
+        # comment calls it "the single largest blind direction we have".
+        # MEASURED: tpr6cn6 (TPR6 on 69 CN6 systems) improved 40 of 40 systems,
+        # mean -8.45, cap_lost 0 -- and failed solely because the added
+        # prism frames are 28 % hard against a floor of 4.7 %.  The defect types
+        # say why: smiles_topology 17 against 1, core_torn 3 against 0.  The ligands TEAR.
+        # tpr6torn (TPR6+TORN_GATE against TPR6) then reported 0/24 reach -- the gate never
+        # arrived at all.  This line is the reason.
+        # `_graph_bonds_from_blocks` takes, according to its own docstring, exactly the same
+        # (ligand_mol, block_offset) layout as `_exempt_from_blocks` -- same source,
+        # same line, no new assumption.  Without TORN_GATE everything stays byte-identical,
+        # because the gate reads the parameter only under its own env switch.
+        _gb = _graph_bonds_from_blocks(_heteroleptic_block_offsets(vertex_specs))
+        # Block bounds for the inter-ligand check: every ligand occupies a
+        # contiguous atom range, metal at 0.  Same source as _gb.
+        _bb = []
+        for _frag, _off in _heteroleptic_block_offsets(vertex_specs):
+            _bb.append((_off, _off + Chem.AddHs(_frag).GetNumAtoms()))
         try:
             built = AC.assemble_heteroleptic_from_mols(d["metal"], geom_name, vertex_specs)
         except Exception:
@@ -1456,16 +3086,425 @@ def _enumerate_geometry(d, geom_key, geom_name, lig_ref, lab_elem, spec, max_iso
             continue
         syms, P = built
         syms, P = _maybe_relax(syms, P)
-        if not _build_is_clean(syms, P, cn=d.get("cn"), geom=geom_name, exempt_pairs=_ex):
+        if not _build_is_clean(syms, P, cn=d.get("cn"), geom=geom_name, exempt_pairs=_ex,
+                               graph_bonds=_gb, block_bounds=_bb):
             continue
+        # ===== TOPOLOGY FILTER ON THE SUPPLEMENTED FRAME (2026-08-08) =====
+        # ⛔ MEASURED AND REFUTED -- DO NOT SWITCH ON AGAIN WITHOUT A NEW CRITERION.
+        #
+        #   topoenvsolo (TOPO_ENV ALONE against the champion, 40-system probe, CN6 pool):
+        #     ccdc_arrangement_lost 3   LIBNAO, LIBNES, URUTEH
+        #     isomers_lost 4            HOQVAN, LIBNAO, LIBNES, URUTEH
+        #     1 better / 4 worse
+        #   tpr6topoenv (together with TPR6): exactly the SAME systems, exactly the same terms.
+        #
+        # The whole damage comes from the filter ALONE.  My first explanation -- that via
+        # the shared function it also hits the champion's CN4_BOTH supplements -- was WRONG:
+        # the isolation shows that it is not the place but the CRITERION.  The comparison
+        # of the neighbour-element SET fires on frames that carry real arrangements and
+        # isomers; the geometric perception sees neighbourhoods there that the block graph
+        # does not list, without anything being broken.
+        #
+        # For comparison, without this filter:  tpr6final = BLOCKERS 0, 17 of 17 systems better,
+        # historic floor passed.  The filter turns zero blockers into two.
+        #
+        # The code stays (project rule: never delete), but the camouflage is gone: whoever
+        # switches it on now knows that it is measured and worse.
+        # DELFIN_FFFREE_TOPO_ENV, default OFF -> byte-identical.
+        #
+        # WHY HERE AND NOT IN THE SELF-GATE.  An attempt to check the same thing in
+        # _build_is_clean (SPURIOUS_BOND) hit the primary frames TOO and lost isomers:
+        # tpr6spur2 reported isomers_lost 4 and ccdc_arrangement_lost 3, i.e. WORSE than
+        # without.  Here the test runs exclusively on the SUPPLEMENTED frame -- it can
+        # thus only reject a supplement, never an existing isomer.  That is the same
+        # construction as every landing of this project: ADD, never replace.
+        #
+        # WHAT IT CHECKS.  The measured remainder of tpr6final was exclusively this: 187
+        # supplemented frames, 53 of them hard, defect type smiles_topology 17 and core_torn 3.
+        # The eye defines smiles_topology like this: from the molecule it is fixed which
+        # HEAVY NEIGHBOURHOOD an atom MUST have; a frame atom whose perceived
+        # neighbourhood deviates from that carries a topology break.
+        #
+        # graph_bonds is already available here in FRAME indices (from the same blocks as
+        # exempt_pairs), so the mapping problem on which the mechanism in
+        # smiles_converter:31880 once died ("they never coincide, so it returned 0
+        # every time") does not arise.  Compared per atom is the SET of neighbour elements; a
+        # perception edge condition that only changes the COUNT of equal elements thereby
+        # stays inconspicuous, while a detached substituent or a merged
+        # contact changes the set.
+        if _topo_env_on and _gb:
+            try:
+                from collections import Counter as _te_C
+                _req_nb = {}
+                for _i, _j in _gb:
+                    _req_nb.setdefault(_i, []).append(syms[_j])
+                    _req_nb.setdefault(_j, []).append(syms[_i])
+                _got_nb = {}
+                for _i, _j in _bd._geometric_bonds(syms, P):
+                    if syms[_i] == "H" or syms[_j] == "H":
+                        continue
+                    if _bd._is_metal(syms[_i]) or _bd._is_metal(syms[_j]):
+                        continue
+                    _got_nb.setdefault(_i, []).append(syms[_j])
+                    _got_nb.setdefault(_j, []).append(syms[_i])
+                _broken = False
+                for _i, _s in enumerate(syms):
+                    if _s == "H" or _bd._is_metal(_s):
+                        continue
+                    if _i not in _req_nb:
+                        continue          # no target value -> not judgeable
+                    if set(_te_C(_got_nb.get(_i, []))) != set(_te_C(_req_nb[_i])):
+                        _broken = True
+                        break
+                if _broken:
+                    continue              # supplemented frame with broken topology
+            except Exception:
+                pass                      # not judgeable -> the old safeguards apply
         vertex_elems = [lab_elem[lab] for lab in coloring]
         name = _classify_coloring(geom_key, vertex_elems)
         label = f"{name}-{geom_tag}-{k+1}" if name else f"{geom_tag}-{k+1}"
         out.append((_xyz(syms, P), label))
+        # ===== THE SUPPLEMENTED POLYHEDRA NEVER GOT A CONFORMER ==============
+        # Measured 18.08.2026 over 423720 frame labels from six archives:
+        #
+        #   OC-6 (primary)   11575 labels, of which 82.9 % with -conf
+        #   TBP-5 (primary)   1899 labels, of which 84.5 %
+        #   TPR-6  (only here) 1855 labels, of which   0.0 %
+        #   SPY-5  (only here)  333 labels, of which   0.0 %
+        #
+        # And the evidence that rules out "these systems simply have no conformers":
+        # on the same 147 systems that build OC-6 AND TPR-6,
+        # OC-6 carries 81.7 % conformers and TPR-6 ZERO.  Among 928 systems with T-4
+        # AND SP-4 (CN4_BOTH, champion) there are ZERO systems in which both
+        # families carry a conformer.
+        #
+        # The reason is an omission, not a design: this function has exactly ONE
+        # `out.append` and calls NO sibling generator -- although the calling
+        # body sixty lines higher has both.  All affected flags
+        # (SIGMA_ENSEMBLE, CN4_BOTH, TPR6) are champion, all lie on the SAME
+        # path.  It is the largest of the measured sum-instead-of-product gaps,
+        # around 9700 missing labels.
+        #
+        # ⚠ WHY ITS OWN SWITCH AND NOT MANIFOLD_PRODUCT: the prism path is
+        # already surveyed in the comment at :2474-2478 as "28 % hard against a floor of
+        # 4.7 %".  More frames on a HARD polyhedron shift the
+        # hard quota -- that is expressly NOT to be booked as "additive, hence safe",
+        # but to be measured against the champion.  A switch of its own keeps
+        # the two findings separable.
+        #
+        # ⚠ geom_name, NOT d["geometry"]: this function builds a DIFFERENT polyhedron
+        # than the system's.  A copied block with d["geometry"] would measure the
+        # prism against the octahedron and reject everything.
+        #
+        # DELFIN_FFFREE_ENUM_GEOM_SIBLINGS (default 0 -> byte-identical).
+        if os.environ.get("DELFIN_FFFREE_ENUM_GEOM_SIBLINGS", "0") == "1":
+            try:
+                _ens = AC.assemble_heteroleptic_ensemble(
+                    d["metal"], geom_name, vertex_specs,
+                    n_frames=max(2, int(os.environ.get(
+                        "DELFIN_FFFREE_ENUM_GEOM_NFRAMES", "6"))))
+            except Exception:
+                _ens = None
+            _pxyz = _xyz(syms, P)
+            for _ei, _efr in enumerate(_ens or []):
+                if max_isomers and len(out) >= max_isomers:
+                    break
+                try:
+                    _es, _eP, _ed = _efr
+                except Exception:
+                    continue
+                _exyz = _xyz(_es, _eP)
+                if _exyz == _pxyz:
+                    continue                      # that is the primary frame itself
+                # THE SAME BAR AS THE PRIMARY FRAME.  The self-gate receives
+                # graph_bonds and block_bounds -- exactly the two arguments whose
+                # absence elsewhere has led to supplemented frames with broken
+                # topology.
+                try:
+                    if not _build_is_clean(_es, _eP, cn=d.get("cn"), geom=geom_name,
+                                           donors=_ed, exempt_pairs=_ex,
+                                           graph_bonds=_gb, block_bounds=_bb):
+                        continue
+                    if (AC._collapsed_heavy_bonds_strict(_es, _eP)
+                            and not AC._collapsed_heavy_bonds_strict(syms, P)):
+                        continue
+                except Exception:
+                    continue
+                out.append((_exyz, "%s-conf%d" % (label, _ei + 1)))
+        # ===== THE SAME OMISSION, SECOND AXIS: THE FOLD ===================
+        # The conformer block directly above closed the one gap of this
+        # function; the ring fold had it just the same.  `_append_ffree_ring_puckers`
+        # is called at exactly two places, both in the chelate path -- so
+        # SPY-5, TPR-6, T-3 and SP-3 carried ZERO fold, and TPR-6 is champion.
+        #
+        # ⚠ geom_name, NOT d["geometry"] -- for the same reason already stated at
+        # the conformer block above: this function builds a DIFFERENT
+        # polyhedron than the system's, and the self-gate in the folder would measure a
+        # prism against the octahedron and reject every fold.
+        # ⚠ `_gb` and `_ex` are the SAME as for the primary frame (:2905), so the bar
+        # is equal; `_bb` the folder cannot accept, and a
+        # new parameter would here be a change to a foreign signature.
+        # ⚠ The folder additionally reads DELFIN_FFFREE_RING_PUCKER.
+        #
+        # DELFIN_FFFREE_PUCKER_ALLPATHS (default 0 -> byte-identical).
+        if os.environ.get("DELFIN_FFFREE_PUCKER_ALLPATHS", "0") == "1":
+            try:
+                _plg = _lig_groups_from_vertex_specs(vertex_specs)
+                _pdon = sorted(int(_g["global_idxs"][0]) + int(_dl)
+                               for _g in (_plg or []) for _dl in _g["donor_local"])
+                _append_ffree_ring_puckers(out, d["metal"], _plg, syms, P, label,
+                                           cn=d.get("cn"), geom=geom_name,
+                                           donors=_pdon, exempt_pairs=_ex,
+                                           graph_bonds=_gb, max_isomers=max_isomers)
+            except Exception:
+                pass
     return out
 
 
+def _wells_selftest():
+    """Where do the torsional wells die?  `python delfin/manta/converter_backend.py wells`.
+
+    No inline python (blocked by a hook), so the diagnostic lives IN the module.  It
+    drives the real builder over real chelate systems, with the switch ON and the
+    counter pointed at a file, and afterwards reads off at WHICH of the seven exits
+    the wells are lost.  Without the denominator `enter`, "no row" could not be told
+    apart from "never entered" -- that is the whole purpose.
+    """
+    import tempfile
+    # Chelates from the test suite (documented and runnable there).  Intent of the
+    # mix: EN is rigid (backbone completely in the chelate ring, hence the expected
+    # zero), BIQCOV/ABEZAJ carry iPr, tBu and cyclohexyl ARMS -- that is exactly the
+    # class the function was built for according to its docstring.
+    cases = [
+        ("Co(en)2Cl2", "[NH2]CC[NH2][Co]1([NH2]CC[NH2]1)([Cl])[Cl]"),
+        ("Pt(en)(NCCN)", "NCCN[Pt]1NCCN1"),
+        ("BIQCOV_Ta_k3", "CC(C)[N]1C2=CC(C(C)(C)C)=CC=C2[N]2C3=CC=C(C(C)(C)C)C=C3"
+                         "[N](C(C)C)[Ta]21([Cl])[Cl]"),
+        ("ABEZAJ_Ti_k3", "CC1=CC(C)=C([N]2C3=CC=CC=C3C3(C)[N](C4CCCCC4)"
+                         "[Ti-]2([Cl])([N](C)C)[N+]3(C)C)C(C)=C1"),
+        ("Pd_diSb", "[CH3][Sb+]1([CH3])[CH2]C2=CC=CC=C2[CH2][Sb+]([CH3])"
+                    "([CH3])[Pd-2]12"),
+    ]
+    keys = ("enter", "nrot", "dof_n", "dof_cap", "cand", "added", "no_dof",
+            "same", "unclean", "collapse", "beta", "clash", "exc",
+            "base_exc", "dof_exc", "conf_exc", "tmpl_none", "import",
+            "sib_cap", "iso_cap")
+    import hashlib
+    tf = os.path.join(tempfile.mkdtemp(prefix="wells_"), "wells.trace")
+    os.environ["DELFIN_FFFREE_WELLS_TRACE"] = tf
+    os.environ["DELFIN_FFFREE_CHELATE_BACKBONE"] = "1"
+
+    def _run(smi, on):
+        """One run; returns (frames, well labels, counter rows, sum, hash)."""
+        os.environ["DELFIN_FFFREE_TORSION_WELLS"] = "1" if on else "0"
+        try:
+            open(tf, "w").close()
+        except Exception:
+            pass
+        try:
+            r = _fffree_isomers(smi)
+        except Exception as _e:
+            return None, 0, [], {}, "RAISED %s: %s" % (type(_e).__name__, _e)
+        try:
+            with open(tf) as fh:
+                lines = [ln for ln in fh.read().splitlines() if ln.startswith("[WELLS]")]
+        except Exception:
+            lines = []
+        agg = dict.fromkeys(keys, 0)
+        for ln in lines:
+            for tok in ln.split():
+                if "=" not in tok:
+                    continue
+                k, _, v = tok.partition("=")
+                if k in agg:
+                    try:
+                        agg[k] += int(v)
+                    except ValueError:
+                        pass
+        h = hashlib.sha256()
+        for _x, _l in (r or []):
+            h.update(_l.encode()); h.update(b"\0"); h.update(_x.encode()); h.update(b"\0")
+        nwell = len([1 for _, lab in (r or []) if "-well" in lab])
+        return r, nwell, lines, agg, h.hexdigest()[:16]
+
+    for label, smi in cases:
+        # OFF arm first -- it is the control.  If a counter reaches it or a
+        # `-well` label shows up, the default is violated and nothing else matters.
+        r0, w0, l0, _a0, h0 = _run(smi, False)
+        r1, w1, l1, a1, h1 = _run(smi, True)
+        print("%-14s AUS frames=%-4s well=%-2d aufrufe=%-2d sig=%s" % (
+            label, len(r0 or []), w0, len(l0), h0))
+        print("%-14s AN  frames=%-4s well=%-2d aufrufe=%-2d sig=%s" % (
+            "", len(r1 or []), w1, len(l1), h1))
+        print("               " + (" ".join(
+            "%s=%d" % (k, a1[k]) for k in keys if a1[k]) or "(keine Zaehler)"))
+        if not l1:
+            print("               ⚠ kein Aufruf im AN-Arm -- Funktion NICHT erreicht")
+        if w0 or l0:
+            print("               🔴 VORGABE VERLETZT: der AUS-Arm ist nicht still")
+
+
+def _oc6_twist_selftest():
+    """Does the OC-6 twist correction reach the FF-free builder -- and is the OFF arm
+    really silent?  `python delfin/manta/converter_backend.py oc6twist`.
+
+    The same construction as `_wells_selftest` next to it and for the same reason: no
+    inline python, so the diagnostic lives IN the module and drives the REAL builder over
+    REAL chelate systems.  Two arms, and the OFF arm is the control.
+    The systems are taken from the test suite (documented and runnable there),
+    with the emphasis on CN 6 -- that is the class at issue.
+
+    Exactly three things are read off, and each of them can say NO:
+      * BYTE IDENTITY -- the frames of the OFF arm must reappear in the ON arm character
+        for character and in the same order.  A sibling may only come
+        at the END; if something before it shifts, it is no longer a sibling
+        but a replacement.
+      * REACH -- does an `-oc6` label show up at all?  Without this line
+        "no effect" could not be told apart from "never reached", and exactly
+        this confusion has already cost this project five mechanisms.
+      * THE NUMBER AT ISSUE -- CShM(OC-6) of the primary frame against that of the
+        sibling.  If it does not drop, the sibling is a duplicate with a
+        label and is not admitted by the builder anyway.
+    """
+    import hashlib
+    # ALL from the stock of this repo (test suite / regression cases), so that they
+    # are demonstrably decomposable -- and staggered by the number of CHELATE RINGS, because
+    # EXACTLY that is the measured axis: 2.49 % failure rate at zero rings, 16.12 % at
+    # five.  A pool without interlocking could not show the defect at all.
+    cases = [
+        ("Co(en)2Cl2   k2", "Cl[Co+3]12(Cl)(NCCN1)NCCN2"),
+        ("Fe(dmpe)2(MeCN)2 k2", "CC#[N+][Fe-4]12([P+](C)(CC[P+]1(C)C)C)"
+                                "([P+](C)(CC[P+]2(C)C)C)[N+]#CC"),
+        ("Fe(en)3      k3", "[Fe]123([N]CC[N]1)([N]CC[N]2)[N]CC[N]3"),
+        ("Ir(ppy)3     k3", "[N+]12=CC=CC=C1C(C=CC=C3)=C3[Ir-3]24"
+                            "([N+]5=CC=CC=C5C6=C4C=CC=C6)([N+]7=CC=CC=C78)C9=C8C=CC=C9"),
+        ("Fe(citrate)3 k3", "O=C1C(CC(O)=O)(CC(O)=O)O[Fe]23(OC(C(CC(O)=O)"
+                            "(CC(O)=O)O2)=O)(OC(CC(O)=O)(CC(O)=O)C(O3)=O)O1"),
+        ("Cr(CN)2(cyclam) k4", "N#C[Cr+]123([NH]4CCC[NH]1CC[NH]2CCC[NH]3CC4)C#N"),
+        ("Os(terpy)(py-Ph) k4", "C1(C2=CC(C3=CC=CC=[N+]3[Os-4]4567[N+](C=CC=C8)=C8C9"
+                                "=CC(C%10=CC=CC=C%10)=CC(C%11=CC=CC=[N+]%117)=[N+]96)"
+                                "=[N+]5C(C%12=[N+]4C=CC=C%12)=C2)=CC=CC=C1"),
+        ("Fe(terpy-NMe2)2 k4", "CC1=CC(N(C)C)=CC2=[N+]1[Fe-6]345([N+]6=C(C7=CC(N(C)C)"
+                               "=CC(C)=[N+]75)C=CC=C62)[N+](C(C)=CC(N(C)C)=C8)=C8C9=CC"
+                               "=CC(C%10=CC(N(C)C)=CC(C)=[N+]%104)=[N+]93"),
+        ("BEFFOJ Ti-N2O4 k5", "ClC1=CC(Cl)=C2[O][Ti-2]3456[O]C7=C(Cl)C=C(Cl)C=C7C[N+]3"
+                              "(CC[N+]4(CC3=CC(Cl)=CC(Cl)=C3[O]5)CC3=CC(Cl)=CC(Cl)=C3"
+                              "[O]6)CC2=C1"),
+        ("YEBPAW Co(Tp)2 k6", "C1=NC=[N+]2[BH-]3[N+]4=CN=C[N]4[Co-4]45([N]12)"
+                              "([N]1C=NC=[N+]31)[N]1C=NC=[N+]1[BH-]([N+]1=CN=C[N]14)"
+                              "[N+]1=CN=C[N]15"),
+    ]
+
+    def _run(smi, on):
+        os.environ["DELFIN_FFFREE_OC6_TWIST_SEAT"] = "1" if on else "0"
+        try:
+            r = _fffree_isomers(smi)
+        except Exception as _e:
+            return None, "RAISED %s: %s" % (type(_e).__name__, _e)
+        h = hashlib.sha256()
+        for _x, _l in (r or []):
+            h.update(_l.encode()); h.update(b"\0"); h.update(_x.encode()); h.update(b"\0")
+        return r, h.hexdigest()[:16]
+
+    def _cshm_of(xyz):
+        """CShM(OC-6) of the coordination shell, computed back directly from the XYZ text:
+        metal = atom 0 (the builder puts it there), donors = the six nearest
+        heavy atoms.  Rough, but it is exactly the quantity being argued about."""
+        try:
+            lines = [ln.split() for ln in xyz.splitlines()[2:] if ln.strip()]
+            pts = [(t[0], np.array([float(t[1]), float(t[2]), float(t[3])]))
+                   for t in lines if len(t) >= 4]
+            M = pts[0][1]
+            heavy = [(float(np.linalg.norm(p - M)), p) for s, p in pts[1:] if s != "H"]
+            heavy.sort(key=lambda t: t[0])
+            if len(heavy) < 6:
+                return float("nan")
+            return float(PLY.cshm([p - M for _d, p in heavy[:6]], "OC-6 octahedron"))
+        except Exception:
+            return float("nan")
+
+    print("OC-6 Twist-Geschwister -- Reichweite auf dem FF-freien Pfad und AUS-Arm-Stille")
+    print("  Kette: smiles_converter.py DELFIN_FFFREE_BUILDER -> _fffree_isomers")
+    print("         -> _fffree_chelate_isomers -> AC.assemble_from_config(oc6_twist=True)")
+    print("         -> AC._oc6_twist_seat  (Setzung, vor _finish_config_frame)\n")
+    n_reach = 0
+    n_break = 0
+    for label, smi in cases:
+        # What the decomposer requests AT ALL -- without this line "no
+        # sibling" cannot be told apart from "no CN6 octahedron in the pool whatsoever".
+        try:
+            _dd = DEC.decompose(smi)
+            _dg = "cn=%s geom=%r chelat=%s" % (
+                _dd.get("cn"), _dd.get("geometry"), _dd.get("has_chelate")) if _dd \
+                else "decompose -> None"
+        except Exception as _e:
+            _dg = "decompose RAISED %s" % type(_e).__name__
+        r0, h0 = _run(smi, False)          # OFF arm first: it is the control
+        # ⚠ Set the mark BEFORE the ON run.  Without it, `[-1]` keeps showing the value of
+        # the PREVIOUS system as soon as the corrector was not called at all on this
+        # one -- an inherited number that looks like a measurement.  Exactly the
+        # kind of silent false report that costs a 30-hour run here.
+        _m_seat = len(AC._OC6_SEAT_CSHM)
+        _m_fin = len(_OC6_FINAL_CSHM)
+        r1, h1 = _run(smi, True)
+        print("%-14s %s" % (label, _dg))
+        l0 = [lab for _, lab in (r0 or [])]
+        l1 = [lab for _, lab in (r1 or [])]
+        new = [lab for lab in l1 if lab.endswith("-oc6")]
+        # the OFF arm must reappear in the ON arm literally and in the same order
+        prefix_ok = (r0 or []) == (r1 or [])[:len(r0 or [])]
+        if not prefix_ok:
+            n_break += 1
+        if new:
+            n_reach += 1
+        print("%-14s AUS frames=%-3d sig=%s" % (label, len(r0 or []), h0))
+        print("%-14s AN  frames=%-3d sig=%s   neu=%s" % ("", len(r1 or []), h1, new or "-"))
+        print("               Vorlaeufer zeichengleich: %s%s" % (
+            prefix_ok, "" if prefix_ok else "   🔴 VORGABE VERLETZT"))
+        # ⚠ THE DECISIVE JUXTAPOSITION: the same number at TWO points.
+        # left, what the corrector finds in the SEATING (before _finish_config_frame);
+        # right, what arrives at the FINISHED frame.  If they differ, the
+        # twist does NOT arise in the seating but afterwards -- and then this block stands
+        # at the wrong place, no matter how well it computes.
+        _seats = AC._OC6_SEAT_CSHM[_m_seat:]          # ONLY what this system produced
+        _fins = _OC6_FINAL_CSHM[_m_fin:]
+        if not _seats:
+            print("               (Korrektor bei diesem System nicht gerufen -- "
+                  "kein CN6-OC-6-Config erreicht die Setzung)")
+        for _i, _s in enumerate(_seats):
+            _f = _fins[_i] if _i < len(_fins) else float("nan")
+            print("               config %d: CShM(OC-6) SETZUNG vor %.3f -> nach %.3f "
+                  "(min-trans %.1fd)   FERTIGES Primaerframe %.3f"
+                  % (_i + 1, _s[0], _s[1], _s[2], _f))
+        if new:
+            base = next((x for x, lab in r1 if not lab.endswith("-oc6")), None)
+            for x, lab in r1:
+                if lab.endswith("-oc6") and base is not None:
+                    print("               CShM(OC-6)  primaer %.3f -> %s %.3f" % (
+                        _cshm_of(base), lab, _cshm_of(x)))
+                    break
+    print("\n  Systeme mit -oc6-Geschwister: %d von %d" % (n_reach, len(cases)))
+    print("  Byte-Identitaet des AUS-Arms verletzt: %d von %d" % (n_break, len(cases)))
+    print("\n  Ausgangszensus Geschwister-Block (Nenner `enter`):")
+    print("    " + (" ".join("%s=%d" % (k, v) for k, v in _OC6_CENSUS.items() if v)
+                    or "(NICHTS -- der Block wurde nie betreten)"))
+    print("  Ausgangszensus Korrektor in der Setzung (Nenner `call`):")
+    print("    " + (" ".join("%s=%d" % (k, v) for k, v in AC._OC6_SEAT_CENSUS.items() if v)
+                    or "(NICHTS -- _oc6_twist_seat wurde nie gerufen)"))
+    if n_reach == 0:
+        print("  ⚠ NICHT ERREICHT -- kein einziges Geschwister gebaut.  Entweder greift")
+        print("    keine der Sicherungen, oder der Pfad kommt hier nie an.  Beides ist")
+        print("    ein Befund, KEIN Erfolg.")
+
+
 if __name__ == "__main__":
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "oc6twist":
+        _oc6_twist_selftest()
+        raise SystemExit(0)
+    if len(sys.argv) > 1 and sys.argv[1] == "wells":
+        _wells_selftest()
+        raise SystemExit(0)
     for label, smi in [("cisplatin", "N[Pt](N)(Cl)Cl"),
                        ("[CoCl3(NH3)3]", "[NH3][Co]([NH3])([NH3])([Cl])([Cl])[Cl]"),
                        ("hexammineCo", "[NH3][Co]([NH3])([NH3])([NH3])([NH3])[NH3]")]:

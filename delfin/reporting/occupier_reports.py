@@ -360,7 +360,7 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
     except (TypeError, ValueError):
         dev_max = None
 
-    # ----------------------- Schwellen/Parameter -------------------------------
+    # ----------------------- thresholds / parameters ---------------------------
     DEV_TINY       = 1e-3
     DEV_SIMILARITY = float(config.get('dev_similarity', _DEFAULT_CONFIG.dev_similarity))
     DEV_GOOD_MARGIN= 0.30
@@ -370,7 +370,7 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
     # AF override (energy window to pull BS candidates back in when contamination is high)
     EPS_AF = float(config.get('bs_override_window_h', _DEFAULT_CONFIG.bs_override_window_h))
 
-    # Energy-bias (wie bisher)
+    # Energy-bias (as before)
     E_BIAS_H = float(config.get('energy_bias_window_h', _DEFAULT_CONFIG.energy_bias_window_h))
     MIS_BIAS = float(config.get('mismatch_bias_window', _DEFAULT_CONFIG.mismatch_bias_window))
 
@@ -589,7 +589,7 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
             # B) similar in quality and both high → pick the BS candidate with the better mismatch score
             elif (abs(min_dev_nb - min_dev_bs) <= DEV_SIMILARITY) and (min_dev_nb > DEV_HIGH) and (min_dev_bs > DEV_HIGH):
                 pick = min(bs_cands, key=lambda p: score_bs(p[0]))
-            # C) Fallback → kombiniere, bevorzuge sauberer (non-BS first), dann Dev, dann Index
+            # C) Fallback → combine, prefer cleaner (non-BS first), then Dev, then Index
             else:
                 def fallback_score(i: int):
                     return (1 if entry_is_bs(i) else 0, effective_dev(i), i)
@@ -601,9 +601,9 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
 
         min_fspe_index, min_fspe_value = pick
 
-    # ----------------------- clean-bias vor energy-bias ------------------------
+    # ----------------------- clean-bias before energy-bias ---------------------
     def _qual_metric(i: int) -> float:
-        # Spinsauberkeit: kleiner ist besser
+        # spin cleanliness: smaller is better
         return bs_mismatch(i) if entry_is_bs(i) else effective_dev(i)
 
     if (min_fspe_index is not None) and cands:
@@ -611,7 +611,7 @@ def generate_summary_report_OCCUPIER(duration, fspe_values, is_even, charge, sol
         pick_E = energies_by_idx.get(pick_i, float("inf"))
         pick_Q = _qual_metric(pick_i)
 
-        # 1) Clean-Bias: wenn E nah, nimm deutlich saubereren
+        # 1) Clean-Bias: if E is close, take the clearly cleaner one
         for j, _ in cands:
             if j == pick_i:
                 continue

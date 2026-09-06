@@ -7,10 +7,10 @@ For every emitted XYZ frame (one prescribed coordination isomer's
 conformational space, so that downstream xTB / DFT local-opt finds the
 *global* minimum without needing a CREST / GOAT global conformer search.
 
-This is the *CREST-obsolescence enabler* per the user direktive 2026-05-18:
+This is the *CREST-obsolescence enabler* per the user directive 2026-05-18:
 
-    "gesamte konformationsraum der koordinationsisomere muss
-     abgedeckt sein damit relevante konformere erhalten bleiben"
+    "the entire conformational space of the coordination isomers must be
+     covered so that the relevant conformers are retained"
 
 Without per-isomer conformer-pool the downstream local-opt may converge
 to a non-global minimum.  With it, each pool member is a different basin

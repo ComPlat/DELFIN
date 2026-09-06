@@ -1,8 +1,8 @@
 """Chemistry-accurate ring-conformer templates (Welle-5p-B).
 
-User direktive 2026-05-18:
-    "Sessel-Wanne-Übergang nicht durch Rotation modellierbar — muss
-     anders gemacht werden."
+User directive 2026-05-18:
+    "the chair-boat transition cannot be modelled by rotation -- it has to
+     be done differently."
 
 A naive single-bond rotation cannot produce chair ↔ boat ↔ twist
 transitions of saturated rings.  Cyclohexane chair → boat requires a

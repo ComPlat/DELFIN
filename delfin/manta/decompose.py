@@ -637,11 +637,11 @@ def _decompose_hapto(smiles: str, mol, m: int, matom) -> Optional[Dict]:
     if os.environ.get("DELFIN_FFFREE_CN3", "0") == "1":
         _allowed.add(3)
     if cn not in _allowed:
-        return None
+        return _bail("CN_OUT_OF_SCOPE", "cn=%s" % cn)
     metal = matom.GetSymbol()
     geometry = _default_geometry(metal, cn)
     if geometry is None:
-        return None
+        return _bail("NO_DEFAULT_GEOMETRY", "metal=%s cn=%s" % (metal, cn))
     donor_elem = {d: mol.GetAtomWithIdx(d).GetSymbol() for d in sigma_idx}
     # Cleave: break every M-σ-donor bond AND every M-(η-carbon) bond, then split
     # into sanitized fragment mols (indices stay stable inside each fragment).
@@ -676,7 +676,7 @@ def _decompose_hapto(smiles: str, mol, m: int, matom) -> Optional[Dict]:
         f_sigma = [o for o in orig if o in sigma_set]
         f_eta_gids = sorted({eta_gid[o] for o in orig if o in eta_gid})
         if not f_sigma and not f_eta_gids:
-            return None                               # bridging / spectator -> legacy
+            return _bail("BRIDGING_OR_SPECTATOR")     # bridging / spectator -> legacy
         # A fragment may carry both σ-donors and η-faces (rare); but each must map
         # cleanly onto its own vertex.  Keep v1 simple+safe: a fragment is EITHER a
         # set of σ-donors (handled like the Werner path) OR exactly ONE η-face.
@@ -732,6 +732,41 @@ def _decompose_hapto(smiles: str, mol, m: int, matom) -> Optional[Dict]:
             "ligands": ligands}
 
 
+def _bail(reason: str, detail: str = ""):
+    """Say WHICH of decompose()'s exits declined this system, then decline it.
+
+    Returns None exactly as the bare `return None` did, and stays silent unless the FF-free
+    trace is on, so the default path is byte-identical.
+
+    THE MEASUREMENT THIS EXISTS FOR.  The 2026-08-01 scope census over 996 systems found the
+    FF-free builder declining 815, and by far the largest reason was DECOMPOSE_NONE:
+
+        580  DECOMPOSE_NONE   58 %        215  CHELATE_EMPTY   22 %        20  GATE_NO_RESEAT
+
+    But DECOMPOSE_NONE is not a cause -- it is TEN different exits of this function under one
+    name, so 580 systems arrived with ten possible reasons and no way to tell them apart.  That
+    is not a work list.  The same treatment turned _fffree_isomers' fourteen silent declines
+    into named ones; this is the second level.
+
+    It decides more than tidiness, because the exits are not the same KIND of problem.  Widening
+    CN_OUT_OF_SCOPE or DENTICITY_GT_3 is a scope screw.  POLYNUCLEAR is not: placing two
+    coordination spheres and the bridge between them deterministically is a new capability, and
+    whether the roll-out is engineering or research depends on how many of the 580 sit there.
+
+    The trace predicate is IMPORTED, not re-read -- converter_backend._ff_trace_on is the single
+    place that env var is consulted (this codebase already has nine copies of 'is this a metal'
+    and does not need a second copy of anything).  The import is lazy because converter_backend
+    imports THIS module at load time; by the time _bail can run, both are in sys.modules.
+    """
+    try:
+        from delfin.manta.converter_backend import _ff_trace_write
+        _ff_trace_write("[FFREE_SCOPE] DECOMPOSE_%s%s"
+                        % (reason, (" " + detail) if detail else ""))
+    except Exception:
+        pass
+    return None
+
+
 def decompose(smiles: str) -> Optional[Dict]:
     # Reuse the converter's full organometallic mol-preparation (stk / dative-bond
     # conversion / charge+H perception) so cleaved ligands have correct chemistry
@@ -746,7 +781,7 @@ def decompose(smiles: str) -> Optional[Dict]:
     if mol is None:
         mol = Chem.MolFromSmiles(smiles, sanitize=False)
     if mol is None:
-        return None
+        return _bail("SMILES_UNPARSEABLE")
     metals = [a.GetIdx() for a in mol.GetAtoms() if bd._is_metal(a.GetSymbol())]
     if len(metals) != 1:
         # Donor-aware metal-centre resolution (DELFIN_FFFREE_METALLOID_DONOR=1, default
@@ -758,10 +793,16 @@ def decompose(smiles: str) -> Optional[Dict]:
         if _metalloid_donor_enabled():
             c = _resolve_metal_center(mol)
             if c is None:
-                return None                           # not a clean metalloid-donor case
+                return _bail("METALLOID_UNCLEAR")     # not a clean metalloid-donor case
             metals = [c]
         else:
-            return None                               # mononuclear only (v1)
+            # THE ARCHITECTURAL ONE.  Every other exit in this function is a scope screw;
+            # this is not.  Two coordination spheres plus the bridge between them, placed
+            # deterministically, is a capability DELFIN does not have.  How much of the
+            # 580-system DECOMPOSE_NONE block sits HERE decides whether "FF-free builds the
+            # whole chemical space" is engineering or research -- which is exactly why it
+            # needed a name of its own before anyone could answer that.
+            return _bail("POLYNUCLEAR")
     m = metals[0]
     matom = mol.GetAtomWithIdx(m)
     # Rigid-hapto path (env-gated, default OFF): if the metal carries a contiguous
@@ -792,11 +833,11 @@ def decompose(smiles: str) -> Optional[Dict]:
     if os.environ.get("DELFIN_FFFREE_CN_EXTEND", "0") == "1":
         _allowed.update({2, 7, 8})
     if cn not in _allowed:
-        return None
+        return _bail("CN_OUT_OF_SCOPE", "cn=%s" % cn)
     metal = matom.GetSymbol()
     geometry = _default_geometry(metal, cn)
     if geometry is None:
-        return None
+        return _bail("NO_DEFAULT_GEOMETRY", "metal=%s cn=%s" % (metal, cn))
 
     donor_elem = {d: mol.GetAtomWithIdx(d).GetSymbol() for d in donor_idx}
     # break metal-donor bonds (keep atom indices stable), then split into
@@ -842,7 +883,7 @@ def decompose(smiles: str) -> Optional[Dict]:
             mapping = []
             frags = _kekulize_robust_frags(em, mapping)
         if frags is None:
-            return None
+            return _bail("FRAGMENT_SPLIT_FAILED")
     donor_set = set(donor_idx)
     ligands: List[Dict] = []
     n_chelate_bonds = 0
@@ -852,7 +893,7 @@ def decompose(smiles: str) -> Optional[Dict]:
             continue                                  # the metal's own fragment
         fdonors = [o for o in orig if o in donor_set]
         if len(fdonors) == 0:
-            return None                               # bridging / spectator -> legacy
+            return _bail("BRIDGING_OR_SPECTATOR")     # bridging / spectator -> legacy
         if len(fdonors) > 3:
             # κ4+ single-fragment polydentate (porphyrin / cyclam / salen / macrocycle
             # / cage): the historic default bails to legacy.  DELFIN_FFFREE_KAPPA4=1
@@ -863,7 +904,7 @@ def decompose(smiles: str) -> Optional[Dict]:
             # infeasible vertex subsets.  Default OFF -> byte-identical.
             if not (os.environ.get("DELFIN_FFFREE_KAPPA4", "0") == "1"
                     and 4 <= len(fdonors) <= cn):
-                return None                           # >tridentate -> legacy (default)
+                return _bail("DENTICITY_GT_3")        # >tridentate -> legacy (default)
         local_donors = [orig.index(o) for o in fdonors]
         # Geometry-aware meridional flag (env-gated, default OFF -> not computed, so
         # byte-identical): a RIGID PLANAR tridentate (terpy / pincer) must bind
@@ -890,7 +931,7 @@ def decompose(smiles: str) -> Optional[Dict]:
         })
         n_chelate_bonds += len(fdonors)
     if n_chelate_bonds != cn:
-        return None
+        return _bail("DONOR_COUNT_MISMATCH", "bonds=%s cn=%s" % (n_chelate_bonds, cn))
     has_chelate = any(lg["denticity"] >= 2 for lg in ligands)
     # Ligand-complexity gate, measured PER DONOR ARM (heavy atoms / denticity):
     # small/simple ligands place cleanly; very large conjugated ligands need
@@ -911,7 +952,38 @@ def decompose(smiles: str) -> Optional[Dict]:
     # historic cap (their backbone needs ring/metallacycle work the declash does not
     # do); denticity>3 / kappa4 already bailed above (class-C, separate).
     _jd = os.environ.get("DELFIN_FFFREE_JOINT_DECLASH", "0") == "1"
-    _mono_cap = int(os.environ.get("DELFIN_FFFREE_MONO_HEAVY_CAP", "12")) if _jd else 8
+    #
+    # MONO-REACH (DELFIN_FFFREE_MONO_REACH_18, default OFF -> byte-identical, 2026-08-04):
+    # the monodentate ceiling is a THRESHOLD, and it has never been calibrated.  It was 8,
+    # then 12 (joint-declash), and CONFORMER_SEATING raises EVERY arm to 24 in one jump --
+    # measured 2026-08-02 as strongly net-negative (seatingAB, pool_toolarge n=240:
+    # valid 175->118, capability_lost 78, gained 21).  Nobody ever measured what lies
+    # BETWEEN 12 and 24.
+    #
+    # The forensic bisect of 2026-08-04 found the cost of leaving it at 12: commit
+    # f8141ce3 (2026-07-04) dropped CONFORMER_SEATING and with it the cap-24, so every
+    # complex whose monodentate arm exceeds the ceiling falls to LEGACY -- 6.9 % clean
+    # manifolds against 57.2 % for the FF-free path.  POCVIO (Hg, 2 Cl + 3 pyridyl-
+    # nitroxides, 17 heavy/arm, dent 1) went from 60 frames / topology correct / 26.7 %
+    # hard to 55 frames / topology WRONG / 100 % hard, and stayed there for five weeks.
+    #
+    # Cap sweep on POCVIO against the current champion (2026-08-04, one build per value):
+    #     cap 14  topo 0/1  hard 100 %  55 frames
+    #     cap 16  topo 0/1  hard 100 %  55 frames
+    #     cap 18  topo 1/1  hard   0 %  21 frames   <- threshold, = the ligand's 17 heavy
+    #     cap 20  topo 1/1  hard   0 %  21 frames   identical
+    #     cap 24  topo 1/1  hard   0 %  21 frames   identical
+    # Against the eye, cap 18 is BETTER than the best stand we ever had: manifold_clean
+    # true (was false), worst_gate 0.027 (was 24.999), isomer coverage unchanged.
+    #
+    # So: raise the MONODENTATE ceiling to 18 only -- the smallest value that recovers the
+    # class -- instead of the 24 that costs 78 capabilities.  MONODENTATE arms only;
+    # chelate arms and the denticity>3 bail are untouched.  The self-gate (_build_is_clean)
+    # still vetoes any unclean result, so this can only ADD reach, never degrade a build
+    # that already succeeds.  Its own flag, so an A/B can actually partition on it.
+    _mono_reach = os.environ.get("DELFIN_FFFREE_MONO_REACH_18", "0") == "1"
+    _mono_default = "18" if _mono_reach else "12"
+    _mono_cap = int(os.environ.get("DELFIN_FFFREE_MONO_HEAVY_CAP", _mono_default)) if _jd else 8
     # CHELATE-BACKBONE gate-lift (DELFIN_FFFREE_CHELATE_BACKBONE, default OFF -> byte-id):
     # PHASE 0 of the polydentate project (K4_MACROCYCLE_DESIGN_2026_06_17.md §10).
     # Large kappa<=3 chelates with an extended/strained backbone (e.g. BIQCOV: Ta,
@@ -945,7 +1017,8 @@ def decompose(smiles: str) -> Optional[Dict]:
         else:
             cap = max(MAX_HEAVY_PER_DONOR, _chel_cap)
         if nheavy / max(lg["denticity"], 1) > cap:
-            return None
+            return _bail("LIGAND_TOO_LARGE",
+                         "nheavy=%s dent=%s cap=%s" % (nheavy, lg["denticity"], cap))
     has_rigid_planar = any(lg.get("rigid_planar") for lg in ligands)
     return {"metal": metal, "cn": cn, "geometry": geometry,
             "has_chelate": has_chelate,

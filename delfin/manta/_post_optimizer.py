@@ -559,6 +559,9 @@ def _md_pairs(mol, metals: Sequence[int]) -> List[Tuple[int, int, float]]:
 # brought back inside.
 _MD_GATE_LO = 0.93
 _MD_GATE_HI = 1.07
+# Third number of the same gate, named once for the same reason (2026-07-30, B6 barrier
+# drifted from [0.85, 1.10] to the gate's window): the non-bonded heavy-heavy collapse floor.
+_COLLAPSE_FRAC = 0.85
 
 
 def _passes_topology(coords: np.ndarray, mol, metals: Sequence[int],
@@ -585,7 +588,7 @@ def _passes_topology(coords: np.ndarray, mol, metals: Sequence[int],
             continue
         r_sum = _cov_radius(syms[i]) + _cov_radius(syms[j])
         d_cur = float(np.linalg.norm(coords[i] - coords[j]))
-        if d_cur < 0.85 * r_sum:
+        if d_cur < _COLLAPSE_FRAC * r_sum:
             return False
     return True
 

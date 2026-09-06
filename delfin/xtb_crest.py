@@ -124,7 +124,7 @@ def XTB(multiplicity, charge, config):
     out = work / "output_XTB.out"
     xyz = work / "XTB.xyz"
 
-    # nie verschieben – immer kopieren (idempotent)
+    # never move – always copy (idempotent)
     shutil.copyfile(src_input, inp)
     atom_count = _count_coordinate_atoms(src_input)
     job_tokens = [str(config['xTB_method'])]
@@ -145,7 +145,7 @@ def XTB(multiplicity, charge, config):
         print("XTB.xyz not found!")
         return
 
-    # Ergebnis nach oben spiegeln (Header entfernen)
+    # mirror the result up one level (strip header)
     tmp_xyz = cwd / "_tmp_xtb.xyz"
     shutil.copyfile(xyz, tmp_xyz)
     _strip_xyz_header(tmp_xyz, work_input)
@@ -209,7 +209,7 @@ def run_crest_workflow(PAL, solvent, charge, multiplicity, input_file="start.txt
         print(f"{src_input.name} not found!")
         return
 
-    # schreibe initial_opt.xyz im CREST-Ordner (ohne input.txt zu verschieben)
+    # write initial_opt.xyz in the CREST folder (without moving input.txt)
     initial_xyz = work / "initial_opt.xyz"
     with src_input.open("r", encoding="utf-8") as f:
         coords = f.readlines()
@@ -225,7 +225,7 @@ def run_crest_workflow(PAL, solvent, charge, multiplicity, input_file="start.txt
     if _recalc_on() and crest_best.exists() and crest_out.exists():
         logging.info("[recalc] skipping CREST; crest_best.xyz already present.")
     else:
-        # CREST laufen lassen
+        # run CREST
         env = os.environ.copy()
         env["OMP_NUM_THREADS"] = str(crest_cores)
         crest_executable = find_tool_executable("crest")
@@ -294,7 +294,7 @@ def run_crest_workflow(PAL, solvent, charge, multiplicity, input_file="start.txt
         except Exception as exc:
             logging.warning("CENSO post-processing failed: %s. Using CREST best.", exc)
 
-    # Ergebnis nach oben spiegeln (Header entfernen)
+    # mirror the result up one level (strip header)
     tmp_xyz = cwd / "_tmp_crest.xyz"
     shutil.copyfile(crest_best, tmp_xyz)
     _strip_xyz_header(tmp_xyz, input_path)
@@ -318,10 +318,10 @@ def XTB_SOLVATOR(source_file, multiplicity, charge, solvent, number_explicit_sol
         return
 
     inp = work / "XTB_SOLVATOR.inp"
-    out = work / "output_XTB_SOLVATOR.out"  # <-- Bugfix: eigener Out-Name
+    out = work / "output_XTB_SOLVATOR.out"  # <-- bugfix: dedicated out-file name
     xyz = work / "XTB_SOLVATOR.solvator.xyz"
 
-    # Quelle in Arbeitsdatei kopieren (ggf. XYZ-Header abtrennen)
+    # copy the source into the working file (strip the XYZ header if present)
     if abs_source.suffix.lower() == ".xyz":
         with abs_source.open("r", encoding="utf-8") as sf, inp.open("w", encoding="utf-8") as tf:
             lines = sf.readlines()
@@ -348,7 +348,7 @@ def XTB_SOLVATOR(source_file, multiplicity, charge, solvent, number_explicit_sol
     finally:
         os.chdir(cwd)
 
-    # Ergebnis nach oben spiegeln (Header entfernen)
+    # mirror the result up one level (strip header)
     work_input = _resolve_work_input(config)
     tmp_xyz = cwd / "_tmp_solvator.xyz"
     shutil.copyfile(xyz, tmp_xyz)
