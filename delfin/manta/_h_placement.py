@@ -227,6 +227,26 @@ def _hp_xh_target(parent_sym: str) -> float:
 # ---------------------------------------------------------------------------
 # Graph.
 # ---------------------------------------------------------------------------
+def _hp_h_contacts(syms: Sequence[str], P: np.ndarray) -> Dict[int, frozenset]:
+    """For every H: the set of atoms it is bonded to under the covalent-radius rule,
+    metals INCLUDED.  This is the topology the eye perceives for a hydrogen; the
+    repair may change positions, never this set (register #357: when it did, every
+    frame of the system lost `topo_correct_frame`)."""
+    out: Dict[int, frozenset] = {}
+    n = len(syms)
+    for h in _hp_hydrogens(syms):
+        rh = _hp_cov("H")
+        bonded = []
+        for j in range(n):
+            if j == h:
+                continue
+            sj = _el.normalise(syms[j])
+            if float(np.linalg.norm(P[h] - P[j])) < _BOND_FACTOR * (rh + _hp_cov(sj)):
+                bonded.append(j)
+        out[h] = frozenset(bonded)
+    return out
+
+
 def _hp_hydrogens(syms: Sequence[str]) -> List[int]:
     return [i for i, s in enumerate(syms) if _el.normalise(s) == "H"]
 
@@ -716,6 +736,7 @@ def repair_xyz(xyz: str, *, stats: Optional[dict] = None) -> str:
         P = P.astype(float).copy()
         frozen = P.copy()
         sig_before = stereo_signature(syms, frozen)
+        contacts_before = _hp_h_contacts(syms, frozen)
         n_a = _hp_stage_umbrella(syms, P)
         adj = _hp_graph(syms, P)
         parents = parents_of_h(syms, P)
@@ -729,8 +750,24 @@ def repair_xyz(xyz: str, *, stats: Optional[dict] = None) -> str:
                 if stats is not None:
                     stats.update({"umbrella": 0, "length": 0, "rotor": 0,
                                   "moved": 0, "aborted_heavy_moved": 1,
-                                  "aborted_stereo": 0})
+                                  "aborted_stereo": 0, "aborted_topology": 0})
                 return xyz
+        # THE TOPOLOGY GATE (2026-09-06, register #357).  hplace6k lost 5 capabilities
+        # and 4 crystal isomers (GIYBOH JOCCUC MEBRET RIMKON TAFROI): no H detector
+        # moved, but `topo_correct_frame` went true -> false on EVERY frame of those
+        # systems.  A moved H had landed where the eye's bond perception reads a
+        # different graph (bonded to a foreign heavy atom or metal, or detached from
+        # its parent).  Same class as the cyclam pucker sibling (#353): a stage
+        # without an assurance at its exit.  Rule from now on: each stage checks the
+        # topology at its exit and rolls back.  Here: the set of atoms each H is
+        # bonded to (covalent-radius rule, metals INCLUDED because an H on a metal is
+        # exactly the case the eye punishes) must be IDENTICAL before and after.
+        if _hp_h_contacts(syms, P) != contacts_before:
+            if stats is not None:
+                stats.update({"umbrella": 0, "length": 0, "rotor": 0,
+                              "moved": 0, "aborted_heavy_moved": 0,
+                              "aborted_stereo": 0, "aborted_topology": 1})
+            return xyz
         moved = n_a + n_b + n_c
         if moved == 0:
             if stats is not None:
