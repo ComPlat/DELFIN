@@ -201,6 +201,13 @@ STEER_SPRING = 0.3          #: Hartree per Bohr squared, on the dragged atom(s)
 STEER_CAP = 0.12            #: Angstrom, the most one atom moves in one step
 STEER_STEPS = 4            #: gradient steps per follow answer
 
+#: A force in kcal/mol/Angstrom as one in Hartree/Bohr, which is what the
+#: steered step's ``max_force`` is in.  A bond gives at
+#: :data:`gfn_optimize.A_BOND_HOLDS` (110 kcal/mol/A), which is 0.093 here, so
+#: a hand set to a share of a bond caps its spring at that share of it -- the
+#: same yardstick the pull is set against.
+FORCE_KCAL_PER_A_IN_AU = BOHR / HARTREE_IN_KCAL
+
 #: ORCA's ``TolMaxG`` and ``TolRMSG``, in Hartree per Bohr.  Converging on the
 #: same numbers as the button next door means the two can be compared at all.
 #: 3e-4 on the largest gradient component is also Baker's own and Gaussian's,
@@ -731,7 +738,7 @@ def _make_gradients(numbers, bohr, method, charge, uhf, solvent, cores,
 
 
 def steer(start_xyz, wish_xyz, held, *, method='gfn2', charge=0, uhf=0,
-          solvent=None, cores=1, etemp=None,
+          solvent=None, cores=1, etemp=None, max_force=None,
           k_spring=STEER_SPRING, cap_angstrom=STEER_CAP, steps=STEER_STEPS,
           should_stop=None):
     """One drag answer by overdamped steered dynamics -- the continuous follow.
@@ -752,7 +759,11 @@ def steer(start_xyz, wish_xyz, held, *, method='gfn2', charge=0, uhf=0,
     wish); ``wish_xyz`` supplies only where the cursor has put the ``held``
     atoms, which is the spring's target.  The two carry the same atoms in the
     same order.  ``etemp`` smears the gradient the way the follow loop smears a
-    relaxation at a closed gap.
+    relaxation at a closed gap.  ``max_force`` (Hartree/Bohr) caps how hard the
+    spring may pull, which is what keeps the hand from tearing a bond off with
+    a long lead -- it is the pull's force ceiling, and
+    :data:`FORCE_KCAL_PER_A_IN_AU` converts a share of a bond into it.  ``None``
+    leaves it uncapped.
 
     Returns a dict shaped like :func:`gfn_optimize.relax_steps`' -- ``ok``,
     ``xyz``, ``energy`` (of the geometry returned, Hartree), ``calls`` -- or
@@ -788,10 +799,22 @@ def steer(start_xyz, wish_xyz, held, *, method='gfn2', charge=0, uhf=0,
             energy, gradient = grad(rb)
             force = -np.asarray(gradient, dtype=float)
             for i in held:
-                # The spring only on the dragged atom(s): a force with a
-                # ceiling that leads the atom towards the cursor and is weaker
-                # the closer it gets, so the chemistry keeps a say.
-                force[i] += k_spring * (target[i] - rb[i])
+                # The spring on the dragged atom(s), the same force the pull
+                # is: a stiff spring near the cursor so the atom leads it, but
+                # capped at ``max_force`` so the hand can only pull so hard.
+                # Uncapped this is a Hooke spring whose force grows without
+                # limit as the cursor runs ahead, and it tears any bond off
+                # given enough lead -- capping it is what makes the atom lag
+                # rather than tear, so the chemistry keeps a say and breaking a
+                # bond takes a hand deliberately set as strong as one.  The cap
+                # is in Hartree/Bohr; ``None`` leaves the spring uncapped, for
+                # a caller that wants the raw dynamics.
+                spring = k_spring * (target[i] - rb[i])
+                if max_force is not None:
+                    strength = float(np.linalg.norm(spring))
+                    if strength > max_force:
+                        spring = spring * (max_force / strength)
+                force[i] += spring
             norm = np.linalg.norm(force, axis=1, keepdims=True)
             # A trust radius per atom, not on the whole step: the dragged atom
             # is where the force is largest and the rest must not be dragged
@@ -815,6 +838,152 @@ def steer(start_xyz, wish_xyz, held, *, method='gfn2', charge=0, uhf=0,
             'xyz': xyz_document(symbols, rb * BOHR,
                                 'Steered by the hand on the structure'),
             'energy': energy, 'calls': int(getattr(grad, 'calls', 0))}
+
+
+#: How stiff the restraint is that drives a chosen coordinate, per unit of it
+#: -- see :func:`steer_coordinate`.  A distance is in Hartree/Bohr^2, an angle
+#: and a torsion in Hartree/radian^2.  Stiff enough to hold the coordinate
+#: near its target even where the surface pushes back hardest -- a C=C torsion's
+#: own curvature at the twisted top is about 0.04 Hartree/rad^2, so this clears
+#: it -- and the ceiling on the force it may apply is what keeps it a hand
+#: rather than a clamp.
+STEER_COORD_K = {'distance': 0.6, 'angle': 0.5, 'dihedral': 0.5}
+
+
+def _coordinate_value(bohr, kind, atoms):
+    """A distance (Bohr), angle or dihedral (radians) off the coordinates."""
+    p = [np.asarray(bohr[int(a)], dtype=float) for a in atoms]
+    if kind == 'distance':
+        return float(np.linalg.norm(p[0] - p[1]))
+    if kind == 'angle':
+        u = p[0] - p[1]
+        v = p[2] - p[1]
+        cos = float(np.dot(u, v) / (np.linalg.norm(u) * np.linalg.norm(v)
+                                    + 1e-12))
+        return math.acos(max(-1.0, min(1.0, cos)))
+    # dihedral, the same atan2 the rest of the editor measures it with
+    b0 = p[0] - p[1]
+    b1 = p[2] - p[1]
+    b2 = p[3] - p[2]
+    b1 = b1 / (np.linalg.norm(b1) + 1e-12)
+    v = b0 - np.dot(b0, b1) * b1
+    w = b2 - np.dot(b2, b1) * b1
+    return math.atan2(float(np.dot(np.cross(b1, v), w)), float(np.dot(v, w)))
+
+
+def _coordinate_gradient(bohr, kind, atoms):
+    """d(coordinate)/d(positions), by finite difference over its own atoms.
+
+    Only the two-to-four atoms the coordinate names move, so this is a handful
+    of pure-geometry evaluations -- microseconds, no xtb -- and it is robust
+    where an analytic dihedral gradient is fiddly at the degeneracies.  A
+    dihedral wraps, so the difference is taken the short way round.
+    """
+    grad = np.zeros_like(np.asarray(bohr, dtype=float))
+    step = 1e-5
+    for a in atoms:
+        a = int(a)
+        for k in range(3):
+            up = np.array(bohr, dtype=float)
+            up[a, k] += step
+            down = np.array(bohr, dtype=float)
+            down[a, k] -= step
+            hi = _coordinate_value(up, kind, atoms)
+            lo = _coordinate_value(down, kind, atoms)
+            diff = hi - lo
+            if kind in ('angle', 'dihedral'):
+                diff = (diff + math.pi) % (2 * math.pi) - math.pi
+            grad[a, k] = diff / (2 * step)
+    return grad
+
+
+def steer_coordinate(start_xyz, kind, atoms, target, *, method='gfn2',
+                     charge=0, uhf=0, solvent=None, cores=1, etemp=None,
+                     max_force=None, k_restraint=None,
+                     cap_angstrom=STEER_CAP, steps=STEER_STEPS,
+                     should_stop=None):
+    """Drive one chosen internal coordinate towards *target*, continuously.
+
+    The other engines cannot do this.  A Cartesian pull on an atom (the live
+    hand) takes the softest way to move it, which for a stiff collective
+    coordinate -- a C=C torsion -- is to bend or turn the whole molecule rather
+    than twist the bond, so cis never becomes trans however hard it is dragged.
+    A pinned coordinate (the old drag) drives it but re-minimises every frame
+    and flips between the two arrangements at the top.  This puts a restraint
+    on the coordinate itself -- a force along ``d(coordinate)/dr`` that pushes
+    its value towards ``target`` -- adds it to the field's own force, and moves
+    every atom down the total by a capped step, carrying the geometry forward.
+    So it forces the coordinate over its barrier (that is what the restraint is
+    for) and stays on one branch (that is what carrying forward is for): cis
+    goes to trans, a bond is made or broken, an angle is opened, on purpose.
+
+    ``kind`` is ``'distance'`` (two atoms, ``target`` in Angstrom),
+    ``'angle'`` (three, degrees) or ``'dihedral'`` (four, degrees).
+    ``max_force`` caps how hard the restraint may pull -- the hand's strength,
+    the pull's ceiling -- so a gentle setting eases the coordinate and a strong
+    one drives it over a barrier, deliberately.  Returns the same shape as
+    :func:`steer`.
+    """
+    info = _elements(start_xyz)
+    if info is None:
+        return {'ok': False, 'xyz': start_xyz,
+                'status': 'the structure could not be read'}
+    atoms = [int(a) for a in atoms]
+    if any(not (0 <= a < len(info['numbers'])) for a in atoms):
+        return {'ok': False, 'xyz': start_xyz,
+                'status': 'the coordinate names an atom that is not here'}
+    rb = np.asarray(info['angstrom'], dtype=float) / BOHR
+    # The target in the units the coordinate is measured in: Bohr, or radians.
+    if kind == 'distance':
+        goal = float(target) / BOHR
+    else:
+        goal = math.radians(float(target))
+    k = float(k_restraint if k_restraint is not None
+              else STEER_COORD_K.get(kind, 0.5))
+    cap = float(cap_angstrom) / BOHR
+    try:
+        grad = _make_gradients(info['numbers'], rb, method, charge, uhf,
+                               solvent, cores, etemp=etemp)
+    except Exception as oops:                        # noqa: BLE001
+        return {'ok': False, 'xyz': start_xyz, 'status': str(oops)}
+    energy = None
+    try:
+        for _ in range(max(1, int(steps))):
+            if should_stop is not None and should_stop():
+                break
+            energy, gradient = grad(rb)
+            force = -np.asarray(gradient, dtype=float)
+            value = _coordinate_value(rb, kind, atoms)
+            dvalue = _coordinate_gradient(rb, kind, atoms)
+            diff = value - goal
+            if kind in ('angle', 'dihedral'):
+                diff = (diff + math.pi) % (2 * math.pi) - math.pi
+            # The restraint force: -dV/dr for V = 0.5 k (value - goal)^2, which
+            # pushes the coordinate towards its target.
+            restraint = -k * diff * dvalue
+            if max_force is not None:
+                strength = float(np.linalg.norm(restraint))
+                if strength > max_force:
+                    restraint = restraint * (max_force / strength)
+            force = force + restraint
+            norm = np.linalg.norm(force, axis=1, keepdims=True)
+            scale = np.minimum(1.0, cap / (norm + 1e-12))
+            rb = rb + force * scale
+        else:
+            if should_stop is None or not should_stop():
+                energy, _ = grad(rb)
+    except Exception as oops:                        # noqa: BLE001
+        return {'ok': False, 'xyz': start_xyz, 'status': str(oops),
+                'calls': int(getattr(grad, 'calls', 0))}
+    finally:
+        closer = getattr(grad, 'close', None)
+        if closer is not None:
+            closer()
+    return {'ok': True,
+            'xyz': xyz_document(info['symbols'], rb * BOHR,
+                                'Driven by the hand along a coordinate'),
+            'energy': energy, 'value': _coordinate_value(rb, kind, atoms),
+            'calls': int(getattr(grad, 'calls', 0))}
 
 
 # --------------------------------------------------------------------------

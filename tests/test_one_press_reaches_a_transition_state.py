@@ -486,10 +486,11 @@ def test_no_press_in_the_editor_runs_against_a_clock():
     # under Fermi smearing, where the first answer's SCC gave out on a bond
     # coming apart: the same follow run once more with an electronic
     # temperature, and it hears the hand let go the same way the first did.
-    # The seventh is the live hand's steered engine (climb.steer), which takes
-    # its gradients one at a time and is told to stop between them the same
-    # way -- a drag that hears the hand let go mid-answer instead of finishing.
-    assert source.count('should_stop=_hand_gone') == 7, (
+    # The seventh is the live hand's steered engine (climb.steer), and the
+    # eighth is the drive hand's (climb.steer_coordinate) -- both take their
+    # gradients one at a time and are told to stop between them the same way, a
+    # drag that hears the hand let go mid-answer instead of finishing.
+    assert source.count('should_stop=_hand_gone') == 8, (
         'every run a drag frame starts has to hear the hand let go')
 
     assert 'seconds_for(method)' not in source, (

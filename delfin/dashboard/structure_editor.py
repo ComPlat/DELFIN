@@ -1697,8 +1697,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                  'what building a structure wants. Live dynamics: the molecule '
                  'answers the hand as a force in real time, walking one '
                  'continuous path over reactions, rotations and rearrangements '
-                 'rather than jumping between two -- under xtb, with Dynamik '
-                 'Opt on.'),
+                 'rather than jumping between two -- the softest way it can '
+                 'respond. Drive coordinate: pick 2, 3 or 4 atoms for a bond, '
+                 'angle or torsion, then drag to force that coordinate over '
+                 'its barrier -- cis to trans, a bond made or broken on '
+                 'purpose. Both under xtb, with Dynamik Opt on.'),
         layout=widgets.Layout(width='158px'),
         disabled=True,
     )
@@ -5060,6 +5063,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: which measured exactly that.
     _GFN_FOLLOW_CYCLES = 10
 
+    #: The gentlest the live hand pulls, as a share of a bond -- see
+    #: :func:`_live_force`.  Where the pull at a share of nothing goes rigid
+    #: and sets the coordinate, the live hand has no coordinate to set, so this
+    #: keeps it from going dead: picking the live hand always follows the
+    #: cursor, with a light touch, and the slider takes it up from there.
+    _LIVE_MIN_SHARE = 0.1
+
     #: How far the answer may put a held atom from the cursor before the drag
     #: counts as under-determined.
     #:
@@ -5375,29 +5385,45 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         """
         return str(submit_hand_dd.value) == 'live'
 
+    def _hand_drives():
+        """Whether the hand drives a chosen coordinate over its barrier.
+
+        The targeted counterpart to the live hand.  The live hand takes the
+        softest way to move the dragged atom, which follows a reaction but
+        cannot force a stiff collective coordinate -- a C=C torsion bends the
+        whole molecule rather than twisting the bond, so cis never becomes
+        trans however hard it is pulled.  This drives the *coordinate the
+        selection names* -- two picked atoms a bond, three an angle, four a
+        torsion -- with a restraint on that coordinate, over its barrier, on
+        purpose.  See :func:`climb.steer_coordinate`.  It needs a pick of the
+        right size, an xtb method and Dynamik Opt.
+        """
+        return str(submit_hand_dd.value) == 'drive'
+
     def _live_hand_runs(method):
-        """Whether the live hand is chosen *and* its engine can drive *method*.
+        """Whether a steered hand is chosen *and* its engine can drive *method*.
 
         Steered dynamics takes its gradients from :mod:`climb`, which knows
         GFN2, GFN1 and GFN-FF and no others -- g-xTB is an xtb method but its
-        gradient is far too slow to drag against.  The option is not offered
+        gradient is far too slow to drag against.  The options are not offered
         elsewhere (see the method's own refresh), and this is the follow's own
         check so the drag never reaches the steered engine with a method it
-        cannot run.  Kept out of the follow step itself so that step names no
+        cannot run.  Covers both steered hands -- the live one and the drive
+        one -- and is kept out of the follow step itself so that step names no
         climb machinery of any kind.
         """
-        return (_hand_is_live()
+        return ((_hand_is_live() or _hand_drives())
                 and str(method or '').lower() in _climb.CLIMB_METHODS)
 
     def _hand_is_a_force():
         """Whether the hand is a force rather than a placement.
 
-        Pull and live are both forces the chemistry answers, so both are
-        priced by the budget; the difference between them is which engine
-        turns the hand into motion, which is asked by :func:`_hand_pulls` and
-        :func:`_hand_is_live` where that is what matters.
+        Pull, live and drive are all forces the chemistry answers, so all three
+        are priced by the budget; what differs is which engine turns the hand
+        into motion, which is asked by :func:`_hand_pulls`, :func:`_hand_is_live`
+        and :func:`_hand_drives` where that is what matters.
         """
-        return _hand_pulls() or _hand_is_live()
+        return _hand_pulls() or _hand_is_live() or _hand_drives()
 
     def _pull_force():
         """How hard the hand may pull under a server method, in kcal/mol/A.
@@ -5436,6 +5462,26 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if share <= 0:
             return None
         return max(0.5, share * _gfn.A_BOND_HOLDS)
+
+    def _live_force():
+        """How hard the live hand may pull, in Hartree/Bohr for the steered step.
+
+        The same yardstick and the same slider as the pull -- a share of what a
+        bond holds -- so a live drag is as strong as a pull set the same way,
+        and for the same reason: an uncapped spring tears any bond off given
+        enough lead, and the cap is what makes the atom lag rather than tear.
+        The default share does not break a bond; a hand set as strong as one
+        (the slider at 1) can, deliberately, which is how a bond-breaking
+        reaction is driven rather than stumbled into.
+
+        A floor keeps the live hand from going dead where the pull would go
+        rigid: the pull at a share of nothing sets the coordinate outright, but
+        the live hand has no coordinate to set, so a share of nothing there
+        would be a hand that does not move the atom at all.  A light touch
+        instead, so picking the live hand always follows the cursor.
+        """
+        share = max(float(submit_pull_slider.value or 0.0), _LIVE_MIN_SHARE)
+        return share * _gfn.A_BOND_HOLDS * _climb.FORCE_KCAL_PER_A_IN_AU
 
     def _still_spent(current, holding):
         """Whether the budget is spent and the hand has not come back in.
@@ -5713,19 +5759,36 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             state.get('gfn_last_status') or '',
                             spinner=True)
                         continue
-                    # The live hand drives its own engine -- steered dynamics,
-                    # which carries the geometry forward down the total force
-                    # rather than re-minimising it, and so answers the hand
-                    # with one continuous path instead of the two arrangements
-                    # a constrained minimisation flips between at a reaction
-                    # top.  It reuses the budget, Keep bonds and the frame
-                    # channel, so nothing below it has to know which hand ran;
-                    # the pull and the placement fall through to the block that
-                    # follows, exactly as they did.  Never under MOPAC, which
-                    # has no xtb gradients for it.
+                    # The steered hands drive their own engine, which carries
+                    # the geometry forward down the total force rather than
+                    # re-minimising it, and so answer with one continuous path
+                    # instead of the two arrangements a constrained
+                    # minimisation flips between at a reaction top.  They reuse
+                    # the budget, Keep bonds and the frame channel, so nothing
+                    # below has to know which hand ran; the pull and the
+                    # placement fall through to the block that follows, exactly
+                    # as they did.  Never under MOPAC, which has no xtb
+                    # gradients for them.
                     if _live_hand_runs(method):
+                        driven = None
+                        if _hand_drives():
+                            # The coordinate the selection names, and where the
+                            # gesture asks to take it.  The target is read from
+                            # a probe -- the last answer with only the dragged
+                            # atoms moved to where the cursor has them -- so it
+                            # is the grabbed atom's own effect on the
+                            # coordinate, whatever the page did with the rest.
+                            driven = _coordinate_wish(current, holding)
+                            if driven is None:
+                                schedule_ui_update(
+                                    _set_mol_status,
+                                    'Drive coordinate: pick 2 atoms for a '
+                                    'bond, 3 for an angle or 4 for a torsion, '
+                                    'then drag to force it.')
+                                continue
+                            holding = [int(i) for i in driven['atoms']]
                         _live_answer(current, holding, began, method, label,
-                                     charge, uhf, wet, model)
+                                     charge, uhf, wet, model, driven=driven)
                         continue
                     # With the budget on, the drag is followed differently:
                     # the contacts the hand has changed are held and the rest
@@ -6884,8 +6947,51 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
         _start_background(_work, 'The relaxation under the hand')
 
+    def _coordinate_wish(current, holding):
+        """The coordinate the selection names, and where the gesture takes it.
+
+        Returns ``{'kind', 'atoms', 'target'}`` for :func:`climb.steer_coordinate`
+        -- the drive hand's whole input -- or ``None`` when the selection is
+        not two, three or four atoms.
+
+        The target is read from a *probe*: the last answer with only the one
+        atom the hand actually grabbed moved to where the cursor has it.  Built
+        that way it is the grabbed atom's own effect on the coordinate and
+        nothing else, so the coordinate can be driven even when the whole
+        selection that names it is being dragged as a group -- a group drag
+        would leave the coordinate unchanged if every atom were moved together.
+        The grabbed atom is named by the page (``gfn_grabbed``); without it the
+        dragged set stands in.  The value is handed on in the units the
+        coordinate is set in -- an Angstrom for a distance, a degree otherwise.
+        """
+        atoms = [int(i) for i in (state.get('picked') or ())]
+        kind = _CONSTRAINT_KINDS.get(len(atoms))
+        if not kind:
+            return None
+        start = state.get('thermal_was') or current
+        here = _gfn.coordinates_of(start)
+        wish = _gfn.coordinates_of(current)
+        if not here or len(here) != len(wish):
+            return None
+        grabbed = state.get('gfn_grabbed')
+        movers = [int(grabbed)] if grabbed is not None else list(holding or ())
+        probe = list(here)
+        for i in movers:
+            j = int(i)
+            if 3 * j + 2 < len(wish):
+                probe[3 * j:3 * j + 3] = wish[3 * j:3 * j + 3]
+        # climb's own numpy, since this module keeps none of its own.
+        bohr = _climb.np.asarray(
+            probe, dtype=float).reshape(-1, 3) / _climb.BOHR
+        if any(a >= len(bohr) for a in atoms):
+            return None
+        value = _climb._coordinate_value(bohr, kind, atoms)
+        target = (value * _climb.BOHR if kind == 'distance'
+                  else math.degrees(value))
+        return {'kind': kind, 'atoms': atoms, 'target': float(target)}
+
     def _live_answer(current, holding, began, method, label, charge,
-                     uhf, wet, model):
+                     uhf, wet, model, driven=None):
         """One drag answer by steered dynamics -- the continuous hand.
 
         The other engine pins the coordinate the hand has changed and
@@ -6922,12 +7028,30 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         warmth = _smearing_for(method)
         start = state.get('thermal_was') or current
         cores = _gfn.interactive_cores(count)
+        # The hand's own strength ceiling, the pull's yardstick and the pull's
+        # slider, so a live drag can only pull as hard as it is set to and
+        # tears a bond only when a hand deliberately as strong as one is asked
+        # for -- see _live_force.
+        pull_cap = _live_force()
 
         def _steer(etemp):
+            # Two engines behind one answer.  With no coordinate named, the
+            # hand is a Cartesian spring on the dragged atom -- the softest way
+            # to move it, which follows a reaction or a dissociation but cannot
+            # force a stiff torsion.  With one named (the drive hand), the hand
+            # is a restraint on that coordinate itself, which drives it over
+            # its barrier -- cis to trans, a bond made or broken on purpose --
+            # and stays on one branch.  Both take the same force ceiling.
+            if driven is not None:
+                return _climb.steer_coordinate(
+                    start, driven['kind'], driven['atoms'], driven['target'],
+                    method=method, charge=charge, uhf=uhf, solvent=wet,
+                    cores=cores, etemp=etemp, max_force=pull_cap,
+                    should_stop=_hand_gone)
             return _climb.steer(
                 start, current, holding, method=method, charge=charge,
                 uhf=uhf, solvent=wet, cores=cores, etemp=etemp,
-                should_stop=_hand_gone)
+                max_force=pull_cap, should_stop=_hand_gone)
 
         out = _steer(warmth)
         # A gradient that will not run at a closed gap is the same failure
@@ -6966,8 +7090,24 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         steps = int(state.get('gfn_follow_steps') or 0) + 1
         state['gfn_follow_steps'] = steps
         many = f', {len(holding)} atoms' if len(holding) > 1 else ''
-        said = (f'{label} steers the drag{many} · {steps} steps, '
-                f'{_hand_answered_in(began) * 1000:.0f} ms')
+        if driven is not None:
+            # The drive hand names the coordinate it is forcing, where it
+            # stands now and where the hand is asking to take it -- the whole
+            # of what the reader is watching.  Universal: it says the same for
+            # a bond, an angle or a torsion of any molecule, because that is
+            # all the engine knows about the system.
+            unit = 'Å' if driven['kind'] == 'distance' else '°'
+            now = out.get('value')
+            at = (float(now) * _climb.BOHR if driven['kind'] == 'distance'
+                  else math.degrees(float(now))) if now is not None else None
+            standing = f'{at:.1f}{unit}' if at is not None else '?'
+            said = (f'{label} drives the {driven["kind"]} '
+                    f'{standing} → {driven["target"]:.1f}{unit} '
+                    f'· {steps} steps, '
+                    f'{_hand_answered_in(began) * 1000:.0f} ms')
+        else:
+            said = (f'{label} steers the drag{many} · {steps} steps, '
+                    f'{_hand_answered_in(began) * 1000:.0f} ms')
         energy = out.get('energy')
         if not stale:
             state['thermal_now'] = energy
@@ -19122,11 +19262,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
           always been and keeps whatever value it was set to.
         """
         pulling = _hand_pulls()
-        submit_pull_slider.layout.display = '' if pulling else 'none'
+        # The slider is the strength of a force, and both force hands have one:
+        # the pull's spring and the live hand's are set against the same
+        # yardstick, a share of a bond, so the same control sets both -- see
+        # _live_force.  Only the placing hand, which has no force, hides it.
+        submit_pull_slider.layout.display = (
+            '' if _hand_is_a_force() else 'none')
         # Beside the pull, because it is about what a pull holds.  Under a
         # placing hand the answer is laid back onto the cursor and no
         # coordinate is read at all, so there are no two questions to choose
-        # between.
+        # between; and the live hand drives its own engine, which holds no
+        # contact to ask the steady question of, so it does not appear there
+        # either.
         submit_steady_hand_btn.layout.display = (
             '' if pulling and _server_method() else 'none')
         # Two conditions, about two different things.
@@ -19591,6 +19738,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         pulling = ('pull with a force', 'pull')
         moving = ('move the atom', 'move')
         living = ('live dynamics', 'live')
+        driving = ('drive coordinate', 'drive')
         # Which hand the user had, so a detour through a method that cannot
         # offer it does not quietly cost it -- and so the value survives the
         # options being reassigned at all.  Read before the change: setting
@@ -19607,29 +19755,30 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         try:
             if mopac:
                 # MOPAC takes no held internals and has no xtb gradients, so
-                # neither force hand has an engine here -- both fall to the
+                # none of the force hands has an engine here -- all fall to the
                 # placing hand, and the box says the one that is left.
-                if had in ('pull', 'live'):
+                if had in ('pull', 'live', 'drive'):
                     state['hand_was'] = had
                 submit_hand_dd.options = [moving]
                 submit_hand_dd.value = 'move'
             elif steerable:
-                # The live hand is the server's steered dynamics, so it is
-                # offered only where climb can drive it.  Any of the three is
-                # valid here, so a remembered hand comes back and otherwise the
-                # one that was in use is kept.
-                submit_hand_dd.options = [pulling, moving, living]
+                # The live and drive hands are the server's steered dynamics,
+                # so they are offered only where climb can drive them.  Any of
+                # the four is valid here, so a remembered hand comes back and
+                # otherwise the one that was in use is kept.
+                submit_hand_dd.options = [pulling, moving, living, driving]
                 want = state.pop('hand_was', None) or had
-                submit_hand_dd.value = (want if want in ('pull', 'move', 'live')
-                                        else 'pull')
+                submit_hand_dd.value = (
+                    want if want in ('pull', 'move', 'live', 'drive')
+                    else 'pull')
             else:
-                # A method that cannot drive the live hand: a browser method,
-                # where the pull runs in the browser's own field, or g-xTB,
-                # whose gradients are too slow for a drag.  A live choice is
-                # remembered to be given back when a steerable method returns
-                # and the placing hand stands in for it meanwhile.
-                if had == 'live':
-                    state['hand_was'] = 'live'
+                # A method that cannot drive the steered hands: a browser
+                # method, where the pull runs in the browser's own field, or
+                # g-xTB, whose gradients are too slow for a drag.  A live or
+                # drive choice is remembered to be given back when a steerable
+                # method returns and the placing hand stands in meanwhile.
+                if had in ('live', 'drive'):
+                    state['hand_was'] = had
                 submit_hand_dd.options = [pulling, moving]
                 if state.get('hand_was') == 'pull':
                     state.pop('hand_was', None)
@@ -19994,10 +20143,21 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # the atoms the hand is on, so the answer can keep them there.
         if dragging:
             holding = []
+            state.pop('gfn_grabbed', None)
             for word in note.split():
                 if word.startswith('held='):
                     holding = [int(n) for n in word[5:].split(',')
                                if n.strip().lstrip('-').isdigit()]
+                elif word.startswith('grabbed='):
+                    # The one atom the hand actually took, apart from the
+                    # passengers a group drag carries with it.  The drive hand
+                    # reads its target from this atom alone, so a coordinate
+                    # can be driven even when the whole selection that names it
+                    # is being dragged -- see :func:`_coordinate_wish`.  The
+                    # other hands do not read it.
+                    grabbed = word[8:].strip()
+                    if grabbed.lstrip('-').isdigit():
+                        state['gfn_grabbed'] = int(grabbed)
                 elif word.startswith('turn='):
                     # A right hand on an atom, turning about the bond it
                     # hangs on.  The four atoms come from the page because
