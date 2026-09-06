@@ -606,6 +606,78 @@ def _hp_rotate(pts: np.ndarray, origin: np.ndarray, axis: np.ndarray,
             + np.outer(v.dot(k), k) * (1.0 - c))
 
 
+# ---------------------------------------------------------------------------
+# The FREE lone-pair cone of group-16 donors -- vendored from the eye (2026-09-06, #360).
+# ---------------------------------------------------------------------------
+# hplace6k lost TAFROI although no H changed its bonding set: the rotor stage removed all
+# seven H...H clashes of the system and turned the H into the free lone-pair cone of an sp3
+# O/S donor -- `donor_lone_pair_clash` (hard) then fired on all 9 frames.  The rule and its
+# numbers are the eye's (weddell/detectors/find_sp3_carbon_donor_geometry.py:296-347), written
+# here as constants so that builder and verdict cannot drift apart (pattern
+# `fffree/aromatic_bond_targets.py`).  A group-16 donor bound to a metal through ONE lone pair
+# keeps its SECOND lone pair at the fourth tetrahedral vertex; nothing may be rotated into it.
+_LP_GROUP16 = frozenset({"O", "S", "Se", "Te"})
+_LP_CONE_COS = 0.82      # cos(~35 deg): inside this half-angle of the free-lp axis = "in the cone"
+_LP_CLASH_MAX = 2.9      # A: a non-bonded atom this close along the lp axis clashes the lone pair
+_LP_MD_RATIO = 1.20      # M-D contact counts as a coordinate bond up to this multiple of the radii sum
+
+
+def _hp_free_lone_pairs(syms: Sequence[str], P: np.ndarray):
+    """(donor, unit vector of the free lone pair, atoms exempt) for every group-16 donor that is
+    bound to exactly one metal and carries exactly two non-metal substituents (sp3, one free lp)."""
+    out = []
+    n = len(syms)
+    norm = [_el.normalise(s) for s in syms]
+    metals = [i for i in range(n) if _hp_metal(norm[i])]
+    for d in range(n):
+        if norm[d] not in _LP_GROUP16:
+            continue
+        dp = P[d]
+        m_bound = [m for m in metals
+                   if float(np.linalg.norm(P[m] - dp)) <= (_hp_cov(norm[m]) + _hp_cov(norm[d])) * _LP_MD_RATIO]
+        if len(m_bound) != 1:
+            continue
+        m = m_bound[0]
+        subs = [k for k in range(n) if k not in (d, m) and not _hp_metal(norm[k])
+                and float(np.linalg.norm(P[k] - dp)) < (_hp_cov(norm[d]) + _hp_cov(norm[k])) * _BOND_FACTOR]
+        if len(subs) != 2:
+            continue
+
+        def _u(i):
+            v = P[i] - dp
+            return v / (float(np.linalg.norm(v)) + 1e-12)
+        lp = -(_u(subs[0]) + _u(subs[1]) + _u(m))
+        nn = float(np.linalg.norm(lp))
+        if nn < 0.30:                      # near-planar donor -> no clear lp direction
+            continue
+        out.append((d, lp / nn, set(subs) | {m, d}))
+    return out
+
+
+def _hp_in_lone_pair_cone(P: np.ndarray, h: int, lps) -> bool:
+    """Does H sit inside the free lone-pair cone of any donor in `lps`?  Same test as the eye."""
+    for d, lp, exempt in lps:
+        if h in exempt:
+            continue
+        xv = P[h] - P[d]
+        dist = float(np.linalg.norm(xv))
+        if dist < 0.4 or dist > _LP_CLASH_MAX:
+            continue
+        if float(np.dot(xv / (dist + 1e-12), lp)) > _LP_CONE_COS:
+            return True
+    return False
+
+
+def _hp_lp_count(syms: Sequence[str], P: np.ndarray) -> int:
+    """Number of hydrogens sitting in a free lone-pair cone -- recomputed from scratch, because an
+    O-H / S-H rotor moves a SUBSTITUENT of the donor and with it the lone-pair axis, so other H
+    can fall into the cone without moving (measured: TAFROI 2 -> 12 with the group-only check)."""
+    lps = _hp_free_lone_pairs(syms, P)
+    if not lps:
+        return 0
+    return sum(1 for h in _hp_hydrogens(syms) if _hp_in_lone_pair_cone(P, h, lps))
+
+
 def _hp_stage_rotor(syms: List[str], P: np.ndarray, parents: Dict[int, int],
                     adj: Sequence[Sequence[int]]) -> int:
     """Rotor H rigidly about the centre-neighbour axis onto the best grid angle."""
@@ -628,6 +700,8 @@ def _hp_stage_rotor(syms: List[str], P: np.ndarray, parents: Dict[int, int],
         if base >= 1.0:
             continue                       # nothing violated -> touch nothing
         orig = P[hs].copy()
+        # Lone-pair cones: counted over ALL H and recomputed per angle, see _hp_lp_count.
+        base_lp = _hp_lp_count(syms, P)
         best_ang = 0.0
         best_val = base
         for step in range(1, _ROTOR_STEPS):
@@ -635,6 +709,8 @@ def _hp_stage_rotor(syms: List[str], P: np.ndarray, parents: Dict[int, int],
             P[hs] = _hp_rotate(orig, P[centre], axis, ang)
             if _group_metal() < min(1.0, base_m) - _EPS_GAIN:
                 continue                   # metal axis protected independently
+            if base_lp is not None and _hp_lp_count(syms, P) > base_lp:
+                continue                   # no angle may put MORE H into free lone-pair cones (#360)
             val = _group_clear()
             if val > best_val + _EPS_GAIN:
                 best_val = val
