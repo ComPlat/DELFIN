@@ -173,3 +173,121 @@ def test_a_live_drag_holds_to_the_thermal_budget():
     stretched = np.linalg.norm(final[3] - final[2])
     began = np.linalg.norm(P[3] - P[2])
     assert stretched < began + 2.0, (began, stretched)
+
+
+# A relaxed cis-2-butene, carbons 0-1-2-3, C=C torsion near cis.
+_CIS_BUTENE = """12
+cis-2-butene, relaxed under GFN2
+C   1.56133168  -0.30153550   0.34941920
+C   0.58962547   0.81664449   0.15552991
+C  -0.69758682   0.72956008  -0.14104061
+C  -1.50476993  -0.50896586  -0.35699709
+H   2.38089185  -0.20604371  -0.36277491
+H   1.10146901  -1.27583353   0.21959173
+H   1.98910506  -0.24943338   1.35057641
+H   1.02420044   1.80112840   0.27987105
+H  -1.26489964   1.64626528  -0.24753152
+H  -1.93691854  -0.49814727  -1.35756982
+H  -0.91382776  -1.41217448  -0.24475249
+H  -2.32872082  -0.54156452   0.35577813
+"""
+
+_SYMS12 = 'CCCCHHHHHHHHHH'[:12]
+
+
+def _dihedral(P, a, b, c, d):
+    import math
+    b0, b1, b2 = P[a] - P[b], P[c] - P[b], P[d] - P[c]
+    b1 = b1 / np.linalg.norm(b1)
+    v = b0 - np.dot(b0, b1) * b1
+    w = b2 - np.dot(b2, b1) * b1
+    return math.degrees(math.atan2(np.dot(np.cross(b1, v), w), np.dot(v, w)))
+
+
+def _rot_about(P, i, ax, deg):
+    import math
+    a, b = P[ax[0]], P[ax[1]]
+    u = (b - a) / np.linalg.norm(b - a)
+    v = P[i] - a
+    th = math.radians(deg)
+    return (a + v * math.cos(th) + np.cross(u, v) * math.sin(th)
+            + u * np.dot(u, v) * (1 - math.cos(th)))
+
+
+@_needs_xtb
+def test_the_drive_hand_turns_a_double_bond_from_cis_towards_trans():
+    """The drive hand, end to end through the built editor: pick the four
+    atoms of the C=C torsion, drag a terminal carbon, and the torsion is
+    forced across its barrier -- what neither the pull (drives the wrong
+    coordinate) nor the live hand (takes the softest way) could do.  A strong
+    hand crosses 90 degrees, the twisted top; the coordinate is what is
+    driven, not the atom, so nothing here is tuned to butene.
+    """
+    part, state = _an_editor(_CIS_BUTENE)
+    part.submit_ff_dd.value = 'gfn2'
+    part.submit_relax_btn.value = True
+    part.submit_hand_dd.options = [('pull with a force', 'pull'),
+                                   ('move the atom', 'move'),
+                                   ('live dynamics', 'live'),
+                                   ('drive coordinate', 'drive')]
+    part.submit_hand_dd.value = 'drive'
+    part.submit_pull_slider.value = 3.0          # a strong hand, to cross
+    state['picked'] = [0, 1, 2, 3]               # the C=C torsion
+
+    started = _dihedral(_coords(_CIS_BUTENE), 0, 1, 2, 3)
+    for _ in range(45):
+        P = _coords(part.coords_widget.value)
+        wish = P.copy()
+        wish[3] = _rot_about(P, 3, (1, 2), 20.0)  # drag C3 along the arc
+        rows = [f'{s} {r[0]:.6f} {r[1]:.6f} {r[2]:.6f}'
+                for s, r in zip(_SYMS12, wish)]
+        wish_xyz = f'12\nDELFIN drag-follow held=3\n' + '\n'.join(rows) + '\n'
+        state['gfn_follow_steps'] = 0
+        part._gfn_follow_step(wish_xyz, [3])
+        assert _wait(state), state.get('gfn_last_status')
+
+    reached = abs(_dihedral(_coords(part.coords_widget.value), 0, 1, 2, 3))
+    assert abs(started) < 30.0, started
+    assert reached > 100.0, f'the drive did not cross the barrier: {reached:.0f}'
+    said = state.get('gfn_last_status') or ''
+    assert 'drives the dihedral' in said, said
+
+
+@_needs_xtb
+def test_the_drive_hand_works_under_a_group_drag():
+    """The real browser case: the coordinate atoms are selected, and grabbing
+    one drags the whole selection as a group -- which would leave the
+    coordinate unchanged if every atom moved together.  The page names the one
+    atom it actually grabbed (``gfn_grabbed``), and the drive reads its target
+    from that atom alone, so the coordinate still moves.  This proves the fix
+    that makes the drive hand usable with a selection, not only with a lone
+    grabbed atom.
+    """
+    part, state = _an_editor(_CIS_BUTENE)
+    part.submit_ff_dd.value = 'gfn2'
+    part.submit_relax_btn.value = True
+    part.submit_hand_dd.options = [('pull with a force', 'pull'),
+                                   ('move the atom', 'move'),
+                                   ('live dynamics', 'live'),
+                                   ('drive coordinate', 'drive')]
+    part.submit_hand_dd.value = 'drive'
+    part.submit_pull_slider.value = 3.0
+    state['picked'] = [0, 1, 2, 3]
+
+    for _ in range(20):
+        P = _coords(part.coords_widget.value)
+        # A group drag: all four selected atoms move together (here rotated as
+        # a block about the C=C), which alone changes no internal coordinate.
+        moved = P.copy()
+        for a in (0, 1, 2, 3):
+            moved[a] = _rot_about(P, a, (1, 2), 15.0)
+        rows = [f'{s} {r[0]:.6f} {r[1]:.6f} {r[2]:.6f}'
+                for s, r in zip(_SYMS12, moved)]
+        wish_xyz = f'12\nDELFIN drag-follow held=0,1,2,3\n' + '\n'.join(rows) + '\n'
+        state['gfn_grabbed'] = 3          # the page says which one was taken
+        state['gfn_follow_steps'] = 0
+        part._gfn_follow_step(wish_xyz, [0, 1, 2, 3])
+        assert _wait(state), state.get('gfn_last_status')
+
+    reached = abs(_dihedral(_coords(part.coords_widget.value), 0, 1, 2, 3))
+    assert reached > 40.0, f'the group drag did not drive the torsion: {reached:.0f}'

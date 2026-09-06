@@ -32,15 +32,23 @@ def test_the_follow_worker_runs_the_steered_engine_for_it():
     test_the_climb_can_be_helped."""
     follow = _EDITOR.split('def _gfn_follow_step(')[1].split(
         "_start_background(_work, 'The relaxation under the hand')")[0]
-    branch = follow.split('if _live_hand_runs(method):')[1][:200]
+    branch = follow.split('if _live_hand_runs(method):')[1][:2000]
     assert '_live_answer(current, holding, began' in branch, branch
-    assert 'continue' in branch, branch
+    assert 'driven=driven' in branch, branch
+    # The drive hand works out its coordinate before the call; the live hand
+    # passes driven None.
+    assert 'if _hand_drives():' in branch, branch
+    assert '_coordinate_wish(current, holding)' in branch, branch
     assert 'climb' not in follow, 'the follow step must name no climb'
     # The live answer is a self-contained function at editor scope, not a
     # change threaded through the pull's path and not buried in the follow
     # step (so the source slices that guard the follow step do not read it).
     assert 'def _live_answer(current, holding, began, method' in _EDITOR
     assert 'def _live_answer(' not in follow
+    # The coordinate the drive hand forces is worked out from the selection,
+    # off editor scope and not in the follow step.
+    assert 'def _coordinate_wish(' in _EDITOR
+    assert 'def _coordinate_wish(' not in follow
     # Its engine only runs where climb can drive it: GFN2/GFN1/GFN-FF.
     runs = _EDITOR.split('def _live_hand_runs(')[1].split('def ')[0]
     assert 'in _climb.CLIMB_METHODS' in runs
@@ -67,23 +75,46 @@ def test_the_pull_and_placement_engines_are_untouched():
     assert 'if not _hand_pulls():' in force
 
 
-def test_the_live_hand_is_offered_only_where_an_engine_can_drive_it():
-    """It is the server's steered dynamics, so it needs xtb gradients: offered
-    under an xtb method, and not under MOPAC (no gradients) or a browser method
-    (no server engine).  A choice made under xtb survives a detour through
-    either and comes back."""
-    block = _EDITOR.split("living = ('live dynamics', 'live')")[1]
+def test_the_steered_hands_are_offered_only_where_an_engine_can_drive_them():
+    """The live and drive hands are the server's steered dynamics, so they need
+    xtb gradients: offered under a steerable method, and not under MOPAC (no
+    gradients) or a browser method (no server engine).  A choice made there
+    survives a detour through either and comes back."""
+    block = _EDITOR.split("driving = ('drive coordinate', 'drive')")[1]
     block = block.split("finally:")[0]
-    # Only the xtb branch lists the live hand: one options list names it, and
-    # the two others (MOPAC, browser) do not.
-    assert 'submit_hand_dd.options = [pulling, moving, living]' in block
-    assert block.count('moving, living]') == 1
+    # Only the steerable branch lists the steered hands: one options list names
+    # both, and the two others (MOPAC, browser) do not.
+    assert 'submit_hand_dd.options = [pulling, moving, living, driving]' in block
+    assert block.count('living, driving]') == 1
     assert 'options = [moving]' in block            # MOPAC: placement only
-    assert block.count('options = [pulling, moving]') == 1   # browser: no live
-    # MOPAC and the browser both remember a live choice rather than dropping
+    assert block.count('options = [pulling, moving]') == 1   # browser: neither
+    # MOPAC and the browser both remember a steered choice rather than dropping
     # it, so switching method and back does not cost it.
     assert "state['hand_was'] = had" in block
-    assert "state['hand_was'] = 'live'" in block
+    assert "had in ('pull', 'live', 'drive')" in block
+    assert "had in ('live', 'drive')" in block
+
+
+def test_the_drive_hand_forces_the_selected_coordinate():
+    """The drive hand is the one that can force a stiff torsion.  It reads the
+    coordinate from the selection -- 2/3/4 picked atoms a bond/angle/torsion --
+    and drives it with climb.steer_coordinate through the same answer the live
+    hand uses, only with a coordinate named."""
+    assert "('drive coordinate', 'drive')" in _EDITOR
+    drives = _EDITOR.split('def _hand_drives(')[1].split('def ')[0]
+    assert "return str(submit_hand_dd.value) == 'drive'" in drives
+    # It is a force hand, so the budget prices it.
+    force = _EDITOR.split('def _hand_is_a_force(')[1].split('def ')[0]
+    assert '_hand_drives()' in force
+    # The coordinate/kind comes from the selection, the same 2/3/4 mapping the
+    # constraints use.
+    wish = _EDITOR.split('def _coordinate_wish(')[1].split('def ')[0]
+    assert "_CONSTRAINT_KINDS.get(len(atoms))" in wish
+    assert "state.get('picked')" in wish
+    # And the engine driven is the coordinate one, not the Cartesian spring.
+    answer = _EDITOR.split('def _live_answer(')[1][:6000]
+    assert 'steer_coordinate(' in answer
+    assert 'if driven is not None:' in answer
 
 
 def test_the_smearing_the_pull_uses_is_reused_by_the_live_hand():

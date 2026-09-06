@@ -1678,6 +1678,15 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
             var indices = ffIndicesOf(viewer, targets);
             if (indices.length) note += ' held=' + indices.join(',');
         }
+        // The one atom the hand actually took, apart from the passengers a
+        // group drag carries with it.  The drive hand on the other side reads
+        // its target from this atom alone, so a coordinate can be driven even
+        // while the whole selection that names it is being dragged; the other
+        // hands ignore it.  Harmless to send always -- it is one index.
+        if (note && held && held.drag && held.drag.grabbed != null) {
+            var gidx = ffIndicesOf(viewer, [held.drag.grabbed]);
+            if (gidx.length) note += ' grabbed=' + gidx[0];
+        }
         // And the torsion, when the hand is turning one.  Named rather than
         // worked out again on the other side: which coordinate a hand is
         // driving is a decision, and a decision the user made by choosing a

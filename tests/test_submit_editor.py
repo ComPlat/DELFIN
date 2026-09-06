@@ -2251,11 +2251,11 @@ def test_how_hard_the_hand_pulls_is_the_users_to_set():
     # budget goes on or off -- the page's hand has a ceiling exactly while
     # the budget does.
     assert source.count('setPullStrength(') == 3, source.count('setPullStrength(')
-    # Shown under both engines.  Hidden under a server method -- as it was at
-    # first, on the grounds that the pull belonged to the browser's field --
-    # the one place where the budget and the scan live was the one place the
-    # hand stayed absolute, which is exactly how it read.
-    assert "submit_pull_slider.layout.display = ''" in source
+    # Shown under every force hand -- the pull and the two steered ones share
+    # the slider, since it is the strength of a force and all three have one.
+    # Hidden only under the placing hand.
+    assert 'submit_pull_slider.layout.display = (' in source
+    assert "'' if _hand_is_a_force() else 'none'" in source
     # Enabled and disabled with the rest of the manipulation toolbar.
     assert 'submit_pull_slider.disabled = not enabled' in source
 
@@ -2989,7 +2989,8 @@ def test_the_pull_hand_is_not_offered_where_it_is_a_placement(editor):
         part.submit_ff_dd.value = method
         offered = [value for _label, value in part.submit_hand_dd.options]
         expected = (['move'] if method in _MOPAC
-                    else ['pull', 'move', 'live'] if method in _STEERABLE
+                    else ['pull', 'move', 'live', 'drive']
+                    if method in _STEERABLE
                     else ['pull', 'move'])
         assert offered == expected, method
         if method in _MOPAC:

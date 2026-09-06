@@ -134,6 +134,146 @@ def test_the_answer_carries_the_geometry_forward():
     assert out.get('energy') is not None
 
 
+_ETHANE = """8
+ethane, relaxed under GFN2
+C   0.000000  0.000000  0.765000
+C   0.000000  0.000000 -0.765000
+H   0.000000  1.019000  1.163000
+H  -0.882000 -0.510000  1.163000
+H   0.882000 -0.510000  1.163000
+H   0.000000 -1.019000 -1.163000
+H   0.882000  0.510000 -1.163000
+H  -0.882000  0.510000 -1.163000
+"""
+
+
+#: A relaxed cis-2-butene (GFN2), carbons 0-1-2-3, the C=C torsion near cis.
+_CIS_BUTENE = """12
+cis-2-butene, relaxed under GFN2
+C   1.56133168  -0.30153550   0.34941920
+C   0.58962547   0.81664449   0.15552991
+C  -0.69758682   0.72956008  -0.14104061
+C  -1.50476993  -0.50896586  -0.35699709
+H   2.38089185  -0.20604371  -0.36277491
+H   1.10146901  -1.27583353   0.21959173
+H   1.98910506  -0.24943338   1.35057641
+H   1.02420044   1.80112840   0.27987105
+H  -1.26489964   1.64626528  -0.24753152
+H  -1.93691854  -0.49814727  -1.35756982
+H  -0.91382776  -1.41217448  -0.24475249
+H  -2.32872082  -0.54156452   0.35577813
+"""
+
+
+def _relaxed(xyz):
+    return gfn.optimize_with_gfn(xyz, 'gfn2', optimise=True, max_steps=200,
+                                 timeout=120)['xyz']
+
+
+def _drag_a_hydrogen_out(share, *, etemp=None, answers=26):
+    """Drag H2 of an ethane straight out under a hand of *share* of a bond,
+    and return the C0-H2 distance it reaches."""
+    cap = share * gfn.A_BOND_HOLDS * C.FORCE_KCAL_PER_A_IN_AU
+    current = gfn.optimize_with_gfn(_ETHANE, 'gfn2', optimise=True,
+                                    max_steps=200, timeout=120)['xyz']
+    for k in range(answers):
+        P = _coords(current)
+        wish = P.copy()
+        wish[2] = P[2] + np.array([0.0, 0.0, 0.15 * (k + 1)])
+        rows = [f'{s} {r[0]:.6f} {r[1]:.6f} {r[2]:.6f}'
+                for s, r in zip('CCHHHHHH', wish)]
+        wish_xyz = f'8\nw\n' + '\n'.join(rows) + '\n'
+        out = C.steer(current, wish_xyz, [2], method='gfn2', cores=4,
+                      max_force=cap, etemp=etemp)
+        assert out.get('ok'), out
+        current = out['xyz']
+    P = _coords(current)
+    return float(np.linalg.norm(P[0] - P[2]))
+
+
+@_needs_xtb
+def test_a_weak_hand_lags_and_a_strong_hand_tears():
+    """The whole of the user's question: the live hand is a force with a
+    ceiling, the pull's, so a gentle drag cannot tear a bond off however far
+    the cursor runs ahead -- the atom lags instead -- and only a hand set as
+    strong as a bond breaks one, deliberately.
+
+    Measured here: an ethane hydrogen dragged 3.9 A out along its bond.  At a
+    hand of 0.4 of a bond -- the default, what room temperature allows -- the
+    C-H holds near its length; at 2.0 of a bond it goes.  An uncapped spring
+    tears it at any strength, which is what this ceiling is here to stop.
+    """
+    held = _drag_a_hydrogen_out(0.4)
+    assert held < 1.5, f'a gentle hand tore the C-H (reached {held:.2f} A)'
+
+    # As strong as two bonds it breaks -- smeared, because a bond coming apart
+    # closes the frontier gap and the closed-shell SCC needs the warmth, which
+    # is exactly what the follow loop gives it.
+    torn = _drag_a_hydrogen_out(2.0, etemp=1000.0)
+    assert torn > 1.9, f'a hand as strong as two bonds did not tear it ({torn:.2f} A)'
+
+
+@_needs_xtb
+def test_the_drive_hand_forces_a_torsion_over_its_barrier():
+    """What the live hand cannot do and this is for: force a chosen coordinate
+    over its barrier.
+
+    A Cartesian pull on an atom takes the softest way to move it, so a stiff
+    torsion bends the whole molecule rather than twisting -- cis stays cis
+    however hard it is dragged.  :func:`climb.steer_coordinate` restrains the
+    coordinate itself, so ramping its target walks it across the top.  Measured
+    on a cis-butene: the C=C torsion driven from cis towards trans crosses 90
+    degrees -- the twisted top of a 65 kcal/mol barrier -- monotonically, and
+    the C=C stays a bond.
+
+    Nothing here is about butene.  The engine reads an energy and a gradient,
+    which every SCC method gives, and drives whatever coordinate it is handed;
+    the two tests below drive a distance and an angle with the same call.
+    """
+    cis = _CIS_BUTENE
+    torsion = (0, 1, 2, 3)
+    current = cis
+    trail = [_dihedral(_coords(current), *torsion)]
+    for target in range(10, 181, 10):
+        out = C.steer_coordinate(current, 'dihedral', list(torsion),
+                                 float(target), method='gfn2', cores=4,
+                                 etemp=1000.0, steps=6)
+        assert out.get('ok'), out
+        current = out['xyz']
+        trail.append(_dihedral(_coords(current), *torsion))
+
+    crossed = max(abs(d) for d in trail)
+    assert crossed > 100.0, f'the drive never crossed the barrier top: {trail}'
+    # Monotone towards trans, no walking back -- the continuity the pin lacked.
+    steps = [abs(trail[i]) - abs(trail[i - 1]) for i in range(1, len(trail))]
+    assert sum(1 for s in steps if s < -3.0) == 0, f'it walked back: {trail}'
+    P = _coords(current)
+    assert np.linalg.norm(P[1] - P[2]) < 1.7, 'the C=C came apart'
+
+
+@_needs_xtb
+def test_the_drive_hand_is_universal_across_coordinates():
+    """The same engine drives a distance and an angle, no per-system code."""
+    # A bond, stretched.
+    out = C.steer_coordinate(_ETHANE, 'distance', [0, 1], 2.2, method='gfn2',
+                             cores=4, etemp=1000.0, steps=10)
+    assert out.get('ok'), out
+    P = _coords(out['xyz'])
+    assert np.linalg.norm(P[0] - P[1]) > 1.9, 'the bond did not stretch'
+
+    # An angle, opened.
+    water = _relaxed('3\nwater\nO 0 0 0\nH 0 0.757 0.587\nH 0 -0.757 0.587\n')
+    out = C.steer_coordinate(water, 'angle', [1, 0, 2], 135.0, method='gfn2',
+                             cores=4, steps=10)
+    assert out.get('ok'), out
+    P = _coords(out['xyz'])
+    u = P[1] - P[0]
+    v = P[2] - P[0]
+    ang = math.degrees(math.acos(
+        float(np.dot(u, v) / (np.linalg.norm(u) * np.linalg.norm(v)))))
+    assert ang > 120.0, f'the angle did not open: {ang:.0f}'
+
+
 @_needs_xtb
 def test_a_still_hand_barely_moves_the_structure():
     """The wish at the atom it already holds is no force at all, so the answer
