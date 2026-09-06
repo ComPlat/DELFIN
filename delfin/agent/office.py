@@ -586,7 +586,7 @@ ISO_DATE = "iso"                    # 2026-07-31
 
 # Excel's number formats say what a value LOOKS like, and the readers
 # below already decode what it means. Between them sat ``str(value)``:
-# a Serienbrief built from a cell formatted ``#,##0.00 "€"`` and one
+# a mail-merge letter built from a cell formatted ``#,##0.00 "€"`` and one
 # formatted ``DD.MM.YYYY`` went to a customer reading
 #
 #     wir stellen Ihnen 1234.5 EUR in Rechnung, fällig am
@@ -5023,8 +5023,8 @@ def fill_docx_template(
     # read-back was a tautology that could never catch the writer's blind
     # spot. Proven on a template whose address window is a text box, which
     # is how Word letterhead is built: filled: 1, unfilled: [], complete:
-    # True, and "{{name}}" still in the output. Every Bescheid of that
-    # Serienbrief prints the placeholder, and fill_series stamps each row
+    # True, and "{{name}}" still in the output. Every notice in that
+    # mail merge prints the placeholder, and fill_series stamps each row
     # ok because it reads that same flag.
     #
     # The output's own XML cannot be fooled that way: what survives there
@@ -5357,7 +5357,7 @@ def read_docx(path: Any, *, max_chars: int = MAX_TEXT_CHARS) -> dict:
         body += "\n\n" + "\n\n".join(tables)
 
     # Headers and footers. This read walked doc.paragraphs and stopped
-    # there, so a .docx whose Rechnungsnummer sits in the Kopfzeile --
+    # there, so a .docx whose invoice number sits in the header --
     # which is where letterhead puts it -- came back as a document that
     # does not contain its own number. Labelled, because a figure lifted
     # out of a running header is not a body figure and an answer citing

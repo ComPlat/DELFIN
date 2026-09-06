@@ -64,8 +64,31 @@ def _ref_polyhedra():
     # C4 in polya_isomer_count._spy_group (1->2->3->4) is a real geometric symmetry of
     # this vertex set -> chelate cis-edge enumeration & isomer dedup are consistent with
     # placement (the index space here IS the one assemble_from_config places into).
+    # SPY-5 APEX CORRECTION (DELFIN_FFFREE_SPY5_APEX, default "0" -> byte-identical).
+    #
+    # The built basal vector (1, 1, +0.2) has a component TOWARDS the apex.  Recomputed
+    # (harness/polyhedra_audit.py) this gives:
+    #       apex-basal  81.95 deg       basal-cis  88.88      basal-trans  163.90
+    # A real C4v square pyramid (VO(acac)2, [CuCl5]3-, [Ni(CN)5]3-) has instead
+    #       apex-basal  100-105         basal-cis  86-88      basal-trans  150-155
+    # -- the basal atoms bend AWAY FROM the apex, the angle is LARGER than 90, not
+    # smaller.  So the builder is off by 20.5 degrees, and on EVERY system that is
+    # seated as SPY-5.
+    #
+    # ⚠ FLIPPING THE SIGN ALONE IS NOT ENOUGH.  z = -0.2 gives apex 98.05 (already better),
+    # but leaves basal-trans standing at 163.90.  Only z = -0.3135 brings ALL THREE
+    # angle classes into the crystal range at the same time: 102.50 / 87.32 / 155.00.
+    #
+    # WHY NO A/B FOUND THIS: the table is the same in BOTH arms.  A wrong
+    # target value is a CONSTANT, not a test -- it vanishes in every difference.
+    # That is why polyhedra_audit checks the table directly against the geometry, instead
+    # of hoping that a comparison of two equally wrong arms would show it.
+    _spy5_z = 0.2
+    if os.environ.get("DELFIN_FFFREE_SPY5_APEX", "0") == "1":
+        _spy5_z = float(os.environ.get("DELFIN_FFFREE_SPY5_Z", "-0.3135"))
     R[("CN5", "SPY-5 square pyramid")] = _norm_rows(np.array(
-        [[0, 0, 1], [1, 1, 0.2], [-1, 1, 0.2], [-1, -1, 0.2], [1, -1, 0.2]], float))
+        [[0, 0, 1], [1, 1, _spy5_z], [-1, 1, _spy5_z],
+         [-1, -1, _spy5_z], [1, -1, _spy5_z]], float))
     R[("CN6", "OC-6 octahedron")] = np.array(
         [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]], float)
     R[("CN6", "TPR-6 trigonal prism")] = _norm_rows(np.array(
@@ -119,6 +142,53 @@ COV = {
     "Cd": 1.44, "Hf": 1.75, "Ta": 1.70, "W": 1.62, "Re": 1.51, "Os": 1.44,
     "Ir": 1.41, "Pt": 1.36, "Au": 1.36, "Hg": 1.32, "La": 2.07,
 }
+
+# ===== THE TABLE WAS TRUNCATED, NOT WRONG =============================================
+# Measured 2026-08-18 against 30735 crystals: the radii sum is globally almost unbiased
+# (sigma class, 260172 bonds, mean signed error +0.014 A).  The
+# error does not sit in the ENTRIES but in the GAPS -- md_distance falls back to
+# COV.get(metal, 1.5) for every unknown metal, and the ENTIRE f-block except
+# La is missing:
+#     Dy 2834 bonds -0.232 A | U 2479 -0.239 | Eu 1758 -0.259 | Yb 1690 -0.207
+#     Tb 1687 -0.232 | Gd 1568 -0.251 | Sm 1174 -0.262 | Nd 964 -0.285 | Ce 738 -0.295
+#     Pr 620 -0.303 | Th 313 -0.226 | Np/Pu 187 ~ -0.30
+# Around 18600 crystal bonds are systematically 0.20 to 0.30 A too short, and all from
+# a single dict.get default value.  No model, no mechanism -- a gap.
+#
+# The existing values ARE Cordero et al. (Dalton Trans. 2008, 2832) -- Sc 1.70, Ti 1.60,
+# V 1.53, Zr 1.75, Y 1.90, La 2.07 match digit for digit, and Mn/Fe/Co stand at the
+# mean of low- and high-spin.  This completion continues the same source and adds
+# no new systematics.  OPEN LITERATURE, no CCDC number -- the file stays
+# publicly licence-clean.
+#
+# DELFIN_FFFREE_COV_COMPLETE (default 0 -> byte-identical).  The switch is needed because
+# the completion changes champion behaviour: a Dy complex is seated 0.42 A further out.
+# That is chemically right and still worth an A/B -- the seating must not
+# shift unnoticed.
+_COV_CORDERO_REST = {
+    # alkali / alkaline earth
+    "Li": 1.28, "Be": 0.96, "Na": 1.66, "Mg": 1.41, "K": 2.03, "Ca": 1.76,
+    "Rb": 2.20, "Sr": 1.95, "Cs": 2.44, "Ba": 2.15,
+    # main-group metals and metalloids (also relevant as DONOR, see _donor_cov)
+    "B": 0.84, "Al": 1.21, "Si": 1.11, "Ga": 1.22, "Ge": 1.20,
+    "In": 1.42, "Sn": 1.39, "Sb": 1.39, "Te": 1.38,
+    "Tl": 1.45, "Pb": 1.46, "Bi": 1.48, "Po": 1.40, "At": 1.50,
+    # the one missing d-metal
+    "Tc": 1.47,
+    # lanthanides -- the largest block of the missing mass
+    "Ce": 2.04, "Pr": 2.03, "Nd": 2.01, "Pm": 1.99, "Sm": 1.98, "Eu": 1.98,
+    "Gd": 1.96, "Tb": 1.94, "Dy": 1.92, "Ho": 1.92, "Er": 1.89, "Tm": 1.90,
+    "Yb": 1.87, "Lu": 1.87,
+    # actinides
+    "Ac": 2.15, "Th": 2.06, "Pa": 2.00, "U": 1.96, "Np": 1.90, "Pu": 1.87,
+    "Am": 1.80, "Cm": 1.69,
+}
+
+if os.environ.get("DELFIN_FFFREE_COV_COMPLETE", "0") == "1":
+    # setdefault, not update: an existing entry is measured or deliberately set
+    # and is NEVER overwritten.  The completion can therefore only close gaps.
+    for _el, _r in _COV_CORDERO_REST.items():
+        COV.setdefault(_el, _r)
 
 
 def ref_vectors(geometry: str) -> np.ndarray:
@@ -257,7 +327,181 @@ def _donor_cov(donor: str) -> float:
     return COV.get(donor, 0.75)
 
 
-def md_distance(metal: str, donor: str, atom=None, mol=None) -> float:
+_MD_BAND_CACHE: dict = {}
+
+
+_TSV_CACHE: dict = {}
+
+
+def _EVIDENCE_ON() -> bool:
+    """Is evidence scoping active?  Default OFF -> every measured bin is used, as before."""
+    return os.environ.get("DELFIN_FFREE_EVIDENCE", "0") == "1"
+
+
+def _EVIDENCE_MIN_N() -> int:
+    """Smallest bin population that may steer a build.
+
+    200 is the measurement's own floor -- it is what min_n was set to when the tables were
+    produced, so anything at exactly 200 is a bin that only just survived.  The default
+    here asks for an order of magnitude more before a bin is allowed to move an atom.
+    """
+    try:
+        return int(os.environ.get("DELFIN_FFREE_EVIDENCE_MIN_N", "2000"))
+    except ValueError:
+        return 2000
+
+
+def _EVIDENCE_MAX_REL() -> float:
+    """Widest band, as (p90-p10)/|p50|, that still says something.
+
+    A five-ring chelate bite measured at 70.6 deg with a 3.2 deg spread has rel 0.045 and
+    is one of the best-defined quantities we have; a macrocycle pair spanning 68-82 deg
+    sits at 0.19 and its p50 is a value no structure actually adopts.  The default sits
+    between them.
+    """
+    try:
+        return float(os.environ.get("DELFIN_FFREE_EVIDENCE_MAX_REL", "0.10"))
+    except ValueError:
+        return 0.10
+
+
+def _load_band_tsv(path: str) -> dict:
+    """``key -> (p10, p50, p90)`` from any of the measured band TSVs, cached per path.
+
+    One reader for every table (bonds, angles, metal-donor, D-M-D): they share the format
+    ``level<TAB>key<TAB>n<TAB>p10<TAB>p50<TAB>p90`` because they come from one measurement
+    pass.  Missing file or unreadable row -> empty, and every caller then keeps its
+    historic behaviour rather than guessing.
+    """
+    if not path:
+        return {}
+    tbl = _TSV_CACHE.get(path)
+    if tbl is not None:
+        return tbl
+    tbl = {}
+    try:
+        with open(path) as fh:
+            for ln in fh:
+                if ln.startswith("#"):
+                    continue
+                p = ln.rstrip("\n").split("\t")
+                if len(p) >= 6:
+                    try:
+                        _n = int(float(p[2]))
+                        _lo, _md, _hi = float(p[3]), float(p[4]), float(p[5])
+                    except ValueError:
+                        continue
+                    # EVIDENCE SCOPING (DELFIN_FFREE_EVIDENCE=1, default OFF -> every bin
+                    # is kept, byte-identical).
+                    #
+                    # WHY.  The never-worse gate is componentwise-strict: one regression on
+                    # one axis in one system fails the whole run.  So the probability of
+                    # landing falls off with REACH -- a change touching 800 systems at even
+                    # 0.5 % risk each lands with probability ~2 %, the same change scoped to
+                    # 50 systems lands with ~77 %.  Measured this week: bandsAB touched 769
+                    # systems and lost, mdAB 198 and lost.  Neither failed because its idea
+                    # was wrong; both applied a measured value EVERYWHERE, including bins
+                    # where the measurement barely says anything.
+                    #
+                    # So the measurement's own confidence decides where it is allowed to
+                    # act: a bin counted on few structures, or one so wide that its p50
+                    # carries no information, is dropped and the caller keeps its historic
+                    # reference.  This is not a weakening -- it is claiming only what was
+                    # actually measured, and it converts a broad risky change into a narrow
+                    # provable one without discarding a single piece of evidence.
+                    if _EVIDENCE_ON():
+                        if _n < _EVIDENCE_MIN_N():
+                            continue
+                        _rel = (_hi - _lo) / abs(_md) if _md else 9.9
+                        if _rel > _EVIDENCE_MAX_REL():
+                            continue
+                    tbl[p[1]] = (_lo, _md, _hi)
+    except Exception:
+        tbl = {}
+    _TSV_CACHE[path] = tbl
+    return tbl
+
+
+def _md_band_table() -> dict:
+    """``key -> (p10, p50, p90)`` from ``DELFIN_FFREE_MD_BANDS`` (CSD-derived, not shipped).
+
+    Keys are what the offline measurement emitted: ``M,cn|donor_sig|chelate`` down to the
+    bare ``M|donor``.  Unset -> empty -> every caller keeps the covalent-radii sum.
+    """
+    path = os.environ.get("DELFIN_FFREE_MD_BANDS", "")
+    if not path:
+        return {}
+    tbl = _MD_BAND_CACHE.get(path)
+    if tbl is not None:
+        return tbl
+    tbl = {}
+    try:
+        with open(path) as fh:
+            for ln in fh:
+                if ln.startswith("#"):
+                    continue
+                p = ln.rstrip("\n").split("\t")
+                if len(p) >= 6:
+                    try:
+                        tbl[p[1]] = (float(p[3]), float(p[4]), float(p[5]))
+                    except ValueError:
+                        continue
+    except Exception:
+        tbl = {}
+    _MD_BAND_CACHE[path] = tbl
+    return tbl
+
+
+_CURRENT_CN = None
+
+
+def set_current_cn(cn) -> None:
+    """Record the coordination number of the complex currently being built.
+
+    Threading ``cn`` through all twelve md_distance() call sites would touch half the
+    build path for a value that is one number per complex and constant throughout it.
+    One process builds one complex at a time (``_one.py`` pins DELFIN_MAX_PROCESS_WORKERS
+    and the pool build runs single-threaded), so a module-level value is well defined here.
+    It is only ever READ behind DELFIN_FFREE_MD_MEASURED, and if it is stale or unset the
+    lookup simply falls back to the bare element pair -- never a wrong distance, only a
+    less specific one.
+    """
+    global _CURRENT_CN
+    try:
+        _CURRENT_CN = int(cn) if cn else None
+    except Exception:
+        _CURRENT_CN = None
+
+
+def _measured_md(metal: str, donor: str, cn=None, chelate=None):
+    """Measured p50 for this metal-donor contact, most specific key first.
+
+    The coordination number is what actually moves an M-D distance, and the measurement
+    shows it cleanly: Cd-N runs 2.283 / 2.342 / 2.357 at CN 4 / 5 / 6, Cd-I 2.712 / 2.743 /
+    2.837, monotonic for every donor type.  A CN-free p50 would flatten all of that into
+    one number -- and worse, for Cu(II) it would place the Jahn-Teller axial bonds 0.47 A
+    too short, because the element-pair band is 0.535 A wide and strongly asymmetric.
+
+    Falls back down the ladder and finally to None, in which case the caller keeps the
+    historic radii sum -- so a missing bin is never a wrong answer, only an unimproved one.
+    """
+    tbl = _md_band_table()
+    if not tbl:
+        return None
+    keys = []
+    if cn is not None:
+        if chelate is not None:
+            keys.append(f"{metal},{int(cn)}|{donor}|{int(bool(chelate))}")
+        keys.append(f"{metal},{int(cn)}|{donor}")
+    keys.append(f"{metal}|{donor}")
+    for k in keys:
+        row = tbl.get(k)
+        if row is not None:
+            return float(row[1])                                # p50
+    return None
+
+
+def md_distance(metal: str, donor: str, atom=None, mol=None, cn=None) -> float:
     """Metal–donor placement distance (Å).
 
     DEFAULT (flag OFF or no donor context): the original element-pair covalent
@@ -274,6 +518,26 @@ def md_distance(metal: str, donor: str, atom=None, mol=None) -> float:
     cyanide / halide / oxo-alkoxo / amide) — this is what distinguishes e.g.
     azide-N (short) from pyridine-N (unchanged) that the bare element sum cannot
     (#305 / GIXFIF).  Universal (graph-only, never SMILES-specific), deterministic."""
+    # MEASURED M-D LENGTH (DELFIN_FFREE_MD_MEASURED=1, default OFF -> byte-identical).
+    # A covalent-radii sum is not where crystals put a metal-donor bond, and this is a
+    # SETTING, not an optimisation: the builder places the donor at this distance and
+    # that is the end of it -- no weight, no barrier, no gate that can reject it.
+    # Measured basis: over 107 crystals the same radii-sum reference made U_topology score
+    # our own frames FIVE TIMES BETTER than reality (ratio 0.20); swapping it for the
+    # measured band took the crystal force from 52833 to 67.39, a factor of 784.  Here the
+    # same number is used one step earlier, where it costs nothing to be right.
+    # ⚠ READ BOTH SPELLINGS (26.08.2026).  `cli_manta.py:293` sets the champion
+    #   as DELFIN_FFFREE_ with THREE F; this switch was written as DELFIN_FFREE_ with TWO
+    #   and could therefore, by construction, NEVER make it into the champion, at
+    #   a measured 19.9 percent reach.  The old name stays readable because 31 of
+    #   1286 axis files set it -- renaming would make those archives
+    #   unreproducible.  Default OFF under BOTH names -> byte-identical.
+    #   Same repair as `assemble_complex._ffree_flag`; the derivation is there.
+    if (os.environ.get("DELFIN_FFFREE_MD_MEASURED", "0") == "1"
+            or os.environ.get("DELFIN_FFREE_MD_MEASURED", "0") == "1"):
+        _m = _measured_md(metal, donor, cn=(cn if cn else _CURRENT_CN))
+        if _m is not None:
+            return float(min(4.0, max(0.8, _m)))
     if os.environ.get("DELFIN_FFFREE_MD_CONTEXT", "0") != "1" or atom is None:
         return COV.get(metal, 1.5) + _donor_cov(donor)
     try:

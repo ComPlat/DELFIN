@@ -121,7 +121,7 @@ _HARTREE_TO_KCAL = 627.5094740631
 #: same atom throughout and the same coordinate held for all 52 answers --
 #: the force alternated between the 44 kcal/mol/A the slider was set to and
 #: 87, and it did so with the mouse standing still.  The user's words:
-#: "ich kann die maus halten an einer stelle es zappelt".
+#: "I can hold the mouse still in one spot and it shakes".
 #:
 #: A half taken per answer is the cure and the cost.  Replayed through
 #: that same recorded sequence it cuts the step-to-step swing to 39% of
@@ -162,7 +162,7 @@ _HAND_FOLLOWS_FLOOR = 0.05
 #: reaching its force in three answers is what was measured and wanted.
 #:
 #: And it was aimed at the wrong thing.  The shaking that was reported is the
-#: budget's: "nicht thermisch zappelt ja meist nicht".  It is the wall's
+#: budget's: "non-thermal mostly doesn't shake".  It is the wall's
 #: rollback, which is fixed where it happens -- see :func:`_within_the_budget`
 #: -- rather than by holding every hand back in case it is the one shaking.
 
@@ -171,7 +171,7 @@ _HAND_FOLLOWS_FLOOR = 0.05
 #: The wall is a refusal after the fact: the hand asks, xtb answers, the
 #: price turns out to be past the ceiling, and the structure springs back to
 #: the last geometry that was inside it.  That spring-back is what the user
-#: sees as shaking -- "nicht thermisch zappelt ja meist nicht", the same drag
+#: sees as shaking -- "non-thermal mostly doesn't shake", the same drag
 #: with the budget switched off is steady -- because the hand goes on asking
 #: for the same forbidden place and gets pulled off it once an answer.
 #:
@@ -2417,9 +2417,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: The press finds them and describes them, and used to leave it at that:
     #: two structures came out and the box holds one, so the saddle kept the
     #: box and the two ends existed only as sentences.  Asked for twice --
-    #: "bei Follow it down will ich natürlich auch beide enden im viewer sehen
-    #: koennen" -- and it is the same want the walk's points answered: the
-    #: numbers say what the two ends *are*, and only the picture says what
+    #: "with Follow it down I of course want to be able to see both ends in
+    #: the viewer too" -- and it is the same want the walk's points answered:
+    #: the numbers say what the two ends *are*, and only the picture says what
     #: they look like.
     #:
     #: The saddle is the first entry rather than something to find again.  It
@@ -2433,9 +2433,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
     #: The lowest structure this search has been through, to go back to.
     #:
-    #: Asked for: "ich brauch ein button mit dem man immer die struktur mit
-    #: der niedrigsten energie sammeln kann ... wenn ich eigenstaendig den
-    #: konformationsraum abtaste", and to be able to bring it back.
+    #: Asked for: "I need a button that always lets me collect the structure
+    #: with the lowest energy ... when I am sampling the conformer space on
+    #: my own", and to be able to bring it back.
     #:
     #: Searching a conformer space by hand is a walk through minima, and the
     #: one that matters is usually not the last one reached: you drag, let
@@ -2544,8 +2544,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: not the same thing: one needs a beginning and an end and has four ways
     #: of getting between them, the other needs no pair at all and one way.
     #: Said by the user, who had to ask what the difference was: "To the
-    #: saddle geht nur mit anfang ende ... und es gibt optts dann muss die
-    #: struktur im viewer schon bei einem TS liegen oder naehe".
+    #: saddle only works with a beginning and an end ... and there is optts,
+    #: then the structure in the viewer must already be at a TS or near one".
     #:
     #: So they are two presses with two conditions, and each condition is
     #: visible.  This one wants a structure on its way up -- a mode going the
@@ -3266,7 +3266,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
         The sentence and the sequence go out together. Neither is much use
         alone: the sentence says what to look for and the sequence is what
-        puts it back on the screen, and it is the pair that turns "es zappelt"
+        puts it back on the screen, and it is the pair that turns "it shakes"
         into a test somebody can fail.
 
         A wordless press is refused once and let through on the second, which
@@ -3434,7 +3434,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # there rather than inventing a message for it.
         state['mol_status_lines'] = tuple(lines)
         # In the plain lines it was given rather than the HTML they become: a
-        # bug report is read by a person, and "es zappelt" is answered by what
+        # bug report is read by a person, and "it shakes" is answered by what
         # the editor claimed at that second, not by its markup.
         record('status', lines=[str(one) for one in lines])
         _render_mol_status()
@@ -4240,8 +4240,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         and the climb never told it.  Measured on a climb stopped at frame 13
         of 117 with the slider at twelve a second: 509 more draws afterwards,
         frames 14 through 116, nine seconds of trajectory playing out over a
-        structure nothing was calculating any more.  That is "ein Stop von
-        Climb to TS laesst die ganze restliche Trajektorie noch nachspielen".
+        structure nothing was calculating any more.  That is "a Stop of
+        Climb to TS still lets the whole rest of the trajectory play out".
 
         Addressed to the run that is playing and not to whatever is current.
         The number has already moved on by the time this goes out -- moving it
@@ -7561,8 +7561,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         went distance[10,0], [10,5], [10,4], [10,5], [10,4], [10,0] over six
         answers.  A rate kept per coordinate is dropped on every one of those
         changes, so the forward spend never engaged at all -- the user, on
-        exactly this: "zappeln ist aber noch vor allem bei systemen die nicht
-        verbunden sind sprich zwei molekuelen".
+        exactly this: "but there is still shaking, above all with systems that
+        are not connected, i.e. two molecules".
 
         Smoothed one way only -- steeper is taken whole on the answer it
         steepens, flatter half at a time -- because what this is for is not
@@ -8120,8 +8120,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # take off again -- the release has already run, and only the
             # *next* grab clears them. Reported from a real session, with the
             # journal showing the release at 1425.264 s and the answer that
-            # drew over it at 1425.977: "warum wird die force nicht mehr
-            # entfernt ich seh immer noch die orangenen kugeln im viewer?"
+            # drew over it at 1425.977: "why is the force no longer being
+            # removed, I still see the orange balls in the viewer?"
             #
             # Nothing is marked and nothing is cleared: the release already
             # cleared, and this answer has no standing to say otherwise.
@@ -8427,8 +8427,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         van-der-Waals complex, dragging twice in a row with Dynamik Opt and
         Auto on: the first release climbed to 2.316 A and switched the toggle
         off behind it, and the second release -- the toggle now up, so downhill
-        again -- walked the structure back to 3.353 A.  Which is "ich kann es
-        nicht beeinflussen": you can point it at a saddle exactly once.
+        again -- walked the structure back to 3.353 A.  Which is "I cannot
+        influence it": you can point it at a saddle exactly once.
 
         Downhill and uphill cannot both answer one release.  A settle and an
         auto-minimisation walk down, a climb walks *up* along one mode while
@@ -8939,8 +8939,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # goes off with it.  Reported from a real session: the switch
                 # went off, the line said a climb was still its own to stop,
                 # and run 54 went on streaming frames into the picture for
-                # another sixteen seconds -- "Dynamik Opt aus, es geht
-                # weiter, warum?".
+                # another sixteen seconds -- "Dynamik Opt off, it keeps
+                # going, why?".
                 #
                 # A climb or a minimise the *user* pressed for, on the other
                 # hand, is a deliberate calculation with its own button, and
@@ -9184,8 +9184,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         The climb used to be the one thing a hand could not interrupt.  It
         stood still instead, in a loop of its own, and was handed the released
         structure by a second path with its own hand-over rules -- which is
-        where "es steppt auf einer alten Geometrie" and "es kaempft mit
-        Dynamik Opt um das Loslassen" both came from.  Stopping it costs
+        where "it is stepping on an old geometry" and "it is fighting with
+        Dynamik Opt over the release" both came from.  Stopping it costs
         nothing that standing still did not already cost: what it resumes from
         is the structure the hand made either way, and the Hessian is
         recomputed either way, because a Bofill update repairs a Hessian one
@@ -10972,8 +10972,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # leaves two ends, the start of a saddle search moves onto them
             # and the ways open from a pair arrive beside it; walked back
             # past the scan, all three went on standing over a walk that no
-            # longer existed.  The user, on the rule this is: "Undo muss dann
-            # natuerlich in Teilen auch wieder Funktionen nehmen."
+            # longer existed.  The user, on the rule this is: "Undo must then
+            # of course, in parts, also take functions away again."
             #
             # By reference: the pair is two geometries that never change once
             # written, so every entry after a scan shares the one tuple.
@@ -10986,9 +10986,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # Two ends went back and the walk did not, so an Undo past an
             # optimisation returned the structure and left the profile gone,
             # the point slider gone and the second opinion unpressable -- the
-            # geometry of a scan without the scan.  Reported: "ich hab scan
-            # gemacht, weiter optimiert, wollte zurueckspringen, konnte scan
-            # nicht mehr anschauen obwohl struktur zurueckgesprungen ist".
+            # geometry of a scan without the scan.  Reported: "I did a scan,
+            # optimised further, wanted to jump back, could no longer look at
+            # the scan although the structure had jumped back".
             #
             # By reference, like the pair: a finished walk is not edited
             # afterwards, so every entry over the same scan shares one object
@@ -11086,7 +11086,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                      gesture=gesture)
         # Kept for the action that cleared them.
         #
-        # "Alles wie der schritt davor alles" asks for every entry to carry
+        # "Everything as in the step before, everything" asks for every entry to carry
         # them, and that is the better rule -- a state that is the same in the
         # coordinates and different in the switches is not the state that was
         # there.  It is not this change: applied to every entry it takes the
@@ -11263,7 +11263,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # through the very walk it describes.  What arrives in the box decides
         # that case, through _scan_plot_holds, and it already did.
         # And the switches as they stood.  Every entry carries them now -- see
-        # :func:`_remember`, and "alles wie der schritt davor alles".
+        # :func:`_remember`, and "everything as in the step before, everything".
         #
         # After the scan's own state and not before it.  Setting a switch can
         # start a run, and a run that is not a press drops the profile the
@@ -12168,8 +12168,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # at its ends already are.  The press said so, and said it after the
         # leg was armed and the button pressed, which is the worst moment for
         # it: the work is done and then comes the correction.  Asked for as
-        # "warum muss ich dann noch umstellen ... da soll direkt das genommen
-        # werden was geht bzw nur noch die auswahl geben die geht".
+        # "why do I then still have to switch it over ... it should directly
+        # take what works, or rather only offer the choice that works".
         #
         # So it comes off the field instead, exactly the way `form` and
         # `break` already come off :data:`submit_scan_way` for an angle.  When
@@ -12838,8 +12838,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     # The ramp came down into a product minimum and would only
                     # have over-strained it from there -- so it stopped, and
                     # this says where, rather than reporting the strain at the
-                    # far end of a ramp that went past the answer.  "Geht ueber
-                    # das Minimum hinaus" was that overshoot; the walk stops at
+                    # far end of a ramp that went past the answer.  "Goes past
+                    # the minimum" was that overshoot; the walk stops at
                     # the minimum now.
                     reached = got['reached']
                     settled_at = (f' Released, it settles to '
@@ -13970,10 +13970,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # "The scan walked 3 of 8 points ... the whole path is open".
                 # Three points had been walked and their two ends were in
                 # hand; nothing offered them and nothing said why not.  That
-                # is what the user was looking at: "habe ich jetzt nach so
-                # einem Scan nicht die Moeglichkeit, dafuer einen TS zu
-                # optimieren oder noch andere Methoden den Path zu
-                # untersuchen?"
+                # is what the user was looking at: "after a scan like this,
+                # do I now not have the option of optimising a TS for it,
+                # or of examining the path with still other methods?"
                 #
                 # Before the budget clamps what goes into the box: the pair is
                 # what the walk reached, and the box gets the last point the
@@ -15522,8 +15521,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         did: the box went on standing at "what is on screen", so the press
         went on meaning climb what is in the box, and the one moment the user
         was being told about passed without anything happening on screen.
-        The user, on that: "nach einem Scan konnten wir doch davor noch weiter
-        den Path absuchen mit Buttons -- wo sind die hin".
+        The user, on that: "after a scan we could previously still search the
+        path further with buttons -- where did they go".
 
         So the start moves.  A finished scan is the strongest statement there
         is about what the user is interested in now -- it is minutes of
@@ -15598,9 +15597,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 # from.  They were "the end you marked" and "the scan's two
                 # ends" -- one singular over a pair, the other putting the
                 # scan first -- and read side by side they looked like two
-                # different kinds of thing.  Asked directly, twice: "was ist
-                # jetzt the scans two ends und the end you mark?" and "aber
-                # was ist der unterschied ich verstehe ihn noch nicht ganz".
+                # different kinds of thing.  Asked directly, twice: "now what
+                # is the scans two ends and the end you mark?" and "but what
+                # is the difference, I don't quite understand it yet".
                 #
                 # They are the same kind of thing: two structures for the
                 # search to look between.  What differs is who chose them, and
@@ -15680,8 +15679,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # It can always be *run* from -- ORCA's OptTS takes any geometry
             # -- and that is not the same as its being worth pressing.  From
             # an ordinary minimum it is a coin flip, and a press that is a
-            # coin flip is what the user was objecting to: "to the saddle kann
-            # ja nichts wenn ich nicht scan habe oder Mark".  A structure with
+            # coin flip is what the user was objecting to: "to the saddle can't
+            # do anything if I don't have a scan or Mark".  A structure with
             # a mode going the wrong way is a different matter, and so is one
             # the hand is climbing uphill: both are already on their way up,
             # and converging them is the whole of what this press is for.
@@ -15702,8 +15701,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # user's whole practice: dragging a structure into the shape a
             # transition state should have and then converging it is exactly
             # what this editor is for, and there is nothing in the geometry
-            # that says a hand-made guess is one.  "ich kann ja auch selber
-            # was ziehen und von dort dann optTS machen."
+            # that says a hand-made guess is one.  "I can also drag something
+            # myself and then do optTS from there."
             #
             # So it is there whenever the method can drive it, and only the
             # pair press waits for a pair.
@@ -15959,8 +15958,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         89.9, 50.0, 93.0, 53.0, 81.5, 63.0, 86.2, 67.2, 93.5, 71.4 kcal/mol
         per Angstrom.  The high ones are all at their own ceiling: the hand
         was pulling as hard as it was allowed to, every second answer.  The
-        user's report: "es zappelt und dann schaff ich es sogar manchmal ein
-        molekuel zu zerreissen", and the seventeenth answer applied 146.5
+        user's report: "it shakes and then I sometimes even manage to tear a
+        molecule apart", and the seventeenth answer applied 146.5
         against a ceiling of 105 and put two atoms inside 0.44 of a bond
         length.  The budget was at +0.9 of 22.3 kcal/mol throughout -- nothing
         was being refused; this was the hand alone.
@@ -16132,8 +16131,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
 
         The method, the charge, the multiplicity, the solvent, and any value
         being held.  UFF is not GFN2 is not g-xTB; a cation is not a neutral;
-        and per charge the spin state is its own question -- "pro charge ist M
-        interessant, das zaehlt da am besten mit rein".  A value held at 2.5 A
+        and per charge the spin state is its own question -- "per charge M is
+        of interest, that is best counted in there too".  A value held at 2.5 A
         makes it a minimum of a different surface again.
 
         Change any of them and what was found does not become wrong -- it
@@ -16207,8 +16206,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     def _keep_a_point(xyz, energy, kind, how):
         """Remember a stationary point this question has been through.
 
-        Extrema and nothing else -- "nur minimum TS nicht zwischendinger also
-        nur extrema auf der PES".  A minimum is what a release settled to and
+        Extrema and nothing else -- "only minimum TS, no in-between things, so
+        only extrema on the PES".  A minimum is what a release settled to and
         what Optimise reached; a transition state is what a search reported
         one imaginary mode for.  Everything between them is a geometry on the
         way somewhere, and a list of those is a recording rather than a set of
@@ -17213,8 +17212,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # a scan put "marked" in the list and left the box on "the scan's two
         # ends", so the press went on searching between the scan's, and the
         # sentence below promised the opposite.  Reported exactly so: a scan,
-        # then To the saddle, then two marks -- "hat einfach aus dem scan die
-        # enden genommen".
+        # then To the saddle, then two marks -- "it simply took the ends from
+        # the scan".
         #
         # Through the wish, like the scan's own move: a start this method
         # cannot run from is left alone rather than forced.
@@ -17870,7 +17869,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         #
         # This grew into three or four paragraphs above the viewer, each
         # clause an explanation of the one before it, and the user's word for
-        # reading it was that it "erschlaegt den user mit text" -- it beats
+        # reading it was that it "bludgeons the user with text" -- it beats
         # him over the head.  A verdict nobody finishes is a verdict nobody
         # has.  So what is on screen is the findings, in the order a chemist
         # reads them, separated rather than joined up; the reasoning behind
@@ -17879,8 +17878,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         marks = []
         if state.get('scan_arrived') and came:
             # Why it walked fewer points than were asked for, and how to get
-            # them all.  Reported: "hab scan mit 40 point machen wollen geht
-            # das nur wenn ich ziel winkel einstelle?" -- the count came back
+            # them all.  Reported: "wanted to do a scan with 40 points, does
+            # that only work if I set a target angle?" -- the count came back
             # short and nothing said the target was not the reason.  It is
             # not: the scan stopped because it had crossed a barrier and
             # settled at the next minimum, which off Whole profile is where a
@@ -18367,9 +18366,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # is what its own note argues.  Reset is not that: it goes back to the
         # same molecule the user is working on, and switching off the mode
         # they are working in leaves a picture that does not answer a click.
-        # Reported twice within the hour, as "der viewer ist nach reset
-        # einfach eingefroren" and "warum reagiert nach reset der viewer nicht
-        # mehr" -- from a session where the journal shows the press, then
+        # Reported twice within the hour, as "after reset the viewer is
+        # simply frozen" and "why does the viewer no longer respond after
+        # reset" -- from a session where the journal shows the press, then
         # `submit_manip_btn = False`, and then nothing the hand did reaching
         # anything.
         #
@@ -18413,8 +18412,8 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # it is about atoms by number and the structure that arrives has the
         # same ones -- so nothing in the write below takes one away, and after
         # a Reset the pull vectors were still there over a structure that had
-        # never been pulled.  Reported as "reset setzt viewer nicht zurueck
-        # auf anfang ich seh immer noch den vektor".
+        # never been pulled.  Reported as "reset does not put the viewer back
+        # to the start, I still see the vector".
         #
         # Reset is the one action that means "as it was loaded", and a load
         # was not part of that.  The same for the pivot: it is a point chosen

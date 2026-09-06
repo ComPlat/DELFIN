@@ -11,6 +11,7 @@ sphere placement (where) + this (orient + merge) -> a DFT-startable structure.
 Prototype: homoleptic monodentate [M(L)n].  Deterministic.
 """
 from __future__ import annotations
+import math
 import os
 import itertools
 from typing import List, Tuple
@@ -21,6 +22,10 @@ from delfin.manta import metal_sphere_builder as MSB
 import delfin.manta._bond_decollapse as _bd
 
 SEED = 42
+# Bin width of the polyhedron-fidelity selection (18.08.2026).  See the long
+# justification at the selection site: unbinned, the floating-point number would decide
+# every comparison and the landed beta term would never get its turn again.
+_POLY_FIDELITY_BIN = 0.05
 
 
 def _rot_align(a: np.ndarray, b: np.ndarray) -> np.ndarray:
@@ -28,7 +33,24 @@ def _rot_align(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     a = a / np.linalg.norm(a); b = b / np.linalg.norm(b)
     v = np.cross(a, b); s = np.linalg.norm(v); c = float(np.dot(a, b))
     if s < 1e-8:
-        return np.eye(3) if c > 0 else -np.eye(3)
+        if c > 0:
+            return np.eye(3)
+        # ANTIPARALLEL (a -> -a).  `-np.eye(3)` maps a to b correctly but has det = -1: it is an
+        # INVERSION, not a rotation.  Applied to a CHIRAL ligand it silently emits the ENANTIOMER --
+        # a different molecule that no dedup or mirror filter downstream catches, and that shows up
+        # in the eye as a lost CCDC isomer rather than as the placement bug it is.  The proper
+        # replacement is a 180 deg rotation about ANY axis perpendicular to a: R = 2*n n^T - I with
+        # n _|_ a.  It maps a -> -a exactly as well, but det = +1, so handedness is preserved.
+        # Env-gated (DELFIN_FFFREE_PROPER_ANTIPARALLEL, default OFF -> byte-identical) so the
+        # correction gets its own A/B; watch ccdc_isomer_lost, where the mirrored ligand surfaces.
+        if os.environ.get("DELFIN_FFFREE_PROPER_ANTIPARALLEL", "0") != "1":
+            return -np.eye(3)
+        _perp = np.array([1.0, 0.0, 0.0])
+        if abs(float(np.dot(_perp, a))) > 0.9:
+            _perp = np.array([0.0, 1.0, 0.0])
+        _n = np.cross(a, _perp)
+        _n = _n / np.linalg.norm(_n)
+        return 2.0 * np.outer(_n, _n) - np.eye(3)
     vx = np.array([[0, -v[2], v[1]], [v[2], 0, -v[0]], [-v[1], v[0], 0]])
     return np.eye(3) + vx + vx @ vx * ((1 - c) / (s * s))
 
@@ -74,6 +96,32 @@ def _ring_bounds_enabled() -> bool:
     6-rings) so the ring embeds flat-and-correct.  Geometry-only, feasibility-safe
     (falls back to the unconstrained embed).  Default OFF -> byte-identical."""
     return os.environ.get("DELFIN_FFFREE_RING_BOUNDS", "0") == "1"
+
+
+def _bite_free_bounds() -> bool:
+    """THE one place DELFIN_FFFREE_BITE_FREE is read (default OFF -> byte-identical).
+
+    THE BITE IS A RING CLOSURE, NOT AN INPUT.  Measured 2026-07-31 over 18 metals:
+        cos(bite) = (r1^2 + r2^2 - d_DD^2) / (2 r1 r2)      RMS 0.24 deg, no fitted parameter.
+    Two M-D radii and ONE donor-donor distance already determine the bite exactly.  So a
+    bounds matrix that pins BOTH the radii AND the donor-donor separation is not stating one
+    law twice -- it is OVER-DETERMINING a triangle, and when the second statement comes from
+    the ideal polyhedron while the ligand's backbone says otherwise, the two contradict.
+    Triangle smoothing spreads that contradiction over the whole matrix and the embedder
+    returns the least-bad compromise: that is the splay described at the TRILATERATED BOUNDS
+    comment below, and the source of chelate bites beyond 92 deg (real chelates: 98 % below
+    90, none above 95).
+
+    This flag keeps the half that is measured and real -- the M-D radii -- and DROPS the
+    donor-donor entries, leaving them to RDKit's own covalent bounds, i.e. to the separations
+    the ligand actually has.  The bite then comes OUT of the embed as the consequence of the
+    ring closure instead of being asked for, and there is nothing left to correct afterwards.
+
+    Distinct from the trilateration at line 273: that one KEEPS the donor-donor entries and
+    moves the targets instead, which needs a pre-existing conformer to trilaterate from (see
+    the GetConformer guard there).  This needs nothing.  It wins over the bite pin when both
+    are on, because it is the more specific statement about the very same entries."""
+    return os.environ.get("DELFIN_FFFREE_BITE_FREE", "0") == "1"
 
 
 def _tighten_ring_bounds(bm, mh, tol=0.06):
@@ -175,7 +223,7 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
         # bound to the metal and DG happily collapses it ONTO the metal (~0.7-1.1 A).  That
         # in-shell intruder makes _build_is_clean reject the whole complex (over-coordination
         # / overlap) -> it falls back to legacy UFF, whose mixed-donor OC-6 buckles the donors
-        # together ("kein OC-6 Polyeder, donors bunched" — eye-flagged ADOHOT/ADOROD/ZUSBEU/
+        # together ("no OC-6 polyhedron, donors bunched" — eye-flagged ADOHOT/ADOROD/ZUSBEU/
         # ASEBAC class).  The donor VERTEX assignment itself is already a perfect octahedron
         # (12 cis 90deg / 3 trans 180deg, verified); only the embed's non-donor collapse
         # poisons it.  Fix: a metal->non-donor-heavy EXCLUSION floor in the DG bounds matrix
@@ -197,7 +245,12 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
         _have_targets = (donor_target_pos is not None
                          and len(donor_target_pos) == len(donor_idxs))
         _ring_b = _ring_bounds_enabled()
-        _use_bm = (_have_targets and (_chel_bite or harden or force_bite)) or _oc6_vertex or _ring_b
+        # BITE_FREE opens the bounds path on its own: it needs the M-D radii out of the
+        # targets, so _have_targets, but NOT the bite pin -- dropping the donor-donor entries
+        # is the whole point of it (see _bite_free_bounds).
+        _bite_free = _bite_free_bounds()
+        _use_bm = (_have_targets and (_chel_bite or harden or force_bite or _bite_free)) \
+            or _oc6_vertex or _ring_b
         if _use_bm:
             try:
                 from rdkit.Chem import rdDistGeom as _DG
@@ -211,7 +264,11 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
                 # polyhedron (that re-introduces the cap splay the rigid seating fixes);
                 # only enforce the ring interior angle below.  Keep the cap's natural
                 # donor geometry -> coordination stays emergent.
-                if _ring_b and not (_chel_bite or harden or force_bite):
+                # BITE_FREE belongs in this list too, and for the opposite reason: it wants
+                # the M-D pins that only tp carries, and it drops the donor-donor entries by
+                # itself further down.  Dropping tp here would silently take its radii away
+                # as well, so RING_BOUNDS+BITE_FREE would quietly become RING_BOUNDS alone.
+                if _ring_b and not (_chel_bite or harden or force_bite or _bite_free):
                     tp = None
 
                 def _setb(i, j, dist, tol=0.05):
@@ -233,11 +290,48 @@ def _embed_metallacycle(lmol, donor_idxs, metal_sym, k=6, donor_target_pos=None,
                                          if not _oc6_vertex else this_lo + 2.0)
                         bm[hi][lo] = float(this_lo)
                 if tp is not None:
+                    # TRILATERATED BOUNDS (DELFIN_FFREE_TRILAT_BOUNDS=1, default OFF).
+                    #
+                    # This block already IS "specify and solve": bounds matrix -> triangle
+                    # smoothing -> embed.  The solver is not the problem.  Its INPUT is:
+                    # tp are the IDEAL POLYHEDRON vertex positions, and the donor-donor
+                    # entries derived from them ask for a separation the ligand does not
+                    # have.  Triangle smoothing then propagates that impossible request
+                    # through the whole matrix, and the embedder returns the least-bad
+                    # compromise -- which is where the splayed rings and the 29 % of
+                    # chelate bites beyond 92 deg come from (real chelates: 98 % below 90,
+                    # none above 95).
+                    #
+                    # So keep the M-D radii, which are measured and real, and replace the
+                    # donor-donor entries with the separations the LIGAND ACTUALLY HAS.
+                    # Same statement as the cosine law for two donors, generalised: the
+                    # coordination angles become a consequence of the bounds instead of an
+                    # input to them, and the enumerated vertex assignment is untouched
+                    # because trilateration starts from those very targets.
+                    _tp_use = tp
+                    if os.environ.get("DELFIN_FFREE_TRILAT_BOUNDS", "0") == "1":
+                        try:
+                            _lp_src = mh.GetConformer().GetPositions()
+                        except Exception:
+                            _lp_src = None
+                        if _lp_src is not None:
+                            _t2 = _trilaterate_donor_targets(
+                                _lp_src, [int(d) for d in donor_idxs], list(tp))
+                            if _t2 is not None:
+                                _tp_use = _t2
                     for a, da in enumerate(donor_idxs):   # M-D HARD; donor-donor (soft for backbone)
-                        _setb(mi, int(da), float(np.linalg.norm(tp[a])))
+                        _setb(mi, int(da), float(np.linalg.norm(_tp_use[a])))
+                        if _bite_free:
+                            # RING CLOSURE: the two radii above already fix the bite once the
+                            # ligand's own donor-donor distance is known, so writing that
+                            # distance from the ideal polyhedron as well over-determines the
+                            # triangle.  Leave it to RDKit's covalent bounds and let the bite
+                            # come out.  Deliberately AFTER the M-D line, not instead of it.
+                            continue
                         for b in range(a + 1, len(donor_idxs)):
                             _setb(int(da), int(donor_idxs[b]),
-                                  float(np.linalg.norm(tp[a] - tp[b])), tol=_dd_tol)
+                                  float(np.linalg.norm(_tp_use[a] - _tp_use[b])),
+                                  tol=_dd_tol)
                 if _DGs.DoTriangleSmoothing(bm):
                     ep = _DG.EmbedParameters()
                     ep.randomSeed = SEED
@@ -580,12 +674,80 @@ def _has_collapsed_heavy_bonds(syms, P, factor=0.70):
     return False
 
 
-def _collapsed_heavy_bonds_strict(syms, P, factor=0.82):
+def _donor_follow_weights(syms, P, donor_idxs, span):
+    """Per-atom (owner donor, weight) for letting a donor's NEIGHBOURHOOD follow its move.
+
+    THE DEFECT THIS ADDRESSES.  The per-donor radial placement further down sets each donor
+    to its exact ideal M-D radius and moves NOTHING else -- the donor slides by delta while
+    its own bonded neighbour stays put, so the donor-backbone bond is stretched or compressed
+    by the full delta (measured median ~0.18 A).  The code says "the constrained relax then
+    pulls the backbone into consistency", and that relax sits behind LIGANDFF, which is not a
+    champion flag: in the shipped build nothing ever pulls it back.  That is the largest
+    single source of GATE_COLLAPSED_BOND (171 of 215 CHELATE_EMPTY systems die there).
+
+    THE FIX IS A DECAY, NOT A REPAIR.  Instead of ending the displacement abruptly at the
+    donor, let it fall off linearly over the BOND GRAPH: an atom k bonds away moves by
+    (1 - k/span) of its donor's delta.  The donor-neighbour bond then distorts by delta/span
+    instead of delta -- with the default span of 3, a third -- and the distortion keeps
+    shrinking outward instead of piling onto one bond.  No force field, no iteration, no
+    reference: one BFS over a covalent graph read off the geometry.
+
+    EVERY DONOR KEEPS ITS EXACT RADIUS.  Atoms are assigned to their NEAREST donor and a tie
+    moves nothing, so no field ever reaches another donor -- the M-D lengths the placement
+    just fixed, and the bite between them, are untouched by construction.
+    """
+    n = len(syms)
+    dons = [int(d) for d in donor_idxs]
+    dset = set(dons)
+    adj = [[] for _ in range(n)]
+    for i in range(n):
+        if _bd._is_metal(syms[i]):
+            continue
+        for j in range(i + 1, n):
+            if _bd._is_metal(syms[j]):
+                continue
+            if float(np.linalg.norm(P[i] - P[j])) <= 1.30 * _bd._ideal_bond(syms[i], syms[j]):
+                adj[i].append(j)
+                adj[j].append(i)
+    INF = 10 ** 6
+    dist = [INF] * n
+    owner = [-1] * n
+    frontier = []
+    for d in dons:
+        dist[d] = 0
+        owner[d] = d
+        frontier.append(d)
+    k = 0
+    while frontier and k < span:
+        k += 1
+        nxt = []
+        claim = {}
+        for a in frontier:
+            for b in adj[a]:
+                if dist[b] <= k or b in dset:
+                    continue                      # already closer, or a donor: never moved
+                claim.setdefault(b, set()).add(owner[a])
+        for b, owners in claim.items():
+            dist[b] = k
+            owner[b] = next(iter(owners)) if len(owners) == 1 else -1   # tie -> no move
+            nxt.append(b)
+        frontier = nxt
+    out = {}
+    for a in range(n):
+        if a in dset or owner[a] < 0 or dist[a] >= span:
+            continue
+        out[a] = (owner[a], 1.0 - float(dist[a]) / float(span))
+    return out
+
+
+def _collapsed_heavy_bonds_strict(syms, P, factor=None):   # None -> _bd.COLLAPSE_FLOOR (war 0.82)
     """True if any BONDED heavy-heavy non-metal pair sits below ``factor`` × the
     covalent-sum ideal — same logic as ``_has_collapsed_heavy_bonds`` but NOT env-
     gated (always active).  Used to reject the few DG-metallacycle conformers of a
     RIGID PLANAR tridentate that carry a collapsed donor-backbone bond, so a clean
     conformer is selected from the pool.  Universal, geometry-only, deterministic."""
+    if factor is None:
+        factor = _bd.COLLAPSE_FLOOR   # ONE source for the collapse floor, see _bond_decollapse
     n = len(syms)
     for i in range(n):
         if syms[i] == "H" or _bd._is_metal(syms[i]):
@@ -668,7 +830,352 @@ def _rigid_planar_central_arm(mol, dons):
     return None
 
 
-def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True, rigid=False):
+def _hydrogens_riding_on(syms, P, idx, cut=1.35):
+    """Indices of the hydrogens covalently attached to atom ``idx``.
+
+    Geometric, so it needs no molecule object and no vocabulary: an H whose distance to
+    ``idx`` is inside a covalent X-H range belongs to it.  1.35 A clears every real X-H
+    (C-H 1.09, N-H 1.03, O-H 0.99, B-H 1.19, Si-H 1.48 is the only common one above it and
+    a silane donor is not a case this path seats) while staying far below any H...X contact.
+    """
+    out = []
+    if syms is None:
+        return out
+    p = np.asarray(P[idx], float)
+    for j in range(len(syms)):
+        if syms[j] != "H" or j == idx:
+            continue
+        if float(np.linalg.norm(np.asarray(P[j], float) - p)) <= cut:
+            out.append(j)
+    return out
+
+
+_H_CONTACT_FLOOR = 1.6      # inter-ligand H...H stays above this in crystals (eye: hhclash)
+
+
+def _riders_that_may_move(syms, P, riders, delta, parent):
+    """Which riding hydrogens may follow their parent WITHOUT tightening a contact.
+
+    MEASURED CAUSE, KIQNUT 2026-08-01.  H_FOLLOW moved every rider along the M-D radial
+    direction with no clash check at all.  On a crowded CN6 hexaamine that drove
+    inter-ligand hydrogens into each other -- H13..H44 went 1.34 -> 1.21 A where crystals
+    stay above 1.6 -- and the tightened contact cost the topology match: topo_correct
+    true -> false, broken_frac 0.0 -> 1.0.  That ONE system was the cap_LOST that blocked
+    the entire A/B, which was otherwise a win (12 affected, valid 5->5, mean_delta -0.836:
+    the eye read the rest as BETTER).
+
+    The heavy-atom graph was never the problem -- BOTH arms carry the identical N-C
+    compression (1.32 / 1.34 / 1.39 A vs crystal 1.47), so the rescale is not what broke
+    it.  The hydrogens were.
+
+    RULE: a rider moves only if the move does not leave its closest contact both TIGHTER
+    than before and below the crystal floor.  Never-worse by construction: the outcome is
+    either today's champion behaviour (the rider simply stays) or a move that does not
+    tighten anything past what crystals show.
+
+    ⛔ MEASURED NOT TO FIX KIQNUT, and the reason is structural.  isoH_FOLLOW2 came back
+    identical to isoH_FOLLOW down to the MD5 of the built file: this guard moved nothing.
+    It runs inside _orient_chelate_to_vertices, which works on ONE ligand's coordinates in
+    the metal frame, while the clash is INTER-ligand (H13 on C2 against H44 on N31).  At
+    rescale time the neighbouring ligand is not in the array, so the guard cannot see the
+    contact it was written to catch -- checkable before building, and I did not check it.
+
+    The guard is kept: it is correct for intra-ligand contacts and costs nothing where it
+    cannot fire.  But H_FOLLOW's real defect is one step earlier -- the DONOR is pushed onto
+    its ideal radius with no knowledge of where its hydrogen will then point, and without
+    H_FOLLOW that same move merely stretches the X-H bond instead.  Both are wrong in
+    different ways and neither repairs the other.  A next attempt must run on the ASSEMBLED
+    complex, or better, the seating must account for the neighbour before it places the donor.
+    """
+    if not len(riders):
+        return riders
+    A = np.asarray(P, float)
+    keep = []
+    for h in riders:
+        others = [j for j in range(len(A)) if j != h and j != parent and j not in riders]
+        if not others:
+            keep.append(h); continue
+        O = A[others]
+        d_before = float(np.min(np.linalg.norm(O - A[h], axis=1)))
+        d_after = float(np.min(np.linalg.norm(O - (A[h] + delta), axis=1)))
+        if d_after >= d_before or d_after >= _H_CONTACT_FLOOR:
+            keep.append(h)
+    return keep
+
+
+# ===== TRILATERATION AS A RESCUE RUNG, NOT AS THE PRIMARY PATH ===============================
+#
+# Measured 2026-08-02 (trilatAB2, 995 systems).  DELFIN_FFREE_TRILATERATE as a PRIMARY path:
+#     12 losses -- 12 of 12 were topo_correct BEFORE
+#     11 gains  --  0 of 11 had a valid frame BEFORE
+# Not one borderline case in either direction: it repairs what was broken and damages what was
+# whole.  PLANAR_MER measured identically.  A switch with that signature is not a better way to
+# place ligands, it is a SECOND way -- and a second way belongs where the first one already
+# failed.  converter_backend already HAS that ladder (_maybe_decollapse -> _seat_via_conformers
+# -> legacy); this adds a rung to it rather than a parallel mechanism.
+#
+# Reached only after the self-gate has rejected the rigid build, the rescue is additive BY
+# CONSTRUCTION: a clean frame can never be replaced by it, so never-worse holds structurally
+# instead of having to be re-measured.
+#
+# The env read lives HERE and only here (converter_backend asks through trilat_rescue_enabled /
+# trilaterate_rescue), so the flag has one home and cannot drift out of sync with its callers.
+_DP_RESID_SLACK = 0.15          # A, how much donor-to-vertex residual beta may buy back
+_DP_STEPS = 72                  # 5 deg scan; the objective is smooth, no optimiser needed
+
+
+def _donor_plane_beta(P, syms, d):
+    """beta at donor d: angle between M->D and the plane of d's own substituents.
+
+    The metal is NOT part of the plane fit -- that is the whole point (pyramid_root.py):
+    a three-coordinate donor has one Walsh angle and it does not say WHICH of the three
+    partners is displaced.  Fitting the plane WITHOUT the metal makes the question
+    answerable: if the substituents stay flat and the metal is off, the seating is at fault.
+    Returns None when d has fewer than two substituents (no plane exists to be out of).
+    """
+    _d = np.asarray(P[d], float)
+    nb = [i for i in range(len(syms)) if i != d and syms[i] != "H"
+          and float(np.linalg.norm(np.asarray(P[i], float) - _d)) < 1.95]
+    if len(nb) < 2:
+        return None
+    A = np.array([np.asarray(P[i], float) - _d for i in nb], float)
+    try:                                        # plane normal = smallest singular vector
+        nrm = np.linalg.svd(A)[2][-1]
+    except Exception:
+        return None
+    v = np.asarray(P[0], float) * 0.0 - _d      # M sits at the origin in this frame
+    n_ = float(np.linalg.norm(v))
+    if n_ < 1e-6:
+        return None
+    return abs(math.degrees(math.asin(max(-1.0, min(1.0, float(np.dot(nrm, v / n_)))))))
+
+
+_BETA_BAND = 4.8        # deg -- the crystals' own upper beta, measured over clean CCDC
+                        # structures: 3.4 monodentate, 3.7 bidentate, 4.8 tetradentate.
+                        # NOT a tuning knob: below it a donor is as flat as real chemistry
+                        # gets, so there is nothing to win by preferring a flatter conformer.
+
+
+_COMBO_MATERIALISE_MAX = 200_000    # above this the full product is never built at all
+
+
+def _ranked_combos(rank_lists, k):
+    """The first ``k`` index-combinations in (sum, lexicographic) order -- WITHOUT ever
+    materialising the Cartesian product.
+
+    WHY THIS EXISTS.  Both ensemble paths did
+
+        combos = list(itertools.product(*rank_lists))
+        combos.sort(key=lambda cb: (sum(cb), cb))
+        ... combos[:MAX_EVAL]
+
+    i.e. they built and sorted the WHOLE product to use 64 of it.  Eight ligands with ten
+    conformers each is 10^8 tuples -- per system, times every parallel worker.  That is the
+    measured cause of four consecutive OOM kills of the sigma-ensemble path (journal:
+    "Failed with result 'oom-kill'"), which is why the biggest conformer lever in the tree
+    has never once produced a verdict.  Note the shape of the mistake: the memory blows up
+    in the SELECTION, not in the chemistry -- a single build peaks near 0.25 G.
+
+    EXACTLY ORDER-EQUIVALENT to the sort it replaces.  Best-first over the index lattice:
+    pop the smallest (sum, tuple), push its one-step increments.  Every combination is
+    reachable by incrementing coordinates from all-zeros, and the heap key IS the sort key,
+    so the k-th element out is the k-th element of the sorted product.  Memory O(k * n).
+
+    Below _COMBO_MATERIALISE_MAX the caller keeps the historic path verbatim, so nothing
+    changes for the small cases that always worked."""
+    import heapq as _hq
+    n = len(rank_lists)
+    if n == 0:
+        return []
+    start = tuple(0 for _ in range(n))
+    heap = [(0, start)]
+    seen = {start}
+    out = []
+    while heap and len(out) < k:
+        s, cb = _hq.heappop(heap)
+        out.append(cb)
+        for i in range(n):
+            if cb[i] + 1 < len(rank_lists[i]):
+                nxt = cb[:i] + (cb[i] + 1,) + cb[i + 1:]
+                if nxt not in seen:
+                    seen.add(nxt)
+                    _hq.heappush(heap, (s + 1, nxt))
+    return out
+
+
+def _beta_score(syms, Q, donor_idxs):
+    """Sum of SQUARED out-of-plane angles over the donors that HAVE a plane (degrees^2).
+
+    The metal sits at the origin in Q, which is exactly what _donor_plane_beta assumes.
+    Donors with fewer than two heavy substituents have no plane to be out of and simply do
+    not contribute -- a carboxylate O is not scored here, and must not be: its in-plane
+    statement is a TORSION, a different quantity.
+
+    ONLY THE EXCESS OVER THE CRYSTAL BAND IS SCORED.  Real complexes are not flat either:
+    measured against clean crystals, beta sits at 3.4 deg for monodentate donors, 3.7 for
+    bidentate and 4.8 for tetradentate.  A donor already inside that band is RIGHT, and
+    preferring an even flatter conformer over it buys nothing while disturbing a pick that
+    the historic clash order had made for a reason.
+
+    Measured 2026-08-02, and this is why the band is here rather than a raw sum: scoring the
+    raw beta (betasel) moved pyramidal_sp2 from 19.05 % to 12.70 % and the hard-finding rate
+    from 50.8 % to 42.5 %, but cost 4 capabilities against 3 gained.  Pairing it with the
+    collapse criterion (betacsel) made it WORSE, not better -- 6 lost against 2 -- so the four
+    losses are not collapse-related; the lever is simply too eager.  _BETA_BAND is not a fitted
+    knob: it is the crystals' own upper figure."""
+    s = 0.0
+    for d in donor_idxs:
+        try:
+            b = _donor_plane_beta(Q, syms, int(d))
+        except Exception:
+            b = None
+        if b is not None:
+            e = float(b) - _BETA_BAND
+            if e > 0.0:
+                s += e * e
+    return s
+
+
+def _donor_plane_relax(Q, syms, donor_idxs, tgt, tmu):
+    """Rotate the whole ligand about the donor-centroid axis to put the metal into the
+    donor planes.  Rigid -> bonds, internal angles and the BITE are untouched by
+    construction.  Returns the improved coordinates or None if nothing beat the input."""
+    def _beta_sum(X):
+        s = 0.0
+        for d in donor_idxs:
+            b = _donor_plane_beta(X, syms, d)
+            if b is not None:
+                s += b * b
+        return s
+
+    def _resid(X):
+        return float(np.sqrt(np.mean(np.sum(
+            (np.array([np.asarray(X[d], float) for d in donor_idxs]) - tgt) ** 2, axis=1))))
+
+    # THE FREE AXIS IS THE ONE THROUGH THE DONORS THEMSELVES, not metal -> centroid.
+    #
+    # Measured 2026-08-02 (donorplane, rc=3): with the metal->centroid axis the lever had
+    # ZERO reach on 187 systems -- the loop's own probe refused the A/B before it could
+    # report "no effect" and let me mistake a wiring fault for a verdict.  The reason is
+    # geometry, not code: rotating about metal->centroid swings every donor on a CONE, away
+    # from the vertex it was just fitted to, so the residual guard rightly killed every
+    # candidate.  That rotation is free only for a MONODENTATE -- and the monodentate path
+    # already sits at beta 0.9 deg, better than the crystals.
+    #
+    # Rotating about the line THROUGH the donors leaves the donors themselves on that line
+    # and therefore on their targets: for a bidentate the donor-donor axis IS the bite, so
+    # the bite is untouched by construction and both donors stay put to first order.  What
+    # swings is the backbone -- and with it the donor planes, which is exactly the quantity
+    # we want to move.  Nothing that is already placed pays for it.
+    # ONLY WHERE THE ROTATION IS PROVABLY FREE: one or two donors.
+    #
+    # With two donors the axis is the line THROUGH both, so both stay exactly where the
+    # radial reset just put them and the donor-donor distance -- the BITE -- is invariant.
+    # With one donor it is the M-D bond itself: same argument, trivially.
+    #
+    # From THREE donors on the claim fails: the principal direction is a best-fit line that
+    # passes through none of them, so every donor swings off the position it was just given.
+    # Measured (donorplane3, 187 systems): reach 56, valid 32->35, 4 systems gained, but
+    # OVAVEO lost and the TOPOLOGY floor broke -- exactly the polydentate case where "free"
+    # was never true.  The lever keeps the part it can prove and drops the part it cannot;
+    # kappa3+ needs the donors placed GLOBALLY, not one ligand rotated after the fact.
+    _D = np.array([np.asarray(Q[d], float) for d in donor_idxs])
+    if len(_D) > 2:
+        return None
+    if len(_D) == 2:
+        ax = _D[1] - _D[0]                                # the line through both donors
+    else:
+        ax = _D[0] - np.zeros(3)                          # monodentate: the M-D bond itself
+    n_ = float(np.linalg.norm(ax))
+    if n_ < 1e-6:
+        return None
+    ax = ax / n_
+    tmu = _D.mean(0)                            # rotate about the donor centroid, on-axis
+    base_b, base_r = _beta_sum(Q), _resid(Q)
+    best = None
+    K = np.array([[0.0, -ax[2], ax[1]], [ax[2], 0.0, -ax[0]], [-ax[1], ax[0], 0.0]])
+    for i in range(1, _DP_STEPS):
+        th = 2.0 * math.pi * i / _DP_STEPS
+        R = np.eye(3) + math.sin(th) * K + (1.0 - math.cos(th)) * (K @ K)
+        X = (np.asarray(Q, float) - tmu) @ R.T + tmu
+        b = _beta_sum(X)
+        if b >= base_b or _resid(X) > base_r + _DP_RESID_SLACK:
+            continue
+        if best is None or b < best[0]:
+            best = (b, X)
+    return None if best is None else best[1]
+
+
+_TRILAT_RESCUE = False
+
+
+def _ffree_flag(name: str) -> bool:
+    """ONE SWITCH, TWO SPELLINGS -- and only one of them can ever land.
+
+    ===== THE LETTER ON WHICH 50.8 PERCENT HANG (26.08.2026) ======================
+
+    `cli_manta.py:293` sets the champion like this:
+
+        os.environ["DELFIN_FFFREE_" + f] = "1"        # THREE F
+
+    But there is a whole class of switches that is read as `DELFIN_FFREE_` -- TWO F.
+    No switch of this class can ever get into the champion, no matter how good its
+    verdict turns out.  Affected, with MEASURED reach:
+
+        TRILATERATE     50.8 %      MD_MEASURED   19.9 %      H_FOLLOW  6.4 %
+        CONF_RELAX       4.0 %      TRILAT_RESCUE  3.7 %
+
+    🔑 And `TRILAT_RESCUE` is not just any of them: it is the LAST RUNG of the
+       rescue ladder below the chelate self-gate, which rejects 2822 of 3597 chelate
+       configs (78.5 %).  Line 1 of `_trilat_rescue` is a return on exactly this
+       switch -- and it is read at ONE place and set at NONE.
+
+    WHY NOT SIMPLY RENAME.  Measured: 31 of 1286 axis files set the OLD name.
+    A rename would make these 31 archives unreproducible -- they would have been
+    measured with a name the code no longer reads.  That is exactly the class of
+    silent failure this campaign is built against.
+
+    ⇒ So read BOTH.  The tree already does this elsewhere: `_mirror_enum`
+      reads `DELFIN_FFFREE_MIRROR_ENUM` or `DELFIN_MIRROR_ENUM` in one line.
+
+    ⛔ THIS IS NOT A LANDING, BUT ITS PRECONDITION.  Before, the mechanism was
+      unlandable; now it is landABLE.  Reach is not benefit -- it still needs
+      its own verdict.
+    ⛔ Default stays OFF under BOTH names -> byte-identical.
+    """
+    return (os.environ.get("DELFIN_FFFREE_" + name, "0") == "1"
+            or os.environ.get("DELFIN_FFREE_" + name, "0") == "1")
+
+
+def trilat_rescue_enabled() -> bool:
+    """THE one place TRILAT_RESCUE is read (default OFF -> byte-identical).
+
+    Reads both spellings, see `_ffree_flag`.  Without that, this rung of the
+    rescue ladder can never get into the champion, because the setter writes three F."""
+    return _ffree_flag("TRILAT_RESCUE")
+
+
+class trilaterate_rescue:
+    """Re-run one assembly with trilaterated donor targets instead of ideal vertices."""
+
+    def __enter__(self):
+        global _TRILAT_RESCUE
+        self._prev = _TRILAT_RESCUE
+        _TRILAT_RESCUE = True
+        return self
+
+    def __exit__(self, *_exc):
+        global _TRILAT_RESCUE
+        _TRILAT_RESCUE = self._prev
+        return False
+
+
+def _trilat_targets_on() -> bool:
+    """Primary-path flag (legacy A/B, default OFF) OR an active rescue re-build."""
+    return _TRILAT_RESCUE or _ffree_flag("TRILATERATE")
+
+
+def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True, rigid=False, lsyms=None):
     """Rotate a metal-centered chelate conformer (from _embed_metallacycle) so its
     donors seat onto the target vertex directions, then per-donor rescale to the
     ideal M-donor distance.  The ring geometry (backbone clears the metal) is
@@ -747,6 +1254,36 @@ def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True, rigid=False)
                     best = (resid, R_, p_)
             R = best[1]; perm = best[2]
     Q = lP @ R.T
+
+    # TRILATERATED TARGETS (DELFIN_FFREE_TRILATERATE=1, default OFF -> byte-identical).
+    #
+    # The two branches below force a choice: per-donor radial gives the right M-D lengths
+    # and splays the ring, rigid keeps the ring and lets M-D come out emergent.  The choice
+    # only exists because the TARGETS are ideal polyhedron vertices, which the ligand
+    # generally cannot reach.  Move the targets first -- onto points that carry both the
+    # M-D radii and the ligand's own donor separations -- and the rigid fit lands on them
+    # with a small residual, so both hold at once.  Bidentate already does exactly this via
+    # _bite_aware_targets (the cosine law); this is the same statement for any denticity,
+    # and it is the only place polydentates have ever had it: _bite_aware_targets is called
+    # from _place_chelate_block alone, which runs only for dent == 2.
+    if _trilat_targets_on():
+        try:
+            _tri = _trilaterate_donor_targets(
+                lP, list(donor_idxs), [targets[perm[i]] for i in range(len(donor_idxs))])
+        except Exception:
+            _tri = None
+        if _tri is not None:
+            _don = np.array([np.asarray(lP[d], float) for d in donor_idxs])
+            _tgt = np.array(_tri, float)
+            _dmu, _tmu = _don.mean(0), _tgt.mean(0)
+            try:
+                _Rk = _kabsch_rot(_don - _dmu, _tgt - _tmu)
+                _Qt = (np.asarray(lP, float) - _dmu) @ _Rk.T + _tmu
+                if np.all(np.isfinite(_Qt)):
+                    return _Qt
+            except Exception:
+                pass
+
     if rigid:
         # LIGAND-GEOMETRY-FIRST: rigid-body best-fit (rotation + translation, NO scale,
         # NO per-donor radial move) of the donor set onto the target POINTS.  Both the
@@ -762,6 +1299,34 @@ def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True, rigid=False)
         dmu = don.mean(0); tmu = tgt.mean(0)
         Rk = _kabsch_rot(don - dmu, tgt - tmu)
         Qr = (np.asarray(lP, float) - dmu) @ Rk.T + tmu
+        # BETA IN THE SEATING (DELFIN_FFFREE_DONOR_PLANE, default OFF -> byte-identical).
+        #
+        # beta = angle between the M->D bond and the plane of the donor's OWN conjugated
+        # environment (0 deg = metal in plane).  Measured against crystals:
+        #     monodentate 0.9 deg (BETTER than the 3.4 crystals allow)
+        #     bidentate   9.3      tetradentate 15.9   (crystals: 3.7 / 4.8)
+        # The monodentate path is right because it aligns the metal along the lone pair
+        # (_donor_and_lp + _rot_align).  THIS path never looks at the donor plane at all --
+        # it fits donors rigidly onto ideal vertices, and beta comes out as a by-product.
+        # The break is a PATH CHANGE, not physics.  pyramidal_sp2 is our largest INDEPENDENT
+        # defect (15.7 % of our frames vs 1.0 % of crystals; sole hard finding on 37.9 % of
+        # its firings), and trilatresc2 lost its verdict to exactly this axis (OVAVEO,
+        # pyramid_frame_regressed + root_defects_increased).
+        #
+        # THE FREE DEGREE OF FREEDOM: a rigid rotation about the axis through the donor
+        # centroid changes NOTHING that is already right -- every bond, every internal
+        # angle and the coordination BITE are preserved exactly (it is a rigid motion of
+        # the whole ligand, and the bite is an internal distance).  It only trades vertex
+        # alignment, which the polyhedron never had exactly anyway.  So beta can be reduced
+        # at zero cost to the two quantities we already get right.
+        #
+        # Loss-guarded: the rotation is kept ONLY if it reduces the summed beta AND the
+        # donor-to-target residual does not grow beyond _DP_RESID_SLACK.  Otherwise the
+        # rigid fit stands unchanged -- a candidate that helps neither is never taken.
+        if os.environ.get("DELFIN_FFFREE_DONOR_PLANE", "0") == "1" and lsyms is not None:
+            _q = _donor_plane_relax(Qr, lsyms, list(donor_idxs), tgt, tmu)
+            if _q is not None:
+                Qr = _q
         # CAGE-CRUSH GUARD (DELFIN_FFFREE_CAGE_MD_GUARD, default-OFF -> byte-id):
         # the rigid fit preserves the embed's ligand geometry EXACTLY, so it also
         # preserves a CRUSHED embed (ETKDG produced a cavity far too small for the
@@ -794,11 +1359,19 @@ def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True, rigid=False)
             # ratio (never SMILES/refcode); byte-id OFF; healthy cages (ratio ~0.9,
             # QEBLOC/FEKZON) have no donor below threshold -> untouched.
             _nfix = 0
+            _hf = (lsyms is not None
+                   and _ffree_flag("H_FOLLOW"))
             for _i, _d in enumerate(donor_idxs):
                 _r = float(np.linalg.norm(Qr[_d]))
                 _idl = float(tgt_md[perm[_i]])
                 if _r > 1e-6 and _idl > 1e-6 and _r < _frac * _idl:
-                    Qr[_d] = Qr[_d] / _r * _idl
+                    _nv = Qr[_d] / _r * _idl
+                    if _hf:                      # hydrogens ride with their parent, as above
+                        _rd = _hydrogens_riding_on(lsyms, Qr, _d)
+                        _dl = _nv - Qr[_d]
+                        for _h in _riders_that_may_move(lsyms, Qr, _rd, _dl, _d):
+                            Qr[_h] = Qr[_h] + _dl
+                    Qr[_d] = _nv
                     _nfix += 1
             if os.environ.get("DELFIN_CAGE_DEBUG", "0") == "1" and _nfix:
                 os.write(2, ("[CAGE_GUARD] dent=%d reset %d/%d donors to ideal M-D\n"
@@ -811,10 +1384,137 @@ def _orient_chelate_to_vertices(lP, donor_idxs, targets, asym=True, rigid=False)
     # the FEKZON CCDC defect).  Keep each donor's Kabsch-rotated DIRECTION (so the embed's
     # natural bite angle is preserved) and set only its radius to md.  The constrained
     # relax (donors fixed here) then pulls the backbone into consistency.
+    # HYDROGENS RIDE WITH THEIR PARENT (DELFIN_FFREE_H_FOLLOW=1, default OFF -> byte-id).
+    #
+    # The loop below moves the DONOR ATOM and nothing else.  A donor that carries hydrogens
+    # -- an amine N-H, a hydroxyl O-H, an agostic C-H -- therefore has its heavy atom
+    # displaced radially while its H stay where the embed put them, which corrupts both the
+    # X-H length and its direction by exactly the displacement.
+    #
+    # MEASURED, reference-free (weddell/tools/h_geometry.py over 296696 X-H bonds of the
+    # champion archive): the MEDIAN X-H length is textbook-correct everywhere -- aromatic
+    # C-H 1.080, methyl 1.109, N-H 1.034, O-H 0.990 -- so the placement RULE is right and
+    # must not be touched.  What is wrong is a TAIL: C|2|2|1 has p10 = 0.948 A, C|1|3|1
+    # spans 0.886 to 1.237, and the direction deviation reaches p90 = 58 deg where its own
+    # median is 6.  A rule that produced correct medians does not produce that tail; being
+    # left behind by a later move does.
+    #
+    # (The CCDC comparison cannot referee this and was nearly a trap: crystal C-H sit at
+    # p10/p50/p90 = 0.930/0.949/0.960 with a 0.45 deg direction width, i.e. a RIDING MODEL,
+    # not a measurement.  "Fixing" our lengths towards it would have broken correct H.)
+    #
+    # This is additive in the strict sense: it invents no geometry, it preserves the X-H
+    # geometry the embed already had.  Nothing about heavy-atom placement changes.
+    _hfollow = (lsyms is not None
+                and _ffree_flag("H_FOLLOW"))
+    # LET THE NEIGHBOURHOOD FOLLOW (DELFIN_FFFREE_DONOR_FOLLOW, default OFF -> byte-identical).
+    # The weights are read off the geometry BEFORE any donor moves, so the graph is the one
+    # the embed produced; see _donor_follow_weights for why a decay and not a repair.
+    _dfollow = None
+    if lsyms is not None and os.environ.get("DELFIN_FFFREE_DONOR_FOLLOW", "0") == "1":
+        try:
+            _span = max(2, int(os.environ.get("DELFIN_FFFREE_DONOR_FOLLOW_SPAN", "3")))
+            _dfollow = _donor_follow_weights(lsyms, Q, list(donor_idxs), _span)
+        except Exception:
+            _dfollow = None
+    _ddelta = {}
     for i, di in enumerate(donor_idxs):
         r = float(np.linalg.norm(Q[di]))
         if r > 1e-6:
-            Q[di] = Q[di] / r * tgt_md[perm[i]]
+            _new = Q[di] / r * tgt_md[perm[i]]
+            if _hfollow:
+                _riders = _hydrogens_riding_on(lsyms, Q, di)   # BEFORE the move
+                _delta = _new - Q[di]
+                for _h in _riders_that_may_move(lsyms, Q, _riders, _delta, di):
+                    Q[_h] = Q[_h] + _delta
+            _ddelta[int(di)] = _new - Q[di]
+            Q[di] = _new
+    if _dfollow:
+        # ONLY WHERE THE PLACEMENT ACTUALLY BROKE SOMETHING (default; the global form is
+        # DELFIN_FFFREE_DONOR_FOLLOW_ALWAYS=1).
+        #
+        # Measured on 187 systems, applied to EVERY seating: reach 92, capability +13 and
+        # valid 56 -> 66 -- the largest capability gain of the day -- but cap_LOST 3 and
+        # sixteen red terms (pyramid_frame_regressed 23, smiles_ccdc_regressed 13,
+        # isomers_lost 7).  The root is right and the scope was wrong: it also moved the
+        # backbones of frames that were already clean, and those had everything to lose.
+        #
+        # A frame that already carries a collapsed bond has nothing to lose, so restricting
+        # the decay to exactly those frames cannot cost a capability by construction -- the
+        # same argument that every lever which landed here rests on.  Where the placement was
+        # clean, this is byte-identical.
+        # KEEP IT ONLY WHERE THE GRADED BOND AXIS STRICTLY IMPROVES.
+        #
+        # A first attempt gated on "the frame already collapsed" and was wrong TWICE, both
+        # measured on 187 systems:
+        #   * Reach fell from 92 to 3.  The displacement is about 0.18 A on a C-N bond of
+        #     1.47 A, i.e. 0.88 x ideal -- ABOVE the 0.82 collapse threshold, so the gate
+        #     almost never fired.  The decay PREVENTS a collapse; it does not repair one.
+        #   * On those 3 it still did damage (isomers_lost 2, ccdc_arrangement_lost 2), so
+        #     "a collapsed frame has nothing to lose" is false at FRAME level -- that argument
+        #     holds for a system with broken_frac 1.0, not for one frame among many, which can
+        #     still be the only carrier of an isomer.
+        #
+        # The graded quantity is the one the eye reads (org_bond), so that is what decides:
+        # keep the decayed frame only if the WORST relative bond deviation strictly drops.
+        # Where it does not, the frame is left exactly as it was -- never-worse on the axis
+        # this lever exists to improve, by construction rather than by hope.
+        _always = os.environ.get("DELFIN_FFFREE_DONOR_FOLLOW_ALWAYS", "0") == "1"
+
+        def _worst_bond_dev(_s, _P):
+            _P = np.asarray(_P, float)
+            _w = 0.0
+            for _i in range(len(_s)):
+                if _s[_i] == "H" or _bd._is_metal(_s[_i]):
+                    continue
+                for _j in range(_i + 1, len(_s)):
+                    if _s[_j] == "H" or _bd._is_metal(_s[_j]):
+                        continue
+                    _id = _bd._ideal_bond(_s[_i], _s[_j])
+                    _dd = float(np.linalg.norm(_P[_i] - _P[_j]))
+                    if _id <= 0 or _dd > 1.30 * _id:
+                        continue
+                    _dv = abs(_dd - _id) / _id
+                    if _dv > _w:
+                        _w = _dv
+            return _w
+
+        _Qf = np.array(Q, float)
+        for _a, (_own, _w) in _dfollow.items():
+            _d = _ddelta.get(int(_own))
+            if _d is not None:
+                _Qf[_a] = _Qf[_a] + _w * _d
+        try:
+            if _always or _worst_bond_dev(lsyms, _Qf) < _worst_bond_dev(lsyms, Q) - 1e-9:
+                Q = _Qf
+        except Exception:
+            pass
+    # BETA IN THE SETTING -- ON THE PATH THAT ACTUALLY RUNS.
+    #
+    # The first two attempts hooked this into the `if rigid:` branch above and had ZERO
+    # reach on 187 systems, twice (donorplane, donorplane2, both rc=3).  Cause, found only
+    # after the second refusal: line ~3654 sets
+    #     _rigid_seat = dent >= 3 and (LIGAND_RIGID or RIGID_LIGAND_SEAT)
+    # and BOTH of those flags are dark.  The rigid branch never executes in the champion, so
+    # the lever was not in the wrong path -- it was in NO path.  Third case of that class in
+    # one day (POLY6 sat in the parked functional), hence the rule: before building into a
+    # branch, grep the ENCLOSING CONDITION, not just the function.
+    #
+    # This is the live default path: every donor has just been reset radially to its ideal
+    # M-D length, so r(M-D) is exactly right and beta is whatever the embed happened to give.
+    # A rotation about the line through the donors leaves the donors on that line -- for a
+    # bidentate the axis IS the donor-donor separation, i.e. the bite, so the bite and the
+    # just-corrected M-D lengths both survive untouched.  Only the backbone swings, and with
+    # it the donor planes.  Loss-guarded inside _donor_plane_relax.
+    if os.environ.get("DELFIN_FFFREE_DONOR_PLANE", "0") == "1" and lsyms is not None:
+        try:
+            _tg = np.array([np.asarray(targets[perm[i]], float)
+                            for i in range(len(donor_idxs))], float)
+            _q = _donor_plane_relax(Q, lsyms, list(donor_idxs), _tg, _tg.mean(0))
+            if _q is not None:
+                Q = _q
+        except Exception:
+            pass
     return Q
 
 
@@ -961,6 +1661,68 @@ def _donor_c_angle(mol, atom):
     return None                           # hypervalent / unknown -> keep linear
 
 
+def _straighten_sp_chain(lsyms, lP, lmol, di, flag="DELFIN_FFREE_SP_LINEAR"):
+    """An SP centre in the donor's substituent chain is LINEAR.  Make it so.
+
+    (DELFIN_FFREE_SP_LINEAR=1, default OFF -> byte-identical.)
+
+    MEASURED, and the measurement is what located it.  smiles_sp-not-linear fires on 437
+    findings of the champion archive, 148 of them on frames where it is the ONLY hard finding,
+    and on 1500 clean CCDC crystals it fires ZERO times.  Its distance to the nearest metal is
+    a razor-thin band -- p10/p50/p90 = 2.89 / 3.10 / 3.36 A, 0.2 % beyond 5 A -- i.e. always
+    exactly ONE BOND beyond the coordination sphere.  Every case is a cumulated pseudohalide,
+    M-N=C=S / M-N=C=Se (UJAZUD02, JEJSID, ADITIT, QUHWAT, QINJAB), built at 105-116 deg where
+    the SMILES itself says 180.
+
+    WHY THE EXISTING MECHANISM MISSES IT -- a scope, not a blindness.  _vsepr_reconstruct
+    reads the hybridisation OF THE DONOR and sets the M-D-substituent angle; for these ligands
+    the donor is the N (correctly placed linear, k==1) and the sp atom is the CARBON one bond
+    further out, which nothing in that function ever touches.  67-90 % of each affected
+    system's frames carry it, so the geometry IS reachable -- the build simply does not
+    insist on it.
+
+    No table, no fit, no crystal reference: a centre carrying a triple bond, or two double
+    bonds, is linear by definition, and the input graph already states the bond orders.  The
+    far subtree is rotated rigidly about the sp atom, so every bond LENGTH and every angle
+    inside that subtree is preserved exactly -- only the one angle that was wrong changes.
+    """
+    if os.environ.get(flag, "0") != "1":
+        return lP
+    try:
+        P = np.array(lP, float).copy()
+        for a in lmol.GetAtomWithIdx(int(di)).GetNeighbors():
+            ai = int(a.GetIdx())
+            nb = [n.GetIdx() for n in a.GetNeighbors()]
+            if len(nb) != 2 or a.IsInRing():
+                continue
+            orders = sorted(float(b.GetBondTypeAsDouble()) for b in a.GetBonds())
+            # sp iff a triple bond, or two doubles (a cumulene) -- read off the graph.
+            if not (orders[-1] >= 2.9 or (len(orders) == 2 and orders[0] >= 1.9
+                                          and orders[1] >= 1.9)):
+                continue
+            far = int(nb[0]) if int(nb[1]) == int(di) else int(nb[1])
+            v1 = P[int(di)] - P[ai]; v2 = P[far] - P[ai]
+            n1 = float(np.linalg.norm(v1)); n2 = float(np.linalg.norm(v2))
+            if n1 < 1e-6 or n2 < 1e-6:
+                continue
+            c = float(np.dot(v1 / n1, v2 / n2))
+            ang = math.degrees(math.acos(max(-1.0, min(1.0, c))))
+            if ang > 170.0:
+                continue                       # already linear
+            axis = np.cross(v2, v1)
+            na = float(np.linalg.norm(axis))
+            if na < 1e-6:
+                continue
+            # rotate the FAR subtree (never the donor side) onto the straight continuation
+            grp = _subtree(lmol, far, ai)
+            R = _axis_rot(axis / na, math.radians(180.0 - ang))
+            for g in grp:
+                P[g] = (P[g] - P[ai]) @ R.T + P[ai]
+        return P
+    except Exception:
+        return lP
+
+
 def _vsepr_reconstruct(lsyms, lP, lmol, di):
     """Re-pyramidalise the donor's LOCAL geometry to ideal VSEPR with one
     coordination vacancy for the metal, rigidly dragging each substituent's
@@ -978,6 +1740,7 @@ def _vsepr_reconstruct(lsyms, lP, lmol, di):
     DELFIN_FFFREE_DONOR_VSEPR=0."""
     if os.environ.get("DELFIN_FFFREE_DONOR_VSEPR", "1") == "0":
         return lP, _donor_and_lp(lsyms, lP, lmol, di)
+    lP = _straighten_sp_chain(lsyms, lP, lmol, di)
     atom = lmol.GetAtomWithIdx(di)
     nbrs = [n.GetIdx() for n in atom.GetNeighbors()]
     k = len(nbrs)
@@ -1278,7 +2041,202 @@ def _bite_aware_targets(lP, d1, d2, T1, T2):
     return T1n, T2n
 
 
-def _place_chelate_block(metal, lsyms, lP, d1, d2, T1, T2):
+def _trilaterate_donor_targets(lP, donor_idxs, targets, iters=400, damp=0.5):
+    """Donor targets that honour the ligand's OWN donor-donor distances AND the M-D radii.
+
+    THE GENERALISATION.  ``_bite_aware_targets`` solves exactly this for two donors, with
+    the cosine law: given the two M-D radii and the donor separation the ligand actually
+    has, the angle between them FOLLOWS.  For k donors the same statement is a
+    trilateration --
+
+        |x_i| = r_i                    (the measured / referenced M-D length)
+        |x_i - x_j| = D_ij             (the separation the LIGAND already has)
+
+    -- and the coordination angles are again a CONSEQUENCE, never an input.  No ideal
+    polyhedron appears anywhere in it, no metal is named, and k = 2 reduces to the cosine
+    law, so bidentate and macrocycle are one rule.
+
+    WHY IT MATTERS HERE.  This seating documents a trade-off it treats as unavoidable: the
+    per-donor radial placement gives correct M-D lengths at the price of splayed ring
+    angles, while the rigid-body fit keeps the ligand exact but lets M-D come out emergent
+    and sometimes impossible (a clathrochelate Co-O at 1.49 against ~1.95, a 24 % collapse).
+    Trilateration is the resolution: it satisfies BOTH as far as geometry allows, and where
+    they are genuinely incompatible the residual states by how much instead of silently
+    picking a side.  Measured motivation: over 995 built systems, 29 % of chelate bites come
+    out beyond 92 deg, a region real chelates essentially do not occupy (49 measured bins,
+    98 % below 90, none above 95).
+
+    Solved by alternating projection -- project every donor back onto its own radius, then
+    correct each pair toward the ligand's separation, damped, repeat.  Deterministic, no
+    random start, no minimiser.  It BEGINS at the enumerated vertex targets, so donor i
+    stays in the region of vertex i and the isomer assignment the enumeration made is
+    preserved; this only moves the targets to where the ligand can actually reach them.
+    """
+    k = len(donor_idxs)
+    if k < 2:
+        return None
+    P = np.array([np.asarray(targets[i], float) for i in range(k)])
+    r = np.array([float(np.linalg.norm(P[i])) for i in range(k)])
+    if np.any(r < 1.0e-6):
+        return None
+    L = np.array([np.asarray(lP[d], float) for d in donor_idxs])
+    D = np.zeros((k, k))
+    for i in range(k):
+        for j in range(i + 1, k):
+            D[i, j] = D[j, i] = float(np.linalg.norm(L[i] - L[j]))
+    if not np.all(np.isfinite(D)):
+        return None
+    for _ in range(int(iters)):
+        # 1) back onto each donor's own sphere around the metal
+        for i in range(k):
+            n = float(np.linalg.norm(P[i]))
+            if n > 1.0e-9:
+                P[i] *= r[i] / n
+        # 2) pull/push every pair toward the separation the ligand actually has
+        for i in range(k):
+            for j in range(i + 1, k):
+                v = P[i] - P[j]
+                d = float(np.linalg.norm(v))
+                if d < 1.0e-9 or D[i, j] < 1.0e-9:
+                    continue
+                corr = damp * 0.5 * (d - D[i, j]) * (v / d)
+                P[i] -= corr
+                P[j] += corr
+    for i in range(k):                      # radii are the hard side: end on them
+        n = float(np.linalg.norm(P[i]))
+        if n > 1.0e-9:
+            P[i] *= r[i] / n
+    if not np.all(np.isfinite(P)):
+        return None
+    return [P[i] for i in range(k)]
+
+
+def _lone_pair_dir(P, mol, idx):
+    """Direction of the donor's lone pair, from its own bonds only.
+
+    Minus the sum of the unit vectors to ALL its neighbours -- hydrogens included, because
+    for an sp3 amine the two N-H bonds are what fix where the lone pair points; dropping
+    them would leave only the C-N axis and give the wrong direction entirely.
+
+    One expression covers every case, which is the test this project applies to any rule:
+    an aromatic pyridine N (two ring neighbours) gets the in-plane outward bisector, an sp3
+    amine (three neighbours) gets the fourth tetrahedral direction, a linear nitrile N (one
+    neighbour) gets the bond axis reversed.  No hybridisation label is read, no functional
+    group is named, and it reads the same for a donor nobody has classified yet.
+    """
+    v = np.zeros(3)
+    try:
+        for nb in mol.GetAtomWithIdx(int(idx)).GetNeighbors():
+            d = P[int(nb.GetIdx())] - P[int(idx)]
+            n = float(np.linalg.norm(d))
+            if n > 1.0e-9:
+                v += d / n
+    except Exception:
+        return None
+    n = float(np.linalg.norm(v))
+    if n < 1.0e-6:
+        return None                      # symmetric surroundings: no defined direction
+    return -v / n
+
+
+def _lp_orient_seated_bidentate(Q, mol, d1, d2, lsyms=None):
+    """Set the ONE rotational freedom a SEATED bidentate still has, from the lone pairs.
+
+    WHERE THE TILT ACTUALLY COMES FROM.  The live path seats a chelate with
+    _orient_chelate_to_vertices, a Kabsch fit of the donor directions onto the target vertex
+    directions.  With TWO donors that fit is UNDERDETERMINED: rotating the ligand about the
+    donor-donor axis leaves both donors exactly where they are, so it changes nothing the fit
+    can see, and whatever the SVD happens to return decides it.  That leftover rotation is
+    precisely the one that decides whether the metal lies in a conjugated donor's pi plane --
+    i.e. beta, the largest single realism gap this project has (18-19 % of frames against
+    0.98 % of crystals).  It was being set by a numerical tie-break.
+
+    The law that fixes it already existed and was already measured -- over 995 built systems
+    the tilt tracks co-ligand contact (median 12.1 deg where vdW shells overlap, 0.9 deg where
+    they do not) -- but it sat in _place_chelate_block, which assemble_from_config reaches ONLY
+    as a fallback after the embed has already failed.  Three independent flags in that function
+    (LP_ORIENT, BITE_LAW, BITE_MEASURED) all measured ZERO reach on a 187-system sweep, while
+    flags elsewhere in the same file measured 123 and 7 -- the function is live code on a path
+    the champion does not take.
+
+    SAFE BY CONSTRUCTION for the seating: both donors lie ON the rotation axis, so they do not
+    move at all.  The M-D distances, the bite angle and the arm-to-vertex correspondence are
+    all preserved EXACTLY; only the backbone turns.  Returns None when no lone-pair direction
+    is defined, or when the turn would introduce a collapsed bond the seated frame did not
+    have -- the caller then keeps what it had.
+    """
+    Q = np.asarray(Q, float)
+    axis = Q[d2] - Q[d1]
+    if float(np.linalg.norm(axis)) < 1.0e-9:
+        return None
+    mid = 0.5 * (Q[d1] + Q[d2])
+    th = _lp_aligned_angle(Q, mol, d1, d2, axis, mid)
+    if th is None:
+        return None
+    Qr = (Q - mid) @ _axis_rot(axis, th).T + mid
+    if not np.all(np.isfinite(Qr)):
+        return None
+    # NO STERIC ESCAPE HERE, AND THAT IS THE POINT.  A first version of this rejected the
+    # derived orientation whenever it brought a backbone atom near the metal, i.e. it fell
+    # back to the old sweep exactly where the sweep and the law disagree -- and measured
+    # affected=0 on 187 systems, changing nothing at all.  The docstring of _lp_aligned_angle
+    # records the same experiment and the same outcome one layer down: "it is why the first
+    # version changed almost nothing".  Twice is enough.  The M-D sigma bond goes THROUGH the
+    # lone pair, so the plane is a BONDING constraint and a clash is not a licence to break
+    # it; a real molecule relieves the clash by turning substituents, opening the bite or
+    # twisting the polyhedron.  If a collision remains it now STAYS VISIBLE for the self-gate
+    # and the clash axis to report, instead of being hidden inside a tilt.
+    return Qr
+
+
+def _lp_aligned_angle(Q, mol, d1, d2, axis, mid):
+    """The rotation about the donor-donor axis that points BOTH lone pairs at the metal.
+
+    THE DEFECT THIS REPLACES.  The orientation used to be picked by a 36-step sweep that
+    maximised the minimum metal-distance of the backbone -- collision avoidance, i.e. a
+    STERIC heuristic where the constraint is a BONDING one.  Three consequences, and all
+    three look like the flapping the manifold is full of: the criterion is simply the wrong
+    one, so a planar chelate's plane tilts out; 36 steps quantise to 10 deg; and scoring by
+    the MINIMUM over backbone atoms lets a single atom decide, so a small change in the
+    ligand flips the chosen step and the orientation jumps between similar systems.
+
+    A conjugated donor's lone pair lies IN its pi plane, so the metal lies in that plane
+    too -- there is no such thing as a tilted aromatic chelate.  That is a hard geometric
+    condition, not a preference, and it has a closed form.  Both donors sit ON the rotation
+    axis, so they do not move and their target directions t_i are constant; each lone pair
+    rotates by Rodrigues, and the total alignment is
+
+        sum_i lp_i(theta) . t_i  =  A cos(theta) + B sin(theta) + C
+
+    maximised at ``theta = atan2(B, A)``.  One atan2 instead of 36 samples: exact, no
+    quantisation, and no discontinuity to jump across.
+
+    Returns ``None`` when no lone-pair direction is defined at either donor, so the caller
+    keeps the old sweep rather than inventing an orientation.
+    """
+    k = axis / float(np.linalg.norm(axis))
+    A = B = C = 0.0
+    used = 0
+    for d in (d1, d2):
+        v = _lone_pair_dir(Q, mol, d)
+        if v is None:
+            continue
+        t = mid * 0.0 - Q[d]             # metal sits at the origin
+        nt = float(np.linalg.norm(t))
+        if nt < 1.0e-9:
+            continue
+        t = t / nt
+        kv, kt = float(np.dot(k, v)), float(np.dot(k, t))
+        A += float(np.dot(v, t)) - kv * kt
+        B += float(np.dot(np.cross(k, v), t))
+        C += kv * kt
+        used += 1
+    if used == 0 or (abs(A) < 1.0e-12 and abs(B) < 1.0e-12):
+        return None
+    return math.atan2(B, A)
+
+
+def _place_chelate_block(metal, lsyms, lP, d1, d2, T1, T2, mol=None):
     """Rigid-fit a chelating ligand's donors onto targets T1,T2; return placed
     coords. (donor-donor vector -> target vector, midpoints matched, backbone
     rotated away from metal at origin.)
@@ -1303,6 +2261,28 @@ def _place_chelate_block(metal, lsyms, lP, d1, d2, T1, T2):
                 if i not in (d1, d2) and lsyms[i] != "H"]
     if not body_idx:
         return Q                              # diatomic chelate: no backbone to rotate
+
+    # LONE-PAIR ORIENTATION (DELFIN_FFREE_LP_ORIENT, default OFF -> byte-identical).
+    #
+    # THE PLANE WINS, WITHOUT A STERIC ESCAPE.  A first version kept a floor that fell back
+    # to the sweep when the derived orientation pushed a backbone atom near the metal.  That
+    # is the wrong hierarchy and it is why the first version changed almost nothing: the
+    # M-D sigma bond goes THROUGH the lone pair, so a conjugated donor holds the metal in
+    # its pi plane, and a real molecule relieves a clash by turning substituents, opening
+    # the bite or twisting the polyhedron -- never by tipping the metal out of the plane,
+    # which would destroy the overlap that binds it.  Measured over 995 built systems: the
+    # tilt tracks the co-ligand contact (Pearson -0.20; median tilt 12.1 deg where the vdW
+    # shells already overlap, 0.9 deg where they do not), i.e. the seat is spending the
+    # ONE degree of freedom it has on steric relief and paying for it with the bond.
+    #
+    # So the plane is set, unconditionally.  If a collision remains it now STAYS VISIBLE
+    # for the clash axis to report, instead of being hidden inside a tilt -- and it has to
+    # be resolved where reality resolves it (cis-edge choice, conformer), not here.
+    if mol is not None and os.environ.get("DELFIN_FFREE_LP_ORIENT", "0") == "1":
+        _th = _lp_aligned_angle(Q, mol, d1, d2, axis, mid)
+        if _th is not None:
+            return (Q - mid) @ _axis_rot(axis, _th).T + mid
+
     best, bestQ = -1e9, Q
     for k in range(36):
         Qr = (Q - mid) @ _axis_rot(axis, 2 * np.pi * k / 36).T + mid
@@ -1310,6 +2290,92 @@ def _place_chelate_block(metal, lsyms, lP, d1, d2, T1, T2):
         if score > best:
             best, bestQ = score, Qr
     return bestQ
+
+
+_BITE_MAX_RING = 7      # above this a "shared ring" is a macrocycle, not a bite
+
+
+def bite_close(u, v, theta_deg):
+    """Rotate two unit directions symmetrically in their own plane until the angle between
+    them is ``theta_deg``, keeping their bisector fixed.
+
+    WHY.  An ideal octahedron puts two cis vertices 90 deg apart, and a five-membered
+    chelate ring measured over real crystals bites at 70.6 deg (p10 69.4, p90 72.6 -- a
+    3 deg wide band, one of the best defined quantities we have).  So every five-ring
+    chelate is seated 19.4 deg too open, and chelates are most of our systems.  This is the
+    quantified form of the earthquake root, "rigid polydentates forced onto ideal vertices",
+    and of poly_cshm_vs_ccdc being the worst axis in all seven UFF-constraint A/Bs.
+
+    Keeping the bisector fixed matters: the chelate must still occupy the SAME edge of the
+    polyhedron that the isomer enumeration assigned to it.  Only the opening changes, so
+    the isomer identity is untouched and this stays a pure seating correction.
+    """
+    u = np.asarray(u, float); v = np.asarray(v, float)
+    nu, nv = np.linalg.norm(u), np.linalg.norm(v)
+    if nu < 1e-9 or nv < 1e-9:
+        return u, v
+    u = u / nu; v = v / nv
+    c = float(np.clip(np.dot(u, v), -1.0, 1.0))
+    cur = math.degrees(math.acos(c))
+    if abs(cur - theta_deg) < 1e-6:
+        return u, v
+    bis = u + v
+    nb = np.linalg.norm(bis)
+    if nb < 1e-9:                       # exactly opposed: no bisector, nothing to close on
+        return u, v
+    bis = bis / nb
+    perp = u - float(np.dot(u, bis)) * bis
+    np_ = np.linalg.norm(perp)
+    if np_ < 1e-9:
+        return u, v
+    perp = perp / np_
+    half = math.radians(theta_deg) / 2.0
+    return (math.cos(half) * bis + math.sin(half) * perp,
+            math.cos(half) * bis - math.sin(half) * perp)
+
+
+def _chelate_ring_size(lmol, d1, d2):
+    """Size of the chelate ring the two donors would close WITH the metal.
+
+    The ligand mol has no metal, so the donors are not yet in a common ring: the chelate
+    ring is the shortest donor-to-donor path through the ligand, plus the metal itself.
+    Path of k bonds -> ring of k+2 atoms (k+1 ligand atoms and the metal).
+    """
+    try:
+        from rdkit import Chem
+        path = Chem.GetShortestPath(lmol, int(d1), int(d2))
+        return (len(path) + 1) if path else 0
+    except Exception:
+        return 0
+
+
+def _measured_bite(metal, cn, ring_size, e1, e2):
+    """Measured p50 bite angle (deg) for this chelate, or None.
+
+    Only for SMALL rings: shared rings of 11-14 come out 68-82 deg WIDE, because two
+    donors of a macrocycle can sit cis or trans while still sharing a ring.  Beyond
+    _BITE_MAX_RING there is no single bite to aim at, and forcing one would be the
+    bimodal-p50 mistake this table was designed to avoid.
+    """
+    if not ring_size or ring_size > _BITE_MAX_RING:
+        return None
+    path = os.environ.get("DELFIN_FFREE_DMD_BANDS", "")
+    if not path:
+        return None
+    try:
+        from delfin.manta.polyhedra import _load_band_tsv
+        tbl = _load_band_tsv(path)
+    except Exception:
+        return None
+    ea, eb = sorted((e1, e2))
+    for k in (f"{metal},{cn}|{ea},{eb}|{ring_size}",
+              f"{metal},{cn}|*|{ring_size}",
+              f"{metal}|*|{ring_size}",
+              f"*,{cn}|*|{ring_size}"):
+        row = tbl.get(k)
+        if row is not None:
+            return float(row[1])                     # p50
+    return None
 
 
 def assemble_multichelate(metal: str, geometry: str, chelate_specs):
@@ -1320,11 +2386,67 @@ def assemble_multichelate(metal: str, geometry: str, chelate_specs):
     for smi, dons, verts in chelate_specs:
         lsyms, lP, lmol = _ligand_3d(smi)
         d1, d2 = dons
-        T1 = ref[verts[0]] / np.linalg.norm(ref[verts[0]]) * MSB.md_distance(
-            metal, lsyms[d1], atom=lmol.GetAtomWithIdx(d1), mol=lmol)
-        T2 = ref[verts[1]] / np.linalg.norm(ref[verts[1]]) * MSB.md_distance(
-            metal, lsyms[d2], atom=lmol.GetAtomWithIdx(d2), mol=lmol)
-        Q = _place_chelate_block(metal, lsyms, lP, d1, d2, T1, T2)
+        u1 = ref[verts[0]] / np.linalg.norm(ref[verts[0]])
+        u2 = ref[verts[1]] / np.linalg.norm(ref[verts[1]])
+        # MEASURED BITE (DELFIN_FFREE_BITE_MEASURED, default OFF -> byte-identical).
+        # The ideal polyhedron separates two cis vertices by 90 deg; a five-membered
+        # chelate measured over real crystals bites at 70.6 deg with a 3 deg wide band.
+        # Closing the pair onto the measured angle -- bisector fixed, so the ligand keeps
+        # the very edge the isomer enumeration assigned it -- is a pure SETTING: no weight,
+        # no gate, no minimiser.
+        _r1 = MSB.md_distance(metal, lsyms[d1],
+                              atom=lmol.GetAtomWithIdx(d1), mol=lmol)
+        _r2 = MSB.md_distance(metal, lsyms[d2],
+                              atom=lmol.GetAtomWithIdx(d2), mol=lmol)
+        # DERIVED BITE (DELFIN_FFREE_BITE_LAW, default OFF -> byte-identical).
+        #
+        # A chelate closes a ring THROUGH the metal, so the bite is not an independent
+        # quantity at all -- it is ring closure:
+        #
+        #     cos(bite) = (r1^2 + r2^2 - d_DD^2) / (2 r1 r2)
+        #
+        # with d_DD the donor-donor distance the LIGAND ALREADY HAS, read straight off its
+        # own FF-free 3D construction.  Verified against 131769 crystals without building
+        # anything: inverting this on the measured D-M-D table returns chemically exact
+        # donor-donor distances (1.402 A for an eta2 C=C, 2.614 A for an en/bipy 5-ring)
+        # and reproduces the measured bite to 0.24 deg across 18 metals.  Nine of eleven
+        # ligand types sit at or below the precision of the M-D input itself.
+        #
+        # WHY THIS AND NOT THE TABLE.  Not precision -- the error in r enters either way.
+        # COUPLING.  mdAB measured what happens when they are set independently: the M-D
+        # length was corrected while the vertex angle stayed at the ideal 90 deg, which
+        # forces d_DD = |u1*r1 - u2*r2| to a value the ligand DOES NOT HAVE, so the ligand
+        # absorbs the difference (valid 155 -> 146).  Deriving the bite from d_DD and r
+        # makes that contradiction impossible by construction: the ligand keeps its own
+        # donor separation, whatever r turns out to be.
+        #
+        # It also extrapolates where the table has holes (bins below n=200 -- precisely the
+        # exotic systems carrying our defects), separates cis from trans by itself in a
+        # macrocycle (they simply ARE two different d_DD), and is a formula rather than a
+        # dataset.
+        if os.environ.get("DELFIN_FFREE_BITE_LAW", "0") == "1":
+            _dd = float(np.linalg.norm(lP[d1] - lP[d2]))
+            if _dd > 1.0e-6 and _r1 > 1.0e-6 and _r2 > 1.0e-6:
+                _c = (_r1 * _r1 + _r2 * _r2 - _dd * _dd) / (2.0 * _r1 * _r2)
+                # Outside [-1, 1] the triangle does not close: the ligand's own donor
+                # separation cannot be reached at these M-D lengths.  Forcing a clamped
+                # angle there would silently invent a geometry, so leave the vertex
+                # direction alone and let the existing path handle it.
+                if -1.0 <= _c <= 1.0:
+                    u1, u2 = bite_close(u1, u2, math.degrees(math.acos(_c)))
+        elif os.environ.get("DELFIN_FFREE_BITE_MEASURED", "0") == "1":
+            # MEASURED BITE.  The ideal polyhedron separates two cis vertices by 90 deg; a
+            # five-membered chelate measured over real crystals bites at 70.6 deg with a
+            # 3 deg wide band.  Closing the pair onto the measured angle -- bisector fixed,
+            # so the ligand keeps the very edge the isomer enumeration assigned it -- is a
+            # pure SETTING: no weight, no gate, no minimiser.
+            _ring = _chelate_ring_size(lmol, d1, d2)
+            _bite = _measured_bite(metal, len(ref), _ring, lsyms[d1], lsyms[d2])
+            if _bite is not None:
+                u1, u2 = bite_close(u1, u2, _bite)
+        T1 = u1 * _r1
+        T2 = u2 * _r2
+        Q = _place_chelate_block(metal, lsyms, lP, d1, d2, T1, T2, mol=lmol)
         out_syms += lsyms; blocks.append(Q)
     return out_syms, np.vstack(blocks)
 
@@ -1344,7 +2466,7 @@ def assemble_chelate(metal: str, ligand_smiles: str, donor_indices: List[int],
     T1 = ref[vertex_indices[0]] / np.linalg.norm(ref[vertex_indices[0]]) * md1
     T2 = ref[vertex_indices[1]] / np.linalg.norm(ref[vertex_indices[1]]) * md2
     # rigid-fit + backbone-away-from-metal axial sweep (single source of truth)
-    bestQ = _place_chelate_block(metal, lsyms, lP, d1, d2, T1, T2)
+    bestQ = _place_chelate_block(metal, lsyms, lP, d1, d2, T1, T2, mol=lmol)
     syms = [metal] + lsyms
     P = np.vstack([np.zeros((1, 3)), bestQ])
     md_act = (float(np.linalg.norm(bestQ[d1])), float(np.linalg.norm(bestQ[d2])))
@@ -1371,6 +2493,43 @@ _CONF_CACHE = {}
 _CONF_CACHE_MAX = 256
 
 
+def _relax_confs_ffree(m, cids):
+    """Minimise each conformer with U_total instead of MMFF.
+
+    Routed through ``variational_refine`` rather than a second copy of the minimiser:
+    ONE minimiser, one place.  The XYZ round-trip is cheap against L-BFGS.
+    ``enable_global_pg=False`` because Tier D is the point group of the WHOLE molecule
+    and this is only a cut-out fragment; Tier B/C (Morgan equivalence + graph orbits)
+    stay on and are exactly what keeps a symmetric ligand's conformer symmetric.
+    A conformer the refiner declines is left untouched -- never-worse per conformer.
+    """
+    try:
+        from delfin.manta._variational_refiner import variational_refine
+    except Exception:
+        return
+    syms = [a.GetSymbol() for a in m.GetAtoms()]
+    for cid in cids:
+        try:
+            conf = m.GetConformer(cid)
+            pos = conf.GetPositions()
+            xyz = f"{len(syms)}\nconf\n" + "\n".join(
+                f"{s:4s} {p[0]:12.6f} {p[1]:12.6f} {p[2]:12.6f}"
+                for s, p in zip(syms, pos))
+            new_xyz, rep = variational_refine(xyz, m, class_label="no_metal",
+                                              enable_global_pg=False)
+            if rep.get("fallback_used", True):
+                continue
+            n_set = 0
+            for ln in new_xyz.splitlines():
+                parts = ln.split()
+                if len(parts) == 4 and n_set < len(syms):
+                    conf.SetAtomPosition(n_set, (float(parts[1]), float(parts[2]),
+                                                 float(parts[3])))
+                    n_set += 1
+        except Exception:
+            continue
+
+
 def _ligand_confs_from_mol(frag_mol, k=10):
     """UNIVERSAL multi-conformer generation for a ligand (deterministic): K diverse
     ETKDG conformers (fixed seed, single-thread) + MMFF.  Returns (syms, [coords],
@@ -1380,6 +2539,22 @@ def _ligand_confs_from_mol(frag_mol, k=10):
     Result is memoised by canonical SMILES + k (deterministic embed): repeated calls
     for the same ligand (e.g. the ensemble builder's variant loop) skip the costly
     re-embed.  The cached coords/mol are NOT mutated by any caller."""
+    # ⚠️ ENTRY TRACE.  The first mesomery smoke test delivered SIX built systems
+    # and ZERO trace lines -- the default sat behind the MMFF block and was never
+    # reached.  That has three causes which cannot be separated without measuring:
+    # the function is not called at all, it serves from the cache, or it returns
+    # earlier.  My static proof "assemble_from_config calls it at
+    # :4381" was TRUE and still not sufficient -- for the third time today the
+    # confusion of "the site exists" with "this run arrives there".
+    # This one line answers it, and it costs nothing when the path is empty.
+    _entp = os.environ.get("DELFIN_MESO_TRACE", "")
+    if _entp and _entp != "0":
+        try:
+            with open(_entp, "a") as _fh:
+                _fh.write("[ENTER] _ligand_confs_from_mol natoms=%d k=%d\n"
+                          % (frag_mol.GetNumAtoms(), int(k)))
+        except Exception:
+            pass
     key = None
     try:
         key = (Chem.MolToSmiles(frag_mol), int(k))
@@ -1428,15 +2603,144 @@ def _ligand_confs_from_mol(frag_mol, k=10):
                 _CONF_CACHE[key] = None
             return None
         cids = [0]
-    try:
-        AllChem.MMFFOptimizeMoleculeConfs(m, numThreads=1)
-    except Exception:
-        pass
+    # FF-FREE CONFORMER RELAX (DELFIN_FFREE_CONF_RELAX, default OFF -> byte-identical).
+    # MMFF is the last real force field on the conformer axis, and it has NO metal
+    # parameters -- it relaxes the conformers of a COORDINATED ligand with a model that
+    # does not know the metal exists, the same defect class as the
+    # "UFFTYPER: Unrecognized atom type: Pd+2" this build prints.  The fragment is cut
+    # metal-free here, so the functional's existing "no_metal" preset fits exactly:
+    # k_topology = 0, k_A = 0, and bond / signature-angle / torsion / clash / symmetry
+    # carry the geometry.  ETKDG above is NOT touched: it is distance geometry, not a
+    # force field, and it stays the generator.
+    if _ffree_flag("CONF_RELAX"):
+        _relax_confs_ffree(m, cids)
+    else:
+        try:
+            AllChem.MMFFOptimizeMoleculeConfs(m, numThreads=1)
+        except Exception:
+            pass
+    _symmetrize_degenerate(m, cids)
     syms = [a.GetSymbol() for a in m.GetAtoms()]
     out = (syms, [np.array(m.GetConformer(c).GetPositions(), float) for c in cids], m)
     if key is not None and len(_CONF_CACHE) < _CONF_CACHE_MAX:
         _CONF_CACHE[key] = out
     return out
+
+
+def _symmetrize_degenerate(m, cids):
+    """Set degenerate bond pairs to ONE length -- carboxylate, nitro, amidinate.
+
+    ===== THE KEKULE DRAWING IS NOT A GEOMETRY ==================================
+    A SMILES draws a carboxylate as ``C(=O)[O-]`` -- one double and one single
+    bond.  In reality both C-O are equally long.  Measured 18.08. against the
+    HIT distribution (only systems with ``org_bond_realized == false``):
+
+        nitro,       worst bond N-O:  24.79 % against 1.94 %  = 12.75x
+        carboxylate, worst bond C-O:  24.82 % against 7.00 %  =  3.55x
+
+    And the direction is unambiguous: for nitro, **29 of 30 are TOO LONG**, mean
+    deviation 0.233 Angstrom, of which **19 on the drawn SINGLE bond**.
+    That is the Kekule signature, undisguised.  It also doubles
+    ``pyramidal_sp2`` (factor 2.41) and thereby hits the three-times-measured
+    pi root from the build side.
+    Reach: 780 of 10000 systems hard-degenerate (7.8 %).
+
+    ⚠ WHY HERE AND NOT IN A CORRECTOR.  This function runs in the METAL-FREE
+    cut ligand fragment, BEFORE placement -- it is part of the construction of
+    the ligand scaffold, not a post-correction on the finished complex.
+    The obvious place ``refine._precompute_arom_targets`` would have reach
+    near ZERO: its never-worse guard excludes everything that touches the
+    coordination sphere -- and 281 of 301 carboxylates are on the metal.
+
+    ⚠ WHY THE AROMATICS AXIS DOES NOT ALREADY DO IT.  ``AROM_SEAT`` demands RDKit
+    aromaticity or a geometric 5/6-ring at all three seating sites.  A
+    carboxylate is neither; the acac chelate ring would be a six-ring, but carries
+    the metal and drops out.  Reach on these groups: exactly 0.
+
+    THE RULE is element-agnostic, so that it is not pinned to patterns:
+    for every heavy atom X its TERMINAL heavy neighbours are grouped by
+    element; if a group has at least two members AND
+    different bond orders, it is degenerate and all its bonds
+    get the MEAN length.  That hits carboxylate, nitro, nitrate, sulfonate,
+    phosphonate and amidinate, without any of them appearing in the code.  If the
+    orders are already equal, nothing is touched -- then the drawer has already
+    expressed the symmetry.
+
+    DELFIN_FFFREE_MESOMERY_SEAT (default 0 -> byte-identical).
+    """
+    if os.environ.get("DELFIN_FFFREE_MESOMERY_SEAT", "0") != "1":
+        return
+    # ⚠️ THE TRACE MUST STAND BEFORE THE try.  In the first draft it sat inside -- an
+    # exception during the group search would thereby have landed in `except: pass`
+    # WITHOUT writing a line, and could not have been distinguished from "no group
+    # found".  A silent exception path is exactly the gap at which the fire census
+    # invented findings on 14.08.
+    _mtp = os.environ.get("DELFIN_MESO_TRACE", "")
+
+    def _mtrace(txt):
+        if not _mtp or _mtp == "0":
+            return
+        try:
+            with open(_mtp, "a") as _fh:
+                _fh.write("[MESO] %s\n" % txt)
+        except Exception:
+            pass
+
+    try:
+        groups = []
+        for a in m.GetAtoms():
+            if a.GetSymbol() == "H":
+                continue
+            by_el = {}
+            for b in a.GetBonds():
+                nb = b.GetOtherAtom(a)
+                if nb.GetSymbol() == "H":
+                    continue
+                # terminal: no heavy neighbour other than X
+                if sum(1 for x in nb.GetNeighbors() if x.GetSymbol() != "H") != 1:
+                    continue
+                by_el.setdefault(nb.GetSymbol(), []).append(
+                    (nb.GetIdx(), float(b.GetBondTypeAsDouble())))
+            for _el, mem in by_el.items():
+                if len(mem) < 2:
+                    continue
+                if len({round(o, 2) for _i, o in mem}) < 2:
+                    continue          # already drawn symmetrically -> nothing to do
+                groups.append((a.GetIdx(), [i for i, _o in mem]))
+        # THE SAME TRACE DISCIPLINE AS IN THE ASSERTION PROTOCOL: a byte-identical
+        # build here too has several indistinguishable causes -- the function does not
+        # run, it finds no group, it aborts, or it finds one and the
+        # bonds are already equally long.
+        if not groups:
+            _mtrace("natoms=%d groups=0 moved=0.0" % m.GetNumAtoms())
+            return
+        _worst = 0.0
+        for c in cids:
+            conf = m.GetConformer(c)
+            for cen, terms in groups:
+                pc = np.array(conf.GetAtomPosition(cen), float)
+                vecs, lens = [], []
+                for t in terms:
+                    v = np.array(conf.GetAtomPosition(t), float) - pc
+                    n = float(np.linalg.norm(v))
+                    if n < 1e-6:
+                        vecs, lens = [], []
+                        break
+                    vecs.append(v / n)
+                    lens.append(n)
+                if not lens:
+                    continue
+                tgt = float(sum(lens) / len(lens))
+                for t, v, l0 in zip(terms, vecs, lens):
+                    _worst = max(_worst, abs(tgt - l0))
+                    p = pc + v * tgt
+                    conf.SetAtomPosition(t, (float(p[0]), float(p[1]), float(p[2])))
+        _mtrace("natoms=%d groups=%d conf=%d worst_shift=%.4f"
+                % (m.GetNumAtoms(), len(groups), len(cids), _worst))
+    except Exception as _mx:
+        # a default that does not take effect must cost nothing -- but it must not
+        # stay silent either, otherwise the abort reads like "nothing found".
+        _mtrace("ABBRUCH %s" % type(_mx).__name__)
 
 
 def _clash_count(Q, existing, syms_Q, syms_ex):
@@ -1487,7 +2791,7 @@ def _torsion_relax_frame(out_syms, P, fixed, block_specs):
         return P
 
 
-def _joint_declash_frame(out_syms, P, fixed, block_specs):
+def _joint_declash_frame(out_syms, P, fixed, block_specs, geom=None):
     """Apply the env-gated JOINT global INTER-LIGAND heavy-heavy declash to one
     assembled frame (``DELFIN_FFFREE_JOINT_DECLASH``), threading the true
     per-ligand connectivity (``block_specs`` = list of ``(offset, lmol,
@@ -1502,10 +2806,100 @@ def _joint_declash_frame(out_syms, P, fixed, block_specs):
                                     for (off, m, dl) in block_specs) if bb is not None]
             if blocks:
                 bp = _JD._TR.bonds_from_blocks(0, blocks)
-        return np.asarray(_JD.declash_if_enabled(out_syms, P, fixed, bond_pairs=bp),
+        return np.asarray(_JD.declash_if_enabled(out_syms, P, fixed, geom=geom, bond_pairs=bp),
                           dtype=float)
     except Exception:
         return P
+
+
+def _refine_guarded(out_syms, P, fixed):
+    """``refine()`` with the seating's assertion before and after it.
+
+    ⚠️ WHY THIS FUNCTION EXISTS -- a mistake of mine, measured on 18.08. and
+    recorded here so that nobody repeats it.  I had first written the guard
+    INLINE at ONE call site (``assemble_heteroleptic_from_mols``) and
+    then checked it on the 19 measured OC-6 cases: 19 of 19 byte-identical.  That
+    looked like "the assertion holds".  The positive control refuted it: with
+    tolerance 0.0001 Angstrom -- where EVERY relaxation must trigger -- the build
+    stayed identical as well.  So the block never ran.  The FF-free chelate builder goes
+    through ``assemble_from_config`` -> ``_finish_config_frame``, a DIFFERENT function
+    with its OWN refine call site.
+    I had checked the line for reachability and not the FUNCTION -- the same
+    construction as ``ISOLATED_SEAT``, which I documented in others on the same day.
+    ⇒ The guard belongs at ALL four refine call sites, hence in ONE function.
+
+    Default OFF -> byte-identical: without the switch this is exactly the old
+    ``try: P = refine(...) except: pass`` block.
+    """
+    _assert_on = os.environ.get("DELFIN_FFFREE_ASSERT_ENFORCE", "0") == "1"
+    _assertion, _P_before = None, None
+    if _assert_on:
+        try:
+            from delfin.manta import _frame_assertions as _FA
+            # The BUILDER's set, not my reconstruction of it: refine() receives
+            # `fixed` as a promise, so exactly that is the contract it has to keep.
+            _assertion = _FA.derive((list(out_syms), P), frozen=fixed)
+            _P_before = P.copy()
+        except Exception:
+            _assertion = _P_before = None
+    try:
+        from delfin.manta.refine import refine as _refine
+        P = _refine(out_syms, P, fixed)
+    except Exception:
+        pass
+    if _assertion is not None and _P_before is not None:
+        try:
+            from delfin.manta import _frame_assertions as _FA
+            _v = _FA.violations(_assertion, (list(out_syms), P))
+            # ⚠️ A TRACE, BECAUSE A BYTE COMPARISON DOES NOT DECIDE HERE.
+            # The first smoke test showed "identical" -- and that has three causes
+            # indistinguishable to the naked eye: (a) the block does not run, (b)
+            # derive() returns None, (c) refine() moves nothing, in which case the
+            # rollback is a no-op.  Exactly this confusion let the fire census
+            # invent findings on 14.08.  The trace separates them:
+            #   derived=1 rules out (b), moved=... rules out (c), broke=1 is the hit.
+            # DELFIN_ASSERT_TRACE=<path>, otherwise silent and free.
+            _tp = os.environ.get("DELFIN_ASSERT_TRACE", "")
+            if _tp and _tp != "0":
+                try:
+                    _mv = float(np.max(np.linalg.norm(P - _P_before, axis=1)))
+                except Exception:
+                    _mv = -1.0
+                try:
+                    with open(_tp, "a") as _fh:
+                        _fh.write("[ASSERT] n=%d derived=1 moved=%.4f broke=%d %s\n"
+                                  % (len(out_syms), _mv,
+                                     1 if (_v and _v.get("any_broken")) else 0,
+                                     "" if not _v else
+                                     "md=%d planar=%d frozen=%d trans=%d" % (
+                                         _v.get("md_broken", 0), _v.get("planar_broken", 0),
+                                         _v.get("frozen_moved", 0),
+                                         _v.get("trans_lost_metals", 0))))
+                except Exception:
+                    pass
+            if _v is not None and _v.get("any_broken"):
+                P = _P_before              # rollback: the claim weighs more
+                # ===== DIAGNOSIS ONLY, NEVER IN PRODUCTION =======================
+                # Question this answers: the full run over the 19
+                # octahedral cases broke the assertion SIX TIMES (109 calls, all
+                # six trans) -- and still delivered 19 of 19 byte-identical
+                # archive files.  Two explanations, both plausible:
+                #   (a) the affected frames are rejected by the self-gate anyway, they
+                #       stand in NO arm in the archive;
+                #   (b) a pass AFTER refine restores the twisted state.
+                # Both produce byte-identical archives, so a byte comparison cannot
+                # separate them -- the same trap as in the first smoke test.
+                # DELFIN_ASSERT_MARK_ROLLBACK=1 additionally shifts the rolled-back frame
+                # by 100 Angstrom.  Such a frame is geometrically
+                # impossible and falls through every gate.  If the archive is THEN still
+                # byte-identical, the frame was never in it -> case (a).
+                # If it changes, the rollback does very well reach the archive ->
+                # case (b), and the cause lies behind refine.
+                if os.environ.get("DELFIN_ASSERT_MARK_ROLLBACK", "0") == "1":
+                    P = P + np.array([100.0, 0.0, 0.0], float)
+        except Exception:
+            pass
+    return P
 
 
 def _sphere_flex_frame(out_syms, P, fixed, block_specs):
@@ -1571,6 +2965,14 @@ def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs,
                         Q = _orient_diatomic_block(
                             Q, lsyms, _dp[0], _dp[1], np.zeros(3), vertex)
             cl = _clash_count(Q, np.array(placed_P), lsyms, placed_syms)
+            # THE FREE DEGREE OF FREEDOM, CALL SITE 2 of 2 (purely monodentate path).
+            # Here the azimuth about M-D is the only free DOF, and on this path it is
+            # sampled NOWHERE -- the existing axis rotation (CN2_SPINS)
+            # sits in the ensemble sibling assemble_heteroleptic_ensemble, not
+            # here.  Default OFF -> None -> byte-identical.
+            _fd = _free_dof_reseat(Q, lsyms, [di], np.array(placed_P), placed_syms, cl)
+            if _fd is not None:
+                Q, cl = _fd
             if cl < best_clash:
                 best_clash, best_Q = cl, Q
             if cl == 0:
@@ -1586,11 +2988,38 @@ def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs,
             fixed.add(pos + di); pos += len(lsyms)
     P = np.vstack(blocks)
     if refine:
-        try:
-            from delfin.manta.refine import refine as _refine
-            P = _refine(out_syms, P, fixed)
-        except Exception:
-            pass
+        # ===== THE SEATING HANDS THE RELAXATION ITS ASSERTION =====================
+        # Measured 2026-08-18 on 30921 systems: net 988 systems flow from the
+        # octahedron into the trigonal prism (McNemar X2 = 860.8), the builder produces
+        # 2.99 times too many prisms, while every other shape stays between 0.86 and
+        # 1.29.  But they are NOT prisms -- the CShM mass lies unimodally at 8
+        # to 12 instead of at 16.7, i.e. a HALF Bailar twist.  And it is not a
+        # selection: poly_match is false in 1061 of 1061 cases, although the eye reads
+        # the best frame over the WHOLE manifold -- in the whole manifold there is
+        # no octahedron.  The signal is the interlocking, monotone from 2.49 % at zero
+        # chelate rings to 16.12 % at five; metal and d-count are flat.
+        #
+        # ⇒ The seating sets the polyhedron correctly, and the chelate pull twists it
+        # out afterwards.  That is exactly what the assertion protocol is built for: the
+        # construction says WHAT it claims, and the relaxation must not break it.
+        #
+        # The existing countermeasure in the source (smiles_converter.py:38074, the
+        # UFF angle targets on the opposing donor pairs) hangs via :27451
+        # on apply_uff and lies behind the FF-free return -- it NEVER ran on this
+        # path.  This here is its FF-free counterpart, and it does not correct,
+        # it FORBIDS: if the relaxation breaks the assertion, the frame BEFORE the
+        # relaxation stands.  Never-worse by construction, no target value, no threshold
+        # that could be fine-tuned to a pool.
+        #
+        # ⚠ WHY THIS IS NOT A REPAIRER.  The module census of 18.08. measured
+        # that 20 of 21 repairers do nothing anyway and the one remaining
+        # (the unconditional post-relaxation) is LOAD-BEARING -- without it every axis
+        # gets worse (uffoffE).  So the answer is not "no optimisation",
+        # but "no BLIND optimisation".  This block takes nothing away from the
+        # relaxation; it only gives it what it did not know before.
+        #
+        # DELFIN_FFFREE_ASSERT_ENFORCE (default 0 -> byte-identical).
+        P = _refine_guarded(out_syms, P, fixed)
         # #308 whole-complex torsion-space clash relax (env-gated, default-OFF
         # byte-id): when rigid M-D-axis selection is not enough and ligand-internal
         # rotation is needed, jointly optimise all rotatable single bonds of the
@@ -1601,13 +3030,604 @@ def assemble_heteroleptic_from_mols(metal: str, geometry: str, vertex_specs,
         # M-D-axis rotations + internal torsions jointly minimising the GLOBAL
         # inter-ligand heavy-heavy clash (the self-gate blocker for class-B), core
         # frozen.  Runs after #308; no-op when DELFIN_FFFREE_JOINT_DECLASH unset.
-        P = _joint_declash_frame(out_syms, P, fixed, block_specs)
+        P = _joint_declash_frame(out_syms, P, fixed, block_specs, geom=geometry)
         # SOFT coordination-sphere flex (env-gated, default-OFF byte-id): let the
         # donors breathe a hard-bounded amount to open the residual MILD inter-ligand
         # heavy-heavy clashes that rotation/frozen-donor refine cannot (clash forensik
         # 2026-06-29).  Restored toward the ideal vertex+M-D; never-worse on clash.
         P = _sphere_flex_frame(out_syms, P, fixed, block_specs)
     return out_syms, P
+
+
+# ===== THE MISSING EYE OF THE DEDUP: THE FOLD FINGERPRINT =========================
+#
+# WHAT WAS MEASURED (26.08.2026, harness/faltung_dedup_schwelle.py, raw data under
+# results/FALTUNG_DEDUP_2026_08_26/).  Every dedup in the build computes RMSD over
+# ALL heavy atoms.  But a ring fold moves only the RING ATOMS -- their
+# median share of the heavy atoms is 0.1316.  Measured counterfactually, on real
+# archive frames folded with the build's own generator (`_ring_pucker._set_pucker`
+# via `_pucker_candidates`, substituents ride along rigidly):
+#
+#   archive gkfam6kb_on (5681 files, 500 drawn, 199 evaluable, 459 rings)
+#       4539 of 5754 fold candidates below 0.50 A total RMSD        =  78.88 %
+#       3311 of 5754                    below 0.30 A               =  57.54 %
+#       2672 of 5754                    below 0.25 A               =  46.44 %
+#   archive hplacegate6k_on (4313 files, 136 evaluable, 327 rings)
+#       3117 of 4206 fold candidates below 0.50 A                  =  74.11 %
+#   chair against COUNTER-chair, the most classic flip of all:
+#         94 of  294 even rings         below 0.50 A               =  31.97 %
+#
+# ⛔ DO NOT LOWER THE THRESHOLD.  That would be a knob, gameable, and it would hit
+#    EVERY other axis as well -- rotamers, seating variants, combinations.  Instead,
+#    the PREDICATE itself is tightened:
+#
+#        rmsd < thr        ->        rmsd < thr  AND  same fold
+#
+# ⚠ WHY THIS CANNOT EXPLODE HERE, although a CP dedup on 26.08. in
+#   `_ring_pucker` failed on EXACTLY THAT.  There it had been measured: without CP
+#   n=5 converges at 3/3/3 states, with CP it explodes to 9/13/14 -- all
+#   thirteen at theta=90 and Q=0.300, distinguished ONLY by phi.  That is the
+#   pseudorotation of an unsubstituted ring; phi hangs on the ATOM NUMBERING,
+#   not on the chemistry.  TFD folds in the topological symmetry, CP cannot
+#   do that.  CP ALONE is no substitute for TFD.
+#     The difference here is the CONJUNCTION.  There CP stood alone and DECIDED;
+#   here it stands BEHIND the RMSD and can only RESCUE pairs that already lie below
+#   the RMSD threshold -- i.e. are almost congruent atom by atom.  Two
+#   pseudorotamers 60 degrees apart are precisely NOT that: half the ring set
+#   switches side, the RMSD separates them anyway.  The explosion mode lies by
+#   construction outside the reach of this term, and the number of additionally
+#   kept frames is capped from above by `n_frames` / `max_builds`.
+#
+# RESOLUTION NOT GUESSED, BUT TAKEN FROM THE GENERATOR.  `_pucker_candidates`
+# samples the CP equator with K = max(8, 2n) phases; the finest spacing the
+# generator itself draws is therefore 360/K degrees.  The tolerance below is HALF the
+# sampling spacing, 180/K: below it two states lie within the granularity of the
+# generator, above it they are two different candidates for the generator itself.
+#     n=4  22.5   n=5  18.0   n=6  15.0   n=7  12.86   n=8  11.25 degrees
+# No free parameter, no turned knob.
+#
+# ⚠ COST, MEASURED instead of assumed (harness/faltung_fp_kosten.py):
+#       _cp_theta_phi   n=5 75.2 us · n=6 85.9 us · n=7 87.9 us   per ring and frame
+#       _cp_abstand      6.9 us                                   per ring and PAIR
+#       _tfd          1435.8 us                                   per PAIR (35 atoms)
+#   Three consequences from that:
+#     1. TFD is ruled out at this site.  It is by construction a PAIR
+#        quantity and cannot be cached per frame; in `_dedup_builds` with
+#        up to 180 candidates against up to 60 kept, that is 10 800 pairs
+#        = 15.5 s per complex.  That is not an instrument verdict, that is a price.
+#     2. The fingerprint is computed and memorised PER FRAME, never per pair.  Naively
+#        per pair it would be 21 600 CP evaluations instead of 180 at the same site --
+#        exactly the quadratic trap.
+#     3. It is moreover computed LAZILY: only when an RMSD proximity
+#        occurs at all.  Where nothing is deduplicated, it costs zero.
+#   Upper bound thereby: 16 rings x 86 us = 1.4 ms per frame, x 180 frames = 0.25 s per
+#   complex in the worst case; measured on average were 459/199 = 2.31 foldable
+#   rings per system, so the cap practically never bites.
+#
+# ⚠ DEFERRED IMPORT, and the reason is NOT circularity.  Measured (both
+#   load orders, each in a fresh interpreter): `_ring_pucker` pulls in on
+#   loading only `delfin`, `delfin.manta`, `delfin.manta._ring_pucker` -- NO
+#   `assemble_complex`.  A module-level import would therefore be permitted.  It stays
+#   in the function nonetheless, because otherwise it would be a LOAD-TIME coupling: a
+#   momentarily broken `_ring_pucker` would then take down the whole builder, even with
+#   the fingerprint switched off.  With default OFF the import never runs.
+#
+# Switch: DELFIN_FFFREE_DEDUP_FOLD_FP (default 0 -> predicate byte-identical).
+
+_FOLD_FP_QMIN = 0.075        # A -- half the smallest amplitude the build produces
+                             # (`_cp_pucker_amps` gives +/-0.15 A for eta faces).
+                             # Below it the ring is flat and theta/phi are noise.
+_FOLD_FP_RINGMAX = 12        # largest ring size considered
+_FOLD_FP_MAXRING = 16        # cost cap: rings per frame (deterministically sorted)
+
+
+def _fold_fp_enabled():
+    return os.environ.get("DELFIN_FFFREE_DEDUP_FOLD_FP", "0") == "1"
+
+
+def _fold_rings_from_blocks(blocks, syms):
+    """Global ring index lists of the potentially FOLDABLE rings.
+
+    ``blocks`` is a sequence of ``(global_offset, mol)``, where
+    ``global_offset + local_index`` is the index in the frame -- the convention the
+    builder itself writes (``_collect_exempt``: "the AddHs ligand block starts
+    at lig_offset+1 in the assembled coords").
+
+    The filter is deliberately COARSE: not fully aromatic, size 4..12.  The
+    actual gate is the amplitude floor at run time -- a rigid, flat
+    ring has Q ~ 0 in BOTH frames and thus counts as equally folded anyway.
+    The filter only saves compute time, it decides nothing.
+
+    ⚠ RETURNS ``None`` AS SOON AS THE OFFSET MODEL DOES NOT WORK OUT.  No verdict
+      is better than a wrong one: with ``None`` the predicate falls back to the old,
+      pure RMSD.  Every ring atom is checked against its element symbol
+      in the frame.  ⚠ What that does NOT catch: ``_ligand_confs_from_mol`` memoises
+      its conformer pools by canonical SMILES; two constitutionally identical
+      ligands with different internal atom order get the same pool,
+      and then local j can be a DIFFERENT atom of the same name.  That is a
+      pre-existing trait of the builder (lines 3705/3722/3744 mix the same two
+      index spaces); here the consequence would at most be one additionally kept
+      near-duplicate, never a lost frame."""
+    rings = []
+    try:
+        for off, mol in blocks:
+            if mol is None:
+                continue
+            off = int(off)
+            for r in mol.GetRingInfo().AtomRings():
+                n = len(r)
+                if n < 4 or n > _FOLD_FP_RINGMAX:
+                    continue
+                if all(mol.GetAtomWithIdx(int(j)).GetIsAromatic() for j in r):
+                    continue                     # flat, rigid face: no axis
+                g = [off + int(j) for j in r]
+                if min(g) < 0 or max(g) >= len(syms):
+                    return None
+                for j, gj in zip(r, g):
+                    if syms[gj] != mol.GetAtomWithIdx(int(j)).GetSymbol():
+                        return None
+                rings.append(tuple(g))
+    except Exception:
+        return None
+    if not rings:
+        return None
+    rings.sort()                                 # deterministic, independent of SSSR
+    return rings[:_FOLD_FP_MAXRING]
+
+
+def _fold_fp(P, rings):
+    """The Cremer-Pople state per ring, computed with the instrument of the
+    FOLD GENERATOR itself (``_ring_pucker._cp_theta_phi``) instead of re-implemented.
+    Per entry ``(n, Q, theta, phi)``.  ``None`` = no verdict possible."""
+    try:
+        from delfin.manta._ring_pucker import _cp_theta_phi     # deferred, see above
+    except Exception:
+        return None
+    out = []
+    try:
+        for r in rings:
+            Q, th, ph = _cp_theta_phi(P, list(r))
+            out.append((len(r), float(Q), float(th), float(ph)))
+    except Exception:
+        return None
+    return out
+
+
+# ===== THE THIRD AXIS OF THE SPHERE: THE AMPLITUDE (26.08.2026) ==================
+#
+# The fingerprint above read (Q, theta, phi) and compared ONLY (theta, phi) of it.
+# Q stood in the tuple and was held exclusively against the floor -- the
+# DIRECTION of the fold decided everything, its DEPTH nothing.  Two gaps follow
+# from that, and both are measured, not suspected
+# (`harness/faltung_fp_rettung_metallacyclus.py`, `archive_gkfam6kb_on`, seed 11,
+#  500 systems -- the same draw as all numbers of this block):
+#
+#   (1) FLAT AGAINST FOLDED.  If ONE ring lies below the floor and the other
+#       above, the great-circle distance judges by the theta/phi of the flat one --
+#       and that is the phase of a vanishing displacement, i.e. noise.
+#       Measured 1191 such pairs, of which 146 (12.26 %) judged as SAME.
+#       That is the `5M:planar` state, which the eye counts as its own basin:
+#       a flat and a folded ring passed as the same fold.
+#   (2) FLAT AGAINST DEEP.  Two rings with the same fold direction, but
+#       Q = 0.15 against Q = 0.60, have great-circle distance ZERO -- a hinted
+#       and a pronounced boat counted as the same state.
+#
+# ⚖ THE TOLERANCE IS DERIVED, NOT CHOSEN -- by THE law by which the
+#   two already existing numbers of this instrument are built:
+#
+#       TOLERANCE = HALF THE GENERATOR'S SAMPLING SPACING ON THIS AXIS.
+#
+#   * angle: `_pucker_candidates` draws K = max(8, 2n) phases around the equator,
+#     spacing 360/K, half spacing 180/max(8,2n)  -- exactly the line below.
+#   * floor:  the smallest amplitude the build sets at all is 0.15 A
+#     (`_cp_pucker_amps` for eta faces); the two neighbouring states there
+#     are 0 and 0.15, half spacing 0.075  -- exactly `_FOLD_FP_QMIN`.
+#   * amplitude: `_pucker_candidates` emits `q_scale` from {0.0, 1.0} (the zero under
+#     DELFIN_FFFREE_PUCKER_PLANAR) and multiplies by `_ring_pucker._amp(n)`.
+#     So the ladder is {0, _amp(n)}, its spacing _amp(n), the half spacing
+#
+#         Q_TOL(n) = _amp(n) / 2      n=4 0.175 · n=5 0.200 · n=6 0.315
+#                                     n=7 0.360 · n=8 0.400 · n=12 0.49
+#
+#   ⇒ The floor is thereby no longer a second parameter, but the same expression
+#     for the eta ladder: 0.15/2.  Two constants, ONE law, NO free knob.
+#
+# 🔬 THE SECOND INSTRUMENT, and it says almost the same.  A derived number without
+#   a second measurement would be a claim -- so the cross-check:  `_ring_pucker`
+#   has long deduplicated its OWN fold candidates on BOTH axes,
+#
+#       `_cp_abstand(_cp,_k) < _cp_tol  AND  |Q_cp - Q_k| < _cp_qtol`   (:1144)
+#
+#   with `_cp_tol` = 15 degrees and `_cp_qtol` = 0.15 A -- the latter NOT from the
+#   grid, but crystallographically justified (coordinate esd 0.002..0.01 A
+#   as lower, the disorder limit 0.3..0.5 A as upper bound).
+#   ⇒ Two independent routes, ONE predicate form.  The fingerprint here was
+#     until today the WEAKER half of it: it demanded only the angle.
+#   ⇒ On the angle the two even meet exactly: 180/max(8,2*6) = 15.0 degrees.
+#     On the amplitude the number derived here is by a factor 1.17 (n=4) to
+#     2.67 (n=8) COARSER than the crystallographic one.  The direction of this
+#     deviation is the safe one (see below); its size is the rescue this
+#     draft deliberately leaves on the table.
+#
+# ⚠ WHY THE COARSE LADDER AND NOT THE FINE ONE.  `_pucker_space_grid` divides
+#   the same span into `n_amp` steps (default 2) and would give _amp(n)/4.  The
+#   LARGER tolerance is taken, and for the same reason the coarse angle tolerance
+#   above stays in place: `_fold_same` returns True on "within the
+#   tolerance", and True means DUPLICATE -- the old behaviour.
+#   A too-coarse tolerance can only leave rescue on the table, never wrongly keep a
+#   frame.  The measured rescue numbers are thereby LOWER BOUNDS.
+#
+# ⚠ (1) NEEDS NO TOLERANCE AT ALL, and therefore gets none.  The floor itself
+#   already says what a ring below it IS: flat, without a fold axis.  A
+#   flat and a folded ring are, by exactly this definition, not
+#   the same fold -- that is no new number, but the missing half
+#   of a case distinction that until now had only its symmetric branch
+#   ("BOTH flat -> same").
+#
+# ⚠ THE CHANGE IS MONOTONE, and that is its most important property.  Every
+#   pair that was previously called DIFFERENT stays different; only pairs that
+#   were called SAME can flip.  So no rescue is lost, and the
+#   byte proof at default OFF stays the same (`_fold_same` is unreachable
+#   as long as `fold_rings is None` -- all three call sites bail out before).
+#   ⚠ Not only argued, but RECOUNTED: in the re-measurement the rescue
+#     rises in EVERY bucket of both axes or stays equal, in none does it fall
+#     -- organic n=4..7 plus chair-against-counter-chair, metallacycle n=4..12
+#     plus chair-against-counter-chair, plus the three overall tables.
+#
+# 🎯 THAT IT IS NOT NOISE IS SHOWN BY THE FOUR-RING -- and analytically, not
+#   statistically.  An N-ring has N-3 fold degrees of freedom; for the FOUR-RING that
+#   is EXACTLY ONE, and that one is the amplitude.  In `_cp_theta_phi` the term
+#   `q2s = -sqrt(2/n) * sum z_j sin(pi j)` drops identically to zero for n=4 (sin(pi j) = 0
+#   for integer j), so phi is constantly 0 or 180, and q2/q3 stand in a
+#   fixed ratio, so theta too takes only two values.
+#   ⇒ For a four-ring, (theta, phi) NEVER carried information about the fold, only
+#     its SIGN.  The old fingerprint was blind there by construction.
+#   ⇒ And exactly there the jump is largest -- measured, not expected:
+#         organic    n=4   32 -> 78 of 94 eaten            34.04 % -> 82.98 %
+#         MC         n=4   67 -> 205 of 356                18.82 % -> 57.58 %
+#     while the six-ring, where the direction really carries two degrees of freedom,
+#     barely gains (organic 3083 -> 3111 of 3136, 98.31 % -> 99.20 %).
+#   A noise term would have scattered evenly across all ring sizes.  This one
+#   hits the class that was known beforehand to HAVE to be blind.
+#
+# ⚠ IN WHICH DIRECTION THIS DRAFT ERRS, if it errs: it SPLITS TOO MUCH.
+#   Two rings just either side of the floor (0.074 against 0.076) are practically
+#   both flat and are still called different -- a spurious variant, one frame
+#   too many.  That is the more expensive, but the right error direction: a
+#   surplus conformer costs compute time, an eaten state is
+#   irretrievable, and the north star is completeness.  The error in
+#   the opposite direction persists anyway (coarse tolerance, see above).
+
+
+def _fold_same(fa, fb):
+    """True = the SAME fold (or no verdict possible -> old behaviour).
+
+    Comparison uses the GREAT-CIRCLE DISTANCE on the CP sphere
+    (``_ring_pucker._cp_abstand``), not |dtheta|+|dphi|.  At the pole (theta 0
+    or 180 -- chair and counter-chair) phi is meaningless; the naive metric
+    holds two identical chairs with phi=136 and phi=339 to be 200 degrees
+    apart.  The great-circle distance solves that geometrically, without a special rule.
+
+    The AMPLITUDE enters as well -- derivation in the block above.  Order of the
+    gates: first the floor (is the sphere responsible at all?), then the
+    amplitude (how DEEP), then the direction (where to)."""
+    if not fa or not fb or len(fa) != len(fb):
+        return True
+    try:
+        from delfin.manta._ring_pucker import _cp_abstand, _amp   # deferred, see above
+    except Exception:
+        return True
+    for a, b in zip(fa, fb):
+        n = int(a[0])
+        if int(b[0]) != n:
+            return True                          # ring lists do not match: no verdict
+        if max(a[1], b[1]) < _FOLD_FP_QMIN:
+            continue                             # both flat -> no fold axis
+        if min(a[1], b[1]) < _FOLD_FP_QMIN:
+            return False                         # ONE flat, ONE folded: the floor
+                                                 # itself calls that two states
+        if abs(a[1] - b[1]) > 0.5 * _amp(n):
+            return False                         # depth: half the generator's
+                                                 # amplitude step ({0, _amp(n)})
+        if _cp_abstand(a[1:], b[1:]) > 180.0 / max(8, 2 * n):
+            return False
+    return True
+
+
+# ===== THE FINGERPRINT'S GAP: THE RING AROUND THE METAL (26.08.2026) ==============
+#
+# The fingerprint above takes its rings from ``mol.GetRingInfo()`` of the LIGAND MOL.
+# There is no metal there, so there is no CHELATE RING there either.  The fold
+# of a metallacycle -- the "step" of a salen ring, the flip of an
+# ethylenediamine five-ring -- until now ran unhindered into the same complex RMSD and
+# was eaten there as a duplicate.
+#
+# ⚠ THIS IS NOT AN EDGE CASE, AND THE NUMBER IS MEASURED, NOT ESTIMATED
+#   (`harness/faltung_fp_rettung_metallacyclus.py`, `archive_gkfam6kb_on`,
+#    seed 11, the same 500 drawn systems as for the organic measure):
+#       reach        314 of 500 systems carry a metallacycle (62.8 %)
+#       rings        816 found, of which 706 after the aromatics rule below
+#                    (n=5: 336 · n=6: 307 · n=4: 33 · n>=7: 30)
+#       candidates   8520  -- MORE than the 5754 organic ones of the predecessor measure
+#       eaten        5550 of 8520 lie below 0.50 A complex heavy-atom RMSD
+#       RESCUED      3630 of 5550 (65.41 %) = 42.61 % of all 8520
+#   For comparison the organic measure of the same day: 4257 of 4539 (93.79 %).
+#   So the metallacycle is rescued LESS OFTEN, but there are more candidates.
+#   ⚠ Without the aromatics rule it would be 816 rings / 9620 candidates / 4445 of
+#     6621 rescued.  The 110 dropped rings are the bipyridine class
+#     (fully aromatic apart from the metal); they are NOT in the
+#     headline number here, because the generator does not fold them in the first
+#     place -- see below.
+#   ⚠ THESE FOUR NUMBERS ARE THE STATE BEFORE THE AMPLITUDE.  The Q term in the block
+#     above `_fold_same` raised them on the same day; the same tools,
+#     the same archive, the same seed 11, the same 500 systems -- only the predicate
+#     is sharper (`results/FALTUNG_FP_Q_2026_08_26/`):
+#         metallacycle   3630 -> 3913 of 5550   65.41 % -> 70.50 %
+#         the same without the aromatics rule
+#                        4445 -> 4780 of 6621   67.13 % -> 72.19 %
+#         organic        4257 -> 4433 of 4539   93.79 % -> 97.66 %
+#         chair against counter-chair on the metallacycle
+#                          60 ->   79 of   80   75.00 % -> 98.75 %
+#     The denominators stand still because they measure the RMSD and not the verdict --
+#     exactly by that the change is recognisable as a pure predicate tightening.
+#
+# ⚠ WHY THE RING LIST AND NOT THE MATHEMATICS WAS THE PROBLEM.  Cremer-Pople
+#   needs only a cyclic order; the metal is a ring atom like any
+#   other, and ``_cp_theta_phi`` is purely geometric.  That is checked, not
+#   assumed (read-back test over 9620 seatings: the formula delivers a
+#   well-defined (Q, theta, phi) for every chelate ring).
+#   ⚠ What the read-back test ALSO shows and what one needs to know: the SET
+#     amplitude is not reached -- |Q_read - Q_set| median 0.155 A
+#     against a set ``_amp(5)`` = 0.40.  That is NOT a metal effect in the
+#     CP calculation, but the frozen coordination sphere: in a
+#     five-ring M-D-X-Y-D THREE of the five ring atoms are in ``frozen``, only
+#     X and Y move.  For the fingerprint that does not matter -- it reads
+#     the ACHIEVED geometry, not the desired one.
+#
+# ⚠ THE TOLERANCE STAYS 180/max(8,2n), AND THAT AFTER A MEASUREMENT THAT SPEAKS
+#   AGAINST IT.  Its derivation is half the sampling spacing of the equator that
+#   ``_pucker_candidates`` draws (K = max(8,2n) phases).  That presumes that the
+#   generator also REACHES the requested phase spacing.  On the metallacycle it
+#   does not -- measured the CP distance of NEIGHBOURING equator candidates,
+#   read back:
+#       n=5  median 11.5 degrees against tolerance 18.0  ->  2678 of 3969 below
+#       n=6  median 18.6 degrees against tolerance 15.0  ->   879 of 3377 below
+#   The softness sits precisely in the M-D bonds, and those are frozen; the
+#   generator samples more tightly than it believes.
+#   ⇒ The tolerance is too COARSE for the metallacycle.  It is nevertheless NOT
+#     tightened, and the reason is the DIRECTION of the error: ``_fold_same`` returns
+#     True on "within the tolerance", and True means DUPLICATE,
+#     i.e. exactly the old behaviour.  A too-coarse tolerance can only leave RESCUE
+#     on the table, never wrongly keep a frame.  A tightened number,
+#     by contrast, would be a fitted knob without derivation -- and the 4445 above are
+#     measured with the coarse tolerance, hence a LOWER BOUND.
+#
+# ✅ WHAT THIS TERM COULD NOT DO -- CLOSED, NOT LEFT STANDING.  Until today this
+#   stood here: ``_fold_same`` does not compare Q at all, only (theta, phi); if
+#   ONE ring lies below the amplitude floor and the other above, the
+#   great-circle distance judges by a meaningless phi.  Measured were 1191 such
+#   pairs, of which 146 (12.26 %) judged as SAME -- the planar chelate-ring state
+#   (`5M:planar`), which the eye counts as its own basin.
+#   The amplitude block above ``_fold_same`` closes that: RE-MEASURED with
+#   the same tool, archive, seed and draw, now **0 of 1191** (0.00 %) stand
+#   on SAME.  It hit, as predicted here, the organic axis as well -- which is why
+#   it is not a silent change, but one with newly collected numbers on BOTH
+#   axes (see the block above ``_fold_same`` and the numbers above).
+#
+# ⛔ AND NOW THE UNCOMFORTABLE REACH QUESTION, CHECKED INSTEAD OF ASSUMED.
+#   The occasion for this term was: "DELFIN_FFFREE_PUCKER_MC produces
+#   metallacycle folds that subsequently run into the same complex RMSD."
+#   THAT IS NOT TRUE.  Looked up in the emitter instead of believed:
+#     `converter_backend._append_ffree_ring_puckers` calls `_ring_pucker.generate`
+#     (PUCKER_MC sits there) and appends every surviving fold with
+#     `results.append(...)` DIRECTLY -- :537.  These frames see none of the three
+#     dedups; the only dedup over `results` is an EXACT
+#     string comparison against the primary frame (:2066/:2740/:3065).  And the
+#     call sites (:2098/:2160/:2800/:3103) stand AFTER the build, i.e. after the
+#     dedup.
+#   ⇒ This term does NOT protect the folds of the fold emitter.  It protects
+#     the metallacycle folds that are there ALREADY BEFORE the dedup: those from
+#     the conformer pool per ligand (`_ligand_confs_from_mol` -> the combination
+#     product in `assemble_from_config`) and the eta variants in `_dedup_builds`.
+#     That is a real axis -- the 8520 candidates above lie on it --, but
+#     it is NOT the axis that triggered the task.
+#   ⚠ And on the small byte battery the effect is ZERO, honestly counted
+#     (`harness/faltung_fp_mc_vergleich.sh`, census of both runs):
+#         MC=0   rings per build  12,  one ring list without verdict (None)
+#         MC=1   rings per build  26,  no ring list without verdict any more
+#                14 chelate rings in 7 ring lists, all n=5
+#         `_fold_same` in BOTH runs: 15 SAME / 2 DIFFERENT
+#     So the switch is not dark -- it doubles the ring set and gives
+#     a build a verdict in the first place --, but NO frame changes and
+#     not a single `_fold_same` verdict flips.  On those four chelate systems
+#     the conformer product varies the ligand periphery, not the
+#     chelate ring fold -- which fits the P3 measurement above: with nailed-down
+#     donors the achieved fold spread on the metallacycle stays small.
+#   ⇒ WHOEVER WANTS TO SWITCH THIS ON must measure it on a 5000-system A/B,
+#     not on a battery -- and the number they may expect is the one from
+#     the archive measurement, not the one from the byte run.
+#
+# Switch: DELFIN_FFFREE_DEDUP_FOLD_FP_MC (default 0).  Its OWN switch, although
+# the parent switch is OFF anyway -- only that way do the two findings
+# (organic / metallacycle) stay separately measurable.  ⚠ The two percentages that
+# stood here -- 73.98 and 65.41 -- are superseded since the Q term; the valid
+# numbers with their denominators stand above in ONE block, so that they cannot
+# drift apart at three places.
+
+_FOLD_FP_MCMAX = 8           # cost cap: metallacycles per frame (deterministically
+                             # sorted).  Measured 816/314 = 2.6 per system.
+
+
+def _fold_fp_mc_enabled():
+    return (_fold_fp_enabled()
+            and os.environ.get("DELFIN_FFFREE_DEDUP_FOLD_FP_MC", "0") == "1")
+
+
+def _fold_mc_arms(lg):
+    """The donors with which THIS ligand spans a chelate ring -- or
+    ``None`` if it spans none.
+
+    ⚠ eta ligands are EXCLUDED, and that is not a reservation but
+      geometry: an eta face is not a sequence of sigma donors, but ONE
+      pi bond.  ``assemble_hapto`` also freezes the whole ring set there
+      (``fixed.update(...eta_local_idxs)``) and reports only ONE representative as
+      donor (:3902).  A "ring" M-C1-C2-C3 would be the cut-open Cp ring, not a
+      metallacycle -- and its middle atom is itself metal-bound, which the
+      minimality test in ``_fold_mc_rings`` catches anyway.
+    ⚠ ``_canonical_arm_order`` instead of ``donor_local_idxs``: that is the list the
+      builder ACTUALLY seats on vertices (:3954 in the hapto branch, :5340 in the
+      configuration branch).  ``donor_local_idxs`` can be longer than the denticity
+      -- that would produce rings nobody has coordinated."""
+    try:
+        if lg.get("is_eta"):
+            return None
+        dent = int(lg.get("denticity") or 0)
+        if dent < 2:
+            return None                          # one donor spans no ring
+        arms = [int(x) for x in _canonical_arm_order(lg, dent)]
+        return arms if len(arms) >= 2 else None
+    except Exception:
+        return None
+
+
+def _lig_path(mol, a, b, maxlen):
+    """Shortest path ``a`` -> ``b`` IN THE LIGAND GRAPH, as a list of local indices.
+
+    The ligand mol carries no metal, so the path cannot shortcut via the metal
+    -- exactly the property that defines a chelate ring.  Neighbours are
+    visited in ascending order -> deterministic for equally long paths.  H is skipped
+    as an intermediate atom (it is terminal and can never lie on a
+    shortest path between two heavy atoms)."""
+    a, b = int(a), int(b)
+    if a == b:
+        return None
+    vor = {a: None}
+    dq = [(a, 1)]
+    head = 0
+    while head < len(dq):
+        cur, tiefe = dq[head]
+        head += 1
+        if tiefe >= maxlen:
+            continue
+        for nb in sorted(int(x.GetIdx()) for x in mol.GetAtomWithIdx(cur).GetNeighbors()):
+            if nb in vor:
+                continue
+            if nb != b and mol.GetAtomWithIdx(nb).GetSymbol() == "H":
+                continue
+            vor[nb] = cur
+            if nb == b:
+                weg = [nb]
+                while vor[weg[-1]] is not None:
+                    weg.append(vor[weg[-1]])
+                weg.reverse()
+                return weg
+            dq.append((nb, tiefe + 1))
+    return None
+
+
+def _fold_mc_rings(blocks, syms, metal_idx=0):
+    """Global ring index lists of the CHELATE RINGS, in cyclic order.
+
+    ``blocks`` = sequence of ``(global_offset, mol, donor_locals)``.  The ring is
+    ``[metal_idx] + shortest ligand path(d1 -> d2)`` -- that is cyclic order
+    by construction (M-d1, the path bonds, d2-M), i.e. exactly what
+    ``_cp_theta_phi`` demands.
+
+    ⚠ MINIMALITY INSTEAD OF ALL PAIRS.  A tridentate has three
+      donor pairs, but only two chelate rings: the third pair runs via the
+      middle donor and is the CONCATENATION of the two.  A path that touches a
+      third donor of the same ligand is therefore rejected.
+
+    ⚠ THE METAL INDEX IS CHECKED, NOT BELIEVED.  All callers write the
+      metal to index 0 (``out_syms = [metal]`` :3262/:5042, ``off = 1`` in
+      ``_hapto_fold_rings``), but an offset model is an assumption -- so
+      ``_elements.is_metal`` stands in front here, and every ring atom is checked,
+      as in ``_fold_rings_from_blocks``, against its element symbol in the frame.
+      If anything does not fit: ``None``, and the predicate falls back to the pure
+      RMSD.
+
+    ⚠ AROMATIC IS A DIFFERENT CRITERION HERE THAN ON THE ORGANIC RING.  There
+      ONE aromatic ring atom tips the whole ring (flat, rigid face).
+      A salen chelate ring has aromatic phenolate carbons and folds
+      nonetheless -- at the M-D bonds.  Therefore only what is ENTIRELY
+      aromatic apart from the metal is excluded -- bipyridine, terpyridine,
+      metallabenzene.  That is literally the rule that
+      ``_ring_pucker._is_puckerable`` applies under DELFIN_FFFREE_PUCKER_MC,
+      not a second opinion on it, and it is THE RIGHT WAY ROUND HERE: the
+      generator never folds such rings, so there is nothing to rescue there either.
+      A fingerprint that carried them would be stricter than the generator and
+      would keep frames that differ in nothing.
+      MEASURED what the rule costs (`harness/faltung_fp_mc_selbsttest.py` and
+      the 500-system measurement): 110 of 816 chelate rings drop out, all of the
+      bipyridine type; salicylaldiminate (M-O-C(ar)-C(ar)-C=N) stays in, because N
+      and O are not aromatic -- exactly the case the `_ring_pucker`
+      comment calls "step or umbrella fold"."""
+    try:
+        from delfin.manta import _elements as _EL
+    except Exception:
+        return None
+    try:
+        mi = int(metal_idx)
+        if mi < 0 or mi >= len(syms) or not _EL.is_metal(syms[mi]):
+            return None                          # no metal there: no verdict
+        ringe = []
+        gesehen = set()
+        for off, mol, dons in blocks:
+            if mol is None or not dons or len(dons) < 2:
+                continue
+            off = int(off)
+            dset = {int(d) for d in dons}
+            arme = sorted(dset)
+            for ai in range(len(arme)):
+                for bi in range(ai + 1, len(arme)):
+                    weg = _lig_path(mol, arme[ai], arme[bi], _FOLD_FP_RINGMAX)
+                    if not weg or len(weg) < 3:
+                        continue                 # no path / ring size < 4
+                    if len(weg) + 1 > _FOLD_FP_RINGMAX:
+                        continue
+                    if any(j in dset for j in weg[1:-1]):
+                        continue                 # third donor: not minimal
+                    if all(mol.GetAtomWithIdx(int(j)).GetIsAromatic() for j in weg):
+                        continue                 # metallabenzene: planar-rigid
+                    g = [mi] + [off + int(j) for j in weg]
+                    if min(g) < 0 or max(g) >= len(syms):
+                        return None
+                    for j, gj in zip(weg, g[1:]):
+                        if syms[gj] != mol.GetAtomWithIdx(int(j)).GetSymbol():
+                            return None
+                    schl = frozenset(g)
+                    if schl in gesehen:
+                        continue
+                    gesehen.add(schl)
+                    ringe.append(tuple(g))
+    except Exception:
+        return None
+    if not ringe:
+        return None
+    ringe.sort()                                 # deterministic
+    return ringe[:_FOLD_FP_MCMAX]
+
+
+def _fold_rings_with_mc(blocks, syms, metal_idx=0):
+    """The fingerprint's ring set: organic rings as before, plus the
+    chelate rings when ``DELFIN_FFFREE_DEDUP_FOLD_FP_MC`` is on.
+
+    ``blocks`` = ``(offset, mol, donor_locals)``; ``donor_locals=None`` switches
+    the metallacycle off for this block.  ⛔ MC switch OFF -> the return
+    value is literally ``_fold_rings_from_blocks(...)``, i.e. byte-identical
+    to the state in which the organic measure was collected."""
+    org = _fold_rings_from_blocks([(o, m) for (o, m, _d) in blocks], syms)
+    if not _fold_fp_mc_enabled():
+        return org
+    mc = _fold_mc_rings(blocks, syms, metal_idx)
+    if not mc:
+        return org
+    if org is None:
+        return mc
+    # ⚠ APPENDED, NOT SORTED IN.  `_fold_same` runs with `zip` over two
+    #   fingerprints that come from THE SAME ring list; any stable
+    #   order will do, but it must be the same between the frames.
+    return org + mc
 
 
 def _complex_rmsd(syms, Pa, Pb):
@@ -1745,7 +3765,15 @@ def assemble_heteroleptic_ensemble(metal: str, geometry: str, vertex_specs,
     # complex level, keep up to n_frames.  Capped product keeps it bounded+fast.
     import itertools as _it
     rank_lists = [list(range(len(c))) for c in per_vertex_cands]
-    combos = list(_it.product(*rank_lists))
+    _nprod = 1
+    for _rl in rank_lists:
+        _nprod *= max(1, len(_rl))
+        if _nprod > _COMBO_MATERIALISE_MAX:
+            break
+    if _nprod > _COMBO_MATERIALISE_MAX:      # never materialise a 10^8 product to use 64
+        combos = _ranked_combos(rank_lists, 256)
+    else:
+        combos = list(_it.product(*rank_lists))
     # order combos by total rank (frame 0 = all best = the single-path pick), then
     # lexicographically -> deterministic.
     combos.sort(key=lambda cb: (sum(cb), cb))
@@ -1825,6 +3853,30 @@ def assemble_heteroleptic_ensemble(metal: str, geometry: str, vertex_specs,
         eval_order = combos[:MAX_EVAL]
 
     frames = []                                      # (syms, P) kept (deduped)
+    # FOLD FINGERPRINT (see block at `_fold_fp_enabled`).  Default OFF ->
+    # `_fold_rings` stays None -> the predicate below is literally the old one.
+    # `block_specs` here already carries (global offset, lmol, donor-local).
+    #
+    # ⛔ THE METALLACYCLE FINGERPRINT (DELFIN_FFFREE_DEDUP_FOLD_FP_MC) IS
+    #    DELIBERATELY NOT WIRED HERE, and the reason is structural, not caution:
+    #    the metal IS at index 0 (`out_syms = [metal]` :3262), so it is not
+    #    missing.  What is missing is the SECOND donor.  `vertex_specs` is a sequence
+    #    of `(frag, di)` with EXACTLY ONE donor index per vertex (:3270/:3276), and
+    #    both callers build it from `lig_ref[lab] = (lg["mol"],
+    #    lg["donor_local_idx"])` -- singular -- in the MONODENTATE branch of
+    #    `converter_backend` (:2615, calls :2727/:3050).  Chelates do not reach
+    #    this branch, they go to `assemble_from_config` beforehand.
+    #    A chelate ring needs two donors FROM THE SAME block; two vertices
+    #    are two separate blocks without a bond between them.
+    #    ⇒ A wiring here could never fire.  It would be exactly the mistake
+    #      this campaign has found five times in one day since 19.08.:
+    #      a mechanism that is built in and whose reach is zero.
+    #      If `vertex_specs` ever becomes multidentate, `_fold_rings_with_mc` belongs
+    #      here -- not before.
+    _fold_rings = (_fold_rings_from_blocks([(o, m) for (o, m, _dl) in block_specs],
+                                           out_syms)
+                   if _fold_fp_enabled() else None)
+    _fold_kept = []                                  # fingerprint per kept frame
     for cb in eval_order:
         blocks = [np.zeros((1, 3))]
         placed_P = [np.zeros(3)]; placed_syms = [metal]
@@ -1839,17 +3891,13 @@ def assemble_heteroleptic_ensemble(metal: str, geometry: str, vertex_specs,
         if not np.all(np.isfinite(P)):
             continue
         if refine:
-            try:
-                from delfin.manta.refine import refine as _refine
-                P = _refine(out_syms, P, fixed)
-            except Exception:
-                pass
+            P = _refine_guarded(out_syms, P, fixed)
             # #308 whole-complex torsion-space clash relax (env-gated, default-OFF
             # byte-id); torsion-only, never-worse, metal+donors (`fixed`) frozen.
             P = _torsion_relax_frame(out_syms, P, fixed, block_specs)
             # JOINT inter-ligand declash (env-gated, default-OFF byte-id): global
             # inter-ligand heavy-heavy minimisation, core frozen.  After #308.
-            P = _joint_declash_frame(out_syms, P, fixed, block_specs)
+            P = _joint_declash_frame(out_syms, P, fixed, block_specs, geom=geometry)
             # SOFT coordination-sphere flex (env-gated, default-OFF byte-id): donors
             # breathe a bounded amount to open residual mild inter-ligand clashes.
             P = _sphere_flex_frame(out_syms, P, fixed, block_specs)
@@ -1857,13 +3905,23 @@ def assemble_heteroleptic_ensemble(metal: str, geometry: str, vertex_specs,
             continue
         # complex-level RMSD dedup vs already-kept frames
         dup = False
-        for _, Pk in frames:
+        _fp = None                                   # lazy: only on RMSD proximity
+        for _ki, (_, Pk) in enumerate(frames):
             if Pk.shape == P.shape and _complex_rmsd(out_syms, P, Pk) < rmsd_dedup:
-                dup = True
-                break
+                if _fold_rings is None:
+                    dup = True                       # switch OFF -> old predicate
+                    break
+                if _fp is None:
+                    _fp = _fold_fp(P, _fold_rings)
+                if _fold_kept[_ki] is None:
+                    _fold_kept[_ki] = _fold_fp(Pk, _fold_rings)
+                if _fold_same(_fold_kept[_ki], _fp):
+                    dup = True
+                    break
         if dup:
             continue
         frames.append((list(out_syms), P))
+        _fold_kept.append(None)                      # same length as `frames`
         if len(frames) >= n_frames:
             break
     if not frames:
@@ -2201,6 +4259,20 @@ def assemble_hapto(metal, geometry, d, variant=None):
     nonprimary_eta_blocks = []   # (start, end) of η faces 2..n  -> rotated with the rest
     sigma_blocks = []        # (start, end) of σ ligands
 
+    # LENGTH-GATED HAPTO EXEMPTION (DELFIN_FFFREE_HAPTO_EXEMPT_LENGTH, default OFF -> byte-identical).
+    # The hapto path collects every heavy-heavy bond of order >= 1.5 into a LIST, and
+    # converter_backend._is_exempt reads the list form as an UNCONDITIONAL pass ("if key in _ex:
+    # return True") -- so once a bond is multiple/aromatic, ANY length survives the collapse
+    # self-gate, however crushed.  Measured: AJUWUY ships a C-C at 0.495 A through this door.
+    # The dict form is already implemented on the reading side (_ex_len + DELFIN_FFFREE_MULTIBOND_TOL
+    # 0.15) and gates on `d >= ideal - tol`, which still passes every genuine short multiple bond
+    # (C=O 1.13, C#N 1.16, aromatic C~C 1.39) while catching the collapses.  Class: 908 systems,
+    # 86.6% of them no_valid -- it tracks the W 69% / Re 53% / Rh 48% / Mo 44% failure rates.
+    # Pairs with no known ideal map to 0.0 = unconditional, i.e. exactly today's behaviour.
+    _hapto_len_gate = os.environ.get("DELFIN_FFFREE_HAPTO_EXEMPT_LENGTH", "0") == "1"
+    if _hapto_len_gate:
+        exempt_pairs = {}
+
     def _collect_exempt(frag_mol, lig_offset):
         """Local heavy-atom double/triple bonds -> global index pairs (the AddHs
         ligand block starts at lig_offset+1 in the assembled coords)."""
@@ -2208,11 +4280,17 @@ def assemble_hapto(metal, geometry, d, variant=None):
             bt = b.GetBondTypeAsDouble()
             if bt >= 1.5:                       # aromatic(1.5)/double(2)/triple(3)
                 a1, a2 = b.GetBeginAtomIdx(), b.GetEndAtomIdx()
-                if (frag_mol.GetAtomWithIdx(a1).GetAtomicNum() > 1
-                        and frag_mol.GetAtomWithIdx(a2).GetAtomicNum() > 1):
+                at1 = frag_mol.GetAtomWithIdx(a1)
+                at2 = frag_mol.GetAtomWithIdx(a2)
+                if at1.GetAtomicNum() > 1 and at2.GetAtomicNum() > 1:
                     g1 = lig_offset + 1 + a1
                     g2 = lig_offset + 1 + a2
-                    exempt_pairs.append((min(g1, g2), max(g1, g2)))
+                    key = (min(g1, g2), max(g1, g2))
+                    if _hapto_len_gate:
+                        from delfin.manta.converter_backend import multibond_ideal as _mbi
+                        exempt_pairs[key] = _mbi(at1.GetSymbol(), at2.GetSymbol(), bt) or 0.0
+                    else:
+                        exempt_pairs.append(key)
     for li in order:
         lg = ligands[li]
         lig_offset = pos - 1
@@ -2312,12 +4390,12 @@ def assemble_hapto(metal, geometry, d, variant=None):
             for lP in coords_list:
                 if dent == 2:
                     Q = _place_chelate_block(metal, lsyms, lP, dons_d[0], dons_d[1],
-                                             targets[0], targets[1])
+                                             targets[0], targets[1], mol=lg["mol"])
                 else:
                     _rigid_seat = (os.environ.get("DELFIN_FFFREE_LIGAND_RIGID", "0") == "1"
                                    and dent >= 3)
                     Q = _orient_chelate_to_vertices(lP, dons_d, targets, asym=True,
-                                                    rigid=_rigid_seat)
+                                                    rigid=_rigid_seat, lsyms=lsyms)
                 if Q is None:
                     continue
                 cl = _clash_count(Q, np.array(placed), lsyms, placed_syms)
@@ -2377,11 +4455,7 @@ def assemble_hapto(metal, geometry, d, variant=None):
             return None
     # FF-free geometric clash-relief (η-ring + σ-donors all frozen so the rigid
     # ring + constructed coordination are preserved; periphery relaxes only).
-    try:
-        from delfin.manta.refine import refine as _refine
-        P = _refine(out_syms, P, fixed)
-    except Exception:
-        pass
+    P = _refine_guarded(out_syms, P, fixed)
     if not np.all(np.isfinite(P)):
         return None
     return out_syms, P, sorted(set(donors)), exempt_pairs
@@ -2507,22 +4581,80 @@ def _rmsd_aligned(A, B):
     return float(np.sqrt((D * D).sum() / len(A)))
 
 
-def _dedup_builds(builds, rmsd_tol=0.25):
+def _hapto_fold_rings(d, syms):
+    """Global ring index lists for the eta builds -- the offset arithmetic of
+    ``assemble_hapto`` RETRACED and then CHECKED against reality.
+
+    ``assemble_hapto`` returns only ``(syms, P, donors, exempt)``; the offsets
+    stay local there.  They are therefore recomputed exactly as they arise there:
+      * emission order is NOT the list order of ``d["ligands"]``,
+        but eta ligands first, then the rest, each ascending (line 3621).
+      * block size is ``Chem.AddHs(lg["mol"]).GetNumAtoms()``, NOT
+        ``lg["mol"].GetNumAtoms()`` -- the ring H exist in ``lg["mol"]`` only as a
+        NumExplicitHs property and become atoms only through AddHs.
+      * index 0 is the metal, so the first ligand starts at 1.
+
+    ⚠ RECOMPUTING IS AN ASSUMPTION, SO IT IS CHECKED.  If the total number
+      of atoms does not match, there is NO verdict (``None``) and the predicate falls
+      back to the pure RMSD -- exactly the case the kekulize detour
+      (DELFIN_FFFREE_KEKULIZE_SPLIT) can produce when it neutralises an aromatic N+
+      and thereby changes the H count.  ``_fold_rings_from_blocks``
+      afterwards still checks every single ring atom against its element symbol."""
+    try:
+        ligs = d["ligands"]
+        order = sorted(range(len(ligs)),
+                       key=lambda i: (0 if ligs[i].get("is_eta") else 1, i))
+        blocks = []
+        off = 1                                    # index 0 is the metal
+        for i in order:
+            m = Chem.AddHs(ligs[i]["mol"])
+            # third entry = the chelate arms for the metallacycle fingerprint
+            # (``None`` for eta and for denticity 1 -> no ring).  MC switch OFF
+            # -> `_fold_rings_with_mc` never reads it.
+            blocks.append((off, m, _fold_mc_arms(ligs[i])))
+            off += m.GetNumAtoms()
+        if off != len(syms):
+            return None                            # offset model does not fit: no verdict
+        return _fold_rings_with_mc(blocks, syms, 0)
+    except Exception:
+        return None
+
+
+def _dedup_builds(builds, rmsd_tol=0.25, fold_rings=None):
     """RMSD-deduplicate a list of (syms, P, donors, exempt) builds (same complex, so
     identical atom ordering).  Keeps the FIRST occurrence (emission order = canonical
     build first), dropping any later build within ``rmsd_tol`` Å of a kept one.
     Deterministic.  Distinct-by-atom-count builds (ring-slip changes nothing in the
-    atom list, so counts always match) are compared directly."""
+    atom list, so counts always match) are compared directly.
+
+    ⚠ WHY A FOLD FINGERPRINT IS NEEDED HERE.  The variant list that runs into
+      this function contains ``_cp_pucker_amps``: the Cremer-Pople fold
+      of the eta face with an amplitude of only +/-0.15 A, compared over ALL
+      atoms of the complex.  That lies safely below ``rmsd_tol`` = 0.25 -- the
+      eta fold axis was completely eaten at this site, and both
+      callers (RIGID_HAPTO, HAPTO_AXIS_ROT) are champion switches.
+      ``fold_rings=None`` (default) -> predicate byte-identical to before."""
     kept = []
+    fps = []                                       # fingerprint per kept build
     for b in builds:
         P = b[1]
         dup = False
-        for kb in kept:
+        fp = None                                  # lazy: only on RMSD proximity
+        for ki, kb in enumerate(kept):
             if kb[1].shape == P.shape and _rmsd_aligned(kb[1], P) < rmsd_tol:
-                dup = True
-                break
+                if fold_rings is None:
+                    dup = True                     # switch OFF -> old predicate
+                    break
+                if fp is None:
+                    fp = _fold_fp(P, fold_rings)
+                if fps[ki] is None:
+                    fps[ki] = _fold_fp(kb[1], fold_rings)
+                if _fold_same(fps[ki], fp):
+                    dup = True
+                    break
         if not dup:
             kept.append(b)
+            fps.append(None)
     return kept
 
 
@@ -2586,7 +4718,10 @@ def assemble_hapto_ensemble(metal, geometry, d, max_builds=30):
         builds.append(b)
     if not builds:
         return None
-    builds = _dedup_builds(builds)
+    # Default OFF -> `fold_rings` stays None -> dedup byte-identical.
+    builds = _dedup_builds(
+        builds,
+        fold_rings=(_hapto_fold_rings(d, builds[0][0]) if _fold_fp_enabled() else None))
     return builds[:max_builds] if builds else None
 
 
@@ -2624,13 +4759,696 @@ def assemble_hapto_axis_rotants(metal, geometry, d, n_axis=8, max_builds=60):
                 break
     if not builds:
         return []
-    builds = _dedup_builds(builds)
+    # Default OFF -> `fold_rings` stays None -> dedup byte-identical.
+    builds = _dedup_builds(
+        builds,
+        fold_rings=(_hapto_fold_rings(d, builds[0][0]) if _fold_fp_enabled() else None))
     return builds[:max_builds]
+
+
+# ===== GLOBAL DONOR SEATING: the distance nobody in the construction is looking at ===========
+#
+# WHAT IS MISSING.  Every seating quantity this builder computes is computed for ONE ligand at
+# a time: _orient_chelate_to_vertices takes ONE ligand's coordinates, fits ITS donors onto ITS
+# assigned vertices and resets ITS M-D radii.  The bite is an intra-ligand distance, r(M-D) is
+# a radius, beta is a local plane.  Not one term in the whole seating has a distance between
+# TWO DIFFERENT ligands in it.  The conformer PICK sees the neighbour (_clash_count vs
+# `placed`), but it is greedy and sequential -- ligand 1 is chosen while ligands 2 and 3 do not
+# exist yet -- and once a conformer is picked, nothing can move it relative to its neighbours.
+#
+# MEASURED, three times independently on 2026-08-02:
+#   KEJCUZ dissected: C4...O28 and O15...C39 both sit at 1.85 A = 57 % of the vdW sum, and BOTH
+#     pairs are INTER-LIGAND (donor of one chelate against backbone carbon of another).  The
+#     per-ligand bite is blind to them by construction.
+#   donorplane3 (187 systems): rotating a seated ligand about its donor BEST-FIT line breaks
+#     the topology from THREE donors on -- the line passes through none of them.
+#   donorplane4 (187 systems): even at TWO donors the backbone swing cost 12 systems
+#     (ccdc_arrangement_lost / ccdc_backbone_lost) when the objective was beta.
+#
+# The lesson of the last two is NOT "never move a seated ligand".  It is "do not move it for a
+# reason unrelated to what is broken": beta fired on EVERY system, so it paid the backbone cost
+# everywhere and collected a benefit only sometimes.  This fires ONLY where an inter-ligand
+# contact is actually below the floor -- a frame with no such contact is returned untouched and
+# unchanged, which is most frames.
+#
+# WHAT IS SOLVED FOR, and why the two things we already get right cannot be traded away.
+# The unknowns are the positions of ALL donors of ALL ligands at once.  The two constraints the
+# seating already satisfies are enforced by the PARAMETERISATION, not as penalty terms that an
+# optimiser could sell:
+#     r(M-D)      is invariant under any rotation about the METAL (the metal is the origin in
+#                 this frame), so every M-D band stays exactly where md_distance put it;
+#     the BITE    -- and with it every intra-ligand distance -- is invariant under ANY rigid
+#                 motion of the whole ligand body.  d_DD does not change, so by the ring-closure
+#                 law cos(bite) = (r1^2 + r2^2 - d_DD^2)/(2 r1 r2) the bite ANGLE cannot change
+#                 either.  Nothing is re-solved; it is carried.
+# What is left free is precisely the quantity that was never in any objective: how the ligands
+# sit relative to EACH OTHER.  Both invariants are re-CHECKED numerically per move (_gd_move_ok)
+# rather than asserted -- one instrument that nobody holds against a second says nothing.
+#
+# WHY THIS IS NOT joint_declash.  delfin/manta/joint_declash.py already minimises an
+# inter-ligand heavy-heavy objective, but it runs with the metal AND ALL DONORS FROZEN, and
+# torsion_relax.identify_dofs drops any rotation whose moving half contains a frozen atom other
+# than the pivot.  For a CHELATE the M-D1 whole-body spin moves D2, which is frozen -> the DOF
+# is dropped, and the D1-D2 line is not a bond so it is not a torsion axis either.  A rigid
+# chelate (acac, oxalate, bipy, phen) therefore has NO degree of freedom there at all -- exactly
+# the KEJCUZ case.  This pass exists because the donors have to be allowed to move, together.
+_GD_CLASH_F = 0.75      # the same clash factor the self-gate and joint_declash use
+_GD_H_W = 0.05          # H contacts are a tie-breaker only; the gate rejects on heavy-heavy
+_GD_RESID = 0.05        # A, furthest a donor may travel from the vertex it was seated on
+# 2026-08-02: 0.25 A was MEASURED and lost.  n=53 affected, valid 25->27, cap_gained=4 but
+# cap_LOST=2 (KEGMEP, KIQNUT) and good_regr=1 -> topology_floor=False.  0.25 A at r=2.1 A is
+# ~7 deg, which is enough for a donor to leave the polyhedron vertex it was enumerated onto,
+# and the topology floor is exactly the term that notices.  0.05 A is ~1.4 deg: the bounded
+# stage survives only as a nudge, and what is left is essentially the axis on which the
+# donors PROVABLY do not move.  Set DELFIN_FFFREE_GD_RESID to sweep it; 0 disables the
+# bounded stage outright (free axis only).
+_GD_FREE_STEPS = 24     # 15 deg grid on the zero-cost axis; the objective is smooth
+_GD_BOUND_STEPS = 6     # steps each way inside the residual cap
+_GD_PASSES = 4          # coordinate-descent sweeps over the ligands
+_GD_EPS = 1e-6          # numerical slack on "did not move" -- a rigid rotation about an axis
+                        # THROUGH a donor leaves it put only to float precision, so resid=0
+                        # must still admit that, or the free axis rejects itself.
+
+
+def _global_donor_seat_enabled() -> bool:
+    """THE one place DELFIN_FFFREE_GLOBAL_DONORS is read (default OFF -> byte-identical)."""
+    return os.environ.get("DELFIN_FFFREE_GLOBAL_DONORS", "0") == "1"
+
+
+def _gd_resid() -> float:
+    """THE one place DELFIN_FFFREE_GD_RESID is read.  Only ever consulted from inside
+    _global_donor_seat, i.e. only when DELFIN_FFFREE_GLOBAL_DONORS is on -- with the flag off
+    this is dead code and the frame is byte-identical whatever the variable says."""
+    try:
+        return max(0.0, float(os.environ["DELFIN_FFFREE_GD_RESID"]))
+    except Exception:
+        return _GD_RESID
+
+
+def _gd_loss(X, mh, ml, fl):
+    """(loss, worst inter-ligand heavy contact).  loss = sum of squared shortfalls below the
+    vdW floor over inter-ligand pairs, heavy-heavy dominant.  Same shape as the self-gate's
+    own measure, so a move that lowers this is a move toward passing the gate."""
+    D = np.linalg.norm(X[:, None, :] - X[None, :, :], axis=2)
+    over = np.clip(fl - D, 0.0, None)
+    L = float((over[mh] ** 2).sum() + _GD_H_W * (over[ml] ** 2).sum())
+    return L, (float(D[mh].min()) if mh.any() else float("inf"))
+
+
+def _gd_move_ok(T, X0, blocks, resid):
+    """Re-measure the two invariants instead of trusting the parameterisation.
+
+    r(M-D): the metal is the origin, so |x_d| must be unchanged to numerical precision.
+    The BITE: every donor-donor distance INSIDE a ligand must be unchanged likewise.
+    Plus the one quantity this pass is allowed to spend -- how far a donor has drifted from
+    the vertex the enumeration seated it on -- capped at ``resid`` against the ORIGINAL
+    frame (not the previous step), so repeated sweeps cannot accumulate a walk-away.
+    ``resid`` is passed in rather than read here: this runs once per candidate angle per
+    donor, and an environment lookup in that loop would be the most expensive line in it."""
+    cap = resid + _GD_EPS
+    for _st, _ln, dn in blocks:
+        for a in range(len(dn)):
+            da = dn[a]
+            if abs(float(np.linalg.norm(T[da])) - float(np.linalg.norm(X0[da]))) > 1e-6:
+                return False                                   # M-D band broken
+            if float(np.linalg.norm(T[da] - X0[da])) > cap:
+                return False                                   # drifted off its vertex
+            for b in range(a + 1, len(dn)):
+                db = dn[b]
+                if abs(float(np.linalg.norm(T[da] - T[db]))
+                       - float(np.linalg.norm(X0[da] - X0[db]))) > 1e-6:
+                    return False                               # bite broken
+    return True
+
+
+def _global_donor_seat(syms, P, blocks):
+    """Move every ligand body -- donors included -- against every OTHER ligand, jointly.
+
+    ``blocks``: one ``(start, n_atoms, [donor global indices])`` per placed ligand; the metal
+    is index 0 and never moves.  Returns the improved frame, or None when there is nothing
+    below the floor / nothing improved (the caller then keeps the seated frame verbatim).
+
+    Two kinds of rigid motion, tried in this order because the first one is FREE:
+
+      1) rotation about the ligand's OWN donor axis -- the M-D bond for a monodentate, the
+         line THROUGH both donors for a bidentate.  The donors lie ON the axis, so they do
+         not move at all: r(M-D), the bite AND the vertex alignment are all untouched, and
+         only the backbone swings.  Cost to everything already right: exactly zero.
+         NOT offered from three donors on: there the "axis" would be a best-fit line through
+         none of them, which is the donorplane3 failure verbatim.
+
+      2) rotation of the whole ligand about the METAL, capped so no donor leaves its vertex
+         by more than _GD_RESID.  This is the step where the donors genuinely re-seat, and it
+         is the only one available to a rigid tri-/tetradentate -- and it is also the step
+         that lost the 0.25 A measurement, because a donor that leaves its vertex is exactly
+         what the topology floor is watching for.  At resid 0 it is not offered at all and
+         only (1) remains.
+
+    Coordinate descent, fixed ligand order, fixed angular grid, no RNG, accept-only-if-better,
+    with a never-worse floor on the WORST inter-ligand heavy contact so the sum objective
+    cannot buy three mild reliefs by crushing one comfortable pair.
+    """
+    try:
+        X0 = np.array(P, float)
+    except Exception:
+        return None
+    n = len(syms)
+    if len(blocks) < 2 or X0.shape != (n, 3) or not np.all(np.isfinite(X0)):
+        return None
+    try:
+        from delfin.manta.refine import _vdw
+    except Exception:
+        return None
+    lig = np.full(n, -1, dtype=int)
+    for bi, (st, ln, _dn) in enumerate(blocks):
+        if st < 1 or st + ln > n:
+            return None                                  # bookkeeping mismatch -> do nothing
+        lig[st:st + ln] = bi
+    vdw = np.array([_vdw(s) for s in syms], float)
+    fl = _GD_CLASH_F * (vdw[:, None] + vdw[None, :])
+    isH = np.array([s == "H" for s in syms])
+    inter = ((lig[:, None] != lig[None, :]) & (lig[:, None] >= 0) & (lig[None, :] >= 0)
+             & np.triu(np.ones((n, n), bool), 1))
+    mh = inter & ~isH[:, None] & ~isH[None, :]
+    ml = inter & (isH[:, None] | isH[None, :])
+    if not mh.any() and not ml.any():
+        return None
+    L0, h0 = _gd_loss(X0, mh, ml, fl)
+    if L0 <= 1e-12:
+        return None            # nothing inter-ligand under the floor -> the frame is returned
+    hfloor = h0 - 1e-6         # ... unchanged, which is what makes this cheap on clean frames
+    resid = _gd_resid()        # read ONCE, outside every loop
+    Xc = X0.copy()
+    bestL = L0
+    for _p in range(_GD_PASSES):
+        improved = False
+        for st, ln, dn in blocks:
+            if ln < 1 or not dn:
+                continue
+            sl = slice(st, st + ln)
+            cands = []                         # (origin, axis, angles) in try-order
+            # 1) THE FREE AXIS (see above): donors stay exactly put.  Needs a BODY to swing
+            #    -- for a monatomic ligand (Cl-, the atom IS the donor) it moves nothing, so
+            #    such a ligand only gets the bounded stage below.
+            if len(dn) == 1 and ln >= 2:
+                cands.append((np.zeros(3), np.asarray(Xc[dn[0]], float),
+                              [2.0 * math.pi * k / _GD_FREE_STEPS
+                               for k in range(1, _GD_FREE_STEPS)]))
+            elif len(dn) == 2:
+                cands.append((np.asarray(Xc[dn[0]], float),
+                              np.asarray(Xc[dn[1]], float) - np.asarray(Xc[dn[0]], float),
+                              [2.0 * math.pi * k / _GD_FREE_STEPS
+                               for k in range(1, _GD_FREE_STEPS)]))
+            # 2) THE BOUNDED AXES through the metal: the donors move, together, by at most
+            #    the chord _GD_RESID allows.  The chord of a given rotation grows with the
+            #    radius, so it is the LONGEST M-D in this ligand that decides the angle for
+            #    the whole body -- taking the shortest would let the outer donors overrun the
+            #    cap (_gd_move_ok would then throw those candidates away, silently).
+            rmax = max(float(np.linalg.norm(Xc[d])) for d in dn)
+            if rmax > 1e-6 and resid > _GD_EPS:
+                tmax = 2.0 * math.asin(min(1.0, resid / (2.0 * rmax)))
+                angs = [s * m for s in
+                        [tmax * k / _GD_BOUND_STEPS for k in range(1, _GD_BOUND_STEPS + 1)]
+                        for m in (1.0, -1.0)]
+                for e in (np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0]),
+                          np.array([0.0, 0.0, 1.0])):
+                    cands.append((np.zeros(3), e, angs))
+            for org, ax, angs in cands:
+                na = float(np.linalg.norm(ax))
+                if na < 1e-6:
+                    continue
+                a_ = np.asarray(ax, float) / na
+                locL, locX = bestL, None
+                for th in angs:
+                    R = _axis_rot(a_, th)
+                    T = Xc.copy()
+                    T[sl] = (Xc[sl] - org) @ R.T + org
+                    if not np.all(np.isfinite(T)):
+                        continue
+                    Lt, ht = _gd_loss(T, mh, ml, fl)
+                    if Lt < locL - 1e-9 and ht >= hfloor and _gd_move_ok(T, X0, blocks, resid):
+                        locL, locX = Lt, T
+                if locX is not None:
+                    Xc, bestL, improved = locX, locL, True
+        if not improved:
+            break
+    if bestL >= L0 - 1e-9 or not np.all(np.isfinite(Xc)):
+        return None
+    return Xc
+
+
+# ===== THE HALF BAILAR TWIST, TURNED BACK FF-FREE ===========================
+# Measured 18.08.2026 on 30921 systems: net +988 systems flow from the octahedron
+# into the trigonal prism (McNemar X2 = 860.8 on 1 df).  TPR-6 is built 2.99 times
+# as often as it really occurs, while EVERY other shape lies between 0.86 and 1.29
+# -- the largest single defect of the polyhedron axis, 3.7 times the mass of the
+# second-largest pair.
+#
+# THREE MEASUREMENTS SAY WHAT IT IS NOT:
+#   * It is NOT a ligand-field effect.  Metal flat, d-count flat; the signal is
+#     solely the INTERLOCKING by chelate rings, monotone from 2.49 % at zero rings
+#     to 16.12 % at five (6.5-fold).  So geometry, not chemistry.
+#   * They are NOT real prisms.  CShM(OC-6) lies at a median of 11.03 instead of
+#     16.7, as an ideal TPR would have -- a HALF Bailar twist, stopped
+#     halfway.
+#   * It is NOT a selection question.  poly_match is false in 1061 of 1061 cases,
+#     although the eye reads poly_build as the minimum over ALL realistic frames.
+#     In the whole manifold there is no octahedron -- so none is built.
+#
+# ⛔ WHY THE EXISTING REPAIR IS NOT ENOUGH.  It exists twice, both in
+# smiles_converter.py: DELFIN_FFFREE_CN6_OH_ADD (:27452) begins with `apply_uff and`,
+# and DELFIN_FFFREE_CN6_OH_ANGLES (:38153) sits in
+# _build_coordination_constraints_from_xyz, i.e. in the UFF constraint machinery.  Both
+# give UFF octahedral angle targets (90/180 degrees) so that UFF relaxes the twist out.
+# On the FF-free path no UFF runs ⇒ reach zero.  They cannot be
+# wired in; they must arise anew on the construction side, and that is this block.
+#
+# ⚠ WHAT IS DELIBERATELY CARRIED OVER HERE, AND WHY.  The three safeguards of the UFF
+# version are not trimmings, they are the reason it is isomer-safe:
+#   1) The three trans pairs come from the FRAME ITSELF (greedy: each donor with its
+#      most opposite one), NOT from an enumerator permutation.  The
+#      PERM variant was measured on 2026-07-14 and COLLAPSED isomers
+#      (VOYWUD lost all-trans + trans-OH) -- it forces the wrong trans set on some
+#      arrangements.  What the frame already has stays: fac stays fac,
+#      cis stays cis.  It is a twist correction, not an arrangement change.
+#   2) Only if ALL three pairs are clearly trans (min > 120 degrees).  A valid
+#      TPR/OC frame sits at 140-180; an ambiguous one does not -> skipped, so that
+#      nothing collapses.
+#   3) Only at CN 6 and _PREFERRED_CN6_GEOMETRY.get(metal, 'OH') == 'OH'.
+#
+# ⚠ AND WHAT IS DIFFERENT -- that is the reason why this can land.  By the cost law
+# measured on 18.08. at three points, ordering/selection costs about 0,
+# isometry +0.98 pp, a rigid rotation with NEW conformation +6.57 pp and a
+# re-embedding +11.9 pp.  What ADDS, without inventing new geometry, lands.
+# That is why here the WHOLE ligand arm is rotated RIGIDLY about the metal and not the
+# single donor atom shifted: a rotation about the metal leaves r(M-D) exact and
+# the bite exact, it invents no conformation.  Shifting single donors
+# would tear bonds -- exactly the re-embedding that was measured to be the most expensive.
+#
+# A chelate with a 78-degree bite CANNOT give a perfect octahedron, and it is not
+# meant to: the Kabsch fit puts its donors as close to the ideal directions as
+# its bite allows, and the bite wins.  The goal is not CShM 0, the goal
+# is "no more half twist".
+_OC6_TRANS_MIN = 120.0   # degrees; below it the pair is not unambiguously trans -> abort
+_OC6_AXIS_MIN = 0.20     # smallest singular value of the three axes: below it they are
+                         # almost coplanar and the orthonormalisation would be guessed
+_OC6_RIGID_TOL = 1e-6    # Angstrom; re-measurement of r(M-D) and bite AFTER the rotation
+
+# ⚠ ONE EXIT, ONE LINE -- and `call` right at the front.  The function has ten ways
+# to come back with None, and every single one means something different: "not my case",
+# "ambiguous, hands off", "rotated, but it achieved nothing".  Without the denominator
+# they would all be the same zero in the report -- the mistake that was made here on
+# 10.08. and once more on 14.08.  Only recorded if the corrector is called at all,
+# i.e. only behind oc6_twist=True.  Read by _self_test_oc6_twist and by the
+# sibling self-test in converter_backend.
+_OC6_SEAT_CENSUS = dict.fromkeys(
+    ("call", "not_oc6", "metal_pref", "shape", "book", "not_cn6", "zero_md",
+     "ambiguous", "coplanar_axes", "rot_bad", "rigid_broken", "cshm_flat", "ok"), 0)
+# (CShM before, CShM after, smallest trans angle) per call -- the raw numbers from
+# which to read WHETHER the seating is twisted at all.  A counter alone could not
+# say that: "not improved" means either "already correct" or "too
+# bad to rescue", and those are opposite findings.  Only behind oc6_twist.
+_OC6_SEAT_CSHM = []
+_OC6_CSHM_KEEP = 4096   # cap; the counters above stay complete, only the
+                        # raw-value list stops growing at some point
+
+
+def _oc6_twist_seat_enabled() -> bool:
+    """THE one read site of DELFIN_FFFREE_OC6_TWIST_SEAT (default 0 -> byte-identical).
+
+    It does NOT decide about the primary frame.  ``assemble_from_config`` executes the
+    correction exclusively on the keyword ``oc6_twist=True``, which
+    is False by default -- so the built primary frame is byte-identical, no
+    matter what is in the environment.  This switch only says whether the caller
+    additionally builds a SIBLING FRAME."""
+    return os.environ.get("DELFIN_FFFREE_OC6_TWIST_SEAT", "0") == "1"
+
+
+def _oc6_trans_pairs(u, donors):
+    """The three trans pairs from the frame itself: each donor with its most
+    opposite one, greedy in fixed index order (deterministic, no RNG).
+
+    ``u``: dict donor index -> unit vector from the metal.  Returns
+    ``(pairs, smallest_trans_angle_deg)`` or ``(None, 0.0)``.  Word for word the
+    pairing of the UFF version in smiles_converter.py:38160 -- not out of convenience,
+    but because EXACTLY this pairing is the isomer-safe one (see head note)."""
+    rem = list(donors)
+    pairs = []
+    min_trans = 180.0
+    while len(rem) >= 2:
+        a = rem[0]
+        b = min(rem[1:], key=lambda x: float(np.dot(u[a], u[x])))
+        c = max(-1.0, min(1.0, float(np.dot(u[a], u[b]))))
+        min_trans = min(min_trans, math.degrees(math.acos(c)))
+        pairs.append((a, b))
+        rem.remove(a)
+        rem.remove(b)
+    if len(pairs) != 3:
+        return None, 0.0
+    return pairs, min_trans
+
+
+def _oc6_ideal_axes(u, pairs):
+    """The three measured trans axes, pulled onto the NEAREST orthonormal triad
+    (polar decomposition, ``A = U S Vt`` -> ``U Vt``).
+
+    WHY POLAR DECOMPOSITION AND NOT GRAM-SCHMIDT: Gram-Schmidt is order-dependent
+    -- the first axis would stay untouched, the third would carry the whole error.  The
+    polar decomposition minimises the sum of squares over all three simultaneously and
+    is thereby independent of which pair was found first.  That matters,
+    because the greedy pairing above has an index order, but the chemistry does not.
+
+    The handedness is NOT corrected.  What is sought are three mutually perpendicular
+    unit vectors; {±e1, ±e2, ±e3} is the same octahedron whether the triad is right-
+    or left-handed.  A det correction would be no protection here, but an
+    additional, unnecessary rotation.  Returns ``(E, smallest_singular_value)``."""
+    A = []
+    for a, b in pairs:
+        ax = u[a] - u[b]
+        na = float(np.linalg.norm(ax))
+        if na < 1e-9:
+            return None, 0.0
+        A.append(ax / na)
+    A = np.asarray(A, float)
+    try:
+        U, S, Vt = np.linalg.svd(A)
+    except Exception:
+        return None, 0.0
+    if not np.all(np.isfinite(U)) or not np.all(np.isfinite(Vt)):
+        return None, 0.0
+    return U @ Vt, float(S[-1])
+
+
+def _oc6_twist_seat(syms, P, blocks, metal, geometry):
+    """Rotate the half twist out -- rigidly, ligand by ligand, about the metal.
+
+    ``blocks``: per seated ligand one ``(start, n_atoms, [global donor indices])``,
+    the same bookkeeping ``_global_donor_seat`` uses; atom 0 is the metal.
+    Returns: the corrected frame, or ``None`` if one of the safeguards
+    triggers OR the correction does not measurably reduce the twist.  The caller
+    then keeps the seated frame verbatim.
+
+    Procedure:
+      1) CN 6, OC-6 requested, metal prefers OH -- otherwise nothing.
+      2) trans pairs from the frame, all three clearly trans (> 120 degrees).
+      3) orthonormalise the three axes -> the octahedron NEAREST to the frame.
+         Not the lab-axes octahedron: the nearest is the one requiring the least
+         movement, and movement is exactly what is paid for under the cost
+         law.
+      4) per ligand ONE rigid rotation about the metal that puts its donors onto
+         their target directions in the Kabsch sense.  A monodentate ligand gets
+         the minimal rotation (Rodrigues), from two donors on the Kabsch fit -- which
+         is NOT degenerate for two points, because the metal at the origin is held
+         along and the covariance thus has rank 2, whose null direction is unique.
+      5) RE-MEASURE instead of trust: r(M-D) and every intra-ligand donor-donor
+         distance must be unchanged to 1e-6, and CShM(OC-6) must have STRICTLY
+         fallen.  Both are measurements on the result, not thresholds tuned to a
+         pool -- a rotation that does not reduce the twist
+         is rejected, instead of being dressed up."""
+    def _no(reason):
+        _OC6_SEAT_CENSUS[reason] += 1
+        return None
+
+    _OC6_SEAT_CENSUS["call"] += 1
+    if not str(geometry).startswith("OC-6"):
+        return _no("not_oc6")              # a REQUESTED TPR-6 stays a TPR-6
+    # Metal preference.  Deferred import as in _finish_config_frame; if the
+    # module fails, the default 'OH' applies -- the same the table itself gives.
+    try:
+        from delfin.smiles_converter import _PREFERRED_CN6_GEOMETRY as _PCN6
+        if _PCN6.get(str(metal), 'OH') != 'OH':
+            return _no("metal_pref")
+    except Exception:
+        pass
+    try:
+        X0 = np.asarray(P, float)
+    except Exception:
+        return _no("shape")
+    n = len(syms)
+    if X0.shape != (n, 3) or not np.all(np.isfinite(X0)) or not blocks:
+        return _no("shape")
+    donors = []
+    for st, ln, dn in blocks:
+        if st < 1 or st + ln > n:
+            return _no("book")             # bookkeeping does not fit -> do nothing
+        donors += [int(x) for x in dn]
+    if len(donors) != 6 or len(set(donors)) != 6:
+        return _no("not_cn6")              # CN 6, and every donor exactly once
+    M = X0[0].copy()
+    u = {}
+    r = {}
+    for d in sorted(donors):
+        v = X0[d] - M
+        nv = float(np.linalg.norm(v))
+        if nv < 1e-6:
+            return _no("zero_md")
+        u[d] = v / nv
+        r[d] = nv
+    pairs, min_trans = _oc6_trans_pairs(u, sorted(donors))
+    if pairs is None or min_trans <= _OC6_TRANS_MIN:
+        return _no("ambiguous")            # ambiguous -> skip, nothing collapses
+    E, smin = _oc6_ideal_axes(u, pairs)
+    if E is None or smin < _OC6_AXIS_MIN:
+        return _no("coplanar_axes")        # almost coplanar axes -> the triad would be guessed
+    tgt = {}
+    for i, (a, b) in enumerate(pairs):
+        e = np.asarray(E[i], float)
+        ne = float(np.linalg.norm(e))
+        if ne < 1e-9:
+            return _no("coplanar_axes")
+        e = e / ne
+        if float(np.dot(u[a], e)) < 0.0:
+            e = -e                         # the axis points towards a, not away from a
+        tgt[a] = e * r[a]
+        tgt[b] = -e * r[b]
+    Xc = X0.copy()
+    for st, ln, dn in blocks:
+        dn = [int(x) for x in dn]
+        if ln < 1 or not dn:
+            continue
+        obs = np.asarray([X0[d] - M for d in dn], float)
+        tar = np.asarray([tgt[d] for d in dn], float)
+        if len(dn) == 1:
+            R = _rot_align(obs[0], tar[0])
+        else:
+            R = _kabsch_rot(obs, tar)
+        if R is None or not np.all(np.isfinite(R)):
+            return _no("rot_bad")
+        Xc[st:st + ln] = (X0[st:st + ln] - M) @ R.T + M
+    if not np.all(np.isfinite(Xc)):
+        return _no("rot_bad")
+    # 5a) RE-MEASURE the two invariants.  A rotation about the metal holds them
+    #     mathematically; they are measured anyway, because a degenerate Kabsch matrix
+    #     could silently smuggle in a mirroring exactly here.
+    for st, ln, dn in blocks:
+        dn = [int(x) for x in dn]
+        for i, da in enumerate(dn):
+            if abs(float(np.linalg.norm(Xc[da] - M)) - r[da]) > _OC6_RIGID_TOL:
+                return _no("rigid_broken")             # r(M-D) broken
+            for db in dn[i + 1:]:
+                if abs(float(np.linalg.norm(Xc[da] - Xc[db]))
+                       - float(np.linalg.norm(X0[da] - X0[db]))) > _OC6_RIGID_TOL:
+                    return _no("rigid_broken")         # bite broken
+    # 5b) and the one number that matters.  If it does not fall, the block has nothing
+    #     to offer and returns the frame unchanged (the caller keeps it).
+    try:
+        from delfin.manta import polyhedra as _PH
+        before = _PH.cshm([X0[d] - M for d in sorted(donors)], "OC-6 octahedron")
+        after = _PH.cshm([Xc[d] - M for d in sorted(donors)], "OC-6 octahedron")
+        if len(_OC6_SEAT_CSHM) < _OC6_CSHM_KEEP:      # capped: a 30-hour run
+            _OC6_SEAT_CSHM.append(                    # must not drag a list along
+                (float(before), float(after), float(min_trans)))
+    except Exception:
+        return _no("cshm_flat")
+    if not (after < before - 1e-9):
+        return _no("cshm_flat")
+    _OC6_SEAT_CENSUS["ok"] += 1
+    return Xc
+
+
+# ===== THE LIGAND'S LAST DEGREE OF FREEDOM ===================================
+# THE FINDING THAT FORCES THIS BLOCK (18.08., 492 clean remaining systems).
+# `org_bond` -- the largest defect mass of the organic geometry -- does NOT hang on
+# the bond class (within a molecule the localisation is massive, but identical between
+# hits and failures, max |delta| 0.14).  Two quantities genuinely enrich:
+# `worst_n` (number of simultaneously bent organic bonds) 3.83x, and the
+# COORDINATION NUMBER 1.62x (CN>=5 51.3 % against CN<=4 31.7 %).  And CN acts THROUGH
+# `worst_n`: mean `worst_n` rises 3.46 -> 7.07 (CN 2..6) at practically
+# constant molecule size, with a CORRECTLY built polyhedron 3.6 against 7.1.
+# ⇒ At equal ligand size a CN-6 centre bends twice as many
+# organic bonds as a CN-4 centre.  The polyhedron is enforced, the ligand pays.
+#
+# THE BUILDER'S DOF BALANCE (re-measured, see _self_test_ligand_dof):
+#   * A ligand block is seated RIGIDLY -- 6 rigid-body DOF.
+#   * Monodentate: `_rot_align(lp, -Vunit)` fixes 5 of them (3 translation via
+#     `+ Vunit*md`, 2 direction via the Rodrigues rotation).  The SIXTH -- the
+#     azimuth about the M-D axis -- is chemically completely undetermined and is
+#     nonetheless nailed down, namely to the random value that the MINIMAL rotation of
+#     `_rot_align` happens to deliver.  It is NEVER sampled on the configuration path.
+#   * Bidentate: the Kabsch fit in `_orient_chelate_to_vertices` puts both donors
+#     onto their vertices; exactly ONE rotation remains -- about the donor-donor axis.
+#     The fit cannot see it (both donors lie ON the axis).  Today it is
+#     used only by `_lp_orient_seated_bidentate` to optimise a BOND angle
+#     (default OFF, measured negative as a seating) -- for the PACKING nobody
+#     has ever used it.
+#   * Tridentate and higher: three non-collinear donors fix the rigid body
+#     COMPLETELY.  ZERO free rotation.  The register is right: 0 DOF.
+#
+# WHAT THIS AXIS PRESERVES -- and that is the reason it is built.  Both
+# cases rotate about a line that CONTAINS EVERY donor of this block.  The donors
+# are thereby POINTWISE fixed: M-D distance, M-D DIRECTION, bite, vertex angles and CShM
+# do not change by one bit.  It is an isometry of the ligand block on an
+# already built conformation -- no new embedding, no new conformation.
+# By the cost law measured at four points (ordering/selection ~0, isometry
+# +0.98 pp, rigid rotation with NEW conformation +6.57 pp, re-embedding +11.9 pp)
+# that is the cheapest class that can change anything about the packing at all.
+#
+# ⚠ DISTINCTION FROM DELFIN_FFFREE_LIGAND_SWING (joint_declash.py:305).  The swing is
+# a DIFFERENT movement at a DIFFERENT place: it rotates the whole ligand about the
+# axis M -> donor centroid, AFTER assembly, in the declash pass, and in doing so THE
+# DONORS MOVE -- that is why it needs a 3-degree cap and a CShM budget, and
+# that is why it can damage the polyhedron at all (at 8 degrees it did).  This
+# axis here does not move the donors, therefore needs no angle cap and may sample the
+# full circle; and it acts at the SELECTION, where the candidate is still being
+# decided, not afterwards on the finished frame.  Extending the swing would mean
+# rebuilding it into a movement it is not -- and in a file that does not belong to this
+# territory.  Hence a second axis, not an extension.
+_LIGAND_DOF_AXIS_TOL = 1.0e-6      # collinearity of the donors / axis proximity (Angstrom)
+
+
+def _ligand_dof_seat_enabled() -> bool:
+    """THE one place where DELFIN_FFFREE_LIGAND_DOF_SEAT is read
+    (default 0 -> byte-identical)."""
+    return os.environ.get("DELFIN_FFFREE_LIGAND_DOF_SEAT", "0") == "1"
+
+
+def _ligand_dof_seat_steps() -> int:
+    """Number of sampled angles on the full circle (default 6, like the already
+    existing CN2 axis rotation DELFIN_FFFREE_CN2_SPINS).  Only read when the
+    switch above is on."""
+    try:
+        n = int(os.environ.get("DELFIN_FFFREE_LIGAND_DOF_SEAT_N", "6"))
+    except Exception:
+        n = 6
+    return max(2, min(n, 36))
+
+
+def _free_rigid_axis(Q, donor_locals, metal_pos):
+    """The ONLY line about which this seated ligand block may still be rotated
+    rigidly without changing the coordination sphere by even one bit -- or ``None``.
+
+    Condition: the axis must contain EVERY donor of the block, then all donors are
+    pointwise fixed and thus M-D distance, M-D direction, bite and CShM exactly preserved.
+      * 1 donor  -> the line M--D (among all lines through the donor the only one that
+                    additionally preserves EVERY M-X distance of the ligand, because the
+                    metal then lies on the axis itself -- the ligand cannot swing into
+                    the metal).
+      * >=2 donors -> the line through the donors, but ONLY if they are collinear.
+      * otherwise -> ``None``.  Three non-collinear donors fix the rigid body
+                    completely; rotating anything here would mean touching the polyhedron.
+    Returns ``(origin, unit_axis)``; ``origin`` is a donor point, so that this donor
+    stays BIT-EXACT under the rotation.
+    """
+    try:
+        d = [np.asarray(Q[int(i)], float) for i in donor_locals]
+    except Exception:
+        return None
+    if not d or any(not np.all(np.isfinite(x)) for x in d):
+        return None
+    if len(d) == 1:
+        a = d[0] - np.asarray(metal_pos, float)
+        n = float(np.linalg.norm(a))
+        if n < _LIGAND_DOF_AXIS_TOL:
+            return None
+        return (d[0], a / n)
+    a = d[-1] - d[0]
+    n = float(np.linalg.norm(a))
+    if n < _LIGAND_DOF_AXIS_TOL:
+        return None
+    a = a / n
+    for p in d[1:-1]:                       # Kollinearitaet ALLER Donoren
+        w = p - d[0]
+        if float(np.linalg.norm(w - float(np.dot(w, a)) * a)) > _LIGAND_DOF_AXIS_TOL:
+            return None
+    return (d[0], a)
+
+
+def _free_dof_reseat(Q, lsyms, donor_locals, existing, existing_syms, base_clash,
+                     metal_pos=None):
+    """Samples the one free degree of freedom of this ligand block and returns
+    ``(Q_rotated, clash)`` -- or ``None`` if nothing is STRICTLY better.
+
+    NEVER-WORSE BY CONSTRUCTION, at three places:
+      1) Switch off -> immediately ``None``, the caller sees nothing.  Byte-identical.
+      2) The same quantity is measured that the selection reads anyway as its first
+         key (`_clash_count` against the already seated atoms) -- no
+         new criterion that could win against the old one.
+      3) Only a STRICTLY smaller clash is taken; on a tie the
+         historic pose stays.  And only a block that ALREADY collides
+         (`base_clash > 0`) is touched at all -- a collision-free seating stays
+         untouched, there is nothing to gain in the packing there.
+    Deterministic: fixed angle list, smallest index wins on a tie.
+    """
+    if not _ligand_dof_seat_enabled():
+        return None
+    if base_clash <= 0 or len(Q) < 2:
+        return None
+    ax = _free_rigid_axis(Q, donor_locals,
+                          np.zeros(3) if metal_pos is None else metal_pos)
+    if ax is None:
+        return None
+    o, u = ax
+    W = np.asarray(Q, float) - o
+    perp = W - np.outer(W @ u, u)
+    if float(np.max(np.linalg.norm(perp, axis=1))) < _LIGAND_DOF_AXIS_TOL:
+        return None                     # everything lies ON the axis -> rotation = identity
+    n = _ligand_dof_seat_steps()
+    best = None
+    for k in range(1, n):
+        try:
+            R = _axis_rot(u, 2.0 * np.pi * float(k) / float(n))
+        except Exception:
+            continue
+        Qk = W @ R.T + o
+        if not np.all(np.isfinite(Qk)):
+            continue
+        ck = _clash_count(Qk, existing, lsyms, existing_syms)
+        if ck < base_clash and (best is None or ck < best[1]):
+            best = (Qk, ck)
+    if best is None:
+        return None
+    # THE ASSERTION IS RE-MEASURED, NOT CLAIMED.  Mathematically a rotation about an
+    # axis through all donors holds every donor point fixed -- it is measured
+    # anyway, because exactly here a degenerate axis could silently do something
+    # else, and the price would be the coordination sphere.  If the assertion breaks,
+    # the rotation is REJECTED (the caller keeps its historic pose).
+    _mp = np.zeros(3) if metal_pos is None else np.asarray(metal_pos, float)
+    for _d in donor_locals:
+        _d = int(_d)
+        if float(np.linalg.norm(best[0][_d] - Q[_d])) > 1.0e-9:
+            return None                                   # donor has moved
+        if abs(float(np.linalg.norm(best[0][_d] - _mp))
+               - float(np.linalg.norm(np.asarray(Q[_d], float) - _mp))) > 1.0e-9:
+            return None                                   # r(M-D) broken
+    _tp = os.environ.get("DELFIN_LIGAND_DOF_TRACE", "")
+    if _tp and _tp != "0":
+        # ⚠️ TRACE, BECAUSE "byte-identical" HAS SEVERAL CAUSES HERE: the block does
+        # not run, there is no free axis, nothing collided, or the rotation found
+        # no better pose.  Without this line one could not say which applies.
+        try:
+            with open(_tp, "a") as _fh:
+                _fh.write("[LIGDOF] ndon=%d nat=%d clash %d -> %d\n"
+                          % (len(list(donor_locals)), len(Q), int(base_clash),
+                             int(best[1])))
+        except Exception:
+            pass
+    return best
 
 
 def assemble_from_config(metal, geometry, config, ligands, refine=True,
                          n_frames=1, per_lig_confs=6, rmsd_dedup=0.5,
-                         planar_bite=None, planar_coplanar=None):
+                         planar_bite=None, planar_coplanar=None, prefer_beta=False,
+                         lp_orient=False, oc6_twist=False):
     """Build a 3D complex from a chelate-isomer config (vertex -> (ligand_idx,
     arm_idx)) and the decomposed ligand list.  Chelating ligands are Kabsch-fit
     onto their two assigned vertices; monodentate ligands are oriented onto their
@@ -2656,6 +5474,8 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
     out_syms = [metal]; placed = [np.zeros(3)]; placed_syms = [metal]
     fixed = {0}; pos = 1
     relax_frags = []          # (AddHs(lg.mol), ligands-only offset) for the internal relax
+    lig_blocks = []           # (start, n_atoms, [donor global idxs]) per placed ligand --
+                              # which atoms form ONE rigid body, for the global donor seating
     # ENSEMBLE refactor (Task A.1): collect per-ligand candidate placements
     # (Q, clash_vs_metal) deduped by intra-ligand RMSD instead of only the single
     # clash-minimal pick, then enumerate full-complex combinations.  n_frames==1
@@ -2665,7 +5485,63 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
     per_lig_cands = []        # per ligand: [(Q, clash_vs_metal), ...] sorted best-first
     per_lig_syms = []         # per ligand: lsyms (for combo assembly)
     metal_P = np.zeros((1, 3)); metal_sym = [metal]
-    for li, va in by_lig.items():
+    # ===== THE MOST RIGID LIGAND FIRST =======================================
+    # Until 18.08.2026 this loop ran in the insertion order of `config`,
+    # i.e. in VERTEX order -- a monodentate could be seated before a tetradentate.
+    # That is the reverse of what the task demands:
+    #
+    #   * An already seated monodentate counts for EVERY later candidate in
+    #     `_clash_count`.  The tetradentate then arrives with almost no freedom --
+    #     its bite fixes four vertices -- and the candidate that wins the
+    #     selection is the one that TWISTS AWAY.
+    #   * Conversely the rigid ligand sits first on its ideal vertices, and the
+    #     monodentates have full rotational freedom to dodge it.  A monodentate
+    #     can almost always dodge, a chelate ring never.
+    #
+    # That is the classic rule "most constrained variable first",
+    # and it fits the measured signal exactly: the error rate of the
+    # octahedron-to-prism confusion is MONOTONE in the number of chelate rings --
+    # 2.49 % at zero, 8.38 % at three, 16.12 % at five (30921 systems, net +988
+    # systems, McNemar X2 = 860.8).  The more rigid ligands compete for the same
+    # vertices, the more often the polyhedron twists.
+    #
+    # ⚠ WHY THIS IS THE CHEAPEST CLASS OF ALL: it only changes the
+    # ORDER in which already existing candidates are evaluated.  No
+    # new geometry, not even a new selection quantity.  By the law measured today at
+    # three points (isometry +0.98 pp, rigid rotation +6.57 pp,
+    # re-embedding +11.9 pp) that lies even below isometry.
+    #
+    # ⚠ DETERMINISM: the secondary key is the ligand index, not chance.
+    # Same denticity -> same order as before.
+    #
+    # DELFIN_FFFREE_SEAT_RIGID_FIRST (default 0 -> byte-identical).
+    _lig_order = list(by_lig.items())
+    if os.environ.get("DELFIN_FFFREE_SEAT_RIGID_FIRST", "0") == "1":
+        def _dent_of(_li):
+            try:
+                return int(ligands[_li].get("denticity") or len(by_lig[_li]))
+            except Exception:
+                return len(by_lig[_li])
+        _before = [kv[0] for kv in _lig_order]
+        _lig_order.sort(key=lambda kv: (-_dent_of(kv[0]), kv[0]))
+        # ⚠️ TRACE, BECAUSE "byte-identical" HAS THREE CAUSES HERE: the block does
+        # not run, the order was already right, or it changes and the
+        # result converges anyway.  The first smoke test delivered 19 of 19
+        # identical -- without this line one could not say which of them applies,
+        # and "achieves nothing" would be a claim instead of a measurement.
+        # The case "was already right" is not a failure, but the
+        # answer: then the builder already does it implicitly.
+        _tp = os.environ.get("DELFIN_SEAT_ORDER_TRACE", "")
+        if _tp and _tp != "0":
+            _after = [kv[0] for kv in _lig_order]
+            try:
+                with open(_tp, "a") as _fh:
+                    _fh.write("[SEATORD] nlig=%d dents=%s changed=%d\n"
+                              % (len(_before), [_dent_of(i) for i in _before],
+                                 1 if _after != _before else 0))
+            except Exception:
+                pass
+    for li, va in _lig_order:
         lg = ligands[li]
         dons = lg["donor_local_idxs"]
         lig_offset = pos - 1                       # start index in the ligands-only frame
@@ -2795,10 +5671,74 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
         # Single mode: pick the clash-minimal vs already-placed atoms (historic,
         # byte-identical).  Ensemble mode: keep distinct low-clash-vs-metal
         # candidates (placement-order-independent + diverse), deduped intra-ligand.
+        #
+        # COLLAPSE-AWARE SELECTION (DELFIN_FFFREE_COLLAPSE_AWARE_SELECT, default OFF ->
+        # byte-identical).  The pick below ranks conformers by CLASH alone, and is blind to
+        # the one criterion the self-gate will later reject the whole complex for: a bonded
+        # heavy-heavy pair below 0.82 x the covalent sum.  Measured 2026-08-02: 171 of the
+        # 215 CHELATE_EMPTY systems die on exactly that, and the mode of the surviving
+        # frames' tightest bond sits in the first bin ABOVE the floor -- the gate cuts
+        # through the middle of the distribution, it does not trim a tail.
+        #
+        # _collapsed_heavy_bonds_strict is the gate's OWN predicate, same 0.82, same
+        # bonded-pair rule, already unconditional -- it is merely scoped to rigid-planar
+        # tridentates further down.  This widens the KNOWLEDGE of it to every chelate
+        # without widening the REJECTION: a collapsed conformer is only DEPRIORITISED, never
+        # discarded.  If every conformer collapses, the same one wins as today, so the set
+        # of buildable systems cannot shrink -- never-worse by construction, not by measurement.
+        _csel = os.environ.get("DELFIN_FFFREE_COLLAPSE_AWARE_SELECT", "0") == "1"
+        # BETA-AWARE SELECTION (DELFIN_FFFREE_BETA_AWARE_SELECT, default OFF -> byte-id).
+        #
+        # pyramidal_sp2 -- the metal sitting OUT of its donor's own substituent plane -- is the
+        # largest single defect class we carry: 18-19 % of frames against 0.98 % in 509 clean
+        # crystals, a 19-fold over-representation.  And it is a PATH difference, not physics:
+        # the monodentate path aligns the metal onto the donor's lone-pair axis by construction
+        # (_vsepr_reconstruct + _rot_align) and reaches 0.9 deg, BETTER than the crystals; the
+        # chelate path never looks at the donor plane at all and reaches 9.3 / 15.9 deg.
+        #
+        # WHY THIS IS A SELECTION AND NOT A CONSTRAINT.  beta is SECOND ORDER in distance:
+        # with d^2 = r^2 + a^2 + 2*r*a*cos(beta)*cos(half) the first derivative vanishes at
+        # beta=0, so d changes only as beta^2.  A 0.10 A bound still admits ~37 deg, a 0.05 A
+        # bound ~26 deg, and our worst 15.9 deg costs all of 0.018 A.  Holding beta to 5 deg
+        # would need a 0.002 A tolerance, which triangle smoothing will not survive.  NO set of
+        # distances to atoms IN the donor plane can pin beta to first order -- the distance
+        # from a point to coplanar anchors is stationary against perpendicular displacement.
+        # (The in-plane azimuth theta IS first order, 0.014 A/deg; that one belongs in bounds.)
+        #
+        # WHY IT REACHES THE FRAME.  The per-donor radial rescale below scales a donor along
+        # M->D, a line that lies IN the plane, so plane(D',X1,X2) is the same plane and still
+        # contains M: beta is preserved.  The Kabsch fit is rigid, likewise.  So whatever beta
+        # the chosen conformer has is the beta that ships -- the lever belongs here and nowhere
+        # after.
+        #
+        # beta decides ONLY among conformers of EQUAL clash.  It cannot displace the criterion
+        # that decides today, so it cannot introduce a clash regression at all.
+        # ``prefer_beta`` lets a CALLER ask for the beta-optimal pick without touching the
+        # environment.  THE POINT IS THAT IT IS ADDITIVE: the caller builds the frame twice
+        # and appends the second as a SIBLING, so the primary is untouched by construction.
+        #
+        # That shape is not a preference, it is what the record says works.  Every flag that
+        # LANDED in this project adds something -- D8_SQ_ADD "a PURELY ADDITIVE sibling ...
+        # the PRIMARY frame is untouched", CN6_OH_ADD "adds the OC-6 isomer as a PURELY
+        # ADDITIVE sibling", STEREOCENTER_ENUM "additively builds every buildable fold",
+        # CN4_BOTH "native-additive".  Everything measured on 2026-08-02 that CHOSE instead
+        # of ADDING died: beta-as-replacement cost 3-4 capabilities, collapse-as-replacement
+        # died on all three pools, and five reach levers that replaced legacy's frame lost
+        # 78/52/52/15/3.  The one lever still alive that night -- the ring pucker -- is the
+        # only one that appends and leaves the primary byte-identical.
+        _bsel = bool(prefer_beta) or os.environ.get(
+            "DELFIN_FFFREE_BETA_AWARE_SELECT", "0") == "1"
         best_Q, best_clash = None, 1e18
+        best_coll = True                            # a collapsed pick loses to a clean one
+        best_pol = 10 ** 9                          # ... then the polyhedron fidelity (18.08.)
+        best_beta = float("inf")                    # ... and among equals, the flatter donor
+        # Default OFF -> _pol is 0 for EVERY candidate, so the tuple compare falls
+        # back exactly onto the historic order: byte-identical.
+        _polysel = os.environ.get("DELFIN_FFFREE_POLY_FIDELITY_SEAT", "0") == "1"
         cands = []                                  # (Q, clash_vs_metal) for ensemble
         seen_local = []                             # intra-ligand RMSD dedup
         for lP in coords_list:
+            dent_targets = None       # only the polydentate branch sets target vertices
             if lg["denticity"] == 1:
                 v = va[0][0]
                 Vunit = ref[v] / np.linalg.norm(ref[v])
@@ -2835,6 +5775,9 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                            * MSB.md_distance(metal, lsyms[dons_d[i]],
                                              atom=lg["mol"].GetAtomWithIdx(int(dons_d[i])),
                                              mol=lg["mol"]) for i in range(dent)]
+                # The target vertices of this chelate -- from here on the selection knows
+                # WHERE the donors actually belong, and can score fidelity to that.
+                dent_targets = targets
                 # config-faithful seating is only meaningful for ASYMMETRIC chelates
                 # (distinct donor elements); for symmetric chelates every arm seating
                 # is the same isomer, so keep the best-fit (lower ring strain).
@@ -2864,7 +5807,38 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                         os.environ.get("DELFIN_FFFREE_LIGAND_RIGID", "0") == "1"
                         or os.environ.get("DELFIN_FFFREE_RIGID_LIGAND_SEAT", "0") == "1"))
                     Q = _orient_chelate_to_vertices(lP, dons_d, targets, asym=_asym,
-                                                    rigid=_rigid_seat)
+                                                    rigid=_rigid_seat, lsyms=lsyms)
+                    # THE LEFTOVER ROTATION, SET BY THE LONE PAIRS INSTEAD OF BY THE SVD.
+                    # Seating two donors onto two vertices leaves exactly one rotational
+                    # freedom -- about the donor-donor axis -- and the Kabsch fit cannot see
+                    # it, because both donors lie ON that axis and do not move.  See
+                    # _lp_orient_seated_bidentate for why that one angle IS beta, and for the
+                    # 995-system measurement behind the law.  Donors, M-D distances, bite and
+                    # arm-to-vertex correspondence are all untouched; only the backbone turns.
+                    #
+                    # AS A SEATING THIS IS MEASURED NEGATIVE, AS A SIBLING IT IS OPEN.
+                    # lpseat2 (187 systems, the rotation applied unconditionally): reach 49,
+                    # but cap_LOST 2, valid 28->27, mean +0.181 and ten red terms.  The turned
+                    # backbones do collide, the self-gate drops those colorings, and the whole
+                    # system hands over to legacy.  So the source's own claim at
+                    # _lp_aligned_angle -- "the plane wins, without a steric escape" -- is
+                    # refuted AT THE LIVE SEATING: a bonding argument does not survive contact
+                    # with a co-ligand that is also real.
+                    # A guarded version is no answer either: with the collapse guard the same
+                    # run measured affected=0, i.e. exactly the "changed almost nothing" the
+                    # docstring already recorded once.  Guarded it does nothing, unguarded it
+                    # costs capability.
+                    # Hence ``lp_orient``: the CALLER asks for the lp-oriented frame and
+                    # appends it as a SIBLING, leaving the primary untouched.  Then the plane
+                    # can win in a frame of its own without any config ever being dropped,
+                    # which is the one shape that has ever landed here.
+                    if (Q is not None and dent == 2
+                            and (lp_orient
+                                 or os.environ.get("DELFIN_FFFREE_LP_SEAT", "0") == "1")):
+                        _Ql = _lp_orient_seated_bidentate(Q, lg.get("mol"),
+                                                          dons_d[0], dons_d[1], lsyms=lsyms)
+                        if _Ql is not None:
+                            Q = _Ql
                     # Collapse-rigid-fallback (DELFIN_FFFREE_CHELATE_RIGID_FALLBACK,
                     # default OFF -> byte-id).  The per-donor RADIAL rescale moves each
                     # donor independently onto its exact ideal radius, which on many
@@ -2879,7 +5853,7 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                             and os.environ.get("DELFIN_FFFREE_CHELATE_RIGID_FALLBACK", "0") == "1"
                             and _has_collapsed_heavy_bonds(lsyms, Q)):
                         _Qr = _orient_chelate_to_vertices(lP, dons_d, targets,
-                                                          asym=_asym, rigid=True)
+                                                          asym=_asym, rigid=True, lsyms=lsyms)
                         if (_Qr is not None and np.all(np.isfinite(_Qr))
                                 and not _has_collapsed_heavy_bonds(lsyms, _Qr)):
                             Q = _Qr
@@ -2901,14 +5875,80 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                     if Q is not None and _rigid_planar and _collapsed_heavy_bonds_strict(lsyms, Q):
                         Q = None
                 if Q is None and dent == 2:         # embed/orient failed -> rigid fallback (bidentate only)
-                    Q = _place_chelate_block(metal, lsyms, lP, dons_d[0], dons_d[1], targets[0], targets[1])
+                    Q = _place_chelate_block(metal, lsyms, lP, dons_d[0], dons_d[1],
+                                             targets[0], targets[1], mol=lg["mol"])
                 if Q is None:                       # tridentate embed failure -> skip this config
                     continue
             if not np.all(np.isfinite(Q)):
                 continue
             cl = _clash_count(Q, np.array(placed), lsyms, placed_syms)
-            if cl < best_clash:
-                best_clash, best_Q = cl, Q
+            # THE FREE DEGREE OF FREEDOM, CALL SITE 1 of 2 (the main road: this
+            # path builds every chelate configuration).  It acts ONLY if this block
+            # already collides with something already seated -- exactly the case in
+            # which the register says "the ligand pays".  Default OFF -> `_fd` is always
+            # None, `Q` and `cl` stay untouched: byte-identical.
+            _fd = _free_dof_reseat(Q, lsyms, dons, np.array(placed), placed_syms, cl)
+            if _fd is not None:
+                Q, cl = _fd
+            # (collapsed, clash) beats (clash) alone: a clean conformer outranks a colliding
+            # one, and among equals the historic clash order is untouched.  With the flag OFF
+            # _coll is False for every candidate, so the tuple compare degenerates to the
+            # historic `cl < best_clash` exactly -- byte-identical.
+            _coll = bool(_csel and _collapsed_heavy_bonds_strict(lsyms, Q))
+            _bta = _beta_score(lsyms, Q, dons) if _bsel else 0.0
+            # ===== POLYHEDRON FIDELITY AS A SELECTION CRITERION ================
+            # THE FINDING THAT FORCES THIS TERM (18.08., 30921 systems): net
+            # +988 systems flow from the octahedron into the trigonal prism, McNemar
+            # X2 = 860.8; the builder produces 2.99 times too many prisms, while every
+            # other shape stays between 0.86 and 1.29.  They are not prisms --
+            # CShM median 11.03 instead of 16.7, i.e. a HALF Bailar twist.  And the
+            # signal is the INTERLOCKING, monotone from 2.49 % at zero chelate rings to
+            # 16.12 % at five.  Metal and d-count are flat.
+            #
+            # ⚠ WHY HERE AND NOT IN THE RELAXATION -- that is DECIDED today,
+            # not suspected.  The assertion protocol was hung on all four
+            # refine call sites and caught the twist six times (109 calls,
+            # all six trans).  Nevertheless 19 of 19 archive files stayed
+            # byte-identical.  The discriminator: the rollback additionally shifted by 100
+            # Angstrom -- a frame that every gate rejects and every
+            # byte comparison would see.  The archive stayed identical.  ⇒ The frames whose
+            # assertion breaks are rejected anyway; the SURVIVORS are
+            # already twisted when they arrive at refine.  The relaxation is thereby
+            # excluded as the cause -- the chelate pull acts HERE, at
+            # placement.
+            #
+            # The builder puts the donors onto `targets` (ideal vertices times
+            # md_distance), but a rigid chelate ring cannot reach them all:
+            # _orient_chelate_to_vertices lays it on as well as possible, and the
+            # rest is deviation.  Until now NOTHING decided about that -- the selection
+            # read (collapse, clash, beta).  A conformer that twists the polyhedron by 30
+            # degrees won against a faithful one as soon as it had one clash less
+            # or even just came earlier.
+            #
+            # ⚠ WHY THIS IS CHEAP: pure SELECTION among already built
+            # candidates -- no new geometry arises.  By the law measured
+            # today (isometry +0.98 pp, rigid rotation +6.57 pp,
+            # re-embedding +11.9 pp) that is the cheapest class of all.
+            #
+            # ⚠ WHY BINNED: `_pol` is a floating-point number.  Unbinned it would decide
+            # practically every comparison and `_bta` would never get its turn again --
+            # that would be a silent switch-off of a landed term.  The band of
+            # 0.05 Angstrom lets it speak only when the difference is large
+            # enough to mean something chemically.
+            #
+            # DELFIN_FFFREE_POLY_FIDELITY_SEAT (default 0 -> byte-identical).
+            _pol = 0
+            if _polysel and dent_targets is not None:
+                try:
+                    _dev = [float(np.linalg.norm(Q[dons_d[i]] - dent_targets[i]))
+                            for i in range(len(dent_targets))]
+                    _pol = int(round((sum(d * d for d in _dev) / len(_dev)) ** 0.5
+                                     / _POLY_FIDELITY_BIN))
+                except Exception:
+                    _pol = 0
+            if (_coll, cl, _pol, _bta) < (best_coll, best_clash, best_pol, best_beta):
+                best_coll, best_clash, best_pol, best_beta, best_Q = (
+                    _coll, cl, _pol, _bta, Q)
             if ensemble:
                 # dedup conformers of THIS ligand by intra-ligand RMSD (identity corr.)
                 dup = False
@@ -2921,7 +5961,13 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
                 if not dup:
                     seen_local.append(Q)
                     cands.append((Q, _clash_count(Q, metal_P, lsyms, metal_sym)))
-            elif cl == 0:
+            elif cl == 0 and not _coll and not _bsel:
+                # the early exit must not fire on a conformer that is clash-free but carries
+                # a bond the gate will kill the whole complex for -- that is the exact trade
+                # this flag exists to stop.  Flag OFF -> _coll is False -> historic break.
+                # It must also not fire under BETA_AWARE_SELECT at all: taking the FIRST
+                # clash-free conformer is precisely what makes the beta tie-break unable to
+                # see the others.  At most per_lig_confs candidates, so the cost is bounded.
                 break
         if best_Q is None:                  # no conformer could be placed -> bail to legacy
             return None
@@ -2942,11 +5988,34 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
         # freeze the donor atoms at their vertices
         for d in dons:
             fixed.add(pos + d)
+        # ... and record which atoms belong to this one ligand.  Pure bookkeeping: nothing
+        # reads it unless DELFIN_FFFREE_GLOBAL_DONORS is on, so the frame is unaffected.
+        lig_blocks.append((pos, len(lsyms), sorted(pos + int(d) for d in dons)))
         pos += len(lsyms)
     donors = sorted(fixed - {0})              # global indices of the constructed donor atoms
     if not ensemble:
         P = np.vstack([np.zeros((1, 3))] + [np.array(placed[1:], float)])
-        P = _finish_config_frame(out_syms, P, fixed, relax_frags, refine)
+        # OC-6 TWIST CORRECTION IN THE SEATING (only on ``oc6_twist=True``; the
+        # keyword is False by default, so the primary frame is byte-identical,
+        # independent of any environment variable).  It stands BEFORE the global
+        # donor seating, because the drift permitted there (0.05 A) is measured against
+        # the frame it finds: first set the polyhedron right, then de-distort --
+        # the other way round the de-distortion would have to give up its own work again.
+        # And BEFORE _finish_config_frame, because the relaxation there nails down the donors.
+        if oc6_twist:
+            _t = _oc6_twist_seat(out_syms, P, lig_blocks, metal, geometry)
+            if _t is not None:
+                P = _t
+        # GLOBAL DONOR SEATING (default OFF -> byte-identical).  Every ligand up to here was
+        # seated ALONE; this is the first and only point where all of them exist at once, so
+        # it is the first point where an inter-ligand distance can even be written down.  It
+        # runs BEFORE _finish_config_frame on purpose: the relax there pins the donors, so
+        # whatever this leaves them at is what the coordination is finished around.
+        if _global_donor_seat_enabled():
+            _g = _global_donor_seat(out_syms, P, lig_blocks)
+            if _g is not None:
+                P = _g
+        P = _finish_config_frame(out_syms, P, fixed, relax_frags, refine, geom=geometry)
         return out_syms, P, donors
 
     # ENSEMBLE assembly (Task A.1): enumerate the Cartesian product of per-ligand
@@ -2955,10 +6024,37 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
     # at the complex level, keep up to n_frames.  Capped product keeps it bounded.
     import itertools as _it
     rank_lists = [list(range(len(c))) for c in per_lig_cands]
-    combos = list(_it.product(*rank_lists))
+    _nprod = 1
+    for _rl in rank_lists:
+        _nprod *= max(1, len(_rl))
+        if _nprod > _COMBO_MATERIALISE_MAX:
+            break
+    if _nprod > _COMBO_MATERIALISE_MAX:      # never materialise a 10^8 product to use 64
+        combos = _ranked_combos(rank_lists, 256)
+    else:
+        combos = list(_it.product(*rank_lists))
     combos.sort(key=lambda cb: (sum(cb), cb))      # deterministic; frame 0 = all-best
     MAX_EVAL = 64
     frames = []                                    # (syms, P) kept (deduped)
+    # FOLD FINGERPRINT (see block at `_fold_fp_enabled`).  Default OFF ->
+    # `_fold_rings` stays None -> the predicate below is literally the old one.
+    # `relax_frags` carries (AddHs(lg.mol), LIGANDS-ONLY offset); globally the
+    # block starts at `lig_offset + 1`, because index 0 is the metal -- the same convention
+    # `_collect_exempt` and `_finish_config_frame` already use.
+    # THIRD ENTRY = the chelate arms for the metallacycle (switch, see above).  The
+    # ligand for it is in `ligands[_lig_order[i][0]]`: the loop above appends per
+    # iteration EXACTLY ONE `relax_frags` entry (:5550, no `continue`
+    # before it), so index i is the same.  ⚠ That is an assumption about the
+    # loop, therefore it is CHECKED -- if the length does not match, there are no
+    # chelate arms and the fingerprint is exactly the organic one from before.
+    _fold_rings = None
+    if _fold_fp_enabled():
+        _fb = [(int(o) + 1, m, None) for (m, o) in relax_frags]
+        if len(relax_frags) == len(_lig_order):
+            _fb = [(int(o) + 1, m, _fold_mc_arms(ligands[_lig_order[i][0]]))
+                   for i, (m, o) in enumerate(relax_frags)]
+        _fold_rings = _fold_rings_with_mc(_fb, out_syms, 0)
+    _fold_kept = []                                # fingerprint per kept frame
     for cb in combos[:MAX_EVAL]:
         blocks = [np.zeros((1, 3))]
         ok = True
@@ -2968,17 +6064,40 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
         Pc = np.vstack(blocks)
         if not np.all(np.isfinite(Pc)):
             continue
-        Pc = _finish_config_frame(out_syms, Pc, fixed, relax_frags, refine)
+        # the same twist correction for the ensemble combinations: the ligand spans
+        # are the same across all combinations (same conformer atom counts), so lig_blocks
+        # applies unchanged.  Again only on the keyword.
+        if oc6_twist:
+            _t = _oc6_twist_seat(out_syms, Pc, lig_blocks, metal, geometry)
+            if _t is not None:
+                Pc = _t
+        # same global seating for the ensemble combos; the per-ligand spans are identical
+        # across combos (same conformer atom counts), so lig_blocks applies unchanged.
+        if _global_donor_seat_enabled():
+            _g = _global_donor_seat(out_syms, Pc, lig_blocks)
+            if _g is not None:
+                Pc = _g
+        Pc = _finish_config_frame(out_syms, Pc, fixed, relax_frags, refine, geom=geometry)
         if not np.all(np.isfinite(Pc)):
             continue
         dup = False
-        for _, Pk in frames:
+        _fp = None                                 # lazy: only on RMSD proximity
+        for _ki, (_, Pk) in enumerate(frames):
             if Pk.shape == Pc.shape and _complex_rmsd(out_syms, Pc, Pk) < rmsd_dedup:
-                dup = True
-                break
+                if _fold_rings is None:
+                    dup = True                     # switch OFF -> old predicate
+                    break
+                if _fp is None:
+                    _fp = _fold_fp(Pc, _fold_rings)
+                if _fold_kept[_ki] is None:
+                    _fold_kept[_ki] = _fold_fp(Pk, _fold_rings)
+                if _fold_same(_fold_kept[_ki], _fp):
+                    dup = True
+                    break
         if dup:
             continue
         frames.append((list(out_syms), Pc))
+        _fold_kept.append(None)                    # same length as `frames`
         if len(frames) >= int(n_frames):
             break
     if not frames:
@@ -2986,7 +6105,7 @@ def assemble_from_config(metal, geometry, config, ligands, refine=True,
     return [(syms, P, donors) for syms, P in frames]
 
 
-def _finish_config_frame(out_syms, P, fixed, relax_frags, refine=True):
+def _finish_config_frame(out_syms, P, fixed, relax_frags, refine=True, geom=None):
     """Shared finishing tail for a single assembled chelate-config frame: the
     FUNDAMENTAL internal relaxation (division-of-labor doctrine) — build the
     ligands-only mol (NO metal) at the placed coords and UFF-relax it with the
@@ -3052,11 +6171,7 @@ def _finish_config_frame(out_syms, P, fixed, relax_frags, refine=True):
     except Exception:
         pass
     # FF-free geometric clash-relief (both tracks)
-    try:
-        from delfin.manta.refine import refine as _refine
-        P = _refine(out_syms, P, fixed)
-    except Exception:
-        pass
+    P = _refine_guarded(out_syms, P, fixed)
     # #308 whole-complex torsion-space clash relax (env-gated, default-OFF byte-id):
     # joint multi-axis torsion of all rotatable single bonds, metal + donors (`fixed`)
     # frozen.  Chelate ring + M-D arms are ring bonds -> kept rigid by construction;
@@ -3085,7 +6200,7 @@ def _finish_config_frame(out_syms, P, fixed, relax_frags, refine=True):
         # inter-ligand heavy-heavy minimisation, core frozen.  After #308.  Reuses
         # the same true-connectivity bond list.  No-op when the flag is unset.
         from delfin.manta import joint_declash as _JD
-        P = np.asarray(_JD.declash_if_enabled(out_syms, P, fixed, bond_pairs=bp),
+        P = np.asarray(_JD.declash_if_enabled(out_syms, P, fixed, geom=geom, bond_pairs=bp),
                        dtype=float)
         # SOFT coordination-sphere radial flex (env-gated, default-OFF byte-id):
         # let crowded monodentate ligands translate radially outward a bounded
@@ -3146,3 +6261,573 @@ def generate_complex_conformers(metal, ligand_smiles, donor_idx, geometry,
             syms += lsyms; blocks.append(Q)
         out.append((round(e, 2), syms, np.vstack(blocks)))
     return out
+
+
+# ---------------------------------------------------------------------------
+# Self-test — does the DERIVED bite actually preserve the ligand's own d_DD?
+# ---------------------------------------------------------------------------
+
+def _self_test_bite_law() -> None:
+    """The claim is not "the angle is nicer" -- it is that d_DD is PRESERVED.
+
+    mdAB measured what happens when it is not: correcting the M-D length while the vertex
+    angle stays at the ideal 90 deg forces d_DD = |u1*r1 - u2*r2| to a value the ligand
+    does not have, and the ligand absorbs the difference (valid 155 -> 146).  So the test
+    that matters compares the donor-donor distance the ligand HAS against the one the
+    seating ASKS FOR, with the law off and on.  A lever that leaves that gap unchanged
+    would be dead code that looks alive.
+    """
+    cases = [
+        ("NCCN",              [0, 3], "ethylenediamine, sp3 backbone"),
+        ("c1ccc(-c2ccccn2)nc1", None, "2,2'-bipyridine, aromatic backbone"),
+        ("CC(=O)CC(C)=O",     None,   "acetylacetone, 6-ring"),
+    ]
+    # WHERE THE MISMATCH ACTUALLY SHOWS.  _place_chelate_block fits the ligand RIGIDLY, so
+    # d_DD is preserved either way -- the first version of this test measured that and
+    # learned nothing.  A rigid body cannot satisfy two vertex directions AND two M-D
+    # lengths when the ligand's own bite disagrees with the vertex spacing, so the
+    # compromise lands in the M-D DISTANCES: the donors end up nearer or further than the
+    # length that was requested.  That is also the sharper reading of mdAB's failure --
+    # setting r is pointless if the rigid fit then moves the donor off it again.
+    print("derived bite -- does the seat DELIVER the M-D length it asked for?")
+    print(f"{'ligand':>34} | {'d_DD':>6} | {'M-D err off':>11} | {'M-D err on':>10} | "
+          f"{'angle off':>9} {'angle on':>8} | OK")
+    metal_sym = "Ni"
+    for smi, dons, label in cases:
+        try:
+            lsyms, lP, lmol = _ligand_3d(smi)
+        except Exception as exc:
+            print(f"{label:>34} | SKIP ({type(exc).__name__})")
+            continue
+        if dons is None:                      # first two N/O heavy donors in the SMILES
+            dons = [a.GetIdx() for a in lmol.GetAtoms()
+                    if a.GetSymbol() in ("N", "O")][:2]
+        if len(dons) != 2:
+            print(f"{label:>34} | SKIP (no donor pair)")
+            continue
+        d1, d2 = dons
+        dd_lig = float(np.linalg.norm(lP[d1] - lP[d2]))
+        _want1 = MSB.md_distance(metal_sym, lsyms[d1],
+                                 atom=lmol.GetAtomWithIdx(d1), mol=lmol)
+        _want2 = MSB.md_distance(metal_sym, lsyms[d2],
+                                 atom=lmol.GetAtomWithIdx(d2), mol=lmol)
+        errs, angs = [], []
+        for flag in ("0", "1"):
+            prev = os.environ.get("DELFIN_FFREE_BITE_LAW")
+            os.environ["DELFIN_FFREE_BITE_LAW"] = flag
+            try:
+                # OC-6 vertices 0/1 are TRANS ([1,0,0] / [-1,0,0]); a chelate needs a CIS
+                # edge, so 0/2 ([1,0,0] / [0,1,0], 90 deg apart).
+                syms, P = assemble_multichelate(metal_sym, "OC-6 octahedron",
+                                                [(smi, [d1, d2], [0, 2])])
+                # metal sits at row 0; the ligand block follows in ligand order
+                v1, v2 = P[1 + d1] - P[0], P[1 + d2] - P[0]
+                g1, g2 = float(np.linalg.norm(v1)), float(np.linalg.norm(v2))
+                errs.append(max(abs(g1 - _want1), abs(g2 - _want2)))
+                angs.append(math.degrees(math.acos(max(-1.0, min(1.0,
+                            float(np.dot(v1, v2)) / (g1 * g2))))))
+            except Exception as exc:
+                errs.append(float("nan"))
+                angs.append(float("nan"))
+                print(f"    ({label}: {type(exc).__name__}: {exc})")
+            finally:
+                if prev is None:
+                    os.environ.pop("DELFIN_FFREE_BITE_LAW", None)
+                else:
+                    os.environ["DELFIN_FFREE_BITE_LAW"] = prev
+        # NEVER-WORSE is the criterion, not "always changes something".  Three outcomes are
+        # all correct: the law repairs a real gap (en), it reproduces what an already-exact
+        # rigid fit does (bipy -- a confirmation, not a no-op), or it DECLINES because the
+        # triangle does not close (acac, whose freely embedded conformer is the open form,
+        # not the chelating one -- d_DD must come from the chelating basin).
+        _c = ((_want1 ** 2 + _want2 ** 2 - dd_lig ** 2) / (2.0 * _want1 * _want2)
+              if _want1 > 0 and _want2 > 0 else 2.0)
+        note = ("declined (cos=%.2f)" % _c if not -1.0 <= _c <= 1.0
+                else ("repairs" if errs[0] - errs[1] > 1.0e-6 else "reproduces"))
+        ok = errs[1] <= errs[0] + 1.0e-9
+        print(f"{label:>34} | {dd_lig:6.3f} | {errs[0]:11.4f} | {errs[1]:10.4f} | "
+              f"{angs[0]:9.2f} {angs[1]:8.2f} | {str(ok):>5} {note}")
+
+
+def _run_self_tests() -> None:
+    _self_test_bite_law()
+    _self_test_lp_orient()
+    _self_test_trilateration()
+    _self_test_oc6_twist()
+    _self_test_ligand_dof()
+
+
+def _self_test_ligand_dof() -> None:
+    """HOW MUCH FREEDOM DOES THE LIGAND STILL HAVE -- and does using it cost the sphere?
+
+    Four questions, and each may say NO:
+      1) CENSUS: how many free rigid-body rotations remain per denticity?
+         Expectation from reading the code: monodentate 1, bidentate 1, tridentate 0.
+      2) PRESERVATION: under this rotation do donor position, M-D distance, bite and
+         the ENTIRE internal ligand geometry stay exact?  Measured in Angstrom, not
+         claimed.  (Isometry: only rounding residues may remain.)
+      3) DEFAULT OFF: does `_free_dof_reseat` without the switch guarantee None?
+      4) REACH ON: does the rotation resolve overlap on a REAL, truly colliding
+         ligand pair -- or does it find nothing?  Either is a finding.
+    """
+    print("\nfreier Ligand-Freiheitsgrad -- Zensus, Erhaltung, Vorgabe, Reichweite")
+    metal = "Fe"
+    ref = MSB._ref_vectors("OC-6 octahedron")
+    _ANG = 137.0                       # odd angle: no symmetry coincidence
+
+    def _seat_mono(smi, want=("N", "P", "S", "O")):
+        lsyms, lP, lmol = _ligand_3d(smi)
+        di = next(a.GetIdx() for a in lmol.GetAtoms() if a.GetSymbol() in want)
+        V = ref[0] / np.linalg.norm(ref[0])
+        md = MSB.md_distance(metal, lsyms[di], atom=lmol.GetAtomWithIdx(di), mol=lmol)
+        lPv, lp = _vsepr_reconstruct(lsyms, lP, lmol, di)
+        return lsyms, (lPv - lPv[di]) @ _rot_align(lp, -V).T + V * md, [di]
+
+    def _seat_chelate(smi, dons):
+        lmol = Chem.AddHs(Chem.MolFromSmiles(smi))
+        tp = [ref[v] / np.linalg.norm(ref[v])
+              * MSB.md_distance(metal, lmol.GetAtomWithIdx(int(d)).GetSymbol(),
+                                atom=lmol.GetAtomWithIdx(int(d)), mol=lmol)
+              for v, d in zip((0, 2, 4)[:len(dons)], dons)]
+        rc = _embed_metallacycle(lmol, list(dons), metal, donor_target_pos=tp)
+        if rc is None:
+            return None
+        lsyms, confs = rc
+        Q = _orient_chelate_to_vertices(confs[0], list(dons), tp, asym=False)
+        return (lsyms, Q, list(dons)) if Q is not None else None
+
+    cases = []
+    try:
+        cases.append(("pyridin (monodentat)",) + _seat_mono("c1ccncc1"))
+    except Exception as exc:
+        print("   pyridin: SKIP (%s)" % type(exc).__name__)
+    for label, smi, dons in (("ethylendiamin (bidentat)", "NCCN", [0, 3]),
+                             ("diethylentriamin (tridentat)", "NCCNCCN", [0, 3, 6])):
+        try:
+            s = _seat_chelate(smi, dons)
+        except Exception as exc:
+            s = None
+            print("   %s: SKIP (%s)" % (label, type(exc).__name__))
+        if s is not None:
+            cases.append((label,) + s)
+
+    print(f"{'Ligand':>30} | {'#Don':>4} | {'freie Achse':>11} | {'d(Donor)':>9} | "
+          f"{'d(M-D)':>8} | {'d(Biss)':>8} | {'d(intern)':>9}")
+    M = np.zeros(3)
+    for label, lsyms, Q, dons in cases:
+        ax = _free_rigid_axis(Q, dons, M)
+        if ax is None:
+            print(f"{label:>30} | {len(dons):4d} | {'KEINE (0 DOF)':>11} | "
+                  f"{'--':>9} | {'--':>8} | {'--':>8} | {'--':>9}")
+            continue
+        o, u = ax
+        Qr = (np.asarray(Q, float) - o) @ _axis_rot(u, math.radians(_ANG)).T + o
+        d_don = max(float(np.linalg.norm(Qr[d] - Q[d])) for d in dons)
+        d_md = max(abs(float(np.linalg.norm(Qr[d] - M))
+                       - float(np.linalg.norm(Q[d] - M))) for d in dons)
+        d_bite = 0.0
+        for i, a in enumerate(dons):
+            for b in dons[i + 1:]:
+                d_bite = max(d_bite, abs(float(np.linalg.norm(Qr[a] - Qr[b]))
+                                         - float(np.linalg.norm(Q[a] - Q[b]))))
+        D0 = np.linalg.norm(Q[:, None, :] - Q[None, :, :], axis=-1)
+        D1 = np.linalg.norm(Qr[:, None, :] - Qr[None, :, :], axis=-1)
+        d_int = float(np.max(np.abs(D1 - D0)))
+        print(f"{label:>30} | {len(dons):4d} | {'1 (%.0f Grad)' % _ANG:>11} | "
+              f"{d_don:9.2e} | {d_md:8.2e} | {d_bite:8.2e} | {d_int:9.2e}")
+
+    # --- 3) DEFAULT OFF ------------------------------------------------------
+    _prev = os.environ.pop("DELFIN_FFFREE_LIGAND_DOF_SEAT", None)
+    try:
+        _off = None
+        if cases:
+            _l, _s, _Q, _d = cases[0]
+            _off = _free_dof_reseat(_Q, _s, _d, np.zeros((1, 3)), [metal], 99)
+        print("   Vorgabe AUS -> _free_dof_reseat liefert %s  (%s)"
+              % (_off, "OK" if _off is None else "FEHLER"))
+    finally:
+        if _prev is not None:
+            os.environ["DELFIN_FFFREE_LIGAND_DOF_SEAT"] = _prev
+
+    # --- 4) REACH: a REAL colliding ligand pair -------------------------------
+    # Two bulky phosphines on ADJACENT octahedron vertices.  Both are seated exactly
+    # as assemble_from_config does it (VSEPR + _rot_align), the second
+    # sees the first in `_clash_count` -- and afterwards has only the azimuth left.
+    try:
+        smi = "P(C(C)(C)C)(C(C)(C)C)C(C)(C)C"
+        lsyms, lP, lmol = _ligand_3d(smi)
+        di = next(a.GetIdx() for a in lmol.GetAtoms() if a.GetSymbol() == "P")
+        md = MSB.md_distance(metal, "P", atom=lmol.GetAtomWithIdx(di), mol=lmol)
+        lPv, lp = _vsepr_reconstruct(lsyms, lP, lmol, di)
+        blocks = []
+        for v in (0, 2):
+            V = ref[v] / np.linalg.norm(ref[v])
+            blocks.append((lPv - lPv[di]) @ _rot_align(lp, -V).T + V * md)
+        ex = np.vstack([np.zeros((1, 3)), blocks[0]])
+        ex_s = [metal] + list(lsyms)
+        c0 = _clash_count(blocks[1], ex, lsyms, ex_s)
+        os.environ["DELFIN_FFFREE_LIGAND_DOF_SEAT"] = "1"
+        try:
+            res = _free_dof_reseat(blocks[1], lsyms, [di], ex, ex_s, c0)
+        finally:
+            if _prev is None:
+                os.environ.pop("DELFIN_FFFREE_LIGAND_DOF_SEAT", None)
+            else:
+                os.environ["DELFIN_FFFREE_LIGAND_DOF_SEAT"] = _prev
+        if c0 <= 0:
+            print("   Reichweite: das Paar kollidiert gar nicht (clash 0) -> die Achse"
+                  " wird hier nicht gebraucht; das ist ein Befund, kein Erfolg.")
+        elif res is None:
+            print("   Reichweite: clash %d, aber KEINE Drehung ist besser -> der"
+                  " Freiheitsgrad traegt an diesem Paar nicht." % c0)
+        else:
+            Qn, c1 = res
+            _dmd = abs(float(np.linalg.norm(Qn[di])) - float(np.linalg.norm(blocks[1][di])))
+            print("   Reichweite: P(tBu)3 / P(tBu)3 cis  clash %d -> %d, "
+                  "M-D-Drift %.2e A" % (c0, c1, _dmd))
+    except Exception as exc:
+        print("   Reichweite: SKIP (%s: %s)" % (type(exc).__name__, exc))
+
+
+def _self_test_oc6_twist() -> None:
+    """Does the corrector really rotate the half twist out -- and in doing so leave
+    everything standing that it must leave standing?
+
+    Measured on SYNTHETIC frames whose truth is known, not on a
+    pool: an octahedron twisted about the C3 axis by a known angle.
+    phi = 0 is the octahedron, phi = 60 degrees the ideal trigonal prism, and the
+    measured median CShM 11.03 lies in between -- the half twist this is about.
+
+    Five questions, and each of them can say NO:
+      1) does CShM(OC-6) fall -- and to ~0, not just a bit?
+      2) does r(M-D) stay exact (the rotation is about the metal)?
+      3) does the bite stay exact (the arm rotates RIGIDLY)?
+      4) does it leave a REQUESTED TPR-6 alone?  (otherwise it destroys an isomer)
+      5) does it leave an ambiguous frame alone (min-trans <= 120 degrees)?
+    And the sixth, which is not a question but the default: with the switch OFF
+    nothing happens at all.
+    """
+    from delfin.manta import polyhedra as _PH
+    print("\nOC-6 Twist-Korrektor -- der halbe Bailar-Twist, FF-frei zurueckgedreht")
+    print(f"  Schalter DELFIN_FFFREE_OC6_TWIST_SEAT gelesen als: "
+          f"{_oc6_twist_seat_enabled()}  (Vorgabe muss False sein)")
+
+    def _twisted_oct(phi_deg, rad=2.10):
+        """An octahedron twisted about the C3 axis [1,1,1]: the upper triangular face
+        by +phi/2, the lower by -phi/2.  phi=0 -> OC-6, phi=60 -> ideal TPR-6."""
+        V = _PH.ref_vectors("OC-6 octahedron")
+        c3 = np.array([1.0, 1.0, 1.0]) / math.sqrt(3.0)
+        top, bot = [], []
+        for v in V:                       # the two triangles perpendicular to the C3 axis
+            (top if float(np.dot(v, c3)) > 0 else bot).append(v)
+        Rt = _axis_rot(c3, math.radians(+phi_deg / 2.0))
+        Rb = _axis_rot(c3, math.radians(-phi_deg / 2.0))
+        return ([np.asarray(v) @ Rt.T * rad for v in top]
+                + [np.asarray(v) @ Rb.T * rad for v in bot])
+
+    def _mk_monodentate_frame(dirs):
+        """Metal + six monodentate arms (donor + one backbone atom pointing outwards), so
+        that every block really has a BODY that the rotation must carry along."""
+        syms = ["Fe"]
+        P = [np.zeros(3)]
+        blocks = []
+        for v in dirs:
+            st = len(P)
+            syms.append("N")
+            P.append(np.asarray(v, float))
+            syms.append("C")
+            P.append(np.asarray(v, float) * 1.65)          # radially outward
+            blocks.append((st, 2, [st]))
+        return syms, np.asarray(P, float), blocks
+
+    print(f"\n{'Frame':>26} | {'min-trans':>9} | {'CShM vor':>9} | {'CShM nach':>9} | "
+          f"{'dM-D':>8} | Urteil")
+    ok_all = True
+    for phi in (0.0, 15.0, 30.0, 45.0, 60.0):
+        dirs = _twisted_oct(phi)
+        syms, P, blocks = _mk_monodentate_frame(dirs)
+        u = {b[2][0]: P[b[2][0]] / float(np.linalg.norm(P[b[2][0]])) for b in blocks}
+        _pairs, _mt = _oc6_trans_pairs(u, sorted(u))
+        before = _PH.cshm([P[b[2][0]] for b in blocks], "OC-6 octahedron")
+        Xc = _oc6_twist_seat(syms, P, blocks, "Fe", "OC-6 octahedron")
+        if Xc is None:
+            verdict = ("uebersprungen (min-trans <= 120)" if _mt <= _OC6_TRANS_MIN
+                       else "uebersprungen")
+            print(f"{'OC-6 twist %4.1f' % phi:>26} | {_mt:8.1f}d | {before:9.3f} | "
+                  f"{'--':>9} | {'--':>8} | {verdict}")
+            # phi=0 is ALREADY the octahedron -> CShM cannot fall -> None is correct
+            if phi == 0.0 and before < 1e-6:
+                continue
+            if _mt > _OC6_TRANS_MIN and before > 1.0:
+                ok_all = False              # should have acted
+            continue
+        after = _PH.cshm([Xc[b[2][0]] for b in blocks], "OC-6 octahedron")
+        dmd = max(abs(float(np.linalg.norm(Xc[b[2][0]]))
+                      - float(np.linalg.norm(P[b[2][0]]))) for b in blocks)
+        # the arm must have COME ALONG: the backbone atom keeps its distance to the donor
+        darm = max(abs(float(np.linalg.norm(Xc[b[0]] - Xc[b[0] + 1]))
+                       - float(np.linalg.norm(P[b[0]] - P[b[0] + 1]))) for b in blocks)
+        good = (after < before - 1e-9) and dmd < 1e-6 and darm < 1e-6
+        ok_all = ok_all and good
+        print(f"{'OC-6 twist %4.1f' % phi:>26} | {_mt:8.1f}d | {before:9.3f} | "
+              f"{after:9.3f} | {dmd:8.1e} | {'OK' if good else 'FEHLER'}"
+              f"  (Arm {darm:.1e})")
+
+    # 4) a REQUESTED TPR-6 must stay untouched -- otherwise an isomer is lost
+    dirs = [np.asarray(v, float) * 2.10 for v in _PH.ref_vectors("TPR-6 trigonal prism")]
+    syms, P, blocks = _mk_monodentate_frame(dirs)
+    tpr = _oc6_twist_seat(syms, P, blocks, "Fe", "TPR-6 trigonal prism")
+    print(f"{'TPR-6 angefordert':>26} | {'--':>9} | {'--':>9} | {'--':>9} | {'--':>8} | "
+          f"{'OK (nicht angefasst)' if tpr is None else 'FEHLER: Isomer zerstoert'}")
+    ok_all = ok_all and (tpr is None)
+
+    # 5) ambiguous: a frame whose best pairing stays below 120 degrees (all six
+    #    donors crowded into ONE hemisphere) -- the corrector must not guess
+    amb = []
+    for k in range(6):
+        a = 2.0 * math.pi * k / 6.0
+        v = np.array([math.cos(a) * 0.80, math.sin(a) * 0.80, 0.60])
+        amb.append(v / float(np.linalg.norm(v)) * 2.10)
+    syms, P, blocks = _mk_monodentate_frame(amb)
+    u = {b[2][0]: P[b[2][0]] / float(np.linalg.norm(P[b[2][0]])) for b in blocks}
+    _p2, _mt2 = _oc6_trans_pairs(u, sorted(u))
+    ambr = _oc6_twist_seat(syms, P, blocks, "Fe", "OC-6 octahedron")
+    print(f"{'mehrdeutig (Halbkugel)':>26} | {_mt2:8.1f}d | {'--':>9} | {'--':>9} | "
+          f"{'--':>8} | {'OK (uebersprungen)' if ambr is None else 'FEHLER: geraten'}")
+    ok_all = ok_all and (ambr is None)
+
+    # 6) a CHELATE: two donors on ONE rigid body.  It may only rotate RIGIDLY
+    #    -- the bite is ligand geometry, not polyhedron geometry.
+    dirs = _twisted_oct(30.0)
+    syms = ["Fe"]; P = [np.zeros(3)]; blocks = []
+    for i in range(0, 6, 2):
+        st = len(P)
+        syms += ["N", "C", "N"]
+        P += [np.asarray(dirs[i], float),
+              (np.asarray(dirs[i], float) + np.asarray(dirs[i + 1], float)) * 0.62,
+              np.asarray(dirs[i + 1], float)]
+        blocks.append((st, 3, [st, st + 2]))
+    P = np.asarray(P, float)
+    bite0 = [float(np.linalg.norm(P[b[2][0]] - P[b[2][1]])) for b in blocks]
+    before = _PH.cshm([P[d] for b in blocks for d in b[2]], "OC-6 octahedron")
+    Xc = _oc6_twist_seat(syms, P, blocks, "Fe", "OC-6 octahedron")
+    if Xc is None:
+        print(f"{'3 Chelate, Biss fest':>26} | {'--':>9} | {before:9.3f} | {'--':>9} | "
+              f"{'--':>8} | uebersprungen")
+        ok_all = False
+    else:
+        after = _PH.cshm([Xc[d] for b in blocks for d in b[2]], "OC-6 octahedron")
+        bite1 = [float(np.linalg.norm(Xc[b[2][0]] - Xc[b[2][1]])) for b in blocks]
+        dbite = max(abs(x - y) for x, y in zip(bite0, bite1))
+        dmd = max(abs(float(np.linalg.norm(Xc[d])) - float(np.linalg.norm(P[d])))
+                  for b in blocks for d in b[2])
+        good = (after < before - 1e-9) and dbite < 1e-6 and dmd < 1e-6
+        ok_all = ok_all and good
+        print(f"{'3 Chelate, Biss fest':>26} | {'--':>9} | {before:9.3f} | {after:9.3f} | "
+              f"{dmd:8.1e} | {'OK' if good else 'FEHLER'}  (Biss {dbite:.1e})")
+    print(f"\n  Gesamturteil: "
+          f"{'ALLE BESTANDEN' if ok_all else 'MINDESTENS EINER FEHLGESCHLAGEN'}")
+
+
+def _self_test_lp_orient() -> None:
+    """How far do the donor lone pairs point PAST the metal?
+
+    That angle IS the flapping.  A conjugated donor's lone pair lies in its pi plane, so a
+    correctly seated planar chelate has the metal IN that plane and the angle is zero;
+    there is no such thing as a tilted aromatic chelate.  The old orientation was chosen by
+    a 36-step sweep maximising the minimum backbone-to-metal distance -- collision
+    avoidance where the constraint is bonding -- so this measures what that costs.
+    """
+    cases = [
+        ("c1ccc(-c2ccccn2)nc1",        "2,2'-bipyridine (planar, aromatic)"),
+        ("c1cnc2c(c1)ccc1cccnc12",     "1,10-phenanthroline (fused, rigid)"),
+        ("NCCN",                       "ethylenediamine (sp3)"),
+        ("CC(=O)[O-]",                 "acetate (carboxylate O donors)"),
+    ]
+    print("\nlone-pair orientation -- degrees the lone pairs miss the metal by")
+    print("  'converge' = angle between the two lone pairs measured on the FREE ligand.")
+    print("  A chelating conformer aims both at one point, so the two directions must")
+    print("  CONVERGE (obtuse, near 180-bite).  If they diverge, no rotation of the whole")
+    print("  ligand can aim them at a metal -- the conformer itself is the wrong one, and")
+    print("  the seat can only flap it into place.")
+    print(f"{'ligand':>36} | {'conv':>5} | {'--':>6} {'lp':>6} {'bite':>6} "
+          f"{'both':>6} | {'best':>7} | OK")
+    for smi, label in cases:
+        try:
+            lsyms, lP, lmol = _ligand_3d(smi)
+        except Exception as exc:
+            print(f"{label:>36} | SKIP ({type(exc).__name__})")
+            continue
+        dons = [a.GetIdx() for a in lmol.GetAtoms() if a.GetSymbol() in ("N", "O")][:2]
+        if len(dons) != 2:
+            print(f"{label:>36} | SKIP (no donor pair)")
+            continue
+        d1, d2 = dons
+        _l1, _l2 = _lone_pair_dir(lP, lmol, d1), _lone_pair_dir(lP, lmol, d2)
+        conv = (math.degrees(math.acos(max(-1.0, min(1.0, float(np.dot(_l1, _l2))))))
+                if (_l1 is not None and _l2 is not None) else float("nan"))
+        # Four configurations, because the sweep was only ONE candidate root.  A rigid
+        # ligand like phenanthroline cannot have a wrong conformer, so if its lone pairs
+        # still miss, the cause is upstream: the donors are pinned at an angle and a length
+        # the ligand does not aim at.  That is precisely what the derived bite removes, so
+        # it has to be in the comparison.
+        miss = []
+        for flag, bite in (("0", "0"), ("1", "0"), ("0", "1"), ("1", "1")):
+            prev = os.environ.get("DELFIN_FFREE_LP_ORIENT")
+            prevb = os.environ.get("DELFIN_FFREE_BITE_LAW")
+            os.environ["DELFIN_FFREE_LP_ORIENT"] = flag
+            os.environ["DELFIN_FFREE_BITE_LAW"] = bite
+            try:
+                syms, P = assemble_multichelate("Ni", "OC-6 octahedron",
+                                                [(smi, [d1, d2], [0, 2])])
+                worst = 0.0
+                for d in (d1, d2):
+                    lp = _lone_pair_dir(P[1:], lmol, d)
+                    if lp is None:
+                        continue
+                    t = P[0] - P[1 + d]
+                    nt = float(np.linalg.norm(t))
+                    if nt < 1.0e-9:
+                        continue
+                    c = max(-1.0, min(1.0, float(np.dot(lp, t / nt))))
+                    worst = max(worst, math.degrees(math.acos(c)))
+                miss.append(worst)
+            except Exception as exc:
+                miss.append(float("nan"))
+                print(f"    ({label}: {type(exc).__name__}: {exc})")
+            finally:
+                for _k, _v in (("DELFIN_FFREE_LP_ORIENT", prev),
+                               ("DELFIN_FFREE_BITE_LAW", prevb)):
+                    if _v is None:
+                        os.environ.pop(_k, None)
+                    else:
+                        os.environ[_k] = _v
+        best = min(m for m in miss if m == m)
+        ok = best <= miss[0] + 1.0e-6             # never-worse is the criterion
+        print(f"{label:>36} | {conv:4.0f}d | {miss[0]:6.1f}d {miss[1]:6.1f}d "
+              f"{miss[2]:6.1f}d {miss[3]:6.1f}d | {miss[0]-best:+6.1f}d | {ok}")
+
+
+
+
+def _self_test_trilateration() -> None:
+    """Does trilateration really hold BOTH sides, where the two old branches each drop one?
+
+    The seating documents the trade-off as unavoidable: per-donor radial keeps the M-D
+    lengths and splays the ring, rigid keeps the ring and lets M-D drift.  So the test
+    reports exactly those two errors for all three placements.  A lever that merely moves
+    the error from one column to the other would be a rename, not a fix.
+    """
+    from delfin.manta import polyhedra as _PH
+    cases = [
+        ("tridentate, 2.1 A radii", "OC-6 octahedron", [0, 2, 4], 2.10),
+        ("tridentate, 2.4 A radii", "OC-6 octahedron", [0, 2, 4], 2.40),
+        ("tetradentate",            "OC-6 octahedron", [0, 2, 4, 1], 2.10),
+    ]
+    print("\ntrilateration -- both constraints at once?  (errors in Angstrom)")
+    print(f"{'case':>24} | {'placement':>14} | {'M-D err':>8} | {'D-D err':>8}")
+    for label, geom, verts, rad in cases:
+        ref = _PH.ref_vectors(geom)
+        # a synthetic rigid donor set: an equilateral-ish arm spacing the ideal vertices
+        # cannot satisfy, which is the situation a real polydentate is in
+        L = np.array([[0.0, 0.0, 0.0], [2.55, 0.0, 0.0], [1.27, 2.30, 0.0],
+                      [1.27, 0.77, 2.10]])[:len(verts)]
+        T = [ref[v] / np.linalg.norm(ref[v]) * rad for v in verts]
+        D = {(i, j): float(np.linalg.norm(L[i] - L[j]))
+             for i in range(len(verts)) for j in range(i + 1, len(verts))}
+
+        def _err(X):
+            md = max(abs(float(np.linalg.norm(X[i])) - rad) for i in range(len(verts)))
+            dd = max(abs(float(np.linalg.norm(X[i] - X[j])) - D[(i, j)])
+                     for (i, j) in D)
+            return md, dd
+
+        # (a) ideal vertices, per-donor radial: radii exact, ligand distances ignored
+        a_md, a_dd = _err(np.array(T))
+        # (b) rigid body onto the ideal vertices: ligand exact, radii drift
+        dmu, tmu = L.mean(0), np.array(T).mean(0)
+        Rk = _kabsch_rot(L - dmu, np.array(T) - tmu)
+        Xb = (L - dmu) @ Rk.T + tmu
+        b_md, b_dd = _err(Xb)
+        # (c) trilateration, then the same rigid fit onto the moved targets
+        tri = _trilaterate_donor_targets(L, list(range(len(verts))), T)
+        if tri is None:
+            print(f"{label:>24} | trilateration returned None")
+            continue
+        tgt = np.array(tri)
+        Rk2 = _kabsch_rot(L - dmu, tgt - tgt.mean(0))
+        Xc = (L - dmu) @ Rk2.T + tgt.mean(0)
+        c_md, c_dd = _err(Xc)
+        for nm, (md, dd) in (("radial(ideal)", (a_md, a_dd)),
+                             ("rigid(ideal)", (b_md, b_dd)),
+                             ("TRILATERATED", (c_md, c_dd))):
+            print(f"{label:>24} | {nm:>14} | {md:8.3f} | {dd:8.3f}")
+
+
+_REAL_FRAME_CASES = [
+    ("cisplatin CN4",        "N[Pt](N)(Cl)Cl"),
+    ("CoCl3(NH3)3 CN6",      "[NH3][Co]([NH3])([NH3])([Cl])([Cl])[Cl]"),
+    ("Fe(en)3 CN6, 3 Chel",  "[Fe]123([N]CC[N]1)([N]CC[N]2)[N]CC[N]3"),
+    ("CoCl(en)2 CN6, 2 Chel", "[Cl][Co]12([NH3])([N]CC[N]1)[N]CC[N]2"),
+    ("Pd(PtBu3)Cl2",         "[Cl][Pd]([Cl])[P](C(C)(C)C)(C(C)(C)C)C(C)(C)C"),
+    ("Ni(Cl)2(NMe3) CN4",    "[Ni](Cl)(Cl)N(C)(C)C"),
+    ("CoCl2(en)2 CN6",       "[NH2]CC[NH2][Co]1([NH2]CC[NH2]1)([Cl])[Cl]"),
+    ("Fe-Citrat, polydentat",
+     "O=C1C(CC(O)=O)(CC(O)=O)O[Fe]23(OC(C(CC(O)=O)(CC(O)=O)O2)=O)"
+     "(OC(CC(O)=O)(CC(O)=O)C(O3)=O)O1"),
+    ("Pt(en)(NH2CH2CH2NH2)", "NCCN[Pt]1NCCN1"),
+]
+
+
+def _real_frame_hashes() -> None:
+    """REAL frames, not synthetic ones: builds every system of the set via the
+    normal converter path and prints per system a SHA1 over ALL emitted
+    XYZ strings.  Two uses:
+
+      * BYTE IDENTITY.  The same call against the unchanged state (switch
+        not set) must deliver character for character the same hashes.
+      * THE FREEZE CENSUS.  Per system: how many atoms does the builder nail down
+        (metal + donors, see `fixed` in assemble_from_config) and how many
+        stay movable?  That is the number the DOF question is about.
+    """
+    import hashlib
+    from delfin.manta import converter_backend as CB
+    from delfin.manta import decompose as DEC
+    print("%-24s | %4s | %5s | %-8s | %s"
+          % ("System", "#Iso", "CN", "fix/Atome", "sha1(alle XYZ)"))
+    for label, smi in _REAL_FRAME_CASES:
+        try:
+            r = CB._fffree_isomers(smi)
+        except Exception as exc:
+            print("%-24s | FEHLER %s: %s" % (label, type(exc).__name__, exc))
+            continue
+        if not r:
+            print("%-24s | %4s | %5s | %-8s | %s" % (label, "-", "-", "-", "None (legacy)"))
+            continue
+        h = hashlib.sha1()
+        for xyz, lab in r:
+            h.update(lab.encode())
+            h.update(xyz.encode())
+        try:
+            cn = int(DEC.decompose(smi).get("cn"))
+        except Exception:
+            cn = -1
+        nat = 0
+        for _ln in r[0][0].splitlines():
+            _f = _ln.split()
+            if len(_f) >= 4 and _f[0][:1].isalpha():
+                try:
+                    float(_f[1]); float(_f[2]); float(_f[3])
+                except ValueError:
+                    continue
+                nat += 1
+        print("%-24s | %4d | %5d | %8s | %s"
+              % (label, len(r), cn, "%d/%d" % (cn + 1, nat), h.hexdigest()))
+
+
+if __name__ == "__main__":       # pragma: no cover
+    import sys as _sys
+    if len(_sys.argv) > 1 and _sys.argv[1] == "realframes":
+        _real_frame_hashes()
+        raise SystemExit(0)
+    _run_self_tests()

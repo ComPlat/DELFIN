@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-CO2_coordinator.py – richtet Komplex aus, platziert CO2, macht Winkel-SPs
-und startet ORCA-Distanz-Scan. Parameter werden aus CONTROL.txt gelesen.
+CO2_coordinator.py – aligns the complex, places CO2, runs angle single points
+and starts the ORCA distance scan. Parameters are read from CONTROL.txt.
 """
 
 import os
-# --- Headless Plot Backend, bevor matplotlib importiert wird ---
+# --- Headless plot backend, before matplotlib is imported ---
 os.environ.setdefault("MPLBACKEND", "Agg")
 import matplotlib
 matplotlib.use("Agg")
@@ -24,7 +24,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import partial
 from delfin import smart_recalc
 
-# === Templates erzeugen (--define) ===========================================
+# === Generate templates (--define) ===========================================
 def write_default_files(control_path="CONTROL.txt", co2_path="co2.xyz",
                         charge=None, multiplicity=None, solvent=None, metal=None,
                         broken_sym=None, overwrite=False):
@@ -115,7 +115,7 @@ max_workers=4
 # - Set max_workers explicitly to override (but stay within limits!)
 """
 
-    # Platzhalter optional ersetzen (sonst bleiben sie wie im Template)
+    # Optionally replace placeholders (otherwise they stay as in the template)
     repl = {
         "[CHARGE]":       str(charge) if charge is not None else "[CHARGE]",
         "[MULTIPLICITY]": str(multiplicity) if multiplicity is not None else "[MULTIPLICITY]",
@@ -152,7 +152,7 @@ O      0.000000    0.000000    4.160000
     _write(co2_path, co2_xyz)
 
 
-# === CONTROL.txt einlesen ===
+# === Read CONTROL.txt ===
 def _minimal_read_control_file(path="CONTROL.txt"):
     """Standalone-friendly CONTROL.txt parser for CO2 Coordinator.
 
@@ -180,7 +180,7 @@ def _minimal_read_control_file(path="CONTROL.txt"):
                 continue
             key, val = map(str.strip, line.split("=", 1))
 
-            # Boolesche Werte
+            # Boolean values
             if isinstance(val, str):
                 low = val.lower()
                 if low == "true":
@@ -190,18 +190,18 @@ def _minimal_read_control_file(path="CONTROL.txt"):
                 elif val == "":
                     val = None
                 else:
-                    # Versuch: Zahl (int oder float)
+                    # Try: number (int or float)
                     try:
                         if "." in val:
                             val = float(val)
                         else:
                             val = int(val)
                     except ValueError:
-                        pass  # bleibt String
+                        pass  # stays a string
 
             params[key] = val
 
-    # Explizite Typanpassung
+    # Explicit type coercion
     for key in ["distance", "scan_end", "orientation_distance", "place_clearance_scale"]:
         if key in params and isinstance(params[key], str):
             params[key] = float(params[key])
@@ -210,7 +210,7 @@ def _minimal_read_control_file(path="CONTROL.txt"):
         if key in params and isinstance(params[key], str):
             params[key] = int(params[key])
 
-    # Optional: /n durch Zeilenumbruch ersetzen
+    # Optional: replace /n with a line break
     for key in ["orca_keywords", "rot_orca_keywords", "broken_sym"]:
         if key in params and isinstance(params[key], str):
             params[key] = params[key].replace("/n", "\n")
@@ -218,7 +218,7 @@ def _minimal_read_control_file(path="CONTROL.txt"):
     return params
 
 
-# === Geometrie und Rotation ===
+# === Geometry and rotation ===
 def rot_from_vecs(a, b):
     a = a / np.linalg.norm(a)
     b = b / np.linalg.norm(b)
@@ -253,7 +253,7 @@ def principal_plane_normal(vectors):
     _, eigvecs = np.linalg.eigh(C)
     return eigvecs[:, 0] / np.linalg.norm(eigvecs[:, 0])
 
-# === XYZ robust lesen ===
+# === Robust XYZ reading ===
 _SEPARATOR_CHARS = {"$", "*"}
 
 
@@ -526,7 +526,7 @@ def _format_geometry_lines(atoms, keywords: str, metal_basis: Optional[str], con
         lines.append(line + "\n")
     return lines
 
-# === Metall erkennen ===
+# === Detect metal ===
 METAL_SYMBOLS = set("""
 Li Be Na Mg K Ca Rb Sr Cs Ba Fr Ra
 Sc Ti V Cr Mn Fe Co Ni Cu Zn Y Zr Nb Mo Tc Ru Rh Pd Ag Cd
@@ -558,7 +558,7 @@ def guess_neighbors(atoms, metal_index, scale=1.15):
             neigh.append(i)
     return neigh
 
-# === Komplex ausrichten ===
+# === Align complex ===
 def align_complex(infile, outfile, metal_index=None, metal_symbol=None, align_bond_index=None, neighbor_indices=None):
     atoms = _read_xyz_robust(infile)
     M = metal_index if metal_index is not None else detect_metal_index(atoms)
@@ -589,7 +589,7 @@ def align_complex(infile, outfile, metal_index=None, metal_symbol=None, align_bo
     print(f"[OK] wrote {outfile}")
     return outfile
 
-# === CO2 platzieren ===
+# === Place CO2 ===
 def _axis_vector(name):
     return {
         "x":  np.array([ 1.,  0.,  0.]),
@@ -613,7 +613,7 @@ def _co2_axis_center_indices(atoms):
 
 def _fibonacci_sphere(n_samples):
     """
-    Gleichmäßig verteilte Richtungen auf der Einheitssphäre (Fibonacci-Sampling).
+    Evenly distributed directions on the unit sphere (Fibonacci sampling).
     """
     n_samples = int(max(1, n_samples))
     if n_samples == 1:
@@ -634,11 +634,11 @@ def _fibonacci_sphere(n_samples):
 def _find_max_clearance_direction(atoms, metal_index, distance, samples=800, clearance_scale=1.0,
                                    hemisphere_dir=None):
     """
-    Suche die Richtung, in der ein Punkt im Abstand 'distance' zur Metallposition
-    den größten minimalen Abstand zu allen anderen Atomen besitzt.
+    Find the direction in which a point at distance 'distance' from the metal position
+    has the largest minimum distance to all other atoms.
 
-    hemisphere_dir: wenn gesetzt (unit vector), werden nur Richtungen mit
-    dot(dir, hemisphere_dir) >= 0 berücksichtigt (Halbraum-Filter).
+    hemisphere_dir: if set (unit vector), only directions with
+    dot(dir, hemisphere_dir) >= 0 are considered (half-space filter).
     """
     if len(atoms) <= 1:
         return np.array([0.0, 0.0, 1.0]), np.inf
@@ -681,7 +681,7 @@ def place_co2_general(complex_path, co2_path, out_path, distance=5.0, place_axis
                       perp_axis='y', optimize_direction=True, direction_samples=800, clearance_scale=1.0,
                       qm_count=None, qm_separator="$"):
     """
-    Fügt CO2 an +place_axis in 'distance' Å an. Gibt zusätzlich CO2-Indizes im kombinierten System zurück.
+    Attaches CO2 along +place_axis at 'distance' Å. Additionally returns the CO2 indices in the combined system.
     """
     comp = _read_xyz_robust(complex_path)
     co2 = _read_xyz_robust(co2_path)
@@ -708,8 +708,8 @@ def place_co2_general(complex_path, co2_path, out_path, distance=5.0, place_axis
 
     if optimize_direction and metal_index is not None:
         if is_negative_axis:
-            # Worst-Hemisphere-Logik: beide Halbräume optimieren, schlechtere Seite wählen
-            base_dir = _axis_vector(place_axis.lstrip("-"))   # z.B. "-z" → [0,0,1]
+            # Worst-hemisphere logic: optimize both half-spaces, pick the worse side
+            base_dir = _axis_vector(place_axis.lstrip("-"))   # e.g. "-z" → [0,0,1]
             dir_pos, clr_pos = _find_max_clearance_direction(
                 comp, metal_index, distance,
                 samples=direction_samples,
@@ -755,7 +755,7 @@ def place_co2_general(complex_path, co2_path, out_path, distance=5.0, place_axis
         print("[WARN] Platzierungsoptimierung nicht möglich – nutze statische place_axis.")
 
     axis, center, c_idx_local = _co2_axis_center_indices(co2)
-    co2.positions -= center  # CO2 um sein C zentrieren
+    co2.positions -= center  # center CO2 on its C
 
     if mode == "side-on":
         perp_target = _axis_vector(perp_axis)
@@ -798,7 +798,7 @@ def place_co2_general(complex_path, co2_path, out_path, distance=5.0, place_axis
     _write_xyz_with_separator(combined, out_path, final_qm_count, separator=qm_separator, insert_separator=False)
     print(f"[OK] wrote combined (complex + CO2) → {out_path}")
 
-    # Indizes der CO2-Atome im kombinierten System
+    # Indices of the CO2 atoms in the combined system
     co2_c_index_combined = co2_indices[c_idx_local]
     return out_path, combined, co2_indices, co2_c_index_combined, final_qm_count
 
@@ -820,9 +820,9 @@ def _is_orca_calculation_complete(out_path):
 
 def parse_orca_energy(out_path):
     """
-    Liefert Energie in Hartree. Sucht robust nach:
+    Returns the energy in Hartree. Robustly searches for:
     - 'FINAL SINGLE POINT ENERGY' (ORCA)
-    - 'TOTAL ENERGY' (xTB-Driver in ORCA)
+    - 'TOTAL ENERGY' (xTB driver in ORCA)
     """
     with open(out_path, "r", errors="ignore") as f:
         lines = f.readlines()
@@ -965,7 +965,7 @@ def write_orca_sp_input_and_run(atoms, xyz_path, outdir, orca_keywords="GFN2-XTB
     with open(inp, "w", encoding="utf-8") as f:
         f.writelines(lines)
 
-    # Nur kopieren, wenn Quelle und Ziel verschieden sind
+    # Only copy if source and target differ
     if os.path.abspath(xyz_path) != os.path.abspath(xyz_target):
         shutil.copy(xyz_path, xyz_target)
 
@@ -1088,7 +1088,7 @@ def plot_scan_result(datapath):
     fig_abs.savefig("relaxed_surface_scan/scan_absolute.png", dpi=300, bbox_inches='tight')
     plt.close(fig_abs)
 
-    # --- relativ zum ersten Punkt (typisch 5 Å) ---
+    # --- relative to the first point (typically 5 Å) ---
     ref_idx = 0
     ref_d = distances[ref_idx]
     ref_E = energies_kcal[ref_idx]
@@ -1159,7 +1159,7 @@ def _calculate_single_angle(ang, base_atoms, co2_indices, charge, multiplicity, 
     atoms = base_atoms.copy()
     R = Rz(ang)
     pos = atoms.positions.copy()
-    pos[co2_indices] = (pos[co2_indices] @ R.T)  # rotiere nur CO2
+    pos[co2_indices] = (pos[co2_indices] @ R.T)  # rotate only CO2
     atoms.positions = pos
 
     ang_dir = os.path.join("orientation_scan", f"ang_{ang:03d}")
@@ -1211,8 +1211,8 @@ def orientation_scan_at_fixed_distance(base_atoms, combined_xyz_path, co2_indice
                                        control_args=None, qmmm_range=None, qm_separator="$",
                                        parallel=True, max_workers=None):
     """
-    Dreht NUR die CO2-Atome um die z-Achse (durch den Ursprung) auf ihrer Position (z=const),
-    macht für jeden Winkel eine SP-Rechnung und liefert die beste Geometrie zurück.
+    Rotates ONLY the CO2 atoms about the z-axis (through the origin) at their position (z=const),
+    runs an SP calculation for each angle and returns the best geometry.
 
     Args:
         parallel: If True, run angle calculations in parallel (default: True)
@@ -1226,7 +1226,7 @@ def orientation_scan_at_fixed_distance(base_atoms, combined_xyz_path, co2_indice
     if recalc_mode:
         print("[INFO] CO2 recalc mode enabled - skipping completed calculations")
 
-    # Winkel-Liste 0..angle_range_deg inkl. Endpunkt
+    # Angle list 0..angle_range_deg incl. endpoint
     angles = list(range(0, angle_range_deg + 1, angle_step_deg))
     results = []  # (angle_deg, energy_Eh, xyz_path)
 
@@ -1301,7 +1301,7 @@ def orientation_scan_at_fixed_distance(base_atoms, combined_xyz_path, co2_indice
 def main():
     args = _minimal_read_control_file()
 
-    # ---- Defaults / CONTROL-Parameter ----
+    # ---- Defaults / CONTROL parameters ----
     xyz_in        = args.get("xyz", "complex.xyz")
     xyz_out_align = args.get("out", "complex_aligned.xyz")
     co2_path      = args.get("co2", "co2.xyz")
@@ -1527,7 +1527,7 @@ if __name__ == "__main__":
                         help="Erzeuge CONTROL.txt und co2.xyz und beende.")
     parser.add_argument("--force", action="store_true",
                         help="Vorhandene Dateien überschreiben.")
-    # Optional: Platzhalter direkt befüllen
+    # Optional: fill placeholders directly
     parser.add_argument("--charge", type=int, help="ersetzt [CHARGE] im CONTROL-Template")
     parser.add_argument("--multiplicity", type=int, help="ersetzt [MULTIPLICITY] im CONTROL-Template")
     parser.add_argument("--solvent", type=str, help="ersetzt [SOLVENT] im CONTROL-Template, z.B. DMF")
@@ -1543,5 +1543,5 @@ if __name__ == "__main__":
                             overwrite=cli.force)
         sys.exit(0)
 
-    # normaler Ablauf
+    # normal flow
     main()

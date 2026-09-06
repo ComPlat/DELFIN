@@ -103,11 +103,66 @@ def planarize_sp2_carbon(xyz: str, mol,
         return xyz, report
     if mol.GetNumAtoms() != len(syms):
         return xyz, report
+    # ORDER, NOT JUST COUNT (16.08.2026) -- the same guard as in the twin
+    # `_fix_sp2n_planarize`.  `detect_planar_sp2c_groups` returns `mol` ATOM INDICES, which
+    # are applied directly to the XYZ coordinates; a pure count check lets a permuted
+    # order through, and then the corrector flattens the WRONG atoms.  On the legacy path
+    # the check is always true (XYZ stems from the same `mol`) and thus byte-identical; it
+    # is the precondition for wiring the corrector in anywhere else.
+    # SINCE THE EVENING OF 16.08.: INSTEAD OF GIVING UP -- TRANSLATE.  The same route as in
+    # the twin `_fix_sp2n_planarize`: if the order matches, it stays the identity and thus
+    # byte-identical; if it does not, the mapping is reconstructed (`_frame_atom_map`, true
+    # graph isomorphism with generic bonds).  If it cannot be determined, we still abort --
+    # a WRONG mapping would be worse than none: it would let the corrector flatten the
+    # wrong atoms.
+    _fmap = None
+    try:
+        _same_order = [a.GetSymbol() for a in mol.GetAtoms()] == list(syms)
+    except Exception:
+        return xyz, report
+    if not _same_order:
+        try:
+            from delfin.manta._frame_atom_map import frame_to_mol_map as _f2m
+            from delfin.manta._coord_angle_corrector import (
+                _build_geometric_adjacency as _adj)
+            _nb, _ = _adj(syms, pts)
+            _m = _f2m(mol, syms, _nb)          # _m[frame] = mol
+        except Exception:
+            _m = None
+        if not _m:
+            return xyz, report
+        _fmap = {int(mi): fi for fi, mi in enumerate(_m)}   # mol -> frame
 
     try:
         groups = detect_planar_sp2c_groups(mol)
     except Exception:
         return xyz, report
+    # Groups carry `mol` indices -> if the order differs, translate ONCE.
+    # Generic over the key names, so that an index kind added later does not silently
+    # stay untranslated; if an index falls out of the mapping, the group is rejected
+    # instead of being applied wrongly.
+    if _fmap is not None:
+        _tr = []
+        for g in groups:
+            g2 = dict(g)
+            ok = True
+            for k, v in g.items():
+                if not (k.endswith("_idx") or k.endswith("_idxs")):
+                    continue
+                if isinstance(v, int):
+                    if v not in _fmap:
+                        ok = False
+                        break
+                    g2[k] = _fmap[v]
+                elif isinstance(v, (list, tuple)):
+                    if any(int(x) not in _fmap for x in v):
+                        ok = False
+                        break
+                    g2[k] = type(v)(_fmap[int(x)] for x in v)
+            if ok:
+                _tr.append(g2)
+        groups = _tr
+
     report["n_candidates"] = len(groups)
     if not groups:
         return xyz, report

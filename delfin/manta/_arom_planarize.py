@@ -50,6 +50,7 @@ the build commit when unset.
 """
 from __future__ import annotations
 
+import os
 from typing import List, Sequence, Set, Tuple
 
 import numpy as np
@@ -63,11 +64,24 @@ from delfin.manta._pi_h_projector import (
     _is_metal_sym,
     _MD_INVARIANT_TOL,
 )
+# ONE SOURCE for the length gate (19.08.2026).  The number 1.46 stood three times in
+# the tree -- here, in the twin ``_aromatic_ring_flattener`` and in
+# ``_bond_decollapse._aromatic_ring_bonds``.  It now stands ONCE, in
+# ``_arom_criterion``; that is also where the switch
+# ``DELFIN_FFFREE_AROM_CRITERION_RADII`` (default 0 -> byte-identical) hangs, which
+# replaces the absolute Angstroem threshold by the element-normalised mean d/(r_i+r_j).
+# Why: see the module docstring there (54,46 % false pass rate, thiophene 0 %).
+# ``_AROMATIC_BOND_MAX`` is now only PASSED THROUGH here (nothing deleted: the name
+# remains for every reader and every external access); the decision is made
+# exclusively in ``ring_rejected_by_length``.
+from delfin.manta._arom_criterion import (   # noqa: F401
+    _AROMATIC_BOND_MAX,
+    ring_rejected_by_length,
+)
 
 _AROMATIC_ELIGIBLE = {"C", "N", "O", "S"}
 _OOP_TOL: float = 0.05            # target: rings flatter than this are done
 _PUCKER_CAP: float = 0.80         # above this it is not a planar-intended ring
-_AROMATIC_BOND_MAX: float = 1.46  # mean intra-ring heavy-bond gate (Å)
 _M_COORD_DIST: float = 2.60       # ring atom within this of metal → anchor
 _SUBST_BOND_MAX_FACTOR: float = 1.30  # heavy substituent within this·Σr_cov is dragged
 
@@ -76,6 +90,96 @@ _COV_RADII = {
     "Si": 1.11, "P": 1.07, "S": 1.05, "Cl": 1.02, "Se": 1.20, "Br": 1.20,
     "I": 1.39,
 }
+
+# ===== THE MEAN DOES NOT SEE THE sp3 CENTRE (19.08.2026) ===========================
+#
+# MEASURED, two-sided, on CRYSTALS -- i.e. on geometries that are correct by
+# definition:  `correct_xyz` alters 62 of the 291 crystals with a stereocentre and in
+# doing so makes 61 of 156 checked sp3 stereocentres FLAT (|v_norm| drops below the
+# eye's threshold 0.20, mostly exactly to 0.000), 21 more partially; in 2 cases even
+# the SIGN flips, i.e. the handedness itself.  32 of these 35 systems carry the same
+# defect in the real build (`n_stereo_flat_build > 0`).
+#   Evidence: agent_workspace/FORENSIK_2026_08_19_sp3flach/D_kristalltest_arom_planarize.py
+#
+# THE ROOT IS THE MEAN.  `_detect_aromatic_rings` takes a 5-/6-ring of C/N/O/S to be
+# aromatic when the MEAN ring bond lies below 1.46 A.  An oxazoline
+# (4,5-dihydrooxazole) has C=N 1.27, O-C 1.35, C-O 1.44, N-C 1.47, C-C 1.54 --
+# mean 1.41.  The ring passes the gate even though TWO of its atoms are sp3.
+# `_flatten_system` then projects the whole ring system into a plane, and a flat
+# centre has no handedness left at all: there is nothing left to mirror that an
+# enumeration could still rescue.  Oxazoline/imidazoline backbones (BOX, PHOX) are
+# exactly the ligand class that carries the stereocentres in the corpus.
+#
+# THE CHEAPEST CONSTRUCTION IS THE VETO.  By the cost law (ordering/selection ~ 0,
+# isometry +0,98 pp, rigid rotation +6,57 pp, re-embedding +11,9 pp) a pass that
+# REFRAINS from a move is cheaper than any repair: it invents no geometry, it leaves
+# standing what the embedding has already set correctly.  Pushing the centre back out
+# afterwards would be more expensive AND worse -- the ring would stay flattened, with
+# only that one atom standing skewed inside it.
+#
+# ⚠ THE CRITERION IS GEOMETRIC, like the whole module (no RDKit, robust to atom
+# order).  An aromatic ring atom is sp2 and has at most THREE sigma partners: two in
+# the ring, one outside (H or substituent).  Four partners are sp3.  Metals do NOT
+# count -- they bind datively, and an eta5-Cp carbon (2 ring + 1 H + metal) would
+# otherwise be wrongly sp3.
+#
+# WHERE THIS BITES, AND WHERE NOT -- call sites, not lines:
+#   `correct_results` hangs off `_apply_arom_planarize_if_enabled`, and that has EXACTLY
+#   TWO call sites (`smiles_converter.py`): one in `_ffree_shared_tail` (:32276, behind
+#   DELFIN_FFFREE_SHARED_TAIL, default 0 -- so FF-free is currently UNREACHED) and one
+#   in the legacy final pass (:34897).  Champion sets AROM_PLANARIZE=1
+#   (`cli_manta._CHAMPION_FLAGS`), so the legacy path fires.
+#   ⚠ THE HAPTO BRANCH RETURNS BEFORE THAT (:33001 / :33017 `return results_hapto, None`).
+#   Of the 123 systems with a flat-built centre, 42 carry an eta label; for those this
+#   pass is NOT the culprit, and their root is still open.  The remaining 81 run
+#   through :34897 -- and in 41 of 54 cases the ring around the flat centre is exactly
+#   PLANAR in the delivered frame (ring-OOP median 0.000), which an oxazoline never is
+#   of its own accord.
+_SP3_SIGMA_DEGREE: int = 4   # EXACTLY this many sigma partners (excluding metal) = sp3;
+#                              more does not mean "even more sp3" but a broken
+#                              distance graph -- see ring_carries_sp3_centre.
+
+
+def sp3_veto_enabled() -> bool:
+    """Default OFF -> byte-identical to the shipped state.
+
+    The veto alters EXISTING frames (it refrains from a move, it adds none),
+    and something like that is measured, not believed.
+    """
+    return os.environ.get("DELFIN_FFFREE_SP3_PYRAMIDAL_SEAT", "0") == "1"
+
+
+def ring_carries_sp3_centre(
+    syms: List[str],
+    nbrs: List[List[int]],
+    ring: Sequence[int],
+) -> bool:
+    """Does the ring carry an sp3 centre?  Then it is NOT aromatic, whatever its
+    mean bond length says, and must not be flattened.
+
+    Purely geometric: number of sigma partners from the distance graph, metals
+    excluded.  ``nbrs`` must be the FULL adjacency including H -- exactly the one
+    that ``_build_geometric_adjacency`` delivers; without H a ring CH2 would be
+    only two-connected and the centre invisible.
+
+    ⚠ EXACTLY FOUR, NOT AT LEAST FOUR -- and that is measured, not chosen.
+    With ">= 4" the aromaticity test lost 77 % of all rings on the build frames
+    instead of 13 % as on the crystals.  The cause was not oxazolines but
+    COLLAPSED frames: there the distance graph reports carbons with eight to
+    eighteen neighbours (`H_warum_so_viele_ringe.py`).  Such an atom is not sp3,
+    it is no longer a meaningful atom at all -- and a veto that, as a side
+    effect, shuts down a quarter of all frames for a completely different reason
+    would be exactly the confounded lever on which this project has already
+    failed several times.  Five or more partners therefore fall through, and the
+    pass behaves there as before.  Price: a genuine sp3 centre that additionally
+    has a very close contact remains unprotected -- a missed protection, not a
+    new defect.
+    """
+    for i in ring:
+        deg = sum(1 for j in nbrs[i] if not _is_metal_sym(syms[j]))
+        if deg == _SP3_SIGMA_DEGREE:
+            return True
+    return False
 
 
 def _detect_aromatic_rings(
@@ -86,7 +190,11 @@ def _detect_aromatic_rings(
     """Geometric 5/6-membered C/N/O/S rings with aromatic-range mean bond
     length.  Saturated rings (mean bond ~1.54) and metal-containing rings are
     excluded.  Heteroaromatics (ring N/O/S) included.  Returns canonical
-    sorted ring tuples.  (Same algorithm as the Iter-24 detector.)"""
+    sorted ring tuples.  (Same algorithm as the Iter-24 detector.)
+
+    With ``DELFIN_FFFREE_SP3_PYRAMIDAL_SEAT=1`` every ring that carries an sp3
+    centre additionally drops out (see ``ring_carries_sp3_centre``)."""
+    _sp3_veto = sp3_veto_enabled()
     n = len(syms)
     heavy_nbrs: List[List[int]] = [
         [j for j in nbrs[i]
@@ -116,14 +224,28 @@ def _detect_aromatic_rings(
     for ring in rings_canon:
         rset = set(ring)
         bond_lens: List[float] = []
+        bond_edges: List[Tuple[int, int]] = []
         for i in ring:
             for j in heavy_nbrs[i]:
                 if j in rset and j > i:
                     bond_lens.append(float(np.linalg.norm(pts[i] - pts[j])))
+                    bond_edges.append((i, j))
         if not bond_lens:
             continue
-        if (sum(bond_lens) / len(bond_lens)) >= _AROMATIC_BOND_MAX:
+        # ONE SOURCE (see import above): with the switch OFF exactly the old
+        # comparison ``mittel >= 1.46``, with the switch ON the element-normalised
+        # mean d/(r_i+r_j) >= 0.939.  The elements must be passed along --
+        # exactly the information the raw mean throws away.
+        if ring_rejected_by_length(syms, bond_edges, bond_lens):
             continue  # saturated ring — leave its (correct) pucker alone
+        # THE VETO (19.08.2026, default OFF -> byte-identical): the mean above lets
+        # oxazoline/imidazoline/dioxolane through, because C=N and C-O average the
+        # one sp3 C-C bond at 1.54 down.  A ring with an sp3 centre is not
+        # aromatic and must not be flattened -- a flat centre has no handedness
+        # left.  ``nbrs``, not ``heavy_nbrs``: the H on the ring CH is the fourth
+        # sigma partner and thus exactly the proof.
+        if _sp3_veto and ring_carries_sp3_centre(syms, nbrs, ring):
+            continue
         out.append(tuple(ring))
     return out
 
@@ -401,3 +523,145 @@ def correct_results(mol, results):
         except Exception:
             out.append(entry)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Self-test:
+#   PYTHONPATH=<worktree> python -m delfin.manta._arom_planarize
+# (via -m, not via the file path: the editable installation would otherwise pull
+#  a DIFFERENT module copy and the test would measure the wrong tree.)
+# ---------------------------------------------------------------------------
+def _selbsttest() -> int:
+    import math
+
+    def _xyz(rows):
+        out = [str(len(rows)), "test"]
+        for s, x, y, z in rows:
+            out.append(f"{s:4s} {float(x):12.6f} {float(y):12.6f} {float(z):12.6f}")
+        return "\n".join(out) + "\n"
+
+    def _kreis(n, r, z_of=None, el="C"):
+        """Planar n-ring in the xy plane, radius r; ``z_of`` folds individual atoms."""
+        rows = []
+        for k in range(n):
+            a = 2 * math.pi * k / n
+            zz = 0.0 if z_of is None else float(z_of.get(k, 0.0))
+            e = el[k] if isinstance(el, (list, tuple)) else el
+            rows.append((e, r * math.cos(a), r * math.sin(a), zz))
+        return rows
+
+    def _erkannt(xyz_str):
+        s, p, _ = _parse_xyz(xyz_str)
+        return len(_detect_aromatic_rings(s, p, _build_geometric_adjacency(s, p)))
+
+    def _setze(v):
+        os.environ["DELFIN_FFFREE_SP3_PYRAMIDAL_SEAT"] = v
+
+    stand = {"n": 0, "fehl": 0}
+
+    def _urteil(name, ok):
+        stand["n"] += 1
+        if not ok:
+            stand["fehl"] += 1
+        print(f"{stand['n']} {name}: {'OK' if ok else 'FEHLER'}")
+
+    # --- 1) BENZENE stays aromatic.  6-ring, bond 1.39, every C carries ONE H. -----
+    r6 = 1.39 / (2 * math.sin(math.pi / 6))
+    benz = _kreis(6, r6, {2: 0.12})                   # one ring atom slightly displaced
+    for k in range(6):
+        a = 2 * math.pi * k / 6
+        benz.append(("H", (r6 + 1.08) * math.cos(a), (r6 + 1.08) * math.sin(a), 0.0))
+    bx = _xyz(benz)
+    _setze("0")
+    n_off = _erkannt(bx)
+    _setze("1")
+    n_on = _erkannt(bx)
+    _urteil(f"Benzol bleibt Aromat (aus={n_off}, an={n_on})", n_off == 1 and n_on == 1)
+
+    # --- 2) OXAZOLINE drops out.  C=N 1.28 / N-C 1.47 / C-C 1.54 / C-O 1.44 /
+    #        O-C 1.35 -> mean 1.42 < 1.46, so "aromatic" according to the mean --
+    #        but the folded ring atom carries H AND a C substituent, so it is
+    #        sp3 and hence a stereocentre.
+    r5 = 1.42 / (2 * math.sin(math.pi / 5))
+    ox = _kreis(5, r5, {1: 0.25}, el=["C", "C", "O", "C", "N"])
+    a1 = 2 * math.pi * 1 / 5
+    # Place the substituents EXACTLY at bond distance from the ring atom -- the distance
+    # graph is the criterion, so the test case must not sit at the threshold.
+    _c = np.array([r5 * math.cos(a1), r5 * math.sin(a1), 0.25])
+    _rad = np.array([math.cos(a1), math.sin(a1), 0.0])
+    _dh = _rad * math.sin(math.radians(55.0)) + np.array([0.0, 0.0, 1.0]) * math.cos(
+        math.radians(55.0))
+    _dc = _rad * math.sin(math.radians(55.0)) - np.array([0.0, 0.0, 1.0]) * math.cos(
+        math.radians(55.0))
+    _ph = _c + 1.09 * _dh / np.linalg.norm(_dh)
+    _pc = _c + 1.52 * _dc / np.linalg.norm(_dc)
+    ox.append(("H", _ph[0], _ph[1], _ph[2]))
+    ox.append(("C", _pc[0], _pc[1], _pc[2]))
+    oxs = _xyz(ox)
+    _setze("0")
+    n_off = _erkannt(oxs)
+    _setze("1")
+    n_on = _erkannt(oxs)
+    _urteil(f"Oxazolin: Mittelwert laesst durch, Verbot haelt (aus={n_off}, an={n_on})",
+            n_off == 1 and n_on == 0)
+
+    # --- 3) and that is exactly why the PYRAMIDALISATION stays in place -------------
+    def _auslenkung(x):
+        s, p, _ = _parse_xyz(x)
+        c, a, b, d = p[1], p[0], p[2], p[6]
+        nr = np.cross(b - a, d - a)
+        nn = float(np.linalg.norm(nr))
+        return abs(float(np.dot(c - a, nr / nn))) if nn > 1e-9 else 0.0
+
+    _setze("0")
+    flach = correct_xyz(oxs)
+    _setze("1")
+    bewahrt = correct_xyz(oxs)
+    d0, d_off, d_on = _auslenkung(oxs), _auslenkung(flach), _auslenkung(bewahrt)
+    print(f"   Auslenkung des Zentrums aus der Nachbarebene: vorher {d0:.3f} A, "
+          f"Schalter AUS {d_off:.3f} A, Schalter AN {d_on:.3f} A")
+    _urteil("Verbot erhaelt die Pyramidalisierung, ohne es wird sie zerstoert",
+            d_off < d0 - 1e-6 and abs(d_on - d0) < 1e-9)
+
+    # --- 4) SWITCH OFF is byte-identical to the old state --------------------------
+    _setze("0")
+    _urteil("Schalter AUS byte-identisch", correct_xyz(oxs) == flach
+            and correct_xyz(bx) == correct_xyz(bx))
+
+    # --- 5) eta5-Cp: the metal does NOT count as a sigma partner -------------------
+    rcp = 1.42 / (2 * math.sin(math.pi / 5))
+    cp = _kreis(5, rcp, {0: 0.10})
+    for k in range(5):
+        a = 2 * math.pi * k / 5
+        cp.append(("H", (rcp + 1.08) * math.cos(a), (rcp + 1.08) * math.sin(a), 0.0))
+    cp.append(("Fe", 0.0, 0.0, 1.70))
+    _setze("1")
+    n_on = _erkannt(_xyz(cp))
+    _urteil(f"eta5-Cp am Fe bleibt Aromat (an={n_on})", n_on == 1)
+
+    # --- 6) the predicate itself ---------------------------------------------------
+    s, p, _ = _parse_xyz(oxs)
+    _urteil("ring_carries_sp3_centre erkennt das Oxazolin-Zentrum",
+            ring_carries_sp3_centre(s, _build_geometric_adjacency(s, p), (0, 1, 2, 3, 4)))
+
+    # --- 7) the TWIN fetches the same source (three copies of the criterion, one
+    #        repair -- exactly the construction where once before only one was hit).
+    #        The import sits INSIDE the function there, so it is provable only here.
+    from delfin.manta._aromatic_ring_flattener import (
+        _detect_aromatic_rings as _zwilling)
+    nb_ox = _build_geometric_adjacency(s, p)
+    _setze("0")
+    z_off = len(_zwilling(s, p, nb_ox))
+    _setze("1")
+    z_on = len(_zwilling(s, p, nb_ox))
+    _urteil(f"Zwilling _aromatic_ring_flattener folgt dem Verbot "
+            f"(aus={z_off}, an={z_on})", z_off == 1 and z_on == 0)
+
+    _setze("0")
+    print(f"\n{stand['n'] - stand['fehl']}/{stand['n']} bestanden")
+    return 1 if stand["fehl"] else 0
+
+
+if __name__ == "__main__":
+    import sys as _sys
+    _sys.exit(_selbsttest())

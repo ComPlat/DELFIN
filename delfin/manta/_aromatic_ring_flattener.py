@@ -40,11 +40,19 @@ from delfin.manta._pi_h_projector import (
     project_ring_h_atoms,
     _MD_INVARIANT_TOL,
 )
+# ONE SOURCE for the length gate (19.08.2026) -- the same one that
+# ``_arom_planarize`` and ``_bond_decollapse._aromatic_ring_bonds`` use.
+# Switch ``DELFIN_FFFREE_AROM_CRITERION_RADII`` (default 0 -> byte-identical).
+# ``_AROMATIC_BOND_MAX`` is only passed through (the name is kept);
+# the decision is made in ``ring_rejected_by_length``.
+from delfin.manta._arom_criterion import (   # noqa: F401
+    _AROMATIC_BOND_MAX,
+    ring_rejected_by_length,
+)
 
 _AROMATIC_ELIGIBLE = {"C", "N", "O", "S"}
 _OOP_TOL: float = 0.10          # below this the ring is already flat
 _PUCKER_CAP: float = 0.80       # above this it is not a planar-intended ring
-_AROMATIC_BOND_MAX: float = 1.46  # mean intra-ring heavy-bond length gate (Å)
 _M_COORD_DIST: float = 2.60       # ring atom within this of a metal → coordinated (skip)
 
 
@@ -55,7 +63,17 @@ def _detect_aromatic_rings(
 ) -> List[Tuple[int, ...]]:
     """Geometric 5/6-membered C/N/O/S rings with aromatic-range mean bond
     length.  Saturated rings (mean bond ~1.54) and metal-containing rings
-    are excluded.  Returns canonical sorted ring tuples."""
+    are excluded.  Returns canonical sorted ring tuples.
+
+    ONE SOURCE (19.08.2026): the sp3 veto lives in ``_arom_planarize`` and is
+    FETCHED here, not copied.  The mean value above lets an oxazoline through and
+    this twin would flatten it just the same; three independent copies of the same
+    criterion are exactly the construction in which, once before, only one of them
+    got repaired.  Switch default OFF -> byte-identical."""
+    from delfin.manta._arom_planarize import (
+        ring_carries_sp3_centre as _has_sp3, sp3_veto_enabled as _veto_on,
+    )
+    _sp3_veto = _veto_on()
     n = len(syms)
     heavy_nbrs: List[List[int]] = [
         [j for j in nbrs[i]
@@ -87,14 +105,20 @@ def _detect_aromatic_rings(
         # mean intra-ring heavy-bond length (consecutive bonded pairs only)
         rset = set(ring)
         bond_lens: List[float] = []
+        bond_edges: List[Tuple[int, int]] = []
         for i in ring:
             for j in heavy_nbrs[i]:
                 if j in rset and j > i:
                     bond_lens.append(float(np.linalg.norm(pts[i] - pts[j])))
+                    bond_edges.append((i, j))
         if not bond_lens:
             continue
-        if (sum(bond_lens) / len(bond_lens)) >= _AROMATIC_BOND_MAX:
+        # ONE SOURCE (see import above): switch OFF = old comparison
+        # ``mean >= 1.46``, switch ON = mean of d/(r_i+r_j) >= 0.939.
+        if ring_rejected_by_length(syms, bond_edges, bond_lens):
             continue  # saturated ring — leave its (correct) pucker alone
+        if _sp3_veto and _has_sp3(syms, nbrs, ring):
+            continue  # carries an sp3 centre -> not aromatic, do not flatten
         out.append(ring)
     return out
 

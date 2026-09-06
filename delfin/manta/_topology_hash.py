@@ -128,10 +128,23 @@ _METAL_ATOMIC_NUMBERS = frozenset(
 
 
 def _is_metal_z(z: int) -> bool:
+    # ONE SOURCE (14.08.2026): delfin/manta/_elements.py.  Default OFF -> byte-identical.
+    # `_is_metal_sym` below goes through this function, so it is carried along.
+    from delfin.manta import _elements as _EL
+    if _EL.unified_enabled():
+        return _EL.is_metal_z(z)
     return int(z) in _METAL_ATOMIC_NUMBERS
 
 
 def _is_metal_sym(sym: str) -> bool:
+    # ONE SOURCE (14.08.2026): delfin/manta/_elements.py.  Default OFF -> byte-identical.
+    # ⚠ Here it is NOT enough to switch `_is_metal_z` over: the bottleneck is `_sym_to_z`.
+    # If the symbol table does not know an element (e.g. Po), it returns None and the
+    # predicate False -- regardless of what the Z set says.  The same construction as
+    # the self-contradiction in the family around _h_vsepr_realism.
+    from delfin.manta import _elements as _EL
+    if _EL.unified_enabled():
+        return _EL.is_metal(sym)
     z = _sym_to_z(sym)
     return _is_metal_z(z) if z is not None else False
 
@@ -174,7 +187,7 @@ def is_hardgate_enabled() -> bool:
     """Return True iff the master Welle-5p-A flag is set.
 
     Default reverted 1 -> 0 on 2026-05-18 (Iter-17) — voll-pool b5defcd
-    showed pool-wide sigma -2783 isomere (5p-A over-rejection beyond
+    showed pool-wide sigma -2783 isomers (5p-A over-rejection beyond
     sentinel-set), DAXPOI 7->1 cliff confirmed in 62-archive scan,
     cshm_max_max +23.07 vs 95767c6 (outlier polyhedra worse), pi_planar
     +4.75pp (5p-B chair-attack on aromatic), hapto+multi-hapto remained

@@ -10550,8 +10550,8 @@ class _DocToolExecutor:
             return err
         # READ-ONLY data — archive of stored calculations, or the DELFIN
         # checkout when you didn't launch there. Writes are HARD-denied; copy
-        # into calc/agent_workspace and edit the copy ("archive sind fix …
-        # wenn man arbeiten will muss man in calc bringen").
+        # into calc/agent_workspace and edit the copy ("archives are fixed …
+        # if you want to work on it you have to bring it into calc").
         if perms.is_read_only_path(resolved):
             _record_security_event(
                 "read_only_write", name, self._display_path(resolved, perms),
@@ -10593,7 +10593,7 @@ class _DocToolExecutor:
         is_protected = perms.matches_path_protected(rel_str)
         # calc holds the user's ACTIVE calculations — editing one always needs
         # an explicit confirm even in acceptEdits, so the agent can't silently
-        # destroy results ("nur Bearbeitung mit Nachfrage").
+        # destroy results ("editing only with a confirmation prompt").
         is_calc = perms.is_confirm_write_path(resolved)
         if is_protected or is_calc:
             _record_security_event(
@@ -15039,7 +15039,7 @@ class OpenAIClient(_BaseClient):
         #   as reasoning models that REQUIRE ``reasoning_effort`` to be
         #   set or they silently consume the budget on internal reasoning
         #   and emit zero text tokens — the live regression we just hit
-        #   on "Öffne Calculations" with Azure GPT-5.4 was exactly this).
+        #   on "Open Calculations" with Azure GPT-5.4 was exactly this).
         _base = self.model.split(".", 1)[-1] if self.model.startswith(("azure.", "kit.")) else self.model
         import re as _re_reason
         is_reasoning = bool(

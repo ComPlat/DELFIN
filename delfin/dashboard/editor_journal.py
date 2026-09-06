@@ -17,8 +17,8 @@ closed vocabulary between the page and the kernel -- a command
 pick on a third, and a widget the user changed -- and that vocabulary is
 exactly what every test of the editor already drives it through.  Record the
 sequence with its timings and a maintainer can play it back into a real
-editor and watch the defect happen, which is the difference between "es
-zappelt" and a failing test.
+editor and watch the defect happen, which is the difference between "it
+jitters" and a failing test.
 
 What is kept
 ------------

@@ -130,11 +130,44 @@ def _build_ideal_vectors() -> Dict[str, np.ndarray]:
     ])
     # See-saw / C2v (e.g. SF4-type) — 2 axial + 2 equatorial bent
     # axial on z, equatorial in xz plane, equatorial bent ~30° down off +x/-x
-    d["see_saw"] = _stack([
-        _u(0, 0,  1), _u(0, 0, -1),
-        _u(np.cos(np.deg2rad(15.0)),  0, -np.sin(np.deg2rad(15.0))),
-        _u(-np.cos(np.deg2rad(15.0)), 0, -np.sin(np.deg2rad(15.0))),
-    ])
+    #
+    # ===== THIS DEFAULT IS NOT A SEESAW (recomputed 16.08.2026) =====
+    # All four vectors below have y = 0, i.e. they are COPLANAR.  The angles that follow:
+    #     ax-ax 180.0   eq-eq 150.0   ax-eq 105.0 (x2) and 75.0 (x2)
+    # A seesaw does not have TWO near-trans pairs -- that is the topology of a
+    # SQUARE PLANE.  The same confusion sits in `smiles_converter._TOPO_GEOMETRY_
+    # VECTORS['SS']` (coplanar, eq-eq 157.4) and in the eye's shape reference
+    # (`metric_coord_shape`, eq-eq 160.4 AND 168.6 -- there even two of them).
+    #
+    # THE REALITY (SF4 type, C2v: trigonal bipyramid with a lone electron pair
+    # on an EQUATORIAL position):
+    #     ax-ax  ~173     eq-eq  ~102     ax-eq  ~87 (x4)
+    # The lone pair pushes the two axial partners from 180 to ~173 and the two
+    # equatorial ones from 120 to ~102.  The default's eq-eq angle is therefore
+    # 48 degrees TOO WIDE OPEN -- the largest single error in the vertex inventory.
+    #
+    # MEASURABLE REFERENCE: the confusion matrix of 16.08. (677 systems with builder AND
+    # crystal polyhedron) shows `SP-4 square planar` <-> `SS-4 seesaw` at 25 versus 21 --
+    # 46 systems, and it is SYMMETRIC, hence a classifier boundary.  That is exactly what
+    # one expects if the "seesaw" in truth describes a square plane.
+    #
+    # Default OFF -> byte-identical.  The read site of the switch is `_elements`.
+    from delfin.manta import _elements as _EL
+    if _EL.seesaw_c2v_enabled():
+        _eq = np.deg2rad(51.0)      # half the eq-eq angle -> 102.0
+        _ax = np.deg2rad(3.5)       # tilt toward the C2 axis -> ax-ax 173.0
+        d["see_saw"] = _stack([
+            _u(np.sin(_ax), 0.0,  np.cos(_ax)),
+            _u(np.sin(_ax), 0.0, -np.cos(_ax)),
+            _u(np.cos(_eq),  np.sin(_eq), 0.0),
+            _u(np.cos(_eq), -np.sin(_eq), 0.0),
+        ])
+    else:
+        d["see_saw"] = _stack([
+            _u(0, 0,  1), _u(0, 0, -1),
+            _u(np.cos(np.deg2rad(15.0)),  0, -np.sin(np.deg2rad(15.0))),
+            _u(-np.cos(np.deg2rad(15.0)), 0, -np.sin(np.deg2rad(15.0))),
+        ])
 
     # ------------- CN = 5 -------------
     # Trigonal bipyramidal (D3h)
@@ -198,14 +231,34 @@ def _build_ideal_vectors() -> Dict[str, np.ndarray]:
     # Square antiprism (D4d): top square rotated 45° relative to bottom.
     # On unit sphere with xy-radius cos θ and z = ±sin θ; pick θ=π/4 so both
     # equal √2/2 → unit length.
-    h = np.sqrt(2.0) / 2.0          # = sin(π/4) and = cos(π/4)
+    # ===== theta = 45 DEGREES IS NOT AN EQUAL-EDGE ANTIPRISM (recomputed 16.08.2026)
+    # With z = xy-radius = sqrt(2)/2 (i.e. polar angle 45 degrees) one obtains:
+    #     square edge 60.0   square diagonal 90.0   lateral edge 98.4   long 148.6
+    # The square edge (60) and the lateral edge (98.4) then DIFFER by 38
+    # degrees -- an antiprism with edges that unequal does not exist.
+    #
+    # THE CONDITION for equal edges, with c = cos^2(theta):
+    #     square edge    cos = c
+    #     lateral edge   cos = cos(45 degrees)*sin^2(theta) - cos^2(theta)
+    #     c = 0.7071*(1-c) - c   ->   c*(2+0.7071) = 0.7071   ->   c = 0.26120
+    # hence cos(theta) = 0.51108, sin(theta) = 0.85953, and from that
+    #     square edge 74.86 (x8)   lateral edge 74.86 (x8)
+    #     diagonal   118.53 (x4)   long         141.57 (x8)
+    # Exactly the values the corrected angle table also carries (74.9/118.5/141.6).
+    #
+    # Default OFF -> byte-identical.  Read site of the switch: `_elements`.
+    from delfin.manta import _elements as _EL
+    if _EL.sap_equiedge_enabled():
+        _sz, _sr = 0.5110783, 0.8595269      # cos(theta), sin(theta) for c = 0.26120
+    else:
+        _sz = _sr = np.sqrt(2.0) / 2.0       # historical: theta = 45 degrees
     sap_top: List[np.ndarray] = []
     sap_bot: List[np.ndarray] = []
     for k in range(4):
         ang_top = (np.pi / 2.0) * k + np.pi / 4.0  # rotated 45°
         ang_bot = (np.pi / 2.0) * k
-        sap_top.append(_u(h * np.cos(ang_top), h * np.sin(ang_top),  h))
-        sap_bot.append(_u(h * np.cos(ang_bot), h * np.sin(ang_bot), -h))
+        sap_top.append(_u(_sr * np.cos(ang_top), _sr * np.sin(ang_top),  _sz))
+        sap_bot.append(_u(_sr * np.cos(ang_bot), _sr * np.sin(ang_bot), -_sz))
     d["sq_antiprism"] = _stack(sap_top + sap_bot)
     # Cube (Oh): 8 vertices at (±1,±1,±1)/√3
     cube_rows = [
@@ -234,7 +287,26 @@ def _build_ideal_vectors() -> Dict[str, np.ndarray]:
     # rectangular faces (between adjacent vertical edges).
     ttp_rows: List[np.ndarray] = []
     # 6 prism vertices on slightly compressed prism (z=±0.5, xy-r normalised)
-    z9 = 0.5
+    # ===== z = 0.5 IS NOT AN EQUAL-EDGE PRISM (recomputed 16.08.2026) =====
+    # With z = 0.5 (r = 0.866) one gets  vertical edge 60.0  versus  triangle edge 97.2
+    # -- 37 degrees apart.  A prism whose edges lie that far apart is no prism;
+    # and the comment "slightly compressed" plays down exactly that.
+    #
+    # THE CONDITION for equal edges (r^2 = 1 - z^2):
+    #     vertical edge   cos = r^2 - z^2
+    #     triangle edge   cos = -0.5*r^2 + z^2        (Delta phi = 120 degrees)
+    #     r^2 - z^2 = -0.5*r^2 + z^2  ->  1.5*r^2 = 2*z^2  ->  z^2 = 3/7
+    # hence z = 0.654654, r = 0.755929, and both edges become 81.79 degrees; the
+    # face diagonal becomes 135.58.  That is the ONLY prism definition without a
+    # free parameter -- the same one the eye's angle table already carries.
+    #
+    # ⚠ AFFECTS ONLY `tricapped_tp` (CN 9).  The champion part `TPR6` (CN 6, different
+    # table, different file) stays UNTOUCHED -- it is the only landed champion
+    # part and is not touched without a decision.
+    #
+    # Default OFF -> byte-identical.  Read site of the switch: `_elements`.
+    from delfin.manta import _elements as _EL
+    z9 = 0.6546537 if _EL.tricapped_equiedge_enabled() else 0.5
     r9 = np.sqrt(1.0 - z9 * z9)  # ensure unit length
     for sign in (+1, -1):
         for k in range(3):
