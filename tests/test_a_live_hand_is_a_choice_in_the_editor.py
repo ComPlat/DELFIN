@@ -126,3 +126,13 @@ def test_the_smearing_the_pull_uses_is_reused_by_the_live_hand():
     assert '_smearing_for(method)' in answer
     assert '_smearing_for(method, failed=True)' in answer
     assert 'etemp=' in answer
+
+
+def test_the_live_hand_lags_like_the_pull():
+    """The page's own force field lags a grabbed atom behind the cursor only
+    when the share it is told is above zero; at zero it places the atom
+    rigidly.  The live hand sends the share like the pull, so it lags -- which
+    is the whole point of a live drag -- rather than sticking to the cursor.
+    The drive hand stays at zero (it forces a coordinate, not the atom)."""
+    share = _EDITOR.split('def _hand_share(')[1].split('def ')[0]
+    assert 'if not (_hand_pulls() or _hand_is_live()):' in share

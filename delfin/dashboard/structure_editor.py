@@ -2955,6 +2955,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         value=True, icon='sliders', tooltip='Hide these controls',
         layout=widgets.Layout(width='34px', height='26px'),
     )
+    #: Put the hand back the way it opens.  The drag has a lot of settings and
+    #: they interact, so a hand that has been tuned into a corner -- a strength
+    #: wound up, a steady gesture left on, a sensitivity that overshoots -- is
+    #: quicker to reset than to talk back down control by control.  Only the
+    #: hand's own settings: it does not touch the structure, the method, or the
+    #: budget, which are the user's work rather than a feel that was fiddled.
+    submit_hand_reset_btn = widgets.Button(
+        icon='undo', tooltip='Restore the default hand settings',
+        layout=widgets.Layout(width='34px', height='26px'),
+    )
     #: One column, one width.
     #:
     #: These were built for a toolbar, where a label, a track and a readout
@@ -2998,12 +3008,40 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         layout=widgets.Layout(gap='2px', min_width='0'),
     )
     submit_view_panel = widgets.VBox(
-        [widgets.HBox([submit_view_open],
-                      layout=widgets.Layout(justify_content='flex-end')),
+        [widgets.HBox([submit_hand_reset_btn, submit_view_open],
+                      layout=widgets.Layout(justify_content='space-between')),
          submit_view_body],
         layout=widgets.Layout(min_width='0'),
     )
     submit_view_panel.add_class('delfin-structure-view-over')
+
+    def on_submit_hand_reset(_button=None):
+        """Restore the hand's settings to what the editor opens with.
+
+        The hand only: the strength, the pull, the steady gesture, the mouse
+        sensitivity and the playback speed, plus the labels off.  Not the
+        structure, the method, the charge or the budget -- those are work, not
+        a feel, and a reset that threw them away would cost more than it saved.
+        The hand is set to the pull it opens on, or to the placing hand where
+        that is the only one the method offers.
+        """
+        state['hand_quiet'] = True
+        try:
+            values = [v for _label, v in submit_hand_dd.options]
+            submit_hand_dd.value = 'pull' if 'pull' in values else values[0]
+        finally:
+            state['hand_quiet'] = False
+        submit_strength_slider.value = 20
+        submit_pull_slider.value = 0.4
+        submit_steady_hand_btn.value = False
+        submit_sens_slider.value = 1.0
+        submit_play_speed.value = 12
+        submit_labels_btn.value = False
+        _refresh_hand_controls()
+        _tell_the_page_the_hand()
+        _set_mol_status('The hand is back to its default settings.')
+
+    submit_hand_reset_btn.on_click(on_submit_hand_reset)
 
     def on_submit_view_open(change):
         if change.get('name') != 'value':
@@ -5568,10 +5606,23 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     def _hand_share():
         """What the page should make of the slider, given which hand it is.
 
-        Zero is the rigid hand there as it is here, so the two sides never
-        disagree about which one is in the user's hand.
+        Zero is the rigid hand -- the page sets the coordinate and freezes it,
+        which is the placing hand.  A share above zero turns the page's own
+        force field on, so the grabbed atom is a spring to the cursor and
+        *lags* behind it, following as far as the field allows.
+
+        Both force hands that grab an atom get that: the **pull** and the
+        **live** hand.  The pull was the only one that did, so the live hand
+        placed the atom rigidly on the cursor instead of letting it lag --
+        which is the whole point of a live drag, and it read as a dead hand.
+        Now both send the share, so both lag; the kernel engine behind them
+        still differs (the pull holds an internal coordinate and re-minimises,
+        the live hand carries the geometry forward), which is where the
+        alternation is removed.  The **drive** hand stays zero -- it forces a
+        chosen coordinate rather than the grabbed atom, so a Cartesian spring
+        on the atom is not its gesture.
         """
-        if not _hand_pulls():
+        if not (_hand_pulls() or _hand_is_live()):
             return 0.0
         return float(submit_pull_slider.value or 0.0)
 
