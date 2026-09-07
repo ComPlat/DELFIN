@@ -304,6 +304,34 @@ _CHAMPION_FLAGS = (
                           # Env DELFIN_FFFREE_BACKBONE_REEMBED / DELFIN_FFFREE_INTERLIG_PAIR_GATE;
                           # impl delfin/manta/backbone_reembed.py, converter_backend.py (pair gate at
                           # the re-embed loop).
+    "PUCKER_SYMM", "PUCKER_SYMM_ADD",
+                          # #31: ring-pucker symmetry reduction WITH the add guard in front of it --
+                          # landed 2026-09-07, label symmfoldadd6k, pool_6000, both historic floors.
+                          #   n_compared 5819, affected 123, judged intersection 107,
+                          #   EVERY never-worse term 0: capability_lost, capability_gained,
+                          #   isomers_lost, ccdc_isomer_lost, poly_lost, broken_regressed,
+                          #   hard_frames_regressed, torn_ligand_regressed, n_good_regressions,
+                          #   build_lost.  stock_proven_intact=True.
+                          # ✅ THE FIRST LANDING CARRIED BY AN ABSOLUTE IMPROVEMENT: improves_absolute
+                          # =True with hard_frame_frac_delta = -0.0013.  Both earlier landings were
+                          # denser but not cleaner (+0.0638 and +0.0512); this one makes the manifold
+                          # better, not merely larger.
+                          # WHY THE SECOND FLAG IS NOT OPTIONAL.  PUCKER_SYMM alone (symmfold6k) was
+                          # blocked by exactly two systems: RONSIW SWAPPED a fold representative
+                          # instead of appending it (r0:base+r1:1+r2:3 -> r0:3+r1:base+r2:4, 12 frames
+                          # for 12 with one new), which violates add-never-replace, and EBAGOF hung on
+                          # it.  PUCKER_SYMM_ADD builds the champion's combination set first and only
+                          # then fills up with the reduced one, so the champion frame set is contained
+                          # by construction.  Both blockers are gone in the A/B, measured, not argued.
+                          # ⚠ THE PRICE, stated honestly: with the guard the union can reach twice the
+                          # budget cap.  That is the intent -- the reduction exists to make DEEPER fold
+                          # states reachable, not to displace shallower ones.  Whoever must hold the
+                          # cap leaves PUCKER_SYMM_ADD off.
+                          # ⚠ REACH IS NARROW: the axis touches ~123 of 6000 systems (it needs at least
+                          # two rings in one automorphism orbit).  The judged intersection of 107 clears
+                          # the floor of 100, but only just.
+                          # Env DELFIN_FFFREE_PUCKER_SYMM / DELFIN_FFFREE_PUCKER_SYMM_ADD;
+                          # impl delfin/manta/_ring_pucker.py (orbit reduction and the add guard).
 )
 _BUILDER_FLAGS = ("KAPPA4", "SIGMA_ENSEMBLE", "CONF_ENERGY_RANK")
 
