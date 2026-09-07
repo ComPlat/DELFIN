@@ -21,7 +21,7 @@ something useful turns up, not preemptively.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -59,6 +59,12 @@ class ModelProfile:
     # models should respond quickly so we kill earlier.
     stale_kill_after_s: float = 120.0
 
+    # Typical seconds for a turn whose prompt the endpoint cannot serve
+    # from its prefix cache — the first turn of a session, and any turn
+    # after the head of the prompt changed. 0 means "not a concern".
+    # Only used to warn the user before the wait, never to shorten it.
+    slow_cold_start_s: float = 0.0
+
     # Free-form notes — useful in /agents stats / /model output and
     # for the human reading this file.
     notes: str = ""
@@ -91,9 +97,71 @@ WEAK_DEFAULT = ModelProfile(
 
 # --- Concrete profiles ------------------------------------------------------
 
-# kit.qwen3.5-397b-A17b — currently the strongest tool-calling-capable
-# model on KIT Toolbox for our scope. 397B MoE with 17B active params,
-# excellent agentic tool routing, no silent-reasoning footguns.
+# kit.glm-5.3 — the endpoint calls it the best open-source model it hosts
+# (intelligence 6/6) and rates its speed 2/6. Both halves are visible in
+# what it does here.
+#
+# Measured 2026-09-07 on the KIT deployment, same 15k-token DELFIN prompt,
+# three alternating pairs: ~7-12s when the endpoint can serve the prompt
+# head from its prefix cache, 199s / 266s when a single changed byte at the
+# top makes it cold. DeepSeek on the same endpoint, same prompt, the same
+# minute: 4-7s warm, 5-16s cold. So the number that decides a GLM session is
+# not tokens per second, it is whether the head of the prompt is stable.
+#
+# It also spends the completion budget on hidden reasoning BEFORE any
+# content: asked for max_tokens=32 it returned 32 reasoning tokens and an
+# empty message, twice. That is the "[empty turn]" the users report. The
+# capability entry marks it a reasoning family so the 2048-token floor in
+# api_client applies; without that floor a tight budget yields nothing.
+_GLM_5_3 = ModelProfile(
+    compact_prompt=False,        # capability is what it is for; keep it
+    core_tools_only=False,
+    effort_default="medium",
+    max_tool_rounds=20,
+    tool_result_cap_kb=5,
+    strict_action_prefix=False,
+    # A cold prompt head measured at 266s. 120s would kill a turn that was
+    # about to answer, and killing it also throws away the prefill it just
+    # paid for -- the retry starts cold again.
+    stale_kill_after_s=420.0,
+    # 199 / 266 / 268s measured. The user cannot be given the time back,
+    # but they can be told what the silence is: the same wait reported as
+    # a hang reads as a cache warming up once it is named.
+    slow_cold_start_s=200.0,
+    notes=(
+        "KIT GLM-5.3 — strongest of the KIT-hosted open models, slowest to "
+        "start. Reasoning-first: needs the thinking token floor. Cold "
+        "prompt head ~200-270s vs ~10s warm, so prefix stability decides "
+        "the session."
+    ),
+)
+
+# kit.deepseek-v4-flash — a coding line, rated 4/6 intelligence and 6/6
+# speed by the endpoint, and the measurements agree: the 15k-token prompt
+# answers in 4-7s warm and 5-16s cold, i.e. it barely notices the thing
+# that costs GLM minutes. No reasoning tokens observed in any probe.
+_DEEPSEEK_V4_FLASH = ModelProfile(
+    compact_prompt=False,
+    core_tools_only=False,
+    effort_default="medium",
+    max_tool_rounds=20,
+    tool_result_cap_kb=5,
+    strict_action_prefix=False,
+    stale_kill_after_s=120.0,
+    notes=(
+        "KIT DeepSeek V4 Flash — fast on this deployment, cold and warm "
+        "alike. Coding line, native function calling."
+    ),
+)
+
+# kit.qwen3.5-397b-A17b — RETIRED from the KIT listing on 2026-09-07. The
+# profile stays: the tuning below was measured, a restored session or a
+# saved setting may still name the model, and if it returns this is what it
+# was tuned to. Nothing here is a claim about what the endpoint serves --
+# model_capabilities._KIT_RETIRED is where that question is answered.
+#
+# 397B MoE with 17B active params, excellent agentic tool routing, no
+# silent-reasoning footguns.
 _QWEN35_397B = ModelProfile(
     compact_prompt=False,        # full 7.5k slim prompt is fine
     core_tools_only=False,       # handles the 45-tool surface cleanly
@@ -168,7 +236,10 @@ _SONNET = ModelProfile(
 
 # Registry — exact match first, longest-prefix second.
 _PROFILES: dict[str, ModelProfile] = {
-    # KIT Toolbox
+    # KIT Toolbox — served as of 2026-09-07
+    "kit.glm-5.3": _GLM_5_3,
+    "kit.deepseek-v4-flash": _DEEPSEEK_V4_FLASH,
+    # KIT Toolbox — retired from the listing, tuning kept (see above)
     "kit.qwen3.5-397b-A17b": _QWEN35_397B,
     "kit.gpt-oss-120b": _GPT_OSS_120B,
     "kit.gemma4-31b-it": _GEMMA4_31B,
@@ -192,10 +263,139 @@ _PROFILES: dict[str, ModelProfile] = {
 _PREFIX_PROFILES: tuple[tuple[str, ModelProfile], ...] = (
     ("azure.gpt-5", _AZURE_GPT5),
     ("kit.gpt-oss", _GPT_OSS_120B),
+    # Point revisions land under the same name (glm-5.3 → glm-5.4) and a
+    # missed rename costs the stale-kill budget and the reasoning floor,
+    # which is how a working model starts looking broken.
+    ("kit.glm", _GLM_5_3),
+    ("kit.deepseek", _DEEPSEEK_V4_FLASH),
 )
 
 
+# --- user overrides ---------------------------------------------------------
+#
+# The knobs above are measured, and a measurement is a claim about one
+# deployment on one day. The KIT roster changed twice this year and the same
+# model name can be re-pointed at different hardware underneath, so the person
+# in front of the endpoint is sometimes the only one who can see that a number
+# is wrong. ``agent.model_overrides`` lets them fix it without editing Python:
+#
+#     "agent": {
+#       "model_overrides": {
+#         "kit.glm-5.3":  {"stale_kill_after_s": 600, "effort_default": "low"},
+#         "kit.deepseek": {"max_tool_rounds": 30}
+#       }
+#     }
+#
+# Exact name first, then longest prefix — the same two-step the registry uses,
+# so an override reads the way the profiles do. Unknown keys and unusable
+# values are ignored rather than raising: this is a settings file, and a typo
+# in it must not take the agent down. An applied override is written into
+# ``notes``, which is what /model and the agent stats print, so a changed
+# number is visible instead of silently different from the file.
+# Every ModelProfile field, with the type a settings value is read as. A
+# test pins this against the dataclass, so a new knob cannot ship without
+# deciding whether a user may set it.
+_COERCE: dict[str, type] = {
+    "compact_prompt": bool,
+    "slow_cold_start_s": float,
+    "core_tools_only": bool,
+    "strict_action_prefix": bool,
+    "effort_default": str,
+    "notes": str,
+    "max_tool_rounds": int,
+    "tool_result_cap_kb": int,
+    "stale_kill_after_s": float,
+}
+
+_OVERRIDES_CACHE: tuple[float, dict] | None = None
+
+
+def _load_overrides() -> dict:
+    """``agent.model_overrides`` from the settings file, or {}.
+
+    Reads the JSON directly instead of going through ``load_settings``:
+    that helper rewrites the file when it fills in defaults, and this is
+    called while building a prompt. Cached on the file's mtime, so an edit
+    is picked up on the next turn without re-reading per call.
+    """
+    global _OVERRIDES_CACHE
+    try:
+        from delfin.user_settings import get_settings_path
+        path = get_settings_path()
+        mtime = path.stat().st_mtime if path.exists() else 0.0
+    except Exception:
+        return {}
+    if _OVERRIDES_CACHE is not None and _OVERRIDES_CACHE[0] == mtime:
+        return _OVERRIDES_CACHE[1]
+    table: dict = {}
+    if mtime:
+        try:
+            import json
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            found = (raw.get("agent") or {}).get("model_overrides") or {}
+            if isinstance(found, dict):
+                table = {str(k): v for k, v in found.items()
+                         if isinstance(v, dict)}
+        except Exception:
+            table = {}
+    _OVERRIDES_CACHE = (mtime, table)
+    return table
+
+
+def _override_for(model: str) -> dict:
+    table = _load_overrides()
+    if not table or not model:
+        return {}
+    if model in table:
+        return table[model]
+    best: tuple[int, dict] | None = None
+    for key, values in table.items():
+        if key and model.startswith(key):
+            if best is None or len(key) > best[0]:
+                best = (len(key), values)
+    return best[1] if best else {}
+
+
+def _apply_overrides(model: str, profile: ModelProfile) -> ModelProfile:
+    values = _override_for(model)
+    if not values:
+        return profile
+    changes: dict = {}
+    for key, value in values.items():
+        coerce = _COERCE.get(str(key))
+        if coerce is None:               # not a knob — ignore, do not raise
+            continue
+        try:
+            changes[str(key)] = coerce(value)
+        except (TypeError, ValueError):
+            continue
+    if not changes:
+        return profile
+    named = ", ".join(f"{k}={v!r}" for k, v in sorted(changes.items()))
+    changes.setdefault("notes", profile.notes)
+    # In FRONT of the description, not after it. A benchmark run stamps the
+    # first 80 characters of ``notes`` onto its results so a later
+    # comparison can say which profile produced them; an override appended
+    # to a long description is truncated away, and the run then reads as if
+    # it had been made with the shipped knobs.
+    changes["notes"] = (
+        f"[user override: {named}] {changes['notes']}".strip())
+    return replace(profile, **changes)
+
+
 def get_profile(model: str, caps: "ModelCapabilities | None" = None) -> ModelProfile:
+    """Return the profile for ``model``, with any user override applied.
+
+    See :func:`_registry_profile` for the lookup and ``_load_overrides``
+    for the settings key. Every lookup goes through here, so an override
+    cannot be bypassed by a caller that happened to hit another branch.
+    """
+    return _apply_overrides(model, _registry_profile(model, caps))
+
+
+def _registry_profile(
+    model: str, caps: "ModelCapabilities | None" = None,
+) -> ModelProfile:
     """Return the profile for ``model``, falling back to a tier default.
 
     ``caps`` (optional :class:`~delfin.agent.model_capabilities.ModelCapabilities`)

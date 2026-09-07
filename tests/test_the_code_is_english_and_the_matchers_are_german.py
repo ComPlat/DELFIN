@@ -42,6 +42,23 @@ from delfin.agent import verify_guard as VG
 # Every caveat a finished answer can carry, in one language
 # ---------------------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _a_german_session():
+    """State the language these assertions are about.
+
+    The caveats follow the session's language now, held in a ContextVar
+    that every turn sets. This file asserts the German wording, so it has
+    to say that it means a German session -- without it the assertions
+    read whatever the last engine in the process left behind, and one test
+    elsewhere sending the word "hi" to an engine turned every caveat here
+    English. A test that depends on a process-wide default is measuring
+    the test order.
+    """
+    VG.set_caveat_language("de")
+    yield
+    VG.set_caveat_language("de")
+
+
 def _every_caveat() -> dict[str, str]:
     """Each caveat producer, called with input that makes it speak."""
     figure_flags = O.scan_answer_for_unledgered_figures(
