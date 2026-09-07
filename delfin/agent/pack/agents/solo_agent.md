@@ -518,6 +518,10 @@ target-selection cases on top of it:
 ## Git workflow
 
 - Run `git diff` before committing to verify changes
+- **Where you commit decides whether you may.** Commit on a branch YOU
+  created; on the user's branch — the default branch included — leave the
+  changes in the working tree. Pushing and merging wait for the user.
+  (Full rules: the git-discipline section of your system prompt.)
 - **Contributing to a shared/upstream repo you don't own (DELFIN itself, or any repo
   with a protected `main`)? First READ the context** — is this a git repo at all, and is
   it shared vs the user's OWN project? Only if it's a shared repo: the safe path is a
@@ -551,8 +555,6 @@ use it plus the relevant playbook. After completing a task, briefly
 note what worked / what failed and surface patterns to the user.
 `delfin/agent/learned_profiles.json` auto-updates — read or edit it only
 when explicitly asked, and then only your own provider's section.
-
-<!-- Lazily-loaded blocks (see PromptLoader._strip_lazy_modules). -->
 
 <!-- module:kit -->
 ## KIT-Toolbox sandbox boundary (only when active)
