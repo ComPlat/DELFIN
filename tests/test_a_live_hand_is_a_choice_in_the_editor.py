@@ -16,6 +16,8 @@ import pathlib
 
 _EDITOR = (pathlib.Path(__file__).resolve().parents[1]
            / 'delfin' / 'dashboard' / 'structure_editor.py').read_text()
+_VIEWER = (pathlib.Path(__file__).resolve().parents[1]
+           / 'delfin' / 'dashboard' / 'molecule_viewer.py').read_text()
 
 
 def test_the_box_offers_a_live_hand():
@@ -136,3 +138,35 @@ def test_the_live_hand_lags_like_the_pull():
     The drive hand stays at zero (it forces a coordinate, not the atom)."""
     share = _EDITOR.split('def _hand_share(')[1].split('def ')[0]
     assert 'if not (_hand_pulls() or _hand_is_live()):' in share
+
+
+def test_the_drive_hand_is_ramped_by_the_wheel():
+    """The drive hand's gesture is the mouse wheel, not the drag: dragging a
+    picked atom moves the whole selection as a block and leaves the coordinate
+    unchanged, so the wheel is what forces it.  The page reroutes its wheel to
+    a drivewheel command only in drive mode with a coordinate picked; the
+    kernel accumulates the target and drives one answer per notch.  Everywhere
+    else the wheel stays the zoom it always was."""
+    # Browser: the wheel is rerouted only in drive mode with 2-4 picks, and
+    # zoom is untouched otherwise.
+    assert 'setDriveMode: setDriveMode,' in _VIEWER
+    assert 'state.driveMode' in _VIEWER
+    wheel = _VIEWER.split("ov.addEventListener('wheel'")[1].split(
+        '}, {passive: false});')[0]
+    assert 'state.driveMode' in wheel
+    assert 'picks.length >= 2' in wheel and 'picks.length <= 4' in wheel
+    assert "pushCommandToPython(scopeKey, 'drivewheel'" in wheel
+    assert '_handleMouseScroll' in wheel        # zoom still there otherwise
+
+    # Kernel: the command is handled, the target accumulates, and the notch
+    # size is per coordinate kind.
+    assert "if verb == 'drivewheel':" in _EDITOR
+    assert 'def _drive_wheel(' in _EDITOR
+    assert '_DRIVE_WHEEL_STEP' in _EDITOR
+    wheelfn = _EDITOR.split('def _drive_wheel(')[1].split('def ')[0]
+    assert "state['drive_wheel_target']" in wheelfn
+    assert '_gfn_follow_step(current, atoms)' in wheelfn
+    # The page is told which hand is in use, so it knows to reroute the wheel.
+    assert 'setDriveMode(' in _EDITOR
+    # A changed selection starts the wheel target fresh.
+    assert "state.pop('drive_wheel_target', None)" in _EDITOR

@@ -291,3 +291,55 @@ def test_the_drive_hand_works_under_a_group_drag():
 
     reached = abs(_dihedral(_coords(part.coords_widget.value), 0, 1, 2, 3))
     assert reached > 40.0, f'the group drag did not drive the torsion: {reached:.0f}'
+
+
+@_needs_xtb
+def test_the_drive_hand_ramps_the_coordinate_on_the_wheel():
+    """The drive hand's real gesture: pick the coordinate, then the mouse
+    wheel ramps it.  Each notch advances an accumulating target, and the
+    coordinate is driven towards it over its barrier -- which the drag could
+    not do, because grabbing a picked atom moves the whole selection as a block
+    and leaves the coordinate unchanged.  Here the wheel turns a cis double
+    bond across 90 degrees towards trans.
+    """
+    part, state = _an_editor(_CIS_BUTENE)
+    part.submit_ff_dd.value = 'gfn2'
+    part.submit_relax_btn.value = True
+    part.submit_hand_dd.options = [('pull with a force', 'pull'),
+                                   ('move the atom', 'move'),
+                                   ('live dynamics', 'live'),
+                                   ('drive coordinate', 'drive')]
+    part.submit_hand_dd.value = 'drive'
+    part.submit_pull_slider.value = 3.0
+    state['picked'] = [0, 1, 2, 3]
+
+    started = abs(_dihedral(_coords(_CIS_BUTENE), 0, 1, 2, 3))
+    for _ in range(30):
+        state['gfn_follow_steps'] = 0
+        part._drive_wheel(1)                 # one notch of the wheel
+        assert _wait(state), state.get('gfn_last_status')
+
+    reached = abs(_dihedral(_coords(part.coords_widget.value), 0, 1, 2, 3))
+    assert started < 30.0, started
+    assert reached > 90.0, f'the wheel did not drive across the barrier: {reached:.0f}'
+    # The target accumulated notch by notch.
+    assert state.get('drive_wheel_target') is not None
+
+
+@_needs_xtb
+def test_the_drive_wheel_needs_a_picked_coordinate():
+    """Without two-to-four atoms picked there is no coordinate to ramp, so the
+    wheel says so rather than doing something arbitrary."""
+    part, state = _an_editor(_CIS_BUTENE)
+    part.submit_ff_dd.value = 'gfn2'
+    part.submit_relax_btn.value = True
+    part.submit_hand_dd.options = [('pull with a force', 'pull'),
+                                   ('move the atom', 'move'),
+                                   ('live dynamics', 'live'),
+                                   ('drive coordinate', 'drive')]
+    part.submit_hand_dd.value = 'drive'
+    state['picked'] = []                     # nothing picked
+    part._drive_wheel(1)
+    said = ' '.join(str(one) for one in (state.get('mol_status_lines') or ()))
+    assert 'pick 2 atoms' in said.lower(), said
+    assert state.get('drive_wheel_target') is None
