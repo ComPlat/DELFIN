@@ -50,6 +50,13 @@ system and the existing stock provably untouched. Against the 1.3.0 landing at
 `0.65` the hard-frame fraction on the affected systems falls from 0.0638 to 0.0512,
 so the appended frames are measurably cleaner while nothing in the stock is lost.
 
+Counted file by file afterwards, against the state that carried factor 0.65: on 250
+systems the tighter gate rejects 1424 previously appended frames, and three systems
+gain frames. No stock frame is affected anywhere — on all 250 the champion's own
+frame set is still contained in full. So this change makes the manifold cleaner by
+making it slightly smaller, and the frames it removes are the ones whose contacts
+the eye itself counts as collisions.
+
 The factor stays overridable through the environment, so an interrupted run can be
 pinned to its original value and stay byte-identical.
 

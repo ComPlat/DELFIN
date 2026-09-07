@@ -330,6 +330,17 @@ _CHAMPION_FLAGS = (
                           # ⚠ REACH IS NARROW: the axis touches ~123 of 6000 systems (it needs at least
                           # two rings in one automorphism orbit).  The judged intersection of 107 clears
                           # the floor of 100, but only just.
+                          # ⚠ AND HOW MUCH IT ACTUALLY CHANGES, counted file by file after the fact
+                          # (2026-09-07): of 5815 built systems 5805 are byte-identical to the
+                          # champion.  Eight differ, and five of those eight are the known
+                          # non-deterministic set -- they differ between two runs of the SAME champion
+                          # as well, so they cannot be credited here.  THREE systems are genuinely
+                          # changed by this axis: DUTCUQ 111 -> 119 frames, ZEHPOU 48 -> 49,
+                          # ZIRYEG 27 -> 28.  Net +10 frames on a pool of 6000.
+                          # "Touches ~123" means the code path runs there; "changes" means three.
+                          # Whoever reads the first number as the second overstates this landing by
+                          # a factor of forty.  The mechanism is right and the A/B is clean, but the
+                          # yield on this pool is small, and that belongs next to the flag.
                           # Env DELFIN_FFFREE_PUCKER_SYMM / DELFIN_FFFREE_PUCKER_SYMM_ADD;
                           # impl delfin/manta/_ring_pucker.py (orbit reduction and the add guard).
 )
