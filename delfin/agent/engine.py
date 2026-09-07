@@ -2392,6 +2392,28 @@ class AgentEngine:
         self.last_system_prompt = system_prompt
         self._system_prompt_chars = len(system_prompt or "")
 
+        # Say what the silence is, once per session, for a model whose
+        # first turn is slow. GLM answered "Hallo" in 190s and was
+        # reported as a hang -- correctly, because nothing distinguished
+        # it from one. The endpoint is building its prefix cache for a
+        # 15k-token prompt; the turns after it are ~20x quicker. This
+        # buys the user nothing but the difference between waiting and
+        # not knowing, which is the whole complaint.
+        if not getattr(self, "_cold_start_noted", False):
+            self._cold_start_noted = True
+            try:
+                from .model_profiles import get_profile as _gp
+                from . import verify_guard as _vg_cold
+                _cold = _vg_cold.cold_start_notice(
+                    getattr(self, "model", "") or "",
+                    float(_gp(getattr(self, "model", "") or "")
+                          .slow_cold_start_s or 0.0),
+                )
+                if _cold:
+                    _notice(_cold)
+            except Exception:
+                pass
+
         # Let the tool loop re-read the steering blocks between rounds. The
         # system prompt above is frozen from here until the turn ends, so
         # without this callback anything that becomes true during the turn
