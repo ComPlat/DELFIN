@@ -59,6 +59,12 @@ class ModelProfile:
     # models should respond quickly so we kill earlier.
     stale_kill_after_s: float = 120.0
 
+    # Typical seconds for a turn whose prompt the endpoint cannot serve
+    # from its prefix cache — the first turn of a session, and any turn
+    # after the head of the prompt changed. 0 means "not a concern".
+    # Only used to warn the user before the wait, never to shorten it.
+    slow_cold_start_s: float = 0.0
+
     # Free-form notes — useful in /agents stats / /model output and
     # for the human reading this file.
     notes: str = ""
@@ -118,6 +124,10 @@ _GLM_5_3 = ModelProfile(
     # about to answer, and killing it also throws away the prefill it just
     # paid for -- the retry starts cold again.
     stale_kill_after_s=420.0,
+    # 199 / 266 / 268s measured. The user cannot be given the time back,
+    # but they can be told what the silence is: the same wait reported as
+    # a hang reads as a cache warming up once it is named.
+    slow_cold_start_s=200.0,
     notes=(
         "KIT GLM-5.3 — strongest of the KIT-hosted open models, slowest to "
         "start. Reasoning-first: needs the thinking token floor. Cold "
@@ -287,6 +297,7 @@ _PREFIX_PROFILES: tuple[tuple[str, ModelProfile], ...] = (
 # deciding whether a user may set it.
 _COERCE: dict[str, type] = {
     "compact_prompt": bool,
+    "slow_cold_start_s": float,
     "core_tools_only": bool,
     "strict_action_prefix": bool,
     "effort_default": str,
