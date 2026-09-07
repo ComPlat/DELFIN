@@ -5116,6 +5116,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: turn cis to trans in a couple of turns of the wheel.
     _DRIVE_WHEEL_STEP = {'distance': 0.05, 'angle': 3.0, 'dihedral': 5.0}
 
+    #: How long the wheel has to be still before the rest is let react fully,
+    #: and how many steered steps that settle takes.  A notch gives the rest
+    #: only a few steps to keep up, so mid-scroll it lags; when the wheel
+    #: stops, the coordinate is held at where it was driven and the rest
+    #: relaxes the whole way into the reacted geometry -- the real product, not
+    #: a half-relaxed snapshot.  Debounced, so a burst of notches settles once
+    #: at the end rather than after every one.
+    _DRIVE_SETTLE_AFTER = 0.4       #: seconds of stillness before the settle
+    _DRIVE_SETTLE_STEPS = 60        #: steered steps the settle relaxes over
+
     #: How far the answer may put a held atom from the cursor before the drag
     #: counts as under-determined.
     #:
@@ -7102,7 +7112,45 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['drive_wheel_target'] = tgt
         # Drive one answer towards it, through the follow worker (which begins
         # the session, holds the budget, and carries the geometry forward).
+        state.pop('drive_settling', None)
         _gfn_follow_step(current, atoms)
+        # And let the rest react fully once the wheel stops: each notch arms a
+        # settle a little ahead, and a following notch disarms it, so a burst
+        # of scrolling settles once at the end rather than after every notch.
+        old = state.get('drive_settle_timer')
+        if old is not None:
+            old.cancel()
+        serial = int(state.get('drive_settle_serial', 0)) + 1
+        state['drive_settle_serial'] = serial
+        timer = threading.Timer(_DRIVE_SETTLE_AFTER,
+                                lambda: _drive_settle(serial))
+        timer.daemon = True
+        state['drive_settle_timer'] = timer
+        timer.start()
+
+    def _drive_settle(serial):
+        """Relax the rest fully at the coordinate the wheel stopped on.
+
+        Fired a short stillness after the last notch (disarmed by any newer
+        one), this holds the driven coordinate where it was taken and lets
+        everything else relax the whole way in -- a C-C driven apart settles
+        into the two radicals, a torsion into the product conformer -- so what
+        is left on screen is the reacted geometry rather than the half-relaxed
+        snapshot a few steered steps leave.
+        """
+        if serial != state.get('drive_settle_serial'):
+            return                      # a newer notch came; that one will arm
+        if not _hand_drives():
+            return
+        if state.get('drive_wheel_target') is None:
+            return
+        atoms = [int(i) for i in (state.get('picked') or ())]
+        if not _CONSTRAINT_KINDS.get(len(atoms)):
+            return
+        # The next follow answer relaxes over many steps rather than a few, so
+        # the rest reaches its minimum for the held coordinate.
+        state['drive_settling'] = True
+        _gfn_follow_step(_current_xyz() or '', atoms)
 
     def _live_answer(current, holding, began, method, label, charge,
                      uhf, wet, model, driven=None):
@@ -7143,6 +7191,11 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         wheel = (driven is not None
                  and state.get('drive_wheel_target') is not None)
         _gone = (lambda: False) if wheel else _hand_gone
+        # A settle relaxes over many steps so the rest reaches its minimum for
+        # the held coordinate; an ordinary notch takes only a few, to stay
+        # responsive.  Consumed here, so the next notch is a notch again.
+        drive_steps = (_DRIVE_SETTLE_STEPS if state.pop('drive_settling', None)
+                       else _climb.STEER_STEPS)
         # The wish clamped to what the budget can still pay for, so the
         # spring never leads the atom past the ceiling and the drag rests
         # against the wall rather than springing back from it.
@@ -7181,7 +7234,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 return _climb.steer_coordinate(
                     start, driven['kind'], driven['atoms'], driven['target'],
                     method=method, charge=charge, uhf=uhf, solvent=wet,
-                    cores=cores, etemp=etemp, max_force=None,
+                    cores=cores, etemp=etemp, max_force=None, steps=drive_steps,
                     should_stop=_gone)
             return _climb.steer(
                 start, current, holding, method=method, charge=charge,

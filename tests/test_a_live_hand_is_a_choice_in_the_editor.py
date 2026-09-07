@@ -188,3 +188,19 @@ def test_the_drive_hand_has_no_force_ceiling_and_no_slider():
     assert 'max_force=pull_cap' in cart_call, cart_call
     # The slider is shown only for the two ceiling hands.
     assert ("'' if (_hand_pulls() or _hand_is_live()) else 'none'") in _EDITOR
+
+
+def test_the_rest_settles_when_the_wheel_stops():
+    """A notch gives the rest a few steps; when the wheel stops, a debounced
+    settle relaxes it the whole way at the held coordinate -- the reacted
+    geometry rather than a half-relaxed snapshot.  Armed by each notch, disarmed
+    by a newer one (a serial), and the settle answer takes many steps."""
+    wheel = _EDITOR.split('def _drive_wheel(')[1].split('def _drive_settle(')[0]
+    assert 'threading.Timer(_DRIVE_SETTLE_AFTER' in wheel
+    assert "state['drive_settle_serial']" in wheel
+    settle = _EDITOR.split('def _drive_settle(')[1].split('def ')[0]
+    assert "serial != state.get('drive_settle_serial')" in settle  # newer notch disarms
+    assert "state['drive_settling'] = True" in settle
+    # The settle answer relaxes over many steps; an ordinary notch over a few.
+    assert '_DRIVE_SETTLE_STEPS if state.pop(' in _EDITOR
+    assert 'steps=drive_steps' in _EDITOR

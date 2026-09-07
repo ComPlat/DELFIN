@@ -379,3 +379,78 @@ def test_the_wheel_drives_even_when_the_hand_is_counted_gone():
     assert abs(after - before) > 3.0, (
         f'the wheel took no steps with the hand counted gone: {before:.0f} -> '
         f'{after:.0f}')
+
+
+def _methyl_sum(P):
+    import math
+    def ang(i, j, k):
+        u, v = P[i] - P[j], P[k] - P[j]
+        c = np.dot(u, v) / (np.linalg.norm(u) * np.linalg.norm(v))
+        return math.degrees(math.acos(max(-1.0, min(1.0, c))))
+    return ang(2, 0, 3) + ang(2, 0, 4) + ang(3, 0, 4)
+
+
+_ETHANE8 = """8
+ethane
+C 0 0 0.765
+C 0 0 -0.765
+H 0 1.019 1.163
+H -0.882 -0.510 1.163
+H 0.882 -0.510 1.163
+H 0 -1.019 -1.163
+H 0.882 0.510 -1.163
+H -0.882 0.510 -1.163
+"""
+
+
+@_needs_xtb
+def test_the_rest_reacts_fully_when_the_wheel_stops():
+    """Beim Anhalten fertig reagieren: a notch gives the rest only a few steps
+    to keep up, so mid-scroll it lags above the relaxed path; when the wheel
+    stops, the settle holds the driven coordinate where it was taken and lets
+    the rest relax the whole way into the reacted geometry.  Proven by the
+    energy: the settle lowers it (the rest found a better configuration) while
+    the driven coordinate stays where the wheel left it.
+    """
+    base = gfn.optimize_with_gfn(_ETHANE8, 'gfn2', optimise=True,
+                                 max_steps=200, timeout=120)['xyz']
+    part, state = _an_editor(base)
+    part.submit_ff_dd.value = 'gfn2'
+    part.submit_relax_btn.value = True
+    part.submit_hand_dd.options = [('pull with a force', 'pull'),
+                                   ('move the atom', 'move'),
+                                   ('live dynamics', 'live'),
+                                   ('drive coordinate', 'drive')]
+    part.submit_hand_dd.value = 'drive'
+    state['picked'] = [0, 1]                 # the C-C bond
+
+    for k in range(20):                      # drive it well apart
+        state['gfn_follow_steps'] = 0
+        part.submit_cmd_sync.value = f'drivewheel:{k}:1'
+        assert _wait(state), state.get('gfn_last_status')
+    timer = state.get('drive_settle_timer')  # the debounce timer this armed
+    if timer is not None:
+        timer.cancel()                       # fire it ourselves, deterministically
+
+    def _energy(xyz):
+        return gfn.optimize_with_gfn(xyz, 'gfn2', optimise=False,
+                                     etemp=1000.0, timeout=60)['energy']
+
+    P0 = _coords(part.coords_widget.value)
+    cc0 = float(np.linalg.norm(P0[0] - P0[1]))
+    e0 = _energy(part.coords_widget.value)
+
+    state['gfn_follow_steps'] = 0
+    part._drive_settle(state.get('drive_settle_serial', 0))
+    assert _wait(state), state.get('gfn_last_status')
+
+    P1 = _coords(part.coords_widget.value)
+    cc1 = float(np.linalg.norm(P1[0] - P1[1]))
+    e1 = _energy(part.coords_widget.value)
+
+    # The rest relaxed -- the settle found a lower-energy configuration...
+    assert e1 < e0 - 1e-4, (e0, e1)
+    # ...while the driven coordinate was held where the wheel left it.
+    assert abs(cc1 - cc0) < 0.2, (cc0, cc1)
+    # And the rest actually moved (the hydrogens, not the held pair).
+    assert np.linalg.norm(P1[2:] - P0[2:], axis=1).max() > 0.02, 'rest stood still'
