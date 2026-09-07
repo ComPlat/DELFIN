@@ -7166,13 +7166,22 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # to move it, which follows a reaction or a dissociation but cannot
             # force a stiff torsion.  With one named (the drive hand), the hand
             # is a restraint on that coordinate itself, which drives it over
-            # its barrier -- cis to trans, a bond made or broken on purpose --
-            # and stays on one branch.  Both take the same force ceiling.
+            # its barrier -- cis to trans, a bond made or broken on purpose.
+            #
+            # The live hand keeps the pull's force ceiling, so it lags and
+            # tears only when set as strong as a bond.  The drive hand does
+            # NOT: forcing the chosen coordinate over its barrier -- breaking
+            # the bond -- is the whole point, and a ceiling is what stops it
+            # part way ("why can it not be driven further?").  Uncapped, it is
+            # still controlled: the per-atom step is a trust radius, and the
+            # wheel's notch sets how far the target moves each turn, so the
+            # coordinate follows the scroll rather than jumping.  The budget,
+            # when it is on, remains the one true limit on how far it goes.
             if driven is not None:
                 return _climb.steer_coordinate(
                     start, driven['kind'], driven['atoms'], driven['target'],
                     method=method, charge=charge, uhf=uhf, solvent=wet,
-                    cores=cores, etemp=etemp, max_force=pull_cap,
+                    cores=cores, etemp=etemp, max_force=None,
                     should_stop=_gone)
             return _climb.steer(
                 start, current, holding, method=method, charge=charge,
@@ -19402,12 +19411,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
           always been and keeps whatever value it was set to.
         """
         pulling = _hand_pulls()
-        # The slider is the strength of a force, and both force hands have one:
-        # the pull's spring and the live hand's are set against the same
-        # yardstick, a share of a bond, so the same control sets both -- see
-        # _live_force.  Only the placing hand, which has no force, hides it.
+        # The slider is a force *ceiling*, so it belongs to the two hands that
+        # have one: the pull's spring and the live hand's, both a share of a
+        # bond (see _live_force).  The placing hand has no force, and the drive
+        # hand has no ceiling -- it forces the chosen coordinate over its
+        # barrier however far the wheel asks, bounded only by the budget -- so
+        # a slider there would set a number nothing reads.  Both hide it.
         submit_pull_slider.layout.display = (
-            '' if _hand_is_a_force() else 'none')
+            '' if (_hand_pulls() or _hand_is_live()) else 'none')
         # Beside the pull, because it is about what a pull holds.  Under a
         # placing hand the answer is laid back onto the cursor and no
         # coordinate is read at all, so there are no two questions to choose

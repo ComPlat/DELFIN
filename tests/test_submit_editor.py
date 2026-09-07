@@ -2251,11 +2251,13 @@ def test_how_hard_the_hand_pulls_is_the_users_to_set():
     # budget goes on or off -- the page's hand has a ceiling exactly while
     # the budget does.
     assert source.count('setPullStrength(') == 3, source.count('setPullStrength(')
-    # Shown under every force hand -- the pull and the two steered ones share
-    # the slider, since it is the strength of a force and all three have one.
-    # Hidden only under the placing hand.
+    # Shown under the hands whose force it caps -- the pull and the live hand,
+    # both a share of a bond.  Hidden under the placing hand (no force) and the
+    # drive hand (no ceiling: it forces the picked coordinate over its barrier
+    # however far the wheel asks, so a slider there would set a number nothing
+    # reads).
     assert 'submit_pull_slider.layout.display = (' in source
-    assert "'' if _hand_is_a_force() else 'none'" in source
+    assert "'' if (_hand_pulls() or _hand_is_live()) else 'none'" in source
     # Enabled and disabled with the rest of the manipulation toolbar.
     assert 'submit_pull_slider.disabled = not enabled' in source
 
