@@ -34,7 +34,7 @@ who needs the combination cap to hold, at the cost of the deeper fold states.
 
 ## [1.3.1] - 2026-09-07
 
-### Changed — Construction (MANTA landing #31)
+### Changed — Construction (refinement of MANTA champion #30)
 
 `DELFIN_FFFREE_INTERLIG_PAIR_FACTOR` now defaults to `0.70` instead of `0.65`
 (`delfin/manta/converter_backend.py`). The inter-ligand pair gate that guards
