@@ -5,6 +5,27 @@ All notable changes to DELFIN will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-09-07
+
+### Changed — Construction (MANTA landing #31)
+
+`DELFIN_FFFREE_INTERLIG_PAIR_FACTOR` now defaults to `0.70` instead of `0.65`
+(`delfin/manta/converter_backend.py`). The inter-ligand pair gate that guards
+backbone re-embedding uses this factor as its contact threshold; at `0.65` it sat
+below the eye's own threshold of `0.70`, so every pair in the band between the two
+was a collision for the eye and invisible to the gate.
+
+Measured as a never-worse A/B on 6000 CCDC systems (`pairgate70`): 5811 systems
+compared, 1100 affected, 968 in the judged intersection. Every never-worse term is
+zero — no capability, isomer, crystal isomer, polyhedron or frame lost, no torn
+ligand bond, no good regression, no build lost — with capability gained on one
+system and the existing stock provably untouched. Against the 1.3.0 landing at
+`0.65` the hard-frame fraction on the affected systems falls from 0.0638 to 0.0512,
+so the appended frames are measurably cleaner while nothing in the stock is lost.
+
+The factor stays overridable through the environment, so an interrupted run can be
+pinned to its original value and stay byte-identical.
+
 ## [1.3.0] - 2026-09-06
 
 ### Added — Construction (MANTA champion #24-#30, 2026-08-03 to 2026-09-05)
