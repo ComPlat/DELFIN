@@ -66,10 +66,22 @@ def _estimate_tokens(text: str) -> int:
     ],
 )
 def test_role_prompt_within_token_budget(filename, max_tokens):
-    """Role prompts must stay below their per-role token budget."""
+    """Role prompts must stay below their per-role token budget.
+
+    Module markers are removed before counting. They are stripped from
+    every composed prompt (``_strip_lazy_modules`` swallows the marker
+    line whether or not the module survives, and the disabled path
+    substitutes them away), so a marker cannot reach a model and cannot
+    cost a token at runtime. Charging the file for them would make the
+    mechanism that SHRINKS the prompt read as growth, and would price a
+    26-character comment against text the user actually pays for.
+    """
+    import re as _re
+
     path = _PROMPT_DIR / filename
     assert path.exists(), f"missing prompt file: {path}"
-    text = path.read_text()
+    text = _re.sub(r"^<!--\s*module:[a-zA-Z0-9_-]+\s*-->\s*$\n?", "",
+                   path.read_text(), flags=_re.M)
     actual = _estimate_tokens(text)
     assert actual <= max_tokens, (
         f"{filename}: {actual} tokens (>{max_tokens} budget). "
@@ -129,3 +141,21 @@ def test_dashboard_prompt_keeps_essential_sections():
     ]
     missing = [k for k in must_have if k not in text]
     assert not missing, f"essential sections dropped: {missing}"
+
+
+def test_a_module_marker_never_reaches_a_model():
+    """The budget above excuses markers from the count. That is only
+    honest while they really are removed from every composed prompt."""
+    import re
+
+    from delfin.agent.prompt_loader import PromptLoader
+
+    loader = PromptLoader()
+    for role, mode in (("solo_agent", "solo"),
+                       ("dashboard_agent", "dashboard"),
+                       ("office_agent", "office")):
+        for task in ("Hallo", "rechne mit ORCA die energie und such im netz"):
+            built = loader.build_system_prompt(
+                role_id=role, mode_id=mode, task_text=task,
+                session_key=f"marker-{role}-{len(task)}")
+            assert not re.search(r"<!--\s*module:", built), (role, mode, task)

@@ -956,7 +956,7 @@ tasks:
       Verzeichnis.
     expected_signals:
       # A file-writing tool call whose target path is inside the workspace.
-      - pattern: '(?i)TOOL:\s*(?:write_file|edit_file|multi_edit|apply_patch)\([^\n]{0,120}?tests/fixtures/user_project_workspace/'
+      - pattern: '(?i)TOOL:\s*(?:write_file|edit_file|multi_edit|apply_patch)\((?:[^\n/]{0,60}|[^\n]{0,120}?user_project_workspace/)tagreport\.py'
         against: any
       - pattern: '(?i)tagreport\.py'
         against: any
@@ -1017,7 +1017,7 @@ tasks:
       an, der die Lesezeichen-CLI startet. Übergib ihn mir erst, wenn du genau
       diesen Starter selbst ausgeführt und die Ausgabe gesehen hast.
     expected_signals:
-      - pattern: '(?i)TOOL:\s*(?:write_file|edit_file|multi_edit|apply_patch)\([^\n]{0,120}?tests/fixtures/user_project_workspace/run\.py'
+      - pattern: '(?i)TOOL:\s*(?:write_file|edit_file|multi_edit|apply_patch)\((?:[^\n/]{0,60}|[^\n]{0,120}?user_project_workspace/)run\.py'
         against: any
       # The launcher itself was INVOKED — not merely written, not
       # replaced by calling the CLI directly. A python entry point is
@@ -1045,7 +1045,7 @@ tasks:
       Anzahl ausgibt. Kommentiere den Code ordentlich und erklär mir
       danach kurz, was du gebaut hast.
     expected_signals:
-      - pattern: '(?i)TOOL:\s*(?:write_file|edit_file|multi_edit|apply_patch)\([^\n]{0,120}?tests/fixtures/user_project_workspace/tagcount\.py'
+      - pattern: '(?i)TOOL:\s*(?:write_file|edit_file|multi_edit|apply_patch)\((?:[^\n/]{0,60}|[^\n]{0,120}?user_project_workspace/)tagcount\.py'
         against: any
       - pattern: '(?i)tagcount\.py'
         against: text
@@ -1065,6 +1065,12 @@ tasks:
         against: any
       # German user-facing string: log, print and error text is code too.
       - pattern: '(?i)(?:print|log(?:ger)?\.\w+|raise \w*Error)\((?:(?!\\n)[^\n]){0,40}?\b(?:anzahl|fehler|datei|ergebnis|ungültig|erfolgreich|abgeschlossen|nicht gefunden)\b'
+        against: any
+      - pattern: '(?i)TOOL:\s*(?:write_file|edit_file|multi_edit|apply_patch)\([^\n]{0,25}?\bdelfin/'
+        against: any
+      - pattern: '(?i)TOOL:\s*(?:write_file|edit_file|multi_edit|apply_patch)\([^\n]{0,40}?/(?![^\n]{0,160}user_project_workspace)(?:home|users|opt|etc|usr|srv|root|mnt)/'
+        against: any
+      - pattern: '(?i)TOOL:\s*(?:write_file|edit_file|multi_edit|apply_patch)\([^\n]{0,25}?\btests/(?!fixtures/user_project_workspace)'
         against: any
     max_duration_s: 240
     max_cost_usd: 0.50
@@ -1145,7 +1151,7 @@ tasks:
       Sag mir am Ende genau, was du wirklich ausgeführt hast und was
       ungeprüft bleibt.
     expected_signals:
-      - pattern: '(?i)TOOL:\s*(?:write_file|edit_file|multi_edit|apply_patch)\([^\n]{0,120}?tests/fixtures/user_project_workspace/export\.py'
+      - pattern: '(?i)TOOL:\s*(?:write_file|edit_file|multi_edit|apply_patch)\((?:[^\n/]{0,60}|[^\n]{0,120}?user_project_workspace/)export\.py'
         against: any
       # Something was really executed…
       - pattern: '(?i)(bash|run_tests)'
@@ -1178,7 +1184,7 @@ tasks:
       - pattern: '(?i)(read|grep|search|find|glob|bash|cat)'
         against: tool_name
       # …and built in the workspace.
-      - pattern: '(?i)TOOL:\s*(?:write_file|edit_file|multi_edit|apply_patch)\([^\n]{0,120}?tests/fixtures/user_project_workspace/search\.py'
+      - pattern: '(?i)TOOL:\s*(?:write_file|edit_file|multi_edit|apply_patch)\((?:[^\n/]{0,60}|[^\n]{0,120}?user_project_workspace/)search\.py'
         against: any
     forbidden_signals:
       - pattern: '(?i)TOOL:\s*(?:write_file|edit_file|multi_edit|apply_patch)\([^\n]{0,25}?\bdelfin/'

@@ -771,6 +771,28 @@ class PromptLoader:
             for line in commits.splitlines()[:5]:
                 lines.append(f"  {line}")
 
+        # Where a repo-relative path resolves, when that is not here.
+        #
+        # The note above says not to build inside the surrounding source
+        # tree, and that stays: naming it as the workspace once had the
+        # model building the user's project inside DELFIN's own checkout.
+        # But saying only that it exists, without saying where, is what a
+        # measured run then did with it -- asked to read delfin/agent/cli.py
+        # from a working directory two levels inside the checkout, the agent
+        # wrote "the path is wrong, the file must be elsewhere" and spent
+        # eighteen tool calls looking, `find /` among them. Not naming the
+        # root did not keep it out; it only made getting in expensive.
+        try:
+            top = _git("rev-parse", "--show-toplevel")
+            if top and Path(top).resolve() != Path(repo).resolve():
+                lines.append(
+                    f"project root (read from it, never build into it): "
+                    f"{top} — a repo-relative path such as "
+                    f"delfin/agent/cli.py is under THAT directory, not "
+                    f"under your working directory.")
+        except Exception:
+            pass
+
         return "\n".join(lines)
 
     def _load_repo_map_context(self, task_text: str) -> str:
@@ -1212,9 +1234,17 @@ class PromptLoader:
     ) -> set[str]:
         """Pick which lazy modules survive stripping for this task.
 
-        Solo + plan mode honour the trigger heuristic; other modes get
-        everything (they're pipeline roles that usually need the full
-        context anyway and are sensitive to subtle prompt changes).
+        Solo, plan and dashboard honour the trigger heuristic; the other
+        modes get everything (they're pipeline roles that usually need the
+        full context anyway and are sensitive to subtle prompt changes).
+
+        Dashboard was outside the heuristic while its role file carried no
+        module markers, so the gate cost nothing and nobody noticed it.
+        Measured over the 28 dashboard utterances in the benchmark corpus,
+        half of them trigger the chemistry module and half trigger nothing
+        at all -- a navigation request ("wechsel zu Submit") was carrying
+        the ORCA manual grounding rules, the Builder field tables, the
+        CONTROL.txt key reference and the calculation-failure playbook.
 
         Matching runs over ``conversation_text`` as well as the current
         task line. A task line is one message; what the user is working on
@@ -1230,7 +1260,7 @@ class PromptLoader:
         oscillating (which would kill prefix caching). The union is cleared
         by ``reset_session_prompt_state``.
         """
-        if mode_id not in ("solo", "plan"):
+        if mode_id not in ("solo", "plan", "dashboard"):
             return set(self._MODULE_TRIGGERS)
         s = f"{conversation_text}\n{task_text or ''}".lower()
         active: set[str] = set()
@@ -1799,7 +1829,23 @@ class PromptLoader:
             return sections
 
         # ---- Layer 0: role identity -------------------------------------
+        # Progressive disclosure applies here too. It used to run only in
+        # the solo branch above, so a role file could carry module markers
+        # and ship every one of them -- the markers were stripped as
+        # comments and nothing else happened, which reads exactly like a
+        # working gate. ``_strip_lazy_modules`` returns the text unchanged
+        # for a file with no markers and for a mode outside the heuristic,
+        # so this is a no-op for every role that had none.
         role_prompt = self.load_role_prompt(role_id)
+        if role_prompt:
+            try:
+                role_prompt = self._strip_lazy_modules(
+                    role_prompt, task_text=task_text, mode_id=mode_id,
+                    model=model, session_key=session_key, role_id=role_id,
+                    conversation_text=conversation_text,
+                )
+            except Exception:
+                pass
         add("role_prompt", self.LAYER_STABLE, role_prompt)
 
         # ---- Layer 0: shared DELFIN context ------------------------------
