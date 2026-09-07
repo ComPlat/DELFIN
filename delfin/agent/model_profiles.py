@@ -21,7 +21,7 @@ something useful turns up, not preemptively.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -261,7 +261,125 @@ _PREFIX_PROFILES: tuple[tuple[str, ModelProfile], ...] = (
 )
 
 
+# --- user overrides ---------------------------------------------------------
+#
+# The knobs above are measured, and a measurement is a claim about one
+# deployment on one day. The KIT roster changed twice this year and the same
+# model name can be re-pointed at different hardware underneath, so the person
+# in front of the endpoint is sometimes the only one who can see that a number
+# is wrong. ``agent.model_overrides`` lets them fix it without editing Python:
+#
+#     "agent": {
+#       "model_overrides": {
+#         "kit.glm-5.3":  {"stale_kill_after_s": 600, "effort_default": "low"},
+#         "kit.deepseek": {"max_tool_rounds": 30}
+#       }
+#     }
+#
+# Exact name first, then longest prefix — the same two-step the registry uses,
+# so an override reads the way the profiles do. Unknown keys and unusable
+# values are ignored rather than raising: this is a settings file, and a typo
+# in it must not take the agent down. An applied override is written into
+# ``notes``, which is what /model and the agent stats print, so a changed
+# number is visible instead of silently different from the file.
+# Every ModelProfile field, with the type a settings value is read as. A
+# test pins this against the dataclass, so a new knob cannot ship without
+# deciding whether a user may set it.
+_COERCE: dict[str, type] = {
+    "compact_prompt": bool,
+    "core_tools_only": bool,
+    "strict_action_prefix": bool,
+    "effort_default": str,
+    "notes": str,
+    "max_tool_rounds": int,
+    "tool_result_cap_kb": int,
+    "stale_kill_after_s": float,
+}
+
+_OVERRIDES_CACHE: tuple[float, dict] | None = None
+
+
+def _load_overrides() -> dict:
+    """``agent.model_overrides`` from the settings file, or {}.
+
+    Reads the JSON directly instead of going through ``load_settings``:
+    that helper rewrites the file when it fills in defaults, and this is
+    called while building a prompt. Cached on the file's mtime, so an edit
+    is picked up on the next turn without re-reading per call.
+    """
+    global _OVERRIDES_CACHE
+    try:
+        from delfin.user_settings import get_settings_path
+        path = get_settings_path()
+        mtime = path.stat().st_mtime if path.exists() else 0.0
+    except Exception:
+        return {}
+    if _OVERRIDES_CACHE is not None and _OVERRIDES_CACHE[0] == mtime:
+        return _OVERRIDES_CACHE[1]
+    table: dict = {}
+    if mtime:
+        try:
+            import json
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            found = (raw.get("agent") or {}).get("model_overrides") or {}
+            if isinstance(found, dict):
+                table = {str(k): v for k, v in found.items()
+                         if isinstance(v, dict)}
+        except Exception:
+            table = {}
+    _OVERRIDES_CACHE = (mtime, table)
+    return table
+
+
+def _override_for(model: str) -> dict:
+    table = _load_overrides()
+    if not table or not model:
+        return {}
+    if model in table:
+        return table[model]
+    best: tuple[int, dict] | None = None
+    for key, values in table.items():
+        if key and model.startswith(key):
+            if best is None or len(key) > best[0]:
+                best = (len(key), values)
+    return best[1] if best else {}
+
+
+def _apply_overrides(model: str, profile: ModelProfile) -> ModelProfile:
+    values = _override_for(model)
+    if not values:
+        return profile
+    changes: dict = {}
+    for key, value in values.items():
+        coerce = _COERCE.get(str(key))
+        if coerce is None:               # not a knob — ignore, do not raise
+            continue
+        try:
+            changes[str(key)] = coerce(value)
+        except (TypeError, ValueError):
+            continue
+    if not changes:
+        return profile
+    named = ", ".join(f"{k}={v!r}" for k, v in sorted(changes.items()))
+    changes.setdefault("notes", profile.notes)
+    changes["notes"] = (
+        f"{changes['notes']} [user override: {named}]".strip())
+    return replace(profile, **changes)
+
+
 def get_profile(model: str, caps: "ModelCapabilities | None" = None) -> ModelProfile:
+    """Return the profile for ``model``, with any user override applied.
+
+    See :func:`_registry_profile` for the lookup and ``_load_overrides``
+    for the settings key. Every lookup goes through here, so an override
+    cannot be bypassed by a caller that happened to hit another branch.
+    """
+    return _apply_overrides(model, _registry_profile(model, caps))
+
+
+def _registry_profile(
+    model: str, caps: "ModelCapabilities | None" = None,
+) -> ModelProfile:
     """Return the profile for ``model``, falling back to a tier default.
 
     ``caps`` (optional :class:`~delfin.agent.model_capabilities.ModelCapabilities`)

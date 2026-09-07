@@ -114,7 +114,35 @@ diagnosis model (e.g. azure.gpt-5-mini), Save monitoring.
   keywords are flagged and force a self-correction); it never weakens
   convergence or resubmits jobs without your explicit confirmation.
 
-8) TIPS
+8) TUNING ONE MODEL (optional)
+------------------------------
+Each model carries its own knobs — how long a turn may run before the
+dashboard calls it stalled, how many tool rounds it gets, the default
+effort. The shipped values are measured, and a measurement is about one
+deployment on one day; when yours behaves differently, set it in
+~/.delfin/settings.json without touching any code:
+
+  "agent": {
+    "model_overrides": {
+      "kit.glm-5.3":  { "stale_kill_after_s": 600, "effort_default": "low" },
+      "kit.deepseek": { "max_tool_rounds": 30 }
+    }
+  }
+
+A key may be a full model name or a prefix (the longest match wins, and
+an exact name beats a prefix). Knobs: compact_prompt, core_tools_only,
+effort_default, max_tool_rounds, tool_result_cap_kb,
+strict_action_prefix, stale_kill_after_s. Unknown keys are ignored.
+An active override is shown in the model's notes, so you can always see
+that a number differs from the shipped one.
+
+Worth knowing about the KIT-hosted models: GLM is the strongest and the
+slowest to start. Its first turn in a session can take minutes while the
+endpoint builds its cache of your prompt; the turns after that are quick.
+DeepSeek is fast from the first turn. If a session feels stuck at the
+beginning, that is what it is.
+
+9) TIPS
 -------
 - Greetings are instant; real tasks deserve one clear message with the
   goal, the paths involved, and what "done" means.
