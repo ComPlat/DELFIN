@@ -6249,6 +6249,49 @@ def _resolve_max_tool_rounds(model: str = "", caps=None) -> int:
     return 500
 
 
+def _sendable_tool_args(raw) -> str:
+    """The arguments string that may go back on the wire.
+
+    An assistant tool_call is replayed to the endpoint on the next round,
+    and vLLM parses its arguments on the way IN. A truncated call — the
+    model cut off mid-string while writing a file — therefore does not
+    fail once and get retried: it makes every later request of the turn a
+    400, and the turn dies with a backend error instead of a tool result
+    the model could act on.
+
+    Observed 2026-09-07 on kit.deepseek-v4-flash, writing a module into a
+    user project: "Unterminated string starting at: line 1 column 34".
+    The same defect was fixed for the id field beside this one, where an
+    empty or duplicated tool_call_id could 400 the next request; the
+    arguments field has the identical shape and was not covered.
+
+    So what is sent is always a JSON object: the original when it parses,
+    the deterministic repair when that works, and an empty object when
+    neither does. The MODEL still learns what went wrong — the executor
+    reads the raw string and reports the parse error as the tool result.
+    """
+    if isinstance(raw, dict):
+        try:
+            return json.dumps(raw)
+        except (TypeError, ValueError):
+            return "{}"
+    text = raw if isinstance(raw, str) else ""
+    if not text.strip():
+        return "{}"
+    try:
+        if isinstance(json.loads(text), dict):
+            return text
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+    repaired = _repair_json_args(text)
+    if isinstance(repaired, dict):
+        try:
+            return json.dumps(repaired)
+        except (TypeError, ValueError):
+            return "{}"
+    return "{}"
+
+
 def _repair_json_args(raw) -> dict | None:
     """Deterministic repair for near-JSON tool arguments from weak models.
 
@@ -15889,18 +15932,25 @@ class OpenAIClient(_BaseClient):
                 else:
                     assistant_msg["content"] = None
                 tc_list = []
+                # What the model actually emitted, kept beside the wire copy
+                # so the executor can report the real parse error while the
+                # request stays sendable. See _sendable_tool_args.
+                _raw_args_by_id: dict[str, str] = {}
                 for idx in sorted(_tool_calls):
                     entry = _tool_calls[idx]
+                    # Backfill a unique id when the backend streamed none
+                    # (some vLLM/Ollama builds omit tool_call ids): an empty
+                    # or duplicated tool_call_id makes the NEXT request's
+                    # assistant/tool pairing ambiguous and can 400.
+                    _call_id = entry["id"] or f"call_{idx}"
+                    _raw_emitted = "".join(entry["arguments_parts"])
+                    _raw_args_by_id[_call_id] = _raw_emitted
                     tc_list.append({
-                        # Backfill a unique id when the backend streamed none
-                        # (some vLLM/Ollama builds omit tool_call ids): an empty
-                        # or duplicated tool_call_id makes the NEXT request's
-                        # assistant/tool pairing ambiguous and can 400.
-                        "id": entry["id"] or f"call_{idx}",
+                        "id": _call_id,
                         "type": "function",
                         "function": {
                             "name": entry["name"],
-                            "arguments": "".join(entry["arguments_parts"]),
+                            "arguments": _sendable_tool_args(_raw_emitted),
                         },
                     })
                 assistant_msg["tool_calls"] = tc_list
@@ -15930,7 +15980,11 @@ class OpenAIClient(_BaseClient):
                     # (e.g. "true", "[1,2]", "42"). Every downstream handler does
                     # arguments.get(...), so anything but a dict must become {}
                     # here or it raises AttributeError and crashes the whole turn.
-                    _raw_args = tc["function"]["arguments"]
+                    # The raw emission, not the sanitised wire copy: a
+                    # truncated call must still reach the model as the
+                    # parse error it is, or it retries the same break.
+                    _raw_args = _raw_args_by_id.get(
+                        tc["id"], tc["function"]["arguments"])
                     _args_parse_error = ""
                     if isinstance(_raw_args, dict):
                         fn_args = _raw_args
