@@ -1430,6 +1430,18 @@ class PromptLoader:
             or self._is_weak_model(model)
         )
 
+        # WHERE the module blocks sit in the role file decides what a
+        # prefix cache can serve. An OpenAI-compatible endpoint reuses a
+        # prompt only up to the first byte that differs, and the active
+        # set is sticky and monotonic — it grows the first time a session
+        # says "ORCA" or asks for a permission. Scattered through the
+        # file, one such block turned every later byte cold: measured on
+        # solo_agent.md, two sessions differing only in the KIT-sandbox
+        # block (29% into the file) shared 24 343 chars of prefix; with
+        # every block moved to the tail the worst pairing shares 43 108.
+        # On the KIT GLM deployment a 15k-token prompt the endpoint
+        # cannot serve warm costs ~200s against ~10s warm, so this is not
+        # a tidiness question. A test keeps them at the tail.
         active = self._detect_active_modules(
             task_text, mode_id, session_key=session_key, role_id=role_id,
             conversation_text=conversation_text,

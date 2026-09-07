@@ -127,3 +127,26 @@ def test_every_knob_has_a_declared_type():
     a user may set it -- not silently un-settable because nobody updated
     the coercion table."""
     assert set(mp._COERCE) == {f.name for f in fields(ModelProfile)}
+
+
+def test_an_override_survives_the_benchmark_stamp(settings):
+    """A run records the first 80 characters of the profile's notes so a
+    later comparison can say which profile produced it. An override
+    appended to a long description is cut off, and the run then reads as
+    if it had been made with the shipped knobs -- which is exactly the
+    conclusion the comparison exists to prevent."""
+    from delfin.agent.benchmark_runner import resolve_profile_name
+
+    settings({"kit.glm-5.3": {"stale_kill_after_s": 600}})
+    stamped = resolve_profile_name("kit.glm-5.3")
+    assert len(stamped) <= 80
+    assert "user override" in stamped
+    assert "stale_kill_after_s" in stamped
+
+
+def test_an_untouched_model_stamps_its_description(settings):
+    from delfin.agent.benchmark_runner import resolve_profile_name
+
+    settings({"kit.deepseek": {"max_tool_rounds": 30}})
+    assert "user override" not in resolve_profile_name("kit.glm-5.3")
+    assert "user override" in resolve_profile_name("kit.deepseek-v4-flash")
