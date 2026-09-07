@@ -4,10 +4,16 @@ How to get real work done with the agent (any project, any user).
 
 1) QUICK START
 --------------
-- Model:   azure.gpt-5.4  (best all-round)  |  kit.qwen3.5-397b (KIT-hosted,
-           good for everyday coding, data-sensitive work)
-           Avoid: gpt-5.5 (broken on the endpoint), mistral-small / nano /
-           gemma for agentic work (they loop — the dashboard warns you).
+- Model:   azure.gpt-5.4  (best all-round)  |  kit.deepseek-v4-flash
+           (KIT-hosted, fast, good for everyday coding and data-sensitive
+           work)  |  kit.glm-5.3 (KIT-hosted, stronger but slow to start:
+           a prompt the endpoint cannot serve from its prefix cache costs
+           minutes, so expect the FIRST turn of a session to be slow and
+           the rest to be quick)
+           Avoid: gpt-5.5 (broken on the endpoint), nano models for
+           agentic work (they loop — the dashboard warns you).
+           The KIT roster changes: the model dropdown is filled from the
+           endpoint's own listing, so trust it over this page.
 - Effort:  medium for normal work, high only for hard problems.
 - Perms:   ask_all   = agent asks before every action (safest, slow)
            acceptEdits = agent works fluently; sandbox + self-mod guard

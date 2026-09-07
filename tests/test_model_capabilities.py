@@ -344,11 +344,12 @@ def test_preflight_kit_weak_model_warns_and_recommends(monkeypatch):
 
 
 def test_preflight_kit_best_model_clean(monkeypatch):
-    payload = {"data": [{"id": "qwen3.5-397b-A17b", "max_model_len": 262_144}]}
+    best = mc.KIT_BEST_MODEL
+    payload = {"data": [{"id": best, "max_model_len": 262_144}]}
     monkeypatch.setattr(
         mc.urllib.request, "urlopen", _urlopen_router({"/v1/models": payload}),
     )
-    ok, msg = mc.preflight("kit", "kit.qwen3.5-397b-A17b", _KIT_BASE)
+    ok, msg = mc.preflight("kit", best, _KIT_BASE)
     assert ok is True
     assert msg == ""
 
@@ -393,12 +394,28 @@ def test_disk_cache_old_flat_format_is_discarded(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# KIT-served model ids (observed on the live /v1/models listing, 2026-07-29):
+# KIT-served model ids (observed on the live /v1/models listing, 2026-09-07):
 # every chat-capable id must resolve to a curated static entry — never fall
 # through to the silent heuristic default that mis-gates tools/windows.
+#
+# The KIT-hosted half of this list is not the same as the 2026-07-29 one:
+# qwen3.5-397b, gpt-oss-120b, gemma4-31b and minimax were all dropped from
+# the endpoint that day and glm-5.3 / deepseek-v4-flash took their place.
+# The entries for the retired ids stay in the registry (a saved setting or
+# a restored session may still name one), so they are asserted separately
+# rather than deleted from the table.
 # ---------------------------------------------------------------------------
 
 _KIT_SERVED_CHAT_IDS = (
+    "alias.complex-claude",
+    "alias.complex-gpt",
+    "alias.complex-local",
+    "alias.medium-claude",
+    "alias.medium-gpt",
+    "alias.medium-local",
+    "alias.simple-claude",
+    "alias.simple-gpt",
+    "alias.simple-local",
     "azure.gpt-5",
     "azure.gpt-5-mini",
     "azure.gpt-5-nano",
@@ -409,22 +426,29 @@ _KIT_SERVED_CHAT_IDS = (
     "azure.gpt-5.6-sol",
     "azure.gpt-5.6-terra",
     "google.claude-fable-5",
+    "google.claude-fable-5.1",
     "google.claude-haiku-4.5",
     "google.claude-opus-4.8",
-    "google.claude-sonnet-4.6",
+    "google.claude-opus-5",
     "google.claude-sonnet-5",
-    "google.gemini-2.5-flash",
-    "google.gemini-2.5-flash-lite",
-    "google.gemini-2.5-pro",
     "google.gemini-3.1-flash-lite",
     "google.gemini-3.5-flash",
-    "kit.gemma4-31b-it",
-    "kit.gpt-oss-120b",
-    "kit.minimax-m2.7-229b",
+    "google.gemini-3.5-flash-lite",
+    "google.gemini-3.8-flash",
+    "kit.deepseek-v4-flash",
+    "kit.glm-5.3",
     "kit.mistral-small-4-119b-a8b",
-    "kit.qwen3.5-397b-A17b",
     "standard-extern",
     "standard-local",
+)
+
+# Served on 2026-07-29, gone on 2026-09-07. Their entries are kept, so they
+# must still resolve — what changes is that DELFIN no longer offers them.
+_KIT_RETIRED_CHAT_IDS = (
+    "kit.qwen3.5-397b-A17b",
+    "kit.gpt-oss-120b",
+    "kit.gemma4-31b-it",
+    "kit.minimax-m2.7-229b",
 )
 
 _KIT_SERVED_NONCHAT_IDS = (
@@ -452,11 +476,29 @@ def test_kit_served_nonchat_id_is_flagged(model):
 
 def test_kit_served_chat_ids_pass_preflight_without_warning():
     # The strong KIT-hosted chat models must not trip the weak-KIT warning.
-    for model in ("kit.qwen3.5-397b-A17b", "kit.gpt-oss-120b",
-                  "kit.minimax-m2.7-229b", "kit.mistral-small-4-119b-a8b"):
+    for model in ("kit.glm-5.3", "kit.deepseek-v4-flash",
+                  "kit.mistral-small-4-119b-a8b"):
         ok, msg = mc.preflight("kit", model, "")
         assert ok is True
         assert msg == "", f"unexpected warning for {model}: {msg}"
+
+
+@pytest.mark.parametrize("model", _KIT_RETIRED_CHAT_IDS)
+def test_a_retired_kit_id_still_resolves(model):
+    """Removed from the roster, kept in the registry: a session restored
+    from disk or a saved setting still names one, and it must resolve to
+    the numbers it had rather than to the weak-model fallback."""
+    caps = mc.resolve("kit", model, "")
+    assert caps.source == "static", f"{model} fell through to {caps.source}"
+    assert caps.context_window >= 32_000
+    assert caps.supports_tools is True
+
+
+@pytest.mark.parametrize("model", _KIT_RETIRED_CHAT_IDS)
+def test_a_retired_kit_id_does_not_pass_preflight_silently(model):
+    ok, msg = mc.preflight("kit", model, "")
+    assert ok is True                     # soft warning, not a block
+    assert "no longer served" in msg, model
 
 
 # ---------------------------------------------------------------------------

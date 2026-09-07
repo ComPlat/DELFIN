@@ -66,24 +66,65 @@ _CACHE_VERSION = 2
 
 # KIT Toolbox hosts many models; only a few are worth driving the agent
 # (strong agentic tool use, large window). Selecting a weak one should warn
-# and point at the best. ``KIT_BEST_MODEL`` is the curated default; the
-# recommended set is the small pool that is worth using for agent work.
-KIT_BEST_MODEL = "kit.qwen3.5-397b-A17b"
-_KIT_RECOMMENDED: frozenset[str] = frozenset({
-    "kit.qwen3.5-397b-A17b",   # best: strong agentic tool routing, no footguns
-    "kit.gpt-oss-120b",        # solid, tool-trained — a notch below qwen3.5
+# and point at the best.
+#
+# The roster is replaced without notice. On 2026-09-07 the live listing had
+# dropped qwen3.5-397b, gpt-oss-120b, gemma4-31b and minimax entirely, which
+# left the curated default naming a model the endpoint no longer serves — the
+# warning told users to switch to something that would 404. So the preference
+# is a RANKED list and the recommendation is the first entry the endpoint
+# actually lists; the constant below is only what is said when the listing
+# cannot be reached.
+_KIT_PREFERENCE: tuple[str, ...] = (
+    # Fast: the endpoint rates it 6/6 for speed and 4/6 for intelligence, and
+    # a 15k-token prompt answers in ~5s cold. For an agent that spends its
+    # day on many short tool rounds, that is the axis that decides.
+    "kit.deepseek-v4-flash",
+    # Strongest of the three (the endpoint calls it the best open-source
+    # model, 6/6 intelligence) but rated 2/6 for speed, and measured at ~200s
+    # for a 15k-token prompt whose prefix the endpoint cannot serve warm.
+    "kit.glm-5.3",
+    # Multimodal MoE, the base model behind the ``standard-local`` alias.
+    "kit.mistral-small-4-119b-a8b",
+)
+KIT_BEST_MODEL = _KIT_PREFERENCE[0]
+_KIT_RECOMMENDED: frozenset[str] = frozenset(_KIT_PREFERENCE)
+
+# Served until 2026-09-07 and gone from the listing since. Kept named because
+# their behavioural tuning is still in ``model_profiles`` and a session
+# restored from disk, a scheduled benchmark or a saved setting may still ask
+# for one — that should read as "retired", not as an unknown model.
+_KIT_RETIRED: frozenset[str] = frozenset({
+    "kit.qwen3.5-397b-A17b",
+    "kit.gpt-oss-120b",
+    "kit.gemma4-31b-it",
+    "kit.minimax-m2.7-229b",
 })
 # Below this window a KIT model is not worth the agent regardless of tools.
 _KIT_MIN_WINDOW = 32_000
+
+# The gateway, for callers that ask what KIT serves without holding a
+# base_url of their own (``kit_best_model``). The client passes its own when
+# it has one; this is the default the rest of the code already hardcodes.
+_KIT_BASE_URL = "https://ki-toolbox.scc.kit.edu/api/v1"
 
 # Network timeouts (seconds). Tags is a cheap liveness probe; show parses
 # metadata; models is the OpenAI-compatible list. The hosted KIT Toolbox
 # /v1/models takes ~5s to answer, so the models probe gets a generous budget —
 # it is a one-time cost: the live result is cached to ~/.delfin (24h TTL), so
 # only the first turn per (model, endpoint) per day pays it.
+#
+# 8s was not generous enough. Four consecutive fetches on 2026-09-07 took
+# 5.02 / 4.77 / 4.77 / 7.66s, so the budget was inside the noise band of the
+# thing it was timing, and losing that race is not a small miss: the model
+# falls back to the 32k heuristic window, DELFIN compacts a 512k-window model
+# every few turns, and each compaction rewrites the head of the prompt. On the
+# KIT GLM deployment a prompt head the endpoint cannot serve from its prefix
+# cache costs ~200s against ~10s for the same prompt warm (measured, same
+# day) — so one lost race turns into minutes per session.
 _TIMEOUT_TAGS = 1.5
 _TIMEOUT_SHOW = 4.0
-_TIMEOUT_MODELS = 8.0
+_TIMEOUT_MODELS = 20.0
 
 
 # ---------------------------------------------------------------------------
@@ -141,10 +182,31 @@ _STATIC: dict[str, dict[str, Any]] = {
                 "supports_vision": True, "recommended_effort": "medium"},
     "gpt-4.1": {"context_window": 200_000, "supports_vision": True},
     # KIT Toolbox (served via vLLM — windows reflect the deployment config).
-    # All kit.* / standard-* ids below were observed on the live /v1/models
-    # listing (2026-07-29).
+    # The kit.* / standard-* ids below were observed on the live /v1/models
+    # listing; the date is when that observation was last made.
+    #
+    # GLM and DeepSeek both advertise "Context length ~ 512K (Hardware
+    # Limited)" in the listing's own description, which the live probe reads
+    # and which wins over these entries. What is written here is only what is
+    # used when the listing is unreachable, so it stays conservative — but
+    # NOT as conservative as the 32k heuristic that applies without an entry:
+    # a 512k model told it has 32k compacts every few turns, and on GLM every
+    # compaction is a cold prompt head worth ~200s.
+    "kit.glm-5.3": {"context_window": 131_072, "is_reasoning": True,
+                    "note": "endpoint-verified 2026-09-07; reasoning family "
+                            "— spends the completion budget on hidden "
+                            "reasoning before any content, so it needs the "
+                            "thinking token floor; listing says 512k"},
+    "kit.deepseek-v4-flash": {"context_window": 131_072,
+                              "note": "endpoint-verified 2026-09-07; V4 chat "
+                                      "line, native function calling; "
+                                      "listing says 512k"},
+    # Retired from the listing on 2026-09-07 (see _KIT_RETIRED). The entries
+    # stay so a saved setting or a restored session resolves to real numbers
+    # instead of the weak-model fallback.
     "kit.qwen3.5-397b-A17b": {"context_window": 128_000,
-                              "note": "endpoint-verified"},
+                              "note": "endpoint-verified 2026-07-29; retired "
+                                      "from the listing 2026-09-07"},
     "kit.gpt-oss-120b": {"context_window": 128_000, "is_reasoning": True,
                          "note": "endpoint-verified; reasoning family — "
                                  "needs the thinking token floor"},
@@ -200,6 +262,14 @@ _STATIC: dict[str, dict[str, Any]] = {
 # lowercase — matching lowercases the model name first. Longest match wins,
 # so specific entries ("mistral-small") dominate broad ones ("mistral").
 _STATIC_PREFIX: tuple[tuple[str, dict[str, Any]], ...] = (
+    # KIT gateway routing aliases (alias.simple-* / medium-* / complex-*).
+    # The gateway picks the target, so nothing here can be more than a safe
+    # floor — which is what the heuristic already gave them. The entry says
+    # so out loud instead: an unknown-by-design id and an id nobody has
+    # looked at yet were indistinguishable, both reported as "heuristic".
+    ("alias.", {"context_window": 32_768,
+                "note": "endpoint-verified alias; routing target chosen by "
+                        "the gateway (conservative-assumed window)"}),
     ("azure.gpt-5", {"context_window": 256_000, "is_reasoning": True,
                      "supports_vision": True, "recommended_effort": "low"}),
     ("kit.gpt-oss", {"context_window": 128_000, "is_reasoning": True,
@@ -511,10 +581,15 @@ def _fetch_openai_models(base_url: str, api_key: str = "") -> list[dict] | None:
     """
     try:
         data = _http_get_json(_models_url(base_url), _TIMEOUT_MODELS, api_key)
-        entries = data.get("data") or []
-        return [e for e in entries if isinstance(e, dict)]
+        entries = [e for e in (data.get("data") or []) if isinstance(e, dict)]
     except Exception:
         return None
+    # The roster question ("which models exist") is answered by the same
+    # response as the capability question ("how big is this one"), and the
+    # capability path is the one that runs on every preflight. Record it
+    # here so nothing else has to go to the wire to ask.
+    _remember_served(base_url, entries)
+    return entries
 
 
 def _model_matches(entry_id: str, model: str) -> bool:
@@ -825,18 +900,98 @@ def register_static(model: str, spec: dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def kit_recommendation(model: str, caps: "ModelCapabilities") -> str:
+# Listing cache for the roster questions (which models exist, which is
+# best). Separate from the per-model capability cache above because the
+# question is about the endpoint, not about one model, and because the
+# answer is asked for while composing a warning — a path that must not
+# spend five seconds on the wire every time it is reached.
+_SERVED_CACHE: dict[str, tuple[float, set[str]]] = {}
+_SERVED_TTL_S = 3600.0
+
+
+def _remember_served(base_url: str, entries: list[dict]) -> None:
+    """Record the chat ids from a ``/v1/models`` response."""
+    served: set[str] = set()
+    for e in entries:
+        info = e.get("info")
+        mid = str((info or {}).get("id") or e.get("id") or "")
+        if mid and not nonchat_reason(mid):
+            served.add(mid)
+    if served:
+        _SERVED_CACHE[base_url or _KIT_BASE_URL] = (time.time(), served)
+
+
+def kit_models_served(base_url: str = "", api_key: str = "",
+                      *, fetch: bool = False) -> set[str]:
+    """Chat model ids the KIT endpoint lists, or an empty set.
+
+    Empty means "could not ask", never "there are none" — every caller has
+    to treat the two the same way, which is why this returns a set rather
+    than raising or returning None.
+
+    Reads the recorded roster by default and does NOT go to the wire: the
+    biggest caller is the warning text on a preflight, and a warning that
+    blocks for the length of an HTTP timeout is worse than a slightly
+    stale one. ``fetch=True`` asks the endpoint. A failed probe is not
+    recorded, so the next fetch retries instead of inheriting one bad
+    minute for the whole TTL.
+    """
+    if not base_url:
+        base_url = _KIT_BASE_URL
+    hit = _SERVED_CACHE.get(base_url)
+    if hit and (time.time() - hit[0]) < _SERVED_TTL_S:
+        return set(hit[1])
+    if not fetch:
+        return set()
+    _fetch_openai_models(base_url, api_key)   # records via _remember_served
+    hit = _SERVED_CACHE.get(base_url)
+    return set(hit[1]) if hit else set()
+
+
+def kit_best_model(base_url: str = "", api_key: str = "",
+                   *, fetch: bool = False) -> str:
+    """The best KIT model for agent work that the endpoint actually serves.
+
+    Recommending a model that 404s is worse than recommending nothing, and
+    that is what a hardcoded name does the day the roster changes. Falls
+    back to :data:`KIT_BEST_MODEL` when no roster has been read — a stale
+    answer beats no answer, and the caller has nothing better.
+    """
+    served = kit_models_served(base_url, api_key, fetch=fetch)
+    if not served:
+        return KIT_BEST_MODEL
+    for name in _KIT_PREFERENCE:
+        if name in served:
+            return name
+    return KIT_BEST_MODEL
+
+
+def kit_recommendation(model: str, caps: "ModelCapabilities",
+                       base_url: str = "", api_key: str = "") -> str:
     """Warn-and-redirect string for a KIT model not worth the agent.
 
     Empty string when the model is fine. Only the strong, tool-capable,
     large-window KIT models are worth it; everything else gets a warning
-    pointing at :data:`KIT_BEST_MODEL`.
+    pointing at the best model the endpoint currently serves.
     """
-    if model in _KIT_RECOMMENDED:
-        return ""
-    if caps.supports_tools and caps.context_window >= _KIT_MIN_WINDOW \
-            and not _is_weak(model):
-        return ""
+    # A retired model is checked FIRST and on its own. It still resolves to
+    # a large window and native tools -- those facts were true while it was
+    # served and the static table still carries them -- so every quality
+    # test below passes it and the user is told nothing until the request
+    # 404s. Being gone is the disqualification.
+    if model not in _KIT_RETIRED:
+        if model in _KIT_RECOMMENDED:
+            return ""
+        if caps.supports_tools and caps.context_window >= _KIT_MIN_WINDOW \
+                and not _is_weak(model):
+            return ""
+    if model in _KIT_RETIRED:
+        # Not a judgement on the model — it was the recommended one until
+        # the roster changed. Say what happened, not that it is weak.
+        return (
+            f"KIT model `{model}` is no longer served by the endpoint. "
+            f"Best KIT model: `{kit_best_model(base_url, api_key)}`."
+        )
     reasons: list[str] = []
     if not caps.supports_tools:
         reasons.append("no tool support")
@@ -845,9 +1000,10 @@ def kit_recommendation(model: str, caps: "ModelCapabilities") -> str:
     if caps.context_window < _KIT_MIN_WINDOW:
         reasons.append(f"small context window ({caps.context_window})")
     why = ", ".join(reasons) or "not recommended for agent work"
+    best = kit_best_model(base_url, api_key)
     return (
         f"KIT model `{model}` is hardly worth it for agent work ({why}). "
-        f"Best KIT model: `{KIT_BEST_MODEL}`."
+        f"Best KIT model: `{best}`."
     )
 
 

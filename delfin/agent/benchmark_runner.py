@@ -4,9 +4,9 @@ The data plane (``benchmark.py``) defines Task / Trajectory / scoring; this
 module bridges to the real ``AgentEngine`` and feeds it the prompts.  A
 single function — ``run_suite`` — is the entire surface area:
 
-    results = run_suite(load_tasks(), model="kit.qwen3.5-397b-A17b",
+    results = run_suite(load_tasks(), model="kit.deepseek-v4-flash",
                         backend="api", provider="kit")
-    path = write_run(results, model="kit.qwen3.5-397b-A17b")
+    path = write_run(results, model="kit.deepseek-v4-flash")
 
 An engine factory can be injected for unit-testing — the real factory
 defers all heavy imports until invocation so a bench CLI parse fails
