@@ -486,12 +486,19 @@ def test_no_press_in_the_editor_runs_against_a_clock():
     # under Fermi smearing, where the first answer's SCC gave out on a bond
     # coming apart: the same follow run once more with an electronic
     # temperature, and it hears the hand let go the same way the first did.
-    # The seventh is the live hand's steered engine (climb.steer), and the
-    # eighth is the drive hand's (climb.steer_coordinate) -- both take their
-    # gradients one at a time and are told to stop between them the same way, a
-    # drag that hears the hand let go mid-answer instead of finishing.
-    assert source.count('should_stop=_hand_gone') == 8, (
-        'every run a drag frame starts has to hear the hand let go')
+    # Six stop on _hand_gone itself: the follow relaxation, its budget
+    # continuation, the two smearing retries, and so on -- each a held drag
+    # that must hear the hand let go mid-answer instead of finishing.
+    assert source.count('should_stop=_hand_gone') == 6, (
+        'every run a held drag starts has to hear the hand let go')
+    # Two more are the steered hands (climb.steer and climb.steer_coordinate),
+    # and they stop on _gone -- a wheel-aware _hand_gone.  A held steered drag
+    # stops the same way; the drive hand's WHEEL does not, because nothing is
+    # held and the frame player's gfnfree would otherwise break its first step
+    # (it is a bounded handful of steps, so it needs no stop to terminate).
+    assert source.count('should_stop=_gone') == 2, (
+        'the steered hands stop on the wheel-aware _gone')
+    assert 'def _hand_gone(' in source and '_gone = (lambda: False)' in source
 
     assert 'seconds_for(method)' not in source, (
         'a press in the editor is running against a clock again')
