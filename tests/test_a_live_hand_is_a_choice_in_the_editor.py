@@ -170,3 +170,21 @@ def test_the_drive_hand_is_ramped_by_the_wheel():
     assert 'setDriveMode(' in _EDITOR
     # A changed selection starts the wheel target fresh.
     assert "state.pop('drive_wheel_target', None)" in _EDITOR
+
+
+def test_the_drive_hand_has_no_force_ceiling_and_no_slider():
+    """Forcing the chosen coordinate over its barrier -- breaking the bond --
+    is the drive hand's whole point, so it has no force ceiling: the wheel
+    drives it as far as it asks, bounded only by the budget.  The live hand
+    keeps the pull's ceiling.  And the slider sets that ceiling, so it is shown
+    for the pull and live hands and hidden for drive (and for the placing
+    hand), where it would set a number nothing reads."""
+    steer = _EDITOR.split('def _steer(etemp):')[1].split('out = _steer(')[0]
+    # The coordinate engine is uncapped; the Cartesian one keeps the cap.
+    assert 'steer_coordinate(' in steer and 'steer(' in steer
+    drive_call = steer.split('steer_coordinate(')[1].split(')')[0]
+    assert 'max_force=None' in drive_call, drive_call
+    cart_call = steer.split('return _climb.steer(')[1].split(')')[0]
+    assert 'max_force=pull_cap' in cart_call, cart_call
+    # The slider is shown only for the two ceiling hands.
+    assert ("'' if (_hand_pulls() or _hand_is_live()) else 'none'") in _EDITOR
