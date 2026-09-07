@@ -5108,6 +5108,14 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: cursor, with a light touch, and the slider takes it up from there.
     _LIVE_MIN_SHARE = 0.1
 
+    #: How far one notch of the drive hand's wheel moves the chosen coordinate
+    #: -- a degree count for an angle or a torsion, an Angstrom for a bond.
+    #: The target accumulates notch by notch, so scrolling on builds a pull
+    #: that crosses a barrier when the hand is strong enough; a few degrees a
+    #: notch is fine enough to stop on a transition state and quick enough to
+    #: turn cis to trans in a couple of turns of the wheel.
+    _DRIVE_WHEEL_STEP = {'distance': 0.05, 'angle': 3.0, 'dihedral': 5.0}
+
     #: How far the answer may put a held atom from the cursor before the drag
     #: counts as under-determined.
     #:
@@ -7019,6 +7027,13 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         kind = _CONSTRAINT_KINDS.get(len(atoms))
         if not kind:
             return None
+        # The wheel's target wins where it is set: the drive hand's wheel
+        # ramps this accumulated value notch by notch, and it is what the
+        # coordinate is driven towards -- the drag's own target below is only
+        # read when the wheel is not the gesture in use.
+        wheel = state.get('drive_wheel_target')
+        if wheel is not None:
+            return {'kind': kind, 'atoms': atoms, 'target': float(wheel)}
         start = state.get('thermal_was') or current
         here = _gfn.coordinates_of(start)
         wish = _gfn.coordinates_of(current)
@@ -7040,6 +7055,54 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         target = (value * _climb.BOHR if kind == 'distance'
                   else math.degrees(value))
         return {'kind': kind, 'atoms': atoms, 'target': float(target)}
+
+    def _drive_wheel(step):
+        """Ramp the picked coordinate one notch of the drive hand's wheel.
+
+        The wheel replaces the drag for the drive hand: dragging a picked atom
+        moves the whole selection as a block and leaves the coordinate
+        unchanged, so the wheel is the gesture that actually forces it.  Each
+        notch advances an accumulating target -- so scrolling on builds a pull
+        that crosses a barrier when the hand is strong enough -- and the drag's
+        own follow worker drives one answer towards it, reusing all of its
+        budget, smearing and framing.
+        """
+        if not _hand_drives():
+            return
+        method = str(state.get('gfn_follow_method') or submit_ff_dd.value)
+        if str(method).lower() not in _climb.CLIMB_METHODS:
+            _set_mol_status('Drive coordinate runs under an xtb method '
+                            '(GFN2, GFN1 or GFN-FF).')
+            return
+        atoms = [int(i) for i in (state.get('picked') or ())]
+        kind = _CONSTRAINT_KINDS.get(len(atoms))
+        if not kind:
+            _set_mol_status('Drive coordinate: pick 2 atoms for a bond, 3 for '
+                            'an angle or 4 for a torsion, then scroll to force '
+                            'it.')
+            return
+        if not (submit_relax_btn.value and _server_method()):
+            _set_mol_status('Drive coordinate needs Dynamik Opt on.')
+            return
+        current = _current_xyz() or ''
+        here = _gfn.coordinates_of(current)
+        if not here or any(3 * a + 2 >= len(here) for a in atoms):
+            return
+        bohr = _climb.np.asarray(here, dtype=float).reshape(-1, 3) / _climb.BOHR
+        value = _climb._coordinate_value(bohr, kind, atoms)
+        value = (value * _climb.BOHR if kind == 'distance'
+                 else math.degrees(value))
+        # Accumulate: the target builds notch by notch from where the
+        # coordinate stood when the wheel first turned, so a barrier is
+        # crossed by scrolling further rather than by one big step.
+        tgt = state.get('drive_wheel_target')
+        if tgt is None:
+            tgt = value
+        tgt = float(tgt) + float(step) * _DRIVE_WHEEL_STEP.get(kind, 5.0)
+        state['drive_wheel_target'] = tgt
+        # Drive one answer towards it, through the follow worker (which begins
+        # the session, holds the budget, and carries the geometry forward).
+        _gfn_follow_step(current, atoms)
 
     def _live_answer(current, holding, began, method, label, charge,
                      uhf, wet, model, driven=None):
@@ -10376,6 +10439,9 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         record('pick', v=raw)
         indices = [int(part) for part in raw.split(',') if part.strip().isdigit()]
         state['picked'] = indices
+        # A changed selection is a changed coordinate for the drive hand, so
+        # its wheel target starts fresh from wherever the new one stands.
+        state.pop('drive_wheel_target', None)
         _step_for_selection(indices)
         _refresh_swap(indices)
         # The two scan fields belong to the selection: they appear when there
@@ -11711,6 +11777,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         if len(parts) != 3:
             return
         verb, payload = parts[0], parts[2]
+
+        if verb == 'drivewheel':
+            # The drive hand's wheel, one notch: ramp the picked coordinate.
+            # The sign is all the page sends; how far a notch is and where the
+            # target stands is the kernel's, in _drive_wheel.
+            try:
+                step = int(float(payload))
+            except (TypeError, ValueError):
+                return
+            _drive_wheel(step)
+            return
 
         if verb == 'editor':
             # The page saying which editor it is running. Until it has, every
@@ -19388,6 +19465,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             f'{json.dumps(submit_scope_id)},{_hand_share()},'
             f'{json.dumps(_pull_most())});'
         )
+        # And whether the drive hand is in use, so the page knows to ramp the
+        # picked coordinate on the wheel instead of zooming.  A fresh coordinate
+        # each time the hand becomes the drive one, so the wheel starts from
+        # where the structure is rather than from an old target.
+        _run_manip_js(
+            'if(window.__delfinSubmitManip&&window.__delfinSubmitManip.setDriveMode)'
+            'window.__delfinSubmitManip.setDriveMode('
+            f'{json.dumps(submit_scope_id)},{json.dumps(bool(_hand_drives()))});'
+        )
+        if not _hand_drives():
+            state.pop('drive_wheel_target', None)
 
     def on_submit_hand_changed(change):
         """Moving or pulling, and what each of them brings with it."""

@@ -1362,6 +1362,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
                 ffActive: false,
                 settleOnRelease: true,
                 pullShare: DEFAULT_PULL_SHARE,
+                driveMode: false,
                 ffFading: null,
                 pinned: [],
                 ffFrameMs: 16,
@@ -4353,6 +4354,16 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         return state.pullShare;
     }
 
+    // Whether the drive hand is the one in use.  While it is, the wheel ramps
+    // the picked coordinate rather than zooming -- see the wheel handler.  The
+    // kernel says so through this, the way it says the pull's strength through
+    // setPullStrength, because which hand is in use is a Python-side choice.
+    function setDriveMode(scopeKey, on) {
+        var state = getState(scopeKey);
+        if (!state) return;
+        state.driveMode = !!on;
+    }
+
     function ffEndDrag(scopeKey, heldSerials) {
         var state = getState(scopeKey);
         // Before anything else, and whether or not the field is still there:
@@ -4692,6 +4703,19 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         // mode was switched on. Hand the event over.
         ov.addEventListener('wheel', function(e) {
             if (state.mode === 'off') return;
+            // The drive hand's wheel ramps the chosen coordinate instead of
+            // zooming, but only while there is a coordinate to ramp -- two to
+            // four atoms picked.  Otherwise, and in every other mode, the
+            // wheel is the zoom it has always been; the override is confined
+            // to the one mode and the one moment it means something.
+            if (state.driveMode && state.picks && state.picks.length >= 2
+                    && state.picks.length <= 4) {
+                e.preventDefault();
+                e.stopPropagation();
+                var step = (e.deltaY < 0) ? 1 : -1;
+                pushCommandToPython(scopeKey, 'drivewheel', String(step));
+                return;
+            }
             var viewer = getViewer(scopeKey);
             if (!viewer || typeof viewer._handleMouseScroll !== 'function') return;
             e.preventDefault();
@@ -5901,6 +5925,7 @@ SUBMIT_MANIP_BOOTSTRAP_JS = r"""
         setDragSensitivity: setDragSensitivity,
         setLiveHand: setLiveHand,
         setPullStrength: setPullStrength,
+        setDriveMode: setDriveMode,
         setFixedInternals: setFixedInternals,
         exchangeLigands: exchangeLigands,
         centreOnSystem: centreOnSystem,
