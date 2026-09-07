@@ -7131,6 +7131,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             0 <= int(i) < count for i in holding)
         pricing = _thermal_live() and not stale
         state.pop('thermal_held_back', None)
+        # Whether this answer is the drive hand's WHEEL rather than a held
+        # drag.  It is not gated on "the hand let go", because nothing is being
+        # held: the wheel is discrete notches, not a pointer that is down.  The
+        # follow session the frame player runs sends `gfnfree` the moment the
+        # mouse is not on an atom -- which is always, on the wheel -- and that
+        # clears `gfn_follow`, so a steer told to stop when the hand is gone
+        # would break on its first step and take none: the coordinate never
+        # moved while the line said it was driving.  So the wheel's steer is
+        # not stoppable that way; it runs its few steps and answers.
+        wheel = (driven is not None
+                 and state.get('drive_wheel_target') is not None)
+        _gone = (lambda: False) if wheel else _hand_gone
         # The wish clamped to what the budget can still pay for, so the
         # spring never leads the atom past the ceiling and the drag rests
         # against the wall rather than springing back from it.
@@ -7161,23 +7173,23 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                     start, driven['kind'], driven['atoms'], driven['target'],
                     method=method, charge=charge, uhf=uhf, solvent=wet,
                     cores=cores, etemp=etemp, max_force=pull_cap,
-                    should_stop=_hand_gone)
+                    should_stop=_gone)
             return _climb.steer(
                 start, current, holding, method=method, charge=charge,
                 uhf=uhf, solvent=wet, cores=cores, etemp=etemp,
-                max_force=pull_cap, should_stop=_hand_gone)
+                max_force=pull_cap, should_stop=_gone)
 
         out = _steer(warmth)
         # A gradient that will not run at a closed gap is the same failure
         # the relaxation hits there, and the same smearing rescues it:
         # tried once more, warmed, before it is reported.
-        if (not out.get('ok') and warmth is None and not _hand_gone()
+        if (not out.get('ok') and warmth is None and not _gone()
                 and _gfn.scc_did_not_converge(out.get('status'))):
             warmth = _smearing_for(method, failed=True)
             if warmth:
                 out = _steer(warmth)
         if not out.get('ok'):
-            if _hand_gone():
+            if _gone():
                 return
             note = str(out.get('status') or 'it did not run')
             if _gfn.scc_did_not_converge(note):

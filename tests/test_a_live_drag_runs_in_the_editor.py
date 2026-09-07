@@ -343,3 +343,39 @@ def test_the_drive_wheel_needs_a_picked_coordinate():
     said = ' '.join(str(one) for one in (state.get('mol_status_lines') or ()))
     assert 'pick 2 atoms' in said.lower(), said
     assert state.get('drive_wheel_target') is None
+
+
+@_needs_xtb
+def test_the_wheel_drives_even_when_the_hand_is_counted_gone():
+    """The real-browser bug: the frame player sends `gfnfree` whenever the
+    mouse is not on an atom -- which is always, on the wheel -- and that clears
+    `gfn_follow`, so `_hand_gone()` reads True.  A steer told to stop when the
+    hand is gone then breaks on its first step and takes none: the status says
+    "drives the distance" while the coordinate never moves.  The wheel's steer
+    must not be stoppable that way.  Here `gfn_follow` is False throughout and
+    the wheel still moves the coordinate.
+    """
+    import time as _t
+    part, state = _an_editor(_CIS_BUTENE)
+    part.submit_ff_dd.value = 'gfn2'
+    part.submit_relax_btn.value = True
+    part.submit_hand_dd.options = [('pull with a force', 'pull'),
+                                   ('move the atom', 'move'),
+                                   ('live dynamics', 'live'),
+                                   ('drive coordinate', 'drive')]
+    part.submit_hand_dd.value = 'drive'
+    part.submit_pull_slider.value = 3.0
+    state['picked'] = [0, 1, 2, 3]
+    state['thermal_was'] = _CIS_BUTENE
+    state['drive_wheel_target'] = _dihedral(_coords(_CIS_BUTENE), 0, 1, 2, 3) + 40.0
+    state['gfn_follow'] = False          # as gfnfree leaves it -- hand "gone"
+
+    before = _dihedral(_coords(_CIS_BUTENE), 0, 1, 2, 3)
+    driven = {'kind': 'dihedral', 'atoms': [0, 1, 2, 3],
+              'target': state['drive_wheel_target']}
+    part._live_answer(_CIS_BUTENE, [0, 1, 2, 3], _t.perf_counter(),
+                      'gfn2', 'GFN2-xTB', 0, 0, None, None, driven=driven)
+    after = _dihedral(_coords(part.coords_widget.value), 0, 1, 2, 3)
+    assert abs(after - before) > 3.0, (
+        f'the wheel took no steps with the hand counted gone: {before:.0f} -> '
+        f'{after:.0f}')
