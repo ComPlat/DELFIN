@@ -1001,7 +1001,17 @@ def _min_nonbonded_heavy(syms, P) -> float:
 #    0.70 is the maximum, and that is no coincidence: there the gate asks exactly
 #    "does this frame newly violate the EYE criterion?".  Whoever turns it higher
 #    measures less.
-_IL_CLASH_FACTOR = float(os.environ.get("DELFIN_FFFREE_INTERLIG_PAIR_FACTOR", "0.65"))
+#
+#    ✅ LANDED 07.09.2026 -- the default is now 0.70 (A/B `pairgate70`, 5811 systems
+#    compared, 1100 affected, 968 in the judged intersection).  Every never-worse term
+#    is zero -- capability_lost, isomers_lost, ccdc_isomer_lost, poly_lost,
+#    broken_regressed, hard_frames_regressed, torn_ligand_regressed, good regressions,
+#    build_lost -- with capability_gained 1 and the stock provably untouched.  Against
+#    the landing of 05.09. (`pairgate6kv`, factor 0.65) the hard-frame fraction on the
+#    affected systems falls from 0.0638 to 0.0512, so the appended frames are measurably
+#    cleaner while nothing in the stock is lost.  The reason the simulation above gave
+#    for 0.70 therefore holds under measurement, not only in the model.
+_IL_CLASH_FACTOR = float(os.environ.get("DELFIN_FFFREE_INTERLIG_PAIR_FACTOR", "0.70"))
 _IL_VDW = {"H": 1.20, "C": 1.70, "N": 1.55, "O": 1.52, "F": 1.47, "P": 1.80,
            "S": 1.80, "Cl": 1.75, "Br": 1.85, "I": 1.98, "B": 1.92, "Si": 2.10,
            "Se": 1.90, "As": 1.85, "Te": 2.06}
