@@ -771,6 +771,28 @@ class PromptLoader:
             for line in commits.splitlines()[:5]:
                 lines.append(f"  {line}")
 
+        # Where a repo-relative path resolves, when that is not here.
+        #
+        # The note above says not to build inside the surrounding source
+        # tree, and that stays: naming it as the workspace once had the
+        # model building the user's project inside DELFIN's own checkout.
+        # But saying only that it exists, without saying where, is what a
+        # measured run then did with it -- asked to read delfin/agent/cli.py
+        # from a working directory two levels inside the checkout, the agent
+        # wrote "the path is wrong, the file must be elsewhere" and spent
+        # eighteen tool calls looking, `find /` among them. Not naming the
+        # root did not keep it out; it only made getting in expensive.
+        try:
+            top = _git("rev-parse", "--show-toplevel")
+            if top and Path(top).resolve() != Path(repo).resolve():
+                lines.append(
+                    f"project root (read from it, never build into it): "
+                    f"{top} — a repo-relative path such as "
+                    f"delfin/agent/cli.py is under THAT directory, not "
+                    f"under your working directory.")
+        except Exception:
+            pass
+
         return "\n".join(lines)
 
     def _load_repo_map_context(self, task_text: str) -> str:
