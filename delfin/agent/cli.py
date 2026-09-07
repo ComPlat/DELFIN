@@ -2338,7 +2338,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     bench_run = bench_sub.add_parser("run", help="Run the suite vs a model")
     bench_run.add_argument("--model", required=True,
-                           help="Model name (e.g. kit.qwen3.5-397b-A17b, opus)")
+                           help="Model name (e.g. kit.deepseek-v4-flash, opus)")
     bench_run.add_argument("--backend", default="", choices=["", "api", "cli"])
     bench_run.add_argument("--provider", default="",
                            help="claude / openai / kit")
@@ -2489,7 +2489,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     bench_nightly.add_argument("--model", required=True,
-                               help="Model name (e.g. kit.qwen3.5-397b-A17b)")
+                               help="Model name (e.g. kit.deepseek-v4-flash)")
     bench_nightly.add_argument("--provider", default="",
                                help="claude / openai / kit")
     bench_nightly.add_argument("--backend", default="",

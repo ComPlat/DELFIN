@@ -3509,26 +3509,25 @@ def create_tab(ctx):
             ("o4-mini", "o4-mini"),
             ("o3", "o3"),
         ],
-        # Mirrors the live KIT-Toolbox /models response as of 2026-05.
-        # Kept generous so a failed/empty fetch still gives users every
-        # selectable model — the live fetch overwrites this when it
-        # succeeds, so any newer additions appear automatically.
+        # Mirrors the live KIT-Toolbox /models response as of 2026-09-07.
+        # This is what a user sees when the live fetch fails (no key,
+        # endpoint down, probe timed out), so it must not offer models the
+        # endpoint has dropped: on 2026-09-07 the roster lost qwen3.5-397b,
+        # gpt-oss-120b, gemma4-31b and minimax in one go, and picking one
+        # from a stale list gets a 404 with no explanation. The live fetch
+        # overwrites this when it succeeds, so newer additions still appear
+        # on their own.
         "kit": [
-            ("Azure GPT-5.1", "azure.gpt-5.1"),
+            ("Azure GPT-5.6-luna", "azure.gpt-5.6-luna"),
+            ("Azure GPT-5.5", "azure.gpt-5.5"),
             ("Azure GPT-5.4", "azure.gpt-5.4"),
+            ("Azure GPT-5.1", "azure.gpt-5.1"),
             ("Azure GPT-5", "azure.gpt-5"),
             ("Azure GPT-5-mini", "azure.gpt-5-mini"),
             ("Azure GPT-5-nano", "azure.gpt-5-nano"),
-            ("Azure o3", "azure.o3"),
-            ("Azure o4-mini", "azure.o4-mini"),
-            ("Azure GPT-4.1", "azure.gpt-4.1"),
-            ("Azure GPT-4.1-mini", "azure.gpt-4.1-mini"),
-            ("Azure GPT-4.1-nano", "azure.gpt-4.1-nano"),
-            ("KIT gpt-oss 120B", "kit.gpt-oss-120b"),
-            ("KIT gemma4 31B-it", "kit.gemma4-31b-it"),
-            ("KIT minimax m2.7 229B", "kit.minimax-m2.7-229b"),
+            ("KIT DeepSeek V4 Flash", "kit.deepseek-v4-flash"),
+            ("KIT GLM-5.3", "kit.glm-5.3"),
             ("KIT mistral-small-4 119B-a8b", "kit.mistral-small-4-119b-a8b"),
-            ("KIT qwen3.5 397B-A17b", "kit.qwen3.5-397b-A17b"),
         ],
         # Common tool-calling-capable Ollama / vLLM / LM Studio models
         # as of 2026-05. The live /api/tags fetch overwrites this so
@@ -16249,7 +16248,7 @@ def create_tab(ctx):
                         f"temporarily unavailable on KIT (backend overloaded or "
                         f"restarting — this is NOT a key/auth problem). Wait a "
                         f"moment and resend, or switch to a responsive model "
-                        f"(e.g. `kit.gpt-oss-120b`)."
+                        f"(e.g. `kit.deepseek-v4-flash`)."
                     )
                 elif is_model_unavailable:
                     # Learn it: never route/pick this model again until
