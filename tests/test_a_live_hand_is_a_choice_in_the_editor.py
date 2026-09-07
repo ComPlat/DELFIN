@@ -114,9 +114,9 @@ def test_the_drive_hand_forces_the_selected_coordinate():
     assert "_CONSTRAINT_KINDS.get(len(atoms))" in wish
     assert "state.get('picked')" in wish
     # And the engine driven is the coordinate one, not the Cartesian spring.
-    answer = _EDITOR.split('def _live_answer(')[1][:6000]
-    assert 'steer_coordinate(' in answer
-    assert 'if driven is not None:' in answer
+    steer = _EDITOR.split('def _steer(etemp):')[1].split('out = _steer(')[0]
+    assert 'steer_coordinate(' in steer
+    assert 'if driven is not None:' in steer
 
 
 def test_the_smearing_the_pull_uses_is_reused_by_the_live_hand():
@@ -191,16 +191,23 @@ def test_the_drive_hand_has_no_force_ceiling_and_no_slider():
 
 
 def test_the_rest_settles_when_the_wheel_stops():
-    """A notch gives the rest a few steps; when the wheel stops, a debounced
-    settle relaxes it the whole way at the held coordinate -- the reacted
-    geometry rather than a half-relaxed snapshot.  Armed by each notch, disarmed
-    by a newer one (a serial), and the settle answer takes many steps."""
+    """A notch gives the rest a few steered steps; when the wheel stops, a
+    debounced settle relaxes it the whole way at the pinned coordinate -- the
+    reacted geometry rather than the strained snapshot the notches leave.  Armed
+    by each notch, disarmed by a newer one (a serial), and the settle answer is
+    a constrained minimisation, not more steered steps."""
     wheel = _EDITOR.split('def _drive_wheel(')[1].split('def _drive_settle(')[0]
     assert 'threading.Timer(_DRIVE_SETTLE_AFTER' in wheel
     assert "state['drive_settle_serial']" in wheel
     settle = _EDITOR.split('def _drive_settle(')[1].split('def ')[0]
     assert "serial != state.get('drive_settle_serial')" in settle  # newer notch disarms
     assert "state['drive_settling'] = True" in settle
-    # The settle answer relaxes over many steps; an ordinary notch over a few.
-    assert '_DRIVE_SETTLE_STEPS if state.pop(' in _EDITOR
-    assert 'steps=drive_steps' in _EDITOR
+    # The settle is a constrained optimisation pinning the driven coordinate at
+    # the wheel's target; an ordinary notch is a few steered steps.
+    assert "settling = bool(state.pop('drive_settling', None))" in _EDITOR
+    steer = _EDITOR.split('def _steer(etemp):')[1].split('out = _steer(')[0]
+    assert 'if settling:' in steer
+    assert 'optimize_with_gfn(' in steer
+    assert "'mode': 'fix'" in steer
+    assert "driven['target']" in steer
+    assert 'steps=_climb.STEER_STEPS' in steer

@@ -491,13 +491,15 @@ def test_no_press_in_the_editor_runs_against_a_clock():
     # that must hear the hand let go mid-answer instead of finishing.
     assert source.count('should_stop=_hand_gone') == 6, (
         'every run a held drag starts has to hear the hand let go')
-    # Two more are the steered hands (climb.steer and climb.steer_coordinate),
-    # and they stop on _gone -- a wheel-aware _hand_gone.  A held steered drag
+    # Three more are the drive/live hands, and they stop on _gone -- a
+    # wheel-aware _hand_gone.  Two are the steered engines (climb.steer for the
+    # live hand and climb.steer_coordinate for the drive notch); the third is
+    # the drive hand's settle, a constrained optimize_with_gfn that relaxes the
+    # rest at the pinned coordinate when the wheel stops.  A held steered drag
     # stops the same way; the drive hand's WHEEL does not, because nothing is
-    # held and the frame player's gfnfree would otherwise break its first step
-    # (it is a bounded handful of steps, so it needs no stop to terminate).
-    assert source.count('should_stop=_gone') == 2, (
-        'the steered hands stop on the wheel-aware _gone')
+    # held and the frame player's gfnfree would otherwise break its first step.
+    assert source.count('should_stop=_gone') == 3, (
+        'the drive/live hands stop on the wheel-aware _gone')
     assert 'def _hand_gone(' in source and '_gone = (lambda: False)' in source
 
     assert 'seconds_for(method)' not in source, (
