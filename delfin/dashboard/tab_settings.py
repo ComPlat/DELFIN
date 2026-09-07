@@ -392,9 +392,13 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
     # Combobox still allows free typing for anything newer).
     _JOBMON_MODEL_SUGGESTIONS = {
         '': [],
+        # As listed by the endpoint on 2026-09-07. The KIT-hosted roster
+        # changed that day; a suggestion for a model that is gone reads as
+        # a recommendation and answers with a 404.
         'kit': ['azure.gpt-5-nano', 'azure.gpt-5-mini', 'azure.gpt-5.1',
-                'azure.gpt-5.4', 'azure.gpt-4.1-mini', 'azure.o4-mini',
-                'kit.qwen3.5-397b-A17b', 'kit.gpt-oss-120b'],
+                'azure.gpt-5.4', 'azure.gpt-5.6-luna',
+                'kit.deepseek-v4-flash', 'kit.glm-5.3',
+                'kit.mistral-small-4-119b-a8b'],
         'claude': ['haiku', 'sonnet', 'opus'],
         'openai': ['gpt-5.4-mini', 'gpt-5.4', 'gpt-4.1-mini', 'o4-mini'],
         'ollama': ['qwen2.5-coder:7b', 'qwen2.5-coder:32b',

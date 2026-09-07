@@ -2103,6 +2103,11 @@ class AgentEngine:
             # Plan is a permission profile now (not a mode): inject the plan
             # addendum whenever the active permission profile is "plan".
             permission_mode=_perm_mode,
+            # One authority for the question. The critical anchor claims
+            # to override any conflicting prior instruction, so a fixed
+            # language there outranks the session pin — and a live GLM
+            # turn read both and said so in its own reasoning.
+            session_language=str(getattr(self, "_session_language", "") or ""),
         )
 
     def stream_response(
@@ -2386,6 +2391,28 @@ class AgentEngine:
         # in the message list, since the API takes it as a separate arg.
         self.last_system_prompt = system_prompt
         self._system_prompt_chars = len(system_prompt or "")
+
+        # Say what the silence is, once per session, for a model whose
+        # first turn is slow. GLM answered "Hallo" in 190s and was
+        # reported as a hang -- correctly, because nothing distinguished
+        # it from one. The endpoint is building its prefix cache for a
+        # 15k-token prompt; the turns after it are ~20x quicker. This
+        # buys the user nothing but the difference between waiting and
+        # not knowing, which is the whole complaint.
+        if not getattr(self, "_cold_start_noted", False):
+            self._cold_start_noted = True
+            try:
+                from .model_profiles import get_profile as _gp
+                from . import verify_guard as _vg_cold
+                _cold = _vg_cold.cold_start_notice(
+                    getattr(self, "model", "") or "",
+                    float(_gp(getattr(self, "model", "") or "")
+                          .slow_cold_start_s or 0.0),
+                )
+                if _cold:
+                    _notice(_cold)
+            except Exception:
+                pass
 
         # Let the tool loop re-read the steering blocks between rounds. The
         # system prompt above is frozen from here until the turn ends, so
@@ -3263,7 +3290,19 @@ class AgentEngine:
             self._session_language = found
 
     def _session_language_block(self) -> str:
-        """The one line that goes in front of the model, or ""."""
+        """The one line that goes in front of the model, or "".
+
+        It names its own rank. Three other things in the prompt speak
+        about language -- the critical anchor, the shared answer-language
+        rule, and a remembered preference in the memory section -- and
+        the first two are now written from this session. The third is
+        recalled text this code does not own, so the block says out loud
+        which one wins. A model given two rules picks one, and which one
+        is not a decision anybody made: a live GLM turn spent its
+        reasoning on exactly that ("the critical rules say communicate in
+        German, but the session language section says English") before
+        answering a one-word greeting.
+        """
         want = str(getattr(self, "_session_language", "") or "")
         try:
             from . import verify_guard as _vg
@@ -3275,9 +3314,11 @@ class AgentEngine:
         return (
             f"SESSION LANGUAGE: {name}. Every answer in this session is "
             f"written in {name} — the first message set it, and a later "
-            f"message in another language does not change it. This covers "
-            f"what you SAY. What goes into code is English either way: "
-            f"comments, docstrings, identifiers, log and error strings."
+            f"message in another language does not change it. It outranks "
+            f"a remembered language preference and any rule about the "
+            f"latest message. This covers what you SAY. What goes into "
+            f"code is English either way: comments, docstrings, "
+            f"identifiers, log and error strings."
         )
 
     def _nudge_language_if_wrong(self, chunks) -> None:

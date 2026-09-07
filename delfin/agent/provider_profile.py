@@ -568,6 +568,34 @@ def update_from_outcome(
     return changes
 
 
+# Learned rules that name a conversation language are dropped from the
+# prompt. The session's language is decided by the user's first message
+# and stated in the critical anchor, which says of itself that it
+# overrides any conflicting prior instruction — so a learned line saying
+# something else puts two rules in front of the model and lets it pick.
+# It is not hypothetical: three of these exist in the shipped baseline
+# (shared, kit, ollama), and a live GLM turn wrote the conflict down in
+# its own reasoning before choosing one.
+#
+# Only the language claim goes. Everything else these rules carry —
+# exactness, units, how much detail a provider needs — is kept, because
+# none of it competes with anything.
+_LANGUAGE_CLAIM = re.compile(
+    r"\b(german|deutsch|english|englisch|french|spanish|italian)\b", re.I)
+
+
+def _dictates_a_language(rule) -> bool:
+    """Does this learned rule tell the agent which language to speak?"""
+    text = str(rule or "")
+    if not _LANGUAGE_CLAIM.search(text):
+        return False
+    # "Code and commits in English" is about artifacts, not conversation,
+    # and the anchor says the same thing — it may stay.
+    return not re.search(
+        r"\b(code|commits?|artifacts?|identifiers?|docstrings?)\b",
+        text, re.I)
+
+
 def format_profile_context(
     provider: str,
     path: Path | None = None,
@@ -620,9 +648,11 @@ def format_profile_context(
             f"Provider failures: {', '.join(failures[-3:])}"
         )
 
-    communication_rules = (
-        provider_overlay.get("communication", {}).get("rules", [])
-    )
+    communication_rules = [
+        rule for rule in (
+            provider_overlay.get("communication", {}).get("rules", []) or ())
+        if not _dictates_a_language(rule)
+    ]
     if communication_rules:
         parts.append(
             "Communication: " + ", ".join(str(rule) for rule in communication_rules[:3])

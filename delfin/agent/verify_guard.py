@@ -648,6 +648,12 @@ _CAVEAT_TEXTS: dict[str, dict[str, str]] = {
                         "vollständige Liste prüfen, bevor sie weitergegeben "
                         "wird."),
         "truncated_where": "ein Werkzeug-Ergebnis",
+        "cold_start_a": "\n> ⏳ Erster Zug mit ",
+        "cold_start_b": (": der Endpoint baut gerade seinen Cache für "
+                         "diesen Prompt auf. Das dauert erfahrungsgemäß "
+                         "bis zu "),
+        "cold_start_c": (" — die folgenden Züge dieser Sitzung sind dann "
+                         "deutlich schneller.\n"),
     },
     "en": {
         "unsourced": ("\n\n[verify] Caveat: the following figures are "
@@ -661,6 +667,11 @@ _CAVEAT_TEXTS: dict[str, dict[str, str]] = {
                         "please check it against the full list before "
                         "passing it on."),
         "truncated_where": "a tool result",
+        "cold_start_a": "\n> ⏳ First turn on ",
+        "cold_start_b": (": the endpoint is building its cache for this "
+                         "prompt. Expect up to "),
+        "cold_start_c": (" — the later turns of this session are much "
+                         "faster.\n"),
     },
 }
 
@@ -676,6 +687,23 @@ _CAVEAT_TEXTS: dict[str, dict[str, str]] = {
 # in their own contexts and must not repaint each other's language.
 _caveat_language: "_contextvars.ContextVar[str]" = (
     _contextvars.ContextVar("delfin_caveat_language", default="de"))
+
+
+def cold_start_notice(model: str, seconds: float) -> str:
+    """The line a user reads instead of watching nothing happen.
+
+    A first turn that takes minutes and says nothing is indistinguishable
+    from a hang, and the user reported it as one. Speaks the session's
+    language, like every other note the user reads.
+    """
+    if not model or seconds <= 0:
+        return ""
+    minutes = max(1, int(seconds // 60))
+    unit = "Minuten" if (_caveat_language.get() or "de") == "de" else "minutes"
+    if minutes == 1:
+        unit = "Minute" if (_caveat_language.get() or "de") == "de" else "minute"
+    return (f"{_t('cold_start_a')}{model}{_t('cold_start_b')}"
+            f"{minutes} {unit}{_t('cold_start_c')}")
 
 
 def set_caveat_language(lang: str) -> None:

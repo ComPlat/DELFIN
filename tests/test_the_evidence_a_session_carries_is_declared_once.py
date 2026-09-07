@@ -209,6 +209,11 @@ _NOT_CARRIED = {
     "_cost_cap_hit", "_cost_cap_value", "_ambiguous_columns_turn",
     "_truncated_tools_turn", "_stop_requested", "_steering_delivered",
     "_steering_refreshes",
+    #    Whether this SESSION has already been told that the first turn on
+    #    a slow-starting model takes minutes. Not carried: a resumed
+    #    session faces the endpoint's prefix cache cold again, so it earns
+    #    the notice again.
+    "_cold_start_noted",
     #    Whether THIS turn has already been told it is answering in the
     #    wrong language. Per turn on purpose: a resumed session that
     #    inherited a spent latch would stay silent through its first
