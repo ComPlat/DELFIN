@@ -29,6 +29,9 @@ class PromptSection:
 # Critical rules repeated at the END of the system prompt (recency bias).
 # Keyed by role category: "write" (solo/builder), "review" (critic/reviewer),
 # "plan" (session_manager).
+# Written into the critical anchor when the session has a language.
+_LANGUAGE_RULE_NAMES = {"de": "German", "en": "English"}
+
 _CRITICAL_RULES: dict[str, list[str]] = {
     "write": [
         "NEVER execute destructive actions (rm -rf, git reset --hard, DROP TABLE) without explicit user confirmation.",
@@ -965,10 +968,66 @@ class PromptLoader:
             return False
 
     @staticmethod
-    def _build_critical_anchor(role_id: str) -> str:
-        """Build the attention-anchoring block for the end of the prompt."""
+    def _pin_language_rule(text: str, session_language: str = "") -> str:
+        """Rewrite the answer-language bullet for a pinned session.
+
+        The shared rule reads "answer in the language of the user's LATEST
+        message". That is the right default and the wrong rule once a
+        session has a language: the pin says the FIRST message decides and
+        a later message in another language does not move it, so the two
+        disagree exactly when it matters -- one German sentence inside an
+        English session. The rule keeps its one home on disk; what the
+        model reads is written from the session.
+
+        Unpinned sessions get the file unchanged, byte for byte.
+        """
+        name = _LANGUAGE_RULE_NAMES.get(str(session_language or ""), "")
+        if not name or not text:
+            return text
+        lines = text.splitlines(keepends=True)
+        start = next(
+            (i for i, ln in enumerate(lines)
+             if ln.startswith("- **Answer in the language")), -1)
+        if start < 0:
+            return text
+        end = start + 1
+        while end < len(lines) and not lines[end].lstrip().startswith("- "):
+            end += 1
+        replacement = (
+            f"- **Answer in {name}** -- this session's language, set by its\n"
+            f"  first message; a later message in another language does not\n"
+            f"  change it. What goes INTO code stays English regardless:\n"
+            f"  comments, docstrings, identifiers, log and error strings.\n"
+        )
+        return "".join(lines[:start]) + replacement + "".join(lines[end:])
+
+    @staticmethod
+    def _build_critical_anchor(role_id: str, session_language: str = "") -> str:
+        """Build the attention-anchoring block for the end of the prompt.
+
+        The language rule is written from the SESSION, not fixed. This
+        block says of itself that it overrides any conflicting prior
+        instruction, so a hardcoded language here outranks everything —
+        including the session pin, which is set from the user's own first
+        message. A live GLM turn read both and said so in its reasoning:
+        "The critical rules say communicate in German, but the session
+        language section says English." A model asked to obey two rules
+        picks one, and which one is not a decision anybody made.
+
+        With no session language the wording is unchanged, so a session
+        that never got one reads exactly what it read before.
+        """
         category = _ROLE_TO_RULE_CATEGORY.get(role_id, "write")
-        rules = _CRITICAL_RULES.get(category, _CRITICAL_RULES["write"])
+        rules = list(_CRITICAL_RULES.get(category, _CRITICAL_RULES["write"]))
+        name = _LANGUAGE_RULE_NAMES.get(str(session_language or ""), "")
+        if name:
+            rules = [
+                (f"Communicate with the user in {name} — this session's "
+                 f"language, set by its first message. Code, commits, and "
+                 f"artifacts in English.")
+                if r.startswith("Communicate with the user in") else r
+                for r in rules
+            ]
         numbered = "\n".join(f"{i+1}. {r}" for i, r in enumerate(rules))
         return (
             "<critical>\n"
@@ -1506,6 +1565,7 @@ class PromptLoader:
         model: str = "",
         permission_mode: str = "",
         conversation_text: str = "",
+        session_language: str = "",
     ) -> list[PromptSection]:
         """Compose the system prompt as an ORDERED list of labelled sections.
 
@@ -1554,6 +1614,8 @@ class PromptLoader:
             ("refusal_addendum", "refusal_addendum.md"),
         ):
             _text = _shared(_rel)
+            if _name == "honesty_addendum":
+                _text = self._pin_language_rule(_text, session_language)
             if _text:
                 add(_name, self.LAYER_STABLE, _text)
                 injected.append(_name)
@@ -1719,7 +1781,7 @@ class PromptLoader:
                 injected.append("live_state")
 
             add("critical_anchor", self.LAYER_ANCHOR,
-                self._build_critical_anchor(role_id))
+                self._build_critical_anchor(role_id, session_language))
 
             self._last_injected_sections = injected
             return sections
@@ -2037,7 +2099,7 @@ class PromptLoader:
 
         # ---- Layer 3: attention anchor (always last — recency bias) ------
         add("critical_anchor", self.LAYER_ANCHOR,
-            self._build_critical_anchor(role_id))
+            self._build_critical_anchor(role_id, session_language))
 
         self._last_injected_sections = injected
         return sections
@@ -2057,6 +2119,7 @@ class PromptLoader:
         model: str = "",
         permission_mode: str = "",
         conversation_text: str = "",
+        session_language: str = "",
     ) -> str:
         """Compose the full system prompt for a given role.
 
@@ -2100,6 +2163,7 @@ class PromptLoader:
             model=model,
             permission_mode=permission_mode,
             conversation_text=conversation_text,
+            session_language=session_language,
         )
         return "\n\n".join(s.content for s in sections)
 
