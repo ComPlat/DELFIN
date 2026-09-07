@@ -405,12 +405,14 @@ H -0.882 0.510 -1.163
 
 @_needs_xtb
 def test_the_rest_reacts_fully_when_the_wheel_stops():
-    """Beim Anhalten fertig reagieren: a notch gives the rest only a few steps
-    to keep up, so mid-scroll it lags above the relaxed path; when the wheel
-    stops, the settle holds the driven coordinate where it was taken and lets
-    the rest relax the whole way into the reacted geometry.  Proven by the
-    energy: the settle lowers it (the rest found a better configuration) while
-    the driven coordinate stays where the wheel left it.
+    """Beim Anhalten fertig reagieren: a notch gives the rest only a few steered
+    steps to keep up, so mid-scroll the coordinate races ahead of its relaxation
+    and the structure is strained above the real path; when the wheel stops, the
+    settle pins the driven coordinate at the wheel's target and lets xtb's own
+    optimiser relax everything else into the constrained minimum.  Proven three
+    ways: the coordinate lands at the target, the rest actually moved, and the
+    result is already the constrained minimum -- optimising again at the same
+    pin barely moves it, which a strained mid-scroll snapshot never is.
     """
     base = gfn.optimize_with_gfn(_ETHANE8, 'gfn2', optimise=True,
                                  max_steps=200, timeout=120)['xyz']
@@ -428,17 +430,13 @@ def test_the_rest_reacts_fully_when_the_wheel_stops():
         state['gfn_follow_steps'] = 0
         part.submit_cmd_sync.value = f'drivewheel:{k}:1'
         assert _wait(state), state.get('gfn_last_status')
+    target = state.get('drive_wheel_target')  # the distance the wheel asked for
+    assert target is not None
     timer = state.get('drive_settle_timer')  # the debounce timer this armed
     if timer is not None:
         timer.cancel()                       # fire it ourselves, deterministically
 
-    def _energy(xyz):
-        return gfn.optimize_with_gfn(xyz, 'gfn2', optimise=False,
-                                     etemp=1000.0, timeout=60)['energy']
-
     P0 = _coords(part.coords_widget.value)
-    cc0 = float(np.linalg.norm(P0[0] - P0[1]))
-    e0 = _energy(part.coords_widget.value)
 
     state['gfn_follow_steps'] = 0
     part._drive_settle(state.get('drive_settle_serial', 0))
@@ -446,11 +444,88 @@ def test_the_rest_reacts_fully_when_the_wheel_stops():
 
     P1 = _coords(part.coords_widget.value)
     cc1 = float(np.linalg.norm(P1[0] - P1[1]))
-    e1 = _energy(part.coords_widget.value)
 
-    # The rest relaxed -- the settle found a lower-energy configuration...
-    assert e1 < e0 - 1e-4, (e0, e1)
-    # ...while the driven coordinate was held where the wheel left it.
-    assert abs(cc1 - cc0) < 0.2, (cc0, cc1)
-    # And the rest actually moved (the hydrogens, not the held pair).
+    # The settle pinned the coordinate at the value the wheel was turned to...
+    assert abs(cc1 - target) < 0.1, (target, cc1)
+    # ...the rest actually moved (the hydrogens, not the held pair)...
     assert np.linalg.norm(P1[2:] - P0[2:], axis=1).max() > 0.02, 'rest stood still'
+    # ...and what is left is the constrained minimum: relaxing again at the same
+    # pin moves it almost not at all, where the strained mid-scroll snapshot
+    # this replaced would have moved a long way.
+    again = gfn.optimize_with_gfn(
+        part.coords_widget.value, 'gfn2', optimise=True,
+        constraints=[{'kind': 'distance', 'atoms': [0, 1],
+                      'value': cc1, 'mode': 'fix'}],
+        etemp=3000.0, max_steps=250, timeout=120)
+    assert again.get('ok'), again.get('status')
+    P2 = _coords(again['xyz'])
+    assert np.linalg.norm(P2 - P1, axis=1).max() < 0.05, 'settle was not at the minimum'
+
+
+@_needs_xtb
+def test_the_drive_settle_lands_a_realistic_trans_not_a_strained_top():
+    """The realism the drive hand is for: turning a cis double bond to trans on
+    the wheel and, when it stops, being left with the real trans conformer --
+    planar and at or below cis -- not the strained half-twisted top the few
+    steered steps per notch leave behind.
+
+    Forcing a C=C torsion drives the structure through the ninety-degree twist
+    where the pi bond is broken and the electrons are all but degenerate.  A
+    closed-shell SCC at xtb's own temperature has no state to put there and
+    climbs without end (measured: +98 kcal/mol and rising, never falling into
+    the product); the drive hand runs warm so that region is described, and its
+    settle is a constrained minimisation that relaxes the rest into the well.
+    This proves both: the wheel reaches trans, and the settle drops the energy
+    the whole way from the strained snapshot down to the real conformer.
+    """
+    import math
+
+    part, state = _an_editor(_CIS_BUTENE)
+    part.submit_ff_dd.value = 'gfn2'
+    part.submit_relax_btn.value = True
+    part.submit_hand_dd.options = [('pull with a force', 'pull'),
+                                   ('move the atom', 'move'),
+                                   ('live dynamics', 'live'),
+                                   ('drive coordinate', 'drive')]
+    part.submit_hand_dd.value = 'drive'
+    state['picked'] = [0, 1, 2, 3]               # the C=C torsion
+
+    def _energy(xyz):
+        # Warm, because the strained snapshot sits at a near-closed gap where a
+        # cold SCC will not converge -- the same reason the drive runs warm.
+        return gfn.optimize_with_gfn(xyz, 'gfn2', optimise=False,
+                                     etemp=3000.0, timeout=60)['energy']
+
+    e_cis = _energy(_CIS_BUTENE)
+    started = abs(_dihedral(_coords(_CIS_BUTENE), 0, 1, 2, 3))
+    assert started < 30.0, started
+
+    for _ in range(40):                          # scroll the whole way to trans
+        state['gfn_follow_steps'] = 0
+        part._drive_wheel(1)
+        assert _wait(state), state.get('gfn_last_status')
+    # The strained mid-scroll snapshot, before the settle relaxes the rest.
+    e_scroll = _energy(part.coords_widget.value)
+
+    timer = state.get('drive_settle_timer')
+    if timer is not None:
+        timer.cancel()
+    state['gfn_follow_steps'] = 0
+    part._drive_settle(state.get('drive_settle_serial', 0))
+    assert _wait(state), state.get('gfn_last_status')
+
+    reached = abs(_dihedral(_coords(part.coords_widget.value), 0, 1, 2, 3))
+    e_trans = _energy(part.coords_widget.value)
+    kcal = 627.509
+
+    # The wheel turned it to trans...
+    assert reached > 150.0, f'the settle did not reach trans: {reached:.0f}'
+    # ...the settle dropped the energy far below the strained snapshot...
+    assert (e_scroll - e_trans) * kcal > 30.0, (
+        f'the settle barely relaxed: scroll {e_scroll:.5f} -> trans '
+        f'{e_trans:.5f} ({(e_scroll - e_trans) * kcal:.1f} kcal/mol)')
+    # ...and what is left is the real conformer, at or below cis (trans-butene
+    # is the more stable one), not a structure stuck above its barrier.
+    assert (e_trans - e_cis) * kcal < 5.0, (
+        f'trans is not the product well: {(e_trans - e_cis) * kcal:+.1f} '
+        'kcal/mol above cis')

@@ -5116,15 +5116,45 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: turn cis to trans in a couple of turns of the wheel.
     _DRIVE_WHEEL_STEP = {'distance': 0.05, 'angle': 3.0, 'dihedral': 5.0}
 
-    #: How long the wheel has to be still before the rest is let react fully,
-    #: and how many steered steps that settle takes.  A notch gives the rest
-    #: only a few steps to keep up, so mid-scroll it lags; when the wheel
-    #: stops, the coordinate is held at where it was driven and the rest
-    #: relaxes the whole way into the reacted geometry -- the real product, not
-    #: a half-relaxed snapshot.  Debounced, so a burst of notches settles once
-    #: at the end rather than after every one.
+    #: How long the wheel has to be still before the rest is let react fully.
+    #: A notch gives the rest only a few steered steps to keep up, so mid-scroll
+    #: the coordinate races ahead of its relaxation and strain piles up above
+    #: the real path; when the wheel stops, the driven coordinate is pinned at
+    #: the value the wheel was turned to and xtb's own optimiser relaxes
+    #: everything else around it -- a proper constrained minimisation, not more
+    #: steered steps.  That reaches the reacted geometry (cis into trans, a C-C
+    #: into its two radicals) in a handful of cycles where a capped steered
+    #: descent crawled there over hundreds of gradients and often never
+    #: arrived: measured on a butene twisted to trans, the steered settle stood
+    #: at +46 kcal/mol after sixty steps and needed a hundred and eighty to
+    #: reach the product, while the constrained optimiser reached it, planar
+    #: and below cis, in four tenths of a second.  Pinned at the wheel's target
+    #: rather than at where the laggy preview stood, so the settle also carries
+    #: out however much of the turn the few mid-scroll steps had not caught up
+    #: with -- what is left on screen is the geometry the reader scrolled to,
+    #: fully reacted.  Debounced, so a burst of notches settles once at the end.
     _DRIVE_SETTLE_AFTER = 0.4       #: seconds of stillness before the settle
-    _DRIVE_SETTLE_STEPS = 60        #: steered steps the settle relaxes over
+    _DRIVE_SETTLE_CYCLES = 250      #: xtb optimiser cycles the settle may take
+
+    #: The electronic temperature the drive hand runs at, always, on an SCC
+    #: method.  Forcing a coordinate over its barrier is forcing the structure
+    #: through a point where the electrons are nearly degenerate -- a bond
+    #: half broken, a double bond twisted to ninety degrees, a diradical -- and
+    #: a closed-shell SCC has no state to put there: it stays in the one it
+    #: started in, which climbs without end and never falls into the product.
+    #: Measured driving a cis C=C to trans under GFN2, the settle at xtb's own
+    #: 300 K stuck at +98 kcal/mol and 1000 K (the gap-closing rescue) at +24;
+    #: 3000 K reached planar trans at -2 kcal/mol, the real conformer.  Fermi
+    #: smearing is how every tight-binding and DFT code crosses such a region,
+    #: and it changes nothing where the gap is open -- kT here is a quarter of
+    #: an electron-volt, far below an ordinary frontier gap, so a well-behaved
+    #: drive keeps its integer occupations.  So it is warmed from the first
+    #: notch rather than waiting for the gap to close under it: the gap is read
+    #: an answer late, and by the time it has closed the SCC has already failed
+    #: or the step has already piled up strain there is no coming back from.
+    #: Universal by construction -- it is the electrons' temperature, and says
+    #: nothing about which coordinate or which molecule is being driven.
+    _DRIVE_ETEMP = 3000.0
 
     #: How far the answer may put a held atom from the cursor before the drag
     #: counts as under-determined.
@@ -7129,14 +7159,16 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         timer.start()
 
     def _drive_settle(serial):
-        """Relax the rest fully at the coordinate the wheel stopped on.
+        """Relax the rest fully at the coordinate the wheel was turned to.
 
         Fired a short stillness after the last notch (disarmed by any newer
-        one), this holds the driven coordinate where it was taken and lets
-        everything else relax the whole way in -- a C-C driven apart settles
-        into the two radicals, a torsion into the product conformer -- so what
-        is left on screen is the reacted geometry rather than the half-relaxed
-        snapshot a few steered steps leave.
+        one), this pins the driven coordinate at the wheel's target and lets
+        xtb's own optimiser relax everything else around it -- a C-C driven
+        apart settles into the two radicals, a torsion into the product
+        conformer -- so what is left on screen is the reacted geometry rather
+        than the strained snapshot a few steered steps leave.  The next follow
+        answer is a constrained minimisation, not more steered steps (see
+        :data:`_DRIVE_SETTLE_CYCLES`).
         """
         if serial != state.get('drive_settle_serial'):
             return                      # a newer notch came; that one will arm
@@ -7147,8 +7179,6 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         atoms = [int(i) for i in (state.get('picked') or ())]
         if not _CONSTRAINT_KINDS.get(len(atoms)):
             return
-        # The next follow answer relaxes over many steps rather than a few, so
-        # the rest reaches its minimum for the held coordinate.
         state['drive_settling'] = True
         _gfn_follow_step(_current_xyz() or '', atoms)
 
@@ -7191,11 +7221,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         wheel = (driven is not None
                  and state.get('drive_wheel_target') is not None)
         _gone = (lambda: False) if wheel else _hand_gone
-        # A settle relaxes over many steps so the rest reaches its minimum for
-        # the held coordinate; an ordinary notch takes only a few, to stay
-        # responsive.  Consumed here, so the next notch is a notch again.
-        drive_steps = (_DRIVE_SETTLE_STEPS if state.pop('drive_settling', None)
-                       else _climb.STEER_STEPS)
+        # A settle is a constrained minimisation that reaches the product for
+        # the held coordinate; an ordinary notch takes a few steered steps, to
+        # stay responsive.  Consumed here, so the next notch is a notch again.
+        settling = bool(state.pop('drive_settling', None))
         # The wish clamped to what the budget can still pay for, so the
         # spring never leads the atom past the ceiling and the drag rests
         # against the wall rather than springing back from it.
@@ -7205,6 +7234,15 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         # drag has been smeared, so the price does not step where the
         # frontier gap crosses the threshold.
         warmth = _smearing_for(method)
+        # The drive hand is warmed from the first notch, not only where the
+        # gap has already closed: it is forcing the structure through a
+        # near-degeneracy on purpose, and a closed-shell SCC that is not
+        # warmed in time stays in the wrong state and never reaches the
+        # product (see _DRIVE_ETEMP).  The hotter of the two stands, so a gap
+        # that wants more than the drive's own floor still gets it.
+        if (driven is not None
+                and str(method or '').strip().lower() in _gfn.SCC_METHODS):
+            warmth = max(float(warmth or 0.0), _DRIVE_ETEMP)
         start = state.get('thermal_was') or current
         cores = _gfn.interactive_cores(count)
         # The hand's own strength ceiling, the pull's yardstick and the pull's
@@ -7231,11 +7269,38 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # coordinate follows the scroll rather than jumping.  The budget,
             # when it is on, remains the one true limit on how far it goes.
             if driven is not None:
+                if settling:
+                    # The wheel has stopped: pin the coordinate at where it was
+                    # turned to and let xtb's own optimiser relax everything
+                    # else into the product, rather than crawl there over
+                    # hundreds of capped steered steps (see
+                    # _DRIVE_SETTLE_CYCLES).  Held exact ('fix'), so the settle
+                    # also finishes however much of the turn the few mid-scroll
+                    # steps had not caught up with.
+                    held = [{'kind': driven['kind'],
+                             'atoms': list(driven['atoms']),
+                             'value': float(driven['target']),
+                             'mode': 'fix'}]
+                    done = _gfn.optimize_with_gfn(
+                        start, method, charge=charge, uhf=uhf, solvent=wet,
+                        constraints=held, topology=_gfn_topology_dir(start),
+                        etemp=etemp, max_steps=_DRIVE_SETTLE_CYCLES,
+                        should_stop=_gone)
+                    if done.get('ok') and done.get('xyz'):
+                        info = _climb._elements(done['xyz'])
+                        if info is not None:
+                            rb = _climb.np.asarray(
+                                info['angstrom'], dtype=float) / _climb.BOHR
+                            done = dict(done)
+                            done['value'] = _climb._coordinate_value(
+                                rb, driven['kind'],
+                                [int(a) for a in driven['atoms']])
+                    return done
                 return _climb.steer_coordinate(
                     start, driven['kind'], driven['atoms'], driven['target'],
                     method=method, charge=charge, uhf=uhf, solvent=wet,
-                    cores=cores, etemp=etemp, max_force=None, steps=drive_steps,
-                    should_stop=_gone)
+                    cores=cores, etemp=etemp, max_force=None,
+                    steps=_climb.STEER_STEPS, should_stop=_gone)
             return _climb.steer(
                 start, current, holding, method=method, charge=charge,
                 uhf=uhf, solvent=wet, cores=cores, etemp=etemp,
