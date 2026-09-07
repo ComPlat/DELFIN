@@ -373,8 +373,13 @@ def _apply_overrides(model: str, profile: ModelProfile) -> ModelProfile:
         return profile
     named = ", ".join(f"{k}={v!r}" for k, v in sorted(changes.items()))
     changes.setdefault("notes", profile.notes)
+    # In FRONT of the description, not after it. A benchmark run stamps the
+    # first 80 characters of ``notes`` onto its results so a later
+    # comparison can say which profile produced them; an override appended
+    # to a long description is truncated away, and the run then reads as if
+    # it had been made with the shipped knobs.
     changes["notes"] = (
-        f"{changes['notes']} [user override: {named}]".strip())
+        f"[user override: {named}] {changes['notes']}".strip())
     return replace(profile, **changes)
 
 
