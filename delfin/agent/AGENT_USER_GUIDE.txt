@@ -120,7 +120,7 @@ Each model carries its own knobs — how long a turn may run before the
 dashboard calls it stalled, how many tool rounds it gets, the default
 effort. The shipped values are measured, and a measurement is about one
 deployment on one day; when yours behaves differently, set it in
-~/.delfin/settings.json without touching any code:
+~/.delfin_settings.json without touching any code:
 
   "agent": {
     "model_overrides": {
