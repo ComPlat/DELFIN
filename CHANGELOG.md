@@ -56,6 +56,7 @@ gain frames. No stock frame is affected anywhere — on all 250 the champion's o
 frame set is still contained in full. So this change makes the manifold cleaner by
 making it slightly smaller, and the frames it removes are the ones whose contacts
 the eye itself counts as collisions.
+
 The factor stays overridable through the environment, so an interrupted run can be
 pinned to its original value and stay byte-identical.
 
