@@ -5,6 +5,33 @@ All notable changes to DELFIN will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.2] - 2026-09-07
+
+### Added — Construction (MANTA landing #31)
+
+`PUCKER_SYMM` and `PUCKER_SYMM_ADD` join `cli_manta._CHAMPION_FLAGS`
+(`delfin/manta/_ring_pucker.py`). Two rings that lie in one orbit of the molecule's
+automorphism group are indistinguishable, so the cartesian product over their pucker
+states generates duplicates. Reducing the product per orbit does not mainly save
+compute: because the combination cap cuts by fold depth, a smaller product means the
+deep states — all rings folded at once — are reached at all instead of being cut off.
+The add guard builds the champion's combination set first and fills up with the
+reduced one afterwards, so the champion frame set is contained by construction.
+
+Measured as a never-worse A/B on 6000 CCDC systems (`symmfoldadd6k`): 5819 systems
+compared, 123 affected, 107 in the judged intersection. Every never-worse term is
+zero, and the existing stock is provably untouched.
+
+This is the first landing of the campaign carried by an absolute improvement rather
+than by the stock being untouched: the hard-frame fraction on the affected systems
+falls by 0.0013. The two landings before it were denser but not cleaner.
+
+The reduction only merges what a genuine automorphism maps onto each other, never
+what merely shares a rank multiset; where the automorphism search does not hold, the
+full product is used, so the fallback is always the larger set. Both flags remain
+overridable through the environment, and `PUCKER_SYMM_ADD` can be left off by anyone
+who needs the combination cap to hold, at the cost of the deeper fold states.
+
 ## [1.3.1] - 2026-09-07
 
 ### Changed — Construction (MANTA landing #31)
