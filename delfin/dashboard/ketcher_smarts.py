@@ -39,6 +39,7 @@ __all__ = [
     'prettify', 'normalize_reaction_smarts', 'normalize_query_smarts',
     'describe', 'inspect', 'reaction_smarts_from_rxn_block',
     'query_smarts_from_molblock', 'rxn_block_from_smarts', 'widen_kekule',
+    'absorb_hydrogens',
     'trial_on_seed',
     'survives_the_editor',
 ]
@@ -378,6 +379,66 @@ def _may_be_aromatic(atom) -> bool:
     return False
 
 
+def absorb_hydrogens(smarts: str) -> Tuple[str, int]:
+    """Turn a hydrogen drawn as an atom into the hydrogen count it was meant as.
+
+    Putting an H on a free position is the natural thing to draw, and in a
+    query it is the one thing that cannot work: an explicit ``[#1]`` matches an
+    explicit hydrogen, and a molecule RDKit has read carries its hydrogens
+    implicitly.  Anthracene has none at all to match, so a rule drawn that way
+    finds nothing -- measured: 0 matches with the H drawn, 8 with it stated as
+    ``H1`` on the atom it hangs off.
+
+    Each drawn hydrogen is removed and counted onto its neighbour instead.  The
+    neighbour is rebuilt from its own SMARTS text with ``;H<n>`` spliced in
+    ahead of the map, so whatever else was set on it survives.
+    """
+    text = str(smarts or '')
+    query = Chem.MolFromSmarts(text)
+    if query is None:
+        return text, 0
+    loose: Dict[int, int] = {}
+    for atom in query.GetAtoms():
+        if atom.GetAtomicNum() != 1 or atom.GetDegree() != 1:
+            continue
+        host = atom.GetNeighbors()[0]
+        if host.GetAtomicNum() == 1:
+            continue
+        loose[host.GetIdx()] = loose.get(host.GetIdx(), 0) + 1
+    if not loose:
+        return text, 0
+
+    out = Chem.RWMol(query)
+    for index, count in loose.items():
+        written = query.GetAtomWithIdx(index).GetSmarts()
+        if not (written.startswith('[') and written.endswith(']')):
+            written = f'[{written}]'
+        inside = written[1:-1]
+        head, mark, tail = inside.rpartition(':')
+        if mark and tail.isdigit():
+            fresh = f'[{head};H{count}:{tail}]'
+        else:
+            fresh = f'[{inside};H{count}]'
+        made = Chem.MolFromSmarts(fresh)
+        if made is None or made.GetNumAtoms() != 1:
+            return text, 0
+        try:
+            out.ReplaceAtom(index, made.GetAtomWithIdx(0), False, True)
+        except Exception:                                   # noqa: BLE001
+            return text, 0
+    for index in sorted((a.GetIdx() for a in query.GetAtoms()
+                         if a.GetAtomicNum() == 1 and a.GetDegree() == 1),
+                        reverse=True):
+        try:
+            out.RemoveAtom(index)
+        except Exception:                                   # noqa: BLE001
+            return text, 0
+    try:
+        return Chem.MolToSmarts(out.GetMol()), sum(loose.values())
+    except Exception:                                       # noqa: BLE001
+        return text, 0
+
+
 def widen_kekule(smarts: str, *, everywhere: bool = True) -> Tuple[str, int]:
     """Let a ring drawn in Kekule form match the aromatic ring it stands for.
 
@@ -554,6 +615,10 @@ def describe(outcome: Dict[str, Any]) -> str:
         bits.append(f"{outcome['kekule']} drawn bond"
                     f"{'s' if outcome['kekule'] != 1 else ''} also match "
                     f"aromatic")
+    if outcome.get('drawn_h'):
+        bits.append(f"{outcome['drawn_h']} drawn hydrogen"
+                    f"{'s' if outcome['drawn_h'] != 1 else ''} read as an "
+                    f"H count")
     if outcome.get('agents'):
         bits.append('what was drawn over the arrow is ignored')
     return ' · '.join(bits)
@@ -579,6 +644,12 @@ def normalize_reaction_smarts(raw: str, *,
     if not left or not right:
         return dict(empty, status='One side of the arrow is empty.')
 
+    # A hydrogen drawn as an atom matches an explicit hydrogen, and the
+    # molecules this rule will meet carry theirs implicitly.  Both sides, so
+    # the two templates keep the same atoms.
+    left, drawn_h = absorb_hydrogens(left)
+    right, right_h = absorb_hydrogens(right)
+    drawn_h += right_h
     # Ketcher draws benzene in Kekule form and Indigo writes it out that way,
     # while every molecule this rule will meet has been through RDKit's
     # aromaticity perception.  Without this the two never touch.
@@ -629,6 +700,7 @@ def normalize_reaction_smarts(raw: str, *,
                          if not a.GetAtomMapNum()),
         'agents': agents,
         'kekule': kekule,
+        'drawn_h': drawn_h,
     }
     if not left_maps and not right_maps:
         outcome['level'] = 'note'
@@ -637,7 +709,7 @@ def normalize_reaction_smarts(raw: str, *,
                              'with the Reaction Mapping Tool.')
         return outcome
     outcome['status'] = describe(outcome)
-    if auto or outcome['agents'] or kekule:
+    if auto or outcome['agents'] or kekule or drawn_h:
         outcome['level'] = 'note'
     return outcome
 
@@ -658,6 +730,7 @@ def normalize_query_smarts(raw: str, *,
         return {'ok': False, 'smarts': '', 'level': 'bad',
                 'status': ('A pattern belongs here, not a reaction -- take '
                            'the arrow out of the drawing.')}
+    text, drawn_h = absorb_hydrogens(text)
     text, kekule = widen_kekule(text, everywhere=aromatic)
     query = Chem.MolFromSmarts(text)
     if query is None:
@@ -674,6 +747,11 @@ def normalize_query_smarts(raw: str, *,
     outcome = {'ok': True, 'smarts': prettify(written, reaction=False),
                'level': 'ok',
                'status': f"{count} atom{'s' if count != 1 else ''} · valid pattern"}
+    if drawn_h:
+        outcome['level'] = 'note'
+        outcome['status'] += (f" · {drawn_h} drawn hydrogen"
+                              f"{'s' if drawn_h != 1 else ''} read as an "
+                              f"H count")
     if kekule:
         outcome['level'] = 'note'
         outcome['status'] += (f" · {kekule} drawn bond"
