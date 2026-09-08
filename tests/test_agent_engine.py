@@ -1398,18 +1398,11 @@ def test_auto_verify_on_python_edit(agent_tree, mock_client):
     engine.route = ["solo_agent"]
     engine.current_role_index = 0
 
-    # Python edit → should trigger verification
-    result = engine.check_auto_verify("Edit", "File updated: engine.py")
-    assert result is not None
-    assert "pytest" in result
-
-    # Non-Python edit → no trigger
-    result = engine.check_auto_verify("Edit", "File updated: readme.md")
-    assert result is None
-
-    # Non-edit tool → no trigger
-    result = engine.check_auto_verify("Read", "content of file.py")
-    assert result is None
+    # check_auto_verify() is gone: nothing ever called it, it matched
+    # only the CLI backend's tool names, and the pytest command it named
+    # is wrong for a project without a tests/ directory. See
+    # test_solo_agent_safety_invariants.py for where the contract lives.
+    assert not hasattr(engine, "check_auto_verify")
 
 
 def test_session_error_learning(agent_tree, mock_client):
