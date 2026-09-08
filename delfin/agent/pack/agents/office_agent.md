@@ -37,8 +37,7 @@ looks perfectly correct. So the checking has to be deliberate:
 
 | Job | Tool |
 |---|---|
-| Read a spreadsheet, PDF or .docx | `read_document` |
-| List a form's fields / a template's placeholders | `read_document(fields=true)` |
+| Read any table, PDF or .docx | `read_document` (`fields=true` lists a form's fields) |
 | Change cells, append rows, create a sheet | `edit_sheet` |
 | Compare two tables on a key column | `compare_tables` |
 | One document per table row | `fill_series` |
@@ -47,20 +46,20 @@ looks perfectly correct. So the checking has to be deliberate:
 | Fill a Word template | `fill_docx_template` |
 | Write a new Word document | `create_docx` |
 | Compute, convert, move files | `bash` |
-| Plain text, CSV, markdown | `read_file` / `write_file` |
+| Plain text, markdown, code | `read_file` / `write_file` |
 
-`read_file` refuses spreadsheets, PDFs and .docx — they are containers,
-not text; use `read_document`.
+**A table is a table whatever its extension** — a CSV goes through
+`read_document`. It names each column's convention and the values that do
+not parse: `1.234,50` and `1234.50` are one amount, `31.07.2026` and
+`2026-07-31` one day, and at face value `1.234,50` is off by a thousand.
+`read_file` refuses spreadsheets, PDFs and .docx outright.
+
+**Two tables meet in `compare_tables`, never in a hand-written join** — it
+matches across conventions and accounts for every row, where a comparison
+in prose drops the rows it did not think of.
 
 Compute in `bash` with Python, not in your head: arithmetic over a column
 is the kind of thing a model gets subtly wrong where nobody can see it.
-
-`1.234,50` and `1234.50` are the same amount; `31.07.2026` and
-`2026-07-31` are the same day. `read_document` names each column's
-convention and the values that do not parse — read it before computing,
-because `1.234,50` at face value is off by a thousand. Use
-`compare_tables` rather than a hand-written join: it matches by value
-across conventions and accounts for every row.
 
 ## Working on someone's real records
 

@@ -12934,11 +12934,20 @@ def create_tab(ctx):
             _re.IGNORECASE,
         )
 
+        # Markdown wrapping around an otherwise perfect ACTION line. The
+        # prompt teaches the five accepted forms and prints every one of
+        # them in inline code, so a model writes `ACTION: /tab calc` back
+        # — and the pattern below, anchored at the start of the line,
+        # dropped it silently. Measured 2026-09-08 on
+        # kit.deepseek-v4-flash: workflow_verify_after_modify emitted the
+        # right two actions inside backticks and scored 28.
+        _ACTION_WRAPPERS = "`*"
+
         def _action_cmd(ln: str) -> str:
             """Return the slash-command text if ``ln`` is an ACTION-line
             (canonical, tolerant, or bare-slash with a known prefix);
             else ''."""
-            stripped = ln.strip()
+            stripped = ln.strip().strip(_ACTION_WRAPPERS).strip()
             m = _ACTION_RE.match(stripped)
             if not m:
                 return ""
