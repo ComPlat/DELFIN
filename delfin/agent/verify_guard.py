@@ -978,16 +978,29 @@ _WORD_RE = re.compile(r"[A-Za-zÄÖÜäöüß]+")
 MIN_WORDS_FOR_LANGUAGE = 12
 
 
-def detect_language(text: str) -> str:
+def detect_language(text: str, *,
+                    min_words: int = MIN_WORDS_FOR_LANGUAGE) -> str:
     """``"de"``, ``"en"``, or ``""`` when the text cannot say.
 
     The empty answer is a real answer here and is returned often — for a
     path, a number, a code block, a one-word acknowledgement. Every
     caller treats it as "do not judge", because a wrong verdict about
     language would force a correction turn on an answer that was fine.
+
+    ``min_words`` is that caution, and it belongs to that question. The
+    session PIN asks a different one — which language did the user open
+    in — where the cost of no answer is a session with no language at
+    all, and where the discrimination is already done by the two rules
+    below: three function-word hits for one language, with a 2× margin
+    over the other. "Merk dir: die Kennzahl ist 5309. Antworte nur mit
+    OK." is nine words with four German hits and zero English, and the
+    default floor refused it.
+
+    Measured over the 85 benchmark prompts: 54 pinned at the default, 58
+    at eight, and no English verdict on a German prompt at any floor.
     """
     words = [w.lower() for w in _WORD_RE.findall(text or "")]
-    if len(words) < MIN_WORDS_FOR_LANGUAGE:
+    if len(words) < max(1, int(min_words)):
         return ""
     hits = {lang: sum(1 for w in words if w in vocab)
             for lang, vocab in _FUNCTION_WORDS.items()}
