@@ -312,15 +312,16 @@ _CHAMPION_FLAGS = (
                           #   isomers_lost, ccdc_isomer_lost, poly_lost, broken_regressed,
                           #   hard_frames_regressed, torn_ligand_regressed, n_good_regressions,
                           #   build_lost.  stock_proven_intact=True.
-                          # ⚠ WHAT CARRIES THIS LANDING, stated exactly: `stock_proven_intact`.
-                          # `improves_absolute` is also True, with hard_frame_frac_delta = -0.0013
+                          # ⚠ THIS LANDING IS A COVERAGE GAIN, NOT A QUALITY GAIN.  What carries it
+                          # is `stock_proven_intact`.
+                          # `improves_absolute` reads True, with hard_frame_frac_delta = -0.0013
                           # on the judged intersection (641 frames / 149 hard -> 649 / 150) -- but
                           # that margin is SMALLER THAN ONE FRAME: had a single one of the 649 been
                           # hard, the delta would read +0.0002 and the sign would flip. All five
                           # systems known to build non-deterministically (EKAKIK, FIHWOL, ILEDUB,
                           # NOJMEE, OLUFIK) sit inside that judged set, and any one of them can move
-                          # a frame by itself. So the absolute improvement is real as computed and
-                          # below the resolution of the instrument on this sample; it is not what the
+                          # a frame by itself.  The figure is therefore not evidence of a cleaner
+                          # manifold, and is not read as one.  It is not what the
                           # landing rests on. The two earlier landings were denser but not cleaner
                           # (+0.0638 and +0.0512); this one is at worst neutral there, which is
                           # already a difference, but it is not proof of a cleaner manifold.
