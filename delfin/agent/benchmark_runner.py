@@ -70,8 +70,13 @@ def extract_actions(text: str) -> list[str]:
     # back in the inline code the prompt showed it in, and an anchored
     # pattern drops it. Mirrored here so the benchmark keeps seeing the
     # routing a user would get.
-    text = "\n".join(ln.strip().strip("`*").strip()
-                      for ln in text.splitlines())
+    # Same unwrapping AND the same list tolerance the dashboard parser
+    # has: a model asked for two steps writes them as a numbered list,
+    # and the marker used to hide the action behind it.
+    text = "\n".join(
+        re.sub(r"^\s*(?:[-*+>]\s+|\d+[.)]\s+)+", "", ln.strip())
+          .strip("`*").strip()
+        for ln in text.splitlines())
     out: list[str] = []
     for rx in _ACTION_PATTERNS:
         for m in rx.finditer(text):
