@@ -629,3 +629,55 @@ def test_the_atoms_that_change_have_to_be_mapped_too():
         except Exception:                                   # noqa: BLE001
             pass
     assert "c1ccc2nc3ccccc3cc2c1" in made
+
+
+# ---------------------------------------------------------------------------
+# The map Ketcher drops on a generic atom
+# ---------------------------------------------------------------------------
+# Measured against Ketcher 3.17: A(:1)~C(:2)~A(:3) >> A(:1)~N(:2)~A(:3) drawn
+# and mapped comes back from getSmarts with only the carbon's map. getRxn and
+# getKet keep all six, so they are taken back off the drawing.
+
+A_SMARTS = "[*;D3]~[#6:2;D2]~[*;D3]>>[*]~[#7:2]~[*]"
+
+
+def _a_block():
+    """The same rule as an RXN, which is what travels beside the SMARTS."""
+    return ks.rxn_block_from_smarts(
+        "[*:1]~[#6:2]~[*:3]>>[*:1]~[#7:2]~[*:3]")
+
+
+def test_a_generic_atom_loses_its_map_in_the_smarts():
+    fixed = ks.repair_atom_maps(A_SMARTS)
+    left = Chem.MolFromSmarts(fixed.split('>>')[0])
+    assert [a.GetAtomMapNum() for a in left.GetAtoms()] == [0, 2, 0]
+
+
+def test_the_dropped_maps_are_taken_back_off_the_drawing():
+    merged, recovered = ks.merge_maps(A_SMARTS, _a_block())
+    assert recovered == 4
+    left = Chem.MolFromSmarts(merged.split('>>')[0])
+    assert [a.GetAtomMapNum() for a in left.GetAtoms()] == [1, 2, 3]
+
+    out = ks.normalize_reaction_smarts(merged)
+    assert out['ok'], out['status']
+    made = set()
+    for group in rdChemReactions.ReactionFromSmarts(
+            out['smarts']).RunReactants((Chem.MolFromSmiles(ANTHRACENE),)):
+        mol = group[0]
+        try:
+            Chem.SanitizeMol(mol)
+            made.add(Chem.MolToSmiles(mol))
+        except Exception:                                   # noqa: BLE001
+            pass
+    assert made == {"c1ccc2nc3ccccc3cc2c1"}                 # acridine
+
+
+def test_maps_are_only_taken_from_a_drawing_that_matches():
+    """Two readings of one canvas line up; two readings of two do not."""
+    other = ks.rxn_block_from_smarts("[c:1]:[c:2]>>[n:1]:[c:2]")
+    assert ks.merge_maps(A_SMARTS, other)[1] == 0
+    assert ks.merge_maps(A_SMARTS, '')[1] == 0
+    # an existing map is never overwritten
+    merged, _ = ks.merge_maps(A_SMARTS, _a_block())
+    assert ':2' in merged and merged.count(':2') == 2
