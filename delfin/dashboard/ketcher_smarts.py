@@ -106,6 +106,26 @@ def _atom_blocks(text: str):
 _MAP_INSIDE = re.compile(r':(\d+)')
 
 
+def _maps_in(inside: str):
+    """The map numbers of one atom, ignoring anything inside ``$(...)``.
+
+    A recursive query holds bonds, and a bond is written ``:`` too.  Reading
+    ``[#6:2;$([*,#1]=,#,:[*,#1])]`` without counting depth finds the aromatic
+    bond in the recursion and gives up on the atom -- which is how Ketcher's
+    Unsaturated came through as something RDKit could not read at all.
+    """
+    found, depth = [], 0
+    for hit in re.finditer(r'[()]|:(\d+)', inside):
+        token = hit.group(0)
+        if token == '(':
+            depth += 1
+        elif token == ')':
+            depth -= 1
+        elif depth == 0:
+            found.append(hit)
+    return found
+
+
 def repair_atom_maps(text: str) -> str:
     """Move an atom map back to the end of its atom, where SMARTS wants it.
 
@@ -114,23 +134,40 @@ def repair_atom_maps(text: str) -> str:
     up a valence query on the way through the editor arrives unreadable.  It
     is the same atom either way, so it is put right rather than reported.
 
-    An atom holding a recursive query is left alone: the ``:`` in ``[$(c:c)]``
-    is a bond, not a map.
+    It also repeats the map on every term of a list rather than writing it
+    once.  A halogen drawn as Ketcher's X comes back as
+    ``[F:2,Cl:2,Br:2,I:2,At:2]`` and a metal drawn as M as a seventeen-term
+    negation carrying ``:2`` seventeen times -- neither parses, so X and M
+    reached nothing at all before this.  Repeats of one number collapse to a
+    single map at the end; two *different* numbers in one atom are a genuine
+    ambiguity and are left alone to be reported.
+
+    A ``:`` inside a recursive query is a bond, not a map, so the search for
+    one counts bracket depth rather than skipping such atoms -- Ketcher writes
+    its Unsaturated as a recursive query with the map in the wrong place, and
+    skipping it left the whole rule unreadable.
     """
     original = str(text or '')
     out = []
     last = 0
     for start, end in _atom_blocks(original):
         inside = original[start:end]
-        if '$(' in inside:
+        found = _maps_in(inside)
+        if not found:
             continue
-        found = list(_MAP_INSIDE.finditer(inside))
-        if len(found) != 1 or found[0].end() == len(inside):
+        numbers = {hit.group(1) for hit in found}
+        if len(numbers) != 1:
             continue
-        hit = found[0]
-        moved = (inside[:hit.start()] + inside[hit.end():]).rstrip(';&,')
+        if len(found) == 1 and found[0].end() == len(inside):
+            continue
+        moved, cut = [], 0
+        for hit in found:
+            moved.append(inside[cut:hit.start()])
+            cut = hit.end()
+        moved.append(inside[cut:])
+        rebuilt = ''.join(moved).rstrip(';&,')
         out.append(original[last:start])
-        out.append(moved + hit.group(0))
+        out.append(f'{rebuilt}:{numbers.pop()}')
         last = end
     if not out:
         return original
