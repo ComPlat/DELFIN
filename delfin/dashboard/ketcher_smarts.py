@@ -327,40 +327,59 @@ def complete_atom_maps(reactant, product) -> List[int]:
     here, there = _plain(reactant), _plain(product)
     if here is None or there is None:
         return given
-    try:
-        found = rdFMCS.FindMCS(
-            [here, there],
-            atomCompare=rdFMCS.AtomCompare.CompareElements,
-            # The point of the drawing is that the bonds change; comparing
-            # them would refuse the very cores this is meant to line up.
-            bondCompare=rdFMCS.BondCompare.CompareAny,
-            ringMatchesRingOnly=False, completeRingsOnly=False,
-            timeout=5,
-        )
-        if found.canceled or not found.smartsString:
-            return given
-        core = Chem.MolFromSmarts(found.smartsString)
-        if core is None:
-            return given
-        left_hit = here.GetSubstructMatch(core)
-        right_hit = there.GetSubstructMatch(core)
-    except Exception:                                       # noqa: BLE001
-        return given
-    if not left_hit or not right_hit or len(left_hit) != len(right_hit):
-        return given
+
+    def pair(atoms_match):
+        """One MCS pass; returns the index pairs it can line up."""
+        try:
+            found = rdFMCS.FindMCS(
+                [here, there],
+                atomCompare=atoms_match,
+                # The point of the drawing is that the bonds change; comparing
+                # them would refuse the very cores this is meant to line up.
+                bondCompare=rdFMCS.BondCompare.CompareAny,
+                ringMatchesRingOnly=False, completeRingsOnly=False,
+                timeout=5,
+            )
+            if found.canceled or not found.smartsString:
+                return []
+            core = Chem.MolFromSmarts(found.smartsString)
+            if core is None:
+                return []
+            left_hit = here.GetSubstructMatch(core)
+            right_hit = there.GetSubstructMatch(core)
+        except Exception:                                   # noqa: BLE001
+            return []
+        if not left_hit or not right_hit or len(left_hit) != len(right_hit):
+            return []
+        return list(zip(left_hit, right_hit))
 
     nxt = 1
-    for l_idx, r_idx in zip(left_hit, right_hit):
-        l_atom = reactant.GetAtomWithIdx(l_idx)
-        r_atom = product.GetAtomWithIdx(r_idx)
-        if l_atom.GetAtomMapNum() or r_atom.GetAtomMapNum():
-            continue
-        while nxt in used:
-            nxt += 1
-        l_atom.SetAtomMapNum(nxt)
-        r_atom.SetAtomMapNum(nxt)
-        used.add(nxt)
-        given.append(nxt)
+
+    def hand_out(pairs):
+        nonlocal nxt
+        for l_idx, r_idx in pairs:
+            l_atom = reactant.GetAtomWithIdx(l_idx)
+            r_atom = product.GetAtomWithIdx(r_idx)
+            if l_atom.GetAtomMapNum() or r_atom.GetAtomMapNum():
+                continue
+            while nxt in used:
+                nxt += 1
+            l_atom.SetAtomMapNum(nxt)
+            r_atom.SetAtomMapNum(nxt)
+            used.add(nxt)
+            given.append(nxt)
+
+    # Elements first, which is the safe pairing.
+    hand_out(pair(rdFMCS.AtomCompare.CompareElements))
+    # Then, for whatever is still unmapped on both sides, elements are allowed
+    # to differ.  A morphing rule exists to change an element, so the atom the
+    # map matters most for -- the carbon that becomes a nitrogen -- is exactly
+    # the one an element-comparing MCS will not pair.  Unmapped it would be
+    # deleted and its replacement built loose, which is a rule that matches and
+    # makes nothing.
+    if (any(not a.GetAtomMapNum() for a in reactant.GetAtoms())
+            and any(not a.GetAtomMapNum() for a in product.GetAtoms())):
+        hand_out(pair(rdFMCS.AtomCompare.CompareAny))
     return given
 
 
@@ -1118,6 +1137,13 @@ def merge_maps(smarts: str, block: str) -> Tuple[str, int]:
         if here.GetNumAtoms() != reference.GetNumAtoms():
             return text, 0
         for mine, theirs in zip(here.GetAtoms(), reference.GetAtoms()):
+            # Only where both readings name an element.  A custom query that
+            # replaces the label -- "N or O" on a carbon -- is atomic number 0
+            # in the SMARTS and 6 in the atom block, and it is still the same
+            # atom in the same place; refusing that is refusing the case the
+            # map is most often missing from.
+            if not mine.GetAtomicNum() or not theirs.GetAtomicNum():
+                continue
             if mine.GetAtomicNum() != theirs.GetAtomicNum():
                 return text, 0
         for mine, theirs in zip(here.GetAtoms(), reference.GetAtoms()):
