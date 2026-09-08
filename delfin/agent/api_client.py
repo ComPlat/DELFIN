@@ -2344,6 +2344,11 @@ _BASH_STATUS_BUSY_POLL_WAIT_S = 15.0
 _REASONING_MIN_TOKENS = 2048
 
 
+# Tools that WRITE to persistent memory. Counted against
+# ModelProfile.max_memory_writes_per_turn — reads are never capped.
+_MEMORY_WRITE_TOOLS: frozenset[str] = frozenset({"remember", "forget"})
+
+
 _WEAK_MODEL_CORE_TOOLS: frozenset[str] = frozenset({
     # File-system core. read_document is here for the same reason as
     # read_file: it is the ONLY way to see inside a spreadsheet or PDF,
@@ -15150,6 +15155,15 @@ class OpenAIClient(_BaseClient):
         # the call gets the parameter's default — which reads as the
         # lowest effort on a reasoning model. Nobody chose that.
         self._turn_thinking_budget = int(thinking_budget or 0)
+        # Per TURN, not per round: the loop that has to be broken spans
+        # rounds. Read from the profile once, here, so a model switch
+        # mid-session takes effect on the next turn and not mid-loop.
+        _memory_writes = 0
+        try:
+            from .model_profiles import get_profile as _gp_mem
+            _memory_cap = int(_gp_mem(self.model).max_memory_writes_per_turn or 0)
+        except Exception:
+            _memory_cap = 0
         api_messages: list[dict[str, Any]] = []
         # Detect reasoning models. Two families today:
         # - o-series (o1, o3, o4-mini, azure.o3, azure.o4-mini)
@@ -16190,6 +16204,38 @@ class OpenAIClient(_BaseClient):
                         })
                         _round_results.append(result)
                         continue
+
+                    # Memory-write cap for this turn, per model profile.
+                    # Held back rather than executed, with the reason said
+                    # plainly: the model is doing the wrong job and needs
+                    # to hear that, not a silent success it will repeat.
+                    # The no-progress guard cannot help — it keys on name
+                    # AND arguments, and six remembers with different
+                    # content look like progress.
+                    if fn_name in _MEMORY_WRITE_TOOLS and _memory_cap:
+                        _memory_writes += 1
+                        if _memory_writes > _memory_cap:
+                            result = json.dumps({"error": (
+                                f"memory write refused: this turn has "
+                                f"already recorded {_memory_cap} fact(s), "
+                                f"which is the limit for this model. You "
+                                f"are recording instead of answering — "
+                                f"finish the task the user asked for, and "
+                                f"remember at most what is genuinely "
+                                f"durable, once."
+                            )})
+                            yield StreamEvent(
+                                type="tool_result",
+                                tool_name=fn_name,
+                                tool_output=_redact_tool_result(result)[:2000],
+                            )
+                            api_messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc["id"],
+                                "content": result,
+                            })
+                            _round_results.append(result)
+                            continue
 
                     # ACTION-protocol repair: roles that drive the UI via
                     # plain-text "ACTION: /command" lines sometimes emit the
