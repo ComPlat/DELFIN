@@ -458,6 +458,27 @@ class _PristineWorkspace:
         import os as _os
         base = root or Path(_os.getcwd())
         self._bases = [base / rel for rel in _BEHAVIOR_WS_RELS]
+        # The memory store belongs here too, and did not use to.
+        #
+        # A `remember` call writes to ~/.delfin/projects/<slug>/memory,
+        # keyed on the WORKSPACE — and a dashboard task's workspace is the
+        # checkout itself, so benchmark prompts landed in the user's own
+        # project memory and were recalled into their real sessions.
+        # Found 2026-09-08 with entries reading "User hat am 2026-09-08
+        # B3LYP als Functional im ORCA Builder gesetzt" at use_count 55 and
+        # "nach jedem /orca set ein /orca show — User will explizit sehen"
+        # at 41. No user said either; a benchmark task did.
+        #
+        # Guarded the same way the fixture directories are: snapshot before
+        # the attempt, restore after. A run may write what it likes; it
+        # does not get to leave it behind.
+        try:
+            from .memory_store import (_delfin_global_memory_dir,
+                                       _delfin_memory_dir)
+            self._bases.append(_delfin_memory_dir(base))
+            self._bases.append(_delfin_global_memory_dir())
+        except Exception:
+            pass
         self._pairs: list[tuple[Path, Path]] = []
         self._snap_root: Path | None = None
         self.failed = False
