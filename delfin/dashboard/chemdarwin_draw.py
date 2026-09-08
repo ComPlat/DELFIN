@@ -344,19 +344,33 @@ def build_section(ctx, targets: Dict[str, Any]) -> Dict[str, Any]:
                     'level': 'ok' if drawn.get('ok') else 'bad',
                     'status': drawn.get('status') or ''}
         if shape == 'reaction':
-            raw = (_smarts.reaction_smarts_from_rxn_block(payload) if retried
-                   else payload)
+            recovered = 0
+            if retried:
+                raw = _smarts.reaction_smarts_from_rxn_block(payload)
+            else:
+                # The SMARTS and the drawing file it travelled with.  The
+                # second is what carries the atom maps Ketcher leaves off a
+                # generic atom when it writes the first.
+                written, _, block = payload.partition(_ketcher.KET_MARK)
+                raw, recovered = _smarts.merge_maps(written, block)
             if not raw:
                 return {'ok': False, 'level': 'bad', 'smarts': '',
-                        'status': 'No reaction could be read from the drawing file.'}
+                        'status': 'No reaction could be read from the drawing.'}
             outcome = _smarts.normalize_reaction_smarts(
                 raw, aromatic=aromatic_box.value)
-            return _with_trial(outcome)
+            outcome = _with_trial(outcome)
+            if recovered and outcome.get('ok'):
+                outcome['status'] = (
+                    f"{outcome['status']} · {recovered} map"
+                    f"{'s' if recovered != 1 else ''} taken back off the "
+                    f"drawing, which the SMARTS had dropped")
+            return outcome
+        # A pattern carries no maps, so only the SMARTS half is of any use.
         raw = (_smarts.query_smarts_from_molblock(payload) if retried
-               else payload)
+               else payload.partition(_ketcher.KET_MARK)[0])
         if not raw:
             return {'ok': False, 'level': 'bad', 'smarts': '',
-                    'status': 'No pattern could be read from the drawing file.'}
+                    'status': 'No pattern could be read from the drawing.'}
         return _smarts.normalize_query_smarts(
             raw, aromatic=aromatic_box.value)
 

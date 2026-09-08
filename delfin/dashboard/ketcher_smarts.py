@@ -39,6 +39,7 @@ __all__ = [
     'prettify', 'normalize_reaction_smarts', 'normalize_query_smarts',
     'describe', 'inspect', 'reaction_smarts_from_rxn_block',
     'query_smarts_from_molblock', 'rxn_block_from_smarts', 'widen_kekule',
+    'merge_maps',
     'absorb_hydrogens',
     'trial_on_seed',
     'survives_the_editor',
@@ -1031,3 +1032,65 @@ def trial_on_seed(smarts: str, seed_smiles: str) -> Dict[str, Any]:
     return {'level': 'note',
             'status': (f'on the seed: matches {hits}x, but no product survives'
                        + (f' — {refused}' if refused else '') + advice)}
+
+
+def merge_maps(smarts: str, block: str) -> Tuple[str, int]:
+    """Put back the atom maps Ketcher drops when it writes a SMARTS.
+
+    Measured against Ketcher 3.17: a generic atom -- A, Q, X, M, the ones that
+    say "anything here" -- loses its mapping in ``getSmarts`` and keeps it
+    everywhere else.  ``A(:1)~C(:2)~A(:3)>>A(:1)~N(:2)~A(:3)`` comes back as
+    ``[*;D3]~[#6:2;D2]~[*;D3]>>[*]~[#7:2]~[*]``, and a rule whose generic atoms
+    are unmapped deletes and rebuilds them, so it matches and makes nothing.
+
+    The same drawing's RXN carries all six maps, so they are taken from there.
+    Only holes are filled, never an existing map overwritten, and only when
+    the two readings agree on how many atoms each side has and on what they
+    are -- otherwise the two orders are not the same order and nothing is
+    touched.
+    """
+    # Repaired first: the string as Ketcher writes it does not parse, and an
+    # atom carrying a query property is exactly where it puts the map wrong.
+    text = repair_atom_maps(smarts)
+    parts = split_reaction(text)
+    if parts is None or not str(block or '').strip():
+        return text, 0
+    try:
+        drawn = rdChemReactions.ReactionFromRxnBlock(str(block), sanitize=False)
+    except Exception:                                       # noqa: BLE001
+        drawn = None
+    if drawn is None:
+        return text, 0
+
+    sides = [
+        (parts[0], [drawn.GetReactantTemplate(i)
+                    for i in range(drawn.GetNumReactantTemplates())]),
+        (parts[2], [drawn.GetProductTemplate(i)
+                    for i in range(drawn.GetNumProductTemplates())]),
+    ]
+    written, filled = [], 0
+    for side, templates in sides:
+        here = Chem.MolFromSmarts(side)
+        if here is None or not templates:
+            return text, 0
+        # One mol per side either way: a '.' in the SMARTS is what several
+        # templates are, so they line up when flattened in order.
+        reference = templates[0]
+        for extra in templates[1:]:
+            reference = Chem.CombineMols(reference, extra)
+        if here.GetNumAtoms() != reference.GetNumAtoms():
+            return text, 0
+        for mine, theirs in zip(here.GetAtoms(), reference.GetAtoms()):
+            if mine.GetAtomicNum() != theirs.GetAtomicNum():
+                return text, 0
+        for mine, theirs in zip(here.GetAtoms(), reference.GetAtoms()):
+            if not mine.GetAtomMapNum() and theirs.GetAtomMapNum():
+                mine.SetAtomMapNum(theirs.GetAtomMapNum())
+                filled += 1
+        try:
+            written.append(Chem.MolToSmarts(here))
+        except Exception:                                   # noqa: BLE001
+            return text, 0
+    if not filled:
+        return text, 0
+    return f'{written[0]}>>{written[1]}', filled
