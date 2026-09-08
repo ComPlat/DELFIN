@@ -6118,13 +6118,34 @@ def _begin_observed_ledgers(client) -> None:
         client._observed_files_ledger_owner = None
 
 
-def _mcp_schema_budget_chars() -> int:
+# What share of a model's context window MCP tool schemas may occupy when
+# no explicit budget is set. The built-in catalogue takes about 1.8% of a
+# 512k window; five leaves room for a large MCP surface without letting it
+# become the request.
+_MCP_SCHEMA_WINDOW_SHARE = 0.05
+
+# Never below this, whatever the window says. It is the figure the flat
+# budget used, so a small-window model reads exactly what it read before.
+_MCP_SCHEMA_FLOOR_CHARS = 12000
+
+
+def _mcp_schema_budget_chars(context_window_tokens: int = 0) -> int:
     """How many characters of MCP tool schema may ride on each request.
 
-    Roughly a third of the built-in catalogue: enough for a normal server,
-    small enough that adding servers cannot silently double the cost of
-    every turn. Raisable in settings for someone who genuinely needs a
-    large MCP surface and has measured what it costs them.
+    A flat 12000 for everyone was the wrong shape once the KIT roster moved
+    to 512k-window models. Measured 2026-09-08: DELFIN's own servers offer
+    93 tools costing 54241 characters — about 13560 tokens, or 2.6% of a
+    524288-token window — and the flat budget advertised 32 of them. A user
+    asking "Hallo" got a warning naming the 61 that were dropped, which is
+    the framework withholding two thirds of itself to save 2.6%.
+
+    So the budget follows the window the model actually has, floored at the
+    old value so nothing shrinks for a small model, where the same surface
+    would be 42% of the context and the cap is right.
+
+    An explicit ``agent.mcp_schema_budget_chars`` still wins outright:
+    someone who has measured their own surface should not have it
+    second-guessed.
     """
     try:
         from delfin.user_settings import load_settings
@@ -6134,7 +6155,15 @@ def _mcp_schema_budget_chars() -> int:
             return max(2000, int(raw))
     except Exception:
         pass
-    return 12000
+    try:
+        window = int(context_window_tokens or 0)
+    except (TypeError, ValueError):
+        window = 0
+    if window <= 0:
+        return _MCP_SCHEMA_FLOOR_CHARS
+    # tokens -> chars at the house estimate of four characters per token.
+    scaled = int(window * _MCP_SCHEMA_WINDOW_SHARE * 4)
+    return max(_MCP_SCHEMA_FLOOR_CHARS, scaled)
 
 
 _POST_HOOK_NOTE_CAP = 2000
@@ -15427,7 +15456,8 @@ class OpenAIClient(_BaseClient):
             # SAID rather than quietly cut, because a surface that shrinks
             # in silence looks like a broken server to whoever debugs it
             # next.
-            _mcp_budget = _mcp_schema_budget_chars()
+            _mcp_budget = _mcp_schema_budget_chars(
+                getattr(_caps, "context_window", 0) if _caps else 0)
             _mcp_spent = 0
             _mcp_dropped: list[str] = []
             for _tool in _mcp_tools:
