@@ -587,3 +587,45 @@ def test_the_three_atom_rule_drawn_in_the_panel_makes_acridine():
     made = cd.apply_custom_reaction_iter(
         ANTHRACENE, out['smarts'], iterations=1, keep_rings=False)
     assert sorted(s for s, _ in made) == ["c1ccc2nc3ccccc3cc2c1"]
+
+
+def test_a_drawing_with_no_mapping_at_all_says_it_is_guessing():
+    """The MCS fills the holes; with nothing drawn it is not filling holes."""
+    nothing = "[#6]~[#6]=[#6]~[#6]>>[#6]~[#6](~[#6])=[#7]~[#6]"
+    out = ks.normalize_reaction_smarts(nothing)
+    assert out['drew_maps'] is False
+    assert out['auto_maps']
+    assert 'NOTHING was mapped' in out['status']
+    assert out['level'] == 'note'
+
+    # holes filled around maps that were drawn read differently
+    some = "[#6:7]~[#6]=[#6]~[#6]>>[#6:7]~[#6]=[#7]~[#6]"
+    filled = ks.normalize_reaction_smarts(some)
+    assert filled['drew_maps'] is True
+    assert 'NOTHING was mapped' not in filled['status']
+
+
+def test_the_atoms_that_change_have_to_be_mapped_too():
+    """Reported twice: mapped the context, left the changing atom out.
+
+    An atom mapped on neither side is deleted from the reactant and built
+    loose in the product, so the rule matches and makes nothing.
+    """
+    loose = "[#6:1](~[*:2])(~[*:3])=,:[#6]~*>>[C:1](~[*:2])(~[*:3])=N~*"
+    assert ks.trial_on_seed(
+        ks.normalize_reaction_smarts(loose)['smarts'], ANTHRACENE
+    )['level'] == 'note'
+
+    mapped = ("[#6:1](~[*:2])(~[*:3])=,:[#6:4]~[*:5]"
+              ">>[C:1](~[*:2])(~[*:3])=[N:4]~[*:5]")
+    out = ks.normalize_reaction_smarts(mapped)
+    made = set()
+    for group in rdChemReactions.ReactionFromSmarts(
+            out['smarts']).RunReactants((Chem.MolFromSmiles(ANTHRACENE),)):
+        mol = group[0]
+        try:
+            Chem.SanitizeMol(mol)
+            made.add(Chem.MolToSmiles(mol))
+        except Exception:                                   # noqa: BLE001
+            pass
+    assert "c1ccc2nc3ccccc3cc2c1" in made
