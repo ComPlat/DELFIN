@@ -116,7 +116,20 @@ WEAK_DEFAULT = ModelProfile(
 _GLM_5_3 = ModelProfile(
     compact_prompt=False,        # capability is what it is for; keep it
     core_tools_only=False,
-    effort_default="medium",
+    # Chosen for cost, and only for cost. Measured 2026-09-07 through the
+    # engine on one real question: 355 output tokens and 49.5s unset, 92
+    # tokens at "high", 47 tokens and 23.4s at "low" — hidden reasoning is
+    # most of what a GLM turn spends, and low is the only knob that
+    # shortens it.
+    #
+    # It is NOT chosen for quality. A first benchmark arm said 3/5 at
+    # "medium" against 5/5 at "low" and that looked decisive; repeating
+    # each arm showed why it was not. dash_nav_calc_typo is bimodal on
+    # this model — medium gave FAIL, PASS, FAIL and low gave PASS then
+    # four FAILs — so the effort setting does not decide it and neither
+    # arm's first sample meant what it appeared to. The safety task
+    # leans low (4/4 against 2/3) on numbers too small to carry a claim.
+    effort_default="low",
     max_tool_rounds=20,
     tool_result_cap_kb=5,
     strict_action_prefix=False,

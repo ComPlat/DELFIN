@@ -6292,6 +6292,36 @@ def _sendable_tool_args(raw) -> str:
     return "{}"
 
 
+# DELFIN's effort levels are five; the OpenAI-compatible parameter takes
+# three. Anything above "high" is still "high" — there is no more to ask
+# for — and an unset effort sends nothing, so a session that never touched
+# the control reads exactly what it read before.
+_EFFORT_TO_REASONING: dict[str, str] = {
+    "low": "low", "medium": "medium", "high": "high",
+    "xhigh": "high", "max": "high",
+}
+
+
+def _reasoning_effort_param(effort: str, caps, provider: str) -> str:
+    """The reasoning_effort to send, or "" to send none.
+
+    Gated on the resolved capability rather than the model name: the name
+    test one branch up knows the o-series and gpt-5, and an open-weight
+    reasoning line served over the same protocol is neither. Ollama is
+    excluded because it 400s on the parameter.
+    """
+    level = _EFFORT_TO_REASONING.get(str(effort or "").strip().lower(), "")
+    if not level or (provider or "").strip().lower() == "ollama":
+        return ""
+    try:
+        if not (caps is not None
+                and (caps.is_reasoning or caps.thinking_tagged)):
+            return ""
+    except Exception:
+        return ""
+    return level
+
+
 def _repair_json_args(raw) -> dict | None:
     """Deterministic repair for near-JSON tool arguments from weak models.
 
@@ -14690,7 +14720,7 @@ class OpenAIClient(_BaseClient):
     def __init__(self, api_key: str = "", model: str = "",
                  base_url: str = "", key_env_var: str = "OPENAI_API_KEY",
                  permissions: Optional["KitToolPermissions"] = None,
-                 provider: str = ""):
+                 provider: str = "", effort: str = ""):
         try:
             import openai  # noqa: F401
         except ImportError:
@@ -14707,6 +14737,17 @@ class OpenAIClient(_BaseClient):
             )
         import openai
 
+        # The session's reasoning effort. Only the CLI backend read this
+        # before, so the dashboard's Effort control did nothing at all for a
+        # KIT-hosted model on the API backend -- the setting was carried into
+        # create_client and dropped one call later. Probed against the
+        # endpoint on 2026-09-07: it accepts reasoning_effort, and on GLM-5.3
+        # the same trivial question costs 25 completion tokens with no
+        # setting, 8 at "high" and 3 at "low" -- the hidden reasoning is most
+        # of what a GLM turn spends. DeepSeek is not a reasoning line and
+        # moves the other way (2 -> 11), so this is sent by CAPABILITY, never
+        # by default.
+        self.effort = (effort or "").strip().lower()
         self.model = model or self.DEFAULT_MODEL
         # Provider identity ("openai"|"kit"|"ollama"). Used to gate
         # provider-specific request shaping (Ollama num_ctx, reasoning_effort
@@ -15717,6 +15758,35 @@ class OpenAIClient(_BaseClient):
                     kwargs["reasoning_effort"] = "low"
             else:
                 kwargs["max_tokens"] = max_tokens
+                # An open-weight reasoning line served over an
+                # OpenAI-compatible endpoint takes the same control, and
+                # the name test above cannot see it: that test knows the
+                # o-series and gpt-5, and GLM is neither. So the decision
+                # is made from the RESOLVED capability, and the parameter
+                # rides beside plain max_tokens rather than replacing it —
+                # vLLM takes max_tokens, and max_completion_tokens is the
+                # Azure spelling.
+                #
+                # Measured on kit.glm-5.3, one trivial question: 25
+                # completion tokens with nothing set, 8 at "high", 3 at
+                # "low". Hidden reasoning is most of what a GLM turn
+                # spends, so this is the one knob that shortens it.
+                # The session's choice first; the model's profile when the
+                # user made none. effort_default has been a field on
+                # ModelProfile, documented and tested, and read by nothing
+                # in the product -- there was no path for it to take until
+                # the parameter above existed.
+                _eff_setting = getattr(self, "effort", "")
+                if not _eff_setting:
+                    try:
+                        from .model_profiles import get_profile as _gp_eff
+                        _eff_setting = _gp_eff(self.model, _caps).effort_default
+                    except Exception:
+                        _eff_setting = ""
+                _eff = _reasoning_effort_param(
+                    _eff_setting, _caps, self._provider)
+                if _eff:
+                    kwargs["reasoning_effort"] = _eff
 
             # Advertise tools to the model. Reasoning models (gpt-5.x, o3,
             # o4) DO support function calling — withholding tools from them
@@ -17168,6 +17238,7 @@ def create_client(
             key_env_var="KIT_TOOLBOX_API_KEY",
             permissions=kit_perms,
             provider="kit",
+            effort=effort,
         )
     if provider == "openai":
         if backend == "cli":
@@ -17241,6 +17312,7 @@ def create_client(
             key_env_var="OLLAMA_HOST",
             permissions=local_perms,
             provider="ollama",
+            effort=effort,
         )
     if backend == "api":
         return APIClient(api_key=api_key, model=model)
