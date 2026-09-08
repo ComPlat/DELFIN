@@ -114,8 +114,16 @@ cannot be built at all — draw it aromatic (<code>c</code>) instead.</p>
     <td>connections <i>including</i> hydrogens — an aromatic CH is
         <code>X3</code> too, so this rarely singles one out</td></tr>
 <tr><td style="padding:2px 12px 2px 0;">Generic atom A / Q / X / M</td>
-    <td style="padding:2px 12px 2px 0;">atom list</td>
-    <td>leave the surroundings open</td></tr>
+    <td style="padding:2px 12px 2px 0;"><code>[*]</code> <code>[!#6]</code>
+        <code>[F,Cl,Br,I]</code></td>
+    <td>any atom / any heteroatom / halogen / metal</td></tr>
+<tr><td style="padding:2px 12px 2px 0;">“N or O” as a <b>query on an atom</b></td>
+    <td style="padding:2px 12px 2px 0;"><code>[#7,#8]</code></td>
+    <td>keeps its map — use this for a mapped position</td></tr>
+<tr><td style="padding:2px 12px 2px 0;">“N or O” as an <b>atom list</b></td>
+    <td style="padding:2px 12px 2px 0;"><code>[#7,#8]</code></td>
+    <td style="color:#b00;">loses its map — Ketcher's atom-list node carries
+        none, in any format</td></tr>
 </table>
 <p style="margin:6px 0 0 0; color:#666;">What is drawn arrives below as a
 SMARTS and can be sharpened by hand there — the line is checked again on
