@@ -112,20 +112,20 @@ def test_open_tasks_reminder_present_outside_plan_mode():
 # --- dashboard source-inspection scope --------------------------------------
 
 def test_dashboard_source_deny_covers_source_tools_not_docsearch():
-    from delfin.agent.engine import (
-        _DASHBOARD_SOURCE_DENY, _DOC_TOOL_PREFIX, _KIT_CODING_PREFIX,
-    )
+    """Asked of the layer that refuses, not of a list that describes it.
 
-    def _bare(name: str) -> str:
-        for pfx in (_DOC_TOOL_PREFIX, _KIT_CODING_PREFIX):
-            if name.startswith(pfx):
-                return name[len(pfx):]
-        return name
+    This used to read a second copy of the ban in engine.py, checked
+    against the tool_use event — which is a report of a call already
+    made. The question that matters is whether the executor refuses it,
+    and it takes the namespaced name because that is how it arrives.
+    """
+    from delfin.agent.api_client import _tool_denied_for_role
 
-    # Forbidden source-inspection tools de-namespace into the deny set …
-    assert _bare("mcp__delfin-docs__read_file") in _DASHBOARD_SOURCE_DENY
-    assert _bare("mcp__delfin-docs__grep_file") in _DASHBOARD_SOURCE_DENY
-    assert _bare("mcp__delfin-docs__list_files") in _DASHBOARD_SOURCE_DENY
-    # … while the dashboard's legitimate research tools do NOT.
-    assert _bare("mcp__delfin-docs__search_docs") not in _DASHBOARD_SOURCE_DENY
-    assert _bare("mcp__delfin-docs__read_section") not in _DASHBOARD_SOURCE_DENY
+    for tool in ("read_file", "grep_file", "list_files", "glob_files"):
+        assert _tool_denied_for_role("dashboard_agent",
+                                     f"mcp__delfin-docs__{tool}"), tool
+        assert _tool_denied_for_role("dashboard_agent", tool), tool
+    # … while the dashboard's legitimate research tools go through.
+    for tool in ("search_docs", "read_section"):
+        assert not _tool_denied_for_role("dashboard_agent",
+                                         f"mcp__delfin-docs__{tool}"), tool

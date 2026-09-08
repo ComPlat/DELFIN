@@ -1577,6 +1577,20 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"^\s*(?:cat|head|tail|wc|file|stat|which|type|env|printenv|sort|uniq|cut|tr)\b",
     r"^\s*(?:basename|dirname|realpath|readlink)\b",
     r"^\s*echo\b",
+    # Looking at the process and socket tables. The agent is asked to
+    # clean up a background job it started and told never to sweep the
+    # process table; to stop the right one it has to find the right one,
+    # and every spelling of the question went to the confirm gate — a
+    # refusal in a headless run. Measured 2026-09-08: three denials in one
+    # task, one per spelling, against a block whose own message says not
+    # to look for another way round.
+    #
+    # These read and change nothing, and reveal strictly less than `env`
+    # and `printenv`, auto-allowed since this list was written. What ACTS
+    # is not here: kill, pkill, killall, and `ss -K`, which closes
+    # sockets.
+    r"^\s*(?:ps|pgrep|netstat|lsof)\b",
+    r"^\s*ss\b(?![^|;&]*(?:-K\b|--kill\b))",
     # cd <literal-path>: harmless on its own (it executes nothing, and each
     # bash call is a fresh subprocess) and the common prefix in
     # `cd /path && <cmd>`. Auto-allowed ONLY for a literal path — the char class
@@ -1639,7 +1653,19 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"^\s*(?:ruff|black|isort|flake8|pylint|mypy|pyright|pyflakes|bandit)\b",
     r"^\s*(?:nox|tox)\s+--?l", r"^\s*tox\s+-e\b",
     r"^\s*make(?!\s+(?:clean|distclean|uninstall|purge))\b",
-    r"^\s*mkdir\s+-p\b",
+    # Creating a directory, and being able to take it back. `-p` was the
+    # only spelling on the list, so a plain `mkdir build` asked while
+    # `mkdir -p a/b/c` — which creates a whole chain — did not.
+    #
+    # rmdir is here for the symmetry that was missing: it REFUSES a
+    # directory that is not empty, so it cannot destroy anything, and
+    # without it an agent could create structure and not undo its own
+    # mistake. Seen 2026-09-08: a wrong relative path left a nested
+    # tests/fixtures/… tree inside the workspace, the agent noticed and
+    # tried to clean up, and every command for doing so was refused.
+    # `rm` stays off this list — that one deletes files.
+    r"^\s*mkdir\b",
+    r"^\s*rmdir\b",
     r"^\s*touch\s+(?!/)",                                    # only relative paths
     r"^\s*cp\s+(?!.*[\s/]/(?:etc|usr|bin|lib|var))",         # disallow copy to system dirs
     r"^\s*mv\s+(?!.*[\s/]/(?:etc|usr|bin|lib|var))",
@@ -2114,12 +2140,49 @@ _PLAN_READONLY_MCP_TOOLS: frozenset[str] = (
     _PLAN_READONLY_TOOLS | _MCP_READONLY_TOOL_BASES
 )
 
+# What a role that only reads must not do. Six roles declare a tool set
+# in engine._ROLE_TOOL_WHITELIST that contains neither Edit nor Write —
+# a statement of intent that nothing was keeping.
+#
+# The engine-side check reads like enforcement and cannot be: the client
+# YIELDS the tool_use event and then executes the tool inside the same
+# generator, so by the time the engine sees it the call has been made.
+# Its `continue` skips the UI callback, the turn's tool counter, the
+# execution ledger the functional-claim guard reads for evidence, the
+# trace and the stray-write check — a call that ran, hidden from every
+# record of it. And on the OpenAI-compatible backends it did not even
+# reach that far: every coding tool arrives as `mcp__kit-coding__…` and
+# took the namespace exemption.
+#
+# Denied rather than allow-listed. Those sets are written in the CLI
+# backend's vocabulary (Read/Grep/Glob/Bash) against an executor surface
+# sixty tools wide; translating them would refuse most of what these
+# roles legitimately do. Naming the writes refuses exactly what was
+# already declared out of bounds and leaves reading, shelling and
+# reporting alone.
+# Catalogue names only. The CLI backend's spellings (Write, Edit, …)
+# never reach this executor -- that backend runs its own tools in its own
+# subprocess, where DELFIN sees the call only after it happened. Listing
+# them here would be a promise this layer cannot keep, and
+# test_the_deny_list_only_names_real_tools says so.
+_WRITE_TOOL_NAMES: frozenset[str] = frozenset({
+    "write_file", "edit_file", "multi_edit", "apply_patch", "notebook_edit",
+})
+
 _ROLE_EXEC_DENYLIST: dict[str, frozenset[str]] = {
     # The office agent works on documents and data, not on chemistry.
     # The calc and ORCA-manual tools are not merely useless there — they
     # invite the model to answer an administrative question with
     # methodology it has no business applying.
     "office_agent": _DELFIN_ONLY_TOOL_NAMES,
+    # Reviewers, planners and the runtime watcher: they read the work and
+    # say what they found. bash stays — these roles run tests and git.
+    "critic_agent": _WRITE_TOOL_NAMES,
+    "reviewer_agent": _WRITE_TOOL_NAMES,
+    "chief_agent": _WRITE_TOOL_NAMES,
+    "session_manager": _WRITE_TOOL_NAMES,
+    "runtime_agent": _WRITE_TOOL_NAMES,
+    "research_agent": _WRITE_TOOL_NAMES,
 }
 
 
