@@ -541,6 +541,14 @@ def _normalize_tool_name(name: str) -> str:
     ``mcp__<server>__<tool>`` (e.g. ``mcp__delfin-docs__read_file``).  The
     classifier reasons about the bare tool (``read_file``), so normalise
     first — otherwise a genuine read/edit/run is invisible to the flags.
+
+    The namespace is all it strips. The sets below are written in the
+    OpenAI-compatible vocabulary (write_file / read_file / bash), which
+    is what every model on the roster is served as, and the CLI
+    backend's Write / Read / Bash would be invisible to every flag.
+    That is a real limit and not an accident: the task signals are
+    written in the same vocabulary, so a CLI-backend run would need both
+    changed together, and nothing runs the suite that way today.
     """
     if name.startswith("mcp__"):
         parts = name.split("__")
