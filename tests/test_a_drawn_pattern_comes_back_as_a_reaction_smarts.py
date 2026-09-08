@@ -681,3 +681,83 @@ def test_maps_are_only_taken_from_a_drawing_that_matches():
     # an existing map is never overwritten
     merged, _ = ks.merge_maps(A_SMARTS, _a_block())
     assert ':2' in merged and merged.count(':2') == 2
+
+
+# ---------------------------------------------------------------------------
+# What Ketcher can express, and what survives the trip
+# ---------------------------------------------------------------------------
+# One drawing per construct, each loaded into the running editor and read back
+# with getSmarts. These are the strings it produced -- every quirk in them is
+# Ketcher's, not a paraphrase.
+
+KETCHER_SAYS = {
+    'generic A':        "[*]~[#6:2]~[*]>>[#6:1]~[#7:2]~[#6:3]",
+    'generic AH':       "[*]~[#6:2]~[*]>>[#6:1]~[#7:2]~[#6:3]",
+    'generic Q':        "[*;!#6:1]~[#6:2]~[*;!#6:3]>>[#6:1]~[#7:2]~[#6:3]",
+    'generic X':        "[#6:1]~[F:2,Cl:2,Br:2,I:2,At:2]>>[#6:1]~[#8:2]",
+    'generic M':        "[#6:1]~[!#6:2;!#7:2;!#8:2;!F:2;!#15:2;!#16:2;!Cl:2;"
+                        "!#34:2;!Br:2;!I:2;!At:2;!He:2;!Ne:2;!Ar:2;!Kr:2;"
+                        "!Xe:2;!Rn:2;*]>>[#6:1]~[#8:2]",
+    'atom list':        "[#7,#8]~[#6:2]~[#6:3]>>[#6:1]~[#7:2]~[#6:3]",
+    'charge':           "[#6:1;+]~[#6:2]~[#6:3]>>[#6:1]~[#7:2]~[#6:3]",
+    'substitution':     "[#6:1;D3]~[#6:2;D2]~[#6:3;D3]>>[#6:1]~[#7:2]~[#6:3]",
+    'ring bond count':  "[#6:1]~[#6:2;x2]~[#6:3]>>[#6:1]~[#7:2]~[#6:3]",
+    'unsaturated':      "[#6:1]~[#6:2;$([*,#1]=,#,:[*,#1])]~[#6:3]"
+                        ">>[#6:1]~[#7:2]~[#6:3]",
+    'hydrogen count':   "[#6:1]~[#6:2;H]~[#6:3]>>[#6:1]~[#7:2]~[#6:3]",
+    'bond single/dbl':  "[#6:1]!:;-,=[#6:2]~[#6:3]>>[#6:1]~[#7:2]~[#6:3]",
+    'bond single/arom': "[#6:1][#6:2]~[#6:3]>>[#6:1]~[#7:2]~[#6:3]",
+    'bond double/arom': "[#6:1]=,:[#6:2]~[#6:3]>>[#6:1]~[#7:2]~[#6:3]",
+    'bond triple':      "[#6:1]#[#6:2]~[#6:3]>>[#6:1]~[#7:2]~[#6:3]",
+    'bond aromatic':    "[#6:1]:[#6:2]:[#6:3]>>[#6:1]~[#7:2]~[#6:3]",
+    'bond any':         "[#6:1]~[#6:2]~[#6:3]>>[#6:1]~[#7:2]~[#6:3]",
+}
+
+
+@pytest.mark.parametrize("name", sorted(KETCHER_SAYS))
+def test_every_construct_ketcher_offers_can_be_read(name):
+    """None of these parse as they arrive; all of them do once repaired."""
+    fixed = ks.repair_atom_maps(KETCHER_SAYS[name])
+    for side in fixed.split('>>'):
+        assert Chem.MolFromSmarts(side) is not None, f"{name}: {side}"
+
+
+def test_a_map_repeated_on_every_term_collapses_to_one():
+    """X and M are written as lists with the map on each branch."""
+    halogen = ks.repair_atom_maps(KETCHER_SAYS['generic X'])
+    assert '[F,Cl,Br,I,At:2]' in halogen
+    metal = ks.repair_atom_maps(KETCHER_SAYS['generic M'])
+    assert metal.count(':2') == 2                 # once per side, not per term
+
+    # two different numbers in one atom is a real ambiguity, left to be seen
+    assert ks.repair_atom_maps("[#6:1;#7:2]") == "[#6:1;#7:2]"
+
+
+def test_a_bond_inside_a_recursive_query_is_not_mistaken_for_a_map():
+    """Ketcher writes Unsaturated as $([*,#1]=,#,:[*,#1]) -- with a ':' in it."""
+    fixed = ks.repair_atom_maps(KETCHER_SAYS['unsaturated'])
+    assert '$([*,#1]=,#,:[*,#1])' in fixed         # the recursion is untouched
+    assert Chem.MolFromSmarts(fixed.split('>>')[0]) is not None
+    assert ks.repair_atom_maps("[$([#6]:[#6]):1]") == "[$([#6]:[#6]):1]"
+
+
+def test_the_generic_atoms_mean_what_they_say():
+    """X only halogens, M only metals -- neither reached anything before."""
+    def hits(name, smiles):
+        out = ks.normalize_reaction_smarts(ks.repair_atom_maps(KETCHER_SAYS[name]))
+        assert out['ok'], out['status']
+        rxn = rdChemReactions.ReactionFromSmarts(out['smarts'])
+        made = set()
+        for group in rxn.RunReactants((Chem.MolFromSmiles(smiles),)):
+            mol = group[0]
+            try:
+                Chem.SanitizeMol(mol)
+                made.add(Chem.MolToSmiles(mol))
+            except Exception:                       # noqa: BLE001
+                pass
+        return made
+
+    assert hits('generic X', "Clc1ccccc1") == {"Oc1ccccc1"}
+    assert hits('generic X', "Cc1ccccc1") == set()
+    assert hits('generic M', "[Fe]C") == {"CO"}
+    assert hits('generic M', "Clc1ccccc1") == set()
