@@ -210,3 +210,86 @@ def test_a_file_that_vanished_does_not_take_the_scan_down(tmp_path):
     from delfin.dashboard.tab_agent import _artifact_stamp
 
     assert _artifact_stamp(tmp_path / "gone.pdf") == (0, -1)
+
+
+# ---------------------------------------------------------------------------
+# The file the ANSWER names
+# ---------------------------------------------------------------------------
+
+def test_a_file_the_answer_names_is_offered(tmp_path):
+    """The artifact diff only sees what the TURN wrote. "Gib mir das
+    Archiv von gestern" produces a sentence naming a file and, before
+    this, no way at all to get it — the one case where the user asked in
+    so many words to be handed something."""
+    from delfin.dashboard.tab_agent import _files_named_in_answer
+
+    (tmp_path / "ergebnisse.zip").write_bytes(b"PK\x05\x06" + b"\0" * 18)
+    found = _files_named_in_answer(
+        "Das Archiv liegt als `ergebnisse.zip` bereit.", tmp_path)
+    assert [p.name for p in found] == ["ergebnisse.zip"]
+
+
+def test_a_file_that_does_not_exist_is_not_offered(tmp_path):
+    """Naming a file is not producing one, and a download button for
+    nothing is worse than no button."""
+    from delfin.dashboard.tab_agent import _files_named_in_answer
+
+    assert _files_named_in_answer(
+        "Ich würde das nach bericht.pdf schreiben.", tmp_path) == []
+
+
+def test_a_path_outside_the_workspace_is_never_offered(tmp_path):
+    """The scan reads text the model wrote. It must not become a way to
+    put a file the user cannot otherwise reach into the page."""
+    from delfin.dashboard.tab_agent import _files_named_in_answer
+
+    outside = tmp_path.parent / "geheim.pdf"
+    outside.write_bytes(b"%PDF")
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    for text in (f"siehe {outside}", "siehe ../geheim.pdf",
+                 "siehe ../../etc/passwd.json"):
+        assert _files_named_in_answer(text, ws) == [], text
+
+
+def test_a_source_file_the_answer_mentions_stays_silent(tmp_path):
+    """Same noise floor as the artifact cards: code is quoted in the
+    answer, not handed over."""
+    from delfin.dashboard.tab_agent import _files_named_in_answer
+
+    for name in ("tagreport.py", "README.md", "run.sh", "out.log"):
+        (tmp_path / name).write_text("x", encoding="utf-8")
+    assert _files_named_in_answer(
+        "Ich habe tagreport.py, README.md, run.sh und out.log angelegt.",
+        tmp_path) == []
+
+
+def test_at_most_three_files_per_turn(tmp_path):
+    """An answer listing a directory must not turn the chat into one."""
+    from delfin.dashboard.tab_agent import _files_named_in_answer
+
+    names = [f"bericht{i}.pdf" for i in range(6)]
+    for n in names:
+        (tmp_path / n).write_bytes(b"%PDF")
+    assert len(_files_named_in_answer(" ".join(names), tmp_path)) == 3
+
+
+def test_a_card_already_on_screen_is_not_drawn_twice(tmp_path):
+    """The turn wrote it, the tool output already showed it, and the
+    answer then mentions it — which is the normal shape of a turn."""
+    from delfin.dashboard.tab_agent import _files_named_in_answer
+
+    p = tmp_path / "plot.png"
+    p.write_bytes(_PNG)
+    assert _files_named_in_answer("siehe plot.png", tmp_path,
+                                  already=[str(p.resolve())]) == []
+
+
+def test_the_same_file_named_twice_is_offered_once(tmp_path):
+    from delfin.dashboard.tab_agent import _files_named_in_answer
+
+    p = tmp_path / "bericht.pdf"
+    p.write_bytes(b"%PDF")
+    found = _files_named_in_answer(
+        "bericht.pdf ist fertig; siehe bericht.pdf", tmp_path)
+    assert len(found) == 1

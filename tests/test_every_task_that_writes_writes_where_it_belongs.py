@@ -144,8 +144,14 @@ def test_the_counts_still_match_what_was_measured():
     # the user_project_workspace, and the memory pair needs its seeded
     # store installed and removed by the same guard. A task that names the
     # fixture without the guard is exactly what this file exists to catch.
+    #
+    # 13 -> 14 the same day: gen_hook_needs_trust, which asks why a hook
+    # in .delfin/settings.json never fires. It writes nothing either, and
+    # it needs the guard for the same reason the memory pair does — the
+    # hook definition is seeded into the fixture at run time and has to
+    # leave with everything else the attempt wrote.
     assert counts == {"office": 11, "behavior": 12,
-                      "generic_project": 13, "other": 48}, counts
+                      "generic_project": 14, "other": 48}, counts
 
 
 # ---------------------------------------------------------------------------
