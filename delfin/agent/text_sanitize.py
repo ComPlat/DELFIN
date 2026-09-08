@@ -39,6 +39,21 @@ _BARE_TOOL_MARKER = re.compile(r"to=\s*[A-Za-z_][\w\-]*")
 _QWEN_TOOL_CALL = re.compile(
     r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 
+# GLM-family markup that wraps TEXT rather than a call object. Given a tool
+# surface, GLM-5.3 on the KIT deployment wraps its ordinary answer in its own
+# call tags and the serving parser leaves them in the text channel:
+#
+#   <tool_call>ACTION: /tab calc</arg_value></tool_call>
+#
+# The pattern above cannot see it — there is no JSON inside — so the answer
+# survived with markup around it and the ACTION line no longer began a line.
+# Measured 2026-09-07: the dashboard reported "[empty turn]" for a request
+# the model had answered correctly, 0/3 across four benchmark arms, while the
+# same prompt sent by hand returned "ACTION: /tab calc" every time. Only the
+# tags go; the text between them is the answer.
+_GLM_CALL_TAGS = re.compile(
+    r"</?(?:tool_call|arg_key|arg_value)\s*>")
+
 # A fenced ```json block whose entire payload is ONE call object. Only
 # treated as a call when the object's keys are exactly a call shape
 # (see _call_shape below) — ordinary JSON output must never be executed.
@@ -117,6 +132,12 @@ def sanitize_agent_text(text: str) -> SanitizeResult:
     cleaned = _THINK_DANGLING.sub(" ", cleaned)
     cleaned = _LEAKED_TOOL.sub(" ", cleaned)
     cleaned = _QWEN_TOOL_CALL.sub(" ", cleaned)
+    # After the JSON form above, so a real leaked call is still recognised
+    # as a call and removed whole rather than unwrapped into prose. The tag
+    # becomes a NEWLINE, not nothing: two wrapped ACTION lines are written
+    # back to back, and the dashboard's parser reads one action per line —
+    # joining them would trade an empty turn for a mangled one.
+    cleaned = _GLM_CALL_TAGS.sub("\n", cleaned)
     cleaned = _BARE_TOOL_MARKER.sub(" ", cleaned)
     cleaned = _HARMONY_TOKENS.sub(" ", cleaned)
 
