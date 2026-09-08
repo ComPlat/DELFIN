@@ -297,6 +297,47 @@ def _seed_fixture_memories(root: Path, workspace: Optional[Path]) -> int:
         return 0
 
 
+# Hook definitions a fixture starts with. One directory per workspace
+# under tests/fixtures/hooks_seed/, named after it; every file in it is
+# installed into <workspace>/.delfin/ under the same name.
+#
+# The definition cannot simply live in the fixture: `.delfin/` is ignored
+# checkout-wide, so a committed settings.json would exist only in the
+# working copy that wrote it and be absent from every clone -- a task
+# that passes here and fails in CI for no visible reason.
+#
+# Installed INSIDE the pristine guard, like the memory seed, so the file
+# is present for the attempt and gone with everything else the attempt
+# left behind. Nothing here grants trust: the point of the fixture is a
+# workspace that ships hooks nobody has trusted yet, which is what a
+# freshly cloned repository is.
+_HOOKS_SEED_REL = Path("tests") / "fixtures" / "hooks_seed"
+
+
+def _seed_fixture_hooks(root: Path, workspace: Optional[Path]) -> int:
+    """Copy a fixture's seeded hook settings into it. Returns the count.
+
+    Best-effort: a missing seed directory is the normal case and must not
+    stop a run.
+    """
+    if workspace is None:
+        return 0
+    try:
+        src = Path(root) / _HOOKS_SEED_REL / Path(workspace).name
+        if not src.is_dir():
+            return 0
+        dest = Path(workspace) / ".delfin"
+        dest.mkdir(parents=True, exist_ok=True)
+        n = 0
+        for f in sorted(src.glob("*.json")):
+            dest.joinpath(f.name).write_text(
+                f.read_text(encoding="utf-8"), encoding="utf-8")
+            n += 1
+        return n
+    except Exception:
+        return 0
+
+
 def _cost_delta(before: float, after: float) -> float:
     """Δ cost for a single turn — defends against engines that don't
     expose cost_usd."""
@@ -708,10 +749,10 @@ def _run_task_once(
     t0 = clock()
     try:
         with _PristineWorkspace():
-            _seed_fixture_memories(
-                Path(os.getcwd()),
-                workspace_for(Path(os.getcwd()), mode=task.mode,
-                              task_class=task.task_class))
+            _ws = workspace_for(Path(os.getcwd()), mode=task.mode,
+                                task_class=task.task_class)
+            _seed_fixture_memories(Path(os.getcwd()), _ws)
+            _seed_fixture_hooks(Path(os.getcwd()), _ws)
             raw = run_once(engine, task.prompt, max_tokens=max_tokens)
     except Exception as exc:
         raw = {"text": "", "tool_calls": [], "input_tokens": 0,

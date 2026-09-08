@@ -795,6 +795,40 @@ class PromptLoader:
 
         return "\n".join(lines)
 
+    def _withheld_config_block(self) -> str:
+        """Configuration this workspace ships that is NOT in force.
+
+        A repository can carry hook commands and MCP servers under
+        ``.delfin/``, and neither is loaded until the user has trusted
+        that directory. Nothing inside a turn says so: the withholding is
+        rendered by ``/hooks`` and ``/trust``, which a user opens only
+        once they already suspect it, and no tool exposes it to the model
+        at all.
+
+        Asked why a PreToolUse hook in ``.delfin/settings.json`` never
+        fires, a model answered that there is no hook mechanism and that
+        the schema does not fit -- confidently, and reasoned from the one
+        thing its prompt does say about that file, which is that it holds
+        permission rules. Measured 2026-09-08. A hook that never started
+        looks exactly like a hook that had nothing to say.
+
+        Its own section rather than a line in the environment block,
+        because that block is composed for ``solo_agent`` only, and a
+        workspace ships what it ships whichever role is reading it.
+
+        The short form: this rides along in every prompt for as long as
+        the trust is pending. It costs nothing in the ordinary case -- a
+        workspace that ships no configuration, or one the user has
+        trusted, produces no text.
+        """
+        try:
+            from . import workspace_trust as _trust
+            root = self.workspace_root or self.repo_root
+            notes = _trust.pending_notices(root, short=True)
+        except Exception:
+            return ""
+        return "\n".join(f"- {n}" for n in notes)
+
     def _load_repo_map_context(self, task_text: str) -> str:
         """Load a compact task-scoped repository map."""
         try:
@@ -1814,6 +1848,14 @@ class PromptLoader:
             add("session_env", self.LAYER_VOLATILE,
                 f"--- Session Environment ---\n{env_block}" if env_block else "")
 
+            # What this workspace ships that is not in force. Before the
+            # live state, because it is stable for as long as the trust is
+            # pending, and empty for every workspace that ships nothing.
+            withheld = self._withheld_config_block()
+            add("withheld_config", self.LAYER_VOLATILE,
+                f"--- Withheld workspace configuration ---\n{withheld}"
+                if withheld else "")
+
             # Live state (dashboard widgets, calc folder, jobs, the
             # context-status block) — highest per-turn churn, must be
             # last before the anchor.
@@ -2147,6 +2189,14 @@ class PromptLoader:
                 add("profile", self.LAYER_VOLATILE,
                     f"--- Provider Profile ---\n{profile_ctx}")
                 injected.append("profile")
+
+        # What this workspace ships that is not in force -- see
+        # _withheld_config_block. Empty for every workspace that ships
+        # nothing, which is nearly all of them.
+        withheld = self._withheld_config_block()
+        add("withheld_config", self.LAYER_VOLATILE,
+            f"--- Withheld workspace configuration ---\n{withheld}"
+            if withheld else "")
 
         # Live state (per-turn UI snapshot, e.g. dashboard widgets + active
         # calc folder). Last domain content before the anchor.
