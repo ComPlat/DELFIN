@@ -605,30 +605,53 @@ def test_a_drawing_with_no_mapping_at_all_says_it_is_guessing():
     assert 'NOTHING was mapped' not in filled['status']
 
 
-def test_the_atoms_that_change_have_to_be_mapped_too():
-    """Reported twice: mapped the context, left the changing atom out.
-
-    An atom mapped on neither side is deleted from the reactant and built
-    loose in the product, so the rule matches and makes nothing.
-    """
-    loose = "[#6:1](~[*:2])(~[*:3])=,:[#6]~*>>[C:1](~[*:2])(~[*:3])=N~*"
-    assert ks.trial_on_seed(
-        ks.normalize_reaction_smarts(loose)['smarts'], ANTHRACENE
-    )['level'] == 'note'
-
-    mapped = ("[#6:1](~[*:2])(~[*:3])=,:[#6:4]~[*:5]"
-              ">>[C:1](~[*:2])(~[*:3])=[N:4]~[*:5]")
-    out = ks.normalize_reaction_smarts(mapped)
+def _products(smarts, seed=None):
     made = set()
-    for group in rdChemReactions.ReactionFromSmarts(
-            out['smarts']).RunReactants((Chem.MolFromSmiles(ANTHRACENE),)):
+    for group in rdChemReactions.ReactionFromSmarts(smarts).RunReactants(
+            (Chem.MolFromSmiles(seed or ANTHRACENE),)):
         mol = group[0]
         try:
             Chem.SanitizeMol(mol)
             made.add(Chem.MolToSmiles(mol))
         except Exception:                                   # noqa: BLE001
             pass
-    assert "c1ccc2nc3ccccc3cc2c1" in made
+    return made
+
+
+def test_the_atom_that_changes_is_paired_even_though_its_element_does_not():
+    """Reported four times: the context mapped, the changing atom left out.
+
+    An element-comparing MCS will not pair the carbon with the nitrogen it
+    becomes -- which is the one pair a morphing rule exists for -- so the
+    holes are filled a second time with elements allowed to differ, and only
+    when both sides still have some. Unmapped it would be deleted and its
+    replacement built loose: a rule that matches and makes nothing.
+    """
+    loose = "[#6:1](~[*:2])(~[*:3])=,:[#6]~*>>[C:1](~[*:2])(~[*:3])=N~*"
+    out = ks.normalize_reaction_smarts(loose)
+    assert out['ok'], out['status']
+    assert out['auto_maps'] == [4, 5]
+    assert 'filled in automatically' in out['status']
+    assert "c1ccc2nc3ccccc3cc2c1" in _products(out['smarts'])
+
+    # the same rule written out by hand agrees
+    mapped = ("[#6:1](~[*:2])(~[*:3])=,:[#6:4]~[*:5]"
+              ">>[C:1](~[*:2])(~[*:3])=[N:4]~[*:5]")
+    assert _products(ks.normalize_reaction_smarts(mapped)['smarts']) \
+        == _products(out['smarts'])
+
+
+def test_a_deliberate_deletion_is_still_a_deletion():
+    """The furan rule drops map 1 on purpose; nothing may pair it back.
+
+    The second pass only runs when *both* sides still hold unmapped atoms, so
+    a rule that maps everything and simply has fewer atoms on the right is
+    left exactly as it was drawn.
+    """
+    out = ks.normalize_reaction_smarts(DRAWN['furan'])
+    assert out['auto_maps'] == []
+    assert out['deleted_maps'] == [1]
+    assert "c1ccoc1" in _products(out['smarts'], "c1ccccc1")
 
 
 # ---------------------------------------------------------------------------
@@ -808,3 +831,22 @@ def test_two_meso_positions_are_one_molecule():
         except Exception:                                   # noqa: BLE001
             pass
     assert made == {"c1ccc2nc3ccccc3cc2c1"}
+
+
+def test_a_custom_query_that_replaces_the_label_keeps_its_map():
+    """Ketcher stores a Custom query as M MRV SMA on an ordinary atom.
+
+    When the query names a different element than the label -- "N or O" typed
+    onto a carbon -- getSmarts writes the query alone and the map goes with
+    the label. The drawing file still has it, on an atom the SMARTS now reads
+    as a query, so the two readings disagree about the element and agree
+    about everything else.
+    """
+    smarts = "[#7,#8]~[#6:2]>>[#16:1]~[#6:2]"
+    block = ks.rxn_block_from_smarts("[#6:1]~[#6:2]>>[#16:1]~[#6:2]")
+    merged, recovered = ks.merge_maps(smarts, block)
+    assert recovered == 1
+    assert '[#7,#8:1]' in merged
+
+    # a genuine disagreement is still refused
+    assert ks.merge_maps("[#7:1]~[#8:2]>>[#16:1]~[#6:2]", block)[1] == 0
