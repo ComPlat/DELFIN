@@ -1686,8 +1686,15 @@ class AgentEngine:
             ["# Answers to requests that previously timed out "
              "(act on them now — do not re-ask)"] + lines)
 
+    # Under both vocabularies. These two guards — the project-dir pin and
+    # the stray-write notice — read the tool name off a tool_use event,
+    # and the CLI backend spells the same tools Write/Edit/MultiEdit/
+    # NotebookEdit. With only the OpenAI-compatible names here, neither
+    # guard has ever fired on that backend: no anti-drift pin, no notice
+    # when a write lands outside the directory the session is working in.
     _MUTATE_TOOLS_FOR_PIN = frozenset({
         "write_file", "edit_file", "multi_edit", "apply_patch", "notebook_edit",
+        "Write", "Edit", "MultiEdit", "NotebookEdit",
     })
 
     def _maybe_pin_project_dir(self, tool_name: str, tool_input: Any) -> None:
@@ -5063,33 +5070,19 @@ class AgentEngine:
             return "\n\n".join(parts)
         return ""
 
-    # -- Auto-verification after code edits (Feature 2) --------------------
-
-    _AUTO_VERIFY_ROLES = {"solo_agent", "builder_agent"}
-    _CODE_EDIT_TOOLS = {"Edit", "Write"}
-
-    def check_auto_verify(self, tool_name: str, tool_output: str) -> str | None:
-        """Check if auto-verification should run after a tool call.
-
-        Returns a verification message to inject, or None.
-        Called by the dashboard worker after each tool result.
-        """
-        role = self.current_role
-        if role not in self._AUTO_VERIFY_ROLES:
-            return None
-        if tool_name not in self._CODE_EDIT_TOOLS:
-            return None
-        # Check if the edited file is a Python file
-        # (tool_output from Edit/Write contains the file path)
-        if ".py" not in tool_output and ".py" not in str(getattr(self, "_last_edit_path", "")):
-            return None
-        return (
-            "[System] A Python file was just modified. "
-            "Run `python -m pytest tests/ -x -q --tb=short` to verify. "
-            "If tests fail, fix the issue before continuing."
-        )
-
-    # -- Within-session error learning (Feature 4) -------------------------
+    # Auto-verification after code edits used to live here: a
+    # check_auto_verify() that returned "[System] A Python file was just
+    # modified. Run `python -m pytest tests/ -x -q --tb=short`". Its
+    # docstring said the dashboard worker called it after each tool
+    # result. Nothing called it, in any backend, ever — the only
+    # references were its own two tests.
+    #
+    # Removed rather than wired. It matched the tool names {"Edit",
+    # "Write"}, so on the OpenAI-compatible backends it could not have
+    # fired anyway, and the command it names is wrong for any project
+    # without a tests/ directory. The contract it was reaching for is
+    # stated where it belongs and where it is measured: solo_agent.md's
+    # verify-after-modify rule, and the behaviour tasks that score it.
 
     def __init_error_memory(self) -> None:
         """Initialize error memory if not present."""
