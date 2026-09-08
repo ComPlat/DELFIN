@@ -2425,7 +2425,330 @@ def _render_xyz_summary(path) -> tuple[int, str] | None:
     return n_atoms, formula
 
 
+# A file's bytes travel inside the page, so the ceiling is the notebook
+# DOM rather than the disk. Base64 adds a third on top and the result is
+# re-parsed on every scroll for the rest of the session.
+_ARTIFACT_DOWNLOAD_LIMIT = 10_000_000
+
+# What a user keeps rather than reads: the document and archive formats
+# the agent's own tools produce (create_pdf, create_docx, merge_pdfs,
+# publish_report). Source and text files are deliberately NOT here --
+# they are visible in the workspace panel and quoted in the answer, and
+# a download button under every scratch .py the agent writes is noise.
+_ARTIFACT_KEEPABLE = (
+    ".pdf", ".docx", ".doc", ".odt", ".rtf",
+    ".xlsx", ".xls", ".ods", ".pptx", ".ppt", ".odp",
+    ".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar",
+    ".epub", ".parquet",
+)
+
+_ARTIFACT_MIME = {
+    ".pdf": "application/pdf",
+    ".docx": ("application/vnd.openxmlformats-officedocument"
+              ".wordprocessingml.document"),
+    ".xlsx": ("application/vnd.openxmlformats-officedocument"
+              ".spreadsheetml.sheet"),
+    ".pptx": ("application/vnd.openxmlformats-officedocument"
+              ".presentationml.presentation"),
+    ".zip": "application/zip",
+    ".csv": "text/csv",
+    ".tsv": "text/tab-separated-values",
+    ".json": "application/json",
+    ".svg": "image/svg+xml",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".xyz": "chemical/x-xyz",
+    ".mol": "chemical/x-mdl-molfile",
+    ".sdf": "chemical/x-mdl-sdfile",
+}
+
+
+# Tools that put a file on disk, under every name they are served by.
+#
+# The gate used to read `tool_name in ("Write", "Edit", "Bash",
+# "NotebookEdit")` — the Anthropic spellings. On the KIT and Ollama
+# surfaces the same tools are `write_file`, `edit_file` and `bash`, so
+# the artifact scan never ran there at all: the agent wrote the plot, the
+# report, the workbook, and the chat showed nothing. The document tools
+# were missing from both spellings, which is why `create_pdf` and
+# `publish_report` were silent even on the surface the gate did match.
+#
+# Matched on the bare name, because MCP serves them as
+# `mcp__<server>__<name>`.
+_FILE_CREATING_TOOLS = frozenset({
+    # Anthropic-style
+    "Write", "Edit", "MultiEdit", "NotebookEdit", "Bash",
+    # OpenAI / KIT / Ollama surface
+    "write_file", "edit_file", "multi_edit", "apply_patch",
+    "notebook_edit", "bash", "bash_background",
+    # Documents and reports — the formats a user asks to be given
+    "create_pdf", "create_docx", "merge_pdfs", "split_pdf",
+    "fill_docx_template", "fill_pdf_form", "edit_sheet", "publish_report",
+    # Plotting, served over MCP
+    "plot_energy_distribution", "plot_energy_correlation",
+    "plot_orbital_diagram", "plot_optimization_convergence",
+    "plot_uvvis_spectrum", "plot_scf_convergence",
+    "plot_population_charges", "plot_vibrational_spectrum",
+})
+
+
+def _is_file_creating(tool_name: str) -> bool:
+    """Whether a finished tool call may have left a file behind."""
+    bare = (tool_name or "").split("__")[-1]
+    return bare in _FILE_CREATING_TOOLS or tool_name in _FILE_CREATING_TOOLS
+
+
+# A file the ANSWER names. The artifact diff only ever sees what the turn
+# wrote, so "gib mir das Archiv von gestern" produced a sentence naming a
+# file and no way to get it -- the one case where the user asked, in so
+# many words, to be handed something.
+#
+# Deliberately not a tool. A tool for this costs its schema on every
+# request to every model forever (measured: 150 tokens, against a
+# catalogue budget that is already paid for), and it only works if the
+# model thinks to call it. Reading the sentence the model already wrote
+# costs nothing and works the same on every backend.
+#
+# Bounded three ways: the extension has to be one the chat can preview or
+# one a user keeps, the path has to resolve INSIDE the agent workspace,
+# and at most three per turn. A card for a file that was merely discussed
+# is a download button nobody presses; a card for a file outside the
+# workspace would be a way to read one.
+_ANSWER_FILE_SUFFIXES = tuple(sorted(set(
+    (".png", ".jpg", ".jpeg", ".gif", ".svg", ".csv", ".tsv", ".json",
+     ".smi", ".mol", ".sdf", ".xyz") + _ARTIFACT_KEEPABLE)))
+
+_ANSWER_FILE_RE = re.compile(
+    r"(?<![\w/])((?:[\w.-]+/)*[\w.-]+(?:"
+    + "|".join(re.escape(x) for x in _ANSWER_FILE_SUFFIXES) + r"))\b")
+
+
+def _files_named_in_answer(text: str, workspace, already=(), limit: int = 3):
+    """Files the answer names that exist inside *workspace*, in order."""
+    out = []
+    if not text or workspace is None:
+        return out
+    try:
+        root = Path(workspace).resolve()
+    except OSError:
+        return out
+    seen = {str(x) for x in already}
+    for m in _ANSWER_FILE_RE.finditer(text):
+        if len(out) >= limit:
+            break
+        try:
+            cand = (root / m.group(1)).resolve()
+        except OSError:
+            continue
+        key = str(cand)
+        if key in seen:
+            continue
+        try:
+            if not cand.is_file() or not cand.is_relative_to(root):
+                continue
+        except (OSError, ValueError):
+            continue
+        seen.add(key)
+        out.append(cand)
+    return out
+
+
+def _artifact_stamp(p) -> tuple:
+    """What makes a file the same file: its name is not enough."""
+    try:
+        st = p.stat()
+        return (st.st_mtime_ns, st.st_size)
+    except OSError:
+        return (0, -1)
+
+
+def _format_bytes(n: int) -> str:
+    if n < 1024:
+        return f"{n} B"
+    if n < 1024 * 1024:
+        return f"{n / 1024:.0f} KB"
+    return f"{n / (1024 * 1024):.1f} MB"
+
+
+def _artifact_download_html(path, data: bytes | None = None) -> str:
+    """A download control for a workspace artifact, or a note saying why not.
+
+    Voila serves the notebook, not the workspace: a ``file://`` or
+    relative href resolves to nothing in the browser, which is why the
+    renderer embeds images instead of linking them. The download follows
+    the same reasoning -- the bytes ride inside the page and the
+    browser's own ``download`` attribute writes the file, so there is no
+    route to serve and nothing leaves the machine that was not already
+    on screen.
+
+    Above the size limit the absolute path is given instead. Naming it is
+    not a consolation prize: it is what the user needs in order to reach
+    the file by any other means, and a truncated download would be worse
+    than none.
+    """
+    from pathlib import Path as _Path
+
+    p = _Path(path)
+    name_html = _html.escape(p.name)
+    try:
+        if data is None:
+            size = p.stat().st_size
+        else:
+            size = len(data)
+    except OSError:
+        return ""
+    if size > _ARTIFACT_DOWNLOAD_LIMIT:
+        return (
+            f'<div style="font-size:11px;color:#9ca3af;margin-top:4px;">'
+            f'{_format_bytes(size)} — too large to offer inline; the file is '
+            f'at <code>{_html.escape(str(p))}</code></div>'
+        )
+    try:
+        if data is None:
+            data = p.read_bytes()
+    except OSError:
+        return ""
+    import base64
+    b64 = base64.b64encode(data).decode("ascii")
+    mime = _ARTIFACT_MIME.get(p.suffix.lower(), "application/octet-stream")
+    return (
+        f'<a download="{name_html}" href="data:{mime};base64,{b64}" '
+        f'style="display:inline-block;margin-top:6px;padding:3px 10px;'
+        f'font-size:11px;border:1px solid #d1d5db;border-radius:4px;'
+        f'background:#f9fafb;color:#374151;text-decoration:none;">'
+        f'⬇ {name_html} <span style="color:#9ca3af;">'
+        f'({_format_bytes(size)})</span></a>'
+    )
+
+
+def _artifact_card(icon: str, name_html: str, subtitle: str, body: str,
+                   download: str = "") -> str:
+    """The frame every artifact preview shares."""
+    sub = f' <span style="color:#9ca3af;">{subtitle}</span>' if subtitle else ""
+    return (
+        f'<div class="delfin-artifact" style="margin:6px 0;padding:6px;'
+        f'border:1px solid #e5e7eb;border-radius:6px;background:#fff;">'
+        f'<div style="font-size:11px;color:#6b7280;margin-bottom:4px;">'
+        f'{icon} <code>{name_html}</code>{sub}</div>'
+        f'{body}{download}</div>'
+    )
+
+
+def _render_pdf_preview(p) -> str | None:
+    """First page as a PNG, plus the page count. None when unrenderable.
+
+    A PDF is the one keepable format worth SHOWING: it is what
+    create_pdf, merge_pdfs and publish_report produce, and "the report is
+    ready" with nothing on screen is indistinguishable from a report that
+    came out blank.
+    """
+    try:
+        import fitz  # PyMuPDF
+    except Exception:
+        return None
+    try:
+        with fitz.open(str(p)) as doc:
+            pages = doc.page_count
+            if pages < 1:
+                return None
+            pix = doc.load_page(0).get_pixmap(dpi=90)
+            png = pix.tobytes("png")
+    except Exception:
+        return None
+    if len(png) > 2_000_000:
+        return None
+    import base64
+    b64 = base64.b64encode(png).decode("ascii")
+    return (
+        f'<img src="data:image/png;base64,{b64}" '
+        f'style="max-width:100%;border:1px solid #f3f4f6;border-radius:4px;'
+        f'display:block;" alt="page 1 of {pages}"/>'
+        f'<div style="font-size:11px;color:#9ca3af;margin-top:3px;">'
+        f'page 1 of {pages}</div>'
+    )
+
+
+def _render_zip_listing(p) -> str | None:
+    """What is in the archive, which is what you want before opening it."""
+    import zipfile
+    try:
+        with zipfile.ZipFile(p) as zf:
+            entries = [i for i in zf.infolist() if not i.is_dir()]
+    except Exception:
+        return None
+    rows = "".join(
+        f'<tr><td style="padding:1px 8px 1px 0;">'
+        f'{_html.escape(i.filename[:70])}</td>'
+        f'<td style="padding:1px 0;color:#9ca3af;text-align:right;">'
+        f'{_format_bytes(i.file_size)}</td></tr>'
+        for i in entries[:15]
+    )
+    more = (f'<div style="font-size:11px;color:#9ca3af;">'
+            f'+{len(entries) - 15} more</div>' if len(entries) > 15 else "")
+    return (
+        f'<table style="font-size:11px;color:#374151;font-family:monospace;'
+        f'border-collapse:collapse;">{rows}</table>{more}'
+    )
+
+
+def _render_office_summary(p, suffix: str) -> str | None:
+    """One line about what is inside, so the download is not blind."""
+    try:
+        if suffix == ".docx":
+            import docx
+            d = docx.Document(str(p))
+            paras = [x for x in d.paragraphs if x.text.strip()]
+            first = paras[0].text.strip()[:120] if paras else ""
+            return (f'<div style="font-size:12px;color:#374151;">'
+                    f'{len(paras)} paragraph(s), {len(d.tables)} table(s)'
+                    + (f' — <span style="color:#6b7280;">'
+                       f'{_html.escape(first)}</span>' if first else "")
+                    + '</div>')
+        if suffix == ".xlsx":
+            import openpyxl
+            wb = openpyxl.load_workbook(str(p), read_only=True)
+            try:
+                sheets = ", ".join(
+                    f"{_html.escape(n)} ({wb[n].max_row}×{wb[n].max_column})"
+                    for n in wb.sheetnames[:4])
+            finally:
+                wb.close()
+            return (f'<div style="font-size:12px;color:#374151;">'
+                    f'{sheets}</div>')
+    except Exception:
+        return None
+    return None
+
+
 def _render_artifact_inline(path) -> str | None:
+    """A workspace artifact as chat HTML: what it looks like, and a way
+    to keep it.
+
+    The preview and the download are separate questions and were
+    answered separately for too long. The renderer below showed the
+    types it could draw and returned None for everything else, so a PDF,
+    a Word file, a workbook or a zip -- exactly what create_pdf,
+    create_docx, merge_pdfs and publish_report produce -- appeared in the
+    chat as nothing at all. And nothing that WAS drawn could be saved:
+    the image was on screen and the file was not reachable from it.
+    """
+    body = _render_artifact_body(path)
+    if body is None:
+        return None
+    link = _artifact_download_html(path)
+    if not link:
+        return body
+    # Inside the card, not after it: the button belongs to the artifact
+    # it saves, and a stray control between two cards belongs to neither.
+    stripped = body.rstrip()
+    if stripped.endswith("</div>"):
+        return stripped[: -len("</div>")] + link + "</div>"
+    return body + link
+
+
+def _render_artifact_body(path) -> str | None:
     """Render a workspace artifact as inline HTML for the chat.
 
     Supported types:
@@ -2433,9 +2756,15 @@ def _render_artifact_inline(path) -> str | None:
         - SVG: inline SVG (kept under 200kB to avoid blowing up the DOM)
         - CSV / TSV: first 12 rows as a compact table
         - JSON: pretty-printed up to 6kB inside ``<pre>``
+        - PDF: first page rendered, with the page count
+        - DOCX / XLSX: what is inside, in one line
+        - ZIP and the other archive/document formats: the listing, or the
+          name and size — enough to decide before opening it
 
     Returns ``None`` for unsupported types or unreadable files so the
-    caller can simply skip them.
+    caller can simply skip them. Source and text files stay unsupported
+    on purpose: they are in the workspace panel and quoted in the answer,
+    and a card under every scratch file the agent writes is noise.
     """
     from pathlib import Path
 
@@ -2644,6 +2973,26 @@ def _render_artifact_inline(path) -> str | None:
             f'border-radius:4px;font-size:11px;max-height:240px;'
             f'overflow:auto;">{_html.escape(text)}</pre></div>'
         )
+
+    # ---- What a user keeps: documents and archives ----------------------
+    if suffix in _ARTIFACT_KEEPABLE:
+        try:
+            size = p.stat().st_size
+        except OSError:
+            return None
+        if suffix == ".pdf":
+            return _artifact_card(
+                "📕", name_html, _format_bytes(size),
+                _render_pdf_preview(p) or "")
+        if suffix in (".docx", ".xlsx"):
+            return _artifact_card(
+                "📘" if suffix == ".docx" else "📗", name_html,
+                _format_bytes(size), _render_office_summary(p, suffix) or "")
+        if suffix == ".zip":
+            return _artifact_card(
+                "🗜️", name_html, _format_bytes(size),
+                _render_zip_listing(p) or "")
+        return _artifact_card("📦", name_html, _format_bytes(size), "")
 
     return None
 
@@ -3380,7 +3729,11 @@ def create_tab(ctx):
         "recent_edits": [],       # list of {"file": path, "tool": name} for undo
         "current_todos": [],      # latest TodoWrite payload (list of {content, status, activeForm})
         "subagent_calls": [],     # active/completed Agent tool calls for the subagent panel
-        "_ws_known_files": set(),  # snapshot of agent_workspace at turn start (D4)
+        # name -> (mtime_ns, size) at turn start (D4). A rewritten file
+        # is a new artifact; a name-only snapshot said it was not.
+        "_ws_known_files": {},
+        # Absolute paths whose card is already on screen this turn.
+        "_emitted_artifacts": set(),
         "_job_states_seen": {},   # last-seen {job_id: status} for proactive notifications (D5)
         "_job_event_thread": None,  # background watcher (D5)
         "_job_event_thread_stop": False,
@@ -14715,20 +15068,30 @@ def create_tab(ctx):
                         )
 
                 def _emit_new_workspace_artifacts() -> None:
-                    """D4: scan agent_workspace for newly created files and
-                    append inline previews (PNG/SVG/CSV/JSON) to the chat."""
+                    """D4: scan agent_workspace for files the turn created or
+                    rewrote, and append their previews to the chat.
+
+                    Keyed on (mtime, size), not on the name alone. A name
+                    diff shows a report the first time it is written and
+                    never again — and "make the same report with the
+                    corrected numbers" is the second time, which is the
+                    one the user is waiting for.
+                    """
                     try:
-                        before = state.get("_ws_known_files") or set()
+                        before = dict(state.get("_ws_known_files") or {})
                         current = {
                             p.name: p for p in ctx.agent_dir.iterdir()
                             if p.is_file()
                         }
+                        stamps = {n: _artifact_stamp(p)
+                                  for n, p in current.items()}
                     except Exception:
                         return
-                    new_names = set(current.keys()) - set(before)
-                    if not new_names:
+                    changed = [n for n, st in stamps.items()
+                               if before.get(n) != st]
+                    if not changed:
                         return
-                    for name in sorted(new_names):
+                    for name in sorted(changed):
                         path = current.get(name)
                         if path is None:
                             continue
@@ -14738,8 +15101,11 @@ def create_tab(ctx):
                             html_block = None
                         if html_block:
                             _append_tool_message(html_block)
+                            _shown = set(state.get("_emitted_artifacts") or ())
+                            _shown.add(str(path.resolve()))
+                            state["_emitted_artifacts"] = _shown
                     # Update the snapshot so we don't re-emit the same artifact.
-                    state["_ws_known_files"] = set(current.keys())
+                    state["_ws_known_files"] = stamps
 
                 def _on_tool_result(tool_name, tool_output):
                     """Append tool result as collapsible detail to the last tool message."""
@@ -14819,24 +15185,13 @@ def create_tab(ctx):
                             f'{_html.escape(output)}</span>'
                         )
 
-                    # D4: After file-creating tools, surface any new artifacts
-                    # in the chat so the user sees plots/CSVs without
-                    # leaving the conversation. The MCP plot tool writes
-                    # PNGs straight into agent_workspace/, so it qualifies
-                    # too; check the tool-name suffix because MCP tools
-                    # are namespaced as ``mcp__<server>__<name>``.
-                    _is_file_creating_tool = (
-                        tool_name in ("Write", "Edit", "Bash", "NotebookEdit")
-                        or tool_name.endswith("__plot_energy_distribution")
-                        or tool_name.endswith("__plot_energy_correlation")
-                        or tool_name.endswith("__plot_orbital_diagram")
-                        or tool_name.endswith("__plot_optimization_convergence")
-                        or tool_name.endswith("__plot_uvvis_spectrum")
-                        or tool_name.endswith("__plot_scf_convergence")
-                        or tool_name.endswith("__plot_population_charges")
-                        or tool_name.endswith("__plot_vibrational_spectrum")
-                    )
-                    if _is_file_creating_tool:
+                    # D4: After file-creating tools, surface any new
+                    # artifacts in the chat so the user sees the plot, the
+                    # report or the workbook without leaving the
+                    # conversation. Which names count is
+                    # _FILE_CREATING_TOOLS, and it is a set rather than a
+                    # list of spellings for the reason recorded there.
+                    if _is_file_creating(tool_name):
                         _emit_new_workspace_artifacts()
 
                 def _on_permission_denied(description):
@@ -15034,10 +15389,14 @@ def create_tab(ctx):
                 # creates (PNG/SVG/CSV/JSON).
                 try:
                     state["_ws_known_files"] = {
-                        p.name for p in ctx.agent_dir.iterdir() if p.is_file()
+                        p.name: _artifact_stamp(p)
+                        for p in ctx.agent_dir.iterdir() if p.is_file()
                     }
                 except Exception:
-                    state["_ws_known_files"] = set()
+                    state["_ws_known_files"] = {}
+                # Cards already drawn THIS turn, so the answer scan below
+                # does not repeat what the tool output already showed.
+                state["_emitted_artifacts"] = set()
 
                 _turn_start_time = time.monotonic()
                 max_auto_steps = len(engine.route) + 1  # safety limit
@@ -15253,6 +15612,23 @@ def create_tab(ctx):
                     # Final update: finalize=True triggers full markdown rendering
                     if chunks:
                         _update_last_assistant("".join(chunks), role_label, finalize=True)
+
+                    # Files the answer NAMED, which the artifact diff above
+                    # cannot see: it only knows what this turn wrote. See
+                    # _files_named_in_answer for what bounds it.
+                    try:
+                        for _f in _files_named_in_answer(
+                                "".join(chunks), ctx.agent_dir,
+                                already=state.get("_emitted_artifacts") or ()):
+                            _card = _render_artifact_inline(_f)
+                            if _card:
+                                _append_tool_message(_card)
+                                _shown = set(
+                                    state.get("_emitted_artifacts") or ())
+                                _shown.add(str(_f))
+                                state["_emitted_artifacts"] = _shown
+                    except Exception:
+                        pass
 
                     # If the engine auto-compacted during this turn, tell the
                     # user — they should always be able to SEE that older
