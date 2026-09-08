@@ -48,6 +48,7 @@ __all__ = ['app_directory', 'app_url', 'install', 'installed_version',
            'is_drawing', 'list_drawings', 'list_in', 'save_drawing',
            'save_into', 'read_drawing',
            'delete_drawing', 'frame_html', 'focus_js', 'load_js', 'KET_MARK',
+           'clear_js', 'contain_js',
            'files_js', 'wire_js']
 
 #: Where the releases come from.  The versioned asset rather than the
@@ -1158,6 +1159,90 @@ def focus_js(host_selector: str) -> str:
         "    host.addEventListener('pointerdown',reach,true);\n"
         "  }\n"
         "  bind();\n"
+        "})();"
+    )
+
+
+def clear_js(host_selector: str) -> str:
+    """Empty the canvas, and count that as saved.
+
+    Pressed after a rule has been taken into the box beside the editor, which
+    is where it now lives -- so the next thing drawn starts on a clean canvas
+    rather than on top of the last one.  The clean mark is reset with it: what
+    was just taken is not unsaved work, and being asked to confirm throwing it
+    away would be asking about nothing.
+    """
+    return (
+        "(function(){\n"
+        "  var host=document.querySelector(" + json.dumps(host_selector) + ");\n"
+        "  var frame=host&&host.querySelector('iframe');\n"
+        "  var api=null;\n"
+        "  try{ api=frame&&frame.contentWindow&&frame.contentWindow.ketcher; }\n"
+        "  catch(e){ api=null; }\n"
+        "  if(!api) return;\n"
+        "  try{\n"
+        "    Promise.resolve(api.setMolecule('')).then(function(){\n"
+        "      try{ frame.contentWindow.__delfinKetcherClean=null; }catch(e){}\n"
+        "    }, function(){});\n"
+        "  }catch(e){}\n"
+        "})();"
+    )
+
+
+def contain_js(host_selector: str) -> str:
+    """Keep the wheel inside whichever of the two is under the pointer.
+
+    A wheel event in the frame never reaches the dashboard; what reaches it is
+    the *chain* -- the browser scrolls the page on once the canvas has nothing
+    left to scroll -- so the editor and the tab behind it moved together, and
+    a wheel meant for the canvas walked the whole page.
+
+    ``overscroll-behavior: contain`` on the frame's own document is what stops
+    the chain, and it is set from out here because the frame is same origin.
+    Set on the host as well, for the wheel that lands on the border rather
+    than on the canvas.
+
+    Applied by looking for the style rather than by remembering that it was
+    applied.  A frame that has just been put on the page answers with
+    ``about:blank``, which has a body and takes the rule and then throws it
+    away when the real document arrives -- so a flag on the document is a flag
+    on a document that is about to be replaced.  It watches the frame's load
+    as well, for the same reason.
+    """
+    return (
+        "(function(){\n"
+        "  var tries=0;\n"
+        "  var MARK='delfin-contain';\n"
+        "  function apply(frame){\n"
+        "    var doc=null;\n"
+        "    try{ doc=frame.contentDocument; }catch(e){ return false; }\n"
+        "    if(!doc||!doc.body) return false;\n"
+        "    if(doc.getElementById(MARK)) return true;\n"
+        "    try{\n"
+        "      var style=doc.createElement('style');\n"
+        "      style.id=MARK;\n"
+        "      style.textContent='html,body{overscroll-behavior:contain;}'\n"
+        "        +'*{overscroll-behavior:contain;}';\n"
+        "      (doc.head||doc.body).appendChild(style);\n"
+        "    }catch(e){ return false; }\n"
+        "    return true;\n"
+        "  }\n"
+        "  function hold(){\n"
+        "    var host=document.querySelector(" + json.dumps(host_selector) + ");\n"
+        "    var frame=host&&host.querySelector('iframe');\n"
+        "    if(!frame){ if(++tries<80) window.setTimeout(hold,200); return; }\n"
+        "    try{ host.style.overscrollBehavior='contain'; }catch(e){}\n"
+        "    if(!frame.__delfinContainBound){\n"
+        "      frame.__delfinContainBound=true;\n"
+        "      frame.addEventListener('load',function(){\n"
+        "        window.setTimeout(function(){ apply(frame); },300); });\n"
+        "    }\n"
+        "    /* Keep asking for a while: the document under the frame is\n"
+        "       replaced once, and the rule has to land on the second one. */\n"
+        "    apply(frame);\n"
+        "    if(++tries<80) window.setTimeout(hold,400);\n"
+        "  }\n"
+        "  hold();\n"
         "})();"
     )
 

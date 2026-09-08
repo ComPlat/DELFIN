@@ -850,3 +850,93 @@ def test_a_custom_query_that_replaces_the_label_keeps_its_map():
 
     # a genuine disagreement is still refused
     assert ks.merge_maps("[#7:1]~[#8:2]>>[#16:1]~[#6:2]", block)[1] == 0
+
+
+# ---------------------------------------------------------------------------
+# Handling
+# ---------------------------------------------------------------------------
+
+def _tab():
+    import tempfile
+    from delfin.dashboard import tab_chemdarwin as cd
+
+    class Ctx:
+        def __init__(self):
+            self.calc_dir = tempfile.mkdtemp()
+            self.init_js_parts = []
+
+        def run_js(self, script):
+            pass
+
+        def add_init_js(self, script):
+            self.init_js_parts.append(script)
+
+    body, refs = cd.create_tab(Ctx())
+    return refs, refs['drawing']
+
+
+FURAN_RULE = ("[c&H1:1]:[c&H1:2]:[c:3]:[c:4]:[c:5]:[c:6]"
+              ">>[o:2]1[c:3][c:4][c:5][c:6]1")
+
+
+def test_the_section_offers_only_add_and_open():
+    """Replace was a line you could retype; two buttons say what they do."""
+    _refs, draw = _tab()
+    labels = {w.description for row in draw['widget'].children
+              for w in (getattr(row, 'children', ()) or (row,))
+              if getattr(w, 'description', '')}
+    assert 'APPEND AS NEW RULE' in labels
+    assert 'OPEN IN EDITOR' in labels
+    assert not any('REPLACE' in text for text in labels)
+
+
+def test_taking_a_rule_empties_the_preview_for_the_next_one():
+    refs, draw = _tab()
+    refs['seed_input'].value = "c1ccccc1"
+    draw['retarget']('rxn')
+    draw['answer']('cd-rxn', FURAN_RULE)
+    assert draw['preview'].value
+    draw['apply']()
+    assert refs['custom_smarts'].value.strip() == FURAN_RULE
+    assert draw['preview'].value == ''
+    assert 'cleared' in draw['verdict'].value
+
+
+def test_a_pattern_goes_to_every_rule_unless_one_is_picked():
+    """A filter is usually about the products, not about one rule that made
+    them -- but the engine binds it by line number, so "all" is every line."""
+    refs, draw = _tab()
+    draw['retarget']('rxn')
+    for rule in (FURAN_RULE, FURAN_RULE.replace('[o:2]', '[s:2]')):
+        draw['answer']('cd-rxn', rule)
+        draw['apply']()
+
+    draw['retarget']('forbidden')
+    assert draw['line_pick'].value == -1                    # all of them
+    assert dict((value, label)
+                for label, value in draw['line_pick'].options)[-1] == 'all 2 rules'
+    draw['answer']('cd-forbidden', "[#8]~[#6;a]~[#8]")
+    draw['apply']()
+    assert refs['custom_forbidden'].value.splitlines() == \
+        ["[#8]~c~[#8]", "[#8]~c~[#8]"]
+
+    draw['line_pick'].value = 1                             # rule 2 only
+    draw['answer']('cd-forbidden', "[#7+]")
+    draw['apply']()
+    assert refs['custom_forbidden'].value.splitlines() == \
+        ["[#8]~c~[#8]", "[#8]~c~[#8];[#7&+]"]
+
+
+def test_open_in_editor_names_the_box_it_found_empty():
+    refs, draw = _tab()
+    draw['retarget']('seed')
+    refs['seed_input'].value = ''
+    draw['load']()
+    assert 'seed box' in draw['verdict'].value
+
+    draw['retarget']('rxn')
+    draw['answer']('cd-rxn', FURAN_RULE)
+    draw['apply']()
+    draw['retarget']('forbidden')          # every line is the '-' placeholder
+    draw['load']()
+    assert 'Forbidden patterns' in draw['verdict'].value

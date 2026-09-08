@@ -326,6 +326,7 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
         page's startup script ran, which is the case the moment Ketcher is
         fetched for the first time."""
         return '\n'.join([_ketcher.focus_js(frame_selector),
+                          _ketcher.contain_js(frame_selector),
                           _ketcher.wire_js(frame_selector, sync_selector)])
 
     def _send(*scripts) -> None:
@@ -573,6 +574,7 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
     try:
         ctx.add_init_js('\n'.join([
             _ketcher.focus_js(frame_selector),
+            _ketcher.contain_js(frame_selector),
             _ketcher.wire_js(frame_selector, sync_selector),
             _ketcher.files_js(frame_selector, _scan_files()),
         ]))
@@ -585,6 +587,10 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
         _say('Ketcher is not here yet.  It is about 32 MB, fetched once and '
              'then it works without a network -- press FETCH KETCHER.',
              '#ef6c00')
+
+    def clear() -> None:
+        """Empty the canvas, for a caller that has taken what was on it."""
+        _send(_ketcher.clear_js(frame_selector))
 
     #: Asking is the whole of what a caller outside this module needs.
     ask = _ask
