@@ -249,7 +249,7 @@ def build_section(ctx, targets: Dict[str, Any]) -> Dict[str, Any]:
     aromatic_box.add_class('chemdarwin-draw-switch')
 
     line_pick = widgets.Dropdown(
-        options=[], description='Rule:',
+        options=[], description='For:',
         layout=widgets.Layout(width='auto', flex='1 1 0', min_width='0'),
         style={'description_width': '50px'})
 
@@ -260,9 +260,6 @@ def build_section(ctx, targets: Dict[str, Any]) -> Dict[str, Any]:
     apply_btn = widgets.Button(
         description='APPEND', icon='plus', button_style='primary',
         layout=widgets.Layout(width='220px'))
-    replace_btn = widgets.Button(
-        description='REPLACE RULE', icon='pencil',
-        layout=widgets.Layout(width='170px'))
     load_btn = widgets.Button(
         description='OPEN IN EDITOR', icon='arrow-up',
         layout=widgets.Layout(width='160px'),
@@ -409,15 +406,32 @@ def build_section(ctx, targets: Dict[str, Any]) -> Dict[str, Any]:
         return state['panel']
 
     # -- the shape of the row, per box -----------------------------------
-    def _relist() -> None:
-        """The rules to pick from, as they stand in the box right now."""
+    #: The dropdown entry that means every rule at once.  The engine binds a
+    #: filter line to a rule by line number, so "for all of them" is the same
+    #: pattern written on every line -- which is what most filters want, and
+    #: what nobody should have to type out per rule.
+    ALL = -1
+
+    def _relist(fresh: bool = False) -> None:
+        """The rules to pick from, as they stand in the box right now.
+
+        *fresh* is the switch to another box, where what was chosen for the
+        last one means nothing and the default for this one should stand.
+        """
         rules = rule_lines(targets['rxn'].value)
         options = [(f'{i + 1}: {line[:70]}', i) for i, line in enumerate(rules)]
+        pattern = _FIELDS[state['target']]['as'] == 'pattern'
+        if pattern and options:
+            options.insert(0, ('the only rule' if len(rules) == 1
+                               else f'all {len(rules)} rules', ALL))
         standing = line_pick.value
         line_pick.options = options
         if options:
-            line_pick.value = (standing if standing in range(len(options))
-                               else len(options) - 1)
+            choices = [value for _label, value in options]
+            if standing in choices and not fresh:
+                line_pick.value = standing
+            else:
+                line_pick.value = ALL if pattern else choices[-1]
         line_pick.disabled = not options
 
     def _retarget(name: str) -> None:
@@ -427,16 +441,13 @@ def build_section(ctx, targets: Dict[str, Any]) -> Dict[str, Any]:
         pattern = field['as'] == 'pattern'
         seed = field['as'] == 'structure'
         line_pick.layout.display = 'none' if seed else ''
-        replace_btn.layout.display = 'none' if seed else ''
         if seed:
             apply_btn.description = 'USE AS SEED'
         elif pattern:
             apply_btn.description = 'ADD TO THIS RULE'
-            replace_btn.description = 'REPLACE LINE'
         else:
             apply_btn.description = 'APPEND AS NEW RULE'
-            replace_btn.description = 'REPLACE RULE'
-        _relist()
+        _relist(fresh=True)
         _show('')
         _verdict('', '')
 
@@ -454,6 +465,16 @@ def build_section(ctx, targets: Dict[str, Any]) -> Dict[str, Any]:
         name = state['target']
         _verdict('note', 'Reading the drawing ...')
         panel.ask(f'cd-{name}', _FIELDS[name]['want'], 'Reading the drawing ...')
+
+    def _clear_canvas() -> None:
+        """What was taken lives in the box now, so the canvas starts over."""
+        _show('')
+        panel = state.get('panel')
+        if panel is not None:
+            try:
+                panel.clear()
+            except Exception:                               # noqa: BLE001
+                pass
 
     def _align() -> None:
         rules = len(rule_lines(targets['rxn'].value))
@@ -500,7 +521,9 @@ def build_section(ctx, targets: Dict[str, Any]) -> Dict[str, Any]:
             targets['rxn'].value = '\n'.join(rules)
             _align()
             _relist()
-            _verdict('ok', f"Appended as rule {len(rules)} · {found['status']}")
+            _clear_canvas()
+            _verdict('ok', f"Appended as rule {len(rules)} · {found['status']}"
+                           f" · editor cleared for the next one")
             return
         index = _picked()
         if index is None:
@@ -508,52 +531,45 @@ def build_section(ctx, targets: Dict[str, Any]) -> Dict[str, Any]:
                             'reaction SMARTS first.')
             return
         box = targets[name]
-        box.value = add_to_line(box.value, index, text)
-        _align()
-        _verdict('ok', f'Added to rule {index + 1}.')
-
-    def _on_replace(_button=None) -> None:
-        text = (preview.value or '').strip()
-        if not text:
-            _verdict('bad', 'There is nothing in the box below to take.')
-            return
-        index = _picked()
-        if index is None:
-            _verdict('bad', 'No rule chosen.')
-            return
-        found = _checked(text)
-        if found is None:
-            return
-        name = state['target']
-        if name == 'rxn':
-            rules = rule_lines(targets['rxn'].value)
-            if index >= len(rules):
-                _verdict('bad', f'Rule {index + 1} is no longer there.')
-                return
-            rules[index] = text
-            targets['rxn'].value = '\n'.join(rules)
+        rules = len(rule_lines(targets['rxn'].value))
+        if index == ALL:
+            for line in range(rules):
+                box.value = add_to_line(box.value, line, text)
+            said = f'Added to all {rules} rules'
         else:
-            targets[name].value = set_line(targets[name].value, index, text)
+            box.value = add_to_line(box.value, index, text)
+            said = f'Added to rule {index + 1}'
         _align()
-        _relist()
-        _verdict('ok', f"Rule {index + 1} replaced · {found['status']}")
+        _clear_canvas()
+        _verdict('ok', f'{said} · editor cleared for the next one')
 
     def _on_load(_button=None) -> None:
         name = state['target']
+        index = _picked()
+        text, where = '', ''
         if name == 'seed':
-            text = (targets['seed'].value or '').strip()
-        else:
-            index = _picked()
-            if index is None:
-                _verdict('bad', 'No rule chosen.')
-                return
+            text, where = (targets['seed'].value or '').strip(), 'the seed box'
+        elif index is not None:
             if name == 'rxn':
                 rules = rule_lines(targets['rxn'].value)
                 text = rules[index] if index < len(rules) else ''
+                where = f'rule {index + 1}'
+            elif index == ALL:
+                text = _first_pattern(targets[name].value, 0)
+                where = f"the first {_FIELDS[name]['label']} line"
             else:
                 text = _first_pattern(targets[name].value, index)
+                where = (f"the {_FIELDS[name]['label']} line for "
+                         f"rule {index + 1}")
         if not text:
-            _verdict('bad', 'There is nothing there that could be drawn.')
+            # Whatever stands in the preview is a rule too, and it is the one
+            # most recently looked at -- a likelier thing to have meant than a
+            # dead end.  A filter line holding only the '-' placeholder lands
+            # here, and so does a box nobody has typed in yet.
+            text = (preview.value or '').strip()
+            where = 'the box below' if text else where
+        if not text:
+            _verdict('bad', f'Nothing in {where or "that box"} to draw.')
             return
         # The line stays in the preview, whatever the editor makes of it: the
         # trip in is lossy and this is the only copy of what was written.
@@ -607,7 +623,6 @@ def build_section(ctx, targets: Dict[str, Any]) -> Dict[str, Any]:
 
     read_btn.on_click(_on_read)
     apply_btn.on_click(_on_apply)
-    replace_btn.on_click(_on_replace)
     load_btn.on_click(_on_load)
     close_btn.on_click(_on_close)
     preview.observe(_revalidate, names='value')
@@ -627,7 +642,7 @@ def build_section(ctx, targets: Dict[str, Any]) -> Dict[str, Any]:
             _row([read_btn, aromatic_box, line_pick]),
             preview,
             verdict,
-            _row([apply_btn, replace_btn, load_btn]),
+            _row([apply_btn, load_btn]),
         ],
         layout=widgets.Layout(width='100%', gap='6px', display='none',
                               border='1px solid #d0d0d0', border_radius='6px',
@@ -670,7 +685,7 @@ def build_section(ctx, targets: Dict[str, Any]) -> Dict[str, Any]:
 
     return {'widget': box, 'buttons': buttons, 'state': state,
             'preview': preview, 'verdict': verdict, 'line_pick': line_pick,
-            'read': _on_read, 'apply': _on_apply, 'replace': _on_replace,
+            'read': _on_read, 'apply': _on_apply,
             'load': _on_load, 'retarget': _retarget, 'answer': _answer,
             'align': _align, 'relist': _relist, 'set_place': _set_place,
             'aromatic': aromatic_box}
