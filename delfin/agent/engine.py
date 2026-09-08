@@ -2461,6 +2461,22 @@ class AgentEngine:
         except Exception:
             pass
 
+        # A window that is still a guess gets one more chance, per turn.
+        #
+        # The probe runs once at construction, on a daemon thread, and if
+        # it lost a race with a slow endpoint the engine kept whatever
+        # fallback it had for the rest of the session — and compaction
+        # fires at 95% of that. The capability layer now lets a guess go
+        # stale (model_capabilities._PROVISIONAL_TTL_S); this is what asks
+        # again. Background, so a turn never waits for it, and skipped
+        # entirely once the answer came from the wire.
+        try:
+            _caps = getattr(self, "_active_capabilities", None)
+            if getattr(_caps, "source", "") != "live":
+                self._refresh_context_window(background=True)
+        except Exception:
+            pass
+
         chunks: list[str] = []
         # Events still dispatched after a stop has been seen (see the loop
         # below): enough for a client's closing notice, far too few for a
