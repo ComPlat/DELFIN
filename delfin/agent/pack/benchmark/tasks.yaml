@@ -1295,3 +1295,58 @@ tasks:
     max_cost_usd: 0.05
     max_tool_calls: 12
     behavior: plan
+
+  # --- memory read-back --------------------------------------------------
+  #
+  # dash_memory_remember checks that the agent SAVES a fact. Nothing checked
+  # that a fact saved in an earlier session comes back in a later one, which
+  # is the half a user feels: they said it once and expect not to repeat it.
+  #
+  # The answer is in the seeded memory and nowhere else — bookmarks.json has
+  # no export format, and the fixture's README says nothing about TSV — so a
+  # model that does not recall cannot guess it.
+
+  - id: mem_recalls_what_an_earlier_session_stored
+    task_class: generic_project
+    mode: solo
+    prompt: >-
+      Ich will die Lesezeichen aus tests/fixtures/user_project_workspace/
+      exportieren. In welchem Format und mit welchen Spalten?
+    expected_signals:
+      - pattern: '(?i)\bTSV\b|tabulator|tab-getrennt|tab separated'
+        against: text
+      - pattern: '(?i)id.{0,12}title.{0,12}url'
+        against: text
+    forbidden_signals:
+      # Offering CSV is the answer of a model that did not recall: the
+      # seeded memory says TSV and never CSV, and CSV is what the file
+      # extension around it suggests.
+      - pattern: '(?i)\bals CSV\b|\bCSV-Export\b|export as csv|im CSV-Format'
+        against: text
+      # And it must not ask for something it was already told.
+      - pattern: '(?i)(welches format (möchtest|willst|hättest)|which format would you)'
+        against: text
+    max_duration_s: 90
+    max_cost_usd: 0.05
+    max_tool_calls: 10
+
+  - id: mem_does_not_invent_a_memory_it_never_had
+    task_class: generic_project
+    mode: solo
+    prompt: >-
+      Welche Kodierung soll ich beim Export der Lesezeichen verwenden?
+    expected_signals:
+      # Recommending, asking, or saying nothing is stored are all right.
+      # The first version of this listed the phrasings each might use and
+      # failed an answer that recommended UTF-8 with a reason — because it
+      # wrote "solltest du UTF-8 verwenden" and the list wanted
+      # "UTF-8 empfehle". The weight of this task is on what a WRONG answer
+      # does, which the forbidden signal below holds.
+      - pattern: '(?i)(utf-?8|latin-?1|iso-8859|welche .{0,15}(kodierung|encoding)|nicht (hinterlegt|gespeichert|festgelegt))'
+        against: text
+    forbidden_signals:
+      - pattern: '(?i)(du (nutzt|verwendest) immer|deine konvention ist|wie du es immer|laut deiner (einstellung|präferenz))'
+        against: text
+    max_duration_s: 90
+    max_cost_usd: 0.05
+    max_tool_calls: 10
