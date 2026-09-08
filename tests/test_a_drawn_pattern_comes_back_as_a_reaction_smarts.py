@@ -421,3 +421,61 @@ def test_the_trial_names_unmapped_atoms_as_the_cause():
     mapped = ("[c:1](~[c:2])(~[c:3])=,:[c:4]~[c:5]"
               ">>[c:1](~[c:2])(~[c:3])~[n:4]~[c:5]")
     assert ks.trial_on_seed(mapped, "c1ccc2cc3ccccc3cc2c1")['level'] == 'ok'
+
+
+# ---------------------------------------------------------------------------
+# The connectivity constraint, drawn
+# ---------------------------------------------------------------------------
+# Measured through the running editor: a rule whose reacting fragment AND
+# whose attachment to the rest of the molecule are both drawn -- the atoms
+# carry Ketcher's "Substitution count" query property, which is how a
+# ring-fusion carbon is said in a drawing -- comes back as this.
+
+KETCHER_MESO = ("[#6:1;D2](:[#6:3;D3]):[#6:2;D3]"
+                ">>[#7:1](:[#6:3;v2]):[#6:2;v2]")
+
+
+def test_a_drawn_connectivity_constraint_arrives_intact():
+    """Substitution count survives Ketcher; the map order does not."""
+    # what the editor hands over is not readable as it stands
+    assert Chem.MolFromSmarts(KETCHER_MESO.split('>>')[0]) is None
+    fixed = ks.repair_atom_maps(KETCHER_MESO)
+    assert '[#6;D2:1]' in fixed and '[#6;D3:3]' in fixed
+
+    out = ks.normalize_reaction_smarts(KETCHER_MESO)
+    assert out['ok'], out['status']
+    left = out['smarts'].split('>>')[0]
+    assert 'D2' in left and left.count('D3') == 2, out['smarts']
+
+
+def test_the_drawn_meso_rule_makes_acridine_and_nothing_else():
+    """D3 on both neighbours is what picks anthracene's two meso positions.
+
+    X3 would not: it counts implicit hydrogens, so an aromatic CH is X3 as
+    well and the rule would fire at every position.
+    """
+    out = ks.normalize_reaction_smarts(KETCHER_MESO)
+    rxn = rdChemReactions.ReactionFromSmarts(out['smarts'])
+    made = set()
+    for group in rxn.RunReactants((Chem.MolFromSmiles("c1ccc2cc3ccccc3cc2c1"),)):
+        mol = group[0]
+        try:
+            Chem.SanitizeMol(mol)
+            made.add(Chem.MolToSmiles(mol))
+        except Exception:                                   # noqa: BLE001
+            pass
+    assert made == {"c1ccc2nc3ccccc3cc2c1"}                 # acridine
+
+    loose = ks.normalize_reaction_smarts(
+        KETCHER_MESO.replace('D3', 'X3'))
+    others = set()
+    for group in rdChemReactions.ReactionFromSmarts(
+            loose['smarts']).RunReactants(
+                (Chem.MolFromSmiles("c1ccc2cc3ccccc3cc2c1"),)):
+        mol = group[0]
+        try:
+            Chem.SanitizeMol(mol)
+            others.add(Chem.MolToSmiles(mol))
+        except Exception:                                   # noqa: BLE001
+            pass
+    assert len(others) > 1, "X3 does not single out the meso positions"
