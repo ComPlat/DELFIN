@@ -10374,7 +10374,7 @@ class _DocToolExecutor:
     # position exactly as the head of a segment is.
     _EXEC_WRAPPER_RE = re.compile(
         r"^(?:env|nohup|time|timeout|nice|ionice|setsid|stdbuf|exec|xargs|"
-        r"sudo|doas|watch)$"
+        r"sudo|doas|watch|source|\.)$"
     )
 
     @staticmethod
