@@ -96,3 +96,57 @@ def test_a_headless_session_cannot_be_talked_into_a_grant():
         {"kind": "extra_dir", "value": str(target), "scope": "user"}, perms))
     assert out.get("status") != "ok", out
     assert perms.extra_workspace_dirs == ()
+
+
+# ---------------------------------------------------------------------------
+# ...and every tool that takes a path asks something about it
+# ---------------------------------------------------------------------------
+
+_PATH_ARGS = ("path", "file_path", "dir", "directory", "repo_dir",
+              "target_dir", "cwd", "notebook_path", "src", "dest", "folder")
+
+# Anything that decides whether this path may be touched: the read gate,
+# the write gate, the role gate, a containment check, or the confirm
+# callback. A tool naming none of them is acting on a path the model
+# chose with nothing asked about it.
+_GATES = ("_check_read_access", "_run_permission_gate", "_get_path_arg",
+          "confirm_callback", "find_root_for", "find_readable_root_for",
+          "_worktree_path_refusal", "matches_path_deny", "_gate_",
+          "_tool_denied_for_role", "scope_locked", "office_root",
+          "_resolve_in_folder", "_safe_join")
+
+
+def test_every_tool_that_takes_a_path_asks_about_it():
+    """enter_worktree took a repo_dir the model named and asked nothing.
+
+    It was the only one, and the check is cheap enough to keep: a tool
+    body that reads a path argument has to name something that decides
+    whether that path may be touched. Structural rather than behavioural
+    on purpose — a behavioural test needs a tool to exist before it can
+    fail, and this is meant to fail on the tool that has just been
+    written.
+    """
+    import ast
+    import re
+
+    ungated = []
+    for path in sorted(_ROOT.joinpath("delfin", "agent").glob("*.py")):
+        src = path.read_text(encoding="utf-8", errors="replace")
+        try:
+            tree = ast.parse(src)
+        except SyntaxError:
+            continue
+        lines = src.splitlines()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            if not (node.name.startswith("_execute_")
+                    or node.name.startswith("tool_")):
+                continue
+            body = "\n".join(lines[node.lineno - 1: node.end_lineno])
+            takes_path = any(
+                re.search(rf'\.get\(\s*["\']{arg}["\']', body)
+                for arg in _PATH_ARGS)
+            if takes_path and not any(g in body for g in _GATES):
+                ungated.append(f"{path.name}:{node.lineno} {node.name}")
+    assert ungated == [], ungated
