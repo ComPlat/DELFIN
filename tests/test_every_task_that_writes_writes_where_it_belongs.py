@@ -137,14 +137,15 @@ def test_the_counts_still_match_what_was_measured():
             counts["generic_project"] += 1
         else:
             counts["other"] += 1
-    # generic_project 8 -> 11 on 2026-09-08: three plan-permission tasks
-    # joined the class. They are not expected to WRITE — they test that
-    # plan mode ends at the gate — but they name the user_project_workspace
-    # in their prompts and must run under its snapshot guard like every
-    # other task in the class. A task that names the fixture without the
-    # guard is exactly what this file exists to catch.
+    # generic_project 8 -> 13 on 2026-09-08. Three plan-permission tasks
+    # and two memory read-back tasks joined the class. None of the five is
+    # expected to WRITE — they test that plan mode ends at the gate, and
+    # that a fact from an earlier session comes back — but all five name
+    # the user_project_workspace, and the memory pair needs its seeded
+    # store installed and removed by the same guard. A task that names the
+    # fixture without the guard is exactly what this file exists to catch.
     assert counts == {"office": 11, "behavior": 12,
-                      "generic_project": 11, "other": 48}, counts
+                      "generic_project": 13, "other": 48}, counts
 
 
 # ---------------------------------------------------------------------------
