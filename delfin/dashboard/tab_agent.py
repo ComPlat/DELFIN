@@ -2997,6 +2997,205 @@ def _render_artifact_body(path) -> str | None:
     return None
 
 
+# Which write a tool performs, under every name it is served by. The
+# concept is what the diff renderer branches on; the spelling is what the
+# backend happens to use.
+_WRITE_TOOL_CONCEPT: dict[str, str] = {
+    "Write": "write", "write_file": "write",
+    "Edit": "edit", "edit_file": "edit",
+    "MultiEdit": "multi", "multi_edit": "multi",
+    "apply_patch": "patch",
+}
+
+
+# What the spinner says while a tool runs, keyed on the concept.
+#
+# The table used to hold the CLI backend's seven names, so on the KIT and
+# Ollama backends every line read "Running mcp__kit-coding__write_file…"
+# — the one place a long turn tells the user what it is doing, saying it
+# in the vocabulary of the transport.
+_ACTIVITY_VERB: dict[str, str] = {
+    "Read": "Reading", "read_file": "Reading", "read_document": "Reading",
+    "notebook_read": "Reading", "read_section": "Reading",
+    "Edit": "Editing", "edit_file": "Editing", "multi_edit": "Editing",
+    "MultiEdit": "Editing", "notebook_edit": "Editing",
+    "apply_patch": "Patching",
+    "Write": "Writing", "write_file": "Writing",
+    "create_pdf": "Writing", "create_docx": "Writing",
+}
+
+
+def _tool_activity_label(tool_name: str, parsed: dict) -> str:
+    """One line saying what is happening, for any backend's spelling."""
+    bare = (tool_name or "").rsplit("__", 1)[-1] \
+        if (tool_name or "").startswith("mcp__") else (tool_name or "")
+    name = (parsed.get("file_path") or parsed.get("path") or "")
+    if name:
+        name = str(name).rsplit("/", 1)[-1]
+    verb = _ACTIVITY_VERB.get(bare, "")
+    if verb:
+        return f"{verb} {name}..." if name else f"{verb}..."
+    if bare in ("Grep", "grep_file", "find_references", "find_definition"):
+        return f"Searching: {str(parsed.get('pattern', ''))[:40]}..."
+    if bare in ("Glob", "list_files", "glob_files"):
+        return f"Finding: {str(parsed.get('pattern', '') or name)[:40]}..."
+    if bare in ("Bash", "bash", "bash_background"):
+        return f"$ {str(parsed.get('command') or '')[:50]}..."
+    if bare in ("Agent", "subagent", "orchestrate"):
+        return f"Sub-agent: {str(parsed.get('description') or '')[:40]}..."
+    if bare in ("web_search", "WebSearch", "web_fetch", "WebFetch"):
+        return f"Looking up: {str(parsed.get('query') or parsed.get('url') or '')[:40]}..."
+    return f"Running {bare or tool_name}..."
+
+
+def _format_tool_description(raw):
+    """Parse a raw permission denial string into a readable description."""
+    import ast as _ast
+    try:
+        d = _ast.literal_eval(raw) if raw.strip().startswith("{") else {}
+    except Exception:
+        d = {}
+    if not d:
+        return raw[:200]
+    tool = d.get("tool_name", "Unknown")
+    inp = d.get("tool_input", {})
+    if not isinstance(inp, dict):
+        return f"{tool}"
+    # Build a human-readable summary per tool CONCEPT. Recognising the
+    # spelling instead sent every KIT and Ollama call to the generic
+    # branch below, where the line the user approves reads
+    # "write_file: path=… content=…" with the content cut at 80
+    # characters.
+    _bare = tool.rsplit("__", 1)[-1] if tool.startswith("mcp__") else tool
+    _concept = _WRITE_TOOL_CONCEPT.get(_bare, "")
+    fp = inp.get("file_path", "") or inp.get("path", "")
+    fname = fp.rsplit("/", 1)[-1] if "/" in fp else fp
+    if _concept == "edit":
+        old = inp.get("old_string", "")
+        new = inp.get("new_string", "")
+        old_short = old[:60].replace("\n", " ")
+        new_short = new[:60].replace("\n", " ")
+        return f"Edit {fname}: \"{old_short}\" → \"{new_short}\""
+    if _concept == "multi":
+        n = len(inp.get("edits") or [])
+        return f"Edit {fname}: {n} change(s)"
+    if _concept == "write":
+        return f"Write file: {fname}"
+    if _concept == "patch":
+        return f"Apply patch ({len(str(inp.get('diff') or '').splitlines())} lines)"
+    if _bare in ("Bash", "bash", "bash_background"):
+        cmd = inp.get("command", "")
+        return f"Run: {cmd[:120]}"
+    if _bare in ("Read", "Glob", "Grep", "read_file", "grep_file",
+                 "list_files"):
+        target = fp or inp.get("pattern", "")
+        return f"{_bare}: {target[:120]}"
+    # Generic: show tool + first key
+    parts = [f"{tool}:"]
+    for k, v in list(inp.items())[:2]:
+        sv = str(v)[:80]
+        parts.append(f" {k}={sv}")
+    return "".join(parts)
+
+def _compute_approval_diff(detail: str) -> str:
+    """A unified diff of the change a pending tool would make, or "".
+
+    Module level so it can be tested: it reads a detail string and a file
+    and returns text, and lived inside create_tab only because that is
+    where it was first needed.
+
+    The tool is recognised by CONCEPT, not by spelling. The list used to
+    be ``("Edit", "Write", "multi_edit")`` — two of the CLI backend's
+    names and one of the OpenAI-compatible backend's, the shape of a list
+    somebody extended once and did not finish. On the KIT and Ollama
+    backends the two commonest write tools are ``write_file`` and
+    ``edit_file``; neither matched, so the user was asked to approve a
+    file change with nothing shown. Approving blind is the failure this
+    preview exists to prevent.
+
+    The argument names were never the problem: path, old_string,
+    new_string, content and edits are the same on both sides.
+
+    Reads the actual file from disk; pure-stdlib (difflib), capped to
+    ~120 lines so the chat does not drown in a huge rewrite preview.
+    """
+    import ast as _ast
+    import difflib as _difflib
+    try:
+        d = _ast.literal_eval(detail) if detail and detail.lstrip().startswith("{") else {}
+    except Exception:
+        return ""
+    if not isinstance(d, dict):
+        return ""
+    raw_tool = (d.get("tool_name") or "").strip()
+    tool = _WRITE_TOOL_CONCEPT.get(raw_tool.rsplit("__", 1)[-1]
+                                   if raw_tool.startswith("mcp__")
+                                   else raw_tool, "")
+    inp = d.get("tool_input") or {}
+    if not isinstance(inp, dict):
+        return ""
+
+    # A patch carries its own diff. Recomputing one from the file would be
+    # work to arrive back where we started, and it would be the diff we
+    # guessed rather than the one that will be applied.
+    if tool == "patch":
+        patch = str(inp.get("diff") or inp.get("patch") or "")
+        return f"```diff\n{patch.strip()}\n```" if patch.strip() else ""
+
+    file_path = (inp.get("file_path") or inp.get("path") or "").strip()
+    if not file_path or not tool:
+        return ""
+    try:
+        target = Path(file_path).expanduser()
+        current = target.read_text(encoding="utf-8") if target.is_file() else ""
+    except OSError:
+        return ""
+
+    if tool == "write":
+        proposed = inp.get("content", "")
+    elif tool == "edit":
+        old = inp.get("old_string", "")
+        new = inp.get("new_string", "")
+        if not old:
+            return ""
+        replace_all = bool(inp.get("replace_all", False))
+        if old not in current:
+            return f"(diff preview unavailable — old_string not found in {target.name})"
+        proposed = (current.replace(old, new) if replace_all
+                    else current.replace(old, new, 1))
+    elif tool == "multi":
+        edits = inp.get("edits") or []
+        proposed = current
+        for e in edits:
+            old = e.get("old_string", "")
+            new = e.get("new_string", "")
+            if old and old in proposed:
+                if e.get("replace_all"):
+                    proposed = proposed.replace(old, new)
+                else:
+                    proposed = proposed.replace(old, new, 1)
+    else:
+        return ""
+
+    if proposed == current:
+        return f"(no change to {target.name})"
+    diff_lines = list(_difflib.unified_diff(
+        current.splitlines(keepends=False),
+        proposed.splitlines(keepends=False),
+        fromfile=str(target),
+        tofile=f"{target} (proposed)",
+        lineterm="",
+        n=3,
+    ))
+    if not diff_lines:
+        return ""
+    if len(diff_lines) > 120:
+        diff_lines = diff_lines[:60] + [
+            f"... ({len(diff_lines) - 120} lines truncated) ...",
+        ] + diff_lines[-60:]
+    return "```diff\n" + "\n".join(diff_lines) + "\n```"
+
+
 def _build_full_transcript_handoff(
     chat_messages: list[dict],
     old_mode: str,
@@ -13664,45 +13863,6 @@ def create_tab(ctx):
         else:
             _append_system_message("Could not find a user message to retry.")
 
-    def _format_tool_description(raw):
-        """Parse a raw permission denial string into a readable description."""
-        import ast as _ast
-        try:
-            d = _ast.literal_eval(raw) if raw.strip().startswith("{") else {}
-        except Exception:
-            d = {}
-        if not d:
-            return raw[:200]
-        tool = d.get("tool_name", "Unknown")
-        inp = d.get("tool_input", {})
-        if not isinstance(inp, dict):
-            return f"{tool}"
-        # Build a human-readable summary per tool type
-        if tool == "Edit":
-            fp = inp.get("file_path", "")
-            old = inp.get("old_string", "")
-            new = inp.get("new_string", "")
-            fname = fp.rsplit("/", 1)[-1] if "/" in fp else fp
-            old_short = old[:60].replace("\n", " ")
-            new_short = new[:60].replace("\n", " ")
-            return f"Edit {fname}: \"{old_short}\" → \"{new_short}\""
-        if tool == "Write":
-            fp = inp.get("file_path", "")
-            fname = fp.rsplit("/", 1)[-1] if "/" in fp else fp
-            return f"Write file: {fname}"
-        if tool == "Bash":
-            cmd = inp.get("command", "")
-            return f"Run: {cmd[:120]}"
-        if tool in ("Read", "Glob", "Grep"):
-            target = inp.get("file_path", "") or inp.get("pattern", "") or inp.get("path", "")
-            return f"{tool}: {target[:120]}"
-        # Generic: show tool + first key
-        parts = [f"{tool}:"]
-        for k, v in list(inp.items())[:2]:
-            sv = str(v)[:80]
-            parts.append(f" {k}={sv}")
-        return "".join(parts)
-
     def _request_confirmation(action_id, description, callback):
         """Show confirmation prompt for destructive dashboard operations.
 
@@ -13737,77 +13897,6 @@ def create_tab(ctx):
             return
         # Needs confirmation
         _request_confirmation(action_id, description, callback)
-
-    def _compute_approval_diff(detail: str) -> str:
-        """Render a unified-diff preview when the pending tool is Edit /
-        Write / multi_edit. Returns "" when the tool isn't file-mutating
-        or the diff can't be computed (binary file, missing path, etc.).
-
-        Reads the actual file from disk; pure-stdlib (difflib), capped to
-        ~120 lines so the chat doesn't drown in a huge rewrite preview.
-        """
-        import ast as _ast
-        import difflib as _difflib
-        try:
-            d = _ast.literal_eval(detail) if detail and detail.lstrip().startswith("{") else {}
-        except Exception:
-            return ""
-        tool = (d.get("tool_name") or "").strip()
-        inp = d.get("tool_input") or {}
-        if not isinstance(inp, dict):
-            return ""
-        file_path = (inp.get("file_path") or inp.get("path") or "").strip()
-        if not file_path or tool not in ("Edit", "Write", "multi_edit"):
-            return ""
-        try:
-            target = Path(file_path).expanduser()
-            current = target.read_text(encoding="utf-8") if target.is_file() else ""
-        except OSError:
-            return ""
-
-        if tool == "Write":
-            proposed = inp.get("content", "")
-        elif tool == "Edit":
-            old = inp.get("old_string", "")
-            new = inp.get("new_string", "")
-            if not old:
-                return ""
-            replace_all = bool(inp.get("replace_all", False))
-            if old not in current:
-                return f"(diff preview unavailable — old_string not found in {target.name})"
-            proposed = (current.replace(old, new) if replace_all
-                        else current.replace(old, new, 1))
-        elif tool == "multi_edit":
-            edits = inp.get("edits") or []
-            proposed = current
-            for e in edits:
-                old = e.get("old_string", "")
-                new = e.get("new_string", "")
-                if old and old in proposed:
-                    if e.get("replace_all"):
-                        proposed = proposed.replace(old, new)
-                    else:
-                        proposed = proposed.replace(old, new, 1)
-        else:
-            return ""
-
-        if proposed == current:
-            return f"(no change to {target.name})"
-        diff_lines = list(_difflib.unified_diff(
-            current.splitlines(keepends=False),
-            proposed.splitlines(keepends=False),
-            fromfile=str(target),
-            tofile=f"{target} (proposed)",
-            lineterm="",
-            n=3,
-        ))
-        if not diff_lines:
-            return ""
-        if len(diff_lines) > 120:
-            diff_lines = diff_lines[:60] + [
-                f"... ({len(diff_lines) - 120} lines truncated) ...",
-            ] + diff_lines[-60:]
-        return "```diff\n" + "\n".join(diff_lines) + "\n```"
 
     def _show_approval_prompt(tool_name, detail):
         """Show approval request inline in chat + approval buttons."""
@@ -14817,15 +14906,7 @@ def create_tab(ctx):
                     _fname = (parsed.get("file_path") or parsed.get("path") or "")
                     if _fname:
                         _fname = _fname.rsplit("/", 1)[-1]
-                    _detail = {
-                        "Read":  f"Reading {_fname}..." if _fname else "Reading...",
-                        "Edit":  f"Editing {_fname}..." if _fname else "Editing...",
-                        "Write": f"Writing {_fname}..." if _fname else "Writing...",
-                        "Grep":  f"Searching: {parsed.get('pattern', '')[:40]}...",
-                        "Glob":  f"Finding: {parsed.get('pattern', '')[:40]}...",
-                        "Bash":  f"$ {(parsed.get('command') or '')[:50]}...",
-                        "Agent": f"Sub-agent: {(parsed.get('description') or '')[:40]}...",
-                    }.get(tool_name, f"Running {tool_name}...")
+                    _detail = _tool_activity_label(tool_name, parsed)
                     _set_working(True, f"[{_tc}] {_detail}")
 
                     # Flush pending text as a finalized assistant message

@@ -378,8 +378,20 @@ def test_engine_allows_mcp_ops_tool_through_whitelist(agent_tree):
     )
 
 
-def test_engine_blocks_unknown_tool_outside_mcp(agent_tree):
-    """A non-whitelisted, non-MCP tool must still be blocked."""
+def test_a_tool_call_that_happened_is_reported(agent_tree):
+    """This used to assert that the engine "blocks" an unknown tool by
+    not calling on_tool_use.
+
+    The event is a report: the client yields it and then executes the
+    tool in the same generator, so nothing here could stop the call. What
+    the filter did was hide one that RAN — from the UI, from the turn's
+    tool counter, from the execution ledger the functional-claim guard
+    reads for evidence, and from the stray-write check. Refusal lives in
+    api_client._tool_denied_for_role, before execution;
+    tests/test_a_reviewer_does_not_edit_what_it_reviews.py holds it.
+
+    So the property here is the opposite one: whatever ran is shown.
+    """
     from delfin.agent.api_client import StreamEvent
     from delfin.agent.engine import AgentEngine
 
@@ -402,8 +414,8 @@ def test_engine_blocks_unknown_tool_outside_mcp(agent_tree):
         on_tool_use=lambda name, inp: seen.append((name, inp)),
     )
 
-    # EvilTool is neither in session_manager whitelist nor MCP-prefixed → blocked.
-    assert not any(name == "EvilTool" for name, _ in seen)
+    assert any(name == "EvilTool" for name, _ in seen), (
+        "a tool call the client already made was hidden from the user")
 
 
 def test_engine_session_persistence(agent_tree):
