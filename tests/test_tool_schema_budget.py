@@ -455,12 +455,19 @@ def test_the_mcp_budget_cannot_be_switched_off(monkeypatch):
 
 def test_dropping_a_tool_is_recorded_not_silent():
     """A surface that shrinks in silence looks like a broken server to
-    whoever debugs it next."""
-    import pathlib
+    whoever debugs it next.
+
+    Anchored on the assignment rather than on a call with an empty
+    argument list: the budget takes the model's context window now, and a
+    test that pins the spelling of the call fails on a change that alters
+    nothing about what it guards.
+    """
+    import inspect
+
     from delfin.agent import api_client as A
 
-    source = pathlib.Path(A.__file__).read_text(encoding="utf-8")
-    block = source[source.index("_mcp_budget = _mcp_schema_budget_chars()"):]
+    source = inspect.getsource(A.OpenAIClient.stream_message)
+    block = source[source.index("_mcp_budget = _mcp_schema_budget_chars("):]
     block = block[:2000]
     assert "_mcp_dropped" in block
     assert "_record_security_event" in block
