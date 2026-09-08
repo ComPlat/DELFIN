@@ -923,7 +923,22 @@ def trial_on_seed(smarts: str, seed_smiles: str) -> Dict[str, Any]:
         return {'level': 'ok',
                 'status': f"on the seed: {len(made)} product"
                           f"{'s' if len(made) != 1 else ''}"}
+    # The two ways a matching rule still builds nothing, in the order they
+    # actually happen: an atom left unmapped is deleted, taking its ring bonds
+    # with it, and an atom drawn aliphatic inside a ring the rest of which
+    # stays aromatic cannot be sanitized.
+    try:
+        loose = sum(1 for atom in rxn.GetReactantTemplate(0).GetAtoms()
+                    if not atom.GetAtomMapNum())
+    except Exception:                                       # noqa: BLE001
+        loose = 0
+    if loose:
+        advice = (f' — {loose} atom{"s" if loose != 1 else ""} on the left '
+                  f'{"are" if loose != 1 else "is"} unmapped and so deleted; '
+                  f'map {"them" if loose != 1 else "it"} if '
+                  f'{"they" if loose != 1 else "it"} should stay')
+    else:
+        advice = ' — what stays aromatic has to be drawn aromatic'
     return {'level': 'note',
             'status': (f'on the seed: matches {hits}x, but no product survives'
-                       + (f' — {refused}' if refused else '')
-                       + ' — check that what stays aromatic is drawn aromatic')}
+                       + (f' — {refused}' if refused else '') + advice)}
