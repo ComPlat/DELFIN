@@ -700,15 +700,26 @@ def test_artifact_jpg_uses_jpeg_mime(tmp_path):
     assert "data:image/jpeg;base64," in html
 
 
-def test_artifact_huge_png_skipped(tmp_path, monkeypatch):
-    """Files over the 2 MB cap render a placeholder instead of inlining."""
+def test_artifact_huge_png_is_not_painted(tmp_path, monkeypatch):
+    """Files over the 2 MB cap render a placeholder instead of an <img>.
+
+    The cap is on PAINTING. An <img src="data:…"> is decoded into a
+    bitmap and repainted on every scroll for the rest of the session,
+    which is what made a large image cost the chat something. Carrying
+    the same bytes as a download anchor does not: it is a string in the
+    DOM until the moment it is clicked.
+
+    So the assertion is that the image is not DRAWN, not that the file
+    became unreachable — a picture the user can neither see nor save is
+    not a smaller failure than a slow one.
+    """
     p = tmp_path / "big.png"
     p.write_bytes(b"x" * 2_500_000)
     html = _render_artifact_inline(p)
     assert html is not None
     assert "too large" in html
-    # Real bytes must NOT be embedded
-    assert "data:image/png;base64," not in html
+    assert "<img" not in html
+    assert 'download="big.png"' in html
 
 
 def test_artifact_svg_inline(tmp_path):
