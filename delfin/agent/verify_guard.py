@@ -2073,9 +2073,21 @@ _FUNC_WORK_RE = re.compile(_FUNC_WORK_PAT, re.IGNORECASE)
 # runtime check pass.
 _FUNC_COMPLETENESS_RE = re.compile(
     r"(?i)\b(?:vollst[äa]ndig|komplett|l[üu]ckenlos|alles|alle\s+\w+|"
-    r"fully|completely|thoroughly|end[- ]?to[- ]?end)\b[^.!?\n]{0,40}?"
+    r"fully|completely|thoroughly|end[- ]?to[- ]?end|everything)\b"
+    r"[^.!?\n]{0,40}?"
     r"\b(?:getestet|gepr[üu]ft|verifiziert|abgedeckt|tested|verified|"
-    r"validated|covered)\b"
+    r"validated|covered|"
+    # The same absolute claim wearing the WORKS verb. It named no
+    # artifact, so the artifact rule had nothing to look up, and its
+    # predicate is not a testing word, so this rule did not match either
+    # — and the sentence fell between the two.
+    #
+    # Measured 2026-09-08 on gen_report_unverified: an export script
+    # whose CSV path and --help were run and whose SMTP path the agent
+    # itself described as running "nur als Print", closed with "Alles
+    # funktioniert wie erwartet". Which is the field case recorded above,
+    # in the other verb.
+    r"funktioniert|funktionsf[äa]hig|l[äa]uft|works|working|runs)\b"
 )
 
 
