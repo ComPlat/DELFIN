@@ -216,3 +216,65 @@ def test_a_round_that_called_a_tool_is_not_re_sent():
     client, seen = _stub_client(empty_stream=False, tool_call=True)
     _first_text(client)
     assert seen["plain"] == 0, "a tool-calling round must not be re-sent"
+
+
+def test_the_retry_still_counts_the_prefix_cache():
+    """The non-streaming synthesis moved into a shared helper; the cached
+    token count has to survive the move, because it is the number the
+    caching work is steered by."""
+    import threading
+    import types
+
+    from delfin.agent import api_client as ac
+
+    class _Stream:
+        def __iter__(self):
+            return iter(())
+
+        def close(self):
+            pass
+
+    class _Stub:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(**kw):
+                    if kw.get("stream"):
+                        return _Stream()
+                    usage = types.SimpleNamespace(
+                        prompt_tokens=1000, completion_tokens=3,
+                        prompt_tokens_details=types.SimpleNamespace(
+                            cached_tokens=960))
+                    msg = types.SimpleNamespace(content="ok", tool_calls=[])
+                    return types.SimpleNamespace(
+                        usage=usage,
+                        choices=[types.SimpleNamespace(
+                            message=msg, finish_reason="stop")])
+
+    c = ac.OpenAIClient.__new__(ac.OpenAIClient)
+    c.client = _Stub()
+    c.model = "kit.glm-5.3"
+    c._provider = "kit"
+    c._base_url = "https://ki-toolbox.scc.kit.edu/api/v1"
+    c._api_key = "x"
+    c.effort = ""
+    c._permissions = None
+    c.on_model_switched = None
+    c._steer_lock = threading.Lock()
+    c._steer_queue = []
+    c._run_notes = []
+    c._stop_flag = False
+
+    seen = []
+    try:
+        for ev in c.stream_message(
+                messages=[{"role": "user", "content": "hi"}],
+                system="t", max_tokens=32):
+            seen.append(ev)
+            if getattr(ev, "type", "") == "message_start":
+                break
+    except Exception:
+        pass
+    starts = [e for e in seen if getattr(e, "type", "") == "message_start"]
+    assert starts, "the retry produced no message_start"
+    assert starts[0].input_tokens == 1000
