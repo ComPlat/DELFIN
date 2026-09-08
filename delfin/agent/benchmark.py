@@ -66,7 +66,10 @@ class Task:
 
     id: str
     task_class: str
-    mode: str                   # solo | dashboard | plan | quick | …
+    # The agent MODE: one of solo | dashboard | office | research. Not a
+    # permission profile — ``load_mode`` rejects "plan", which this comment
+    # used to list, and a task written against it fails at construction.
+    mode: str
     prompt: str
     expected_signals: tuple[Signal, ...] = ()
     forbidden_signals: tuple[Signal, ...] = ()
@@ -78,6 +81,13 @@ class Task:
     # flag for this task (did it plan/scout/verify/ask?) into
     # ``BenchmarkResult.behavior`` — orthogonal to the quality rubric.
     behavior: str = ""
+    # The permission profile the turn runs under: plan | default |
+    # acceptEdits | bypassPermissions. Empty means the engine's own
+    # default. Plan is a SAFETY boundary — the agent may read and must not
+    # write until the user approves — and until this field existed the
+    # suite could not express one, so nothing measured whether a model
+    # respects it.
+    permission_mode: str = ""
 
 
 @dataclass
@@ -211,6 +221,7 @@ def _coerce_task(raw: dict) -> Task:
         id=str(raw["id"]),
         task_class=str(raw.get("task_class", "")),
         mode=str(raw.get("mode", "solo")),
+        permission_mode=str(raw.get("permission_mode", "")),
         prompt=str(raw.get("prompt", "")),
         expected_signals=expected,
         forbidden_signals=forbidden,
