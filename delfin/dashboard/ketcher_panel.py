@@ -108,7 +108,23 @@ def read_js(scope: str, kind: str, want: str, *,
         "  if(!api){ hand('!no-editor'); return; }\n"
         "  function ask(){\n"
         "    if(want==='ket') return api.getKet();\n"
-        "    if(want==='smarts') return api.getSmarts();\n"
+        # The SMARTS never travels alone.  Ketcher drops the atom map on
+        # a generic atom when it writes one -- A, Q, X and M all lose it
+        # -- and keeps it in every other format, so the drawing file
+        # comes along and the maps are taken back off it.
+        "    if(want==='smarts'){\n"
+        "      var pick=function(fn){\n"
+        "        try{ return Promise.resolve(fn()); }\n"
+        "        catch(e){ return Promise.reject(e); } };\n"
+        "      return pick(function(){ return api.getSmarts(); })\n"
+        "        .then(function(s){\n"
+        "          return pick(function(){ return api.getRxn(); })\n"
+        "            .catch(function(){\n"
+        "              return pick(function(){ return api.getMolfile(); }); })\n"
+        "            .catch(function(){ return ''; })\n"
+        "            .then(function(m){ return s+MARK+(m||''); });\n"
+        "        });\n"
+        "    }\n"
         "    if(want==='smi') return api.getSmiles();\n"
         "    if(want==='cdxml') return api.getCDXml();\n"
         "    if(want==='rxn') return api.getRxn();\n"
