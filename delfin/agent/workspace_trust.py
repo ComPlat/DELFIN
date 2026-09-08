@@ -605,11 +605,20 @@ def workspace_paths(kind_name: str,
     return gate(kind_name, workspace).paths
 
 
-def pending_notices(workspace: Path | str | None) -> list[str]:
-    """Every kind's notice for *workspace*, for a caller that shows all."""
+def pending_notices(workspace: Path | str | None, *,
+                    short: bool = False) -> list[str]:
+    """Every kind's notice for *workspace*, for a caller that shows all.
+
+    ``short`` returns the one-clause form instead. A screen the user
+    opened on purpose has room for the whole explanation; a line carried
+    in every prompt does not, and the actionable half -- what to type --
+    is what has to survive either way.
+    """
     out: list[str] = []
     for kind in kinds():
-        note = gate(kind.name, workspace).notice
+        decision = gate(kind.name, workspace)
+        note = (decision.short_notice or decision.notice) if short \
+            else decision.notice
         if note:
             out.append(note)
     return out
