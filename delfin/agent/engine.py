@@ -3295,7 +3295,11 @@ class AgentEngine:
             return                      # the harness talking, always English
         try:
             from . import verify_guard as _vg
-            found = _vg.detect_language(text)
+            # A lower floor than the answer-judging default: see
+            # detect_language. The question here is which language the
+            # user opened in, and the hit-count and margin rules already
+            # refuse a fragment.
+            found = _vg.detect_language(text, min_words=8)
         except Exception:
             found = ""
         if found:
@@ -5808,9 +5812,13 @@ class AgentEngine:
         # run picked up tomorrow that forgot which language it was started
         # in would answer the resumed half differently from the half
         # already on the page, which is the drift the pin exists to stop.
+        # str(None) is "None", and "None" is truthy: an unset pin came
+        # back from a resume as a pin naming no language, so
+        # _note_session_language saw it as already set and never looked
+        # again, and the block that renders it looked up "None".
         _SessionField(
             "_session_language", "session_language", "state",
-            str, str, lambda: ""),
+            lambda v: str(v or ""), lambda v: str(v or ""), lambda: ""),
         # -- the ledgers the guards judge against -------------------------
         _SessionField(
             "_last_observed_files", "observed_files", "evidence",
