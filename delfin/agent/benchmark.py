@@ -497,10 +497,32 @@ _PLAN_TOOLS = frozenset({"task_create", "exit_plan_mode"})
 _ASK_TOOLS = frozenset({"ask_user_question"})
 
 # First token of a read-only shell command (scouting via bash, not mutating).
+# Shell commands that only look. A bash call whose head is one of these
+# counts as SCOUTING; anything else counts as acting, and acting before
+# asking is what the "asked" behaviour treats as a guess.
+#
+# The list was 24 names of file readers, so a model that inspected the
+# machine rather than a file — `ps` to find its own job, `env` to see the
+# configuration, `awk` over a table — was recorded as having acted. On
+# the three ask-tagged tasks that scored 0% while all three PASSED their
+# signals: the metric was calling investigation a guess.
+#
+# Deliberately still without `python3` and `pytest`. Running a script or
+# a test suite is what the verify behaviour looks for, and moving them
+# here would take the evidence away from that.
 _RO_BASH_CMDS = frozenset({
-    "ls", "cat", "head", "tail", "grep", "rg", "find", "pwd", "wc",
+    # files
+    "ls", "cat", "head", "tail", "grep", "rg", "ag", "find", "pwd", "wc",
     "which", "file", "stat", "tree", "diff", "less", "more", "column",
     "sort", "uniq", "cut", "nl", "basename", "dirname", "realpath",
+    "readlink", "awk", "jq", "yq", "md5sum", "sha256sum", "type",
+    # the machine
+    "echo", "env", "printenv", "date", "uname", "whoami", "hostname",
+    "id", "uptime", "df", "du", "free",
+    # processes and sockets — reading these tables changes nothing, and
+    # finding a background job is a prerequisite for stopping the right
+    # one rather than sweeping the table.
+    "ps", "pgrep", "ss", "netstat", "lsof",
 })
 _RO_GIT_SUB = frozenset({
     "status", "log", "diff", "show", "branch", "ls-files", "rev-parse",
@@ -519,6 +541,14 @@ def _normalize_tool_name(name: str) -> str:
     ``mcp__<server>__<tool>`` (e.g. ``mcp__delfin-docs__read_file``).  The
     classifier reasons about the bare tool (``read_file``), so normalise
     first — otherwise a genuine read/edit/run is invisible to the flags.
+
+    The namespace is all it strips. The sets below are written in the
+    OpenAI-compatible vocabulary (write_file / read_file / bash), which
+    is what every model on the roster is served as, and the CLI
+    backend's Write / Read / Bash would be invisible to every flag.
+    That is a real limit and not an accident: the task signals are
+    written in the same vocabulary, so a CLI-backend run would need both
+    changed together, and nothing runs the suite that way today.
     """
     if name.startswith("mcp__"):
         parts = name.split("__")
@@ -559,6 +589,35 @@ def _is_readonly_bash(cmd: str) -> bool:
         sub = tokens[1] if len(tokens) > 1 else ""
         return sub in _RO_GIT_SUB
     return head in _RO_BASH_CMDS
+
+
+def _bash_command(inp: Any) -> str:
+    """The shell command inside a bash call's input.
+
+    ``_classify_calls`` passed the JSON-encoded input to
+    ``_is_readonly_bash``, which reads the first token to decide what the
+    command does — and the first token of ``{"command": "ls -la"}`` is
+    ``{"command":``. So the read-only test never once returned True for a
+    real call: every bash call in every run was classified as ACTING.
+
+    That silently decided the behaviour rates. The "asked" rate treats
+    acting as a guess that overrides asking, so on 2026-09-08 the three
+    ask-tagged tasks all PASSED their signals and the run reported
+    ``asked 0% (n=3)``.
+    """
+    if isinstance(inp, dict):
+        for key in ("command", "cmd", "script", "code"):
+            val = inp.get(key)
+            if isinstance(val, str) and val.strip():
+                return val
+        return ""
+    text = str(inp or "").strip()
+    if text.startswith("{"):
+        try:
+            return _bash_command(json.loads(text))
+        except (TypeError, ValueError):
+            return ""
+    return text
 
 
 def _basename(path: str) -> str:
@@ -603,7 +662,9 @@ def _classify_calls(tool_calls: list[dict]) -> list[dict]:
         if name == "subagent" and "explore" in inp.lower():
             kinds.add("read")                     # explore subagent = scouting
         if name in _EXEC_TOOLS:
-            if name in ("bash", "bash_background") and _is_readonly_bash(inp):
+            if (name in ("bash", "bash_background")
+                    and _is_readonly_bash(_bash_command(
+                        (c or {}).get("input")))):
                 kinds.add("read")                 # read-only shell = scouting
             else:
                 kinds.add("exec_act")
@@ -1906,11 +1967,18 @@ def format_audit_report(entries: list[dict]) -> str:
             if e["error"]:
                 lines.append(f"  error  : {e['error'][:200]}")
             if e["text_excerpt"]:
-                lines.append("  model output (≤400 chars):")
-                for line in e["text_excerpt"].splitlines()[:8]:
+                # The label said 400 while the record has held 4000 for a
+                # failing task since someone widened it for exactly this
+                # reason. A caption that understates what is there invites
+                # the reader to give up before scrolling.
+                _lines = e["text_excerpt"].splitlines()
+                lines.append(
+                    f"  model output ({len(e['text_excerpt'])} chars, "
+                    f"first {min(12, len(_lines))} lines):")
+                for line in _lines[:12]:
                     lines.append(f"    │ {line[:120]}")
-                if len(e["text_excerpt"].splitlines()) > 8:
-                    lines.append("    │ …")
+                if len(_lines) > 12:
+                    lines.append(f"    │ … ({len(_lines) - 12} more lines)")
         lines.append("")
     return "\n".join(lines) + "\n"
 
