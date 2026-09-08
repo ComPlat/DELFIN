@@ -1623,6 +1623,25 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     # the agent's commit, and afterwards nothing can say which hunks were
     # whose. So `git add delfin/agent/office.py` runs, and `git add -A`,
     # `git add .`, `git add -u` go to the confirm gate.
+    # The same reads, spelled the way the prompt tells the agent to spell
+    # them. solo_agent.md says twice: never prepend `cd /pfad && …`; use
+    # the bash tool's cwd, or git's own -C. This list matched
+    # `git <subcommand>` with nothing in between, so `git -C . status` —
+    # the sanctioned spelling — went to the confirm gate, which in a
+    # headless run is a refusal. `--no-pager` is how you keep git from
+    # opening a pager in a shell that has no terminal, and it was refused
+    # for the same reason.
+    #
+    # READ-ONLY subcommands only, and deliberately fewer than the bare
+    # list above: -C names ANOTHER repository, so `git -C /elsewhere
+    # commit` would be a write over there, and fetch/pull/switch move a
+    # repo this session may not own. Those keep requiring the bare form.
+    # The -C path is a literal — the character class excludes $ ( ` ; so
+    # no substitution rides in as a path.
+    r"^\s*git\s+(?:(?:--no-pager|--paginate|-C\s+[A-Za-z0-9_./~@:+=-]+)\s+)+"
+    r"(?:status|diff|log|show|branch(?!\s+-D)|remote|rev-parse|describe|"
+    r"ls-files|ls-tree|blame|shortlog|reflog|config\s+--get|"
+    r"stash\s+(?:list|show)|tag\s*$)\b",
     r"^\s*git\s+add\s+(?!(?:-A|--all|-u|--update|\.|:/)(?:\s|$))[^-\s]",
     # Moving to a branch is routine; `git checkout -- <path>` and
     # `git checkout .` overwrite uncommitted work in place and cannot be
