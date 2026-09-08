@@ -389,6 +389,58 @@ def _strip_section(text: str, start_marker: str, end_markers: tuple[str, ...]) -
     return text[:start] + text[end:]
 
 
+_SEQUENCE_DELTA_HEADER = re.compile(r"^[+\-0-9,\s]+=\[\s*$")
+
+
+def _sequence_profiles_end(text: str, start: int) -> int | None:
+    """Index just past the ``<deltas>=[ ... ]`` literal following `start`.
+
+    Returns None when the section carries no such block, in which case the
+    caller falls back to the end markers.
+    """
+    depth = 0
+    inside = False
+    pos = 0
+    for line in text[start:].splitlines(keepends=True):
+        pos += len(line)
+        if not inside:
+            if _SEQUENCE_DELTA_HEADER.match(line.strip()):
+                inside = True
+                depth = line.count("[") - line.count("]")
+                if depth <= 0:
+                    return start + pos
+            continue
+        depth += line.count("[") - line.count("]")
+        if depth <= 0:
+            return start + pos
+    return None
+
+
+def _strip_sequence_profiles(text: str, fallback_end_markers: tuple[str, ...]) -> str:
+    """Remove the OCCUPIER_sequence_profiles section.
+
+    The section ends where its own bracket literal closes. This used to be
+    found by looking for the documentation block that happened to follow it,
+    so a CONTROL file written without one lost everything from here to the end
+    of the file — and with persist=True that loss was written back to disk.
+    Everything behind the block (ORCA base overrides, CO2 coordination, ...)
+    is unrelated to the sequences and has to survive.
+    """
+    start = text.find("OCCUPIER_sequence_profiles:")
+    if start == -1:
+        return text
+    end = _sequence_profiles_end(text, start)
+    if end is None:
+        return _strip_section(text, "OCCUPIER_sequence_profiles:", fallback_end_markers)
+    # take a separator line that is left dangling behind the block with it
+    rest = text[end:]
+    newline = rest.find("\n")
+    first = rest[:newline if newline != -1 else len(rest)]
+    if first.strip() and set(first.strip()) == {"-"}:
+        end += (newline + 1) if newline != -1 else len(rest)
+    return text[:start] + text[end:]
+
+
 def _strip_infos_and_esd_sections(text: str) -> str:
     """Remove everything from INFOS: to the end of ESD MODULE section (including all dashes)."""
     # Find INFOS: marker
@@ -467,9 +519,8 @@ def remove_existing_sequence_blocks(
         # For copied CONTROL files
         if is_auto:
             # Auto mode: remove all template sections (OCCUPIER_sequence_profiles, INFOS, ESD MODULE)
-            updated = _strip_section(
+            updated = _strip_sequence_profiles(
                 updated,
-                "OCCUPIER_sequence_profiles:",
                 ("INFOS:", "# AUTO sequence overrides"),
             )
             updated = _strip_infos_and_esd_sections(updated)
@@ -487,11 +538,7 @@ def remove_existing_sequence_blocks(
             return original
 
         # Remove OCCUPIER_sequence_profiles section (but keep INFOS)
-        updated = _strip_section(
-            updated,
-            "OCCUPIER_sequence_profiles:",
-            ("INFOS:",),
-        )
+        updated = _strip_sequence_profiles(updated, ("INFOS:",))
         # Remove old AUTO sequence overrides if present
         updated = _strip_section(
             updated,

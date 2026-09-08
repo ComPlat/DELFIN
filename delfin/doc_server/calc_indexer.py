@@ -79,9 +79,10 @@ def _extract_from_delfin_data(data: dict) -> dict[str, Any]:
         if parsed.get("reduction_steps"):
             modules.append("reduction")
             rec["reduction_steps"] = parsed.get("reduction_steps", "")
-        if _is_yes(parsed.get("XTB_GOAT")):
+        parsed_optimizer = str(parsed.get("global_optimizer", "")).strip().upper()
+        if _is_yes(parsed.get("XTB_GOAT")) or parsed_optimizer == "GOAT":
             modules.append("GOAT")
-        if _is_yes(parsed.get("CREST")):
+        if _is_yes(parsed.get("CREST")) or parsed_optimizer == "CREST":
             modules.append("CREST")
         if _is_yes(parsed.get("GUPPY")):
             modules.append("GUPPY")
@@ -177,9 +178,10 @@ def _extract_from_control_txt(text: str) -> dict[str, Any]:
         rec["esd_modus"] = kv.get("ESD_modus", "")
     if _is_yes(kv.get("GUPPY")):
         modules.append("GUPPY")
-    if _is_yes(kv.get("XTB_GOAT")):
+    global_optimizer = str(kv.get("global_optimizer", "")).strip().upper()
+    if _is_yes(kv.get("XTB_GOAT")) or global_optimizer == "GOAT":
         modules.append("GOAT")
-    if _is_yes(kv.get("CREST")):
+    if _is_yes(kv.get("CREST")) or global_optimizer == "CREST":
         modules.append("CREST")
     if kv.get("oxidation_steps"):
         modules.append("oxidation")

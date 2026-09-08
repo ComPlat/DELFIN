@@ -1037,6 +1037,24 @@ def _as_preopt_mode(value: Any) -> str:
     raise ValueError("must be none/no, xtb, crest, or goat")
 
 
+def _as_global_optimizer(value: Any) -> str:
+    """GOAT, CREST, or nothing at all.
+
+    Replaces the older pair of yes/no switches (XTB_GOAT, CREST). An untouched
+    "[GOAT|CREST]" and an explicit none both mean no global search, which is
+    what a template with both switches on "no" used to say.
+    """
+    text = str(value or "").strip()
+    if not text or text.lower() == "[goat|crest]":
+        return ""
+    upper = text.upper()
+    if upper in {"NONE", "NO", "OFF", "FALSE", "0"}:
+        return ""
+    if upper in {"GOAT", "CREST"}:
+        return upper
+    raise ValueError("must be GOAT, CREST, or none")
+
+
 def _as_response_engine(value: Any) -> str:
     text = str(value or "std2").strip().lower()
     if text in {"std2", "stda"}:
@@ -1708,6 +1726,14 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("frequency_calculation_OCCUPIER", _as_yes_no, default="no"),
     FieldSpec("OCCUPIER_compare", _as_occupier_compare, default="FSPE"),
     FieldSpec("xTB_method", _as_xtb_method, default="XTB2"),
+    # The global-optimiser trio. XTB_OPT (written XTB_preOPT in the CONTROL
+    # file) and the two program switches used to pass through untouched, so a
+    # value of True or 1 read as "off" at every call site that compares to the
+    # string "yes"; _as_yes_no normalises those instead of rejecting them.
+    FieldSpec("global_optimizer", _as_global_optimizer, default=""),
+    FieldSpec("XTB_OPT", _as_yes_no, default="no"),
+    FieldSpec("XTB_GOAT", _as_yes_no, default="no"),
+    FieldSpec("CREST", _as_yes_no, default="no"),
     FieldSpec("implicit_solvation_model", _as_implicit_solvation_model, default=""),
     FieldSpec("solvent", _as_solvent, default=""),
     FieldSpec("functional", _as_functional, default="PBE0"),
