@@ -1967,11 +1967,18 @@ def format_audit_report(entries: list[dict]) -> str:
             if e["error"]:
                 lines.append(f"  error  : {e['error'][:200]}")
             if e["text_excerpt"]:
-                lines.append("  model output (≤400 chars):")
-                for line in e["text_excerpt"].splitlines()[:8]:
+                # The label said 400 while the record has held 4000 for a
+                # failing task since someone widened it for exactly this
+                # reason. A caption that understates what is there invites
+                # the reader to give up before scrolling.
+                _lines = e["text_excerpt"].splitlines()
+                lines.append(
+                    f"  model output ({len(e['text_excerpt'])} chars, "
+                    f"first {min(12, len(_lines))} lines):")
+                for line in _lines[:12]:
                     lines.append(f"    │ {line[:120]}")
-                if len(e["text_excerpt"].splitlines()) > 8:
-                    lines.append("    │ …")
+                if len(_lines) > 12:
+                    lines.append(f"    │ … ({len(_lines) - 12} more lines)")
         lines.append("")
     return "\n".join(lines) + "\n"
 
