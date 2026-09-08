@@ -17,7 +17,12 @@ import py3Dmol
 from IPython import get_ipython
 from IPython.display import clear_output
 
-from delfin.config import parse_control_text, validate_control_text, get_esd_hints
+from delfin.config import (
+    parse_control_text,
+    set_control_value,
+    validate_control_text,
+    get_esd_hints,
+)
 from delfin.smiles_converter import contains_metal
 
 from .constants import COMMON_LAYOUT, COMMON_STYLE
@@ -1274,15 +1279,7 @@ def create_tab(ctx):
         )
 
     def _set_control_value(control_content, key, value):
-        pattern = rf'(?m)^{re.escape(key)}\s*=.*$'
-        replacement = f'{key}={value}'
-        if re.search(pattern, control_content):
-            return re.sub(
-                pattern,
-                lambda _m, repl=replacement: repl,
-                control_content,
-            )
-        return control_content.rstrip() + f'\n{replacement}\n'
+        return set_control_value(control_content, key, value)
 
     def _set_control_smiles(control_content, smiles):
         return _set_control_value(control_content, 'SMILES', smiles)
@@ -1838,7 +1835,7 @@ def create_tab(ctx):
                 mode, co2_delta = resolve_co2_submit_mode(control_content)
                 result = ctx.backend.submit_delfin(
                     job_dir=job_dir, job_name=safe_job_name, mode=mode,
-                    time_limit=time_limit, pal=pal or 40, maxcore=maxcore or 6000,
+                    time_limit=time_limit, pal=pal or 48, maxcore=maxcore or 6000,
                     co2_species_delta=co2_delta,
                 )
 
@@ -1979,7 +1976,7 @@ def create_tab(ctx):
                 mode, co2_delta = resolve_co2_submit_mode(control_content)
                 result = ctx.backend.submit_delfin(
                     job_dir=job_dir, job_name=safe_job_name, mode=mode,
-                    time_limit=time_limit, pal=pal or 40, maxcore=maxcore or 6000,
+                    time_limit=time_limit, pal=pal or 48, maxcore=maxcore or 6000,
                     co2_species_delta=co2_delta,
                 )
 
@@ -2300,7 +2297,7 @@ def create_tab(ctx):
                 result = ctx.backend.submit_delfin(
                     job_dir=job_dir, job_name=safe_job_name,
                     mode='delfin-co2-chain',
-                    time_limit=time_limit, pal=pal or 40, maxcore=maxcore or 6000,
+                    time_limit=time_limit, pal=pal or 48, maxcore=maxcore or 6000,
                     co2_species_delta=delta,
                 )
 

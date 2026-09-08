@@ -217,7 +217,7 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
     sections = []
     sections.append(f"{calc_properties_header}\n{calculated_block}")
     if experimental_block:
-        sections.append(f"Experimental properties ({config.get('reference_CV', 'Unknown reference electrode')}):\n{experimental_block}")
+        sections.append(f"Experimental properties ({config.get('reference_CV') or 'V vs. Fc+/Fc'}):\n{experimental_block}")
     if literature_reference:
         sections.append(f"Literature References:\n(1): {literature_reference}")
     if smiles_info:

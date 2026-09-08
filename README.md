@@ -609,7 +609,8 @@ DELFIN is configured via `CONTROL.txt` in your working directory. Key settings i
 * `orca_parallel_strategy = auto | threads | serial`
 
 ### Optional Modules
-* `XTB_OPT = yes | no` / `XTB_GOAT = yes | no` / `CREST = yes | no`
+* `XTB_preOPT = yes | no` / `global_optimizer = GOAT | CREST`
+  * older spellings `XTB_OPT` / `XTB_GOAT` / `CREST` are still accepted
 * `XTB_SOLVATOR = yes | no`
 * `ESD_modul = yes | no` (excited-state dynamics)
   * `states = S0,S1,T1,T2`

@@ -22,6 +22,15 @@ _OPTION_PLACEHOLDER_DEFAULTS: Dict[str, Any] = {
     "stability_constant_mode": "auto",
     "thdy_smiles_converter": "NORMAL",
     "thdy_preopt": "xtb",
+    # Left as the shipped "[GOAT|CREST]" this means no global optimiser at all,
+    # which is what the two keys it replaces (XTB_GOAT=no, CREST=no) used to say.
+    "global_optimizer": "",
+    # The ESD lists are opt-in: shipped bracketed so the template shows the
+    # shape, but an untouched template must not switch ESD on.
+    "states": "",
+    "ISCs": "",
+    "ICs": "",
+    "emission_rates": "",
 }
 _PLACEHOLDER_VALIDATION_VALUES: Dict[str, Any] = {
     "charge": 0,
@@ -104,6 +113,9 @@ _CONTROL_KEY_ALIASES: Dict[str, str] = {
     "thdypreopt": "thdy_preopt",
     "scsmilesconverter": "thdy_smiles_converter",
     "scpreopt": "thdy_preopt",
+    # XTB_preOPT is the name the CONTROL file shows; XTB_OPT is what the
+    # workflow code has always called it, so the new spelling maps onto the old.
+    "xtbpreopt": "XTB_OPT",
 }
 _COLON_ASSIGNMENT_KEYS: Set[str] = {"co2_coordination", "co2_species_delta"}
 _STRING_ONLY_KEYS: Set[str] = {"smiles"}
@@ -326,6 +338,66 @@ def _load_template_defaults() -> Dict[str, Any]:
     return deepcopy(_TEMPLATE_DEFAULTS_CACHE)
 
 
+_GLOBAL_OPTIMIZER_CHOICES: Set[str] = {"GOAT", "CREST"}
+_GLOBAL_OPTIMIZER_OFF: Set[str] = {"NONE", "NO", "OFF", "FALSE", "0"}
+
+
+def _is_yes_token(value: Any) -> bool:
+    return str(value).strip().lower() in {"yes", "true", "1", "on"}
+
+
+def _normalize_global_optimizer(value: Any) -> str:
+    """Return ``GOAT``, ``CREST`` or ``""`` for a ``global_optimizer`` value.
+
+    Anything unrecognised comes back as ``""``: parsing stays lenient and the
+    validator is the one that tells the user what belongs there.
+    """
+    text = str(value or "").strip()
+    if not text or _is_placeholder_value(text):
+        return ""
+    upper = text.upper()
+    if upper in _GLOBAL_OPTIMIZER_OFF:
+        return ""
+    return upper if upper in _GLOBAL_OPTIMIZER_CHOICES else ""
+
+
+def _apply_global_optimizer_compat(config: Dict[str, Any]) -> None:
+    """Keep ``global_optimizer`` and the older ``XTB_GOAT``/``CREST`` pair in step.
+
+    A CONTROL file now names one global optimiser instead of carrying a yes/no
+    switch per program. The workflow code still reads ``XTB_GOAT`` and ``CREST``
+    — and reads them by bare index — so after a parse both spellings are always
+    present, whichever one the file was written with.
+    """
+    chosen = _normalize_global_optimizer(config.get("global_optimizer"))
+    legacy_goat = _is_yes_token(config.get("XTB_GOAT"))
+    legacy_crest = _is_yes_token(config.get("CREST"))
+
+    if chosen:
+        conflicting = "CREST" if chosen == "GOAT" else "XTB_GOAT"
+        if (chosen == "GOAT" and legacy_crest) or (chosen == "CREST" and legacy_goat):
+            logger.warning(
+                "CONTROL sets global_optimizer=%s while the older %s=yes is also "
+                "present; global_optimizer wins.", chosen, conflicting,
+            )
+        config["XTB_GOAT"] = "yes" if chosen == "GOAT" else "no"
+        config["CREST"] = "yes" if chosen == "CREST" else "no"
+    else:
+        # No choice made (absent, emptied, or the untouched "[GOAT|CREST]"):
+        # whatever the old keys say stands, and both are guaranteed to exist
+        # because the workflow indexes them without a default.
+        config.setdefault("XTB_GOAT", "no")
+        config.setdefault("CREST", "no")
+        if "global_optimizer" not in config:
+            config["global_optimizer"] = (
+                "GOAT" if legacy_goat else "CREST" if legacy_crest else ""
+            )
+
+    # XTB_preOPT is resolved to XTB_OPT by the alias table; guarantee it exists
+    # for the same bare-index reason.
+    config.setdefault("XTB_OPT", "no")
+
+
 def _apply_guppy_legacy(config: Dict[str, Any]) -> None:
     """Translate legacy ``GUPPY=yes`` to ``smiles_converter=GUPPY``.
 
@@ -465,12 +537,27 @@ def _parse_control_file(file_path: str, *, keep_steps_literal: bool, content: Op
 
     if sequence_blocks:
         config["_occupier_sequence_blocks"] = sequence_blocks
+    _apply_global_optimizer_compat(config)
     return config
 
 
 def parse_control_text(control_text: str, *, keep_steps_literal: bool = True) -> Dict[str, Any]:
     """Parse CONTROL.txt content from a string without full validation."""
     return _parse_control_file("<in-memory>", keep_steps_literal=keep_steps_literal, content=control_text)
+
+
+def set_control_value(control_text: str, key: str, value: Any) -> str:
+    """Return `control_text` with `key` set to `value`, appending it if absent.
+
+    The one place that rewrites a CONTROL line in text form, so the dashboard
+    editor and the derived templates cannot disagree about what counts as a
+    key line.
+    """
+    pattern = rf"(?m)^{re.escape(str(key))}\s*=.*$"
+    replacement = f"{key}={value}"
+    if re.search(pattern, control_text):
+        return re.sub(pattern, lambda _m: replacement, control_text)
+    return control_text.rstrip() + f"\n{replacement}\n"
 
 
 def read_control_file(file_path: str) -> Dict[str, Any]:

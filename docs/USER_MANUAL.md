@@ -206,11 +206,14 @@ See [Section 4](#4-controltxt-reference) for the complete reference.
 | Key | Default | Description |
 |-----|---------|-------------|
 | `xTB_method` | `XTB2` | xTB method for pre-optimisation |
-| `smiles_converter` | (empty) | SMILES conversion method: `QUICK`, `NORMAL`, `GUPPY`, or `ARCHITECTOR` |
-| `XTB_OPT` | `no` | Run xTB geometry optimisation before DFT |
-| `XTB_GOAT` | `no` | Run XTB-GOAT global optimisation |
-| `CREST` | `no` | Run CREST conformer search |
+| `smiles_converter` | (empty) | SMILES conversion method: `QUICK`, `NORMAL`, `GUPPY`, or `ARCHITECTOR` (own section) |
+| `XTB_preOPT` | `no` | Run xTB geometry optimisation before DFT |
+| `global_optimizer` | (empty) | Global optimisation: `GOAT`, `CREST`, or none |
 | `multiplicity_global_opt` | (empty) | Override multiplicity for pre-optimisation |
+
+The older spellings are still accepted, so existing CONTROL.txt files keep
+working unchanged: `XTB_OPT` is read as `XTB_preOPT`, and `XTB_GOAT=yes` /
+`CREST=yes` as `global_optimizer=GOAT` / `global_optimizer=CREST`.
 
 ### Imaginary Frequency Elimination (IMAG)
 
@@ -377,6 +380,10 @@ See [Section 4](#4-controltxt-reference) for the complete reference.
 DELFIN automatically selects relativistic settings when 4d/5d transition metals are detected.
 
 ### Reference Values
+
+`E_ref` sits in the Redox steps section. The experimental comparison keys below
+are **optional** and are not written by `delfin --define` — paste in the ones
+you want and the report gains an "Experimental properties" section.
 
 | Key | Default | Description |
 |-----|---------|-------------|
@@ -736,10 +743,12 @@ delfin-guppy input.txt --runs 20 --parallel-jobs 4
 Conformer search and global optimisation are triggered via CONTROL.txt:
 
 ```ini
-XTB_OPT=yes    # xTB geometry optimisation
-XTB_GOAT=yes   # XTB-GOAT global optimisation
-CREST=yes      # CREST conformer search
+XTB_preOPT=yes           # xTB geometry optimisation
+global_optimizer=GOAT    # XTB-GOAT global optimisation
+global_optimizer=CREST   # ...or CREST conformer search
 ```
+
+`XTB_OPT` / `XTB_GOAT` / `CREST` remain valid in older files.
 
 ---
 
