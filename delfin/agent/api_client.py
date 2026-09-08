@@ -10369,8 +10369,42 @@ class _DocToolExecutor:
         r"node|deno|bun|perl|ruby|php|Rscript|lua)$"
     )
 
+    # Commands that run whatever they are handed. The token after one of
+    # these -- past its own flags and arguments -- is in execution
+    # position exactly as the head of a segment is.
+    _EXEC_WRAPPER_RE = re.compile(
+        r"^(?:env|nohup|time|timeout|nice|ionice|setsid|stdbuf|exec|xargs|"
+        r"sudo|doas|watch|source|\.)$"
+    )
+
+    @staticmethod
+    def _looks_like_a_script_path(tok: str, base: str) -> bool:
+        return (tok.startswith("./") or tok.startswith("../")
+                or (tok.startswith("/") and "." in base))
+
     def _referenced_script_paths(self, cmd: str) -> list[str]:
-        """Best-effort list of script files a command would execute."""
+        """Best-effort list of script files a command would EXECUTE.
+
+        Execution POSITION, not mere presence. The earlier version
+        collected any ``./x`` or absolute dotted path appearing anywhere
+        in the command, so the argument of ``grep``, ``cat``, ``head``,
+        ``sed``, ``wc`` or ``cp`` was opened and scanned as though the
+        command would run it -- and a file whose CONTENTS trip the
+        deny-list then refused the read.
+
+        That lands hardest on this repository, because the deny-list is
+        written here: ``delfin/agent/hooks.py`` documents the
+        shell-injection sink it guards against and so contains
+        ``curl … | sh``, and ``tests/conftest.py`` names a credentials
+        path. Measured 2026-09-08 -- asked why a hook never fires, a
+        model spent four denials trying spelling after spelling to read
+        ``hooks.py``, and concluded from the refusals that the file's
+        content was itself the fault.
+
+        A program is: the head of a segment, the argument of an
+        interpreter, or what an execution wrapper is handed. Everything
+        else in a command line is data.
+        """
         import shlex
         out: list[str] = []
         for seg in _split_shell_segments(cmd):
@@ -10379,6 +10413,8 @@ class _DocToolExecutor:
             except Exception:
                 continue
             i = 0
+            head = True        # the first token of a segment is the program
+            pending = False    # a wrapper is still looking for its program
             while i < len(toks):
                 tok = toks[i]
                 base = tok.rsplit("/", 1)[-1]
@@ -10397,10 +10433,27 @@ class _DocToolExecutor:
                     if not inline and j < len(toks):
                         out.append(toks[j])
                     i = j + 1
+                    head = pending = False
                     continue
-                # Direct execution: ./script or an absolute path with a basename
-                if tok.startswith("./") or (tok.startswith("/") and "." in base):
-                    out.append(tok)
+                # `find … -exec prog {} ;` runs prog, and so does a wrapper.
+                if self._EXEC_WRAPPER_RE.match(base) or base in (
+                        "-exec", "-execdir"):
+                    head = False
+                    pending = True
+                    i += 1
+                    continue
+                if self._looks_like_a_script_path(tok, base):
+                    if head or pending:
+                        out.append(tok)
+                    head = pending = False
+                    i += 1
+                    continue
+                # A plain word at the head of a segment IS the program --
+                # `grep`, `cat`, `cp`. Everything after it is that
+                # program's data. A wrapper's own flags and arguments
+                # (`timeout 5 …`, `env FOO=1 …`) are stepped over, so the
+                # program it eventually names is still found.
+                head = False
                 i += 1
         return out
 
