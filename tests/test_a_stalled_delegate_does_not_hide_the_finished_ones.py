@@ -150,9 +150,16 @@ def test_a_thread_that_dies_early_is_not_reported_as_a_made_up_id():
 
     out = _spawn(_runner)
     assert done.wait(timeout=5)
+    # "unknown" means the id is not in the registry YET, not that the run is over:
+    # get_subagent_result answers {"status": "unknown", "error": "no running or
+    # finished subagent with this id"} for an id it has not seen. Breaking on it
+    # ends the wait before the run has even been recorded, and the assertion then
+    # reads that error instead of the one under test. It only opens under load,
+    # which is why CI saw it on 2026-09-08 while the same commit was green on the
+    # push-triggered run and green three times locally.
     for _ in range(50):
         status = sa.get_subagent_result(out["sa_id"])["status"]
-        if status != "running":
+        if status not in ("running", "unknown"):
             break
         time.sleep(0.05)
     assert status == "died"
@@ -165,7 +172,7 @@ def test_the_died_record_says_what_happened():
     out = _spawn(_runner)
     for _ in range(50):
         res = sa.get_subagent_result(out["sa_id"])
-        if res["status"] != "running":
+        if res["status"] not in ("running", "unknown"):
             break
         time.sleep(0.05)
     assert "no workspace" in res.get("error", "")
@@ -175,7 +182,7 @@ def test_a_run_that_stored_no_report_does_not_stay_running_forever():
     out = _spawn(lambda **kw: {"ok": True})
     for _ in range(50):
         status = sa.get_subagent_result(out["sa_id"])["status"]
-        if status != "running":
+        if status not in ("running", "unknown"):
             break
         time.sleep(0.05)
     assert status == "died"
