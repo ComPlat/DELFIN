@@ -306,3 +306,99 @@ def test_a_recursive_query_is_left_alone():
     """The ``:`` in ``[$(c:c)]`` is a bond, not a map."""
     line = "[$([#6]:[#6]):1]"
     assert ks.repair_atom_maps(line) == line
+
+
+# ---------------------------------------------------------------------------
+# Kekule drawings against aromatic molecules
+# ---------------------------------------------------------------------------
+# Ketcher draws benzene with three alternating double bonds and Indigo writes
+# that out as drawn; every molecule the rule will meet has been through
+# RDKit's aromaticity perception. A '-' does not match an aromatic bond.
+
+KEKULE_RING = ("[#6:1]1-[#6:2]=[#6:3]-[#6:4]=[#6:5]-[#6:6]=1"
+               ">>[C:1]1[C:2][C:3][C:4][C:5][C:6]1")
+KEKULE_PIECE = "[#6:1](~[#6:2])=[#6:3]~[#6:4]>>[C:1](~[C:2])=[N:3]~[C:4]"
+
+
+def _runs_on(smarts, smiles):
+    rxn = rdChemReactions.ReactionFromSmarts(smarts)
+    return len(rxn.RunReactants((Chem.MolFromSmiles(smiles),))) if rxn else 0
+
+
+def test_a_kekule_ring_would_have_matched_nothing():
+    """The failure as reported: a right drawing and an empty result."""
+    assert _runs_on(KEKULE_RING, "c1ccccc1") == 0
+
+
+def test_a_kekule_ring_is_widened_and_then_matches():
+    out = ks.normalize_reaction_smarts(KEKULE_RING)
+    assert out['ok'], out['status']
+    assert out['kekule'] == 6
+    assert "C1CCCCC1" in _makes(out['smarts'])
+
+
+def test_the_switch_is_the_whole_trade():
+    """Cyclohexa-1,4-diene, drawn with the same two bond types benzene is.
+
+    Nothing in the drawing says which one was meant, so the checkbox decides:
+    on, it also matches the aromatic ring, which is what a ChemDarwin seed
+    almost always is; off, it matches exactly the diene that was drawn.
+    """
+    diene = ("[#6:1]1-[#6:2]=[#6:3]-[#6:4]-[#6:5]=[#6:6]-1"
+             ">>[C:1]1[C:2][C:3][C:4][C:5][C:6]1")
+    off = ks.normalize_reaction_smarts(diene, aromatic=False)
+    assert off['kekule'] == 0
+    assert _runs_on(off['smarts'], "c1ccccc1") == 0
+    assert _runs_on(off['smarts'], "C1=CCC=CC1") > 0
+
+    on = ks.normalize_reaction_smarts(diene, aromatic=True)
+    assert on['kekule'] == 6
+    assert _runs_on(on['smarts'], "c1ccccc1") > 0
+    # and it says so rather than widening quietly
+    assert 'also match aromatic' in on['status']
+
+
+def test_a_fragment_cut_out_of_a_ring_needs_the_switch():
+    """An open fragment never perceives as aromatic, so the ring rule cannot
+    reach it -- only the atom-by-atom pass can, and that is the checkbox."""
+    off = ks.normalize_reaction_smarts(KEKULE_PIECE, aromatic=False)
+    assert off['kekule'] == 0
+    assert _runs_on(off['smarts'], "c1ccccc1") == 0
+    on = ks.normalize_reaction_smarts(KEKULE_PIECE, aromatic=True)
+    assert on['kekule'] == 1
+    assert _runs_on(on['smarts'], "c1ccccc1") > 0
+
+
+def test_an_explicitly_aliphatic_bond_is_never_widened():
+    """[C] is a carbon drawn as aliphatic; [#6] is one drawn without saying."""
+    out = ks.normalize_reaction_smarts("[C:1]-[C:2]>>[C:1]-[N:2]", aromatic=True)
+    assert out['kekule'] == 0
+    assert _runs_on(out['smarts'], "c1ccccc1") == 0
+    assert _runs_on(out['smarts'], "CCCCCC") > 0
+
+
+def test_a_rule_already_drawn_aromatic_is_untouched():
+    out = ks.normalize_reaction_smarts(DRAWN['furan'])
+    assert out['kekule'] == 0
+    assert out['smarts'] == HAND['furan']
+
+
+# ---------------------------------------------------------------------------
+# The dry run against the seed in the box
+# ---------------------------------------------------------------------------
+
+def test_the_rule_is_tried_on_the_seed_before_run_is_pressed():
+    good = ks.trial_on_seed(HAND['furan'], "c1ccccc1")
+    assert good['level'] == 'ok' and 'product' in good['status']
+
+    never = ks.trial_on_seed(KEKULE_RING, "c1ccccc1")
+    assert never['level'] == 'note' and 'no match' in never['status']
+
+    # matches, but the product is drawn aliphatic inside a ring that stays
+    # aromatic, and RDKit will not build it
+    broken = ks.trial_on_seed(
+        "[#6:1](~[#6:2])=,:[#6]~[#6]>>[C:1](~[C:2])=N~C", "c1ccccc1")
+    assert broken['level'] == 'note'
+    assert 'no product survives' in broken['status']
+
+    assert ks.trial_on_seed(HAND['furan'], '')['status'] == ''

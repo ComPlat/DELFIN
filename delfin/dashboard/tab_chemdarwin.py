@@ -1751,7 +1751,6 @@ def create_tab(ctx):
         _titled('<b>Protected patterns (keep unchanged)</b>', 'protected'),
         custom_protected,
         custom_protected_label,
-        drawing['widget'] if drawing is not None else widgets.HTML(''),
         custom_keep_rings,
         custom_iters,
         custom_debug,
@@ -1771,6 +1770,17 @@ def create_tab(ctx):
         'max-width: 100% !important; min-width: 0 !important; }'
         '.chemdarwin-tab .widget-hbox { flex-wrap: wrap !important; }'
         '.chemdarwin-tab .jupyter-widgets-output-area { max-width: 100% !important; min-width: 0 !important; }'
+        # The drawing section and the panel inside it overflowed by exactly
+        # 4px -- a child at width:100% inside a box that gives it a 2px margin
+        # a side -- and both sit on overflow-x:auto, so those 4px were a
+        # scrollbar under each of them.  Scoped to the section: the tab's own
+        # boxes are handled by the rules above.
+        '.chemdarwin-tab .chemdarwin-draw,'
+        ' .chemdarwin-tab .chemdarwin-draw .widget-box,'
+        ' .chemdarwin-tab .chemdarwin-draw .widget-vbox,'
+        ' .chemdarwin-tab .chemdarwin-draw .widget-hbox {'
+        ' overflow-x: hidden !important; min-width: 0 !important; }'
+        '.chemdarwin-tab .chemdarwin-draw-switch { width: auto !important; }'
         '.chemdarwin-tab .chemdarwin-seed-wrapper { margin:0 !important; padding:0 !important; }'
         '.chemdarwin-tab .chemdarwin-seed-out { width:100% !important; height:100% !important;'
         ' margin:0 !important; padding:0 !important; overflow:hidden !important; }'
@@ -1783,6 +1793,42 @@ def create_tab(ctx):
         ' width:100% !important; height:100% !important; overflow:hidden !important; }'
         '</style>'
     )
+
+    # -- where the editor sits --------------------------------------------
+    # Under the box being drawn into, rather than at the foot of the tab: the
+    # answer belongs beside the question.  The two containers keep the
+    # children they were built with and the section is spliced into one of
+    # them, so nothing else moves.
+    if drawing is not None:
+        _seed_kids = list(seed_section.children)
+        _param_kids = list(param_box.children)
+        _anchors = {
+            'seed': (seed_section, _seed_kids, seed_input),
+            'rxn': (param_box, _param_kids, custom_smarts),
+            'forbidden': (param_box, _param_kids, custom_forbidden_label),
+            'protected': (param_box, _param_kids, custom_protected_label),
+        }
+
+        def _place(which):
+            """Put the editor directly under the box it is pointed at.
+
+            Moving it between the two containers rebuilds its view, and a
+            rebuilt view is a reloaded iframe -- an emptied canvas.  Within
+            param_box, which is where the three SMARTS boxes are and so where
+            the switching mostly happens, the children are only reordered and
+            the drawing survives.
+            """
+            node = drawing['widget']
+            holder, kids, anchor = _anchors[which]
+            fresh = list(kids)
+            fresh.insert(fresh.index(anchor) + 1, node)
+            other = param_box if holder is seed_section else seed_section
+            other_kids = _param_kids if other is param_box else _seed_kids
+            if node in other.children:
+                other.children = tuple(other_kids)
+            holder.children = tuple(fresh)
+
+        drawing['set_place'](_place)
 
     pagination_bar = widgets.HBox([
         btn_prev_page, btn_next_page,

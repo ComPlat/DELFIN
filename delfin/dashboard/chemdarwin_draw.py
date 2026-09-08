@@ -222,6 +222,14 @@ def build_section(ctx, targets: Dict[str, Any]) -> Dict[str, Any]:
         layout=widgets.Layout(width='auto', flex='1 1 0', min_width='0'))
     verdict = widgets.HTML(value='')
 
+    # On by default: ChemDarwin's seeds are aromatic scaffolds, and Ketcher
+    # draws a benzene fragment with single and double bonds, which match none
+    # of them.  Off gives exactly what was drawn.
+    aromatic_box = widgets.Checkbox(
+        value=True, description='bonds also match aromatic', indent=False,
+        layout=widgets.Layout(width='auto', min_width='0'))
+    aromatic_box.add_class('chemdarwin-draw-switch')
+
     line_pick = widgets.Dropdown(
         options=[], description='Rule:',
         layout=widgets.Layout(width='auto', flex='1 1 0', min_width='0'),
@@ -297,6 +305,18 @@ def build_section(ctx, targets: Dict[str, Any]) -> Dict[str, Any]:
                  outcome.get('status') or '')
         return True
 
+    def _with_trial(outcome: Dict[str, Any]) -> Dict[str, Any]:
+        """Say now what Run would only say afterwards, and without a reason."""
+        if not outcome.get('ok'):
+            return outcome
+        tried = _smarts.trial_on_seed(outcome['smarts'],
+                                      targets['seed'].value)
+        if tried.get('status'):
+            outcome['status'] = f"{outcome['status']} · {tried['status']}"
+            if tried['level'] == 'note':
+                outcome['level'] = 'note'
+        return outcome
+
     def _read(shape: str, payload: str, retried: bool) -> Dict[str, Any]:
         """The drawing, as the text the box it is bound for holds."""
         if shape == 'structure':
@@ -319,13 +339,16 @@ def build_section(ctx, targets: Dict[str, Any]) -> Dict[str, Any]:
             if not raw:
                 return {'ok': False, 'level': 'bad', 'smarts': '',
                         'status': 'No reaction could be read from the drawing file.'}
-            return _smarts.normalize_reaction_smarts(raw)
+            outcome = _smarts.normalize_reaction_smarts(
+                raw, aromatic=aromatic_box.value)
+            return _with_trial(outcome)
         raw = (_smarts.query_smarts_from_molblock(payload) if retried
                else payload)
         if not raw:
             return {'ok': False, 'level': 'bad', 'smarts': '',
                     'status': 'No pattern could be read from the drawing file.'}
-        return _smarts.normalize_query_smarts(raw)
+        return _smarts.normalize_query_smarts(
+            raw, aromatic=aromatic_box.value)
 
     # -- the editor, once somebody wants it ------------------------------
     def _panel_now():
@@ -337,7 +360,7 @@ def build_section(ctx, targets: Dict[str, Any]) -> Dict[str, Any]:
         way and sends the same last entry.
         """
         if state['panel'] is None:
-            panel = _panel.build(ctx, height='58vh', scope=SCOPE, title='',
+            panel = _panel.build(ctx, height='76vh', scope=SCOPE, title='',
                                  compact=True, on_answer=_answer)
             state['panel'] = panel
             # The panel's own TO SMILES reads the drawing into a box this
@@ -546,6 +569,8 @@ def build_section(ctx, targets: Dict[str, Any]) -> Dict[str, Any]:
                 _verdict('ok', f'{mol.GetNumAtoms()} atoms')
             return
         found = _smarts.inspect(text, reaction=(name == 'rxn'))
+        if found['ok'] and name == 'rxn':
+            found = _with_trial(dict(found, smarts=text))
         _verdict(found['level'], found['status'])
 
     read_btn.on_click(_on_read)
@@ -554,6 +579,7 @@ def build_section(ctx, targets: Dict[str, Any]) -> Dict[str, Any]:
     load_btn.on_click(_on_load)
     close_btn.on_click(_on_close)
     preview.observe(_revalidate, names='value')
+    aromatic_box.observe(lambda _c: _revalidate(), names='value')
     targets['rxn'].observe(lambda _c: _relist(), names='value')
 
     def _row(members):
@@ -566,7 +592,7 @@ def build_section(ctx, targets: Dict[str, Any]) -> Dict[str, Any]:
             _row([head, close_btn]),
             legend,
             holder,
-            _row([read_btn, line_pick]),
+            _row([read_btn, aromatic_box, line_pick]),
             preview,
             verdict,
             _row([apply_btn, replace_btn, load_btn]),
@@ -576,12 +602,27 @@ def build_section(ctx, targets: Dict[str, Any]) -> Dict[str, Any]:
                               padding='8px', overflow_x='hidden'),
     )
 
+    box.add_class('chemdarwin-draw')
+
     def _opener(name: str):
         def go(_button=None) -> None:
+            # Under the box it belongs to, not at the foot of the tab.  The
+            # tab hands in how to do that, because only it knows what the two
+            # containers hold; without one the section stays where it is.
+            place = state.get('place')
+            if place is not None:
+                try:
+                    place(name)
+                except Exception:                           # noqa: BLE001
+                    pass
             box.layout.display = ''
             _retarget(name)
             _panel_now()._show_frame()
         return go
+
+    def _set_place(where) -> None:
+        """Told, once the tab has built the containers, how to move."""
+        state['place'] = where
 
     buttons = {
         name: widgets.Button(
@@ -599,4 +640,5 @@ def build_section(ctx, targets: Dict[str, Any]) -> Dict[str, Any]:
             'preview': preview, 'verdict': verdict, 'line_pick': line_pick,
             'read': _on_read, 'apply': _on_apply, 'replace': _on_replace,
             'load': _on_load, 'retarget': _retarget, 'answer': _answer,
-            'align': _align, 'relist': _relist}
+            'align': _align, 'relist': _relist, 'set_place': _set_place,
+            'aromatic': aromatic_box}
