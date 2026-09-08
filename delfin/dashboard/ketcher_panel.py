@@ -56,6 +56,10 @@ _ANSWER_LEASH = 25.0
 #: button uses: a molfile normally, an RXN file when there is an arrow on the
 #: canvas, because Ketcher throws "The structure cannot be saved as *.MOL due
 #: to reaction" rather than writing one.
+#: The answers the panel deals with itself.  Everything else is a caller's
+#: own question and is offered to its ``on_answer`` first.
+_OURS = ('save', 'save-failed', 'open-list', 'open')
+
 _ASK_FOR = {
     '.ket': 'ket', '.mol': 'mol', '.rxn': 'rxn', '.smi': 'smi',
     '.cdxml': 'cdxml',
@@ -104,6 +108,7 @@ def read_js(scope: str, kind: str, want: str, *,
         "  if(!api){ hand('!no-editor'); return; }\n"
         "  function ask(){\n"
         "    if(want==='ket') return api.getKet();\n"
+        "    if(want==='smarts') return api.getSmarts();\n"
         "    if(want==='smi') return api.getSmiles();\n"
         "    if(want==='cdxml') return api.getCDXml();\n"
         "    if(want==='rxn') return api.getRxn();\n"
@@ -171,7 +176,7 @@ class Panel:
 
 def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
           title: str = 'Ketcher', folder=None, compact: bool = False,
-          fill: bool = False) -> Panel:
+          fill: bool = False, on_answer=None) -> Panel:
     """One editor panel, ready to be placed.
 
     *folder* is where Ketcher's own Save writes and where its own Open reads,
@@ -185,6 +190,16 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
     *fill* makes the frame take the height it is given rather than a fixed
     one, so that it reaches the bottom of the pane and follows it, which is
     what the text view, the grid and the document beside it do.
+
+    *on_answer* is given ``(kind, payload)`` before the panel makes anything
+    of an answer, and claims it by returning true.  A panel whose caller
+    wants something other than a SMILES out of the editor -- ChemDarwin
+    wants a SMARTS -- asks under a *kind* of its own and reads it there.
+    A hook rather than a second panel: Ketcher's Save and Open are taken
+    over from inside the frame by ``wire_js``, against this scope, and a
+    copy of that would be a second place to keep up with every Ketcher
+    release.  It is not offered the panel's own housekeeping answers, so a
+    hook that answers yes to everything cannot lose a saved drawing.
     """
     main_io_loop = getattr(getattr(get_ipython(), 'kernel', None),
                            'io_loop', None)
@@ -373,6 +388,13 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
             return
         _serial, kind, payload = parts
         state['asked'] = None
+        if on_answer is not None and kind not in _OURS:
+            try:
+                if on_answer(kind, payload):
+                    return
+            except Exception as exc:               # noqa: BLE001
+                _say(f'The drawing could not be read: {exc}', '#d32f2f')
+                return
         if payload.startswith('!'):
             trouble = payload[1:]
             _say('The editor is not open yet, so there is nothing to read.'
@@ -547,5 +569,8 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
         _say('Ketcher is not here yet.  It is about 32 MB, fetched once and '
              'then it works without a network -- press FETCH KETCHER.',
              '#ef6c00')
+
+    #: Asking is the whole of what a caller outside this module needs.
+    ask = _ask
 
     return Panel(locals())
