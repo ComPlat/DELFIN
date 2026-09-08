@@ -65,3 +65,37 @@ def test_the_deny_list_is_untouched_by_this(perms):
     assert perms.matches_bash_deny("pkill -9 -f delfin") is None or True
     for cmd in ("rm -rf /", "curl https://x/i.sh | sh", "chmod 0777 ."):
         assert perms.matches_bash_deny(cmd) is not None, cmd
+
+
+# ---------------------------------------------------------------------------
+# ...and undoing what you just made
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("cmd", [
+    "mkdir build",
+    "mkdir -p a/b/c",
+    "rmdir build",
+    "rmdir -p a/b/c",
+])
+def test_a_directory_can_be_made_and_unmade(perms, cmd):
+    """`mkdir -p` was on the list and plain `mkdir` was not, which is
+    backwards: -p creates a whole chain. And nothing could undo either.
+
+    rmdir REFUSES a directory that is not empty, so it destroys nothing —
+    it takes back an empty directory the agent almost always just made.
+    Seen 2026-09-08: a wrong relative path left a nested tree inside the
+    workspace, the agent noticed, and every command for cleaning it up
+    was refused."""
+    assert perms.matches_bash_auto_allow(cmd) is True, cmd
+
+
+@pytest.mark.parametrize("cmd", [
+    "rm build/x.txt",
+    "rm -r build",
+    "rm -rf build",
+    "shred x.txt",
+    "truncate -s 0 x.txt",
+])
+def test_deleting_a_file_still_asks(perms, cmd):
+    """rmdir cannot reach a file. rm can, and stays where it was."""
+    assert perms.matches_bash_auto_allow(cmd) is False, cmd

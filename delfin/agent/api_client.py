@@ -1653,7 +1653,19 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"^\s*(?:ruff|black|isort|flake8|pylint|mypy|pyright|pyflakes|bandit)\b",
     r"^\s*(?:nox|tox)\s+--?l", r"^\s*tox\s+-e\b",
     r"^\s*make(?!\s+(?:clean|distclean|uninstall|purge))\b",
-    r"^\s*mkdir\s+-p\b",
+    # Creating a directory, and being able to take it back. `-p` was the
+    # only spelling on the list, so a plain `mkdir build` asked while
+    # `mkdir -p a/b/c` — which creates a whole chain — did not.
+    #
+    # rmdir is here for the symmetry that was missing: it REFUSES a
+    # directory that is not empty, so it cannot destroy anything, and
+    # without it an agent could create structure and not undo its own
+    # mistake. Seen 2026-09-08: a wrong relative path left a nested
+    # tests/fixtures/… tree inside the workspace, the agent noticed and
+    # tried to clean up, and every command for doing so was refused.
+    # `rm` stays off this list — that one deletes files.
+    r"^\s*mkdir\b",
+    r"^\s*rmdir\b",
     r"^\s*touch\s+(?!/)",                                    # only relative paths
     r"^\s*cp\s+(?!.*[\s/]/(?:etc|usr|bin|lib|var))",         # disallow copy to system dirs
     r"^\s*mv\s+(?!.*[\s/]/(?:etc|usr|bin|lib|var))",
