@@ -186,7 +186,10 @@ tasks:
     prompt: >-
       stell den orca functional auf b3lyp ein
     expected_signals:
-      - pattern: '(?i)(?:ACTION:\s*)?/(?:control\s+key\s+functional|orca\s+set\s+functional)\s+b3lyp'
+      # `method` is the Builder's name for the DFT functional dropdown;
+      # it has no parameter called "functional". Same fix as
+      # workflow_verify_after_modify.
+      - pattern: '(?i)(?:ACTION:\s*)?/(?:control\s+key\s+\w*functional\w*|orca\s+set\s+(?:method|\w*functional\w*))\s+b3lyp'
         against: action
     forbidden_signals:
       - pattern: '(?i)(cannot|nicht möglich|don.?t know)'
@@ -557,7 +560,13 @@ tasks:
       ORCA Builder einstellungen so dass ich sehe was wirklich gesetzt
       wurde.
     expected_signals:
-      - pattern: '(?i)(?:ACTION:\s*)?/(?:control\s+key|orca\s+set)\s+\w*functional\w*\s+b3lyp'
+      # `/orca set method B3LYP` is the correct command: the Builder has
+      # no parameter called "functional" — its own prompt lists method /
+      # basis / job_type / … and calls `method` the DFT functional
+      # dropdown. The pattern demanded a spelling the surface does not
+      # accept, so a model that used the right name scored 0/3. CONTROL.txt
+      # does have a `functional` key, which is why that half stays.
+      - pattern: '(?i)(?:ACTION:\s*)?/(?:control\s+key\s+\w*functional\w*|orca\s+set\s+(?:method|\w*functional\w*))\s+b3lyp'
         against: action
       # Then the verify step: /orca show OR equivalent state-query
       - pattern: '(?:ACTION:\s*)?/orca\s+show'
