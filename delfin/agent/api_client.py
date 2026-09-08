@@ -13254,6 +13254,49 @@ class _DocToolExecutor:
 
     # ------- Git worktree isolation ---------------------------------------
 
+    @staticmethod
+    def _worktree_path_refusal(
+        label: str, path: Path, perms: Optional["KitToolPermissions"]
+    ) -> Optional[str]:
+        """Why a worktree verb may not touch *path*, or None.
+
+        These three verbs take directories from the model and act on them
+        with git: one creates a worktree of a repository and grants write
+        access to it, one merges a worktree INTO a directory, one removes
+        a worktree. None of them checked anything.
+
+        That made enter_worktree a way out of the workspace. A path the
+        read gate refuses — outside every root, no confirm callback —
+        became reachable in one call: the worktree holds the same files,
+        the tool registers it as writable, and worktree_merge puts changes
+        back into the original working tree. Measured 2026-09-08 with two
+        scratch repositories, reading one denied before the call and
+        allowed after it.
+
+        Containment, not confirmation. A worktree of a repository the user
+        already granted is exactly what the tool is for, and the write
+        grant that follows is the point of it. What it may not do is
+        choose a different repository. With no permissions object there is
+        no workspace to be contained by, and that must not be the way
+        round the check.
+        """
+        if perms is None:
+            return (f"{label} needs a configured workspace: without one "
+                    f"there is nothing for the path to be inside of.")
+        try:
+            resolved = Path(path).expanduser().resolve()
+        except OSError:
+            resolved = Path(path)
+        if perms.find_root_for(resolved) is not None:
+            return None
+        return (
+            f"{label} '{resolved}' is outside the allowed workspace roots. "
+            f"A worktree grants write access to what it holds, so it may "
+            f"only be made of a directory you already work in. Add it via "
+            f"'Erlaubte Verzeichnisse' or "
+            f"remember_permission(kind='extra_dir', ...) first."
+        )
+
     def _execute_enter_worktree(
         self, arguments: dict, perms: Optional["KitToolPermissions"]
     ) -> str:
@@ -13268,6 +13311,9 @@ class _DocToolExecutor:
                     "repo_dir is required when no workspace is configured"
                 )})
             repo_dir = perms.workspace
+        refusal = self._worktree_path_refusal("repo_dir", repo_dir, perms)
+        if refusal is not None:
+            return json.dumps({"error": refusal})
         try:
             info = _wt.enter_worktree(repo_dir, branch_prefix=prefix)
         except _wt.WorktreeError as exc:
@@ -13298,6 +13344,9 @@ class _DocToolExecutor:
         wt_path = Path(path_arg).expanduser()
         if not wt_path.is_dir():
             return json.dumps({"error": f"worktree path missing: {wt_path}"})
+        refusal = self._worktree_path_refusal("path", wt_path, perms)
+        if refusal is not None:
+            return json.dumps({"error": refusal})
         # Reconstruct minimal info from `git -C wt_path status` + branch
         try:
             head = subprocess.check_output(
@@ -13360,6 +13409,9 @@ class _DocToolExecutor:
         wt_path = Path(path_arg).expanduser()
         if not wt_path.is_dir():
             return json.dumps({"error": f"worktree path missing: {wt_path}"})
+        refusal = self._worktree_path_refusal("path", wt_path, perms)
+        if refusal is not None:
+            return json.dumps({"error": refusal})
         try:
             head = subprocess.check_output(
                 ["git", "rev-parse", "--abbrev-ref", "HEAD"],
@@ -13380,6 +13432,13 @@ class _DocToolExecutor:
                 source_repo = Path(line.removeprefix("worktree ").strip())
                 break
         target = Path(target_arg).expanduser() if target_arg else source_repo
+        # Where the changes LAND. Derived from the worktree when the model
+        # names nothing, and checked either way: the source repo of a
+        # worktree made outside this session is no safer than a target
+        # named outright.
+        refusal = self._worktree_path_refusal("target_dir", target, perms)
+        if refusal is not None:
+            return json.dumps({"error": refusal})
         # Determine the branch point: explicit, else merge-base of the
         # worktree's HEAD with the target's HEAD (the shared ancestor).
         base = base_arg
