@@ -114,20 +114,58 @@ def test_verify_after_modify_is_stated_where_the_model_reads_it():
 
 
 def test_nothing_claims_a_caller_it_does_not_have():
-    """The docstring said "Called by the dashboard worker after each tool
-    result". A mechanism that describes a caller nobody wrote is worse
-    than no mechanism: the next reader believes it runs."""
+    """check_auto_verify's docstring said "Called by the dashboard worker
+    after each tool result" and nothing called it, in any backend, ever.
+
+    A mechanism that describes a caller nobody wrote is worse than no
+    mechanism: the next reader believes it runs, and its tests keep
+    passing because they call it themselves.
+
+    So the rule rather than the instance. Every function under
+    delfin/agent and delfin/dashboard whose docstring names a caller has
+    to be called somewhere. Scoped to those two trees because the
+    chemistry core is another agent's to answer for.
+    """
+    import ast
     import pathlib
+    import re
+
     root = pathlib.Path(__file__).resolve().parents[1]
-    hits = []
+    claim = re.compile(r"(?i)\bcalled (?:by|from)\b|\binvoked by\b")
+
+    called: set[str] = set()
     for path in root.joinpath("delfin").rglob("*.py"):
-        for line in path.read_text(encoding="utf-8",
-                                   errors="replace").splitlines():
-            # The tombstone in engine.py names it on purpose; a comment
-            # is not a caller.
-            if "check_auto_verify(" in line and not line.lstrip().startswith("#"):
-                hits.append(f"{path.name}: {line.strip()[:60]}")
-    assert hits == [], hits
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8",
+                                            errors="replace"))
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                called.add(node.func.id)
+            elif isinstance(node, ast.Attribute):
+                called.add(node.attr)
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                # Dispatch tables and getattr() reach a function by name.
+                called.add(node.value.strip())
+
+    unreachable = []
+    for sub in ("agent", "dashboard"):
+        for path in root.joinpath("delfin", sub).rglob("*.py"):
+            try:
+                tree = ast.parse(path.read_text(encoding="utf-8",
+                                                errors="replace"))
+            except SyntaxError:
+                continue
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.FunctionDef,
+                                         ast.AsyncFunctionDef)):
+                    continue
+                doc = ast.get_docstring(node) or ""
+                if claim.search(doc) and node.name not in called:
+                    unreachable.append(
+                        f"{path.relative_to(root)}:{node.lineno} {node.name}")
+    assert unreachable == [], unreachable
 
 
 # ---------------------------------------------------------------------------
