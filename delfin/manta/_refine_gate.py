@@ -305,6 +305,7 @@ def keep_better(before: Sequence, after: Sequence):
                 continue
             n_rueck += 1
     ZAEHLER["keep_better_zurueck"] += n_rueck
+    ZAEHLER["keep_better_geprueft"] += n_geprueft
     if n_rueck:
         # WARNING, NOT INFO (01.09.2026).  Measured: `refine-gate` appears in
         # **0 of 2031** run logs -- the builder's INFO level does not reach the
@@ -343,6 +344,13 @@ FLAG_ADD = "DELFIN_FFFREE_ADD_NEVER_REPLACE"
 ZAEHLER = {
     "keep_better_gelaufen": 0,      # calls in which the gate was ON
     "keep_better_zurueck": 0,       # frames actually rolled back
+    # How many frames were actually COMPARED. Measured 2026-09-08 on picopret6k: the
+    # gate ran 905 times and rolled back nothing, and from the outside "compared 500,
+    # none worse" was indistinguishable from "compared none, the gate never saw the
+    # axis at all". It was the second: the axis it was meant to guard runs in the
+    # caller, after this window has already closed. A gate that cannot say how much
+    # it looked at cannot be told apart from one that is wired past its subject.
+    "keep_better_geprueft": 0,      # frames compared (label known, text changed)
     "keep_all_gelaufen": 0,         # calls in which the gate was ON
     "keep_all_wieder": 0,           # frames actually restored
     # ── Dual-parse union (smiles_converter.py:~35092), 01.09.2026 ────────────────
