@@ -240,6 +240,63 @@ def _default_engine_factory(model: str, backend: str, provider: str,
     return AgentEngine(**kwargs)
 
 
+# Memories a fixture starts with. One directory per workspace under
+# tests/fixtures/memory_seed/, named after it.
+#
+# Memory READ-BACK had no coverage: dash_memory_remember checks that the
+# agent SAVES a fact, and nothing checked that a fact saved in an earlier
+# session comes back in a later one — which is the half a user feels. A
+# task cannot seed its own store, because the store is keyed on the
+# workspace and lives under ~/.delfin.
+#
+# Installed INSIDE the pristine guard, so the seed is present for the
+# attempt and removed with everything else the attempt wrote. That also
+# means a seed can never leak into the user's own store.
+_MEMORY_SEED_REL = Path("tests") / "fixtures" / "memory_seed"
+
+
+def _seed_fixture_memories(root: Path, workspace: Optional[Path]) -> int:
+    """Copy a fixture's seeded memories into its store. Returns the count.
+
+    Best-effort: a missing seed directory is the normal case and must not
+    stop a run.
+    """
+    if workspace is None:
+        return 0
+    try:
+        src = Path(root) / _MEMORY_SEED_REL / Path(workspace).name
+        if not src.is_dir():
+            return 0
+        # Installed through save_typed_memory, not by copying the file.
+        # A copy puts the sidecar in place and leaves MEMORY.md — the index
+        # the recall actually reads — untouched, so the seed sits in the
+        # directory and reaches no prompt. That is how the first version of
+        # this failed, and it looked exactly like a model that does not
+        # recall.
+        import re as _re
+
+        from .memory_store import save_typed_memory
+        n = 0
+        for f in sorted(src.glob("*.md")):
+            raw = f.read_text(encoding="utf-8")
+            head, _, body = raw.partition("---\n")[2].partition("---\n")
+            def _field(name: str) -> str:
+                m = _re.search(rf"^{name}:\s*(.+)$", head, _re.M)
+                return m.group(1).strip() if m else ""
+            mtype = f.name.split("_", 1)[0] or "user"
+            save_typed_memory(
+                (body or raw).strip(),
+                repo_root=Path(workspace),
+                memory_type=mtype,
+                title=_field("name") or f.stem,
+                source=_field("source") or "user",
+            )
+            n += 1
+        return n
+    except Exception:
+        return 0
+
+
 def _cost_delta(before: float, after: float) -> float:
     """Δ cost for a single turn — defends against engines that don't
     expose cost_usd."""
@@ -458,6 +515,7 @@ class _PristineWorkspace:
         import os as _os
         base = root or Path(_os.getcwd())
         self._bases = [base / rel for rel in _BEHAVIOR_WS_RELS]
+        self._stores: list[Path] = []
         # The memory store belongs here too, and did not use to.
         #
         # A `remember` call writes to ~/.delfin/projects/<slug>/memory,
@@ -475,19 +533,59 @@ class _PristineWorkspace:
         try:
             from .memory_store import (_delfin_global_memory_dir,
                                        _delfin_memory_dir)
-            self._bases.append(_delfin_memory_dir(base))
-            self._bases.append(_delfin_global_memory_dir())
+            # One store per workspace, because the store is keyed on the
+            # workspace: the checkout has one, and so does every fixture
+            # directory a task can be given. Guarding only the checkout's
+            # left a generic-project task's memories behind in the
+            # fixture's own store, where the next run then recalled them.
+            stores = [_delfin_memory_dir(ws) for ws in [base] + list(self._bases)]
+            stores.append(_delfin_global_memory_dir())
+            self._stores = stores
+            self._bases.extend(stores)
         except Exception:
             pass
         self._pairs: list[tuple[Path, Path]] = []
+        self._absent: list[Path] = []
         self._snap_root: Path | None = None
         self.failed = False
 
     def __enter__(self) -> "_PristineWorkspace":
         import shutil
         import tempfile
+        # One guard at a time over these paths.
+        #
+        # Without it two attempts race: A empties a directory to restore it
+        # and B snapshots the emptiness in that window, then restores it —
+        # and a tracked fixture is gone. That is not hypothetical; it is
+        # how tests/fixtures lost its files repeatedly on 2026-09-08, in a
+        # checkout where a parallel suite and a benchmark run at once.
+        #
+        # A file lock rather than a thread lock: the racing attempts are
+        # separate processes (pytest -n 8, a bench run beside it).
+        self._lock_handle = None
+        try:
+            import fcntl
+            lock_path = Path(tempfile.gettempdir()) / "delfin-bench-ws.lock"
+            self._lock_handle = open(lock_path, "w")
+            fcntl.flock(self._lock_handle.fileno(), fcntl.LOCK_EX)
+        except Exception:
+            # No lock is the old behaviour, not a reason to refuse a run.
+            self._lock_handle = None
         live = [ws for ws in self._bases if ws.is_dir()]
-        if not live:
+        # A store that does not exist YET is not skipped, it is remembered:
+        # otherwise there is nothing to snapshot, nothing to restore, and
+        # the first thing the attempt writes into it survives the run. A
+        # memory store is created on its first `remember`, which makes that
+        # the common case rather than a corner one.
+        #
+        # Only the stores, never a fixture directory inside the checkout.
+        # A fixture that is momentarily absent is another attempt restoring
+        # it — rmtree then copy back — and deleting it then is how two
+        # parallel runs erase a tracked fixture between them. Observed
+        # exactly that way before this was narrowed.
+        self._absent = [ws for ws in self._bases
+                        if not ws.exists() and ws in set(self._stores)]
+        if not live and not self._absent:
             return self
         # One retry, then refusal. A file appearing or vanishing mid-copy
         # makes copytree raise, and that really happens: writing new
@@ -517,6 +615,11 @@ class _PristineWorkspace:
                     self._snap_root = None
         self._pairs = []
         self.failed = True
+        # __exit__ is NOT called when __enter__ raises, so the lock has to
+        # go here or every later attempt waits on a holder that is gone.
+        # That is a deadlock, not a slow run: observed as a pytest master
+        # with one second of CPU in forty-five minutes.
+        self._release_lock()
         names = ", ".join(ws.name for ws in live)
         raise RuntimeError(
             f"could not snapshot the fixture workspace(s) {names}: {last}. "
@@ -527,12 +630,36 @@ class _PristineWorkspace:
     def __exit__(self, *exc) -> None:
         import shutil
         try:
-            for ws, snap in self._pairs:
+            # What was not there before must not be there after.
+            for ws in self._absent:
                 shutil.rmtree(ws, ignore_errors=True)
-                shutil.copytree(snap, ws)
+            try:
+                for ws, snap in self._pairs:
+                    shutil.rmtree(ws, ignore_errors=True)
+                    shutil.copytree(snap, ws)
+            finally:
+                if self._snap_root is not None:
+                    shutil.rmtree(self._snap_root, ignore_errors=True)
         finally:
-            if self._snap_root is not None:
-                shutil.rmtree(self._snap_root, ignore_errors=True)
+            # Released only once the directories are whole again: the
+            # window this closes is exactly the one where another attempt
+            # would snapshot a half-restored directory.
+            self._release_lock()
+
+    def _release_lock(self) -> None:
+        handle = getattr(self, "_lock_handle", None)
+        if handle is None:
+            return
+        try:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            pass
+        try:
+            handle.close()
+        except Exception:
+            pass
+        self._lock_handle = None
 
 
 def _run_task_once(
@@ -581,6 +708,10 @@ def _run_task_once(
     t0 = clock()
     try:
         with _PristineWorkspace():
+            _seed_fixture_memories(
+                Path(os.getcwd()),
+                workspace_for(Path(os.getcwd()), mode=task.mode,
+                              task_class=task.task_class))
             raw = run_once(engine, task.prompt, max_tokens=max_tokens)
     except Exception as exc:
         raw = {"text": "", "tool_calls": [], "input_tokens": 0,
