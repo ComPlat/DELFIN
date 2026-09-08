@@ -1842,9 +1842,13 @@ def _extract_action_commands(agent_text: str) -> list[str]:
     """
     if not agent_text:
         return []
+    import re as _re_local
     out: list[str] = []
     for raw in agent_text.splitlines():
-        line = raw.rstrip()
+        # Same tolerance as the executor below: a list marker and the
+        # markdown the prompt's own examples are printed in.
+        line = _re_local.sub(r"^\s*(?:[-*+>]\s+|\d+[.)]\s+)+", "",
+                             raw.strip()).strip("`*").strip()
         if line.startswith("ACTION:"):
             cmd = line[len("ACTION:"):].strip()
             if cmd.startswith("/"):
@@ -13494,12 +13498,23 @@ def create_tab(ctx):
         # kit.deepseek-v4-flash: workflow_verify_after_modify emitted the
         # right two actions inside backticks and scored 28.
         _ACTION_WRAPPERS = "`*"
+        # A markdown list marker in front of an otherwise perfect ACTION line.
+        # Asked for two things in order, or three at once, a model writes a list —
+        # and a list item begins with a marker. `* ACTION: …` happened to work
+        # because `*` is one of the two emphasis characters stripped below;
+        # `- ACTION: …`, `1. ACTION: …` and `> ACTION: …` were dropped silently.
+        # One bullet character working and the other not is not a rule a model
+        # can follow. Measured 2026-09-08 on kit.glm-5.3: the two tasks in the
+        # suite whose natural answer is a list failed twice each, with the
+        # actions never reaching the dispatcher.
+        _ACTION_LIST_MARKER_RE = _re.compile(r"^\s*(?:[-*+>]\s+|\d+[.)]\s+)+")
 
         def _action_cmd(ln: str) -> str:
             """Return the slash-command text if ``ln`` is an ACTION-line
             (canonical, tolerant, or bare-slash with a known prefix);
             else ''."""
-            stripped = ln.strip().strip(_ACTION_WRAPPERS).strip()
+            stripped = _ACTION_LIST_MARKER_RE.sub("", ln.strip())
+            stripped = stripped.strip(_ACTION_WRAPPERS).strip()
             m = _ACTION_RE.match(stripped)
             if not m:
                 return ""
