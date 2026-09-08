@@ -479,3 +479,88 @@ def test_the_drawn_meso_rule_makes_acridine_and_nothing_else():
         except Exception:                                   # noqa: BLE001
             pass
     assert len(others) > 1, "X3 does not single out the meso positions"
+
+
+# ---------------------------------------------------------------------------
+# A hydrogen drawn as an atom
+# ---------------------------------------------------------------------------
+# Putting an H on a free position is the natural thing to draw and the one
+# thing that cannot work: [#1] matches an explicit hydrogen and a molecule
+# RDKit has read carries its hydrogens implicitly.
+
+ANTHRACENE = "c1ccc2cc3ccccc3cc2c1"
+H_DRAWN = ("[#6:1](~[#6:2])(~[#6:3])=[#6:4]([#1])~[#6:5]"
+           ">>[#6:1](~[#6:2])(~[#6:3])=[#7:4]~[#6:5]")
+
+
+def test_a_drawn_hydrogen_would_have_matched_nothing():
+    target = Chem.MolFromSmiles(ANTHRACENE)
+    # the bond widened, so only the hydrogen is left to explain the difference
+    with_h = "[#6:1](~[#6:2])(~[#6:3])=,:[#6:4]([#1])~[#6:5]"
+    counted = "[#6:1](~[#6:2])(~[#6:3])=,:[#6;H1:4]~[#6:5]"
+    assert len(target.GetSubstructMatches(Chem.MolFromSmarts(with_h))) == 0
+    assert len(target.GetSubstructMatches(Chem.MolFromSmarts(counted))) == 8
+    # it is the implicitness that does it: given real hydrogens it matches
+    assert len(Chem.AddHs(target).GetSubstructMatches(
+        Chem.MolFromSmarts(with_h))) == 8
+
+
+def test_a_drawn_hydrogen_is_read_as_a_hydrogen_count():
+    out = ks.normalize_reaction_smarts(H_DRAWN)
+    assert out['ok'], out['status']
+    assert out['drawn_h'] == 1
+    assert 'H1' in out['smarts'].split('>>')[0]
+    assert 'drawn hydrogen' in out['status']
+
+    rxn = rdChemReactions.ReactionFromSmarts(out['smarts'])
+    made = set()
+    for group in rxn.RunReactants((Chem.MolFromSmiles(ANTHRACENE),)):
+        mol = group[0]
+        try:
+            Chem.SanitizeMol(mol)
+            made.add(Chem.MolToSmiles(mol))
+        except Exception:                                   # noqa: BLE001
+            pass
+    assert "c1ccc2nc3ccccc3cc2c1" in made                   # acridine
+
+
+def test_absorbing_a_hydrogen_keeps_the_rest_of_the_atom():
+    out, count = ks.absorb_hydrogens(
+        "[#6;D3:1](~[#6:2])(~[#6:3])=,:[#6;D2:4]([#1])~[#6:5]")
+    assert count == 1
+    assert '[#6&D2&H1:4]' in out                            # query and map kept
+    assert '#1' not in out
+
+    twice, count = ks.absorb_hydrogens("[#6:1]([#1])([#1])~[#6:2]")
+    assert count == 2 and '[#6&H2:1]' in twice
+
+    same, count = ks.absorb_hydrogens("[#6:1](~[#6:2])~[#6:3]")
+    assert count == 0 and same == "[#6:1](~[#6:2])~[#6:3]"
+
+
+def test_substitution_count_narrows_where_drawn_neighbours_cannot():
+    """Three atoms with D<n> beat five atoms with Any bonds.
+
+    Drawing a neighbour puts that atom *in* the pattern; saying how many
+    neighbours an atom has constrains it without adding anything to match.
+    """
+    def products(smarts):
+        out = ks.normalize_reaction_smarts(smarts)
+        assert out['ok'], out['status']
+        made = set()
+        for group in rdChemReactions.ReactionFromSmarts(
+                out['smarts']).RunReactants(
+                    (Chem.MolFromSmiles(ANTHRACENE),)):
+            mol = group[0]
+            try:
+                Chem.SanitizeMol(mol)
+                made.add(Chem.MolToSmiles(mol))
+            except Exception:                               # noqa: BLE001
+                pass
+        return made
+
+    # five atoms, neighbours drawn: catches a peripheral position as well
+    assert len(products(H_DRAWN)) == 2
+    # three atoms, neighbours counted: the two meso positions and nothing else
+    counted = "[#6;D3:1]~[#6;D2;H1:2]~[#6;D3:3]>>[#6:1]~[#7:2]~[#6:3]"
+    assert products(counted) == {"c1ccc2nc3ccccc3cc2c1"}
