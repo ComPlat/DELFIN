@@ -402,3 +402,22 @@ def test_the_rule_is_tried_on_the_seed_before_run_is_pressed():
     assert 'no product survives' in broken['status']
 
     assert ks.trial_on_seed(HAND['furan'], '')['status'] == ''
+
+
+def test_the_trial_names_unmapped_atoms_as_the_cause():
+    """The rule matched sixteen times and built nothing, on anthracene.
+
+    Two of its five atoms were left unmapped, so they were deleted and took
+    the ring with them -- which is the thing to say, not just that RDKit
+    refused what came out.
+    """
+    drawn = "[#6:1](~[#6:2])(~[#6:3])=,:[#6]~[#6]>>[C:1](~[C:2])(~[C:3])=N~C"
+    tried = ks.trial_on_seed(drawn, "c1ccc2cc3ccccc3cc2c1")
+    assert tried['level'] == 'note'
+    assert 'matches 16x' in tried['status']
+    assert 'unmapped and so deleted' in tried['status']
+
+    # mapped through, and drawn aromatic, it builds
+    mapped = ("[c:1](~[c:2])(~[c:3])=,:[c:4]~[c:5]"
+              ">>[c:1](~[c:2])(~[c:3])~[n:4]~[c:5]")
+    assert ks.trial_on_seed(mapped, "c1ccc2cc3ccccc3cc2c1")['level'] == 'ok'
