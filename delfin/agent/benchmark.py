@@ -177,6 +177,10 @@ class BenchmarkResult:
     per_run_success: list[bool] = field(default_factory=list)
     # --- forensic fields for pattern-bug-vs-real-fail diagnosis ---
     text_excerpt: str = ""              # first ≤400 chars of model output
+    # For each violated signal, the sentence that tripped it. The excerpt
+    # above is a HEAD slice, so a violation past its end was reported as a
+    # pattern label with no way to see what matched.
+    signal_evidence: dict[str, str] = field(default_factory=dict)
     tool_names: list[str] = field(default_factory=list)  # tools the model actually called
     # --- trace-derived behaviour flags (behavioural-parity eval) ---
     # Only populated for tasks carrying a ``behavior:`` tag.  Per-run this
@@ -367,6 +371,66 @@ def _match_is_negated(haystack: str, start: int, end: int) -> bool:
         hi -= 1
     ctx = haystack[lo:start] + " " + haystack[end:hi]
     return bool(_NEGATION_RE.search(ctx))
+
+
+def _signal_evidence(
+    signal: Signal, traj: Trajectory, *, waive_negated: bool = False,
+    context: int = 160,
+) -> str:
+    """The text that made a signal match, with a little either side.
+
+    A violated signal used to be reported as a label and nothing else.
+    The record keeps a HEAD slice of the answer — 400 chars, widened to
+    4000 for a failing task with exactly this problem in mind — and a
+    15000-character answer that trips a pattern at character 12000 was
+    then unauditable: the audit says which pattern fired and cannot show
+    where. Measured 2026-09-08 on office_task_list_is_closed_out.
+
+    More head does not fix that; the matching span does. Returns "" when
+    nothing matched, so the caller can tell "no evidence" from "no
+    match".
+    """
+    m = _signal_match(signal, traj, waive_negated=waive_negated)
+    if m is None:
+        return ""
+    hay, match = m
+    a = max(0, match.start() - context)
+    b = min(len(hay), match.end() + context)
+    out = hay[a:b].replace("\n", " ").strip()
+    return ("…" if a > 0 else "") + out + ("…" if b < len(hay) else "")
+
+
+def _signal_match(
+    signal: Signal, traj: Trajectory, *, waive_negated: bool = False,
+):
+    """(haystack, match) for the first hit, or None. The shared core of
+    ``_signal_matches`` and ``_signal_evidence`` so the two can never
+    disagree about what matched."""
+    pat = signal.pattern
+    if not pat:
+        return None
+    try:
+        rx = re.compile(pat)
+    except re.error:
+        return None
+    against = signal.against if signal.against in _SIGNAL_AGAINST_VALUES else "any"
+    if against == "text":
+        haystacks = [traj.text]
+    elif against == "action":
+        haystacks = list(traj.actions)
+    elif against == "tool_name":
+        haystacks = [_tool_semantic_name(c.get("name", ""))
+                     for c in traj.tool_calls]
+    else:
+        haystacks = [traj.as_string()]
+    if against != "tool_name":
+        haystacks = [_strip_emphasis(h) for h in haystacks]
+    for h in haystacks:
+        for m in rx.finditer(h or ""):
+            if waive_negated and _match_is_negated(h or "", m.start(), m.end()):
+                continue
+            return (h or "", m)
+    return None
 
 
 def _signal_matches(
@@ -802,6 +866,9 @@ def score_outcome(
     matched: list[str] = []
     missing: list[str] = []
     violated: list[str] = []
+    # label -> the text that made it match. Only forbidden signals have
+    # any: a MISSING expected signal has nothing to show by definition.
+    signal_evidence: dict[str, str] = {}
     budget_violations: list[str] = []
 
     # 1. Expected signals — each non-optional MUST match for success.
@@ -833,6 +900,11 @@ def score_outcome(
         label = f"{task.id}.forbidden[{idx}]"
         if _signal_matches(sig, traj, waive_negated=True):
             violated.append(label)
+            # What actually matched, so the audit can show the sentence
+            # rather than only the pattern that objected to it.
+            ev = _signal_evidence(sig, traj, waive_negated=True)
+            if ev:
+                signal_evidence[label] = ev
 
     unmeasured = is_unmeasured(traj)
     # An unmeasured run is not a pass and not a fail. `success` stays
@@ -950,6 +1022,7 @@ def score_outcome(
         error=traj.error,
         unmeasured=unmeasured,
         text_excerpt=excerpt,
+        signal_evidence=signal_evidence,
         tool_names=tool_names,
         behavior=behavior_flags(task, traj),
         caveats=caveat_count(traj.text),
@@ -1128,6 +1201,8 @@ def aggregate_replicates(
         matched_signals=_matched_every_time(_union("missing_signals")),
         violated_signals=_union("violated_signals"),
         missing_signals=_union("missing_signals"),
+        signal_evidence={k: v for r in results
+                         for k, v in (r.signal_evidence or {}).items()},
         flaky_signals=_flaky(_union("missing_signals")),
         budget_violations=_union("budget_violations"),
         error="; ".join(sorted({r.error for r in results if r.error}))[:500],
@@ -1776,6 +1851,7 @@ def audit_run(
             "violated_signals": violated,
             "tool_names": list(r.get("tool_names") or []),
             "text_excerpt": excerpt,
+            "signal_evidence": dict(r.get("signal_evidence") or {}),
             "error": error,
             "signal_defs": signal_defs,
             "hint_pattern_bug": hint_pattern_bug,
@@ -1821,6 +1897,12 @@ def format_audit_report(entries: list[dict]) -> str:
                     defn = e["signal_defs"].get(label, "(definition not found)")
                     lines.append(f"    {label}")
                     lines.append(f"      pattern: {defn}")
+                    # The sentence that tripped it. The excerpt below is a
+                    # head slice, so a violation past its end used to be a
+                    # pattern label with nothing to judge it by.
+                    ev = (e.get("signal_evidence") or {}).get(label)
+                    if ev:
+                        lines.append(f"      matched : {ev[:400]}")
             if e["error"]:
                 lines.append(f"  error  : {e['error'][:200]}")
             if e["text_excerpt"]:
