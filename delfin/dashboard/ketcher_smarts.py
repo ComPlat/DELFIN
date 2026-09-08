@@ -38,7 +38,8 @@ __all__ = [
     'split_reaction', 'concretize_product', 'complete_atom_maps',
     'prettify', 'normalize_reaction_smarts', 'normalize_query_smarts',
     'describe', 'inspect', 'reaction_smarts_from_rxn_block',
-    'query_smarts_from_molblock', 'rxn_block_from_smarts',
+    'query_smarts_from_molblock', 'rxn_block_from_smarts', 'widen_kekule',
+    'trial_on_seed',
     'survives_the_editor',
 ]
 
@@ -334,6 +335,120 @@ _PROBES = (
 _PROBE_MOLS: List[Any] = []
 
 
+#: A bond that is either the Kekule form or the aromatic one.  Taken off a
+#: parsed template because a bond query cannot be built from Python directly --
+#: ``QueryBond`` exposes no ``GetQuery`` -- and copied on with ``ReplaceBond``.
+_SINGLE_OR_AROMATIC = Chem.MolFromSmarts('[#6]-,:[#6]').GetBondWithIdx(0)
+_DOUBLE_OR_AROMATIC = Chem.MolFromSmarts('[#6]=,:[#6]').GetBondWithIdx(0)
+
+
+#: One aromatic atom of each element a drawn fragment is likely to sit on, to
+#: ask a query atom whether it would accept an aromatic partner at all.
+_AROMATIC_SOURCES = ('c1ccccc1', 'c1ccncc1', 'c1ccoc1', 'c1ccsc1', 'c1cc[se]c1')
+_AROMATIC_ATOMS: List[Any] = []
+
+
+def _aromatic_probes() -> List[Any]:
+    if not _AROMATIC_ATOMS:
+        for smiles in _AROMATIC_SOURCES:
+            mol = Chem.MolFromSmiles(smiles)
+            if mol is None:
+                continue
+            for atom in mol.GetAtoms():
+                if atom.GetIsAromatic():
+                    _AROMATIC_ATOMS.append(atom)
+    return _AROMATIC_ATOMS
+
+
+def _may_be_aromatic(atom) -> bool:
+    """Whether this query atom would accept an aromatic atom at all.
+
+    ``[#6]`` would, ``[C]`` and ``[#6;A]`` would not -- the difference between
+    a carbon drawn without saying which kind and one drawn as explicitly
+    aliphatic, which is exactly the line a widening must not cross.
+    """
+    if not atom.HasQuery():
+        return bool(atom.GetIsAromatic())
+    for probe in _aromatic_probes():
+        try:
+            if atom.Match(probe):
+                return True
+        except Exception:                                   # noqa: BLE001
+            return False
+    return False
+
+
+def widen_kekule(smarts: str, *, everywhere: bool = True) -> Tuple[str, int]:
+    """Let a ring drawn in Kekule form match the aromatic ring it stands for.
+
+    Ketcher draws benzene the way a chemist does, with three alternating
+    double bonds, and Indigo writes that out as it was drawn:
+    ``[#6:1]1-[#6:2]=[#6:3]-...``.  The seed on the other side of the match is
+    parsed by RDKit and comes out *aromatic* -- every bond ``AROMATIC``, no
+    single or double anywhere -- and a ``-`` query does not match an aromatic
+    bond, nor a ``=``.  So the rule matched nothing at all and the tab said
+    "Reaction SMARTS produced no products", with a drawing that was right.
+
+    Each ring bond that aromaticity perception calls aromatic is widened to
+    ``-,:`` or ``=,:``, which matches the ring in either form.  Only those:
+    cyclohexa-1,4-diene is drawn with the same two bond types and perceives as
+    nothing, so it stays exactly as narrow as it was drawn.
+
+    A ring is the case this can decide on its own.  A fragment *cut out* of a
+    ring cannot be: ``[#6:1](~[#6:2])=[#6]~[#6]`` is four atoms of a benzene
+    with one bond drawn double, and nothing in it says the double bond stands
+    for an aromatic one.  So with *everywhere* -- which the panel offers as a
+    checkbox, on by default because ChemDarwin's seeds are aromatic scaffolds
+    -- every drawn single or double bond is widened as well, but only between
+    two atoms that would accept an aromatic partner.  A bond drawn between
+    explicitly aliphatic atoms is left alone either way.
+
+    Returns the SMARTS and how many bonds were widened, so the panel can say
+    that it happened rather than quietly changing what somebody drew.
+    """
+    text = str(smarts or '')
+    query = Chem.MolFromSmarts(text)
+    if query is None:
+        return text, 0
+    plain = _plain(query)
+    if plain is None:
+        return text, 0
+    try:
+        Chem.SanitizeMol(plain)
+    except Exception:                                       # noqa: BLE001
+        # No perception, so no ring to decide on -- but the *everywhere* pass
+        # asks the atoms, not the ring, and still has something to say.
+        if not everywhere:
+            return text, 0
+
+    out = Chem.RWMol(query)
+    widened = 0
+    for index, reference in enumerate(plain.GetBonds()):
+        drawn = query.GetBondWithIdx(index)
+        kind = drawn.GetBondType()
+        if kind not in (Chem.BondType.SINGLE, Chem.BondType.DOUBLE):
+            continue
+        if not reference.GetIsAromatic():
+            if not everywhere:
+                continue
+            if not (_may_be_aromatic(drawn.GetBeginAtom())
+                    and _may_be_aromatic(drawn.GetEndAtom())):
+                continue
+        template = (_DOUBLE_OR_AROMATIC if kind == Chem.BondType.DOUBLE
+                    else _SINGLE_OR_AROMATIC)
+        try:
+            out.ReplaceBond(index, template, True)
+        except Exception:                                   # noqa: BLE001
+            return text, 0
+        widened += 1
+    if not widened:
+        return text, 0
+    try:
+        return Chem.MolToSmarts(out.GetMol()), widened
+    except Exception:                                       # noqa: BLE001
+        return text, 0
+
+
 def _probes() -> List[Any]:
     if not _PROBE_MOLS:
         for smiles in _PROBES:
@@ -435,12 +550,17 @@ def describe(outcome: Dict[str, Any]) -> str:
                     f"{'s' if outcome['new_atoms'] != 1 else ''}")
     if outcome.get('auto_maps'):
         bits.append(f"map {_listed(outcome['auto_maps'])} filled in automatically")
+    if outcome.get('kekule'):
+        bits.append(f"{outcome['kekule']} drawn bond"
+                    f"{'s' if outcome['kekule'] != 1 else ''} also match "
+                    f"aromatic")
     if outcome.get('agents'):
         bits.append('what was drawn over the arrow is ignored')
     return ' · '.join(bits)
 
 
-def normalize_reaction_smarts(raw: str) -> Dict[str, Any]:
+def normalize_reaction_smarts(raw: str, *,
+                              aromatic: bool = True) -> Dict[str, Any]:
     """A drawn reaction, as a line the Reaction SMARTS box can hold.
 
     ``level`` is what the panel colours by, and it is not the same question as
@@ -459,6 +579,10 @@ def normalize_reaction_smarts(raw: str) -> Dict[str, Any]:
     if not left or not right:
         return dict(empty, status='One side of the arrow is empty.')
 
+    # Ketcher draws benzene in Kekule form and Indigo writes it out that way,
+    # while every molecule this rule will meet has been through RDKit's
+    # aromaticity perception.  Without this the two never touch.
+    left, kekule = widen_kekule(left, everywhere=aromatic)
     reactant = Chem.MolFromSmarts(left)
     if reactant is None:
         return dict(empty, status=f'The reactant side cannot be read: {left}')
@@ -504,6 +628,7 @@ def normalize_reaction_smarts(raw: str) -> Dict[str, Any]:
         'new_atoms': sum(1 for a in product.GetAtoms()
                          if not a.GetAtomMapNum()),
         'agents': agents,
+        'kekule': kekule,
     }
     if not left_maps and not right_maps:
         outcome['level'] = 'note'
@@ -512,12 +637,13 @@ def normalize_reaction_smarts(raw: str) -> Dict[str, Any]:
                              'with the Reaction Mapping Tool.')
         return outcome
     outcome['status'] = describe(outcome)
-    if auto or outcome['agents']:
+    if auto or outcome['agents'] or kekule:
         outcome['level'] = 'note'
     return outcome
 
 
-def normalize_query_smarts(raw: str) -> Dict[str, Any]:
+def normalize_query_smarts(raw: str, *,
+                           aromatic: bool = True) -> Dict[str, Any]:
     """A drawn fragment, as a line the Forbidden or Protected box can hold.
 
     No arrow: these are matched against a molecule, never applied to one.  Map
@@ -532,6 +658,7 @@ def normalize_query_smarts(raw: str) -> Dict[str, Any]:
         return {'ok': False, 'smarts': '', 'level': 'bad',
                 'status': ('A pattern belongs here, not a reaction -- take '
                            'the arrow out of the drawing.')}
+    text, kekule = widen_kekule(text, everywhere=aromatic)
     query = Chem.MolFromSmarts(text)
     if query is None:
         return {'ok': False, 'smarts': '', 'level': 'bad',
@@ -547,6 +674,11 @@ def normalize_query_smarts(raw: str) -> Dict[str, Any]:
     outcome = {'ok': True, 'smarts': prettify(written, reaction=False),
                'level': 'ok',
                'status': f"{count} atom{'s' if count != 1 else ''} · valid pattern"}
+    if kekule:
+        outcome['level'] = 'note'
+        outcome['status'] += (f" · {kekule} drawn bond"
+                              f"{'s' if kekule != 1 else ''} also match "
+                              f"aromatic")
     # Two things drawn side by side are one pattern that wants both at once,
     # which is rarely what somebody drawing two of them meant.  The box does
     # have an "any of these", but it is the ``;`` between separate patterns,
@@ -733,3 +865,65 @@ def survives_the_editor(line: str) -> bool:
         return False
     here = _behaviour(str(line), True)
     return here is not None and here == _behaviour(landed['smarts'], True)
+
+
+def trial_on_seed(smarts: str, seed_smiles: str) -> Dict[str, Any]:
+    """Run the rule against the seed that is actually in the box.
+
+    "Reaction SMARTS produced no products" arrives after the Run button, names
+    no rule and gives no reason, and the two things it usually means are very
+    different: a template that never matched, and one that matched and built
+    something RDKit will not accept. Both are cheap to find out at the moment
+    the drawing is read, so they are said there.
+    """
+    seed = str(seed_smiles or '').strip()
+    if not seed or '>>' not in str(smarts or ''):
+        return {'level': '', 'status': ''}
+    mol = Chem.MolFromSmiles(seed)
+    if mol is None:
+        mol = Chem.MolFromSmiles(seed, sanitize=False)
+        if mol is not None:
+            try:
+                mol.UpdatePropertyCache(strict=False)
+            except Exception:                               # noqa: BLE001
+                mol = None
+    if mol is None:
+        return {'level': '', 'status': ''}
+    try:
+        rxn = rdChemReactions.ReactionFromSmarts(str(smarts))
+    except Exception:                                       # noqa: BLE001
+        rxn = None
+    if rxn is None or not rxn.GetNumReactantTemplates():
+        return {'level': '', 'status': ''}
+
+    try:
+        hits = len(mol.GetSubstructMatches(rxn.GetReactantTemplate(0)))
+    except Exception:                                       # noqa: BLE001
+        hits = 0
+    if not hits:
+        return {'level': 'note',
+                'status': 'on the seed: no match — the bonds as drawn may be '
+                          'single and double where the seed is aromatic'}
+
+    made, refused = set(), ''
+    try:
+        groups = rxn.RunReactants((Chem.Mol(mol),))
+    except Exception:                                       # noqa: BLE001
+        groups = ()
+    for group in groups:
+        if not group:
+            continue
+        product = group[0]
+        try:
+            Chem.SanitizeMol(product)
+            made.add(Chem.MolToSmiles(product))
+        except Exception as exc:                            # noqa: BLE001
+            refused = refused or str(exc).split('\n')[0][:90]
+    if made:
+        return {'level': 'ok',
+                'status': f"on the seed: {len(made)} product"
+                          f"{'s' if len(made) != 1 else ''}"}
+    return {'level': 'note',
+            'status': (f'on the seed: matches {hits}x, but no product survives'
+                       + (f' — {refused}' if refused else '')
+                       + ' — check that what stays aromatic is drawn aromatic')}
