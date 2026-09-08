@@ -37,11 +37,15 @@ from .benchmark_fixtures import ensure_office_fixtures
 # ---------------------------------------------------------------------------
 
 
-# Same five ACTION variants tab_agent.py accepts in the dashboard.
+# Same ACTION variants tab_agent.py accepts in the dashboard. Its own
+# pattern is one IGNORECASE regex, and the three spelled out here were
+# case-SENSITIVE apart from the "Action:" line — so "action /tab calc" and
+# "Action /tab calc" routed for a user and were invisible to the benchmark.
+# A mirror that is stricter than the thing it mirrors under-reports what
+# the product does, which is the opposite of what it is for.
 _ACTION_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"^\s*ACTION\s*:\s*(/\S.*?)\s*$", re.MULTILINE),
-    re.compile(r"^\s*ACTION\s+(/\S.*?)\s*$", re.MULTILINE),
-    re.compile(r"^\s*Action\s*:\s*(/\S.*?)\s*$", re.MULTILINE),
+    re.compile(r"^\s*ACTION\s*[:.]?\s*(/\S.*?)\s*$",
+               re.MULTILINE | re.IGNORECASE),
     re.compile(r"`(/(?:tab|control|orca|effort|mode|provider|model)\s+\S[^`]*)`"),
 )
 _BARE_SLASH_PREFIXES = (
@@ -62,6 +66,12 @@ def extract_actions(text: str) -> list[str]:
 
     if not text:
         return []
+    # Same unwrapping the dashboard parser does: a model writes the line
+    # back in the inline code the prompt showed it in, and an anchored
+    # pattern drops it. Mirrored here so the benchmark keeps seeing the
+    # routing a user would get.
+    text = "\n".join(ln.strip().strip("`*").strip()
+                      for ln in text.splitlines())
     out: list[str] = []
     for rx in _ACTION_PATTERNS:
         for m in rx.finditer(text):
