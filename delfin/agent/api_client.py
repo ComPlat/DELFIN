@@ -2114,12 +2114,49 @@ _PLAN_READONLY_MCP_TOOLS: frozenset[str] = (
     _PLAN_READONLY_TOOLS | _MCP_READONLY_TOOL_BASES
 )
 
+# What a role that only reads must not do. Six roles declare a tool set
+# in engine._ROLE_TOOL_WHITELIST that contains neither Edit nor Write —
+# a statement of intent that nothing was keeping.
+#
+# The engine-side check reads like enforcement and cannot be: the client
+# YIELDS the tool_use event and then executes the tool inside the same
+# generator, so by the time the engine sees it the call has been made.
+# Its `continue` skips the UI callback, the turn's tool counter, the
+# execution ledger the functional-claim guard reads for evidence, the
+# trace and the stray-write check — a call that ran, hidden from every
+# record of it. And on the OpenAI-compatible backends it did not even
+# reach that far: every coding tool arrives as `mcp__kit-coding__…` and
+# took the namespace exemption.
+#
+# Denied rather than allow-listed. Those sets are written in the CLI
+# backend's vocabulary (Read/Grep/Glob/Bash) against an executor surface
+# sixty tools wide; translating them would refuse most of what these
+# roles legitimately do. Naming the writes refuses exactly what was
+# already declared out of bounds and leaves reading, shelling and
+# reporting alone.
+# Catalogue names only. The CLI backend's spellings (Write, Edit, …)
+# never reach this executor -- that backend runs its own tools in its own
+# subprocess, where DELFIN sees the call only after it happened. Listing
+# them here would be a promise this layer cannot keep, and
+# test_the_deny_list_only_names_real_tools says so.
+_WRITE_TOOL_NAMES: frozenset[str] = frozenset({
+    "write_file", "edit_file", "multi_edit", "apply_patch", "notebook_edit",
+})
+
 _ROLE_EXEC_DENYLIST: dict[str, frozenset[str]] = {
     # The office agent works on documents and data, not on chemistry.
     # The calc and ORCA-manual tools are not merely useless there — they
     # invite the model to answer an administrative question with
     # methodology it has no business applying.
     "office_agent": _DELFIN_ONLY_TOOL_NAMES,
+    # Reviewers, planners and the runtime watcher: they read the work and
+    # say what they found. bash stays — these roles run tests and git.
+    "critic_agent": _WRITE_TOOL_NAMES,
+    "reviewer_agent": _WRITE_TOOL_NAMES,
+    "chief_agent": _WRITE_TOOL_NAMES,
+    "session_manager": _WRITE_TOOL_NAMES,
+    "runtime_agent": _WRITE_TOOL_NAMES,
+    "research_agent": _WRITE_TOOL_NAMES,
 }
 
 
