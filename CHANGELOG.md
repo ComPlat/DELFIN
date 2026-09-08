@@ -22,9 +22,13 @@ Measured as a never-worse A/B on 6000 CCDC systems (`symmfoldadd6k`): 5819 syste
 compared, 123 affected, 107 in the judged intersection. Every never-worse term is
 zero, and the existing stock is provably untouched.
 
-This is the first landing of the campaign carried by an absolute improvement rather
-than by the stock being untouched: the hard-frame fraction on the affected systems
-falls by 0.0013. The two landings before it were denser but not cleaner.
+What carries this landing is the stock being provably untouched. The absolute
+improvement is also there — the hard-frame fraction on the judged intersection
+falls by 0.0013 — but that margin is smaller than a single frame: had one of the
+649 frames been hard, the sign would flip. All five systems that are known to
+build non-deterministically sit inside that judged set. The number is real as
+computed and below the resolution of the instrument on this sample, so it is
+reported here and not leaned on.
 
 The reduction only merges what a genuine automorphism maps onto each other, never
 what merely shares a rank multiset; where the automorphism search does not hold, the
