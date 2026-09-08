@@ -2461,6 +2461,22 @@ class AgentEngine:
         except Exception:
             pass
 
+        # A window that is still a guess gets one more chance, per turn.
+        #
+        # The probe runs once at construction, on a daemon thread, and if
+        # it lost a race with a slow endpoint the engine kept whatever
+        # fallback it had for the rest of the session — and compaction
+        # fires at 95% of that. The capability layer now lets a guess go
+        # stale (model_capabilities._PROVISIONAL_TTL_S); this is what asks
+        # again. Background, so a turn never waits for it, and skipped
+        # entirely once the answer came from the wire.
+        try:
+            _caps = getattr(self, "_active_capabilities", None)
+            if getattr(_caps, "source", "") != "live":
+                self._refresh_context_window(background=True)
+        except Exception:
+            pass
+
         chunks: list[str] = []
         # Events still dispatched after a stop has been seen (see the loop
         # below): enough for a client's closing notice, far too few for a
@@ -3403,6 +3419,27 @@ class AgentEngine:
         "command not found", "blocked by hook",
         "is not available to the", "permission denied: cannot execute",
     )
+    # A python traceback that the output ENDS on.
+    #
+    # The commonest way a command fails, and the one _commit_exec_command's
+    # docstring names first, was not detected at all: `python app.py` dying
+    # with ModuleNotFoundError produces a traceback, no "command not found"
+    # and no exit-code line, so the run was recorded as evidence that the
+    # script had been exercised. The test for it existed and passed for the
+    # wrong reason — it used the bare tool name `bash`, which the engine's
+    # role filter hid before the ledger was written, so the outcome logic
+    # was never asked.
+    #
+    # Matched on the SHAPE, not on the word. A first attempt at this
+    # matched "traceback" anywhere, and a pytest run with one failure
+    # contains one — so a run that demonstrably happened was discarded and
+    # the guard told an accurate report that the file was never exercised
+    # (test_a_failing_test_run_still_counts_as_having_run). A crashed
+    # script ENDS on its exception; a test runner keeps going and ends on
+    # its summary.
+    _TRACEBACK_MARKER = "traceback (most recent call last)"
+    _TRACEBACK_TAIL_RE = re.compile(
+        r"^\s*(?:\w[\w.]*\.)?\w*(?:Error|Exception|Exit)\b")
     _EXIT_CODE_RE = re.compile(r"exit(?:\s+code)?[:= ]\s*([1-9]\d*)\b",
                                re.IGNORECASE)
 
@@ -3439,6 +3476,11 @@ class AgentEngine:
             low = out.lower()
             if any(marker in low for marker in self._EXEC_FAILURE_MARKERS):
                 return
+            # A traceback the output ends on: the script died there.
+            if self._TRACEBACK_MARKER in low:
+                tail = [ln for ln in out.splitlines() if ln.strip()][-1:]
+                if tail and self._TRACEBACK_TAIL_RE.match(tail[0]):
+                    return
             # A non-zero exit reported in the last few lines, where a
             # runner puts it. Searching the whole body would match a
             # program that merely PRINTS about exit codes.

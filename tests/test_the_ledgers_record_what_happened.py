@@ -59,11 +59,38 @@ def test_a_command_the_gate_refused_is_not_recorded(eng):
 
 
 def test_a_command_that_crashed_is_not_recorded(eng):
+    """This passed for years without asking the question.
+
+    The bare tool name `bash` was not on solo_agent's role whitelist, and
+    the engine's filter dropped the call before the ledger was written —
+    so the ledger was empty because the call was HIDDEN, not because the
+    crash was seen. With the filter gone the question is finally put, and
+    the answer was no: a traceback was on no failure list.
+    """
     ledger = _run(
         eng, "bash", '{"command": "python app.py"}',
         "Traceback (most recent call last):\n"
         "  File \"app.py\", line 1\nModuleNotFoundError: no module named x")
     assert ledger == [], ledger
+
+
+def test_the_same_crash_under_the_namespaced_name(eng):
+    """The spelling must not decide the outcome."""
+    ledger = _run(
+        eng, "mcp__kit-coding__bash", '{"command": "python app.py"}',
+        "Traceback (most recent call last):\n"
+        "  File \"app.py\", line 1\nModuleNotFoundError: no module named x")
+    assert ledger == [], ledger
+
+
+def test_a_traceback_printed_mid_run_is_not_a_crash(eng):
+    """A program that logs a handled exception and carries on HAS run.
+    The discriminator is that a crash ENDS on its exception."""
+    ledger = _run(
+        eng, "mcp__kit-coding__bash", '{"command": "python scan.py"}',
+        "Traceback (most recent call last):\nValueError: bad row 3\n"
+        "recovered, continuing\nscanned 900 rows, 1 skipped")
+    assert any("scan.py" in c for c in ledger), ledger
 
 
 def test_a_missing_interpreter_is_not_recorded(eng):
