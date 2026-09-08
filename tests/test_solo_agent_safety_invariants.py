@@ -92,15 +92,42 @@ def _solo_engine(tmp_path):
         return AgentEngine(repo_dir=str(tmp_path), mode="solo")
 
 
-def test_auto_verify_fires_after_python_edit(tmp_path):
-    eng = _solo_engine(tmp_path)
-    msg = eng.check_auto_verify("Edit", "edited /repo/foo.py")
-    assert msg and "pytest" in msg
+def test_verify_after_modify_is_stated_where_the_model_reads_it():
+    """These two tests used to call engine.check_auto_verify(), which
+    returned a "[System] run pytest" nudge after a code edit.
+
+    Nothing called that function, in any backend, ever — the tests were
+    its only references. It also matched the tool names {"Edit",
+    "Write"}, so on the OpenAI-compatible backends it could not have
+    fired, and the command it named is wrong for a project with no
+    tests/ directory.
+
+    The contract it was reaching for is real and lives in the prompt,
+    which is where the model actually reads it.
+    """
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[1]
+    prompt = (root / "delfin" / "agent" / "pack" / "agents"
+              / "solo_agent.md").read_text(encoding="utf-8").lower()
+    assert "verify-after-modify" in prompt
+    assert "before reporting success" in prompt
 
 
-def test_auto_verify_silent_for_read(tmp_path):
-    eng = _solo_engine(tmp_path)
-    assert eng.check_auto_verify("Read", "read /repo/foo.py") is None
+def test_nothing_claims_a_caller_it_does_not_have():
+    """The docstring said "Called by the dashboard worker after each tool
+    result". A mechanism that describes a caller nobody wrote is worse
+    than no mechanism: the next reader believes it runs."""
+    import pathlib
+    root = pathlib.Path(__file__).resolve().parents[1]
+    hits = []
+    for path in root.joinpath("delfin").rglob("*.py"):
+        for line in path.read_text(encoding="utf-8",
+                                   errors="replace").splitlines():
+            # The tombstone in engine.py names it on purpose; a comment
+            # is not a caller.
+            if "check_auto_verify(" in line and not line.lstrip().startswith("#"):
+                hits.append(f"{path.name}: {line.strip()[:60]}")
+    assert hits == [], hits
 
 
 # ---------------------------------------------------------------------------
