@@ -200,7 +200,8 @@ def workspace_for(root: Path, *, mode: str = "", task_class: str = "") -> Option
 
 
 def _default_engine_factory(model: str, backend: str, provider: str,
-                            mode: str, task_class: str = "") -> Any:
+                            mode: str, task_class: str = "",
+                            permission_mode: str = "") -> Any:
     """Build a real AgentEngine for the given config.
 
     AgentEngine creates its own client internally; we just hand it the
@@ -224,13 +225,19 @@ def _default_engine_factory(model: str, backend: str, provider: str,
     if fixtures is not None:
         root = fixtures
 
-    return AgentEngine(
-        repo_dir=root,
-        backend=backend or "api",
-        provider=provider,
-        model=model,
-        mode=mode or "solo",
-    )
+    kwargs: dict[str, Any] = {
+        "repo_dir": root,
+        "backend": backend or "api",
+        "provider": provider,
+        "model": model,
+        "mode": mode or "solo",
+    }
+    # Only when the task asks for one: an empty value must leave the
+    # engine's own default alone, so every task written before this
+    # existed runs exactly as it did.
+    if permission_mode:
+        kwargs["permission_mode"] = permission_mode
+    return AgentEngine(**kwargs)
 
 
 def _cost_delta(before: float, after: float) -> float:
@@ -522,8 +529,16 @@ def _run_task_once(
     """Single attempt — kept private so retry-aggregation logic lives
     in one place at the public ``run_task`` entry."""
     try:
-        engine = engine_factory(model, backend, provider, task.mode,
-                                task.task_class)
+        # Passed positionally for the four a factory has always taken, and
+        # by keyword for the fifth — a test double with the old signature
+        # keeps working, which is the point of not making it positional.
+        try:
+            engine = engine_factory(model, backend, provider, task.mode,
+                                    task.task_class,
+                                    permission_mode=task.permission_mode)
+        except TypeError:
+            engine = engine_factory(model, backend, provider, task.mode,
+                                    task.task_class)
     except Exception as exc:
         traj = Trajectory(error=f"engine init failed: {exc}")
         return score_outcome(
