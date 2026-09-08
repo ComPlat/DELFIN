@@ -1577,6 +1577,20 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"^\s*(?:cat|head|tail|wc|file|stat|which|type|env|printenv|sort|uniq|cut|tr)\b",
     r"^\s*(?:basename|dirname|realpath|readlink)\b",
     r"^\s*echo\b",
+    # Looking at the process and socket tables. The agent is asked to
+    # clean up a background job it started and told never to sweep the
+    # process table; to stop the right one it has to find the right one,
+    # and every spelling of the question went to the confirm gate — a
+    # refusal in a headless run. Measured 2026-09-08: three denials in one
+    # task, one per spelling, against a block whose own message says not
+    # to look for another way round.
+    #
+    # These read and change nothing, and reveal strictly less than `env`
+    # and `printenv`, auto-allowed since this list was written. What ACTS
+    # is not here: kill, pkill, killall, and `ss -K`, which closes
+    # sockets.
+    r"^\s*(?:ps|pgrep|netstat|lsof)\b",
+    r"^\s*ss\b(?![^|;&]*(?:-K\b|--kill\b))",
     # cd <literal-path>: harmless on its own (it executes nothing, and each
     # bash call is a fresh subprocess) and the common prefix in
     # `cd /path && <cmd>`. Auto-allowed ONLY for a literal path — the char class
