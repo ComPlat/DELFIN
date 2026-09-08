@@ -60,7 +60,21 @@ _GLM_CALL_TAGS = re.compile(
 _FENCED_JSON_CALL = re.compile(r"```(?:json)?\s*(\{.*?\})\s*```", re.DOTALL)
 
 # Harmony special-token leftovers that decode as literal words.
-_HARMONY_TOKENS = re.compile(r"\b(?:json_schema|json|constrain)\b(?=[^\sA-Za-z])")
+#
+# A leftover sits against what it was announcing: `json_schema{"doc_id"`
+# is the recorded shape, and the special-token bar `constrain|>json{` is
+# the other. The follow-set used to be "any character that is not a
+# space or a letter", which cannot tell that from an ordinary word --
+# and a file extension is an ordinary word: `settings.json` written in
+# backticks, before a period or before a comma matched, so every JSON
+# path an answer named arrived as `settings. `. Seen on 2026-09-08 in an
+# answer that named the file eleven times and mangled it every time.
+#
+# Narrowed rather than widened on purpose. Missing a leftover leaves one
+# stray word in prose; catching an extension hands the user a path that
+# does not exist, with nothing in the answer to say why.
+_HARMONY_TOKENS = re.compile(
+    r"\b(?:json_schema|json|constrain)\b(?=\s*[{\[<|])")
 
 # Reasoning-tag models (deepseek-r1, qwq, qwen3-thinking, …) emit their chain
 # of thought as <think>…</think> in the visible text channel. Strip the whole
