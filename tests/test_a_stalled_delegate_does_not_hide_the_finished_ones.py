@@ -68,6 +68,28 @@ def _stall(seconds: float = 30.0):
     return _fn
 
 
+def _settled(sa_id: str, timeout_s: float = 10.0) -> dict:
+    """The subagent's record once it has stopped running.
+
+    Waits through "unknown" as well as "running". An id whose thread has
+    not registered yet reads as unknown, and a loop that breaks on
+    "anything but running" takes that for a terminal state — which is how
+    this file failed in CI while passing on every developer machine: the
+    poll won the race against the thread and asserted against
+    "no running or finished subagent with this id".
+    """
+    import time as _t
+
+    deadline = _t.monotonic() + timeout_s
+    res = sa.get_subagent_result(sa_id)
+    while _t.monotonic() < deadline:
+        res = sa.get_subagent_result(sa_id)
+        if res.get("status") not in ("running", "unknown"):
+            return res
+        _t.sleep(0.05)
+    return res
+
+
 def test_a_finished_delegate_is_collected_while_a_sibling_stalls(pool):
     futures = {
         "stalled": pool.submit(_stall()),
@@ -150,12 +172,7 @@ def test_a_thread_that_dies_early_is_not_reported_as_a_made_up_id():
 
     out = _spawn(_runner)
     assert done.wait(timeout=5)
-    for _ in range(50):
-        status = sa.get_subagent_result(out["sa_id"])["status"]
-        if status != "running":
-            break
-        time.sleep(0.05)
-    assert status == "died"
+    assert _settled(out["sa_id"])["status"] == "died"
 
 
 def test_the_died_record_says_what_happened():
@@ -163,22 +180,13 @@ def test_the_died_record_says_what_happened():
         raise RuntimeError("no workspace")
 
     out = _spawn(_runner)
-    for _ in range(50):
-        res = sa.get_subagent_result(out["sa_id"])
-        if res["status"] != "running":
-            break
-        time.sleep(0.05)
-    assert "no workspace" in res.get("error", "")
+    res = _settled(out["sa_id"])
+    assert "no workspace" in res.get("error", ""), res
 
 
 def test_a_run_that_stored_no_report_does_not_stay_running_forever():
     out = _spawn(lambda **kw: {"ok": True})
-    for _ in range(50):
-        status = sa.get_subagent_result(out["sa_id"])["status"]
-        if status != "running":
-            break
-        time.sleep(0.05)
-    assert status == "died"
+    assert _settled(out["sa_id"])["status"] == "died"
 
 
 def test_a_died_entry_is_not_shown_as_running(tmp_path):
