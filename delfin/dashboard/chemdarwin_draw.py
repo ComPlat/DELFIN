@@ -66,6 +66,11 @@ LEGEND = '''
 <div style="font-size:12px; line-height:1.5;">
 <p style="margin:0 0 6px 0;"><b>The bonds you draw define the pattern; Any
 bonds and query properties define how it is allowed to be attached.</b></p>
+<p style="margin:0 0 6px 0;">Every atom that should <b>survive</b> has to be
+mapped on both sides. An atom mapped only on the left is deleted and takes its
+bonds with it; one drawn only on the right is built loose. And an atom drawn
+aliphatic (<code>C</code>) inside a ring whose other half stays aromatic
+cannot be built at all — draw it aromatic (<code>c</code>) instead.</p>
 <table style="border-collapse:collapse;">
 <tr><th style="text-align:left; padding:2px 12px 2px 0;">In Ketcher</th>
     <th style="text-align:left; padding:2px 12px 2px 0;">In the SMARTS</th>
@@ -100,9 +105,14 @@ bonds and query properties define how it is allowed to be attached.</b></p>
 <tr><td style="padding:2px 12px 2px 0;">Query property “Ring bond count”</td>
     <td style="padding:2px 12px 2px 0;"><code>x&lt;n&gt;</code></td>
     <td>ring context</td></tr>
+<tr><td style="padding:2px 12px 2px 0;">Query property “Substitution count”</td>
+    <td style="padding:2px 12px 2px 0;"><code>D&lt;n&gt;</code></td>
+    <td>neighbours that are not hydrogen — a ring-fusion carbon is
+        <code>D3</code></td></tr>
 <tr><td style="padding:2px 12px 2px 0;">Query property “Connectivity”</td>
     <td style="padding:2px 12px 2px 0;"><code>X&lt;n&gt;</code></td>
-    <td>how substituted</td></tr>
+    <td>connections <i>including</i> hydrogens — an aromatic CH is
+        <code>X3</code> too, so this rarely singles one out</td></tr>
 <tr><td style="padding:2px 12px 2px 0;">Generic atom A / Q / X / M</td>
     <td style="padding:2px 12px 2px 0;">atom list</td>
     <td>leave the surroundings open</td></tr>
