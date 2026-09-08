@@ -3008,6 +3008,46 @@ _WRITE_TOOL_CONCEPT: dict[str, str] = {
 }
 
 
+# What the spinner says while a tool runs, keyed on the concept.
+#
+# The table used to hold the CLI backend's seven names, so on the KIT and
+# Ollama backends every line read "Running mcp__kit-coding__write_file…"
+# — the one place a long turn tells the user what it is doing, saying it
+# in the vocabulary of the transport.
+_ACTIVITY_VERB: dict[str, str] = {
+    "Read": "Reading", "read_file": "Reading", "read_document": "Reading",
+    "notebook_read": "Reading", "read_section": "Reading",
+    "Edit": "Editing", "edit_file": "Editing", "multi_edit": "Editing",
+    "MultiEdit": "Editing", "notebook_edit": "Editing",
+    "apply_patch": "Patching",
+    "Write": "Writing", "write_file": "Writing",
+    "create_pdf": "Writing", "create_docx": "Writing",
+}
+
+
+def _tool_activity_label(tool_name: str, parsed: dict) -> str:
+    """One line saying what is happening, for any backend's spelling."""
+    bare = (tool_name or "").rsplit("__", 1)[-1] \
+        if (tool_name or "").startswith("mcp__") else (tool_name or "")
+    name = (parsed.get("file_path") or parsed.get("path") or "")
+    if name:
+        name = str(name).rsplit("/", 1)[-1]
+    verb = _ACTIVITY_VERB.get(bare, "")
+    if verb:
+        return f"{verb} {name}..." if name else f"{verb}..."
+    if bare in ("Grep", "grep_file", "find_references", "find_definition"):
+        return f"Searching: {str(parsed.get('pattern', ''))[:40]}..."
+    if bare in ("Glob", "list_files", "glob_files"):
+        return f"Finding: {str(parsed.get('pattern', '') or name)[:40]}..."
+    if bare in ("Bash", "bash", "bash_background"):
+        return f"$ {str(parsed.get('command') or '')[:50]}..."
+    if bare in ("Agent", "subagent", "orchestrate"):
+        return f"Sub-agent: {str(parsed.get('description') or '')[:40]}..."
+    if bare in ("web_search", "WebSearch", "web_fetch", "WebFetch"):
+        return f"Looking up: {str(parsed.get('query') or parsed.get('url') or '')[:40]}..."
+    return f"Running {bare or tool_name}..."
+
+
 def _format_tool_description(raw):
     """Parse a raw permission denial string into a readable description."""
     import ast as _ast
@@ -14866,15 +14906,7 @@ def create_tab(ctx):
                     _fname = (parsed.get("file_path") or parsed.get("path") or "")
                     if _fname:
                         _fname = _fname.rsplit("/", 1)[-1]
-                    _detail = {
-                        "Read":  f"Reading {_fname}..." if _fname else "Reading...",
-                        "Edit":  f"Editing {_fname}..." if _fname else "Editing...",
-                        "Write": f"Writing {_fname}..." if _fname else "Writing...",
-                        "Grep":  f"Searching: {parsed.get('pattern', '')[:40]}...",
-                        "Glob":  f"Finding: {parsed.get('pattern', '')[:40]}...",
-                        "Bash":  f"$ {(parsed.get('command') or '')[:50]}...",
-                        "Agent": f"Sub-agent: {(parsed.get('description') or '')[:40]}...",
-                    }.get(tool_name, f"Running {tool_name}...")
+                    _detail = _tool_activity_label(tool_name, parsed)
                     _set_working(True, f"[{_tc}] {_detail}")
 
                     # Flush pending text as a finalized assistant message

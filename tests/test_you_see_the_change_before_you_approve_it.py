@@ -142,3 +142,44 @@ def test_a_shell_call_shows_the_command(tool):
 def test_an_unknown_tool_still_says_something():
     out = _readable("some_new_tool", subject="x")
     assert "some_new_tool" in out and "x" in out
+
+
+# ---------------------------------------------------------------------------
+# ...and the spinner says what is happening while it happens
+# ---------------------------------------------------------------------------
+
+def _label(tool: str, **parsed) -> str:
+    from delfin.dashboard.tab_agent import _tool_activity_label
+    return _tool_activity_label(tool, parsed)
+
+
+@pytest.mark.parametrize("tool,expected", [
+    ("write_file", "Writing"), ("Write", "Writing"),
+    ("edit_file", "Editing"), ("Edit", "Editing"),
+    ("multi_edit", "Editing"), ("apply_patch", "Patching"),
+    ("read_file", "Reading"), ("Read", "Reading"),
+])
+def test_the_spinner_says_what_is_happening_on_either_backend(tool, expected):
+    """The one place a long turn tells the user what it is doing. The
+    table held the CLI backend's seven names, so on KIT every line read
+    "Running mcp__kit-coding__write_file…" — the transport's vocabulary
+    where a sentence belongs."""
+    assert _label(tool, path="/a/b/bookmark_store.py") == (
+        f"{expected} bookmark_store.py...")
+
+
+def test_the_mcp_namespace_does_not_hide_the_verb():
+    assert _label("mcp__kit-coding__write_file", path="x.py") == "Writing x.py..."
+
+
+@pytest.mark.parametrize("tool", ["bash", "Bash"])
+def test_a_shell_line_shows_the_command(tool):
+    assert _label(tool, command="pytest -q").startswith("$ pytest -q")
+
+
+def test_a_tool_nobody_mapped_still_reads_as_a_sentence():
+    assert _label("some_new_tool") == "Running some_new_tool..."
+
+
+def test_a_write_without_a_path_still_names_the_verb():
+    assert _label("write_file") == "Writing..."
