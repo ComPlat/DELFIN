@@ -761,3 +761,50 @@ def test_the_generic_atoms_mean_what_they_say():
     assert hits('generic X', "Cc1ccccc1") == set()
     assert hits('generic M', "[Fe]C") == {"CO"}
     assert hits('generic M', "Clc1ccccc1") == set()
+
+
+def test_an_element_choice_keeps_its_map_only_off_an_atom_list():
+    """Ketcher's KET has a node type for an atom list, and it has no mapping.
+
+    Measured: the same "N or O" written as a list gives
+    ``{"type": "atom-list", "elements": ["N","O"]}`` with no mapping field
+    anywhere on it, and the map is gone from every format.  Written as a query
+    on an ordinary atom it stays an atom node, mapping and all.
+    """
+    as_a_list = "[#7,#8]~[#6:2]~[#6:3]>>[#6:1]~[#7:2]~[#6:3]"
+    lost = Chem.MolFromSmarts(ks.repair_atom_maps(as_a_list).split('>>')[0])
+    assert [a.GetAtomMapNum() for a in lost.GetAtoms()] == [0, 2, 3]
+
+    as_a_query = "[*;#7:1,#8:1]~[#6:2]~[#6:3]>>[#6:1]~[#7:2]~[#6:3]"
+    kept = Chem.MolFromSmarts(ks.repair_atom_maps(as_a_query).split('>>')[0])
+    assert [a.GetAtomMapNum() for a in kept.GetAtoms()] == [1, 2, 3]
+
+    out = ks.normalize_reaction_smarts(as_a_query)
+    assert out['ok'], out['status']
+    pattern = Chem.MolFromSmarts(out['smarts'].split('>>')[0])
+    assert len(Chem.MolFromSmiles("c1ccncc1").GetSubstructMatches(pattern)) == 2
+    assert len(Chem.MolFromSmiles("c1ccccc1").GetSubstructMatches(pattern)) == 0
+
+
+def test_two_meso_positions_are_one_molecule():
+    """Anthracene is symmetric, so both meso positions give acridine.
+
+    Worth pinning because "there should be two" is true of the positions and
+    not of the products, and the engine reports products.
+    """
+    rule = ks.normalize_reaction_smarts(
+        "[#6;D3:1]~[#6;D2:2]~[#6;D3:3]>>[#6:1]~[#7:2]~[#6:3]")['smarts']
+    target = Chem.MolFromSmiles(ANTHRACENE)
+    hits = target.GetSubstructMatches(Chem.MolFromSmarts(rule.split('>>')[0]))
+    assert len(hits) == 2
+    assert sorted({h[1] for h in hits}) == [4, 11]
+
+    made = set()
+    for group in rdChemReactions.ReactionFromSmarts(rule).RunReactants((target,)):
+        mol = group[0]
+        try:
+            Chem.SanitizeMol(mol)
+            made.add(Chem.MolToSmiles(mol))
+        except Exception:                                   # noqa: BLE001
+            pass
+    assert made == {"c1ccc2nc3ccccc3cc2c1"}
