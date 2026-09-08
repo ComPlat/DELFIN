@@ -564,3 +564,26 @@ def test_substitution_count_narrows_where_drawn_neighbours_cannot():
     # three atoms, neighbours counted: the two meso positions and nothing else
     counted = "[#6;D3:1]~[#6;D2;H1:2]~[#6;D3:3]>>[#6:1]~[#7:2]~[#6:3]"
     assert products(counted) == {"c1ccc2nc3ccccc3cc2c1"}
+
+
+def test_the_three_atom_rule_drawn_in_the_panel_makes_acridine():
+    """Driven through the running dashboard, button by button.
+
+    Three atoms joined by Any bonds, each carrying Ketcher's Substitution
+    count -- 3 on the outer two, 2 on the middle -- and the middle one going
+    to nitrogen. This is what getSmarts handed over, verbatim, malformed map
+    order and product valence terms included.
+    """
+    drawn = "[#6:1;D3]~[#6:2;D2]~[#6:3;D3]>>[#6:1;v2]:[#7:2]:[#6:3;v2]"
+    assert Chem.MolFromSmarts(drawn.split('>>')[0]) is None   # as it arrives
+
+    out = ks.normalize_reaction_smarts(drawn)
+    assert out['ok'], out['status']
+    assert out['smarts'] == "[#6&D3:1]~[#6&D2:2]~[#6&D3:3]>>[c:1][n:2][c:3]"
+    assert ks.trial_on_seed(out['smarts'], ANTHRACENE)['level'] == 'ok'
+
+    # and through the tab's own engine, the way Run calls it
+    from delfin.dashboard import tab_chemdarwin as cd
+    made = cd.apply_custom_reaction_iter(
+        ANTHRACENE, out['smarts'], iterations=1, keep_rings=False)
+    assert sorted(s for s, _ in made) == ["c1ccc2nc3ccccc3cc2c1"]
