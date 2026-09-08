@@ -890,7 +890,9 @@ def create_tab(ctx):
                     'functional, basis, dispersion, solvation etc. set there.'
                 )
                 return
-            control_errors = validate_control_text(control_text)
+            control_errors = validate_control_text(
+                control_text, converts_smiles=_input_is_a_smiles(raw_input_value),
+            )
             if control_errors:
                 print('Error: CONTROL.txt is missing or invalid for Fukui submission:')
                 for err in control_errors:
@@ -1293,32 +1295,20 @@ def create_tab(ctx):
             return normalized
         return ''
 
-    def _get_smiles_converter_from_control(control_content):
-        try:
-            parsed = parse_control_text(control_content)
-        except Exception:
-            parsed = {}
-        return _normalize_smiles_converter_value(parsed.get('smiles_converter', ''))
+    def _input_is_a_smiles(raw_input):
+        """Whether the tab's own input box holds a SMILES rather than an XYZ block.
 
-    def _validate_smiles_converter_requirement(control_content, raw_input, *, batch_has_smiles=False):
-        converter = _get_smiles_converter_from_control(control_content)
-        single_has_smiles = False
-
+        The core validator cannot see it — the box is only written into
+        CONTROL.txt further down, after validation — so the tab answers for it.
+        """
         raw_input = str(raw_input or '').strip()
-        if raw_input:
-            try:
-                cleaned_data, input_type = clean_input_data(raw_input)
-                single_has_smiles = input_type == 'smiles' and bool(cleaned_data.strip())
-            except Exception:
-                cleaned_data, input_type = clean_input_data(raw_input)
-                single_has_smiles = input_type == 'smiles' and bool(cleaned_data.strip())
-
-        if (single_has_smiles or batch_has_smiles) and not converter:
-            return [
-                'SMILES detected in Input or Batch list: set '
-                'smiles_converter=QUICK, NORMAL, GUPPY, or ARCHITECTOR.'
-            ]
-        return []
+        if not raw_input:
+            return False
+        try:
+            cleaned_data, input_type = clean_input_data(raw_input)
+        except Exception:  # noqa: BLE001
+            return False
+        return input_type == 'smiles' and bool(cleaned_data.strip())
 
     def _keep_the_drawing(job_dir, smiles):
         """Put the drawing beside the job it was drawn for.
@@ -1744,13 +1734,11 @@ def create_tab(ctx):
                 return
 
             control_content_base = control_widget.value
-            control_errors = validate_control_text(control_content_base)
-            control_errors.extend(
-                _validate_smiles_converter_requirement(
-                    control_content_base,
-                    coords_widget.value,
-                    batch_has_smiles=batch_has_smiles_entries(),
-                )
+            control_errors = validate_control_text(
+                control_content_base,
+                converts_smiles=(
+                    _input_is_a_smiles(coords_widget.value) or batch_has_smiles_entries()
+                ),
             )
             if control_errors:
                 print('CONTROL.txt validation failed:')
@@ -1918,12 +1906,8 @@ def create_tab(ctx):
                 print('Error: Input (coordinates or SMILES) cannot be empty!')
                 return
 
-            control_errors = validate_control_text(control_content)
-            control_errors.extend(
-                _validate_smiles_converter_requirement(
-                    control_content,
-                    raw_input,
-                )
+            control_errors = validate_control_text(
+                control_content, converts_smiles=_input_is_a_smiles(raw_input),
             )
             if control_errors:
                 print('CONTROL.txt validation failed:')
@@ -2008,13 +1992,11 @@ def create_tab(ctx):
     def handle_validate_control(button):
         with validate_output:
             clear_output()
-            errors = validate_control_text(control_widget.value)
-            errors.extend(
-                _validate_smiles_converter_requirement(
-                    control_widget.value,
-                    coords_widget.value,
-                    batch_has_smiles=batch_has_smiles_entries(),
-                )
+            errors = validate_control_text(
+                control_widget.value,
+                converts_smiles=(
+                    _input_is_a_smiles(coords_widget.value) or batch_has_smiles_entries()
+                ),
             )
             if errors:
                 print('CONTROL.txt validation failed:')
@@ -2093,7 +2075,9 @@ def create_tab(ctx):
                         submit_smiles=submit_smiles,
                     )
 
-                    control_errors = validate_control_text(control_content)
+                    control_errors = validate_control_text(
+                        control_content, converts_smiles=(input_type == 'smiles'),
+                    )
                     if control_errors:
                         print('CONTROL.txt validation failed:')
                         for err in control_errors:
@@ -2200,7 +2184,9 @@ def create_tab(ctx):
                         extras=extras,
                     )
 
-                    control_errors = validate_control_text(control_content)
+                    control_errors = validate_control_text(
+                        control_content, converts_smiles=(input_kind == 'smiles'),
+                    )
                     if control_errors:
                         print(f'Line {line_no}: CONTROL.txt validation failed for {safe_job_name}:')
                         for err in control_errors:
@@ -2260,7 +2246,9 @@ def create_tab(ctx):
                 print('Error: Input (coordinates or SMILES) cannot be empty!')
                 return
 
-            control_errors = validate_control_text(control_content)
+            control_errors = validate_control_text(
+                control_content, converts_smiles=_input_is_a_smiles(raw_input),
+            )
             if control_errors:
                 print('CONTROL.txt validation failed:')
                 for err in control_errors:
