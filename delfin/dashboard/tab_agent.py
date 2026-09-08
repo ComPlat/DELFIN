@@ -2500,6 +2500,61 @@ def _is_file_creating(tool_name: str) -> bool:
     return bare in _FILE_CREATING_TOOLS or tool_name in _FILE_CREATING_TOOLS
 
 
+# A file the ANSWER names. The artifact diff only ever sees what the turn
+# wrote, so "gib mir das Archiv von gestern" produced a sentence naming a
+# file and no way to get it -- the one case where the user asked, in so
+# many words, to be handed something.
+#
+# Deliberately not a tool. A tool for this costs its schema on every
+# request to every model forever (measured: 150 tokens, against a
+# catalogue budget that is already paid for), and it only works if the
+# model thinks to call it. Reading the sentence the model already wrote
+# costs nothing and works the same on every backend.
+#
+# Bounded three ways: the extension has to be one the chat can preview or
+# one a user keeps, the path has to resolve INSIDE the agent workspace,
+# and at most three per turn. A card for a file that was merely discussed
+# is a download button nobody presses; a card for a file outside the
+# workspace would be a way to read one.
+_ANSWER_FILE_SUFFIXES = tuple(sorted(set(
+    (".png", ".jpg", ".jpeg", ".gif", ".svg", ".csv", ".tsv", ".json",
+     ".smi", ".mol", ".sdf", ".xyz") + _ARTIFACT_KEEPABLE)))
+
+_ANSWER_FILE_RE = re.compile(
+    r"(?<![\w/])((?:[\w.-]+/)*[\w.-]+(?:"
+    + "|".join(re.escape(x) for x in _ANSWER_FILE_SUFFIXES) + r"))\b")
+
+
+def _files_named_in_answer(text: str, workspace, already=(), limit: int = 3):
+    """Files the answer names that exist inside *workspace*, in order."""
+    out = []
+    if not text or workspace is None:
+        return out
+    try:
+        root = Path(workspace).resolve()
+    except OSError:
+        return out
+    seen = {str(x) for x in already}
+    for m in _ANSWER_FILE_RE.finditer(text):
+        if len(out) >= limit:
+            break
+        try:
+            cand = (root / m.group(1)).resolve()
+        except OSError:
+            continue
+        key = str(cand)
+        if key in seen:
+            continue
+        try:
+            if not cand.is_file() or not cand.is_relative_to(root):
+                continue
+        except (OSError, ValueError):
+            continue
+        seen.add(key)
+        out.append(cand)
+    return out
+
+
 def _artifact_stamp(p) -> tuple:
     """What makes a file the same file: its name is not enough."""
     try:
@@ -3677,6 +3732,8 @@ def create_tab(ctx):
         # name -> (mtime_ns, size) at turn start (D4). A rewritten file
         # is a new artifact; a name-only snapshot said it was not.
         "_ws_known_files": {},
+        # Absolute paths whose card is already on screen this turn.
+        "_emitted_artifacts": set(),
         "_job_states_seen": {},   # last-seen {job_id: status} for proactive notifications (D5)
         "_job_event_thread": None,  # background watcher (D5)
         "_job_event_thread_stop": False,
@@ -15044,6 +15101,9 @@ def create_tab(ctx):
                             html_block = None
                         if html_block:
                             _append_tool_message(html_block)
+                            _shown = set(state.get("_emitted_artifacts") or ())
+                            _shown.add(str(path.resolve()))
+                            state["_emitted_artifacts"] = _shown
                     # Update the snapshot so we don't re-emit the same artifact.
                     state["_ws_known_files"] = stamps
 
@@ -15334,6 +15394,9 @@ def create_tab(ctx):
                     }
                 except Exception:
                     state["_ws_known_files"] = {}
+                # Cards already drawn THIS turn, so the answer scan below
+                # does not repeat what the tool output already showed.
+                state["_emitted_artifacts"] = set()
 
                 _turn_start_time = time.monotonic()
                 max_auto_steps = len(engine.route) + 1  # safety limit
@@ -15549,6 +15612,23 @@ def create_tab(ctx):
                     # Final update: finalize=True triggers full markdown rendering
                     if chunks:
                         _update_last_assistant("".join(chunks), role_label, finalize=True)
+
+                    # Files the answer NAMED, which the artifact diff above
+                    # cannot see: it only knows what this turn wrote. See
+                    # _files_named_in_answer for what bounds it.
+                    try:
+                        for _f in _files_named_in_answer(
+                                "".join(chunks), ctx.agent_dir,
+                                already=state.get("_emitted_artifacts") or ()):
+                            _card = _render_artifact_inline(_f)
+                            if _card:
+                                _append_tool_message(_card)
+                                _shown = set(
+                                    state.get("_emitted_artifacts") or ())
+                                _shown.add(str(_f))
+                                state["_emitted_artifacts"] = _shown
+                    except Exception:
+                        pass
 
                     # If the engine auto-compacted during this turn, tell the
                     # user — they should always be able to SEE that older
