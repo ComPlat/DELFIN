@@ -59,6 +59,24 @@ class ModelProfile:
     # models should respond quickly so we kill earlier.
     stale_kill_after_s: float = 120.0
 
+    # How many times a turn may write to memory before the tool is held
+    # back. 0 means no cap.
+    #
+    # The memory addendum asks every role to persist durable facts as it
+    # works, and one model takes that as the work. Measured 2026-09-08,
+    # workflow_verify_after_modify in acceptEdits: GLM issued six
+    # consecutive `remember` calls and then answered with a fragment
+    # ending in a colon where the two ACTION lines should have been.
+    # DeepSeek called it zero times on every dashboard task in the same
+    # run and solved that task in two calls at quality 88 — so this is
+    # one model over-applying a shared rule, which is what a per-model
+    # knob is for rather than weakening the rule for everyone.
+    #
+    # The no-progress guard in api_client does not catch it: it keys on
+    # name AND arguments, and six remembers with different content read
+    # as progress.
+    max_memory_writes_per_turn: int = 0
+
     # Typical seconds for a turn whose prompt the endpoint cannot serve
     # from its prefix cache — the first turn of a session, and any turn
     # after the head of the prompt changed. 0 means "not a concern".
@@ -137,6 +155,10 @@ _GLM_5_3 = ModelProfile(
     # about to answer, and killing it also throws away the prefill it just
     # paid for -- the retry starts cold again.
     stale_kill_after_s=420.0,
+    # Six `remember` calls in one turn, measured; two is generous for the
+    # facts a turn actually turns up, and the seventh is what turned a
+    # working turn into a fragment.
+    max_memory_writes_per_turn=2,
     # 199 / 266 / 268s measured. The user cannot be given the time back,
     # but they can be told what the silence is: the same wait reported as
     # a hang reads as a cache warming up once it is named.
@@ -310,6 +332,7 @@ _PREFIX_PROFILES: tuple[tuple[str, ModelProfile], ...] = (
 # deciding whether a user may set it.
 _COERCE: dict[str, type] = {
     "compact_prompt": bool,
+    "max_memory_writes_per_turn": int,
     "slow_cold_start_s": float,
     "core_tools_only": bool,
     "strict_action_prefix": bool,
