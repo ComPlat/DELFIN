@@ -6249,6 +6249,40 @@ def _resolve_max_tool_rounds(model: str = "", caps=None) -> int:
     return 500
 
 
+def _absorb_non_streaming(resp):
+    """Pull a non-streaming completion apart into the streaming shape.
+
+    Returns ``(content, tool_calls, finish_reason, (in, out, cached))``
+    where ``tool_calls`` is keyed the way the streaming accumulator keys
+    it. Two paths need this — the proxy that cannot stream a request, and
+    a stream that ends having produced nothing — and a second copy of it
+    would be a second place to forget the tool-call id backfill.
+    """
+    content = ""
+    calls: dict[int, dict] = {}
+    finish = ""
+    usage = (0, 0, 0)
+    _u = getattr(resp, "usage", None)
+    if _u:
+        usage = (_u.prompt_tokens or 0, _u.completion_tokens or 0,
+                 _cached_tokens_of(_u))
+    _choices = getattr(resp, "choices", None)
+    if _choices:
+        _ch = _choices[0]
+        _msg = getattr(_ch, "message", None)
+        content = (getattr(_msg, "content", None) or "") if _msg else ""
+        for _i, _tc in enumerate(getattr(_msg, "tool_calls", None) or []):
+            _fn = getattr(_tc, "function", None)
+            calls[_i] = {
+                "id": getattr(_tc, "id", "") or f"ns_{_i}",
+                "name": (getattr(_fn, "name", "") or "") if _fn else "",
+                "arguments_parts": [
+                    (getattr(_fn, "arguments", "") or "") if _fn else ""],
+            }
+        finish = getattr(_ch, "finish_reason", "") or ""
+    return content, calls, finish, usage
+
+
 def _sendable_tool_args(raw) -> str:
     """The arguments string that may go back on the wire.
 
@@ -15808,6 +15842,7 @@ class OpenAIClient(_BaseClient):
             _round_in = 0
 
             finish_reason = None
+            _saw_reasoning = False
             try:
                 stream = self.client.chat.completions.create(**kwargs)
                 try:
@@ -15831,6 +15866,12 @@ class OpenAIClient(_BaseClient):
                         # of losing it; it never pollutes the answer text.
                         _rc = getattr(delta, "reasoning_content", None) if delta else None
                         if _rc:
+                            # Remembered, not only forwarded: a round that
+                            # produced reasoning and nothing else is a
+                            # model thinking out loud, which is a different
+                            # thing from a round that produced nothing at
+                            # all — and only the second is worth retrying.
+                            _saw_reasoning = True
                             yield StreamEvent(type="thinking_delta", text=_rc)
 
                         # Text content
@@ -15914,28 +15955,53 @@ class OpenAIClient(_BaseClient):
                 nk["stream"] = False
                 nk.pop("stream_options", None)
                 resp = self.client.chat.completions.create(**nk)
-                if getattr(resp, "usage", None):
-                    _total_in += resp.usage.prompt_tokens or 0
-                    _round_in += resp.usage.prompt_tokens or 0
-                    _total_out += resp.usage.completion_tokens or 0
-                    _total_cached += _cached_tokens_of(resp.usage)
-                if getattr(resp, "choices", None):
-                    _choice = resp.choices[0]
-                    _msg = _choice.message
-                    if getattr(_msg, "content", None):
-                        _text_chunks.append(_msg.content)
-                        yield StreamEvent(type="text_delta", text=_msg.content)
-                    for _i, _tc in enumerate(
-                            getattr(_msg, "tool_calls", None) or []):
-                        _fn = getattr(_tc, "function", None)
-                        _tool_calls[_i] = {
-                            "id": getattr(_tc, "id", "") or f"ns_{_i}",
-                            "name": (getattr(_fn, "name", "") or "") if _fn else "",
-                            "arguments_parts": [
-                                (getattr(_fn, "arguments", "") or "") if _fn else ""
-                            ],
-                        }
-                    finish_reason = _choice.finish_reason
+                _c, _calls, _fin, (_ti, _to, _tc_cached) = \
+                    _absorb_non_streaming(resp)
+                _total_in += _ti
+                _round_in += _ti
+                _total_out += _to
+                _total_cached += _tc_cached
+                if _c:
+                    _text_chunks.append(_c)
+                    yield StreamEvent(type="text_delta", text=_c)
+                _tool_calls.update(_calls)
+                if _fin:
+                    finish_reason = _fin
+
+            # A stream that ended having produced NOTHING. Not an error and
+            # not a refusal: finish_reason says stop, and no content, no
+            # tool call and no reasoning arrived. Measured 2026-09-07 at
+            # the protocol level on kit.glm-5.3 — with a tool surface
+            # advertised the streamed request returns an empty content
+            # channel while the identical request non-streaming returns
+            # the answer, and the engine reported "[empty turn]" for a
+            # question the model had answered. Independent of
+            # reasoning_effort; reproduced 12 times out of 12.
+            #
+            # The cure the proxy path already uses works here too, so it is
+            # taken once per round and only when there is nothing to lose.
+            if (kwargs.get("stream") and not _text_chunks and not _tool_calls
+                    and not _saw_reasoning):
+                try:
+                    _nk = dict(kwargs)
+                    _nk["stream"] = False
+                    _nk.pop("stream_options", None)
+                    _resp = self.client.chat.completions.create(**_nk)
+                except Exception:
+                    _resp = None
+                if _resp is not None:
+                    _c, _calls, _fin, (_ti, _to, _cch) = \
+                        _absorb_non_streaming(_resp)
+                    _total_in += _ti
+                    _round_in += _ti
+                    _total_out += _to
+                    _total_cached += _cch
+                    if _c:
+                        _text_chunks.append(_c)
+                        yield StreamEvent(type="text_delta", text=_c)
+                    _tool_calls.update(_calls)
+                    if _fin:
+                        finish_reason = _fin
 
             # Got a response (streamed or fallback): clear the transient-retry
             # budget so a later hiccup in this same (possibly long) turn gets a
