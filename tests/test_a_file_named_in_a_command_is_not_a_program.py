@@ -73,6 +73,10 @@ def test_a_file_read_by_a_command_is_not_scanned_as_its_program(scan, template):
     "timeout 5 {p}",
     "ls; python3 {p}",
     "true && bash {p}",
+    # Sourcing runs it in the current shell, which is execution with the
+    # blast radius turned up, not down.
+    "source {p}",
+    ". {p}",
 ])
 def test_a_file_the_command_actually_runs_is_still_scanned(scan, template):
     cmd = template.format(p=scan.script)
