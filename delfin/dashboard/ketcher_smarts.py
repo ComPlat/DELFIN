@@ -610,7 +610,13 @@ def describe(outcome: Dict[str, Any]) -> str:
         bits.append(f"{outcome['new_atoms']} new atom"
                     f"{'s' if outcome['new_atoms'] != 1 else ''}")
     if outcome.get('auto_maps'):
-        bits.append(f"map {_listed(outcome['auto_maps'])} filled in automatically")
+        if outcome.get('drew_maps') is False:
+            bits.append('NOTHING was mapped in the drawing — the mapping below '
+                        'is a guess; join the atoms that stay with the '
+                        'Reaction Mapping Tool')
+        else:
+            bits.append(f"map {_listed(outcome['auto_maps'])} "
+                        f"filled in automatically")
     if outcome.get('kekule'):
         bits.append(f"{outcome['kekule']} drawn bond"
                     f"{'s' if outcome['kekule'] != 1 else ''} also match "
@@ -661,6 +667,10 @@ def normalize_reaction_smarts(raw: str, *,
     if product is None:
         return dict(empty, status=f'The product side cannot be read: {right}')
 
+    # Whether the *drawing* said anything about what stays, before the MCS is
+    # let near it.  A rule mapped entirely by guesswork is a different claim
+    # from one where the holes were filled, and it has to read differently.
+    drew_maps = bool(_maps(reactant) or _maps(product))
     auto = complete_atom_maps(reactant, product)
 
     try:
@@ -701,6 +711,7 @@ def normalize_reaction_smarts(raw: str, *,
         'agents': agents,
         'kekule': kekule,
         'drawn_h': drawn_h,
+        'drew_maps': drew_maps,
     }
     if not left_maps and not right_maps:
         outcome['level'] = 'note'
