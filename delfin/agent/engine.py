@@ -264,10 +264,18 @@ _ROLE_MAX_TOKENS: dict[str, int] = {
 }
 _DEFAULT_MAX_TOKENS = 8192
 
-# Code-level tool whitelist per role.
-# If a role emits a tool_use event for a tool NOT in its whitelist,
-# the engine silently blocks it.  This prevents prompt-injection or
-# model hallucination from bypassing role restrictions.
+# What each role is FOR, in the CLI backend's tool vocabulary.
+#
+# A declaration, not a gate. It used to be checked against the tool_use
+# event and described as blocking; the event is a report of a call the
+# client has already made, so the check could only hide it. Refusal
+# happens before execution, in api_client._tool_denied_for_role.
+#
+# Kept because the intent is worth stating in one place, and because the
+# deny-list that enforces it is derived from what is written here: the
+# six roles below with neither Edit nor Write may not call the write
+# tools. tests/test_a_reviewer_does_not_edit_what_it_reviews.py reads
+# both and fails if they drift apart.
 _READ_TOOLS = frozenset({"Read", "Grep", "Glob"})
 _GIT_BASH = frozenset({"Read", "Grep", "Glob", "Bash"})  # Bash limited by prompt to git
 _RESEARCH_TOOLS = frozenset({"Read", "Grep", "Glob", "Bash", "WebSearch", "WebFetch"})
@@ -293,15 +301,11 @@ _MCP_TOOL_PREFIXES = (_DOC_TOOL_PREFIX, _OPS_TOOL_PREFIX)
 # role whitelist below — so we always let them through when KIT permissions
 # have been wired up.
 _KIT_CODING_PREFIX = "mcp__kit-coding__"
-# Source-inspection tools the dashboard agent must NOT use (its prompt hard-rule:
-# "no read_file/grep_file/list_files/glob_files on DELFIN source" — it researches
-# via search_docs and drives the UI via ACTION: slash-commands). These bypass the
-# role whitelist below because they arrive mcp__-namespaced, so they are blocked
-# explicitly by bare name for dashboard_agent (bug 20260708-092217: a dashboard
-# agent read the whole delfin/manta source tree).
-_DASHBOARD_SOURCE_DENY = frozenset({
-    "read_file", "grep_file", "list_files", "glob_files",
-})
+# The dashboard agent's source-inspection ban (bug 20260708-092217: a
+# dashboard agent read the whole source tree) used to be a second copy of
+# the list, re-checked here by bare name. It is enforced where execution
+# happens instead -- api_client._ROLE_EXEC_ALLOWLIST, which grants the
+# dashboard search_docs and read_section and nothing that reads source.
 # Roles that drive a conversation and therefore receive the per-turn steering
 # blocks (open tasks, finished jobs, budget, late answers). The pipeline roles
 # run one scripted step each and have no list of their own to keep.
@@ -2621,44 +2625,29 @@ class AgentEngine:
                     # The first thing the user reads is the sentence before
                     # this call, and the end-of-turn guard cannot reach it.
                     self._nudge_language_if_wrong(chunks)
-                    # Code-level tool whitelist enforcement
-                    role_id = self.route[self.current_role_index] if self.route else ""
-                    allowed = _ROLE_TOOL_WHITELIST.get(role_id)
-                    if allowed is not None and event.tool_name not in allowed:
-                        # Allow MCP doc + ops server tools for all roles, plus
-                        # the KIT-Toolbox coding tools (already permission-gated).
-                        if not (
-                            event.tool_name.startswith(_MCP_TOOL_PREFIXES)
-                            or event.tool_name.startswith(_KIT_CODING_PREFIX)
-                        ):
-                            # Block unauthorized tool — don't call on_tool_use
-                            continue
-                    # Dashboard scope: the mcp__ exemption above lets KIT-backend
-                    # tools bypass the role whitelist, but the dashboard agent
-                    # must never inspect DELFIN source. Re-block the forbidden
-                    # source-reading tools by their bare (de-namespaced) name.
-                    if role_id == "dashboard_agent":
-                        _bare = event.tool_name
-                        for _pfx in (*_MCP_TOOL_PREFIXES, _KIT_CODING_PREFIX):
-                            if _bare.startswith(_pfx):
-                                _bare = _bare[len(_pfx):]
-                                break
-                        if _bare in _DASHBOARD_SOURCE_DENY:
-                            continue  # dashboard scope: no source inspection
-                    # Defense-in-depth: dashboard_agent Write restricted to workspace
-                    if (role_id == "dashboard_agent"
-                            and event.tool_name == "Write"
-                            and self._agent_workspace_dir):
-                        try:
-                            _parsed = json.loads(event.tool_input)
-                            _fp = _parsed.get("file_path", "")
-                            if _fp:
-                                _resolved = str(Path(_fp).resolve())
-                                _ws = str(Path(self._agent_workspace_dir).resolve())
-                                if not _resolved.startswith(_ws + "/") and _resolved != _ws:
-                                    continue  # block write outside workspace
-                        except Exception:
-                            pass
+                    # This is a REPORT of a call, not a request to make one.
+                    #
+                    # The client yields the tool_use event and then executes
+                    # the tool inside the same generator, so by the time it
+                    # arrives here the call has been made. Three filters used
+                    # to `continue` at this point, described as blocking: the
+                    # role whitelist, the dashboard source-deny, and a
+                    # workspace check on Write. None of them could stop
+                    # anything. What they did was skip the UI callback, the
+                    # turn's tool counter, the execution ledger the
+                    # functional-claim guard reads for evidence, the trace and
+                    # the stray-write check -- so a call that RAN went missing
+                    # from every record of it, which is worse than showing it.
+                    #
+                    # Refusal happens before execution, in
+                    # api_client._tool_denied_for_role, checked inside
+                    # _DocToolExecutor.execute: an allow-list for the
+                    # dashboard and office roles, a deny-list of the write
+                    # tools for the six roles that only read. That layer sees
+                    # the un-namespaced name, so mcp__kit-coding__write_file
+                    # is judged as write_file -- the exemption that let every
+                    # coding tool past this filter on the OpenAI-compatible
+                    # backends does not exist there.
                     # Trace: stash this call until its result arrives.
                     if _turn_ttft is None:
                         _turn_ttft = _time.monotonic()
