@@ -779,6 +779,40 @@ def clear_cache() -> None:
 # ---------------------------------------------------------------------------
 
 
+# How long an answer that did NOT come from the wire is reused.
+#
+# A live answer is a fact and is cached for the process. Everything else
+# is a guess -- the curated static table when the endpoint is
+# unreachable, a name heuristic when even that has no entry -- and
+# caching a guess for the life of the process turns one bad moment into a
+# whole session.
+#
+# The numbers make it concrete. Both KIT flagships declare 512K; the
+# static fallback for them is a deliberate, conservative 131072 and the
+# heuristic below that is 32768. Compaction fires at 95% of whatever this
+# returns, so a session that started while the endpoint was slow compacts
+# at ~124k or ~31k instead of ~498k -- four to sixteen times too early.
+# On GLM every compaction is a cold prompt head worth about 200 seconds,
+# so one unlucky probe is paid for the rest of the day. Observed
+# 2026-09-08: two engines built seconds apart, one resolving 524288 and
+# the other 32768.
+#
+# Not zero, because the cache still has a job: an endpoint that is down
+# must not be asked once per call. A minute is short enough that the next
+# turn heals and long enough that a burst does not hammer it.
+_PROVISIONAL_TTL_S = 60.0
+
+
+def _is_stale_guess(caps: "ModelCapabilities") -> bool:
+    """Whether a cached non-live answer has waited long enough to retry."""
+    if getattr(caps, "source", "") == "live":
+        return False
+    try:
+        return (time.time() - float(caps.discovered_at)) > _PROVISIONAL_TTL_S
+    except (TypeError, ValueError):
+        return False
+
+
 def _apply_ollama_window(spec: dict[str, Any]) -> dict[str, Any]:
     """Re-cap an Ollama spec so context_window == num_ctx_override.
 
@@ -820,7 +854,7 @@ def resolve(
 
     key = _cache_key(provider, model, base_url, bool(api_key))
     cached = _CACHE.get(key)
-    if cached is not None:
+    if cached is not None and not _is_stale_guess(cached):
         return cached
 
     spec: dict[str, Any] = {}

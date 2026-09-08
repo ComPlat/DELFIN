@@ -1623,6 +1623,25 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     # the agent's commit, and afterwards nothing can say which hunks were
     # whose. So `git add delfin/agent/office.py` runs, and `git add -A`,
     # `git add .`, `git add -u` go to the confirm gate.
+    # The same reads, spelled the way the prompt tells the agent to spell
+    # them. solo_agent.md says twice: never prepend `cd /pfad && …`; use
+    # the bash tool's cwd, or git's own -C. This list matched
+    # `git <subcommand>` with nothing in between, so `git -C . status` —
+    # the sanctioned spelling — went to the confirm gate, which in a
+    # headless run is a refusal. `--no-pager` is how you keep git from
+    # opening a pager in a shell that has no terminal, and it was refused
+    # for the same reason.
+    #
+    # READ-ONLY subcommands only, and deliberately fewer than the bare
+    # list above: -C names ANOTHER repository, so `git -C /elsewhere
+    # commit` would be a write over there, and fetch/pull/switch move a
+    # repo this session may not own. Those keep requiring the bare form.
+    # The -C path is a literal — the character class excludes $ ( ` ; so
+    # no substitution rides in as a path.
+    r"^\s*git\s+(?:(?:--no-pager|--paginate|-C\s+[A-Za-z0-9_./~@:+=-]+)\s+)+"
+    r"(?:status|diff|log|show|branch(?!\s+-D)|remote|rev-parse|describe|"
+    r"ls-files|ls-tree|blame|shortlog|reflog|config\s+--get|"
+    r"stash\s+(?:list|show)|tag\s*$)\b",
     r"^\s*git\s+add\s+(?!(?:-A|--all|-u|--update|\.|:/)(?:\s|$))[^-\s]",
     # Moving to a branch is routine; `git checkout -- <path>` and
     # `git checkout .` overwrite uncommitted work in place and cannot be
@@ -13235,6 +13254,49 @@ class _DocToolExecutor:
 
     # ------- Git worktree isolation ---------------------------------------
 
+    @staticmethod
+    def _worktree_path_refusal(
+        label: str, path: Path, perms: Optional["KitToolPermissions"]
+    ) -> Optional[str]:
+        """Why a worktree verb may not touch *path*, or None.
+
+        These three verbs take directories from the model and act on them
+        with git: one creates a worktree of a repository and grants write
+        access to it, one merges a worktree INTO a directory, one removes
+        a worktree. None of them checked anything.
+
+        That made enter_worktree a way out of the workspace. A path the
+        read gate refuses — outside every root, no confirm callback —
+        became reachable in one call: the worktree holds the same files,
+        the tool registers it as writable, and worktree_merge puts changes
+        back into the original working tree. Measured 2026-09-08 with two
+        scratch repositories, reading one denied before the call and
+        allowed after it.
+
+        Containment, not confirmation. A worktree of a repository the user
+        already granted is exactly what the tool is for, and the write
+        grant that follows is the point of it. What it may not do is
+        choose a different repository. With no permissions object there is
+        no workspace to be contained by, and that must not be the way
+        round the check.
+        """
+        if perms is None:
+            return (f"{label} needs a configured workspace: without one "
+                    f"there is nothing for the path to be inside of.")
+        try:
+            resolved = Path(path).expanduser().resolve()
+        except OSError:
+            resolved = Path(path)
+        if perms.find_root_for(resolved) is not None:
+            return None
+        return (
+            f"{label} '{resolved}' is outside the allowed workspace roots. "
+            f"A worktree grants write access to what it holds, so it may "
+            f"only be made of a directory you already work in. Add it via "
+            f"'Erlaubte Verzeichnisse' or "
+            f"remember_permission(kind='extra_dir', ...) first."
+        )
+
     def _execute_enter_worktree(
         self, arguments: dict, perms: Optional["KitToolPermissions"]
     ) -> str:
@@ -13249,6 +13311,9 @@ class _DocToolExecutor:
                     "repo_dir is required when no workspace is configured"
                 )})
             repo_dir = perms.workspace
+        refusal = self._worktree_path_refusal("repo_dir", repo_dir, perms)
+        if refusal is not None:
+            return json.dumps({"error": refusal})
         try:
             info = _wt.enter_worktree(repo_dir, branch_prefix=prefix)
         except _wt.WorktreeError as exc:
@@ -13279,6 +13344,9 @@ class _DocToolExecutor:
         wt_path = Path(path_arg).expanduser()
         if not wt_path.is_dir():
             return json.dumps({"error": f"worktree path missing: {wt_path}"})
+        refusal = self._worktree_path_refusal("path", wt_path, perms)
+        if refusal is not None:
+            return json.dumps({"error": refusal})
         # Reconstruct minimal info from `git -C wt_path status` + branch
         try:
             head = subprocess.check_output(
@@ -13341,6 +13409,9 @@ class _DocToolExecutor:
         wt_path = Path(path_arg).expanduser()
         if not wt_path.is_dir():
             return json.dumps({"error": f"worktree path missing: {wt_path}"})
+        refusal = self._worktree_path_refusal("path", wt_path, perms)
+        if refusal is not None:
+            return json.dumps({"error": refusal})
         try:
             head = subprocess.check_output(
                 ["git", "rev-parse", "--abbrev-ref", "HEAD"],
@@ -13361,6 +13432,13 @@ class _DocToolExecutor:
                 source_repo = Path(line.removeprefix("worktree ").strip())
                 break
         target = Path(target_arg).expanduser() if target_arg else source_repo
+        # Where the changes LAND. Derived from the worktree when the model
+        # names nothing, and checked either way: the source repo of a
+        # worktree made outside this session is no safer than a target
+        # named outright.
+        refusal = self._worktree_path_refusal("target_dir", target, perms)
+        if refusal is not None:
+            return json.dumps({"error": refusal})
         # Determine the branch point: explicit, else merge-base of the
         # worktree's HEAD with the target's HEAD (the shared ancestor).
         base = base_arg
