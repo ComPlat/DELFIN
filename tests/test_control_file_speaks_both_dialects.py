@@ -121,10 +121,18 @@ def test_the_shipped_template_only_complains_about_its_placeholders():
     """A round trip the template did not survive before: it shipped
     `OCCUPIER_method=auto|manually`, which the validator rejected."""
     errors = validate_control_text(define.TEMPLATE)
-    assert len(errors) == 4
     joined = " ".join(errors)
-    for placeholder in ("[CHARGE]", "[SOLVENT]", "[METHOD]", "[SMILES_CONVERTER]"):
+    for placeholder in ("[CHARGE]", "[SOLVENT]", "[METHOD]"):
         assert placeholder in joined
+    # nothing to convert yet, so the converter is not demanded
+    assert len(errors) == 3
+    assert "[SMILES_CONVERTER]" not in joined
+
+    with_smiles = validate_control_text(
+        define.TEMPLATE.replace("SMILES=", "SMILES=c1ccccc1")
+    )
+    assert len(with_smiles) == 4
+    assert "[SMILES_CONVERTER]" in " ".join(with_smiles)
 
 
 def test_the_dashboard_shows_the_template_it_validates_against():
@@ -220,3 +228,70 @@ def test_an_occupier_auto_run_still_reads_the_keys_behind_the_sequences(tmp_path
     config = read_control_file(str(control))
     assert config["co2_coordination"] == "on"
     assert config["maxcore"] == 1234
+
+
+# --- smiles_converter is only required when there is a SMILES to convert ------
+
+def test_an_xyz_run_does_not_have_to_pick_a_smiles_converter(tmp_path):
+    """Every shipped example CONTROL.txt was rejected over this: they feed an
+    XYZ block, so there is nothing for a converter to do."""
+    control = tmp_path / "CONTROL.txt"
+    control.write_text("charge=0\nsolvent=water\nmethod=classic\n", encoding="utf-8")
+    (tmp_path / "input.txt").write_text("C 0.0 0.0 0.0\nH 0.0 0.0 1.1\n", encoding="utf-8")
+
+    assert validate_control_text(control.read_text()) == []
+    assert read_control_file(str(control))["smiles_converter"] == "NORMAL"
+
+
+def test_a_smiles_run_still_has_to_pick_one(tmp_path):
+    control = tmp_path / "CONTROL.txt"
+    control.write_text(
+        "charge=0\nsolvent=water\nmethod=classic\nSMILES=c1ccccc1\n", encoding="utf-8"
+    )
+    errors = validate_control_text(control.read_text())
+    assert len(errors) == 1
+    assert "SMILES" in errors[0]
+    for option in ("QUICK", "NORMAL", "GUPPY", "ARCHITECTOR"):
+        assert option in errors[0]
+    with pytest.raises(ValueError, match="smiles_converter"):
+        read_control_file(str(control))
+
+
+def test_a_smiles_in_the_input_file_counts_too(tmp_path):
+    """The conversion is triggered by the input file's content, not by the
+    SMILES key, so the input file has to be able to demand a converter."""
+    control = tmp_path / "CONTROL.txt"
+    control.write_text("charge=0\nsolvent=water\nmethod=classic\n", encoding="utf-8")
+    (tmp_path / "input.txt").write_text("c1ccccc1\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="smiles_converter"):
+        read_control_file(str(control))
+
+
+def test_a_caller_that_knows_can_say_so():
+    """The Submit tab validates before it writes its input box into the
+    CONTROL text, so it answers for it."""
+    text = "charge=0\nsolvent=water\nmethod=classic\n"
+    assert validate_control_text(text, converts_smiles=True) != []
+    assert validate_control_text(text + "SMILES=c1ccccc1\n", converts_smiles=False) == []
+
+
+def test_the_shipped_examples_parse(tmp_path):
+    """The examples are the oldest real CONTROL files there are."""
+    import glob
+    from pathlib import Path as _Path
+
+    root = _Path(__file__).resolve().parent.parent / "examples"
+    files = sorted(glob.glob(str(root / "**" / "CONTROL.txt"), recursive=True))
+    assert files, "no example CONTROL.txt found"
+    unreadable = {}
+    for path in files:
+        try:
+            config = read_control_file(path)
+        except ValueError as exc:
+            unreadable[path] = str(exc)
+            continue
+        assert config["XTB_OPT"] in {"yes", "no"}
+        assert config["global_optimizer"] in {"", "GOAT", "CREST"}
+    # ZnTpy_Me leaves `method=` empty, which is a real gap in that file
+    assert all("method" in msg for msg in unreadable.values()), unreadable
+    assert len(unreadable) <= 1, unreadable

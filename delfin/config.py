@@ -64,6 +64,14 @@ _PLACEHOLDER_MESSAGES: Dict[str, str] = {
     "ESD_modus": "Placeholder [ESD_MODUS] must be set to one of: TDDFT, deltaSCF, hybrid1",
     "ESD_T1_opt": "Placeholder [ESD_T1_OPT] must be set to one of: uks, tddft",
 }
+_MISSING_KEY_MESSAGES: Dict[str, str] = {
+    # smiles_converter is only demanded when the run actually builds a
+    # structure from a SMILES, so say that rather than naming a bare key.
+    "smiles_converter": (
+        "This run builds its structure from a SMILES, so smiles_converter must "
+        "be set to one of: QUICK, NORMAL, GUPPY, ARCHITECTOR"
+    ),
+}
 _KNOWN_ORCA_OVERRIDE_BASENAMES: Set[str] = {
     "basename",
     "xtb",
@@ -414,8 +422,57 @@ def _apply_guppy_legacy(config: Dict[str, Any]) -> None:
         config["smiles_converter"] = "GUPPY"
 
 
+def _control_names_a_smiles(config: Dict[str, Any]) -> bool:
+    """The CONTROL file itself carries a SMILES that will have to be built."""
+    value = config.get("SMILES", "")
+    return bool(str(value or "").strip()) and not _is_placeholder_value(value)
+
+
+def _input_file_holds_a_smiles(config: Dict[str, Any], control_path: Optional[str]) -> bool:
+    """Whether the geometry source named by the CONTROL file is a SMILES.
+
+    The SMILES module is imported lazily: it pulls in openbabel and costs about
+    0.4 s, and the question only has to be answered when smiles_converter is
+    missing in the first place.
+    """
+    if not control_path:
+        return False
+    try:
+        entry = str(config.get("input_file") or "input.txt").strip() or "input.txt"
+        source = Path(control_path).parent / entry
+        if not source.is_file():
+            return False
+        content = source.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return False
+    if not content.strip():
+        return False
+    try:
+        from delfin.smiles_converter import is_smiles_string
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(is_smiles_string(content))
+
+
+def _run_converts_smiles(config: Dict[str, Any], control_path: Optional[str] = None) -> bool:
+    """True when this run turns a SMILES into coordinates.
+
+    Only then does the converter have to be chosen. A run whose geometry comes
+    from an XYZ block has nothing to convert, and demanding a converter for it
+    made every CONTROL file written for such a run unusable.
+    """
+    return _control_names_a_smiles(config) or _input_file_holds_a_smiles(config, control_path)
+
+
 def _collect_missing_required_keys(user_keys: Set[str], placeholder_keys: Set[str],
-                                    esd_enabled: bool = True) -> List[str]:
+                                    esd_enabled: bool = True,
+                                    converts_smiles: Any = None) -> List[str]:
+    """Required keys the file does not answer.
+
+    `converts_smiles` may be a bool or a zero-argument callable, and is
+    consulted only when smiles_converter would otherwise be reported — the
+    answer can cost an expensive import.
+    """
     required_missing = {key for key in _TEMPLATE_REQUIRED_KEYS if key not in user_keys}
     placeholder_required = _TEMPLATE_REQUIRED_KEYS & placeholder_keys
     missing = sorted(required_missing | placeholder_required)
@@ -423,12 +480,19 @@ def _collect_missing_required_keys(user_keys: Set[str], placeholder_keys: Set[st
     missing = [k for k in missing if k != "ESD_T1_opt"]
     if not esd_enabled:
         missing = [k for k in missing if k != "ESD_modus"]
+    if "smiles_converter" in missing and converts_smiles is not None:
+        answer = converts_smiles() if callable(converts_smiles) else converts_smiles
+        if not answer:
+            missing = [k for k in missing if k != "smiles_converter"]
     return missing
 
 
 def _raise_if_missing_required(user_keys: Set[str], placeholder_keys: Set[str],
-                                esd_enabled: bool = True) -> None:
-    missing_all = _collect_missing_required_keys(user_keys, placeholder_keys, esd_enabled=esd_enabled)
+                                esd_enabled: bool = True,
+                                converts_smiles: Any = None) -> None:
+    missing_all = _collect_missing_required_keys(
+        user_keys, placeholder_keys, esd_enabled=esd_enabled, converts_smiles=converts_smiles,
+    )
     if missing_all:
         joined = ", ".join(missing_all)
         raise ValueError(
@@ -586,7 +650,10 @@ def read_control_file(file_path: str) -> Dict[str, Any]:
     placeholder_keys = {key for key, value in config.items() if _is_placeholder_value(value)}
     defaults = _load_template_defaults()
     esd_enabled = str(config.get("ESD_modul", "no")).strip().lower() == "yes"
-    _raise_if_missing_required(user_keys, placeholder_keys, esd_enabled=esd_enabled)
+    _raise_if_missing_required(
+        user_keys, placeholder_keys, esd_enabled=esd_enabled,
+        converts_smiles=lambda: _run_converts_smiles(config, file_path),
+    )
     validated = validate_control_config(config)
     if "_occupier_sequence_blocks" in config:
         validated["_occupier_sequence_blocks"] = config["_occupier_sequence_blocks"]
@@ -600,11 +667,17 @@ def read_control_file(file_path: str) -> Dict[str, Any]:
     return merged
 
 
-def validate_control_text(control_text: str) -> List[str]:
+def validate_control_text(control_text: str, *, converts_smiles: Optional[bool] = None) -> List[str]:
     """Validate CONTROL.txt content and return a list of errors (empty if valid).
 
     Collects ALL validation errors instead of stopping at the first one.
     This includes placeholder errors AND field validation errors.
+
+    `converts_smiles` says whether this run will build a structure from a
+    SMILES, which decides whether smiles_converter has to be chosen. There is
+    no file to look at here, so a caller that knows — the Submit tab knows what
+    is in its input box — should say; otherwise only the CONTROL file's own
+    SMILES key can answer.
     """
     all_errors: List[str] = []
 
@@ -626,7 +699,13 @@ def validate_control_text(control_text: str) -> List[str]:
 
     # Collect placeholder errors (don't raise, just collect)
     esd_enabled = str(config.get('ESD_modul', 'no')).strip().lower() == 'yes'
-    missing_required = _collect_missing_required_keys(user_keys, placeholder_keys)
+    missing_required = _collect_missing_required_keys(
+        user_keys, placeholder_keys,
+        converts_smiles=(
+            converts_smiles if converts_smiles is not None
+            else lambda: _run_converts_smiles(config)
+        ),
+    )
     for key in missing_required:
         # ESD settings only matter when ESD_modul=yes
         if key in {'ESD_modus', 'ESD_T1_opt'} and not esd_enabled:
@@ -637,7 +716,7 @@ def validate_control_text(control_text: str) -> List[str]:
             )
             all_errors.append(msg)
         else:
-            all_errors.append(f"Missing required key: {key}")
+            all_errors.append(_MISSING_KEY_MESSAGES.get(key, f"Missing required key: {key}"))
 
     # Replace placeholders with valid dummy values for further validation
     config_for_validation = dict(config)
@@ -772,7 +851,10 @@ def OCCUPIER_parser(path: str) -> Dict[str, Any]:
     placeholder_keys = {key for key, value in config.items() if _is_placeholder_value(value)}
     defaults = _load_template_defaults()
     esd_enabled = str(config.get("ESD_modul", "no")).strip().lower() == "yes"
-    _raise_if_missing_required(user_keys, placeholder_keys, esd_enabled=esd_enabled)
+    _raise_if_missing_required(
+        user_keys, placeholder_keys, esd_enabled=esd_enabled,
+        converts_smiles=lambda: _run_converts_smiles(config, path),
+    )
     validated = validate_control_config(config)
     if "_occupier_sequence_blocks" in config:
         validated["_occupier_sequence_blocks"] = config["_occupier_sequence_blocks"]
