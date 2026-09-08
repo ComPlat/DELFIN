@@ -28,6 +28,14 @@ from .molecule_viewer import apply_molecule_view_style
 
 RDLogger.DisableLog('rdApp.*')
 
+# Drawing the rules rather than typing them.  Optional on purpose: a tab that
+# cannot build its editor is a tab without a DRAW button, not a tab that takes
+# the dashboard down on the way up.
+try:
+    from . import chemdarwin_draw as _draw
+except Exception:                                       # noqa: BLE001
+    _draw = None
+
 try:
     from PIL import Image
 except ImportError:
@@ -1310,6 +1318,32 @@ def create_tab(ctx):
     page_jump_input.add_class('chemdarwin-iter')
     btn_jump = widgets.Button(description='Go', button_style='info', layout=widgets.Layout(width='40px'))
 
+    # -- drawing the rules -----------------------------------------------
+    # One editor for all four boxes; the buttons only say which one it is
+    # pointed at.  If it cannot be built there are simply no DRAW buttons and
+    # every box is still typed into, which is how the tab worked before.
+    drawing = None
+    if _draw is not None:
+        try:
+            drawing = _draw.build_section(ctx, {
+                'seed': seed_input,
+                'rxn': custom_smarts,
+                'forbidden': custom_forbidden,
+                'protected': custom_protected,
+            })
+        except Exception:                               # noqa: BLE001
+            drawing = None
+
+    def _titled(text, which):
+        """A box's title, with the button that draws into it beside it."""
+        label = widgets.HTML(text)
+        if drawing is None:
+            return label
+        return widgets.HBox(
+            [label, drawing['buttons'][which]],
+            layout=widgets.Layout(gap='10px', align_items='center',
+                                  flex_wrap='wrap', max_width='100%'))
+
     def _safe_job_name(name_raw):
         return ''.join(c for c in name_raw if c.isalnum() or c in ('_', '-'))
 
@@ -1450,7 +1484,7 @@ def create_tab(ctx):
     )
 
     seed_section = widgets.VBox([
-        widgets.HTML('<b>Seed SMILES</b>'),
+        _titled('<b>Seed SMILES</b>', 'seed'),
         seed_input,
         complex_info_label,
         seed_viz_row,
@@ -1709,14 +1743,15 @@ def create_tab(ctx):
 
     # -- layout ----------------------------------------------------------
     param_box = widgets.VBox([
-        widgets.HTML('<b>Reaction SMARTS</b>'),
+        _titled('<b>Reaction SMARTS</b>', 'rxn'),
         custom_smarts,
-        widgets.HTML('<b>Forbidden patterns (block newly formed)</b>'),
+        _titled('<b>Forbidden patterns (block newly formed)</b>', 'forbidden'),
         custom_forbidden,
         custom_forbidden_label,
-        widgets.HTML('<b>Protected patterns (keep unchanged)</b>'),
+        _titled('<b>Protected patterns (keep unchanged)</b>', 'protected'),
         custom_protected,
         custom_protected_label,
+        drawing['widget'] if drawing is not None else widgets.HTML(''),
         custom_keep_rings,
         custom_iters,
         custom_debug,
@@ -1773,7 +1808,10 @@ def create_tab(ctx):
     refs = {
         'seed_input': seed_input,
         'custom_smarts': custom_smarts,
+        'custom_forbidden': custom_forbidden,
+        'custom_protected': custom_protected,
         'run_btn': run_btn,
+        'drawing': drawing,
     }
 
     return tab_body, refs
