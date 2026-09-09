@@ -14384,6 +14384,15 @@ class _DocToolExecutor:
         """
         from . import skills as _skills_mod
         name = (arguments.get("name") or "").strip()
+        # The tool's own description says "Use on '/skill-name'", and the
+        # user types the slash, so that is the string a model passes
+        # through -- and it was then refused, with the parameter text
+        # ("Skill name, no slash") contradicting the sentence above it.
+        # A leading slash cannot be part of a real name: skills are files.
+        # Same for the extension a model copies off a `ls .delfin/skills`.
+        name = name.lstrip("/").strip()
+        if name.lower().endswith(".md"):
+            name = name[:-3]
         args = (arguments.get("args") or "").strip()
         if not name:
             return json.dumps({"error": "skill name must be non-empty"})
