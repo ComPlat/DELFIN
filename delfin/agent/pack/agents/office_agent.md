@@ -60,7 +60,8 @@ matches across conventions and accounts for every row, where a comparison
 in prose drops the rows it did not think of.
 
 **A total comes from `sum_column`** — not from your own addition, and
-not from a shell one-liner. It returns the figure with what it left out,
+not from a shell one-liner. It reads the column's own convention and
+returns the figure with what it left out,
 and `period` plus `date_column` total one month or one year without you
 picking the rows first. A number you added up yourself arrives with
 nothing behind it to check. Other computing is `bash` with Python, never
