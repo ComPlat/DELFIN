@@ -294,7 +294,7 @@ def create_tab(ctx):
     Returns ``(tab_widget, refs_dict)``.
     """
     SUBMIT_MOL_HEIGHT = 650
-    SMILES_CONVERTER_PLACEHOLDER = '[QUICK|NORMAL|GUPPY|ARCHITECTOR]'
+    SMILES_CONVERTER_PLACEHOLDER = '[QUICK|NORMAL|MANTA|ARCHITECTOR]'
     main_io_loop = getattr(getattr(get_ipython(), 'kernel', None), 'io_loop', None)
 
     # -- widgets --------------------------------------------------------
@@ -400,7 +400,7 @@ def create_tab(ctx):
         style=COMMON_STYLE, layout=widgets.Layout(width='220px'),
     )
     only_goat_smiles_converter = widgets.Dropdown(
-        options=['QUICK', 'NORMAL', 'GUPPY', 'ARCHITECTOR'],
+        options=['QUICK', 'NORMAL', 'MANTA', 'ARCHITECTOR'],
         value='QUICK', description='Converter:', style=COMMON_STYLE,
         layout=widgets.Layout(width='220px'),
     )
@@ -1291,7 +1291,7 @@ def create_tab(ctx):
         if not text or text == SMILES_CONVERTER_PLACEHOLDER:
             return ''
         normalized = text.upper()
-        if normalized in {'QUICK', 'NORMAL', 'GUPPY', 'ARCHITECTOR'}:
+        if normalized in {'QUICK', 'NORMAL', 'MANTA', 'GUPPY', 'ARCHITECTOR'}:
             return normalized
         return ''
 

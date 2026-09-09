@@ -948,6 +948,10 @@ class FieldSpec:
     required: bool = False
     default: Any = None
     allow_none: bool = False
+    #: What the key does, in one or two sentences.  Writing ``KEY=?`` in
+    #: CONTROL.txt prints this and then runs on the default, so a question can
+    #: be asked without leaving the file and without stopping the run.
+    help: str = ""
 
 
 def _as_int(value: Any) -> int:
@@ -975,10 +979,19 @@ def _as_guppy_start_strategy(value: Any) -> str:
     return text
 
 
+#: How many of the ranked frames may be handed to GOAT.  The old ceiling was
+#: three, which is below what a real screening run wants; ten is high enough
+#: that the setting stops being the limit and low enough that a typo cannot
+#: quietly queue a hundred global optimisations overnight.  What actually runs
+#: is still bounded by how many frames survived the energy window and the
+#: duplicate filter.
+_GOAT_TOPK_CEILING = 10
+
+
 def _as_guppy_goat_topk(value: Any) -> int:
     parsed = _as_int(value)
-    if parsed < 0 or parsed > 3:
-        raise ValueError("must be 0, 1, 2, or 3")
+    if parsed < 0 or parsed > _GOAT_TOPK_CEILING:
+        raise ValueError(f"must be between 0 and {_GOAT_TOPK_CEILING}")
     return parsed
 
 
@@ -1685,18 +1698,195 @@ def _as_ap_method(value: Any) -> int | None:
     return parsed
 
 
+#: The placeholders a shipped template may still carry.  Both spellings are
+#: accepted because a CONTROL file written before the rename is still a valid
+#: CONTROL file, and the run it describes has not changed.
+_SMILES_CONVERTER_PLACEHOLDERS = (
+    "[QUICK|NORMAL|MANTA|ARCHITECTOR]",
+    "[QUICK|NORMAL|GUPPY|ARCHITECTOR]",
+)
+
+#: ``GUPPY`` is kept as an accepted spelling of ``MANTA``.  It never named a
+#: different builder: since MANTA v1 the GUPPY path has called
+#: ``smiles_to_xyz_isomers`` -- MANTA's own entry point -- and added an energy
+#: ranking on top.  The rename says what it was already doing.
+_SMILES_CONVERTER_ALIASES = {"GUPPY": "MANTA"}
+
+_SMILES_CONVERTER_MODES = ("QUICK", "NORMAL", "MANTA", "ARCHITECTOR")
+
+
+def _as_manta_quality(value: Any) -> str:
+    """One of the builder's four conformer-depth presets.
+
+    The seed counts behind them are 12 / 20 / 40 / 60.  ``extreme`` is what the
+    command line uses by default and the only one the convergence study finds
+    reliable on multi-isomer systems; the pipeline used to pass nothing, which
+    is the library default of 20.
+    """
+    text = str(value or "").strip().lower()
+    if not text:
+        return "extreme"
+    if text not in ("fast", "normal", "max", "extreme"):
+        raise ValueError("must be fast, normal, max, or extreme")
+    return text
+
+
+def _as_manta_construction(value: Any) -> str:
+    """Which construction preset the builder runs under."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return "champion"
+    if text not in ("champion", "builder", "default"):
+        raise ValueError("must be champion, builder, or default")
+    return text
+
+
+def _as_manta_hapto(value: Any) -> str:
+    """Whether eta-coordination is approximated, forced, or refused."""
+    text = str(value or "").strip().lower()
+    if not text:
+        return "auto"
+    if text not in ("auto", "on", "off"):
+        raise ValueError("must be auto, on, or off")
+    return text
+
+
+def _as_manta_rank(value: Any) -> str:
+    """The Hamiltonian the selection stage ranks the frames with.
+
+    ``clash`` is the builder's own steric ordering and needs no binary; the
+    rest need xtb, and ``gxtb`` needs the separate g-xTB build -- an ordinary
+    xtb accepts ``--gxtb`` and silently runs GFN2, so it is not reachable by
+    flag alone.
+    """
+    text = str(value or "").strip().lower()
+    if not text:
+        return "gfn2"
+    if text not in ("none", "clash", "gfnff", "gfn0", "gfn1", "gfn2", "gxtb"):
+        raise ValueError(
+            "must be none, clash, gfnff, gfn0, gfn1, gfn2, or gxtb")
+    return text
+
+
+def _as_manta_multiplicity(value: Any) -> str:
+    """``auto`` or a positive integer."""
+    text = str(value or "").strip().lower()
+    if not text or text == "auto":
+        return "auto"
+    try:
+        number = int(float(text))
+    except (TypeError, ValueError):
+        raise ValueError("must be auto or a positive integer") from None
+    if number < 1:
+        raise ValueError("must be auto or a positive integer")
+    return str(number)
+
+
+def _as_manta_opt(value: Any) -> str:
+    """Whether the surviving frames get a real geometry optimisation.
+
+    ``none`` means the screen is the whole ranking: one single point per
+    (frame, multiplicity) pair and nothing is optimised.  That is a deliberate
+    mode -- a cheap look at a large manifold -- not a way to skip work by
+    accident, so it is spelled out rather than inferred from a zero somewhere.
+    """
+    text = str(value or "").strip().lower()
+    if not text:
+        return "xtb"
+    if text in ("no", "off", "false"):
+        return "none"
+    if text in ("yes", "on", "true"):
+        return "xtb"
+    if text not in ("none", "xtb"):
+        raise ValueError("must be none or xtb")
+    return text
+
+
+def _as_manta_refine(value: Any) -> str:
+    """What the best of the optimised frames is handed to.
+
+    GOAT searches for the global minimum, CREST for the conformer ensemble.
+    Which one a given complex wants is a chemistry question, so CONTROL asks
+    it; ``none`` stops after the optimisation.
+    """
+    text = str(value or "").strip().lower()
+    if not text:
+        return "goat"
+    if text in ("no", "off", "false"):
+        return "none"
+    if text not in ("none", "goat", "crest"):
+        raise ValueError("must be none, goat, or crest")
+    return text
+
+
+def _as_manta_multiplicities(value: Any) -> str:
+    """``auto``, or the spin states the frames are tried at.
+
+    Unset, this is DELFIN's existing rule and nothing more: an even electron
+    count is a singlet, an odd one a doublet.  Named -- ``1,3,5`` -- every
+    frame is built at every one of them and they compete in a single ranking,
+    because which coordination isomer lies lowest and which spin state lies
+    lowest are not separable questions for a metal complex.
+    """
+    text = str(value or "").strip().lower()
+    if not text or text in ("auto", "default"):
+        return "auto"
+    found = []
+    for token in text.replace(",", " ").split():
+        try:
+            number = int(float(token))
+        except (TypeError, ValueError):
+            raise ValueError(
+                "must be auto or a comma-separated list of positive integers, "
+                f"got {token!r}") from None
+        if number < 1:
+            raise ValueError("multiplicities must be 1 or greater")
+        if number not in found:
+            found.append(number)
+    if not found:
+        return "auto"
+    return ",".join(str(n) for n in sorted(found))
+
+
+def _as_manta_keep(value: Any) -> str:
+    """``all`` or how many frames reach the ranking stage."""
+    text = str(value or "").strip().lower()
+    if not text or text in ("all", "0"):
+        return "all"
+    try:
+        number = int(float(text))
+    except (TypeError, ValueError):
+        raise ValueError("must be all or a positive integer") from None
+    if number < 1:
+        raise ValueError("must be all or a positive integer")
+    return str(number)
+
+
+def _as_optional_positive_int(value: Any) -> str:
+    """A positive integer, or empty meaning "let the builder decide"."""
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        number = int(float(text))
+    except (TypeError, ValueError):
+        raise ValueError("must be a positive integer or empty") from None
+    if number < 1:
+        raise ValueError("must be a positive integer or empty")
+    return str(number)
+
+
 def _as_smiles_converter(value: Any) -> str:
     """Coerce smiles_converter into one of the supported modes."""
     text = str(value or "").strip()
     if not text:
         return ""
-    if text == "[QUICK|NORMAL|GUPPY|ARCHITECTOR]":
+    if text in _SMILES_CONVERTER_PLACEHOLDERS:
         return "NORMAL"
 
-    normalized = text.upper()
-    allowed = {"QUICK", "NORMAL", "GUPPY", "ARCHITECTOR"}
-    if normalized not in allowed:
-        raise ValueError("must be QUICK, NORMAL, GUPPY, or ARCHITECTOR")
+    normalized = _SMILES_CONVERTER_ALIASES.get(text.upper(), text.upper())
+    if normalized not in _SMILES_CONVERTER_MODES:
+        raise ValueError("must be QUICK, NORMAL, MANTA, or ARCHITECTOR")
     return normalized
 
 
@@ -1711,6 +1901,9 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("multiplicity_global_opt", _as_int, allow_none=True),
     FieldSpec("PAL", _as_int, default=6),
     FieldSpec("smiles_converter", _as_smiles_converter, default=""),
+    # Legacy GUPPY keys.  Kept so an archived CONTROL file still validates --
+    # 62 of the 126 archived GUPPY runs were configured through GUPPY=yes -- and
+    # each is read as a fallback by its MANTA successor below.
     FieldSpec("GUPPY", _as_yes_no, default="no"),
     FieldSpec("GUPPY_RUNS", _as_positive_int, default=20),
     FieldSpec("GUPPY_GOAT", _as_guppy_goat_topk, default=0),
@@ -1720,6 +1913,80 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("GUPPY_MAX_ISOMERS", _as_positive_int, default=100),
     FieldSpec("GUPPY_RMSD_CUTOFF", _as_non_negative_float, default=0.3),
     FieldSpec("GUPPY_ENERGY_WINDOW_KCAL", _as_non_negative_float, default=25.0),
+    # MANTA: the builder.
+    FieldSpec("MANTA_QUALITY", _as_manta_quality, default="extreme",
+             help="How hard the builder searches: fast (12 seeds), normal (20), max (40), extreme (60). Seeds are independent placement attempts per coordination geometry; more of them find isomers the smaller counts miss, at close to linear cost. extreme is what the delfin-manta command line uses by default."),
+    FieldSpec("MANTA_SEEDS", _as_optional_positive_int, default="",
+             help="Override the seed count from MANTA_QUALITY with an explicit number. Empty means the profile decides."),
+    FieldSpec("MANTA_NUM_CONFS", _as_optional_positive_int, default="",
+             help="How many conformers per isomer the builder generates. Empty means the quality profile decides."),
+    FieldSpec("MANTA_CONSTRUCTION", _as_manta_construction, default="champion",
+             help="Which construction path: champion (all strategies, best result wins), builder (the direct path only), default (the library default)."),
+    FieldSpec("MANTA_MAX_ISOMERS", _as_int, default=0,
+             help="Cap on the isomers built. This shrinks the search, not just the answer: the pre-UFF candidate budget is MANTA_MAX_ISOMERS x cap_mult, so a small number means fewer candidates were ever considered. 0 means the complete manifold."),
+    FieldSpec("MANTA_BINDING_MODES", _as_yes_no, default="yes",
+             help="Enumerate the ways a ligand can bind (which donor atoms face the metal), not only where the ligands sit."),
+    FieldSpec("MANTA_HAPTO", _as_manta_hapto, default="auto",
+             help="Hapticity handling for pi-bound ligands: auto, on, or off."),
+    FieldSpec("MANTA_UFF", _as_yes_no, default="yes",
+             help="Run the UFF pre-relaxation on each built frame. Off gives raw geometric placements, which are faster and worse."),
+    FieldSpec("MANTA_DETERMINISTIC", _as_yes_no, default="yes",
+             help="Fix the random seeds so the same SMILES gives the same frames in the same order on every run. Turning this off makes results irreproducible for no gain."),
+    FieldSpec("MANTA_COLLAPSE_VARIANTS", _as_yes_no, default="no",
+             help="Merge isomers that differ only in atom labelling. On, the manifold is smaller and duplicates are gone; off, label variants are kept as separate frames."),
+    FieldSpec("MANTA_ENV", _as_str, default="",
+             help="Extra MANTA environment variables as KEY=VALUE pairs, semicolon separated. An escape hatch for builder options that have no CONTROL key yet."),
+    # MANTA: the gates.  All never-worse -- asked to empty the list they return
+    # it unchanged -- so switching them on cannot cost a structure.
+    FieldSpec("MANTA_CLEAN_GATE", _as_yes_no, default="yes",
+             help="Reject frames with atom clashes before they cost anything downstream."),
+    FieldSpec("MANTA_TOPOLOGY_GATE", _as_yes_no, default="yes",
+             help="Reject frames whose bonding does not match the SMILES that was asked for."),
+    FieldSpec("MANTA_DEDUP", _as_yes_no, default="yes",
+             help="Remove frames that are the same structure under rotation and relabelling."),
+    FieldSpec("MANTA_COORD_INTEGRITY", _as_yes_no, default="no",
+             help="Additionally check that every donor atom named in the SMILES really reaches the metal."),
+    FieldSpec("MANTA_CONF_COMPLETE", _as_yes_no, default="no",
+             help="Require the conformer search to finish rather than accepting a partial ensemble."),
+    # MANTA: reducing the frames to the one geometry the pipeline takes.
+    # The funnel: screen -> optimise -> refine.  Each stage is switchable on
+    # its own because they cost three different amounts.
+    FieldSpec("MANTA_SCREEN", _as_manta_rank, default="",
+             help="The single point that puts the frames in an energy order: none, clash, gfnff, gfn0, gfn1, gfn2, gxtb. This is the cheap stage -- one energy per (frame, multiplicity) pair, no geometry change -- and it exists so the expensive stage can be pointed at the frames worth optimising. none leaves the builder's own order, which is least-steric-clash and largely tied. gxtb needs the separate g-xTB build; an ordinary xtb accepts the flag and silently runs GFN2, so DELFIN verifies the binary before using it."),
+    FieldSpec("MANTA_SCREEN_KEEP", _as_manta_keep, default="",
+             help="How many (frame, multiplicity) pairs survive the screen and get optimised. all optimises everything, which makes the screen pointless -- set a number here and the screen decides which ones deserve the cost. 10 is a reasonable starting point for a large manifold."),
+    FieldSpec("MANTA_OPT", _as_manta_opt, default="",
+             help="Whether the surviving frames get a real geometry optimisation (xtb) or none at all. With none, the screen is the entire ranking: nothing is optimised and the winner is the lowest single point. That is a deliberate mode for a cheap first look at a large manifold, not a way to skip work by accident."),
+    FieldSpec("MANTA_OPT_METHOD", _as_str, default="",
+             help="Override the xtb Hamiltonian for the optimisation stage. Empty follows xTB_method."),
+    FieldSpec("MANTA_MULTIPLICITIES", _as_manta_multiplicities, default="",
+             help="The spin states every frame is built and ranked at, e.g. 1,3,5. Left at auto this is DELFIN's existing rule and nothing more: an even electron count is a singlet, an odd one a doublet. Naming several matters for metal complexes, because which coordination isomer lies lowest and which spin state lies lowest are not separable questions -- so the frames compete as (frame, multiplicity) pairs in one ranking, and the winner carries its own multiplicity into GOAT or CREST. This is not a spin-state prediction; OCCUPIER does that later and properly."),
+    FieldSpec("MANTA_REFINE", _as_manta_refine, default="",
+             help="What the best optimised frames are handed to: goat (search for the global minimum), crest (conformer ensemble), or none (stop after the optimisation). CREST runs in the CONTROL solvent via GBSA; GOAT does not use it."),
+    FieldSpec("MANTA_REFINE_TOPK", _as_guppy_goat_topk, default="",
+             help="How many of the ranked candidates go into GOAT or CREST. 0 skips the refinement entirely. The winner of this stage is what the pipeline writes to start.txt and everything downstream uses."),
+    # The spellings these replaced.  Kept so a CONTROL.txt written before the
+    # rename still validates and still means what it said.
+    FieldSpec("MANTA_RANK", _as_manta_rank, default="",
+             help="Old spelling of MANTA_SCREEN. Still honoured; write MANTA_SCREEN in new files."),
+    FieldSpec("MANTA_RANK_OPT", _as_yes_no, default="",
+             help="Old spelling of MANTA_OPT as a yes/no. Still honoured; write MANTA_OPT=xtb or MANTA_OPT=none in new files."),
+    FieldSpec("MANTA_RANK_MULTIPLICITY", _as_manta_multiplicity, default="",
+             help="Old spelling for a single multiplicity. Still honoured; MANTA_MULTIPLICITIES takes a list."),
+    FieldSpec("MANTA_KEEP", _as_manta_keep, default="",
+             help="Old spelling of MANTA_SCREEN_KEEP. Still honoured."),
+    FieldSpec("MANTA_START_STRATEGY", _as_guppy_start_strategy, default="isomers",
+             help="Where start geometries come from: isomers (enumeration only), isomers+random (plus seeded conformers), full (both, unrestricted)."),
+    FieldSpec("MANTA_RMSD_CUTOFF", _as_non_negative_float, default=0.3,
+             help="Frames closer than this RMSD (Angstrom) to one already kept are dropped before the refinement, so GOAT is not run twice on the same structure."),
+    FieldSpec("MANTA_ENERGY_WINDOW", _as_non_negative_float, default=25.0,
+             help="Frames more than this many kcal/mol above the best are dropped before the refinement."),
+    FieldSpec("MANTA_GOAT", _as_guppy_goat_topk, default="",
+             help="Old spelling of MANTA_REFINE_TOPK. Still honoured."),
+    FieldSpec("MANTA_PARALLEL_JOBS", _as_positive_int, default=4,
+             help="How many frames are worked on at once. The PAL budget is divided across them, so 4 jobs on PAL=32 gives each job 8 cores and each job maxcore x 8 MB."),
+    FieldSpec("MANTA_TIME_BUDGET", _as_non_negative_float, default=1800.0,
+             help="Accepted for compatibility, but not enforced: the builder has no interruption point, so a wall-clock cap could only kill a construction part-way and a part-way construction yields nothing usable. Bound the work with MANTA_QUALITY and MANTA_MAX_ISOMERS instead. Not written into new CONTROL files."),
     FieldSpec("number_explicit_solv_molecules", _as_int, default=0),
     FieldSpec("method", _as_method, required=True),
     FieldSpec("frequency_calculation", _as_yes_no, default="no"),
@@ -1797,6 +2064,65 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
 )
 
 
+def _manta_funnel_notes(validated: Mapping[str, Any]) -> list[str]:
+    """Say so when the funnel cannot actually name a winner.
+
+    The pipeline takes exactly one geometry out of MANTA, so something has to
+    put the frames in an order.  There are only two things that can: a single
+    point on every frame (``MANTA_SCREEN``), or a geometry optimisation of
+    every frame (``MANTA_OPT=xtb`` with ``MANTA_SCREEN_KEEP=all``).
+
+    Switch both off and the run still produces a structure -- the builder's
+    first frame -- but that structure was never compared to anything.  It is
+    not a wrong answer so much as an unmeasured one, and it looks exactly like
+    a measured one everywhere downstream.  That is worth a sentence in the log.
+
+    These are advisory.  Refusing the run would be wrong: building frames
+    without ranking them is a legitimate thing to ask for.  It just has to be
+    asked for knowingly.
+
+    The settings are read through ``selection_options`` rather than off the
+    keys, so this warns about what the run will actually do instead of about
+    what the file appears to say.
+    """
+    try:
+        from delfin.common.manta_settings import selection_options
+        funnel = selection_options(validated)
+    except Exception:                              # noqa: BLE001
+        return []
+
+    screen = funnel['screen']
+    optimise = funnel['optimise']
+    keep = funnel['screen_keep']
+    notes: list[str] = []
+
+    screens_nothing = screen in ('none', 'clash')
+    optimises_everything = optimise == 'xtb' and keep is None
+
+    if screens_nothing and optimise == 'none':
+        notes.append(
+            "MANTA ranks nothing: MANTA_SCREEN=none means no single point and "
+            "MANTA_OPT=none means no optimisation, so there is no energy to "
+            "order the frames by. The run will hand the pipeline the builder's "
+            "first frame -- a structure, but not a winner, and nothing "
+            "downstream can tell the difference. Set MANTA_SCREEN=gfn2 to rank "
+            "by single point, or MANTA_OPT=xtb to let the optimisation rank.")
+    elif screens_nothing and not optimises_everything:
+        notes.append(
+            f"MANTA_SCREEN=none with MANTA_SCREEN_KEEP={keep} keeps the first "
+            f"{keep} frames in builder order. That order is least-steric-clash "
+            "and largely tied, so nothing measured which frames those should "
+            "be. Set MANTA_SCREEN=gfn2 so the kept frames are the lowest ones.")
+
+    if optimise == 'none' and funnel['refine'] != 'none':
+        notes.append(
+            "MANTA_OPT=none hands unoptimised builder geometries straight to "
+            f"{funnel['refine'].upper()}. That is allowed, but the frames "
+            "reaching it have only ever been seen by a single point.")
+
+    return notes
+
+
 def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
     """Validate and coerce CONTROL configuration values."""
     if "sc_smiles_converter" in config and "thdy_smiles_converter" not in config:
@@ -1805,6 +2131,7 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
         config["thdy_preopt"] = config["sc_preopt"]
 
     errors: list[str] = []
+    explanations: list[tuple[str, str]] = []
     validated: dict[str, Any] = dict(config)
 
     if "OCCUPIER_method" in config and str(config.get("OCCUPIER_method", "")).strip() == "":
@@ -1836,6 +2163,14 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
             continue
 
         raw = config.get(spec.name, None)
+        # ``KEY=?`` is a question, not a value.  Answer it and fall through to
+        # the default, so asking what a key does never changes what the run
+        # does and never blocks it.
+        if isinstance(raw, str) and raw.strip() in ("?", "??", "help"):
+            explanations.append((spec.name, spec.help or
+                                 "no explanation has been written for this key yet"))
+            raw = None
+            config[spec.name] = ""
         if raw is None or raw == "":
             if spec.required and spec.default is None:
                 errors.append(f"Missing required key: {spec.name}")
@@ -1971,10 +2306,11 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
         if (
             "thdy_smiles_converter" not in config
             or str(config.get("thdy_smiles_converter", "")).strip() == ""
-            or _is_placeholder_literal(config.get("thdy_smiles_converter"), "[QUICK|NORMAL|GUPPY|ARCHITECTOR]")
+            or any(_is_placeholder_literal(config.get("thdy_smiles_converter"), text)
+                    for text in _SMILES_CONVERTER_PLACEHOLDERS)
         ):
             errors.append(
-                "thermodynamics=yes requires thdy_smiles_converter to be set to QUICK, NORMAL, GUPPY, or ARCHITECTOR."
+                "thermodynamics=yes requires thdy_smiles_converter to be set to QUICK, NORMAL, MANTA, or ARCHITECTOR."
             )
         if (
             "thdy_preopt" not in config
@@ -2036,6 +2372,12 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
             validated["OCCUPIER_compare"] = (
                 "G" if legacy.lower() in ("yes", "true", "1", "on") else "FSPE"
             )
+
+    for name, text in explanations:
+        logger.warning("CONTROL %s=? -> %s", name, text)
+
+    for note in _manta_funnel_notes(validated):
+        logger.warning("CONTROL validation: %s", note)
 
     if errors:
         raise ValueError("; ".join(errors))

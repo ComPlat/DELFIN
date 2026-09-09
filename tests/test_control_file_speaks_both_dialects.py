@@ -251,7 +251,7 @@ def test_a_smiles_run_still_has_to_pick_one(tmp_path):
     errors = validate_control_text(control.read_text())
     assert len(errors) == 1
     assert "SMILES" in errors[0]
-    for option in ("QUICK", "NORMAL", "GUPPY", "ARCHITECTOR"):
+    for option in ("QUICK", "NORMAL", "MANTA", "ARCHITECTOR"):
         assert option in errors[0]
     with pytest.raises(ValueError, match="smiles_converter"):
         read_control_file(str(control))
@@ -295,3 +295,24 @@ def test_the_shipped_examples_parse(tmp_path):
     # ZnTpy_Me leaves `method=` empty, which is a real gap in that file
     assert all("method" in msg for msg in unreadable.values()), unreadable
     assert len(unreadable) <= 1, unreadable
+
+
+def test_the_old_guppy_spelling_still_selects_the_builder(tmp_path):
+    """Three generations of CONTROL file, one builder.
+
+    The oldest archived runs say ``GUPPY=yes`` with no converter key at all;
+    the next say ``smiles_converter=GUPPY``; the current say ``MANTA``.  All
+    three select the same thing, and 62 of the 126 archived GUPPY runs are the
+    first kind -- if the bridge goes, their CONTROL files stop parsing.
+    """
+    for body in (
+        "charge=0\nsolvent=water\nmethod=classic\nSMILES=c1ccccc1\nGUPPY=yes\n",
+        "charge=0\nsolvent=water\nmethod=classic\nSMILES=c1ccccc1\n"
+        "smiles_converter=GUPPY\n",
+        "charge=0\nsolvent=water\nmethod=classic\nSMILES=c1ccccc1\n"
+        "smiles_converter=MANTA\n",
+    ):
+        control = tmp_path / "CONTROL.txt"
+        control.write_text(body, encoding="utf-8")
+        config = read_control_file(str(control))
+        assert config.get("smiles_converter") == "MANTA", body
