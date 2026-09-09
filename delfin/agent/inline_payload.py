@@ -171,6 +171,11 @@ class Effects:
     """
 
     writes: list[str] = field(default_factory=list)
+    # Literal paths the payload OPENS for reading. Collected for the same
+    # reason as ``writes``: the gate that stops `cat /etc/passwd` reads
+    # the arguments of known content-dumping commands, and a payload's
+    # `open(p).read()` is that command with the path one level in.
+    reads: list[str] = field(default_factory=list)
     local_modules: list[str] = field(default_factory=list)
     opaque: list[str] = field(default_factory=list)
 
@@ -283,9 +288,11 @@ class _Walker(ast.NodeVisitor):
             elif kw.arg is None:
                 self.eff.opaque.append("open() with **kwargs")
                 return
-        if not (set(mode) & _WRITE_MODE_CHARS):
-            return
         path = _literal_str(node.args[0]) if node.args else None
+        if not (set(mode) & _WRITE_MODE_CHARS):
+            if path is not None:
+                self.eff.reads.append(path)
+            return
         if path is None:
             self.eff.opaque.append("open() writes a computed path")
             return
@@ -358,6 +365,7 @@ def analyze_payload(source: str, cwd: Path | None = None) -> Effects:
         eff.opaque = [o for o in eff.opaque
                       if not o.startswith("calls .write")]
     _dedupe(eff.writes)
+    _dedupe(eff.reads)
     _dedupe(eff.local_modules)
     _dedupe(eff.opaque)
     return eff

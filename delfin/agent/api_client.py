@@ -887,9 +887,37 @@ _BASH_DEST_OPTS: frozenset[str] = frozenset({
 # gated in general — half of a shell session legitimately touches paths
 # outside the workspace (interpreters, system tools, /proc) — but these are
 # the direct substitute for a refused read_file.
+# Commands that print the CONTENTS of a file named on their command line.
+#
+# The gate this feeds exists because "a refusal that one tool honours and
+# the next ignores is not a refusal" -- and the set was written narrowly
+# enough that four other spellings of `cat` walked straight past it.
+# Measured against main on 2026-09-09, with the workspace elsewhere:
+#
+#     cat /etc/passwd                 blocked
+#     grep root /etc/passwd           printed it
+#     awk '{print}' /etc/passwd       printed it
+#     sed -n 1,2p /etc/passwd         printed it
+#     cut -d: -f1 /etc/passwd         printed it
+#
+# All four are on the auto-allow list, so an agent that had a read_file
+# refused could reach the same bytes with the next line it typed.
+#
+# Only ABSOLUTE and `~` arguments are inspected (see _bash_outside_reads),
+# so ordinary work is untouched: `grep -rn foo .`, `sed -n 1,50p src/x.py`
+# and every relative path stay exactly as they were.
+#
+# Metadata-only commands are deliberately NOT here -- wc, file, stat,
+# md5sum and sha256sum report a size, a type or a digest, and gating a
+# question about a file's existence would be friction with nothing behind
+# it.
 _BASH_CONTENT_READERS: frozenset[str] = frozenset({
     "cat", "head", "tail", "less", "more", "strings", "xxd", "od",
     "base64", "nl", "tac", "bat",
+    "grep", "egrep", "fgrep", "rg", "ag", "ack",
+    "awk", "gawk", "mawk", "sed", "cut", "sort", "uniq", "paste",
+    "column", "fold", "expand", "unexpand", "rev", "jq", "yq",
+    "zcat", "zgrep", "bzcat", "xzcat",
 })
 
 
@@ -926,8 +954,22 @@ def _bash_outside_reads(cmd: str) -> list[str]:
     Only the readers above are inspected, and only their absolute
     arguments — a conservative net around the exact circumvention that was
     observed (three refused read_file calls, then `cat` on the same files).
+
+    An inline python payload is inspected too, for the same reason and by
+    the same rule: `python3 -c "print(open('/etc/passwd').read())"` is
+    `cat /etc/passwd` with the path one level in. Before the payload could
+    be read at all this was moot -- the command was refused outright --
+    and reading it would have opened a route past this gate if the reads
+    had not been collected with the writes.
     """
     out: list[str] = []
+    try:
+        for src in (_inline_payload.extract_c_payloads(cmd) or []):
+            for tok in _inline_payload.analyze_payload(src).reads:
+                if tok.startswith("/") or tok.startswith("~"):
+                    out.append(tok)
+    except Exception:
+        pass
     try:
         import shlex
         for segment in re.split(r"[;&|]{1,2}|\n", cmd):
