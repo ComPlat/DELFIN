@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Callable, Generator, Optional
 
 from . import german as _german
+from . import inline_payload as _inline_payload
 from . import pricing
 from . import text_files as _text_files
 
@@ -1073,18 +1074,52 @@ _REL_PATH_RE = re.compile(r"(?<![\w/])([\w.][\w.\-]*(?:/[\w.\-]+)+/?)")
 # without the prefix group they read as an ordinary word to this regex — the
 # venv fallback in ``_segment_auto_allowed`` then auto-allowed the first form
 # even under a locked scope.
+#
+# The word boundary used to sit after the whole alternation, and one
+# alternative ends in `=`. `env X=1 …` matched because `1` is a word
+# character; `env PYTHONPATH=/elsewhere …` did not, because `/` is not —
+# so the spelling that actually redirects an import was the spelling the
+# guard could not see. Each alternative carries its own boundary now.
 _INTERPRETER_RE = re.compile(
     r"(?:^|[;&|`$(]\s*)\s*"
     r"(?:[\w./~+-]*/)?"          # one flat group: no nested quantifier
     r"(?:"
-    r"python[0-9.]*\s+-c|python[0-9.]*\s*<|"
-    r"perl\s+-e|ruby\s+-e|node\s+-e|php\s+-r|"
-    r"eval|exec|source|\.\s|"
-    r"make|xargs|env\s+[A-Za-z_]+=|"
-    r"base64\s+(?:-d|--decode)|"
-    r"find\b[^;|&]*-exec"
-    r")\b"
+    r"python[0-9.]*\s+-c\b|python[0-9.]*\s*<|"
+    r"perl\s+-e\b|ruby\s+-e\b|node\s+-e\b|php\s+-r\b|"
+    r"(?:eval|exec|source|make|xargs)\b|\.\s|"
+    r"env\s+[A-Za-z_][A-Za-z0-9_]*=|"
+    r"base64\s+(?:-d|--decode)\b|"
+    r"find\b[^;|&]*-exec\b"
+    r")"
 )
+
+# Words that run the command that follows them. The regex above anchors
+# an interpreter at the start of the command or after a shell operator,
+# so one of these in front hid it completely: `time python3 -c "…"` was
+# auto-allowed (`time` is on the auto-allow list) with the payload never
+# looked at once. Same list as ``_referenced_script_paths`` uses for the
+# same reason, and stripped repeatedly — `nohup time python3 -c` is two
+# of them.
+_EXEC_WRAPPER_WORD_RE = re.compile(
+    r"^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+|"
+    r"(?:env|nohup|time|timeout|nice|ionice|setsid|stdbuf|command|builtin|"
+    r"watch|sudo|doas)\b(?:\s+-{1,2}[\w-]+(?:=\S+)?|\s+\d+(?:\.\d+)?[smhd]?)*"
+    r"\s+)"
+)
+
+
+def _strip_exec_wrappers(segment: str) -> str:
+    """Drop the wrapper words in front of the command a segment runs.
+
+    `timeout 30 env FOO=bar python3 -c "…"` runs python. Peeling the
+    wrappers is what lets the checks that anchor on the head of a command
+    reach the command that is actually there.
+    """
+    prev, out = None, segment or ""
+    while out != prev and len(out) < 100_000:
+        prev = out
+        out = _EXEC_WRAPPER_WORD_RE.sub("", out, count=1)
+    return out
 
 
 def _is_interpreter_invocation(cmd: str) -> bool:
@@ -1099,11 +1134,77 @@ def _is_interpreter_invocation(cmd: str) -> bool:
         text = cmd or ""
         if _INTERPRETER_RE.search(text):
             return True
+        # ...and again with the wrapper words peeled off each segment, so
+        # `time python3 -c "…"` is the interpreter it is rather than an
+        # auto-allowed `time`.
+        for seg in _split_shell_segments(text):
+            stripped = _strip_exec_wrappers(seg)
+            if stripped != seg and _INTERPRETER_RE.search(stripped):
+                return True
         # A pipe into a shell or an interpreter: `... | bash`, `... | python3`.
         return bool(re.search(
             r"\|\s*(?:ba|z|k|da)?sh\b|\|\s*python[0-9.]*\b", text))
     except Exception:
         return True
+
+
+# A segment that is nothing but `python -c <payload>`: the interpreter
+# name (a bare word, so no PATH prefix and no `env FOO=1` in front),
+# option flags, `-c`, and the payload. Anything else in the segment --
+# a wrapper, a variable assignment, a pipe -- means the segment is
+# opaque for a reason this module is not modelling, and the readable
+# path below must not be taken for it.
+_PLAIN_C_HEAD_RE = re.compile(r"^\s*python[0-9.]*\s")
+
+
+def _inline_payload_is_readable(segment: str, workspace: Path | str) -> bool:
+    """True when a segment's only opacity is a payload that can be read.
+
+    `python -c` hides nothing: the program is a literal in the command
+    line. This asks :mod:`delfin.agent.inline_payload` whether the whole
+    payload can be accounted for, and answers False for everything else
+    -- a payload with a construct the analyser does not model, a second
+    reason the segment is opaque (`env X=1 python -c …`, `… | python3`),
+    a command line that will not tokenise.
+
+    A payload that WRITES stays off this path even when it is perfectly
+    readable, and that is a policy choice rather than a limit of the
+    analysis. Its target is now visible to ``_bash_write_targets`` and
+    would be gated there like any other -- but over the 199 recorded
+    auto-allow refusals not one payload wrote anything, so allowing them
+    buys no measured friction back and spends the clearest security
+    property this rule has. The write side of the analysis earns its
+    keep in the gate, not here.
+
+    Being wrong in the False direction costs a confirmation, which is
+    what happens today for every one of these. Being wrong in the True
+    direction would run something unread, so every unknown answers False.
+    """
+    try:
+        seg = segment or ""
+        if not _PLAIN_C_HEAD_RE.match(seg):
+            return False
+        payloads = _inline_payload.extract_c_payloads(seg)
+        if not payloads:
+            return False
+        try:
+            cwd: Path | None = Path(workspace)
+        except (TypeError, ValueError):
+            cwd = None
+        for src in payloads:
+            eff = _inline_payload.analyze_payload(src, cwd)
+            if not eff.readable or eff.writes:
+                return False
+        # The payloads are readable; the segment must be nothing BUT
+        # them. Blank each one out and require what is left to be an
+        # ordinary command again -- that is what rules out a second,
+        # unmodelled reason for the segment's opacity.
+        rest = seg
+        for src in payloads:
+            rest = rest.replace(src, " ", 1)
+        return not _is_interpreter_invocation(rest.replace("-c", " ", 1))
+    except Exception:
+        return False
 
 
 def _bash_symlink_escapes(cmd: str, workspace: Path) -> list[str]:
@@ -1168,6 +1269,12 @@ def _bash_write_targets(cmd: str) -> list[str]:
     the airtight containment is filesystem isolation
     (``agent.bash_isolation``), which this does not replace. Never raises;
     an unparseable command yields no targets rather than a false block.
+
+    A ``python -c`` payload is read as Python for the same question, so
+    ``open('out.csv', 'w')`` is a target here exactly as ``tee out.csv``
+    is. Before that, a write through python was the one file-creating
+    form this function could not see at all -- which is half of why an
+    interpreter had to be kept off the auto-allow list wholesale.
     """
     targets: list[str] = []
     try:
@@ -1186,6 +1293,11 @@ def _bash_write_targets(cmd: str) -> list[str]:
                              cmd):
             tok = m.group(1)
             if not tok.startswith("&"):
+                _add(tok)
+
+        # What an inline python payload would write.
+        for src in (_inline_payload.extract_c_payloads(cmd) or []):
+            for tok in _inline_payload.analyze_payload(src).writes:
                 _add(tok)
 
         # Per shell segment: command name + arguments.
@@ -3244,6 +3356,17 @@ class KitToolPermissions:
 
         A locked scope refuses regardless. Elsewhere a pattern the user
         wrote themselves still applies -- see ``_custom_allow_matches``.
+
+        And `python -c` is the one member of the family whose program IS
+        in the command text. Where :mod:`delfin.agent.inline_payload` can
+        account for the whole payload, the two things this rule stands in
+        for both happen for real instead of being stood in for: the
+        payload's write targets reach ``_bash_write_targets`` like any
+        other command's, and its text -- and any file it imports out of
+        the working directory -- go through the same content scan an
+        executed script file already gets. The paragraph above then has
+        nothing left to be true about, which is what
+        ``_inline_payload_is_readable`` decides, conservatively.
         """
         if not _is_interpreter_invocation(cmd):
             return False
@@ -3251,7 +3374,9 @@ class KitToolPermissions:
             return True
         hidden = [s for s in _split_shell_segments(cmd)
                   if _is_interpreter_invocation(s)] or [cmd]
-        return not all(self._custom_allow_matches(s) for s in hidden)
+        return not all(self._custom_allow_matches(s)
+                       or _inline_payload_is_readable(s, self.workspace)
+                       for s in hidden)
 
     def matches_bash_auto_allow(self, cmd: str) -> bool:
         if self._interpreter_needs_confirm(cmd):
@@ -10492,6 +10617,92 @@ class _DocToolExecutor:
                 return v.strip()
         return ""
 
+    @staticmethod
+    def _names_the_workspace_from_outside(
+        rel_path: str, workspace: Path | str
+    ) -> Optional[str]:
+        """The path the caller meant, when it named the workspace itself.
+
+        A workspace is usually a subdirectory of something, and the person
+        who wrote the request was standing outside it: "build me a script
+        in tests/fixtures/user_project_workspace/". The agent IS that
+        directory, so the path it copies from the request resolves one
+        level of the same name deeper and there is nothing there.
+
+        Measured over ~/.delfin/audit.log on 2026-09-09: 27 refusals with
+        commands like `python3 tests/fixtures/user_project_workspace/run.py`
+        and 9 more `cwd is not a directory` on the identical string --
+        second only to the auto-allow list, and unlike that one it is
+        entirely a wording problem.
+
+        Returns the path with the duplicated head removed, or None. The
+        answer is a HINT: taking it silently would hide a genuine nested
+        directory of the same name, and would teach nothing.
+        """
+        try:
+            rel = (rel_path or "").replace("\\", "/").strip().strip("/")
+            if not rel:
+                return None
+            if Path(rel_path).is_absolute():
+                return None
+            ws_parts = [p for p in Path(workspace).parts if p not in ("/", "")]
+            rel_parts = rel.split("/")
+            # The longest head of the path that is also a tail of the
+            # workspace. `tests/fixtures/ws/run.py` under `…/tests/fixtures/ws`
+            # matches three parts and leaves `run.py`.
+            for n in range(min(len(ws_parts), len(rel_parts)), 0, -1):
+                if rel_parts[:n] == ws_parts[-n:]:
+                    remainder = "/".join(rel_parts[n:])
+                    return remainder or "."
+            return None
+        except (OSError, ValueError):
+            return None
+
+    @staticmethod
+    def _is_ancestor_of_workspace(
+        rel_path: str, workspace: Path | str
+    ) -> bool:
+        """True when the path names a directory the workspace lives inside.
+
+        The other half of the same wording mistake, and the commoner one:
+        10 of the 13 recorded refusals passed the CHECKOUT ROOT as an
+        absolute ``cwd`` while the workspace was a fixture directory
+        several levels below it. The agent is not lost -- it is standing
+        in the right place and describing it from where the request was
+        written.
+        """
+        try:
+            given = Path(rel_path).expanduser()
+            if not given.is_absolute():
+                return False
+            ws = Path(workspace).resolve()
+            given = given.resolve(strict=False)
+            return given != ws and given in ws.parents
+        except (OSError, ValueError, RuntimeError):
+            return False
+
+    @classmethod
+    def _hint_if_it_names_the_workspace(
+        cls, rel_path: str, workspace: Path | str
+    ) -> str:
+        """The sentence to append to a path refusal, or an empty string."""
+        meant = cls._names_the_workspace_from_outside(rel_path, workspace)
+        if meant is not None:
+            return (
+                f" Your working directory already IS "
+                f"'{Path(workspace).name}' — you are inside the directory "
+                f"the request named from outside it, so write the path "
+                f"relative to where you are: '{meant}'."
+            )
+        if cls._is_ancestor_of_workspace(rel_path, workspace):
+            return (
+                f" That directory CONTAINS your workspace "
+                f"({Path(workspace)}) and is not itself granted. If you "
+                f"meant your own project, you are already in it — use a "
+                f"relative path, or no cwd at all."
+            )
+        return ""
+
     def _resolve_in_workspace(
         self, rel_path: str, perms: "KitToolPermissions", *, for_read: bool = False
     ) -> tuple[Optional[Path], Optional[str]]:
@@ -10523,7 +10734,9 @@ class _DocToolExecutor:
             roots_str = ", ".join(str(r) for r in _roots)
             return None, (
                 f"path is outside the allowed workspace roots [{roots_str}]: "
-                f"{rel_path}. To work on it, ask the user to GRANT this path "
+                f"{rel_path}."
+                + self._hint_if_it_names_the_workspace(rel_path, ws) +
+                f" To work on it, ask the user to GRANT this path "
                 f"to the agent (add it via --add-dir / extra_workspace_dirs), "
                 f"or move the project into an allowed workspace root. Do NOT "
                 f"silently fall back to a manual snippet without telling the "
@@ -10735,27 +10948,54 @@ class _DocToolExecutor:
         subprocess/etc. is untouched — only a literal ``rm -rf /`` / ``sudo`` /
         ``curl|sh`` or a ``.ssh``/credentials path reference trips it). The
         obfuscated case (base64-then-exec) is left to filesystem isolation.
+
+        An inline ``python -c`` payload is scanned too, as text -- it has
+        no file to open, which is the only reason it escaped before -- and
+        so is any module it imports out of the working directory, because
+        `import mymod` executes ``mymod.py`` exactly as running the script
+        would.
+
         Returns a reason string, or None. Never raises."""
         try:
             cwd_arg = str(args.get("cwd") or "").strip()
             base_dir = Path(cwd_arg) if cwd_arg else Path(perms.workspace)
         except Exception:
             base_dir = Path(perms.workspace)
-        for ref in self._referenced_script_paths(cmd):
+
+        def _resolve(ref: str) -> tuple[str, str] | None:
+            """(label, contents) for a script path, or None to skip it."""
             try:
                 p = Path(ref)
                 if not p.is_absolute():
                     p = base_dir / p
                 p = p.expanduser()
                 if not p.is_file() or p.stat().st_size > 512_000:
-                    continue
+                    return None
                 if self._is_reviewed_project_file(p):
                     # The project's own committed code, unmodified. See
                     # _is_reviewed_project_file for why that is the line.
-                    continue
-                text = p.read_text(encoding="utf-8", errors="replace")
+                    return None
+                return ref, p.read_text(encoding="utf-8", errors="replace")
             except Exception:
-                continue
+                return None
+
+        sources: list[tuple[str, str]] = []
+        for ref in self._referenced_script_paths(cmd):
+            got = _resolve(ref)
+            if got is not None:
+                sources.append(got)
+        try:
+            for src in (_inline_payload.extract_c_payloads(cmd) or []):
+                sources.append(("the inline python payload", src))
+                eff = _inline_payload.analyze_payload(src, base_dir)
+                for mod in eff.local_modules:
+                    got = _resolve(mod)
+                    if got is not None:
+                        sources.append(got)
+        except Exception:
+            pass
+
+        for ref, text in sources:
             hit = perms.matches_bash_deny(text)
             if hit:
                 return f"{ref} contains deny-pattern {hit!r}"
@@ -12712,7 +12952,10 @@ class _DocToolExecutor:
             if err:
                 return json.dumps({"error": err})
             if not cwd_resolved.is_dir():
-                return json.dumps({"error": f"cwd is not a directory: {cwd_arg}"})
+                return json.dumps({"error": (
+                    f"cwd is not a directory: {cwd_arg}."
+                    + self._hint_if_it_names_the_workspace(
+                        cwd_arg, perms.workspace))})
             run_cwd = cwd_resolved
         else:
             run_cwd = perms.workspace
@@ -12803,7 +13046,10 @@ class _DocToolExecutor:
             if err:
                 return json.dumps({"error": err})
             if not cwd_resolved.is_dir():
-                return json.dumps({"error": f"cwd is not a directory: {cwd_arg}"})
+                return json.dumps({"error": (
+                    f"cwd is not a directory: {cwd_arg}."
+                    + self._hint_if_it_names_the_workspace(
+                        cwd_arg, perms.workspace))})
             run_cwd = cwd_resolved
         else:
             run_cwd = perms.workspace
