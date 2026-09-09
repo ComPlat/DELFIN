@@ -2997,6 +2997,31 @@ class KitToolPermissions:
         self.extra_workspace_dirs = tuple(self.extra_workspace_dirs) + (p,)
         return p
 
+    def drop_extra_dir(self, path) -> bool:
+        """Take back a writable root once what it was granted for is gone.
+
+        ``add_extra_dir`` had no inverse, so ``extra_workspace_dirs``
+        only ever grew inside a session. enter_worktree adds the worktree
+        as a writable root and BOTH ways out remove the directory --
+        exit_worktree tears it down, worktree_merge consumes it -- so the
+        ordinary path left the sandbox wider than the state warranted, for
+        the rest of the session, with nothing able to narrow it.
+
+        Only a path that is no longer a directory is dropped. That keeps
+        the rule to one sentence a reader can check -- a grant for a
+        directory that does not exist is dead already -- and makes it
+        impossible for this to revoke a root the user granted and still
+        uses. The workspace itself is never dropped.
+        """
+        p = Path(path).expanduser().resolve()
+        if p == self.workspace or p.is_dir():
+            return False
+        remaining = tuple(d for d in self.extra_workspace_dirs if d != p)
+        if len(remaining) == len(self.extra_workspace_dirs):
+            return False
+        self.extra_workspace_dirs = remaining
+        return True
+
     def add_session_read_dir(self, path) -> Path:
         """Open ``path`` for READING for the rest of this session.
 
@@ -8496,7 +8521,14 @@ class _DocToolExecutor:
         # apply_patch names its targets in the RESULT, not the arguments:
         # one record per file, so the changes report can show a patch the
         # same way it shows any other write.
+        # check_only is `git apply --check`: it reports the files the diff
+        # WOULD touch and writes none of them. Recording those as writes
+        # put a file in the changes report that was never modified, marked
+        # "NOT undoable (no pre-image)" -- so the one tool that answers
+        # "what did you do" answered with a change that had not happened.
         _touched = payload.get("files_touched")
+        if payload.get("check_only"):
+            _touched = None
         if name == "apply_patch" and decision == "ok" and isinstance(_touched, list):
             for _rel in _touched:
                 _al.append(_al.make_record(
@@ -8652,6 +8684,23 @@ class _DocToolExecutor:
             if not ws:
                 return json.dumps({"error": (
                     "watch_job requires permissions to be configured.")})
+            # A bash job id the registry does not know can never
+            # complete, so watching it promises a notification that
+            # cannot arrive -- and the note below tells the model to end
+            # its turn and wait for it. bash_kill already refuses the
+            # same id; this one accepted it and answered "watching".
+            # A SLURM id cannot be checked without asking the scheduler,
+            # so it stays accepted.
+            try:
+                from .job_monitor import _classify_job_id
+                from . import bash_jobs as _bj
+                if (_classify_job_id(job_id, ws) == "bash"
+                        and _bj.get_registry().get(job_id, ws) is None):
+                    return json.dumps({"error": (
+                        f"unknown job_id: {job_id}. Start it with "
+                        "bash_background, or pass a SLURM id.")})
+            except Exception:
+                pass
             try:
                 from .job_monitor import register_agent_job
                 entry = register_agent_job(
@@ -8714,10 +8763,20 @@ class _DocToolExecutor:
         # git-worktree-on-branch sandbox for the current task.
         if name == "enter_worktree":
             return self._execute_enter_worktree(arguments, permissions)
-        if name == "exit_worktree":
-            return self._execute_exit_worktree(arguments, permissions)
-        if name == "worktree_merge":
-            return self._execute_worktree_merge(arguments, permissions)
+        # Both ways out remove the worktree, so both give the writable
+        # root back. Keyed on the directory being gone, so a call that
+        # refused or kept the tree changes nothing.
+        if name in ("exit_worktree", "worktree_merge"):
+            _wt_path = str(arguments.get("path", "") or "")
+            _out = (self._execute_exit_worktree(arguments, permissions)
+                    if name == "exit_worktree"
+                    else self._execute_worktree_merge(arguments, permissions))
+            if permissions is not None and _wt_path:
+                try:
+                    permissions.drop_extra_dir(_wt_path)
+                except Exception:
+                    pass
+            return _out
 
         # Scheduler: one-shot wake-ups + interval cron.
         if name in ("schedule_wakeup", "cron_create",
@@ -13310,9 +13369,19 @@ class _DocToolExecutor:
         _ws = str(getattr(perms, "workspace", "") or "")
         try:
             if name == "schedule_wakeup":
+                # The prompt IS the wake-up. Without one the agent is
+                # woken with nothing to do, which costs a turn and
+                # cannot accomplish anything -- and the schema calls it
+                # required, which only means the key is present.
+                _prompt = str(arguments.get("prompt", "") or "").strip()
+                if not _prompt:
+                    return json.dumps({"error": (
+                        "prompt is required — it is what the wake-up is "
+                        "FOR. A scheduled turn with nothing to do wakes "
+                        "the agent and ends.")})
                 ent = sch.schedule_once(
                     delay_seconds=int(arguments.get("delay_seconds", 0)),
-                    prompt=str(arguments.get("prompt", "")),
+                    prompt=_prompt,
                     reason=str(arguments.get("reason", "")),
                     workspace=_ws,
                 )
@@ -13349,7 +13418,18 @@ class _DocToolExecutor:
                     ],
                 })
             if name == "cron_delete":
-                ok = sch.delete(str(arguments.get("entry_id", "")))
+                # A missing argument is not a missing entry. Called with
+                # no entry_id -- or with the wrong key name -- this said
+                # "not_found", which sends the reader looking for an
+                # entry that was never named. Every sibling here answers
+                # "X is required"; this one now does too. It cost a wrong
+                # diagnosis to find that out.
+                _entry_id = str(arguments.get("entry_id", "") or "").strip()
+                if not _entry_id:
+                    return json.dumps({"error": (
+                        "entry_id is required — pass the id from "
+                        "cron_list. Nothing was deleted.")})
+                ok = sch.delete(_entry_id)
                 return json.dumps({"status": "ok" if ok else "not_found"})
         except ValueError as exc:
             return json.dumps({"error": str(exc)})
