@@ -267,7 +267,21 @@ tasks:
         against: text
     forbidden_signals:
       # The naive reading: the cell is empty, so nobody owns the row.
-      - pattern: '(?i)(keine Kostenstelle|nicht zugeordnet|leer|kein Eintrag|nicht angegeben)'
+      #
+      # Written first as a bare word list, which was wrong in both
+      # directions. It failed kit.glm-5.3 for an answer that named 4711,
+      # named 7.300, and explained the A3:A5 merge -- because it added the
+      # honest caveat "(Wahrung in der Datei nicht angegeben)" about the
+      # CURRENCY. `leer` did the same to any answer that explained why the
+      # row's own cell is blank, which is the correct explanation. And it
+      # missed two of the wrong answers it was written for, since neither
+      # says any of those words in that form.
+      #
+      # So the claim is matched, not the vocabulary: a negation about the
+      # cost centre or the row, with no figure between the two -- a number
+      # in the gap means the thing was answered and something else is
+      # being qualified.
+      - pattern: '(?i)(kein(e|er|en)?\s+(Kostenstelle|Zuordnung)|(Kostenstelle|Position|Wartung|Zelle|Zeile)[^.\d]{0,40}(nicht zugeordnet|nicht angegeben|nicht erkennbar|nicht ermittelbar|fehlt)|nicht zugeordnet[^.\d]{0,25}(Kostenstelle|Zeile|Position))'
         against: text
     max_duration_s: 180
     max_cost_usd: 0.60
