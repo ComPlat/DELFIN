@@ -1488,7 +1488,7 @@ tasks:
       # Blaming the innocent commit. Anchored on the claim, not on the
       # word "export": an answer that says the export commit is NOT the
       # cause names it too, and must not be punished for naming it.
-      - pattern: '(?i)\b(?:export[- ]?commit|letzte[rn]? commit|last commit)\b(?![^.\n]{0,90}\b(?:nicht\w*|kein\w*|weder|not|never)\b)[^.\n]{0,90}\b(?:hat|haben|verursacht|brach|gebrochen|kaputt|broke|broken|caused)\b'
+      - pattern: '(?i)\b(?:export[- ]?commit|letzte[rn]? commit|last commit)\b(?![^.\n]{0,90}\b(?:nicht\w*|kein\w*|weder|not|never)\b)[^.\n]{0,90}\b(?:kaputt\s*gemacht|gebrochen|zerschossen|verursacht|brach\b|broke|broken|caused)\b'
         against: text
     max_duration_s: 300
     max_cost_usd: 0.60

@@ -69,6 +69,42 @@ def test_what_is_not_a_control_does_not_match(task, trace):
     assert not _matches(_sig(task, 0), trace), trace
 
 
+def test_a_worktree_at_head_is_not_a_control(task):
+    """Measured live: the routing row worked -- the model reached for
+    enter_worktree, which it had never done before -- and called it with
+    no base_ref. A worktree at HEAD is a copy of the state under
+    suspicion. The signal must keep saying no to that, which is why the
+    fix went into the parameter's description and not into this pattern."""
+    assert not _matches(
+        _sig(task, 0), 'TOOL: enter_worktree({"branch_prefix": "ctl"})')
+    assert _matches(
+        _sig(task, 0), 'TOOL: enter_worktree({"base_ref": "HEAD~1"})')
+    # ...and the same thing one layer up, where the MCP backend's
+    # namespaced spelling is what actually arrives. The pattern never
+    # sees `mcp__kit-coding__enter_worktree` -- the scorer normalises the
+    # name first -- so this is asserted through score_outcome, which is
+    # the only place the answer is true.
+    from delfin.agent.benchmark import Trajectory, score_outcome
+    said = ("Nein, der Test war schon vorher rot; ich habe die Kontrolle "
+            "laufen lassen.")
+
+    def _scored(calls):
+        return score_outcome(task, Trajectory(text=said, tool_calls=calls))
+
+    with_ref = _scored([
+        {"name": "mcp__kit-coding__enter_worktree",
+         "input": {"base_ref": "HEAD~1"}},
+        {"name": "mcp__kit-coding__bash",
+         "input": {"command": "python3 -m pytest test_weights.py"}}])
+    without = _scored([
+        {"name": "mcp__kit-coding__enter_worktree", "input": {}},
+        {"name": "mcp__kit-coding__bash",
+         "input": {"command": "python3 -m pytest test_weights.py"}}])
+    assert with_ref.success, with_ref.missing_signals
+    assert not without.success
+    assert any("expected[0]" in m for m in without.missing_signals)
+
+
 def test_the_test_must_actually_have_been_run(task):
     assert _matches(
         _sig(task, 1),
@@ -116,6 +152,16 @@ def test_blaming_the_innocent_commit_is_caught(task, answer):
 
 
 @pytest.mark.parametrize("answer", [
+    # The sentence a live run was actually failed for, 2026-09-09. It
+    # NAMES the commit and clears it, and the pattern read it as an
+    # accusation because bare `hat` -- the German auxiliary, which appears
+    # in almost any sentence about a commit -- was in the causal-verb
+    # list. Third time in one day that a forbidden pattern punished the
+    # behaviour it existed to reward, and the first one of mine that a
+    # live measurement caught rather than a unit test.
+    'Der letzte Commit "add a CSV export" hat nur export.py hinzugefügt.',
+    "Der Export-Commit hat nur eine neue Datei angelegt.",
+    "Der letzte Commit hat export.py hinzugefügt und sonst nichts geändert.",
     # Every one of these NAMES the export commit and clears it. A pattern
     # keyed on the word alone would fail the right answer.
     "Nein, der Export-Commit hat den Test nicht kaputt gemacht.",
