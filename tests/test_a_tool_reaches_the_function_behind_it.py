@@ -87,14 +87,64 @@ def test_every_office_parameter_is_reachable_through_the_tool():
         "no tool schema and in no withheld list: " + ", ".join(unreachable))
 
 
+# The two helpers that resolve a tool's subject before the executor body
+# sees it. Naming one is how those executors read "path"; without this the
+# check reports every file tool in the catalogue.
+_PATH_RESOLVERS = ("_office_target(", "_get_path_arg(")
+
+
+def test_no_tool_in_the_catalogue_advertises_a_parameter_nobody_reads():
+    """The office half of this, widened to every tool that has its own
+    executor. Verified clean when written, which is the point: it costs
+    nothing today and fails the day a schema grows a parameter the
+    executor was never taught about — the direction that is worse than a
+    missing feature, because the model is TOLD it can ask."""
+    from delfin.agent import api_client as A
+
+    ignored = []
+    for tool in A._DOC_TOOLS_OPENAI:
+        fn = tool.get("function", {})
+        name = fn.get("name", "")
+        executor = getattr(A._DocToolExecutor, f"_execute_{name}", None)
+        if not callable(executor):
+            continue
+        source = inspect.getsource(executor)
+        reached = ({"path"} if any(r in source for r in _PATH_RESOLVERS)
+                   else set())
+        for param in sorted(fn.get("parameters", {}).get("properties", {})):
+            if param in reached:
+                continue
+            if f'"{param}"' in source or f"'{param}'" in source:
+                continue
+            ignored.append(f"{name}.{param}")
+    assert not ignored, (
+        "advertised to the model and read by nobody: " + ", ".join(ignored))
+
+
+def test_every_advertised_tool_can_actually_be_dispatched():
+    """A tool in the schema with nothing behind it is a turn the model
+    spends to be told the call failed."""
+    from delfin.agent import api_client as A
+
+    source = inspect.getsource(A._DocToolExecutor)
+    unrouted = []
+    for tool in A._DOC_TOOLS_OPENAI:
+        name = tool.get("function", {}).get("name", "")
+        if callable(getattr(A._DocToolExecutor, f"_execute_{name}", None)):
+            continue
+        if f'"{name}"' in source or f"'{name}'" in source:
+            continue
+        unrouted.append(name)
+    assert not unrouted, (
+        "advertised with no executor and no dispatch: " + ", ".join(unrouted))
+
+
 def test_every_advertised_parameter_is_read_by_the_executor():
     ignored = []
     for name, fn, executor in _office_tools():
         source = inspect.getsource(executor)
-        # Every office tool resolves its subject through one helper, which
-        # is also where the path is checked against the workspace. Naming
-        # the helper is how those executors read "path".
-        reached = {"path"} if "_office_target(" in source else set()
+        reached = ({"path"} if any(r in source for r in _PATH_RESOLVERS)
+                   else set())
         for param in sorted(fn.get("parameters", {}).get("properties", {})):
             if param in reached:
                 continue
