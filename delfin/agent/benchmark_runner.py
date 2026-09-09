@@ -595,6 +595,9 @@ class _PristineWorkspace:
         self._snap_root: Path | None = None
         self.failed = False
 
+    # How many guards this process has open. See __enter__.
+    _depth: int = 0
+
     def _install_signal_trap(self) -> None:
         """Turn a termination signal into the exception this guard survives.
 
@@ -660,6 +663,23 @@ class _PristineWorkspace:
         #
         # A file lock rather than a thread lock: the racing attempts are
         # separate processes (pytest -n 8, a bench run beside it).
+        # Re-entrant within one process. The lock is an exclusive flock,
+        # and a second guard opened a second descriptor on the same file
+        # and waited for a lock its own process already held — a silent
+        # deadlock, not an error. It cost a CI run: the job sat at the
+        # nested call until the 25-minute limit cancelled it, with two
+        # tests passed and nothing to say why.
+        #
+        # Nesting is a programming mistake either way. Hanging is the
+        # worst way to report one, so the inner guard stands down: the
+        # outer one already holds the lock and will do the restore.
+        _PristineWorkspace._depth += 1
+        self._nested = _PristineWorkspace._depth > 1
+        if self._nested:
+            self._lock_handle = None
+            self._prev_signals = {}
+            return self
+
         self._lock_handle = None
         try:
             import fcntl
@@ -728,6 +748,10 @@ class _PristineWorkspace:
 
     def __exit__(self, *exc) -> None:
         import shutil
+        _PristineWorkspace._depth = max(0, _PristineWorkspace._depth - 1)
+        if getattr(self, "_nested", False):
+            # The outer guard holds the lock and owns the restore.
+            return
         try:
             # What was not there before must not be there after.
             for ws in self._absent:
