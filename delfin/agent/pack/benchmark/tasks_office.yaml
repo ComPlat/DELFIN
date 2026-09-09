@@ -355,15 +355,22 @@ tasks:
       # word "period" has still done the arithmetic itself.
       - pattern: 'TOOL: sum_column\([\s\S]{0,160}?period'
         against: any
-      # The March figure. 894,30 + 3.320,00 + 410,00 + 265,85 + 1.180,40.
-      - pattern: '6\.?070[,.]55'
-        against: text
       # The sheet has hidden rows and they ARE in the total, which is the
       # standing rule of this module and does not stop being true because
       # a month was picked out.
       - pattern: '(?i)(ausgeblendet|versteckt|gefiltert|hidden)'
         against: text
         optional: true
+    # The March figure, judged as a NUMBER: 894,30 + 3.320,00 + 410,00 +
+    # 265,85 + 1.180,40, taken from what the tool returns rather than from
+    # arithmetic written into a rubric by hand. As a digit pattern it had
+    # to guess which separators the answer would use; as a value it reads
+    # 6.070,55 and 6,070.55 and 6070.55 as the one figure they are, and a
+    # miss says whether the number was wrong or was never given.
+    expected_values:
+      - value: 6070.55
+        label: maerz
+        tolerance: 0.001
     forbidden_signals:
       # The whole year reported as March. This is the failure the filter
       # exists to prevent, and it reads exactly like a correct answer.
