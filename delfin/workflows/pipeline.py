@@ -1370,6 +1370,7 @@ def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any])
     from delfin.common.manta_settings import (
         builder_options as _builder_options,
         selection_options as _selection_options,
+        LAST_CONSTRUCTION as _LAST_CONSTRUCTION,
     )
     build_options = _builder_options(config)
     selection = _selection_options(config)
@@ -1450,6 +1451,12 @@ def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any])
         'start_strategy': start_strategy,
         'max_isomers': max_isomers,
         'builder': dict(build_options),
+        # The construction set defines the builder's output more than the
+        # quality profile does -- 42 environment flags against five profile
+        # numbers -- and it was applied in cli.py and recorded nowhere.  This
+        # is the set that was actually applied, not the config read a second
+        # time, so the record cannot disagree with the run.
+        'construction': dict(_LAST_CONSTRUCTION),
         'selection': dict(selection),
         'solvent': manta_solvent,
         'solvation': manta_solvation or 'gas phase',

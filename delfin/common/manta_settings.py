@@ -177,6 +177,12 @@ def builder_options(config: Mapping[str, Any]) -> Dict[str, Any]:
     return options
 
 
+#: What the last :func:`apply_construction_env` call actually applied.  The
+#: pipeline records this rather than asking the config a second time, so the
+#: provenance is the applied set by construction and cannot drift from it.
+LAST_CONSTRUCTION: Dict[str, Any] = {'config': None, 'flags': {}}
+
+
 def apply_construction_env(config: Mapping[str, Any],
                            environ: Optional[Dict[str, str]] = None
                            ) -> Dict[str, str]:
@@ -193,6 +199,7 @@ def apply_construction_env(config: Mapping[str, Any],
     """
     target = os.environ if environ is None else environ
     applied: Dict[str, str] = {}
+    global LAST_CONSTRUCTION
 
     construction = _choice(config, 'MANTA_CONSTRUCTION',
                            allowed=CONSTRUCTION_MODES, default='champion')
@@ -215,6 +222,13 @@ def apply_construction_env(config: Mapping[str, Any],
             if before.get(key) != value:
                 applied[key] = value
 
+    #: What was applied, so the run can record it instead of recomputing it.
+    #: Recomputing is how a provenance record comes to disagree with the run it
+    #: describes: the same environment lookup written twice with two different
+    #: fallbacks reports one thing and does another, and both look right.
+    #: (Seen in the MANTA harness: builds ran at quality ``extreme`` for weeks
+    #: while every results file recorded the shipped default, because the call
+    #: site and the recording site each supplied their own default.)
     #: The drop-capable filters are all off by default, including under
     #: ``champion``.  For a pipeline that then optimises every surviving frame,
     #: a torn frame that leads the ordering costs a whole DFT chain -- and the
@@ -245,6 +259,10 @@ def apply_construction_env(config: Mapping[str, Any],
                 target[name] = value
                 applied[name] = value
 
+    LAST_CONSTRUCTION = {
+        'config': construction,
+        'flags': dict(applied),
+    }
     return applied
 
 
