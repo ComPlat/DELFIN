@@ -80,30 +80,22 @@ def test_the_helper_survives_a_response_with_nothing_in_it():
 
 
 def test_the_retry_is_conditioned_on_an_empty_round():
-    """Reasoning or a tool call means the model was working; re-asking
-    would double the work and could double a side effect."""
+    """Content or a tool call means the round contributed something, and
+    re-asking would throw it away.
+
+    Reasoning used to be on that list, on the ground that a model
+    thinking out loud is working. It is not working in the way that
+    matters: reasoning is not handed back to the caller, and what the
+    engine does with a round that produced only reasoning is declare the
+    whole turn empty. See _should_retry_empty_round.
+    """
     import inspect
 
     from delfin.agent import api_client
 
     src = inspect.getsource(api_client.OpenAIClient.stream_message)
-    i = src.index('if (kwargs.get("stream") and not _text_chunks')
-    condition = src[i:i + 200]
-    assert "not _tool_calls" in condition
-    assert "not _saw_reasoning" in condition
-
-
-def test_reasoning_is_remembered_not_only_forwarded():
-    """_saw_reasoning has to be set where the reasoning delta arrives, or
-    the condition above reads False for a model that thinks out loud."""
-    import inspect
-
-    from delfin.agent import api_client
-
-    src = inspect.getsource(api_client.OpenAIClient.stream_message)
-    assert "_saw_reasoning = False" in src
-    assert "_saw_reasoning = True" in src
-    assert src.index("_saw_reasoning = False") < src.index("_saw_reasoning = True")
+    assert "_should_retry_empty_round(" in src
+    assert "_saw_reasoning" not in src
 
 
 def test_the_two_paths_share_one_absorber():
@@ -204,12 +196,21 @@ def test_an_empty_stream_is_retried_and_the_answer_comes_back():
     assert seen["plain"] == 1, "the empty stream was not retried"
 
 
-def test_a_round_that_reasoned_is_not_re_sent():
-    """A model thinking out loud is working. Re-asking would double the
-    work and could double a side effect."""
+def test_a_round_that_only_reasoned_is_re_sent():
+    """The case the retry now exists for.
+
+    Captured 2026-09-09 from a suite run on kit.glm-5.3: 36577 characters
+    of system prompt, one 44-character user message, 16 tools — and back
+    came 34 characters of reasoning, no text, no tool call. The engine
+    reported `[empty turn]` and took the user's message back out of the
+    history for a question the model could answer: replaying that exact
+    request answered correctly six times out of six, streamed and
+    non-streamed alike. The request was fine; the response was empty
+    once, which is why re-asking is the cure.
+    """
     client, seen = _stub_client(empty_stream=False, reasoning=True)
     _first_text(client)
-    assert seen["plain"] == 0, "a reasoning round must not be re-sent"
+    assert seen["plain"] == 1, "a reasoning-only round was not re-asked"
 
 
 def test_a_round_that_called_a_tool_is_not_re_sent():
