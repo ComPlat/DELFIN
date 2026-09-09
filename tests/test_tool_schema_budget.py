@@ -74,7 +74,22 @@ _BASELINE_TOKENS = 11_422
 # parameters are the file, the column, the sheet, the group, the header
 # row and the convention, and none of them can be dropped without making
 # the tool unusable on the layouts the users actually have.
-_TOKEN_BUDGET = 9_287
+#
+# Raised a fourth time, 9_287 -> 9_368, for the row filter on sum_column:
+# period, date_column and date_convention. 87 tokens measured, 6 of them
+# returned by tightening the tool's own description and the period text,
+# so the ceiling moves by 81. Two thirds of that is structure -- three
+# names and three types -- which no wording can shrink. The prose that is
+# left is the part a model cannot work without: the three ISO shapes it
+# may pass, that a period without a date column is refused, and the word
+# that settles a date ambiguity. Neither of the two existing escape
+# hatches could carry it: convention settles the DECIMAL reading, and
+# folding dates into it would change how money parses whenever a caller
+# answered a date question. Before this, a total over one month was the
+# model filtering rows in its head and adding them there -- the arithmetic
+# the tool exists to take away from it, done on exactly the task where a
+# quietly dropped row is hardest to see.
+_TOKEN_BUDGET = 9_368
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but

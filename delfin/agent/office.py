@@ -736,6 +736,12 @@ def parse_number(text: Any, convention: str = PLAIN_NUMBER) -> Optional[float]:
         return None
 
 
+# A period as an ISO prefix: a year, a year-month, or a full day. One
+# parameter for all three, because a prefix comparison on ISO dates is
+# exactly the question "does this row fall in that span".
+_ISO_PREFIX_RE = re.compile(r"^\d{4}(?:-\d{2}(?:-\d{2})?)?$")
+
+
 def _date_parts(text: Any) -> Optional[tuple[int, int, int, str]]:
     """``(a, b, c, separator)`` of a date-shaped value, else None."""
     match = _DATE_SEP_RE.match(str(text or ""))
@@ -1940,6 +1946,67 @@ def _locate_rows(ws: Any, key_column: str) -> tuple[int, dict, list[str]]:
     return index, by_key, duplicates
 
 
+def _column_is_numeric(ws, col_index: int, skip_row: int) -> bool:
+    """True when this column's other cells hold numbers.
+
+    Reads the sheet rather than a convention argument, because the
+    question is what the column IS, not what the caller believes.
+    """
+    seen = 0
+    numeric = 0
+    for row in range(2, min(ws.max_row, 500) + 1):
+        if row == skip_row:
+            continue
+        value = ws.cell(row=row, column=col_index).value
+        if value is None or str(value).strip() == "":
+            continue
+        if isinstance(value, str) and value.startswith("="):
+            continue
+        seen += 1
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            numeric += 1
+    return seen > 0 and numeric * 2 > seen
+
+
+def _value_for_a_numeric_column(value: Any, column: str) -> tuple[Any, str]:
+    """The value to store, and a note about it.
+
+    A person writing into a money column types the amount the way the
+    rest of their file is written -- "1.265,85". Stored as the string it
+    arrived as, that one cell turns a number column into a mixed one, and
+    the next total over it refuses the whole column while every screen
+    still shows the right figure. Nothing raises, which is the failure
+    this module exists to prevent.
+
+    So the string is read with the same parser the reader uses, and the
+    NUMBER goes in the cell. An amount that reads two ways is refused
+    rather than guessed, for the reason the totals give: 1.265 is a
+    thousand and a bit or it is one and a quarter, and picking one
+    silently moves the figure without moving anything a reader can see.
+    """
+    if not isinstance(value, str):
+        return value, ""
+    text = value.strip()
+    if not text or text.startswith("="):
+        return value, ""
+    convention, reason = detect_number_convention([text])
+    if convention == AMBIGUOUS:
+        raise OfficeError(
+            f"{text!r} reads as two different numbers and column "
+            f"{column!r} holds numbers: {reason}. Pass it as a number "
+            "(1265.85), or write it unambiguously (1.265,85 or 1,265.85).")
+    number = parse_number(text, convention)
+    if number is None:
+        # Deliberate text in a number column -- "n/a" is a real answer.
+        # Allowed, and said out loud, because the next total will report
+        # the row as unreadable and the reason should not be a mystery.
+        return value, (
+            f"{text!r} is not a number and column {column!r} holds "
+            "numbers, so this row will be reported as unreadable by any "
+            "total over that column.")
+    return number, ""
+
+
 def edit_sheet(
     path: Any,
     *,
@@ -1995,6 +2062,8 @@ def edit_sheet(
 
         applied: list[dict] = []
         wrote_formula = False
+        # Values that went in as text where the column holds numbers.
+        type_notes: list[str] = []
 
         # Record-oriented changes. Everything is validated BEFORE the first
         # cell is written: an unknown key, a duplicate key or an unknown
@@ -2054,14 +2123,20 @@ def edit_sheet(
                     col_index = named[str(column).strip().lower()] + 1
                     cell = ws.cell(row=row_number, column=col_index)
                     old_value = cell.value
-                    cell.value = value
-                    if isinstance(value, str) and value.startswith("="):
+                    stored, type_note = value, ""
+                    if _column_is_numeric(ws, col_index, row_number):
+                        stored, type_note = _value_for_a_numeric_column(
+                            value, str(column))
+                    cell.value = stored
+                    if type_note:
+                        type_notes.append(type_note)
+                    if isinstance(stored, str) and stored.startswith("="):
                         wrote_formula = True
                     applied.append({
                         "cell": f"{column_letter(col_index)}{row_number}",
                         "key": str(update.get("key", "")).strip(),
                         "column": str(column),
-                        "old": _fmt(old_value), "new": _fmt(value),
+                        "old": _fmt(old_value), "new": _fmt(stored),
                     })
 
         for edit in edits or []:
@@ -2071,13 +2146,22 @@ def edit_sheet(
             value = edit.get("value")
             cell = ws.cell(row=row, column=col)
             old = cell.value
-            cell.value = value
-            if isinstance(value, str) and value.startswith("="):
+            # Same hazard by coordinate as by key: the column does not
+            # care which way the caller addressed the row.
+            stored, type_note = value, ""
+            if row > 1 and _column_is_numeric(ws, col, row):
+                header_cell = _fmt(ws.cell(row=1, column=col).value)
+                stored, type_note = _value_for_a_numeric_column(
+                    value, header_cell or column_letter(col))
+            cell.value = stored
+            if type_note:
+                type_notes.append(type_note)
+            if isinstance(stored, str) and stored.startswith("="):
                 wrote_formula = True
             applied.append({
                 "cell": f"{column_letter(col)}{row}",
                 "old": _fmt(old),
-                "new": _fmt(value),
+                "new": _fmt(stored),
             })
 
         first_appended = 0
@@ -2128,6 +2212,7 @@ def edit_sheet(
             appended += 1
 
         notes: list[str] = []
+        notes.extend(type_notes)
         if appended and first_appended:
             _total = _total_row_above(ws, first_appended)
             if _total is not None:
@@ -2388,6 +2473,9 @@ def sum_column(
     group_by: Optional[str] = None,
     convention: Optional[str] = None,
     header_row: int = 1,
+    date_column: Optional[str] = None,
+    period: Optional[str] = None,
+    date_convention: Optional[str] = None,
 ) -> dict:
     """Total one column of a table and say what it could not add.
 
@@ -2410,6 +2498,22 @@ def sum_column(
     Kostenstelle" every administrative answer is really about.
     ``header_row`` is for the layout every German cost-centre sheet has:
     a title in row 1 and the column names below it.
+
+    ``period`` with ``date_column`` totals one span of time — the "Summe
+    der Juni-Buchungen" that was the other half of that question and had
+    no answer here. It is an ISO prefix, so ``"2026"``, ``"2026-06"`` and
+    ``"2026-06-03"`` are a year, a month and a day through one parameter,
+    and the column's own convention decides how its cells are read:
+    03.06.2026 and 2026-06-03 are the same day. A column that cannot be
+    settled is REFUSED for the same reason an unsettled number column is
+    — 05.06. and 06.05. are different months — and ``date_convention``
+    is how the caller says which reading applies.
+
+    Rows the period excludes are COUNTED, not dropped: ``outside`` for a
+    date outside it, ``undated`` for a row whose date could not be read
+    at all, and the four places still add up to the rows of the table. A
+    filter that quietly removed rows would be the failure this module
+    exists to prevent wearing a new hat.
     """
     p = _resolve(path)
     rows = _table_rows(p, sheet)
@@ -2453,12 +2557,63 @@ def sum_column(
     group_index = _column_index(group_by) if group_by else -1
     group_name = str(header[group_index]) if group_index >= 0 else ""
 
+    # -- the period, if one was named ----------------------------------
+    #
+    # Half a filter is worse than none: a date column without a span to
+    # match, or a span with no column to read it from, would silently
+    # total everything under a name that says otherwise.
+    if bool(period) != bool(date_column):
+        raise OfficeError(
+            "period and date_column go together: period='2026-06' says "
+            "WHICH span, date_column='Datum' says which column carries "
+            "the date. Give both or neither.")
+    period_key = str(period or "").strip()
+    if period_key and not _ISO_PREFIX_RE.match(period_key):
+        raise OfficeError(
+            f"period {period_key!r} is not an ISO prefix. Write the span "
+            "as '2026' for a year, '2026-06' for a month or '2026-06-03' "
+            "for a day; the column's own date format is read for you.")
+
+    date_index = -1
+    date_name = ""
+    date_chosen = ""
+    if period_key:
+        date_index = _column_index(str(date_column))
+        date_name = str(header[date_index])
+        date_values = [r[date_index] if date_index < len(r) else ""
+                       for r in body]
+        detected_dates, date_reason = detect_date_convention(date_values)
+        date_chosen = str(date_convention or "").strip() or detected_dates
+        if date_chosen not in (ISO_DATE, DAY_FIRST, MONTH_FIRST):
+            # Same stance the number side takes above: 05.06. and 06.05.
+            # are different months, and picking one silently moves the
+            # total without moving anything the reader can see.
+            raise OfficeError(
+                f"column {date_name!r} cannot be read as dates as it "
+                f"stands: {date_reason}. Ask which reading applies and "
+                f"pass date_convention='{DAY_FIRST}' or "
+                f"'{MONTH_FIRST}' or '{ISO_DATE}'.")
+
     total = 0.0
     counted = 0
     blank = 0
+    outside = 0
+    undated: list[str] = []
     skipped: list[str] = []
     groups: dict[str, list] = {}
     for offset, raw in enumerate(values):
+        if date_index >= 0:
+            row = body[offset]
+            cell = row[date_index] if date_index < len(row) else ""
+            iso = parse_date(cell, date_chosen)
+            if iso is None:
+                # Neither inside nor outside. Counting it as either is a
+                # guess about a row the reader can still see in the file.
+                undated.append(_fmt(cell))
+                continue
+            if not iso.startswith(period_key):
+                outside += 1
+                continue
         if str(raw if raw is not None else "").strip() == "":
             blank += 1
             continue
@@ -2487,6 +2642,19 @@ def sum_column(
     total = round(total, 6)
 
     notes: list[str] = []
+    if period_key:
+        notes.append(
+            f"this total covers only {period_key} by {date_name!r}: "
+            f"{outside} row(s) fall outside that span and are NOT in it.")
+    if undated:
+        # Named, not counted away: an undated row is one the reader can
+        # still see in the file, and it belongs to neither side.
+        shown = ", ".join(undated[:3])
+        more = f" … +{len(undated) - 3}" if len(undated) > 3 else ""
+        notes.append(
+            f"{len(undated)} row(s) have no readable date in "
+            f"{date_name!r} ({shown}{more}) and are in neither the total "
+            "nor the rows outside the period.")
     if skipped:
         notes.append(
             f"{len(skipped)} of {counted + len(skipped)} value(s) could not be "
@@ -2570,6 +2738,13 @@ def sum_column(
         "counted": counted,
         "blank": blank,
         "skipped": skipped,
+        # The two places a period sends a row. Always present, so a
+        # caller need not know whether a filter was used to check that
+        # the places add up to the rows.
+        "outside": outside,
+        "undated": len(undated),
+        "period": period_key,
+        "date_column": date_name,
         "rows": len(body),
         "group_by": group_name,
         "groups": group_rows,
@@ -5645,7 +5820,14 @@ def draft_email(
         msg["Cc"] = ", ".join(carbon)
     msg["Subject"] = str(subject)
     msg["Date"] = formatdate(localtime=True)
-    msg["Message-ID"] = make_msgid()
+    # make_msgid() ends the id with this machine's fully-qualified name.
+    # The draft is a file the user opens and sends, so that name travels
+    # to whoever receives it — here the internal name of a shared compute
+    # host, which is not the sender's mail domain and is nobody's business
+    # outside it. The id only has to be unique; the domain part carries no
+    # information the recipient uses, and a mail client normally issues
+    # its own on send.
+    msg["Message-ID"] = make_msgid(domain="delfin.invalid")
     msg.set_content(str(body or ""))
 
     attached: list[str] = []

@@ -66,6 +66,11 @@ _KINDS = {
     "locked_scope_exec":    ("🔒", "Locked scope: execution outside the folder"),
     "locked_scope_widen":   ("🔒", "Locked scope: attempt to widen it"),
     "locked_scope_parse":   ("🔒", "Locked scope: command could not be checked"),
+    # A persisted auto-allow that matches every command is not a rule, it
+    # is the confirmation switched off for good. Refused whatever the
+    # dialog said, so it is recorded like the other floors that hold
+    # against an approving user.
+    "unbounded_allow_pattern": ("🔓", "Auto-allow rule that matched everything"),
     # MCP dispatch bypasses the native executor, so its refusals are their
     # own kinds.
     "plan_mode_mcp":     ("📝", "Plan mode: MCP tool refused"),

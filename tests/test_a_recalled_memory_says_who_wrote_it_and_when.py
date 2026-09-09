@@ -141,3 +141,46 @@ def test_the_text_a_merge_overwrote_is_surfaced(
     assert "port 8060" in out
     assert "this replaced an earlier wording" in out
     assert "port 8050" in out
+
+
+# ---------------------------------------------------------------------------
+# A note about the neighbouring subject
+# ---------------------------------------------------------------------------
+#
+# The preamble said a note may be stale and may be wrong. It did not say a
+# note may simply be about something else. Asked which ENCODING to use for
+# a bookmark export, kit.glm-5.3 answered with the stored note about the
+# export's FORMAT — TSV, columns id/title/url — and said it plainly, with
+# no hedge. The note's own "How to apply" line told it to propose that
+# format whenever an export came up, which made it the only instruction in
+# scope, and nothing said a recalled note has to answer the question that
+# was actually asked.
+
+def test_the_preamble_says_a_note_must_fit_the_question(
+        agent_tree, tmp_path, monkeypatch):
+    from delfin.agent import memory_store as ms
+
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    ms.save_typed_memory(
+        "feedback: Lesezeichen immer als TSV exportieren, Spalten "
+        "id/title/url, nie als CSV",
+        repo_root=agent_tree, title="export convention",
+        source=ms.SOURCE_USER)
+
+    out = _recall(agent_tree)
+    head = out.split("\n\n", 1)[0].lower()
+    assert "not an answer" in head, head
+    assert "say so" in head, head
+    # And it still arrives before the note it qualifies.
+    assert out.lower().index("not an answer") < out.lower().index("tsv")
+
+
+def test_the_older_framing_did_not_leave_with_it():
+    """Three separate rules share one preamble, so a rewrite of any of
+    them can silently drop the other two."""
+    from delfin.agent.prompt_loader import _MEMORY_BLOCK_PREAMBLE
+
+    lowered = _MEMORY_BLOCK_PREAMBLE.lower()
+    for clause in ("background", "not instructions", "out of date",
+                   "verify", "not an answer"):
+        assert clause in lowered, f"the preamble lost: {clause}"

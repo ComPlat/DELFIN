@@ -251,3 +251,64 @@ def test_the_engine_turns_that_raise_into_a_visible_error(tmp_path):
     with pytest.raises(RuntimeError):
         engine.stream_response("the long task")
     assert engine.messages == []
+
+
+# ---------------------------------------------------------------------------
+# Two silences that are not the same silence
+# ---------------------------------------------------------------------------
+#
+# A turn whose whole answer was tool-call markup or a think-block cleans
+# down to "" and lands in exactly the branch above, which then told the
+# user the backend "ended this turn without any answer text" and advised
+# switching model. Both halves are wrong: text arrived, and a different
+# model on the same serving stack produces the same markup. The remedy is
+# not the same remedy, so the sentence must not be the same sentence.
+
+def test_an_answer_that_was_all_markup_says_so(eng):
+    def only_markup(**kw):
+        yield StreamEvent(
+            type="text_delta",
+            text="<tool_call>{\"name\": \"read_file\"}</tool_call>")
+
+    eng.client.stream_message = MagicMock(side_effect=only_markup)
+    out = eng.stream_response("read the file")
+    assert "empty turn" in out.lower()
+    assert "markup" in out.lower(), out
+    assert "switch model" not in out.lower(), (
+        "advice for a silent backend, given for a formatting fault")
+
+
+def test_the_markup_length_is_reported_not_the_reasoning_length(eng):
+    markup = "<think>" + "x" * 40 + "</think>"
+
+    def only_markup(**kw):
+        yield StreamEvent(type="text_delta", text=markup)
+
+    eng.client.stream_message = MagicMock(side_effect=only_markup)
+    out = eng.stream_response("do the thing")
+    assert str(len(markup)) in out, out
+    assert eng.last_empty_turn["sanitised_to_nothing"] == len(markup)
+
+
+def test_a_genuinely_silent_turn_keeps_its_own_wording(eng):
+    """The other half of the distinction. A regression here would be one
+    message doing both jobs badly again."""
+    def nothing(**kw):
+        yield StreamEvent(type="thinking_delta", text="y" * 99)
+
+    eng.client.stream_message = MagicMock(side_effect=nothing)
+    out = eng.stream_response("do the thing")
+    assert "without any answer text" in out
+    assert "markup" not in out.lower()
+    assert eng.last_empty_turn["sanitised_to_nothing"] == 0
+
+
+def test_a_real_answer_is_never_marked_as_emptied(eng):
+    def real(**kw):
+        yield StreamEvent(type="thinking_delta", text="<think>plan</think>")
+        yield StreamEvent(type="text_delta", text="Die Summe ist 6.070,55 €.")
+
+    eng.client.stream_message = MagicMock(side_effect=real)
+    out = eng.stream_response("was ist die Summe?")
+    assert "6.070,55" in out
+    assert "empty turn" not in out.lower()

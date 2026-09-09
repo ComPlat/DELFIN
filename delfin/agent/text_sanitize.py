@@ -107,11 +107,23 @@ class SanitizeResult:
     leaked_tools: list[str] = field(default_factory=list)
     glitch_chars: int = 0
     think_stripped: bool = False
+    # How much text went in. Only interesting next to an empty ``text``:
+    # an answer that was entirely think-blocks or tool-call markup leaves
+    # nothing behind, and a caller that sees only the empty string cannot
+    # tell that apart from a backend that said nothing at all. The two
+    # have different causes and different remedies, so the caller has to
+    # be able to tell them apart.
+    source_chars: int = 0
 
     @property
     def changed(self) -> bool:
         return (bool(self.leaked_tools) or self.glitch_chars > 0
                 or self.think_stripped)
+
+    @property
+    def emptied(self) -> bool:
+        """The model produced text and none of it survived cleaning."""
+        return self.source_chars > 0 and not self.text
 
 
 def sanitize_agent_text(text: str) -> SanitizeResult:
@@ -126,7 +138,7 @@ def sanitize_agent_text(text: str) -> SanitizeResult:
     Clean text passes through unchanged (``changed`` is False).
     """
     if not text:
-        return SanitizeResult(text=text or "")
+        return SanitizeResult(text=text or "", source_chars=0)
 
     leaked: list[str] = []
     for m in _LEAKED_TOOL.finditer(text):
@@ -168,6 +180,7 @@ def sanitize_agent_text(text: str) -> SanitizeResult:
         leaked_tools=leaked,
         glitch_chars=glitch_chars,
         think_stripped=think_stripped,
+        source_chars=len(text),
     )
 
 

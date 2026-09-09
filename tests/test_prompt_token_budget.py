@@ -62,7 +62,42 @@ def _estimate_tokens(text: str) -> int:
         # the model would otherwise improvise, so each has to be named. The
         # prose was tightened three times on the way; what is left is
         # contract, not explanation.
-        ("office_agent.md", 1600),
+        # 1600 -> 1657 on 2026-09-09 for one tool that was in the
+        # catalogue and in no routing table. sum_column appeared nowhere in
+        # this prompt, while the arithmetic sentence told the model to
+        # total a column in bash — so a model that followed the prompt read
+        # the CSV with cat and added the amounts in its own text, which is
+        # the failure the office module exists to prevent, and it did it
+        # while obeying every instruction it had been given. Measured on
+        # kit.glm-5.3, office_total_names_what_it_left_out: two bash calls,
+        # no document tool, the five amounts written out and summed in the
+        # answer.
+        #
+        # Paid as far as it goes: the rule was cut twice, and the coverage
+        # principle above it dropped the list of skipped-row kinds, which
+        # the tool now reports itself. 133 tokens became 57, and those 57
+        # buy a routing row plus the sentence that stops the shell
+        # one-liner. Not a relaxation — the prompt was describing a surface
+        # that had changed underneath it.
+        #
+        # 1657 -> 1679 the same day, for draft_email. Generalising the
+        # check above found it: the role could call it and the prompt named
+        # no tool for an email, while the egress rule two sections up tells
+        # the model that sending anything out is asked about first. So the
+        # likely behaviour was to refuse or improvise a text file, when the
+        # tool writes a .eml and has no network at all. 22 tokens for the
+        # row, and the row says the part that resolves the conflict.
+        #
+        # 1679 -> 1688, nine tokens, for the words "reads the column's own
+        # convention". kit.deepseek-v4-flash gave exactly that as its
+        # REASON for going to the shell instead:  "Ich summiere in bash
+        # mit Python, um die Konvention korrekt zu beruecksichtigen" --
+        # then spent 27 of one task's 50 tool calls writing and debugging
+        # the script, for a total sum_column returns in one call and with
+        # the coverage attached. The old rule is what it was echoing, so
+        # removing that rule was necessary and not sufficient: the model
+        # also has to know the tool covers the thing it was worried about.
+        ("office_agent.md", 1688),
     ],
 )
 def test_role_prompt_within_token_budget(filename, max_tokens):
