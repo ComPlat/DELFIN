@@ -144,3 +144,140 @@ def test_the_office_prompts_name_files_the_way_a_user_would():
     testing something no user ever types."""
     for task in _office_tasks():
         assert "tests/fixtures" not in task.prompt, task.id
+
+
+# ---------------------------------------------------------------------------
+# The forbidden pattern that failed a correct answer
+# ---------------------------------------------------------------------------
+#
+# Eleventh time in this suite's history that a rubric measured spelling
+# rather than behaviour, so this one is pinned on the real answers.
+# kit.glm-5.3 named the cost centre, named the budget and explained the
+# A3:A5 merge, then added "(Wahrung in der Datei nicht angegeben)" about
+# the CURRENCY, and a word-list pattern for "the row is unassigned"
+# matched it. The same list matched every correct answer that explained
+# why the row's own cell is blank -- which is the explanation the task
+# wants -- and missed two of the wrong answers it existed to catch.
+
+_MERGED = "office_merged_block_is_not_read_as_unassigned"
+
+_UNASSIGNED_CLAIMS = (
+    'Die Position „Wartung“ hat keine Kostenstelle.',
+    'Wartung ist keiner Kostenstelle zugeordnet.',
+    'Für Wartung ist keine Kostenstelle angegeben.',
+    'Die Kostenstelle für Wartung ist nicht angegeben.',
+    'Die Zelle ist leer, die Position ist damit nicht zugeordnet.',
+    'Zu dieser Zeile fehlt die Kostenstelle.',
+    'Die Kostenstelle ist nicht erkennbar.',
+)
+
+_CORRECT_ANSWERS = (
+    # The measured one, verbatim in substance.
+    'Die Position „Wartung" gehört zur Kostenstelle 4711 mit einem Budget '
+    'von 7.300 (Währung in der Datei nicht angegeben).',
+    'Die Kostenstelle ist 4711, die Währung nicht angegeben.',
+    'Wartung gehört zu 4711; ein Währungssymbol fehlt in der Datei.',
+    'Die eigene Zelle in Zeile 5 ist leer, weil A3:A5 verbunden sind — '
+    'die Kostenstelle ist 4711.',
+    'Kostenstelle 4711 (Anorganische Chemie), Budget 7.300.',
+)
+
+
+def _merged_forbidden():
+    from delfin.agent.benchmark import load_tasks
+
+    task = next(t for t in load_tasks() if t.id == _MERGED)
+    assert len(task.forbidden_signals) == 1, "the rubric changed shape"
+    return task.forbidden_signals[0].pattern
+
+
+def test_the_unassigned_claim_is_still_caught():
+    import re
+
+    pat = _merged_forbidden()
+    missed = [t for t in _UNASSIGNED_CLAIMS if not re.search(pat, t)]
+    assert not missed, "a wrong answer walks through: " + "; ".join(missed)
+
+
+def test_a_correct_answer_is_not_failed_for_a_word_it_used():
+    import re
+
+    pat = _merged_forbidden()
+    hits = []
+    for text in _CORRECT_ANSWERS:
+        m = re.search(pat, text)
+        if m:
+            hits.append(f"{m.group(0)!r} in {text[:50]!r}")
+    assert not hits, "correct answers scored as the naive reading: " + \
+        "; ".join(hits)
+
+
+# ---------------------------------------------------------------------------
+# The first office task that changes a file
+# ---------------------------------------------------------------------------
+
+_CORRECT = "office_a_record_is_corrected_by_its_key"
+
+
+def _correct_task():
+    from delfin.agent.benchmark import load_tasks
+
+    return next(t for t in load_tasks() if t.id == _CORRECT)
+
+
+def _edit_by_key_traj(text: str):
+    from delfin.agent.benchmark import Trajectory
+
+    return Trajectory(text=text, tool_calls=[
+        {"name": "mcp__delfin-docs__read_document",
+         "input": {"path": "Buchungen_2026.xlsx"}},
+        {"name": "mcp__kit-coding__edit_sheet",
+         "input": {"path": "Buchungen_2026.xlsx", "key_column": "Beleg",
+                   "updates": [{"key": "R-014",
+                                "set": {"Betrag": "1.265,85"}}]}},
+    ])
+
+
+def test_the_right_edit_satisfies_every_expected_signal():
+    from delfin.agent.benchmark import _signal_matches
+
+    traj = _edit_by_key_traj(
+        "R-014 steht jetzt auf 1.265,85 € (vorher 265,85 €). Die Änderung "
+        "ist gesichert und lässt sich mit undo_changes zurücknehmen.")
+    unmatched = [i for i, s in enumerate(_correct_task().expected_signals)
+                 if not _signal_matches(s, traj)]
+    assert not unmatched, f"unmatched: expected{unmatched}"
+
+
+def test_a_cell_coordinate_does_not_satisfy_the_by_key_signal():
+    """The rule the prompt states: the sheet has seven hidden rows, so
+    what a reader counts and what the file numbers are different things."""
+    from delfin.agent.benchmark import Trajectory, _signal_matches
+
+    by_cell = Trajectory(
+        text="E15 auf 1.265,85 gesetzt; per undo_changes rücknehmbar.",
+        tool_calls=[{"name": "mcp__kit-coding__edit_sheet",
+                     "input": {"path": "Buchungen_2026.xlsx",
+                               "edits": [{"cell": "E15",
+                                          "value": "1.265,85"}]}}])
+    task = _correct_task()
+    key_signal = next(s for s in task.expected_signals
+                      if "key_column" in s.pattern)
+    assert not _signal_matches(key_signal, by_cell)
+    # Saying it is not doing it.
+    talked = Trajectory(text="Ich adressiere die Zeile über key_column.")
+    assert not _signal_matches(key_signal, talked)
+
+
+def test_rewriting_the_workbook_in_a_shell_is_the_forbidden_route():
+    from delfin.agent.benchmark import Trajectory, _signal_matches
+
+    task = _correct_task()
+    shell = Trajectory(text="Fertig.", tool_calls=[
+        {"name": "mcp__kit-coding__bash",
+         "input": {"command": "python -c \"import openpyxl; "
+                              "wb=openpyxl.load_workbook('Buchungen_2026.xlsx')\""}}])
+    assert any(_signal_matches(s, shell) for s in task.forbidden_signals)
+    # And the correct route is not caught by it.
+    ok = _edit_by_key_traj("R-014 auf 1.265,85 gesetzt, per Backup rücknehmbar.")
+    assert not any(_signal_matches(s, ok) for s in task.forbidden_signals)

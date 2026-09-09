@@ -204,10 +204,13 @@ def test_office_may_use_it_and_the_surface_still_fits():
     # said "showing 40 of 87 columns" and there was no way to reach the
     # other 47 — the slice always began at column 1.
     #
-    # 9_133 -> 9_287: sum_column, measured at 154 tokens after its texts
-    # were cut to the shortest form that still says what it refuses and
-    # how to get past the refusal. The reason it is worth a raise is
-    # written next to the canonical ceiling in test_tool_schema_budget.py;
-    # this assertion tracks it so the office surface is checked from the
-    # email side too.
-    assert tool_schema_token_report()["total_tokens"] <= 9_287
+    # The ceiling itself lives in test_tool_schema_budget.py, with the
+    # reasoning for every raise beside it. This assertion used to carry a
+    # SECOND copy of the number so the office surface was checked from the
+    # email side too -- and a copy of a rule is a rule that can drift: the
+    # canonical one moved for sum_column's row filter and this one did
+    # not, so a test named after email failed for a change to totals.
+    # Imported now, so there is one ceiling and both sides read it.
+    from tests.test_tool_schema_budget import _TOKEN_BUDGET
+
+    assert tool_schema_token_report()["total_tokens"] <= _TOKEN_BUDGET

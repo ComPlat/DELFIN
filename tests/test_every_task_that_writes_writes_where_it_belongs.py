@@ -150,7 +150,18 @@ def test_the_counts_still_match_what_was_measured():
     # it needs the guard for the same reason the memory pair does — the
     # hook definition is seeded into the fixture at run time and has to
     # leave with everything else the attempt wrote.
-    assert counts == {"office": 11, "behavior": 12,
+    #
+    # office 11 -> 12 on 2026-09-09: office_one_month_is_totalled_by_the
+    # _tool, which asks for one month out of a workbook that holds five.
+    # It reads the same restored fixture as its neighbours and writes
+    # nothing, so it belongs to the class for the same reason they do.
+    #
+    # office 12 -> 13, same day: office_a_record_is_corrected_by_its_key,
+    # the first task in this class that CHANGES a file. It writes into the
+    # restored fixture workbook, which is what the guard around every
+    # office attempt is for, and the guard replaces the workspace whole so
+    # the backup the edit creates leaves with it.
+    assert counts == {"office": 13, "behavior": 12,
                       "generic_project": 14, "other": 48}, counts
 
 

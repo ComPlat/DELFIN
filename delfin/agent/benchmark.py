@@ -60,6 +60,169 @@ class Signal:
     optional: bool = False
 
 
+# A number as it is actually written in an answer: German and English
+# grouping, a bare decimal, a signed value, a thousands run.
+#
+# The hyphen is excluded on the left as well as the word characters. An
+# administrative answer is full of record references -- R-014, A-2026-003,
+# a date written 2026-03-19 -- and without it the digits after the dash
+# read as their own figure, so an answer that merely NAMES beleg R-014
+# would satisfy an expected value of 14. A leading minus still works
+# wherever a sign can actually stand: at the start, or after a space or a
+# bracket, never glued to the end of a word.
+_NUMBER_TOKEN_RE = re.compile(
+    r"(?<![\w.,-])[+-]?\d{1,3}(?:[.,]\d{3})*(?:[.,]\d+)?(?![\w])"
+    r"|(?<![\w.,-])[+-]?\d+(?:[.,]\d+)?(?![\w])")
+
+
+def readings_of(token: str) -> tuple[float, ...]:
+    """Every number this token could denote, most likely first.
+
+    A written figure is not a float. "6.070,55" and "6,070.55" are the
+    same amount in two conventions, "6070.55" is a third spelling of it,
+    and "1.265" is either a thousand and a bit or one and a quarter with
+    nothing in the string to decide. So a token becomes a SET of readings
+    and a comparison succeeds when any of them fits.
+
+    Deliberately permissive, and only safe because of what it is used for:
+    the question asked is "did the expected figure appear", where reading
+    an ambiguous token both ways can only fail to catch a wrong answer. A
+    stricter reading would instead fail a correct one for writing its
+    number the way the rest of the document writes it, which is the error
+    that has actually been made here, repeatedly, by patterns matching
+    digits.
+    """
+    text = str(token or "").strip()
+    if not text:
+        return ()
+    sign = -1.0 if text.startswith("-") else 1.0
+    body = text.lstrip("+-")
+    if not body or not body[0].isdigit():
+        return ()
+
+    out: list[float] = []
+
+    def _add(value: Optional[float]) -> None:
+        if value is not None and value not in out:
+            out.append(value)
+
+    def _read(decimal: str, group: str) -> Optional[str]:
+        """The plain form under one convention, or None if it cannot hold.
+
+        Grouping is checked on the INTEGER part only, and every group
+        after the first must be exactly three digits — that is what makes
+        "1,5" refuse to be fifteen while "1,265" is allowed to be a
+        thousand two hundred and sixty-five.
+        """
+        if decimal:
+            if body.count(decimal) != 1:
+                return None
+            integer, fraction = body.split(decimal)
+            if not fraction.isdigit():
+                return None
+        else:
+            integer, fraction = body, ""
+        if group:
+            if group in fraction:
+                return None
+            parts = integer.split(group)
+            if len(parts) > 1:
+                if not parts[0] or len(parts[0]) > 3:
+                    return None
+                if any(len(part) != 3 for part in parts[1:]):
+                    return None
+            integer = integer.replace(group, "")
+        elif any(sep in integer for sep in ".,"):
+            return None
+        if not integer.isdigit():
+            return None
+        return integer + ("." + fraction if fraction else "")
+
+    has_dot, has_comma = "." in body, "," in body
+    if has_dot and has_comma:
+        # The LAST separator is the decimal one; the other groups.
+        if body.rindex(",") > body.rindex("."):
+            _add(_to_float(_read(",", ".")))
+        else:
+            _add(_to_float(_read(".", ",")))
+    elif has_comma:
+        _add(_to_float(_read(",", "")))          # 1,5  -> 1.5
+        _add(_to_float(_read("", ",")))          # 1,265 -> 1265
+    elif has_dot:
+        _add(_to_float(_read(".", "")))          # 1.5  -> 1.5
+        _add(_to_float(_read("", ".")))          # 1.265 -> 1265
+    else:
+        _add(_to_float(body))
+    return tuple(sign * v for v in out)
+
+
+def _to_float(text: Optional[str]) -> Optional[float]:
+    if text is None:
+        return None
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def numbers_in(text: str) -> tuple[float, ...]:
+    """Every value any number in *text* could denote."""
+    seen: list[float] = []
+    for match in _NUMBER_TOKEN_RE.finditer(str(text or "")):
+        for value in readings_of(match.group(0)):
+            if value not in seen:
+                seen.append(value)
+    return tuple(seen)
+
+
+@dataclass(frozen=True)
+class ExpectedValue:
+    """One figure the answer has to state, judged as a NUMBER.
+
+    A regex over digits cannot express a tolerance, cannot tell 1.234,50
+    from 1,234.50 without being written twice, and cannot say whether a
+    missing match means the model got the figure wrong or never gave one.
+    Those are three different repairs and the report should not need a
+    trace read to tell them apart.
+
+    ``tolerance`` is relative (0.005 = half a percent); ``absolute`` is an
+    alternative floor for figures near zero, and the larger of the two
+    wins so a value of 0.0 is expressible.
+    """
+
+    value: float
+    label: str = ""
+    tolerance: float = 0.005
+    absolute: float = 0.0
+    optional: bool = False
+    # "text" reads the answer only, which is what a figure the user is
+    # meant to READ has to be judged on. "any" also reads the rendered
+    # tool calls, for a task whose point is that the number was produced
+    # by actually running something -- there the figure may legitimately
+    # live in the output rather than in the prose.
+    against: str = "text"
+
+    def margin(self) -> float:
+        return max(abs(self.value) * abs(self.tolerance), abs(self.absolute))
+
+    def matches(self, candidate: float) -> bool:
+        return abs(candidate - self.value) <= self.margin()
+
+    def judge(self, text: str) -> str:
+        """``matched`` | ``wrong`` | ``absent``.
+
+        The split is the point. ``absent`` means the answer states no
+        figure at all -- the model did not answer, or the harness did not
+        capture what it said -- and ``wrong`` means it did state figures
+        and none of them is this one. The first is usually ours to fix,
+        the second is the model's.
+        """
+        candidates = numbers_in(text)
+        if not candidates:
+            return "absent"
+        return "matched" if any(self.matches(c) for c in candidates) else "wrong"
+
+
 @dataclass(frozen=True)
 class Task:
     """One canned benchmark task."""
@@ -73,6 +236,9 @@ class Task:
     prompt: str
     expected_signals: tuple[Signal, ...] = ()
     forbidden_signals: tuple[Signal, ...] = ()
+    # Figures the answer must state, compared as numbers rather than as
+    # digits. See ExpectedValue.
+    expected_values: tuple[ExpectedValue, ...] = ()
     max_duration_s: float = 60.0
     max_cost_usd: float = 0.10
     max_tool_calls: int = 5
@@ -182,6 +348,10 @@ class BenchmarkResult:
     # above is a HEAD slice, so a violation past its end was reported as a
     # pattern label with no way to see what matched.
     signal_evidence: dict[str, str] = field(default_factory=dict)
+    # label -> matched | wrong | absent, one per expected figure. The
+    # split is what separates a model that computed the wrong number from
+    # an answer that never reached the scorer.
+    value_report: dict[str, str] = field(default_factory=dict)
     tool_names: list[str] = field(default_factory=list)  # tools the model actually called
     # --- trace-derived behaviour flags (behavioural-parity eval) ---
     # Only populated for tasks carrying a ``behavior:`` tag.  Per-run this
@@ -219,9 +389,27 @@ def _coerce_signal(raw: Any) -> Signal:
     raise TypeError(f"Cannot coerce signal: {raw!r}")
 
 
+def _coerce_value(raw: Any) -> ExpectedValue:
+    if isinstance(raw, ExpectedValue):
+        return raw
+    if isinstance(raw, (int, float)):
+        return ExpectedValue(value=float(raw))
+    if isinstance(raw, dict):
+        return ExpectedValue(
+            value=float(raw["value"]),
+            label=str(raw.get("label", "")),
+            tolerance=float(raw.get("tolerance", 0.005)),
+            absolute=float(raw.get("absolute", 0.0)),
+            optional=bool(raw.get("optional", False)),
+            against=str(raw.get("against", "text")),
+        )
+    raise TypeError(f"Cannot coerce expected value: {raw!r}")
+
+
 def _coerce_task(raw: dict) -> Task:
     expected = tuple(_coerce_signal(s) for s in raw.get("expected_signals") or [])
     forbidden = tuple(_coerce_signal(s) for s in raw.get("forbidden_signals") or [])
+    values = tuple(_coerce_value(v) for v in raw.get("expected_values") or [])
     return Task(
         id=str(raw["id"]),
         task_class=str(raw.get("task_class", "")),
@@ -230,6 +418,7 @@ def _coerce_task(raw: dict) -> Task:
         prompt=str(raw.get("prompt", "")),
         expected_signals=expected,
         forbidden_signals=forbidden,
+        expected_values=values,
         max_duration_s=float(raw.get("max_duration_s", 60.0)),
         max_cost_usd=float(raw.get("max_cost_usd", 0.10)),
         max_tool_calls=int(raw.get("max_tool_calls", 5)),
@@ -992,6 +1181,32 @@ def score_outcome(
         if sig.optional:
             optional_total += 1
 
+    # 1b. Expected figures — judged as numbers, not as digits.
+    #
+    # A figure written 1.234,50 and the same figure written 1,234.50 are
+    # one answer, and a pattern that reads digits has to be written twice
+    # to see that, or it fails a correct answer for the convention its
+    # document uses. This asks the question directly, with a tolerance,
+    # and records WHY it did not match: no figure at all in the answer is
+    # a different fault from the wrong figure, and only one of the two is
+    # the model's.
+    value_report: dict[str, str] = {}
+    for idx, expected in enumerate(task.expected_values):
+        label = f"{task.id}.value[{idx}]"
+        if expected.label:
+            label += f":{expected.label}"
+        haystack = (traj.as_string() if expected.against == "any"
+                    else traj.text)
+        verdict = expected.judge(haystack)
+        value_report[label] = verdict
+        if verdict == "matched":
+            matched.append(label)
+        else:
+            missing.append(label + (":optional" if expected.optional
+                                    else f":{verdict}"))
+            if not expected.optional:
+                success_required_ok = False
+
     # 2. Forbidden signals — any match flips success to False. A match
     # inside an explicit NEGATION context is waived: an answer that names
     # a fake keyword in order to warn against it ("the keywords are NOT
@@ -1124,6 +1339,7 @@ def score_outcome(
         unmeasured=unmeasured,
         text_excerpt=excerpt,
         signal_evidence=signal_evidence,
+        value_report=value_report,
         tool_names=tool_names,
         behavior=behavior_flags(task, traj),
         caveats=caveat_count(traj.text),
@@ -1388,6 +1604,7 @@ def summarise_run(results: list[dict] | list[BenchmarkResult]) -> dict[str, Any]
             "avg_quality": 0.0, "total_cost_usd": 0.0,
             "total_duration_s": 0.0, "total_tool_calls": 0,
             "avg_caveats": 0.0, "max_caveats": 0,
+            "values_matched": 0, "values_wrong": 0, "values_absent": 0,
             "avg_output_tokens": 0.0, "avg_answer_chars": 0.0,
             "total_denials": None,
         }
@@ -1434,7 +1651,24 @@ def summarise_run(results: list[dict] | list[BenchmarkResult]) -> dict[str, Any]
         "total_denials": (
             None if any(r.get("denials") is None for r in scored)
             else sum(int(r.get("denials") or 0) for r in scored)),
+        # Figures asked for and not matched, split by WHY. A wrong figure
+        # is the model's arithmetic; a figure that is absent from an
+        # answer usually means the answer never got here -- an empty
+        # turn, a truncation, a refusal -- and reading the two as one
+        # number is how a harness fault gets filed as a model fault.
+        "values_matched": _count_verdicts(scored, "matched"),
+        "values_wrong": _count_verdicts(scored, "wrong"),
+        "values_absent": _count_verdicts(scored, "absent"),
     }
+
+
+def _count_verdicts(rows: list[dict], verdict: str) -> int:
+    total = 0
+    for row in rows:
+        report = row.get("value_report") or {}
+        if isinstance(report, dict):
+            total += sum(1 for v in report.values() if v == verdict)
+    return total
 
 
 def compare_runs(

@@ -140,3 +140,115 @@ def test_calc_tail_is_documented_in_the_unit_the_handler_uses():
                 if ln.startswith("- `ACTION: /calc tail"))
     assert "8 KB" in line
     assert "50 lines" not in line
+
+
+# ---------------------------------------------------------------------------
+# A tool in the catalogue and in no routing table
+# ---------------------------------------------------------------------------
+#
+# The office prompt's arithmetic rule read "Compute in bash with Python,
+# not in your head: arithmetic over a column is the kind of thing a model
+# gets subtly wrong where nobody can see it." That was true when it was
+# written and stopped being true when sum_column shipped, and nothing
+# noticed, because a prompt sentence has no compiler. The routing table
+# had no row for totalling either.
+#
+# So the correct behaviour, for a model that followed its instructions
+# exactly, was to read the CSV in a shell and write the addition out in
+# its answer. Measured on kit.glm-5.3 in
+# office_total_names_what_it_left_out: two bash calls, no document tool,
+# five amounts added in prose. The benchmark scored it a failure and the
+# prompt had asked for it.
+
+_OFFICE = (_PACK / "agents" / "office_agent.md").read_text(encoding="utf-8")
+
+
+def test_the_office_prompt_routes_a_total_to_the_tool_that_totals():
+    from delfin.agent.api_client import _OFFICE_AGENT_ALLOWED_TOOLS
+
+    assert "sum_column" in _OFFICE_AGENT_ALLOWED_TOOLS, (
+        "premise gone: the role can no longer reach the tool")
+    assert "sum_column" in _OFFICE, (
+        "the role can call sum_column and its prompt never names it")
+
+
+def test_the_prompt_does_not_send_a_column_total_to_the_shell():
+    """The specific sentence that produced the measured failure. Any
+    wording is fine; sending arithmetic over a column to bash is not."""
+    lowered = _OFFICE.lower()
+    for phrase in ("arithmetic over a column",
+                   "compute in `bash` with python, not in your head"):
+        assert phrase not in lowered, (
+            f"the prompt still routes a column total to the shell: {phrase}")
+
+
+def test_every_office_tool_the_role_can_call_is_named_in_its_prompt():
+    """The general form. A tool the model may call and has never been
+    told about is one it will reach for by accident or not at all."""
+    from delfin.agent import api_client as A
+    from delfin.agent import office as _office
+
+    catalogue = {t["function"]["name"] for t in A._DOC_TOOLS_OPENAI}
+    office_backed = {
+        n for n in catalogue
+        if callable(getattr(_office, n, None))
+        and n in A._OFFICE_AGENT_ALLOWED_TOOLS
+    }
+    assert office_backed, "premise gone: no office tool is role-allowed"
+    unnamed = sorted(n for n in office_backed if n not in _OFFICE)
+    assert not unnamed, (
+        "callable by this role, named nowhere in its prompt: "
+        + ", ".join(unnamed))
+
+
+# ---------------------------------------------------------------------------
+# One rule, stated twice, narrowed once
+# ---------------------------------------------------------------------------
+#
+# The dashboard prompt asked for a plan before ≥3 actions in two places.
+# One of them was narrowed on 2026-08-13 to "only when the user did NOT
+# enumerate the steps", because a numbered list read back to the user who
+# just wrote it is pure cost; the benchmark dropped its plan expectation
+# in the same change. The other passage kept the unconditional form.
+#
+# kit.glm-5.3 on workflow_plan_before_act, whose prompt is itself a
+# numbered list ending "Bitte alle 5 schritte ausführen": it answered
+# "Kurzplan: 1) BP86 setzen, 2) def2-TZVP setzen, …" and emitted no ACTION
+# and no tool call at all. Stopping after the plan is the model's error;
+# being told to write one was not.
+#
+# The rule is now stated once, so the two halves cannot drift apart again.
+
+# The prompt is hard-wrapped, so a rule can carry a newline in the middle
+# of the phrase that names it. Match on the flowed text.
+_DASH_FLAT = re.sub(r"\s+", " ", _DASH)
+
+
+def test_the_plan_rule_is_stated_once():
+    hits = re.findall(r"(?i)1-line (?:numbered )?plan", _DASH_FLAT)
+    assert len(hits) == 1, (
+        f"the plan rule appears {len(hits)} times; two statements of one "
+        "rule are how the narrowed and unnarrowed versions came to live "
+        "in the same prompt")
+
+
+def test_the_plan_is_asked_for_only_when_the_user_did_not_enumerate():
+    """Whatever the wording, the exception has to be in the same breath
+    as the rule."""
+    m = re.search(r"(?i)1-line (?:numbered )?plan", _DASH_FLAT)
+    assert m, "the plan rule is gone entirely"
+    para = _DASH_FLAT[max(0, m.start() - 300):m.end() + 400]
+    assert re.search(r"(?i)without enumerating|nicht auf|did NOT enumerate",
+                     para), "the rule no longer names its condition"
+    assert re.search(r"(?i)already wrote the list", para), (
+        "the case where the user wrote the list is not answered next to "
+        "the rule that would otherwise cover it")
+
+
+def test_a_plan_is_never_offered_as_a_substitute_for_acting():
+    """The half that was missing: the prompt said when to write a plan
+    and never said a plan is not the work."""
+    assert re.search(r"(?i)plan INSTEAD of the ACTIONs|plan is not the work",
+                     _DASH_FLAT), (
+        "nothing tells the model that stopping after the plan answers "
+        "nothing")

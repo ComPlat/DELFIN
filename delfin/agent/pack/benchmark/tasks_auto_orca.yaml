@@ -16,7 +16,15 @@ tasks:
     against: text
   - pattern: (?i)\b(?:norb|ptmethod)\b
     against: text
-  - pattern: (?i)\b(?:mult|actorbs)\b
+  # A third genuine keyword, not two specific ones. The prompt asks for
+  # "mindestens 3 echte Keywords"; this slot asked for mult or actorbs and
+  # nothing else, so kit.glm-5.3 failed it having named eight real
+  # keywords from the block -- nel, norb, MaxIter, ETol, GTol,
+  # ActConstraints, SwitchConv, switchstep -- with the section cited and
+  # no invented one among them. Every alternative below is documented at
+  # keyword position in ch3_13_4_keywords of the ORCA manual, which the
+  # test asserts against the index rather than against anyone's memory.
+  - pattern: (?i)\b(?:mult|actorbs|irrep|bweight|weights|printlevel|maxiter|etol|gtol|rtol|actconstraints|switchconv|switchstep|switchdens|trafostep|orbstep|cistep|shiftup|shiftdn|maxdiis|maxrot|refs|imult|iroot|printwf|canonorbs|locorbs|extorbs|intorbs|freezeactive|diisthresh)\b
     against: text
   max_duration_s: 120
   max_cost_usd: 0.5
@@ -26,7 +34,16 @@ tasks:
     against: text
   - pattern: (?i)\bnactorb\b
     against: text
-  - pattern: (?i)\bmultiplicity\b
+  # multiplicity is the Molcas spelling; ORCA's is mult. Matched where a
+  # keyword is WRITTEN -- with its value after it -- because the manual
+  # itself uses the plain English word in a comment ("imult 0 #
+  # multiplicity block counting from zero"), and this task tells the model
+  # to go and read that manual. A bare word match failed an answer for
+  # quoting the source it was sent to.
+  #
+  # Not anchored on backticks: _strip_emphasis removes them before a text
+  # signal is matched, so a pattern that mentions one can never fire.
+  - pattern: (?i)\bmultiplicity\s*(?:[=:]|\d)
     against: text
   - pattern: (?i)\bnelectrons\b
     against: text
@@ -54,7 +71,15 @@ tasks:
     against: text
   - pattern: (?i)\bnumroots\b
     against: text
-  - pattern: (?i)(?:`states`|\*\*states\*\*|\bstates\s*[:=]|\|\s*states\s*\|)
+  # states is not a %tddft keyword -- nroots is -- and the word alone is
+  # ordinary prose ("die angeregten states"), so the claim is matched
+  # where a keyword is written: with its value, or as a table cell.
+  #
+  # Two of the four alternatives here used to be `states` and **states**,
+  # and neither could ever fire: _strip_emphasis removes backticks and
+  # asterisks before a text signal is matched, so the two forms a model is
+  # MOST likely to write were the two the guard could not see.
+  - pattern: (?i)(\bstates\s*[:=]|\bstates\s+\d|\|\s*states\s*\|)
     against: text
 - id: fact_orca_mp2_keywords_auto
   task_class: fact_verify_auto

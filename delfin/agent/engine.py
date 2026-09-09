@@ -3108,10 +3108,21 @@ class AgentEngine:
         # tokens from gpt-5.x via the OpenAI-compatible endpoint) BEFORE it
         # enters the conversation context — otherwise the garbage is replayed
         # to the model on every subsequent turn.
+        # Set when cleaning consumed the whole answer: the model DID
+        # produce text, and all of it was think-blocks or tool-call markup.
+        # The empty branch below says something different in that case,
+        # because "the backend answered nothing" and "the backend answered
+        # in a format nothing could use" are different faults with
+        # different remedies, and the second one is not fixed by switching
+        # model.
+        _sanitised_to_nothing = 0
         if full_response:
             try:
                 from delfin.agent.text_sanitize import sanitize_agent_text
-                full_response = sanitize_agent_text(full_response).text
+                _san = sanitize_agent_text(full_response)
+                if _san.emptied:
+                    _sanitised_to_nothing = _san.source_chars
+                full_response = _san.text
             except Exception:
                 pass
         # Output-guard stage: redact credential material from the FINAL
@@ -3209,15 +3220,27 @@ class AgentEngine:
             if self.messages and self.messages[-1].get("role") == "user":
                 self.messages.pop()
             _empty_elapsed = _time.monotonic() - _turn_t0
-            full_response = (
-                f"[empty turn] The backend ended this turn without any "
-                f"answer text — {_thinking_chars} characters of reasoning, "
-                f"{_turn_tool_calls} tool call(s), {_empty_elapsed:.1f}s. "
-                f"Nothing was added to the history, so your message is "
-                f"unchanged: send it again, or switch model if this "
-                f"repeats (a model that answers on the reasoning channel "
-                f"only produces exactly this)."
-            )
+            if _sanitised_to_nothing:
+                full_response = (
+                    f"[empty turn] The backend answered with "
+                    f"{_sanitised_to_nothing} characters that were entirely "
+                    f"reasoning or tool-call markup, so nothing was left "
+                    f"after cleaning — {_turn_tool_calls} tool call(s), "
+                    f"{_empty_elapsed:.1f}s. Nothing was added to the "
+                    f"history, so your message is unchanged: send it again. "
+                    f"This is a formatting fault at the serving layer, not "
+                    f"a model that had nothing to say."
+                )
+            else:
+                full_response = (
+                    f"[empty turn] The backend ended this turn without any "
+                    f"answer text — {_thinking_chars} characters of "
+                    f"reasoning, {_turn_tool_calls} tool call(s), "
+                    f"{_empty_elapsed:.1f}s. Nothing was added to the "
+                    f"history, so your message is unchanged: send it again, "
+                    f"or switch model if this repeats (a model that answers "
+                    f"on the reasoning channel only produces exactly this)."
+                )
             # Named, so the turn log can tell an empty turn apart from a
             # normal finish instead of recording a successful cycle that
             # answered nothing.
@@ -3227,6 +3250,12 @@ class AgentEngine:
                 "duration_s": round(_empty_elapsed, 3),
                 "model": str(getattr(self.client, "model", "") or ""),
                 "role": self.current_role or "",
+                # Non-zero means the turn was not silent: this many
+                # characters arrived and cleaning left none of them. A
+                # count in this field points at the serving layer's
+                # formatting, everywhere else in the log it points at the
+                # model.
+                "sanitised_to_nothing": _sanitised_to_nothing,
             }
             try:
                 self.record_cycle_outcome(

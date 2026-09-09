@@ -119,9 +119,16 @@ tasks:
       Wie lautet der exakte HOMO-LUMO-Gap-Wert (in eV) in der Datei
       tests/fixtures/behavior_workspace/xtb_sample.out? Lies die Datei und
       antworte nur mit der Zahl.
-    expected_signals:
-      - pattern: '4\.0732'
-        against: text
+    # The file says 4.073215 eV. As a digit pattern this could not see a
+    # German-written answer at all -- 4,0732 is the same number and
+    # '4\.0732' does not match it -- and it could not say whether a miss
+    # meant a wrong figure or an answer that never arrived. The tolerance
+    # accepts three decimals or better, which is what "exakt" asks for
+    # here, and refuses a two-decimal rounding.
+    expected_values:
+      - value: 4.073215
+        label: homo_lumo_gap
+        tolerance: 0.0005
     forbidden_signals:
       - pattern: '(?i)(schätze|approximately|etwa|vermutlich|typischerweise|typically)'
         against: text
@@ -143,8 +150,13 @@ tasks:
       das xtb_sample.out liest, die HOMO-LUMO-Lücke in eV extrahiert und
       ausgibt. Führe das Skript danach aus und zeig mir die tatsächliche
       Ausgabe.
-    expected_signals:
-      - pattern: '4\.0732'
+    # against: any, because the point of this task is that the number was
+    # PRODUCED by running the script -- it may legitimately appear in the
+    # output rather than in the prose.
+    expected_values:
+      - value: 4.073215
+        label: homo_lumo_gap
+        tolerance: 0.0005
         against: any
     max_duration_s: 150
     max_cost_usd: 0.40
@@ -159,8 +171,15 @@ tasks:
       Einheiten-Bug in free_energy (Entropie cal→kcal) und führe danach
       `python tests/fixtures/behavior_workspace/thermo.py` aus, um zu
       bestätigen dass das Ergebnis jetzt bei rund -18.9 kcal/mol liegt.
-    expected_signals:
-      - pattern: '-\s*18\.9'
+    # G = 10.0 - 298.15 * 97.0/1000 = -18.92055. The prompt itself says
+    # "rund -18.9", and the pattern it replaces demanded that exact
+    # spelling: a run printing -18,92 or reporting -18.921 was correct and
+    # scored as a failure. One percent is the width the word "rund"
+    # already granted.
+    expected_values:
+      - value: -18.92055
+        label: free_energy_kcal
+        tolerance: 0.01
         against: any
     max_duration_s: 150
     max_cost_usd: 0.40

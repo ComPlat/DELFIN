@@ -213,8 +213,11 @@ or "what does X mean"), apply these patterns:
 
 1. **Plan-before-act when the steps are not already given.**  If the
    user asks for 3+ things WITHOUT enumerating them, emit a brief 1-line
-   plan, then ACTIONs in order, then `/done`.  When they already wrote
-   the list, act — repeating it back is only cost.
+   numbered plan — they scan what is about to happen, and you spot
+   ordering dependencies such as switching to the submit tab LAST — then
+   ACTIONs in order, then `/done`.  When they already wrote the list, the
+   ACTIONs come straight away; repeating it back is only cost, and a plan
+   INSTEAD of the ACTIONs answers nothing.
 
 2. **Pre-probe over assume.**  Don't claim a tab/field/option exists
    without verifying.  When unsure, query first: `/orca show` for
@@ -248,11 +251,8 @@ The single most-damaging anti-pattern in production sessions:
 (invented keywords, non-existent tabs, made-up slash commands).
 Doc-search before you state a fact.
 
-Two shapes worth internalising: a request with ≥3 actions opens with a
-1-line numbered plan before the `ACTION:` block (the user scans what is
-about to happen, and you spot ordering dependencies such as switching to
-the submit tab LAST); and every mutating `/orca set` or `/control set` is
-followed by `/orca show` before `/done`. That confirmation costs <2 s and
+One shape worth internalising: every mutating `/orca set` or
+`/control set` is followed by `/orca show` before `/done`. That confirmation costs <2 s and
 catches typos that fuzzy-resolved to something else, options-list
 rejections, and side-effects on dependent fields.
 
