@@ -8236,6 +8236,9 @@ class _DocToolExecutor:
         self._index: dict | None = None
         self._calc_engine = None
         self._calc_dirs: dict[str, str] = {}  # set by caller
+        # Where the index was actually built from, filled in by
+        # _ensure_calc_loaded so a calc answer can name its corpus.
+        self._calc_roots: dict[str, str] = {}
         # Undo journal: seqs of file changes captured THIS turn (reset by
         # the client at turn start) so undo_changes(scope="turn") knows
         # the turn boundary.
@@ -8380,6 +8383,39 @@ class _DocToolExecutor:
         except Exception:
             return False
 
+    @staticmethod
+    def _configured_calc_dirs() -> dict[str, str]:
+        """The calculation roots the USER configured, or the defaults.
+
+        ``_calc_dirs`` is set by exactly one caller, the dashboard
+        (tab_agent.py). Everywhere else -- the CLI, a headless run, every
+        benchmark attempt -- it was empty and the literals ``~/calc`` and
+        ``~/archive`` were used instead, so a user who had set
+        ``paths.calculations_dir`` to anything else got an agent that
+        indexed a folder they do not use and said nothing about it.
+        `calc_summary` then reports a corpus that is not theirs, and
+        `search_calcs` answers "no runs match" about a directory it never
+        looked in -- a negative finding from a search of the wrong place.
+
+        Same keys and same fallbacks as ``mcp_isolation._roots_for``,
+        which has read them this way since the isolation work: one
+        convention for where a user's calculations are, not two.
+        """
+        out: dict[str, str] = {}
+        try:
+            from delfin.user_settings import load_settings
+            settings = load_settings() or {}
+            paths = settings.get("paths") or {}
+            if isinstance(paths, dict):
+                for key, setting in (("calc", "calculations_dir"),
+                                     ("archive", "archive_dir")):
+                    value = str(paths.get(setting) or "").strip()
+                    if value:
+                        out[key] = value
+        except Exception:
+            return {}
+        return out
+
     def _ensure_calc_loaded(self) -> bool:
         """Build calc index on first use. Returns True if ready."""
         if self._calc_engine is not None:
@@ -8389,9 +8425,12 @@ class _DocToolExecutor:
             from delfin.doc_server.calc_indexer import build_calc_index
             from delfin.doc_server.calc_search import CalcSearchEngine
 
-            calc_dir = Path(self._calc_dirs.get("calc", "~/calc")).expanduser()
-            archive_dir = Path(self._calc_dirs.get("archive", "~/archive")).expanduser()
-            remote = self._calc_dirs.get("remote_archive", "")
+            # Explicit override first (the dashboard sets it), then what
+            # the user configured, then the historical defaults.
+            roots = {**self._configured_calc_dirs(), **self._calc_dirs}
+            calc_dir = Path(roots.get("calc", "~/calc")).expanduser()
+            archive_dir = Path(roots.get("archive", "~/archive")).expanduser()
+            remote = roots.get("remote_archive", "")
             remote_dir = Path(remote).expanduser() if remote else None
 
             idx = build_calc_index(
@@ -8401,6 +8440,13 @@ class _DocToolExecutor:
                 quiet=True,
             )
             self._calc_engine = CalcSearchEngine(idx)
+            # Kept so an answer can say WHERE it looked. A corpus is
+            # evidence, and evidence with no provenance is the thing the
+            # integrity rules exist to prevent.
+            self._calc_roots = {
+                "calc": str(calc_dir) if calc_dir.is_dir() else "",
+                "archive": str(archive_dir) if archive_dir.is_dir() else "",
+            }
             return True
         except Exception:
             return False
@@ -9292,9 +9338,14 @@ class _DocToolExecutor:
             return json.dumps(info, indent=2, ensure_ascii=False)
 
         elif name == "calc_summary":
-            return json.dumps(
-                self._calc_engine.summary(), indent=2, ensure_ascii=False
-            )
+            summary = dict(self._calc_engine.summary() or {})
+            # The corpus names itself. "777 calculations" is a number an
+            # answer will quote, and until it says WHICH directories it
+            # counted, nobody -- model or user -- can tell a complete
+            # answer from one about the wrong folder.
+            roots = {k: v for k, v in (self._calc_roots or {}).items() if v}
+            summary["indexed_from"] = roots or "no calculation directory found"
+            return json.dumps(summary, indent=2, ensure_ascii=False)
 
         return json.dumps({"error": f"Unknown calc tool: {name}"})
 
