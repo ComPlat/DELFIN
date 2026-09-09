@@ -1202,6 +1202,25 @@ _LABEL_ONLY: frozenset[tuple[str, str]] = frozenset({
     ("task_create", "description"),
 })
 
+# Tools that carry their OWN plan-mode refusal in their body, past the
+# entry gate. Both are on the plan-mode safe list -- reading a task list
+# is fine -- and refuse deeper down because it is the STATUS change, not
+# the tool, that starts execution.
+#
+# In plan mode they must answer with that reason, not with an argument
+# nit: a model told "subject is required" for a task_create it may not
+# perform learns the wrong thing and retries into the same wall. Same
+# precedence argument as everywhere else in this chain -- the more
+# permanent reason wins -- and it is the one case the entry gate cannot
+# see, because from outside the tool looks allowed.
+#
+# The set is asserted against the source in
+# tests/test_plan_mode_changes_nothing.py, so a third such tool cannot
+# be added without this list being updated.
+_PLAN_MODE_BODY_REFUSERS: frozenset[str] = frozenset({
+    "task_create", "task_update",
+})
+
 
 def _missing_required_argument(name: str, arguments: dict) -> Optional[str]:
     """The message for a required argument that never arrived, or None.
@@ -8685,6 +8704,11 @@ class _DocToolExecutor:
                 "error": "blocked_by_hook",
                 "reason": block_reason[:1200],
             })
+        elif (_bare_tool_name(name) in _PLAN_MODE_BODY_REFUSERS
+                and getattr(permissions, "mode", "") == "plan"):
+            # Let the tool's own plan-mode refusal answer. See
+            # _PLAN_MODE_BODY_REFUSERS.
+            result = self._dispatch(name, arguments, permissions)
         elif (_missing := _missing_required_argument(name, arguments)):
             # LAST in the chain, by the same argument the plan-mode gate
             # makes about the role check: the more permanent reason is the

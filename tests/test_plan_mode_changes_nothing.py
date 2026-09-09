@@ -120,3 +120,64 @@ def test_a_session_without_permissions_is_unchanged(tmp_path):
     ex = A._DocToolExecutor.__new__(A._DocToolExecutor)
     out = ex.execute("read_file", {"path": "nope"}, None)
     assert "plan mode" not in out
+
+
+# ---------------------------------------------------------------------------
+# The tools that refuse plan mode from INSIDE
+#
+# task_create and task_update are on the plan-mode safe list -- reading a
+# task list is fine -- and refuse deeper down, because it is the status
+# change that starts execution, not the tool. From the entry gate they
+# look allowed, so anything placed between that gate and the dispatch has
+# to know about them: the required-argument check ran there and answered
+# "subject is required" for a task_create the session may not perform at
+# all, which is the wrong lesson and one more turn against the same wall.
+# ---------------------------------------------------------------------------
+
+def test_the_body_refusers_are_the_ones_the_source_has(tmp_path):
+    """A hand-written set goes stale silently. This reads the source and
+    fails when a third tool grows its own plan-mode gate without being
+    added -- which would make that tool answer with an argument nit."""
+    import inspect
+    import re as _re
+
+    src = inspect.getsource(A._DocToolExecutor)
+    found = set()
+    for match in _re.finditer(r"def (_execute_\w+)\(", src):
+        name = match.group(1)
+        body = src[match.end():match.end() + 2000]
+        nxt = body.find("\n    def ")
+        if nxt != -1:
+            body = body[:nxt]
+        if "_PLAN_MODE_TASK_REJECT" in body:
+            found.add(name.removeprefix("_execute_"))
+    assert found == set(A._PLAN_MODE_BODY_REFUSERS), (
+        f"source says {sorted(found)}, "
+        f"list says {sorted(A._PLAN_MODE_BODY_REFUSERS)}")
+
+
+@pytest.mark.parametrize("name,args", [
+    # task_create refuses in plan mode whatever it is handed: creating the
+    # list is itself the execution act.
+    ("task_create", {}),
+    # task_update refuses only for a STATUS change -- that is the
+    # auto-continue trigger. A metadata edit is harmless and is not
+    # refused, so passing no status here would test nothing.
+    ("task_update", {"status": "in_progress"}),
+])
+def test_each_of_them_answers_with_plan_mode_not_with_arguments(
+        name, args, tmp_path):
+    ex = A._DocToolExecutor.__new__(A._DocToolExecutor)
+    perms = A.KitToolPermissions(workspace=tmp_path, mode="plan")
+    out = ex.execute(name, args, perms)
+    assert "plan mode" in out, f"{name}: {out[:120]}"
+    assert "is required" not in out, f"{name}: {out[:120]}"
+
+
+def test_outside_plan_mode_the_argument_check_still_applies(tmp_path):
+    """The exemption is about plan mode only. In every other mode a
+    task_create with no subject is still a malformed call."""
+    ex = A._DocToolExecutor.__new__(A._DocToolExecutor)
+    perms = A.KitToolPermissions(workspace=tmp_path, mode="default")
+    out = ex.execute("task_create", {}, perms)
+    assert "subject is required" in out
