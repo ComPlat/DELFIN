@@ -1946,6 +1946,67 @@ def _locate_rows(ws: Any, key_column: str) -> tuple[int, dict, list[str]]:
     return index, by_key, duplicates
 
 
+def _column_is_numeric(ws, col_index: int, skip_row: int) -> bool:
+    """True when this column's other cells hold numbers.
+
+    Reads the sheet rather than a convention argument, because the
+    question is what the column IS, not what the caller believes.
+    """
+    seen = 0
+    numeric = 0
+    for row in range(2, min(ws.max_row, 500) + 1):
+        if row == skip_row:
+            continue
+        value = ws.cell(row=row, column=col_index).value
+        if value is None or str(value).strip() == "":
+            continue
+        if isinstance(value, str) and value.startswith("="):
+            continue
+        seen += 1
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            numeric += 1
+    return seen > 0 and numeric * 2 > seen
+
+
+def _value_for_a_numeric_column(value: Any, column: str) -> tuple[Any, str]:
+    """The value to store, and a note about it.
+
+    A person writing into a money column types the amount the way the
+    rest of their file is written -- "1.265,85". Stored as the string it
+    arrived as, that one cell turns a number column into a mixed one, and
+    the next total over it refuses the whole column while every screen
+    still shows the right figure. Nothing raises, which is the failure
+    this module exists to prevent.
+
+    So the string is read with the same parser the reader uses, and the
+    NUMBER goes in the cell. An amount that reads two ways is refused
+    rather than guessed, for the reason the totals give: 1.265 is a
+    thousand and a bit or it is one and a quarter, and picking one
+    silently moves the figure without moving anything a reader can see.
+    """
+    if not isinstance(value, str):
+        return value, ""
+    text = value.strip()
+    if not text or text.startswith("="):
+        return value, ""
+    convention, reason = detect_number_convention([text])
+    if convention == AMBIGUOUS:
+        raise OfficeError(
+            f"{text!r} reads as two different numbers and column "
+            f"{column!r} holds numbers: {reason}. Pass it as a number "
+            "(1265.85), or write it unambiguously (1.265,85 or 1,265.85).")
+    number = parse_number(text, convention)
+    if number is None:
+        # Deliberate text in a number column -- "n/a" is a real answer.
+        # Allowed, and said out loud, because the next total will report
+        # the row as unreadable and the reason should not be a mystery.
+        return value, (
+            f"{text!r} is not a number and column {column!r} holds "
+            "numbers, so this row will be reported as unreadable by any "
+            "total over that column.")
+    return number, ""
+
+
 def edit_sheet(
     path: Any,
     *,
@@ -2001,6 +2062,8 @@ def edit_sheet(
 
         applied: list[dict] = []
         wrote_formula = False
+        # Values that went in as text where the column holds numbers.
+        type_notes: list[str] = []
 
         # Record-oriented changes. Everything is validated BEFORE the first
         # cell is written: an unknown key, a duplicate key or an unknown
@@ -2060,14 +2123,20 @@ def edit_sheet(
                     col_index = named[str(column).strip().lower()] + 1
                     cell = ws.cell(row=row_number, column=col_index)
                     old_value = cell.value
-                    cell.value = value
-                    if isinstance(value, str) and value.startswith("="):
+                    stored, type_note = value, ""
+                    if _column_is_numeric(ws, col_index, row_number):
+                        stored, type_note = _value_for_a_numeric_column(
+                            value, str(column))
+                    cell.value = stored
+                    if type_note:
+                        type_notes.append(type_note)
+                    if isinstance(stored, str) and stored.startswith("="):
                         wrote_formula = True
                     applied.append({
                         "cell": f"{column_letter(col_index)}{row_number}",
                         "key": str(update.get("key", "")).strip(),
                         "column": str(column),
-                        "old": _fmt(old_value), "new": _fmt(value),
+                        "old": _fmt(old_value), "new": _fmt(stored),
                     })
 
         for edit in edits or []:
@@ -2077,13 +2146,22 @@ def edit_sheet(
             value = edit.get("value")
             cell = ws.cell(row=row, column=col)
             old = cell.value
-            cell.value = value
-            if isinstance(value, str) and value.startswith("="):
+            # Same hazard by coordinate as by key: the column does not
+            # care which way the caller addressed the row.
+            stored, type_note = value, ""
+            if row > 1 and _column_is_numeric(ws, col, row):
+                header_cell = _fmt(ws.cell(row=1, column=col).value)
+                stored, type_note = _value_for_a_numeric_column(
+                    value, header_cell or column_letter(col))
+            cell.value = stored
+            if type_note:
+                type_notes.append(type_note)
+            if isinstance(stored, str) and stored.startswith("="):
                 wrote_formula = True
             applied.append({
                 "cell": f"{column_letter(col)}{row}",
                 "old": _fmt(old),
-                "new": _fmt(value),
+                "new": _fmt(stored),
             })
 
         first_appended = 0
@@ -2134,6 +2212,7 @@ def edit_sheet(
             appended += 1
 
         notes: list[str] = []
+        notes.extend(type_notes)
         if appended and first_appended:
             _total = _total_row_above(ws, first_appended)
             if _total is not None:
