@@ -6211,6 +6211,25 @@ _MCP_SCHEMA_WINDOW_SHARE = 0.05
 _MCP_SCHEMA_FLOOR_CHARS = 12000
 
 
+def _should_retry_empty_round(stream: bool, text_chunks, tool_calls) -> bool:
+    """Whether a finished round produced no answer and is worth re-asking.
+
+    Content and tool calls are the two things a round can contribute.
+    With neither, the caller has nothing to hand back, and the engine's
+    next step is to declare the turn empty and ask the user to resend.
+
+    Reasoning is deliberately not consulted. It is not an answer, it is
+    not returned to the caller, and a round that produced only reasoning
+    leaves exactly as little as a round that produced nothing at all —
+    which is what made it the wrong thing to guard the retry with.
+
+    Only for a STREAMED round: a non-streamed one has no second shape to
+    fall back to, and retrying it would be the same request twice with
+    nothing changed about how it is read.
+    """
+    return bool(stream) and not text_chunks and not tool_calls
+
+
 def _mcp_schema_budget_chars(context_window_tokens: int = 0) -> int:
     """How many characters of MCP tool schema may ride on each request.
 
@@ -16080,7 +16099,6 @@ class OpenAIClient(_BaseClient):
             _round_in = 0
 
             finish_reason = None
-            _saw_reasoning = False
             try:
                 stream = self.client.chat.completions.create(**kwargs)
                 try:
@@ -16104,12 +16122,14 @@ class OpenAIClient(_BaseClient):
                         # of losing it; it never pollutes the answer text.
                         _rc = getattr(delta, "reasoning_content", None) if delta else None
                         if _rc:
-                            # Remembered, not only forwarded: a round that
-                            # produced reasoning and nothing else is a
-                            # model thinking out loud, which is a different
-                            # thing from a round that produced nothing at
-                            # all — and only the second is worth retrying.
-                            _saw_reasoning = True
+                            # Forwarded and not remembered. It used to be
+                            # remembered, to keep the empty-round retry
+                            # from firing on "a model thinking out loud"
+                            # — but a round that produced reasoning and
+                            # nothing else hands the caller exactly as
+                            # little as one that produced nothing, and
+                            # what the engine does with it is declare the
+                            # turn empty. See _should_retry_empty_round.
                             yield StreamEvent(type="thinking_delta", text=_rc)
 
                         # Text content
@@ -16206,20 +16226,35 @@ class OpenAIClient(_BaseClient):
                 if _fin:
                     finish_reason = _fin
 
-            # A stream that ended having produced NOTHING. Not an error and
-            # not a refusal: finish_reason says stop, and no content, no
-            # tool call and no reasoning arrived. Measured 2026-09-07 at
-            # the protocol level on kit.glm-5.3 — with a tool surface
+            # A stream that ended having produced no ANSWER. Not an error
+            # and not a refusal: finish_reason says stop, and no content
+            # and no tool call arrived. Measured 2026-09-07 at the
+            # protocol level on kit.glm-5.3 — with a tool surface
             # advertised the streamed request returns an empty content
             # channel while the identical request non-streaming returns
             # the answer, and the engine reported "[empty turn]" for a
             # question the model had answered. Independent of
             # reasoning_effort; reproduced 12 times out of 12.
             #
-            # The cure the proxy path already uses works here too, so it is
-            # taken once per round and only when there is nothing to lose.
-            if (kwargs.get("stream") and not _text_chunks and not _tool_calls
-                    and not _saw_reasoning):
+            # Reasoning used to block this, on the ground that the retry
+            # should run "only when there is nothing to lose". A round
+            # that produced reasoning and nothing else has nothing to
+            # lose either: the reasoning channel is not the answer, and
+            # what the engine does with such a round is declare the whole
+            # turn empty, take the user's message back out of the history
+            # and tell them to send it again.
+            #
+            # Captured 2026-09-09 from a suite run — 36577 characters of
+            # system prompt, one 44-character user message, 16 tools, 34
+            # characters of reasoning, no text, no tool call. Replaying
+            # that exact request answered correctly six times out of six,
+            # streamed and non-streamed alike. The request was fine; the
+            # response was empty once. A retry is the cure precisely
+            # because the failure is transient.
+            #
+            # Taken once per round.
+            if _should_retry_empty_round(
+                    bool(kwargs.get("stream")), _text_chunks, _tool_calls):
                 try:
                     _nk = dict(kwargs)
                     _nk["stream"] = False
