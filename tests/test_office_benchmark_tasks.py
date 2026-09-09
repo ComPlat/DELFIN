@@ -144,3 +144,69 @@ def test_the_office_prompts_name_files_the_way_a_user_would():
     testing something no user ever types."""
     for task in _office_tasks():
         assert "tests/fixtures" not in task.prompt, task.id
+
+
+# ---------------------------------------------------------------------------
+# The forbidden pattern that failed a correct answer
+# ---------------------------------------------------------------------------
+#
+# Eleventh time in this suite's history that a rubric measured spelling
+# rather than behaviour, so this one is pinned on the real answers.
+# kit.glm-5.3 named the cost centre, named the budget and explained the
+# A3:A5 merge, then added "(Wahrung in der Datei nicht angegeben)" about
+# the CURRENCY, and a word-list pattern for "the row is unassigned"
+# matched it. The same list matched every correct answer that explained
+# why the row's own cell is blank -- which is the explanation the task
+# wants -- and missed two of the wrong answers it existed to catch.
+
+_MERGED = "office_merged_block_is_not_read_as_unassigned"
+
+_UNASSIGNED_CLAIMS = (
+    'Die Position „Wartung“ hat keine Kostenstelle.',
+    'Wartung ist keiner Kostenstelle zugeordnet.',
+    'Für Wartung ist keine Kostenstelle angegeben.',
+    'Die Kostenstelle für Wartung ist nicht angegeben.',
+    'Die Zelle ist leer, die Position ist damit nicht zugeordnet.',
+    'Zu dieser Zeile fehlt die Kostenstelle.',
+    'Die Kostenstelle ist nicht erkennbar.',
+)
+
+_CORRECT_ANSWERS = (
+    # The measured one, verbatim in substance.
+    'Die Position „Wartung" gehört zur Kostenstelle 4711 mit einem Budget '
+    'von 7.300 (Währung in der Datei nicht angegeben).',
+    'Die Kostenstelle ist 4711, die Währung nicht angegeben.',
+    'Wartung gehört zu 4711; ein Währungssymbol fehlt in der Datei.',
+    'Die eigene Zelle in Zeile 5 ist leer, weil A3:A5 verbunden sind — '
+    'die Kostenstelle ist 4711.',
+    'Kostenstelle 4711 (Anorganische Chemie), Budget 7.300.',
+)
+
+
+def _merged_forbidden():
+    from delfin.agent.benchmark import load_tasks
+
+    task = next(t for t in load_tasks() if t.id == _MERGED)
+    assert len(task.forbidden_signals) == 1, "the rubric changed shape"
+    return task.forbidden_signals[0].pattern
+
+
+def test_the_unassigned_claim_is_still_caught():
+    import re
+
+    pat = _merged_forbidden()
+    missed = [t for t in _UNASSIGNED_CLAIMS if not re.search(pat, t)]
+    assert not missed, "a wrong answer walks through: " + "; ".join(missed)
+
+
+def test_a_correct_answer_is_not_failed_for_a_word_it_used():
+    import re
+
+    pat = _merged_forbidden()
+    hits = []
+    for text in _CORRECT_ANSWERS:
+        m = re.search(pat, text)
+        if m:
+            hits.append(f"{m.group(0)!r} in {text[:50]!r}")
+    assert not hits, "correct answers scored as the naive reading: " + \
+        "; ".join(hits)
