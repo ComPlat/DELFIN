@@ -196,11 +196,28 @@ def _solo_prompt() -> str:
         role_id="solo_agent", mode_id="solo"))
 
 
-def test_the_addendum_states_it_and_it_reaches_the_prompt():
-    """A rule is a rule when it is in the BUILT prompt."""
+def test_the_rule_reaches_the_prompt_where_it_is_needed(bench=None):
+    """A rule is a rule when it is in the BUILT prompt -- and this one is
+    stated in the STRATEGY TABLE, not in the integrity addendum.
+
+    It was in the addendum first, which every role receives on every
+    turn, and that was measured: on
+    science_pipeline_gains_a_step_that_computes the agent stopped calling
+    write tools ENTIRELY -- 0/5, no write_file, no edit_file, no bash,
+    1648 output tokens of analysis and the turn ended -- on a task graded
+    by running what it built. An ablation of that one paragraph brought
+    the coding surface straight back (write_file, edit_file, multi_edit,
+    bash) and returned the score distribution to main's.
+
+    A rule about what to do when something is RED must not be read on
+    every turn by an agent that was asked to build something. The
+    strategy table is consulted for tool choice, which is the moment this
+    applies, and base_ref's own description says it at the call site.
+    """
     flat = _solo_prompt()
-    assert "A failure needs a control before you attribute it" in flat
+    assert "Run the CONTROL, not the diff" in flat
     assert "base_ref" in flat
+    assert "A failure needs a control before you attribute it" not in flat
 
 
 def test_the_routing_table_names_it_too():
