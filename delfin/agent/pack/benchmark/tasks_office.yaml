@@ -186,12 +186,27 @@ tasks:
         against: text
       - pattern: '(?i)(kostenstellen|zeile|spalte)'
         against: text
-    forbidden_signals:
-      # The failure this exists to catch on the other side: claiming the
-      # close is done while the list still says otherwise.
-      - pattern: '(?i)alle (drei )?(schritte|aufgaben) (sind )?(erledigt|abgeschlossen)'
+      # The reconciliation is the second of the three steps and had no
+      # signal of its own, so a run that summed and checked the form
+      # could close the list out having skipped it. Its substance is
+      # discoverable only by doing it: R-002 is booked at 289,90 and
+      # invoiced at 298,90, and R-009 exists only in the invoices.
+      - pattern: '(?i)(R-002|R-009)'
         against: text
-        optional: true
+    # A phrase-based forbidden signal used to sit here: "alle drei
+    # Aufgaben erledigt". It punished the SENTENCE rather than the
+    # behaviour, and kit.glm-5.3 failed at q=41 for an answer that summed
+    # with the n/a row named, reconciled with three concrete
+    # discrepancies, checked the form, and then said so -- sixteen tool
+    # calls including sum_column and compare_tables. Closing the list out
+    # is what the task is named for.
+    #
+    # It also carried `optional: true`, which the scorer reads only for
+    # EXPECTED signals: on a forbidden one it is a no-op, so the soft
+    # signal its author meant to write was a hard one. What the phrase
+    # was reaching for -- a completion claim without the work -- is now
+    # measured by requiring the work.
+    forbidden_signals: []
     max_duration_s: 420
     max_cost_usd: 1.20
     max_tool_calls: 30
