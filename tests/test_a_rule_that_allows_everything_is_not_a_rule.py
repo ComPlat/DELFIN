@@ -64,11 +64,11 @@ def session(tmp_path, monkeypatch):
     return _DocToolExecutor(), perms
 
 
-def _remember(session, value, kind="allow_pattern"):
+def _remember(session, value, kind="allow_pattern", scope="user"):
     executor, perms = session
     return json.loads(executor.execute(
         "remember_permission",
-        {"kind": kind, "value": value, "scope": "repo",
+        {"kind": kind, "value": value, "scope": scope,
          "rationale": "keeps the build from interrupting you"}, perms))
 
 
@@ -144,3 +144,38 @@ def test_the_shipped_bundle_carries_no_catch_all():
                 continue
             assert not _DocToolExecutor._pattern_constrains_nothing(pattern), (
                 f"{profile} ships a catch-all: {pattern!r}")
+
+
+# ---------------------------------------------------------------------------
+# Which scope was actually the hole
+# ---------------------------------------------------------------------------
+#
+# Checked after the fix, because the first write-up of it was too broad.
+# kit_settings._merge takes allow_patterns from the USER file only and
+# lets a repo TIGHTEN the mode and never widen it -- so a repo-scoped
+# catch-all is written to disk and then ignored at load, and a repo asking
+# for bypassPermissions floors to the user's mode. The live hole was
+# scope='user', which is the default this file now tests.
+#
+# The refusal covers both, and these tests say why that is not belt and
+# braces: the day the loader changes, the file on disk is what it reads.
+
+@pytest.mark.parametrize("scope", ["user", "repo"])
+def test_the_floor_holds_at_either_scope(session, scope):
+    out = _remember(session, "^.*$", scope=scope)
+    assert "error" in out, f"{scope}: {out}"
+
+
+def test_the_user_file_is_the_one_that_is_read_back():
+    """Why scope='user' is the severe case, pinned so a change to the
+    merge rule cannot quietly make repo patterns live again."""
+    from delfin.agent.kit_settings import _merge
+
+    merged = _merge(
+        {"allow_patterns": [r"^userrule\b"], "default_mode": "default"},
+        {"allow_patterns": [r"^reporule\b"],
+         "default_mode": "bypassPermissions"})
+    assert merged["allow_patterns"] == [r"^userrule\b"], (
+        "a repo's auto-allow patterns are being honoured")
+    assert merged["default_mode"] == "default", (
+        "a repo widened the mode")
