@@ -1499,6 +1499,8 @@ def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any])
         rank_multiplicity=selection['multiplicity'],
         keep_frames=selection['screen_keep'],
         screen_method=selection['screen'],
+        screen_explicit=selection['screen_explicit'],
+        screen_above=selection['screen_above'],
         multiplicities=selection['multiplicities'],
         optimise=selection['optimise'],
         refine=selection['refine'],

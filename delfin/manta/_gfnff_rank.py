@@ -194,6 +194,22 @@ def _natoms(xyz_block: str) -> int:
     return sum(1 for ln in xyz_block.splitlines() if len(ln.split()) == 4)
 
 
+#: Hit/miss counters for the single-point cache.  The cache key carries the
+#: solvent, so changing the solvent invalidates every cached energy -- and an
+#: invisible cache is an unverifiable one: a run that silently recomputes
+#: everything, or silently reuses energies from another medium, looks exactly
+#: like a run that did the right thing.  :func:`cache_stats` lets the caller
+#: say which happened.
+_CACHE_HITS = [0]
+_CACHE_MISSES = [0]
+
+
+def cache_stats() -> dict:
+    """Hits, misses and size of the single-point cache."""
+    return {"hits": _CACHE_HITS[0], "misses": _CACHE_MISSES[0],
+            "entries": len(_CACHE)}
+
+
 def gfnff_energy(xyz_block: str, charge: int = 0, uhf: int = 0,
                  timeout: float = 120.0, method: Optional[str] = None,
                  solvent: str = "") -> Optional[float]:
@@ -225,7 +241,9 @@ def gfnff_energy(xyz_block: str, charge: int = 0, uhf: int = 0,
     key = (hashlib.sha256(xyz_block.encode()).hexdigest(), int(charge), meth,
            solvent_name)
     if key in _CACHE:
+        _CACHE_HITS[0] += 1
         return _CACHE[key]
+    _CACHE_MISSES[0] += 1
     val: Optional[float] = None
     try:
         na = _natoms(xyz_block)

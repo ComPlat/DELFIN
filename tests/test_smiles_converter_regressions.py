@@ -56,7 +56,10 @@ def test_dashboard_isomer_wrapper_passes_deterministic_flag(monkeypatch):
     # intercept the converter and the REAL pipeline runs — the test's
     # subject is the wrapper's flag forwarding, which is identical in
     # both paths.
-    monkeypatch.setattr(input_processing, "_UI_ISOLATE_DEFAULT", False)
+    # DELFIN_UI_INLINE is the documented switch and is now read at call time,
+    # so setting it is what forces the inline path; the module constant it used
+    # to stand in for is only a fallback.
+    monkeypatch.setenv("DELFIN_UI_INLINE", "1")
 
     def _fake_converter(*_args, **kwargs):
         recorded.append(kwargs.get("deterministic"))

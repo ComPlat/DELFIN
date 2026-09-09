@@ -424,3 +424,73 @@ def test_control_reproduces_the_champion_construction_set():
     apply_construction_env({"MANTA_CONSTRUCTION": "champion"}, applied)
     enabled = {key for key, value in applied.items() if str(value) == "1"}
     assert wanted <= enabled, sorted(wanted - enabled)
+
+
+# --- optimising everything is right for the median and wrong for the tail ---
+
+def test_the_screen_threshold_is_a_setting_with_a_measured_default():
+    """Measured over 5810 builds at champion/extreme with max_isomers=0:
+
+        mean 26.1 · p10 3 · p25 4 · p50 14 · p75 33 · p90 64 · p95 90
+        p99 190 · max 399
+
+    So "optimise everything" is right for the median system and wrong for its
+    tail, where 4.1 % return more than 100 frames and each frame is an ORCA
+    optimisation. Screening above 30 leaves roughly three quarters of systems
+    on the path that needs no screen, and caps the worst case there instead of
+    at 399.
+    """
+    from delfin.common.manta_settings import SCREEN_ABOVE_FRAMES
+
+    assert SCREEN_ABOVE_FRAMES == 30
+    assert selection_options({})["screen_above"] == 30
+    assert selection_options({"MANTA_SCREEN_ABOVE": "50"})["screen_above"] == 50
+    assert selection_options({"MANTA_SCREEN_ABOVE": "0"})["screen_above"] == 0
+
+
+def test_an_explicit_screen_is_never_overridden_by_the_threshold():
+    # The threshold fills in what CONTROL left open. It does not overrule what
+    # CONTROL said.
+    assert selection_options({})["screen_explicit"] is False
+    assert selection_options({"MANTA_SCREEN": "none"})["screen_explicit"] is True
+    assert selection_options({"MANTA_RANK": "gfnff"})["screen_explicit"] is True
+
+
+def test_the_threshold_reaches_the_sampler():
+    import tempfile
+    from pathlib import Path
+    import delfin.guppy_sampling as sampling
+    import delfin.workflows.pipeline as pipeline
+
+    seen = {}
+    original = sampling.run_sampling
+    sampling.run_sampling = lambda **kw: seen.update(kw) or 0
+    try:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "GUPPY").mkdir()
+            (root / "GUPPY" / "best_coordniation.xyz").write_text("1\n\nH 0 0 0\n")
+            try:
+                pipeline._run_guppy_for_smiles(
+                    "[Ni+2]", root / "start.txt",
+                    {"PAL": "8", "maxcore": "2000", "xTB_method": "XTB2"})
+            except Exception:                      # noqa: BLE001
+                pass
+    finally:
+        sampling.run_sampling = original
+    assert seen["screen_above"] == 30
+    assert seen["screen_explicit"] is False
+
+
+# --- an invisible cache is an unverifiable cache ----------------------------
+
+def test_the_single_point_cache_can_be_counted():
+    """The solvent is part of the cache key, so changing it invalidates every
+    cached energy. A run that silently recomputes everything and a run that
+    silently reuses energies from another medium look identical without this.
+    """
+    from delfin.manta import _gfnff_rank
+
+    stats = _gfnff_rank.cache_stats()
+    assert set(stats) == {"hits", "misses", "entries"}
+    assert all(isinstance(v, int) for v in stats.values())
