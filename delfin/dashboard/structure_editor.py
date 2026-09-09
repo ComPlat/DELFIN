@@ -22309,10 +22309,19 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         it bound to, so arriving again costs nothing, and the frame may have
         been built since the last time -- which is the case the moment the
         editor is fetched for the first time.
+
+        The wheel is contained here too.  A wheel event inside the frame never
+        reaches this page, but the chain does -- once the canvas has nothing
+        left to scroll the browser scrolls the tab behind it -- so the editor
+        and the form moved together under one wheel.  The scroll hold beside
+        this one is a different thing: that is about the frame taking the
+        focus and dragging the page to itself a second after it appears.
         """
-        return (_KETCHER_FOCUS_JS + _ketcher.wire_js(
-            _draw_frame_selector(),
-            f'.submit-ketcher-file-sync.{submit_scope_id}'))
+        return (_KETCHER_FOCUS_JS
+                + _ketcher.contain_js(_draw_frame_selector())
+                + _ketcher.wire_js(
+                    _draw_frame_selector(),
+                    f'.submit-ketcher-file-sync.{submit_scope_id}'))
 
     def _refresh_draw_files():
         """Tell the editor what is kept, so its own Open list can show it."""

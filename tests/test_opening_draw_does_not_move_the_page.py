@@ -82,3 +82,31 @@ def test_it_runs_when_the_editor_is_opened():
     # Only on the way in. Folding it shut moves nothing.
     assert opener.index('if not submit_draw_open_btn.value:') < opener.index(
         '_run_manip_js(_KETCHER_SCROLL_HOLD_JS')
+
+
+# ---------------------------------------------------------------------------
+# The other way the page moved: the wheel
+# ---------------------------------------------------------------------------
+# A different problem with the same shape. The hold above is about the frame
+# taking the focus and dragging the page to itself once, seconds after it
+# appears. This is about every wheel afterwards: an event inside the frame
+# never reaches this page, but the *chain* does -- once the canvas has nothing
+# left to scroll the browser scrolls the tab behind it -- so the editor and the
+# form moved together under one gesture.
+
+def test_the_wheel_stays_in_whichever_one_is_under_the_pointer():
+    from delfin.dashboard import ketcher
+
+    source = SUBMIT_SOURCE
+    wiring = source.split('def _draw_wiring')[1].split('\n    def ')[0]
+    assert '_ketcher.contain_js(_draw_frame_selector())' in wiring, (
+        'Submit and the ORCA builder share this wiring, so containing the '
+        'wheel here covers both')
+
+    js = ketcher.contain_js('.submit-ketcher-frame.submit-scope-1')
+    assert 'overscroll-behavior:contain' in js
+    # Looked for rather than remembered: a frame just put on the page answers
+    # with about:blank, which has a body, takes the rule and then throws it
+    # away when the real document arrives.
+    assert "getElementById(MARK)" in js
+    assert "addEventListener('load'" in js
