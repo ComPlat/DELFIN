@@ -3599,14 +3599,20 @@ class KitToolPermissions:
 
         And `python -c` is the one member of the family whose program IS
         in the command text. Where :mod:`delfin.agent.inline_payload` can
-        account for the whole payload, the two things this rule stands in
-        for both happen for real instead of being stood in for: the
-        payload's write targets reach ``_bash_write_targets`` like any
-        other command's, and its text -- and any file it imports out of
-        the working directory -- go through the same content scan an
-        executed script file already gets. The paragraph above then has
-        nothing left to be true about, which is what
-        ``_inline_payload_is_readable`` decides, conservatively.
+        account for the whole payload, the three checks this rule stands
+        in for all happen for real instead of being stood in for:
+
+        * its write targets reach ``_bash_write_targets`` like any other
+          command's;
+        * its READ targets reach ``_bash_outside_reads``, so
+          ``open('/etc/passwd').read()`` is gated exactly as `cat` on the
+          same file is;
+        * its text -- and any file it imports out of the working
+          directory -- go through the same content scan an executed
+          script file already gets.
+
+        The paragraph above then has nothing left to be true about, which
+        is what ``_inline_payload_is_readable`` decides, conservatively.
         """
         if not _is_interpreter_invocation(cmd):
             return False
