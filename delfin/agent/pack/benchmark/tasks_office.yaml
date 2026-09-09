@@ -378,3 +378,45 @@ tasks:
     max_duration_s: 240
     max_cost_usd: 0.80
     max_tool_calls: 14
+
+  # ── the half of this mode that changes something ─────────────────────
+  #
+  # Every task above reads. edit_sheet, fill_series and draft_email had
+  # never been called in a single recorded run, on either model, because
+  # nothing here asks for a change -- while the prompt carries a whole
+  # section of rules about making one. Driving edit_sheet by hand to write
+  # this task found the defect that a written amount stopped being an
+  # amount, which is the argument for the task in one sentence.
+  - id: office_a_record_is_corrected_by_its_key
+    task_class: office
+    mode: office
+    prompt: >
+      In Buchungen_2026.xlsx ist der Betrag von R-014 falsch erfasst. Er
+      muss 1.265,85 lauten. Bitte korrigier das.
+    expected_signals:
+      - pattern: 'edit_sheet'
+        against: tool_name
+      # By record, not by cell coordinate. The prompt states this rule and
+      # nothing measured it; the sheet has seven hidden rows, so what a
+      # reader counts and what the file numbers are not the same thing.
+      # Anchored on the rendered call, since saying "per Schlüssel" is not
+      # doing it.
+      - pattern: 'TOOL: edit_sheet\([\s\S]{0,300}?key_column'
+        against: any
+      # The corrected figure is in the answer, in either convention.
+      - pattern: '1[.,]?265[,.]85'
+        against: text
+      # "Where you must edit in place, the change is recorded and can be
+      # undone with undo_changes -- say so when you report the edit." The
+      # tool result names the backup, so the fact is in front of it.
+      - pattern: '(?i)(undo_changes|rückgängig|zurücknehmen|Backup|Sicherung)'
+        against: text
+    forbidden_signals:
+      # Rewriting a workbook from a shell loses the formula in the last
+      # row, the hidden rows and the formatting in one go, and leaves no
+      # backup. The tool exists so this is never the route.
+      - pattern: 'TOOL: (bash|write_file|create_docx)\([\s\S]{0,200}?Buchungen_2026'
+        against: any
+    max_duration_s: 240
+    max_cost_usd: 0.80
+    max_tool_calls: 12
