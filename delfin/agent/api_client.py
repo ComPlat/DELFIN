@@ -3943,15 +3943,23 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "list_files",
-            "description": "List files matching a glob, newest first.",
+            # `pattern` was marked required while the executor has always
+            # defaulted it to "*" -- the schema described a contract the
+            # code did not have, and a required argument that silently
+            # defaults to "everything" is how a listing of the whole
+            # workspace became the answer to a narrower question.
+            "description": ("List files matching a glob, newest first. "
+                            "Default '*'. `path`: one dir."),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "pattern": {
                         "type": "string",
                     },
+                    "path": {
+                        "type": "string",
+                    },
                 },
-                "required": ["pattern"],
             },
         },
     },
@@ -10829,13 +10837,35 @@ class _DocToolExecutor:
     def _execute_list_files(
         self, arguments: dict, perms: Optional["KitToolPermissions"] = None
     ) -> str:
+        """List workspace files matching a glob.
+
+        ``path`` narrows it to one directory. It used to be accepted and
+        silently ignored, so `list_files(path="src")` answered with the
+        WHOLE workspace -- a listing of everything presented as the answer
+        to a question about one folder. Callers pass it (this executor's
+        own suite did), because it is the obvious name for the thing.
+        """
         pattern = arguments.get("pattern", "*")
         root = perms.workspace if perms is not None else self._repo_root()
+        sub = str(arguments.get("path", "") or "").strip().strip("/")
+        base = root
+        if sub and sub != ".":
+            if perms is not None:
+                resolved, err = self._resolve_in_workspace(
+                    sub, perms, for_read=True)
+                if err:
+                    return json.dumps({"error": err})
+                base = resolved
+            else:
+                base = root / sub
+            if not Path(base).is_dir():
+                return json.dumps(
+                    {"error": f"not a directory: {sub}"})
         extra_skip = _gitignore_skip_dirs(root)
         matches = []
-        for fp in _iter_scan_files(root, extra_skip):
+        for fp in _iter_scan_files(base, extra_skip):
             try:
-                rel = str(fp.relative_to(root))
+                rel = str(fp.relative_to(base))
             except ValueError:
                 continue
             # Match against the bare filename too, so a pattern like "*.py"

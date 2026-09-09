@@ -122,7 +122,21 @@ _BASELINE_TOKENS = 11_422
 # right, assume it is not and you ship the regression -- and it is the
 # one step of the scientific loop the addendum described without giving
 # the agent a way to perform it.
-_TOKEN_BUDGET = 9_393
+#
+# Raised a seventh time, 9_393 -> 9_401, for list_files. Eight tokens,
+# seven of them the description and one the new `path` property; the
+# first draft cost twelve and was cut.
+#
+# Two things it corrects, both discovered by the required-argument sweep
+# and by a test the sweep then broke. `pattern` was marked REQUIRED while
+# the executor has always defaulted it to "*", so the schema described a
+# contract the code did not have -- and a required argument that silently
+# means "everything" is how a listing of the whole workspace became the
+# answer to a narrower question. And `path` was passed by callers (this
+# repository's own tool-surface test passes it) and silently ignored, so
+# `list_files(path="src")` answered with every file in the workspace.
+# Now it is optional, documented, and it works.
+_TOKEN_BUDGET = 9_401
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but
