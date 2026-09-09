@@ -153,3 +153,56 @@ def test_a_path_that_is_not_a_directory_says_so(ws):
     perms = A.KitToolPermissions(mode="default", workspace=str(ws))
     out = A._doc_executor.execute("list_files", {"path": "nope"}, perms)
     assert "not a directory" in out
+
+
+# ---------------------------------------------------------------------------
+# diff was the fifth spelling — and allowing its sibling exposed a
+# false positive in the WRITE scanner
+# ---------------------------------------------------------------------------
+
+def test_diff_and_cmp_are_content_readers_too(ws):
+    """`diff /etc/passwd /etc/hosts` prints all of both, and diff is on
+    the auto-allow list. Found in the same sweep as grep/awk/sed/cut."""
+    for cmd in ("diff /etc/passwd /etc/hosts", "cmp /etc/passwd /etc/hosts"):
+        out = _run(cmd, ws)
+        assert "/etc/passwd" in out.get("error", ""), cmd
+
+
+def test_the_harmless_predicates_run(ws):
+    """`cmp a b` beside `diff a b` -- the same question about two files,
+    and one spelling was refused. `test` / `[` read and report; there is
+    no destructive form of either."""
+    for cmd in ("cmp local.txt local.txt", "diff local.txt local.txt",
+                "test -f local.txt && echo yes", "[ -f local.txt ] && echo yes"):
+        out = _run(cmd, ws)
+        assert out.get("exit_code") == 0, f"{cmd} -> {str(out)[:120]}"
+
+
+@pytest.mark.parametrize("cmd,expected", [
+    # `-d` is a predicate here, a delimiter there, a destination elsewhere.
+    ("test -d /etc && echo yes", []),
+    ("[ -d /etc ]", []),
+    ("cut -d , -f1 data.csv", []),
+    ("date -d /etc", []),
+    ("grep -d skip x /etc/hosts", []),
+    ("ls -d /etc", []),
+    # ...and where it really is a destination, it still is.
+    ("unzip -d /tmp/x a.zip", ["/tmp/x", "a.zip"]),
+    ("install -d /opt/x", ["/opt/x"]),
+    ("tar -C /tmp -xf a.tar", ["/tmp"]),
+    ("pip install --target /opt/x pkg", ["/opt/x"]),
+    ("curl -o /tmp/f.txt http://x", ["/tmp/f.txt"]),
+    # sort is the reason this is per-option and not per command: -d is
+    # dictionary order, -o really does write the output file.
+    ("sort -d in.txt", []),
+    ("sort -o out.txt in.txt", ["out.txt"]),
+    # The ordinary writers are untouched.
+    ("cp a b", ["b"]),
+    ("tee out.txt", ["out.txt"]),
+])
+def test_a_flag_means_what_the_command_means_by_it(cmd, expected):
+    """`test -d /etc && echo yes` was refused as a WRITE to /etc -- the
+    scanner read `-d` as a destination for every command. Checking whether
+    a directory exists is not a write, and this only became reachable when
+    `test` reached the auto-allow list."""
+    assert A._bash_write_targets(cmd) == expected, cmd
