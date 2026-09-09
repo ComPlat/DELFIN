@@ -10653,6 +10653,50 @@ class _DocToolExecutor:
                 i += 1
         return out
 
+    @staticmethod
+    def _is_reviewed_project_file(path: Path) -> bool:
+        """True when git tracks this file AND it is unmodified.
+
+        The content scan reads an executed script and applies the
+        deny-list to it. DELFIN's own sources trip it on their own
+        contents: hooks.py holds the ``curl … | sh`` pattern because it
+        DEFINES it, kit_settings.py holds the rm -rf one for the same
+        reason, and cli.py names ~/.delfin/credentials.json because it
+        manages credentials. Measured: `python delfin/agent/cli.py
+        --help` was refused, so an agent asked to work on DELFIN could
+        not run DELFIN.
+
+        Tracked-and-clean is the line, and it is the security-relevant
+        one. A script this session WROTE is untracked or modified and is
+        still scanned; a project file the session EDITS becomes modified
+        and is scanned again from that moment. What is skipped is only
+        code that was in the repository before the session started and
+        has not been touched since -- reviewed by whoever committed it,
+        and the subject of the work rather than a payload smuggled into
+        it.
+
+        Fails closed: no git, not a repository, any error at all, and the
+        answer is False, which means "scan it".
+        """
+        try:
+            import subprocess as _sp
+
+            folder = str(path.parent)
+            tracked = _sp.run(
+                ["git", "-C", folder, "ls-files", "--error-unmatch", "--",
+                 str(path)],
+                capture_output=True, text=True, timeout=5)
+            if tracked.returncode != 0:
+                return False
+            dirty = _sp.run(
+                ["git", "-C", folder, "status", "--porcelain", "--", str(path)],
+                capture_output=True, text=True, timeout=5)
+            if dirty.returncode != 0:
+                return False
+            return not dirty.stdout.strip()
+        except Exception:
+            return False
+
     def _scan_bash_script_payloads(
         self, cmd: str, args: dict, perms: "KitToolPermissions"
     ) -> Optional[str]:
@@ -10674,6 +10718,10 @@ class _DocToolExecutor:
                     p = base_dir / p
                 p = p.expanduser()
                 if not p.is_file() or p.stat().st_size > 512_000:
+                    continue
+                if self._is_reviewed_project_file(p):
+                    # The project's own committed code, unmodified. See
+                    # _is_reviewed_project_file for why that is the line.
                     continue
                 text = p.read_text(encoding="utf-8", errors="replace")
             except Exception:
