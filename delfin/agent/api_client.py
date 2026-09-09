@@ -9489,7 +9489,12 @@ class _DocToolExecutor:
             # answer will quote, and until it says WHICH directories it
             # counted, nobody -- model or user -- can tell a complete
             # answer from one about the wrong folder.
-            roots = {k: v for k, v in (self._calc_roots or {}).items() if v}
+            # getattr, not the attribute: _ensure_calc_loaded returns
+            # early when an engine is already present, and an executor
+            # built with __new__ (as several tests do) never ran __init__.
+            roots = {k: v
+                     for k, v in (getattr(self, "_calc_roots", None) or {}).items()
+                     if v}
             summary["indexed_from"] = roots or "no calculation directory found"
             return json.dumps(summary, indent=2, ensure_ascii=False)
 
