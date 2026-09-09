@@ -1122,6 +1122,110 @@ def _strip_exec_wrappers(segment: str) -> str:
     return out
 
 
+_REQUIRED_BY_TOOL: dict[str, tuple[str, ...]] | None = None
+
+# Keys a tool accepts INSTEAD of the one its schema names. Weak models
+# generate the neighbouring convention -- `file_path` for `path` is the
+# commonest -- and ``_get_path_arg`` has tolerated that for as long as
+# there have been weak models. A guard that reads the schema literally
+# would take that tolerance away, so it reads it through this table.
+_ARG_ALIASES: dict[str, tuple[str, ...]] = {
+    "path": ("file_path", "filename", "file", "target"),
+}
+
+# (tool, parameter) pairs where an EMPTY value is the point of the call.
+# Everywhere else an empty required argument is treated as an absent one,
+# because that is how the silent-wrong-answer cases below arrived. Here it
+# is content, not an identifier, and emptiness means something:
+# `new_string: ""` deletes the block it matched, and `content: ""` creates
+# an empty file. Both verified against the executor before this guard was
+# added -- refusing them would have been a regression written in the name
+# of a fix.
+_EMPTY_IS_MEANINGFUL: frozenset[tuple[str, str]] = frozenset({
+    ("edit_file", "new_string"),
+    ("write_file", "content"),
+    ("multi_edit", "new_string"),
+})
+
+
+def _missing_required_argument(name: str, arguments: dict) -> Optional[str]:
+    """The message for a required argument that never arrived, or None.
+
+    One check at the single entry point rather than per tool, because per
+    tool it was not there. Swept over the whole catalogue on 2026-09-09 by
+    calling every tool with no arguments at all:
+
+    * ``get_calc_info`` returned a real calculation -- the first in the
+      index -- with its functional, basis set and energies. A model that
+      spells the key `id` instead of `calc_id` (which I have done three
+      times myself) gets a confident, complete answer about somebody
+      else's run, and the grounding rules then have it cite those numbers.
+      Not a refusal, not an error: plausible data about the wrong subject,
+      which is the worst thing a scientific tool can hand back.
+    * ``search_docs`` answered ``results: []`` beside the corpus
+      statistics, which reads as "1539 sections searched, nothing on your
+      topic" -- a negative finding about the documentation, from a search
+      that was never made.
+    * ``list_files`` listed the whole tree: a required ``pattern``
+      silently defaulting to everything.
+    * ``list_sections`` / ``read_section`` answered "Document '' not
+      found" and printed every document id in the index.
+    * ``history_get`` / ``history_search`` blamed the session for a
+      missing ``ref`` / ``query``.
+
+    Same shape as cron_delete answering "not_found" for a missing
+    entry_id: the model is told the world is a certain way, when what
+    happened is that its call was malformed. Empty string counts as
+    missing -- that is how every one of the above arrived.
+
+    Tools whose own message already names the argument are unaffected;
+    they simply never reach their body with it absent.
+    """
+    global _REQUIRED_BY_TOOL
+    try:
+        if _REQUIRED_BY_TOOL is None:
+            table: dict[str, tuple[str, ...]] = {}
+            for tool in _DOC_TOOLS_OPENAI:
+                fn = tool.get("function") or {}
+                req = (fn.get("parameters") or {}).get("required") or []
+                if fn.get("name") and req:
+                    table[fn["name"]] = tuple(str(r) for r in req)
+            _REQUIRED_BY_TOOL = table
+        required = _REQUIRED_BY_TOOL.get(name)
+        if not required or not isinstance(arguments, dict):
+            return None
+        for key in required:
+            names = (key,) + _ARG_ALIASES.get(key, ())
+            if (name, key) in _EMPTY_IS_MEANINGFUL:
+                if any(arguments.get(k) is not None for k in names):
+                    continue
+            elif any(_argument_present(arguments.get(k)) for k in names):
+                continue
+            return (
+                f"{key} is required for {name}, and none arrived. This is "
+                f"about the call, not about the data: nothing was looked "
+                f"up. Re-send it with {key} set."
+            )
+    except Exception:
+        return None
+    return None
+
+
+def _argument_present(value: Any) -> bool:
+    """Whether an argument carries something to act on.
+
+    ``0`` and ``False`` do (``cell_idx: 0`` is a real cell); an empty
+    string, an empty list and None do not.
+    """
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, dict, set)):
+        return bool(value)
+    return True
+
+
 def _is_interpreter_invocation(cmd: str) -> bool:
     """True when the command's real target cannot be read from its text.
 
@@ -8370,6 +8474,11 @@ class _DocToolExecutor:
         permissions: Optional["KitToolPermissions"] = None,
     ) -> str:
         """The body of :meth:`execute`, under one pinned policy."""
+        # A required argument that never arrived.
+        missing = _missing_required_argument(name, arguments)
+        if missing is not None:
+            return json.dumps({"error": missing})
+
         # Plan mode, deny-by-default. One check at the single entry point,
         # before hooks, before dispatch, covering namespaced MCP calls too
         # -- rather than a per-family refusal each new tool has to be
