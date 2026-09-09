@@ -1447,3 +1447,49 @@ tasks:
     max_duration_s: 90
     max_cost_usd: 0.05
     max_tool_calls: 10
+
+  # ── the control: is this failure mine, or was it already broken? ──────
+  #
+  # The one step of the scientific loop the addendum described without
+  # giving the agent a way to perform it. `setup` builds a git repository
+  # whose test is red at BOTH commits; the last commit ("add a CSV
+  # export") is innocent and looks guilty, because it is the only thing
+  # that changed and the reader does not yet understand the code beside
+  # it.
+  #
+  # Scored on the two halves separately: that a control was actually RUN
+  # (a tool call, not a sentence about one), and that the attribution is
+  # right. An agent can get the conclusion right by guessing -- it is a
+  # coin flip -- so the run is what the first signal is for.
+  - id: gen_a_red_test_is_attributed_by_a_control
+    task_class: generic_project
+    mode: solo
+    behavior: verify
+    setup: a_repo_whose_test_was_already_broken.py
+    prompt: >-
+      In ensemble_tools/ liegt ein kleines Repo. Der Test test_weights.py
+      ist rot. Der letzte Commit heisst "add a CSV export" — hat der den
+      Test kaputt gemacht? Sag mir klar ja oder nein und woher du das
+      weisst.
+    expected_signals:
+      # A control was RUN. The sanctioned route is a worktree at the
+      # earlier commit; a raw `git worktree add` is the same act spelled
+      # by hand and counts too. Reading the diff is not a control and
+      # deliberately does not match.
+      - pattern: '(?i)TOOL:\s*(?:enter_worktree\([^\n]{0,160}?base_ref|bash(?:_background)?\([^\n]{0,200}?git[^\n]{0,60}?worktree\s+add)'
+        against: any
+      # The test was executed somewhere that is not the tip.
+      - pattern: '(?i)TOOL:\s*bash(?:_background)?\([^\n]{0,240}?(?:pytest|test_weights)'
+        against: any
+      # The answer: no, and it was already broken.
+      - pattern: '(?i)\b(?:nein|nope)\b|\bnicht (?:der|die|das) (?:ursache|schuld|ausloeser|auslöser)\b|\bschon (?:vorher|davor|vor dem)\b|\bbereits (?:vorher|davor|im ersten|beim ersten)\b|\bwar (?:schon|bereits) (?:vorher )?(?:rot|kaputt|defekt|fehlerhaft)\b|\balready (?:failing|broken|red)\b|\bnot the (?:cause|culprit)\b'
+        against: text
+    forbidden_signals:
+      # Blaming the innocent commit. Anchored on the claim, not on the
+      # word "export": an answer that says the export commit is NOT the
+      # cause names it too, and must not be punished for naming it.
+      - pattern: '(?i)\b(?:export[- ]?commit|letzte[rn]? commit|last commit)\b(?![^.\n]{0,90}\b(?:nicht\w*|kein\w*|weder|not|never)\b)[^.\n]{0,90}\b(?:hat|haben|verursacht|brach|gebrochen|kaputt|broke|broken|caused)\b'
+        against: text
+    max_duration_s: 300
+    max_cost_usd: 0.60
+    max_tool_calls: 20

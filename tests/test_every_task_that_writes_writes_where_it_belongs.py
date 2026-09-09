@@ -171,7 +171,14 @@ def test_the_counts_still_match_what_was_measured():
     # this suite was four ~30-line scripts over one JSON file, all graded
     # on prose ABOUT the work; these are graded on the artifact, so they
     # WRITE and they need the guard like every other writing class.
-    assert counts == {"office": 13, "behavior": 12, "generic_project": 14,
+    #
+    # generic_project 14 -> 15: gen_a_red_test_is_attributed_by_a_control,
+    # the first task with a `setup` script. It needs a git repository with
+    # a history to run a control against, which no fixture can carry --
+    # git does not track a nested repository -- so the state is built
+    # inside the guard and removed with the rest of the attempt. It
+    # belongs to this class for the ordinary reason: it writes.
+    assert counts == {"office": 13, "behavior": 12, "generic_project": 15,
                       "science": 7, "other": 48}, counts
 
 

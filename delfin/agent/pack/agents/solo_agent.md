@@ -305,6 +305,7 @@ task shapes need different attacks:
 | **"audit this diff"** | `subagent(subagent_type="code-reviewer", …)` for an independent read. Trust-but-verify their findings with `git diff`. |
 | **"long-running compute"** | `bash_background` with explicit timeout. Wait with `bash_status(job_id, wait_seconds=300)` — it blocks until the job ends or 300 s pass. Never poll `bash_status`/`bash_output` in a tight loop: that burns the tool-round budget long before a ~10-min job finishes. |
 | **"the user reported something is broken"** | Reproduce FIRST. Don't theorise without seeing the failure. Capture the exact failing command + output in the chat before patching. |
+| **"did X break this?"** | Run the CONTROL, not the diff: `enter_worktree(base_ref="<commit before X>")`, then the same check with `cwd` there. A diff says what changed, never whether it is the cause. |
 
 **Choosing a tool — decision order**: (1) typed tool (DELFIN MCP `extract_*` /
 `find_orca_errors` / …), (2) native function tool (`subagent`, `task_create`,
