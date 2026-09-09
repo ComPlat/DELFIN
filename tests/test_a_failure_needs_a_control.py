@@ -298,3 +298,34 @@ def test_an_explicit_parent_still_wins(tmp_path):
         assert info.path.parent == where
     finally:
         WT.exit_worktree(info, keep_if_changed=False)
+
+
+def test_a_checkout_under_tmp_does_not_get_a_worktree_inside_it(tmp_path):
+    """The rule's own promise, checked rather than assumed.
+
+    A CHECKOUT can live under /tmp too -- this project's benchmark runs
+    from /tmp/delfin-bench-branch -- and a worktree of a fixture directory
+    inside it would otherwise land in the checkout's own tests/fixtures,
+    which is exactly what "never inside a project the user is looking at"
+    rules out.
+    """
+    import subprocess
+
+    from delfin.agent import worktree as WT
+
+    checkout = tmp_path / "checkout"
+    (checkout / "fixtures" / "ws").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=str(checkout), check=True)
+    # The fixture directory is inside the checkout's working tree.
+    assert WT._default_parent(checkout / "fixtures" / "ws") == Path(
+        __import__("tempfile").gettempdir())
+
+
+def test_the_work_tree_probe_fails_safe(tmp_path):
+    """No git, an unreadable path, anything at all -- answer "inside",
+    which sends the worktree to the temp dir, which is where it went
+    before any of this existed."""
+    from delfin.agent import worktree as WT
+
+    assert WT._inside_a_work_tree(Path("/definitely/not/here")) in (True, False)
+    assert WT._inside_a_work_tree(Path("\x00bad")) is True
