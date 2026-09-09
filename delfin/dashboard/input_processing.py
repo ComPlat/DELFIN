@@ -23,8 +23,61 @@ from delfin.smiles_converter import (
 _UI_ISOLATE_DEFAULT = os.environ.get("DELFIN_UI_INLINE", "0") != "1"
 # Per-conversion subprocess timeout (s).  Set DELFIN_UI_ISOLATE_TIMEOUT=0 (or negative) for NO
 # timeout, so a large complete manifold (huge, heavily-substituted macrocycles) can run to completion
-# instead of being killed at the default 30 min — the construction is deterministic, not a hang.
-_UI_ISOLATE_TIMEOUT = int(os.environ.get("DELFIN_UI_ISOLATE_TIMEOUT", "1800"))
+# instead of being killed — the construction is deterministic, not a hang.
+#
+# Raised from 1800 to 3600.  A cut build returns *nothing*, not a smaller
+# answer, and 1800 s was cutting the band DELFIN users actually submit.
+# Measured over 2000 systems built at extreme with max_isomers=0, by build time
+# against total atom count:
+#
+#     atoms     n     mean    >1800s   >3600s   >7200s
+#     <=30    442      35 s     0.0%     0.0%     0.0%
+#     31-50   379     333 s     2.9%     1.1%     0.0%
+#     51-80   757     824 s     9.6%     2.5%     0.0%
+#     >80     422    1802 s    39.6%    15.6%     0.0%
+#
+# A cyclam complex is ~40 atoms, a bis-terpyridine ~60-75, a substituted
+# porphyrin 50-90.  At 1800 s two of those bands lost 9.6 % and 39.6 % of their
+# builds to the clock and returned an empty answer.  Nothing in that sample
+# exceeded 7200 s, so the tail is bounded, not infinite.
+_UI_ISOLATE_TIMEOUT = int(os.environ.get("DELFIN_UI_ISOLATE_TIMEOUT", "3600"))
+
+
+def _kill_process_group(proc):
+    """Kill a timed-out build and everything it spawned.
+
+    The builder's own children are the point: it opens a ProcessPoolExecutor
+    for batch UFF, so a bare ``proc.kill()`` can leave dozens of workers
+    reparented to init.  SIGTERM to the group first so anything with a handler
+    can tidy up, SIGKILL after a short grace period, then reap.
+    """
+    import signal
+    import time
+
+    try:
+        pgid = os.getpgid(proc.pid)
+    except (OSError, ProcessLookupError):
+        pgid = None
+
+    for sig, wait in ((signal.SIGTERM, 2.0), (signal.SIGKILL, 1.0)):
+        try:
+            if pgid is not None:
+                os.killpg(pgid, sig)
+            else:
+                proc.send_signal(sig)
+        except (OSError, ProcessLookupError):
+            break
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                break
+            time.sleep(0.05)
+        if proc.poll() is not None:
+            break
+    try:
+        proc.communicate(timeout=1.0)
+    except Exception:                              # noqa: BLE001
+        pass
 
 
 def _run_isomers_subprocess(smiles, kwargs, timeout=None):
@@ -59,14 +112,29 @@ def _run_isomers_subprocess(smiles, kwargs, timeout=None):
         # on Python hash randomisation.
         env = dict(os.environ)
         env.setdefault("PYTHONHASHSEED", "0")
-        proc = subprocess.run(
+        # ``start_new_session`` puts the child in its own process group so the
+        # timeout can kill the group.  ``subprocess.run(timeout=)`` kills only
+        # the direct child, and this child is not a leaf: the builder opens a
+        # ProcessPoolExecutor for batch UFF with up to DELFIN_MAX_PROCESS_WORKERS
+        # (64) workers.  Killing the parent alone leaves those reparented to
+        # init, holding RAM until somebody notices -- measured elsewhere in this
+        # tree as 128 orphans alive for 3-5 hours after one such kill.
+        proc = subprocess.Popen(
             [sys.executable, "-c", script],
-            input=payload,
-            capture_output=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=timeout,
             env=env,
+            start_new_session=True,
         )
+        try:
+            out, err = proc.communicate(input=payload, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_process_group(proc)
+            return [], f"Subprocess timed out after {timeout}s"
+        proc = subprocess.CompletedProcess(
+            proc.args, proc.returncode, stdout=out, stderr=err)
     except subprocess.TimeoutExpired:
         return [], f"Subprocess timed out after {timeout}s"
     if proc.returncode != 0:

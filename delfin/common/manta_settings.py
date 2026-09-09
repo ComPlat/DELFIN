@@ -222,6 +222,16 @@ def apply_construction_env(config: Mapping[str, Any],
             if before.get(key) != value:
                 applied[key] = value
 
+    # The build budget.  This is the only wall-clock limit MANTA has, and it is
+    # enforced where the build actually is: ``smiles_to_xyz_isomers`` runs in an
+    # isolated subprocess by default, and that subprocess is what gets killed.
+    # A cut build returns nothing rather than a smaller answer, so the number
+    # is a real decision -- 1800 s cut 39.6 % of complexes above 80 atoms.
+    budget = _number(config, 'MANTA_TIME_BUDGET', default=None)
+    if budget is not None and budget >= 0:
+        target['DELFIN_UI_ISOLATE_TIMEOUT'] = str(int(budget))
+        applied['DELFIN_UI_ISOLATE_TIMEOUT'] = str(int(budget))
+
     #: What was applied, so the run can record it instead of recomputing it.
     #: Recomputing is how a provenance record comes to disagree with the run it
     #: describes: the same environment lookup written twice with two different

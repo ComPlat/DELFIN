@@ -248,6 +248,7 @@ MANTA_REFINE_TOPK=0
 MANTA_RMSD_CUTOFF=0.3
 MANTA_ENERGY_WINDOW=25.0
 MANTA_PARALLEL_JOBS=auto
+MANTA_TIME_BUDGET=3600
 ------------------------------------------------------
 xTB Hyperpolarizability (sTD-DFT-xTB):
 ----------
