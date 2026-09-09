@@ -595,6 +595,58 @@ class _PristineWorkspace:
         self._snap_root: Path | None = None
         self.failed = False
 
+    def _install_signal_trap(self) -> None:
+        """Turn a termination signal into the exception this guard survives.
+
+        Everything here is restored in ``__exit__``, which Python runs
+        when the block is left -- including on KeyboardInterrupt, because
+        that is an exception. SIGTERM is not: the interpreter exits where
+        it stands, no ``finally`` runs, and the fixture directory keeps
+        whatever the attempt had done to it.
+
+        Observed 2026-09-08. A benchmark run killed by its own `timeout`
+        during an office task left buchungen.csv, rechnungen.csv,
+        kostenstellen_roh.csv, inventar.csv and README.md deleted from
+        the checkout, plus a half-written .wb-*.xlsx beside them. The
+        same shape reaches a user: a scheduled run killed by its runner,
+        a container stopped, a `kill` on a long benchmark.
+
+        The handler only raises. Doing the restore inside it would run
+        filesystem work from a signal context; raising hands control back
+        to the ``with`` statement, which already knows what to do.
+
+        Best-effort: signal handlers can only be installed from the main
+        thread, and a worker thread running a guard keeps the old
+        behaviour rather than refusing to run.
+        """
+        self._prev_signals: dict = {}
+        try:
+            import signal as _signal
+
+            def _raise(signum, frame):
+                raise KeyboardInterrupt(f"signal {signum}")
+
+            for sig in (_signal.SIGTERM, _signal.SIGHUP):
+                try:
+                    self._prev_signals[sig] = _signal.signal(sig, _raise)
+                except (ValueError, OSError, AttributeError):
+                    continue
+        except Exception:
+            self._prev_signals = {}
+
+    def _remove_signal_trap(self) -> None:
+        """Put back whatever was handling those signals before."""
+        try:
+            import signal as _signal
+            for sig, prev in (getattr(self, "_prev_signals", None) or {}).items():
+                try:
+                    _signal.signal(sig, prev)
+                except (ValueError, OSError, TypeError):
+                    continue
+        except Exception:
+            pass
+        self._prev_signals = {}
+
     def __enter__(self) -> "_PristineWorkspace":
         import shutil
         import tempfile
@@ -617,6 +669,7 @@ class _PristineWorkspace:
         except Exception:
             # No lock is the old behaviour, not a reason to refuse a run.
             self._lock_handle = None
+        self._install_signal_trap()
         live = [ws for ws in self._bases if ws.is_dir()]
         # A store that does not exist YET is not skipped, it is remembered:
         # otherwise there is nothing to snapshot, nothing to restore, and
@@ -693,6 +746,10 @@ class _PristineWorkspace:
             self._release_lock()
 
     def _release_lock(self) -> None:
+        # The signal trap belongs to the same window as the lock: both go
+        # up when the guard takes over and come down when it is done, on
+        # every path out including the failed-snapshot one.
+        self._remove_signal_trap()
         handle = getattr(self, "_lock_handle", None)
         if handle is None:
             return
