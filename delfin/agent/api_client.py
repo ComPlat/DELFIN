@@ -1147,6 +1147,19 @@ _EMPTY_IS_MEANINGFUL: frozenset[tuple[str, str]] = frozenset({
     ("multi_edit", "new_string"),
 })
 
+# Required in the SCHEMA, because the model should send it, but never a
+# reason to refuse the call. `description` is a line for the audit trail;
+# the command runs the same without it. Failing an action over a missing
+# label would turn a working call into a dead turn, which is the whole
+# failure this guard exists to reduce -- so the schema keeps asking and
+# the gate keeps quiet.
+_LABEL_ONLY: frozenset[tuple[str, str]] = frozenset({
+    ("bash", "description"),
+    ("bash_background", "description"),
+    ("subagent", "description"),
+    ("task_create", "description"),
+})
+
 
 def _missing_required_argument(name: str, arguments: dict) -> Optional[str]:
     """The message for a required argument that never arrived, or None.
@@ -1195,6 +1208,8 @@ def _missing_required_argument(name: str, arguments: dict) -> Optional[str]:
         if not required or not isinstance(arguments, dict):
             return None
         for key in required:
+            if (name, key) in _LABEL_ONLY:
+                continue
             names = (key,) + _ARG_ALIASES.get(key, ())
             if (name, key) in _EMPTY_IS_MEANINGFUL:
                 if any(arguments.get(k) is not None for k in names):
@@ -5177,10 +5192,10 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "enter_worktree",
             "description": (
-                "Create a temporary git worktree on a fresh branch; run later"
-                " edits/bash inside the returned path so the user's main tree"
-                " stays untouched. exit_worktree auto-cleans the branch when "
-                "no commits were made."
+                "Temporary git worktree on a fresh branch; run edits/bash "
+                "inside the returned path so the user's tree stays "
+                "untouched. exit_worktree auto-cleans it when nothing was "
+                "committed."
             ),
             "parameters": {
                 "type": "object",
@@ -5191,6 +5206,11 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     },
                     "branch_prefix": {
                         "type": "string",
+                    },
+                    "base_ref": {
+                        "type": "string",
+                        "description":
+                            "This commit instead of HEAD, for a control run.",
                     },
                 },
             },
@@ -13933,6 +13953,7 @@ class _DocToolExecutor:
         from . import worktree as _wt
         repo_arg = (arguments.get("repo_dir") or "").strip()
         prefix = (arguments.get("branch_prefix") or "agent").strip() or "agent"
+        base_ref = (arguments.get("base_ref") or "").strip() or None
         if repo_arg:
             repo_dir = Path(repo_arg).expanduser()
         else:
@@ -13945,7 +13966,8 @@ class _DocToolExecutor:
         if refusal is not None:
             return json.dumps({"error": refusal})
         try:
-            info = _wt.enter_worktree(repo_dir, branch_prefix=prefix)
+            info = _wt.enter_worktree(
+                repo_dir, branch_prefix=prefix, base_ref=base_ref)
         except _wt.WorktreeError as exc:
             return json.dumps({"error": str(exc)})
         # Register the worktree path under the agent's allowed roots so

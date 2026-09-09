@@ -116,18 +116,65 @@ def _current_head(repo: Path) -> str:
     return _run_git(repo, "rev-parse", "HEAD").strip()
 
 
+# A git ref, and nothing that could be read as an option. `_run_git`
+# passes an argument list, so there is no shell to inject into; what this
+# rules out is a ref like `--force` arriving where git expects a
+# commit-ish. The ref is also resolved against the repo before use, so an
+# unknown one is a clear refusal rather than a git usage error.
+_REF_RE = None
+
+
+def _valid_ref(ref: str) -> bool:
+    global _REF_RE
+    if _REF_RE is None:
+        import re
+        _REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@^~-]{0,200}$")
+    return bool(_REF_RE.match(ref or ""))
+
+
 def enter_worktree(
     repo_dir: Path | str,
     *,
     branch_prefix: str = "agent",
     parent: Path | str | None = None,
+    base_ref: str | None = None,
 ) -> WorktreeInfo:
-    """Create a fresh worktree for the agent. Returns WorktreeInfo."""
+    """Create a fresh worktree for the agent. Returns WorktreeInfo.
+
+    ``base_ref`` starts the worktree at a named commit of the SAME repo
+    instead of at the current HEAD. That is what makes a control run
+    possible: a check that fails here can be run again at the baseline,
+    which is the only way to tell "my change broke it" from "it was
+    already broken" -- and getting that wrong costs either a good change
+    reverted or a real regression shipped.
+
+    Everything else is unchanged. Still a fresh branch, still in the
+    repository the workspace already is, still cleaned up on exit; a ref
+    is not a way to reach another repository.
+    """
     repo = Path(repo_dir).resolve()
     if not _is_git_repo(repo):
         raise WorktreeError(f"not a git repo: {repo}")
 
-    base_ref = _current_head(repo)
+    if base_ref:
+        ref = base_ref.strip()
+        if not _valid_ref(ref):
+            raise WorktreeError(
+                f"base_ref is not a plain git ref: {base_ref!r}")
+        try:
+            base_ref = _run_git(
+                repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"
+            ).strip()
+        except WorktreeError:
+            raise WorktreeError(
+                f"base_ref {ref!r} does not name a commit in {repo}. "
+                f"Fetch it first, or name one that exists."
+            ) from None
+        if not base_ref:
+            raise WorktreeError(
+                f"base_ref {ref!r} does not name a commit in {repo}.")
+    else:
+        base_ref = _current_head(repo)
     parent_dir = Path(parent) if parent else Path(tempfile.gettempdir())
     parent_dir.mkdir(parents=True, exist_ok=True)
     suffix = uuid.uuid4().hex[:8]

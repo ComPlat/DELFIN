@@ -106,7 +106,23 @@ _BASELINE_TOKENS = 11_422
 # INSTEAD of read_file, which would at least have dumped the traceback as
 # raw JSON. For a scientific agent the outputs of a notebook are the
 # result, and "why did this cell fail" was unanswerable.
-_TOKEN_BUDGET = 9_375
+#
+# Raised a sixth time, 9_375 -> 9_393, for enter_worktree's `base_ref`.
+# 40 measured; 7 returned by cutting the tool's own description, and the
+# parameter text cut from 26 tokens to 11 because the rule that says WHEN
+# to reach for it belongs in the integrity addendum, not in a schema every
+# request pays for. 13 of the 18 left are structure -- one name, one type
+# -- which no wording shrinks.
+#
+# What it buys is the control. "My change broke this test" was a
+# hypothesis the agent had no way to test: enter_worktree only ever
+# branched from HEAD, so there was no way to run the same check against
+# the state before the change. Getting that wrong costs the same in both
+# directions -- assume the failure is yours and you revert work that was
+# right, assume it is not and you ship the regression -- and it is the
+# one step of the scientific loop the addendum described without giving
+# the agent a way to perform it.
+_TOKEN_BUDGET = 9_393
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but
