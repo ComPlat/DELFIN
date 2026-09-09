@@ -960,6 +960,32 @@ def _bash_outside_reads(cmd: str) -> list[str]:
 _SYSTEM_PATH_PREFIXES: tuple[str, ...] = (
     "/usr/", "/bin/", "/sbin/", "/lib/", "/lib64/", "/opt/", "/proc/self/",
 )
+
+# The pseudo-devices, named one by one rather than by a "/dev/" prefix.
+#
+# `2>/dev/null` is the commonest idiom in shell there is, and it was read
+# as reaching outside the workspace through a link -- 58 refusals in the
+# audit log, most of them a `find` or an `ls` with its errors silenced.
+# Nothing is contained by refusing it: /dev/null discards what it is
+# given and yields nothing when read.
+#
+# Named individually because a "/dev/" prefix would also exempt
+# /dev/sda1, /dev/mem and every other real device, which is exactly the
+# escape this check exists for. Each entry here carries no user data in
+# either direction, or aliases a descriptor the process already holds.
+_SAFE_DEVICES: frozenset[str] = frozenset({
+    "/dev/null", "/dev/zero", "/dev/full",
+    "/dev/random", "/dev/urandom",
+    "/dev/tty", "/dev/stdin", "/dev/stdout", "/dev/stderr",
+})
+_SAFE_DEVICE_PREFIXES: tuple[str, ...] = ("/dev/fd/",)
+
+
+def _is_safe_device(path: "str | Path") -> bool:
+    """True for a pseudo-device that can neither leak nor import data."""
+    text = str(path)
+    return (text in _SAFE_DEVICES
+            or text.startswith(_SAFE_DEVICE_PREFIXES))
 # The same directories named without a trailing component ("ls /bin").
 _SYSTEM_DIRS: frozenset[str] = frozenset(
     p.rstrip("/") for p in _SYSTEM_PATH_PREFIXES)
@@ -1017,6 +1043,8 @@ def _bash_paths_outside(cmd: str, workspace: Path) -> list[str]:
                 continue
             text = str(expanded)
             if text.startswith(_SYSTEM_PATH_PREFIXES) or text in _SYSTEM_DIRS:
+                continue
+            if _is_safe_device(text):
                 continue
             if text == ws or text.startswith(ws.rstrip("/") + "/"):
                 continue
@@ -1120,6 +1148,8 @@ def _bash_symlink_escapes(cmd: str, workspace: Path) -> list[str]:
             except (OSError, RuntimeError):
                 continue
             if str(resolved).startswith(_SYSTEM_PATH_PREFIXES):
+                continue
+            if _is_safe_device(resolved) or _is_safe_device(token):
                 continue
             if resolved == ws or str(resolved).startswith(str(ws) + "/"):
                 continue
