@@ -149,14 +149,37 @@ def _default_parent(repo: Path) -> Path:
     A real user's repository is not under /tmp, so nothing about the
     normal case changes -- which is the point: the worktree must not
     appear inside a project the user is looking at.
+
+    And that promise is checked rather than assumed. A CHECKOUT can live
+    under /tmp too -- this project's own benchmark runs from
+    ``/tmp/delfin-bench-branch`` -- and asking for a worktree of a fixture
+    directory inside it would otherwise land one in
+    ``/tmp/delfin-bench-branch/tests/fixtures``, which is the very thing
+    the paragraph above rules out. So the parent is used only when it is
+    not itself inside a git working tree.
     """
+    tmp = Path(tempfile.gettempdir())
     try:
-        tmp = Path(tempfile.gettempdir()).resolve()
-        if repo.resolve().is_relative_to(tmp) and repo.resolve() != tmp:
-            return repo.parent
+        resolved = repo.resolve()
+        tmp_resolved = tmp.resolve()
+        if not resolved.is_relative_to(tmp_resolved) or resolved == tmp_resolved:
+            return tmp
+        if _inside_a_work_tree(repo.parent):
+            return tmp
+        return repo.parent
     except (OSError, ValueError):
-        pass
-    return Path(tempfile.gettempdir())
+        return tmp
+
+
+def _inside_a_work_tree(path: Path) -> bool:
+    """True when *path* lies inside some git checkout. Fails safe (True)."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--is-inside-work-tree"],
+            capture_output=True, text=True, timeout=5)
+        return out.returncode == 0 and out.stdout.strip() == "true"
+    except Exception:
+        return True
 
 
 def enter_worktree(
