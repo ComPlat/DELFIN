@@ -14944,12 +14944,48 @@ class _DocToolExecutor:
     def _execute_list_changes(
         self, arguments: dict, perms: Optional["KitToolPermissions"]
     ) -> str:
-        """Read-only: render the current session's audit records."""
+        """Read-only: render the current session's audit records.
+
+        The workspace is passed as a second filter, and it carries the
+        answer on its own when there is no session id. Without it,
+        ``build_changes_report(None)`` means "no filter" -- the newest 200
+        records from EVERY session in ~/.delfin/audit.log -- and this
+        tool's whole promise is "what did YOU change, from the record
+        rather than from memory". Driven on 2026-09-09 with no session
+        attached, it answered with another agent's writes in a shared
+        checkout, two benchmark worktrees and four unrelated temp dirs.
+        An agent reading that would tell the user, citing its audit log,
+        that it had edited files it never opened -- a fabricated claim
+        with a tool call behind it, which is worse than one without.
+
+        A session id still narrows it further when there is one. When
+        there is not, the report says which scope it is answering in, so
+        the agent does not read a workspace-wide list as its own.
+        """
         from . import audit_log as _al
         sid = (getattr(perms, "task_session_id", "") or "") if perms else ""
+        ws = str(getattr(perms, "workspace", "") or "") if perms else ""
         try:
-            report = _al.build_changes_report(sid if sid else None)
-            return _al.format_changes_report(report)
+            report = _al.build_changes_report(
+                sid if sid else None, workspace=ws or None)
+            out = _al.format_changes_report(report)
+            if not sid:
+                # First line, not a footnote. The caveat has to frame the
+                # list; under it, it is a line nobody reaches. And the
+                # workspace filter cannot close the gap on its own --
+                # file tools record workspace-RELATIVE paths, so a
+                # relative path from another workspace is indistinguishable
+                # from one of ours, and _under_workspace lets it through
+                # by design.
+                where = f"under {ws}" if ws else "in the audit log"
+                out = (
+                    "NOT SESSION-SCOPED — this run has no session id, so "
+                    f"what follows is everything recorded {where}, not "
+                    "necessarily your own work. Do not tell the user you "
+                    "changed any of it unless you can point at the call "
+                    "that did.\n\n" + out
+                )
+            return out
         except Exception as exc:
             return json.dumps({"error": f"list_changes_made failed: {exc}"})
 
