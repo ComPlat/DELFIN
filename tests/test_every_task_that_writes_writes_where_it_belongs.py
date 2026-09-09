@@ -172,7 +172,7 @@ def test_the_counts_still_match_what_was_measured():
     # on prose ABOUT the work; these are graded on the artifact, so they
     # WRITE and they need the guard like every other writing class.
     assert counts == {"office": 13, "behavior": 12, "generic_project": 14,
-                      "science": 1, "other": 48}, counts
+                      "science": 2, "other": 48}, counts
 
 
 # ---------------------------------------------------------------------------
