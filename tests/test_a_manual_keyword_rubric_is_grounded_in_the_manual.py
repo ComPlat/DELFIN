@@ -148,3 +148,57 @@ def test_quoting_the_manuals_own_comment_is_not_an_invented_keyword():
     fired = [i for i, s in enumerate(task.forbidden_signals)
              if _signal_matches(s, traj)]
     assert not fired, f"quoting the source trips forbidden{fired}"
+
+
+# ---------------------------------------------------------------------------
+# The class, not the two instances
+# ---------------------------------------------------------------------------
+#
+# Every text signal is matched against _strip_emphasis(text), so a pattern
+# that requires a backtick or a pair of asterisks is text that can never
+# fire, and it looks exactly like a working guard. Two were found this
+# way, both in tasks about not inventing a keyword, and in both the form
+# the guard could not see -- `keyword` in code formatting -- is the form a
+# model is most likely to write.
+#
+# An OPTIONAL emphasis group is a different thing: several plan rubrics
+# carry `(?:\*\*)?` before a step number, which is inert but harmless
+# because the rest of the pattern still matches. Only a required one is a
+# defect, so that is what this asserts.
+
+def _emphasis_anchored(pattern: str) -> list[str]:
+    """Literal ` or ** in the pattern that is not inside an optional group."""
+    found = []
+    for m in re.finditer(r"(?<!\\)`|\\\*\\\*", pattern):
+        tail = pattern[m.end():m.end() + 40]
+        # `(?:\*\*)?` and friends -- the group closes and is made optional
+        # immediately, so the literal never has to match.
+        if re.match(r"[^)]{0,10}\)\?", tail):
+            continue
+        found.append(m.group(0))
+    return found
+
+
+def test_no_rubric_pattern_waits_for_emphasis_that_is_stripped_first():
+    from delfin.agent.benchmark import load_tasks
+
+    dead = []
+    for task in load_tasks():
+        pairs = (("expected", task.expected_signals),
+                 ("forbidden", task.forbidden_signals))
+        for kind, signals in pairs:
+            for i, sig in enumerate(signals):
+                if (sig.against or "any") == "tool_name":
+                    continue
+                for literal in _emphasis_anchored(sig.pattern or ""):
+                    dead.append(f"{task.id}.{kind}[{i}] requires {literal!r}")
+    assert not dead, (
+        "these patterns can never match — the emphasis is removed before "
+        "the signal is applied: " + "; ".join(dead))
+
+
+def test_the_detector_knows_an_optional_group_from_a_required_one():
+    """Otherwise the test above either passes always or fires on the
+    fifteen plan rubrics that are fine."""
+    assert _emphasis_anchored(r"(?i)(?:`states`|\bstates\s*[:=])") == ["`", "`"]
+    assert _emphasis_anchored(r"(?im)^\s*(?:\*\*)?(?:schritt)?\s*1\b") == []
