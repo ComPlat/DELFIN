@@ -8548,11 +8548,6 @@ class _DocToolExecutor:
         permissions: Optional["KitToolPermissions"] = None,
     ) -> str:
         """The body of :meth:`execute`, under one pinned policy."""
-        # A required argument that never arrived.
-        missing = _missing_required_argument(name, arguments)
-        if missing is not None:
-            return json.dumps({"error": missing})
-
         # Plan mode, deny-by-default. One check at the single entry point,
         # before hooks, before dispatch, covering namespaced MCP calls too
         # -- rather than a per-family refusal each new tool has to be
@@ -8648,6 +8643,17 @@ class _DocToolExecutor:
                 "error": "blocked_by_hook",
                 "reason": block_reason[:1200],
             })
+        elif (_missing := _missing_required_argument(name, arguments)):
+            # LAST in the chain, by the same argument the plan-mode gate
+            # makes about the role check: the more permanent reason is the
+            # more useful one. "You may not use this tool at all" and "not
+            # in this mode" both outrank "your call was malformed" -- and
+            # a model told `path is required` under plan mode fixes the
+            # arguments and retries into the same wall, having learnt the
+            # wrong thing about the gate. The plan-mode refusal even says
+            # the call was refused "before its arguments were looked at",
+            # which running this first had quietly made false.
+            result = json.dumps({"error": _missing})
         else:
             result = self._dispatch(name, arguments, permissions)
 

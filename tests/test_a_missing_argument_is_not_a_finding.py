@@ -162,6 +162,30 @@ def test_a_tool_with_no_required_arguments_is_untouched():
     assert A._missing_required_argument("list_docs", {}) is None
 
 
+def test_a_more_permanent_refusal_wins(tmp_path):
+    """The check runs LAST in the gate chain, by the same argument the
+    plan-mode gate makes about the role check: the more permanent reason
+    is the more useful one.
+
+    Placed first, it told a model under plan mode that `path is required`
+    for a write it may not perform at all -- so the model fixes the
+    arguments and retries into the same wall, having learnt the wrong
+    thing about the gate. The plan-mode refusal even says the call was
+    refused "before its arguments were looked at", which running this
+    first had quietly made false.
+    """
+    plan = A.KitToolPermissions(mode="plan", workspace=str(tmp_path))
+    err = json.loads(A._doc_executor.execute("write_file", {}, plan))["error"]
+    assert "plan mode" in err
+    assert "is required" not in err
+
+    # ...and where the tool IS allowed in plan mode, the argument is the
+    # right reason again.
+    err = json.loads(
+        A._doc_executor.execute("get_calc_info", {}, plan))["error"]
+    assert "calc_id is required" in err
+
+
 def test_an_unknown_tool_is_left_to_the_dispatcher(tmp_path):
     """The near-miss suggestion for a hallucinated tool name must still be
     what a model gets, rather than a complaint about arguments."""
