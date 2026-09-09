@@ -2444,6 +2444,9 @@ _ARTIFACT_KEEPABLE = (
     ".xlsx", ".xls", ".ods", ".pptx", ".ppt", ".odp",
     ".zip", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".7z", ".rar",
     ".epub", ".parquet",
+    # A draft_email .eml exists precisely so the user opens it and sends
+    # it. It was the one artifact the chat could not show at all.
+    ".eml",
 )
 
 _ARTIFACT_MIME = {
@@ -2490,6 +2493,12 @@ _FILE_CREATING_TOOLS = frozenset({
     # Documents and reports — the formats a user asks to be given
     "create_pdf", "create_docx", "merge_pdfs", "split_pdf",
     "fill_docx_template", "fill_pdf_form", "edit_sheet", "publish_report",
+    # The two the list forgot, and the two most worth handing over: a
+    # draft_email .eml exists precisely so the user opens and sends it,
+    # and fill_series writes one document per row. Both were missing
+    # because neither had ever been called in a benchmark run, so nobody
+    # saw the card that did not appear.
+    "draft_email", "fill_series",
     # Plotting, served over MCP
     "plot_energy_distribution", "plot_energy_correlation",
     "plot_orbital_diagram", "plot_optimization_convergence",
@@ -2996,9 +3005,58 @@ def _render_artifact_body(path) -> str | None:
             return _artifact_card(
                 "🗜️", name_html, _format_bytes(size),
                 _render_zip_listing(p) or "")
+        if suffix == ".eml":
+            return _artifact_card(
+                "✉️", name_html, _format_bytes(size),
+                _render_eml_summary(p) or "")
         return _artifact_card("📦", name_html, _format_bytes(size), "")
 
     return None
+
+
+def _render_eml_summary(path) -> str | None:
+    """Who it is to and what it says it is about.
+
+    The draft is not sent by DELFIN -- the user opens it and sends it --
+    so the two things worth seeing before that are the recipient and the
+    subject. Headers are decoded because a German subject arrives
+    RFC-2047 encoded and =?utf-8?q?R=C3=BCckfrage?= tells nobody
+    anything.
+    """
+    from email import message_from_bytes
+    from email.header import decode_header, make_header
+
+    try:
+        msg = message_from_bytes(Path(path).read_bytes())
+    except Exception:
+        return None
+
+    def _field(name: str) -> str:
+        raw = msg.get(name, "")
+        if not raw:
+            return ""
+        try:
+            return str(make_header(decode_header(raw)))
+        except Exception:
+            return str(raw)
+
+    rows = [(label, _field(key)) for label, key in
+            (("An", "To"), ("Cc", "Cc"), ("Betreff", "Subject"))]
+    rows = [(label, value) for label, value in rows if value]
+    if not rows:
+        return None
+    attachments = sum(
+        1 for part in msg.walk() if part.get_filename())
+    if attachments:
+        rows.append(("Anhänge", str(attachments)))
+    body = "".join(
+        f'<div style="font-size:11px;color:#374151;">'
+        f'<span style="color:#6b7280;">{_html.escape(label)}:</span> '
+        f'{_html.escape(value)}</div>'
+        for label, value in rows)
+    return (body + '<div style="font-size:11px;color:#6b7280;'
+            'margin-top:4px;">Wird nicht versendet — öffnen und selbst '
+            'senden.</div>')
 
 
 # Which write a tool performs, under every name it is served by. The
