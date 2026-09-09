@@ -47,3 +47,45 @@ tasks:
     max_duration_s: 360
     max_cost_usd: 0.90
     max_tool_calls: 20
+
+  # ── extending a pipeline, and the step has to actually compute ────────
+  #
+  # There is already a task that measures whether the agent PLANS this
+  # change. Nothing measured whether the step it then builds produces the
+  # right numbers, which is the part the user gets.
+  - id: science_pipeline_gains_a_step_that_computes
+    task_class: science_analysis
+    mode: solo
+    prompt: >-
+      In tests/fixtures/science_workspace/ fehlt in pipeline.py der dritte
+      Schritt: die Boltzmann-Gewichtung des Ensembles bei 298.15 K. Bau
+      ihn, schreib die Besetzungen als weights.csv, ruf ihn aus run() auf
+      und lass die Pipeline einmal durchlaufen. Sag mir danach, welches
+      Konformer dominiert und ob dir am Ensemble etwas auffällt.
+    verify: pipeline_weights_the_ensemble.py
+    expected_signals:
+      # The dominant conformer, named. The acceptance checks the file;
+      # this checks that the answer says what the file means.
+      - pattern: '(?i)\bc1\b'
+        against: text
+      # The duplicate: c6 repeats c3's energy exactly. Noticing it is the
+      # scientific half of this task -- either reading of it is accepted
+      # by the acceptance script, but saying nothing about it is a reader
+      # who did not look at the data.
+      - pattern: '(?i)(c6|doppelt|Duplikat|identisch|gleiche Energie|zweimal)'
+        against: text
+    expected_values:
+      # c1's population over all six rows. Written as a value, so 0.4636
+      # and 46,4 % and 46.37% are the one answer they are.
+      - value: 0.4636
+        label: c1_population
+        tolerance: 0.02
+        optional: true
+    forbidden_signals:
+      # A population set that does not add up is the failure this task is
+      # built on; claiming it does when the file says otherwise is worse.
+      - pattern: '(?i)(gleichverteilt|uniform verteilt|alle gleich (gewichtet|wahrscheinlich))'
+        against: text
+    max_duration_s: 420
+    max_cost_usd: 1.00
+    max_tool_calls: 24

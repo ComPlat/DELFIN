@@ -226,3 +226,131 @@ def test_the_science_workspace_is_restored_between_attempts():
     assert any(rel.name == "science_workspace" for rel in _BEHAVIOR_WS_RELS), (
         "the science fixture is not under the guard, so its artifacts "
         "survive the run")
+
+
+# ---------------------------------------------------------------------------
+# Extending the pipeline: the step has to compute, not just exist
+# ---------------------------------------------------------------------------
+#
+# There was already a task measuring whether the agent PLANS this change.
+# Nothing measured whether the step it then builds produces the right
+# numbers, which is the part a user gets.
+#
+# Two answers are accepted on purpose. c6 repeats c3's energy exactly, so
+# weighting six rows and weighting five are both defensible; what is not
+# negotiable is that the populations sum to one and follow Boltzmann over
+# whichever set was used. The judgement about the duplicate is measured
+# in the answer, not in the file.
+
+_PIPE_TASK = "science_pipeline_gains_a_step_that_computes"
+
+_STEP = '''import csv, math
+HA = 2625.4996392852
+RT = 8.314462618e-3 * 298.15
+
+
+def boltzmann_weights(path="ensemble.csv", out="weights.csv"):
+    rows = list(csv.DictReader(open(path)))
+    E = {r["conformer"]: float(r["energy_hartree"]) for r in rows}
+    lo = min(E.values())
+    w = {k: math.exp(-((v - lo) * HA) / RT) for k, v in E.items()}
+    z = sum(w.values())
+    with open(out, "w", newline="") as fh:
+        wr = csv.writer(fh)
+        wr.writerow(["conformer", "population"])
+        for k in sorted(E):
+            wr.writerow([k, f"{w[k]/z:.6f}"])
+    print("step 3: boltzmann weights")
+'''
+
+_UNIFORM = _STEP.replace(
+    "w = {k: math.exp(-((v - lo) * HA) / RT) for k, v in E.items()}",
+    "w = {k: 1.0 for k in E}")
+
+
+def _build(workspace, step_source, *, call_it=True):
+    (workspace / "weighting.py").write_text(step_source)
+    pipe = (workspace / "pipeline.py").read_text()
+    if call_it:
+        pipe = pipe.replace(
+            "    # TODO: step 3",
+            "    from weighting import boltzmann_weights\n"
+            "    boltzmann_weights()\n    # TODO: step 3")
+    (workspace / "pipeline.py").write_text(pipe)
+
+
+def _accept_pipeline(workspace):
+    task = next(t for t in load_tasks() if t.id == _PIPE_TASK)
+    return subprocess.run(
+        [sys.executable, str(acceptance_path(task.verify, _ROOT)),
+         str(workspace)],
+        capture_output=True, text=True, timeout=120)
+
+
+def test_the_pipeline_fixture_still_has_the_gap(workspace):
+    """The premise: a step that is already there measures nothing.
+
+    Asked by RUNNING it, not by searching the source — the TODO names
+    weights.csv quite legitimately, which is what a text check tripped
+    over."""
+    proc = subprocess.run([sys.executable, "pipeline.py"], cwd=str(workspace),
+                          capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    assert not (workspace / "weights.csv").exists(), (
+        "the fixture already weights the ensemble, so the task has "
+        "nothing to add")
+
+
+def test_the_ensemble_carries_the_duplicate():
+    rows = [ln.split(",") for ln in
+            (_FIXTURE / "ensemble.csv").read_text().strip().splitlines()[1:]]
+    energies = [r[1] for r in rows]
+    assert len(energies) != len(set(energies)), (
+        "the duplicate geometry is gone, so the judgement half of the "
+        "task has nothing to notice")
+
+
+def test_a_correct_step_is_accepted(workspace):
+    _build(workspace, _STEP)
+    proc = _accept_pipeline(workspace)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "sum=1.0000" in proc.stdout
+
+
+def test_dropping_the_duplicate_is_accepted_too(workspace):
+    dedup = _STEP.replace(
+        'E = {r["conformer"]: float(r["energy_hartree"]) for r in rows}',
+        "E = {}\n    seen = set()\n"
+        "    for r in rows:\n"
+        '        e = float(r["energy_hartree"])\n'
+        "        if e in seen:\n            continue\n"
+        '        seen.add(e)\n        E[r["conformer"]] = e')
+    _build(workspace, dedup)
+    proc = _accept_pipeline(workspace)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_weights_that_are_not_boltzmann_are_rejected(workspace):
+    _build(workspace, _UNIFORM)
+    proc = _accept_pipeline(workspace)
+    assert proc.returncode == 1
+    assert "Boltzmann" in proc.stdout
+
+
+def test_a_step_that_is_never_called_is_rejected(workspace):
+    """It exists, it is correct, and run() does not reach it — so the
+    user gets nothing."""
+    _build(workspace, _STEP, call_it=False)
+    proc = _accept_pipeline(workspace)
+    assert proc.returncode == 1
+    assert "weights.csv" in proc.stdout
+
+
+def test_the_conformer_name_is_not_read_as_its_population():
+    """Found by running the acceptance against a CORRECT answer, which it
+    rejected: the row is (c1, 0.4636) and "c1" carries a 1, which is a
+    perfectly plausible population."""
+    task = next(t for t in load_tasks() if t.id == _PIPE_TASK)
+    source = acceptance_path(task.verify, _ROOT).read_text(encoding="utf-8")
+    assert "c.strip() != name" in source, (
+        "the name cell is being scanned for numbers again")
