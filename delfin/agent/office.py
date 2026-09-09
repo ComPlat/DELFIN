@@ -5820,7 +5820,14 @@ def draft_email(
         msg["Cc"] = ", ".join(carbon)
     msg["Subject"] = str(subject)
     msg["Date"] = formatdate(localtime=True)
-    msg["Message-ID"] = make_msgid()
+    # make_msgid() ends the id with this machine's fully-qualified name.
+    # The draft is a file the user opens and sends, so that name travels
+    # to whoever receives it — here the internal name of a shared compute
+    # host, which is not the sender's mail domain and is nobody's business
+    # outside it. The id only has to be unique; the domain part carries no
+    # information the recipient uses, and a mail client normally issues
+    # its own on send.
+    msg["Message-ID"] = make_msgid(domain="delfin.invalid")
     msg.set_content(str(body or ""))
 
     attached: list[str] = []
