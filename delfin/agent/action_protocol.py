@@ -117,20 +117,59 @@ def _base_name(name: str) -> str:
     return strip_tool_namespace(name).rstrip(":").strip()
 
 
+# Argument keys that name a file. A slash command sitting in one of
+# these is the third shape the protocol arrives in.
+_PATH_KEYS: frozenset[str] = frozenset(
+    {"path", "file_path", "notebook_path", "filename", "file"})
+
+
+def _is_command_not_a_path(text: str) -> bool:
+    """True when a path-shaped argument is really a slash command.
+
+    ``/orca show`` and ``/memories`` are commands; ``/etc/passwd`` and
+    ``/home/u/notes.md`` are paths. The separator tells them apart: a
+    slash command has exactly one, at the front. A file extension settles
+    the rest.
+    """
+    s = _clean(text)
+    if not _is_slash_shaped(s):
+        return False
+    head = s.split()[0] if s.split() else s
+    if head.count("/") != 1:
+        return False
+    return "." not in head
+
+
 def is_action_style_call(name: str, arguments: object = None) -> bool:
     """True when the tool call is really a text-protocol invocation.
 
     Matches the tool name ``ACTION`` (case-insensitive, with or without an
-    ``mcp__*__`` namespace prefix or a trailing colon) and tool names that
+    ``mcp__*__`` namespace prefix or a trailing colon), tool names that
     are themselves slash-command shaped (``/tab``, ``/orca set ...``,
-    including an ``ACTION:``-fused form). ``arguments`` is accepted for
-    signature stability; detection is name-based.
+    including an ``ACTION:``-fused form), and a real tool whose PATH
+    argument carries the slash command.
+
+    That third shape was measured on kit.glm-5.3, 3 of 3 at the protocol
+    level: given a tool surface it answered "zeig mir gleichzeitig (a)
+    (b) (c)" with three ``read_file(path="/orca show")`` calls. The same
+    request without streaming returns the three ACTION lines as text.
+
+    Narrow on purpose: only a path-shaped key, only a value that is
+    entirely a slash command with no second separator, and the callers
+    gate on roles that drive the UI by text — which have no file tools at
+    all, so such a call could only ever have produced an error.
     """
-    del arguments  # detection is name-based
     base = _base_name(name)
     if base.upper() == _ACTION_KEYWORD:
         return True
-    return _is_slash_shaped(_clean(base))
+    if _is_slash_shaped(_clean(base)):
+        return True
+    args, _raw = _coerce_arguments(arguments)
+    for key, value in (args or {}).items():
+        if str(key).lower() in _PATH_KEYS and isinstance(value, str):
+            if _is_command_not_a_path(value):
+                return True
+    return False
 
 
 def _coerce_arguments(arguments: object) -> tuple[dict, str]:
