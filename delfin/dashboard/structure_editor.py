@@ -12061,6 +12061,18 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # for a structure the hand is changing, and nobody has seen them.
             frame, _, walk = str(payload).strip().partition(',')
             _keep_the_shown_frame(frame, walk)
+            # And land the frame the picture stands on, the way a Stop report
+            # does (gfnplay above).  A walk that *finished* puts its path down
+            # but the page never sends "stopped at frame" for it -- the
+            # playback ends of its own accord -- so a grab is the only message
+            # that says where the picture got to.  Without this the box kept
+            # the walk's end while the picture stood on an earlier point, and
+            # the grab read the box and jumped there: "the scan result jumps
+            # when I grab it", still arriving after the Stop path was fixed
+            # because the user grabbed the result rather than pausing first.
+            # A no-op when no path is down (the ordinary grab mid-run) or when
+            # the grabbed frame is of another walk -- see _land_the_stopped_frame.
+            _land_the_stopped_frame()
             # Whichever of the two was walking, and the same sentence for
             # both: a hand has arrived, so the run under it is about a
             # structure that has stopped existing.  Set at the grab rather
