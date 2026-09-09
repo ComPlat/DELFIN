@@ -78,6 +78,30 @@ def test_every_tool_refuses_a_call_with_nothing_in_it(name, required, tmp_path):
     assert "required" in err.lower(), f"{name}: {err[:200]}"
 
 
+def test_the_two_cases_that_were_reported_before_the_sweep(tmp_path):
+    """Both were found in the field, written down as separate fixes, and
+    never applied. Neither needed its own fix in the end.
+
+    cron_delete answered "not_found" for a missing entry_id, so passing
+    `id` instead of `entry_id` -- a real mistake, made in a real session
+    -- read as "that entry is gone" and cost a wrong diagnosis.
+
+    schedule_wakeup accepted an EMPTY prompt and scheduled a real wake-up
+    with nothing to do: an agent woken at 3am to carry out an empty
+    instruction.
+    """
+    perms = _perms(tmp_path)
+    wrong_key = A._doc_executor.execute("cron_delete", {"id": 5}, perms)
+    assert "entry_id is required" in str(wrong_key)
+    assert "not_found" not in str(wrong_key)
+
+    for prompt in ("", "   "):
+        out = A._doc_executor.execute(
+            "schedule_wakeup",
+            {"delay_seconds": 600, "prompt": prompt, "reason": "r"}, perms)
+        assert "prompt is required" in str(out), prompt
+
+
 def test_the_message_says_nothing_was_looked_up(tmp_path):
     """The failure this replaces was a model believing a negative result.
     The message has to close that reading explicitly."""
