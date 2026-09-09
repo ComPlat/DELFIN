@@ -11890,6 +11890,29 @@ class _DocToolExecutor:
                     "inside allowed roots) instead of 'cd /path && …'. "
                     "Rerun with cwd=<path> and the actual command."
                 )
+            elif _bash_write_targets(cmd):
+                # Writing a file through the shell. `echo x > f` happens
+                # to run (echo is on the list and the redirect goes
+                # through the write gate); `cat > f << 'EOF'` and
+                # `tee f` do not, and the refusal named nothing. Both
+                # were observed in one recorded run, writing a launcher
+                # the agent had just been asked to build.
+                #
+                # write_file is not merely the allowed spelling, it is
+                # the better one: a shell redirect leaves no pre-image in
+                # the change journal, so `undo_changes` cannot take it
+                # back and list_changes_made reports it as unjournalled.
+                # Fired off _bash_write_targets rather than off a command
+                # name, so it appears exactly when the command really
+                # would create a file.
+                hint = (
+                    " HINT: to create or replace a file, use "
+                    "`write_file(path, content)` (or edit_file / "
+                    "multi_edit for a change to an existing one). A shell "
+                    "redirect leaves no pre-image, so undo_changes cannot "
+                    "take it back — that is why the tool exists, not a "
+                    "formality."
+                )
             return (
                 f"bash: '{cmd[:120]}' is not on the auto-allow list "
                 f"(mode={mode}). Do NOT try to work around this block with "

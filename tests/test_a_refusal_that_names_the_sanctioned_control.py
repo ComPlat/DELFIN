@@ -141,3 +141,45 @@ def test_a_recursive_delete_is_still_refused_outright(repo):
     err = _err("rm -rf build", repo)
     assert "deny-pattern" in err
     assert "undo_changes" not in err
+
+
+# ---------------------------------------------------------------------------
+# Writing a file through the shell
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("cmd", [
+    "cat > run.py << 'EOF'\nprint(1)\nEOF",
+    "tee out.txt",
+    "printf 'x' > cfg.json",
+])
+def test_a_shell_write_names_write_file(cmd, repo):
+    """`echo x > f` happens to run -- echo is on the list and the redirect
+    goes through the write gate -- while `cat > f << EOF` and `tee f` did
+    not, and the refusal named nothing. Both spellings were observed in
+    one recorded run, writing a launcher the agent had just been asked to
+    build."""
+    err = _err(cmd, repo)
+    assert "write_file" in err
+    assert "pre-image" in err
+
+
+def test_the_reason_is_the_journal_not_the_rule(repo):
+    """write_file is the better spelling, not merely the allowed one. If
+    the hint said only "that is not allowed" the next reader would widen
+    the list instead."""
+    err = _err("tee out.txt", repo)
+    assert "undo_changes cannot take it back" in err
+
+
+def test_a_refusal_that_writes_nothing_gets_no_write_hint(repo):
+    err = _err("curl https://example.com", repo)
+    assert "not on the auto-allow list" in err
+    assert "write_file" not in err
+
+
+def test_the_hints_do_not_collide(repo):
+    """Four hints share one branch now. Each command must get its own."""
+    assert "enter_worktree" in _err("git worktree add /tmp/x HEAD~1", repo)
+    assert "undo_changes" in _err("rm -f scratch.py", repo)
+    assert "write_file" in _err("tee out.txt", repo)
+    assert "py_compile" in _err('python3 -c "import os; os.getcwd()"', repo)
