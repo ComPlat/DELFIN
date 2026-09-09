@@ -21,12 +21,22 @@ needs chemistry fixtures, use `tests/fixtures/behavior_workspace/` instead.
 | `bookmarks_cli.py`   | the entry point — prints `bookmarks: 3`           |
 | `requirements.txt`   | intentionally dependency-free                     |
 
-Run the entry point from anywhere in the checkout:
+Run the entry point. **This directory is the agent's workspace root**, so
+from inside a benchmark run the path is just the file name:
 
 ```sh
-python3 tests/fixtures/user_project_workspace/bookmarks_cli.py
+python3 bookmarks_cli.py
 bookmarks: 3
 ```
+
+From a shell in the checkout it is `python3
+tests/fixtures/user_project_workspace/bookmarks_cli.py` — but do not copy
+that spelling into a task prompt or into this file's examples. An agent
+whose workspace IS this directory resolves it one level of the same name
+deeper, finds nothing, and (measured 2026-09-09) spends its turns on
+`cwd is not a directory: tests/fixtures/user_project_workspace` and on
+creating a `tests/fixtures/user_project_workspace/` tree inside the
+workspace it was already standing in.
 
 The `bookmarks: 3` line is the ground truth a benchmark task can only report
 after really executing something — the launcher task checks for that line
