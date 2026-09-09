@@ -1228,7 +1228,6 @@ _ARG_ALIASES: dict[str, tuple[str, ...]] = {
 _EMPTY_IS_MEANINGFUL: frozenset[tuple[str, str]] = frozenset({
     ("edit_file", "new_string"),
     ("write_file", "content"),
-    ("multi_edit", "new_string"),
 })
 
 # Required in the SCHEMA, because the model should send it, but never a
@@ -1241,7 +1240,6 @@ _LABEL_ONLY: frozenset[tuple[str, str]] = frozenset({
     ("bash", "description"),
     ("bash_background", "description"),
     ("subagent", "description"),
-    ("task_create", "description"),
 })
 
 # Tools that carry their OWN plan-mode refusal in their body, past the
