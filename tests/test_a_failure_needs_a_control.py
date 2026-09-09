@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -69,7 +70,7 @@ def test_a_worktree_can_start_at_the_baseline(repo):
     out = _run("enter_worktree", {"base_ref": base}, perms)
     assert out["status"] == "ok"
     assert out["base_ref"] == base
-    wt = __import__("pathlib").Path(out["path"])
+    wt = Path(out["path"])
     try:
         # The state BEFORE the change: calc.py is there, report.py is not.
         assert (wt / "calc.py").is_file()
@@ -85,7 +86,7 @@ def test_without_it_the_worktree_still_starts_at_head(repo):
     ws, base = repo
     perms = _perms(ws)
     out = _run("enter_worktree", {}, perms)
-    wt = __import__("pathlib").Path(out["path"])
+    wt = Path(out["path"])
     try:
         assert out["base_ref"] != base
         assert (wt / "report.py").is_file()
@@ -115,7 +116,7 @@ def test_the_control_answers_the_question(repo):
     try:
         # The baseline has no test file at all -- copy the check in, which
         # is what an agent does when the test itself is new.
-        (__import__("pathlib").Path(wt) / "test_calc.py").write_text(
+        (Path(wt) / "test_calc.py").write_text(
             (ws / "test_calc.py").read_text(encoding="utf-8"),
             encoding="utf-8")
         there = _run("bash", {**check, "cwd": wt}, perms)
@@ -224,3 +225,76 @@ def test_the_row_names_a_tool_that_exists_with_the_argument_it_names():
     entry = next(t for t in A._DOC_TOOLS_OPENAI
                  if t["function"]["name"] == "enter_worktree")
     assert "base_ref" in entry["function"]["parameters"]["properties"]
+
+
+# ---------------------------------------------------------------------------
+# ...and where the worktree goes
+# ---------------------------------------------------------------------------
+
+def test_a_throwaway_repos_worktree_dies_with_it(tmp_path):
+    """2532 orphaned `/tmp/delfin-wt-*` directories on this machine, the
+    oldest from 2026-08-12, growing by about a hundred per suite run.
+
+    A repo under the system temp dir is a throwaway -- a test's tmp_path,
+    a scratch checkout -- and its worktree used to land in /tmp's ROOT,
+    which outlives it. What is left behind is a `.git` file pointing at a
+    directory that no longer exists: unusable, unremovable by `git
+    worktree prune` (its repo is gone too), and permanent.
+
+    Beside the repository instead, so whatever removes the repository
+    removes the worktree with it.
+    """
+    import subprocess
+
+    from delfin.agent import worktree as WT
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=str(repo), check=True)
+    for k, v in (("user.email", "a@b.c"), ("user.name", "t")):
+        subprocess.run(["git", "config", k, v], cwd=str(repo), check=True)
+    (repo / "a.txt").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=str(repo), check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "x"], cwd=str(repo),
+                   check=True)
+
+    info = WT.enter_worktree(repo)
+    try:
+        assert info.path.parent == repo.parent, info.path
+        assert str(info.path).startswith(str(tmp_path))
+    finally:
+        WT.exit_worktree(info, keep_if_changed=False)
+
+
+def test_a_real_repo_still_gets_the_temp_dir():
+    """The point of the rule is that a worktree must NOT appear inside a
+    project the user is looking at. A repository outside /tmp is
+    unaffected."""
+    import tempfile
+
+    from delfin.agent import worktree as WT
+
+    assert WT._default_parent(
+        Path("/home/someone/projects/thing")) == Path(tempfile.gettempdir())
+
+
+def test_an_explicit_parent_still_wins(tmp_path):
+    import subprocess
+
+    from delfin.agent import worktree as WT
+
+    repo = tmp_path / "r"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=str(repo), check=True)
+    for k, v in (("user.email", "a@b.c"), ("user.name", "t")):
+        subprocess.run(["git", "config", k, v], cwd=str(repo), check=True)
+    (repo / "f").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=str(repo), check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "x"], cwd=str(repo),
+                   check=True)
+    where = tmp_path / "elsewhere"
+    info = WT.enter_worktree(repo, parent=where)
+    try:
+        assert info.path.parent == where
+    finally:
+        WT.exit_worktree(info, keep_if_changed=False)
