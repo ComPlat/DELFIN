@@ -113,7 +113,13 @@ _GATES = ("_check_read_access", "_run_permission_gate", "_get_path_arg",
           "confirm_callback", "find_root_for", "find_readable_root_for",
           "_worktree_path_refusal", "matches_path_deny", "_gate_",
           "_tool_denied_for_role", "scope_locked", "office_root",
-          "_resolve_in_folder", "_safe_join")
+          "_resolve_in_folder", "_safe_join",
+          # The canonical one, and it was missing: every other entry here
+          # belongs to a tool that ALSO calls _get_path_arg, so nothing
+          # had ever reached this list through _resolve_in_workspace
+          # alone. list_files did, when `path` stopped being ignored, and
+          # was reported as ungated while doing exactly the right thing.
+          "_resolve_in_workspace")
 
 
 def test_every_tool_that_takes_a_path_asks_about_it():

@@ -882,6 +882,44 @@ _BASH_DEST_OPTS: frozenset[str] = frozenset({
     "--target", "--prefix", "--root", "--output-dir", "--dest",
 })
 
+# Short options that mean something OTHER than a destination, per command.
+#
+# `-d` is a destination for `unzip` and `install`, a DELIMITER for `cut`,
+# a date string for `date`, and a PREDICATE for `test`. Read as a
+# destination it made `test -d /etc && echo yes` a write to /etc -- a
+# refusal to check whether a directory exists -- and `cut -d , -f1
+# data.csv` a write to ",". Same failure as reading `s.replace(',', '.')`
+# as Path.replace: one name, two meanings, told apart by context.
+#
+# Per (command, option) rather than per command, because the distinction
+# is per option: `sort -d` is dictionary order and `sort -o` really does
+# write its output file. Long options are unambiguous and are never
+# suppressed. An empty set means "every short dest-option", for commands
+# that cannot write at all.
+_BASH_NO_DEST_OPTS: dict[str, frozenset[str]] = {
+    "test": frozenset(), "[": frozenset(),
+    "grep": frozenset(), "egrep": frozenset(), "fgrep": frozenset(),
+    "rg": frozenset(), "ag": frozenset(),
+    "cmp": frozenset(), "comm": frozenset(), "diff": frozenset(),
+    "sdiff": frozenset(), "ls": frozenset(), "find": frozenset(),
+    "wc": frozenset(), "head": frozenset(), "tail": frozenset(),
+    "cut": frozenset(), "uniq": frozenset(), "join": frozenset(),
+    "paste": frozenset(), "column": frozenset(), "date": frozenset(),
+    "od": frozenset(), "xxd": frozenset(),
+    # ...and the one that writes, where only the ambiguous flag is muted.
+    "sort": frozenset({"-d"}),
+}
+
+
+def _dest_opt_applies(name: str, opt: str) -> bool:
+    """Whether *opt* names a destination for command *name*."""
+    if opt.startswith("--"):
+        return True
+    muted = _BASH_NO_DEST_OPTS.get(name)
+    if muted is None:
+        return True
+    return bool(muted) and opt not in muted
+
 
 # Commands whose whole purpose is to emit a file's contents. Reading is not
 # gated in general — half of a shell session legitimately touches paths
@@ -918,6 +956,10 @@ _BASH_CONTENT_READERS: frozenset[str] = frozenset({
     "awk", "gawk", "mawk", "sed", "cut", "sort", "uniq", "paste",
     "column", "fold", "expand", "unexpand", "rev", "jq", "yq",
     "zcat", "zgrep", "bzcat", "xzcat",
+    # `diff /etc/passwd /etc/hosts` prints all of both, and diff is on the
+    # auto-allow list. A fifth spelling of cat, found in the same sweep.
+    # `cmp` reports an offset by default but `cmp -b` prints the bytes.
+    "diff", "cmp", "comm", "sdiff",
 })
 
 
@@ -1538,11 +1580,15 @@ def _bash_write_targets(cmd: str) -> list[str]:
                 continue
 
             # Destination-carrying options (pip --target, tar -C, ...).
+            # Short ones are suppressed for commands where they mean
+            # something else -- see _BASH_NO_DEST_OPTS.
             for i, a in enumerate(rest):
                 if a in _BASH_DEST_OPTS and i + 1 < len(rest):
-                    _add(rest[i + 1])
+                    if _dest_opt_applies(name, a):
+                        _add(rest[i + 1])
                 elif "=" in a and a.split("=", 1)[0] in _BASH_DEST_OPTS:
-                    _add(a.split("=", 1)[1])
+                    if _dest_opt_applies(name, a.split("=", 1)[0]):
+                        _add(a.split("=", 1)[1])
 
             pos = [a for a in rest if not a.startswith("-")]
             if name in _BASH_DEST_ALL:
@@ -2026,6 +2072,14 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"^\s*timeout\s+\d",
     r"^\s*xargs\s+",
     r"^\s*diff\b", r"^\s*patch\s+(?:-p\d|--dry-run)",
+    # `cmp` beside `diff`, which has been here all along -- the same
+    # question asked of two files, and one of the two spellings was
+    # refused. `test` / `[` are pure predicates: every form of them reads
+    # and reports, and there is no destructive one. Both were refused in
+    # recorded runs on the plainest possible use (`cmp a b`,
+    # `test -f export.py && echo exists`).
+    r"^\s*cmp\b", r"^\s*comm\b",
+    r"^\s*test\s+", r"^\s*\[\s+",
 )
 
 # DELFIN-specific bash auto-allow patterns — merged into the auto-allow
@@ -10847,12 +10901,19 @@ class _DocToolExecutor:
         """
         pattern = arguments.get("pattern", "*")
         root = perms.workspace if perms is not None else self._repo_root()
-        sub = str(arguments.get("path", "") or "").strip().strip("/")
+        # Only a trailing separator is trimmed. Stripping a LEADING one
+        # turned `/etc` into `etc`, which then resolved inside the
+        # workspace and came back "not a directory: etc" -- the right
+        # outcome reached by saying something false about a directory
+        # that plainly exists. An absolute or `~` path goes to the gate
+        # as written and is refused for the reason it is actually
+        # refused for.
+        sub = str(arguments.get("path", "") or "").strip().rstrip("/")
         base = root
         if sub and sub != ".":
             if perms is not None:
                 resolved, err = self._resolve_in_workspace(
-                    sub, perms, for_read=True)
+                    str(Path(sub).expanduser()), perms, for_read=True)
                 if err:
                     return json.dumps({"error": err})
                 base = resolved
