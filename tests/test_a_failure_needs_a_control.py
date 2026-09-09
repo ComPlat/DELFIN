@@ -196,43 +196,44 @@ def _solo_prompt() -> str:
         role_id="solo_agent", mode_id="solo"))
 
 
-def test_the_rule_reaches_the_prompt_where_it_is_needed(bench=None):
-    """A rule is a rule when it is in the BUILT prompt -- and this one is
-    stated in the STRATEGY TABLE, not in the integrity addendum.
+def test_the_rule_is_a_MECHANISM_and_not_prose(bench=None):
+    """Measured, and the measurement is the whole argument.
 
-    It was in the addendum first, which every role receives on every
-    turn, and that was measured: on
-    science_pipeline_gains_a_step_that_computes the agent stopped calling
-    write tools ENTIRELY -- 0/5, no write_file, no edit_file, no bash,
-    1648 output tokens of analysis and the turn ended -- on a task graded
-    by running what it built. An ablation of that one paragraph brought
-    the coding surface straight back (write_file, edit_file, multi_edit,
-    bash) and returned the score distribution to main's.
+    The control rule shipped twice as prose: a paragraph in the integrity
+    addendum, which every role reads on every turn, and a row in
+    solo_agent's strategy table. On
+    science_pipeline_gains_a_step_that_computes, N=8 per arm:
 
-    A rule about what to do when something is RED must not be read on
-    every turn by an agent that was asked to build something. The
-    strategy table is consulted for tool choice, which is the moment this
-    applies, and base_ref's own description says it at the call site.
+        main, neither addition                     5/10
+        both additions (the merge)                 0/8   sigma 0.4
+        addendum paragraph removed                 1/10
+        BOTH removed                               8/8   sigma 2.7
+
+    8/8 against 0/8 is p ~ 0.0002. Removing only one recovers nothing --
+    either alone still turns the agent from a builder into an analyst,
+    on a task graded by RUNNING what it built.
+
+    And 8/8 beats main's 5/10 (p ~ 0.02): the code changes in that merge
+    IMPROVED this task, and the two sentences of prose destroyed it.
+
+    So the rule ships as a mechanism only -- `base_ref` exists, and its
+    own description says what omitting it costs, read at the call site
+    where it applies. Nothing states it on a turn that is not about
+    attributing a failure. That is the cost side the project's own rule
+    demands be measured, and prose that costs fifty points on a build
+    task does not earn its place however true it is.
     """
+    # The mechanism is in the tool CATALOGUE, which is sent as tool
+    # definitions rather than as prompt text -- that is precisely why it
+    # is free of the cost measured above.
+    entry = next(t for t in A._DOC_TOOLS_OPENAI
+                 if t["function"]["name"] == "enter_worktree")
+    base = entry["function"]["parameters"]["properties"]["base_ref"]
+    assert "not a control" in base["description"]
+
     flat = _solo_prompt()
-    assert "Run the CONTROL, not the diff" in flat
-    assert "base_ref" in flat
     assert "A failure needs a control before you attribute it" not in flat
-
-
-def test_the_routing_table_names_it_too():
-    """Measured live on kit.deepseek-v4-flash, 2026-09-09: with the rule in
-    the addendum and the mechanism in the catalogue, the model still read
-    `git show <sha> --stat` on both commits and never ran a control. The
-    addendum says what a scientist does; the strategy table is where the
-    model looks to pick a tool, and it had no row for this question.
-
-    Same shape as the office arithmetic rule that named no tool: a rule
-    the framework states and a routing table that does not carry it are
-    not the same thing."""
-    flat = _solo_prompt()
-    assert "did X break this?" in flat
-    assert "Run the CONTROL, not the diff" in flat
+    assert "Run the CONTROL, not the diff" not in flat
 
 
 def test_the_row_names_a_tool_that_exists_with_the_argument_it_names():
