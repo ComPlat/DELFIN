@@ -252,3 +252,58 @@ def test_a_plan_is_never_offered_as_a_substitute_for_acting():
                      _DASH_FLAT), (
         "nothing tells the model that stopping after the plan answers "
         "nothing")
+
+
+# ---------------------------------------------------------------------------
+# A routing row without the condition that decides whether it applies
+# ---------------------------------------------------------------------------
+#
+# The solo table sent "Gibbs/SPE many folders" to extract_energy_table
+# with nothing saying the parser is ORCA-specific. On xtb output it does
+# not fail: it answers status: ok with every requested value null, and it
+# reads only the LARGEST .out in the folder -- which in the science
+# fixture is the run that did not converge. A model following the table
+# therefore gets a confident empty answer about the wrong file.
+#
+# Same shape as the office prompt that routed a column total to bash: the
+# table names a tool and omits the condition under which it works.
+
+_SOLO_FLAT = re.sub(r"\s+", " ", _SOLO)
+
+
+def test_the_orca_parsers_are_marked_as_orca_parsers():
+    for row in ("Gibbs/SPE/ZPE one folder", "Gibbs/SPE many folders"):
+        idx = _SOLO_FLAT.find(row)
+        assert idx > 0, f"the routing row is gone: {row}"
+        assert "ORCA" in _SOLO_FLAT[idx:idx + 60], (
+            f"{row!r} names a parser without saying it reads ORCA output")
+
+
+def test_the_prompt_says_what_those_parsers_do_on_another_format():
+    """Not an error -- which is the part that has to be said, because a
+    tool that returns ok is normally a tool that worked."""
+    assert re.search(r"(?i)status: ?.?ok.?[^.]{0,40}null", _SOLO_FLAT), (
+        "nothing warns that these parsers answer ok with null values")
+    assert re.search(r"(?i)largest[^.]{0,30}per folder|LARGEST \.out",
+                     _SOLO_FLAT), (
+        "nothing says only one file per folder is read")
+
+
+def test_the_claim_about_those_parsers_is_still_true():
+    """The prompt now asserts something about delfin/api.py. If that
+    changes, the prompt is the thing that becomes wrong."""
+    from pathlib import Path
+
+    from delfin import api
+
+    workspace = (Path(__file__).resolve().parents[1] / "tests" / "fixtures"
+                 / "science_workspace")
+    if not workspace.is_dir():
+        pytest.skip("the science fixture is not in this checkout")
+    rows = api.extract_energy_table(
+        folders=[str(workspace)], properties=["scf_converged", "single_point"])
+    assert rows and rows[0].get("status") == "ok", rows
+    assert rows[0].get("scf_converged") is None, (
+        "the parser now understands xtb; the prompt paragraph is stale")
+    assert rows[0].get("output_file") == "run_d.out", (
+        "it no longer picks the largest file; the prompt paragraph is stale")

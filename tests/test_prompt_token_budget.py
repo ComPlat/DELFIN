@@ -53,7 +53,24 @@ def _estimate_tokens(text: str) -> int:
         # returning 49 of the rule's 82 tokens. 21 is what is left after
         # the sentence was cut twice more, and it buys the narrowest form
         # of the rule — ask before the WRITE, never before the reads.
-        ("solo_agent.md", 10621),
+        # 10621 -> 10672, fifty-one tokens, for the condition under which
+        # two routing rows apply. The table sent "Gibbs/SPE many folders"
+        # to extract_energy_table with nothing saying the parser is ORCA
+        # -specific -- and on xtb it answers status: ok with every value
+        # null instead of an error, and reads only the LARGEST .out in the
+        # folder, which in the science fixture is the run that did not
+        # converge. So a model following the table gets a confident empty
+        # answer about the wrong file.
+        #
+        # Reported by kit.deepseek-v4-flash, asked after a real task what
+        # got in its way: it formed the hypothesis that it should have
+        # used those parsers, TESTED it against the xtb files, and
+        # refuted its own hypothesis with the tool output. Verified here
+        # before acting -- and the string form is worse than reported,
+        # since properties="scf_converged,single_point" is iterated
+        # character by character into keys s, c, f, _, o, n, v ...
+        # That part is in delfin/api.py and belongs to another owner.
+        ("solo_agent.md", 10672),
         # Written lean from the start: the shared addenda carry the general
         # contracts, so this prompt only states what is specific to working
         # on someone's real records. Raised as the mode's surface grew —
