@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Callable, Generator, Optional
 
 from . import german as _german
+from . import inline_payload as _inline_payload
 from . import pricing
 from . import text_files as _text_files
 
@@ -881,14 +882,84 @@ _BASH_DEST_OPTS: frozenset[str] = frozenset({
     "--target", "--prefix", "--root", "--output-dir", "--dest",
 })
 
+# Short options that mean something OTHER than a destination, per command.
+#
+# `-d` is a destination for `unzip` and `install`, a DELIMITER for `cut`,
+# a date string for `date`, and a PREDICATE for `test`. Read as a
+# destination it made `test -d /etc && echo yes` a write to /etc -- a
+# refusal to check whether a directory exists -- and `cut -d , -f1
+# data.csv` a write to ",". Same failure as reading `s.replace(',', '.')`
+# as Path.replace: one name, two meanings, told apart by context.
+#
+# Per (command, option) rather than per command, because the distinction
+# is per option: `sort -d` is dictionary order and `sort -o` really does
+# write its output file. Long options are unambiguous and are never
+# suppressed. An empty set means "every short dest-option", for commands
+# that cannot write at all.
+_BASH_NO_DEST_OPTS: dict[str, frozenset[str]] = {
+    "test": frozenset(), "[": frozenset(),
+    "grep": frozenset(), "egrep": frozenset(), "fgrep": frozenset(),
+    "rg": frozenset(), "ag": frozenset(),
+    "cmp": frozenset(), "comm": frozenset(), "diff": frozenset(),
+    "sdiff": frozenset(), "ls": frozenset(), "find": frozenset(),
+    "wc": frozenset(), "head": frozenset(), "tail": frozenset(),
+    "cut": frozenset(), "uniq": frozenset(), "join": frozenset(),
+    "paste": frozenset(), "column": frozenset(), "date": frozenset(),
+    "od": frozenset(), "xxd": frozenset(),
+    # ...and the one that writes, where only the ambiguous flag is muted.
+    "sort": frozenset({"-d"}),
+}
+
+
+def _dest_opt_applies(name: str, opt: str) -> bool:
+    """Whether *opt* names a destination for command *name*."""
+    if opt.startswith("--"):
+        return True
+    muted = _BASH_NO_DEST_OPTS.get(name)
+    if muted is None:
+        return True
+    return bool(muted) and opt not in muted
+
 
 # Commands whose whole purpose is to emit a file's contents. Reading is not
 # gated in general — half of a shell session legitimately touches paths
 # outside the workspace (interpreters, system tools, /proc) — but these are
 # the direct substitute for a refused read_file.
+# Commands that print the CONTENTS of a file named on their command line.
+#
+# The gate this feeds exists because "a refusal that one tool honours and
+# the next ignores is not a refusal" -- and the set was written narrowly
+# enough that four other spellings of `cat` walked straight past it.
+# Measured against main on 2026-09-09, with the workspace elsewhere:
+#
+#     cat /etc/passwd                 blocked
+#     grep root /etc/passwd           printed it
+#     awk '{print}' /etc/passwd       printed it
+#     sed -n 1,2p /etc/passwd         printed it
+#     cut -d: -f1 /etc/passwd         printed it
+#
+# All four are on the auto-allow list, so an agent that had a read_file
+# refused could reach the same bytes with the next line it typed.
+#
+# Only ABSOLUTE and `~` arguments are inspected (see _bash_outside_reads),
+# so ordinary work is untouched: `grep -rn foo .`, `sed -n 1,50p src/x.py`
+# and every relative path stay exactly as they were.
+#
+# Metadata-only commands are deliberately NOT here -- wc, file, stat,
+# md5sum and sha256sum report a size, a type or a digest, and gating a
+# question about a file's existence would be friction with nothing behind
+# it.
 _BASH_CONTENT_READERS: frozenset[str] = frozenset({
     "cat", "head", "tail", "less", "more", "strings", "xxd", "od",
     "base64", "nl", "tac", "bat",
+    "grep", "egrep", "fgrep", "rg", "ag", "ack",
+    "awk", "gawk", "mawk", "sed", "cut", "sort", "uniq", "paste",
+    "column", "fold", "expand", "unexpand", "rev", "jq", "yq",
+    "zcat", "zgrep", "bzcat", "xzcat",
+    # `diff /etc/passwd /etc/hosts` prints all of both, and diff is on the
+    # auto-allow list. A fifth spelling of cat, found in the same sweep.
+    # `cmp` reports an offset by default but `cmp -b` prints the bytes.
+    "diff", "cmp", "comm", "sdiff",
 })
 
 
@@ -925,8 +996,22 @@ def _bash_outside_reads(cmd: str) -> list[str]:
     Only the readers above are inspected, and only their absolute
     arguments — a conservative net around the exact circumvention that was
     observed (three refused read_file calls, then `cat` on the same files).
+
+    An inline python payload is inspected too, for the same reason and by
+    the same rule: `python3 -c "print(open('/etc/passwd').read())"` is
+    `cat /etc/passwd` with the path one level in. Before the payload could
+    be read at all this was moot -- the command was refused outright --
+    and reading it would have opened a route past this gate if the reads
+    had not been collected with the writes.
     """
     out: list[str] = []
+    try:
+        for src in (_inline_payload.extract_c_payloads(cmd) or []):
+            for tok in _inline_payload.analyze_payload(src).reads:
+                if tok.startswith("/") or tok.startswith("~"):
+                    out.append(tok)
+    except Exception:
+        pass
     try:
         import shlex
         for segment in re.split(r"[;&|]{1,2}|\n", cmd):
@@ -1073,18 +1158,188 @@ _REL_PATH_RE = re.compile(r"(?<![\w/])([\w.][\w.\-]*(?:/[\w.\-]+)+/?)")
 # without the prefix group they read as an ordinary word to this regex — the
 # venv fallback in ``_segment_auto_allowed`` then auto-allowed the first form
 # even under a locked scope.
+#
+# The word boundary used to sit after the whole alternation, and one
+# alternative ends in `=`. `env X=1 …` matched because `1` is a word
+# character; `env PYTHONPATH=/elsewhere …` did not, because `/` is not —
+# so the spelling that actually redirects an import was the spelling the
+# guard could not see. Each alternative carries its own boundary now.
 _INTERPRETER_RE = re.compile(
     r"(?:^|[;&|`$(]\s*)\s*"
     r"(?:[\w./~+-]*/)?"          # one flat group: no nested quantifier
     r"(?:"
-    r"python[0-9.]*\s+-c|python[0-9.]*\s*<|"
-    r"perl\s+-e|ruby\s+-e|node\s+-e|php\s+-r|"
-    r"eval|exec|source|\.\s|"
-    r"make|xargs|env\s+[A-Za-z_]+=|"
-    r"base64\s+(?:-d|--decode)|"
-    r"find\b[^;|&]*-exec"
-    r")\b"
+    r"python[0-9.]*\s+-c\b|python[0-9.]*\s*<|"
+    r"perl\s+-e\b|ruby\s+-e\b|node\s+-e\b|php\s+-r\b|"
+    r"(?:eval|exec|source|make|xargs)\b|\.\s|"
+    r"env\s+[A-Za-z_][A-Za-z0-9_]*=|"
+    r"base64\s+(?:-d|--decode)\b|"
+    r"find\b[^;|&]*-exec\b"
+    r")"
 )
+
+# Words that run the command that follows them. The regex above anchors
+# an interpreter at the start of the command or after a shell operator,
+# so one of these in front hid it completely: `time python3 -c "…"` was
+# auto-allowed (`time` is on the auto-allow list) with the payload never
+# looked at once. Same list as ``_referenced_script_paths`` uses for the
+# same reason, and stripped repeatedly — `nohup time python3 -c` is two
+# of them.
+_EXEC_WRAPPER_WORD_RE = re.compile(
+    r"^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+|"
+    r"(?:env|nohup|time|timeout|nice|ionice|setsid|stdbuf|command|builtin|"
+    r"watch|sudo|doas)\b(?:\s+-{1,2}[\w-]+(?:=\S+)?|\s+\d+(?:\.\d+)?[smhd]?)*"
+    r"\s+)"
+)
+
+
+def _strip_exec_wrappers(segment: str) -> str:
+    """Drop the wrapper words in front of the command a segment runs.
+
+    `timeout 30 env FOO=bar python3 -c "…"` runs python. Peeling the
+    wrappers is what lets the checks that anchor on the head of a command
+    reach the command that is actually there.
+    """
+    prev, out = None, segment or ""
+    while out != prev and len(out) < 100_000:
+        prev = out
+        out = _EXEC_WRAPPER_WORD_RE.sub("", out, count=1)
+    return out
+
+
+_REQUIRED_BY_TOOL: dict[str, tuple[str, ...]] | None = None
+
+# Keys a tool accepts INSTEAD of the one its schema names. Weak models
+# generate the neighbouring convention -- `file_path` for `path` is the
+# commonest -- and ``_get_path_arg`` has tolerated that for as long as
+# there have been weak models. A guard that reads the schema literally
+# would take that tolerance away, so it reads it through this table.
+_ARG_ALIASES: dict[str, tuple[str, ...]] = {
+    "path": ("file_path", "filename", "file", "target"),
+}
+
+# (tool, parameter) pairs where an EMPTY value is the point of the call.
+# Everywhere else an empty required argument is treated as an absent one,
+# because that is how the silent-wrong-answer cases below arrived. Here it
+# is content, not an identifier, and emptiness means something:
+# `new_string: ""` deletes the block it matched, and `content: ""` creates
+# an empty file. Both verified against the executor before this guard was
+# added -- refusing them would have been a regression written in the name
+# of a fix.
+_EMPTY_IS_MEANINGFUL: frozenset[tuple[str, str]] = frozenset({
+    ("edit_file", "new_string"),
+    ("write_file", "content"),
+})
+
+# Required in the SCHEMA, because the model should send it, but never a
+# reason to refuse the call. `description` is a line for the audit trail;
+# the command runs the same without it. Failing an action over a missing
+# label would turn a working call into a dead turn, which is the whole
+# failure this guard exists to reduce -- so the schema keeps asking and
+# the gate keeps quiet.
+_LABEL_ONLY: frozenset[tuple[str, str]] = frozenset({
+    ("bash", "description"),
+    ("bash_background", "description"),
+    ("subagent", "description"),
+})
+
+# Tools that carry their OWN plan-mode refusal in their body, past the
+# entry gate. Both are on the plan-mode safe list -- reading a task list
+# is fine -- and refuse deeper down because it is the STATUS change, not
+# the tool, that starts execution.
+#
+# In plan mode they must answer with that reason, not with an argument
+# nit: a model told "subject is required" for a task_create it may not
+# perform learns the wrong thing and retries into the same wall. Same
+# precedence argument as everywhere else in this chain -- the more
+# permanent reason wins -- and it is the one case the entry gate cannot
+# see, because from outside the tool looks allowed.
+#
+# The set is asserted against the source in
+# tests/test_plan_mode_changes_nothing.py, so a third such tool cannot
+# be added without this list being updated.
+_PLAN_MODE_BODY_REFUSERS: frozenset[str] = frozenset({
+    "task_create", "task_update",
+})
+
+
+def _missing_required_argument(name: str, arguments: dict) -> Optional[str]:
+    """The message for a required argument that never arrived, or None.
+
+    One check at the single entry point rather than per tool, because per
+    tool it was not there. Swept over the whole catalogue on 2026-09-09 by
+    calling every tool with no arguments at all:
+
+    * ``get_calc_info`` returned a real calculation -- the first in the
+      index -- with its functional, basis set and energies. A model that
+      spells the key `id` instead of `calc_id` (which I have done three
+      times myself) gets a confident, complete answer about somebody
+      else's run, and the grounding rules then have it cite those numbers.
+      Not a refusal, not an error: plausible data about the wrong subject,
+      which is the worst thing a scientific tool can hand back.
+    * ``search_docs`` answered ``results: []`` beside the corpus
+      statistics, which reads as "1539 sections searched, nothing on your
+      topic" -- a negative finding about the documentation, from a search
+      that was never made.
+    * ``list_files`` listed the whole tree: a required ``pattern``
+      silently defaulting to everything.
+    * ``list_sections`` / ``read_section`` answered "Document '' not
+      found" and printed every document id in the index.
+    * ``history_get`` / ``history_search`` blamed the session for a
+      missing ``ref`` / ``query``.
+
+    Same shape as cron_delete answering "not_found" for a missing
+    entry_id: the model is told the world is a certain way, when what
+    happened is that its call was malformed. Empty string counts as
+    missing -- that is how every one of the above arrived.
+
+    Tools whose own message already names the argument are unaffected;
+    they simply never reach their body with it absent.
+    """
+    global _REQUIRED_BY_TOOL
+    try:
+        if _REQUIRED_BY_TOOL is None:
+            table: dict[str, tuple[str, ...]] = {}
+            for tool in _DOC_TOOLS_OPENAI:
+                fn = tool.get("function") or {}
+                req = (fn.get("parameters") or {}).get("required") or []
+                if fn.get("name") and req:
+                    table[fn["name"]] = tuple(str(r) for r in req)
+            _REQUIRED_BY_TOOL = table
+        required = _REQUIRED_BY_TOOL.get(name)
+        if not required or not isinstance(arguments, dict):
+            return None
+        for key in required:
+            if (name, key) in _LABEL_ONLY:
+                continue
+            names = (key,) + _ARG_ALIASES.get(key, ())
+            if (name, key) in _EMPTY_IS_MEANINGFUL:
+                if any(arguments.get(k) is not None for k in names):
+                    continue
+            elif any(_argument_present(arguments.get(k)) for k in names):
+                continue
+            return (
+                f"{key} is required for {name}, and none arrived. This is "
+                f"about the call, not about the data: nothing was looked "
+                f"up. Re-send it with {key} set."
+            )
+    except Exception:
+        return None
+    return None
+
+
+def _argument_present(value: Any) -> bool:
+    """Whether an argument carries something to act on.
+
+    ``0`` and ``False`` do (``cell_idx: 0`` is a real cell); an empty
+    string, an empty list and None do not.
+    """
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, tuple, dict, set)):
+        return bool(value)
+    return True
 
 
 def _is_interpreter_invocation(cmd: str) -> bool:
@@ -1099,11 +1354,77 @@ def _is_interpreter_invocation(cmd: str) -> bool:
         text = cmd or ""
         if _INTERPRETER_RE.search(text):
             return True
+        # ...and again with the wrapper words peeled off each segment, so
+        # `time python3 -c "…"` is the interpreter it is rather than an
+        # auto-allowed `time`.
+        for seg in _split_shell_segments(text):
+            stripped = _strip_exec_wrappers(seg)
+            if stripped != seg and _INTERPRETER_RE.search(stripped):
+                return True
         # A pipe into a shell or an interpreter: `... | bash`, `... | python3`.
         return bool(re.search(
             r"\|\s*(?:ba|z|k|da)?sh\b|\|\s*python[0-9.]*\b", text))
     except Exception:
         return True
+
+
+# A segment that is nothing but `python -c <payload>`: the interpreter
+# name (a bare word, so no PATH prefix and no `env FOO=1` in front),
+# option flags, `-c`, and the payload. Anything else in the segment --
+# a wrapper, a variable assignment, a pipe -- means the segment is
+# opaque for a reason this module is not modelling, and the readable
+# path below must not be taken for it.
+_PLAIN_C_HEAD_RE = re.compile(r"^\s*python[0-9.]*\s")
+
+
+def _inline_payload_is_readable(segment: str, workspace: Path | str) -> bool:
+    """True when a segment's only opacity is a payload that can be read.
+
+    `python -c` hides nothing: the program is a literal in the command
+    line. This asks :mod:`delfin.agent.inline_payload` whether the whole
+    payload can be accounted for, and answers False for everything else
+    -- a payload with a construct the analyser does not model, a second
+    reason the segment is opaque (`env X=1 python -c …`, `… | python3`),
+    a command line that will not tokenise.
+
+    A payload that WRITES stays off this path even when it is perfectly
+    readable, and that is a policy choice rather than a limit of the
+    analysis. Its target is now visible to ``_bash_write_targets`` and
+    would be gated there like any other -- but over the 199 recorded
+    auto-allow refusals not one payload wrote anything, so allowing them
+    buys no measured friction back and spends the clearest security
+    property this rule has. The write side of the analysis earns its
+    keep in the gate, not here.
+
+    Being wrong in the False direction costs a confirmation, which is
+    what happens today for every one of these. Being wrong in the True
+    direction would run something unread, so every unknown answers False.
+    """
+    try:
+        seg = segment or ""
+        if not _PLAIN_C_HEAD_RE.match(seg):
+            return False
+        payloads = _inline_payload.extract_c_payloads(seg)
+        if not payloads:
+            return False
+        try:
+            cwd: Path | None = Path(workspace)
+        except (TypeError, ValueError):
+            cwd = None
+        for src in payloads:
+            eff = _inline_payload.analyze_payload(src, cwd)
+            if not eff.readable or eff.writes:
+                return False
+        # The payloads are readable; the segment must be nothing BUT
+        # them. Blank each one out and require what is left to be an
+        # ordinary command again -- that is what rules out a second,
+        # unmodelled reason for the segment's opacity.
+        rest = seg
+        for src in payloads:
+            rest = rest.replace(src, " ", 1)
+        return not _is_interpreter_invocation(rest.replace("-c", " ", 1))
+    except Exception:
+        return False
 
 
 def _bash_symlink_escapes(cmd: str, workspace: Path) -> list[str]:
@@ -1168,6 +1489,12 @@ def _bash_write_targets(cmd: str) -> list[str]:
     the airtight containment is filesystem isolation
     (``agent.bash_isolation``), which this does not replace. Never raises;
     an unparseable command yields no targets rather than a false block.
+
+    A ``python -c`` payload is read as Python for the same question, so
+    ``open('out.csv', 'w')`` is a target here exactly as ``tee out.csv``
+    is. Before that, a write through python was the one file-creating
+    form this function could not see at all -- which is half of why an
+    interpreter had to be kept off the auto-allow list wholesale.
     """
     targets: list[str] = []
     try:
@@ -1186,6 +1513,11 @@ def _bash_write_targets(cmd: str) -> list[str]:
                              cmd):
             tok = m.group(1)
             if not tok.startswith("&"):
+                _add(tok)
+
+        # What an inline python payload would write.
+        for src in (_inline_payload.extract_c_payloads(cmd) or []):
+            for tok in _inline_payload.analyze_payload(src).writes:
                 _add(tok)
 
         # Per shell segment: command name + arguments.
@@ -1246,11 +1578,15 @@ def _bash_write_targets(cmd: str) -> list[str]:
                 continue
 
             # Destination-carrying options (pip --target, tar -C, ...).
+            # Short ones are suppressed for commands where they mean
+            # something else -- see _BASH_NO_DEST_OPTS.
             for i, a in enumerate(rest):
                 if a in _BASH_DEST_OPTS and i + 1 < len(rest):
-                    _add(rest[i + 1])
+                    if _dest_opt_applies(name, a):
+                        _add(rest[i + 1])
                 elif "=" in a and a.split("=", 1)[0] in _BASH_DEST_OPTS:
-                    _add(a.split("=", 1)[1])
+                    if _dest_opt_applies(name, a.split("=", 1)[0]):
+                        _add(a.split("=", 1)[1])
 
             pos = [a for a in rest if not a.startswith("-")]
             if name in _BASH_DEST_ALL:
@@ -1633,8 +1969,16 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"^\s*sed\s+-n\b",                                       # read-only sed
     r"^\s*awk\s+",                                           # awk has no destructive default
     r"^\s*jq\b", r"^\s*yq\b",
+    # `worktree list` reads the registry and changes nothing -- the same
+    # class as `stash list`, which has been here all along. It was refused
+    # while the agent was trying to find out whether it already had a
+    # control tree, which is the question the list answers. `add`,
+    # `remove` and `prune` are deliberately absent: add writes a whole
+    # checkout wherever it is pointed and _bash_write_targets cannot see
+    # that path, and the other two delete one.
     r"^\s*git\s+(?:status|diff|log|show|branch(?!\s+-D)|remote|config\s+--get|"
     r"rev-parse|describe|ls-files|ls-tree|blame|stash\s+(?:list|show)|tag\s*$|"
+    r"worktree\s+list|"
     r"shortlog|reflog|fetch|pull(?!\s+--rebase\s+--force)|"
     r"switch(?![^;|&]*--discard-changes)|"
     # NOTE: 'push' is deliberately NOT here. Pushing publishes to a remote — an
@@ -1726,6 +2070,14 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"^\s*timeout\s+\d",
     r"^\s*xargs\s+",
     r"^\s*diff\b", r"^\s*patch\s+(?:-p\d|--dry-run)",
+    # `cmp` beside `diff`, which has been here all along -- the same
+    # question asked of two files, and one of the two spellings was
+    # refused. `test` / `[` are pure predicates: every form of them reads
+    # and reports, and there is no destructive one. Both were refused in
+    # recorded runs on the plainest possible use (`cmp a b`,
+    # `test -f export.py && echo exists`).
+    r"^\s*cmp\b", r"^\s*comm\b",
+    r"^\s*test\s+", r"^\s*\[\s+",
 )
 
 # DELFIN-specific bash auto-allow patterns — merged into the auto-allow
@@ -3244,6 +3596,23 @@ class KitToolPermissions:
 
         A locked scope refuses regardless. Elsewhere a pattern the user
         wrote themselves still applies -- see ``_custom_allow_matches``.
+
+        And `python -c` is the one member of the family whose program IS
+        in the command text. Where :mod:`delfin.agent.inline_payload` can
+        account for the whole payload, the three checks this rule stands
+        in for all happen for real instead of being stood in for:
+
+        * its write targets reach ``_bash_write_targets`` like any other
+          command's;
+        * its READ targets reach ``_bash_outside_reads``, so
+          ``open('/etc/passwd').read()`` is gated exactly as `cat` on the
+          same file is;
+        * its text -- and any file it imports out of the working
+          directory -- go through the same content scan an executed
+          script file already gets.
+
+        The paragraph above then has nothing left to be true about, which
+        is what ``_inline_payload_is_readable`` decides, conservatively.
         """
         if not _is_interpreter_invocation(cmd):
             return False
@@ -3251,7 +3620,9 @@ class KitToolPermissions:
             return True
         hidden = [s for s in _split_shell_segments(cmd)
                   if _is_interpreter_invocation(s)] or [cmd]
-        return not all(self._custom_allow_matches(s) for s in hidden)
+        return not all(self._custom_allow_matches(s)
+                       or _inline_payload_is_readable(s, self.workspace)
+                       for s in hidden)
 
     def matches_bash_auto_allow(self, cmd: str) -> bool:
         if self._interpreter_needs_confirm(cmd):
@@ -3630,15 +4001,23 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "list_files",
-            "description": "List files matching a glob, newest first.",
+            # `pattern` was marked required while the executor has always
+            # defaulted it to "*" -- the schema described a contract the
+            # code did not have, and a required argument that silently
+            # defaults to "everything" is how a listing of the whole
+            # workspace became the answer to a narrower question.
+            "description": ("List files matching a glob, newest first. "
+                            "Default '*'. `path`: one dir."),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "pattern": {
                         "type": "string",
                     },
+                    "path": {
+                        "type": "string",
+                    },
                 },
-                "required": ["pattern"],
             },
         },
     },
@@ -4948,10 +5327,10 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "enter_worktree",
             "description": (
-                "Create a temporary git worktree on a fresh branch; run later"
-                " edits/bash inside the returned path so the user's main tree"
-                " stays untouched. exit_worktree auto-cleans the branch when "
-                "no commits were made."
+                "Temporary git worktree on a fresh branch; run edits/bash "
+                "inside the returned path so the user's tree stays "
+                "untouched. exit_worktree auto-cleans it when nothing was "
+                "committed."
             ),
             "parameters": {
                 "type": "object",
@@ -4962,6 +5341,11 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     },
                     "branch_prefix": {
                         "type": "string",
+                    },
+                    "base_ref": {
+                        "type": "string",
+                        "description":
+                            "This commit instead of HEAD, for a control run.",
                     },
                 },
             },
@@ -5239,8 +5623,8 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             "name": "notebook_read",
             "description": (
                 "Read a .ipynb cell-aware: ordered {idx, cell_type, source, "
-                "output_summary}, outputs summarised. Use instead of "
-                "read_file for notebooks."
+                "output_summary, output} — printed values and tracebacks, "
+                "no images. Use instead of read_file for notebooks."
             ),
             "parameters": {
                 "type": "object",
@@ -5252,6 +5636,11 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                         "type": "integer",
                         "description": "Per-cell cap, default 4000.",
                     },
+                    # max_output_chars is accepted and is deliberately NOT
+                    # advertised. The default is right for every recorded
+                    # use, a capped output says so in its own text, and a
+                    # knob in the catalogue is paid for by every request
+                    # whether or not anyone turns it.
                 },
                 "required": ["path"],
             },
@@ -7982,6 +8371,9 @@ class _DocToolExecutor:
         self._index: dict | None = None
         self._calc_engine = None
         self._calc_dirs: dict[str, str] = {}  # set by caller
+        # Where the index was actually built from, filled in by
+        # _ensure_calc_loaded so a calc answer can name its corpus.
+        self._calc_roots: dict[str, str] = {}
         # Undo journal: seqs of file changes captured THIS turn (reset by
         # the client at turn start) so undo_changes(scope="turn") knows
         # the turn boundary.
@@ -8126,6 +8518,39 @@ class _DocToolExecutor:
         except Exception:
             return False
 
+    @staticmethod
+    def _configured_calc_dirs() -> dict[str, str]:
+        """The calculation roots the USER configured, or the defaults.
+
+        ``_calc_dirs`` is set by exactly one caller, the dashboard
+        (tab_agent.py). Everywhere else -- the CLI, a headless run, every
+        benchmark attempt -- it was empty and the literals ``~/calc`` and
+        ``~/archive`` were used instead, so a user who had set
+        ``paths.calculations_dir`` to anything else got an agent that
+        indexed a folder they do not use and said nothing about it.
+        `calc_summary` then reports a corpus that is not theirs, and
+        `search_calcs` answers "no runs match" about a directory it never
+        looked in -- a negative finding from a search of the wrong place.
+
+        Same keys and same fallbacks as ``mcp_isolation._roots_for``,
+        which has read them this way since the isolation work: one
+        convention for where a user's calculations are, not two.
+        """
+        out: dict[str, str] = {}
+        try:
+            from delfin.user_settings import load_settings
+            settings = load_settings() or {}
+            paths = settings.get("paths") or {}
+            if isinstance(paths, dict):
+                for key, setting in (("calc", "calculations_dir"),
+                                     ("archive", "archive_dir")):
+                    value = str(paths.get(setting) or "").strip()
+                    if value:
+                        out[key] = value
+        except Exception:
+            return {}
+        return out
+
     def _ensure_calc_loaded(self) -> bool:
         """Build calc index on first use. Returns True if ready."""
         if self._calc_engine is not None:
@@ -8135,9 +8560,12 @@ class _DocToolExecutor:
             from delfin.doc_server.calc_indexer import build_calc_index
             from delfin.doc_server.calc_search import CalcSearchEngine
 
-            calc_dir = Path(self._calc_dirs.get("calc", "~/calc")).expanduser()
-            archive_dir = Path(self._calc_dirs.get("archive", "~/archive")).expanduser()
-            remote = self._calc_dirs.get("remote_archive", "")
+            # Explicit override first (the dashboard sets it), then what
+            # the user configured, then the historical defaults.
+            roots = {**self._configured_calc_dirs(), **self._calc_dirs}
+            calc_dir = Path(roots.get("calc", "~/calc")).expanduser()
+            archive_dir = Path(roots.get("archive", "~/archive")).expanduser()
+            remote = roots.get("remote_archive", "")
             remote_dir = Path(remote).expanduser() if remote else None
 
             idx = build_calc_index(
@@ -8147,6 +8575,13 @@ class _DocToolExecutor:
                 quiet=True,
             )
             self._calc_engine = CalcSearchEngine(idx)
+            # Kept so an answer can say WHERE it looked. A corpus is
+            # evidence, and evidence with no provenance is the thing the
+            # integrity rules exist to prevent.
+            self._calc_roots = {
+                "calc": str(calc_dir) if calc_dir.is_dir() else "",
+                "archive": str(archive_dir) if archive_dir.is_dir() else "",
+            }
             return True
         except Exception:
             return False
@@ -8335,6 +8770,22 @@ class _DocToolExecutor:
                 "error": "blocked_by_hook",
                 "reason": block_reason[:1200],
             })
+        elif (_bare_tool_name(name) in _PLAN_MODE_BODY_REFUSERS
+                and getattr(permissions, "mode", "") == "plan"):
+            # Let the tool's own plan-mode refusal answer. See
+            # _PLAN_MODE_BODY_REFUSERS.
+            result = self._dispatch(name, arguments, permissions)
+        elif (_missing := _missing_required_argument(name, arguments)):
+            # LAST in the chain, by the same argument the plan-mode gate
+            # makes about the role check: the more permanent reason is the
+            # more useful one. "You may not use this tool at all" and "not
+            # in this mode" both outrank "your call was malformed" -- and
+            # a model told `path is required` under plan mode fixes the
+            # arguments and retries into the same wall, having learnt the
+            # wrong thing about the gate. The plan-mode refusal even says
+            # the call was refused "before its arguments were looked at",
+            # which running this first had quietly made false.
+            result = json.dumps({"error": _missing})
         else:
             result = self._dispatch(name, arguments, permissions)
 
@@ -9033,9 +9484,19 @@ class _DocToolExecutor:
             return json.dumps(info, indent=2, ensure_ascii=False)
 
         elif name == "calc_summary":
-            return json.dumps(
-                self._calc_engine.summary(), indent=2, ensure_ascii=False
-            )
+            summary = dict(self._calc_engine.summary() or {})
+            # The corpus names itself. "777 calculations" is a number an
+            # answer will quote, and until it says WHICH directories it
+            # counted, nobody -- model or user -- can tell a complete
+            # answer from one about the wrong folder.
+            # getattr, not the attribute: _ensure_calc_loaded returns
+            # early when an engine is already present, and an executor
+            # built with __new__ (as several tests do) never ran __init__.
+            roots = {k: v
+                     for k, v in (getattr(self, "_calc_roots", None) or {}).items()
+                     if v}
+            summary["indexed_from"] = roots or "no calculation directory found"
+            return json.dumps(summary, indent=2, ensure_ascii=False)
 
         return json.dumps({"error": f"Unknown calc tool: {name}"})
 
@@ -10439,13 +10900,42 @@ class _DocToolExecutor:
     def _execute_list_files(
         self, arguments: dict, perms: Optional["KitToolPermissions"] = None
     ) -> str:
+        """List workspace files matching a glob.
+
+        ``path`` narrows it to one directory. It used to be accepted and
+        silently ignored, so `list_files(path="src")` answered with the
+        WHOLE workspace -- a listing of everything presented as the answer
+        to a question about one folder. Callers pass it (this executor's
+        own suite did), because it is the obvious name for the thing.
+        """
         pattern = arguments.get("pattern", "*")
         root = perms.workspace if perms is not None else self._repo_root()
+        # Only a trailing separator is trimmed. Stripping a LEADING one
+        # turned `/etc` into `etc`, which then resolved inside the
+        # workspace and came back "not a directory: etc" -- the right
+        # outcome reached by saying something false about a directory
+        # that plainly exists. An absolute or `~` path goes to the gate
+        # as written and is refused for the reason it is actually
+        # refused for.
+        sub = str(arguments.get("path", "") or "").strip().rstrip("/")
+        base = root
+        if sub and sub != ".":
+            if perms is not None:
+                resolved, err = self._resolve_in_workspace(
+                    str(Path(sub).expanduser()), perms, for_read=True)
+                if err:
+                    return json.dumps({"error": err})
+                base = resolved
+            else:
+                base = root / sub
+            if not Path(base).is_dir():
+                return json.dumps(
+                    {"error": f"not a directory: {sub}"})
         extra_skip = _gitignore_skip_dirs(root)
         matches = []
-        for fp in _iter_scan_files(root, extra_skip):
+        for fp in _iter_scan_files(base, extra_skip):
             try:
-                rel = str(fp.relative_to(root))
+                rel = str(fp.relative_to(base))
             except ValueError:
                 continue
             # Match against the bare filename too, so a pattern like "*.py"
@@ -10492,6 +10982,92 @@ class _DocToolExecutor:
                 return v.strip()
         return ""
 
+    @staticmethod
+    def _names_the_workspace_from_outside(
+        rel_path: str, workspace: Path | str
+    ) -> Optional[str]:
+        """The path the caller meant, when it named the workspace itself.
+
+        A workspace is usually a subdirectory of something, and the person
+        who wrote the request was standing outside it: "build me a script
+        in tests/fixtures/user_project_workspace/". The agent IS that
+        directory, so the path it copies from the request resolves one
+        level of the same name deeper and there is nothing there.
+
+        Measured over ~/.delfin/audit.log on 2026-09-09: 27 refusals with
+        commands like `python3 tests/fixtures/user_project_workspace/run.py`
+        and 9 more `cwd is not a directory` on the identical string --
+        second only to the auto-allow list, and unlike that one it is
+        entirely a wording problem.
+
+        Returns the path with the duplicated head removed, or None. The
+        answer is a HINT: taking it silently would hide a genuine nested
+        directory of the same name, and would teach nothing.
+        """
+        try:
+            rel = (rel_path or "").replace("\\", "/").strip().strip("/")
+            if not rel:
+                return None
+            if Path(rel_path).is_absolute():
+                return None
+            ws_parts = [p for p in Path(workspace).parts if p not in ("/", "")]
+            rel_parts = rel.split("/")
+            # The longest head of the path that is also a tail of the
+            # workspace. `tests/fixtures/ws/run.py` under `…/tests/fixtures/ws`
+            # matches three parts and leaves `run.py`.
+            for n in range(min(len(ws_parts), len(rel_parts)), 0, -1):
+                if rel_parts[:n] == ws_parts[-n:]:
+                    remainder = "/".join(rel_parts[n:])
+                    return remainder or "."
+            return None
+        except (OSError, ValueError):
+            return None
+
+    @staticmethod
+    def _is_ancestor_of_workspace(
+        rel_path: str, workspace: Path | str
+    ) -> bool:
+        """True when the path names a directory the workspace lives inside.
+
+        The other half of the same wording mistake, and the commoner one:
+        10 of the 13 recorded refusals passed the CHECKOUT ROOT as an
+        absolute ``cwd`` while the workspace was a fixture directory
+        several levels below it. The agent is not lost -- it is standing
+        in the right place and describing it from where the request was
+        written.
+        """
+        try:
+            given = Path(rel_path).expanduser()
+            if not given.is_absolute():
+                return False
+            ws = Path(workspace).resolve()
+            given = given.resolve(strict=False)
+            return given != ws and given in ws.parents
+        except (OSError, ValueError, RuntimeError):
+            return False
+
+    @classmethod
+    def _hint_if_it_names_the_workspace(
+        cls, rel_path: str, workspace: Path | str
+    ) -> str:
+        """The sentence to append to a path refusal, or an empty string."""
+        meant = cls._names_the_workspace_from_outside(rel_path, workspace)
+        if meant is not None:
+            return (
+                f" Your working directory already IS "
+                f"'{Path(workspace).name}' — you are inside the directory "
+                f"the request named from outside it, so write the path "
+                f"relative to where you are: '{meant}'."
+            )
+        if cls._is_ancestor_of_workspace(rel_path, workspace):
+            return (
+                f" That directory CONTAINS your workspace "
+                f"({Path(workspace)}) and is not itself granted. If you "
+                f"meant your own project, you are already in it — use a "
+                f"relative path, or no cwd at all."
+            )
+        return ""
+
     def _resolve_in_workspace(
         self, rel_path: str, perms: "KitToolPermissions", *, for_read: bool = False
     ) -> tuple[Optional[Path], Optional[str]]:
@@ -10523,11 +11099,13 @@ class _DocToolExecutor:
             roots_str = ", ".join(str(r) for r in _roots)
             return None, (
                 f"path is outside the allowed workspace roots [{roots_str}]: "
-                f"{rel_path}. To work on it, ask the user to GRANT this path "
-                f"to the agent (add it via --add-dir / extra_workspace_dirs), "
-                f"or move the project into an allowed workspace root. Do NOT "
-                f"silently fall back to a manual snippet without telling the "
-                f"user that the path must be granted first."
+                f"{rel_path}."
+                + self._hint_if_it_names_the_workspace(rel_path, ws) +
+                " To work on it, ask the user to GRANT this path "
+                "to the agent (add it via --add-dir / extra_workspace_dirs), "
+                "or move the project into an allowed workspace root. Do NOT "
+                "silently fall back to a manual snippet without telling the "
+                "user that the path must be granted first."
             )
         try:
             rel_str = str(resolved.relative_to(root)).replace("\\", "/")
@@ -10735,27 +11313,54 @@ class _DocToolExecutor:
         subprocess/etc. is untouched — only a literal ``rm -rf /`` / ``sudo`` /
         ``curl|sh`` or a ``.ssh``/credentials path reference trips it). The
         obfuscated case (base64-then-exec) is left to filesystem isolation.
+
+        An inline ``python -c`` payload is scanned too, as text -- it has
+        no file to open, which is the only reason it escaped before -- and
+        so is any module it imports out of the working directory, because
+        `import mymod` executes ``mymod.py`` exactly as running the script
+        would.
+
         Returns a reason string, or None. Never raises."""
         try:
             cwd_arg = str(args.get("cwd") or "").strip()
             base_dir = Path(cwd_arg) if cwd_arg else Path(perms.workspace)
         except Exception:
             base_dir = Path(perms.workspace)
-        for ref in self._referenced_script_paths(cmd):
+
+        def _resolve(ref: str) -> tuple[str, str] | None:
+            """(label, contents) for a script path, or None to skip it."""
             try:
                 p = Path(ref)
                 if not p.is_absolute():
                     p = base_dir / p
                 p = p.expanduser()
                 if not p.is_file() or p.stat().st_size > 512_000:
-                    continue
+                    return None
                 if self._is_reviewed_project_file(p):
                     # The project's own committed code, unmodified. See
                     # _is_reviewed_project_file for why that is the line.
-                    continue
-                text = p.read_text(encoding="utf-8", errors="replace")
+                    return None
+                return ref, p.read_text(encoding="utf-8", errors="replace")
             except Exception:
-                continue
+                return None
+
+        sources: list[tuple[str, str]] = []
+        for ref in self._referenced_script_paths(cmd):
+            got = _resolve(ref)
+            if got is not None:
+                sources.append(got)
+        try:
+            for src in (_inline_payload.extract_c_payloads(cmd) or []):
+                sources.append(("the inline python payload", src))
+                eff = _inline_payload.analyze_payload(src, base_dir)
+                for mod in eff.local_modules:
+                    got = _resolve(mod)
+                    if got is not None:
+                        sources.append(got)
+        except Exception:
+            pass
+
+        for ref, text in sources:
             hit = perms.matches_bash_deny(text)
             if hit:
                 return f"{ref} contains deny-pattern {hit!r}"
@@ -11400,12 +12005,85 @@ class _DocToolExecutor:
                     "`-c` skips. Use one of them instead of asking for a "
                     "`-c` allow-pattern."
                 )
+            elif re.search(
+                    r"\bgit\b[^\n]{0,40}\b(?:worktree\s+add|stash\b|"
+                    r"checkout\s+[^\s]+\s+--)", cmd):
+                # The control run, spelled by hand. Measured live on
+                # 2026-09-09: asked whether the last commit broke a red
+                # test, the model reached for the control THREE times in
+                # 16 seconds -- `git checkout <ref> -- .`, `git stash -u`,
+                # then `git worktree add /tmp/ctl <ref>` -- and every one
+                # came back "not on the auto-allow list" with no
+                # alternative named. It gave up and answered from the
+                # diff. The framework had asked for exactly that work in
+                # the addendum, and then refused all three spellings of
+                # it.
+                #
+                # The first two stay refused on their merits: `git stash`
+                # and `git checkout <ref> -- <paths>` overwrite the user's
+                # working tree, and this project's git rules name both as
+                # destructive. `git worktree add` is not destructive, but
+                # its path argument is a full checkout written wherever
+                # the model points it, and _bash_write_targets cannot see
+                # that -- so it stays off the list too, and the native
+                # tool, which puts the tree under /tmp and registers it,
+                # is named instead.
+                hint = (
+                    " HINT: for a control run — the same check against the "
+                    "state before a change — use `enter_worktree(base_ref="
+                    "\"<the commit>\")`, run the check with `cwd` set to the "
+                    "path it returns, then `exit_worktree(path, "
+                    "keep_if_changed=false)`. That is not a workaround: it "
+                    "is the sanctioned spelling, and unlike `git stash` or "
+                    "`git checkout <ref> -- .` it cannot destroy work in "
+                    "the user's tree."
+                )
+            elif re.match(r"^\s*rm\s+(?!-[a-zA-Z]*[rR])", cmd):
+                # Cleaning up after itself. Twice in one recorded run:
+                # `rm -f _tagreport_check.py`, `rm _verify_export.py` --
+                # both files the agent had written a minute earlier to
+                # check its own work, and both refusals left the scratch
+                # file sitting in the user's directory. `rm` stays off the
+                # auto-allow list because it deletes files and the list
+                # cannot tell whose. undo_changes can: it restores or
+                # removes only what THIS session recorded writing, and
+                # refuses anything whose content has changed since.
+                hint = (
+                    " HINT: to remove a file YOU created in this session, "
+                    "`undo_changes(scope=\"session\")` deletes it — it acts "
+                    "only on what this session recorded writing, and leaves "
+                    "anything edited since untouched. `rm` cannot tell whose "
+                    "file it is, which is why it is not on the list."
+                )
             elif cmd.lstrip().startswith(("cd ", "cd\t")):
                 hint = (
                     " HINT: this command starts with 'cd' — use the bash "
                     "tool's `cwd` parameter (it accepts absolute paths "
                     "inside allowed roots) instead of 'cd /path && …'. "
                     "Rerun with cwd=<path> and the actual command."
+                )
+            elif _bash_write_targets(cmd):
+                # Writing a file through the shell. `echo x > f` happens
+                # to run (echo is on the list and the redirect goes
+                # through the write gate); `cat > f << 'EOF'` and
+                # `tee f` do not, and the refusal named nothing. Both
+                # were observed in one recorded run, writing a launcher
+                # the agent had just been asked to build.
+                #
+                # write_file is not merely the allowed spelling, it is
+                # the better one: a shell redirect leaves no pre-image in
+                # the change journal, so `undo_changes` cannot take it
+                # back and list_changes_made reports it as unjournalled.
+                # Fired off _bash_write_targets rather than off a command
+                # name, so it appears exactly when the command really
+                # would create a file.
+                hint = (
+                    " HINT: to create or replace a file, use "
+                    "`write_file(path, content)` (or edit_file / "
+                    "multi_edit for a change to an existing one). A shell "
+                    "redirect leaves no pre-image, so undo_changes cannot "
+                    "take it back — that is why the tool exists, not a "
+                    "formality."
                 )
             return (
                 f"bash: '{cmd[:120]}' is not on the auto-allow list "
@@ -12712,7 +13390,10 @@ class _DocToolExecutor:
             if err:
                 return json.dumps({"error": err})
             if not cwd_resolved.is_dir():
-                return json.dumps({"error": f"cwd is not a directory: {cwd_arg}"})
+                return json.dumps({"error": (
+                    f"cwd is not a directory: {cwd_arg}."
+                    + self._hint_if_it_names_the_workspace(
+                        cwd_arg, perms.workspace))})
             run_cwd = cwd_resolved
         else:
             run_cwd = perms.workspace
@@ -12803,7 +13484,10 @@ class _DocToolExecutor:
             if err:
                 return json.dumps({"error": err})
             if not cwd_resolved.is_dir():
-                return json.dumps({"error": f"cwd is not a directory: {cwd_arg}"})
+                return json.dumps({"error": (
+                    f"cwd is not a directory: {cwd_arg}."
+                    + self._hint_if_it_names_the_workspace(
+                        cwd_arg, perms.workspace))})
             run_cwd = cwd_resolved
         else:
             run_cwd = perms.workspace
@@ -12937,6 +13621,7 @@ class _DocToolExecutor:
         if not path_arg:
             return json.dumps({"error": "path is required"})
         max_chars = int(arguments.get("max_source_chars", 4000) or 4000)
+        max_out = int(arguments.get("max_output_chars", 2000) or 2000)
         resolved, err = self._resolve_in_workspace(path_arg, perms, for_read=True)
         if err:
             # Fall back to the read-access gate so cross-root reads
@@ -12962,7 +13647,9 @@ class _DocToolExecutor:
 
         try:
             from . import notebook_tools as _nb
-            cells = _nb.read_cells(resolved, max_source_chars=max_chars)
+            cells = _nb.read_cells(
+                resolved, max_source_chars=max_chars,
+                max_output_chars=max_out)
         except json.JSONDecodeError as exc:
             return json.dumps({"error": f"not valid JSON / nbformat: {exc}"})
         except Exception as exc:
@@ -12984,6 +13671,10 @@ class _DocToolExecutor:
                     "cell_type": c.cell_type,
                     "source": c.source,
                     "output_summary": c.output_summary,
+                    # Omitted rather than sent empty: a cell that ran and
+                    # printed nothing and a markdown cell both have no
+                    # output, and neither is worth a key per cell.
+                    **({"output": c.output_text} if c.output_text else {}),
                 }
                 for c in cells
             ],
@@ -13566,6 +14257,7 @@ class _DocToolExecutor:
         from . import worktree as _wt
         repo_arg = (arguments.get("repo_dir") or "").strip()
         prefix = (arguments.get("branch_prefix") or "agent").strip() or "agent"
+        base_ref = (arguments.get("base_ref") or "").strip() or None
         if repo_arg:
             repo_dir = Path(repo_arg).expanduser()
         else:
@@ -13578,7 +14270,8 @@ class _DocToolExecutor:
         if refusal is not None:
             return json.dumps({"error": refusal})
         try:
-            info = _wt.enter_worktree(repo_dir, branch_prefix=prefix)
+            info = _wt.enter_worktree(
+                repo_dir, branch_prefix=prefix, base_ref=base_ref)
         except _wt.WorktreeError as exc:
             return json.dumps({"error": str(exc)})
         # Register the worktree path under the agent's allowed roots so
@@ -13995,6 +14688,15 @@ class _DocToolExecutor:
         """
         from . import skills as _skills_mod
         name = (arguments.get("name") or "").strip()
+        # The tool's own description says "Use on '/skill-name'", and the
+        # user types the slash, so that is the string a model passes
+        # through -- and it was then refused, with the parameter text
+        # ("Skill name, no slash") contradicting the sentence above it.
+        # A leading slash cannot be part of a real name: skills are files.
+        # Same for the extension a model copies off a `ls .delfin/skills`.
+        name = name.lstrip("/").strip()
+        if name.lower().endswith(".md"):
+            name = name[:-3]
         args = (arguments.get("args") or "").strip()
         if not name:
             return json.dumps({"error": "skill name must be non-empty"})
@@ -14555,12 +15257,48 @@ class _DocToolExecutor:
     def _execute_list_changes(
         self, arguments: dict, perms: Optional["KitToolPermissions"]
     ) -> str:
-        """Read-only: render the current session's audit records."""
+        """Read-only: render the current session's audit records.
+
+        The workspace is passed as a second filter, and it carries the
+        answer on its own when there is no session id. Without it,
+        ``build_changes_report(None)`` means "no filter" -- the newest 200
+        records from EVERY session in ~/.delfin/audit.log -- and this
+        tool's whole promise is "what did YOU change, from the record
+        rather than from memory". Driven on 2026-09-09 with no session
+        attached, it answered with another agent's writes in a shared
+        checkout, two benchmark worktrees and four unrelated temp dirs.
+        An agent reading that would tell the user, citing its audit log,
+        that it had edited files it never opened -- a fabricated claim
+        with a tool call behind it, which is worse than one without.
+
+        A session id still narrows it further when there is one. When
+        there is not, the report says which scope it is answering in, so
+        the agent does not read a workspace-wide list as its own.
+        """
         from . import audit_log as _al
         sid = (getattr(perms, "task_session_id", "") or "") if perms else ""
+        ws = str(getattr(perms, "workspace", "") or "") if perms else ""
         try:
-            report = _al.build_changes_report(sid if sid else None)
-            return _al.format_changes_report(report)
+            report = _al.build_changes_report(
+                sid if sid else None, workspace=ws or None)
+            out = _al.format_changes_report(report)
+            if not sid:
+                # First line, not a footnote. The caveat has to frame the
+                # list; under it, it is a line nobody reaches. And the
+                # workspace filter cannot close the gap on its own --
+                # file tools record workspace-RELATIVE paths, so a
+                # relative path from another workspace is indistinguishable
+                # from one of ours, and _under_workspace lets it through
+                # by design.
+                where = f"under {ws}" if ws else "in the audit log"
+                out = (
+                    "NOT SESSION-SCOPED — this run has no session id, so "
+                    f"what follows is everything recorded {where}, not "
+                    "necessarily your own work. Do not tell the user you "
+                    "changed any of it unless you can point at the call "
+                    "that did.\n\n" + out
+                )
+            return out
         except Exception as exc:
             return json.dumps({"error": f"list_changes_made failed: {exc}"})
 

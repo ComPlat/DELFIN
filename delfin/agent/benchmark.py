@@ -249,6 +249,21 @@ class Task:
     # runs. The script is ours, never the model's; it is handed the
     # workspace path and its exit status is the verdict.
     verify: str = ""
+    # A script, in this repository, run against the workspace BEFORE the
+    # turn -- the mirror of ``verify``, and for the same reason.
+    #
+    # Some questions can only be asked of a prepared state. "Is this test
+    # failure mine, or was it already broken?" needs a repository with a
+    # history to run the control against; "why did this run not converge"
+    # needs a run that did not converge. Committing such a state as a
+    # fixture does not work for the git case at all: a nested repository
+    # inside the checkout is not something git tracks.
+    #
+    # Runs inside the same guard as everything else, so whatever it builds
+    # is removed with the rest of the attempt. A setup that FAILS makes
+    # the attempt unmeasured rather than a model failure -- the question
+    # was never put.
+    setup: str = ""
     max_duration_s: float = 60.0
     max_cost_usd: float = 0.10
     max_tool_calls: int = 5
@@ -442,6 +457,7 @@ def _coerce_task(raw: dict) -> Task:
         forbidden_signals=forbidden,
         expected_values=values,
         verify=str(raw.get("verify", "") or ""),
+        setup=str(raw.get("setup", "") or ""),
         max_duration_s=float(raw.get("max_duration_s", 60.0)),
         max_cost_usd=float(raw.get("max_cost_usd", 0.10)),
         max_tool_calls=int(raw.get("max_tool_calls", 5)),

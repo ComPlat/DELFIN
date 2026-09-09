@@ -24,6 +24,18 @@ against the one alternative that is not a workaround.
 
 Same shape as the plan-mode refusal fixed the same day: a gate that says
 no without saying what yes looks like.
+
+**Update.** The premise above -- "inline interpreter code carries its own
+program text and so reaches past every write gate" -- was half right. It
+carries its own program text, and that is the reason it CAN be read: the
+program is a literal in the command line, unlike `xargs`, `make` or a
+base64 payload. Both checks the blanket ban stood in for run on it now
+(delfin/agent/inline_payload.py), so the ast.parse in the incident above
+runs, and the ban narrowed to payloads the analysis cannot account for.
+
+The hint still matters and is still tested here, because that narrower
+set is where the agent lands next: `python3 -c "import os; …"` is opaque
+and `python3 -m py_compile` is still the sanctioned spelling.
 """
 
 from __future__ import annotations
@@ -50,10 +62,13 @@ def run(cmd: str, ws: Path) -> dict:
     return json.loads(_doc_executor.execute("bash", {"command": cmd}, perms))
 
 
+OPAQUE = 'python3 -c "import os; print(os.getcwd())"'
+
+
 @pytest.mark.parametrize("cmd", [
-    'python3 -c "import ast"',
-    'python -c "print(1)"',
-    'python3.11 -c "x=1"',
+    OPAQUE,
+    'python -c "exec(open(\'p\').read())"',
+    'python3.11 -c "import subprocess; subprocess.run([\'ls\'])"',
 ])
 def test_inline_interpreter_code_is_still_refused(cmd, ws):
     """The hint must not soften the block it is attached to."""
@@ -62,15 +77,26 @@ def test_inline_interpreter_code_is_still_refused(cmd, ws):
 
 
 def test_the_refusal_names_the_spelling_that_works(ws):
-    err = run('python3 -c "import ast"', ws).get("error", "")
+    err = run(OPAQUE, ws).get("error", "")
     assert "py_compile" in err
 
 
 def test_it_says_why_that_is_not_a_workaround(ws):
     """Without this the hint reads as a loophole, and the next reader
     deletes it."""
-    err = run('python3 -c "import ast"', ws).get("error", "")
+    err = run(OPAQUE, ws).get("error", "")
     assert "write gate already saw" in err
+
+
+def test_the_job_the_agent_wanted_now_runs(ws):
+    """The incident's own command, verbatim. It was the whole reason this
+    file exists: four edit passes, none of them verified, because the one
+    way to check the work was refused."""
+    out = run(
+        'python3 -c "import ast; ast.parse(open(\'t.py\').read());'
+        ' print(\'syntax OK\')"', ws)
+    assert out.get("exit_code") == 0, out
+    assert "syntax OK" in str(out.get("stdout", ""))
 
 
 def test_the_named_alternative_actually_runs(ws):

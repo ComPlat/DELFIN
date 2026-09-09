@@ -851,6 +851,21 @@ def _run_task_once(
                                 task_class=task.task_class)
             _seed_fixture_memories(Path(os.getcwd()), _ws)
             _seed_fixture_hooks(Path(os.getcwd()), _ws)
+            if task.setup:
+                # Inside the guard, so what it builds is removed with the
+                # rest of the attempt -- including a nested git
+                # repository, which the snapshot/restore handles and
+                # `git clean` would not.
+                setup_ok, setup_output = run_setup(
+                    task.setup, _ws, root=Path(os.getcwd()))
+                if not setup_ok:
+                    # Not a model failure: the question was never put.
+                    # "engine init failed" is the phrase is_unmeasured
+                    # already knows, and this is the same category of
+                    # event -- the turn never got a fair chance to run.
+                    raise _SetupFailed(
+                        f"engine init failed: task setup "
+                        f"{task.setup!r} did not run: {setup_output[:300]}")
             raw = run_once(engine, task.prompt, max_tokens=max_tokens)
             # Inside the guard on purpose: it puts the workspace back on
             # the way out, so anything the task produced exists only
@@ -858,6 +873,12 @@ def _run_task_once(
             if task.verify:
                 verify_ok, verify_output = run_acceptance(
                     task.verify, _ws, root=Path(os.getcwd()))
+    except _SetupFailed as exc:
+        # Passed through verbatim: the prefix is what marks the attempt
+        # unmeasured, and wrapping it in "_run_once raised" would hide it
+        # behind a phrase that reads like a model failure.
+        raw = {"text": "", "tool_calls": [], "input_tokens": 0,
+               "output_tokens": 0, "error": str(exc)}
     except Exception as exc:
         raw = {"text": "", "tool_calls": [], "input_tokens": 0,
                "output_tokens": 0, "error": f"_run_once raised: {exc}"}
@@ -904,6 +925,60 @@ def acceptance_path(name: str, root: Path | str | None = None) -> Path:
         raise ValueError(
             f"acceptance script {name!r} is outside {base}")
     return candidate
+
+
+class _SetupFailed(RuntimeError):
+    """A task's precondition could not be built. Not a model failure."""
+
+
+_SETUP_DIR = Path("delfin") / "agent" / "pack" / "benchmark" / "setup"
+
+
+def setup_path(name: str, root: Path | str | None = None) -> Path:
+    """Resolve a setup script name to a path inside the pack.
+
+    Same containment as :func:`acceptance_path`, for the same reason: the
+    name comes from a task file, and a task file is data.
+    """
+    base = (Path(root) if root else Path(os.getcwd())) / _SETUP_DIR
+    candidate = (base / str(name)).resolve()
+    if not str(candidate).startswith(str(base.resolve()) + os.sep):
+        raise ValueError(f"setup script {name!r} is outside {base}")
+    return candidate
+
+
+def run_setup(
+    name: str, workspace: Path | str, *, root: Path | str | None = None,
+) -> tuple[bool, str]:
+    """Prepare *workspace* for a task. Returns ``(ok, output)``.
+
+    The mirror of :func:`run_acceptance`, and the opposite failure
+    stance. An acceptance script that cannot run leaves the verdict
+    UNKNOWN, because the model's work still happened and may still be
+    judged on everything else. A setup script that cannot run means the
+    question was never put: there is nothing to judge, and scoring the
+    attempt would record a model failure for a fixture that was never
+    built.
+    """
+    try:
+        script = setup_path(name, root)
+    except ValueError as exc:
+        return False, str(exc)
+    if not script.is_file():
+        return False, f"setup script not found: {script}"
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(script), str(workspace)],
+            capture_output=True, text=True,
+            timeout=_ACCEPTANCE_TIMEOUT_S,
+            cwd=str(workspace),
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"setup script did not finish in {_ACCEPTANCE_TIMEOUT_S}s"
+    except Exception as exc:
+        return False, f"setup script could not run: {exc}"
+    out = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    return proc.returncode == 0, out
 
 
 def run_acceptance(

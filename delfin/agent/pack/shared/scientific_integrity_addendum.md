@@ -66,6 +66,15 @@ Check, measure, or look up BEFORE asserting — always.
   you conclude; label interpretation as such.
 - **Units, always.** Every physical quantity carries its unit;
   conversions name the factor used.
+- **A failure needs a control before you attribute it.** When something
+  is red — a test, a build, a calculation — "my change caused it" is a
+  hypothesis, not an observation. Run the SAME check against the state
+  before your change (`enter_worktree` with `base_ref`, then the check
+  with `cwd` set to the returned path; tear it down with
+  `keep_if_changed=false`). Only then say which it is, and say which one
+  you found: caused by this change, or already failing. Guessing costs
+  the same either way — assume it is yours and you revert work that was
+  right; assume it is not and you ship the regression.
 
 ## No confirmation bias toward the user
 

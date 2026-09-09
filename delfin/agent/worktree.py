@@ -116,19 +116,117 @@ def _current_head(repo: Path) -> str:
     return _run_git(repo, "rev-parse", "HEAD").strip()
 
 
+# A git ref, and nothing that could be read as an option. `_run_git`
+# passes an argument list, so there is no shell to inject into; what this
+# rules out is a ref like `--force` arriving where git expects a
+# commit-ish. The ref is also resolved against the repo before use, so an
+# unknown one is a clear refusal rather than a git usage error.
+_REF_RE = None
+
+
+def _valid_ref(ref: str) -> bool:
+    global _REF_RE
+    if _REF_RE is None:
+        import re
+        _REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@^~-]{0,200}$")
+    return bool(_REF_RE.match(ref or ""))
+
+
+def _default_parent(repo: Path) -> Path:
+    """Where a worktree goes when the caller does not say.
+
+    The system temp directory, EXCEPT when the repository is itself
+    under it -- then the worktree goes beside the repository instead.
+
+    A repo under /tmp is a throwaway: a test's tmp_path, a scratch
+    checkout. Its worktree used to land in /tmp's root, which outlives
+    it, and the `.git` file left behind points at a directory that no
+    longer exists. Counted on this machine 2026-09-09: 2532 orphaned
+    `/tmp/delfin-wt-*` directories, the oldest from 2026-08-12, growing
+    by about a hundred per suite run. Placing it beside the repository
+    means it is removed with whatever removes the repository.
+
+    A real user's repository is not under /tmp, so nothing about the
+    normal case changes -- which is the point: the worktree must not
+    appear inside a project the user is looking at.
+
+    And that promise is checked rather than assumed. A CHECKOUT can live
+    under /tmp too -- this project's own benchmark runs from
+    ``/tmp/delfin-bench-branch`` -- and asking for a worktree of a fixture
+    directory inside it would otherwise land one in
+    ``/tmp/delfin-bench-branch/tests/fixtures``, which is the very thing
+    the paragraph above rules out. So the parent is used only when it is
+    not itself inside a git working tree.
+    """
+    tmp = Path(tempfile.gettempdir())
+    try:
+        resolved = repo.resolve()
+        tmp_resolved = tmp.resolve()
+        if not resolved.is_relative_to(tmp_resolved) or resolved == tmp_resolved:
+            return tmp
+        if _inside_a_work_tree(repo.parent):
+            return tmp
+        return repo.parent
+    except (OSError, ValueError):
+        return tmp
+
+
+def _inside_a_work_tree(path: Path) -> bool:
+    """True when *path* lies inside some git checkout. Fails safe (True)."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--is-inside-work-tree"],
+            capture_output=True, text=True, timeout=5)
+        return out.returncode == 0 and out.stdout.strip() == "true"
+    except Exception:
+        return True
+
+
 def enter_worktree(
     repo_dir: Path | str,
     *,
     branch_prefix: str = "agent",
     parent: Path | str | None = None,
+    base_ref: str | None = None,
 ) -> WorktreeInfo:
-    """Create a fresh worktree for the agent. Returns WorktreeInfo."""
+    """Create a fresh worktree for the agent. Returns WorktreeInfo.
+
+    ``base_ref`` starts the worktree at a named commit of the SAME repo
+    instead of at the current HEAD. That is what makes a control run
+    possible: a check that fails here can be run again at the baseline,
+    which is the only way to tell "my change broke it" from "it was
+    already broken" -- and getting that wrong costs either a good change
+    reverted or a real regression shipped.
+
+    Everything else is unchanged. Still a fresh branch, still in the
+    repository the workspace already is, still cleaned up on exit; a ref
+    is not a way to reach another repository.
+    """
     repo = Path(repo_dir).resolve()
     if not _is_git_repo(repo):
         raise WorktreeError(f"not a git repo: {repo}")
 
-    base_ref = _current_head(repo)
-    parent_dir = Path(parent) if parent else Path(tempfile.gettempdir())
+    if base_ref:
+        ref = base_ref.strip()
+        if not _valid_ref(ref):
+            raise WorktreeError(
+                f"base_ref is not a plain git ref: {base_ref!r}")
+        try:
+            base_ref = _run_git(
+                repo, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"
+            ).strip()
+        except WorktreeError:
+            raise WorktreeError(
+                f"base_ref {ref!r} does not name a commit in {repo}. "
+                f"Fetch it first, or name one that exists."
+            ) from None
+        if not base_ref:
+            raise WorktreeError(
+                f"base_ref {ref!r} does not name a commit in {repo}.")
+    else:
+        base_ref = _current_head(repo)
+
+    parent_dir = Path(parent) if parent else _default_parent(repo)
     parent_dir.mkdir(parents=True, exist_ok=True)
     suffix = uuid.uuid4().hex[:8]
     branch_name = f"{branch_prefix}/{suffix}"
