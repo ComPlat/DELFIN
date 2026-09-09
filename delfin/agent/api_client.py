@@ -1864,8 +1864,16 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"^\s*sed\s+-n\b",                                       # read-only sed
     r"^\s*awk\s+",                                           # awk has no destructive default
     r"^\s*jq\b", r"^\s*yq\b",
+    # `worktree list` reads the registry and changes nothing -- the same
+    # class as `stash list`, which has been here all along. It was refused
+    # while the agent was trying to find out whether it already had a
+    # control tree, which is the question the list answers. `add`,
+    # `remove` and `prune` are deliberately absent: add writes a whole
+    # checkout wherever it is pointed and _bash_write_targets cannot see
+    # that path, and the other two delete one.
     r"^\s*git\s+(?:status|diff|log|show|branch(?!\s+-D)|remote|config\s+--get|"
     r"rev-parse|describe|ls-files|ls-tree|blame|stash\s+(?:list|show)|tag\s*$|"
+    r"worktree\s+list|"
     r"shortlog|reflog|fetch|pull(?!\s+--rebase\s+--force)|"
     r"switch(?![^;|&]*--discard-changes)|"
     # NOTE: 'push' is deliberately NOT here. Pushing publishes to a remote — an
@@ -11824,6 +11832,56 @@ class _DocToolExecutor:
                     "on a file the write gate already saw, which is the part "
                     "`-c` skips. Use one of them instead of asking for a "
                     "`-c` allow-pattern."
+                )
+            elif re.search(
+                    r"\bgit\b[^\n]{0,40}\b(?:worktree\s+add|stash\b|"
+                    r"checkout\s+[^\s]+\s+--)", cmd):
+                # The control run, spelled by hand. Measured live on
+                # 2026-09-09: asked whether the last commit broke a red
+                # test, the model reached for the control THREE times in
+                # 16 seconds -- `git checkout <ref> -- .`, `git stash -u`,
+                # then `git worktree add /tmp/ctl <ref>` -- and every one
+                # came back "not on the auto-allow list" with no
+                # alternative named. It gave up and answered from the
+                # diff. The framework had asked for exactly that work in
+                # the addendum, and then refused all three spellings of
+                # it.
+                #
+                # The first two stay refused on their merits: `git stash`
+                # and `git checkout <ref> -- <paths>` overwrite the user's
+                # working tree, and this project's git rules name both as
+                # destructive. `git worktree add` is not destructive, but
+                # its path argument is a full checkout written wherever
+                # the model points it, and _bash_write_targets cannot see
+                # that -- so it stays off the list too, and the native
+                # tool, which puts the tree under /tmp and registers it,
+                # is named instead.
+                hint = (
+                    " HINT: for a control run — the same check against the "
+                    "state before a change — use `enter_worktree(base_ref="
+                    "\"<the commit>\")`, run the check with `cwd` set to the "
+                    "path it returns, then `exit_worktree(path, "
+                    "keep_if_changed=false)`. That is not a workaround: it "
+                    "is the sanctioned spelling, and unlike `git stash` or "
+                    "`git checkout <ref> -- .` it cannot destroy work in "
+                    "the user's tree."
+                )
+            elif re.match(r"^\s*rm\s+(?!-[a-zA-Z]*[rR])", cmd):
+                # Cleaning up after itself. Twice in one recorded run:
+                # `rm -f _tagreport_check.py`, `rm _verify_export.py` --
+                # both files the agent had written a minute earlier to
+                # check its own work, and both refusals left the scratch
+                # file sitting in the user's directory. `rm` stays off the
+                # auto-allow list because it deletes files and the list
+                # cannot tell whose. undo_changes can: it restores or
+                # removes only what THIS session recorded writing, and
+                # refuses anything whose content has changed since.
+                hint = (
+                    " HINT: to remove a file YOU created in this session, "
+                    "`undo_changes(scope=\"session\")` deletes it — it acts "
+                    "only on what this session recorded writing, and leaves "
+                    "anything edited since untouched. `rm` cannot tell whose "
+                    "file it is, which is why it is not on the list."
                 )
             elif cmd.lstrip().startswith(("cd ", "cd\t")):
                 hint = (
