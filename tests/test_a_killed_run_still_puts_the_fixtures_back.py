@@ -55,28 +55,47 @@ def test_the_handler_is_removed_again_afterwards(tmp_path):
     assert signal.getsignal(signal.SIGTERM) == before
 
 
-def test_a_nested_guard_stands_down_instead_of_deadlocking(tmp_path):
-    """The lock is an exclusive flock, and a second guard opened a second
-    descriptor on the same file and waited for a lock its own process
-    already held — a silent deadlock, not an error.
+def test_the_guard_is_not_nested_anywhere():
+    """It is not re-entrant, and the protection is a deadline, not a
+    counter.
 
-    It cost a CI run: the job sat there until the 25-minute limit
-    cancelled it, with two tests passed and nothing to say why. Nesting is
-    a programming mistake either way; hanging is the worst way to report
-    one, so the inner guard stands down and the outer keeps the lock and
-    the restore.
+    The lock is an exclusive flock: a second guard inside the first waits
+    for a lock its own process already holds. That cost a CI run on
+    2026-09-09 — the job sat at a nested call until the 25-minute limit
+    cancelled it, with no failure named. A depth counter was tried and
+    reverted the same night: per process it made a second THREAD stand
+    down instead of waiting, and per thread it leaked whenever __enter__
+    raised. Both failures are silent, which is worse than a hang.
+
+    So: nothing nests one, and the per-test deadline in CI turns a future
+    nester into one named failure inside five minutes.
     """
-    ws = tmp_path / "tests" / "fixtures" / "office_workspace"
-    ws.mkdir(parents=True)
-    (ws / "buchungen.csv").write_text("id;betrag\n1;10\n", encoding="utf-8")
-    before = signal.getsignal(signal.SIGTERM)
-    with _PristineWorkspace(tmp_path):
-        with _PristineWorkspace(tmp_path):
-            (ws / "buchungen.csv").unlink()
-        # The inner guard restored nothing: that is the outer one's job.
-        assert not (ws / "buchungen.csv").exists()
-    assert (ws / "buchungen.csv").is_file(), "the outer guard did not restore"
-    assert signal.getsignal(signal.SIGTERM) == before
+    import ast
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parents[1]
+    workflow = (root / ".github" / "workflows" / "ci.yml").read_text(
+        encoding="utf-8")
+    assert "--timeout=300" in workflow, (
+        "the fast suite lost its per-test deadline")
+
+    # No product code opens one inside another.
+    for path in root.joinpath("delfin").rglob("*.py"):
+        src = path.read_text(encoding="utf-8", errors="replace")
+        if "_PristineWorkspace(" not in src:
+            continue
+        tree = ast.parse(src)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.With):
+                continue
+            opens = "_PristineWorkspace(" in ast.unparse(node.items[0].context_expr)
+            if not opens:
+                continue
+            inner = [n for n in ast.walk(node)
+                     if isinstance(n, ast.With) and n is not node
+                     and "_PristineWorkspace(" in ast.unparse(
+                         n.items[0].context_expr)]
+            assert not inner, f"{path.name}:{node.lineno} nests the guard"
 
 
 def test_the_files_come_back_when_the_block_is_left_by_an_exception(tmp_path):
