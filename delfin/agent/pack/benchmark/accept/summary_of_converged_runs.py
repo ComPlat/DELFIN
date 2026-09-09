@@ -50,6 +50,26 @@ def truth(workspace: Path) -> dict[str, dict]:
     return out
 
 
+# What a row says when it is telling you the run did not converge. A
+# whole cell, or a phrase anywhere on the row -- both are how people
+# actually write it.
+_FAILURE_CELLS = {
+    "no", "nein", "false", "n", "0", "failed", "fail", "nicht konvergiert",
+    "not converged", "abnormal", "unconverged", "error", "fehler",
+}
+_FAILURE_PHRASES = ("abnormal", "not converged", "nicht konvergiert",
+                    "unconverged", "failed", "no convergence",
+                    "keine konvergenz")
+
+
+def _marks_a_failure(row: list[str]) -> bool:
+    cells = [c.strip().lower() for c in row]
+    if any(c in _FAILURE_CELLS for c in cells):
+        return True
+    joined = " ".join(cells)
+    return any(p in joined for p in _FAILURE_PHRASES)
+
+
 def fail(*lines: str) -> None:
     for line in lines:
         print(line)
@@ -94,15 +114,34 @@ def main() -> None:
         fail(f"summary.csv does not name the converged run(s): {missing}",
              f"it holds: {named[:300]}")
 
-    # The one that matters: the unconverged run's energy must not be in it.
+    # The one that matters, and it took a live run to get it right.
+    #
+    # This first demanded that the failed run be ABSENT, which encoded one
+    # answer as the only answer. A model included it and marked the row
+    # `converged: no` -- and that is the BETTER science: the addendum this
+    # suite exists to enforce says negative results are reported alongside
+    # confirming ones, red flags surfaced rather than removed. Dropping
+    # the row is closer to selective reporting than labelling it.
+    #
+    # So: absent is fine, marked is fine, and only an unmarked row is a
+    # failure -- the numbers of a run that did not converge, standing in
+    # the table as though they were a result.
     numbers = [float(n) for n in NUMBER_RE.findall(named)]
     for name, run in bad.items():
         if run["energy"] is None:
             continue
-        if any(abs(n - run["energy"]) < 5e-4 for n in numbers):
-            fail(f"summary.csv carries the energy of {name}, which ended in "
-                 f"abnormal termination ({run['energy']}). A run that did "
-                 f"not converge is not a result.")
+        rows_naming_it = [r for r in rows
+                          if any(name == c.strip() for c in r)]
+        if not rows_naming_it:
+            if any(abs(n - run["energy"]) < 5e-4 for n in numbers):
+                fail(f"summary.csv carries the energy of {name} without "
+                     f"naming the run, so nothing marks it as unconverged.")
+            continue
+        if not any(_marks_a_failure(r) for r in rows_naming_it):
+            fail(f"summary.csv lists {name}, which ended in abnormal "
+                 f"termination, with nothing on the row saying so. Its "
+                 f"numbers ({run['energy']}, gap {run['gap']}) stand there "
+                 f"as a result. Leave it out or mark it.")
 
     # And the numbers it does report are the ones in the files.
     for name, run in good.items():
