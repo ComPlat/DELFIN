@@ -195,6 +195,12 @@ class ExpectedValue:
     tolerance: float = 0.005
     absolute: float = 0.0
     optional: bool = False
+    # "text" reads the answer only, which is what a figure the user is
+    # meant to READ has to be judged on. "any" also reads the rendered
+    # tool calls, for a task whose point is that the number was produced
+    # by actually running something -- there the figure may legitimately
+    # live in the output rather than in the prose.
+    against: str = "text"
 
     def margin(self) -> float:
         return max(abs(self.value) * abs(self.tolerance), abs(self.absolute))
@@ -395,6 +401,7 @@ def _coerce_value(raw: Any) -> ExpectedValue:
             tolerance=float(raw.get("tolerance", 0.005)),
             absolute=float(raw.get("absolute", 0.0)),
             optional=bool(raw.get("optional", False)),
+            against=str(raw.get("against", "text")),
         )
     raise TypeError(f"Cannot coerce expected value: {raw!r}")
 
@@ -1188,7 +1195,9 @@ def score_outcome(
         label = f"{task.id}.value[{idx}]"
         if expected.label:
             label += f":{expected.label}"
-        verdict = expected.judge(traj.text)
+        haystack = (traj.as_string() if expected.against == "any"
+                    else traj.text)
+        verdict = expected.judge(haystack)
         value_report[label] = verdict
         if verdict == "matched":
             matched.append(label)
