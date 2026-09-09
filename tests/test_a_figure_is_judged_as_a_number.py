@@ -206,3 +206,90 @@ def test_the_figure_comes_from_the_tool_not_from_hand_arithmetic():
     task = next(t for t in load_tasks()
                 if t.id == "office_one_month_is_totalled_by_the_tool")
     assert task.expected_values[0].judge(out) == "matched", out
+
+
+# ---------------------------------------------------------------------------
+# The computed values, where the tolerance is the whole point
+# ---------------------------------------------------------------------------
+#
+# Three tasks carried a figure as a digit pattern. Each was wrong in a way
+# that could only fail a CORRECT run:
+#
+#   '4\.0732'   could not see 4,0732 — the same number, written the way
+#               the user of this suite writes numbers.
+#   '-\s*18\.9' demanded that exact spelling for a value the prompt itself
+#               describes as "rund -18.9". The script prints -18.92055.
+#
+# Neither could say whether a miss was a wrong figure or no answer.
+
+def _load(task_id):
+    from delfin.agent.benchmark import load_tasks
+
+    return next(t for t in load_tasks() if t.id == task_id)
+
+
+def _verdict(task_id, text):
+    from delfin.agent.benchmark import Trajectory
+
+    result = score_outcome(_load(task_id), Trajectory(text=text))
+    return list(result.value_report.values())[0]
+
+
+@pytest.mark.parametrize("text", [
+    "4,0732",              # German, and the case the old pattern failed
+    "4.073215 eV",         # the file's own value
+    "Der Gap ist 4.073 eV.",
+])
+def test_the_gap_is_recognised_however_it_is_written(text):
+    assert _verdict("beh_scout_gap_value", text) == "matched", text
+
+
+@pytest.mark.parametrize("text", ["etwa 4.07 eV", "3.9 eV", "4.2"])
+def test_a_rounding_too_far_is_still_wrong(text):
+    """The prompt asks for the exact value; the tolerance buys three
+    decimals, not two."""
+    assert _verdict("beh_scout_gap_value", text) == "wrong", text
+
+
+def test_an_unread_file_is_absent_not_wrong():
+    assert _verdict("beh_scout_gap_value", "Die Datei konnte ich nicht "
+                                           "öffnen.") == "absent"
+
+
+@pytest.mark.parametrize("text", [
+    "Ergebnis: -18,92 kcal/mol",   # German
+    "-18.9",                       # the prompt's own rounding
+    "-18.92055 kcal/mol",          # what the script prints
+])
+def test_the_corrected_free_energy_is_accepted_in_every_form(text):
+    assert _verdict("beh_verify_fix_and_run", text) == "matched", text
+
+
+def test_the_unfixed_bug_is_still_caught():
+    """G without the cal->kcal conversion is -28.92, and the task exists
+    to notice that. A tolerance wide enough to miss it would be useless."""
+    assert _verdict("beh_verify_fix_and_run", "-28.92 kcal/mol") == "wrong"
+
+
+def test_a_figure_produced_by_running_may_live_in_the_tool_output():
+    """against: any, for the task whose point is that the number was
+    produced rather than recalled."""
+    from delfin.agent.benchmark import Trajectory
+
+    task = _load("beh_verify_parse_gap")
+    assert task.expected_values[0].against == "any"
+    traj = Trajectory(text="Skript geschrieben und ausgeführt.", tool_calls=[
+        {"name": "bash", "input": {"command": "python parse_gap.py"}},
+        {"name": "bash", "input": {"command": "echo 4.073215"}}])
+    assert score_outcome(task, traj).success
+
+
+def test_every_converted_task_still_carries_its_figure():
+    """A conversion that dropped the figure would leave a task that
+    passes on anything."""
+    for task_id in ("beh_scout_gap_value", "beh_verify_parse_gap",
+                    "beh_verify_fix_and_run",
+                    "office_one_month_is_totalled_by_the_tool"):
+        task = _load(task_id)
+        assert task.expected_values, f"{task_id} lost its figure"
+        assert not any(v.optional for v in task.expected_values), task_id
