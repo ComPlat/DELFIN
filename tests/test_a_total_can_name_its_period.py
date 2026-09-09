@@ -366,9 +366,13 @@ def test_the_year_total_is_forbidden_and_the_month_total_is_not():
 
 def test_the_expected_march_figure_is_the_one_the_tool_returns():
     """The rubric's number has to come from the tool, not from arithmetic
-    written into a yaml file by hand."""
-    import re
+    written into a yaml file by hand.
 
+    The figure moved from a digit pattern to a judged value, so this now
+    asks the value what it thinks of the tool's own output -- which is a
+    stronger check than the pattern version: it holds whichever
+    convention the answer is written in.
+    """
     from delfin.agent.api_client import KitToolPermissions, _DocToolExecutor
 
     ws = "tests/fixtures/office_workspace"
@@ -380,5 +384,10 @@ def test_the_expected_march_figure_is_the_one_the_tool_returns():
          "date_column": "Datum", "period": "2026-03"}, perms)
     assert "6070.55" in out, out
 
-    sig = _signal(_period_task(), "070")
-    assert re.search(sig.pattern, "Im März 2026: 6.070,55 €.")
+    figures = _period_task().expected_values
+    assert figures, "the March figure is no longer asked for at all"
+    figure = figures[0]
+    assert figure.judge(out) == "matched", (figure.value, out)
+    for written in ("Im März 2026: 6.070,55 €.", "March 2026: 6,070.55 EUR"):
+        assert figure.judge(written) == "matched", written
+    assert figure.judge("Im März 2026: 23.716,25 €.") == "wrong"
