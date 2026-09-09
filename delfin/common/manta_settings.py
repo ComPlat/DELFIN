@@ -180,6 +180,8 @@ def builder_options(config: Mapping[str, Any]) -> Dict[str, Any]:
 #: What the last :func:`apply_construction_env` call actually applied.  The
 #: pipeline records this rather than asking the config a second time, so the
 #: provenance is the applied set by construction and cannot drift from it.
+#: Mutated in place so that an early ``from ... import LAST_CONSTRUCTION``
+#: still sees it.
 LAST_CONSTRUCTION: Dict[str, Any] = {'config': None, 'flags': {}}
 
 
@@ -199,7 +201,6 @@ def apply_construction_env(config: Mapping[str, Any],
     """
     target = os.environ if environ is None else environ
     applied: Dict[str, str] = {}
-    global LAST_CONSTRUCTION
 
     construction = _choice(config, 'MANTA_CONSTRUCTION',
                            allowed=CONSTRUCTION_MODES, default='champion')
@@ -287,10 +288,13 @@ def apply_construction_env(config: Mapping[str, Any],
                 target[name] = value
                 applied[name] = value
 
-    LAST_CONSTRUCTION = {
-        'config': construction,
-        'flags': dict(applied),
-    }
+    # Mutated in place, never rebound.  ``from manta_settings import
+    # LAST_CONSTRUCTION`` binds the object, so rebinding the module global
+    # leaves every existing import pointing at the old empty dict -- a name
+    # bound at one moment and read at another, which is the third time that
+    # shape has cost something in this integration.
+    LAST_CONSTRUCTION.clear()
+    LAST_CONSTRUCTION.update({'config': construction, 'flags': dict(applied)})
     return applied
 
 

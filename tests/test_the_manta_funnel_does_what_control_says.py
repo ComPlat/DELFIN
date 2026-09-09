@@ -494,3 +494,25 @@ def test_the_single_point_cache_can_be_counted():
     stats = _gfnff_rank.cache_stats()
     assert set(stats) == {"hits", "misses", "entries"}
     assert all(isinstance(v, int) for v in stats.values())
+
+
+def test_an_early_import_of_the_construction_record_still_sees_it():
+    """``LAST_CONSTRUCTION`` is mutated, never rebound.
+
+    ``from manta_settings import LAST_CONSTRUCTION`` binds the object. Rebinding
+    the module global leaves every existing import pointing at the old empty
+    dict, so a caller that imported early records "no construction" for a run
+    that applied 44 flags. Found on the first real build through the CONTROL
+    path, which reported ``construction: None (0 flags)`` while the environment
+    plainly had them.
+
+    Third time this shape has cost something in this integration: a provenance
+    record read from a second environment lookup, a timeout frozen at module
+    import, and now a name bound before the value existed.
+    """
+    from delfin.common.manta_settings import (
+        LAST_CONSTRUCTION, apply_construction_env)
+
+    apply_construction_env({"MANTA_CONSTRUCTION": "champion", "PAL": "8"}, {})
+    assert LAST_CONSTRUCTION["config"] == "champion"
+    assert len(LAST_CONSTRUCTION["flags"]) > 30
