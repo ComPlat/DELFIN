@@ -71,7 +71,15 @@ tasks:
     against: text
   - pattern: (?i)\bnumroots\b
     against: text
-  - pattern: (?i)(?:`states`|\*\*states\*\*|\bstates\s*[:=]|\|\s*states\s*\|)
+  # states is not a %tddft keyword -- nroots is -- and the word alone is
+  # ordinary prose ("die angeregten states"), so the claim is matched
+  # where a keyword is written: with its value, or as a table cell.
+  #
+  # Two of the four alternatives here used to be `states` and **states**,
+  # and neither could ever fire: _strip_emphasis removes backticks and
+  # asterisks before a text signal is matched, so the two forms a model is
+  # MOST likely to write were the two the guard could not see.
+  - pattern: (?i)(\bstates\s*[:=]|\bstates\s+\d|\|\s*states\s*\|)
     against: text
 - id: fact_orca_mp2_keywords_auto
   task_class: fact_verify_auto
