@@ -332,6 +332,7 @@ def _screen_start_geometries(
     charge: int,
     multiplicities: Sequence[int],
     parallel_jobs: int = 1,
+    solvent: str = "",
 ) -> List[Tuple["StartGeometry", int, Optional[float]]]:
     """Order the frames by a cheap single point, and keep the head.
 
@@ -398,7 +399,8 @@ def _screen_start_geometries(
         block = "\n".join(entry[1])
         try:
             return position, pair, ranking.gfnff_energy(
-                block, charge=int(charge), uhf=max(0, mult - 1), method=name)
+                block, charge=int(charge), uhf=max(0, mult - 1), method=name,
+                solvent=solvent)
         except Exception:                          # noqa: BLE001
             return position, pair, None
 
@@ -639,10 +641,19 @@ def _write_xtb_input(
     pal: int,
     maxcore: int,
     method: str,
+    solvation: str = "",
 ) -> None:
-    """Write ORCA XTB optimization input file."""
+    """Write ORCA XTB optimization input file.
+
+    ``solvation`` is the CONTROL solvation keyword (``CPCM(DMF)``), not a
+    switch of its own.  Optimising the frames in the gas phase and then running
+    everything downstream in solvent would rank the coordination isomers under
+    a different Hamiltonian than the one that decides anything afterwards --
+    and for a charged complex that is not a small difference.
+    """
+    head = f"!{method} OPT" + (f" {solvation}" if solvation else "")
     blocks = [
-        f"!{method} OPT",
+        head,
         f"%maxcore {maxcore}",
         f"%pal nprocs {pal} end",
         f"*xyz {charge} {multiplicity}",
@@ -676,11 +687,13 @@ def _write_goat_input(
     pal: int,
     maxcore: int,
     method: str,
+    solvation: str = "",
 ) -> None:
     """Write ORCA GOAT input for an XYZ file."""
     method_token = (method or "XTB2").strip() or "XTB2"
+    head = method_token + (f" {solvation}" if solvation else "")
     content = (
-        f"!{method_token} GOAT\n\n"
+        f"!{head} GOAT\n\n"
         f"%maxcore {maxcore}\n"
         f"%pal nprocs {pal} end\n\n"
         f"*xyzfile {charge} {multiplicity} {xyz_file.name}\n"
@@ -1017,6 +1030,7 @@ def _execute_single_sampling_run(
     workdir: Path,
     smiles: str = "",
     mol_template=None,
+    solvation: str = "",
 ) -> Tuple[bool, Optional[RunResult], Optional[str]]:
     """Execute one SMILES->XTB2 run and return (ok, result, error)."""
     run_dir = workdir / f"run_{run_idx:02d}"
@@ -1046,6 +1060,7 @@ def _execute_single_sampling_run(
         pal=pal,
         maxcore=maxcore,
         method=method,
+        solvation=solvation,
     )
 
     ok = run_orca(
@@ -1093,6 +1108,7 @@ def _execute_single_goat_run(
     workdir: Path,
     smiles: str = "",
     mol_template=None,
+    solvation: str = "",
 ) -> Tuple[bool, Optional[RunResult], Optional[str]]:
     """Run GOAT on one candidate and return refined geometry + energy."""
     xtb_energy, natoms, coords, run_idx, start_label, start_source = candidate
@@ -1118,6 +1134,7 @@ def _execute_single_goat_run(
         pal=pal,
         maxcore=maxcore,
         method=method,
+        solvation=solvation,
     )
 
     ok = run_orca(
@@ -1283,6 +1300,7 @@ def _run_topk_refinement(
     parallel_jobs: int,
     engine: str = "goat",
     solvent: str = "",
+    solvation: str = "",
 ) -> Tuple[List[RunResult], List[str]]:
     """Refine the top-k ranked candidates with GOAT or CREST, in parallel.
 
@@ -1330,7 +1348,10 @@ def _run_topk_refinement(
             mol_template=mol_template,
         )
         if engine == "crest":
+            # CREST takes a GBSA solvent name; GOAT takes the ORCA keyword.
             kwargs["solvent"] = solvent
+        else:
+            kwargs["solvation"] = solvation
         try:
             ok, result, error = executor_fn(**kwargs)
             with results_lock:
@@ -1460,6 +1481,7 @@ def run_sampling(
     optimise: str = "xtb",
     refine: str = "goat",
     solvent: str = "",
+    solvation: str = "",
 ) -> int:
     """Execute repeated SMILES->XTB2 workflow and write ranked trajectory."""
     smiles = _read_first_smiles_line(input_file)
@@ -1513,7 +1535,10 @@ def run_sampling(
         keep=keep_frames,
         charge=resolved_charge,
         multiplicities=wanted_mults,
-        parallel_jobs=prephase_parallel_jobs,
+        # One core per single point, so the screen can use the whole node --
+        # the frame-optimisation width would leave most of it idle here.
+        parallel_jobs=max(1, int(pal)),
+        solvent=solvent,
     )
     # Renumber so each (frame, multiplicity) pair is its own run, and say which
     # multiplicity it is in the label -- the trajectory comment carries it, so
@@ -1580,6 +1605,7 @@ def run_sampling(
                 workdir=workdir,
                 smiles=smiles,
                 mol_template=mol_template,
+                solvation=solvation,
             )
             with results_lock:
                 if ok and result is not None:
@@ -1758,6 +1784,7 @@ def run_sampling(
             parallel_jobs=goat_parallel,
             engine=refine_engine,
             solvent=solvent,
+            solvation=solvation,
         )
         if goat_results:
             winner_result = goat_results[0]
@@ -1834,6 +1861,7 @@ def run_sampling(
         "multiplicity": multiplicity,
         "multiplicities_tested": list(wanted_mults),
         "screen_method": screen_method,
+        "solvation": solvation or "gas phase",
         "optimise": str(optimise or "xtb").strip().lower(),
         "refine": refine_engine,
         "rmsd_cutoff": rmsd_cutoff,

@@ -314,10 +314,43 @@ def selection_options(config: Mapping[str, Any]) -> Dict[str, Any]:
                                'GUPPY_RMSD_CUTOFF', default=0.3),
         'energy_window_kcal': _number(config, 'MANTA_ENERGY_WINDOW',
                                       'GUPPY_ENERGY_WINDOW_KCAL', default=25.0),
-        'parallel_jobs': max(1, _integer(config, 'MANTA_PARALLEL_JOBS',
-                                         'GUPPY_PARALLEL_JOBS', default=4) or 4),
+        'parallel_jobs': _parallel_jobs(config),
         'time_budget_s': _number(config, 'MANTA_TIME_BUDGET', default=1800.0),
     }
+
+
+#: Cores one frame optimisation can actually use.  An xtb geometry optimisation
+#: of a 40-100 atom complex stops scaling well before this; the number is a
+#: compromise between that and not spawning more ORCA processes than the node
+#: wants to schedule.
+CORES_PER_FRAME_JOB = 4
+
+
+def _parallel_jobs(config: Mapping[str, Any]) -> int:
+    """How many frames are worked on at once.
+
+    The old fixed 4 wasted the machine in both directions: on PAL=8 it split
+    two cores per job, and on PAL=450 it left the node 96 % idle while frames
+    queued.  Unset -- or ``auto`` -- this now follows PAL, at roughly
+    ``CORES_PER_FRAME_JOB`` cores per frame.
+
+    Two things bound it further at the point of use and are deliberately not
+    duplicated here: the sampler clamps to the number of frames that actually
+    exist (``min(parallel_jobs, total_jobs, pal)``), and the total memory is
+    ``pal * maxcore`` however the split falls, so a wider split does not ask
+    for more RAM.
+    """
+    text = (_raw(config, 'MANTA_PARALLEL_JOBS', 'GUPPY_PARALLEL_JOBS') or '').strip().lower()
+    if text and text not in ('auto', 'default'):
+        try:
+            return max(1, int(float(text)))
+        except (TypeError, ValueError):
+            pass
+    try:
+        pal = int(float(str(config.get('PAL') or 1).strip()))
+    except (TypeError, ValueError):
+        pal = 1
+    return max(1, pal // CORES_PER_FRAME_JOB)
 
 
 def _multiplicity_list(config: Mapping[str, Any], *names: str) -> List[int]:
