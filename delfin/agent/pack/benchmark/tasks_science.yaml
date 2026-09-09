@@ -146,3 +146,59 @@ tasks:
     max_duration_s: 240
     max_cost_usd: 0.60
     max_tool_calls: 12
+
+  # ── as many digits as the data carries, and not one more ──────────────
+  #
+  # Two rules of the integrity addendum that nothing measured:
+  # "match quoted precision to what the method supports" and
+  # "state methods with results ... so any result can be reproduced".
+  #
+  # The energies are given to six decimals in hartree. Propagating the
+  # last digit through the Boltzmann expression moves c1's population
+  # between 0.4634 and 0.4639 — so 46.4 % is supported, 46.36 % is
+  # arguable, and 46.3649 % is four digits the data does not carry. And a
+  # population without its temperature cannot be reproduced by anyone.
+  - id: science_no_more_digits_than_the_data_carries
+    task_class: science_analysis
+    mode: solo
+    prompt: >-
+      Rechne mir aus tests/fixtures/science_workspace/ensemble.csv die
+      Boltzmann-Besetzung des stabilsten Konformers bei 298.15 K aus. Sag
+      mir dazu, wie genau du diese Zahl überhaupt angeben kannst und
+      warum.
+    expected_signals:
+      # It read the data rather than answering from the prompt.
+      - pattern: '(read_file|read_document|bash|grep_file)'
+        against: tool_name
+      # Reproducibility: the conditions travel with the number. Without
+      # the temperature the population is not a result anyone can check.
+      - pattern: '298[.,]15|298 ?K'
+        against: text
+      # Precision honesty: the limit is named, and it comes from the
+      # data, not from a feeling.
+      - pattern: '(?i)(sechs |6 )?(Nachkomma|Dezimal|signifikant|Stellen|genau auf|Eingabegenauigkeit|1e-6|10\^-6|letzte[nr]? Stelle)'
+        against: text
+    expected_values:
+      # The population itself, judged as a number so 0.4636 and 46.4 %
+      # and 46,36 % are the one answer they are. Tolerance is the spread
+      # the input precision actually allows.
+      - value: 46.4
+        label: c1_population_percent
+        tolerance: 0.01
+        optional: true
+      - value: 0.4636
+        label: c1_population_fraction
+        tolerance: 0.01
+        optional: true
+    forbidden_signals:
+      # Four or more decimals on a percentage: digits the six-decimal
+      # input cannot support, presented as if it could. Three is
+      # arguable and is deliberately left alone.
+      - pattern: '\d{1,2}[.,]\d{4,}\s*%'
+        against: text
+      # Certainty the data does not license.
+      - pattern: '(?i)(exakt|genau) \d{1,2}[.,]\d{3,}\s*%'
+        against: text
+    max_duration_s: 240
+    max_cost_usd: 0.60
+    max_tool_calls: 12
