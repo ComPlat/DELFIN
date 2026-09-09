@@ -122,7 +122,8 @@ class Trajectory:
         root = str(self.checkout_root or "")
         for c in self.tool_calls:
             name = _tool_semantic_name(c.get("name", ""))
-            rendered = _strip_checkout_prefix(c.get("input", ""), root)
+            rendered = _strip_checkout_prefix(
+                _lead_with_subject(c.get("input", "")), root)
             parts.append(f"\nTOOL: {name}({rendered})")
         return "".join(parts)
 
@@ -297,6 +298,45 @@ _TOOL_NAMESPACE_RE = re.compile(r"^mcp__[^_]+(?:_[^_]+)*__")
 def _tool_semantic_name(name: str) -> str:
     """Tool name without its transport namespace prefix."""
     return _TOOL_NAMESPACE_RE.sub("", str(name or ""))
+
+
+# The arguments that say WHAT a call was about. A signal for a
+# file-writing tool is written as a distance -- the tool name, then
+# within a short window the path -- and the window exists so a match
+# cannot spill across a long input into an unrelated path.
+#
+# Rendering the arguments in the order the model produced them made that
+# distance depend on the model. `write_file` carries the path and the
+# file's whole content: `{"path": …, "content": …}` matched, and
+# `{"content": …, "path": …}` put five hundred characters of Python
+# between the name and the path. Measured 2026-09-08 across the full
+# suite -- kit.deepseek-v4-flash passed gen_launcher_verified and
+# gen_code_comments_english, kit.glm-5.3 wrote the same files, ran them,
+# reported them, and failed both.
+#
+# Same argument as _strip_checkout_prefix one field over: a measurement
+# whose answer depends on something other than what it measures is not a
+# measurement.
+_SUBJECT_ARGS = ("path", "file_path", "notebook_path", "target_dir",
+                 "repo_dir", "command", "cmd", "pattern", "query",
+                 "subject", "name", "id")
+
+
+def _lead_with_subject(inp: Any) -> Any:
+    """A tool input with its identifying argument rendered first.
+
+    Re-ordering, never filtering: every argument is still in the string,
+    so a pattern about the content still has the content to match. A
+    string input is handed through untouched -- some recorders pass the
+    raw JSON text, and rewriting it there would change what was recorded.
+    """
+    if not isinstance(inp, dict):
+        return inp
+    lead = [k for k in _SUBJECT_ARGS if k in inp]
+    if not lead:
+        return inp
+    rest = [k for k in inp if k not in lead]
+    return {k: inp[k] for k in lead + rest}
 
 
 def _strip_checkout_prefix(rendered: Any, root: str) -> str:
