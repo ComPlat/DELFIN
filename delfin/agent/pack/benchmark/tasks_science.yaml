@@ -1,0 +1,91 @@
+# The everyday work: read what a calculation produced, compute something
+# from it, and write the script that does it.
+#
+# Why this file exists. The coding side of this suite was four tasks, each
+# a ~30-line script over one small JSON file, and every one of them was
+# graded on what the model WROTE ABOUT its work. For "build something that
+# works" that is the wrong question and no amount of pattern care fixes
+# it: a rubric that reads prose about a program can be satisfied by prose.
+#
+# So these tasks are graded on the artifact. `verify` names a script in
+# accept/ that is handed the workspace after the turn and before the
+# fixture guard puts it back; its exit status is the verdict and its
+# output is the reason. The script is ours, never the model's.
+#
+# The fixture carries what real output carries and demonstrations leave
+# out — a run that did not converge but still holds numbers, a duplicate
+# geometry in an ensemble. Those are the everyday mistakes, so they are
+# what is measured.
+
+tasks:
+
+  # ── a summary is of the runs that produced a result ───────────────────
+  - id: science_summarises_only_the_runs_that_converged
+    task_class: science_analysis
+    mode: solo
+    prompt: >-
+      In tests/fixtures/science_workspace/ liegen vier xtb-Ausgaben. Bau
+      dort ein Skript summary.py, das daraus eine summary.csv mit Lauf,
+      Gesamtenergie und HOMO-LUMO-Lücke erzeugt, und führ es aus. Sag mir
+      danach, was in der Tabelle steht — und was nicht.
+    verify: summary_of_converged_runs.py
+    expected_signals:
+      # The judgement said out loud, not only performed. A summary that
+      # is right by accident is worth less than one whose author knows
+      # why a run was left out.
+      - pattern: '(?i)(run_d|abnormal|nicht konvergiert|keine? Konvergenz|abgebrochen|fehlgeschlagen)'
+        against: text
+      # It ran the thing rather than describing it. The acceptance script
+      # would catch a missing summary.csv anyway; this separates "wrote a
+      # script that happens to work" from "ran it and looked".
+      - pattern: '(?i)(summary\.csv|ausgeführt|Ausgabe|Zeilen)'
+        against: text
+    forbidden_signals:
+      # All four reported as results.
+      - pattern: '(?i)(alle vier|alle 4)\s+(L(ä|ae)ufe|Rechnungen|Ergebnisse)'
+        against: text
+    max_duration_s: 360
+    max_cost_usd: 0.90
+    max_tool_calls: 20
+
+  # ── extending a pipeline, and the step has to actually compute ────────
+  #
+  # There is already a task that measures whether the agent PLANS this
+  # change. Nothing measured whether the step it then builds produces the
+  # right numbers, which is the part the user gets.
+  - id: science_pipeline_gains_a_step_that_computes
+    task_class: science_analysis
+    mode: solo
+    prompt: >-
+      In tests/fixtures/science_workspace/ fehlt in pipeline.py der dritte
+      Schritt: die Boltzmann-Gewichtung des Ensembles bei 298.15 K. Bau
+      ihn, schreib die Besetzungen als weights.csv, ruf ihn aus run() auf
+      und lass die Pipeline einmal durchlaufen. Sag mir danach, welches
+      Konformer dominiert und ob dir am Ensemble etwas auffällt.
+    verify: pipeline_weights_the_ensemble.py
+    expected_signals:
+      # The dominant conformer, named. The acceptance checks the file;
+      # this checks that the answer says what the file means.
+      - pattern: '(?i)\bc1\b'
+        against: text
+      # The duplicate: c6 repeats c3's energy exactly. Noticing it is the
+      # scientific half of this task -- either reading of it is accepted
+      # by the acceptance script, but saying nothing about it is a reader
+      # who did not look at the data.
+      - pattern: '(?i)(c6|doppelt|Duplikat|identisch|gleiche Energie|zweimal)'
+        against: text
+    expected_values:
+      # c1's population over all six rows. Written as a value, so 0.4636
+      # and 46,4 % and 46.37% are the one answer they are.
+      - value: 0.4636
+        label: c1_population
+        tolerance: 0.02
+        optional: true
+    forbidden_signals:
+      # A population set that does not add up is the failure this task is
+      # built on; claiming it does when the file says otherwise is worse.
+      - pattern: '(?i)(gleichverteilt|uniform verteilt|alle gleich (gewichtet|wahrscheinlich))'
+        against: text
+    max_duration_s: 420
+    max_cost_usd: 1.00
+    max_tool_calls: 24

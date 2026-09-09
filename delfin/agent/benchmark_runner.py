@@ -20,6 +20,8 @@ from pathlib import Path
 import contextlib
 import os
 import re
+import subprocess
+import sys
 import time
 from typing import Any, Callable, Iterable, Optional
 
@@ -198,6 +200,13 @@ def workspace_for(root: Path, *, mode: str = "", task_class: str = "") -> Option
         rel = "behavior_workspace"
     elif cls == "generic_project":
         rel = "user_project_workspace"
+    elif cls.startswith("science"):
+        # The everyday work: read real output, compute something from it,
+        # write the script that does it. Its own fixture rather than the
+        # behaviour one, because these tasks are graded on the ARTIFACT
+        # and want data with the things real data has -- a duplicate
+        # geometry, a run that did not converge.
+        rel = "science_workspace"
     if rel is None:
         return None
     candidate = Path(root) / "tests" / "fixtures" / rel
@@ -370,6 +379,12 @@ _BEHAVIOR_WS_RELS: tuple[Path, ...] = (
     # between attempts a later run scores against rows an earlier one
     # changed.
     Path("tests") / "fixtures" / "office_workspace",
+    # Science tasks are graded on what they BUILD, so they always leave
+    # something behind. Adding the workspace to workspace_for without
+    # adding it here left the built script sitting in the checkout after
+    # the run -- caught by driving one task end to end and asking whether
+    # the fixture came back.
+    Path("tests") / "fixtures" / "science_workspace",
 )
 _BEHAVIOR_WS_REL = _BEHAVIOR_WS_RELS[0]
 
@@ -828,6 +843,8 @@ def _run_task_once(
         pass
     cost_before = float(getattr(engine, "cost_usd", 0.0) or 0.0)
     t0 = clock()
+    verify_ok: "Optional[bool]" = None
+    verify_output = ""
     try:
         with _PristineWorkspace():
             _ws = workspace_for(Path(os.getcwd()), mode=task.mode,
@@ -835,6 +852,12 @@ def _run_task_once(
             _seed_fixture_memories(Path(os.getcwd()), _ws)
             _seed_fixture_hooks(Path(os.getcwd()), _ws)
             raw = run_once(engine, task.prompt, max_tokens=max_tokens)
+            # Inside the guard on purpose: it puts the workspace back on
+            # the way out, so anything the task produced exists only
+            # here. A check that ran afterwards would find the fixture.
+            if task.verify:
+                verify_ok, verify_output = run_acceptance(
+                    task.verify, _ws, root=Path(os.getcwd()))
     except Exception as exc:
         raw = {"text": "", "tool_calls": [], "input_tokens": 0,
                "output_tokens": 0, "error": f"_run_once raised: {exc}"}
@@ -845,9 +868,74 @@ def _run_task_once(
         checkout_root=str(Path(os.getcwd()).resolve()),
     )
     traj.denials = _denials_during(engine, since_ts=_iso(t0))
+    traj.verify_ok = verify_ok
+    traj.verify_output = verify_output
     return score_outcome(
         task, traj, model=model, profile_name=profile_name, ts=clock(),
     )
+
+
+# ---------------------------------------------------------------------------
+# Executable acceptance
+# ---------------------------------------------------------------------------
+#
+# Every other check in this suite reads what the model WROTE about its
+# work. For a task whose subject is a working program that is the wrong
+# question, and no amount of pattern care fixes it -- a rubric that reads
+# prose about a program can be satisfied by prose. So the artifact answers
+# instead: a script we own is handed the workspace and its exit status is
+# the verdict.
+#
+# The script is ours, never the model's, and it is looked up under the
+# packaged benchmark directory so a task cannot name a path outside it.
+_ACCEPTANCE_DIR = Path("delfin") / "agent" / "pack" / "benchmark" / "accept"
+_ACCEPTANCE_TIMEOUT_S = 120
+
+
+def acceptance_path(name: str, root: Path | str | None = None) -> Path:
+    """Resolve an acceptance script name to a path inside the pack.
+
+    Raises ValueError for anything that leaves the directory -- the name
+    comes from a task file, and a task file is data.
+    """
+    base = (Path(root) if root else Path(os.getcwd())) / _ACCEPTANCE_DIR
+    candidate = (base / str(name)).resolve()
+    if not str(candidate).startswith(str(base.resolve()) + os.sep):
+        raise ValueError(
+            f"acceptance script {name!r} is outside {base}")
+    return candidate
+
+
+def run_acceptance(
+    name: str, workspace: Path | str, *, root: Path | str | None = None,
+) -> tuple["Optional[bool]", str]:
+    """Run one acceptance script against *workspace*.
+
+    Returns ``(ok, output)``. ``ok`` is None when the script could not be
+    run at all -- missing, or it timed out -- which the scorer reads as
+    "not run" rather than as a failure, the same distinction denials and
+    is_unmeasured make.
+    """
+    try:
+        script = acceptance_path(name, root)
+    except ValueError as exc:
+        return None, str(exc)
+    if not script.is_file():
+        return None, f"acceptance script not found: {script}"
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(script), str(workspace)],
+            capture_output=True, text=True,
+            timeout=_ACCEPTANCE_TIMEOUT_S,
+            cwd=str(workspace),
+        )
+    except subprocess.TimeoutExpired:
+        return None, (
+            f"acceptance script did not finish in {_ACCEPTANCE_TIMEOUT_S}s")
+    except Exception as exc:
+        return None, f"acceptance script could not run: {exc}"
+    out = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    return proc.returncode == 0, out
 
 
 def run_task(
