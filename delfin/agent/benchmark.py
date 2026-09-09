@@ -372,6 +372,9 @@ class BenchmarkResult:
     verify_ok: Optional[bool] = None
     verify_output: str = ""
     tool_names: list[str] = field(default_factory=list)  # tools the model actually called
+    # ``name: subject`` per call, in order. What the names alone could not
+    # say: which file, which command, which query. See tool_subject.
+    tool_subjects: list[str] = field(default_factory=list)
     # --- trace-derived behaviour flags (behavioural-parity eval) ---
     # Only populated for tasks carrying a ``behavior:`` tag.  Per-run this
     # is {flag: 0|1}; aggregated across replicates it is {flag: rate}.
@@ -546,6 +549,41 @@ def _lead_with_subject(inp: Any) -> Any:
         return inp
     rest = [k for k in inp if k not in lead]
     return {k: inp[k] for k in lead + rest}
+
+
+def tool_subject(call: dict, *, limit: int = 90) -> str:
+    """``name: what the call was about``, short enough to keep.
+
+    The run file recorded tool NAMES and dropped the arguments, so a
+    finished run could not answer the question its own numbers raise. One
+    task took fifty tool calls to total a column; the file said
+    `edit_file x12, bash x11` and nothing about what they touched, and
+    the only reason the cause was found -- a prompt sentence sending the
+    arithmetic to a shell -- is that the console log still existed.
+
+    Reading the recorded runs is the cheapest way to find where a model
+    struggles, and it only works if the record carries the subject. So:
+    the identifying argument, by the same rule ``_lead_with_subject``
+    already uses for matching, truncated. Never the content of a write --
+    that is what made keeping the inputs unthinkable in the first place.
+    """
+    name = _tool_semantic_name(str(call.get("name", "") or ""))
+    raw = call.get("input")
+    subject = ""
+    if isinstance(raw, dict):
+        for key in _SUBJECT_ARGS:
+            value = raw.get(key)
+            if isinstance(value, str) and value.strip():
+                subject = " ".join(value.split())
+                break
+        if not subject:
+            # No identifying argument: say which keys there were, so the
+            # call is still distinguishable from its neighbours.
+            subject = ",".join(sorted(str(k) for k in raw)[:4])
+    elif isinstance(raw, str):
+        subject = " ".join(raw.split())
+    subject = subject[:limit]
+    return f"{name}: {subject}" if subject else name
 
 
 def _strip_checkout_prefix(rendered: Any, root: str) -> str:
@@ -1383,6 +1421,8 @@ def score_outcome(
         verify_ok=traj.verify_ok,
         verify_output=str(traj.verify_output or "")[:2000],
         tool_names=tool_names,
+        tool_subjects=[tool_subject(c) for c in traj.tool_calls
+                       if isinstance(c, dict)][:60],
         behavior=behavior_flags(task, traj),
         caveats=caveat_count(traj.text),
         answer_chars=len(str(traj.text or "")),
@@ -1525,6 +1565,15 @@ def aggregate_replicates(
         for n_name in (r.tool_names or []):
             if n_name and n_name not in tool_names_union:
                 tool_names_union.append(n_name)
+    # The subjects come from ONE sample, not a union: they are a
+    # sequence, and interleaving three replicates would read as a route
+    # nobody took. The first sample that made any call is the one kept,
+    # which matches how the excerpt is chosen two blocks up.
+    subjects: list[str] = []
+    for r in results:
+        if r.tool_subjects:
+            subjects = list(r.tool_subjects)
+            break
 
     # Behaviour flags: mean per flag across replicates → a 0..1 rate.
     beh_sums: dict[str, float] = {}
@@ -1572,6 +1621,7 @@ def aggregate_replicates(
         per_run_success=list(success_flags),
         text_excerpt=excerpt,
         tool_names=tool_names_union,
+        tool_subjects=subjects,
         behavior=behavior_agg,
         unmeasured=all_unmeasured,
         caveats=int(_median([float(r.caveats) for r in results])),
