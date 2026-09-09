@@ -186,13 +186,41 @@ def test_the_primitive_refuses_the_same_things(tmp_path):
 # ...and the rule that tells the agent to reach for it
 # ---------------------------------------------------------------------------
 
-def test_the_addendum_states_it_and_it_reaches_the_prompt():
-    """A rule is a rule when it is in the BUILT prompt."""
+def _solo_prompt() -> str:
     import re
 
     from delfin.agent.prompt_loader import PromptLoader
 
-    flat = re.sub(r"\s+", " ", PromptLoader().build_system_prompt(
+    return re.sub(r"\s+", " ", PromptLoader().build_system_prompt(
         role_id="solo_agent", mode_id="solo"))
+
+
+def test_the_addendum_states_it_and_it_reaches_the_prompt():
+    """A rule is a rule when it is in the BUILT prompt."""
+    flat = _solo_prompt()
     assert "A failure needs a control before you attribute it" in flat
     assert "base_ref" in flat
+
+
+def test_the_routing_table_names_it_too():
+    """Measured live on kit.deepseek-v4-flash, 2026-09-09: with the rule in
+    the addendum and the mechanism in the catalogue, the model still read
+    `git show <sha> --stat` on both commits and never ran a control. The
+    addendum says what a scientist does; the strategy table is where the
+    model looks to pick a tool, and it had no row for this question.
+
+    Same shape as the office arithmetic rule that named no tool: a rule
+    the framework states and a routing table that does not carry it are
+    not the same thing."""
+    flat = _solo_prompt()
+    assert "did X break this?" in flat
+    assert "Run the CONTROL, not the diff" in flat
+
+
+def test_the_row_names_a_tool_that_exists_with_the_argument_it_names():
+    """A routing row pointing at a spelling the catalogue does not accept
+    is worse than none: it costs a turn and teaches the wrong call."""
+    import delfin.agent.api_client as A
+    entry = next(t for t in A._DOC_TOOLS_OPENAI
+                 if t["function"]["name"] == "enter_worktree")
+    assert "base_ref" in entry["function"]["parameters"]["properties"]
