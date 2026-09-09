@@ -736,6 +736,12 @@ def parse_number(text: Any, convention: str = PLAIN_NUMBER) -> Optional[float]:
         return None
 
 
+# A period as an ISO prefix: a year, a year-month, or a full day. One
+# parameter for all three, because a prefix comparison on ISO dates is
+# exactly the question "does this row fall in that span".
+_ISO_PREFIX_RE = re.compile(r"^\d{4}(?:-\d{2}(?:-\d{2})?)?$")
+
+
 def _date_parts(text: Any) -> Optional[tuple[int, int, int, str]]:
     """``(a, b, c, separator)`` of a date-shaped value, else None."""
     match = _DATE_SEP_RE.match(str(text or ""))
@@ -2388,6 +2394,9 @@ def sum_column(
     group_by: Optional[str] = None,
     convention: Optional[str] = None,
     header_row: int = 1,
+    date_column: Optional[str] = None,
+    period: Optional[str] = None,
+    date_convention: Optional[str] = None,
 ) -> dict:
     """Total one column of a table and say what it could not add.
 
@@ -2410,6 +2419,22 @@ def sum_column(
     Kostenstelle" every administrative answer is really about.
     ``header_row`` is for the layout every German cost-centre sheet has:
     a title in row 1 and the column names below it.
+
+    ``period`` with ``date_column`` totals one span of time — the "Summe
+    der Juni-Buchungen" that was the other half of that question and had
+    no answer here. It is an ISO prefix, so ``"2026"``, ``"2026-06"`` and
+    ``"2026-06-03"`` are a year, a month and a day through one parameter,
+    and the column's own convention decides how its cells are read:
+    03.06.2026 and 2026-06-03 are the same day. A column that cannot be
+    settled is REFUSED for the same reason an unsettled number column is
+    — 05.06. and 06.05. are different months — and ``date_convention``
+    is how the caller says which reading applies.
+
+    Rows the period excludes are COUNTED, not dropped: ``outside`` for a
+    date outside it, ``undated`` for a row whose date could not be read
+    at all, and the four places still add up to the rows of the table. A
+    filter that quietly removed rows would be the failure this module
+    exists to prevent wearing a new hat.
     """
     p = _resolve(path)
     rows = _table_rows(p, sheet)
@@ -2453,12 +2478,63 @@ def sum_column(
     group_index = _column_index(group_by) if group_by else -1
     group_name = str(header[group_index]) if group_index >= 0 else ""
 
+    # -- the period, if one was named ----------------------------------
+    #
+    # Half a filter is worse than none: a date column without a span to
+    # match, or a span with no column to read it from, would silently
+    # total everything under a name that says otherwise.
+    if bool(period) != bool(date_column):
+        raise OfficeError(
+            "period and date_column go together: period='2026-06' says "
+            "WHICH span, date_column='Datum' says which column carries "
+            "the date. Give both or neither.")
+    period_key = str(period or "").strip()
+    if period_key and not _ISO_PREFIX_RE.match(period_key):
+        raise OfficeError(
+            f"period {period_key!r} is not an ISO prefix. Write the span "
+            "as '2026' for a year, '2026-06' for a month or '2026-06-03' "
+            "for a day; the column's own date format is read for you.")
+
+    date_index = -1
+    date_name = ""
+    date_chosen = ""
+    if period_key:
+        date_index = _column_index(str(date_column))
+        date_name = str(header[date_index])
+        date_values = [r[date_index] if date_index < len(r) else ""
+                       for r in body]
+        detected_dates, date_reason = detect_date_convention(date_values)
+        date_chosen = str(date_convention or "").strip() or detected_dates
+        if date_chosen not in (ISO_DATE, DAY_FIRST, MONTH_FIRST):
+            # Same stance the number side takes above: 05.06. and 06.05.
+            # are different months, and picking one silently moves the
+            # total without moving anything the reader can see.
+            raise OfficeError(
+                f"column {date_name!r} cannot be read as dates as it "
+                f"stands: {date_reason}. Ask which reading applies and "
+                f"pass date_convention='{DAY_FIRST}' or "
+                f"'{MONTH_FIRST}' or '{ISO_DATE}'.")
+
     total = 0.0
     counted = 0
     blank = 0
+    outside = 0
+    undated: list[str] = []
     skipped: list[str] = []
     groups: dict[str, list] = {}
     for offset, raw in enumerate(values):
+        if date_index >= 0:
+            row = body[offset]
+            cell = row[date_index] if date_index < len(row) else ""
+            iso = parse_date(cell, date_chosen)
+            if iso is None:
+                # Neither inside nor outside. Counting it as either is a
+                # guess about a row the reader can still see in the file.
+                undated.append(_fmt(cell))
+                continue
+            if not iso.startswith(period_key):
+                outside += 1
+                continue
         if str(raw if raw is not None else "").strip() == "":
             blank += 1
             continue
@@ -2487,6 +2563,19 @@ def sum_column(
     total = round(total, 6)
 
     notes: list[str] = []
+    if period_key:
+        notes.append(
+            f"this total covers only {period_key} by {date_name!r}: "
+            f"{outside} row(s) fall outside that span and are NOT in it.")
+    if undated:
+        # Named, not counted away: an undated row is one the reader can
+        # still see in the file, and it belongs to neither side.
+        shown = ", ".join(undated[:3])
+        more = f" … +{len(undated) - 3}" if len(undated) > 3 else ""
+        notes.append(
+            f"{len(undated)} row(s) have no readable date in "
+            f"{date_name!r} ({shown}{more}) and are in neither the total "
+            "nor the rows outside the period.")
     if skipped:
         notes.append(
             f"{len(skipped)} of {counted + len(skipped)} value(s) could not be "
@@ -2570,6 +2659,13 @@ def sum_column(
         "counted": counted,
         "blank": blank,
         "skipped": skipped,
+        # The two places a period sends a row. Always present, so a
+        # caller need not know whether a filter was used to check that
+        # the places add up to the rows.
+        "outside": outside,
+        "undated": len(undated),
+        "period": period_key,
+        "date_column": date_name,
         "rows": len(body),
         "group_by": group_name,
         "groups": group_rows,
