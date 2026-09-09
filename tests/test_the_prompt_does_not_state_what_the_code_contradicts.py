@@ -199,3 +199,56 @@ def test_every_office_tool_the_role_can_call_is_named_in_its_prompt():
     assert not unnamed, (
         "callable by this role, named nowhere in its prompt: "
         + ", ".join(unnamed))
+
+
+# ---------------------------------------------------------------------------
+# One rule, stated twice, narrowed once
+# ---------------------------------------------------------------------------
+#
+# The dashboard prompt asked for a plan before ≥3 actions in two places.
+# One of them was narrowed on 2026-08-13 to "only when the user did NOT
+# enumerate the steps", because a numbered list read back to the user who
+# just wrote it is pure cost; the benchmark dropped its plan expectation
+# in the same change. The other passage kept the unconditional form.
+#
+# kit.glm-5.3 on workflow_plan_before_act, whose prompt is itself a
+# numbered list ending "Bitte alle 5 schritte ausführen": it answered
+# "Kurzplan: 1) BP86 setzen, 2) def2-TZVP setzen, …" and emitted no ACTION
+# and no tool call at all. Stopping after the plan is the model's error;
+# being told to write one was not.
+#
+# The rule is now stated once, so the two halves cannot drift apart again.
+
+# The prompt is hard-wrapped, so a rule can carry a newline in the middle
+# of the phrase that names it. Match on the flowed text.
+_DASH_FLAT = re.sub(r"\s+", " ", _DASH)
+
+
+def test_the_plan_rule_is_stated_once():
+    hits = re.findall(r"(?i)1-line (?:numbered )?plan", _DASH_FLAT)
+    assert len(hits) == 1, (
+        f"the plan rule appears {len(hits)} times; two statements of one "
+        "rule are how the narrowed and unnarrowed versions came to live "
+        "in the same prompt")
+
+
+def test_the_plan_is_asked_for_only_when_the_user_did_not_enumerate():
+    """Whatever the wording, the exception has to be in the same breath
+    as the rule."""
+    m = re.search(r"(?i)1-line (?:numbered )?plan", _DASH_FLAT)
+    assert m, "the plan rule is gone entirely"
+    para = _DASH_FLAT[max(0, m.start() - 300):m.end() + 400]
+    assert re.search(r"(?i)without enumerating|nicht auf|did NOT enumerate",
+                     para), "the rule no longer names its condition"
+    assert re.search(r"(?i)already wrote the list", para), (
+        "the case where the user wrote the list is not answered next to "
+        "the rule that would otherwise cover it")
+
+
+def test_a_plan_is_never_offered_as_a_substitute_for_acting():
+    """The half that was missing: the prompt said when to write a plan
+    and never said a plan is not the work."""
+    assert re.search(r"(?i)plan INSTEAD of the ACTIONs|plan is not the work",
+                     _DASH_FLAT), (
+        "nothing tells the model that stopping after the plan answers "
+        "nothing")
