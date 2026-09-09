@@ -1782,6 +1782,20 @@ def _as_manta_multiplicity(value: Any) -> str:
     return str(number)
 
 
+def _as_manta_parallel_jobs(value: Any) -> str:
+    """``auto`` or how many frames run at once."""
+    text = str(value or "").strip().lower()
+    if not text or text in ("auto", "default"):
+        return "auto"
+    try:
+        number = int(float(text))
+    except (TypeError, ValueError):
+        raise ValueError("must be auto or a positive integer") from None
+    if number < 1:
+        raise ValueError("must be auto or a positive integer")
+    return str(number)
+
+
 def _as_manta_opt(value: Any) -> str:
     """Whether the surviving frames get a real geometry optimisation.
 
@@ -1964,7 +1978,7 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("MANTA_REFINE", _as_manta_refine, default="",
              help="What the best optimised frames are handed to: goat (search for the global minimum), crest (conformer ensemble), or none (stop after the optimisation). CREST runs in the CONTROL solvent via GBSA; GOAT does not use it."),
     FieldSpec("MANTA_REFINE_TOPK", _as_guppy_goat_topk, default="",
-             help="How many of the ranked candidates go into GOAT or CREST. 0 skips the refinement entirely. The winner of this stage is what the pipeline writes to start.txt and everything downstream uses."),
+             help="How many of the ranked candidates go into GOAT or CREST *inside* MANTA. Leave at 0 for the usual case: the winner is written to start.txt and global_optimizer=[GOAT|CREST] then refines that one structure downstream, which is the same work without doing it twice. Set this above 0 only to refine several candidates and let the refinement pick the winner. The winner of this stage is what the pipeline writes to start.txt and everything downstream uses."),
     # The spellings these replaced.  Kept so a CONTROL.txt written before the
     # rename still validates and still means what it said.
     FieldSpec("MANTA_RANK", _as_manta_rank, default="",
@@ -1983,8 +1997,8 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
              help="Frames more than this many kcal/mol above the best are dropped before the refinement."),
     FieldSpec("MANTA_GOAT", _as_guppy_goat_topk, default="",
              help="Old spelling of MANTA_REFINE_TOPK. Still honoured."),
-    FieldSpec("MANTA_PARALLEL_JOBS", _as_positive_int, default=4,
-             help="How many frames are worked on at once. The PAL budget is divided across them, so 4 jobs on PAL=32 gives each job 8 cores and each job maxcore x 8 MB."),
+    FieldSpec("MANTA_PARALLEL_JOBS", _as_manta_parallel_jobs, default="",
+             help="How many frames are worked on at once. auto follows PAL at about 4 cores per frame -- 8 jobs on PAL=32, 112 on PAL=450 -- which is where an xtb optimisation of a 40-100 atom complex stops scaling. Bounded at run time by the number of frames that exist. Total memory is PAL x maxcore however the split falls, so a wider split does not ask for more RAM. The pre-screen ignores this and uses the whole node, because its single points are one core each."),
     FieldSpec("MANTA_TIME_BUDGET", _as_non_negative_float, default=1800.0,
              help="Accepted for compatibility, but not enforced: the builder has no interruption point, so a wall-clock cap could only kill a construction part-way and a part-way construction yields nothing usable. Bound the work with MANTA_QUALITY and MANTA_MAX_ISOMERS instead. Not written into new CONTROL files."),
     FieldSpec("number_explicit_solv_molecules", _as_int, default=0),

@@ -1380,6 +1380,14 @@ def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any])
     # CONTROL solvent through means a CREST refinement runs in the same medium
     # as everything downstream instead of in the gas phase by omission.
     manta_solvent = str(config.get('solvent') or '').strip()
+    # The solvation the rest of the run uses, not a switch of MANTA's own.
+    # Optimising the frames in the gas phase and then running everything
+    # downstream in CPCM would rank the coordination isomers under a different
+    # Hamiltonian than the one that decides anything afterwards -- and for a
+    # complex carrying a formal charge that is not a small difference.
+    from delfin.common.solvation import build_solvation_keyword
+    manta_solvation = build_solvation_keyword(
+        config.get('implicit_solvation_model'), manta_solvent)
     # MANTA_OPT_METHOD lets the frame optimisations run at a different xtb
     # level from the rest of the run -- GFN-FF to sift a large manifold, say,
     # while xTB_method stays GFN2 for everything downstream.  Unset, it follows
@@ -1444,6 +1452,7 @@ def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any])
         'builder': dict(build_options),
         'selection': dict(selection),
         'solvent': manta_solvent,
+        'solvation': manta_solvation or 'gas phase',
         'rmsd_cutoff': rmsd_cutoff,
         'energy_window_kcal': energy_window_kcal,
         'input_file': guppy_input.name,
@@ -1487,6 +1496,7 @@ def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any])
         optimise=selection['optimise'],
         refine=selection['refine'],
         solvent=manta_solvent,
+        solvation=manta_solvation,
     )
     if ret != 0:
         raise RuntimeError("GUPPY sampling returned non-zero status")

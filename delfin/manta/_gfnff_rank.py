@@ -195,19 +195,35 @@ def _natoms(xyz_block: str) -> int:
 
 
 def gfnff_energy(xyz_block: str, charge: int = 0, uhf: int = 0,
-                 timeout: float = 120.0, method: Optional[str] = None) -> Optional[float]:
+                 timeout: float = 120.0, method: Optional[str] = None,
+                 solvent: str = "") -> Optional[float]:
     """Return the total energy of ``xyz_block`` in kcal/mol under the selected xtb
-    Hamiltonian (or None on any failure).  ``xyz_block`` is a header-less
+    Hamiltonian (or None on any failure).  ``solvent`` adds ALPB implicit
+    solvation, so the screen ranks in the same medium the optimisations and
+    everything downstream run in; an unknown solvent name makes xtb fail and
+    the frame simply gets no energy rather than a gas-phase one.  ``xyz_block`` is a header-less
     ``Sym x y z`` block (the canonical DELFIN format).  ``method`` overrides the
     DELFIN_CONF_RANK_METHOD env (gfnff | gfn2 | gfn1 | gfn0).  Cached by
     (coordinate-hash, charge, method)."""
     meth = (method or _resolve_method())
     if meth not in _METHOD_FLAGS:
-        meth = "gfnff"
+        # Do not quietly substitute a Hamiltonian.  GFN-FF used to be the
+        # fallback here, and on a transition-metal complex it is not a slightly
+        # worse GFN2: measured on ABAKOE (W(V)) its energy minimum sits at
+        # GFN2's near-maximum, 482 kcal/mol away.  A ranking produced that way
+        # is not a rougher ranking, it is a different one, and nothing in the
+        # result says which method produced it.
+        logger.error(
+            "Unknown ranking method %r; expected one of %s. Refusing to "
+            "substitute another Hamiltonian -- this frame gets no energy.",
+            meth, ", ".join(sorted(_METHOD_FLAGS)))
+        return None
     binary = binary_for(meth)
     if binary is None:
         return None
-    key = (hashlib.sha256(xyz_block.encode()).hexdigest(), int(charge), meth)
+    solvent_name = str(solvent or "").strip().lower()
+    key = (hashlib.sha256(xyz_block.encode()).hexdigest(), int(charge), meth,
+           solvent_name)
     if key in _CACHE:
         return _CACHE[key]
     val: Optional[float] = None
@@ -222,6 +238,8 @@ def gfnff_energy(xyz_block: str, charge: int = 0, uhf: int = 0,
                 fh.write(f"{na}\n\n{xyz_block}\n")
             cmd = [binary, fp] + _METHOD_FLAGS[meth] + ["--sp",
                    "--chrg", str(int(charge)), "--uhf", str(int(uhf))]
+            if solvent_name and solvent_name not in ("gas", "none", "vacuum"):
+                cmd += ["--alpb", solvent_name]
             res = subprocess.run(cmd, capture_output=True, text=True,
                                  timeout=timeout, cwd=td,
                                  env={**os.environ, "OMP_NUM_THREADS": "1"})

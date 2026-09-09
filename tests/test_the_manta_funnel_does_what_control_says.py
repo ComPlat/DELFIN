@@ -253,3 +253,111 @@ def test_the_screen_energy_is_converted_before_it_becomes_a_result():
     assert abs(_KCAL_PER_HARTREE - 627.509474) < 1e-6
     kcal = -1_234_567.8
     assert abs(kcal / _KCAL_PER_HARTREE + 1967.4) < 1.0
+
+
+# --- the frames are optimised in the solvent the rest of the run uses -------
+
+def test_the_optimisation_input_carries_the_control_solvation(tmp_path):
+    # Ranking coordination isomers in the gas phase and then running everything
+    # downstream in CPCM ranks them under a different Hamiltonian than the one
+    # that decides anything afterwards. For a complex carrying a formal charge
+    # that is not a small difference, and nothing in the output would say so.
+    from delfin.guppy_sampling import _write_xtb_input, _write_goat_input
+
+    inp = tmp_path / "XTB.inp"
+    _write_xtb_input(inp, ["Ni 0.0 0.0 0.0"], charge=2, multiplicity=3,
+                     pal=4, maxcore=2000, method="XTB2",
+                     solvation="CPCM(DMF)")
+    head = inp.read_text().splitlines()[0]
+    assert head == "!XTB2 OPT CPCM(DMF)", head
+
+    goat = tmp_path / "goat.inp"
+    _write_goat_input(goat, xyz_file=tmp_path / "c.xyz", charge=2,
+                      multiplicity=3, pal=4, maxcore=2000, method="XTB2",
+                      solvation="CPCM(DMF)")
+    assert goat.read_text().splitlines()[0] == "!XTB2 CPCM(DMF) GOAT"
+
+
+def test_gas_phase_stays_gas_phase(tmp_path):
+    from delfin.guppy_sampling import _write_xtb_input
+
+    inp = tmp_path / "XTB.inp"
+    _write_xtb_input(inp, ["Ni 0.0 0.0 0.0"], charge=0, multiplicity=1,
+                     pal=4, maxcore=2000, method="XTB2")
+    assert inp.read_text().splitlines()[0] == "!XTB2 OPT"
+
+
+def test_the_solvation_reaches_the_sampler_from_control():
+    import tempfile
+    from pathlib import Path
+    import delfin.guppy_sampling as sampling
+    import delfin.workflows.pipeline as pipeline
+
+    seen = {}
+    original = sampling.run_sampling
+    sampling.run_sampling = lambda **kw: seen.update(kw) or 0
+    try:
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "GUPPY").mkdir()
+            (root / "GUPPY" / "best_coordniation.xyz").write_text("1\n\nH 0 0 0\n")
+            try:
+                pipeline._run_guppy_for_smiles(
+                    "[Ni+2]", root / "start.txt",
+                    {"PAL": "8", "maxcore": "2000", "xTB_method": "XTB2",
+                     "solvent": "DMF", "implicit_solvation_model": "CPCM"})
+            except Exception:                      # noqa: BLE001
+                pass
+    finally:
+        sampling.run_sampling = original
+    assert seen["solvation"] == "CPCM(DMF)"
+    assert seen["solvent"] == "DMF"
+
+
+# --- how many frames run at once --------------------------------------------
+
+def test_the_worker_count_follows_pal():
+    # A fixed 4 wasted the machine in both directions: two cores per job on
+    # PAL=8, and 96 % of the node idle on PAL=450.
+    assert selection_options({"PAL": "8"})["parallel_jobs"] == 2
+    assert selection_options({"PAL": "32"})["parallel_jobs"] == 8
+    assert selection_options({"PAL": "450"})["parallel_jobs"] == 112
+
+
+def test_an_explicit_worker_count_still_wins():
+    assert selection_options({"PAL": "450",
+                              "MANTA_PARALLEL_JOBS": "6"})["parallel_jobs"] == 6
+
+
+def test_a_tiny_pal_still_runs_one_job():
+    assert selection_options({"PAL": "1"})["parallel_jobs"] == 1
+    assert selection_options({})["parallel_jobs"] == 1
+
+
+# --- no Hamiltonian is substituted behind the run's back --------------------
+
+def test_an_unknown_ranking_method_gets_no_energy_rather_than_gfnff():
+    # GFN-FF used to be the silent fallback. On a transition-metal complex it
+    # is not a rougher GFN2 but a different answer -- measured on ABAKOE its
+    # minimum is GFN2's near-maximum -- and nothing in the result said which
+    # method produced it.
+    from delfin.manta import _gfnff_rank
+
+    assert _gfnff_rank.gfnff_energy("H 0 0 0\nH 0 0 0.74",
+                                    method="not-a-hamiltonian") is None
+
+
+# --- GOAT inside MANTA is off by default; global_optimizer does it downstream
+
+def test_no_goat_inside_manta_by_default():
+    # The winner goes to start.txt and global_optimizer=[GOAT|CREST] refines
+    # that one structure. Refining inside MANTA as well would do it twice.
+    assert selection_options({})["refine_topk"] == 0
+
+
+def test_the_template_ships_no_goat_inside_manta():
+    from delfin import define
+
+    block = [l for l in define.TEMPLATE.splitlines() if l.startswith("MANTA_")]
+    assert "MANTA_REFINE_TOPK=0" in block
+    assert "MANTA_PARALLEL_JOBS=auto" in block
