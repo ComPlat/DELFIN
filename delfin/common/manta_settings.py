@@ -222,6 +222,24 @@ def apply_construction_env(config: Mapping[str, Any],
             if before.get(key) != value:
                 applied[key] = value
 
+    # Keep the builder inside the allocation it was given.  The batch-UFF pool
+    # is bounded by ``min(len(batch), os.cpu_count(), DELFIN_MAX_PROCESS_WORKERS)``
+    # -- by the whole machine and by 64, never by PAL.  On a 384-core node a run
+    # allocated PAL=8 would spawn up to 64 UFF processes, eight times its share,
+    # and on a shared node that is somebody else's job it is taking.
+    #
+    # Not pinned to 1: this pipeline makes one builder call and parallelises the
+    # frame optimisations afterwards, so the build and the optimisations never
+    # overlap and there is nothing to oversubscribe against.  A harness that
+    # runs many builds at once does need 1, for the opposite reason.
+    if not os.environ.get('DELFIN_MAX_PROCESS_WORKERS'):
+        try:
+            pal = max(1, int(float(str(config.get('PAL') or 1).strip())))
+        except (TypeError, ValueError):
+            pal = 1
+        target['DELFIN_MAX_PROCESS_WORKERS'] = str(pal)
+        applied['DELFIN_MAX_PROCESS_WORKERS'] = str(pal)
+
     # The build budget.  This is the only wall-clock limit MANTA has, and it is
     # enforced where the build actually is: ``smiles_to_xyz_isomers`` runs in an
     # isolated subprocess by default, and that subprocess is what gets killed.
@@ -276,6 +294,26 @@ def apply_construction_env(config: Mapping[str, Any],
     return applied
 
 
+#: Frame count above which "optimise everything" stops being the cheap option
+#: and a single-point screen is run first.  Measured over 5810 systems built at
+#: champion/extreme with ``max_isomers=0``, the manifold size per system is
+#:
+#:     mean 26.1 - p10 3 - p25 4 - p50 14 - p75 33 - p90 64 - p95 90
+#:     p99 190 - max 399
+#:
+#: so a fixed "optimise all" is right for the median system and wrong for its
+#: tail: 4.1 % of systems return more than 100 frames, and each one of those is
+#: an ORCA optimisation.  Screening above this leaves roughly three quarters of
+#: systems on the path that needs no screen at all, and caps the worst case at
+#: this many optimisations instead of 399.
+#:
+#: The number will bite slightly more often over time: the builder's
+#: PUCKER_SYMM_ADD, added after that measurement, can take the pucker
+#: combination union to twice the budget cap on systems with two or more rings
+#: in one automorphism orbit.
+SCREEN_ABOVE_FRAMES = 30
+
+
 def selection_options(config: Mapping[str, Any]) -> Dict[str, Any]:
     """How the frames are funnelled down to the one geometry the pipeline takes.
 
@@ -324,10 +362,15 @@ def selection_options(config: Mapping[str, Any]) -> Dict[str, Any]:
     screen = _choice(config, 'MANTA_SCREEN', 'MANTA_RANK', 'GUPPY_RANK',
                      allowed=SCREEN_METHODS,
                      default='none' if optimises_everything else 'gfn2')
+    screen_explicit = _raw(config, 'MANTA_SCREEN', 'MANTA_RANK',
+                           'GUPPY_RANK') is not None
 
     return {
         'screen': screen,
+        'screen_explicit': screen_explicit,
         'screen_keep': screen_keep,
+        'screen_above': _integer(config, 'MANTA_SCREEN_ABOVE',
+                                 default=SCREEN_ABOVE_FRAMES),
         'optimise': optimise,
         'optimise_method': _raw(config, 'MANTA_OPT_METHOD') or None,
         'multiplicity': _count(config, 'MANTA_OPT_MULTIPLICITY',

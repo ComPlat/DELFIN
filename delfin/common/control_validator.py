@@ -1967,6 +1967,8 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     # its own because they cost three different amounts.
     FieldSpec("MANTA_SCREEN", _as_manta_rank, default="",
              help="The single point that puts the frames in an energy order: none, clash, gfnff, gfn0, gfn1, gfn2, gxtb. This is the cheap stage -- one energy per (frame, multiplicity) pair, no geometry change -- and it exists so the expensive stage can be pointed at the frames worth optimising. none leaves the builder's own order, which is least-steric-clash and largely tied. gxtb needs the separate g-xTB build; an ordinary xtb accepts the flag and silently runs GFN2, so DELFIN verifies the binary before using it."),
+    FieldSpec("MANTA_SCREEN_ABOVE", _as_int, default="",
+             help="Frame count above which the single-point screen runs even though MANTA_SCREEN is unset. Measured over 5810 builds at champion/extreme with max_isomers=0, the manifold is p50 14 frames, p75 33, p90 64, p95 90, p99 190, max 399 -- so optimising everything is right for the median system and wrong for its tail, where every extra frame is an ORCA optimisation. Above this many, the run screens with gfn2 and optimises the best this many instead. An explicit MANTA_SCREEN always wins over it. 0 switches the rule off and optimises whatever the builder returned."),
     FieldSpec("MANTA_SCREEN_KEEP", _as_manta_keep, default="",
              help="How many (frame, multiplicity) pairs survive the screen and get optimised. all optimises everything, which makes the screen pointless -- set a number here and the screen decides which ones deserve the cost. 10 is a reasonable starting point for a large manifold."),
     FieldSpec("MANTA_OPT", _as_manta_opt, default="",

@@ -20,6 +20,9 @@ from delfin.smiles_converter import (
 # RDKit / OpenBabel memory across calls.  Enabled by default; set
 # ``DELFIN_UI_INLINE=1`` to bypass (e.g. when profiling or for
 # cooperative debugging).
+#: Fallback only.  The live answer comes from :func:`_isolation_wanted`, which
+#: reads the environment at call time -- see the note on ``_UI_ISOLATE_TIMEOUT``
+#: below for why a module-level read is not good enough.
 _UI_ISOLATE_DEFAULT = os.environ.get("DELFIN_UI_INLINE", "0") != "1"
 # Per-conversion subprocess timeout (s).  Set DELFIN_UI_ISOLATE_TIMEOUT=0 (or negative) for NO
 # timeout, so a large complete manifold (huge, heavily-substituted macrocycles) can run to completion
@@ -40,7 +43,51 @@ _UI_ISOLATE_DEFAULT = os.environ.get("DELFIN_UI_INLINE", "0") != "1"
 # porphyrin 50-90.  At 1800 s two of those bands lost 9.6 % and 39.6 % of their
 # builds to the clock and returned an empty answer.  Nothing in that sample
 # exceeded 7200 s, so the tail is bounded, not infinite.
+#: The default, not the answer.  Read at call time by
+#: :func:`_resolve_isolate_timeout`, because a module-level read freezes the
+#: value at first import: CONTROL sets DELFIN_UI_ISOLATE_TIMEOUT from
+#: MANTA_TIME_BUDGET, and if anything imports this module before that runs, a
+#: user who asked for 7200 s is killed at the default and nothing says so.
+#: That is the same failure as a provenance record written from a second
+#: environment lookup -- it does not raise, it just quietly does something else.
 _UI_ISOLATE_TIMEOUT = int(os.environ.get("DELFIN_UI_ISOLATE_TIMEOUT", "3600"))
+
+
+def _resolve_isolate_timeout(explicit=None):
+    """The build timeout in seconds, or ``None`` for no limit.
+
+    ``0`` means no limit and has to survive as such: a complete manifold on a
+    heavy macrocycle is a long deterministic construction, not a hang.  An
+    explicit ``0`` from a caller used to fall through to the default, because
+    ``timeout or _UI_ISOLATE_TIMEOUT`` cannot tell ``0`` from unset.
+    """
+    if explicit is None:
+        raw = os.environ.get("DELFIN_UI_ISOLATE_TIMEOUT", _UI_ISOLATE_TIMEOUT)
+    else:
+        raw = explicit
+    try:
+        seconds = int(float(raw))
+    except (TypeError, ValueError):
+        seconds = _UI_ISOLATE_TIMEOUT
+    return None if seconds <= 0 else seconds
+
+
+def _isolation_wanted():
+    """Whether the build runs in its own subprocess, read at call time.
+
+    ``DELFIN_UI_INLINE=1`` turns the isolation off, and with it the only place
+    a build timeout can be enforced -- the budget then has no effect at all,
+    not even a wrong one.  Inheriting that variable from a parent process is
+    enough to do it, so a run that asked for a budget and cannot get one is
+    told rather than left to assume.
+    """
+    inline = os.environ.get("DELFIN_UI_INLINE", "0") == "1"
+    if inline and os.environ.get("DELFIN_UI_ISOLATE_TIMEOUT"):
+        print("WARNING: DELFIN_UI_INLINE=1 runs the structure build in this "
+              "process, so MANTA_TIME_BUDGET / DELFIN_UI_ISOLATE_TIMEOUT "
+              "cannot be enforced and a long build will not be stopped.",
+              file=sys.stderr)
+    return not inline
 
 
 def _kill_process_group(proc):
@@ -92,9 +139,7 @@ def _run_isomers_subprocess(smiles, kwargs, timeout=None):
     Input ``kwargs`` are JSON-serialised, so only primitives / lists
     are accepted.  Output XYZ strings + labels are also JSON-safe.
     """
-    timeout = timeout or _UI_ISOLATE_TIMEOUT
-    if not timeout or timeout <= 0:
-        timeout = None          # DELFIN_UI_ISOLATE_TIMEOUT<=0 -> run to completion, no kill
+    timeout = _resolve_isolate_timeout(timeout)
     payload = json.dumps({"smiles": smiles, "kwargs": kwargs})
     script = (
         "import json, sys\n"
@@ -302,7 +347,7 @@ def smiles_to_xyz_isomers(
     # MANTA button can request the COMPLETE manifold (never cut off).
     if max_isomers is not None:
         base_kwargs["max_isomers"] = int(max_isomers)
-    if _UI_ISOLATE_DEFAULT:
+    if _isolation_wanted():
         results, error = _run_isomers_subprocess(smiles, base_kwargs)
         if error and hapto_approx is None and _is_hapto_failfast(error):
             retry_kwargs = dict(base_kwargs, hapto_approx=True)

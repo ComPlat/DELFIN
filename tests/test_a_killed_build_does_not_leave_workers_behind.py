@@ -114,3 +114,76 @@ def test_the_template_ships_the_budget_it_documents():
     from delfin import define
 
     assert "MANTA_TIME_BUDGET=3600" in define.TEMPLATE
+
+
+# --- the budget has to be read when it is used, not when the module loads ---
+
+def test_the_budget_is_read_at_call_time_not_at_import(monkeypatch):
+    """A module-level env read freezes the value at first import.
+
+    CONTROL sets DELFIN_UI_ISOLATE_TIMEOUT from MANTA_TIME_BUDGET. If anything
+    imports this module first -- and plenty does -- a user who asked for 7200 s
+    was killed at the default and nothing said so. The same shape as a
+    provenance record written from a second environment lookup: it does not
+    raise, it quietly does something else.
+    """
+    monkeypatch.setenv("DELFIN_UI_ISOLATE_TIMEOUT", "7200")
+    assert input_processing._resolve_isolate_timeout() == 7200
+
+    monkeypatch.setenv("DELFIN_UI_ISOLATE_TIMEOUT", "900")
+    assert input_processing._resolve_isolate_timeout() == 900
+
+
+def test_zero_means_no_limit_and_survives_as_zero(monkeypatch):
+    # `timeout or default` cannot tell 0 from unset, so an explicit "no limit"
+    # used to fall through to the default. A complete manifold on a heavy
+    # macrocycle is a long deterministic construction, not a hang.
+    monkeypatch.setenv("DELFIN_UI_ISOLATE_TIMEOUT", "0")
+    assert input_processing._resolve_isolate_timeout() is None
+    assert input_processing._resolve_isolate_timeout(0) is None
+
+
+def test_nonsense_falls_back_rather_than_crashing_the_build(monkeypatch):
+    monkeypatch.setenv("DELFIN_UI_ISOLATE_TIMEOUT", "soon")
+    assert input_processing._resolve_isolate_timeout() == input_processing._UI_ISOLATE_TIMEOUT
+
+
+def test_inline_mode_says_the_budget_cannot_be_enforced(monkeypatch, capsys):
+    # DELFIN_UI_INLINE=1 runs the build in-process, which removes the only
+    # place a timeout can be applied. Inheriting the variable is enough to do
+    # it, so a run that asked for a budget and cannot have one is told.
+    monkeypatch.setenv("DELFIN_UI_INLINE", "1")
+    monkeypatch.setenv("DELFIN_UI_ISOLATE_TIMEOUT", "7200")
+    assert input_processing._isolation_wanted() is False
+    assert "cannot be enforced" in capsys.readouterr().err
+
+
+def test_isolation_is_on_by_default(monkeypatch):
+    monkeypatch.delenv("DELFIN_UI_INLINE", raising=False)
+    assert input_processing._isolation_wanted() is True
+
+
+# --- the builder stays inside the allocation it was given --------------------
+
+def test_the_uff_pool_is_bounded_by_pal_not_by_the_machine(monkeypatch):
+    """The batch-UFF pool is capped by os.cpu_count() and 64, never by PAL.
+
+    On a 384-core node a run allocated PAL=8 would spawn up to 64 UFF
+    processes, eight times its share, and on a shared node that is somebody
+    else's job it is taking.
+    """
+    from delfin.common.manta_settings import apply_construction_env
+
+    monkeypatch.delenv("DELFIN_MAX_PROCESS_WORKERS", raising=False)
+    applied = {}
+    apply_construction_env({"PAL": "8"}, applied)
+    assert applied["DELFIN_MAX_PROCESS_WORKERS"] == "8"
+
+
+def test_an_explicit_worker_cap_is_left_alone(monkeypatch):
+    from delfin.common.manta_settings import apply_construction_env
+
+    monkeypatch.setenv("DELFIN_MAX_PROCESS_WORKERS", "1")
+    applied = {}
+    apply_construction_env({"PAL": "64"}, applied)
+    assert "DELFIN_MAX_PROCESS_WORKERS" not in applied
