@@ -55,19 +55,35 @@ def test_the_handler_is_removed_again_afterwards(tmp_path):
     assert signal.getsignal(signal.SIGTERM) == before
 
 
-def test_a_nested_guard_does_not_lose_the_original_handler(tmp_path):
+def test_a_nested_guard_stands_down_instead_of_deadlocking(tmp_path):
+    """The lock is an exclusive flock, and a second guard opened a second
+    descriptor on the same file and waited for a lock its own process
+    already held — a silent deadlock, not an error.
+
+    It cost a CI run: the job sat there until the 25-minute limit
+    cancelled it, with two tests passed and nothing to say why. Nesting is
+    a programming mistake either way; hanging is the worst way to report
+    one, so the inner guard stands down and the outer keeps the lock and
+    the restore.
+    """
+    ws = tmp_path / "tests" / "fixtures" / "office_workspace"
+    ws.mkdir(parents=True)
+    (ws / "buchungen.csv").write_text("id;betrag\n1;10\n", encoding="utf-8")
     before = signal.getsignal(signal.SIGTERM)
     with _PristineWorkspace(tmp_path):
         with _PristineWorkspace(tmp_path):
-            pass
+            (ws / "buchungen.csv").unlink()
+        # The inner guard restored nothing: that is the outer one's job.
+        assert not (ws / "buchungen.csv").exists()
+    assert (ws / "buchungen.csv").is_file(), "the outer guard did not restore"
     assert signal.getsignal(signal.SIGTERM) == before
 
 
 def test_the_files_come_back_when_the_block_is_left_by_an_exception(tmp_path):
     """The property the handler exists to reach, exercised through the
     exception it raises."""
-    ws = tmp_path / "office_workspace"
-    ws.mkdir()
+    ws = tmp_path / "tests" / "fixtures" / "office_workspace"
+    ws.mkdir(parents=True)
     (ws / "buchungen.csv").write_text("id;betrag\n1;10\n", encoding="utf-8")
     with pytest.raises(KeyboardInterrupt):
         with _PristineWorkspace(tmp_path):

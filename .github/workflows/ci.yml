@@ -80,7 +80,18 @@ jobs:
           pip install -e ".[agent,docs,dev]"
 
       - name: Run fast test suite (excludes heavy + order-dependent tests)
-        run: pytest -q -m "not slow"
+        # A per-TEST deadline, for the reason pytest-timeout is declared in
+        # pyproject: without one, a single test that waits forever sits
+        # there until the job's 25-minute limit cancels it, and the run
+        # ends with no failure named and nothing to look at. That happened
+        # on 2026-09-09 — a guard taking an exclusive lock it already held
+        # deadlocked, two tests had passed, and the job was cancelled.
+        #
+        # The slow workflow has had this since the same lesson. 300s is far
+        # above the slowest test here and still turns a hang into one named
+        # failure within five minutes. --timeout-method=signal so a test
+        # blocked in C code (a lock, a socket) is interrupted too.
+        run: pytest -q -m "not slow" --timeout=300 --timeout-method=signal
 
   lint:
     name: lint (ruff)
@@ -199,7 +210,7 @@ jobs:
 
       - name: Measure coverage over the fast suite
         run: |
-          pytest -q -m "not slow" \
+          pytest -q -m "not slow" --timeout=300 --timeout-method=signal \
             --cov=delfin --cov-report=term --cov-report=xml \
             > coverage.txt 2>&1 || true
           {
