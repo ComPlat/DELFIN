@@ -196,26 +196,52 @@ def _solo_prompt() -> str:
         role_id="solo_agent", mode_id="solo"))
 
 
-def test_the_addendum_states_it_and_it_reaches_the_prompt():
-    """A rule is a rule when it is in the BUILT prompt."""
+def test_the_rule_is_a_MECHANISM_and_not_prose(bench=None):
+    """Measured, and the measurement is the whole argument.
+
+    The control rule shipped twice as prose: a paragraph in the integrity
+    addendum, which every role reads on every turn, and a row in
+    solo_agent's strategy table. On
+    science_pipeline_gains_a_step_that_computes, N=8 per arm:
+
+        main, neither addition                     5/10
+        both additions (the merge)                 0/8   sigma 0.4
+        addendum paragraph removed                 1/10
+        BOTH removed                               8/8   sigma 2.7
+
+    8/8 against 0/8 is p ~ 0.0002. Removing only one recovers nothing --
+    either alone still turns the agent from a builder into an analyst,
+    on a task graded by RUNNING what it built.
+
+    And 8/8 beats main's 5/10 (p ~ 0.02): the code changes in that merge
+    IMPROVED this task, and the two sentences of prose destroyed it.
+
+    So the rule ships as a mechanism only -- `base_ref` exists, and its
+    own description says what omitting it costs, read at the call site
+    where it applies. Nothing states it on a turn that is not about
+    attributing a failure. That is the cost side the project's own rule
+    demands be measured, and prose that costs fifty points on a build
+    task does not earn its place however true it is.
+    """
+    # The mechanism is in the tool CATALOGUE, which is sent as tool
+    # definitions rather than as prompt text -- that is precisely why it
+    # is free of the cost measured above.
+    entry = next(t for t in A._DOC_TOOLS_OPENAI
+                 if t["function"]["name"] == "enter_worktree")
+    base = entry["function"]["parameters"]["properties"]["base_ref"]
+    assert "control" in base["description"]
+    # Short on purpose. A longer wording was tried -- "Without it you get
+    # HEAD again, which is not a control" -- to stop the model omitting
+    # the argument. It bought nothing measurable on the control task
+    # (2/8 against a 33% baseline) and the arm carrying it scored 4/8 on
+    # science_pipeline where the arm without it scored 8/8. Suggestive at
+    # p ~ 0.08 rather than proven, and with no benefit on the other side
+    # of the ledger there is nothing to weigh it against.
+    assert len(base["description"]) < 60
+
     flat = _solo_prompt()
-    assert "A failure needs a control before you attribute it" in flat
-    assert "base_ref" in flat
-
-
-def test_the_routing_table_names_it_too():
-    """Measured live on kit.deepseek-v4-flash, 2026-09-09: with the rule in
-    the addendum and the mechanism in the catalogue, the model still read
-    `git show <sha> --stat` on both commits and never ran a control. The
-    addendum says what a scientist does; the strategy table is where the
-    model looks to pick a tool, and it had no row for this question.
-
-    Same shape as the office arithmetic rule that named no tool: a rule
-    the framework states and a routing table that does not carry it are
-    not the same thing."""
-    flat = _solo_prompt()
-    assert "did X break this?" in flat
-    assert "Run the CONTROL, not the diff" in flat
+    assert "A failure needs a control before you attribute it" not in flat
+    assert "Run the CONTROL, not the diff" not in flat
 
 
 def test_the_row_names_a_tool_that_exists_with_the_argument_it_names():
