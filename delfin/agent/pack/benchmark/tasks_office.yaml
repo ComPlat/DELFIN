@@ -324,3 +324,43 @@ tasks:
     max_duration_s: 240
     max_cost_usd: 0.80
     max_tool_calls: 14
+
+  # ── one month out of a year, without doing the filtering by hand ─────
+  - id: office_one_month_is_totalled_by_the_tool
+    task_class: office
+    mode: office
+    prompt: >
+      Wie viel haben wir laut Buchungen_2026.xlsx im März 2026 ausgegeben?
+    expected_signals:
+      # The tool that totals, not a total the model assembled itself.
+      - pattern: 'sum_column'
+        against: tool_name
+      # And totalled with the filter rather than by reading the grid and
+      # adding the March rows in its head. Anchored on the rendered call
+      # so the prose cannot satisfy it: an answer that merely says the
+      # word "period" has still done the arithmetic itself.
+      - pattern: 'TOOL: sum_column\([\s\S]{0,160}?period'
+        against: any
+      # The March figure. 894,30 + 3.320,00 + 410,00 + 265,85 + 1.180,40.
+      - pattern: '6\.?070[,.]55'
+        against: text
+      # The sheet has hidden rows and they ARE in the total, which is the
+      # standing rule of this module and does not stop being true because
+      # a month was picked out.
+      - pattern: '(?i)(ausgeblendet|versteckt|gefiltert|hidden)'
+        against: text
+        optional: true
+    forbidden_signals:
+      # The whole year reported as March. This is the failure the filter
+      # exists to prevent, and it reads exactly like a correct answer.
+      - pattern: '23[.,]?716'
+        against: text
+      # A month assembled by hand out of a rendered grid: the arithmetic
+      # this tool exists to take off the model. Matched as an action —
+      # explaining which rows are March is fine, adding them up in a
+      # shell is not.
+      - pattern: 'TOOL: bash\([\s\S]{0,200}?(awk|grep|python|paste|cut)[\s\S]{0,200}?(03\.2026|2026-03)'
+        against: any
+    max_duration_s: 240
+    max_cost_usd: 0.80
+    max_tool_calls: 14

@@ -150,7 +150,12 @@ def test_the_counts_still_match_what_was_measured():
     # it needs the guard for the same reason the memory pair does — the
     # hook definition is seeded into the fixture at run time and has to
     # leave with everything else the attempt wrote.
-    assert counts == {"office": 11, "behavior": 12,
+    #
+    # office 11 -> 12 on 2026-09-09: office_one_month_is_totalled_by_the
+    # _tool, which asks for one month out of a workbook that holds five.
+    # It reads the same restored fixture as its neighbours and writes
+    # nothing, so it belongs to the class for the same reason they do.
+    assert counts == {"office": 12, "behavior": 12,
                       "generic_project": 14, "other": 48}, counts
 
 
