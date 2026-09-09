@@ -210,3 +210,74 @@ def test_a_correct_answer_is_not_failed_for_a_word_it_used():
             hits.append(f"{m.group(0)!r} in {text[:50]!r}")
     assert not hits, "correct answers scored as the naive reading: " + \
         "; ".join(hits)
+
+
+# ---------------------------------------------------------------------------
+# The first office task that changes a file
+# ---------------------------------------------------------------------------
+
+_CORRECT = "office_a_record_is_corrected_by_its_key"
+
+
+def _correct_task():
+    from delfin.agent.benchmark import load_tasks
+
+    return next(t for t in load_tasks() if t.id == _CORRECT)
+
+
+def _edit_by_key_traj(text: str):
+    from delfin.agent.benchmark import Trajectory
+
+    return Trajectory(text=text, tool_calls=[
+        {"name": "mcp__delfin-docs__read_document",
+         "input": {"path": "Buchungen_2026.xlsx"}},
+        {"name": "mcp__kit-coding__edit_sheet",
+         "input": {"path": "Buchungen_2026.xlsx", "key_column": "Beleg",
+                   "updates": [{"key": "R-014",
+                                "set": {"Betrag": "1.265,85"}}]}},
+    ])
+
+
+def test_the_right_edit_satisfies_every_expected_signal():
+    from delfin.agent.benchmark import _signal_matches
+
+    traj = _edit_by_key_traj(
+        "R-014 steht jetzt auf 1.265,85 € (vorher 265,85 €). Die Änderung "
+        "ist gesichert und lässt sich mit undo_changes zurücknehmen.")
+    unmatched = [i for i, s in enumerate(_correct_task().expected_signals)
+                 if not _signal_matches(s, traj)]
+    assert not unmatched, f"unmatched: expected{unmatched}"
+
+
+def test_a_cell_coordinate_does_not_satisfy_the_by_key_signal():
+    """The rule the prompt states: the sheet has seven hidden rows, so
+    what a reader counts and what the file numbers are different things."""
+    from delfin.agent.benchmark import Trajectory, _signal_matches
+
+    by_cell = Trajectory(
+        text="E15 auf 1.265,85 gesetzt; per undo_changes rücknehmbar.",
+        tool_calls=[{"name": "mcp__kit-coding__edit_sheet",
+                     "input": {"path": "Buchungen_2026.xlsx",
+                               "edits": [{"cell": "E15",
+                                          "value": "1.265,85"}]}}])
+    task = _correct_task()
+    key_signal = next(s for s in task.expected_signals
+                      if "key_column" in s.pattern)
+    assert not _signal_matches(key_signal, by_cell)
+    # Saying it is not doing it.
+    talked = Trajectory(text="Ich adressiere die Zeile über key_column.")
+    assert not _signal_matches(key_signal, talked)
+
+
+def test_rewriting_the_workbook_in_a_shell_is_the_forbidden_route():
+    from delfin.agent.benchmark import Trajectory, _signal_matches
+
+    task = _correct_task()
+    shell = Trajectory(text="Fertig.", tool_calls=[
+        {"name": "mcp__kit-coding__bash",
+         "input": {"command": "python -c \"import openpyxl; "
+                              "wb=openpyxl.load_workbook('Buchungen_2026.xlsx')\""}}])
+    assert any(_signal_matches(s, shell) for s in task.forbidden_signals)
+    # And the correct route is not caught by it.
+    ok = _edit_by_key_traj("R-014 auf 1.265,85 gesetzt, per Backup rücknehmbar.")
+    assert not any(_signal_matches(s, ok) for s in task.forbidden_signals)
