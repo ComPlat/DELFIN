@@ -154,3 +154,77 @@ def test_the_same_holds_for_an_edit_addressed_by_cell(sheet):
     assert res["total"] == pytest.approx(
         _TOTAL_BEFORE - _R014_BEFORE + 1265.85)
     assert res["skipped"] == []
+
+
+# ---------------------------------------------------------------------------
+# The other two tools nobody had ever called
+# ---------------------------------------------------------------------------
+#
+# fill_series and draft_email were driven by hand at the same time and
+# both did their job. draft_email had one thing worth changing: the
+# Message-ID it generated ended in this machine's fully-qualified name,
+# and the draft is a file the user opens and SENDS. The internal name of a
+# shared compute host is not the sender's mail domain and travels to
+# whoever receives the mail. The id only has to be unique.
+
+def test_a_draft_does_not_carry_this_machines_name_to_the_recipient(tmp_path):
+    import socket
+
+    from delfin.agent import office
+
+    office.draft_email(tmp_path / "anfrage.eml", to="einkauf@example.org",
+                       subject="Rückfrage", body="Guten Tag")
+    text = (tmp_path / "anfrage.eml").read_text(encoding="utf-8")
+    host = socket.getfqdn()
+    assert host not in text, f"the draft names this host: {host}"
+    if "." in host:
+        assert host.split(".", 1)[1] not in text, "the domain still travels"
+
+
+def test_the_draft_is_still_a_valid_message_with_a_unique_id(tmp_path):
+    """The id is reserved-TLD, not absent — a message without one is not
+    a message, and two drafts must not collide."""
+    from email import message_from_string
+
+    from delfin.agent import office
+
+    ids = []
+    for name in ("a.eml", "b.eml"):
+        office.draft_email(tmp_path / name, to="x@example.org",
+                           subject="Test", body="Hallo")
+        msg = message_from_string(
+            (tmp_path / name).read_text(encoding="utf-8"))
+        assert msg["To"] == "x@example.org"
+        assert msg["Subject"] == "Test"
+        ids.append(msg["Message-ID"])
+    assert all(i and i.startswith("<") and i.endswith(">") for i in ids), ids
+    assert ids[0] != ids[1], "two drafts share a Message-ID"
+
+
+def test_a_series_fills_every_row_and_keeps_the_numbers_as_written(tmp_path):
+    """fill_series, driven for the first time. Recorded because it is the
+    tool the prompt's whole series section is about and nothing had ever
+    run it."""
+    from delfin.agent import office
+
+    table = tmp_path / "kunden.csv"
+    table.write_text("Nr;Name;Betrag\n1;Meier GmbH;1.234,50\n"
+                     "2;Schulze AG;289,90\n", encoding="utf-8")
+    template = tmp_path / "brief.docx"
+    office.create_docx(template, [
+        {"heading": "Zahlungserinnerung"},
+        {"paragraph": "Sehr geehrte {{Name}},"},
+        {"paragraph": "offen sind {{Betrag}} EUR."}])
+
+    out = tmp_path / "briefe"
+    res = office.fill_series(table, template, output_dir=out,
+                             name_pattern="Brief_{Nr}.docx")
+    assert res["counts"] == {"ok": 2, "incomplete": 0, "failed": 0}
+    assert sorted(p.name for p in out.iterdir()) == [
+        "Brief_1.docx", "Brief_2.docx"]
+
+    body = json.dumps(office.read_document(out / "Brief_1.docx"),
+                      ensure_ascii=False, default=str)
+    assert "Meier GmbH" in body
+    assert "{{" not in body, "a placeholder survived into the letter"
+    assert "1.234,50" in body, "the amount was reformatted on the way in"
