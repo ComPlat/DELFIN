@@ -84,8 +84,15 @@ def _extract_from_delfin_data(data: dict) -> dict[str, Any]:
             modules.append("GOAT")
         if _is_yes(parsed.get("CREST")) or parsed_optimizer == "CREST":
             modules.append("CREST")
+        # The archive holds 126 calculations tagged GUPPY; that tag stays
+        # readable so they do not fall out of the index.  A run configured the
+        # new way is tagged MANTA, and a legacy GUPPY=yes run is both -- it is
+        # the same builder either way.
         if _is_yes(parsed.get("GUPPY")):
             modules.append("GUPPY")
+        if str(parsed.get("smiles_converter", "")).strip().upper() in ("MANTA", "GUPPY") \
+                or _is_yes(parsed.get("GUPPY")):
+            modules.append("MANTA")
         if _is_yes(parsed.get("hyperpol_xtb_module")):
             modules.append("hyperpol_xtb")
         if _is_yes(parsed.get("TADF_xTB_module")):
@@ -178,6 +185,9 @@ def _extract_from_control_txt(text: str) -> dict[str, Any]:
         rec["esd_modus"] = kv.get("ESD_modus", "")
     if _is_yes(kv.get("GUPPY")):
         modules.append("GUPPY")
+    if str(kv.get("smiles_converter", "")).strip().upper() in ("MANTA", "GUPPY") \
+            or _is_yes(kv.get("GUPPY")):
+        modules.append("MANTA")
     global_optimizer = str(kv.get("global_optimizer", "")).strip().upper()
     if _is_yes(kv.get("XTB_GOAT")) or global_optimizer == "GOAT":
         modules.append("GOAT")

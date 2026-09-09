@@ -21,7 +21,10 @@ import os
 import shutil
 import subprocess
 import tempfile
+import logging
 from typing import Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 _HARTREE_TO_KCAL = 627.5094740631
 
@@ -34,7 +37,16 @@ _METHOD_FLAGS = {
     "gfn2": ["--gfn", "2"],
     "gfn1": ["--gfn", "1"],
     "gfn0": ["--gfn", "0"],
+    # g-xTB is not one of the family above even though the flag looks like it.
+    # It ships as a statically linked xtb of its own, and the ordinary xtb
+    # beside it **accepts** ``--gxtb`` and silently runs GFN2 -- measured
+    # identical to the last digit.  So it needs its own binary and a check that
+    # the binary is really it; see _find_gxtb and _binary_is_really_gxtb.
+    "gxtb": ["--gxtb"],
 }
+
+#: Methods that need the separate g-xTB build rather than the ordinary xtb.
+_NEEDS_GXTB = frozenset({"gxtb"})
 
 
 def _resolve_method() -> str:
@@ -65,13 +77,117 @@ def _find_xtb() -> Optional[str]:
     return None
 
 
+def _find_gxtb() -> Optional[str]:
+    """The xtb build that actually has g-xTB in it.
+
+    Looked for under two names because the two exist in the wild: DELFIN's own
+    installer lays it down as ``xtb-gxtb`` beside the ordinary one, while the
+    upstream release installs as plain ``gxtb`` (that is what is on this
+    machine, in /usr/local/bin).  A resolver that knew only the first name
+    reported "not found" on a system where it was installed.
+    """
+    override = os.environ.get("DELFIN_GXTB_BINARY")
+    if override and os.path.exists(override):
+        return override
+    try:
+        from delfin.qm_runtime import get_qm_tools_bin_dir
+
+        candidate = os.path.join(get_qm_tools_bin_dir(), "xtb-gxtb")
+        if os.path.exists(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    except Exception:                                     # noqa: BLE001
+        pass
+    for name in ("xtb-gxtb", "gxtb"):
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
 _XTB = _find_xtb()
+_GXTB = _find_gxtb()
 _CACHE: Dict[Tuple[str, int, str], Optional[float]] = {}
+_GXTB_VERIFIED: Dict[str, bool] = {}
+
+#: Two hydrogens, far enough apart to be a molecule and small enough that both
+#: Hamiltonians answer in well under a second.  Used only to tell the two
+#: programs apart, never for chemistry.
+_PROBE_XYZ = "H 0.000000 0.000000 0.000000\nH 0.000000 0.000000 0.740000\n"
 
 
-def available() -> bool:
-    """True if an xtb binary was found (GFN-FF ranking is possible)."""
-    return _XTB is not None
+def _binary_is_really_gxtb(binary: str, timeout: float = 60.0) -> bool:
+    """Whether ``binary`` runs g-xTB when asked to, or quietly runs GFN2.
+
+    The failure this guards against is silent by construction: an ordinary xtb
+    given ``--gxtb`` prints no warning, exits zero, and returns the GFN2 energy.
+    A ranking built on that is a GFN2 ranking wearing a g-xTB label, and nothing
+    in the output says so.
+
+    So the two are asked the same question and their answers compared.  A real
+    g-xTB and a GFN2 disagree on any molecule; the same number twice means one
+    program answered twice.
+    """
+    cached = _GXTB_VERIFIED.get(binary)
+    if cached is not None:
+        return cached
+    answers = []
+    for flags in (_METHOD_FLAGS["gxtb"], _METHOD_FLAGS["gfn2"]):
+        answers.append(_probe_energy(binary, flags, timeout))
+    good = (answers[0] is not None and answers[1] is not None
+            and abs(answers[0] - answers[1]) > 1e-8)
+    if not good:
+        logger.warning(
+            "%s does not appear to be a g-xTB build: --gxtb and --gfn 2 return "
+            "%s and %s. An ordinary xtb accepts --gxtb and runs GFN2 silently, "
+            "so g-xTB ranking is refused rather than mislabelled.",
+            binary, answers[0], answers[1])
+    _GXTB_VERIFIED[binary] = good
+    return good
+
+
+def _probe_energy(binary: str, flags, timeout: float) -> Optional[float]:
+    """One total energy from ``binary`` on the probe molecule, or None."""
+    try:
+        with tempfile.TemporaryDirectory() as folder:
+            path = os.path.join(folder, "probe.xyz")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write("2\n\n" + _PROBE_XYZ)
+            done = subprocess.run(
+                [binary, path, *flags, "--norestart"],
+                cwd=folder, capture_output=True, text=True, timeout=timeout,
+                env={**os.environ, "OMP_NUM_THREADS": "1"})
+            for line in reversed((done.stdout or "").splitlines()):
+                if "TOTAL ENERGY" in line:
+                    for token in line.split():
+                        try:
+                            return float(token)
+                        except ValueError:
+                            continue
+    except Exception:                                     # noqa: BLE001
+        return None
+    return None
+
+
+def binary_for(method: Optional[str] = None) -> Optional[str]:
+    """Whichever program the chosen ranking method needs, or None.
+
+    Returns None for g-xTB when no verified g-xTB build is present -- the
+    caller is then expected to fall back and say so, rather than rank with
+    something else under the g-xTB name.
+    """
+    name = (method or _resolve_method()).strip().lower()
+    if name in _NEEDS_GXTB:
+        if _GXTB is None:
+            return None
+        return _GXTB if _binary_is_really_gxtb(_GXTB) else None
+    return _XTB
+
+
+def available(method: Optional[str] = None) -> bool:
+    """True if the binary the chosen method needs was found (and verified)."""
+    if method is None:
+        return _XTB is not None
+    return binary_for(method) is not None
 
 
 def _natoms(xyz_block: str) -> int:
@@ -85,11 +201,12 @@ def gfnff_energy(xyz_block: str, charge: int = 0, uhf: int = 0,
     ``Sym x y z`` block (the canonical DELFIN format).  ``method`` overrides the
     DELFIN_CONF_RANK_METHOD env (gfnff | gfn2 | gfn1 | gfn0).  Cached by
     (coordinate-hash, charge, method)."""
-    if _XTB is None:
-        return None
     meth = (method or _resolve_method())
     if meth not in _METHOD_FLAGS:
         meth = "gfnff"
+    binary = binary_for(meth)
+    if binary is None:
+        return None
     key = (hashlib.sha256(xyz_block.encode()).hexdigest(), int(charge), meth)
     if key in _CACHE:
         return _CACHE[key]
@@ -103,7 +220,7 @@ def gfnff_energy(xyz_block: str, charge: int = 0, uhf: int = 0,
             fp = os.path.join(td, "conf.xyz")
             with open(fp, "w") as fh:
                 fh.write(f"{na}\n\n{xyz_block}\n")
-            cmd = [_XTB, fp] + _METHOD_FLAGS[meth] + ["--sp",
+            cmd = [binary, fp] + _METHOD_FLAGS[meth] + ["--sp",
                    "--chrg", str(int(charge)), "--uhf", str(int(uhf))]
             res = subprocess.run(cmd, capture_output=True, text=True,
                                  timeout=timeout, cwd=td,
@@ -137,11 +254,12 @@ def gfnff_optimize(xyz_block: str, charge: int = 0, uhf: int = 0,
     ``None`` on any failure (caller then keeps the unrelaxed structure).
     Single-threaded (OMP=1) so each optimization is reproducible.
     """
-    if _XTB is None:
-        return None
     meth = (method or _resolve_method())
     if meth not in _METHOD_FLAGS:
         meth = "gfn2"
+    binary = binary_for(meth)
+    if binary is None:
+        return None
     try:
         na = _natoms(xyz_block)
         if na < 2:
@@ -150,7 +268,7 @@ def gfnff_optimize(xyz_block: str, charge: int = 0, uhf: int = 0,
             fp = os.path.join(td, "conf.xyz")
             with open(fp, "w") as fh:
                 fh.write(f"{na}\n\n{xyz_block}\n")
-            cmd = [_XTB, fp] + _METHOD_FLAGS[meth] + ["--opt",
+            cmd = [binary, fp] + _METHOD_FLAGS[meth] + ["--opt",
                    "--chrg", str(int(charge)), "--uhf", str(int(uhf))]
             res = subprocess.run(cmd, capture_output=True, text=True,
                                  timeout=timeout, cwd=td,

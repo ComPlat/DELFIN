@@ -57,9 +57,9 @@ _PLACEHOLDER_MESSAGES: Dict[str, str] = {
         "CPCM/SMD"
     ),
     "method": "Placeholder [METHOD] must be set to one of: classic, manually, OCCUPIER",
-    "smiles_converter": "Placeholder [SMILES_CONVERTER] must be set to one of: QUICK, NORMAL, GUPPY, ARCHITECTOR",
+    "smiles_converter": "Placeholder [SMILES_CONVERTER] must be set to one of: QUICK, NORMAL, MANTA, ARCHITECTOR",
     "stability_constant_mode": "Placeholder [STABILITY_CONSTANT_MODE] must be set to one of: auto, reaction",
-    "thdy_smiles_converter": "Placeholder [THDY_SMILES_CONVERTER] must be set to one of: QUICK, NORMAL, GUPPY, ARCHITECTOR",
+    "thdy_smiles_converter": "Placeholder [THDY_SMILES_CONVERTER] must be set to one of: QUICK, NORMAL, MANTA, ARCHITECTOR",
     "thdy_preopt": "Placeholder [THDY_PREOPT] must be set to one of: none, xtb, crest, goat",
     "ESD_modus": "Placeholder [ESD_MODUS] must be set to one of: TDDFT, deltaSCF, hybrid1",
     "ESD_T1_opt": "Placeholder [ESD_T1_OPT] must be set to one of: uks, tddft",
@@ -69,7 +69,7 @@ _MISSING_KEY_MESSAGES: Dict[str, str] = {
     # structure from a SMILES, so say that rather than naming a bare key.
     "smiles_converter": (
         "This run builds its structure from a SMILES, so smiles_converter must "
-        "be set to one of: QUICK, NORMAL, GUPPY, ARCHITECTOR"
+        "be set to one of: QUICK, NORMAL, MANTA, ARCHITECTOR"
     ),
 }
 _KNOWN_ORCA_OVERRIDE_BASENAMES: Set[str] = {
@@ -407,19 +407,24 @@ def _apply_global_optimizer_compat(config: Dict[str, Any]) -> None:
 
 
 def _apply_guppy_legacy(config: Dict[str, Any]) -> None:
-    """Translate legacy ``GUPPY=yes`` to ``smiles_converter=GUPPY``.
+    """Translate legacy ``GUPPY=yes`` to ``smiles_converter=MANTA``.
 
-    Old CONTROL files use ``GUPPY=yes`` instead of the newer
-    ``smiles_converter=GUPPY`` key.  When ``GUPPY`` is *yes* and
-    ``smiles_converter`` is absent or still a template placeholder,
-    inject the correct value so that the required-key check passes.
+    Two generations of CONTROL file said the same thing three ways: the oldest
+    with a bare ``GUPPY=yes``, the next with ``smiles_converter=GUPPY``, and the
+    current one with ``smiles_converter=MANTA``.  They all select the same
+    builder -- since MANTA v1 the GUPPY path has called MANTA's own entry point
+    and added an energy ranking on top -- so all three are read as MANTA.
+
+    This bridge is load-bearing, not decoration: 62 of the 126 archived GUPPY
+    runs are configured through the bare ``GUPPY=yes`` and would stop parsing
+    without it.
     """
     guppy_val = str(config.get("GUPPY", "no")).strip().lower()
     if guppy_val != "yes":
         return
     sc = config.get("smiles_converter", "")
     if not sc or _is_placeholder_value(sc):
-        config["smiles_converter"] = "GUPPY"
+        config["smiles_converter"] = "MANTA"
 
 
 def _control_names_a_smiles(config: Dict[str, Any]) -> bool:

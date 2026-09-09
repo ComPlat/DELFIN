@@ -178,8 +178,15 @@ def test_control_txt_parses_core_identity_fields(config):
 
 
 def test_control_txt_preserves_workflow_toggles(config):
-    """Workflow on/off switches drive which pipeline phases run."""
-    assert config.get("smiles_converter") == "GUPPY"
+    """Workflow on/off switches drive which pipeline phases run.
+
+    The fixture CONTROL says ``smiles_converter=GUPPY``, which is the older
+    spelling of the same builder: since MANTA v1 the GUPPY path has called
+    MANTA's own entry point and added an energy ranking on top.  It normalises
+    to ``MANTA``, and that it does is the point -- an archived CONTROL file has
+    to keep selecting the builder it always selected.
+    """
+    assert config.get("smiles_converter") == "MANTA"
     assert config.get("XTB_GOAT") == "yes"
     assert config.get("IMAG") == "yes"
     assert config.get("calc_initial") == "yes"

@@ -720,7 +720,7 @@ def _convert_smiles_and_write(
         xyz_content, error = smiles_to_xyz_quick(smiles)
     elif converter == "ARCHITECTOR":
         xyz_content, error = smiles_to_xyz_architector(smiles)
-    elif converter == "GUPPY":
+    elif converter in ("MANTA", "GUPPY"):
         run_config = dict(config or {})
         _run_guppy_for_smiles(smiles, start_path, run_config)
         xyz_content = start_path.read_text(encoding="utf-8")

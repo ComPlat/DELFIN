@@ -1685,6 +1685,22 @@ def main(argv: list[str] | None = None) -> int:
     # Auto-configure cluster resources if not explicitly set
     config = auto_configure_resources(config)
 
+    # The structure builder reads its construction preset at import time, so the
+    # environment has to carry it before anything pulls delfin.smiles_converter
+    # in.  Setting it later -- inside the conversion call, where it would read
+    # naturally -- is too late: by then the module has already decided which
+    # builder it is.  `delfin-manta` sets it in the same place and for the same
+    # reason.
+    try:
+        from delfin.common.manta_settings import apply_construction_env
+        _manta_env = apply_construction_env(config)
+    except Exception as exc:  # noqa: BLE001 - a preset must never stop a run
+        logger.warning("MANTA construction preset not applied: %s", exc)
+    else:
+        if _manta_env:
+            logger.debug("MANTA construction environment: %d flags set",
+                         len(_manta_env))
+
     # Initialize global job manager with configuration
     global_mgr = get_global_manager()
     global_mgr.initialize(config)

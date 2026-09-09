@@ -21,7 +21,7 @@ number_explicit_solv_molecules=2
 ------------------------------------------------------
 SMILES conversion:
 ----------
-smiles_converter=[QUICK|NORMAL|GUPPY|ARCHITECTOR]
+smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR]
 ------------------------------------------------------
 Global geometry optimisation:
 ----------
@@ -221,12 +221,33 @@ max_recovery_attempts=3
 enable_adaptive_parallelism=yes
 enable_performance_metrics=yes
 ------------------------------------------------------
-GUPPY_settings:
+MANTA_settings:
 ----------
-GUPPY_RUNS=20
-GUPPY_GOAT=0
-GUPPY_PARALLEL_JOBS=4
-GUPPY_SEED=31
+MANTA_QUALITY=extreme
+MANTA_SEEDS=
+MANTA_NUM_CONFS=
+MANTA_CONSTRUCTION=champion
+MANTA_MAX_ISOMERS=0
+MANTA_BINDING_MODES=yes
+MANTA_HAPTO=auto
+MANTA_UFF=yes
+MANTA_DETERMINISTIC=yes
+MANTA_ENV=
+----------
+MANTA_CLEAN_GATE=yes
+MANTA_TOPOLOGY_GATE=yes
+MANTA_DEDUP=yes
+----------
+MANTA_SCREEN=none
+MANTA_SCREEN_KEEP=all
+MANTA_OPT=xtb
+MANTA_OPT_METHOD=
+MANTA_MULTIPLICITIES=auto
+MANTA_REFINE=goat
+MANTA_REFINE_TOPK=5
+MANTA_RMSD_CUTOFF=0.3
+MANTA_ENERGY_WINDOW=25.0
+MANTA_PARALLEL_JOBS=4
 ------------------------------------------------------
 xTB Hyperpolarizability (sTD-DFT-xTB):
 ----------
@@ -255,7 +276,7 @@ thermodynamics_mode=[auto|reaction]
 thermodynamics_reaction=a*{SMILES}+b*{SMILES}...>>>c*{SMILES}+d*{SMILES}...
 n_explicit_solvent=6
 logK_exp=
-thdy_smiles_converter=[QUICK|NORMAL|GUPPY|ARCHITECTOR]
+thdy_smiles_converter=[QUICK|NORMAL|MANTA|ARCHITECTOR]
 thdy_preopt=[none|xtb|crest|goat]
 """
 # -------------------------------------------------------------------------------------------------------

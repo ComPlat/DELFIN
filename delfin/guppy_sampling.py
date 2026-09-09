@@ -29,7 +29,7 @@ import re
 import threading
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
-from typing import Dict, List, Literal, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
 
 from delfin.common.logging import get_logger
 from delfin.dynamic_pool import JobPriority, PoolJob, get_current_job_id
@@ -255,6 +255,186 @@ StartStrategy = Literal["isomers", "isomers+random", "full"]
 _ALLOWED_START_STRATEGIES: Tuple[str, ...] = ("isomers", "isomers+random", "full")
 
 
+_Z_BY_SYMBOL = {
+    s: i for i, s in enumerate(
+        "n H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe "
+        "Co Ni Cu Zn Ga Ge As Se Br Kr Rb Sr Y Zr Nb Mo Tc Ru Rh Pd Ag Cd In "
+        "Sn Sb Te I Xe Cs Ba La Ce Pr Nd Pm Sm Eu Gd Tb Dy Ho Er Tm Yb Lu Hf "
+        "Ta W Re Os Ir Pt Au Hg Tl Pb Bi Po At Rn".split())
+}
+
+
+def coord_lines_of_first(starts: List["StartGeometry"]) -> List[str]:
+    """The coordinate block of the first start geometry, or an empty list."""
+    for entry in starts or ():
+        lines = entry[1]
+        if lines:
+            return list(lines)
+    return []
+
+
+def _resolve_pre_opt_multiplicity(requested: Optional[int],
+                                  coord_lines: Sequence[str],
+                                  charge: int) -> int:
+    """The multiplicity to pre-optimise at.
+
+    An explicit setting wins.  Otherwise it is read off the electron count: an
+    even count is a closed-shell singlet, an odd one cannot be, and the lowest
+    state it can be is a doublet.  That is not a spin-state prediction and is
+    not meant to be -- it is the difference between "we chose 1" and "1 is
+    impossible here and we used it anyway".
+    """
+    if requested and int(requested) >= 1:
+        return int(requested)
+    electrons = 0
+    for line in coord_lines or ():
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        z = _Z_BY_SYMBOL.get(parts[0].strip().capitalize())
+        if z is None:
+            return 1
+        electrons += z
+    electrons -= int(charge)
+    if electrons <= 0:
+        return 1
+    return 1 if electrons % 2 == 0 else 2
+
+
+_KCAL_PER_HARTREE = 627.509474
+
+MULTIPLICITY_IN_LABEL = re.compile(r"\bM=(\d+)\b")
+
+
+def multiplicity_of_label(label: str, fallback: int) -> int:
+    """The multiplicity a candidate carries in its own label.
+
+    When several spin states are screened, the winner of the screen is a
+    (frame, multiplicity) pair, and the pair is written into the label.  A
+    later refinement stage has to read it back: refining a triplet winner as a
+    singlet is refining a different molecule, and it would do so silently,
+    because both are perfectly valid calculations.
+    """
+    found = MULTIPLICITY_IN_LABEL.search(str(label or ""))
+    if not found:
+        return int(fallback)
+    try:
+        return max(1, int(found.group(1)))
+    except (TypeError, ValueError):
+        return int(fallback)
+
+
+def _screen_start_geometries(
+    starts: List["StartGeometry"],
+    *,
+    method: str,
+    keep: Optional[int],
+    charge: int,
+    multiplicities: Sequence[int],
+    parallel_jobs: int = 1,
+) -> List[Tuple["StartGeometry", int, Optional[float]]]:
+    """Order the frames by a cheap single point, and keep the head.
+
+    This is the stage that decides which frames are worth a geometry
+    optimisation.  Without it the choice falls to the builder's own ordering,
+    which is least-steric-clash -- and its docstring records that on a clean
+    ensemble 86 % of frames tie at the top score, so the delivered order is the
+    enumeration order.  Cutting that at N is cutting an arbitrary list.
+
+    One single point per frame, no geometry change, in-process through the xtb
+    CLI and cached by coordinate hash.  ``method='none'`` or ``'clash'`` leaves
+    the builder's order alone, which is the older behaviour and still the right
+    thing when the frames are about to be optimised anyway.
+
+    A frame whose energy cannot be had keeps its place rather than being
+    dropped: a screen is for ordering, and a program that failed to answer is
+    not evidence about the structure.
+
+    **The unit being ordered is a (frame, multiplicity) pair, not a frame.**
+    Which coordination isomer of a metal complex lies lowest depends on the spin
+    state, and which spin state lies lowest depends on the geometry; ranking
+    frames at one assumed multiplicity answers neither question.  So every frame
+    is offered at every multiplicity asked for and they compete in one list.
+
+    The energy is handed back with the pair, not thrown away.  When nothing is
+    going to be optimised afterwards this screen *is* the ranking, and it would
+    otherwise be measured and then discarded.
+    """
+    pairs: List[Tuple["StartGeometry", int]] = [
+        (entry, int(m)) for entry in starts for m in (multiplicities or (1,))]
+    if not pairs:
+        return []
+    name = (method or 'none').strip().lower()
+    def _unscored(items):
+        return [(entry, mult, None) for entry, mult in items]
+
+    if name in ('', 'none', 'clash'):
+        if keep and keep > 0 and len(pairs) > keep:
+            logger.info("Keeping the first %d of %d (frame, multiplicity) pairs "
+                        "in builder order (no energy screen requested).",
+                        keep, len(pairs))
+            return _unscored(pairs[:keep])
+        return _unscored(pairs)
+
+    try:
+        from delfin.manta import _gfnff_rank as ranking
+    except Exception as exc:                       # noqa: BLE001
+        logger.warning("Frame screen unavailable (%s); keeping builder order.", exc)
+        return _unscored(pairs[:keep] if (keep and keep > 0) else pairs)
+
+    if not ranking.available(name):
+        logger.warning(
+            "Frame screen asked for %s but no verified binary was found; "
+            "keeping builder order rather than ranking with something else.",
+            name)
+        return _unscored(pairs[:keep] if (keep and keep > 0) else pairs)
+
+    scored: List[Tuple[float, int, Tuple["StartGeometry", int]]] = []
+    unscored: List[Tuple[int, Tuple["StartGeometry", int]]] = []
+
+    def _one(item):
+        position, pair = item
+        entry, mult = pair
+        block = "\n".join(entry[1])
+        try:
+            return position, pair, ranking.gfnff_energy(
+                block, charge=int(charge), uhf=max(0, mult - 1), method=name)
+        except Exception:                          # noqa: BLE001
+            return position, pair, None
+
+    workers = max(1, min(int(parallel_jobs), len(pairs)))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for position, pair, energy in pool.map(_one, list(enumerate(pairs))):
+            if energy is None:
+                unscored.append((position, pair))
+            else:
+                scored.append((energy, position, pair))
+
+    if not scored:
+        logger.warning("Frame screen with %s produced no energies; "
+                       "keeping builder order.", name)
+        return _unscored(pairs[:keep] if (keep and keep > 0) else pairs)
+
+    scored.sort(key=lambda t: (t[0], t[1]))
+    ordered: List[Tuple["StartGeometry", int, Optional[float]]] = (
+        [(pair[0], pair[1], energy) for energy, _, pair in scored]
+        + [(pair[0], pair[1], None) for _, pair in unscored])
+    span = (scored[-1][0] - scored[0][0]) if len(scored) > 1 else 0.0
+    best_mult = scored[0][2][1]
+    logger.info(
+        "Frame screen (%s): %d of %d (frame, multiplicity) pairs scored over "
+        "M=%s, spread %.1f kcal/mol; lowest is M=%d.",
+        name, len(scored), len(pairs),
+        ",".join(str(m) for m in multiplicities), span, best_mult)
+    if unscored:
+        logger.info("  %d pair(s) gave no energy and keep their place.",
+                    len(unscored))
+    if keep and keep > 0 and len(ordered) > keep:
+        logger.info("  keeping the %d lowest for optimisation.", keep)
+        return ordered[:keep]
+    return ordered
+
+
 def _collect_start_geometries(
     smiles: str,
     *,
@@ -263,6 +443,7 @@ def _collect_start_geometries(
     prephase_parallel_jobs: int = 1,
     start_strategy: StartStrategy = "isomers",
     max_isomers: int = 100,
+    builder_options: Optional[Dict[str, Any]] = None,
 ) -> List[StartGeometry]:
     """Collect start geometries from SMILES conversion.
 
@@ -299,12 +480,18 @@ def _collect_start_geometries(
 
     iso_count_before = len(starts)
     try:
-        iso_results, iso_error = smiles_to_xyz_isomers(
-            smiles,
-            num_confs=target_confs,
-            max_isomers=iso_cap,
-            collapse_label_variants=False,
-        )
+        # Everything the builder can be told, told.  Without these it runs on
+        # the library default profile -- 20 seeds where the CLI's own default is
+        # 60 -- and the convergence study says 20 misses the GFN2 global minimum
+        # by ~2.5 kcal/mol on multi-isomer systems.  The pipeline was asking for
+        # a weaker search than the command line does and never said so.
+        iso_kwargs: Dict[str, Any] = {
+            'num_confs': target_confs,
+            'max_isomers': iso_cap,
+            'collapse_label_variants': False,
+        }
+        iso_kwargs.update(builder_options or {})
+        iso_results, iso_error = smiles_to_xyz_isomers(smiles, **iso_kwargs)
         if iso_results and not iso_error:
             for idx, (xyz_text, label) in enumerate(iso_results, start=1):
                 coords_lines = [ln.rstrip() for ln in xyz_text.splitlines() if ln.strip()]
@@ -970,7 +1157,118 @@ def _execute_single_goat_run(
     return True, (energy, goat_natoms, goat_coords, run_idx, goat_label, "goat"), None
 
 
-def _run_topk_goat_refinement(
+def _crest_best_energy(crest_dir: Path) -> Optional[float]:
+    """The energy CREST puts on the comment line of its winner.
+
+    CREST writes the total energy in Hartree as the comment of
+    ``crest_best.xyz`` and again as the first entry of ``crest.energies``.
+    Either is read; if neither parses, the candidate is failed rather than
+    given a made-up number, because the number is what the candidates are
+    about to be sorted by.
+    """
+    best = crest_dir / "crest_best.xyz"
+    if best.exists():
+        try:
+            lines = best.read_text(encoding="utf-8", errors="ignore").splitlines()
+        except OSError:
+            lines = []
+        if len(lines) >= 2:
+            for token in lines[1].split():
+                try:
+                    return float(token)
+                except ValueError:
+                    continue
+    energies = crest_dir / "crest.energies"
+    if energies.exists():
+        try:
+            for line in energies.read_text(encoding="utf-8", errors="ignore").splitlines():
+                for token in reversed(line.split()):
+                    try:
+                        return float(token)
+                    except ValueError:
+                        continue
+        except OSError:
+            pass
+    return None
+
+
+def _execute_single_crest_run(
+    *,
+    candidate_rank: int,
+    candidate: RunResult,
+    resolved_charge: int,
+    multiplicity: int,
+    pal: int,
+    maxcore: int,
+    method: str,
+    workdir: Path,
+    smiles: str = "",
+    mol_template=None,
+    solvent: str = "",
+) -> Tuple[bool, Optional[RunResult], Optional[str]]:
+    """Run CREST on one candidate and return refined geometry + energy.
+
+    The same contract as the GOAT refiner, so the two are interchangeable at
+    the call site.  CREST searches conformers where GOAT searches the global
+    minimum; which of the two a complex wants is a chemistry question, so
+    CONTROL asks it instead of the code deciding.
+
+    ``run_crest_workflow`` overwrites the coordinate file it is handed, which
+    is why it is handed a copy inside the candidate directory and never the
+    pipeline's ``start.txt``.
+    """
+    from delfin.xtb_crest import run_crest_workflow
+
+    xtb_energy, natoms, coords, run_idx, start_label, start_source = candidate
+    base = workdir / "CREST" / f"candidate_{candidate_rank:02d}_run_{run_idx:02d}"
+    base.mkdir(parents=True, exist_ok=True)
+
+    candidate_txt = base / "candidate.txt"
+    candidate_txt.write_text("\n".join(coords[:natoms]) + "\n", encoding="utf-8")
+
+    try:
+        run_crest_workflow(
+            max(1, int(pal)),
+            solvent or "",
+            int(resolved_charge),
+            int(multiplicity),
+            str(candidate_txt),
+            "CREST",
+        )
+    except Exception as exc:                       # noqa: BLE001
+        return False, None, f"CREST run failed: {exc}"
+
+    crest_dir = base / "CREST"
+    crest_best = crest_dir / "crest_best.xyz"
+    if not crest_best.exists():
+        return False, None, f"CREST result file missing: {crest_best.name}"
+
+    energy = _crest_best_energy(crest_dir)
+    if energy is None:
+        return False, None, "Could not extract CREST energy"
+
+    try:
+        crest_natoms, crest_coords = _read_xyz_coordinates(crest_best)
+    except Exception as exc:                       # noqa: BLE001
+        return False, None, f"Could not read CREST geometry: {exc}"
+
+    if smiles:
+        xyz_delfin = "\n".join(crest_coords[:crest_natoms])
+        topology_ok, topology_error = _topology_checks_pass(
+            xyz_delfin=xyz_delfin,
+            smiles=smiles,
+            mol_template=mol_template,
+            stage="CREST",
+        )
+        if not topology_ok:
+            return False, None, topology_error
+
+    base_label = start_label or start_source
+    crest_label = f"{base_label} crest".strip() if base_label else "crest"
+    return True, (energy, crest_natoms, crest_coords, run_idx, crest_label, "crest"), None
+
+
+def _run_topk_refinement(
     *,
     ranked_results: List[RunResult],
     resolved_charge: int,
@@ -983,16 +1281,31 @@ def _run_topk_goat_refinement(
     mol_template,
     topk: int,
     parallel_jobs: int,
+    engine: str = "goat",
+    solvent: str = "",
 ) -> Tuple[List[RunResult], List[str]]:
-    """Run GOAT for top-k ranked GUPPY candidates, in parallel where possible."""
+    """Refine the top-k ranked candidates with GOAT or CREST, in parallel.
+
+    The two engines answer different questions -- GOAT looks for the global
+    minimum, CREST for the conformer ensemble -- and which one a complex wants
+    is a chemistry question, so ``MANTA_REFINE`` asks it rather than the code
+    assuming.  Both keep the same contract, so everything below this line is
+    the same for either.
+    """
+    engine = (engine or "goat").strip().lower()
+    if engine not in ("goat", "crest"):
+        engine = "goat"
+    label = engine.upper()
+    executor_fn = (_execute_single_crest_run if engine == "crest"
+                   else _execute_single_goat_run)
     candidate_count = max(1, min(int(topk), len(ranked_results)))
     candidates = ranked_results[:candidate_count]
     resolved_parallel_jobs = max(1, min(int(parallel_jobs), candidate_count, pal))
     per_job_pal = max(1, pal // resolved_parallel_jobs)
 
-    logger.info("GOAT refinement candidates: top %d", candidate_count)
-    logger.info("GOAT parallel jobs: %d", resolved_parallel_jobs)
-    logger.info("GOAT target PAL per run: %d", per_job_pal)
+    logger.info("%s refinement candidates: top %d", label, candidate_count)
+    logger.info("%s parallel jobs: %d", label, resolved_parallel_jobs)
+    logger.info("%s target PAL per run: %d", label, per_job_pal)
 
     goat_results: List[RunResult] = []
     goat_failed_runs: List[str] = []
@@ -1000,23 +1313,31 @@ def _run_topk_goat_refinement(
 
     def _record_goat(candidate_rank: int, candidate: RunResult, assigned_pal: int) -> None:
         run_idx = candidate[3]
+        kwargs = dict(
+            candidate_rank=candidate_rank,
+            candidate=candidate,
+            resolved_charge=resolved_charge,
+            # Refine at the spin state this candidate won at, not at a default.
+            # The screen ranks (frame, multiplicity) pairs, so the winner names
+            # its own multiplicity in its label; refining a triplet winner as a
+            # singlet would silently refine a different molecule.
+            multiplicity=multiplicity_of_label(candidate[4], multiplicity),
+            pal=max(1, assigned_pal),
+            maxcore=maxcore,
+            method=method,
+            workdir=workdir,
+            smiles=smiles,
+            mol_template=mol_template,
+        )
+        if engine == "crest":
+            kwargs["solvent"] = solvent
         try:
-            ok, result, error = _execute_single_goat_run(
-                candidate_rank=candidate_rank,
-                candidate=candidate,
-                resolved_charge=resolved_charge,
-                multiplicity=multiplicity,
-                pal=max(1, assigned_pal),
-                maxcore=maxcore,
-                method=method,
-                workdir=workdir,
-                smiles=smiles,
-                mol_template=mol_template,
-            )
+            ok, result, error = executor_fn(**kwargs)
             with results_lock:
                 if ok and result is not None:
                     logger.info(
-                        "[goat run %02d] energy = %.12f Eh (PAL=%d)",
+                        "[%s run %02d] energy = %.12f Eh (PAL=%d)",
+                        engine,
                         run_idx,
                         result[0],
                         max(1, assigned_pal),
@@ -1035,9 +1356,9 @@ def _run_topk_goat_refinement(
     pool = None
     if nested_job_id is not None:
         logger.info(
-            "Detected nested pool job %s during GUPPY GOAT refinement; "
+            "Detected nested pool job %s during MANTA %s refinement; "
             "using local worker threads instead of the global pool.",
-            nested_job_id,
+            nested_job_id, label,
         )
     else:
         try:
@@ -1052,18 +1373,19 @@ def _run_topk_goat_refinement(
             )
             pool = manager.get_pool()
             use_pool = True
-            logger.info("Using global manager pool scheduling for GUPPY GOAT refinement.")
+            logger.info("Using global manager pool scheduling for MANTA %s refinement.", label)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "Global manager unavailable for GUPPY GOAT refinement (%s). Falling back to local worker threads.",
-                exc,
+                "Global manager unavailable for MANTA %s refinement (%s). "
+                "Falling back to local worker threads.",
+                label, exc,
             )
 
     if use_pool and pool is not None:
         estimated_runtime = float(max(300, int(os.environ.get("GUPPY_GOAT_EST_RUNTIME_S", "2400"))))
         for rank, candidate in enumerate(candidates, start=1):
             run_idx = candidate[3]
-            candidate_dir = workdir / "GOAT" / f"candidate_{rank:02d}_run_{run_idx:02d}"
+            candidate_dir = workdir / label / f"candidate_{rank:02d}_run_{run_idx:02d}"
 
             def runner(
                 *_args,
@@ -1079,7 +1401,7 @@ def _run_topk_goat_refinement(
                 _record_goat(cur_rank, cur_candidate, assigned)
 
             pool_job = PoolJob(
-                job_id=f"GUPPY_GOAT_C{rank:02d}_R{run_idx:02d}",
+                job_id=f"MANTA_{label}_C{rank:02d}_R{run_idx:02d}",
                 cores_min=1,
                 cores_optimal=per_job_pal,
                 cores_max=per_job_pal,
@@ -1108,6 +1430,9 @@ def _run_topk_goat_refinement(
     return goat_results, goat_failed_runs
 
 
+_run_topk_goat_refinement = _run_topk_refinement
+
+
 def run_sampling(
     *,
     input_file: Path,
@@ -1127,6 +1452,14 @@ def run_sampling(
     max_isomers: int = 100,
     rmsd_cutoff: float = 0.3,
     energy_window_kcal: float = 25.0,
+    builder_options: Optional[Dict[str, Any]] = None,
+    rank_multiplicity: Optional[int] = None,
+    keep_frames: Optional[int] = None,
+    screen_method: str = "none",
+    multiplicities: Optional[Sequence[int]] = None,
+    optimise: str = "xtb",
+    refine: str = "goat",
+    solvent: str = "",
 ) -> int:
     """Execute repeated SMILES->XTB2 workflow and write ranked trajectory."""
     smiles = _read_first_smiles_line(input_file)
@@ -1147,10 +1480,53 @@ def run_sampling(
         prephase_parallel_jobs=prephase_parallel_jobs,
         start_strategy=start_strategy,
         max_isomers=max_isomers,
+        builder_options=builder_options,
     )
     if not start_geometries:
         logger.error("SMILES conversion produced no usable start geometries.")
         return 1
+
+    # The brake.  On `extreme` with no isomer cap the builder routinely returns
+    # 27 to 119 frames and a single sibling family can append 187, and every one
+    # of them becomes an ORCA optimisation here.  `keep_frames` bounds that.
+    # The frames arrive in the builder's own order -- least steric clash -- so
+    # taking the head is taking its best guess, and the log says how many were
+    # set aside so the number is never silently smaller than it looks.
+    # Which multiplicities the frames are offered at.  A complex has to be tried
+    # at more than one: the lowest coordination isomer and the lowest spin state
+    # are not independent, and picking either first decides the other by
+    # accident.  ``auto`` is the single parity-consistent state, which is what
+    # this did when it had no choice.
+    if multiplicities:
+        wanted_mults = [int(m) for m in multiplicities if int(m) >= 1]
+    else:
+        wanted_mults = [_resolve_pre_opt_multiplicity(
+            rank_multiplicity, coord_lines_of_first(start_geometries),
+            resolved_charge)]
+    wanted_mults = sorted(dict.fromkeys(wanted_mults)) or [1]
+    logger.info("Multiplicities to test: %s",
+                ", ".join(str(m) for m in wanted_mults))
+
+    screened = _screen_start_geometries(
+        start_geometries,
+        method=screen_method,
+        keep=keep_frames,
+        charge=resolved_charge,
+        multiplicities=wanted_mults,
+        parallel_jobs=prephase_parallel_jobs,
+    )
+    # Renumber so each (frame, multiplicity) pair is its own run, and say which
+    # multiplicity it is in the label -- the trajectory comment carries it, so
+    # the winner names its own spin state.
+    start_geometries = []
+    job_multiplicity: Dict[int, int] = {}
+    screen_energy: Dict[int, Optional[float]] = {}
+    for position, (entry, mult, energy) in enumerate(screened, start=1):
+        label = entry[2] or ""
+        start_geometries.append((position, entry[1],
+                                 f"{label} M={mult}".strip(), entry[3]))
+        job_multiplicity[position] = mult
+        screen_energy[position] = energy
 
     total_jobs = len(start_geometries)
     resolved_parallel_jobs = max(1, min(parallel_jobs, total_jobs, pal))
@@ -1172,9 +1548,15 @@ def run_sampling(
     failed_runs: List[str] = []
     results_lock = threading.Lock()
 
-    # Closed-shell only as requested.
-    multiplicity = 1
-    logger.info("Using multiplicity: %d (fixed closed-shell)", multiplicity)
+    # The multiplicity the pre-optimisation runs at.  It was hard-coded to 1
+    # here, so every XTB.inp in the archive reads ``*xyz <q> 1`` -- including
+    # for the open-shell metal centres this pipeline exists to study.  For a
+    # semiempirical pre-optimisation that is defensible, but it was silent, and
+    # ranking coordination isomers of a d7 complex as closed-shell singlets is
+    # not obviously harmless.  ``auto`` keeps the old behaviour where the
+    # electron count is even and steps to the lowest open-shell state where it
+    # is not, which is the least surprising thing to do without being told.
+    multiplicity = wanted_mults[0]
 
     def _record_run(
         run_idx: int,
@@ -1182,6 +1564,7 @@ def run_sampling(
         start_label: str,
         start_source: str,
         assigned_pal: int,
+        run_multiplicity: Optional[int] = None,
     ) -> None:
         try:
             ok, result, error = _execute_single_sampling_run(
@@ -1190,7 +1573,7 @@ def run_sampling(
                 start_label=start_label,
                 start_source=start_source,
                 resolved_charge=resolved_charge,
-                multiplicity=multiplicity,
+                multiplicity=int(run_multiplicity or multiplicity),
                 pal=max(1, assigned_pal),
                 maxcore=maxcore,
                 method=method,
@@ -1220,77 +1603,113 @@ def run_sampling(
                 logger.error("[run %02d] Unexpected error: %s", run_idx, exc)
                 failed_runs.append(f"{run_idx:02d}")
 
-    nested_job_id = get_current_job_id()
-    use_pool = False
-    pool = None
-    if nested_job_id is not None:
-        logger.info(
-            "Detected nested pool job %s during GUPPY sampling; "
-            "using local worker threads instead of the global pool.",
-            nested_job_id,
-        )
-    else:
-        try:
-            manager = get_global_manager()
-            manager.ensure_initialized(
-                {
-                    "PAL": pal,
-                    "maxcore": maxcore,
-                    "pal_jobs": resolved_parallel_jobs,
-                    "parallel_workflows": "enable",
-                }
-            )
-            pool = manager.get_pool()
-            use_pool = True
-            logger.info("Using global manager pool scheduling for GUPPY runs.")
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Global manager unavailable for GUPPY (%s). Falling back to local worker threads.", exc)
-
-    if use_pool and pool is not None:
-        estimated_runtime = float(max(300, int(os.environ.get("GUPPY_EST_RUNTIME_S", "1800"))))
+    # Optimise every survivor, or none of them.  ``MANTA_OPT=none`` means the
+    # screen *is* the ranking: one single point per (frame, multiplicity) pair
+    # and no geometry optimisation at all.  That is a real mode, not a
+    # degenerate one -- it is how a run asks for a cheap look at a large
+    # manifold before deciding what deserves ORCA -- but it only works if
+    # something measured an energy, which is why the screen hands its energies
+    # back instead of discarding them.
+    if str(optimise or 'xtb').strip().lower() == 'none':
         for run_idx, start_coords, start_label, start_source in start_geometries:
-            run_dir = workdir / f"run_{run_idx:02d}"
-
-            def runner(
-                *_args,
-                cur_idx=run_idx,
-                cur_coords=start_coords,
-                cur_label=start_label,
-                cur_source=start_source,
-                **kwargs,
-            ) -> None:
-                allocated = kwargs.get("cores", per_job_pal)
-                try:
-                    assigned = max(1, int(allocated))
-                except (TypeError, ValueError):
-                    assigned = per_job_pal
-                _record_run(cur_idx, cur_coords, cur_label, cur_source, assigned)
-
-            pool_job = PoolJob(
-                job_id=f"GUPPY_RUN_{run_idx:02d}",
-                cores_min=1,
-                cores_optimal=per_job_pal,
-                cores_max=per_job_pal,
-                memory_mb=max(256, per_job_pal * maxcore),
-                priority=JobPriority.NORMAL,
-                execute_func=runner,
-                args=(),
-                kwargs={},
-                estimated_duration=estimated_runtime,
-                working_dir=run_dir,
-            )
-            pool_job.suppress_pool_logs = True
-            pool.submit_job(pool_job)
-
-        pool.wait_for_completion()
+            energy = screen_energy.get(run_idx)
+            if energy is None:
+                failed_runs.append(f"{run_idx:02d}")
+                continue
+            natoms = sum(1 for line in start_coords if line.split())
+            # The screen answers in kcal/mol; every RunResult downstream --
+            # the trajectory comments, the summaries, the energy window -- is
+            # in Hartree.  Ordering would survive the mismatch, so nothing
+            # would have looked wrong, but every printed number would have
+            # been 627x too large and the energy window 627x too wide.
+            results.append((float(energy) / _KCAL_PER_HARTREE, natoms,
+                            list(start_coords), run_idx, start_label,
+                            start_source))
+        logger.info(
+            "MANTA_OPT=none: ranking %d of %d pairs on the %s screen alone; "
+            "no geometry optimisation was run.",
+            len(results), total_jobs, screen_method)
+        if failed_runs:
+            logger.warning(
+                "%d pair(s) had no screen energy and cannot be ranked without "
+                "an optimisation: %s",
+                len(failed_runs), ", ".join(failed_runs))
     else:
-        with ThreadPoolExecutor(max_workers=resolved_parallel_jobs) as executor:
-            futures = [
-                executor.submit(_record_run, run_idx, start_coords, start_label, start_source, per_job_pal)
-                for run_idx, start_coords, start_label, start_source in start_geometries
-            ]
-            for future in futures:
-                future.result()
+        nested_job_id = get_current_job_id()
+        use_pool = False
+        pool = None
+        if nested_job_id is not None:
+            logger.info(
+                "Detected nested pool job %s during GUPPY sampling; "
+                "using local worker threads instead of the global pool.",
+                nested_job_id,
+            )
+        else:
+            try:
+                manager = get_global_manager()
+                manager.ensure_initialized(
+                    {
+                        "PAL": pal,
+                        "maxcore": maxcore,
+                        "pal_jobs": resolved_parallel_jobs,
+                        "parallel_workflows": "enable",
+                    }
+                )
+                pool = manager.get_pool()
+                use_pool = True
+                logger.info("Using global manager pool scheduling for GUPPY runs.")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Global manager unavailable for GUPPY (%s). Falling back to local worker threads.", exc)
+
+        if use_pool and pool is not None:
+            estimated_runtime = float(max(300, int(os.environ.get("GUPPY_EST_RUNTIME_S", "1800"))))
+            for run_idx, start_coords, start_label, start_source in start_geometries:
+                run_dir = workdir / f"run_{run_idx:02d}"
+
+                def runner(
+                    *_args,
+                    cur_idx=run_idx,
+                    cur_coords=start_coords,
+                    cur_label=start_label,
+                    cur_source=start_source,
+                    cur_mult=job_multiplicity.get(run_idx),
+                    **kwargs,
+                ) -> None:
+                    allocated = kwargs.get("cores", per_job_pal)
+                    try:
+                        assigned = max(1, int(allocated))
+                    except (TypeError, ValueError):
+                        assigned = per_job_pal
+                    _record_run(cur_idx, cur_coords, cur_label, cur_source, assigned,
+                                cur_mult)
+
+                pool_job = PoolJob(
+                    job_id=f"GUPPY_RUN_{run_idx:02d}",
+                    cores_min=1,
+                    cores_optimal=per_job_pal,
+                    cores_max=per_job_pal,
+                    memory_mb=max(256, per_job_pal * maxcore),
+                    priority=JobPriority.NORMAL,
+                    execute_func=runner,
+                    args=(),
+                    kwargs={},
+                    estimated_duration=estimated_runtime,
+                    working_dir=run_dir,
+                )
+                pool_job.suppress_pool_logs = True
+                pool.submit_job(pool_job)
+
+            pool.wait_for_completion()
+        else:
+            with ThreadPoolExecutor(max_workers=resolved_parallel_jobs) as executor:
+                futures = [
+                    executor.submit(_record_run, run_idx, start_coords, start_label,
+                                    start_source, per_job_pal,
+                                    job_multiplicity.get(run_idx))
+                    for run_idx, start_coords, start_label, start_source in start_geometries
+                ]
+                for future in futures:
+                    future.result()
 
     if not results:
         logger.error("No successful XTB runs. Nothing to write.")
@@ -1304,7 +1723,7 @@ def run_sampling(
 
     # Dedup + energy window before GOAT refinement to avoid wasted cycles on
     # near-identical or high-energy candidates.
-    energy_window_eh = max(0.0, float(energy_window_kcal)) / 627.509474
+    energy_window_eh = max(0.0, float(energy_window_kcal)) / _KCAL_PER_HARTREE
     filtered_results = _filter_xtb_candidates(
         results,
         rmsd_cutoff=max(0.0, float(rmsd_cutoff)),
@@ -1318,9 +1737,14 @@ def run_sampling(
     goat_results: List[RunResult] = []
     goat_failed_runs: List[str] = []
     goat_topk_resolved = max(0, int(goat_topk))
+    refine_engine = (refine or "goat").strip().lower()
+    if refine_engine not in ("none", "goat", "crest"):
+        refine_engine = "goat"
+    if refine_engine == "none":
+        goat_topk_resolved = 0
     if goat_topk_resolved > 0:
         goat_parallel = int(goat_parallel_jobs) if goat_parallel_jobs is not None else parallel_jobs
-        goat_results, goat_failed_runs = _run_topk_goat_refinement(
+        goat_results, goat_failed_runs = _run_topk_refinement(
             ranked_results=filtered_results,
             resolved_charge=resolved_charge,
             multiplicity=multiplicity,
@@ -1332,27 +1756,36 @@ def run_sampling(
             mol_template=mol_template,
             topk=goat_topk_resolved,
             parallel_jobs=goat_parallel,
+            engine=refine_engine,
+            solvent=solvent,
         )
         if goat_results:
             winner_result = goat_results[0]
-            winner_source = "goat"
-            goat_output = _derived_output_path(output_file, "goat")
+            winner_source = refine_engine
+            goat_output = _derived_output_path(output_file, refine_engine)
             _write_ranked_trajectory(goat_output, goat_results)
-            logger.info("Wrote GOAT-ranked trajectory: %s", goat_output)
+            logger.info("Wrote %s-ranked trajectory: %s",
+                        refine_engine.upper(), goat_output)
             logger.info(
-                "Selected GOAT winner from top-%d candidates: run_%02d %.12f Eh",
+                "Selected %s winner from top-%d candidates: run_%02d %.12f Eh "
+                "at M=%d",
+                refine_engine.upper(),
                 max(1, min(goat_topk_resolved, len(results))),
                 winner_result[3],
                 winner_result[0],
+                multiplicity_of_label(winner_result[4], multiplicity),
             )
         else:
-            logger.warning("GOAT refinement produced no successful candidates; using XTB winner.")
+            logger.warning(
+                "%s refinement produced no successful candidates; using the "
+                "unrefined winner.", refine_engine.upper())
 
         summary_path = workdir / "guppy_goat_summary.json"
         summary = {
             "smiles": smiles,
             "resolved_charge": resolved_charge,
             "goat_topk_requested": goat_topk_resolved,
+            "refine_engine": refine_engine,
             "winner_source": winner_source,
             "winner": {
                 "run_idx": winner_result[3],
@@ -1399,6 +1832,10 @@ def run_sampling(
         "seed": seed,
         "method": method,
         "multiplicity": multiplicity,
+        "multiplicities_tested": list(wanted_mults),
+        "screen_method": screen_method,
+        "optimise": str(optimise or "xtb").strip().lower(),
+        "refine": refine_engine,
         "rmsd_cutoff": rmsd_cutoff,
         "energy_window_kcal": energy_window_kcal,
         "runs_requested": runs,
@@ -1412,6 +1849,7 @@ def run_sampling(
             "energy_eh": winner_result[0],
             "label": winner_result[4],
             "source": winner_result[5],
+            "multiplicity": multiplicity_of_label(winner_result[4], multiplicity),
         },
         "ranking": [
             {
@@ -1550,7 +1988,60 @@ def _build_parser() -> argparse.ArgumentParser:
             "before GOAT (default: 25.0, set 0 to disable)."
         ),
     )
+    # The funnel, as flags.  Each is optional and each defaults to what a
+    # CONTROL.txt without the key would do, so the command line and the
+    # pipeline cannot drift apart by omission.
+    parser.add_argument(
+        "--screen",
+        default="none",
+        help="Hamiltonian for the single-point pre-screen: none, clash, gfnff, "
+             "gfn0, gfn1, gfn2, gxtb (default: none)",
+    )
+    parser.add_argument(
+        "--screen-keep",
+        type=int,
+        default=0,
+        help="Keep only this many (frame, multiplicity) pairs after the "
+             "screen; 0 keeps all (default: 0)",
+    )
+    parser.add_argument(
+        "--optimise",
+        choices=("none", "xtb"),
+        default="xtb",
+        help="Optimise the survivors, or rank on the screen alone "
+             "(default: xtb)",
+    )
+    parser.add_argument(
+        "--multiplicities",
+        default="",
+        help="Spin states to try every frame at, e.g. 1,3,5. Empty means the "
+             "parity rule: even electron count -> 1, odd -> 2 (default: empty)",
+    )
+    parser.add_argument(
+        "--refine",
+        choices=("none", "goat", "crest"),
+        default="goat",
+        help="What the best optimised frames are handed to (default: goat)",
+    )
+    parser.add_argument(
+        "--solvent",
+        default="",
+        help="GBSA solvent for a CREST refinement (default: gas phase)",
+    )
     return parser
+
+
+def _multiplicity_argument(text: str) -> List[int]:
+    """``1,3,5`` or ``1 3 5`` from the command line; empty means parity."""
+    found: List[int] = []
+    for token in str(text or "").replace(",", " ").split():
+        try:
+            value = int(float(token))
+        except (TypeError, ValueError):
+            continue
+        if value >= 1 and value not in found:
+            found.append(value)
+    return sorted(found)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
@@ -1575,6 +2066,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         parser.error("--rmsd-cutoff must be >= 0")
     if args.energy_window_kcal < 0:
         parser.error("--energy-window-kcal must be >= 0")
+    if args.screen_keep < 0:
+        parser.error("--screen-keep must be >= 0")
+    if str(args.screen).strip().lower() not in (
+            "none", "clash", "gfnff", "gfn0", "gfn1", "gfn2", "gxtb"):
+        parser.error("--screen must be none, clash, gfnff, gfn0, gfn1, gfn2, "
+                     "or gxtb")
+    if args.multiplicities.strip() and not _multiplicity_argument(args.multiplicities):
+        parser.error("--multiplicities must be a list of positive integers")
 
     return run_sampling(
         input_file=Path(args.input_file),
@@ -1594,6 +2093,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         max_isomers=args.max_isomers,
         rmsd_cutoff=args.rmsd_cutoff,
         energy_window_kcal=args.energy_window_kcal,
+        screen_method=str(args.screen).strip().lower() or "none",
+        keep_frames=args.screen_keep if args.screen_keep > 0 else None,
+        optimise=args.optimise,
+        multiplicities=_multiplicity_argument(args.multiplicities),
+        refine=args.refine,
+        solvent=str(args.solvent).strip(),
     )
 
 

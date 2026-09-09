@@ -1355,12 +1355,6 @@ def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any])
     if runs <= 0:
         runs = 20
 
-    try:
-        parallel_jobs = int(str(config.get('GUPPY_PARALLEL_JOBS', 4)).strip())
-    except (ValueError, TypeError):
-        parallel_jobs = 4
-    if parallel_jobs <= 0:
-        parallel_jobs = 4
 
     try:
         seed = int(str(config.get('GUPPY_SEED', 31)).strip())
@@ -1368,13 +1362,70 @@ def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any])
         seed = 31
 
     method = str(config.get('xTB_method') or 'XTB2').strip() or 'XTB2'
-    try:
-        goat_topk = int(str(config.get('GUPPY_GOAT', 0)).strip())
-    except (ValueError, TypeError):
-        goat_topk = 0
-    goat_topk = max(0, min(3, goat_topk))
+
+    # Everything CONTROL says about the builder, and about reducing its frames to
+    # the one geometry the pipeline takes, read once and in one place.  Deriving
+    # any of it a second time here is how MANTA_GOAT came to be validated by the
+    # control file and then ignored by the run.
+    from delfin.common.manta_settings import (
+        builder_options as _builder_options,
+        selection_options as _selection_options,
+    )
+    build_options = _builder_options(config)
+    selection = _selection_options(config)
+    goat_topk = selection['refine_topk']
+    parallel_jobs = selection['parallel_jobs']
     goat_parallel_jobs = parallel_jobs
+    # CREST wants a GBSA solvent name; GOAT does not use it.  Passing the
+    # CONTROL solvent through means a CREST refinement runs in the same medium
+    # as everything downstream instead of in the gas phase by omission.
+    manta_solvent = str(config.get('solvent') or '').strip()
+    # MANTA_OPT_METHOD lets the frame optimisations run at a different xtb
+    # level from the rest of the run -- GFN-FF to sift a large manifold, say,
+    # while xTB_method stays GFN2 for everything downstream.  Unset, it follows
+    # xTB_method, which is what it did before the key existed.
+    if selection['optimise_method']:
+        method = str(selection['optimise_method']).strip()
+        logger.info("MANTA frame optimisation uses %s (MANTA_OPT_METHOD), "
+                    "not xTB_method=%s",
+                    method, config.get('xTB_method'))
     config['_guppy_goat_completed'] = 'no'
+
+    # The four keys below are validated in control_validator (:1719-1722) and were
+    # never handed to run_sampling, so every run silently took the function's own
+    # defaults and four documented CONTROL knobs did nothing.  run_sampling has
+    # accepted all four since it was written; only the call site was missing them.
+    start_strategy = str(
+        config.get('MANTA_START_STRATEGY')
+        or config.get('GUPPY_START_STRATEGY')
+        or 'isomers').strip().lower() or 'isomers'
+
+    def _setting(name, legacy, fallback, cast):
+        """CONTROL value under the new name, the old name, or the default."""
+        raw = config.get(name)
+        if raw is None or str(raw).strip() == '':
+            raw = config.get(legacy)
+        if raw is None or str(raw).strip() == '':
+            return fallback
+        try:
+            return cast(str(raw).strip())
+        except (ValueError, TypeError):
+            return fallback
+
+    # 0 means "the complete manifold".  It is not a truncation: the builder uses
+    # max_isomers * cap_mult as its pre-UFF candidate budget, so a small number
+    # shrinks the search rather than just shortening the answer.
+    max_isomers = _setting('MANTA_MAX_ISOMERS', 'GUPPY_MAX_ISOMERS', 100, int)
+    if max_isomers <= 0:
+        max_isomers = 100000
+    rmsd_cutoff = _setting('MANTA_RMSD_CUTOFF', 'GUPPY_RMSD_CUTOFF', 0.3, float)
+    energy_window_kcal = _setting(
+        'MANTA_ENERGY_WINDOW', 'GUPPY_ENERGY_WINDOW_KCAL', 25.0, float)
+
+    # Everything the builder can be told.  Without this it runs on the library
+    # default profile -- 20 seeds against the 60 that `delfin-manta` uses by
+    # default -- so the pipeline was asking for a weaker search than the command
+    # line and had no way to say otherwise.
 
     guppy_settings = {
         'source': 'CONTROL.txt',
@@ -1388,6 +1439,13 @@ def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any])
         'goat_parallel_jobs': goat_parallel_jobs,
         'seed': seed,
         'method': method,
+        'start_strategy': start_strategy,
+        'max_isomers': max_isomers,
+        'builder': dict(build_options),
+        'selection': dict(selection),
+        'solvent': manta_solvent,
+        'rmsd_cutoff': rmsd_cutoff,
+        'energy_window_kcal': energy_window_kcal,
         'input_file': guppy_input.name,
         'output_file': guppy_output.name,
         'winner_file': best_coord.name,
@@ -1402,7 +1460,7 @@ def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any])
     }
     guppy_settings_path.write_text(json.dumps(guppy_settings, indent=2), encoding="utf-8")
 
-    logger.info("smiles_converter=GUPPY: starting GUPPY sampling for SMILES → %s", start_path.name)
+    logger.info("smiles_converter=MANTA: building and ranking structures for SMILES → %s", start_path.name)
     ret = run_sampling(
         input_file=guppy_input,
         runs=runs,
@@ -1417,6 +1475,18 @@ def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any])
         allow_partial=True,
         goat_topk=goat_topk,
         goat_parallel_jobs=goat_parallel_jobs,
+        start_strategy=start_strategy,
+        max_isomers=max_isomers,
+        rmsd_cutoff=rmsd_cutoff,
+        energy_window_kcal=energy_window_kcal,
+        builder_options=build_options,
+        rank_multiplicity=selection['multiplicity'],
+        keep_frames=selection['screen_keep'],
+        screen_method=selection['screen'],
+        multiplicities=selection['multiplicities'],
+        optimise=selection['optimise'],
+        refine=selection['refine'],
+        solvent=manta_solvent,
     )
     if ret != 0:
         raise RuntimeError("GUPPY sampling returned non-zero status")
@@ -1447,7 +1517,10 @@ def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any])
 def _resolve_smiles_converter(config: Dict[str, Any]) -> str:
     """Return the effective SMILES converter with legacy fallback."""
     raw_value = str(config.get('smiles_converter', '') or '').strip().upper()
-    if raw_value in {'QUICK', 'NORMAL', 'GUPPY', 'ARCHITECTOR'}:
+    if raw_value == 'GUPPY':
+        # The old spelling of the same builder; see config._apply_guppy_legacy.
+        return 'MANTA'
+    if raw_value in {'QUICK', 'NORMAL', 'MANTA', 'ARCHITECTOR'}:
         return raw_value
     if str(config.get('GUPPY', 'no')).strip().lower() == 'yes':
         return 'GUPPY'
@@ -1509,7 +1582,7 @@ def normalize_input_file(config: Dict[str, Any], control_path: Path) -> str:
             converter = _resolve_smiles_converter(config)
             logger.info("Using smiles_converter=%s for %s", converter, input_path.name)
 
-            if converter == 'GUPPY':
+            if converter == 'MANTA':
                 if _skip_preprocessing_for_override(config, start_path.parent):
                     logger.info(
                         "[recalc] Skipping GUPPY sampling: --occupier-override active and "
