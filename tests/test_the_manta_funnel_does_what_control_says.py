@@ -361,3 +361,66 @@ def test_the_template_ships_no_goat_inside_manta():
     block = [l for l in define.TEMPLATE.splitlines() if l.startswith("MANTA_")]
     assert "MANTA_REFINE_TOPK=0" in block
     assert "MANTA_PARALLEL_JOBS=auto" in block
+
+
+# --- the run records what it actually did, not what the config says ---------
+
+def test_the_construction_set_is_recorded_with_the_run(tmp_path):
+    """The provenance names the construction config and lists its flags.
+
+    The construction set defines the builder's output more than the quality
+    profile does -- 42 environment flags against five profile numbers -- and it
+    was applied in cli.py and recorded nowhere, so a finished run could not say
+    which builder produced it.
+
+    The failure this guards against is not a crash. The MANTA harness ran
+    builds at quality ``extreme`` for weeks while every results file recorded
+    the shipped default, because the call site and the recording site each
+    wrote their own fallback for the same environment lookup. Both looked
+    right. So this records the set that was *applied*, not the config read a
+    second time.
+    """
+    import json
+    import delfin.guppy_sampling as sampling
+    import delfin.workflows.pipeline as pipeline
+    from delfin.common.manta_settings import apply_construction_env
+
+    original = sampling.run_sampling
+    sampling.run_sampling = lambda **kw: 0
+    try:
+        (tmp_path / "GUPPY").mkdir()
+        (tmp_path / "GUPPY" / "best_coordniation.xyz").write_text("1\n\nH 0 0 0\n")
+        config = {"PAL": "8", "maxcore": "2000", "xTB_method": "XTB2",
+                  "MANTA_CONSTRUCTION": "champion"}
+        apply_construction_env(config)
+        try:
+            pipeline._run_guppy_for_smiles("[Ni+2]", tmp_path / "start.txt", config)
+        except Exception:                          # noqa: BLE001
+            pass
+        recorded = json.loads((tmp_path / "guppy_settings.json").read_text())
+    finally:
+        sampling.run_sampling = original
+
+    construction = recorded["construction"]
+    assert construction["config"] == "champion"
+    assert len(construction["flags"]) > 30, construction["flags"]
+    assert recorded["builder"]["quality_mode"] == "extreme"
+
+
+def test_control_reproduces_the_champion_construction_set():
+    """CONTROL's champion is the same set the MANTA command line applies.
+
+    If it were a subset, a CONTROL run would silently build something that
+    does not match anything in the MANTA archives -- and the file defining
+    these flags records that a hand-picked 29-flag subset scored 13.7 %
+    topology-correct against 33.6 % for no flags at all, so a partial set is
+    not a milder version of the whole one.
+    """
+    from delfin import cli_manta
+    from delfin.common.manta_settings import apply_construction_env
+
+    wanted = {f"DELFIN_FFFREE_{name}" for name in cli_manta._CHAMPION_FLAGS}
+    applied = {}
+    apply_construction_env({"MANTA_CONSTRUCTION": "champion"}, applied)
+    enabled = {key for key, value in applied.items() if str(value) == "1"}
+    assert wanted <= enabled, sorted(wanted - enabled)
