@@ -801,6 +801,27 @@ class PromptLoader:
                     f"{top} — a repo-relative path such as "
                     f"delfin/agent/cli.py is under THAT directory, not "
                     f"under your working directory.")
+                # ...and the one repo-relative path that means HERE.
+                #
+                # Both paths were already named and the model still could
+                # not put them together: 27 refusals naming a path outside
+                # the roots and 9 `cwd is not a directory`, every one of
+                # them the working directory's own repo-relative spelling
+                # (`tests/fixtures/user_project_workspace`), because the
+                # person who wrote the request was standing in the root.
+                # Ten of them passed the root itself as an absolute cwd.
+                # Measured over ~/.delfin/audit.log, 2026-09-09.
+                try:
+                    inside = Path(repo).resolve().relative_to(
+                        Path(top).resolve())
+                except ValueError:
+                    inside = None
+                if inside is not None and str(inside) != ".":
+                    lines.append(
+                        f"…except {inside}/, which IS your working "
+                        f"directory. A request that names that path means "
+                        f"HERE — write plain relative paths, and never "
+                        f"repeat it as a prefix or pass the root as cwd.")
         except Exception:
             pass
 
