@@ -1386,9 +1386,9 @@ def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any])
     # downstream in CPCM would rank the coordination isomers under a different
     # Hamiltonian than the one that decides anything afterwards -- and for a
     # complex carrying a formal charge that is not a small difference.
-    from delfin.common.solvation import build_solvation_keyword
-    manta_solvation = build_solvation_keyword(
-        config.get('implicit_solvation_model'), manta_solvent)
+    from delfin.common.solvation import solvation_keyword_for_method
+    manta_solvation = solvation_keyword_for_method(
+        config.get('implicit_solvation_model'), manta_solvent, method)
     # MANTA_OPT_METHOD lets the frame optimisations run at a different xtb
     # level from the rest of the run -- GFN-FF to sift a large manifold, say,
     # while xTB_method stays GFN2 for everything downstream.  Unset, it follows

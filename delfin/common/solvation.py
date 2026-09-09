@@ -44,3 +44,29 @@ def build_solvation_keyword(implicit_solvation_model, solvent) -> str:
         return ""
 
     return f"{model}({solvent_name})"
+
+
+def solvation_keyword_for_method(implicit_solvation_model, solvent, method) -> str:
+    """The solvation keyword a given method will actually accept.
+
+    ORCA's xTB does not implement CPCM or SMD.  Handed one it does not warn and
+    carry on -- it aborts the whole run:
+
+        WARNING: Found SMD or SMDSolvent or CPCM keyword with XTB calculation.
+                 This is not implemented.
+        Error (ORCA_MAIN): ... aborting the run
+
+    So an xTB step takes ALPB with the same solvent, which is what the rest of
+    DELFIN already writes by hand (``! XTB2 ALPB(DMF)``, ``! XTB2 GOAT
+    ALPB(DMF)``).  Everything else keeps the model CONTROL asked for.
+
+    The failure this prevents is total, not subtle: every frame optimisation in
+    a solvated MANTA run died at exit code 25 and the run produced nothing.
+    """
+    name = str(solvent or "").strip()
+    if not name:
+        return ""
+    token = str(method or "").strip().upper()
+    if token.startswith("XTB") or token in ("GFN2-XTB", "GFN1-XTB", "GFNFF"):
+        return f"ALPB({name})"
+    return build_solvation_keyword(implicit_solvation_model, name)
