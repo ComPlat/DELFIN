@@ -3831,7 +3831,8 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             "description": (
                 "Total a column, saying what it left out: unreadable "
                 "values, empty and hidden rows. Never add a grid up "
-                "yourself. group_by totals per group."
+                "yourself. group_by totals per group, period one span "
+                "of time."
             ),
             "parameters": {
                 "type": "object",
@@ -3840,6 +3841,17 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     "column": {"type": "string"},
                     "sheet": {"type": "string"},
                     "group_by": {"type": "string"},
+                    "period": {
+                        "type": "string",
+                        "description": (
+                            "An ISO prefix: '2026-06' a month, '2026' a "
+                            "year, '2026-06-03' a day. Needs date_column."
+                        ),
+                    },
+                    "date_column": {
+                        "type": "string",
+                        "description": "Which column period reads.",
+                    },
                     "header_row": {
                         "type": "integer",
                         "description": "If a title sits above the names.",
@@ -3849,6 +3861,13 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                         "description": (
                             "After an ambiguity refusal: 'decimal_comma' "
                             "or 'decimal_point'."
+                        ),
+                    },
+                    "date_convention": {
+                        "type": "string",
+                        "description": (
+                            "After a date refusal: 'day_first', "
+                            "'month_first' or 'iso'."
                         ),
                     },
                 },
@@ -9211,7 +9230,10 @@ class _DocToolExecutor:
                 sheet=arguments.get("sheet"),
                 group_by=arguments.get("group_by"),
                 convention=arguments.get("convention"),
-                header_row=_as_int(arguments.get("header_row"), 1))
+                header_row=_as_int(arguments.get("header_row"), 1),
+                date_column=arguments.get("date_column"),
+                period=arguments.get("period"),
+                date_convention=arguments.get("date_convention"))
         except _office.OfficeError as exc:
             return json.dumps({"error": str(exc)}, ensure_ascii=False)
         except Exception as exc:
@@ -9224,11 +9246,25 @@ class _DocToolExecutor:
         # The total is never printed alone: what it left out is part of
         # what it is. A number without its coverage is the failure this
         # tool exists to replace.
+        # A period is part of what the number IS, so it belongs in the
+        # headline and not only in a note underneath it.
+        span = ""
+        if result.get("period"):
+            span = (f" in {result['period']} "
+                    f"(by '{result['date_column']}')")
+        # The places have to add up to the table. Rows dropped by the
+        # filter are two more places, and leaving them to the notes would
+        # print a coverage line that contradicts its own arithmetic.
+        coverage = f"counted {result['counted']} of {result['rows']} data row(s); "
+        if result.get("period"):
+            coverage += (f"{result['outside']} outside the period, "
+                         f"{result['undated']} without a readable date, ")
+        coverage += (f"{len(result['skipped'])} not readable, "
+                     f"{result['blank']} empty")
         lines = [
             f"{self._display_path(full, perms)} — total of "
-            f"'{result['column']}': {result['total']}",
-            f"counted {result['counted']} of {result['rows']} data row(s); "
-            f"{len(result['skipped'])} not readable, {result['blank']} empty",
+            f"'{result['column']}'{span}: {result['total']}",
+            coverage,
         ]
         if result["skipped"]:
             shown = ", ".join(result["skipped"][:10])
