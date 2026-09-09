@@ -157,6 +157,27 @@ def test_the_alias_a_weak_model_writes_still_counts(tmp_path):
     assert A._missing_required_argument("read_file", {}) is not None
 
 
+@pytest.mark.parametrize("table_name", ["_LABEL_ONLY", "_EMPTY_IS_MEANINGFUL"])
+def test_every_exemption_names_a_parameter_that_is_really_required(table_name):
+    """An exemption for an argument the schema does not require is dead
+    code that asserts something false about the contract -- the same
+    defect this whole file is about, one level up.
+
+    Both tables had one when they were written: `task_create.description`
+    (task_create requires only `subject`) and `multi_edit.new_string`
+    (which lives inside each edit, not at the top level)."""
+    required = {
+        t["function"]["name"]:
+            set((t["function"].get("parameters") or {}).get("required") or [])
+        for t in A._DOC_TOOLS_OPENAI
+    }
+    for tool, arg in sorted(getattr(A, table_name)):
+        assert tool in required, f"{table_name}: no such tool {tool}"
+        assert arg in required[tool], (
+            f"{table_name}: {tool}.{arg} is not a required parameter "
+            f"(required: {sorted(required[tool])})")
+
+
 def test_a_tool_with_no_required_arguments_is_untouched():
     assert A._missing_required_argument("calc_summary", {}) is None
     assert A._missing_required_argument("list_docs", {}) is None
