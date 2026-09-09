@@ -431,6 +431,13 @@ def _screen_start_geometries(
     if unscored:
         logger.info("  %d pair(s) gave no energy and keep their place.",
                     len(unscored))
+    try:
+        stats = ranking.cache_stats()
+        logger.info("  single-point cache: %d hit(s), %d miss(es). The solvent "
+                    "is part of the key, so changing it recomputes everything.",
+                    stats["hits"], stats["misses"])
+    except Exception:                              # noqa: BLE001
+        pass
     if keep and keep > 0 and len(ordered) > keep:
         logger.info("  keeping the %d lowest for optimisation.", keep)
         return ordered[:keep]
@@ -1482,6 +1489,8 @@ def run_sampling(
     refine: str = "goat",
     solvent: str = "",
     solvation: str = "",
+    screen_explicit: bool = True,
+    screen_above: int = 0,
 ) -> int:
     """Execute repeated SMILES->XTB2 workflow and write ranked trajectory."""
     smiles = _read_first_smiles_line(input_file)
@@ -1528,6 +1537,30 @@ def run_sampling(
     wanted_mults = sorted(dict.fromkeys(wanted_mults)) or [1]
     logger.info("Multiplicities to test: %s",
                 ", ".join(str(m) for m in wanted_mults))
+
+    # Whether to screen at all is a question about the manifold, and the
+    # manifold does not exist until here.  Optimising everything is the right
+    # answer for the median system -- measured over 5810 builds the median
+    # manifold is 14 frames -- and the wrong one for its tail, where 4.1 % of
+    # systems return more than 100 frames and the largest returns 399.  Each of
+    # those is an ORCA optimisation.
+    #
+    # So the default is conditional on what the builder actually returned, and
+    # an explicit MANTA_SCREEN always wins: this only fills in what CONTROL
+    # left open.
+    pair_count = len(start_geometries) * max(1, len(wanted_mults))
+    if (not screen_explicit and screen_above and pair_count > int(screen_above)
+            and str(screen_method or 'none').lower() in ('', 'none', 'clash')
+            and str(optimise or 'xtb').lower() != 'none'):
+        screen_method = 'gfn2'
+        if keep_frames is None:
+            keep_frames = int(screen_above)
+        logger.info(
+            "The builder returned %d (frame, multiplicity) pairs, above the "
+            "%d that are worth optimising outright. Screening with gfn2 and "
+            "optimising the best %d instead. Set MANTA_SCREEN explicitly to "
+            "override, or MANTA_SCREEN_ABOVE to move the threshold.",
+            pair_count, int(screen_above), keep_frames)
 
     screened = _screen_start_geometries(
         start_geometries,
