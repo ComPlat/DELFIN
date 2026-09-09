@@ -186,3 +186,78 @@ def test_a_scheduler_id_is_still_accepted(tmp_path):
         "watch_job", {"job_id": "123456"}, perms))
     assert out.get("status") == "watching", out
     assert out.get("kind") == "slurm"
+
+
+# ---------------------------------------------------------------------------
+# Two scheduler answers that pointed away from the fault
+# ---------------------------------------------------------------------------
+#
+# `cron_delete` called with no entry_id at all answered "not_found" — it
+# said the entry does not exist when the caller never named one. That is
+# not a hypothetical reading: it sent the author of this file to the wrong
+# diagnosis, "wake-ups cannot be deleted", when the real fault was a wrong
+# key name. Every sibling here answers "X is required".
+#
+# `schedule_wakeup` accepted an empty prompt and scheduled a real wake-up.
+# The prompt IS the wake-up; without one the agent is woken with nothing
+# to do, spends a turn and ends. The schema calls it required, which only
+# means the key is present.
+
+def _sched(tmp_path, name, args, session="sched"):
+    perms = _perms(tmp_path, session)
+    return json.loads(_DocToolExecutor().execute(name, args, perms))
+
+
+def test_deleting_without_naming_an_entry_says_which_argument_is_missing(
+        tmp_path):
+    out = _sched(tmp_path, "cron_delete", {})
+    assert "error" in out, out
+    assert "entry_id" in out["error"]
+    assert "not_found" not in json.dumps(out)
+
+
+def test_a_wrong_key_name_is_not_reported_as_a_missing_entry(tmp_path):
+    """The shape that cost the wrong diagnosis."""
+    out = _sched(tmp_path, "cron_delete", {"id": "abc"})
+    assert "error" in out and "entry_id" in out["error"]
+
+
+def test_an_entry_that_really_is_absent_still_says_not_found(tmp_path):
+    """The other half: the fix must not turn a real miss into an argument
+    complaint."""
+    out = _sched(tmp_path, "cron_delete", {"entry_id": "no-such-entry"})
+    assert out.get("status") == "not_found", out
+
+
+def test_a_wake_up_without_a_prompt_is_refused(tmp_path):
+    out = _sched(tmp_path, "schedule_wakeup",
+                 {"delay_seconds": 60, "prompt": "", "reason": "probe"})
+    assert "error" in out, out
+    assert "prompt" in out["error"]
+
+
+def test_a_wake_up_with_a_prompt_is_still_scheduled_and_deletable(tmp_path):
+    """End to end, and it cleans up after itself: the scheduler store is
+    real and shared, so a test that leaves an entry behind wakes somebody."""
+    made = _sched(tmp_path, "schedule_wakeup",
+                  {"delay_seconds": 99999, "prompt": "probe, delete me",
+                   "reason": "probe"})
+    assert made.get("status") == "ok", made
+    gone = _sched(tmp_path, "cron_delete", {"entry_id": made["id"]})
+    assert gone.get("status") == "ok", gone
+    listed = _sched(tmp_path, "cron_list", {})
+    assert not any(e.get("id") == made["id"]
+                   for e in listed.get("entries", []))
+
+
+def test_the_scheduler_tools_all_name_the_argument_they_want(tmp_path):
+    """The family rule, so the next one added does not drift."""
+    for name, args, wanted in (
+            ("cron_delete", {}, "entry_id"),
+            ("watch_job", {}, "job_id"),
+            ("remote_trigger", {}, "event"),
+            ("schedule_wakeup", {"delay_seconds": 60, "reason": "r"},
+             "prompt")):
+        out = _sched(tmp_path, name, args)
+        assert "error" in out, (name, out)
+        assert wanted in out["error"], (name, out["error"])

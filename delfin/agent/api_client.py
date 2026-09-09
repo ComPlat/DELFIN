@@ -13369,9 +13369,19 @@ class _DocToolExecutor:
         _ws = str(getattr(perms, "workspace", "") or "")
         try:
             if name == "schedule_wakeup":
+                # The prompt IS the wake-up. Without one the agent is
+                # woken with nothing to do, which costs a turn and
+                # cannot accomplish anything -- and the schema calls it
+                # required, which only means the key is present.
+                _prompt = str(arguments.get("prompt", "") or "").strip()
+                if not _prompt:
+                    return json.dumps({"error": (
+                        "prompt is required — it is what the wake-up is "
+                        "FOR. A scheduled turn with nothing to do wakes "
+                        "the agent and ends.")})
                 ent = sch.schedule_once(
                     delay_seconds=int(arguments.get("delay_seconds", 0)),
-                    prompt=str(arguments.get("prompt", "")),
+                    prompt=_prompt,
                     reason=str(arguments.get("reason", "")),
                     workspace=_ws,
                 )
@@ -13408,7 +13418,18 @@ class _DocToolExecutor:
                     ],
                 })
             if name == "cron_delete":
-                ok = sch.delete(str(arguments.get("entry_id", "")))
+                # A missing argument is not a missing entry. Called with
+                # no entry_id -- or with the wrong key name -- this said
+                # "not_found", which sends the reader looking for an
+                # entry that was never named. Every sibling here answers
+                # "X is required"; this one now does too. It cost a wrong
+                # diagnosis to find that out.
+                _entry_id = str(arguments.get("entry_id", "") or "").strip()
+                if not _entry_id:
+                    return json.dumps({"error": (
+                        "entry_id is required — pass the id from "
+                        "cron_list. Nothing was deleted.")})
+                ok = sch.delete(_entry_id)
                 return json.dumps({"status": "ok" if ok else "not_found"})
         except ValueError as exc:
             return json.dumps({"error": str(exc)})
