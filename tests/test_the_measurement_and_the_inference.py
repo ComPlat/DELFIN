@@ -129,6 +129,11 @@ def test_each_integrity_rule_now_has_a_task_behind_it():
         "precision honesty": ("Nachkomma", "signifikant", "Eingabegenauigkeit"),
         "reproducibility": ("298", "Temperatur", "funktional"),
         "data vs interpretation": ("Interpretation", "Faustregel", "Heurist"),
+        # A failure needs a control before you attribute it. Added with
+        # the rule and with the mechanism it names: enter_worktree had no
+        # base_ref, so the refuting experiment for the commonest
+        # hypothesis in software work could not be performed at all.
+        "a failure needs a control": ("base_ref", "worktree add"),
     }
     tasks = load_tasks()
     for label, markers in rules.items():
