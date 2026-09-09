@@ -87,7 +87,17 @@ def _estimate_tokens(text: str) -> int:
         # likely behaviour was to refuse or improvise a text file, when the
         # tool writes a .eml and has no network at all. 22 tokens for the
         # row, and the row says the part that resolves the conflict.
-        ("office_agent.md", 1679),
+        #
+        # 1679 -> 1688, nine tokens, for the words "reads the column's own
+        # convention". kit.deepseek-v4-flash gave exactly that as its
+        # REASON for going to the shell instead:  "Ich summiere in bash
+        # mit Python, um die Konvention korrekt zu beruecksichtigen" --
+        # then spent 27 of one task's 50 tool calls writing and debugging
+        # the script, for a total sum_column returns in one call and with
+        # the coverage attached. The old rule is what it was echoing, so
+        # removing that rule was necessary and not sufficient: the model
+        # also has to know the tool covers the thing it was worried about.
+        ("office_agent.md", 1688),
     ],
 )
 def test_role_prompt_within_token_budget(filename, max_tokens):
