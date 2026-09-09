@@ -198,3 +198,71 @@ def test_a_finished_walk_stays_cuttable_at_the_frame_on_screen():
     # run claims a number -- it may only be cut while it is the walk on screen.
     claim = SOURCE.split('def _claim_the_frame_run')[1].split('\n    def ')[0]
     assert "state.pop('gfn_stopped_path', None)" in claim
+
+
+def test_a_grab_lands_the_frame_on_screen_not_only_a_stop(editor):
+    """The scan-jump report kept arriving after the Stop path was fixed,
+    because the user grabs the result rather than pausing first.
+
+    A finished walk puts its path down but the page never sends "stopped at
+    frame" for it -- the playback ends of its own accord -- so the only message
+    that says where the picture got to is the grab.  The Stop report landed the
+    frame; the grab did not, so the box kept the walk's end while the picture
+    stood on an earlier point, and reading the box (the grab, Copy, Submit) made
+    them agree by jumping.  Driven here the way the browser drives it: arm the
+    path a finished scan leaves, then grab on an earlier frame, and the box has
+    to become that frame -- as the Stop report already makes it.
+    """
+    state = editor['editor_state']
+    box = editor['coords_widget']
+
+    summit = '3\nScanned\nO 0.00 0.00 0.00\nH 1.40 0.00 0.00\nH -0.35 1.35 0.00\n'
+    walked = [[0.0, 0.0, 0.0, 0.96, 0.0, 0.0, -0.24, 0.93, 0.0],   # frame 1
+              [0.0, 0.0, 0.0, 1.10, 0.0, 0.0, -0.28, 1.05, 0.0],   # frame 2
+              [0.0, 0.0, 0.0, 1.40, 0.0, 0.0, -0.35, 1.35, 0.0]]   # frame 3 = summit
+
+    def arm():
+        box.value = summit
+        state['gfn_run'] = 7
+        state['gfn_stopped_path'] = {'run': 7, 'source': summit,
+                                     'comment': 'point of the walk',
+                                     'undo': True,
+                                     'frames': [list(f) for f in walked]}
+        state.pop('gfn_shown_frame', None)
+        state.pop('gfn_shown_run', None)
+
+    def first_oh(text):
+        import math
+        rows = [ln.split() for ln in text.splitlines()[2:] if ln.strip()]
+        o = list(map(float, rows[0][1:4]))
+        h = list(map(float, rows[1][1:4]))
+        return math.dist(o, h)
+
+    # A grab on frame 1 lands it: the box holds the summit (1.40), the picture
+    # stands on frame 1 (O-H ~0.96), and the grab makes the box that frame...
+    arm()
+    assert abs(first_oh(box.value) - 1.40) < 0.05   # the box holds the walk's end
+    _says(editor, 'gfngrab', '1,7')
+    assert abs(first_oh(box.value) - 0.96) < 0.05, 'the grab did not land the frame'
+    assert state.get('gfn_stopped_path') is None, 'the path was not consumed'
+
+    # ...exactly as the Stop report already did.
+    arm()
+    _says(editor, 'gfnplay', 'stopped at frame 1 of run 7')
+    assert abs(first_oh(box.value) - 0.96) < 0.05
+
+    # A grab of another walk's frame leaves a down path alone (it is not ours).
+    arm()
+    _says(editor, 'gfngrab', '1,9')
+    assert abs(first_oh(box.value) - 1.40) < 0.05, 'a foreign frame must not land'
+    assert state.get('gfn_stopped_path') is not None
+
+
+def test_the_grab_lands_the_frame_the_way_the_stop_does():
+    """The fix, in the source: the grab calls _land_the_stopped_frame, the same
+    reconciliation the stop report does -- so a finished walk is cut at the
+    frame on screen whether the user pauses or takes straight hold of it."""
+    grab = SOURCE.split("if verb == 'gfngrab':")[1].split('return')[0]
+    assert '_keep_the_shown_frame(' in grab
+    assert '_land_the_stopped_frame()' in grab, (
+        'a grab must land the frame on screen, not only a Stop report')
