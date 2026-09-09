@@ -1524,6 +1524,20 @@ def cmd_bench(args: argparse.Namespace) -> int:
           f"denials {'not observed' if _denials is None else _denials}")
     print("     Rising here is a regression even at an unchanged pass "
           "rate: an answer nobody finishes reading says nothing.")
+    # Figures, split by why they did not match. The two failures need
+    # different repairs and used to look identical in this summary: a
+    # wrong figure is arithmetic, an absent one is usually an answer that
+    # never arrived, and reading them as one number files a harness fault
+    # as a model fault.
+    _v_ok = s.get("values_matched", 0)
+    _v_bad = s.get("values_wrong", 0)
+    _v_gone = s.get("values_absent", 0)
+    if _v_ok or _v_bad or _v_gone:
+        print(f"  figures: {_v_ok} matched   {_v_bad} wrong   "
+              f"{_v_gone} absent from the answer")
+        if _v_gone:
+            print("     An absent figure is usually not the model's "
+                  "arithmetic — check the answer arrived before blaming it.")
     _print_behavior_rates(_bm, results)
     print(f"\nWritten to: {path}")
     return 0
