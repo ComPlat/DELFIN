@@ -132,6 +132,33 @@ def _valid_ref(ref: str) -> bool:
     return bool(_REF_RE.match(ref or ""))
 
 
+def _default_parent(repo: Path) -> Path:
+    """Where a worktree goes when the caller does not say.
+
+    The system temp directory, EXCEPT when the repository is itself
+    under it -- then the worktree goes beside the repository instead.
+
+    A repo under /tmp is a throwaway: a test's tmp_path, a scratch
+    checkout. Its worktree used to land in /tmp's root, which outlives
+    it, and the `.git` file left behind points at a directory that no
+    longer exists. Counted on this machine 2026-09-09: 2532 orphaned
+    `/tmp/delfin-wt-*` directories, the oldest from 2026-08-12, growing
+    by about a hundred per suite run. Placing it beside the repository
+    means it is removed with whatever removes the repository.
+
+    A real user's repository is not under /tmp, so nothing about the
+    normal case changes -- which is the point: the worktree must not
+    appear inside a project the user is looking at.
+    """
+    try:
+        tmp = Path(tempfile.gettempdir()).resolve()
+        if repo.resolve().is_relative_to(tmp) and repo.resolve() != tmp:
+            return repo.parent
+    except (OSError, ValueError):
+        pass
+    return Path(tempfile.gettempdir())
+
+
 def enter_worktree(
     repo_dir: Path | str,
     *,
@@ -175,7 +202,8 @@ def enter_worktree(
                 f"base_ref {ref!r} does not name a commit in {repo}.")
     else:
         base_ref = _current_head(repo)
-    parent_dir = Path(parent) if parent else Path(tempfile.gettempdir())
+
+    parent_dir = Path(parent) if parent else _default_parent(repo)
     parent_dir.mkdir(parents=True, exist_ok=True)
     suffix = uuid.uuid4().hex[:8]
     branch_name = f"{branch_prefix}/{suffix}"
