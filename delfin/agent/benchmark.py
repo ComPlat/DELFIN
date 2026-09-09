@@ -239,6 +239,16 @@ class Task:
     # Figures the answer must state, compared as numbers rather than as
     # digits. See ExpectedValue.
     expected_values: tuple[ExpectedValue, ...] = ()
+    # A script, in this repository, run against what the task PRODUCED --
+    # after the turn, before the fixture guard puts the workspace back.
+    #
+    # Every other check here reads what the model wrote ABOUT its work.
+    # For "build something that works" that is the wrong question, and no
+    # amount of pattern care fixes it: a task whose subject is a running
+    # program has one honest criterion, which is whether the program
+    # runs. The script is ours, never the model's; it is handed the
+    # workspace path and its exit status is the verdict.
+    verify: str = ""
     max_duration_s: float = 60.0
     max_cost_usd: float = 0.10
     max_tool_calls: int = 5
@@ -274,6 +284,12 @@ class Trajectory:
     # Gate denials observed during the run; ``None`` when the runner had
     # no way to look. Unobserved is not zero.
     denials: Optional[int] = None
+    # What an acceptance script made of the artifacts, when the task
+    # declared one. ``None`` means no script was declared OR the runner
+    # could not reach one -- never "it failed", for the same reason
+    # denials distinguishes unobserved from zero.
+    verify_ok: Optional[bool] = None
+    verify_output: str = ""
     # Where the checkout under test lives. An absolute prefix in a tool
     # input is a routing detail, exactly like the transport namespace on a
     # tool NAME, and it is dropped for the same reason -- see
@@ -352,6 +368,9 @@ class BenchmarkResult:
     # split is what separates a model that computed the wrong number from
     # an answer that never reached the scorer.
     value_report: dict[str, str] = field(default_factory=dict)
+    # The acceptance run: True, False, or None for "no script / not run".
+    verify_ok: Optional[bool] = None
+    verify_output: str = ""
     tool_names: list[str] = field(default_factory=list)  # tools the model actually called
     # --- trace-derived behaviour flags (behavioural-parity eval) ---
     # Only populated for tasks carrying a ``behavior:`` tag.  Per-run this
@@ -419,6 +438,7 @@ def _coerce_task(raw: dict) -> Task:
         expected_signals=expected,
         forbidden_signals=forbidden,
         expected_values=values,
+        verify=str(raw.get("verify", "") or ""),
         max_duration_s=float(raw.get("max_duration_s", 60.0)),
         max_cost_usd=float(raw.get("max_cost_usd", 0.10)),
         max_tool_calls=int(raw.get("max_tool_calls", 5)),
@@ -1207,6 +1227,26 @@ def score_outcome(
             if not expected.optional:
                 success_required_ok = False
 
+    # 1c. The acceptance run. A task that declares one is asking a
+    # question about the artifact, so the artifact answers it: no
+    # wording, no convention, no pattern that has to be maintained
+    # alongside the thing it describes.
+    if task.verify:
+        label = f"{task.id}.verify"
+        if traj.verify_ok is True:
+            matched.append(label)
+        elif traj.verify_ok is False:
+            missing.append(label + ":failed")
+            success_required_ok = False
+            if traj.verify_output:
+                signal_evidence[label] = traj.verify_output[:600]
+        else:
+            # Not run. Not a pass and not a model failure -- the same
+            # stance is_unmeasured takes about a turn that never reached
+            # the model.
+            missing.append(label + ":not_run")
+            success_required_ok = False
+
     # 2. Forbidden signals — any match flips success to False. A match
     # inside an explicit NEGATION context is waived: an answer that names
     # a fake keyword in order to warn against it ("the keywords are NOT
@@ -1340,6 +1380,8 @@ def score_outcome(
         text_excerpt=excerpt,
         signal_evidence=signal_evidence,
         value_report=value_report,
+        verify_ok=traj.verify_ok,
+        verify_output=str(traj.verify_output or "")[:2000],
         tool_names=tool_names,
         behavior=behavior_flags(task, traj),
         caveats=caveat_count(traj.text),

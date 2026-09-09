@@ -58,6 +58,7 @@ def _tasks():
     ("behavior_scout", "behavior_workspace"),
     ("behavior_verify", "behavior_workspace"),
     ("generic_project", "user_project_workspace"),
+    ("science_analysis", "science_workspace"),
 ])
 def test_a_writing_class_is_confined_to_its_fixture(task_class, expected):
     ws = workspace_for(_ROOT, task_class=task_class)
@@ -116,6 +117,7 @@ def test_every_packaged_writing_class_has_a_workspace():
     missing = sorted({
         t.get("task_class", "") for t in _tasks()
         if (str(t.get("task_class", "")).startswith("behavior")
+            or str(t.get("task_class", "")).startswith("science")
             or t.get("task_class") in ("office", "generic_project"))
         and workspace_for(_ROOT, mode=t.get("mode", ""),
                           task_class=t.get("task_class", "")) is None
@@ -126,7 +128,8 @@ def test_every_packaged_writing_class_has_a_workspace():
 def test_the_counts_still_match_what_was_measured():
     """If a task file grows a new writing class, this says so rather than
     letting it inherit the checkout unnoticed."""
-    counts = {"office": 0, "behavior": 0, "generic_project": 0, "other": 0}
+    counts = {"office": 0, "behavior": 0, "generic_project": 0,
+              "science": 0, "other": 0}
     for t in _tasks():
         c = str(t.get("task_class", ""))
         if c == "office":
@@ -135,6 +138,8 @@ def test_the_counts_still_match_what_was_measured():
             counts["behavior"] += 1
         elif c == "generic_project":
             counts["generic_project"] += 1
+        elif c.startswith("science"):
+            counts["science"] += 1
         else:
             counts["other"] += 1
     # generic_project 8 -> 13 on 2026-09-08. Three plan-permission tasks
@@ -161,8 +166,13 @@ def test_the_counts_still_match_what_was_measured():
     # restored fixture workbook, which is what the guard around every
     # office attempt is for, and the guard replaces the workspace whole so
     # the backup the edit creates leaves with it.
-    assert counts == {"office": 13, "behavior": 12,
-                      "generic_project": 14, "other": 48}, counts
+    #
+    # A "science" bucket on 2026-09-09, starting at 1. The coding side of
+    # this suite was four ~30-line scripts over one JSON file, all graded
+    # on prose ABOUT the work; these are graded on the artifact, so they
+    # WRITE and they need the guard like every other writing class.
+    assert counts == {"office": 13, "behavior": 12, "generic_project": 14,
+                      "science": 1, "other": 48}, counts
 
 
 # ---------------------------------------------------------------------------
