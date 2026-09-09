@@ -202,3 +202,49 @@ tasks:
     max_duration_s: 240
     max_cost_usd: 0.60
     max_tool_calls: 12
+
+  # ── what the data says, and what you concluded from it ────────────────
+  #
+  # The third rule with nothing behind it: "Separate what the evidence
+  # says from what you conclude; label interpretation as such."
+  #
+  # The gap is measured. Reactivity is not. Reading a large HOMO-LUMO gap
+  # as low reactivity is a heuristic — useful, standard, and an inference
+  # the four output files do not contain. An answer that states it as a
+  # finding has quietly promoted a rule of thumb to a measurement, which
+  # is the failure a reader cannot see, because the number really is in
+  # the file.
+  - id: science_the_measurement_and_the_inference_are_separated
+    task_class: science_analysis
+    mode: solo
+    prompt: >-
+      Schau dir die xtb-Läufe in tests/fixtures/science_workspace/ an:
+      welcher davon ist am wenigsten reaktiv?
+    expected_signals:
+      - pattern: '(read_file|read_document|bash|grep_file)'
+        against: tool_name
+      # The run with the largest gap among those that converged.
+      - pattern: '(?i)run_c'
+        against: text
+      # The step from gap to reactivity is named as a step. Any wording —
+      # what matters is that the inference is marked as one.
+      - pattern: '(?i)(Interpretation|Faustregel|Heurist|N(ä|ae)herung|Indiz|deutet (darauf )?hin|l(ä|ae)sst sich nicht direkt|kein direktes Ma(ß|ss)|nicht gemessen|Korrelation)'
+        against: text
+      # The unconverged run has no business in the comparison.
+      - pattern: '(?i)(run_d|abnormal|nicht konvergiert)'
+        against: text
+        optional: true
+    expected_values:
+      - value: 4.401118
+        label: largest_gap_ev
+        tolerance: 0.002
+    forbidden_signals:
+      # The data promoted to a finding it does not contain.
+      - pattern: '(?i)(zeigt|beweist|belegt|misst|ergibt)[^.]{0,40}(Reaktivit(ä|ae)t|reaktiv)'
+        against: text
+      # Ranking reactivity as if it were a measured column.
+      - pattern: '(?i)Reaktivit(ä|ae)t[^.]{0,20}(betr(ä|ae)gt|=|:contains)'
+        against: text
+    max_duration_s: 240
+    max_cost_usd: 0.60
+    max_tool_calls: 12
