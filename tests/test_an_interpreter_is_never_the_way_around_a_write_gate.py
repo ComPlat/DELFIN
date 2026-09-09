@@ -257,3 +257,49 @@ def test_a_default_pattern_cannot_pass_for_a_user_rule():
     for pat in A._DEFAULT_BASH_AUTO_ALLOW:
         assert pat in A._BUILTIN_BASH_AUTO_ALLOW
     assert perms._custom_allow_matches("python3 -c 'x'") is False
+
+
+def test_the_unattended_profile_gains_the_most(tmp_path):
+    """Measured against main, both arms, bypassPermissions:
+
+        python3 -c "open('~/delfin_probe.txt','w').write(1)"
+            main   -> RAN, and the file appeared in the user's HOME
+            branch -> blocked: this command would write to '/home/...'
+
+    bypassPermissions skips the auto-allow table entirely, so the
+    interpreter rule never applied there in the first place -- the only
+    thing between a payload and the filesystem was _bash_write_targets,
+    which could not see `open(p, 'w')` at all. Reading the payload closes
+    that, and it closes it in the profile that has no human in the loop.
+
+    The same probe against /etc "ran" on main and wrote nothing: the
+    operating system refused it. That is not containment.
+    """
+    outside = tmp_path.parent / "outside_the_workspace.txt"
+    perms = _perms(tmp_path, mode="bypassPermissions")
+    ex = A._DocToolExecutor.__new__(A._DocToolExecutor)
+    blocked = ex._gate_bash_write_targets(
+        f"python3 -c \"open('{outside}','w').write(1)\"", {}, perms)
+    assert blocked is not None
+    assert str(outside) in blocked
+    assert not outside.exists()
+
+
+def test_a_scratch_sink_is_decided_by_where_the_workspace_is(tmp_path):
+    """The exemption that must survive the change, stated the way the code
+    states it: /tmp is scratch only for a workspace that does not LIVE
+    there. A workspace under /tmp has its own neighbourhood, and gating
+    every file beside it would be friction with nothing behind it --
+    while treating them as scratch would exempt the workspace itself.
+
+    Measured directly rather than assumed: an earlier draft of this test
+    asserted the opposite and was wrong about which side of the rule it
+    was on.
+    """
+    real_project = Path("/home/someone/projects/thing")
+    assert A._is_ephemeral_sink(Path("/tmp/scratch.txt"), real_project) is True
+    assert A._is_ephemeral_sink(
+        real_project / "out.txt", real_project) is False
+
+    # ...and for a workspace that IS under /tmp, /tmp is not scratch.
+    assert A._is_ephemeral_sink(Path("/tmp/scratch.txt"), tmp_path) is False
