@@ -267,15 +267,15 @@ def test_the_optimisation_input_carries_the_control_solvation(tmp_path):
     inp = tmp_path / "XTB.inp"
     _write_xtb_input(inp, ["Ni 0.0 0.0 0.0"], charge=2, multiplicity=3,
                      pal=4, maxcore=2000, method="XTB2",
-                     solvation="CPCM(DMF)")
+                     solvation="ALPB(DMF)")
     head = inp.read_text().splitlines()[0]
-    assert head == "!XTB2 OPT CPCM(DMF)", head
+    assert head == "!XTB2 OPT ALPB(DMF)", head
 
     goat = tmp_path / "goat.inp"
     _write_goat_input(goat, xyz_file=tmp_path / "c.xyz", charge=2,
                       multiplicity=3, pal=4, maxcore=2000, method="XTB2",
-                      solvation="CPCM(DMF)")
-    assert goat.read_text().splitlines()[0] == "!XTB2 CPCM(DMF) GOAT"
+                      solvation="ALPB(DMF)")
+    assert goat.read_text().splitlines()[0] == "!XTB2 ALPB(DMF) GOAT"
 
 
 def test_gas_phase_stays_gas_phase(tmp_path):
@@ -310,7 +310,8 @@ def test_the_solvation_reaches_the_sampler_from_control():
                 pass
     finally:
         sampling.run_sampling = original
-    assert seen["solvation"] == "CPCM(DMF)"
+    # XTB gets ALPB: ORCA aborts an xTB run handed CPCM.
+    assert seen["solvation"] == "ALPB(DMF)"
     assert seen["solvent"] == "DMF"
 
 
@@ -516,3 +517,29 @@ def test_an_early_import_of_the_construction_record_still_sees_it():
     apply_construction_env({"MANTA_CONSTRUCTION": "champion", "PAL": "8"}, {})
     assert LAST_CONSTRUCTION["config"] == "champion"
     assert len(LAST_CONSTRUCTION["flags"]) > 30
+
+
+def test_an_xtb_step_never_gets_a_solvation_model_orca_refuses():
+    """ORCA's xTB does not implement CPCM or SMD, and does not degrade quietly:
+
+        WARNING: Found SMD or SMDSolvent or CPCM keyword with XTB calculation.
+                 This is not implemented.
+        Error (ORCA_MAIN): ... aborting the run
+
+    Found by running the whole chain on a real complex for the first time.
+    Every frame optimisation died at exit code 25 and the run produced nothing,
+    so a solvated MANTA run was totally broken while every unit test passed.
+    """
+    from delfin.common.solvation import solvation_keyword_for_method
+
+    for method in ("XTB2", "XTB1", "xtb2", "GFN2-xTB"):
+        assert solvation_keyword_for_method("CPCM", "DMF", method) == "ALPB(DMF)"
+        assert solvation_keyword_for_method("SMD", "DMF", method) == "ALPB(DMF)"
+
+    # a DFT step keeps what CONTROL asked for
+    assert solvation_keyword_for_method("CPCM", "DMF", "B3LYP") == "CPCM(DMF)"
+    assert solvation_keyword_for_method("SMD", "water", "wB97X") == "SMD(water)"
+
+    # and gas phase stays gas phase
+    assert solvation_keyword_for_method("CPCM", "", "XTB2") == ""
+    assert solvation_keyword_for_method("CPCM", "", "B3LYP") == ""
