@@ -115,3 +115,41 @@ def test_the_secret_deny_list_still_answers_first(ws):
     one -- the more specific reason is the more useful one."""
     out = _run("grep -r . ~/.ssh/id_rsa", ws)
     assert "secret-deny path" in out.get("error", "")
+
+
+# ---------------------------------------------------------------------------
+# list_files: a required argument that meant "everything"
+# ---------------------------------------------------------------------------
+
+def test_a_directory_argument_is_honoured_not_ignored(ws):
+    """`path` was accepted and silently dropped, so `list_files(path="src")`
+    answered with every file in the workspace -- a listing of everything
+    presented as the answer to a question about one folder. Callers pass
+    it: this repository's own tool-surface test does."""
+    perms = A.KitToolPermissions(mode="default", workspace=str(ws))
+    out = A._doc_executor.execute("list_files", {"path": "sub"}, perms)
+    assert "a.py" in out
+    assert "local.txt" not in out
+
+
+def test_the_default_pattern_is_the_documented_one(ws):
+    """`pattern` was marked required while the code has always defaulted it
+    to '*'. The schema described a contract the executor did not have."""
+    entry = next(t for t in A._DOC_TOOLS_OPENAI
+                 if t["function"]["name"] == "list_files")
+    assert "required" not in entry["function"]["parameters"]
+    perms = A.KitToolPermissions(mode="default", workspace=str(ws))
+    out = A._doc_executor.execute("list_files", {}, perms)
+    assert "local.txt" in out
+
+
+def test_a_directory_outside_the_workspace_is_refused(ws):
+    perms = A.KitToolPermissions(mode="default", workspace=str(ws))
+    out = A._doc_executor.execute("list_files", {"path": "../.."}, perms)
+    assert "outside the allowed workspace roots" in out
+
+
+def test_a_path_that_is_not_a_directory_says_so(ws):
+    perms = A.KitToolPermissions(mode="default", workspace=str(ws))
+    out = A._doc_executor.execute("list_files", {"path": "nope"}, perms)
+    assert "not a directory" in out
