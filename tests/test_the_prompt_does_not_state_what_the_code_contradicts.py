@@ -140,3 +140,62 @@ def test_calc_tail_is_documented_in_the_unit_the_handler_uses():
                 if ln.startswith("- `ACTION: /calc tail"))
     assert "8 KB" in line
     assert "50 lines" not in line
+
+
+# ---------------------------------------------------------------------------
+# A tool in the catalogue and in no routing table
+# ---------------------------------------------------------------------------
+#
+# The office prompt's arithmetic rule read "Compute in bash with Python,
+# not in your head: arithmetic over a column is the kind of thing a model
+# gets subtly wrong where nobody can see it." That was true when it was
+# written and stopped being true when sum_column shipped, and nothing
+# noticed, because a prompt sentence has no compiler. The routing table
+# had no row for totalling either.
+#
+# So the correct behaviour, for a model that followed its instructions
+# exactly, was to read the CSV in a shell and write the addition out in
+# its answer. Measured on kit.glm-5.3 in
+# office_total_names_what_it_left_out: two bash calls, no document tool,
+# five amounts added in prose. The benchmark scored it a failure and the
+# prompt had asked for it.
+
+_OFFICE = (_PACK / "agents" / "office_agent.md").read_text(encoding="utf-8")
+
+
+def test_the_office_prompt_routes_a_total_to_the_tool_that_totals():
+    from delfin.agent.api_client import _OFFICE_AGENT_ALLOWED_TOOLS
+
+    assert "sum_column" in _OFFICE_AGENT_ALLOWED_TOOLS, (
+        "premise gone: the role can no longer reach the tool")
+    assert "sum_column" in _OFFICE, (
+        "the role can call sum_column and its prompt never names it")
+
+
+def test_the_prompt_does_not_send_a_column_total_to_the_shell():
+    """The specific sentence that produced the measured failure. Any
+    wording is fine; sending arithmetic over a column to bash is not."""
+    lowered = _OFFICE.lower()
+    for phrase in ("arithmetic over a column",
+                   "compute in `bash` with python, not in your head"):
+        assert phrase not in lowered, (
+            f"the prompt still routes a column total to the shell: {phrase}")
+
+
+def test_every_office_tool_the_role_can_call_is_named_in_its_prompt():
+    """The general form. A tool the model may call and has never been
+    told about is one it will reach for by accident or not at all."""
+    from delfin.agent import api_client as A
+    from delfin.agent import office as _office
+
+    catalogue = {t["function"]["name"] for t in A._DOC_TOOLS_OPENAI}
+    office_backed = {
+        n for n in catalogue
+        if callable(getattr(_office, n, None))
+        and n in A._OFFICE_AGENT_ALLOWED_TOOLS
+    }
+    assert office_backed, "premise gone: no office tool is role-allowed"
+    unnamed = sorted(n for n in office_backed if n not in _OFFICE)
+    assert not unnamed, (
+        "callable by this role, named nowhere in its prompt: "
+        + ", ".join(unnamed))
