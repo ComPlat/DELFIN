@@ -11096,11 +11096,11 @@ class _DocToolExecutor:
                 f"path is outside the allowed workspace roots [{roots_str}]: "
                 f"{rel_path}."
                 + self._hint_if_it_names_the_workspace(rel_path, ws) +
-                f" To work on it, ask the user to GRANT this path "
-                f"to the agent (add it via --add-dir / extra_workspace_dirs), "
-                f"or move the project into an allowed workspace root. Do NOT "
-                f"silently fall back to a manual snippet without telling the "
-                f"user that the path must be granted first."
+                " To work on it, ask the user to GRANT this path "
+                "to the agent (add it via --add-dir / extra_workspace_dirs), "
+                "or move the project into an allowed workspace root. Do NOT "
+                "silently fall back to a manual snippet without telling the "
+                "user that the path must be granted first."
             )
         try:
             rel_str = str(resolved.relative_to(root)).replace("\\", "/")
