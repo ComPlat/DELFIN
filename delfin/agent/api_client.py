@@ -5344,10 +5344,8 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     },
                     "base_ref": {
                         "type": "string",
-                        "description": (
-                            "The commit BEFORE the change. Without it you "
-                            "get HEAD again, which is not a control."
-                        ),
+                        "description":
+                            "This commit instead of HEAD, for a control run.",
                     },
                 },
             },

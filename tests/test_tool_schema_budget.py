@@ -136,25 +136,7 @@ _BASELINE_TOKENS = 11_422
 # repository's own tool-surface test passes it) and silently ignored, so
 # `list_files(path="src")` answered with every file in the workspace.
 # Now it is optional, documented, and it works.
-#
-# Raised an eighth time, 9_401 -> 9_410, for nine tokens on base_ref's
-# own description -- and this one was bought back from a trim that had
-# already been made and was wrong.
-#
-# The parameter's text was cut from 26 tokens to 11 when it was added,
-# on the argument that the rule saying WHEN to reach for it lives in the
-# integrity addendum. Then it was measured. On
-# gen_a_red_test_is_attributed_by_a_control the routing row worked --
-# the model reached for enter_worktree, which it had never done before
-# -- and called it WITHOUT base_ref. A worktree at HEAD is a copy of the
-# state under suspicion: it proves nothing, and the whole feature did
-# nothing. 33% pass, unchanged from the baseline.
-#
-# So the schema says the one thing the model has to know at the moment
-# it types the call: omit this and you get HEAD again, which is not a
-# control. The addendum and the routing row both already named the
-# argument; neither is read at that moment.
-_TOKEN_BUDGET = 9_410
+_TOKEN_BUDGET = 9_401
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but

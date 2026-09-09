@@ -229,7 +229,15 @@ def test_the_rule_is_a_MECHANISM_and_not_prose(bench=None):
     entry = next(t for t in A._DOC_TOOLS_OPENAI
                  if t["function"]["name"] == "enter_worktree")
     base = entry["function"]["parameters"]["properties"]["base_ref"]
-    assert "not a control" in base["description"]
+    assert "control" in base["description"]
+    # Short on purpose. A longer wording was tried -- "Without it you get
+    # HEAD again, which is not a control" -- to stop the model omitting
+    # the argument. It bought nothing measurable on the control task
+    # (2/8 against a 33% baseline) and the arm carrying it scored 4/8 on
+    # science_pipeline where the arm without it scored 8/8. Suggestive at
+    # p ~ 0.08 rather than proven, and with no benefit on the other side
+    # of the ledger there is nothing to weigh it against.
+    assert len(base["description"]) < 60
 
     flat = _solo_prompt()
     assert "A failure needs a control before you attribute it" not in flat
