@@ -89,7 +89,24 @@ _BASELINE_TOKENS = 11_422
 # model filtering rows in its head and adding them there -- the arithmetic
 # the tool exists to take away from it, done on exactly the task where a
 # quietly dropped row is hardest to see.
-_TOKEN_BUDGET = 9_368
+#
+# Raised a fifth time, 9_368 -> 9_375, for notebook_read's `output`.
+# Seven tokens, and it is the whole of what the field costs to advertise:
+# the field itself is free (it rides in the RESULT, not the schema), the
+# `max_output_chars` knob was measured at 24 and dropped from the
+# catalogue rather than paid for -- the default is right for every
+# recorded use, a capped output says so in its own text, and a knob is
+# paid for by every request whether or not anyone turns it -- and the
+# description was cut from 64 tokens to 41, below where it started.
+#
+# What the seven buy: notebook_read summarised its outputs, so a failed
+# cell came back as `error(ValueError)` with no message, no line and no
+# stack, and a cell that computed a number came back as the news that it
+# had computed something. Its own description tells the agent to use it
+# INSTEAD of read_file, which would at least have dumped the traceback as
+# raw JSON. For a scientific agent the outputs of a notebook are the
+# result, and "why did this cell fail" was unanswerable.
+_TOKEN_BUDGET = 9_375
 # Capability added after the compaction was measured. The diet ratchet
 # below applies to the surface the diet was measured on — new tools have
 # to justify their own cost (the per-tool cap and the budget above), but

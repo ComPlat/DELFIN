@@ -5364,8 +5364,8 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             "name": "notebook_read",
             "description": (
                 "Read a .ipynb cell-aware: ordered {idx, cell_type, source, "
-                "output_summary}, outputs summarised. Use instead of "
-                "read_file for notebooks."
+                "output_summary, output} — printed values and tracebacks, "
+                "no images. Use instead of read_file for notebooks."
             ),
             "parameters": {
                 "type": "object",
@@ -5377,6 +5377,11 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                         "type": "integer",
                         "description": "Per-cell cap, default 4000.",
                     },
+                    # max_output_chars is accepted and is deliberately NOT
+                    # advertised. The default is right for every recorded
+                    # use, a capped output says so in its own text, and a
+                    # knob in the catalogue is paid for by every request
+                    # whether or not anyone turns it.
                 },
                 "required": ["path"],
             },
@@ -13183,6 +13188,7 @@ class _DocToolExecutor:
         if not path_arg:
             return json.dumps({"error": "path is required"})
         max_chars = int(arguments.get("max_source_chars", 4000) or 4000)
+        max_out = int(arguments.get("max_output_chars", 2000) or 2000)
         resolved, err = self._resolve_in_workspace(path_arg, perms, for_read=True)
         if err:
             # Fall back to the read-access gate so cross-root reads
@@ -13208,7 +13214,9 @@ class _DocToolExecutor:
 
         try:
             from . import notebook_tools as _nb
-            cells = _nb.read_cells(resolved, max_source_chars=max_chars)
+            cells = _nb.read_cells(
+                resolved, max_source_chars=max_chars,
+                max_output_chars=max_out)
         except json.JSONDecodeError as exc:
             return json.dumps({"error": f"not valid JSON / nbformat: {exc}"})
         except Exception as exc:
@@ -13230,6 +13238,10 @@ class _DocToolExecutor:
                     "cell_type": c.cell_type,
                     "source": c.source,
                     "output_summary": c.output_summary,
+                    # Omitted rather than sent empty: a cell that ran and
+                    # printed nothing and a markdown cell both have no
+                    # output, and neither is worth a key per cell.
+                    **({"output": c.output_text} if c.output_text else {}),
                 }
                 for c in cells
             ],
