@@ -739,8 +739,8 @@ third-tier fallback for free-form data no typed parser covers.
 | all vib modes + IR | `extract_vibrational_modes` |
 | DELFIN_data.json | `extract_delfin_json` |
 | multi-property summary | `extract_calc_summary_table` |
-| Gibbs/SPE/ZPE one folder | `parse_orca_output` |
-| Gibbs/SPE many folders | `extract_energy_table` |
+| Gibbs/SPE/ZPE one folder (ORCA) | `parse_orca_output` |
+| Gibbs/SPE many folders (ORCA) | `extract_energy_table` |
 | ORCA errors | `find_orca_errors` |
 | ORCA syntax / `%blocks` | `check_orca_manual_indexed` → `search_docs` |
 | how does DELFIN do X | `explain_delfin_feature` |
@@ -750,6 +750,11 @@ third-tier fallback for free-form data no typed parser covers.
 | open-ended cross-file research (≥3 searches) | `subagent(subagent_type="explore", …)` |
 | design implementation for non-trivial multi-file task | `subagent(subagent_type="plan", …)` |
 | independent second opinion on a diff | `subagent(subagent_type="code-reviewer", …)` |
+
+These parsers read ORCA output. On xtb or another format they answer
+`status: ok` with `null` values rather than an error, and they read only
+the LARGEST .out per folder — converged or not. For those, read the file
+and name which one each number came from.
 
 **Your recomputation CHECKS DELFIN's value; it does not replace it.**
 `search_docs` indexes manuals, not source, so it answers a formula question
