@@ -1852,6 +1852,13 @@ def run_sampling(
                 "energy_eh": winner_result[0],
                 "label": winner_result[4],
                 "source": winner_result[5],
+                # The spin state this was refined at.  The refinement takes it
+                # from the candidate's own label, so the record has to say
+                # which one that was -- otherwise the file that describes a
+                # multi-multiplicity search is the one file that cannot name
+                # the multiplicity it settled on.
+                "multiplicity": multiplicity_of_label(winner_result[4],
+                                                      multiplicity),
             },
             "xtb_candidates": [
                 {
