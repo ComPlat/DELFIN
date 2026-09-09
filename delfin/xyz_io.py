@@ -18,6 +18,7 @@ from delfin.common.control_validator import resolve_occupier_compare
 _QMMM_CACHE: Dict[Tuple[str, ...], Tuple[int, int]] = {}
 _QMMM_CACHE_LOCK = threading.Lock()
 _QMMM_CACHE_BASENAME = ".qmmm_cache.json"
+_FIRST_SPHERE_CACHE_BASENAME = ".delfin_first_sphere.json"
 
 
 def _cache_key(signature: Tuple[str, ...]) -> str:
@@ -35,7 +36,8 @@ def _normalise_source_path(source_path: Optional[Path]) -> Optional[Path]:
         return source_path
 
 
-def _candidate_cache_paths(source_path: Optional[Path]) -> List[Path]:
+def _candidate_cache_paths(source_path: Optional[Path],
+                           basename: str = _QMMM_CACHE_BASENAME) -> List[Path]:
     """
     Return cache file locations to probe, starting from the geometry directory
     and walking up the parent chain.
@@ -53,7 +55,7 @@ def _candidate_cache_paths(source_path: Optional[Path]) -> List[Path]:
         if current in seen:
             break
         seen.add(current)
-        candidates.append(current / _QMMM_CACHE_BASENAME)
+        candidates.append(current / basename)
         parent = current.parent
         if parent == current:
             break
@@ -344,6 +346,115 @@ def _first_sphere_indices(atoms, metal_indices, scale, radii_map):
                 first.add(i)
     return first
 
+def _composition_key(atoms) -> str:
+    """Element sequence of a geometry — the same molecule in any of its states."""
+    return "|".join(a["elem"] for a in atoms)
+
+
+def _first_sphere_cache_file(source_path: Optional[Path]) -> Optional[Path]:
+    """Where one run keeps its coordination sphere.
+
+    The nearest directory up the chain that holds a CONTROL.txt — the run this
+    input belongs to, so an OCCUPIER subfolder and the run root share one file
+    while a neighbouring job does not. Without CONTROL.txt (a bare call, a
+    test) the geometry's own directory is used.
+    """
+    if source_path is None:
+        return None
+    base = source_path if source_path.is_dir() else source_path.parent
+    base = _normalise_source_path(base)
+    if base is None:
+        return None
+    current = base
+    for _ in range(8):
+        if (current / "CONTROL.txt").is_file():
+            return current / _FIRST_SPHERE_CACHE_BASENAME
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    return base / _FIRST_SPHERE_CACHE_BASENAME
+
+
+def _load_first_sphere(key: str, source_path: Optional[Path]) -> Optional[Set[int]]:
+    cache_file = _first_sphere_cache_file(source_path)
+    if cache_file is None:
+        return None
+    try:
+        with cache_file.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return None
+    except Exception:  # noqa: BLE001
+        return None
+    raw = data.get(key)
+    if isinstance(raw, list):
+        try:
+            return {int(i) for i in raw}
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _persist_first_sphere(key: str, indices: Set[int], source_path: Optional[Path]) -> None:
+    cache_file = _first_sphere_cache_file(source_path)
+    if cache_file is None:
+        return
+    payload = sorted(int(i) for i in indices)
+    try:
+        with _QMMM_CACHE_LOCK:
+            try:
+                with cache_file.open("r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+            except FileNotFoundError:
+                data = {}
+            except Exception:  # noqa: BLE001
+                data = {}
+            data[key] = payload
+            with cache_file.open("w", encoding="utf-8") as fh:
+                json.dump(data, fh)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _resolve_first_sphere(atoms, metal_indices, scale, radii_map,
+                          source_path: Optional[Path]) -> Set[int]:
+    """The first coordination sphere, decided once per molecule and then kept.
+
+    Membership is a distance test, and metal-ligand bonds lengthen on reduction.
+    Deciding it again for every redox state lets a ligand drift across the
+    cutoff between two states whose energies are subtracted from one another —
+    the larger basis is then on that atom in one state and not in the other, and
+    the difference lands in the redox potential. Measured on a Co complex with
+    two DMF ligands: one Co-O bond grew 2.11 -> 2.34 -> 2.58 A over two
+    reductions, crossed the 2.50 A cutoff at the second one, and moved that
+    potential by 2.3 eV.
+
+    The first geometry to ask decides, which in a normal run is the initial
+    state — the reference every other state is compared against. The key is the
+    element sequence, so a different molecule, or the same one with explicit
+    solvent added, is decided afresh.
+    """
+    here = _first_sphere_indices(atoms, metal_indices, scale, radii_map)
+    key = _composition_key(atoms)
+    frozen = _load_first_sphere(key, source_path)
+    if frozen is None:
+        _persist_first_sphere(key, here, source_path)
+        return here
+    if frozen != here:
+        gained = sorted(i + 1 for i in here - frozen)
+        lost = sorted(i + 1 for i in frozen - here)
+        logging.info(
+            "First coordination sphere kept from the reference geometry: this "
+            "one would have %s%s%s. Keeping it identical is what makes the "
+            "state energies comparable.",
+            f"dropped atoms {lost}" if lost else "",
+            " and " if lost and gained else "",
+            f"added atoms {gained}" if gained else "",
+        )
+    return frozen
+
+
 def _implicit_token(config, solvent):
     """Build implicit solvent token."""
     return build_solvation_keyword(config.get('implicit_solvation_model'), solvent)
@@ -445,7 +556,8 @@ def is_relativistic_mode(config) -> bool:
 
 
 def _apply_per_atom_newgto(geom_lines: List[str], found_metals: List[str],
-                           metal_basisset: Optional[str], config, radii_map):
+                           metal_basisset: Optional[str], config, radii_map,
+                           source_path: Optional[Path] = None):
     """
     Append per-atom 'NewGTO "metal_basisset" end' to
     - all metal atoms (always when metal_basisset provided),
@@ -495,7 +607,10 @@ def _apply_per_atom_newgto(geom_lines: List[str], found_metals: List[str],
         # is_relativistic_mode docstring for details.
         first = set()
     else:
-        first = _first_sphere_indices(atoms, metal_indices, scale, radii_map) if (enable_first and metal_indices) else set()
+        first = (
+            _resolve_first_sphere(atoms, metal_indices, scale, radii_map, source_path)
+            if (enable_first and metal_indices) else set()
+        )
 
     metal_line_set = {atoms[i]['line_idx'] for i in metal_indices}
     first_line_set = {atoms[i]['line_idx'] for i in first}
@@ -568,7 +683,9 @@ def read_and_modify_file(input_file_path, output_file_path, charge, multiplicity
     # geometry
     lines.extend(build_qmmm_block(qmmm_range))
     lines.append(f"* xyz {charge} {multiplicity}\n")
-    geom = _apply_per_atom_newgto(geom_lines, found_metals, metal, config, radii_all)
+    geom = _apply_per_atom_newgto(
+        geom_lines, found_metals, metal, config, radii_all, Path(output_file_path),
+    )
     lines.extend(geom)
     lines.append("*\n")
 
@@ -640,7 +757,9 @@ def read_and_modify_file_1(input_file_path, output_file_path, charge, multiplici
     # geometry
     lines.extend(build_qmmm_block(qmmm_range))
     lines.append(f"* xyz {charge} {multiplicity}\n")
-    geom = _apply_per_atom_newgto(geom_lines, found_metals, metal, config, radii_all)
+    geom = _apply_per_atom_newgto(
+        geom_lines, found_metals, metal, config, radii_all, Path(output_file_path),
+    )
     lines.extend(geom)
     lines.append("*\n")
 
@@ -702,7 +821,9 @@ def read_xyz_and_create_input3(xyz_file_path: str, output_file_path: str, charge
 
     lines.extend(build_qmmm_block(qmmm_range))
     lines.append(f"* xyz {charge} {multiplicity}\n")
-    geom = _apply_per_atom_newgto(geom_lines, found_metals, metal, config, radii_all)
+    geom = _apply_per_atom_newgto(
+        geom_lines, found_metals, metal, config, radii_all, Path(output_file_path),
+    )
     lines.extend(geom)
     lines.append("*\n")
 
