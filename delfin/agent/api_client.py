@@ -2996,6 +2996,42 @@ _DEFAULT_PATH_PROTECTED_GLOBS: tuple[str, ...] = (
 )
 
 
+_SHELL_LOOP_RE = re.compile(
+    r"(?is)\b(?:for|while|until)\b.*?\bdo\b(?P<body>.*?)\bdone\b")
+
+
+def _loop_body_already_allowed(cmd: str, perms) -> str:
+    """The body of a shell loop, when the body alone would be allowed.
+
+    Repeating a measurement is ordinary scientific work and `for i in
+    1 2 3; do python3 x.py; done` is how it is written — but the
+    auto-allow list matches whole commands, so the loop is refused even
+    though `python3 x.py` is allowed and `python3 x.py; python3 x.py`
+    is allowed too (every segment of a compound is checked, so an
+    all-safe compound runs).
+
+    The generic refusal then tells the model to stop and ask the user,
+    which is right for a command it genuinely may not run and wrong
+    here: it needs no permission, only a different spelling. Returns
+    the body so the hint can quote it, or "" when the loop body is
+    something the list would refuse on its own.
+    """
+    if perms is None:
+        return ""
+    match = _SHELL_LOOP_RE.search(cmd or "")
+    if match is None:
+        return ""
+    body = (match.group("body") or "").strip().strip(";").strip()
+    if not body:
+        return ""
+    try:
+        if perms.matches_bash_auto_allow(body):
+            return body
+    except Exception:
+        return ""
+    return ""
+
+
 def _split_shell_segments(cmd: str) -> list[str]:
     """Split a shell command into the segments chained by ``||``, ``&&``,
     ``;``, ``|`` or newline, ignoring operators inside single/double quotes.
@@ -12062,6 +12098,25 @@ class _DocToolExecutor:
                     "only on what this session recorded writing, and leaves "
                     "anything edited since untouched. `rm` cannot tell whose "
                     "file it is, which is why it is not on the list."
+                )
+            elif _loop_body_already_allowed(cmd, perms):
+                # Repeating a measurement is ordinary scientific work,
+                # and a shell loop is how it is written. The auto-allow
+                # list matches whole commands, so the loop is refused
+                # while its body is allowed -- and the generic refusal
+                # then says to stop and ask the user, which costs the
+                # turn and the measurement. Nothing needs approving
+                # here; only the spelling changes.
+                _body = _loop_body_already_allowed(cmd, perms)
+                hint = (
+                    " HINT: you do not need permission for this — the "
+                    f"command inside the loop (`{_body[:80]}`) is already "
+                    "allowed. The auto-allow list matches whole commands, "
+                    "not loop bodies. Repeat it instead: send it once per "
+                    "iteration, or join the iterations with ';' in one "
+                    "call (every segment of a compound is checked, so an "
+                    "all-allowed compound runs unattended). Do NOT ask the "
+                    "user for this one."
                 )
             elif cmd.lstrip().startswith(("cd ", "cd\t")):
                 hint = (
