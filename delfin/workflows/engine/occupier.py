@@ -846,6 +846,7 @@ def build_occupier_jobs(
                     metal_basis,
                     broken_sym_val,
                     source_input=str(workspace_root / "initial.inp"),
+                    copy_files=initial_deps,
                 )
                 logger.info(
                     "%s %s freq & geometry optimization of the initial system complete!",
@@ -1028,6 +1029,7 @@ def build_occupier_jobs(
                         broken_sym_step,
                         step_name=f"ox_step_{idx}",
                         source_input=str(inp_abs),
+                        copy_files=ox_deps,
                     )
                     logger.info(
                         "%s %s freq & geometry optimization cation (step %d) complete!",
@@ -1215,6 +1217,7 @@ def build_occupier_jobs(
                         broken_sym_step,
                         step_name=f"red_step_{idx}",
                         source_input=str(inp_abs),
+                        copy_files=red_deps,
                     )
                     logger.info(
                         "%s %s freq & geometry optimization anion (step %d) complete!",

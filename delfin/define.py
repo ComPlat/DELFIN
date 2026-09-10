@@ -35,7 +35,7 @@ Imaginary mode elimination:
 IMAG=yes
 IMAG_scope=all
 IMAG_option=2
-allow_imaginary_freq=0
+allow_imaginary_freq=-50
 IMAG_sp_energy_window=1e-5
 IMAG_optimize_candidates=no
 IMAG_max_rounds=2

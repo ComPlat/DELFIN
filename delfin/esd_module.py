@@ -108,6 +108,7 @@ def _leave_saddle(
     input_path: Path,
     output_path: Path,
     config: Dict[str, Any],
+    copy_files: Optional[List[str]] = None,
 ) -> None:
     """After a state job: a state that came back as a saddle goes through IMAG.
 
@@ -125,6 +126,7 @@ def _leave_saddle(
 
     result = eliminate_imaginary_modes(
         label=state, input_path=input_path, output_path=output_path, config=config, run_orca=run,
+        fingerprint_deps=copy_files,
     )
     if not result.resolved:
         logger.warning("%s: %s; rates that need its Hessian will not be computed", state, result.reason)
@@ -535,7 +537,7 @@ def _populate_state_jobs(
                         )
 
                     logger.info(f"Hybrid1 step 2 (deltaSCF) completed for {st_upper}")
-                    _leave_saddle(st_upper, abs_input, abs_output, config)
+                    _leave_saddle(st_upper, abs_input, abs_output, config, step2_deps)
                 else:
                     # Standard single-step calculation (TDDFT or deltaSCF)
                     # Convert to absolute path before any chdir operations
@@ -569,7 +571,7 @@ def _populate_state_jobs(
                         raise RuntimeError(
                             f"ORCA terminated abnormally for {st_upper} state"
                         )
-                    _leave_saddle(st_upper, abs_input, abs_output, config)
+                    _leave_saddle(st_upper, abs_input, abs_output, config, state_deps_files)
 
                 logger.info(f"State {st_upper} calculation completed")
 
