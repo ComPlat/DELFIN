@@ -551,3 +551,109 @@ def test_the_heartbeat_script_is_not_sent_through_run_js():
     src = _dashboard_source()
     assert "run_js(_session.heartbeat_js" not in src
     assert "display(Javascript(_session.heartbeat_js()))" in src
+
+
+# ---------------------------------------------------------------------------
+# Ending a session must end it, not hand it back
+# ---------------------------------------------------------------------------
+#
+# A kernel that exits on its own reads to the server as a crash, and the
+# restarter puts a replacement in its place under the same id. Under
+# Voila that replacement is blank -- the notebook is not re-executed --
+# and a blank page never beats, so the watchdog never arms in it and it
+# stays for the life of the server. Driving this in a browser is what
+# showed it: the kernel id was still listed after the teardown, under a
+# process that had started seconds earlier.
+
+def test_the_shutdown_address_is_built_from_what_the_server_gave_us(monkeypatch):
+    from delfin.dashboard import session as s
+
+    monkeypatch.setenv(
+        "VOILA_REQUEST_URL",
+        "http://127.0.0.1:8890/voila/render/x.ipynb?token=abc",
+    )
+    monkeypatch.setenv("JUPYTER_TOKEN", "abc")
+    monkeypatch.setattr(s, "kernel_id", lambda: "kid-1")
+
+    url = s.server_shutdown_url()
+    assert url == "http://127.0.0.1:8890/api/kernels/kid-1?token=abc"
+
+
+def test_the_port_stands_in_when_no_request_was_recorded(monkeypatch):
+    from delfin.dashboard import session as s
+
+    monkeypatch.delenv("VOILA_REQUEST_URL", raising=False)
+    monkeypatch.setenv("VOILA_APP_PORT", "8899")
+    monkeypatch.setenv("JUPYTER_TOKEN", "t")
+    monkeypatch.setattr(s, "kernel_id", lambda: "kid-2")
+
+    assert s.server_shutdown_url() == (
+        "http://127.0.0.1:8899/api/kernels/kid-2?token=t"
+    )
+
+
+def test_outside_a_kernel_there_is_nobody_to_ask(monkeypatch):
+    """Every test and every CLI call is outside a kernel."""
+    from delfin.dashboard import session as s
+
+    monkeypatch.setattr(s, "kernel_id", lambda: "")
+    assert s.server_shutdown_url() == ""
+    assert s._ask_server_to_end_this_kernel() is False
+
+
+def test_a_nonsense_port_is_not_an_address(monkeypatch):
+    from delfin.dashboard import session as s
+
+    monkeypatch.delenv("VOILA_REQUEST_URL", raising=False)
+    monkeypatch.setenv("VOILA_APP_PORT", "not-a-port")
+    monkeypatch.setattr(s, "kernel_id", lambda: "kid-3")
+    assert s.server_shutdown_url() == ""
+
+
+def test_the_delete_carries_the_token_in_the_header_too(monkeypatch):
+    """Query token and Authorization header, because a server may be
+    configured to accept only one of them."""
+    from delfin.dashboard import session as s
+
+    seen = {}
+
+    class _Resp:
+        status = 204
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def _urlopen(req, timeout=0):
+        seen["method"] = req.get_method()
+        seen["url"] = req.full_url
+        seen["auth"] = req.get_header("Authorization")
+        return _Resp()
+
+    monkeypatch.setenv("VOILA_REQUEST_URL", "http://h:1/x?token=tok")
+    monkeypatch.setenv("JUPYTER_TOKEN", "tok")
+    monkeypatch.setattr(s, "kernel_id", lambda: "k9")
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", _urlopen)
+
+    assert s._ask_server_to_end_this_kernel() is True
+    assert seen["method"] == "DELETE"
+    assert seen["url"] == "http://h:1/api/kernels/k9?token=tok"
+    assert seen["auth"] == "token tok"
+
+
+def test_a_server_that_refuses_is_not_taken_for_a_shutdown(monkeypatch):
+    from delfin.dashboard import session as s
+
+    def _boom(req, timeout=0):
+        raise OSError("connection refused")
+
+    monkeypatch.setenv("VOILA_REQUEST_URL", "http://h:1/x")
+    monkeypatch.setattr(s, "kernel_id", lambda: "k9")
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", _boom)
+    assert s._ask_server_to_end_this_kernel() is False

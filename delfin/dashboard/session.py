@@ -150,8 +150,67 @@ def describe() -> dict:
         }
 
 
+def server_shutdown_url() -> str:
+    """The address that asks the server to remove THIS kernel, or "".
+
+    Everything it needs is in the environment the server built for the
+    kernel: the request Voila recorded gives scheme and host, and the
+    token is the one the server itself was started with.
+    """
+    from urllib.parse import urlsplit
+
+    kid = kernel_id()
+    if not kid:
+        return ""
+    parts = urlsplit(os.environ.get("VOILA_REQUEST_URL", ""))
+    if parts.scheme and parts.netloc:
+        root = f"{parts.scheme}://{parts.netloc}"
+    else:
+        port = (os.environ.get("VOILA_APP_PORT")
+                or os.environ.get("SERVER_PORT") or "")
+        if not port.isdigit():
+            return ""
+        root = f"http://127.0.0.1:{port}"
+    token = os.environ.get("JUPYTER_TOKEN", "")
+    return f"{root}/api/kernels/{kid}" + (f"?token={token}" if token else "")
+
+
+def _ask_server_to_end_this_kernel(timeout: float = 10.0) -> bool:
+    """Have the server shut this kernel down. True if it accepted.
+
+    Exiting on our own is not enough. A kernel that dies by itself looks
+    to the server like a crash, so the restarter starts a replacement
+    under the same id — and under Voila that replacement is useless: the
+    notebook is not re-executed, so it is blank, and a blank kernel never
+    beats, so this watchdog never arms inside it. It would sit there for
+    the life of the server, holding the memory a dashboard kernel holds
+    — a few hundred MB each, and they accumulate.
+
+    Asking the server instead makes it a shutdown rather than a death,
+    and a shutdown is not restarted.
+    """
+    url = server_shutdown_url()
+    if not url:
+        return False
+    import urllib.request
+
+    req = urllib.request.Request(url, method="DELETE")
+    token = os.environ.get("JUPYTER_TOKEN", "")
+    if token:
+        req.add_header("Authorization", f"token {token}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return 200 <= int(resp.status) < 400
+    except Exception:
+        return False
+
+
 def _default_shutdown() -> None:                       # pragma: no cover
     """End this kernel. Called only when the page is gone and unpinned."""
+    if _ask_server_to_end_this_kernel():
+        # The server terminates us; wait rather than race it, so the
+        # shutdown it is performing is the one that happens.
+        time.sleep(15)
     os._exit(0)
 
 
