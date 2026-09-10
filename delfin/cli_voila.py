@@ -762,6 +762,42 @@ def main(argv=None):
     # `default_url` sends the browser straight to the rendered dashboard, so
     # `http://localhost:PORT/?token=…` behaves exactly as before for the user.
     dashboard_url = _dashboard_default_url(notebook, root_dir)
+
+    # Coming back to a kept session.
+    #
+    # A session the user chose to keep is reached through a SECOND,
+    # one-cell notebook rather than the dashboard's own address: that one
+    # renders and executes the whole thing, which against a live kernel
+    # would run all nineteen tabs a second time. The one-cell notebook
+    # re-displays what the kernel already holds.
+    #
+    # The path is handed to the kernels through the environment because
+    # only the launcher knows where the notebook was staged relative to
+    # the server root; and the kernel manager is swapped for one that
+    # recognises `?session=<name>` and hands back the running kernel
+    # instead of starting a fresh one. An ordinary request goes through
+    # it untouched.
+    try:
+        from delfin.dashboard import resume_server as _resume
+
+        _resume_nb = _resume.stage_resume_notebook(root_dir)
+        _trust_notebook(_resume_nb)
+        resume_url_path = _dashboard_default_url(_resume_nb, root_dir)
+        kernel_manager_class = (
+            "delfin.dashboard.resume_server.ResumeAwareMappingKernelManager")
+    except Exception:
+        # A dashboard that starts is worth more than one that can be
+        # resumed: without these two the default path is exactly what it
+        # was, and keeping a session simply is not offered.
+        resume_url_path = ""
+        kernel_manager_class = ""
+
+    # Kernels inherit the server's environment, and Voila copies it into
+    # every kernel it starts, so this is how a dashboard learns its own
+    # come-back address without the launcher and the kernel having to
+    # agree on paths twice.
+    if resume_url_path:
+        env[_resume.RESUME_PATH_ENV] = resume_url_path
     # Voilà only needs the `voila` extension. Explicitly DISABLE the others that
     # auto-load from entry points (jupyterlab/notebook/lsp/terminals): each adds
     # HTTP endpoints = attack surface, boot time and log noise the dashboard
@@ -776,6 +812,8 @@ def main(argv=None):
         "jupyter",
         "server",
         f"--ServerApp.jpserver_extensions={_extensions}",
+        *(["--ServerApp.kernel_manager_class="
+           + kernel_manager_class] if kernel_manager_class else []),
         f"--port={args.port}",
         f"--ServerApp.ip={args.ip}",
         f"--ServerApp.root_dir={root_dir}",
