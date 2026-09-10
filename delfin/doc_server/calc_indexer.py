@@ -15,7 +15,6 @@ that can be searched by keyword or structured query.
 from __future__ import annotations
 
 import json
-import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -154,6 +153,20 @@ def _extract_from_delfin_data(data: dict) -> dict[str, Any]:
     rec["has_data"] = has_data
 
     return rec
+
+
+def _outcome_of(completed, exit_code) -> str:
+    """One phrase a reader cannot mistake: did the run succeed?"""
+    if completed is None:
+        return "unknown (no run log and no exit code)"
+    if completed is False:
+        return "running or crashed (run log present, no exit code)"
+    if exit_code == 0:
+        return "succeeded (exit code 0)"
+    if isinstance(exit_code, int):
+        return f"failed (exit code {exit_code})"
+    return "ended with an unreadable exit code"
+
 
 
 def _extract_from_control_txt(text: str) -> dict[str, Any]:
@@ -358,7 +371,13 @@ def _scan_calc_dir(
                            if not p.name.startswith("delfin_"))
         rec["out_files"] = out_files
 
-        # Check completion status
+        # Check completion status.
+        #
+        # `completed` means the run ENDED -- an exit-code file exists --
+        # not that it succeeded; a run that died with exit code 1025 is
+        # "completed: true" here. Driven through get_calc_info, that
+        # record read as a success. `outcome` says which it was, in
+        # words, so the two are never read as one.
         exit_codes = list(d.glob(".exit_code_*"))
         if exit_codes:
             rec["completed"] = True
@@ -371,6 +390,7 @@ def _scan_calc_dir(
             rec["completed"] = False  # has log but no exit code → running/crashed
         else:
             rec["completed"] = None  # unknown
+        rec["outcome"] = _outcome_of(rec.get("completed"), rec.get("exit_code"))
 
         records.append(rec)
 

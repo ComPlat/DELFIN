@@ -8,7 +8,6 @@ calculations (calc/, archive/, remote_archive/).
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
 
@@ -276,6 +275,7 @@ def _format_result(rec: dict[str, Any]) -> dict[str, Any]:
         "charge": rec.get("charge", ""),
         "modules": rec.get("modules", []),
         "completed": rec.get("completed"),
+        "outcome": rec.get("outcome", ""),
         "smiles": rec.get("smiles", "")[:80],
     }
 
@@ -303,6 +303,7 @@ def _format_result_detailed(rec: dict[str, Any]) -> dict[str, Any]:
         "out_files": rec.get("out_files", []),
         "completed": rec.get("completed"),
         "exit_code": rec.get("exit_code"),
+        "outcome": rec.get("outcome", ""),
     }
     # Energies
     for key in ("gibbs_energy", "electronic_energy", "zpe", "run_time_seconds"):
