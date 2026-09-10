@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import contextlib
 import io
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
@@ -636,6 +635,27 @@ def extract_thermochem(folder: str) -> ThermochemResult:
     return ThermochemResult(path=str(p))
 
 
+def _method_label(functional, basis) -> str | None:
+    """"PBE0/def2-SVP": the pair a total energy is only comparable within.
+
+    Sorting a mixed archive by energy sorts it by functional -- every
+    B3LYP run sits hundreds of kJ/mol below every PBE0 run, whatever the
+    structure -- so a row without its method is a number waiting to be
+    ranked against numbers it cannot be ranked against. Every row carries
+    it, and the tools below never order rows across it.
+    """
+    if not functional and not basis:
+        return None
+    return f"{functional or '?'}/{basis or '?'}"
+
+
+#: What every grouped result says, so the rule travels with the data.
+METHOD_NOTE = (
+    "A total energy compares only within one method (functional AND basis). "
+    "Rows are grouped by method; groups are not ranked against each other."
+)
+
+
 def extract_energy_table(
     folders: list[str] | str,
     properties: list[str] | None = None,
@@ -663,14 +683,16 @@ def extract_energy_table(
     for folder in folders:
         p = _P(folder)
         if not p.exists() or not p.is_dir():
-            row: dict = {"folder": str(folder), "status": "missing"}
+            row: dict = {"folder": str(folder), "status": "missing",
+                   "functional": None, "basis": None, "method": None}
             for prop in properties:
                 row[prop] = None
             rows.append(row)
             continue
         out_files = sorted(p.glob("*.out"))
         if not out_files:
-            row = {"folder": str(folder), "status": "no_output"}
+            row = {"folder": str(folder), "status": "no_output",
+                   "functional": None, "basis": None, "method": None}
             for prop in properties:
                 row[prop] = None
             rows.append(row)
@@ -681,6 +703,9 @@ def extract_energy_table(
             "folder": str(folder),
             "status": "ok",
             "output_file": target.name,
+            "functional": parsed.functional,
+            "basis": parsed.basis,
+            "method": _method_label(parsed.functional, parsed.basis),
         }
         for prop in properties:
             if prop == "gibbs":
@@ -1707,6 +1732,7 @@ class FunctionalComparisonRow:
     n_imag: int | None
     is_minimum: bool | None
     status: str  # "ok" / "no_output" / "missing" / parse-error
+    method: str | None = None   # "PBE0/def2-SVP": comparable only within
 
 
 def compare_across_functionals(
@@ -1760,13 +1786,19 @@ def compare_across_functionals(
             n_imag=n_imag,
             is_minimum=is_min,
             status="ok",
+            method=_method_label(parsed.functional, parsed.basis),
         ))
 
     sort_field = sort_by.strip().lower()
     if sort_field in ("gibbs", "single_point", "zpe"):
+        # Within a method, by the energy; between methods, by name and
+        # never by energy. A flat sort by gibbs put the functional with
+        # the lowest absolute energies first and handed that order to
+        # the caller as if it were a ranking.
         def _key(r: FunctionalComparisonRow):
             v = getattr(r, sort_field)
-            return (v is None, v if v is not None else 0.0)
+            return (r.method is None, r.method or "",
+                    v is None, v if v is not None else 0.0)
         rows.sort(key=_key)
     elif sort_field == "functional":
         rows.sort(key=lambda r: (r.functional is None, r.functional or ""))
@@ -2606,7 +2638,6 @@ def rename_calc_folder(
 
     Returns a dict with ``ok``, ``src``, ``dst``, ``message``.
     """
-    from pathlib import Path as _P
     roots = allowed_roots or _default_calc_roots()
     if not roots:
         return {
@@ -2656,7 +2687,6 @@ def create_calc_folder(
     allow_mutate: bool = False,
 ) -> dict:
     """Create a new sub-folder inside ``parent`` (destructive)."""
-    from pathlib import Path as _P
     roots = allowed_roots or _default_calc_roots()
     if not roots:
         return {"ok": False, "error": "no allowed_roots inferred"}
@@ -2704,7 +2734,6 @@ def move_calc_folder(
     sending things to ``archive/`` use :func:`move_to_archive`, which
     enforces the calc → archive direction.
     """
-    from pathlib import Path as _P
     import shutil as _sh
     roots = allowed_roots or _default_calc_roots()
     if not roots:
@@ -2830,7 +2859,6 @@ def delete_calc_folder(
     roots (NOT archive/), and ``confirm_token`` must equal the folder's
     basename verbatim. Any one missing → refusal.
     """
-    from pathlib import Path as _P
     import shutil as _sh
     roots = allowed_roots or _default_calc_roots()
     if not roots:
@@ -4790,8 +4818,21 @@ def find_calculation_extreme(
     if not valid:
         return []
     reverse = (str(extreme).lower() == "max")
-    valid.sort(key=lambda r: float(r[property]), reverse=reverse)
-    return valid[: max(1, int(n))]
+    # One extreme per METHOD. A single list across methods answered "which
+    # run has the lowest energy" with the functional that sits lowest,
+    # which is not a property of any molecule. Groups are ordered by
+    # name; within a group the top n by the property.
+    groups: dict = {}
+    for r in valid:
+        groups.setdefault(r.get("method"), []).append(r)
+    out: list[dict] = []
+    for method in sorted(groups, key=lambda m: (m is None, m or "")):
+        block = sorted(groups[method], key=lambda r: float(r[property]),
+                       reverse=reverse)[: max(1, int(n))]
+        for rank, r in enumerate(block, start=1):
+            r["rank_within_method"] = rank
+        out.extend(block)
+    return out
 
 
 # ---------------------------------------------------------------------------
