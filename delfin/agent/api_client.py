@@ -13606,8 +13606,17 @@ class _DocToolExecutor:
             ok, msg = _bj.get_registry().kill(job_id)
         except Exception as exc:
             return json.dumps({"error": f"kill failed: {exc}"})
+        if not ok:
+            # Every sibling reports a failure as {"error": ...}:
+            # bash_status, bash_output, watch_job, and this tool's own
+            # "job_id is required" two lines up. This branch alone said
+            # {"status": "error", "message": ...}, so a caller that tests
+            # for an "error" key -- which is what the rest of the surface
+            # teaches it to do -- read a failed kill as a success.
+            return json.dumps({"error": msg, "job_id": job_id},
+                              ensure_ascii=False)
         return json.dumps({
-            "status": "ok" if ok else "error",
+            "status": "ok",
             "job_id": job_id,
             "message": msg,
         }, ensure_ascii=False)
