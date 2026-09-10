@@ -313,3 +313,59 @@ def test_the_predicate_itself_is_already_right(ws):
         "python3 - <<'EOF'\nprint(1+1)\nEOF", ws)
     for _name, cmd in _HEREDOCS_THAT_MUST_NOT_RUN:
         assert not A._inline_payload_is_readable(cmd, ws), cmd
+
+
+# ---------------------------------------------------------------------------
+# A here-document feeding a redirect is write_file's job
+# ---------------------------------------------------------------------------
+#
+# `cat > run.py << 'EOF' … EOF` used to be refused by the same accident:
+# `print(1)` is not an allowed command, so the segment check failed. Now
+# that the body stays with its command it would be auto-allowed off
+# `cat`, and the file written with no pre-image in the change journal —
+# undo_changes could not take it back and list_changes_made would not
+# report it. That is a property worth keeping, so it is kept on purpose.
+#
+# Narrow, and narrower than the first attempt. A REDIRECT specifically,
+# not any write the segment performs: an inline python payload that
+# writes has its own policy a layer up, and overriding an explicit user
+# grant over a journalling concern would be too strong.
+#
+# `cat > f` and `echo x > f` are a separate and older question. Both
+# already run unattended, and neither carries its content in the command.
+
+def test_a_heredoc_into_a_redirect_still_names_write_file(ws):
+    out = _run(ws, "cat > run.py << 'EOF'\nprint(1)\nEOF")
+    assert "error" in out
+    assert "write_file" in out["error"]
+
+
+def test_tee_fed_by_a_heredoc_too(ws):
+    out = _run(ws, "tee run.py << 'EOF'\nprint(1)\nEOF")
+    assert "error" in out
+
+
+def test_a_heredoc_with_no_redirect_is_untouched(ws):
+    assert "error" not in _run(ws, "cat << 'EOF'\nhello\nEOF")
+
+
+@pytest.mark.parametrize("cmd", ["cat > f1.py", "echo x > f2.py"])
+def test_a_plain_redirect_is_the_older_question_and_unchanged(ws, cmd):
+    """Documented rather than asserted as good: these run unattended on
+    main too, and journalling them is a separate fix."""
+    assert "error" not in _run(ws, cmd)
+
+
+def test_a_grant_is_not_overridden_for_a_journalling_concern(ws):
+    """The first version of the rule refused any heredoc segment with a
+    write target, which cancelled an explicit user grant. A payload
+    writing inside the workspace is what that grant means."""
+    assert "error" not in _run(
+        ws, "python3 - <<'EOF'\nopen('out.txt','w').write('x')\nEOF",
+        grant=True)
+
+
+def test_and_the_sandbox_still_wins_over_the_grant(ws):
+    out = _run(ws, "python3 - <<'EOF'\nopen('/etc/evil','w').write('x')\nEOF",
+               grant=True)
+    assert "error" in out and "/etc/evil" in out["error"]

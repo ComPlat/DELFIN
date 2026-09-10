@@ -3084,6 +3084,10 @@ def _loop_body_already_allowed(cmd: str, perms) -> str:
     return ""
 
 
+_REDIRECT_TARGET_RE = re.compile(
+    r"(?<![0-9<>&])(?:[0-9]?|&)>{1,2}\s*([^\s;&|<>()]+)")
+
+
 def _split_shell_segments(cmd: str) -> list[str]:
     """Split a shell command into the segments chained by ``||``, ``&&``,
     ``;``, ``|`` or newline, ignoring operators inside single/double quotes.
@@ -3810,6 +3814,29 @@ class KitToolPermissions:
         segments = _split_shell_segments(cmd)
         if not segments:
             return False
+        # A here-document feeding a REDIRECT is "create this file with
+        # this content" -- what write_file is for, and the one form of
+        # shell write that carries its content in the command line.
+        #
+        # It used to be refused by accident: the body was split into
+        # pseudo-segments and `print(1)` is not an allowed command. Now
+        # that the body stays with its command, `cat > run.py << 'EOF'`
+        # would be auto-allowed off `cat` and the file written with no
+        # pre-image in the change journal, so undo_changes could not take
+        # it back and list_changes_made would not report it.
+        #
+        # A REDIRECT specifically, not any write the segment performs: an
+        # inline python payload that writes has its own policy one layer
+        # up (`_inline_payload_is_readable` refuses it) and its target
+        # goes through the write gate like any other. Overriding an
+        # explicit user grant over a journalling concern would be too
+        # strong, and it is not this rule's business.
+        #
+        # A plain `cat > f` or `echo x > f` is a separate and older
+        # question: those already run, and they carry no content.
+        for seg in segments:
+            if "<<" in seg and _REDIRECT_TARGET_RE.search(seg):
+                return False
         return all(self._segment_auto_allowed(s) for s in segments)
 
     def _segment_auto_allowed(self, cmd: str) -> bool:
