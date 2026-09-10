@@ -318,7 +318,35 @@ def test_resume_follows_the_same_rule():
 # A gated shell has to ask while a human is reachable
 # ---------------------------------------------------------------------------
 
-_NOT_AUTO_ALLOWED = "python3 << 'EOF'\nfrom openpyxl import load_workbook\nEOF"
+# Gated for a REASON, not by punctuation. The first version of this
+# constant was `from openpyxl import load_workbook` in a here-document,
+# which was refused only because the auto-allow pattern spelled `-c`:
+# `python3 -c "from openpyxl import load_workbook"` has always run, and
+# once the stdin form reached the same gates the heredoc did too. That
+# made the fixture stop being gated while these tests still needed a
+# gated command.
+#
+# This one writes a file, which stays off the inline-payload allow path
+# as a policy choice rather than a limit of the analysis (see
+# `_inline_payload_is_readable`) — and writing a workbook is what the
+# office analysis script in the docstring below actually does.
+_NOT_AUTO_ALLOWED = (
+    "python3 << 'EOF'\n"
+    "from openpyxl import Workbook\n"
+    "Workbook().save('out.xlsx')\n"
+    "EOF"
+)
+
+
+def test_the_fixture_command_is_really_gated(tmp_path):
+    """The premise of the four tests below. It stopped holding once and
+    they all went red together, which is the wrong way to find out."""
+    from delfin.agent.api_client import KitToolPermissions
+
+    perms = KitToolPermissions(workspace=str(tmp_path))
+    perms.mode = "default"
+    assert not perms.matches_bash_auto_allow(_NOT_AUTO_ALLOWED)
+    assert perms._interpreter_needs_confirm(_NOT_AUTO_ALLOWED)
 
 
 def _bash(mode, with_dialog, tmp_path):

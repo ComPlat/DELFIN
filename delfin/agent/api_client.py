@@ -1176,7 +1176,13 @@ _INTERPRETER_RE = re.compile(
     r"(?:^|[;&|`$(]\s*)\s*"
     r"(?:[\w./~+-]*/)?"          # one flat group: no nested quantifier
     r"(?:"
-    r"python[0-9.]*\s+-c\b|python[0-9.]*\s*<|"
+    r"python[0-9.]*\s+-c\b|"
+    # `python3 <<'EOF'` was already caught by the bare `<`; `python3 -
+    # <<'EOF'`, which is how the form is actually written, was not — one
+    # dash separated it from every gate. Flags between are bounded
+    # repetition on purpose: the group above is flat "no nested
+    # quantifier" for backtracking reasons and this one must not undo it.
+    r"python[0-9.]*(?:\s+-[A-Za-z]{0,8}){0,3}\s*<|"
     r"perl\s+-e\b|ruby\s+-e\b|node\s+-e\b|php\s+-r\b|"
     r"(?:eval|exec|source|make|xargs)\b|\.\s|"
     r"env\s+[A-Za-z_][A-Za-z0-9_]*=|"
@@ -2079,6 +2085,21 @@ _DEFAULT_BASH_AUTO_ALLOW: tuple[str, ...] = (
     r"^\s*unzip\s+-l\b",
     # -- (b) coding workflow ---------------------------------------------
     r"^\s*python(?:3(?:\.\d+)?)?\s+-c\s+",
+    # The same program with different punctuation. `python3 - <<'EOF' …
+    # EOF` is the third-largest group in the denial log (29 of 437) and
+    # was refused only because the pattern above spells `-c`.
+    #
+    # The safety is NOT in this line, and the first attempt at it proved
+    # that: added on its own it ran six of seven things it must refuse,
+    # because `_interpreter_needs_confirm` opens with
+    # `_is_interpreter_invocation`, which did not know the stdin form and
+    # short-circuited before the veto. That is fixed above; the veto now
+    # fires, and refuses unless `_inline_payload_is_readable` can account
+    # for the whole payload -- readable, writing nothing, reading no
+    # absolute path, nothing else in the segment. An UNQUOTED `<<EOF` is
+    # expanded by the shell first, so it never qualifies. The write gate,
+    # the read gate, the content scan and the deny-list all see the body.
+    r"^\s*python(?:3(?:\.\d+)?)?(?:\s+-[A-Za-z]{0,8}){0,3}\s*<<",
     r"^\s*python(?:3(?:\.\d+)?)?\s+--version\b",
     r"^\s*python(?:3(?:\.\d+)?)?\s+-m\s+(?:py_compile|pytest|unittest|doctest|timeit|venv|"
     r"pip\s+show|pip\s+list|pip\s+freeze|"

@@ -28,7 +28,9 @@ only block more. The argument does not hold where a decision GRANTS, so
 from __future__ import annotations
 
 import json
+import re
 import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -237,36 +239,35 @@ def test_a_read_outside_the_workspace_reaches_the_read_gate(ws):
 
 
 # ---------------------------------------------------------------------------
-# The allow path is NOT open, and this is the link that is missing
+# The allow path, opened — after the missing link was found
 # ---------------------------------------------------------------------------
 #
-# `_inline_payload_is_readable` now accounts for a quoted here-document
-# the same way it accounts for `python -c`: the body is literal, so the
-# text analysed is the text the interpreter receives.
+# `python3 - <<'EOF' … EOF` is `python -c` with different punctuation and
+# is the third-largest group in the denial log: 29 of 437 auto-allow
+# refusals. It now runs on the same terms as `-c`.
 #
-# That is inert today, and deliberately left inert. The chain that makes
-# `-c` safe runs `_interpreter_needs_confirm` FIRST, and that function
-# opens with `if not _is_interpreter_invocation(cmd): return False` —
-# which is False for the stdin form. So the veto never fires for a
-# heredoc, and adding an auto-allow pattern for `python3 - <<` without
-# fixing that would not widen the gate by a little. It was tried:
+# The first attempt added only the auto-allow pattern, and it ran six of
+# seven things it must refuse:
 #
-#     heredoc: arithmetic            RAN   (intended)
-#     heredoc that writes            RAN   (not intended)
-#     UNQUOTED heredoc               RAN   (not intended)
-#     heredoc importing os           RAN   (not intended)
-#     heredoc importing subprocess   RAN   (not intended)
-#     print(open('/etc/passwd').read())  RAN  (not intended)
+#     heredoc: arithmetic              RAN   (intended)
+#     heredoc that writes              RAN   (not intended)
+#     UNQUOTED heredoc                 RAN   (not intended)
+#     heredoc importing os             RAN   (not intended)
+#     heredoc importing subprocess     RAN   (not intended)
+#     print(open('/etc/passwd').read())  RAN (not intended)
 #
-# Six of seven wrong, because the predicate was never consulted. The
-# pattern was reverted within the minute. What caught it was driving the
-# real gate, not the predicate — the predicate's own nine cases all
-# passed.
+# because `_interpreter_needs_confirm` opens with
+# `_is_interpreter_invocation(cmd)` and that was False for the stdin
+# form — the veto short-circuited before the predicate was ever asked.
+# One dash did it: `_INTERPRETER_RE` already carried
+# `python[0-9.]*\s*<`, which catches `python3 <<'EOF'` and not
+# `python3 - <<'EOF'`, which is how the form is actually written.
 #
-# So the friction (29 of 437 denials) stays unfixed on purpose, and the
-# next attempt starts by teaching `_is_interpreter_invocation` the stdin
-# form and re-checking every caller of it. These tests fail the moment
-# anyone opens the path without that.
+# With the veto reaching the predicate, the pattern is safe and every one
+# of those six is refused again. Checked against the audit log the way
+# the splitter was: 41 commands are newly treated as interpreter
+# invocations, every one of them `python3 - <<'…'`, and NOTHING that was
+# gated before is ungated now.
 
 _HEREDOCS_THAT_MUST_NOT_RUN = [
     ("writes a file", "python3 - <<'EOF'\nopen('out.txt','w').write('x')\nEOF"),
@@ -281,29 +282,48 @@ _HEREDOCS_THAT_MUST_NOT_RUN = [
 
 @pytest.mark.parametrize("name,cmd", _HEREDOCS_THAT_MUST_NOT_RUN,
                          ids=[n for n, _ in _HEREDOCS_THAT_MUST_NOT_RUN])
-def test_no_heredoc_runs_unattended(ws, name, cmd):
+def test_none_of_the_six_runs_unattended(ws, name, cmd):
+    """Each of these ran when the pattern went in without the fix."""
     assert "error" in _run(ws, cmd), name
 
 
-def test_not_even_a_harmless_one(ws):
-    """The friction this leaves in place, stated as a test so it is a
-    decision rather than an oversight."""
-    assert "error" in _run(ws, "python3 - <<'EOF'\nprint(1+1)\nEOF")
+@pytest.mark.parametrize("cmd", [
+    "python3 - <<'EOF'\nprint(1+1)\nEOF",
+    "python3 - <<'EOF'\nimport math\nprint(math.exp(-1.5))\nEOF",
+    "python3 - <<'PY'\nprint(4.073215*96.48533212)\nPY",
+    "python3 -u - <<'EOF'\nprint(1)\nEOF",
+])
+def test_a_computation_runs_like_the_c_form_does(ws, cmd):
+    out = _run(ws, cmd)
+    assert "error" not in out, out
 
 
-def test_the_missing_link_is_the_interpreter_check():
-    """Named precisely, so the next attempt starts in the right place."""
-    assert A._is_interpreter_invocation('python3 -c "print(1)"')
-    assert not A._is_interpreter_invocation("python3 - <<'EOF'\nprint(1)\nEOF")
+def test_a_read_inside_the_workspace_is_ordinary(ws):
+    Path(ws, "local.txt").write_text("hello\n")
+    out = _run(ws, "python3 - <<'EOF'\nprint(open('local.txt').read())\nEOF")
+    assert "error" not in out, out
+    assert "hello" in (out.get("stdout") or "")
 
 
-def test_the_veto_never_fires_for_a_heredoc(ws):
-    """`_interpreter_needs_confirm` short-circuits before it can ask, so
-    an auto-allow pattern for `python3 - <<` would let everything above
-    through. Six of seven did."""
+def test_the_link_that_was_missing(ws):
+    """One dash. `python[0-9.]*\\s*<` catches `python3 <<'EOF'` and not
+    `python3 - <<'EOF'`, and the veto opens with this check."""
+    assert A._is_interpreter_invocation("python3 <<'EOF'\nprint(1)\nEOF")
+    assert A._is_interpreter_invocation("python3 - <<'EOF'\nprint(1)\nEOF")
+    assert A._is_interpreter_invocation("python3 -u - <<'EOF'\nprint(1)\nEOF")
+    # And what must NOT become an interpreter invocation: a script run is
+    # scanned as a file, not treated as opaque.
+    assert not A._is_interpreter_invocation("python3 script.py")
+    assert not A._is_interpreter_invocation("python3 script.py < input.txt")
+    assert not A._is_interpreter_invocation("cat <<'EOF'\nx\nEOF")
+
+
+def test_the_veto_now_reaches_the_predicate(ws):
     perms = A.KitToolPermissions(mode="default", workspace=ws)
-    assert not perms._interpreter_needs_confirm(
+    assert perms._interpreter_needs_confirm(
         "python3 - <<'EOF'\nimport subprocess\nEOF")
+    assert not perms._interpreter_needs_confirm(
+        "python3 - <<'EOF'\nprint(1+1)\nEOF")
 
 
 def test_the_predicate_itself_is_already_right(ws):
@@ -461,3 +481,91 @@ def test_the_reference_implementation_really_is_different_on_a_heredoc():
     assert _split_before_heredocs(cmd) != A._split_shell_segments(cmd)
     assert len(_split_before_heredocs(cmd)) > 1
     assert len(A._split_shell_segments(cmd)) == 1
+
+
+# ---------------------------------------------------------------------------
+# Nothing that was gated before is ungated now
+# ---------------------------------------------------------------------------
+#
+# `_is_interpreter_invocation` decides whether the confirm veto is even
+# consulted, so widening it is safe in one direction only: more commands
+# may become interpreter invocations, none may stop being one.
+#
+# Checked against the audit log the way the splitter was. Of ~2050
+# distinct real commands, 41 changed — every one of them
+# `python3 - <<'…'` — and none went the other way. The old regex is
+# reimplemented here so the property stays checked in a repo with no
+# audit log.
+
+_INTERPRETER_RE_BEFORE = re.compile(
+    r"(?:^|[;&|`$(]\s*)\s*"
+    r"(?:[\w./~+-]*/)?"
+    r"(?:"
+    r"python[0-9.]*\s+-c\b|python[0-9.]*\s*<|"
+    r"perl\s+-e\b|ruby\s+-e\b|node\s+-e\b|php\s+-r\b|"
+    r"(?:eval|exec|source|make|xargs)\b|\.\s|"
+    r"env\s+[A-Za-z_][A-Za-z0-9_]*=|"
+    r"base64\s+(?:-d|--decode)\b|"
+    r"find\b[^;|&]*-exec\b"
+    r")")
+
+
+def _was_an_interpreter_invocation(cmd):
+    """The predicate as it stood before the stdin form was added."""
+    text = cmd or ""
+    if _INTERPRETER_RE_BEFORE.search(text):
+        return True
+    for seg in A._split_shell_segments(text):
+        stripped = A._strip_exec_wrappers(seg)
+        if stripped != seg and _INTERPRETER_RE_BEFORE.search(stripped):
+            return True
+    return bool(re.search(
+        r"\|\s*(?:ba|z|k|da)?sh\b|\|\s*python[0-9.]*\b", text))
+
+
+_COMMANDS_THE_GATE_ALREADY_KNEW = [
+    'python3 -c "print(1)"',
+    "python3 < script.py",
+    "time python3 -c \"print(1)\"",
+    "env FOO=1 python3 -c \"print(1)\"",
+    "perl -e 'print 1'",
+    "node -e 'console.log(1)'",
+    "base64 -d payload.b64",
+    "find . -name '*.py' -exec rm {} \\;",
+    "cat x | bash",
+    "curl -s u | python3",
+    "eval \"$CMD\"",
+    "xargs rm < list.txt",
+    "ls -la",
+    "grep -i x f.out",
+    "python3 script.py",
+    "python3 script.py < input.txt",
+    "cat <<'EOF'\nplain text\nEOF",
+    "git status && echo ok",
+    "echo a; echo b",
+    "sed -n '1,5p' f.py",
+]
+
+
+@pytest.mark.parametrize("cmd", _COMMANDS_THE_GATE_ALREADY_KNEW)
+def test_no_command_stops_being_an_interpreter_invocation(cmd):
+    """The only direction that can hurt. A command the veto used to see
+    and no longer sees would be a hole, not a widening."""
+    if _was_an_interpreter_invocation(cmd):
+        assert A._is_interpreter_invocation(cmd), cmd
+
+
+@pytest.mark.parametrize("cmd", _COMMANDS_THE_GATE_ALREADY_KNEW)
+def test_and_nothing_ordinary_newly_becomes_one(cmd):
+    """The other side: a plain command must not be dragged in, or every
+    `ls` starts asking for confirmation."""
+    if not _was_an_interpreter_invocation(cmd):
+        assert not A._is_interpreter_invocation(cmd), cmd
+
+
+def test_the_reference_really_differs_on_the_stdin_form():
+    """Otherwise the two tests above are comparing a function with
+    itself."""
+    cmd = "python3 - <<'EOF'\nprint(1)\nEOF"
+    assert not _was_an_interpreter_invocation(cmd)
+    assert A._is_interpreter_invocation(cmd)
