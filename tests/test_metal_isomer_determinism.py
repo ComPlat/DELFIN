@@ -11,8 +11,16 @@ import itertools
 from typing import List, Tuple
 
 import pytest
+import rdkit
 
 from delfin import smiles_converter as sc
+
+# The all-trans OC-6 geometry of Cd MA2B2C2 depends on the RDKit release (2026-09-10,
+# private register #430): three trans pairs under RDKit 2025.3.5 and 2025.9.3, one under
+# 2026.3.5 -- the release the CI resolves (the defect first filed as #353 on 2026-09-06 in a
+# 2026.3.5 environment).  Version-conditional expectation: expected to fail on 2026 (strict),
+# required to pass on 2025.
+_RDKIT_2026 = int(rdkit.__version__.split(".")[0]) >= 2026
 
 
 def _metal_and_donors(
@@ -89,7 +97,7 @@ def test_cd_MA2B2C2_yields_all_five_octahedral_isomers():
     )
 
 
-@pytest.mark.xfail(strict=True, reason="all-trans OC-6 isomer of Cd MA2B2C2 is built with one trans pair instead of three -- Known construction defect, tracked in the private register (2026-09-06, #353); strict so a root fix is noticed")
+@pytest.mark.xfail(condition=_RDKIT_2026, strict=True, reason="all-trans OC-6 isomer of Cd MA2B2C2 is built with one trans pair instead of three under RDKit >= 2026 -- three under 2025.3.5 and 2025.9.3; RDKit-release-dependent construction, tracked in the private register (2026-09-06 #353, 2026-09-10 #430); strict so a root fix is noticed")
 def test_cd_MA2B2C2_octahedral_geometries_are_clean():
     res = _isomers(CD_MA2B2C2)
     oh_labels = {'all-cis', 'all-trans', 'N-trans', 'O-trans', 'Cl-trans'}

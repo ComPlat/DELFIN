@@ -30,11 +30,21 @@ import os
 
 import pytest
 
+import rdkit
 from rdkit import Chem
 
 from delfin.manta import decompose as DEC
 from delfin.manta import polyhedra as PLY
 from delfin.manta.converter_backend import _fffree_isomers
+
+# The distibine FF-free build depends on the RDKit release (2026-09-10, private register
+# #430): under RDKit 2025.3.5 and 2025.9.3 it builds a coordinated frame, under 2026.3.5 --
+# the release the CI resolves -- it returns None (the defect first filed as #353 on
+# 2026-09-06 in a 2026.3.5 environment).  A version-conditional expectation encodes the
+# measured state on both sides: expected to fail on 2026 (strict, so a root fix is noticed),
+# required to pass on 2025.  Removing the marker would turn the CI red; keeping it
+# unconditional turns every 2025 environment red.
+_RDKIT_2026 = int(rdkit.__version__.split(".")[0]) >= 2026
 
 # ATOQUV: Pd(II) coordinated by two o-phenylene-bis(dimethylstibine) chelates (4 Sb).
 ATOQUV_PD = ("[CH3][Sb+]1([CH3])[CH2]C2=CC=CC=C2[CH2][Sb+]([CH3])([CH3])[Pd-2]12"
@@ -124,7 +134,7 @@ def test_distibine_decomposes_consistently_with_flag(clean_env):
     assert d_pt["metal"] == "Pt"
 
 
-@pytest.mark.xfail(strict=True, reason="distibine ligand builds no frame on the FF-free path (None) -- Known construction defect, tracked in the private register (2026-09-06, #353); strict so a root fix is noticed")
+@pytest.mark.xfail(condition=_RDKIT_2026, strict=True, reason="distibine ligand builds no frame on the FF-free path (None) under RDKit >= 2026 -- builds under 2025.3.5 and 2025.9.3; RDKit-release-dependent construction, tracked in the private register (2026-09-06 #353, 2026-09-10 #430); strict so a root fix is noticed")
 def test_distibine_builds_coordinated_frame(clean_env):
     for k, v in _BUILD_FLAGS.items():
         clean_env.setenv(k, v)
@@ -193,7 +203,7 @@ def test_flag_on_inert_on_non_metalloid(clean_env):
 # --------------------------------------------------------------------------- #
 # determinism
 # --------------------------------------------------------------------------- #
-@pytest.mark.xfail(strict=True, reason="distibine ligand builds no frame on the FF-free path (None) -- Known construction defect, tracked in the private register (2026-09-06, #353); strict so a root fix is noticed")
+@pytest.mark.xfail(condition=_RDKIT_2026, strict=True, reason="distibine ligand builds no frame on the FF-free path (None) under RDKit >= 2026 -- builds under 2025.3.5 and 2025.9.3; RDKit-release-dependent construction, tracked in the private register (2026-09-06 #353, 2026-09-10 #430); strict so a root fix is noticed")
 def test_distibine_build_is_deterministic(clean_env):
     for k, v in _BUILD_FLAGS.items():
         clean_env.setenv(k, v)
