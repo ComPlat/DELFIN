@@ -562,5 +562,83 @@ def list_records(*, root: str = "") -> list[dict]:
             continue
         if data.get("session_name") and data.get("kernel_id"):
             out.append(data)
-    out.sort(key=lambda d: float(d.get("started_at") or 0), reverse=True)
+
+    def _started(record: dict) -> float:
+        # A record is written by a kernel and read by a server, possibly
+        # of a different vintage. The promise above is that one bad file
+        # does not hide the others, and a sort key that raises breaks
+        # exactly that -- found by a test that put a string in this
+        # field.
+        try:
+            return float(record.get("started_at") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    out.sort(key=_started, reverse=True)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Landing on a dashboard while another session is still running
+# ---------------------------------------------------------------------------
+
+def other_sessions(*, root: str = "", exclude_kernel: str = "") -> list[dict]:
+    """Kept sessions that are not the one being looked at.
+
+    The current kernel is excluded by id rather than by name: a resume
+    renders into the running kernel, so the page you are on IS the kept
+    session and offering to go back to it would be a loop.
+    """
+    mine = exclude_kernel or kernel_id()
+    return [r for r in list_records(root=root)
+            if str(r.get("kernel_id") or "") != mine]
+
+
+def _banner_html(records: list[dict]) -> str:
+    """What a returning visitor is told. Split out so it reads without a
+    kernel, and so the wording is testable."""
+    if not records:
+        return ""
+    rows = []
+    for record in records:
+        name = str(record.get("session_name") or "")
+        url = resume_url(name, request_url=str(record.get("request_url") or ""))
+        started = record.get("started_at")
+        try:
+            age = max(0.0, time.time() - float(started))
+            hours = age / 3600.0
+            when = (f"seit {hours:.0f}&nbsp;h" if hours >= 1
+                    else f"seit {age / 60.0:.0f}&nbsp;min")
+        except (TypeError, ValueError):
+            when = ""
+        link = (f'<a href="{url}">wieder hineingehen</a>' if url
+                else '<span style="color:#8a919e">Adresse unbekannt</span>')
+        rows.append(
+            f'<li style="margin:2px 0"><code>{name}</code>'
+            f'{" &middot; " + when if when else ""} &middot; {link}</li>')
+    return (
+        '<div style="border:1px solid #d7dbe2; border-left:3px solid #4b9e5f;'
+        ' background:#f7f9fb; padding:8px 12px; margin:0 0 8px 0;'
+        ' border-radius:4px; font-size:13px">'
+        '<b>Eine Sitzung l&auml;uft noch.</b> '
+        '<span style="color:#5a6270">Dieses Fenster ist neu &mdash; '
+        'du kannst dort weitermachen, wo du aufgeh&ouml;rt hast.</span>'
+        f'<ul style="margin:6px 0 0 18px; padding:0">{"".join(rows)}</ul>'
+        '</div>'
+    )
+
+
+def build_returning_banner(*, root: str = "", exclude_kernel: str = ""):
+    """A banner offering the running session, or None when there is none.
+
+    Shown where the user lands rather than behind a route of its own:
+    they go to the address they always go to, and it tells them. That is
+    also why nothing here needs a server extension.
+    """
+    import ipywidgets as widgets
+
+    records = other_sessions(root=root, exclude_kernel=exclude_kernel)
+    html = _banner_html(records)
+    if not html:
+        return None
+    return widgets.HTML(html)
