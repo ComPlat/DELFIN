@@ -512,6 +512,30 @@ def parse_orca_output(path: str) -> OrcaParseResult:
             and "ABORTING THE RUN" in text):
         out.error_summary = "ORCA aborted the run"
 
+    # The output need not state its method -- a DELFIN run's does not --
+
+    # and a snapshot that says functional "" beside a folder whose
+
+    # CONTROL.txt names it is an answer nobody asked for. Read the
+
+    # folder the file lives in, the way the folder tools do.
+
+    if not out.functional or not out.basis:
+
+        try:
+
+            from delfin.doc_server.calc_indexer import method_of_folder
+
+            f2, b2 = method_of_folder(p.parent)
+
+            out.functional = out.functional or (f2 or '')
+
+            out.basis = out.basis or (b2 or '')
+
+        except Exception:
+
+            pass
+
     return out
 
 
@@ -1737,8 +1761,9 @@ def extract_calc_summary_table(
             continue
         out_files = sorted(p.glob("*.out"))
         if not out_files:
+            f0, b0 = _method_of(None, p)
             rows.append(ExtendedComparisonRow(
-                folder=str(folder), functional=None, basis=None,
+                folder=str(folder), functional=f0, basis=b0,
                 gibbs=None, single_point=None, zpe=None,
                 homo_ev=None, lumo_ev=None, gap_ev=None,
                 n_imag=None, dipole_debye=None, walltime_s=None,
