@@ -30,7 +30,11 @@ from delfin.dashboard import session as S
 
 
 @pytest.fixture(autouse=True)
-def clean():
+def clean(tmp_path, monkeypatch):
+    # conftest redirects RECORD_DIR for the whole suite; this pins it per
+    # test as well, so one test's armed session cannot appear in the
+    # next one's landing page.
+    monkeypatch.setattr(S, "RECORD_DIR", str(tmp_path / "kept"))
     S._reset_for_tests()
     yield
     S._reset_for_tests()
@@ -320,15 +324,21 @@ def test_a_stale_session_in_the_address_is_replaced_not_doubled():
     assert "session=second" in url
 
 
-@pytest.mark.parametrize("name,req,path", [
-    ("", "http://h:1/x", _RESUME_PATH),
-    ("n", "", _RESUME_PATH),
-    ("n", "not a url", _RESUME_PATH),
-    ("n", "///", _RESUME_PATH),
-    ("n", "http://h:1/x", ""),
+@pytest.mark.parametrize("name,req", [
+    ("", "http://h:1/x"),
+    ("n", ""),
+    ("n", "not a url"),
+    ("n", "///"),
 ])
-def test_an_unknown_address_is_empty_not_a_guess(name, req, path):
-    assert S.resume_url(name, request_url=req, resume_path=path) == ""
+def test_an_unknown_address_is_empty_not_a_guess(name, req):
+    assert S.resume_url(name, request_url=req, resume_path=_RESUME_PATH) == ""
+
+
+def test_no_staged_resume_notebook_means_no_address(monkeypatch):
+    """The launcher sets the path. Without it there is nowhere to come
+    back to, and a guess would send somebody to a 404."""
+    monkeypatch.delenv(S.RESUME_PATH_ENV, raising=False)
+    assert S.resume_url("n", request_url="http://h:1/x", resume_path="") == ""
 
 
 def test_two_sessions_started_together_do_not_collide():
@@ -382,3 +392,99 @@ def test_arming_prints_where_to_come_back(capsys):
     out = capsys.readouterr().out
     assert "probe-9" in out
     assert "Beenden" in out
+
+
+# ---------------------------------------------------------------------------
+# Landing while a session is still running
+# ---------------------------------------------------------------------------
+#
+# Offered where people land rather than behind a route of its own: they
+# open the address they always open, and it tells them. That is also why
+# none of this needs a server extension.
+
+def _kept(name, kid, *, hours_ago=1.0, url="http://h:8866/voila/render/x?token=t"):
+    import json
+    import os
+    import time as _t
+
+    path = S.write_record(name, kid=kid)
+    with open(path, encoding="utf-8") as h:
+        rec = json.load(h)
+    rec["request_url"] = url
+    rec["started_at"] = _t.time() - hours_ago * 3600
+    with open(path, "w", encoding="utf-8") as h:
+        json.dump(rec, h)
+    return path
+
+
+@pytest.fixture(autouse=True)
+def _resume_path(monkeypatch):
+    monkeypatch.setenv(
+        S.RESUME_PATH_ENV,
+        "/voila/render/delfin_voila_runtime/delfin_resume.ipynb")
+
+
+def test_a_new_window_is_told_about_a_running_session():
+    _kept("uc3n990-ab12", "kernel-aaa")
+    others = S.other_sessions(exclude_kernel="kernel-bbb")
+    assert [r["session_name"] for r in others] == ["uc3n990-ab12"]
+
+
+def test_the_session_you_are_looking_at_is_not_offered_back():
+    """A resume renders INTO the kept kernel, so the page you are on IS
+    that session — offering to go back to it would be a loop."""
+    _kept("uc3n990-ab12", "kernel-aaa")
+    assert S.other_sessions(exclude_kernel="kernel-aaa") == []
+
+
+def test_nothing_is_shown_when_nothing_is_running():
+    assert S._banner_html([]) == ""
+    assert S.build_returning_banner(exclude_kernel="kernel-x") is None
+
+
+def test_the_banner_carries_a_link_and_an_age():
+    _kept("uc3n990-ab12", "kernel-aaa", hours_ago=5)
+    html = S._banner_html(S.other_sessions(exclude_kernel="kernel-bbb"))
+    assert "uc3n990-ab12" in html
+    assert "delfin_resume.ipynb" in html
+    assert "seit 5" in html
+
+
+def test_a_young_session_is_counted_in_minutes():
+    """A dashboard opened three minutes ago should not read "seit 0 h"."""
+    import re
+
+    _kept("fresh-1", "kernel-aaa", hours_ago=0.05)
+    html = S._banner_html(S.other_sessions(exclude_kernel="kernel-bbb"))
+    age = re.search(r"seit[^&]*&nbsp;(min|h)", html)
+    assert age and age.group(1) == "min", html
+
+
+def test_a_record_without_an_address_says_so_rather_than_linking_nowhere():
+    _kept("no-url", "kernel-aaa", url="")
+    html = S._banner_html(S.other_sessions(exclude_kernel="kernel-bbb"))
+    assert "Adresse unbekannt" in html
+    assert "<a href" not in html
+
+
+def test_a_broken_timestamp_does_not_take_the_banner_down():
+    import json
+
+    path = _kept("odd-1", "kernel-aaa")
+    with open(path, encoding="utf-8") as h:
+        rec = json.load(h)
+    rec["started_at"] = "not a number"
+    with open(path, "w", encoding="utf-8") as h:
+        json.dump(rec, h)
+    html = S._banner_html(S.other_sessions(exclude_kernel="kernel-bbb"))
+    assert "odd-1" in html
+
+
+def test_the_dashboard_shows_it_above_everything_else():
+    import inspect
+
+    from delfin import dashboard as d
+    src = inspect.getsource(d)
+    assert "_session.build_returning_banner()" in src
+    assert "([_returning] if _returning else [])" in src, (
+        "no running session must not leave an empty box in the header")

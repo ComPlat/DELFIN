@@ -926,7 +926,15 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         + '</div>'
     )
 
-    _header_root = widgets.VBox([
+    # Landing while another session is still running.
+    #
+    # Offered where people actually land rather than behind a route of
+    # its own: they open the address they always open, and it tells them.
+    # Excluded by kernel id, so a resume -- which renders INTO the kept
+    # kernel -- never offers to go back to the page you are on.
+    _returning = _session.build_returning_banner()
+
+    _header_root = widgets.VBox(([_returning] if _returning else []) + [
         busy_css,
         create_page_css(),
         widgets.HBox([
