@@ -95,6 +95,13 @@ FLAG = "DELFIN_FFFREE_H_PLACEMENT"
 # construction as the topology gate and the stereo gate: measured, not
 # assumed, and the WHOLE frame rolls back.  One read site, like FLAG.
 FLAG_CONTACT_GATE = "DELFIN_FFFREE_H_CONTACT_GATE"
+# THE PARENT-REGAIN RULE OF THE TOPOLOGY GATE (2026-09-10, register #420).
+# The topology gate reads bonds with the eye's perception, for which a
+# stretched (1.60 A) or orphaned X-H is UNBONDED; repairing it to 1.07 A then
+# reads as "topology changed" and the gate rolls the frame back.  Stage B was
+# dead under it (hplace6k2: xh_orphan 121 -> 121).  With this rule an H may
+# gain exactly ONE thing: its own parent.  Default OFF -> byte-identical.
+FLAG_PARENT_REGAIN = "DELFIN_FFFREE_H_PARENT_REGAIN"
 
 # --- Thresholds -----------------------------------------------------------
 # Firing INSIDE the detector bands (eye: collision < 0.75 · stretch > 1.25).
@@ -266,6 +273,26 @@ def _hp_h_contacts(syms: Sequence[str], P: np.ndarray) -> Dict[int, frozenset]:
     for h in hs:
         out[h] = frozenset(acc[h])
     return out
+
+
+def _hp_topo_change_is_parent_regain(before: Dict[int, frozenset],
+                                     after: Dict[int, frozenset],
+                                     parents: Dict[int, int]) -> bool:
+    """True iff EVERY H whose bond set changed went from EMPTY to exactly
+    {its own parent} -- the module's parent (``parents_of_h``: nearest heavy
+    non-metal within 1.45 x target or 2.20 A).  Anything else -- a foreign
+    heavy atom, a metal, a lost parent, a second bond -- is NOT a regain and
+    the gate must fire as before.  Register #420: the rule is universal (no
+    element, no system), and it is the ONLY transition the gate of #357 had
+    forbidden that a repair legitimately needs."""
+    for h, s_after in after.items():
+        s_before = before.get(h, frozenset())
+        if s_after == s_before:
+            continue
+        p = parents.get(h, -1)
+        if p < 0 or s_before or s_after != frozenset({int(p)}):
+            return False
+    return True
 
 
 def _hp_hydrogens(syms: Sequence[str]) -> List[int]:
@@ -873,6 +900,11 @@ def h_contact_gate_enabled() -> bool:
     return os.environ.get(FLAG_CONTACT_GATE, "0") == "1"
 
 
+def h_parent_regain_enabled() -> bool:
+    """THE ONE read site of DELFIN_FFFREE_H_PARENT_REGAIN (default 0)."""
+    return os.environ.get(FLAG_PARENT_REGAIN, "0") == "1"
+
+
 def repair_xyz(xyz: str, *, stats: Optional[dict] = None) -> str:
     """Repair ungated -- for self-test and measurement, NOT in the build path.
 
@@ -924,7 +956,15 @@ def repair_xyz(xyz: str, *, stats: Optional[dict] = None) -> str:
         # topology at its exit and rolls back.  Here: the set of atoms each H is
         # bonded to (covalent-radius rule, metals INCLUDED because an H on a metal is
         # exactly the case the eye punishes) must be IDENTICAL before and after.
-        if _hp_h_contacts(syms, P) != contacts_before:
+        contacts_after = _hp_h_contacts(syms, P)
+        if contacts_after != contacts_before and not (
+                h_parent_regain_enabled()
+                and _hp_topo_change_is_parent_regain(contacts_before,
+                                                     contacts_after, parents)):
+            # The parent-regain rule (#420, default OFF) lets exactly one
+            # transition through: an H whose bond set was EMPTY (stretched or
+            # orphaned under the eye's perception) and is now {its own parent}.
+            # That is stage B's repair, and nothing else.
             if stats is not None:
                 stats.update({"umbrella": 0, "length": 0, "rotor": 0,
                               "moved": 0, "aborted_heavy_moved": 0,
@@ -1117,7 +1157,18 @@ def _hp_selftest() -> int:
     os.environ[FLAG] = "1"
     _expect("AN wird gelesen", h_placement_enabled() is True)
 
-    print("== Stufe B: Laenge ==")
+    print("== Stufe B unter dem Topologietor (register #420) ==")
+    os.environ.pop(FLAG_PARENT_REGAIN, None)
+    _expect("Elternteil-Erlass: Vorgabe AUS", h_parent_regain_enabled() is False)
+    _st_topo: Dict[str, int] = {}
+    _out_topo = repair_xyz(stretched, stats=_st_topo)
+    _expect("ohne Erlass nimmt das Topologietor die Laengenreparatur zurueck (#420)",
+            _out_topo is stretched and _st_topo.get("aborted_topology", 0) == 1,
+            str(_st_topo))
+    os.environ[FLAG_PARENT_REGAIN] = "1"
+    _expect("Elternteil-Erlass: AN wird gelesen", h_parent_regain_enabled() is True)
+
+    print("== Stufe B: Laenge (mit Erlass) ==")
     st: Dict[str, int] = {}
     out = repair_xyz(stretched, stats=st)
     _s0, P0, _ = _hp_read(stretched)
@@ -1150,6 +1201,8 @@ def _hp_selftest() -> int:
     _expect("verwaistes H bekommt seinen Elternteil zurueck",
             c0["xh_orphan"] == 1 and c1["xh_orphan"] == 0,
             f"{c0['xh_orphan']} -> {c1['xh_orphan']}")
+    os.environ.pop(FLAG_PARENT_REGAIN, None)
+    _expect("Elternteil-Erlass wieder AUS", h_parent_regain_enabled() is False)
 
     print("== Stufe A: Dach ==")
     # C2 hangs on C1 so that C1 is NOT a terminal group -- otherwise
@@ -1304,6 +1357,24 @@ def _hp_selftest() -> int:
         _expect("mit Tor: der GANZE Frame faellt zurueck (Eingabeobjekt)",
                 _out_on is stub and _st_on.get("aborted_contact", 0) == 1,
                 str(_st_on))
+        # The parent-regain rule (#420) must NOT widen the topology gate for
+        # anything but a regained parent: swing H2 onto the foreign O (1.00 A,
+        # a bond under any perception) -- with the rule ON the frame still
+        # falls back, and it is the TOPOLOGY gate that says so.
+        os.environ.pop(FLAG_CONTACT_GATE, None)
+        os.environ[FLAG_PARENT_REGAIN] = "1"
+        _s_st, _P_st, _ = _hp_read(stub)
+        _foreign = _P_st[4] + np.array([0.0, 1.0, 0.0])   # 1.00 A above the O
+
+        def _bad_umbrella_foreign(syms, P, tol_deg=_DET_METHYL_DEG):
+            P[2] = _foreign.copy()
+            return 1
+        globals()["_hp_stage_umbrella"] = _bad_umbrella_foreign
+        _st_f: Dict[str, int] = {}
+        _out_f = repair_xyz(stub, stats=_st_f)
+        _expect("Erlass AN: ein H an ein FREMDES Atom faellt weiter zurueck (Topologietor)",
+                _out_f is stub and _st_f.get("aborted_topology", 0) == 1, str(_st_f))
+        os.environ.pop(FLAG_PARENT_REGAIN, None)
     finally:
         globals()["_hp_stage_umbrella"] = _real_umbrella
         globals()["_hp_stage_rotor"] = _real_rotor
