@@ -36,8 +36,9 @@ IMAG=yes
 IMAG_scope=initial
 IMAG_option=2
 allow_imaginary_freq=0
-IMAG_sp_energy_window=1e-3
+IMAG_sp_energy_window=1e-5
 IMAG_optimize_candidates=no
+IMAG_max_rounds=2
 ------------------------------------------------------
 Redox steps:
 ------------------

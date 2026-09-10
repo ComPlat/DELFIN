@@ -819,7 +819,16 @@ def _build_summary_text(data: Dict[str, Any], project_dir: Path) -> tuple[Option
         pass
 
     if control_flags.get("imag"):
-        parts.append("IMAG was used to eliminate imaginary frequencies.")
+        # Say what the final structure shows, not what IMAG was asked to do.
+        if modes and negative_freqs:
+            parts.append(
+                f"IMAG was enabled, but {negative_freqs} imaginary "
+                f"{'frequency remains' if negative_freqs == 1 else 'frequencies remain'} in the final structure."
+            )
+        elif modes:
+            parts.append("IMAG was enabled; the final structure has no imaginary frequencies.")
+        else:
+            parts.append("IMAG was enabled.")
 
     # Add redox potentials (prefer computed values, fallback to DELFIN.txt)
     computed_values = [computed_final.get(k) for k in ["E_red", "E_red_2", "E_red_3", "E_ox", "E_ox_2", "E_ox_3"]]

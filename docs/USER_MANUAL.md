@@ -219,12 +219,23 @@ working unchanged: `XTB_OPT` is read as `XTB_preOPT`, and `XTB_GOAT=yes` /
 
 | Key | Default | Description |
 |-----|---------|-------------|
-| `IMAG` | `yes` | Enable imaginary frequency elimination |
-| `IMAG_scope` | `initial` | Scope: `initial` (initial state only) or `all` (all states) |
-| `IMAG_option` | `2` | IMAG method option |
-| `allow_imaginary_freq` | `0` | Number of allowed imaginary frequencies |
-| `IMAG_sp_energy_window` | `1e-3` | Energy window (Hartree) for single-point comparison |
-| `IMAG_optimize_candidates` | `no` | Optimize IMAG candidate structures |
+| `IMAG` | `yes` | Move a structure whose frequencies show an imaginary mode to a minimum |
+| `IMAG_scope` | `initial` | `initial`: the initial structure only; `all`: the redox steps too. Excited states of the ESD module are always treated when `IMAG=yes`, since a rate needs both states at minima |
+| `IMAG_option` | `2` | How OCCUPIER schedules IMAG |
+| `allow_imaginary_freq` | `0` | Imaginary frequencies smaller in magnitude than this (cm⁻¹, either sign) are tolerated; `0` tolerates none |
+| `IMAG_sp_energy_window` | `1e-5` | A displaced single point must lie this far (Eh) below a single point at the saddle to be taken — a noise floor; which modes are worth removing is `allow_imaginary_freq`'s question |
+| `IMAG_optimize_candidates` | `no` | Optimise the displaced structures instead of single points |
+| `IMAG_max_rounds` | `2` | Most rounds per structure; each round costs one frequency calculation |
+
+One round: the geometry in the structure's `.hess` is displaced along the
+imaginary mode both ways (the atom that moves most by 0.3 Å, times
+`IMAG_displacement_scale`), a single point of the same state is computed at
+each, and the lower one — if it lies below the saddle — is re-optimised with
+frequencies. If neither lies lower, the displacement is halved, at most twice.
+Everything runs on the structure's own input, in place: the method, reference
+and per-atom basis stay as written, jobs appended to the input run again at
+the new geometry, and afterwards `.out`, `.xyz`, `.hess` and `.gbw` all belong
+to the final geometry. Each round's saddle is kept in `<step>_IMAG/round<n>/`.
 
 ### Properties of Interest
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict, List
 
 from delfin.workflows.registry import register
@@ -14,54 +15,41 @@ class ImagWorkflow:
     description = "Iterative imaginary frequency elimination via ORCA re-optimization"
 
     def run(self, *, config: Dict[str, Any], **kwargs: Any) -> Any:
-        from delfin.imag import run_IMAG
+        """IMAG on one finished calculation, asked for explicitly (no IMAG switch is read).
 
-        return run_IMAG(
-            input_file=kwargs["input_file"],
-            hess_file=kwargs["hess_file"],
-            charge=kwargs["charge"],
-            multiplicity=kwargs["mult"],
-            solvent=kwargs.get("solvent", config.get("solvent", "")),
-            metals=kwargs.get("metals", config.get("metals", [])),
+        ``input_file`` is the calculation's .inp or .out; the other one and the
+        .hess are found beside it under the same name.
+        """
+        from delfin.imag import _pipeline_run_orca, eliminate_imaginary_modes
+
+        given = Path(kwargs["input_file"])
+        if given.suffix not in (".inp", ".out"):
+            raise ValueError(f"IMAG needs the calculation's .inp or .out, not {given.name}")
+        return eliminate_imaginary_modes(
+            label=kwargs.get("step_name", "imag"),
+            input_path=given.with_suffix(".inp"),
+            output_path=given.with_suffix(".out"),
             config=config,
-            main_basisset=kwargs.get("main_basisset", config.get("main_basisset", "def2-SVP")),
-            metal_basisset=kwargs.get("metal_basisset", config.get("metal_basisset", "")),
-            broken_sym=kwargs.get("broken_sym", config.get("broken_sym", False)),
-            step_name=kwargs.get("step_name", "imag"),
-            pal_override=kwargs.get("cores"),
+            run_orca=_pipeline_run_orca,
+            pal=kwargs.get("cores"),
         )
 
     def run_cli(self, argv: List[str]) -> int:
         import argparse
 
         parser = argparse.ArgumentParser(description=self.description)
-        parser.add_argument("input_file", help="Path to input XYZ/inp file")
-        parser.add_argument("hess_file", help="Path to .hess file")
-        parser.add_argument("--charge", type=int, required=True)
-        parser.add_argument("--mult", type=int, required=True)
-        parser.add_argument("--solvent", type=str, default="")
-        parser.add_argument("--metals", type=str, nargs="*", default=[])
-        parser.add_argument("--basis", type=str, default="def2-SVP")
-        parser.add_argument("--metal-basis", type=str, default="")
+        parser.add_argument("input_file", help="The calculation's .inp or .out (the .hess beside it)")
+        parser.add_argument("--cores", type=int, default=None)
+        parser.add_argument("--max-rounds", type=int, default=None)
         args = parser.parse_args(argv)
-
-        from delfin.imag import run_IMAG
+        config: Dict[str, Any] = {}
+        if args.max_rounds:
+            config["IMAG_max_rounds"] = args.max_rounds
         try:
-            run_IMAG(
-                input_file=args.input_file,
-                hess_file=args.hess_file,
-                charge=args.charge,
-                multiplicity=args.mult,
-                solvent=args.solvent,
-                metals=args.metals,
-                config={"PAL": 1},
-                main_basisset=args.basis,
-                metal_basisset=args.metal_basis,
-                broken_sym=False,
-            )
-            return 0
-        except Exception:
+            result = self.run(config=config, input_file=args.input_file, cores=args.cores)
+        except Exception:  # noqa: BLE001
             return 1
+        return 0 if result.resolved else 1
 
 
 register(ImagWorkflow())

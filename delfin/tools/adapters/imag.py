@@ -40,48 +40,52 @@ class ImagFixAdapter(StepAdapter):
             raise ValueError("'hess_file' parameter is required (path to .hess)")
 
     def execute(self, work_dir: Path, *, geometry: Optional[Path] = None, cores: int = 1, **kwargs: Any) -> StepResult:
+        """IMAG on the calculation that wrote ``hess_file``.
+
+        The Hessian's calculation is ``<name>.inp`` / ``<name>.out`` beside
+        ``<name>.hess`` -- what the ORCA adapters write.  IMAG re-runs that
+        input, so it needs it; this used to hand IMAG the geometry file in the
+        output's place, IMAG found no imaginary mode in an xyz, and the step
+        reported success without having done anything.
+        """
+        import shutil
+
+        from delfin.imag import _pipeline_run_orca, _referenced_files, eliminate_imaginary_modes
+
         start = time.monotonic()
-
-        if geometry is None:
-            return self._make_result(self.name, StepStatus.FAILED, work_dir, start, error="geometry is required")
-
-        # Copy input files into work_dir
-        local_geom = self._copy_geometry_to_workdir(geometry, work_dir, "input.xyz")
         hess_src = Path(kwargs["hess_file"])
-        local_hess = work_dir / hess_src.name
-        if not local_hess.exists():
-            import shutil
-            shutil.copy2(hess_src, local_hess)
-
-        config = kwargs.get("config", {})
-        config.setdefault("PAL", cores)
-
-        from delfin.imag import run_IMAG
-
-        run_IMAG(
-            input_file=str(local_geom),
-            hess_file=str(local_hess),
-            charge=kwargs["charge"],
-            multiplicity=kwargs["mult"],
-            solvent=kwargs["solvent"],
-            metals=kwargs["metals"],
-            config=config,
-            main_basisset=kwargs["main_basisset"],
-            metal_basisset=kwargs["metal_basisset"],
-            broken_sym=kwargs.get("broken_sym", False),
-            step_name=kwargs.get("step_name", "imag_fix"),
-            pal_override=cores,
-        )
-
-        # IMAG writes the corrected geometry back to input_file
-        if local_geom.is_file():
+        inp_src, out_src = hess_src.with_suffix(".inp"), hess_src.with_suffix(".out")
+        missing = [p.name for p in (hess_src, inp_src, out_src) if not p.is_file()]
+        if missing:
             return self._make_result(
-                self.name, StepStatus.SUCCESS, work_dir, start,
-                geometry=local_geom,
+                self.name, StepStatus.FAILED, work_dir, start,
+                error=f"IMAG needs the Hessian's calculation beside it; missing: {', '.join(missing)}",
             )
+
+        # Work on copies: the upstream step's files stay what that step produced.
+        work_dir.mkdir(parents=True, exist_ok=True)
+        for src in (inp_src, out_src, hess_src):
+            shutil.copy2(src, work_dir / src.name)
+        for name in _referenced_files(inp_src.read_text(encoding="utf-8")):
+            if (hess_src.parent / name).is_file():
+                shutil.copy2(hess_src.parent / name, work_dir / Path(name).name)
+
+        result = eliminate_imaginary_modes(
+            label=kwargs.get("step_name", "imag_fix"),
+            input_path=work_dir / inp_src.name,
+            output_path=work_dir / out_src.name,
+            config=kwargs.get("config") or {},
+            run_orca=_pipeline_run_orca,
+            pal=cores,
+        )
+        refined = work_dir / f"{hess_src.stem}.xyz"
         return self._make_result(
-            self.name, StepStatus.FAILED, work_dir, start,
-            error="IMAG did not produce output geometry",
+            self.name, StepStatus.SUCCESS, work_dir, start,
+            geometry=refined if refined.is_file() else geometry,
+            output_file=work_dir / out_src.name,
+            data={"n_imaginary": len(result.remaining), "imag_rounds": result.rounds,
+                  "imag_reason": result.reason or ""},
+            artifacts={"hess": work_dir / hess_src.name},
         )
 
 
