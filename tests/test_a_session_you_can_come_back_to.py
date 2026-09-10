@@ -21,8 +21,11 @@ on the FIRST beat and never before.
 
 from __future__ import annotations
 
+import json
+import os
 import threading
 import time
+from pathlib import Path
 
 import pytest
 
@@ -657,3 +660,133 @@ def test_a_server_that_refuses_is_not_taken_for_a_shutdown(monkeypatch):
 
     monkeypatch.setattr(urllib.request, "urlopen", _boom)
     assert s._ask_server_to_end_this_kernel() is False
+
+
+# ---------------------------------------------------------------------------
+# Three things a browser found after the mechanism "worked"
+# ---------------------------------------------------------------------------
+
+def test_the_first_beat_does_not_wait_for_the_interval():
+    """A window closed inside its first ten seconds never beat, so its
+    kernel was never torn down. The script now retries the first beat
+    quickly until the field it writes to is there."""
+    from delfin.dashboard import session as s
+
+    js = s.heartbeat_js()
+    assert "return true" in js and "return false" in js
+    assert "if (!beat())" in js
+    assert "250" in js, "the retry must be far quicker than the interval"
+
+
+def test_disarming_restarts_the_grace(monkeypatch):
+    """The last beat on record may be hours old when the option is switched
+    off on a resumed page; judging by it would end the kernel under the
+    person looking at it."""
+    from delfin.dashboard import session as s
+
+    s._reset_for_tests()
+    now = {"t": 1000.0}
+    monkeypatch.setattr(s.time, "monotonic", lambda: now["t"])
+
+    s.beat()
+    s.keep_alive(True, session_name="x")
+    now["t"] += 8 * 3600                      # overnight
+    assert s.seconds_since_beat() > s.GRACE_SECONDS
+
+    s.keep_alive(False)
+    assert s.seconds_since_beat() == 0.0, "disarming must restart the grace"
+    s._reset_for_tests()
+
+
+def test_disarming_a_page_that_never_beat_does_not_arm_the_watchdog():
+    from delfin.dashboard import session as s
+
+    s._reset_for_tests()
+    s.keep_alive(True, session_name="x")
+    s.keep_alive(False)
+    assert s.seconds_since_beat() is None
+    s._reset_for_tests()
+
+
+def test_a_record_whose_process_is_gone_is_not_offered(tmp_path, monkeypatch):
+    from delfin.dashboard import session as s
+
+    monkeypatch.setattr(s, "_hostname", lambda: "thishost")
+    # A pid that cannot exist on Linux: above pid_max's ceiling.
+    dead = {"session_name": "gone", "kernel_id": "k1", "pid": 4194305,
+            "host": "thishost", "started_at": 1.0}
+    live = {"session_name": "here", "kernel_id": "k2", "pid": os.getpid(),
+            "host": "thishost", "started_at": 2.0}
+    for rec in (dead, live):
+        (tmp_path / f"{rec['session_name']}.json").write_text(json.dumps(rec))
+
+    names = [r["session_name"] for r in s.other_sessions(root=str(tmp_path))]
+    assert names == ["here"]
+    assert not (tmp_path / "gone.json").exists(), "the dead record is dropped"
+    assert (tmp_path / "here.json").exists()
+
+
+def test_a_record_from_another_host_is_left_alone(tmp_path, monkeypatch):
+    """A home directory may be shared; a pid means nothing elsewhere."""
+    from delfin.dashboard import session as s
+
+    monkeypatch.setattr(s, "_hostname", lambda: "thishost")
+    rec = {"session_name": "far", "kernel_id": "k3", "pid": 4194305,
+           "host": "otherhost", "started_at": 1.0}
+    (tmp_path / "far.json").write_text(json.dumps(rec))
+    assert [r["session_name"] for r in s.other_sessions(root=str(tmp_path))] == ["far"]
+    assert (tmp_path / "far.json").exists()
+
+
+def test_a_record_without_a_host_is_left_alone(tmp_path, monkeypatch):
+    """Written by an older DELFIN; nothing to judge it by."""
+    from delfin.dashboard import session as s
+
+    monkeypatch.setattr(s, "_hostname", lambda: "thishost")
+    rec = {"session_name": "old", "kernel_id": "k4", "pid": 4194305,
+           "started_at": 1.0}
+    (tmp_path / "old.json").write_text(json.dumps(rec))
+    assert [r["session_name"] for r in s.other_sessions(root=str(tmp_path))] == ["old"]
+
+
+def test_a_new_record_names_its_host(tmp_path, monkeypatch):
+    from delfin.dashboard import session as s
+
+    monkeypatch.setattr(s, "kernel_id", lambda: "kid")
+    monkeypatch.setattr(s, "_hostname", lambda: "thishost")
+    path = s.write_record("named", root=str(tmp_path))
+    assert json.loads(Path(path).read_text())["host"] == "thishost"
+
+
+def test_the_strip_cannot_be_shrunk_by_the_header():
+    """Seen in a browser: a 130px control rendered 20px wide the moment
+    the header row was full, and the address beside it wrapped into a
+    70px column. Clickable, unreadable."""
+    from delfin.dashboard import session as s
+
+    strip = s.build_status_strip()
+    toggle = next(w for w in strip.children
+                  if getattr(w, "description", "") == "Offen halten")
+    assert toggle.layout.flex == "0 0 auto"
+    assert strip.layout.flex == "0 0 auto"
+    assert "white-space:nowrap" in s._STRIP_CSS
+
+
+def test_inside_a_kernel_the_announcement_reaches_the_server(monkeypatch, capsys):
+    """A kernel's print goes to the frontend, not the terminal: ipykernel
+    captures it. Inside a kernel the line is written to the server's own
+    stdout instead -- and a test is not inside a kernel, which is why the
+    test above still reads it from print."""
+    import io
+
+    class _Out(io.StringIO):
+        def close(self):            # `with out:` must not discard the text
+            pass
+
+    out = _Out()
+    monkeypatch.setattr(S, "kernel_id", lambda: "k1")
+    monkeypatch.setattr(S, "_server_stdout", lambda: out)
+    S.keep_alive(True, session_name="probe-10")
+    S.announce()
+    assert "probe-10" in out.getvalue() and "Beenden" in out.getvalue()
+    assert capsys.readouterr().out == ""

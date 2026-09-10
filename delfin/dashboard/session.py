@@ -38,7 +38,20 @@ from typing import Any, Callable, Optional
 # How long a page may stay silent before the kernel calls it gone. The
 # page beats every ~10s, so this tolerates several missed beats over a
 # slow link rather than tearing a working session down.
-GRACE_SECONDS = 90.0
+#
+# Overridable because a test that drives a real browser has to wait out
+# this grace for real, and 90s per case is the difference between a
+# check that runs and one that does not.
+def _grace_from_env(default: float = 90.0) -> float:
+    try:
+        value = float(os.environ.get("DELFIN_SESSION_GRACE_SECONDS", ""))
+    except (TypeError, ValueError):
+        return default
+    # Zero or less would end a session between two beats.
+    return value if value > 0 else default
+
+
+GRACE_SECONDS = _grace_from_env()
 
 # How often the watchdog looks. Cheap, and the grace above is what
 # decides; this only bounds how late the teardown is.
@@ -114,12 +127,21 @@ def seconds_since_beat() -> Optional[float]:
 
 
 def keep_alive(on: bool, *, session_name: str = "") -> None:
-    """Arm or disarm the opt-in. Never called by default."""
-    global _keep_alive, _session_name
+    """Arm or disarm the opt-in. Never called by default.
+
+    Disarming restarts the grace. The last beat on record may be hours
+    old -- a session kept overnight and resumed into a page that has not
+    reported yet -- and judging the page by it would end the kernel the
+    moment somebody switched the option off while looking at it.
+    """
+    global _keep_alive, _session_name, _last_beat
     with _lock:
+        was = _keep_alive
         _keep_alive = bool(on)
         if session_name:
             _session_name = session_name
+        if was and not _keep_alive and _last_beat is not None:
+            _last_beat = time.monotonic()
 
 
 def is_kept_alive() -> bool:
@@ -297,7 +319,7 @@ _HEARTBEAT_JS = """
   }
   function beat() {
     var el = input();
-    if (!el) return;
+    if (!el) return false;
     var proto = (el.tagName === 'TEXTAREA')
       ? window.HTMLTextAreaElement.prototype
       : window.HTMLInputElement.prototype;
@@ -307,13 +329,23 @@ _HEARTBEAT_JS = """
     else el.value = next;
     el.dispatchEvent(new Event('input', {bubbles: true}));
     el.dispatchEvent(new Event('change', {bubbles: true}));
+    return true;
   }
   if (window.__delfinHeartbeat) clearInterval(window.__delfinHeartbeat);
   window.__delfinHeartbeat = setInterval(beat, EVERY);
   document.addEventListener('visibilitychange', function () {
     if (!document.hidden) beat();
   });
-  beat();
+  // The first beat is the one that arms the watchdog, and the field it
+  // writes to renders a moment after this script runs. Waiting for the
+  // interval would leave a window closed inside its first ten seconds
+  // unbeaten -- and an unbeaten kernel is never torn down.
+  if (!beat()) {
+    var tries = 0;
+    var first = setInterval(function () {
+      if (beat() || ++tries > 120) clearInterval(first);
+    }, 250);
+  }
 })();
 """ % {"cls": _HEARTBEAT_CLASS, "every": BEAT_SECONDS}
 
@@ -413,7 +445,7 @@ def default_session_name() -> str:
 
 _STRIP_CSS = """
 <style>
-.delfin-session-strip { display:flex; align-items:center; gap:8px; }
+.delfin-session-strip { display:flex; align-items:center; gap:8px; white-space:nowrap; }
 .delfin-session-dot {
   width:8px; height:8px; border-radius:50%; display:inline-block;
   background:#c8ccd4;
@@ -469,7 +501,10 @@ def build_status_strip():
             "Rechnungen bleiben. Scroll-Positionen kommen nicht zurück."
         ),
         icon="thumb-tack",
-        layout=widgets.Layout(width="130px"),
+        # flex 0 0 auto: the header is a flex row, and a control that may
+        # shrink is one that renders twenty pixels wide the moment the
+        # row is full -- seen in a browser, clickable and unreadable.
+        layout=widgets.Layout(width="130px", flex="0 0 auto"),
     )
 
     def _on_toggle(change):
@@ -492,17 +527,35 @@ def build_status_strip():
     toggle.observe(_on_toggle, names="value")
     strip = widgets.HBox(
         [css, toggle, note],
-        layout=widgets.Layout(align_items="center", gap="8px"),
+        layout=widgets.Layout(align_items="center", gap="8px",
+                              flex="0 0 auto"),
     )
     return strip
 
 
+def _server_stdout():
+    """The server's own stdout: the terminal, or the log the launcher keeps.
+
+    A kernel's print never gets there. ipykernel captures Python-level AND
+    fd-level stdout and forwards both to the frontend as stream output,
+    which under Voila is nowhere -- a server log stayed at zero bytes
+    through two kept sessions before this was measured. The server that
+    spawned this kernel is its parent, and on Linux its stdout is a path.
+    """
+    for fd in (1, 2):
+        try:
+            return open(f"/proc/{os.getppid()}/fd/{fd}", "w",
+                        encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+    return None
+
+
 def announce(name: str = "") -> str:
-    """Print where to come back to, on the terminal that runs the server.
+    """Say where to come back to, on the terminal that runs the server.
 
     That terminal is usually inside tmux, which is exactly where somebody
-    looks tomorrow after `tmux attach`. Printing to stdout from a kernel
-    reaches the server's log, not the browser, which is the point.
+    looks tomorrow after `tmux attach`.
     """
     who = name or session_name()
     url = resume_url(who)
@@ -511,7 +564,16 @@ def announce(name: str = "") -> str:
         f"         Zurück:  {url or '(Adresse unbekannt)'}\n"
         f"         Beenden: im Dashboard, oder Ctrl+C hier"
     )
-    print(line, flush=True)
+    # Only a kernel has to reach past its own captured stdout; anywhere
+    # else -- a test, a CLI -- the parent is not the server, and print
+    # is what the caller expects to see.
+    out = _server_stdout() if kernel_id() else None
+    if out is not None:
+        with out:
+            out.write(line + "\n")
+            out.flush()
+    else:
+        print(line, flush=True)
     return line
 
 
@@ -522,7 +584,7 @@ def announce(name: str = "") -> str:
 #: Where a kept session announces itself. One small JSON file per armed
 #: session, removed when it is disarmed or the kernel ends, so the
 #: directory is also the answer to "what is running".
-RECORD_DIR = os.path.join(
+RECORD_DIR = os.environ.get("DELFIN_SESSION_RECORD_DIR") or os.path.join(
     os.path.expanduser("~"), ".delfin", "kept_sessions")
 
 
@@ -570,6 +632,7 @@ def write_record(name: str = "", *, root: str = "", kid: str = "") -> str:
             "session_name": who,
             "kernel_id": ident,
             "pid": os.getpid(),
+            "host": _hostname(),
             "started_at": time.time(),
             "request_url": _request_url(),
         }
@@ -641,16 +704,62 @@ def list_records(*, root: str = "") -> list[dict]:
 # Landing on a dashboard while another session is still running
 # ---------------------------------------------------------------------------
 
+def _hostname() -> str:
+    import socket
+
+    try:
+        return (socket.gethostname() or "").split(".")[0]
+    except Exception:
+        return ""
+
+
+def _record_is_dead(record: dict) -> bool:
+    """A record whose kernel process is gone, as far as this host can tell.
+
+    Only judged on the host that wrote it: a home directory may be shared
+    between machines, and a pid means nothing on another one. Elsewhere
+    the record is left alone and the resume itself decides.
+    """
+    host = str(record.get("host") or "")
+    if not host or host != _hostname():
+        return False
+    try:
+        pid = int(record.get("pid") or 0)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
 def other_sessions(*, root: str = "", exclude_kernel: str = "") -> list[dict]:
     """Kept sessions that are not the one being looked at.
 
     The current kernel is excluded by id rather than by name: a resume
     renders into the running kernel, so the page you are on IS the kept
     session and offering to go back to it would be a loop.
+
+    A record whose process is gone is dropped rather than offered. After
+    a machine restart every kept session is such a record, and a landing
+    page that lists them all until each is clicked away is one nobody
+    trusts.
     """
     mine = exclude_kernel or kernel_id()
-    return [r for r in list_records(root=root)
-            if str(r.get("kernel_id") or "") != mine]
+    out = []
+    for record in list_records(root=root):
+        if str(record.get("kernel_id") or "") == mine:
+            continue
+        if _record_is_dead(record):
+            drop_record(str(record.get("session_name") or ""), root=root)
+            continue
+        out.append(record)
+    return out
 
 
 def _banner_html(records: list[dict]) -> str:

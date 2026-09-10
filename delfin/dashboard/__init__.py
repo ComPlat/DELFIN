@@ -967,8 +967,12 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
                     _heartbeat,
                     _heartbeat_js,
                 ],
+                # Wrap rather than shrink: the session strip carries an
+                # address, and a row that squeezes its items renders it
+                # unreadable before it overflows.
                 layout=widgets.Layout(
                     margin='0 0 0 12px', align_items='center', gap='8px',
+                    flex_flow='row wrap',
                 ),
             ),
         ], layout=widgets.Layout(
