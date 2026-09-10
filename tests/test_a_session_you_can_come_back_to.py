@@ -286,30 +286,49 @@ def test_the_script_replaces_its_own_timer():
 # Where to come back to
 # ---------------------------------------------------------------------------
 
+_RESUME_PATH = "/voila/render/delfin_voila_runtime/delfin_resume.ipynb"
+
+
 def test_the_resume_url_keeps_host_port_and_token():
     url = S.resume_url(
         "uc3n990-ab12",
-        request_url="http://uc3n990:8866/voila/render/dash.ipynb?token=abc123")
-    assert url == "http://uc3n990:8866/delfin/resume/uc3n990-ab12?token=abc123"
+        request_url=("http://uc3n990:8866/voila/render/"
+                     "delfin_voila_runtime/delfin_dashboard.ipynb?token=abc"),
+        resume_path=_RESUME_PATH)
+    assert url == ("http://uc3n990:8866" + _RESUME_PATH
+                   + "?token=abc&session=uc3n990-ab12")
 
 
 def test_the_resume_url_is_not_the_dashboard_url():
-    """The normal address goes through Voila's renderer, which EXECUTES
-    the notebook — against a live kernel that would run everything a
-    second time instead of showing what is there."""
-    assert "/voila/render/" not in S.RESUME_PATH
-    url = S.resume_url("n", request_url="http://h:1/voila/render/d.ipynb")
-    assert "/voila/render/" not in url
+    """The dashboard's own address renders and EXECUTES the whole
+    notebook. Against a live kernel that would run all nineteen tabs a
+    second time — the opposite of coming back."""
+    url = S.resume_url(
+        "n", request_url="http://h:1/voila/render/delfin_dashboard.ipynb",
+        resume_path=_RESUME_PATH)
+    assert "delfin_dashboard.ipynb" not in url
+    assert "delfin_resume.ipynb" in url
 
 
-@pytest.mark.parametrize("name,req", [
-    ("", "http://h:1/x"),
-    ("n", ""),
-    ("n", "not a url"),
-    ("n", "///"),
+def test_a_stale_session_in_the_address_is_replaced_not_doubled():
+    """Coming back from a resume page and arming again must not leave two
+    session keys for the manager to choose between."""
+    url = S.resume_url(
+        "second", resume_path=_RESUME_PATH,
+        request_url="http://h:1/voila/render/r.ipynb?token=t&session=first")
+    assert url.count("session=") == 1
+    assert "session=second" in url
+
+
+@pytest.mark.parametrize("name,req,path", [
+    ("", "http://h:1/x", _RESUME_PATH),
+    ("n", "", _RESUME_PATH),
+    ("n", "not a url", _RESUME_PATH),
+    ("n", "///", _RESUME_PATH),
+    ("n", "http://h:1/x", ""),
 ])
-def test_an_unknown_address_is_empty_not_a_guess(name, req):
-    assert S.resume_url(name, request_url=req) == ""
+def test_an_unknown_address_is_empty_not_a_guess(name, req, path):
+    assert S.resume_url(name, request_url=req, resume_path=path) == ""
 
 
 def test_two_sessions_started_together_do_not_collide():

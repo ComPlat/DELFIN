@@ -282,11 +282,17 @@ def build_heartbeat_widget():
 # Where to come back to
 # ---------------------------------------------------------------------------
 
-#: The route a kept session is reachable at. Deliberately NOT the normal
-#: dashboard URL: that one goes through Voila's renderer, which executes
-#: the notebook — so opening it against a live kernel would run
-#: everything a second time instead of showing what is there.
-RESUME_PATH = "/delfin/resume/"
+#: The query key that names which session an address comes back to.
+#: It rides on the URL because that is the only thing the kernel manager
+#: is handed -- the request URL reaches it through the environment Voila
+#: builds for the kernel.
+SESSION_QUERY_KEY = "session"
+
+#: Set by the launcher: where the one-cell resume notebook was staged,
+#: as a path the server serves. Deliberately NOT the dashboard's own
+#: address -- that one renders and EXECUTES the full notebook, which
+#: against a live kernel would run all nineteen tabs a second time.
+RESUME_PATH_ENV = "DELFIN_RESUME_URL_PATH"
 
 
 def _request_url() -> str:
@@ -294,7 +300,8 @@ def _request_url() -> str:
     return os.environ.get("VOILA_REQUEST_URL", "")
 
 
-def resume_url(name: str = "", *, request_url: str = "") -> str:
+def resume_url(name: str = "", *, request_url: str = "",
+               resume_path: str = "") -> str:
     """The address that comes back to this session, or "" if unknown.
 
     Built from the request that started the kernel, so it carries the
@@ -303,19 +310,25 @@ def resume_url(name: str = "", *, request_url: str = "") -> str:
     looking at — it belongs in a terminal or a copy button, not in a
     ticket.
     """
-    from urllib.parse import urlsplit, urlunsplit
+    from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
     base = request_url or _request_url()
     who = name or session_name()
-    if not base or not who:
+    path = resume_path or os.environ.get(RESUME_PATH_ENV, "")
+    if not base or not who or not path:
         return ""
     try:
         parts = urlsplit(base)
         if not parts.netloc:
             return ""
+        # Keep whatever the current address carries -- the token above
+        # all -- and add the session on top, replacing any stale one.
+        query = [(k, v) for k, v in parse_qsl(parts.query)
+                 if k != SESSION_QUERY_KEY]
+        query.append((SESSION_QUERY_KEY, who))
         return urlunsplit((
-            parts.scheme or "http", parts.netloc,
-            RESUME_PATH + who, parts.query, "",
+            parts.scheme or "http", parts.netloc, path,
+            urlencode(query), "",
         ))
     except ValueError:
         return ""
