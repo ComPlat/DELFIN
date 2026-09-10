@@ -37,6 +37,7 @@ from delfin.runtime_setup import (
     resolve_orca_base,
     resolve_submit_templates_dir,
 )
+from delfin.dashboard import session as _session
 from delfin.quota import home_usage
 from delfin.user_settings import load_remote_archive_enabled, load_settings
 
@@ -925,7 +926,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         + '</div>'
     )
 
-    display(widgets.VBox([
+    _header_root = widgets.VBox([
         busy_css,
         create_page_css(),
         widgets.HBox([
@@ -949,8 +950,27 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             align_items='center', justify_content='space-between', width='100%',
         )),
         pull_delfin_output,
-    ], layout=widgets.Layout(width='100%')))
-    display(widgets.VBox([js_output, tabs]))
+    ], layout=widgets.Layout(width='100%'))
+    _body_root = widgets.VBox([js_output, tabs])
+
+    # The two roots are kept before they are shown, not after.
+    #
+    # Coming back to a session does not rebuild anything: the widget
+    # objects still exist in this kernel with every value and callback
+    # they had, so re-displaying THESE is the whole restore. Registering
+    # them here is what lets the resume path find them without knowing
+    # how the dashboard was assembled -- and it is why the work does not
+    # grow when somebody adds a twentieth tab.
+    _session.register_root(_header_root, _body_root)
+
+    # Watch the page and end this kernel when it goes, which is what
+    # happens today and stays the default. It arms on the first
+    # heartbeat and never before, so a frontend that cannot send them is
+    # not mistaken for a window that closed.
+    _session.start_watchdog()
+
+    display(_header_root)
+    display(_body_root)
 
     return ctx
 
