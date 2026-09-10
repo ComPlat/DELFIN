@@ -270,3 +270,21 @@ def test_an_input_without_output_is_no_output_yet_not_unknown(tmp_path):
     assert ci.outcome_of_folder(d).startswith("no output yet")
     e = tmp_path / "empty"; e.mkdir()
     assert ci.outcome_of_folder(e).startswith("unknown")
+
+
+def test_parse_orca_output_names_the_method_from_the_folder(tmp_path):
+    """Round 3: parse_orca_output promised functional/basis and returned
+    empty strings for a DELFIN-style output. The file's folder knows."""
+    d = tmp_path / "run"; d.mkdir()
+    out = d / "run.out"; out.write_text("FINAL SINGLE POINT ENERGY   -113.30500000\n****ORCA TERMINATED NORMALLY****\n")
+    (d / "run.inp").write_text("! B3LYP def2-TZVP Opt\n")
+    parsed = api.parse_orca_output(str(out))
+    assert parsed.functional == "B3LYP" and parsed.basis == "def2-TZVP"
+    assert parsed.final_single_point == pytest.approx(-113.305)
+
+
+def test_the_summary_table_names_the_method_of_a_run_without_output(tmp_path):
+    d = tmp_path / "queued"; d.mkdir()
+    (d / "run.inp").write_text("! PBE0 def2-SVP Opt\n")
+    rows = api.extract_calc_summary_table([str(d)])
+    assert rows[0].status == "no_output" and rows[0].functional == "PBE0" and rows[0].basis == "def2-SVP"

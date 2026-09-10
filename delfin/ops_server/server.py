@@ -248,8 +248,11 @@ def tool_parse_orca_output(path: str) -> str:
     gibbs_free_energy (Hartree), zpe (Hartree), scf_converged (bool),
     opt_converged (bool), imag_freq_count (int), walltime_s (float),
     n_atoms (int), functional (str), basis (str), error_summary (str).
-    Missing values are null. Use this BEFORE writing a Python script
-    to grep the file — one tool call replaces dozens of regexes.
+    functional/basis come from the output when it states them, else
+    from the folder (DELFIN_Data.json, CONTROL.txt, .inp) -- a DELFIN
+    run's output does not name its method. Missing values are null.
+    Use this BEFORE writing a Python script to grep the file — one
+    tool call replaces dozens of regexes.
 
     Args:
         path: absolute path to the ORCA .out file.
