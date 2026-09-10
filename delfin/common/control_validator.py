@@ -1662,10 +1662,13 @@ def _as_ics(value: Any) -> list[str] | str:
         items = [item.strip() for item in text.split(",") if item.strip()]
     normalized = []
     for item in items:
-        reason = unsupported_ic_reason(item)
-        if reason:
-            raise ValueError(f"ICs: {reason}. Supported are Sn>S0 (S1>S0, S2>S0 ...) and Tn>T1 (T2>T1 ...)")
-        normalized.append(item.upper())
+        # Only the spelling is refused here.  A transition ORCA cannot compute
+        # (S2>S1, which the old template suggested) must not stop an old
+        # CONTROL file from running: the ESD module skips it with its reason,
+        # and the dashboard names it before submission (config.get_esd_hints).
+        if not re.match(r"^[ST]\d+>[ST]\d+$", item.strip().upper()):
+            raise ValueError(f"ICs: {item!r} is not a transition like S1>S0 or T2>T1")
+        normalized.append(item.strip().upper())
     return normalized
 
 
@@ -2300,9 +2303,7 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
             validated[spec.name] = spec.default
             continue
 
-        # ICs only exist inside the ESD module.  Old templates shipped
-        # ICs=[S2>S1], which ORCA cannot compute; with ESD off that line is
-        # inert and must not stop a run, with ESD on it is refused.
+        # ICs only exist inside the ESD module; with ESD off the line is inert.
         if spec.name == "ICs" and not esd_modul_enabled:
             validated[spec.name] = spec.default
             continue
