@@ -534,10 +534,233 @@ def reset_maintenance_flag() -> None:
     _MAINTENANCE_DONE = False
 
 
+# ---------------------------------------------------------------------------
+# A run that is nobody's
+# ---------------------------------------------------------------------------
+#
+# The agent reads its own past into every prompt: the session briefing
+# quotes recent failures from ``~/.delfin/outcome_history.jsonl``, recall
+# draws on the memory stores, the provider profile carries what earlier
+# runs learned. That is right for a user. It is wrong for a benchmark
+# attempt, a probe, or a suite: those must see nothing that an earlier
+# run left, and leave nothing behind for a later one.
+#
+# Observed 2026-09-10. A benchmark task asking which of the user's
+# calculations has the lowest energy answered about "the three runs in
+# runs/" -- the wording of a DIFFERENT task, whose failed attempts sat in
+# the user's history and reached the prompt as "failure lessons". Of 179
+# records in that history, 59 were benchmark prompts verbatim and most of
+# the rest were probes; the user's own work was a handful of lines.
+#
+# The table below is every module-level sink under ``~/.delfin`` that a
+# run writes to. Each entry is resolved at import time in its module, so
+# redirecting means setting the attribute -- which is also what the test
+# suite does, per test, from this same table.
+#
+# Read-mostly stores are deliberately absent: the documentation index, the
+# model-capability cache, credentials (isolated separately) and the
+# settings files. Redirecting those would not stop a write, it would only
+# hide the real content from a run that legitimately reads it.
+
+#: ``(module, attribute, relative path under the redirected home)``.
+USER_STATE_SINKS: tuple[tuple[str, str, str], ...] = (
+    ("delfin.agent.bash_jobs", "_INDEX_PATH", "bash_jobs_index.json"),
+    # A kept dashboard session announces itself so a later request can
+    # find its kernel. A test that armed one wrote into the user's real
+    # ~/.delfin and their next landing page then offered a session that
+    # was a test fixture.
+    ("delfin.dashboard.session", "RECORD_DIR", "kept_sessions"),
+    # The benchmark's per-checkout run lock. It lived under tests/fixtures
+    # first, where the checkout-leak guard would have caught it, and the
+    # move to ~/.delfin brought it into this table's scope instead.
+    ("delfin.agent.benchmark_runner", "_RUN_LOCK_DIR", "benchmark_locks"),
+    ("delfin.agent.provider_profile", "_LOCAL_STATE_PATH",
+     "provider_profile_state.json"),
+    ("delfin.agent.job_fix", "_ATTEMPTS_PATH", "fix_attempts.json"),
+    ("delfin.agent.session_store", "_SESSIONS_DIR", "agent_sessions"),
+    ("delfin.agent.outcome_tracker", "_DEFAULT_PATH", "outcome_history.jsonl"),
+    ("delfin.agent.agent_metrics", "_LOG_PATH", "agent_metrics.jsonl"),
+    ("delfin.agent.context_tracker", "_DEFAULT_PATH", "context_usage.jsonl"),
+    ("delfin.agent.failure_log", "_LOG_PATH", "failure_log.jsonl"),
+    ("delfin.agent.eval_loop", "_REPORTS_DIR", "eval_reports"),
+    ("delfin.agent.eval_loop", "_TASK_DRAFTS_DIR", "bug_tasks"),
+    ("delfin.agent.bug_report", "_FALLBACK_DIR", "agent_bugs"),
+    ("delfin.agent.bug_report", "_TASK_DRAFTS_DIR", "bug_tasks"),
+    ("delfin.agent.benchmark", "_DEFAULT_RUNS_DIR", "benchmark_runs"),
+    ("delfin.agent.scheduler", "_DEFAULT_PATH", "cron.json"),
+    ("delfin.dashboard.schedules", "_DEFAULT_PATH", "schedules.json"),
+    ("delfin.agent.memory_store", "_DEFAULT_PATH", "agent_memory.json"),
+    ("delfin.agent.skill_registry", "_LOCAL_SKILLS_DIR", "skills"),
+    ("delfin.agent.job_monitor", "_WATCHED_PATH", "watched_jobs.json"),
+    ("delfin.agent.job_monitor", "_AGENT_WATCH_INDEX_PATH",
+     "agent_watch_index.json"),
+    ("delfin.agent.job_monitor", "_FINDINGS_PATH", "monitor_findings.jsonl"),
+    ("delfin.agent.job_monitor", "_PID_PATH", "job_monitor.pid"),
+    ("delfin.agent.bug_watcher", "_PID_PATH", "bug_watcher.pid"),
+    ("delfin.agent.scheduler_daemon", "_PID_PATH", "scheduler_daemon.pid"),
+    # The user's own settings file. A permission rule the agent persists on
+    # approval is written here, so a test exercising that path edited the
+    # real file -- and permission rules are exactly what must not be
+    # granted by accident.
+    ("delfin.agent.hooks_editor", "_USER_SETTINGS", "settings.json"),
+    ("delfin.agent.kit_settings", "USER_SETTINGS_PATH", "settings.json"),
+)
+
+#: Sinks resolved per call rather than at import: ``(module, function,
+#: relative path)``. The two project-store resolvers take the repo root
+#: and land under ``projects/<slug>/<leaf>``; the rest take no argument.
+USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = (
+    ("delfin.agent.audit_log", "_default_log_path", "audit.log"),
+    # Which directories the user has trusted to run commands. A run that
+    # granted trust must never grant it in the real store: the entry would
+    # outlive the run and let a later, real session honour a workspace's
+    # hooks and MCP servers on the strength of a fixture directory.
+    ("delfin.agent.workspace_trust", "_trust_store_path",
+     "trusted_workspaces.json"),
+    # The state-tree maintenance sweep walks these three, and its prune
+    # DELETES: pointed at the real home from inside a test run it would
+    # remove the user's archived transcripts, handoffs and bundles.
+    ("delfin.agent.session_store", "_transcript_archive_path",
+     "transcript_archive"),
+    ("delfin.agent.session_store", "_handoffs_path", "handoffs"),
+    ("delfin.agent.session_store", "_bundles_path", "bundles"),
+    ("delfin.agent.attention", "_inbox_path", "attention_inbox.jsonl"),
+    ("delfin.agent.change_journal", "_undo_root", "undo"),
+    ("delfin.agent.memory_store", "_delfin_plans_dir", "projects"),
+    ("delfin.agent.memory_store", "_delfin_memory_dir", "projects"),
+    ("delfin.agent.memory_store", "_delfin_global_memory_dir", "memory"),
+)
+
+#: The resolvers that take a repo root and add a per-project leaf.
+PROJECT_LEAVES: dict[str, str] = {
+    "_delfin_memory_dir": "memory",
+    "_delfin_plans_dir": "plans",
+}
+
+#: What a LIVE run keeps real even while everything else is redirected.
+#: A benchmark attempt runs with the user's configuration -- their
+#: settings, their provider -- it just does not run with their past. The
+#: bench's own results directory and run lock are the bench's, not the
+#: attempt's: both are written outside the guard.
+KEPT_BY_A_LIVE_RUN: frozenset[tuple[str, str]] = frozenset({
+    ("delfin.agent.hooks_editor", "_USER_SETTINGS"),
+    ("delfin.agent.kit_settings", "USER_SETTINGS_PATH"),
+    ("delfin.agent.benchmark", "_DEFAULT_RUNS_DIR"),
+    ("delfin.agent.benchmark_runner", "_RUN_LOCK_DIR"),
+})
+
+#: Set this to a directory and a ``delfin agent`` process keeps its
+#: history, memory, profile learning, sessions and logs there instead of
+#: under ``~/.delfin``. For probes and interviews driven through the CLI,
+#: which otherwise write into the user's history exactly as a benchmark
+#: attempt used to.
+SCRATCH_STATE_ENV = "DELFIN_SCRATCH_STATE"
+
+
+class RedirectedUserState:
+    """Point every writable sink at ``home/.delfin`` for the duration.
+
+    A context manager, re-entrant across separate instances: each one
+    remembers what it replaced and puts exactly that back, so a guard
+    inside a suite that already redirected restores the suite's redirect,
+    not the real home.
+
+    Nothing on disk is touched. The attributes are swapped in memory;
+    what a run writes lands under ``home`` and what it reads is whatever
+    ``home`` holds -- for a fresh directory, nothing. A process killed
+    mid-run therefore leaves the user's files as they were, which the
+    snapshot-and-restore guards this replaced could not promise.
+    """
+
+    def __init__(self, home: "Path | str", *,
+                 keep: Iterable[tuple[str, str]] = ()) -> None:
+        self.home = Path(home)
+        self.root = self.home / ".delfin"
+        self._keep = frozenset(keep)
+        self._saved: list[tuple[Any, str, Any]] = []
+        self.redirected: dict[tuple[str, str], Path] = {}
+
+    def __enter__(self) -> "RedirectedUserState":
+        import importlib
+
+        for mod_name, attr, rel in USER_STATE_SINKS:
+            if (mod_name, attr) in self._keep:
+                continue
+            try:
+                mod = importlib.import_module(mod_name)
+            except Exception:
+                continue
+            if not hasattr(mod, attr):
+                continue
+            self._saved.append((mod, attr, getattr(mod, attr)))
+            target = self.root / rel
+            setattr(mod, attr, target)
+            self.redirected[(mod_name, attr)] = target
+
+        for mod_name, attr, rel in USER_STATE_RESOLVERS:
+            if (mod_name, attr) in self._keep:
+                continue
+            try:
+                mod = importlib.import_module(mod_name)
+            except Exception:
+                continue
+            original = getattr(mod, attr, None)
+            if not callable(original):
+                continue
+            self._saved.append((mod, attr, original))
+            leaf = PROJECT_LEAVES.get(attr)
+            if leaf is not None:
+                def _resolve(repo_root, _root=self.root, _leaf=leaf):
+                    from delfin.agent.memory_store import _project_slug
+                    return (_root / "projects" / _project_slug(repo_root)
+                            / _leaf)
+            else:
+                def _resolve(_target=self.root / rel):
+                    return _target
+            setattr(mod, attr, _resolve)
+            self.redirected[(mod_name, attr)] = self.root / rel
+        return self
+
+    def __exit__(self, *exc) -> None:
+        # Reverse order, so an attribute redirected twice by mistake ends
+        # up with its first original.
+        for mod, attr, original in reversed(self._saved):
+            try:
+                setattr(mod, attr, original)
+            except Exception:
+                pass
+        self._saved = []
+
+
+def scratch_state_from_environment(
+        environ: "dict | None" = None) -> "RedirectedUserState | None":
+    """Honour :data:`SCRATCH_STATE_ENV` for the life of this process.
+
+    Returns the redirect so a caller that wants to end it can; a CLI
+    simply lets it stand. An unset or blank variable does nothing, and
+    the directory is created so the first write does not have to.
+    """
+    env = os.environ if environ is None else environ
+    raw = (env.get(SCRATCH_STATE_ENV) or "").strip()
+    if not raw:
+        return None
+    home = Path(raw).expanduser()
+    try:
+        ensure_dir(home / ".delfin")
+    except Exception:
+        pass
+    redirect = RedirectedUserState(home, keep=KEPT_BY_A_LIVE_RUN)
+    redirect.__enter__()
+    return redirect
+
+
 __all__ = [
     "DIR_MODE", "FILE_MODE",
     "DEFAULT_RETENTION_DAYS", "DEFAULT_SESSION_RETENTION_DAYS",
     "StateDir", "ensure_dir", "secure_file", "write_text", "open_append",
     "repair_tree", "prune_old", "state_dirs", "run_startup_maintenance",
     "reset_maintenance_flag",
+    "USER_STATE_SINKS", "USER_STATE_RESOLVERS", "PROJECT_LEAVES",
+    "KEPT_BY_A_LIVE_RUN", "SCRATCH_STATE_ENV", "RedirectedUserState",
+    "scratch_state_from_environment",
 ]
