@@ -18,7 +18,9 @@ browser, and the browser found three things none of them could:
                                     where there was a resurrection
 
   ending has to be asked for        exiting on our own looks like a crash,
-                                    which is what invites the restarter
+                                    which is what invites the restarter --
+                                    so the SERVER ends it now, on its own
+                                    count of windows
 
 So the checks here are about the process behind the id, not the id, and
 they run against a real Voila server with a real chromium.
@@ -188,18 +190,6 @@ def _open_dashboard(page, root: str):
     page.wait_for_selector(".delfin-session-strip", timeout=240_000)
 
 
-#: A beat is a timestamp in the hidden field. Newer than `after_ms` means
-#: THIS page wrote it, not one the widget state was carried over from.
-_BEAT_AFTER = """(afterMs) => {
-  const h = document.querySelector('.delfin-session-heartbeat');
-  const el = h && h.querySelector('input, textarea');
-  return !!(el && el.value && Number(el.value) > afterMs);
-}"""
-
-
-def _wait_for_beat(page, after_ms: float = 0.0, timeout_ms: int = 60_000):
-    page.wait_for_function(_BEAT_AFTER, arg=after_ms, timeout=timeout_ms)
-
 
 _DIAG = """() => ({
   lib: typeof window.$3Dmol,
@@ -225,11 +215,11 @@ def _expect(page, what: str, expression: str, timeout_ms: int):
             f"{what} did not come back with the page: {diag}; errors: {errors}")
 
 
-def test_the_page_beats_and_the_control_is_on_it(server):
-    """The strip and the heartbeat reach the rendered page.
+def test_the_control_is_on_the_page(server):
+    """The strip reaches the rendered page.
 
-    Both were built and neither was displayed; nothing without a browser
-    could see that.
+    It was built and not displayed once; nothing without a browser could
+    see that.
     """
     from playwright.sync_api import sync_playwright
 
@@ -240,8 +230,6 @@ def test_the_page_beats_and_the_control_is_on_it(server):
         try:
             _open_dashboard(page, root)
             assert page.locator("button", has_text="Offen halten").count() >= 1
-
-            _wait_for_beat(page)
             # The baseline for the resume case: a fresh page has the
             # scripts an Output widget carries, not only the bundle.
             _expect(page, "the agent tab's Output-carried script",
@@ -266,13 +254,8 @@ def test_a_session_nobody_kept_ends_and_stays_ended(server):
             kid = new.pop()
             pid = _wait_for_pid(kid)
             assert pid, f"no process found for kernel {kid}"
-            # The watchdog arms on the first beat. A window closed before
-            # it is one the kernel never hears about, so the first beat
-            # has to come quickly -- the script retries every 250ms
-            # rather than waiting for its 10s interval.
-            t0 = time.time()
-            _wait_for_beat(page, timeout_ms=15_000)
-            assert time.time() - t0 < 12, "the first beat waited for the interval"
+            # Nothing to arm: the server counts this window itself.
+            page.wait_for_timeout(2_000)
         finally:
             browser.close()
 
@@ -352,18 +335,11 @@ def test_a_kept_session_survives_the_window_and_comes_back(server):
                 if m.type == "error" else None)
         page._delfin_errors = errors
         try:
-            opened_ms = time.time() * 1000
             page.goto(resume, wait_until="domcontentloaded", timeout=180_000)
             page.wait_for_selector(".delfin-session-strip", timeout=240_000)
             # The control comes back armed: it is the same widget object.
             assert "Läuft weiter als" in page.locator(
                 ".delfin-session-note").last.inner_text()
-            # And the page reports in on its own. The heartbeat script
-            # rides in an Output widget that is replayed on re-display;
-            # if that replay did not run it, switching the option off
-            # here would be judged by a beat from hours ago.
-            _wait_for_beat(page, after_ms=opened_ms)
-
             # The scripts came back with the page: the library, the
             # startup scripts, and a viewer drawn from them. Before this
             # was built, a resumed page showed the box and no molecule.

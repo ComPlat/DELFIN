@@ -61,7 +61,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     """
     # -- lazy imports (keep dashboard importable without ipywidgets) --------
     import ipywidgets as widgets
-    from IPython.display import Javascript, clear_output, display
+    from IPython.display import clear_output, display
 
     from .constants import DEFAULT_CONTROL, ONLY_GOAT_TEMPLATE
     from .context import DashboardContext
@@ -926,19 +926,10 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         + '</div>'
     )
 
-    # The session control, and the beat it depends on.
-    #
-    # The strip sits in the header beside the other controls that change
-    # what the dashboard IS rather than what it shows. The heartbeat is
-    # a hidden field plus the script that writes to it; both have to be
-    # DISPLAYED, because a page that never reports in is indistinguishable
-    # from a window that closed -- and a watchdog that never hears a first
-    # beat never arms, so the default teardown would not happen either.
+    # The session control. It sits in the header beside the other
+    # controls that change what the dashboard IS rather than what it
+    # shows, so a kept session is never invisible.
     _session_strip = _session.build_status_strip()
-    _heartbeat = _session.build_heartbeat_widget()
-    _heartbeat_js = widgets.Output()
-    with _heartbeat_js:
-        display(Javascript(_session.heartbeat_js()))
 
     # Landing while another session is still running.
     #
@@ -964,8 +955,6 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
                     pull_delfin_btn,
                     rollback_delfin_btn,
                     _session_strip,
-                    _heartbeat,
-                    _heartbeat_js,
                 ],
                 # Wrap rather than shrink: the session strip carries an
                 # address, and a row that squeezes its items renders it
@@ -998,12 +987,6 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     # bootstraps once sent -- is collected on ctx and handed to a resume
     # to run ahead of the roots.
     _session.register_bootstrap(ctx.resume_bootstrap_js, before=_body_root)
-
-    # Watch the page and end this kernel when it goes, which is what
-    # happens today and stays the default. It arms on the first
-    # heartbeat and never before, so a frontend that cannot send them is
-    # not mistaken for a window that closed.
-    _session.start_watchdog()
 
     display(_header_root)
     display(_body_root)

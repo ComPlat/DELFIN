@@ -814,6 +814,10 @@ def main(argv=None):
         f"--ServerApp.jpserver_extensions={_extensions}",
         *(["--ServerApp.kernel_manager_class="
            + kernel_manager_class] if kernel_manager_class else []),
+        # A kernel whose last window closed is ended by the server after
+        # a grace, unless the session was kept. The flags switch the
+        # culler on; the rule itself lives in the kernel manager above.
+        *(_resume.cull_config_args() if kernel_manager_class else []),
         f"--port={args.port}",
         f"--ServerApp.ip={args.ip}",
         f"--ServerApp.root_dir={root_dir}",

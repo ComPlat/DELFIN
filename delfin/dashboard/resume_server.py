@@ -26,11 +26,70 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import parse_qs, quote, urlsplit
 
 from delfin.dashboard import session as _session
+
+
+# ---------------------------------------------------------------------------
+# Ending a kernel nobody is looking at
+# ---------------------------------------------------------------------------
+#
+# The server counts the websocket connections to every kernel it runs. A
+# dashboard whose last window closed has zero, and that is the whole
+# signal: no script in the page, no heartbeat to miss, no restarter to
+# fool -- the server shuts the kernel down itself, the way it would for
+# any other reason. Keeping a session is the one exemption, read from
+# the record the page wrote when the option was switched on.
+
+#: How long a kernel may go without a window before it is ended. The
+#: connection drops the instant a tab is closed, so this is entirely
+#: about a reload: the new page has to connect before the old kernel is
+#: taken away, or every reload would look like a departure.
+GRACE_SECONDS = 90.0
+
+#: A kernel that has never had a window is a page still loading. The
+#: dashboard takes a while to build; give it longer than a reload.
+NEVER_CONNECTED_SECONDS = 600.0
+
+#: How often the server looks. Bounds how late a teardown is.
+POLL_SECONDS = 10
+
+GRACE_ENV = "DELFIN_SESSION_GRACE_SECONDS"
+
+
+def grace_seconds(default: float = GRACE_SECONDS) -> float:
+    """The grace, with an environment override for a suite that has to
+    wait it out for real."""
+    try:
+        value = float(os.environ.get(GRACE_ENV, ""))
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+def cull_config_args(grace: Optional[float] = None) -> list[str]:
+    """The server flags that switch the culler on.
+
+    The culler runs only when cull_idle_timeout is positive; the value
+    itself is not what decides here -- the override below is -- but it
+    has to be set, and setting it to the grace keeps the server's own
+    log lines truthful.
+    """
+    seconds = max(1, int(round(grace if grace is not None else grace_seconds())))
+    return [
+        f"--MappingKernelManager.cull_idle_timeout={seconds}",
+        f"--MappingKernelManager.cull_interval={POLL_SECONDS}",
+        "--MappingKernelManager.cull_connected=False",
+    ]
+
+
+def kept_kernel_ids(*, root: str = "") -> set[str]:
+    """Every kernel a record says is kept."""
+    return {str(r.get("kernel_id") or "") for r in _session.list_records(root=root)}
 
 
 #: The query key that marks a request as a resume, and names which
@@ -162,7 +221,76 @@ def resume_kernel_manager_class(base: type) -> type:
             existing = await self._delfin_existing(kwargs.get("env"))
             if existing:
                 return existing
-            return await super().start_kernel(*args, **kwargs)
+            kid = await super().start_kernel(*args, **kwargs)
+            # Unwatched from birth until a window connects. Timed from
+            # here so a page that never manages to connect is not kept
+            # for the life of the server.
+            self._delfin_unwatched()[kid] = (time.monotonic(), False)
+            return kid
+
+        # -- who is looking ------------------------------------------------
+
+        def _delfin_unwatched(self) -> dict:
+            """kernel id -> (since, had_a_window)."""
+            store = getattr(self, "_delfin_unwatched_since", None)
+            if store is None:
+                store = {}
+                self._delfin_unwatched_since = store
+            return store
+
+        def notify_connect(self, kernel_id):
+            super().notify_connect(kernel_id)
+            self._delfin_unwatched().pop(kernel_id, None)
+
+        def notify_disconnect(self, kernel_id):
+            super().notify_disconnect(kernel_id)
+            try:
+                left = int(self._kernel_connections.get(kernel_id, 0))
+            except Exception:
+                left = 0
+            if left <= 0:
+                self._delfin_unwatched()[kernel_id] = (time.monotonic(), True)
+
+        def _delfin_seconds_unwatched(self, kernel_id) -> Optional[tuple]:
+            """(seconds, had_a_window), or None while a window is there."""
+            entry = self._delfin_unwatched().get(kernel_id)
+            if entry is None:
+                return None
+            since, had_window = entry
+            return (time.monotonic() - since, had_window)
+
+        # -- the decision ---------------------------------------------------
+
+        async def cull_kernel_if_idle(self, kernel_id):
+            """End a kernel that has had no window for the grace, unless
+            it is kept. Replaces the server's idle rule outright: a
+            dashboard kernel is idle while its agent works in a thread
+            and busy with widget traffic while nobody watches, so
+            activity says nothing here. Windows do.
+            """
+            state = self._delfin_seconds_unwatched(kernel_id)
+            if state is None:
+                return
+            seconds, had_window = state
+            allowed = grace_seconds() if had_window else NEVER_CONNECTED_SECONDS
+            if seconds <= allowed:
+                return
+            if kernel_id in kept_kernel_ids():
+                return
+            self.log.info(
+                "Ending kernel %s: no window for %ds and not kept.",
+                kernel_id, int(seconds))
+            await self.shutdown_kernel(kernel_id)
+
+        async def shutdown_kernel(self, kernel_id, *args: Any, **kwargs: Any):
+            # Whatever ends the kernel -- this rule, Ctrl+C, a DELETE --
+            # the record must not outlive it, or the landing page offers
+            # a session that is gone.
+            for record in _session.list_records():
+                if str(record.get("kernel_id") or "") == str(kernel_id):
+                    _session.drop_record(str(record.get("session_name") or ""))
+            self._delfin_unwatched().pop(kernel_id, None)
+            return await super().shutdown_kernel(kernel_id, *args, **kwargs)
 
     ResumeAwareKernelManager.__name__ = f"ResumeAware{base.__name__}"
     return ResumeAwareKernelManager
