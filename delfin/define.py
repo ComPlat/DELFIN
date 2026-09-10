@@ -168,12 +168,13 @@ deltaSCF_SOSCFMaxStep=0.1
 ---------------------------------
 TDDFT Settings:
 ----------
-TDDFT_TDDFT_maxiter=500
 TDDFT_nroots=15
-TDDFT_maxdim=30
+TDDFT_maxdim=auto
+TDDFT_maxiter=500
 TDDFT_TDA=TRUE
 TDDFT_followiroot=true
 TDDFT_SOC=false
+TDDFT_additions=
 ------------------------------------------------------
 Level of Theory:
 ----------

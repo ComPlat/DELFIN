@@ -204,7 +204,10 @@ def test_classic_config_tddft_block_preserved(classic_config):
     setting here maps to a kwarg on that block."""
     assert classic_config.get("TDDFT_nroots") == 15
     assert classic_config.get("TDDFT_maxdim") == 30
-    assert classic_config.get("TDDFT_TDDFT_maxiter") == 500
+    # This file still says TDDFT_TDDFT_maxiter, the spelling the template
+    # shipped and no job read; it is an alias of TDDFT_maxiter now.
+    assert classic_config.get("TDDFT_maxiter") == 500
+    assert "TDDFT_TDDFT_maxiter" not in classic_config
     # Boolean-ish keys survive as strings (case-sensitive ORCA input)
     assert str(classic_config.get("TDDFT_TDA")).upper() == "FALSE"
     assert classic_config.get("TDDFT_followiroot") == "true"

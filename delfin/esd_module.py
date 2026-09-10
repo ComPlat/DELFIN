@@ -14,6 +14,7 @@ import threading
 
 from delfin.common.logging import get_logger
 from delfin.common.paths import ensure_relative_link
+from delfin.common.tddft_settings import tddft_block
 from delfin import smart_recalc
 from delfin.esd_input_generator import (
     create_fluor_input,
@@ -1037,10 +1038,6 @@ def _create_s0_tddft_check_input(
     implicit_solvation = config.get('implicit_solvation_model', '')
     pal = config.get("PAL", 12)
     maxcore = config.get("maxcore", 6000)
-    nroots = config.get('ESD_nroots', 15)
-    tda_flag = str(config.get('TDA', 'TRUE')).upper()
-    esd_maxdim = config.get('ESD_maxdim', None)
-    maxdim = esd_maxdim if esd_maxdim is not None else max(5, int(nroots / 2))
 
     main_basis, _metal_basis, rel_token, aux_jk = resolve_level_of_theory(
         metals, config, main_basisset, metal_basisset
@@ -1068,15 +1065,7 @@ def _create_s0_tddft_check_input(
         f.write('%base "S0_TDDFT"\n')
         f.write(f"%pal nprocs {pal} end\n")
         f.write(f"%maxcore {maxcore}\n")
-        f.write("\n%tddft\n")
-        f.write(f"  nroots {nroots}\n")
-        f.write(f"  maxdim {maxdim}\n")
-        f.write(f"  tda {tda_flag}\n")
-        tddft_maxiter = config.get('ESD_TDDFT_maxiter')
-        if tddft_maxiter is not None:
-            f.write(f"  maxiter {tddft_maxiter}\n")
-        f.write("  triplets true\n")
-        f.write("end\n")
+        f.write("\n" + tddft_block(config, triplets=True) + "\n")
         f.write("\n")
         f.write(f"* xyzfile {charge} 1 S0.xyz\n")
 

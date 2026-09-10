@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from delfin.common.logging import get_logger
+from delfin.common.tddft_settings import ORCA_DEFAULT_MAXDIM
 
 logger = get_logger(__name__)
 
@@ -843,9 +844,11 @@ class RecoveryStrategy:
                 "scf_block": {"Convergence": "TightSCF"},
             }
         # Last resort: TDA plus a larger Davidson subspace and more
-        # iterations, for roots that are merely hard to converge.
+        # iterations, for roots that are merely hard to converge.  MaxDim is
+        # a multiplier of NRoots in ORCA, so twice ORCA's own 10 is already
+        # a large space; the 50 this used to set meant 750 vectors at 15 roots.
         return {
-            "tddft_block": {"tda": "true", "maxdim": 50, "maxiter": 1000},
+            "tddft_block": {"tda": "true", "maxdim": 2 * ORCA_DEFAULT_MAXDIM, "maxiter": 1000},
             "scf_block": {"Convergence": "TightSCF"},
             "reduce_pal": 0.5,
         }

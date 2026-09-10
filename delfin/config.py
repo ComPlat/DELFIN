@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from delfin.common.control_validator import validate_control_config
+from delfin.common.tddft_settings import maxdim_hint
 from delfin.occupier_sequences import remove_existing_sequence_blocks
 from delfin.define import TEMPLATE as CONTROL_TEMPLATE
 
@@ -124,6 +125,24 @@ _CONTROL_KEY_ALIASES: Dict[str, str] = {
     # XTB_preOPT is the name the CONTROL file shows; XTB_OPT is what the
     # workflow code has always called it, so the new spelling maps onto the old.
     "xtbpreopt": "XTB_OPT",
+    # TD-DFT has one spelling per setting.  TDDFT_TDDFT_maxiter is what the
+    # template shipped for years and no job ever read; the ESD_ names are
+    # older than the TDDFT section.  The canonical names are listed too, so
+    # that tddft_nroots and TDDFT_NROOTS mean TDDFT_nroots instead of nothing.
+    "tddftnroots": "TDDFT_nroots",
+    "tddftmaxdim": "TDDFT_maxdim",
+    "tddftmaxiter": "TDDFT_maxiter",
+    "tddfttda": "TDDFT_TDA",
+    "tddftfollowiroot": "TDDFT_followiroot",
+    "tddftsoc": "TDDFT_SOC",
+    "tddftadditions": "TDDFT_additions",
+    "tddfttddftmaxiter": "TDDFT_maxiter",
+    "esdtddftmaxiter": "TDDFT_maxiter",
+    "esdnroots": "TDDFT_nroots",
+    "esdmaxdim": "TDDFT_maxdim",
+    "esdtda": "TDDFT_TDA",
+    "esdfollowiroot": "TDDFT_followiroot",
+    "esdsoc": "TDDFT_SOC",
 }
 _COLON_ASSIGNMENT_KEYS: Set[str] = {"co2_coordination", "co2_species_delta"}
 _STRING_ONLY_KEYS: Set[str] = {"smiles"}
@@ -820,6 +839,12 @@ def get_esd_hints(control_text: str) -> List[str]:
                     f"ICs={trans!r}: different-spin transition (S→T or T→S) — "
                     f"did you mean ISCs={trans}? ICs connect same spin states (S→S, T→T)"
                 )
+
+    # An explicit MaxDim outside ORCA's range usually means the old reading
+    # of it as an absolute size (the template shipped 30).
+    maxdim_note = maxdim_hint(config)
+    if maxdim_note:
+        hints.append(maxdim_note)
 
     return hints
 
