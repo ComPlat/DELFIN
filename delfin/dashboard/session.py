@@ -406,6 +406,13 @@ def build_status_strip():
         on = bool(change.get("new"))
         name = session_name() or default_session_name()
         keep_alive(on, session_name=name)
+        # The record is what a later request follows back to this kernel,
+        # and disarming has to remove it: a landing page that offers a
+        # session which is gone is worse than one that offers nothing.
+        if on:
+            write_record(name)
+        else:
+            drop_record(name)
         note.value = _strip_html(on, name, resume_url(name) if on else "")
         if on:
             announce(name)
@@ -434,3 +441,113 @@ def announce(name: str = "") -> str:
     )
     print(line, flush=True)
     return line
+
+
+# ---------------------------------------------------------------------------
+# The record the server reads to find this kernel again
+# ---------------------------------------------------------------------------
+
+#: Where a kept session announces itself. One small JSON file per armed
+#: session, removed when it is disarmed or the kernel ends, so the
+#: directory is also the answer to "what is running".
+RECORD_DIR = os.path.join(
+    os.path.expanduser("~"), ".delfin", "kept_sessions")
+
+
+def kernel_id() -> str:
+    """This kernel's id, as the server knows it.
+
+    Taken from the connection file ipykernel was started with —
+    ``.../kernel-<id>.json`` — because a kernel is not told its own id
+    any other way, and the server's registry is keyed on exactly that.
+    Empty outside a kernel, which is every test and every CLI call.
+    """
+    try:
+        from ipykernel.connect import get_connection_file
+
+        stem = os.path.basename(str(get_connection_file() or ""))
+    except Exception:
+        return ""
+    if not stem.startswith("kernel-") or not stem.endswith(".json"):
+        return ""
+    return stem[len("kernel-"):-len(".json")]
+
+
+def record_path(name: str, *, root: str = "") -> str:
+    return os.path.join(root or RECORD_DIR, f"{name}.json")
+
+
+def write_record(name: str = "", *, root: str = "", kid: str = "") -> str:
+    """Announce this session so a later request can find it.
+
+    Returns the path written, or "" when there is nothing to announce —
+    outside a kernel there is no id, and a record without one would send
+    the server looking for a kernel that does not exist.
+    """
+    import json
+
+    who = name or session_name()
+    ident = kid or kernel_id()
+    if not who or not ident:
+        return ""
+    directory = root or RECORD_DIR
+    try:
+        os.makedirs(directory, exist_ok=True)
+        path = record_path(who, root=directory)
+        payload = {
+            "session_name": who,
+            "kernel_id": ident,
+            "pid": os.getpid(),
+            "started_at": time.time(),
+            "request_url": _request_url(),
+        }
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=1)
+        os.replace(tmp, path)
+        os.chmod(path, 0o600)
+        return path
+    except OSError:
+        return ""
+
+
+def drop_record(name: str = "", *, root: str = "") -> bool:
+    """Take the announcement back. Disarming must leave nothing behind,
+    or the landing page offers a session that is gone."""
+    who = name or session_name()
+    if not who:
+        return False
+    try:
+        os.remove(record_path(who, root=root))
+        return True
+    except OSError:
+        return False
+
+
+def list_records(*, root: str = "") -> list[dict]:
+    """Every announced session, newest first.
+
+    The landing page and the settings list are built from this, which is
+    why a stale or unreadable file is skipped rather than raised: one bad
+    record must not hide the others.
+    """
+    import json
+
+    directory = root or RECORD_DIR
+    out: list[dict] = []
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError:
+        return out
+    for entry in names:
+        if not entry.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(directory, entry), encoding="utf-8") as h:
+                data = json.load(h)
+        except (OSError, ValueError):
+            continue
+        if data.get("session_name") and data.get("kernel_id"):
+            out.append(data)
+    out.sort(key=lambda d: float(d.get("started_at") or 0), reverse=True)
+    return out
