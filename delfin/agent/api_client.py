@@ -13678,6 +13678,39 @@ class _DocToolExecutor:
         env.setdefault("LC_ALL", "C.UTF-8")
         env.setdefault("LANG", "C.UTF-8")
 
+        # What the command is about to overwrite.
+        #
+        # `echo x > f` and `cat > f` run unattended in default mode, and
+        # they left NO pre-image: undo_changes could not take them back
+        # and list_changes_made did not report them, so a file the agent
+        # replaced through the shell was simply gone. Every other tool
+        # that writes journals what it replaced -- write_file, edit_file,
+        # apply_patch, the office builders -- and the refusal for a
+        # heredoc-fed redirect names that as the reason to use write_file
+        # instead. It should not be the reason a plain redirect is
+        # unrecoverable.
+        #
+        # Read as raw bytes: a decoded pre-image stores errors="replace"
+        # damage that the revert then writes into the user's file. The
+        # journal caps and marks anything over 2 MB itself.
+        _pre_shell: "dict[Path, Optional[bytes]]" = {}
+        try:
+            for _tok in _bash_write_targets(cmd):
+                _t = Path(_tok)
+                _tp = _t if _t.is_absolute() else Path(run_cwd) / _t
+                try:
+                    _tp = _tp.resolve()
+                except OSError:
+                    continue
+                if _tp in _pre_shell:
+                    continue
+                try:
+                    _pre_shell[_tp] = _tp.read_bytes() if _tp.is_file() else None
+                except OSError:
+                    _pre_shell[_tp] = None
+        except Exception:
+            _pre_shell = {}
+
         t0 = time.monotonic()
         try:
             proc = subprocess.run(
@@ -13699,6 +13732,26 @@ class _DocToolExecutor:
             return json.dumps({"error": f"command failed to start: {exc}"})
 
         elapsed = time.monotonic() - t0
+
+        # ...and what it actually changed. Only files whose bytes really
+        # moved: a redirect that the command never reached, or one whose
+        # content came out identical, is not a change and journalling it
+        # would put noise in the one report that answers "what did you
+        # do".
+        for _tp, _pre in _pre_shell.items():
+            try:
+                _post = _tp.read_bytes() if _tp.is_file() else None
+            except OSError:
+                continue
+            if _post == _pre:
+                continue
+            if _post is None:
+                if _pre is not None:
+                    self._capture_raw_change(
+                        "bash", _tp, _pre, perms, deleted=True)
+                continue
+            self._capture_raw_change("bash", _tp, _pre, perms)
+
         out = proc.stdout or ""
         err = proc.stderr or ""
         cap = perms.max_output_chars
