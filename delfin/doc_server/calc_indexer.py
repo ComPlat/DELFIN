@@ -212,6 +212,11 @@ def outcome_of_folder(d) -> str:
         if status in ("failed", "error", "crashed"):
             return f"failed per {name} (no exit code file)"
         break
+    # An input with no output and no log: not started, or running on a
+    # machine that writes no log here. Either way it is not "unknown"
+    # in the sense of "nothing to go on" -- there is an input waiting.
+    if any(d.glob("*.inp")) and not any(d.glob("*.out")):
+        return "no output yet (input present; not started or still running)"
     return _outcome_of(completed, exit_code)
 
 

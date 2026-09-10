@@ -240,5 +240,33 @@ def test_the_small_archive_no_longer_contradicts_itself(tmp_path):
     assert running == [] or running == ["calc_d"], running
     rows = {Path(r["folder"]).name: r for r in api.extract_energy_table(
         [str(p) for p in sorted((tmp_path / "calc_archive" / "calc").iterdir())], properties=["single_point"])}
-    assert rows["calc_d"]["outcome"].startswith(("running", "unknown"))
+    assert rows["calc_d"]["outcome"].startswith(("running", "no output yet")), rows["calc_d"]["outcome"]
     assert all(r["outcome"].startswith("finished per DELFIN_Data.json") for n, r in rows.items() if n != "calc_d"), rows
+
+
+# ---------------------------------------------------------------------------
+# GLM, as the operator, added two
+# ---------------------------------------------------------------------------
+
+def test_a_sort_key_nobody_has_falls_back_and_says_so(tmp_path):
+    """sort_by=gibbs over a single-point archive sorted silently by
+    something else. Now it sorts by what is there and every row says which."""
+    a = _run(tmp_path, "a", "PBE0", "def2-SVP", -113.20)
+    b = _run(tmp_path, "b", "PBE0", "def2-SVP", -113.30)
+    # strip the Gibbs line so only single points exist
+    for d in (a, b):
+        f = Path(d) / "run.out"; f.write_text("\n".join(l for l in f.read_text().splitlines() if "Gibbs" not in l) + "\n")
+    rows = api.compare_across_functionals([a, b], include_imag=False, sort_by="gibbs")
+    ok = [r for r in rows if r.status == "ok"]
+    if len(ok) < 2:
+        pytest.skip("parser did not read the fixture")
+    assert all(r.sorted_by == "single_point" for r in ok)
+    assert [Path(r.folder).name for r in ok] == ["b", "a"], "ordered by the key it fell back to"
+
+
+def test_an_input_without_output_is_no_output_yet_not_unknown(tmp_path):
+    from delfin.doc_server import calc_indexer as ci
+    d = tmp_path / "queued"; d.mkdir(); (d / "run.inp").write_text("! PBE0 def2-SVP\n")
+    assert ci.outcome_of_folder(d).startswith("no output yet")
+    e = tmp_path / "empty"; e.mkdir()
+    assert ci.outcome_of_folder(e).startswith("unknown")

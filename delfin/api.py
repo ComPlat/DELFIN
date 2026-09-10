@@ -1780,6 +1780,7 @@ class FunctionalComparisonRow:
     is_minimum: bool | None
     status: str  # "ok" / "no_output" / "missing" / parse-error
     method: str | None = None   # "PBE0/def2-SVP": comparable only within
+    sorted_by: str | None = None  # the key the order actually used
 
 
 def compare_across_functionals(
@@ -1844,6 +1845,17 @@ def compare_across_functionals(
 
     sort_field = sort_by.strip().lower()
     if sort_field in ("gibbs", "single_point", "zpe"):
+        # A sort key nobody has is not a sort. sort_by=gibbs is the
+        # default, and a single-point archive has no Gibbs energy at all
+        # -- the rows came back in a silent order that read as one. Fall
+        # back to the energy that IS there, and say so on every row.
+        if all(getattr(r, sort_field) is None for r in rows):
+            for alt in ("single_point", "gibbs", "zpe"):
+                if any(getattr(r, alt) is not None for r in rows):
+                    sort_field = alt
+                    break
+        for r in rows:
+            r.sorted_by = sort_field
         # Within a method, by the energy; between methods, by name and
         # never by energy. A flat sort by gibbs put the functional with
         # the lowest absolute energies first and handed that order to
