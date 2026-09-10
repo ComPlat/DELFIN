@@ -169,12 +169,19 @@ def test_watching_an_unknown_bash_job_is_refused(tmp_path):
 
 
 def test_bash_kill_and_watch_job_agree_about_an_unknown_id(tmp_path):
-    """They disagreed: one refused, the other answered 'watching'."""
+    """They disagreed: one refused, the other answered 'watching'.
+
+    They now agree on the WORDING too. bash_kill used to report the
+    refusal as {"status": "error", "message": ...} while every sibling
+    says {"error": ...}, so a caller testing for an "error" key -- what
+    the rest of the surface teaches -- read a failed kill as a success.
+    See test_one_tool_spelled_failure_differently.py.
+    """
     perms = _perms(tmp_path, "watch")
     ex = _DocToolExecutor()
     killed = json.loads(ex.execute("bash_kill", {"job_id": "nope"}, perms))
     watched = json.loads(ex.execute("watch_job", {"job_id": "nope"}, perms))
-    assert killed.get("status") == "error"
+    assert "error" in killed
     assert "error" in watched
 
 

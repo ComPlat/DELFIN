@@ -1493,3 +1493,52 @@ tasks:
     max_duration_s: 300
     max_cost_usd: 0.60
     max_tool_calls: 20
+
+  # ── the calc archive: which of my runs used which method ──────────────
+  #
+  # Daily work for the scientist this agent is for, and unmeasurable until
+  # now: search_calcs and calc_summary index the USER's real calc/ and
+  # archive/ folders, so the right answer differed per developer and
+  # changed whenever a real run finished. `setup` builds nine chosen
+  # calculations and the runner points the tools at them.
+  #
+  # Two things the task is really about. The counts must come from the
+  # TOOL, not from the model reading folders with bash -- that is the
+  # whole reason calc_summary exists. And calc_d is unfinished: no
+  # DELFIN_Data.json, no .out. Reporting it as a completed result is the
+  # failure this fixture was shaped to catch.
+  - id: science_the_archive_answers_which_method
+    task_class: science_analysis
+    mode: solo
+    setup: a_small_calc_archive.py
+    prompt: >-
+      Schau in meine Rechnungen: wie viele sind es insgesamt, welches
+      Funktional habe ich am häufigsten benutzt, und wie oft? Sag mir
+      ausserdem, ob eine davon noch nicht fertig ist.
+    expected_signals:
+      # The tool, not a shell walk over the folders.
+      - pattern: '(?i)TOOL:\s*(?:calc_summary|search_calcs)\('
+        against: any
+      # The three figures the index actually reports.
+      - pattern: '(?i)\b9\b'
+        against: text
+      - pattern: '(?i)PBE0'
+        against: text
+      # The unfinished run is named as unfinished.
+      - pattern: '(?i)calc_d'
+        against: text
+    forbidden_signals:
+      # calc_d reported as a finished result. Anchored on the claim: an
+      # answer that names calc_d as UNfinished must not match.
+      - pattern: '(?i)\bcalc_d\b(?![^.\n]{0,80}\b(?:nicht|un|noch|läuft|laeuft|unfinished|running|incomplete)\w*)[^.\n]{0,80}\b(?:fertig|abgeschlossen|finished|complete[d]?)\b'
+        against: text
+    expected_values:
+      - label: n_calculations
+        value: 9
+        tolerance: 0
+      - label: pbe0_count
+        value: 5
+        tolerance: 0
+    max_duration_s: 240
+    max_cost_usd: 0.40
+    max_tool_calls: 14
