@@ -142,6 +142,9 @@ def test_the_counts_still_match_what_was_measured():
             counts["science"] += 1
         else:
             counts["other"] += 1
+    # science 10 -> 11 on 2026-09-10: three_runs_to_audit. Its setup
+    # writes three run folders under runs/ in the task's own workspace,
+    # which the guard installs and removes; nothing reaches the checkout.
     # generic_project 8 -> 13 on 2026-09-08. Three plan-permission tasks
     # and two memory read-back tasks joined the class. None of the five is
     # expected to WRITE — they test that plan mode ends at the gate, and
@@ -198,7 +201,7 @@ def test_the_counts_still_match_what_was_measured():
     # of each answers it wrongly with near-certainty; its setup builds two
     # variants whose runtimes are drawn from the same distribution.
     assert counts == {"office": 13, "behavior": 12, "generic_project": 15,
-                      "science": 10, "other": 48}, counts
+                      "science": 11, "other": 48}, counts
 
 
 # ---------------------------------------------------------------------------

@@ -1762,3 +1762,49 @@ tasks:
     max_duration_s: 360
     max_cost_usd: 0.50
     max_tool_calls: 20
+
+  # ── science: three independent audits, one answer ───────────────────────
+  # The shape `orchestrate` exists for -- every folder is its own audit and
+  # nothing in one depends on another -- and, before this task, no
+  # benchmark ever asked for it (0 calls in 2509 recorded runs). Scored on
+  # the ANSWER: each run's state, stated correctly. Whether the model
+  # reached for orchestrate is a bonus signal, read by the A/B.
+  - id: science_three_runs_are_audited_independently
+    task_class: science_analysis
+    mode: solo
+    setup: three_runs_to_audit.py
+    prompt: >-
+      Unter runs/ liegen drei Rechnungen. Prüfe jede für sich, unabhängig
+      voneinander, und gib mir danach eine gemeinsame Übersicht: welche ist
+      fertig und brauchbar, welche ist gescheitert und woran, welche läuft
+      noch.
+    expected_signals:
+      # The one that finished: named as finished, with its energy read.
+      - pattern: '(?i)succeeded'
+        against: text
+      - pattern: '-613\.417'
+        against: text
+      # The one that failed: named as failed, and WHY -- the SCF.
+      - pattern: '(?i)failed'
+        against: text
+      - pattern: '(?i)(SCF|nicht konvergiert|not converged|Konvergenz)'
+        against: text
+      # The one still going: named as unfinished.
+      - pattern: '(?i)running'
+        against: text
+      - pattern: '(?i)(l(ä|ae)uft noch|noch nicht (fertig|abgeschlossen|beendet)|unvollst(ä|ae)ndig|kein Exit-?Code|still running|in progress)'
+        against: text
+      # The bonus: a plan with a parallel stage and a synthesis.
+      - pattern: '(?i)TOOL:\s*orchestrate\('
+        against: any
+        optional: true
+    forbidden_signals:
+      # "completed: true" read as a result. The failed run has an exit-code
+      # file, so the index calls it completed; the answer must not.
+      - pattern: '(?i)alle drei (rechnungen |l(ä|ae)ufe )?(sind |waren )?(fertig|erfolgreich|abgeschlossen|konvergiert)'
+        against: text
+      - pattern: '(?i)failed[^.\n]{0,60}(erfolgreich|konvergiert ist|ist fertig|abgeschlossen und brauchbar)'
+        against: text
+    max_duration_s: 900
+    max_cost_usd: 1.00
+    max_tool_calls: 30
