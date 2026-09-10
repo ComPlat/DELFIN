@@ -1484,17 +1484,26 @@ def cmd_bench(args: argparse.Namespace) -> int:
                   f"{result.duration_s:>5.1f}s",
                   flush=True)
 
-    results = _br.run_suite(
-        tasks,
-        model=model,
-        backend=backend,
-        provider=provider,
-        profile_name=profile_name,
-        max_tokens=max_tokens,
-        repeats=repeats,
-        progress=_progress,
-        on_replicate=_on_rep if repeats > 1 else None,
-    )
+    try:
+        results = _br.run_suite(
+            tasks,
+            model=model,
+            backend=backend,
+            provider=provider,
+            profile_name=profile_name,
+            max_tokens=max_tokens,
+            repeats=repeats,
+            progress=_progress,
+            on_replicate=_on_rep if repeats > 1 else None,
+        )
+    except _br.BenchmarkRunInProgress as exc:
+        # The lock's message already names the holder and the two ways
+        # out. It was reaching the caller as a twenty-line traceback with
+        # the sentence at the bottom, which is where a queued script's
+        # log buries it -- three arms of an A/B died this way and the
+        # output read as a crash rather than as a queue.
+        print(f"\nbenchmark not started: {exc}", file=sys.stderr)
+        return 3
     path = _bm.write_run(results, model=model)
     s = _bm.summarise_run(results)
     print(f"\n{s['n_pass']}/{s['n_tasks']} passed "
