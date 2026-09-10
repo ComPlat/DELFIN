@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import subprocess
 import tempfile
@@ -150,4 +149,9 @@ def test_exit_worktree_missing_path():
         "exit_worktree", {"path": "/no/such/dir"}, permissions=perms,
     )
     payload = json.loads(out)
-    assert "error" in payload
+    # Not an error since 2026-09-10: the tool's job is that the worktree no
+    # longer exists, and a clean worktree_merge removes it before exit is
+    # ever called. The answer says nothing was there to tear down.
+    assert "error" not in payload
+    assert payload["status"] == "ok" and payload["removed"] is False
+    assert "nothing to tear down" in payload["note"]

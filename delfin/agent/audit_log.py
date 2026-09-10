@@ -347,6 +347,15 @@ def _read_all_records(
     return out, consulted
 
 
+def _same_dir(a: str, b: str) -> bool:
+    """The same directory, whatever spelling each side used."""
+    try:
+        return os.path.normcase(os.path.realpath(os.path.expanduser(a))) == \
+            os.path.normcase(os.path.realpath(os.path.expanduser(b)))
+    except Exception:
+        return False
+
+
 def _under_workspace(target: str, workspace: str) -> bool:
     """True unless ``target`` is an absolute path outside ``workspace``.
 
@@ -472,9 +481,20 @@ def build_changes_report(
                     if str(rec.get("ts", "")) < str(since_ts):
                         continue
                 if workspace:
-                    target = str(rec.get("path", "") or rec.get("cwd", ""))
-                    if not _under_workspace(target, str(workspace)):
-                        continue
+                    # A record that names its workspace is judged by it,
+                    # exactly. Only records from before that field existed
+                    # fall back to the path test below -- which cannot
+                    # tell a relative path of ours from another
+                    # workspace's, and let a benchmark's commands into a
+                    # probe's report as its own.
+                    tagged = str(rec.get("workspace", "") or "")
+                    if tagged:
+                        if not _same_dir(tagged, str(workspace)):
+                            continue
+                    else:
+                        target = str(rec.get("path", "") or rec.get("cwd", ""))
+                        if not _under_workspace(target, str(workspace)):
+                            continue
                 out.append(rec)
             return out
 
