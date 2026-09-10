@@ -488,3 +488,66 @@ def test_the_dashboard_shows_it_above_everything_else():
     assert "_session.build_returning_banner()" in src
     assert "([_returning] if _returning else [])" in src, (
         "no running session must not leave an empty box in the header")
+
+
+def _header_root_segment() -> str:
+    """The header the dashboard actually puts on the page, as source."""
+    import ast
+    import inspect
+
+    from delfin import dashboard as d
+
+    src = inspect.getsource(d.create_dashboard)
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "_header_root"
+            for t in node.targets
+        ):
+            return ast.get_source_segment(src, node.value) or ""
+    raise AssertionError("create_dashboard no longer builds a _header_root")
+
+
+def test_the_control_that_keeps_a_session_is_on_the_page():
+    """Built, tested, and never mounted — which a unit test cannot see.
+
+    The module had the strip, the hidden field and the script, and every
+    one of them had a test. The dashboard displayed none of them, so a
+    browser got a page with no way to arm a session at all. Reaching the
+    page is a property of the assembler, so it is pinned here.
+    """
+    import re
+
+    header = _header_root_segment()
+    assert "_session_strip" in header, (
+        "the session strip is built but not in the header the dashboard shows"
+    )
+    assert re.search(r"\b_heartbeat\b", header), (
+        "the heartbeat field is not displayed; a page that cannot beat "
+        "reads as a window that closed"
+    )
+    assert re.search(r"\b_heartbeat_js\b", header), (
+        "the heartbeat script is not sent, so nothing writes to the field"
+    )
+
+
+def test_the_dashboard_builds_all_three_pieces():
+    src = _dashboard_source()
+    for call in (
+        "_session.build_status_strip()",
+        "_session.build_heartbeat_widget()",
+        "_session.heartbeat_js()",
+    ):
+        assert call in src, f"create_dashboard never calls {call}"
+
+
+def test_the_heartbeat_script_is_not_sent_through_run_js():
+    """``ctx.run_js`` clears its output before writing.
+
+    The beat has to keep running for the life of the page, so it gets an
+    Output of its own; sending it through the shared one would let the
+    next startup script wipe it.
+    """
+    src = _dashboard_source()
+    assert "run_js(_session.heartbeat_js" not in src
+    assert "display(Javascript(_session.heartbeat_js()))" in src

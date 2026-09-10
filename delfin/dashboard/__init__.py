@@ -61,7 +61,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     """
     # -- lazy imports (keep dashboard importable without ipywidgets) --------
     import ipywidgets as widgets
-    from IPython.display import clear_output, display
+    from IPython.display import Javascript, clear_output, display
 
     from .constants import DEFAULT_CONTROL, ONLY_GOAT_TEMPLATE
     from .context import DashboardContext
@@ -926,6 +926,20 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         + '</div>'
     )
 
+    # The session control, and the beat it depends on.
+    #
+    # The strip sits in the header beside the other controls that change
+    # what the dashboard IS rather than what it shows. The heartbeat is
+    # a hidden field plus the script that writes to it; both have to be
+    # DISPLAYED, because a page that never reports in is indistinguishable
+    # from a window that closed -- and a watchdog that never hears a first
+    # beat never arms, so the default teardown would not happen either.
+    _session_strip = _session.build_status_strip()
+    _heartbeat = _session.build_heartbeat_widget()
+    _heartbeat_js = widgets.Output()
+    with _heartbeat_js:
+        display(Javascript(_session.heartbeat_js()))
+
     # Landing while another session is still running.
     #
     # Offered where people actually land rather than behind a route of
@@ -949,6 +963,9 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
                     switch_branch_btn,
                     pull_delfin_btn,
                     rollback_delfin_btn,
+                    _session_strip,
+                    _heartbeat,
+                    _heartbeat_js,
                 ],
                 layout=widgets.Layout(
                     margin='0 0 0 12px', align_items='center', gap='8px',
