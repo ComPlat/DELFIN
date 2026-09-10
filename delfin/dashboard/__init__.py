@@ -37,6 +37,7 @@ from delfin.runtime_setup import (
     resolve_orca_base,
     resolve_submit_templates_dir,
 )
+from delfin.dashboard import session as _session
 from delfin.quota import home_usage
 from delfin.user_settings import load_remote_archive_enabled, load_settings
 
@@ -60,7 +61,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     """
     # -- lazy imports (keep dashboard importable without ipywidgets) --------
     import ipywidgets as widgets
-    from IPython.display import clear_output, display
+    from IPython.display import Javascript, clear_output, display
 
     from .constants import DEFAULT_CONTROL, ONLY_GOAT_TEMPLATE
     from .context import DashboardContext
@@ -925,7 +926,29 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         + '</div>'
     )
 
-    display(widgets.VBox([
+    # The session control, and the beat it depends on.
+    #
+    # The strip sits in the header beside the other controls that change
+    # what the dashboard IS rather than what it shows. The heartbeat is
+    # a hidden field plus the script that writes to it; both have to be
+    # DISPLAYED, because a page that never reports in is indistinguishable
+    # from a window that closed -- and a watchdog that never hears a first
+    # beat never arms, so the default teardown would not happen either.
+    _session_strip = _session.build_status_strip()
+    _heartbeat = _session.build_heartbeat_widget()
+    _heartbeat_js = widgets.Output()
+    with _heartbeat_js:
+        display(Javascript(_session.heartbeat_js()))
+
+    # Landing while another session is still running.
+    #
+    # Offered where people actually land rather than behind a route of
+    # its own: they open the address they always open, and it tells them.
+    # Excluded by kernel id, so a resume -- which renders INTO the kept
+    # kernel -- never offers to go back to the page you are on.
+    _returning = _session.build_returning_banner()
+
+    _header_root = widgets.VBox(([_returning] if _returning else []) + [
         busy_css,
         create_page_css(),
         widgets.HBox([
@@ -940,17 +963,43 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
                     switch_branch_btn,
                     pull_delfin_btn,
                     rollback_delfin_btn,
+                    _session_strip,
+                    _heartbeat,
+                    _heartbeat_js,
                 ],
+                # Wrap rather than shrink: the session strip carries an
+                # address, and a row that squeezes its items renders it
+                # unreadable before it overflows.
                 layout=widgets.Layout(
                     margin='0 0 0 12px', align_items='center', gap='8px',
+                    flex_flow='row wrap',
                 ),
             ),
         ], layout=widgets.Layout(
             align_items='center', justify_content='space-between', width='100%',
         )),
         pull_delfin_output,
-    ], layout=widgets.Layout(width='100%')))
-    display(widgets.VBox([js_output, tabs]))
+    ], layout=widgets.Layout(width='100%'))
+    _body_root = widgets.VBox([js_output, tabs])
+
+    # The two roots are kept before they are shown, not after.
+    #
+    # Coming back to a session does not rebuild anything: the widget
+    # objects still exist in this kernel with every value and callback
+    # they had, so re-displaying THESE is the whole restore. Registering
+    # them here is what lets the resume path find them without knowing
+    # how the dashboard was assembled -- and it is why the work does not
+    # grow when somebody adds a twentieth tab.
+    _session.register_root(_header_root, _body_root)
+
+    # Watch the page and end this kernel when it goes, which is what
+    # happens today and stays the default. It arms on the first
+    # heartbeat and never before, so a frontend that cannot send them is
+    # not mistaken for a window that closed.
+    _session.start_watchdog()
+
+    display(_header_root)
+    display(_body_root)
 
     return ctx
 
