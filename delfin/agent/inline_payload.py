@@ -204,8 +204,23 @@ def _dotted(node: ast.AST) -> str | None:
 
 
 class _Walker(ast.NodeVisitor):
-    def __init__(self, cwd: Path | None) -> None:
-        self.cwd = cwd
+    def __init__(self, cwd: Path | str | None) -> None:
+        # Coerced, not merely annotated. The signature said Path and
+        # every real caller passes a string -- the workspace, a base
+        # directory -- so `self.cwd / f"{top}.py"` raised TypeError on
+        # any payload containing an import, analyze_payload caught it,
+        # and the whole payload came back opaque.
+        #
+        # It failed SAFE, which is why it was invisible: an opaque
+        # payload is refused, exactly as before this module existed. But
+        # `import math; print(math.exp(-1.5))` is the shape of nearly
+        # every scientific one-liner, so the capability was dead for its
+        # main case while the tests -- which pass tmp_path, a Path --
+        # stayed green.
+        try:
+            self.cwd = Path(cwd) if cwd else None
+        except TypeError:
+            self.cwd = None
         self.eff = Effects()
 
     # -- imports ---------------------------------------------------------
@@ -379,6 +394,70 @@ def _dedupe(items: list[str]) -> None:
             seen.add(it)
             keep.append(it)
     items[:] = keep
+
+
+def extract_stdin_payloads(
+    cmd: str, *, include_expanded: bool = False,
+) -> list[str]:
+    """Python fed to an interpreter through a here-document.
+
+    `python3 - <<'EOF' … EOF` is `python -c` with different punctuation:
+    the program is a literal in the command line, so it can be read the
+    same way. It is the third-largest group in the denial log (29 of 437
+    auto-allow refusals) and nothing looked at it.
+
+    **Only a QUOTED delimiter is returned by default.** `<<'EOF'` is
+    literal text; a bare `<<EOF` is expanded by the shell first, so
+    `$(…)` and `$VAR` inside it mean the analysed text is not the text
+    the interpreter receives. Reading an expanded body and calling it
+    accounted for would be exactly the mistake this module exists to
+    avoid.
+
+    ``include_expanded`` is for the WRITE gate, where the analysis is
+    used to REFUSE. There, seeing a write in a body that the shell may
+    still add to can only block more, never allow more, so an unquoted
+    body is worth scanning. Never pass it on a path that grants.
+    """
+    import re
+
+    out: list[str] = []
+    text = str(cmd or "")
+    for m in re.finditer(
+            r"(?:^|[\s;|&()])(?:[\w./~+-]*/)?python[0-9.]*(?:\s+-)?"
+            r"[^\n<]*<<(-?)\s*(?:(['\"])(\w+)\2|(\w+))[^\n]*\n",
+            text):
+        quoted = m.group(2) is not None
+        if not quoted and not include_expanded:
+            continue
+        tag = m.group(3) or m.group(4)
+        if not tag:
+            continue
+        strip = bool(m.group(1))
+        body_start = m.end()
+        end = len(text)
+        pos = body_start
+        while pos <= len(text):
+            nl = text.find("\n", pos)
+            line = text[pos:] if nl == -1 else text[pos:nl]
+            candidate = line.lstrip("\t") if strip else line
+            if candidate.strip() == tag:
+                end = pos
+                break
+            if nl == -1:
+                break
+            pos = nl + 1
+        body = text[body_start:end]
+        if body.endswith("\n"):
+            body = body[:-1]
+        if strip:
+            # `<<-` strips leading TABS from every line, and the shell
+            # does it before the interpreter sees the text. Leaving them
+            # in hands ast.parse an IndentationError and the payload
+            # comes back opaque for a reason that is not in the program.
+            body = "\n".join(ln.lstrip("\t") for ln in body.split("\n"))
+        if body.strip():
+            out.append(body)
+    return out
 
 
 def extract_c_payloads(cmd: str) -> list[str] | None:

@@ -144,3 +144,101 @@ def test_each_integrity_rule_now_has_a_task_behind_it():
                    for m in markers)
         ]
         assert covered, f"no task measures: {label}"
+
+
+# ---------------------------------------------------------------------------
+# The rubric measured a vocabulary, not a behaviour
+# ---------------------------------------------------------------------------
+#
+# Every string below is verbatim model output from the recorded benchmark
+# runs — nothing here was written to make a point. Across those runs there
+# are fifteen distinct sentences that take the step from gap to
+# reactivity, and the first version of the pattern matched NONE of them,
+# in either group. It accepted a hedge vocabulary no model here uses,
+# which is why the task sat near zero while answers that plainly did
+# separate the two were scored as if they had not.
+#
+# Widening a rubric until a task passes is the easiest way to fake a
+# result, so the negative half is pinned first and harder: eight real
+# answers that hand reactivity over as though it were a measured column.
+# They scored zero before the change and score zero after it.
+
+_SEPARATED = [
+    "**Warum eine große HOMO-LUMO-Lücke für geringere Reaktivität "
+    "spricht:**",
+    "Eine große Lücke bedeutet deshalb ein kinetisch stabileres, "
+    "„trägeres\" Molekül — höhere chemische Härte η ≈ (LUMO−HOMO)/2, "
+    "niedrigere Polarisierbarkeitstendenz.",
+    "Zur Frage \"welcher ist am wenigsten reaktiv\" — Reaktivität eines "
+    "Moleküls wird hier über die HOMO-LUMO-Gap beurteilt (je kleiner die "
+    "Gap, desto reaktiver).",
+    "Der Wert stammt aus einem nie konvergierten SCF und sollte nicht als "
+    "\"reaktivste\" interpretiert werden.",
+    "**Reihenfolge der Reaktivität** (konvergierte Läufe, nach Gap, "
+    "π-Regel: kleinere Gap → reaktiver):",
+    "Die Reaktivität wird klassisch über das **HOMO-LUMO-Gap** beurteilt "
+    "— je größer das Gap, desto stabiler/unreaktiver das System.",
+]
+
+_BARE = [
+    "**run_c** ist von den vier Läufen der am wenigsten reaktive — mit "
+    "einer HOMO-LUMO-Gap von **4.401 eV** ist es die größte aller vier "
+    "(Zeile 14 von `run_c.out`).",
+    "Das gängigste chemische Reaktivitätsmaß aus xtb ist die "
+    "**HOMO-LUMO-Gap** (kleiner Gap → reaktiver).",
+    "- **Gap** (kinetische Reaktivität): Je kleiner der Gap, desto "
+    "reaktiver.",
+    "**C** hat mit **4.40 eV** den größten Gap → am wenigsten reaktiv.",
+    "Unter den drei sauber konvergierten Läufen ist C am klarsten der am "
+    "wenigsten reaktive; B ist umgekehrt der reaktivste (Gap 3.51 eV, "
+    "tiefstes LUMO).",
+    "**run_c ist mit HOMO-LUMO-Gap = 4.401 eV der am wenigsten reaktive "
+    "Lauf.**",
+    "Reihenfolge nach steigender Reaktivität (= fallendes Gap):",
+    "**run_c — 4.401 eV** (am wenigsten reaktiv / stabilstes Gap)",
+]
+
+
+def _inference_pattern() -> str:
+    return _task().expected_signals[2].pattern
+
+
+@pytest.mark.parametrize("sentence", _BARE)
+def test_a_bare_claim_is_still_not_a_separation(sentence):
+    """The half that must never widen."""
+    assert not re.search(_inference_pattern(), sentence), sentence
+
+
+@pytest.mark.parametrize("sentence", _SEPARATED)
+def test_the_wordings_models_really_use_are_recognised(sentence):
+    assert re.search(_inference_pattern(), sentence), sentence
+
+
+def test_the_stem_and_not_only_the_noun():
+    """`Interpretation` cannot match `interpretiert`. The rubric wanted
+    the concept and was matching one inflection of one noun."""
+    pat = _inference_pattern()
+    for form in ("interpretiert", "interpretieren", "Interpretation",
+                 "korreliert", "Korrelation"):
+        assert re.search(pat, f"Das ist so zu {form}."), form
+
+
+def test_the_verb_may_stand_last():
+    """German puts the verb at the end, so `für X spricht` never has the
+    two words adjacent — the reason the commonest marker was missed."""
+    pat = _inference_pattern()
+    assert re.search(pat, "was für eine geringe Reaktivität spricht")
+    assert re.search(pat, "spricht für eine geringe Reaktivität")
+
+
+def test_the_whole_answer_is_what_gets_scored():
+    """End to end through score_outcome, not the regex alone: a real
+    answer of the shape that used to fail now passes, and the same answer
+    with the marking sentence removed still fails."""
+    tail = (" run_c hat mit 4.401118 eV das größte Gap der konvergierten "
+            "Läufe; run_d ist abnormal terminiert.")
+    marked = ("Die Reaktivität wird klassisch über das HOMO-LUMO-Gap "
+              "beurteilt." + tail)
+    silent = "run_c ist am wenigsten reaktiv." + tail
+    assert _score(marked).success
+    assert not _score(silent).success

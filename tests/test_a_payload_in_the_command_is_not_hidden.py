@@ -216,3 +216,86 @@ def test_nothing_raises_on_junk():
     for junk in ("", None, "\x00\x01", "def f(:", "x" * 20000):
         analyze_payload(junk)           # type: ignore[arg-type]
         extract_c_payloads(junk)        # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
+# The analyser crashed on every payload that imports anything
+# ---------------------------------------------------------------------------
+#
+# `_Walker.__init__` annotated its argument `Path | None` and stored it
+# unchanged. Every real caller passes a STRING — the workspace, a base
+# directory — so `self.cwd / f"{top}.py"` raised TypeError the moment a
+# payload contained an import. `analyze_payload` caught it and returned
+# the whole payload as opaque.
+#
+# It failed SAFE, which is why nothing showed: an opaque payload is
+# refused, exactly as before this module existed. But
+# `import math; print(math.exp(-1.5))` is the shape of nearly every
+# scientific one-liner, so the capability was dead for its main case
+# while these tests stayed green — they pass `tmp_path`, which is a
+# Path. Measured against a day of the audit log: 19 of 30 refused
+# `python` commands carried an inline payload.
+#
+# Both directions are pinned: a stdlib import must now be transparent,
+# and `os` / `subprocess` must still be opaque. A coercion bug that had
+# quietly made everything opaque would otherwise look like caution.
+
+import pytest as _pytest
+
+from pathlib import Path
+
+from delfin.agent import inline_payload as _ip
+
+
+@_pytest.mark.parametrize("cwd_kind", ["str", "path", "none"])
+def test_a_stdlib_import_is_transparent_whatever_the_cwd_type(tmp_path, cwd_kind):
+    cwd = {"str": str(tmp_path), "path": tmp_path, "none": None}[cwd_kind]
+    eff = _ip.analyze_payload("import math; print(math.exp(-1.5))", cwd)
+    assert not eff.opaque, eff.opaque
+    assert not eff.writes
+
+
+@_pytest.mark.parametrize("source", [
+    "import math\nprint(math.sqrt(2))",
+    "from math import exp; print(exp(-1.5))",
+    "import json; print(json.dumps({'a': 1}))",
+    "import statistics as st; print(st.mean([1, 2, 3]))",
+])
+def test_the_shapes_a_one_liner_really_takes(tmp_path, source):
+    eff = _ip.analyze_payload(source, str(tmp_path))
+    assert not eff.opaque, (source, eff.opaque)
+    assert not eff.writes
+
+
+@_pytest.mark.parametrize("source,expected", [
+    ("import os, csv, math", "imports os"),
+    ("import subprocess; subprocess.run(['ls'])", "imports subprocess"),
+    ("import shutil; shutil.rmtree('/x')", "imports shutil"),
+])
+def test_what_was_opaque_before_is_opaque_still(tmp_path, source, expected):
+    """The half that must not widen. A coercion bug that made everything
+    opaque would otherwise be indistinguishable from caution."""
+    eff = _ip.analyze_payload(source, str(tmp_path))
+    assert any(expected in o for o in eff.opaque), (source, eff.opaque)
+
+
+def test_a_local_module_is_still_resolved_from_a_string_cwd(tmp_path):
+    """The reason cwd exists at all: an import of a file in the working
+    directory runs that file, and the caller has to get it to scan."""
+    (tmp_path / "helper.py").write_text("x = 1\n")
+    eff = _ip.analyze_payload("import helper; print(helper.x)", str(tmp_path))
+    assert not eff.opaque, eff.opaque
+    assert [Path(m).name for m in eff.local_modules] == ["helper.py"]
+
+
+def test_a_write_is_still_seen_through_an_import(tmp_path):
+    eff = _ip.analyze_payload(
+        "import math\nopen('out.txt', 'w').write(str(math.pi))", str(tmp_path))
+    assert "out.txt" in list(eff.writes), eff.writes
+
+
+def test_a_nonsense_cwd_does_not_raise(tmp_path):
+    """Never raises is part of the contract — analyze_payload says so."""
+    for cwd in (b"bytes", 42, object()):
+        eff = _ip.analyze_payload("import math; print(math.pi)", cwd)
+        assert isinstance(eff.opaque, list)
