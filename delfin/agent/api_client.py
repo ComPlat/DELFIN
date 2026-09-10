@@ -10374,6 +10374,14 @@ class _DocToolExecutor:
 
         self._capture_binary_change("draft_email", target, None, perms)
         result["path"] = self._display_path(target, perms)
+        # Every other tool that answers "a file now exists" opens with
+        # status:ok -- create_docx, create_pdf, merge_pdfs, split_pdf,
+        # fill_docx_template, fill_pdf_form. This one answered with the
+        # recipients and a note, so a caller asking the family's question
+        # read a written draft as a failure. It is not a surface-wide
+        # convention (most read tools carry no status and should not),
+        # but within this family it is unanimous.
+        result.setdefault("status", "ok")
         return json.dumps(result, ensure_ascii=False)
 
     def _execute_create_docx(
