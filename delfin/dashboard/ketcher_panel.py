@@ -449,6 +449,9 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
                 return
             open_text(got['text'], got['name'])
             return
+        # What came out of the editor is the newest drawing there is; keep
+        # it so a resumed page can be given the drawing as it was last read.
+        state['last_drawing'] = payload
         outcome = _ketcher.smiles_from_drawing(payload)
         if not outcome['ok']:
             _say(outcome['status'], '#d32f2f')
@@ -476,6 +479,9 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
                  'it.  Press FETCH KETCHER first.', '#d32f2f')
             return False
         _send(_wire(), _ketcher.load_js(frame_selector, body))
+        # The drawing lives inside the frame, and a frame in a new window
+        # is an empty one. This is what a resumed page is given back.
+        state['last_drawing'] = body
         _say(f'{name or "The drawing"} is in the editor.', '#2e7d32')
         return True
 
@@ -580,6 +586,21 @@ def build(ctx, *, height: str = '72vh', scope: str = 'delfin-ketcher-tab',
         ]))
     except Exception:                                   # noqa: BLE001
         pass
+
+    # A resumed page gets the frame back as HTML, and the editor inside
+    # it starts empty. The last drawing this panel put in or read out is
+    # loaded again once the frame is there; load_js waits for it.
+    # Edits made after the last read are not known here and are lost --
+    # the drawing is the editor's, not the kernel's.
+    def _restore_drawing() -> None:
+        body = state.get('last_drawing')
+        if not body or not _show_frame():
+            return
+        _send(_wire(), _ketcher.load_js(frame_selector, body))
+
+    register = getattr(ctx, 'on_resume', None)
+    if callable(register):
+        register(_restore_drawing)
     if ready:
         version = _ketcher.installed_version()
         _say(f'Ketcher {version}: draw it, keep it, open it again.')

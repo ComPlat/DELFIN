@@ -46,6 +46,13 @@ _REPO = Path(__file__).resolve().parents[1]
 #: Short enough that a test can wait it out, long enough that a slow
 #: render is not mistaken for a window that closed.
 _GRACE = 10.0
+
+_WATER = """3
+water
+O  0.000  0.000  0.117
+H  0.000  0.757 -0.469
+H  0.000 -0.757 -0.469
+"""
 _TOKEN = "delfin-browser-session-test-token"
 
 
@@ -194,6 +201,30 @@ def _wait_for_beat(page, after_ms: float = 0.0, timeout_ms: int = 60_000):
     page.wait_for_function(_BEAT_AFTER, arg=after_ms, timeout=timeout_ms)
 
 
+_DIAG = """() => ({
+  lib: typeof window.$3Dmol,
+  chatScroll: window.__delfinChatScroll,
+  agentKeys: window.__delfinAgentKeys,
+  canvases: document.querySelectorAll('.submit-mol-output canvas').length,
+  previewText: (document.querySelector('.submit-mol-output') || {}).innerText,
+  scripts: document.querySelectorAll('.jp-OutputArea script, .widget-output script').length,
+  outputs: document.querySelectorAll('.jp-OutputArea-output').length,
+})"""
+
+
+def _expect(page, what: str, expression: str, timeout_ms: int):
+    """Wait for *expression*; on timeout say what the page looks like."""
+    from playwright.sync_api import TimeoutError as _Timeout
+
+    try:
+        page.wait_for_function(f"() => {expression}", timeout=timeout_ms)
+    except _Timeout:
+        diag = page.evaluate(_DIAG)
+        errors = [e[:300] for e in getattr(page, "_delfin_errors", [])[:8]]
+        raise AssertionError(
+            f"{what} did not come back with the page: {diag}; errors: {errors}")
+
+
 def test_the_page_beats_and_the_control_is_on_it(server):
     """The strip and the heartbeat reach the rendered page.
 
@@ -211,6 +242,10 @@ def test_the_page_beats_and_the_control_is_on_it(server):
             assert page.locator("button", has_text="Offen halten").count() >= 1
 
             _wait_for_beat(page)
+            # The baseline for the resume case: a fresh page has the
+            # scripts an Output widget carries, not only the bundle.
+            _expect(page, "the agent tab's Output-carried script",
+                    "window.__delfinChatScroll === true", 60_000)
         finally:
             browser.close()
 
@@ -270,6 +305,14 @@ def test_a_kept_session_survives_the_window_and_comes_back(server):
             pid = _wait_for_pid(kid)
             assert pid
 
+            # Something on the page that only script can draw: a
+            # structure in the Submit preview. The widgets come back by
+            # themselves; the viewer is JavaScript and has to be given
+            # its library and its bootstrap again.
+            box = page.locator("textarea[placeholder^='Paste XYZ']").first
+            box.fill(_WATER)
+            page.wait_for_selector(".submit-mol-output canvas", timeout=90_000)
+
             page.locator("button", has_text="Offen halten").first.click()
             page.wait_for_selector("text=Läuft weiter als", timeout=60_000)
             note = page.locator(".delfin-session-note").last.inner_text()
@@ -303,6 +346,11 @@ def test_a_kept_session_survives_the_window_and_comes_back(server):
         listed_before_resume = {k["id"] for k in _kernels(root)}
         browser = p.chromium.launch(headless=True)
         page = browser.new_page()
+        errors: list = []
+        page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
+        page.on("console", lambda m: errors.append(f"console.{m.type}: {m.text}")
+                if m.type == "error" else None)
+        page._delfin_errors = errors
         try:
             opened_ms = time.time() * 1000
             page.goto(resume, wait_until="domcontentloaded", timeout=180_000)
@@ -315,6 +363,17 @@ def test_a_kept_session_survives_the_window_and_comes_back(server):
             # if that replay did not run it, switching the option off
             # here would be judged by a beat from hours ago.
             _wait_for_beat(page, after_ms=opened_ms)
+
+            # The scripts came back with the page: the library, the
+            # startup scripts, and a viewer drawn from them. Before this
+            # was built, a resumed page showed the box and no molecule.
+            _expect(page, "the 3Dmol library",
+                    "typeof window.$3Dmol !== 'undefined'", 60_000)
+            _expect(page, "the agent tab's startup script",
+                    "window.__delfinChatScroll === true", 60_000)
+            _expect(page, "a viewer drawn in the Submit preview",
+                    "!!document.querySelector('.submit-mol-output canvas')", 90_000)
+            assert page.locator("textarea[placeholder^='Paste XYZ']").first.input_value().strip() == _WATER.strip()
         finally:
             browser.close()
 
