@@ -165,6 +165,18 @@ def _to_float(text: Optional[str]) -> Optional[float]:
         return None
 
 
+def _short_number(value: float) -> str:
+    """A figure written the way it would be read back.
+
+    Only for the diagnostic note beside a "wrong" verdict, so trailing
+    zeros are noise: 6.4 is a version string and 6.400000 is not more
+    informative about that.
+    """
+    if value == int(value) and abs(value) < 1e15:
+        return str(int(value))
+    return f"{value:.6g}"
+
+
 def numbers_in(text: str) -> tuple[float, ...]:
     """Every value any number in *text* could denote."""
     seen: list[float] = []
@@ -216,11 +228,43 @@ class ExpectedValue:
         capture what it said -- and ``wrong`` means it did state figures
         and none of them is this one. The first is usually ours to fix,
         the second is the model's.
+
+        The caveat is in ``nearest_to``: the tokeniser is deliberately
+        permissive, so "wrong" can be reached by a version string or a
+        file count. Read the verdict with the figures beside it.
         """
         candidates = numbers_in(text)
         if not candidates:
             return "absent"
         return "matched" if any(self.matches(c) for c in candidates) else "wrong"
+
+    def nearest_to(self, text: str, limit: int = 3) -> tuple[float, ...]:
+        """The figures in *text* closest to this one, nearest first.
+
+        A "wrong" verdict claimed the model stated a figure and got it
+        wrong. It could not support that claim: ``numbers_in`` is
+        permissive on purpose -- the safety argument in ``readings_of``
+        holds for "did the expected figure appear", where reading a token
+        both ways can only fail to catch a wrong answer -- and so a
+        version number, a percentage, a file count or a line number all
+        arrive as figures the model supposedly offered. An answer reading
+        "the Gibbs energy is not in the file; xtb 6.4.1 does not write
+        one" was reported as having stated the wrong energy.
+
+        Narrowing the tokeniser would trade a misleading label for a
+        missed match, which is the worse error and the one the comparison
+        was built to avoid. Drawing a line by magnitude only looks
+        principled: 4 is nearer to 25 than one decade, so the file count
+        would still qualify.
+
+        So the verdict is left as it is and the evidence is put next to
+        it. ``wrong (saw -25.18)`` and ``wrong (saw 4, 6.4)`` are two
+        different repairs, and neither needs a trace read to tell them
+        apart.
+        """
+        candidates = numbers_in(text)
+        ordered = sorted(candidates, key=lambda c: abs(c - self.value))
+        return tuple(ordered[:max(0, int(limit))])
 
 
 @dataclass(frozen=True)
@@ -1276,8 +1320,18 @@ def score_outcome(
         if verdict == "matched":
             matched.append(label)
         else:
+            # "wrong" on its own overstates what the harness knows -- see
+            # ExpectedValue.nearest_to. The figures go beside it so the
+            # reader can see whether the model answered badly or did not
+            # answer at all.
+            note = f":{verdict}"
+            if verdict == "wrong":
+                saw = expected.nearest_to(haystack)
+                if saw:
+                    note += " (saw " + ", ".join(
+                        _short_number(v) for v in saw) + ")"
             missing.append(label + (":optional" if expected.optional
-                                    else f":{verdict}"))
+                                    else note))
             if not expected.optional:
                 success_required_ok = False
 
