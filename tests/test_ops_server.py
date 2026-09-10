@@ -1058,7 +1058,7 @@ def test_tool_extract_delfin_json_missing(tmp_path):
     folder = tmp_path / "calc"
     folder.mkdir()
     data = json.loads(ops_server.tool_extract_delfin_json(str(folder)))
-    assert data["error"] == "DELFIN_data.json not found"
+    assert data["error"] == "DELFIN_Data.json not found"
 
 
 def test_tool_extract_delfin_json_malformed(tmp_path):

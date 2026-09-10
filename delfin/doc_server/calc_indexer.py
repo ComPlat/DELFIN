@@ -184,8 +184,35 @@ def completion_of(d) -> tuple:
 
 
 def outcome_of_folder(d) -> str:
-    """The outcome phrase for a folder, in one call."""
-    return _outcome_of(*completion_of(d))
+    """The outcome phrase for a folder, in one call.
+
+    When neither an exit-code file nor a run log exists, the pipeline
+    state file still may: a status of running / finished there is
+    evidence, and "unknown" beside a file that says "finished" was the
+    answer a model called misleading.
+    """
+    import json as _json
+    from pathlib import Path as _P
+    completed, exit_code = completion_of(d)
+    if completed is not None:
+        return _outcome_of(completed, exit_code)
+    d = _P(d)
+    for name in ("DELFIN_Data.json", "DELFIN_data.json"):
+        f = d / name
+        if not f.is_file():
+            continue
+        try:
+            status = str((_json.loads(f.read_text(encoding="utf-8")) or {}).get("status") or "").strip().lower()
+        except Exception:
+            break
+        if status in ("running", "active", "started", "in_progress"):
+            return f"running per {name} (no exit code yet)"
+        if status in ("finished", "completed", "done", "ok", "success"):
+            return f"finished per {name} (no exit code file)"
+        if status in ("failed", "error", "crashed"):
+            return f"failed per {name} (no exit code file)"
+        break
+    return _outcome_of(completed, exit_code)
 
 
 def method_of_folder(d) -> tuple:
@@ -300,7 +327,7 @@ def _extract_from_control_txt(text: str) -> dict[str, Any]:
 
 _KNOWN_FUNCTIONALS = {
     "hf", "rhf", "uhf",
-    "b3lyp", "pbe", "pbe0", "bp86", "tpss", "m06", "m06-2x", "m06-l",
+    "b3lyp", "pbe", "pbe0", "bp86", "tpss", "tpssh", "m06", "m06-2x", "m06-l",
     "cam-b3lyp", "wb97x", "wb97x-d3", "wb97x-d3bj", "wb97x-v",
     "wb97m-v", "wb97m-d3bj", "wb97x-3c",
     "b2plyp", "ri-b2plyp", "dlpno-ccsd(t)", "ccsd(t)",

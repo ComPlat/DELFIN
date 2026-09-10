@@ -1419,7 +1419,7 @@ def tool_extract_vibrational_modes(folder: str) -> str:
 
 
 def tool_extract_delfin_json(folder: str) -> str:
-    """Read the structured DELFIN_data.json pipeline state.
+    """Read the structured DELFIN_Data.json pipeline state.
 
     Returns workflow_stages, per-stage energies + timings, total
     cost (USD), and raw_keys (for schema-version discovery).
