@@ -616,8 +616,9 @@ DELFIN is configured via `CONTROL.txt` in your working directory. Key settings i
   * `states = S0,S1,T1,T2`
   * `ISCs = S1>T1,...` / `ICs = S1>S0,...`
 * `IMAG = yes | no` (imaginary frequency elimination)
-  * `IMAG_scope = initial | all`
-  * `allow_imaginary_freq = N`
+  * `IMAG_scope = all | initial` (default `all`: every redox step too)
+  * `allow_imaginary_freq = -50` (cm⁻¹, ≤ 0: smaller imaginary modes are numerical noise)
+  * `IMAG_max_rounds = 2` (each round is one frequency calculation)
 
 ### Error Recovery
 * `enable_auto_recovery = yes | no` (intelligent ORCA error recovery with MOREAD)
