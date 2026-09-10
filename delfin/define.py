@@ -33,7 +33,7 @@ multiplicity_global_opt=
 Imaginary mode elimination:
 ----------
 IMAG=yes
-IMAG_scope=initial
+IMAG_scope=all
 IMAG_option=2
 allow_imaginary_freq=0
 IMAG_sp_energy_window=1e-5

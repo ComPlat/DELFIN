@@ -281,3 +281,43 @@ def test_the_saddle_is_measured_by_the_same_single_point_as_the_candidates(nh3):
     ref = [text for name, _, text in orca.calls if name.endswith("_ref.inp")][0]
     assert "OPT" not in ref.splitlines()[0] and "FREQ" not in ref.splitlines()[0]
     assert "0.941935" in ref  # the Hessian's own geometry: 1.78 bohr
+
+
+def _control_file(tmp_path, **keys):
+    from delfin.config import set_control_value
+    from delfin.define import TEMPLATE
+
+    text = TEMPLATE
+    for key, value in {"charge": "0", "solvent": "water", "method": "classic", **keys}.items():
+        text = set_control_value(text, key, value)
+    path = tmp_path / "CONTROL.txt"
+    path.write_text(text)
+    return path
+
+
+def test_an_old_control_files_window_is_read_as_the_new_floor(tmp_path):
+    from delfin.config import read_control_file
+
+    # 1e-3 is what every CONTROL copied from the old template says
+    assert read_control_file(str(_control_file(tmp_path, IMAG_sp_energy_window="1e-3")))["IMAG_sp_energy_window"] == 1e-5
+    # any other value is the user's own and stays
+    assert read_control_file(str(_control_file(tmp_path, IMAG_sp_energy_window="2e-4")))["IMAG_sp_energy_window"] == 2e-4
+
+
+def test_every_structure_is_in_scope_unless_the_file_says_initial(tmp_path, monkeypatch):
+    from delfin.config import _load_template_defaults, read_control_file
+
+    assert _load_template_defaults()["IMAG_scope"] == "all"
+    assert read_control_file(str(_control_file(tmp_path, IMAG_scope="initial")))["IMAG_scope"] == "initial"
+
+    home = tmp_path / "calc"
+    home.mkdir()
+    (home / "ox_step_1.inp").write_text(_INPUT)
+    _out(home / "ox_step_1.out", _SADDLE_ENERGY)
+    _hess(home / "ox_step_1.hess", _SADDLE)
+    calls = []
+    monkeypatch.setattr(imag, "eliminate_imaginary_modes", lambda **kw: calls.append(kw) or imag.ImagResult(kw["label"]))
+    # a config without the key: a redox step is treated
+    run_IMAG(str(home / "ox_step_1.out"), "ox_step_1", 0, 1, "water", [], {"IMAG": "yes"}, "def2-SVP", "", "",
+             step_name="ox_step_1", source_input=str(home / "ox_step_1.inp"))
+    assert [c["label"] for c in calls] == ["ox_step_1"]

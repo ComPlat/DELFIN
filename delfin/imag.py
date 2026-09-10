@@ -567,7 +567,7 @@ def run_IMAG(
     """
     if not _truthy(config.get("IMAG", "no")):
         return None
-    scope = str(config.get("IMAG_scope", "initial")).strip().lower()
+    scope = str(config.get("IMAG_scope", "all")).strip().lower()
     if scope == "initial" and step_name != "initial":
         logger.info("Skipping IMAG for '%s' (IMAG_scope=initial)", step_name)
         return None
