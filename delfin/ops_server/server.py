@@ -295,6 +295,23 @@ def tool_extract_thermochem(folder: str) -> str:
     return _json.dumps(_asdict(result), indent=2)
 
 
+def _grouped_by_method(rows: list) -> dict:
+    """Rows -> {"note", "groups": [{"method", "rows"}]}, in row order.
+
+    The rule travels with the data: a caller that reads the JSON reads
+    that energies compare only within a method before it reads a number.
+    """
+    groups: list = []
+    index: dict = {}
+    for row in rows:
+        method = row.get("method") if isinstance(row, dict) else None
+        if method not in index:
+            index[method] = len(groups)
+            groups.append({"method": method, "rows": []})
+        groups[index[method]]["rows"].append(row)
+    return {"note": delfin_api.METHOD_NOTE, "groups": groups}
+
+
 def tool_extract_energy_table(
     folders: str,
     properties: str = "",
@@ -302,8 +319,9 @@ def tool_extract_energy_table(
     """Walk a list of folders and collect energies into rows.
 
     Returns a JSON list of rows. Each row has ``folder``, ``status``
-    ("ok" / "missing" / "no_output"), and one entry per requested
-    property. Rows with status != "ok" carry None for properties.
+    ("ok" / "missing" / "no_output"), ``method`` ("PBE0/def2-SVP": a
+    total energy compares only within one method), and one entry per
+    requested property. Rows with status != "ok" carry None.
 
     Recognised properties: gibbs, zpe, single_point, scf_converged,
     opt_converged, imag_freqs, walltime_s.
@@ -312,6 +330,7 @@ def tool_extract_energy_table(
         folders: comma-separated absolute paths (or a single path).
         properties: comma-separated property names. Empty → defaults
             to "gibbs,zpe,single_point".
+    
     """
     import json as _json
     folder_list = [f.strip() for f in folders.split(",") if f.strip()]
@@ -1176,25 +1195,28 @@ def tool_find_calculation_extreme(
     extreme: str = "min",
     n: int = 5,
 ) -> str:
-    """Return the N folders with the lowest/highest value of a property.
+    """The N lowest/highest folders by a property, PER METHOD.
 
-    Direct answer to "find the .out with the lowest Gibbs energy"
-    type questions. Folders that fail to parse the property are
-    excluded from the ranking, so a clean list is returned.
+    Returns {"note", "groups": [{"method", "rows"}]}: within each method
+    (functional/basis) the top n rows, ranked; groups are not ranked
+    against each other, because a total energy compares only within one
+    method. "Find the .out with the lowest Gibbs energy" is answered per
+    method. Folders that fail to parse the property are excluded.
 
     Args:
         folders: comma-separated absolute paths.
         property: gibbs (default) | zpe | single_point | imag_freqs |
             walltime_s.
         extreme: "min" (lowest, default) or "max" (highest).
-        n: how many top entries to return (default 5).
+        n: how many top entries per method to return (default 5).
+    
     """
     import json as _json
     folder_list = [f.strip() for f in folders.split(",") if f.strip()]
     rows = delfin_api.find_calculation_extreme(
         folder_list, property=property, extreme=extreme, n=int(n),
     )
-    return _json.dumps(rows, indent=2)
+    return _json.dumps(_grouped_by_method(rows), indent=2)
 
 
 def tool_extract_imaginary_frequencies(folder: str) -> str:
@@ -1246,20 +1268,23 @@ def tool_compare_across_functionals(
     include_imag: bool = True,
     sort_by: str = "gibbs",
 ) -> str:
-    """Multi-folder comparison table grouped by functional/basis.
+    """Multi-folder comparison table grouped by method (functional/basis).
 
-    Returns one row per folder with: functional, basis, gibbs,
-    single_point, zpe, n_imag, is_minimum, status. Sortable by gibbs
-    (default), single_point, zpe, functional, or folder.
-
-    Direct answer to "compare imaginary frequencies across functionals"
-    or "Which functional gives the lowest minimum?".
+    Returns {"note", "groups": [{"method", "rows"}]}: one row per folder
+    with functional, basis, gibbs, single_point, zpe, n_imag,
+    is_minimum, status. Sorting by gibbs (default), single_point or zpe
+    orders rows WITHIN a method; groups are never ranked against each
+    other, because a total energy compares only within one method.
+    Answers "which run is lowest within each method" and "compare
+    imaginary frequencies across functionals" -- not "which functional
+    gives the lowest minimum", which has no answer.
 
     Args:
         folders: comma-separated absolute paths.
         include_imag: if True (default), also extract imaginary-freq
             counts (slightly slower but usually wanted).
         sort_by: gibbs | single_point | zpe | functional | folder.
+    
     """
     import json as _json
     from dataclasses import asdict as _asdict
@@ -1267,7 +1292,7 @@ def tool_compare_across_functionals(
     rows = delfin_api.compare_across_functionals(
         folder_list, include_imag=include_imag, sort_by=sort_by,
     )
-    return _json.dumps([_asdict(r) for r in rows], indent=2)
+    return _json.dumps(_grouped_by_method([_asdict(r) for r in rows]), indent=2)
 
 
 def tool_extract_orbital_energies(folder: str) -> str:

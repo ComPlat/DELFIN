@@ -440,7 +440,7 @@ def test_tool_find_calculation_extreme_picks_lowest(tmp_path):
     txt = ops_server.tool_find_calculation_extreme(
         folders_csv, property="gibbs", extreme="min", n=2,
     )
-    rows = json.loads(txt)
+    rows = [r for g in json.loads(txt)["groups"] for r in g["rows"]]   # grouped by method since 2026-09-10
     assert len(rows) == 2
     # Lowest Gibbs first
     assert rows[0]["gibbs"] == pytest.approx(-150.0)
@@ -461,7 +461,7 @@ def test_tool_find_calculation_extreme_excludes_unparseable(tmp_path):
     txt = ops_server.tool_find_calculation_extreme(
         folders_csv, property="gibbs",
     )
-    rows = json.loads(txt)
+    rows = [r for g in json.loads(txt)["groups"] for r in g["rows"]]   # grouped by method since 2026-09-10
     assert len(rows) == 1
     assert rows[0]["folder"] == str(good)
 
@@ -617,11 +617,16 @@ def test_tool_compare_across_functionals_sorted_by_gibbs(tmp_path):
         _write_freq_out(f, functional=func, gibbs=gibbs)
         folders.append(str(f))
     txt = ops_server.tool_compare_across_functionals(",".join(folders))
-    rows = json.loads(txt)
+    out = json.loads(txt)
+    # Grouped by method since 2026-09-10: three functionals are three
+    # groups, ordered by name and never by energy -- a flat sort by gibbs
+    # handed the caller a cross-method ranking as if it were one.
+    rows = [r for g in out["groups"] for r in g["rows"]]
     assert len(rows) == 3
-    assert rows[0]["functional"] == "PBE0"
-    assert rows[0]["gibbs"] == pytest.approx(-150.5)
-    assert rows[-1]["functional"] == "BP86"
+    assert [g["method"] for g in out["groups"]] == sorted(g["method"] for g in out["groups"])
+    assert {r["functional"] for r in rows} == {"PBE0", "BP86", "B3LYP"}
+    assert next(r for r in rows if r["functional"] == "PBE0")["gibbs"] == pytest.approx(-150.5)
+    assert out["note"]
 
 
 def test_tool_compare_across_functionals_skip_imag(tmp_path):
@@ -631,7 +636,7 @@ def test_tool_compare_across_functionals_skip_imag(tmp_path):
     txt = ops_server.tool_compare_across_functionals(
         str(f), include_imag=False,
     )
-    rows = json.loads(txt)
+    rows = [r for g in json.loads(txt)["groups"] for r in g["rows"]]
     assert rows[0]["n_imag"] is None
     assert rows[0]["is_minimum"] is None
     # gibbs/spe still extracted even when imag is skipped
@@ -646,7 +651,7 @@ def test_tool_compare_across_functionals_status_codes(tmp_path):
     txt = ops_server.tool_compare_across_functionals(
         f"{missing},{empty}", sort_by="folder",
     )
-    rows = json.loads(txt)
+    rows = [r for g in json.loads(txt)["groups"] for r in g["rows"]]   # grouped by method since 2026-09-10
     statuses = sorted(r["status"] for r in rows)
     assert statuses == ["missing", "no_output"]
 
