@@ -992,10 +992,14 @@ def tool_explain_delfin_feature(name: str) -> str:
 
 
 def tool_list_active_calculations() -> str:
-    """Live list of running/pending jobs (read-only).
+    """Live list of the scheduler's running/pending jobs (read-only).
 
     Returns JSON list of {job_id, name, status, runtime_s, directory}
-    entries. Empty when no jobs are active.
+    entries. Empty when no jobs are active -- which says nothing about
+    folders on disk: a calculation submitted elsewhere, or one that
+    crashed, is not in this list. For "which of these folders is still
+    running" read the ``outcome`` column of extract_energy_table
+    (running or crashed / no output yet / failed (exit code N)).
     """
     import json as _json
     return _json.dumps(delfin_api.list_active_calculations(), indent=2)
@@ -1202,11 +1206,20 @@ def tool_find_calculation_extreme(
 ) -> str:
     """The N lowest/highest folders by a property, PER METHOD.
 
-    Returns {"note", "groups": [{"method", "rows"}]}: within each method
-    (functional/basis) the top n rows, ranked; groups are not ranked
-    against each other, because a total energy compares only within one
-    method. "Find the .out with the lowest Gibbs energy" is answered per
-    method. Folders that fail to parse the property are excluded.
+    Returns {"note", "property_requested", "property_used", "groups":
+    [{"method", "rows"}], "skipped": [{"folder", "reason", "outcome"}]}:
+    within each method (functional/basis) the top n rows, ranked; groups
+    are not ranked against each other, because a total energy compares
+    only within one method. "Find the .out with the lowest Gibbs energy"
+    is answered per method.
+
+    Every folder that is not in a group is in "skipped" with the reason
+    -- missing, no output (the outcome says whether it is still running,
+    crashed or never started), or the property is not in its output.
+    When NO folder carries the requested property but single point
+    energies are there, the ranking uses single_point and says so in
+    property_used and in the note; an archive of single points has no
+    Gibbs energy to rank by.
 
     Args:
         folders: comma-separated absolute paths.
@@ -1218,10 +1231,20 @@ def tool_find_calculation_extreme(
     """
     import json as _json
     folder_list = [f.strip() for f in folders.split(",") if f.strip()]
-    rows = delfin_api.find_calculation_extreme(
+    res = delfin_api.find_calculation_extreme_explained(
         folder_list, property=property, extreme=extreme, n=int(n),
     )
-    return _json.dumps(_grouped_by_method(rows), indent=2)
+    out = _grouped_by_method(res["rows"])
+    out["property_requested"] = res["property_requested"]
+    out["property_used"] = res["property_used"]
+    out["skipped"] = res["skipped"]
+    if res["property_used"] != res["property_requested"]:
+        out["note"] += (f" No folder carries {res['property_requested']}; "
+                        f"ranked by {res['property_used']} instead.")
+    if not res["rows"]:
+        out["note"] += (" Nothing to rank: 'skipped' says why each "
+                        "folder is left out.")
+    return _json.dumps(out, indent=2)
 
 
 def tool_extract_imaginary_frequencies(folder: str) -> str:
