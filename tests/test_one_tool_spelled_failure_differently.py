@@ -82,3 +82,84 @@ def test_a_caller_testing_for_error_is_never_misled(perms):
     killed = _call("bash_kill", {"job_id": ok_start["job_id"]}, perms)
     assert ("error" in failed) is True
     assert ("error" in killed) is False
+
+
+# ---------------------------------------------------------------------------
+# The same trap, the other way round: one tool spelled SUCCESS differently
+# ---------------------------------------------------------------------------
+#
+# `status: "ok"` is not a convention of the whole surface, and should not
+# become one -- 41 of 57 executors omit it, and for a read tool the key
+# would be noise beside the data the caller actually wants.
+#
+# It IS unanimous among the tools whose entire result is "a file now
+# exists": create_docx, create_pdf, merge_pdfs, split_pdf,
+# fill_docx_template and fill_pdf_form all open with it. draft_email did
+# not, and its payload -- recipients, byte count, a note -- gives a
+# caller nothing that reads as a verdict. Asking that family's question
+# of it returned a written draft as a failure. Found by driving it: the
+# probe that caught it was written with the whole surface in view and
+# still made the mistake.
+#
+# fill_series is deliberately outside this: it answers in prose, not
+# JSON, because its result is a per-row report. A status key on a string
+# would be a fiction.
+
+_FILE_MAKERS = ("create_docx", "create_pdf", "merge_pdfs", "split_pdf",
+                "fill_docx_template", "fill_pdf_form", "draft_email")
+
+
+def test_a_written_draft_says_it_succeeded(tmp_path):
+    perms = A.KitToolPermissions(workspace=str(tmp_path))
+    perms.mode = "acceptEdits"
+    perms.task_session_id = "draft-ok"
+    out = _call("draft_email", {"path": "m.eml", "to": "max@example.org",
+                                "subject": "Ergebnis", "body": "Anbei."},
+                perms)
+    assert out.get("status") == "ok", out
+    assert "error" not in out
+    assert (tmp_path / "m.eml").is_file()
+
+
+def test_the_payload_a_caller_needs_is_still_there(tmp_path):
+    """A status key must not become the whole answer: the recipients and
+    the note that this is NOT sent are the point of the tool."""
+    perms = A.KitToolPermissions(workspace=str(tmp_path))
+    perms.mode = "acceptEdits"
+    perms.task_session_id = "draft-payload"
+    out = _call("draft_email", {"path": "m.eml", "to": "max@example.org",
+                                "subject": "Ergebnis", "body": "Anbei."},
+                perms)
+    assert out["to"] == ["max@example.org"]
+    assert "NOT sent" in out.get("note", "")
+    assert out.get("bytes", 0) > 0
+
+
+def test_a_refused_draft_still_answers_with_error_only(tmp_path):
+    perms = A.KitToolPermissions(workspace=str(tmp_path))
+    perms.mode = "acceptEdits"
+    perms.task_session_id = "draft-bad"
+    out = _call("draft_email", {"path": "m.eml", "to": "not-an-address",
+                                "subject": "s", "body": "b"}, perms)
+    assert "error" in out
+    assert out.get("status") != "ok"
+
+
+def test_the_family_rule_so_the_next_one_added_does_not_drift():
+    """Every tool whose result is a written file opens with status:ok.
+
+    Read off the source rather than by calling them: several need real
+    inputs, and the point is the shape they are written to return.
+    """
+    import re
+    from pathlib import Path
+
+    src = Path(A.__file__).read_text(encoding="utf-8")
+    for name in _FILE_MAKERS:
+        m = re.search(rf"def _execute_{name}\b", src)
+        assert m, f"{name} has no executor any more"
+        nxt = re.search(r"\n    def _execute_", src[m.start() + 10:])
+        body = (src[m.start(): m.start() + 10 + nxt.start()] if nxt
+                else src[m.start():])
+        assert re.search(r'"status":\s*"ok"|setdefault\("status", "ok"\)',
+                         body), f"{name} no longer says status:ok on success"
