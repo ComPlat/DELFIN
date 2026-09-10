@@ -2669,6 +2669,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # A probe or an interview driven through here is nobody's session:
+    # with DELFIN_SCRATCH_STATE set it keeps its history, memory, profile
+    # learning and logs under that directory instead of the user's, and
+    # reads none of theirs. Applied before anything imports a sink.
+    from . import state_paths as _state_paths
+    _state_paths.scratch_state_from_environment()
     parser = build_parser()
     argv = list(sys.argv[1:] if argv is None else argv)
     args = parser.parse_args(_route_argv(argv, _subcommand_names(parser)))

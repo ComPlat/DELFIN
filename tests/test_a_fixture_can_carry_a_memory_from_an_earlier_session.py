@@ -14,7 +14,6 @@ which also means it can never leak into the user's own store.
 
 from pathlib import Path
 
-import pytest
 
 from delfin.agent.benchmark_runner import (_PristineWorkspace,
                                            _seed_fixture_memories,
@@ -68,13 +67,20 @@ def test_the_seed_reaches_the_prompt(tmp_path):
 
 
 def test_the_seed_does_not_outlive_the_attempt():
+    """The seed is installed into the attempt's own store -- the guard
+    points the resolver at a scratch home for the duration -- so the
+    store outside the guard never sees it, during or after."""
     ws = workspace_for(_REPO, mode="solo", task_class="generic_project")
     store = _mem_dir()(ws)
     before = sorted(f.name for f in store.glob("*.md")) if store.is_dir() else []
     with _PristineWorkspace(_REPO):
         _seed_fixture_memories(_REPO, ws)
-        during = sorted(f.name for f in store.glob("*.md"))
-        assert len(during) > len(before)
+        attempt_store = _mem_dir()(ws)
+        assert attempt_store != store
+        during = sorted(f.name for f in attempt_store.glob("*.md"))
+        assert len(during) >= 1
+        outside = sorted(f.name for f in store.glob("*.md")) if store.is_dir() else []
+        assert outside == before
     after = sorted(f.name for f in store.glob("*.md")) if store.is_dir() else []
     assert after == before, (before, after)
 
