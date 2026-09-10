@@ -23,8 +23,6 @@ from __future__ import annotations
 
 import json
 import os
-import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -52,99 +50,26 @@ def test_nothing_is_kept_alive_by_default():
     assert S.describe()["kept_alive"] is False
 
 
-def test_a_page_that_stops_beating_ends_the_kernel():
-    ended = threading.Event()
-    S.beat()
-    S.GRACE_SECONDS, old = 0.05, S.GRACE_SECONDS
-    try:
-        S.start_watchdog(shutdown=ended.set, poll_seconds=0.01)
-        assert ended.wait(3.0), "the kernel outlived its page"
-    finally:
-        S.GRACE_SECONDS = old
-
-
-def test_a_beating_page_is_left_alone():
-    ended = threading.Event()
-    S.beat()
-    S.GRACE_SECONDS, old = 0.4, S.GRACE_SECONDS
-    try:
-        S.start_watchdog(shutdown=ended.set, poll_seconds=0.02)
-        for _ in range(20):          # keep beating for ~1s
-            S.beat()
-            time.sleep(0.05)
-        assert not ended.is_set(), "a live page was torn down"
-    finally:
-        S.GRACE_SECONDS = old
-
-
 # ---------------------------------------------------------------------------
 # The safety property: never fire before the page has spoken
 # ---------------------------------------------------------------------------
-
-def test_a_page_that_never_beats_is_not_a_page_that_left():
-    """A frontend whose scripts did not load cannot send heartbeats. It
-    must not be read as a window that closed, or the default path breaks
-    for everyone it happens to."""
-    ended = threading.Event()
-    S.GRACE_SECONDS, old = 0.05, S.GRACE_SECONDS
-    try:
-        S.start_watchdog(shutdown=ended.set, poll_seconds=0.01)
-        time.sleep(0.6)
-        assert not ended.is_set(), (
-            "the watchdog fired before the page had ever spoken")
-        assert S.describe()["watchdog_armed"] is False
-    finally:
-        S.GRACE_SECONDS = old
-
-
-def test_the_watchdog_arms_on_the_first_beat():
-    assert S.describe()["watchdog_armed"] is False
-    S.beat()
-    assert S.describe()["watchdog_armed"] is True
 
 
 # ---------------------------------------------------------------------------
 # The opt-in
 # ---------------------------------------------------------------------------
 
-def test_an_armed_session_survives_its_page():
-    ended = threading.Event()
-    S.beat()
-    S.keep_alive(True, session_name="probe-1")
-    S.GRACE_SECONDS, old = 0.05, S.GRACE_SECONDS
-    try:
-        S.start_watchdog(shutdown=ended.set, poll_seconds=0.01)
-        time.sleep(0.6)
-        assert not ended.is_set(), "an armed session was torn down"
-    finally:
-        S.GRACE_SECONDS = old
-
-
-def test_disarming_lets_it_end_again():
-    ended = threading.Event()
-    S.beat()
-    S.keep_alive(True, session_name="probe-2")
-    S.GRACE_SECONDS, old = 0.05, S.GRACE_SECONDS
-    try:
-        S.start_watchdog(shutdown=ended.set, poll_seconds=0.01)
-        time.sleep(0.3)
-        assert not ended.is_set()
-        S.keep_alive(False)
-        assert ended.wait(3.0), "disarming did not let the session end"
-    finally:
-        S.GRACE_SECONDS = old
-
 
 def test_an_armed_session_says_so():
-    """Kept alive and invisible is how a machine ends up holding ten of
-    them. Everything the strip and the terminal line need is in one
-    call."""
-    S.keep_alive(True, session_name="uc3n990-2")
-    d = S.describe()
-    assert d["kept_alive"] is True
-    assert d["session_name"] == "uc3n990-2"
-    assert d["pid"] > 0
-    assert d["grace_seconds"] == S.GRACE_SECONDS
+    """describe() is what the strip and the terminal are built from, so an
+    armed session cannot be invisible."""
+    S.keep_alive(True, session_name="night-run")
+    told = S.describe()
+    assert told["kept_alive"] is True
+    assert told["session_name"] == "night-run"
+    assert told["pid"] == __import__("os").getpid()
+    S.keep_alive(False)
+    assert S.describe()["kept_alive"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -195,13 +120,6 @@ def test_a_none_root_is_dropped():
 # The watchdog itself
 # ---------------------------------------------------------------------------
 
-def test_starting_twice_does_not_race_itself():
-    """Two watchdogs would both call shutdown, and the second would do it
-    to a kernel that is already going."""
-    first = S.start_watchdog(shutdown=lambda: None, poll_seconds=5)
-    second = S.start_watchdog(shutdown=lambda: None, poll_seconds=5)
-    assert first is second
-
 
 # ---------------------------------------------------------------------------
 # Wired into the dashboard, not just available
@@ -227,12 +145,6 @@ def test_the_dashboard_registers_what_it_displays():
     assert src.index("_session.register_root(") < src.index("display(_header_root)")
 
 
-def test_the_dashboard_starts_the_watchdog():
-    """Without it the default teardown does not happen at all — the
-    kernel would simply live on, which is the opposite of the default."""
-    assert "_session.start_watchdog()" in _dashboard_source()
-
-
 def test_both_roots_are_registered_and_both_are_shown():
     src = _dashboard_source()
     assert "_session.register_root(_header_root, _body_root)" in src
@@ -243,50 +155,6 @@ def test_both_roots_are_registered_and_both_are_shown():
 # ---------------------------------------------------------------------------
 # The page's end of the heartbeat
 # ---------------------------------------------------------------------------
-
-def test_a_write_from_the_page_is_a_beat():
-    field = S.build_heartbeat_widget()
-    assert S.describe()["watchdog_armed"] is False
-    field.value = "1700000000"
-    assert S.describe()["watchdog_armed"] is True
-
-
-def test_the_field_is_hidden_and_findable():
-    """Hidden because it is plumbing; classed because the script has to
-    find it without knowing the widget's generated ids."""
-    field = S.build_heartbeat_widget()
-    assert field.layout.display == "none"
-    assert S._HEARTBEAT_CLASS in field._dom_classes
-
-
-def test_the_script_writes_through_the_native_setter():
-    """A plain `el.value = x` does not notify a widget: its own handler
-    listens for the events a real edit produces. This is the idiom the
-    dashboard already uses (see molecule_viewer)."""
-    js = S.heartbeat_js()
-    assert "getOwnPropertyDescriptor" in js
-    assert "new Event('input'" in js and "new Event('change'" in js
-    assert S._HEARTBEAT_CLASS in js
-
-
-def test_the_script_beats_when_a_hidden_tab_comes_back():
-    """Browsers throttle timers in a background tab to once a minute or
-    worse, which looks exactly like a window that closed."""
-    js = S.heartbeat_js()
-    assert "visibilitychange" in js
-    assert "document.hidden" in js
-
-
-def test_several_beats_fit_inside_the_grace():
-    """A slow link may drop beats; it must not drop the session."""
-    assert S.GRACE_SECONDS >= 4 * S.BEAT_SECONDS
-
-
-def test_the_script_replaces_its_own_timer():
-    """Voila re-runs page scripts on some navigations; two intervals
-    would double the traffic and outlive each other."""
-    js = S.heartbeat_js()
-    assert "clearInterval(window.__delfinHeartbeat)" in js
 
 
 # ---------------------------------------------------------------------------
@@ -407,7 +275,6 @@ def test_arming_prints_where_to_come_back(capsys):
 
 def _kept(name, kid, *, hours_ago=1.0, url="http://h:8866/voila/render/x?token=t"):
     import json
-    import os
     import time as _t
 
     path = S.write_record(name, kid=kid)
@@ -519,41 +386,18 @@ def test_the_control_that_keeps_a_session_is_on_the_page():
     browser got a page with no way to arm a session at all. Reaching the
     page is a property of the assembler, so it is pinned here.
     """
-    import re
 
     header = _header_root_segment()
     assert "_session_strip" in header, (
         "the session strip is built but not in the header the dashboard shows"
     )
-    assert re.search(r"\b_heartbeat\b", header), (
-        "the heartbeat field is not displayed; a page that cannot beat "
-        "reads as a window that closed"
-    )
-    assert re.search(r"\b_heartbeat_js\b", header), (
-        "the heartbeat script is not sent, so nothing writes to the field"
-    )
 
 
-def test_the_dashboard_builds_all_three_pieces():
+def test_the_dashboard_builds_the_strip_and_nothing_of_the_old_mechanism():
     src = _dashboard_source()
-    for call in (
-        "_session.build_status_strip()",
-        "_session.build_heartbeat_widget()",
-        "_session.heartbeat_js()",
-    ):
-        assert call in src, f"create_dashboard never calls {call}"
-
-
-def test_the_heartbeat_script_is_not_sent_through_run_js():
-    """``ctx.run_js`` clears its output before writing.
-
-    The beat has to keep running for the life of the page, so it gets an
-    Output of its own; sending it through the shared one would let the
-    next startup script wipe it.
-    """
-    src = _dashboard_source()
-    assert "run_js(_session.heartbeat_js" not in src
-    assert "display(Javascript(_session.heartbeat_js()))" in src
+    assert "_session.build_status_strip()" in src
+    for gone in ("build_heartbeat_widget", "heartbeat_js", "start_watchdog"):
+        assert gone not in src, f"{gone} is back; the server ends kernels now"
 
 
 # ---------------------------------------------------------------------------
@@ -568,144 +412,10 @@ def test_the_heartbeat_script_is_not_sent_through_run_js():
 # showed it: the kernel id was still listed after the teardown, under a
 # process that had started seconds earlier.
 
-def test_the_shutdown_address_is_built_from_what_the_server_gave_us(monkeypatch):
-    from delfin.dashboard import session as s
-
-    monkeypatch.setenv(
-        "VOILA_REQUEST_URL",
-        "http://127.0.0.1:8890/voila/render/x.ipynb?token=abc",
-    )
-    monkeypatch.setenv("JUPYTER_TOKEN", "abc")
-    monkeypatch.setattr(s, "kernel_id", lambda: "kid-1")
-
-    url = s.server_shutdown_url()
-    assert url == "http://127.0.0.1:8890/api/kernels/kid-1?token=abc"
-
-
-def test_the_port_stands_in_when_no_request_was_recorded(monkeypatch):
-    from delfin.dashboard import session as s
-
-    monkeypatch.delenv("VOILA_REQUEST_URL", raising=False)
-    monkeypatch.setenv("VOILA_APP_PORT", "8899")
-    monkeypatch.setenv("JUPYTER_TOKEN", "t")
-    monkeypatch.setattr(s, "kernel_id", lambda: "kid-2")
-
-    assert s.server_shutdown_url() == (
-        "http://127.0.0.1:8899/api/kernels/kid-2?token=t"
-    )
-
-
-def test_outside_a_kernel_there_is_nobody_to_ask(monkeypatch):
-    """Every test and every CLI call is outside a kernel."""
-    from delfin.dashboard import session as s
-
-    monkeypatch.setattr(s, "kernel_id", lambda: "")
-    assert s.server_shutdown_url() == ""
-    assert s._ask_server_to_end_this_kernel() is False
-
-
-def test_a_nonsense_port_is_not_an_address(monkeypatch):
-    from delfin.dashboard import session as s
-
-    monkeypatch.delenv("VOILA_REQUEST_URL", raising=False)
-    monkeypatch.setenv("VOILA_APP_PORT", "not-a-port")
-    monkeypatch.setattr(s, "kernel_id", lambda: "kid-3")
-    assert s.server_shutdown_url() == ""
-
-
-def test_the_delete_carries_the_token_in_the_header_too(monkeypatch):
-    """Query token and Authorization header, because a server may be
-    configured to accept only one of them."""
-    from delfin.dashboard import session as s
-
-    seen = {}
-
-    class _Resp:
-        status = 204
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    def _urlopen(req, timeout=0):
-        seen["method"] = req.get_method()
-        seen["url"] = req.full_url
-        seen["auth"] = req.get_header("Authorization")
-        return _Resp()
-
-    monkeypatch.setenv("VOILA_REQUEST_URL", "http://h:1/x?token=tok")
-    monkeypatch.setenv("JUPYTER_TOKEN", "tok")
-    monkeypatch.setattr(s, "kernel_id", lambda: "k9")
-    import urllib.request
-
-    monkeypatch.setattr(urllib.request, "urlopen", _urlopen)
-
-    assert s._ask_server_to_end_this_kernel() is True
-    assert seen["method"] == "DELETE"
-    assert seen["url"] == "http://h:1/api/kernels/k9?token=tok"
-    assert seen["auth"] == "token tok"
-
-
-def test_a_server_that_refuses_is_not_taken_for_a_shutdown(monkeypatch):
-    from delfin.dashboard import session as s
-
-    def _boom(req, timeout=0):
-        raise OSError("connection refused")
-
-    monkeypatch.setenv("VOILA_REQUEST_URL", "http://h:1/x")
-    monkeypatch.setattr(s, "kernel_id", lambda: "k9")
-    import urllib.request
-
-    monkeypatch.setattr(urllib.request, "urlopen", _boom)
-    assert s._ask_server_to_end_this_kernel() is False
-
 
 # ---------------------------------------------------------------------------
 # Three things a browser found after the mechanism "worked"
 # ---------------------------------------------------------------------------
-
-def test_the_first_beat_does_not_wait_for_the_interval():
-    """A window closed inside its first ten seconds never beat, so its
-    kernel was never torn down. The script now retries the first beat
-    quickly until the field it writes to is there."""
-    from delfin.dashboard import session as s
-
-    js = s.heartbeat_js()
-    assert "return true" in js and "return false" in js
-    assert "if (!beat())" in js
-    assert "250" in js, "the retry must be far quicker than the interval"
-
-
-def test_disarming_restarts_the_grace(monkeypatch):
-    """The last beat on record may be hours old when the option is switched
-    off on a resumed page; judging by it would end the kernel under the
-    person looking at it."""
-    from delfin.dashboard import session as s
-
-    s._reset_for_tests()
-    now = {"t": 1000.0}
-    monkeypatch.setattr(s.time, "monotonic", lambda: now["t"])
-
-    s.beat()
-    s.keep_alive(True, session_name="x")
-    now["t"] += 8 * 3600                      # overnight
-    assert s.seconds_since_beat() > s.GRACE_SECONDS
-
-    s.keep_alive(False)
-    assert s.seconds_since_beat() == 0.0, "disarming must restart the grace"
-    s._reset_for_tests()
-
-
-def test_disarming_a_page_that_never_beat_does_not_arm_the_watchdog():
-    from delfin.dashboard import session as s
-
-    s._reset_for_tests()
-    s.keep_alive(True, session_name="x")
-    s.keep_alive(False)
-    assert s.seconds_since_beat() is None
-    s._reset_for_tests()
 
 
 def test_a_record_whose_process_is_gone_is_not_offered(tmp_path, monkeypatch):
