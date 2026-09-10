@@ -5441,6 +5441,12 @@ def create_tab(ctx):
             }
         }
     }, true);
+})();
+
+// The blocks below are their own scripts: the guard above covers the
+// key handler only. Nested inside it, they were skipped whenever the
+// page bundle had already set the flag -- which on a resumed page is
+// always, and on a fresh one depends on which output rendered first.
 
     // --- Chat scroll: follow the newest output only from the end ---
     // The chat used to be pulled to the bottom on every refresh, which took
@@ -5594,7 +5600,6 @@ def create_tab(ctx):
             }
         });
     })();
-})();
 """))
 
     # -- UI widget registry (for /ui command) --------------------------------
