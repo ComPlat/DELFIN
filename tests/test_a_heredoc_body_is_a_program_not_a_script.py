@@ -369,3 +369,95 @@ def test_and_the_sandbox_still_wins_over_the_grant(ws):
     out = _run(ws, "python3 - <<'EOF'\nopen('/etc/evil','w').write('x')\nEOF",
                grant=True)
     assert "error" in out and "/etc/evil" in out["error"]
+
+
+# ---------------------------------------------------------------------------
+# Nothing else moved
+# ---------------------------------------------------------------------------
+#
+# _split_shell_segments is load-bearing: every permission decision runs
+# through it. The heredoc change had to leave everything else exactly as
+# it was, and six hand-written cases do not show that.
+#
+# Checked against the corpus instead: the OLD algorithm reimplemented
+# below, both run over the ~2000 distinct commands in
+# ~/.delfin/audit*.log. Segmentation differed on 46 of them, every one
+# containing `<<`, and on nothing else. The commands kept here are a
+# sample of the real ones that actually exercise the splitter —
+# operators, quotes, redirects, `$(…)`, embedded newlines — so the
+# property stays checked in a repo that has no audit log.
+
+def _split_before_heredocs(cmd):
+    """The algorithm as it stood before the here-document change."""
+    segs, buf, q, i, n = [], [], None, 0, len(cmd)
+    while i < n:
+        c = cmd[i]
+        if q is not None:
+            buf.append(c)
+            if c == q:
+                q = None
+            i += 1
+            continue
+        if c in ("'", '"'):
+            q = c
+            buf.append(c)
+            i += 1
+            continue
+        if cmd[i:i + 2] in ("||", "&&"):
+            segs.append("".join(buf))
+            buf = []
+            i += 2
+            continue
+        if c in (";", "|", "\n"):
+            segs.append("".join(buf))
+            buf = []
+            i += 1
+            continue
+        buf.append(c)
+        i += 1
+    segs.append("".join(buf))
+    return [s.strip() for s in segs if s.strip()]
+
+
+_REAL_COMMANDS_WITHOUT_A_HEREDOC = [
+    "find . -maxdepth 3 -iname '*bookmark*' -o -iname '*lesezeichen*' "
+    "2>/dev/null",
+    'python3 -m py_compile export.py && echo "syntax OK"',
+    'grep -i "HOMO-LUMO GAP\\|ORBITAL ENERGIES\\|: HOMO\\|: LUMO" run_*.out',
+    "lsof -i :8899 2>/dev/null || netstat -tlnp 2>/dev/null | grep 8899 "
+    "|| ss -tlnp | grep 8899",
+    "python3 -c \"import ast; ast.parse(open('pipeline.py').read())\" "
+    "&& echo SYNTAX_OK",
+    'python3 export.py --smtp-host smtp.example.org --sender a@b.c; '
+    'echo "exit=$?"',
+    "cd tests/fixtures/user_project_workspace && python3 tagreport.py",
+    "ls -R . | head -50",
+    'git status && echo "---" && find . -maxdepth 3 -type d | head -50',
+    "ls -la && git status --short",
+    "cat delfin/agent/pack/benchmark/tasks_auto_behavior.yaml 2>&1 | head -150",
+    'ls -la .delfin/ 2>/dev/null; echo "---"; ls -la tests/fixtures/ 2>/dev/null',
+    "python3 export.py && cat bookmarks.csv && python3 export.py --send "
+    "2>&1 | tail -1",
+    "ls -la && cat bookmarks.json 2>/dev/null | head -50",
+    'find /home/user/ComPlat -name "zahlen.txt" 2>/dev/null',
+    'ls -la; echo "---"; rm -f a.csv b.json; rm -rf __pycache__; '
+    'echo "cleaned"; ls -la',
+    "sed -n '538,610p' delfin/agent/workspace_trust.py",
+    "cmd 2>&1",
+    "echo 'a;b' && echo \"c|d\"",
+    "for i in 1 2 3; do echo $i; done",
+]
+
+
+@pytest.mark.parametrize("cmd", _REAL_COMMANDS_WITHOUT_A_HEREDOC)
+def test_a_command_with_no_heredoc_segments_exactly_as_before(cmd):
+    assert A._split_shell_segments(cmd) == _split_before_heredocs(cmd), cmd
+
+
+def test_the_reference_implementation_really_is_different_on_a_heredoc():
+    """Otherwise the parametrised test above proves nothing: a reference
+    that agreed everywhere would be the same function."""
+    cmd = "python3 - <<'EOF'\nimport os\nx = 1; y = 2\nEOF"
+    assert _split_before_heredocs(cmd) != A._split_shell_segments(cmd)
+    assert len(_split_before_heredocs(cmd)) > 1
+    assert len(A._split_shell_segments(cmd)) == 1
