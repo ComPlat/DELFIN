@@ -62,13 +62,12 @@ VARIANTS = {
     },
 }
 
-README = """# timings
-
-Two variants of the same accumulation, `bench_a.py` and `bench_b.py`.
-Both print a checksum and their own elapsed time.
-
-Run one with `python3 bench_a.py`.
-"""
+# No README is written. A science task's workspace is
+# tests/fixtures/science_workspace/, which already HAS one describing the
+# xtb outputs the other tasks read -- a setup script that dropped its own
+# there would overwrite a fixture it does not own. The guard around an
+# attempt would restore it, which is not a licence to rely on the guard.
+# The prompt names both files; nothing else is needed.
 
 
 def main(argv: list[str]) -> int:
@@ -83,8 +82,6 @@ def main(argv: list[str]) -> int:
             print(f"refusing to overwrite {target}", file=sys.stderr)
             return 1
         target.write_text(BODY.format(**spec), encoding="utf-8")
-    (ws / "README.md").write_text(README, encoding="utf-8")
-
     # Check the precondition rather than assume it: if the scripts do not
     # run, or their checksums differ, the task measures something else.
     sums = {}
