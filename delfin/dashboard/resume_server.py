@@ -166,3 +166,31 @@ def resume_kernel_manager_class(base: type) -> type:
 
     ResumeAwareKernelManager.__name__ = f"ResumeAware{base.__name__}"
     return ResumeAwareKernelManager
+
+
+# ---------------------------------------------------------------------------
+# The concrete class the server is pointed at
+# ---------------------------------------------------------------------------
+#
+# `--ServerApp.kernel_manager_class` takes an import path, not a factory,
+# so the wrapping happens here once against the server's own default. In
+# extension mode -- which is how DELFIN runs Voila -- this is the manager
+# Voila is handed, so it is the only place a resume can be recognised.
+
+
+def _server_default_manager() -> type:
+    from jupyter_server.services.kernels.kernelmanager import (
+        AsyncMappingKernelManager,
+    )
+
+    return AsyncMappingKernelManager
+
+
+ResumeAwareMappingKernelManager = resume_kernel_manager_class(
+    _server_default_manager())
+
+
+#: The environment variable that tells a kernel where its own resume
+#: address lives. Set by the launcher, which is the only thing that
+#: knows where the notebook was staged relative to the server root.
+RESUME_PATH_ENV = "DELFIN_RESUME_URL_PATH"

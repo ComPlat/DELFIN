@@ -188,3 +188,66 @@ def test_the_wrapper_keeps_the_wrapped_class_recognisable():
     cls = R.resume_kernel_manager_class(_FakeManager)
     assert "_FakeManager" in cls.__name__
     assert issubclass(cls, _FakeManager)
+
+
+# ---------------------------------------------------------------------------
+# Wired into the launcher, and failing soft when it cannot be
+# ---------------------------------------------------------------------------
+
+def _launcher_source() -> str:
+    import inspect
+
+    from delfin import cli_voila
+    return inspect.getsource(cli_voila)
+
+
+def test_the_launcher_stages_the_resume_notebook():
+    src = _launcher_source()
+    assert "stage_resume_notebook(root_dir)" in src
+    assert "_trust_notebook(_resume_nb)" in src, (
+        "an untrusted notebook meets Voila's security warning instead of "
+        "the dashboard")
+
+
+def test_the_launcher_points_the_server_at_the_resume_aware_manager():
+    """In extension mode Voila is handed the SERVER's kernel manager, so
+    this flag is the only place a resume can be recognised."""
+    src = _launcher_source()
+    assert "--ServerApp.kernel_manager_class=" in src
+    assert ("delfin.dashboard.resume_server.ResumeAwareMappingKernelManager"
+            in src)
+
+
+def test_the_launcher_tells_the_kernels_where_to_come_back_to():
+    src = _launcher_source()
+    assert "env[_resume.RESUME_PATH_ENV] = resume_url_path" in src
+
+
+def test_a_dashboard_that_starts_beats_one_that_can_be_resumed():
+    """If staging or the import fails, the default path must be exactly
+    what it was — keeping a session simply is not offered."""
+    src = _launcher_source()
+    block = src[src.index("_resume_nb = _resume.stage_resume_notebook"):]
+    block = block[:800]
+    assert "except Exception:" in block
+    assert 'resume_url_path = ""' in block
+    assert 'kernel_manager_class = ""' in block
+
+
+def test_the_flag_is_omitted_rather_than_empty_when_unavailable():
+    """`--ServerApp.kernel_manager_class=` with nothing after it is not
+    'use the default', it is a class named the empty string."""
+    src = _launcher_source()
+    assert "if kernel_manager_class else []" in src
+
+
+def test_the_import_path_in_the_flag_really_resolves():
+    """A typo here fails at server start, long after the test suite."""
+    import importlib
+
+    mod = importlib.import_module("delfin.dashboard.resume_server")
+    cls = getattr(mod, "ResumeAwareMappingKernelManager")
+    from jupyter_server.services.kernels.kernelmanager import (
+        AsyncMappingKernelManager,
+    )
+    assert issubclass(cls, AsyncMappingKernelManager)
