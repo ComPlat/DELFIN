@@ -1560,6 +1560,36 @@ def _as_reorganisation_energy(value: Any) -> list[str] | str:
     return unique
 
 
+def unsupported_ic_reason(transition: str) -> str | None:
+    """Why ORCA's ESD(IC) cannot compute ``transition``, or None if it can.
+
+    An ESD(IC) rate runs from root IRoot into the reference state of the
+    calculation, and "the final state is always S0 and this cannot be
+    changed" (ORCA 6.1.1 manual, 5.5.5).  With the closed-shell reference
+    that is S0, so singlets go Sn>S0; with the UKS triplet reference DELFIN
+    uses for triplets it is T1, so triplets go Tn>T1.  Sn>S1 has no reference
+    that is S1: what was computed under that name was the S2->S0 coupling on
+    the S1 geometry, with the S1 Hessian standing in for the ground state.
+    """
+    match = re.match(r"^([ST])(\d+)>([ST])(\d+)$", str(transition).strip().upper())
+    if not match:
+        return f"{transition!r} is not a transition like S1>S0 or T2>T1"
+    init_spin, init_root, final_spin, final_root = match.groups()
+    if init_spin != final_spin:
+        return f"{transition} changes spin; that is an ISC (ISCs=), not an IC"
+    final_ok = (final_spin == "S" and final_root == "0") or (final_spin == "T" and final_root == "1")
+    if not final_ok:
+        reference = "S0" if final_spin == "S" else "T1"
+        return (
+            f"{transition} cannot be computed: ORCA's ESD(IC) always ends in the reference "
+            f"state, {reference} for {'singlets' if final_spin == 'S' else 'triplets'} "
+            f"(did you mean {init_spin}{init_root}>{reference}?)"
+        )
+    if int(init_root) <= int(final_root):
+        return f"{transition} does not start above the state it ends in"
+    return None
+
+
 def _as_ics(value: Any) -> list[str] | str:
     if value is None or value == "":
         return ""
@@ -1573,9 +1603,10 @@ def _as_ics(value: Any) -> list[str] | str:
         items = [item.strip() for item in text.split(",") if item.strip()]
     normalized = []
     for item in items:
-        if not re.match(r"^[ST]\d+>(S1|T1)$", item):
-            raise ValueError("ICs must be transitions like S2>S1 or T2>T1")
-        normalized.append(item)
+        reason = unsupported_ic_reason(item)
+        if reason:
+            raise ValueError(f"ICs: {reason}. Supported are Sn>S0 (S1>S0, S2>S0 ...) and Tn>T1 (T2>T1 ...)")
+        normalized.append(item.upper())
     return normalized
 
 
@@ -2201,6 +2232,13 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
 
         # Only require/validate ESD_T1_opt when ESD is enabled and T1 is requested.
         if spec.name == "ESD_T1_opt" and (not esd_modul_enabled or not esd_states_have_t1):
+            validated[spec.name] = spec.default
+            continue
+
+        # ICs only exist inside the ESD module.  Old templates shipped
+        # ICs=[S2>S1], which ORCA cannot compute; with ESD off that line is
+        # inert and must not stop a run, with ESD on it is refused.
+        if spec.name == "ICs" and not esd_modul_enabled:
             validated[spec.name] = spec.default
             continue
 
