@@ -107,3 +107,75 @@ def test_the_descriptions_no_longer_invite_the_question_that_has_no_answer():
     src = open(ops.__file__).read()
     assert "Which functional gives the lowest minimum" not in src
     assert "within one method" in src
+
+
+# ---------------------------------------------------------------------------
+# What a model, asked where the tools hurt, reported the same evening
+# ---------------------------------------------------------------------------
+#
+# Driving the tools as the operator over the nine-calculation fixture,
+# DeepSeek reported: compare_across_functionals filed every run under
+# method None (a DELFIN run's ORCA output does not state its method);
+# extract_energy_table said "no_output" for a run that is still running
+# and could not tell that from a missing one; list_active_calculations
+# crashed with an ImportError. All three below.
+
+def test_the_method_comes_from_the_folder_when_the_output_does_not_say(tmp_path):
+    d = tmp_path / "run"; d.mkdir()
+    (d / "run.out").write_text("* O R C A *\nFINAL SINGLE POINT ENERGY   -113.30500000\n****ORCA TERMINATED NORMALLY****\n")
+    (d / "run.inp").write_text("! PBE0 def2-SVP Opt\n* xyz 0 1\nO 0 0 0\n*\n")
+    rows = api.extract_energy_table([str(d)], properties=["single_point"])
+    assert rows[0]["status"] == "ok" and rows[0]["method"] == "PBE0/def2-SVP", rows[0]
+    cmp = api.compare_across_functionals([str(d)], include_imag=False)
+    assert cmp[0].method == "PBE0/def2-SVP"
+
+
+def test_delfin_data_outranks_the_inp_header(tmp_path):
+    d = tmp_path / "run"; d.mkdir()
+    (d / "run.out").write_text("FINAL SINGLE POINT ENERGY   -1.0\n")
+    (d / "run.inp").write_text("! B3LYP def2-SVP\n")
+    (d / "DELFIN_Data.json").write_text(json.dumps({"functional": "PBE0", "basis_set": "def2-TZVP"}))
+    rows = api.extract_energy_table([str(d)], properties=["single_point"])
+    assert rows[0]["method"] == "PBE0/def2-TZVP"
+
+
+def test_a_row_says_whether_the_run_is_still_running(tmp_path):
+    running = tmp_path / "running"; running.mkdir()
+    (running / "run.inp").write_text("! PBE0 def2-SVP\n")
+    (running / "delfin_run.log").write_text("started\n")
+    done = tmp_path / "done"; done.mkdir()
+    (done / "run.out").write_text("FINAL SINGLE POINT ENERGY   -1.0\n")
+    (done / ".exit_code_0").write_text("")
+    failed = tmp_path / "failed"; failed.mkdir()
+    (failed / "run.out").write_text("ORCA finished by error termination\n")
+    (failed / ".exit_code_1025").write_text("")
+    rows = {Path(r["folder"]).name: r for r in api.extract_energy_table(
+        [str(running), str(done), str(failed), str(tmp_path / "nope")], properties=["single_point"])}
+    assert rows["running"]["status"] == "no_output" and rows["running"]["outcome"].startswith("running or crashed")
+    assert rows["running"]["method"] == "PBE0/def2-SVP", "a running run still names its method"
+    assert rows["done"]["outcome"] == "succeeded (exit code 0)"
+    assert rows["failed"]["outcome"] == "failed (exit code 1025)"
+    assert rows["nope"]["status"] == "missing" and rows["nope"]["outcome"].startswith("unknown")
+
+
+def test_the_index_and_the_energy_tools_read_completion_the_same_way(tmp_path):
+    from delfin.doc_server import calc_indexer as ci
+    d = tmp_path / "x"; d.mkdir(); (d / ".exit_code_7").write_text("")
+    assert ci.completion_of(d) == (True, 7)
+    assert ci.outcome_of_folder(d) == "failed (exit code 7)"
+
+
+def test_list_active_calculations_no_longer_crashes_on_an_import():
+    out = ops.tool_list_active_calculations() if not ops.tool_list_active_calculations.__code__.co_argcount else None
+    if out is None:
+        pytest.skip("wrapper takes arguments; the import is exercised below")
+    assert "cannot import name" not in out
+
+
+def test_the_local_backend_import_resolves():
+    api._resolve_backend  # the function under test
+    import shutil
+    if shutil.which("sbatch") and shutil.which("squeue"):
+        pytest.skip("slurm host: the local branch is not taken")
+    backend = api._resolve_backend()
+    assert type(backend).__name__ == "LocalJobBackend"
