@@ -51,10 +51,19 @@ def test_orca_cannot_compute(transition, fragment):
     assert fragment in unsupported_ic_reason(transition)
 
 
-def test_the_validator_refuses_what_orca_cannot_do_when_esd_is_on():
-    errors = validate_control_text(_control(ESD_modul="yes", ICs="[S2>S1]"))
-    assert any("did you mean S2>S0" in e for e in errors), errors
+def test_an_old_control_file_with_an_ic_orca_cannot_do_still_runs_and_is_told():
+    """The old template suggested ICs=[S2>S1]; a CONTROL file that kept it must
+    still run.  The IC is skipped at run time and named before submission."""
+    from delfin.config import get_esd_hints
+
+    for spelling in ("S2>S1", "[S2>S1]"):
+        old = _control(ESD_modul="yes", ICs=spelling)
+        assert validate_control_text(old) == []
+        assert any("did you mean S2>S0" in h and "skipped" in h for h in get_esd_hints(old)), spelling
     assert validate_control_text(_control(ESD_modul="yes", ICs="[S1>S0,S2>S0,T2>T1]")) == []
+    assert not any("skipped" in h for h in get_esd_hints(_control(ESD_modul="yes", ICs="S1>S0")))
+    # a spelling that is not a transition at all is still an error
+    assert any("not a transition" in e for e in validate_control_text(_control(ESD_modul="yes", ICs="[S2-S0]")))
 
 
 def test_an_old_file_with_esd_off_still_reads():

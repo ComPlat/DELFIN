@@ -840,6 +840,16 @@ def get_esd_hints(control_text: str) -> List[str]:
                     f"did you mean ISCs={trans}? ICs connect same spin states (S→S, T→T)"
                 )
 
+    # An IC ORCA cannot compute is skipped at run time; say so before it is.
+    # Read the way the ESD module reads it: brackets or not.
+    from delfin.common.control_validator import unsupported_ic_reason
+    raw_ics = config.get('ICs')
+    ic_items = raw_ics if isinstance(raw_ics, list) else str(raw_ics or '').strip().strip('[]').split(',')
+    for trans in [str(t).strip() for t in ic_items if str(t).strip()]:
+        reason = unsupported_ic_reason(trans)
+        if reason and 'ISC' not in reason and 'not a transition' not in reason:
+            hints.append(f"ICs={trans!r}: {reason}; it will be skipped")
+
     # An explicit MaxDim outside ORCA's range usually means the old reading
     # of it as an absolute size (the template shipped 30).
     maxdim_note = maxdim_hint(config)
