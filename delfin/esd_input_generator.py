@@ -2019,13 +2019,15 @@ def create_ic_input(
 
     # Calculate IROOT: For Tn->T1 IC, T1 is the SCF ground state (multiplicity 3)
     # and Tn is the (n-1)-th excited state above T1
-    # For Sn->S0 IC, S0 is the SCF ground state and Sn is the n-th excited state
+    # For Sn->S0 IC, S0 is the SCF ground state and Sn is the n-th excited state.
+    # It follows from the transition alone: a global IROOT key (the pipeline
+    # used to default it to 1) turned S2>S0 into S1>S0 without a word.
     if final_type == "T" and final_state == "T1":
         # Triplet IC: T2->T1 uses IROOT=1, T3->T1 uses IROOT=2, etc.
-        iroot = config.get('IROOT', init_root - 1)
+        iroot = init_root - 1
     else:
         # Singlet IC: S1->S0 uses IROOT=1, S2->S0 uses IROOT=2, etc.
-        iroot = config.get('IROOT', init_root)
+        iroot = init_root
 
     nacme_flag = str(config.get('NACME', 'TRUE')).upper()
     etf_flag = str(config.get('ETF', 'TRUE')).upper()

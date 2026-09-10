@@ -14,6 +14,7 @@ import threading
 
 from delfin.common.logging import get_logger
 from delfin.common.paths import ensure_relative_link
+from delfin.common.control_validator import unsupported_ic_reason
 from delfin.common.tddft_settings import tddft_block
 from delfin import smart_recalc
 from delfin.esd_input_generator import (
@@ -750,7 +751,7 @@ def _populate_ic_jobs(
 
     Args:
         manager: Workflow manager
-        ics: List of IC transitions (e.g., ["S1>S0", "T1>T2"])
+        ics: List of IC transitions (e.g., ["S1>S0", "T2>T1"])
         esd_dir: ESD working directory
         charge: Molecular charge
         solvent: Solvent name
@@ -766,23 +767,12 @@ def _populate_ic_jobs(
         initial_state = initial_state.strip().upper()
         final_state = final_state.strip().upper()
 
-        # ORCA IC support: Transitions to S1, T1, or S0 (fluorescence only)
-        # Examples: S2→S1, S3→S1, S1→S0 (fluorescence), T2→T1, T3→T1
-        # NOT allowed: S2→S0, S3→S0 (only S1→S0 for fluorescence)
-
-        # Allow Sn→S1 (IC to S1) or S1→S0 (fluorescence)
-        allowed_sn_to_s1 = initial_state.startswith("S") and final_state == "S1"
-        allowed_fluorescence = initial_state == "S1" and final_state == "S0"
-
-        # Allow Tn→T1 (IC to T1, excluding T1→T1)
-        allowed_tn_to_t1 = initial_state.startswith("T") and initial_state != "T1" and final_state == "T1"
-
-        if not (allowed_sn_to_s1 or allowed_fluorescence or allowed_tn_to_t1):
+        # ORCA's ESD(IC) ends in the reference state: Sn>S0, Tn>T1.  The
+        # validator refuses the rest; this catches configs built by hand.
+        reason = unsupported_ic_reason(f"{initial_state}>{final_state}")
+        if reason:
             unsupported_ics.append(ic)
-            logger.warning(
-                "Skipping IC %s: ORCA IC support is limited to Sn→S1, S1→S0 (fluorescence), or Tn→T1; calculation not scheduled.",
-                ic,
-            )
+            logger.warning("Skipping IC %s: %s; calculation not scheduled.", ic, reason)
             continue
 
         # IC depends on both initial and final states

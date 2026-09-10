@@ -254,7 +254,7 @@ working unchanged: `XTB_OPT` is read as `XTB_preOPT`, and `XTB_GOAT=yes` /
 | `ESD_frequency` | `yes` | Run frequency calculation for ESD states |
 | `states` | `S1,T1,S2,T2` | Electronic states to compute |
 | `ISCs` | `S1>T1,T1>S1` | Intersystem crossing rates |
-| `ICs` | `S2>S1` | Internal conversion rates |
+| `ICs` | `S1>S0` | Internal conversion rates. ORCA's ESD(IC) ends in the reference state, so singlets go `Sn>S0` and triplets `Tn>T1` |
 | `emission_rates` | `f,p` | Emission rates: `f` (fluorescence), `p` (phosphorescence) |
 | `phosp_IROOT` | `1,2,3` | Phosphorescence IROOT sublevels |
 | `phosp_keywords` | (empty) | Additional phosphorescence keywords |
@@ -659,7 +659,7 @@ ESD_modul=yes
 ESD_modus=TDDFT
 states=S0,S1,T1,T2
 ISCs=S1>T1,T1>S1
-ICs=S2>S1
+ICs=S1>S0,T2>T1
 emission_rates=f,p
 ```
 
@@ -1106,7 +1106,7 @@ ESD_modul=yes
 ESD_modus=TDDFT
 states=S0,S1,T1,T2
 ISCs=S1>T1,T1>S1
-ICs=S2>S1
+ICs=S1>S0,T2>T1
 emission_rates=f,p
 PAL=16
 maxcore=4000

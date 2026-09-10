@@ -1756,7 +1756,6 @@ def main(argv: list[str] | None = None) -> int:
             'DONTO': 'FALSE',
             'DOSOC': 'TRUE',
             'FOLLOWIROOT': 'TRUE',
-            'IROOT': '1',
             'NACME': 'TRUE',
             'ETF': 'TRUE',
             'implicit_solvation_model': '',

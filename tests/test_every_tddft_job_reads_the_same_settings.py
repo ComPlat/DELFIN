@@ -31,7 +31,7 @@ _XYZ = "3\nwater\nO 0.000 0.000 0.117\nH 0.000 0.757 -0.467\nH 0.000 -0.757 -0.4
 _BASE = [
     ("charge", "0"), ("solvent", "water"), ("method", "classic"),
     ("ESD_modul", "yes"), ("ESD_modus", "TDDFT"), ("ESD_T1_opt", "uks"),
-    ("states", "[S1,T1,S2,T2]"), ("ISCs", "[S1>T1,T1>S1]"), ("ICs", "[S2>S1,T2>T1]"),
+    ("states", "[S1,T1,S2,T2]"), ("ISCs", "[S1>T1,T1>S1]"), ("ICs", "[S1>S0,T2>T1]"),
     ("emission_rates", "[f,p]"),
 ]
 
@@ -66,7 +66,7 @@ def _generate_all(tmp_path: Path, monkeypatch, mode: str, **keys) -> dict:
         gen.create_state_input(state=state, **common)
     for pair in ("S1>T1", "T1>S1"):
         gen.create_isc_input(isc_pair=pair, trootssl=0, **common)
-    for pair in ("S2>S1", "T2>T1"):
+    for pair in ("S1>S0", "S2>S0", "T2>T1"):
         gen.create_ic_input(ic_pair=pair, **common)
     gen.create_fluor_input(**common)
     gen.create_phosp_input(**common)
