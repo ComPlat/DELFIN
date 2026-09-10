@@ -1622,11 +1622,28 @@ def aggregate_replicates(
         gone = set(missing)
         return [s for s in _union("matched_signals") if s in gone]
 
-    # Pick the first non-empty excerpt — gives forensic value without
-    # bloating storage with N copies; tool_names unioned the same way
-    # as signals (a flaky tool-call still surfaces).
+    # One excerpt, not N -- but it has to be an excerpt of the thing the
+    # aggregate REPORTS.
+    #
+    # score_outcome caps a passing sample's excerpt at 400 chars and a
+    # failing one at 4000, on the stated ground that "a FAILING one has
+    # to be diagnosable from the record alone". Taking the first
+    # non-empty one threw that away whenever sample 1 happened to pass:
+    # the record then said FAIL and carried 400 characters of a
+    # DIFFERENT, passing answer, and the sample that actually failed was
+    # unrecoverable. Hit on 2026-09-10 diagnosing
+    # science_a_quantity_that_is_absent_is_reported_as_absent, whose
+    # samples are bimodal -- the record read `q=51 rate=0.40` beside the
+    # excerpt of a run that scored 98.
+    #
+    # So: when the aggregate does not pass, prefer a sample that did not
+    # pass. Still one copy, still the first match, now of the right
+    # sample.
+    _aggregate_passes = (n_pass * 2 >= n)
+    _preferred = ([r for r in results if not r.success]
+                  if not _aggregate_passes else [])
     excerpt = ""
-    for r in results:
+    for r in (_preferred + list(results)):
         if r.text_excerpt:
             excerpt = r.text_excerpt
             break
@@ -1640,7 +1657,7 @@ def aggregate_replicates(
     # nobody took. The first sample that made any call is the one kept,
     # which matches how the excerpt is chosen two blocks up.
     subjects: list[str] = []
-    for r in results:
+    for r in (_preferred + list(results)):
         if r.tool_subjects:
             subjects = list(r.tool_subjects)
             break

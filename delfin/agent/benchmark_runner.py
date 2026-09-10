@@ -952,6 +952,17 @@ def _fixture_calc_dirs(workspace: Path):
     one, including a live session sharing the process.
     """
     from .api_client import _doc_executor
+    # A task without a fixture workspace passes None here -- most of the
+    # suite, since only the science and project families get one. The
+    # first version indexed straight into Path(None), and run_task
+    # catches everything the attempt raises, so every dashboard, office
+    # and behaviour task came back "_run_once raised: argument should be
+    # a str or an os.PathLike object" -- an unmeasured error rather than
+    # a model failure, which is at least the honest half, but a whole
+    # suite of them.
+    if not workspace:
+        yield
+        return
     root = Path(workspace) / "calc_archive"
     if not (root / "calc").is_dir():
         yield

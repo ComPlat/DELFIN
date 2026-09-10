@@ -161,3 +161,58 @@ def test_the_setup_script_is_the_one_the_task_names(task):
 
     assert task.setup == "a_small_calc_archive.py"
     assert setup_path(task.setup).is_file()
+
+
+# ---------------------------------------------------------------------------
+# The workspace that is not there
+# ---------------------------------------------------------------------------
+#
+# Only the science and project families get a fixture workspace; the rest
+# of the suite passes None. The first version of _fixture_calc_dirs
+# indexed straight into Path(None), and because run_task catches whatever
+# the attempt raises, every dashboard, office and behaviour task came
+# back as `_run_once raised: argument should be a str or an os.PathLike
+# object`. Unmeasured rather than scored as a model failure, which is the
+# honest half — but a whole suite of them, from a guard that was supposed
+# to be inert for exactly those tasks.
+
+def test_a_task_without_a_workspace_is_left_alone():
+    from delfin.agent.api_client import _doc_executor
+
+    before = dict(getattr(_doc_executor, "_calc_dirs", {}))
+    with _fixture_calc_dirs(None):
+        assert dict(getattr(_doc_executor, "_calc_dirs", {})) == before
+    assert dict(getattr(_doc_executor, "_calc_dirs", {})) == before
+
+
+def test_an_empty_workspace_string_is_left_alone_too():
+    from delfin.agent.api_client import _doc_executor
+
+    before = dict(getattr(_doc_executor, "_calc_dirs", {}))
+    with _fixture_calc_dirs(""):
+        assert dict(getattr(_doc_executor, "_calc_dirs", {})) == before
+
+
+def test_a_task_with_no_workspace_still_runs_end_to_end():
+    """The shape the whole suite hit: the guard must be invisible to a
+    task that has no workspace at all."""
+    from delfin.agent import benchmark_runner as br
+    from delfin.agent.benchmark import Task
+
+    task = Task(id="probe", task_class="dashboard_nav", mode="dashboard",
+                prompt="p", expected_signals=(), forbidden_signals=(),
+                max_duration_s=10.0, max_cost_usd=0.05, max_tool_calls=2)
+
+    class _Engine:
+        cost_usd = 0.0
+
+    ticks = iter([100.0, 101.5, 101.6])
+    res = br.run_task(
+        task, model="m",
+        engine_factory=lambda *a, **k: _Engine(),
+        run_once=lambda e, p, **k: {"text": "ok", "tool_calls": [],
+                                    "input_tokens": 1, "output_tokens": 1,
+                                    "error": ""},
+        clock=lambda: next(ticks))
+    assert not res.error, res.error
+    assert "PathLike" not in (res.error or "")

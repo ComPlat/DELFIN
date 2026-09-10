@@ -145,3 +145,83 @@ def test_the_summary_still_counts_a_wrong_as_a_wrong():
         text="Gibbs fehlt; xtb 6.4.1, 4 Dateien, Frequenzrechnung.",
         tool_calls=_READ))
     assert set(res.value_report.values()) <= {"matched", "wrong", "absent"}
+
+
+# ---------------------------------------------------------------------------
+# A failing record carried a passing answer
+# ---------------------------------------------------------------------------
+#
+# score_outcome caps a passing sample's excerpt at 400 characters and a
+# failing one at 4000, on its own stated ground: "a FAILING one has to be
+# diagnosable from the record alone -- 400 chars regularly cut off the
+# sentence that tripped a signal."
+#
+# aggregate_replicates then took the FIRST non-empty excerpt across the
+# replicates. Whenever sample 1 happened to pass, the aggregate reported
+# a failure and carried 400 characters of a different, passing answer --
+# and the sample that actually failed was gone. The same line chose the
+# tool subjects, so the recorded route was that other sample's too.
+#
+# Found diagnosing science_a_quantity_that_is_absent_is_reported_as_absent,
+# whose samples are bimodal: the record read `q=51 rate=0.40` beside the
+# excerpt of a run that scored 98, which is why the failure could not be
+# explained without re-running.
+
+from delfin.agent.benchmark import BenchmarkResult, aggregate_replicates
+
+
+def _sample(*, ok, excerpt, subjects):
+    return BenchmarkResult(
+        task_id="t", task_class="c", model="m", mode="solo",
+        success=ok, quality_0_100=98 if ok else 51,
+        text_excerpt=excerpt, tool_subjects=list(subjects),
+        tool_names=["read_file"], n_samples=1,
+    )
+
+
+def test_a_failing_aggregate_carries_a_failing_sample():
+    agg = aggregate_replicates([
+        _sample(ok=True, excerpt="the passing answer", subjects=["read_file: a"]),
+        _sample(ok=False, excerpt="the failing answer", subjects=["bash: b"]),
+        _sample(ok=False, excerpt="another failing one", subjects=["bash: c"]),
+    ])
+    assert agg.success is False
+    assert agg.text_excerpt == "the failing answer"
+    assert agg.tool_subjects == ["bash: b"], agg.tool_subjects
+
+
+def test_a_passing_aggregate_is_unchanged():
+    """The old behaviour where it was already right: still the first."""
+    agg = aggregate_replicates([
+        _sample(ok=True, excerpt="first", subjects=["read_file: a"]),
+        _sample(ok=True, excerpt="second", subjects=["read_file: b"]),
+        _sample(ok=False, excerpt="the odd failure", subjects=["bash: c"]),
+    ])
+    assert agg.success is True
+    assert agg.text_excerpt == "first"
+
+
+def test_a_failing_sample_with_no_text_does_not_blank_the_record():
+    """An empty answer is the commonest failure of all. Preferring a
+    failing sample must not mean preferring an empty excerpt over a
+    usable one."""
+    agg = aggregate_replicates([
+        _sample(ok=True, excerpt="the passing answer", subjects=["read_file: a"]),
+        _sample(ok=False, excerpt="", subjects=[]),
+        _sample(ok=False, excerpt="the failing answer", subjects=["bash: c"]),
+    ])
+    assert agg.text_excerpt == "the failing answer"
+    assert agg.tool_subjects == ["bash: c"]
+
+
+def test_every_sample_failing_still_picks_the_first():
+    agg = aggregate_replicates([
+        _sample(ok=False, excerpt="one", subjects=["bash: a"]),
+        _sample(ok=False, excerpt="two", subjects=["bash: b"]),
+    ])
+    assert agg.text_excerpt == "one"
+
+
+def test_a_single_sample_is_its_own_excerpt():
+    agg = aggregate_replicates([_sample(ok=False, excerpt="only", subjects=["bash: a"])])
+    assert agg.text_excerpt == "only"
