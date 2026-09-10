@@ -18,8 +18,9 @@ import re
 import shutil
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
+from delfin.common import orca_input
 from delfin.common.logging import get_logger
 from delfin.common.tddft_settings import ORCA_DEFAULT_MAXDIM
 
@@ -571,7 +572,7 @@ class RecoveryStrategy:
                     "keywords_add": ["VerySlowConv", "FreezeAndRelease", "GMF"],
                     "scf_block": {
                         "MaxIter": 1000,
-                        "SOSCF": True,  # %scf block parameter
+                        "CNVSOSCF": "true",  # %scf switch; a bare SOSCF line opens a sub-block
                         "DampFac": 0.9,  # High damping for pathological cases
                         "DampErr": 0.02,
                         "SOSCFHESSUP": "LBFGS",  # Switch from LSR1 to LBFGS
@@ -605,7 +606,7 @@ class RecoveryStrategy:
                     "keywords_add": ["VerySlowConv"],
                     "scf_block": {
                         "MaxIter": 800,
-                        "SOSCF": True,  # %scf block parameter
+                        "CNVSOSCF": "true",  # %scf switch; a bare SOSCF line opens a sub-block
                         "DampFac": 0.95,  # Very high damping for pathological cases
                         "DampErr": 0.001,  # Damp until very converged
                     },
@@ -762,7 +763,7 @@ class RecoveryStrategy:
             return {
                 "use_moread": True,
                 "scf_block": {
-                    "SOSCF": True,  # %scf block parameter
+                    "CNVSOSCF": "true",  # %scf switch; a bare SOSCF line opens a sub-block
                     "SOSCFStart": 0.00033,  # Start SOSCF earlier
                     "MaxIter": 500,
                     "DampFac": 0.9,
@@ -774,7 +775,7 @@ class RecoveryStrategy:
             return {
                 "use_moread": True,
                 "scf_block": {
-                    "SOSCF": True,
+                    "CNVSOSCF": "true",
                     "SOSCFStart": 0.001,
                     "MaxIter": 600,
                     "DampFac": 0.95,  # Strong damping
@@ -841,7 +842,7 @@ class RecoveryStrategy:
         if self.attempt == 2:
             return {
                 "tddft_block": {"tda": "true"},
-                "scf_block": {"Convergence": "TightSCF"},
+                "scf_block": {"Convergence": "Tight"},
             }
         # Last resort: TDA plus a larger Davidson subspace and more
         # iterations, for roots that are merely hard to converge.  MaxDim is
@@ -849,7 +850,7 @@ class RecoveryStrategy:
         # a large space; the 50 this used to set meant 750 vectors at 15 roots.
         return {
             "tddft_block": {"tda": "true", "maxdim": 2 * ORCA_DEFAULT_MAXDIM, "maxiter": 1000},
-            "scf_block": {"Convergence": "TightSCF"},
+            "scf_block": {"Convergence": "Tight"},
             "reduce_pal": 0.5,
         }
 
@@ -886,7 +887,7 @@ class RecoveryStrategy:
                 "use_moread": True,
                 "freq_method": "NumFreq",  # Try different method
                 "scf_block": {
-                    "Convergence": "VeryTightConv",  # Tighter for numerical derivatives
+                    "Convergence": "VeryTight",  # Tighter for numerical derivatives
                 },
             }
         else:
@@ -941,7 +942,7 @@ class RecoveryStrategy:
         """
         fixes: Dict = {
             "keywords_remove": ["SOSCF"],  # Disable SOSCF keyword if present
-            "scf_block_remove": ["SOSCF", "SOSCFStart", "SOSCFConvFactor", "SOSCFMaxStep", "SOSCFHESSUP"],
+            "scf_block_remove": ["SOSCF", "CNVSOSCF", "SOSCFStart", "SOSCFConvFactor", "SOSCFMaxStep", "SOSCFHESSUP"],
             # Attempt 1 halves the cores, attempt 2 quarters them: fewer ranks
             # means more memory per rank.
             "reduce_pal": 0.5 if self.attempt == 1 else 0.25,
@@ -959,7 +960,26 @@ class RecoveryStrategy:
 
 
 class OrcaInputModifier:
-    """Modifies ORCA input files by applying recovery strategies."""
+    """Writes the retry input for a recovery strategy.
+
+    The input is changed through :mod:`delfin.common.orca_input`, which keeps
+    every line it does not change.  Measured on ORCA 6.1.1, the dictionary
+    rebuild this replaces wrote retries ORCA refused or misread:
+
+    * one-line blocks (``%scf maxiter 125 end``, in every OCCUPIER input)
+      came back nested inside a new ``%scf`` -- an input error;
+    * a second ``%scf`` (``BrokenSym``) was written twice, the first lost;
+    * a bare ``SOSCF`` line opens a sub-block in ORCA (manual section 2.1),
+      so the settings after it were read inside it -- an input error;
+    * ``Convergence TightSCF`` is not an ORCA value (``Tight`` is);
+    * a metal's ``NewGTO ... end`` on its coordinate line was dropped when the
+      coordinates were updated, so the retry ran the metal in another basis;
+    * a multi-job file could come back as one job carrying the second job's
+      ``%base`` and ``%tddft``.
+
+    Each job of the file is kept apart; the strategy's changes go to the job
+    that failed, and what is written must read back as ORCA input.
+    """
 
     def __init__(self, inp_file: Path, config: Dict):
         """Initialize input modifier.
@@ -968,9 +988,9 @@ class OrcaInputModifier:
             inp_file: Path to original ORCA .inp file
             config: DELFIN configuration dict
         """
-        self.inp_file = inp_file
+        self.inp_file = Path(inp_file)
         self.config = config
-        self.work_dir = inp_file.parent
+        self.work_dir = self.inp_file.parent
 
     def apply_recovery(self, strategy: RecoveryStrategy) -> Path:
         """Apply recovery strategy and create modified input file.
@@ -979,824 +999,213 @@ class OrcaInputModifier:
             strategy: Recovery strategy to apply
 
         Returns:
-            Path to modified input file
+            Path to the retry input, or the original path when no retry can be written
         """
         try:
-            # Parse original input first so strategy can access it
-            parsed = self._parse_input()
-
-            # Provide parsed input to strategy for context-aware modifications
-            strategy.parsed_input = parsed
-
-            mods = strategy.get_modifications()
-
-            if not mods:
-                logger.warning(f"No modifications defined for {strategy.error_type.value}")
-                return self.inp_file
-
-            # Apply modifications
-            if mods.get("use_moread"):
-                parsed = self._add_moread(parsed)
-                # CRITICAL: Update coordinates from .xyz to match .gbw geometry
-                parsed = self._update_geometry_from_xyz(parsed)
-
-            if "scf_block" in mods:
-                parsed = self._modify_scf_block(parsed, mods["scf_block"])
-
-            if "geom_block" in mods:
-                parsed = self._modify_geom_block(parsed, mods["geom_block"])
-
-            if "tddft_block" in mods:
-                parsed = self._modify_tddft_block(parsed, mods["tddft_block"])
-
-            if mods.get("force_pal"):
-                parsed = self._set_parallelism(parsed, int(mods["force_pal"]))
-            elif mods.get("reduce_pal"):
-                parsed = self._reduce_parallelism(parsed, mods["reduce_pal"])
-
-            if mods.get("reduce_maxcore"):
-                parsed = self._reduce_maxcore(parsed, mods["reduce_maxcore"])
-
-            if mods.get("set_maxcore"):
-                parsed = self._set_maxcore(parsed, mods["set_maxcore"])
-
-            if mods.get("skip_freq"):
-                parsed = self._remove_freq(parsed)
-
-            if "keywords_add" in mods:
-                parsed = self._add_keywords(parsed, mods["keywords_add"])
-
-            if "keywords_remove" in mods:
-                parsed = self._remove_keywords(parsed, mods["keywords_remove"])
-
-            if "scf_block_remove" in mods:
-                parsed = self._remove_scf_params(parsed, mods["scf_block_remove"])
-
-            # Create modified input file
-            new_inp = self.inp_file.with_suffix(f'.retry{strategy.attempt}.inp')
-            self._write_input(new_inp, parsed)
-
-            logger.info(
-                f"Created recovery input: {new_inp.name} "
-                f"(error={strategy.error_type.value}, attempt={strategy.attempt})"
-            )
-
-            return new_inp
-
-        except Exception as e:
-            logger.error(f"Failed to apply recovery strategy: {e}", exc_info=True)
+            text = self.inp_file.read_text(encoding="utf-8", errors="replace")
+            jobs = [orca_input.parse_job(job) for job in orca_input.split_jobs(text)]
+        except (OSError, orca_input.OrcaInputError) as exc:
+            logger.error("Recovery cannot rewrite %s: %s", self.inp_file.name, exc)
             return self.inp_file
 
-    def _parse_input(self) -> Dict:
-        """Parse ORCA input file into structured format.
+        target = self._failed_job(strategy, len(jobs))
+        strategy.parsed_input = self._strategy_view(jobs[target])
+        mods = strategy.get_modifications()
+        if not mods:
+            logger.warning(f"No modifications defined for {strategy.error_type.value}")
+            return self.inp_file
 
-        Returns:
-            Dictionary with parsed components
-        """
-        with open(self.inp_file, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-
-        parsed = {
-            "keywords": [],
-            "blocks": {},
-            "blocks_before_geom": [],  # Blocks that appear before geometry
-            "blocks_after_geom": [],   # Blocks that appear after geometry
-            "geometry": [],
-            "charge_mult": None,
-            "raw_lines": lines,
-            "comments": [],  # Store comment lines
-            "subsequent_jobs": None,  # Everything after $new_job (preserved verbatim)
-        }
-
-        # First, check for $new_job and split the file
-        # Only parse the FIRST job, preserve everything after $new_job verbatim
-        full_content = ''.join(lines)
-        new_job_match = re.search(r'\n\s*\$new_job\s*\n', full_content, re.IGNORECASE)
-        if new_job_match:
-            first_job_content = full_content[:new_job_match.start()]
-            parsed["subsequent_jobs"] = full_content[new_job_match.start():]  # Include $new_job line
-            lines = first_job_content.split('\n')
-            lines = [line + '\n' for line in lines]  # Re-add newlines
-            logger.debug(f"Found $new_job - parsing only first job, preserving {len(parsed['subsequent_jobs'])} chars of subsequent jobs")
-
-        # Parse comment lines and keyword line
-        for line in lines:
-            stripped = line.strip()
-            if stripped.startswith("#"):
-                parsed["comments"].append(line.rstrip())
-            elif stripped.startswith("!"):
-                keywords = stripped[1:].split()
-                parsed["keywords"] = keywords
-                break
-
-        # First, find geometry position
-        geom_line_num = None
-        for i, line in enumerate(lines):
-            if line.strip().startswith("* xyz") or line.strip().startswith("* xyzfile"):
-                geom_line_num = i
-                break
-
-        # Parse blocks (%pal, %scf, %geom, etc.)
-        # Need to handle nested blocks (like Constraints { ... } end in %geom)
-        current_block = None
-        block_lines = []
-        in_subblock = False  # Track if we're in a nested sub-block (like Constraints)
-        block_start_line = None
-
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-
-            if stripped.startswith("%"):
-                # Save previous block
-                if current_block:
-                    block_content = "\n".join(block_lines)
-                    parsed["blocks"][current_block] = block_content
-                    # Categorize: before or after geometry?
-                    if geom_line_num is not None:
-                        if block_start_line < geom_line_num:
-                            parsed["blocks_before_geom"].append(current_block)
-                        else:
-                            parsed["blocks_after_geom"].append(current_block)
-
-                # Start new block
-                block_name = stripped[1:].split()[0]
-                current_block = block_name
-                block_lines = [stripped]
-                in_subblock = False
-                block_start_line = i
-
-            elif current_block:
-                block_lines.append(line.rstrip())
-
-                # Check for start of sub-blocks (Constraints, MDCI, etc.)
-                if any(keyword in stripped for keyword in ['Constraints', 'MDCI', 'ModifyInternal']):
-                    in_subblock = True
-
-                # Check for "end"
-                if stripped.lower() == "end":
-                    if in_subblock:
-                        # This "end" closes the sub-block, not the main block
-                        in_subblock = False
-                    else:
-                        # This "end" closes the main block
-                        block_content = "\n".join(block_lines)
-                        parsed["blocks"][current_block] = block_content
-                        # Categorize: before or after geometry?
-                        if geom_line_num is not None:
-                            if block_start_line < geom_line_num:
-                                parsed["blocks_before_geom"].append(current_block)
-                            else:
-                                parsed["blocks_after_geom"].append(current_block)
-                        current_block = None
-                        block_lines = []
-                        in_subblock = False
-                        block_start_line = None
-
-        # Parse geometry
-        in_geom = False
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-
-            if stripped.startswith("* xyz") or stripped.startswith("* xyzfile"):
-                parsed["charge_mult"] = stripped
-                in_geom = True
-                continue
-
-            if in_geom:
-                if stripped == "*":
-                    break
-                # Handle trailing geometry terminator stuck to the last coordinate line
-                if stripped.endswith("*") and not stripped.startswith("*") and len(stripped.split()) >= 4:
-                    cleaned = stripped[:-1].rstrip()
-                    if cleaned:
-                        parsed["geometry"].append(cleaned)
-                    break
-                parsed["geometry"].append(line.rstrip())
-
-        return parsed
-
-    def _update_geometry_from_xyz(self, parsed: Dict) -> Dict:
-        """Update geometry coordinates from latest .xyz file while preserving inline basis sets.
-
-        This is CRITICAL for geometry optimizations:
-        - .gbw contains wavefunction for OPTIMIZED geometry
-        - .xyz contains the OPTIMIZED coordinates
-        - We must use these new coordinates with MOREAD, not old ones!
-
-        Args:
-            parsed: Parsed input dict
-
-        Returns:
-            Modified parsed dict with updated coordinates
-        """
-        # Find latest .xyz file
-        xyz_candidates = [
-            self.inp_file.with_suffix('.xyz'),  # Same name as input
-            *sorted(
-                self.work_dir.glob(f"{self.inp_file.stem}*.xyz"),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True
-            )[:3]
-        ]
-
-        xyz_file = None
-        for candidate in xyz_candidates:
-            if candidate.exists():
-                xyz_file = candidate
-                break
-
-        if not xyz_file:
-            logger.info("No .xyz file found, keeping original coordinates")
-            return parsed
-
-        logger.info(f"Updating coordinates from: {xyz_file.name}")
-
-        # Read .xyz file
         try:
-            with open(xyz_file, 'r') as f:
-                xyz_lines = f.readlines()
-        except Exception as e:
-            logger.warning(f"Could not read .xyz file: {e}")
-            return parsed
+            self._apply(jobs, target, mods)
+            new_text = "".join(orca_input.render_job(items) for items in jobs)
+            for job in orca_input.split_jobs(new_text):
+                orca_input.parse_job(job)
+        except orca_input.OrcaInputError as exc:
+            logger.error("Recovery for %s would write an input ORCA cannot read (%s); not retrying",
+                         self.inp_file.name, exc)
+            return self.inp_file
 
-        # Parse .xyz format:
-        # Line 0: number of atoms
-        # Line 1: comment
-        # Line 2+: Element X Y Z
-        try:
-            n_atoms = int(xyz_lines[0].strip())
-            xyz_coords = []
-            for i in range(2, 2 + n_atoms):
-                xyz_coords.append(xyz_lines[i].strip())
-        except Exception as e:
-            logger.warning(f"Could not parse .xyz file: {e}")
-            return parsed
+        new_inp = self.inp_file.with_suffix(f'.retry{strategy.attempt}.inp')
+        new_inp.write_text(new_text, encoding="utf-8")
+        logger.info(
+            f"Created recovery input: {new_inp.name} "
+            f"(error={strategy.error_type.value}, attempt={strategy.attempt}, job {target + 1} of {len(jobs)})"
+        )
+        return new_inp
 
-        # Extract inline basis sets from original geometry
-        # Map: atom_index -> list of basis set lines following that atom
-        atom_basis_map = {}
-        current_atom_idx = 0
-        basis_lines_for_current = []
-
-        for line in parsed["geometry"]:
-            stripped = line.strip()
-            # Check if this is an atom line (starts with element symbol)
-            if stripped and not stripped.startswith('newgto') and not stripped.startswith('newaux'):
-                # Save basis lines for previous atom
-                if current_atom_idx > 0 and basis_lines_for_current:
-                    atom_basis_map[current_atom_idx - 1] = basis_lines_for_current
-                    basis_lines_for_current = []
-                current_atom_idx += 1
-            elif stripped.startswith('newgto') or stripped.startswith('newaux'):
-                # This is a basis set line
-                basis_lines_for_current.append(line)
-
-        # Don't forget last atom's basis sets
-        if basis_lines_for_current:
-            atom_basis_map[current_atom_idx - 1] = basis_lines_for_current
-
-        # Build new geometry with updated coordinates + preserved basis sets
-        new_geometry = []
-        for i, xyz_line in enumerate(xyz_coords):
-            # Add coordinate line from .xyz
-            new_geometry.append(xyz_line)
-            # Add inline basis sets if this atom had them
-            if i in atom_basis_map:
-                new_geometry.extend(atom_basis_map[i])
-
-        # Update parsed geometry
-        parsed["geometry"] = new_geometry
-
-        # CRITICAL: Change "* xyzfile ..." to "* xyz ..." since we're using inline coords
-        if parsed["charge_mult"] and "xyzfile" in parsed["charge_mult"]:
-            # Extract charge and multiplicity, replace xyzfile with xyz
-            parts = parsed["charge_mult"].split()
-            if len(parts) >= 4 and parts[0] == "*" and parts[1] == "xyzfile":
-                charge = parts[2]
-                mult = parts[3]
-                parsed["charge_mult"] = f"* xyz {charge} {mult}"
-                logger.info(f"Changed geometry format from xyzfile to inline xyz")
-
-        logger.info(f"Updated {len(xyz_coords)} atom coordinates from .xyz, preserved inline basis sets")
-
-        return parsed
-
-    def _add_moread(self, parsed: Dict) -> Dict:
-        """Add MOREAD keyword and %moinp block to continue from last state.
-
-        Strategy for RETRY (this is only called during recovery, not initial run):
-        - Always check if a valid GBW exists
-        - If GBW exists: Add/update MOREAD to use it (continue from partial run)
-        - If no GBW: Don't add MOREAD (start from scratch)
-
-        Args:
-            parsed: Parsed input dict
-
-        Returns:
-            Modified parsed dict
-        """
-        # Find valid GBW file to use for continuation
-        gbw_file = self._find_valid_gbw()
-
-        if not gbw_file:
-            # No valid GBW found -> Remove MOREAD if present and start from scratch
-            logger.info("No valid GBW found - removing MOREAD (will start from scratch)")
-            parsed["keywords"] = [k for k in parsed["keywords"] if k != "MOREAD"]
-            if "moinp" in parsed["blocks"]:
-                del parsed["blocks"]["moinp"]
-            return parsed
-
-        # Valid GBW found -> Use it for continuation
-        logger.info(f"Found valid GBW - using {gbw_file.name} for continuation")
-
-        # Add MOREAD keyword if not present
-        if "MOREAD" not in parsed["keywords"]:
-            parsed["keywords"].append("MOREAD")
-            logger.info("Added MOREAD keyword")
-
-        # Add/update %moinp block
-        parsed["blocks"]["moinp"] = f'%moinp "{gbw_file.name}"'
-        logger.info(f"Set %moinp to {gbw_file.name}")
-
-        return parsed
-
-    def _find_valid_gbw(self, prefer_job_gbw: bool = True) -> Optional[Path]:
-        """Find a valid GBW file to use for MOREAD.
-
-        Priority order when prefer_job_gbw=True:
-        1. GBW file with same name as input (e.g., T1.gbw for T1.inp) - highest priority
-        2. Other GBW files in directory (sorted by modification time)
-
-        Args:
-            prefer_job_gbw: If True, prioritize job's own GBW over others
-
-        Returns:
-            Path to valid GBW file (backed up to _old.gbw), or None if not found
-        """
-        if prefer_job_gbw:
-            # First check job's own GBW (from partial run)
-            job_gbw = self.inp_file.with_suffix('.gbw')
-            if job_gbw.exists() and job_gbw.stat().st_size > 100_000:
-                gbw_backup = self.work_dir / f"{job_gbw.stem}_old.gbw"
-                try:
-                    shutil.copy2(job_gbw, gbw_backup)
-                    logger.info(f"Found job's own GBW (partial run): {job_gbw.name} -> {gbw_backup.name}")
-                    return gbw_backup
-                except Exception as e:
-                    logger.warning(f"Failed to backup job GBW {job_gbw.name}: {e}")
-
-        # Check other GBW files (e.g., from prerequisite jobs like S0)
-        other_gbw_candidates = sorted(
-            self.work_dir.glob("*.gbw"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True
-        )[:10]
-
-        for gbw in other_gbw_candidates:
-            if not gbw.exists():
-                continue
-
-            # Skip job's own GBW if we already checked it
-            if prefer_job_gbw and gbw == self.inp_file.with_suffix('.gbw'):
-                continue
-
-            # Basic sanity checks
-            size = gbw.stat().st_size
-            if size < 100_000:  # Less than 100 KB is suspicious
-                logger.debug(f"Skipping {gbw.name} - too small ({size} bytes)")
-                continue
-
-            # Create backup to prevent ORCA from deleting it on crash
-            gbw_backup = self.work_dir / f"{gbw.stem}_old.gbw"
-            try:
-                shutil.copy2(gbw, gbw_backup)
-                logger.info(f"Found valid GBW: {gbw.name} -> {gbw_backup.name}")
-                return gbw_backup
-            except Exception as e:
-                logger.warning(f"Failed to backup GBW {gbw.name}: {e}")
-                continue
-
-        return None
+    # ------------------------------------------------------------------ which job
 
     @staticmethod
-    def _sets_param(line: str, params) -> bool:
-        """True if an ORCA block line assigns one of ``params``.
+    def _failed_job(strategy: RecoveryStrategy, n_jobs: int) -> int:
+        """Index of the job ORCA was running when it stopped (its last "JOB NUMBER" banner)."""
+        if n_jobs <= 1 or strategy.output_file is None:
+            return 0
+        try:
+            text = Path(strategy.output_file).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return 0
+        numbers = re.findall(r"\${4,}\s+JOB NUMBER\s+(\d+)\s+\$", text)
+        if not numbers:
+            return 0
+        return max(0, min(int(numbers[-1]) - 1, n_jobs - 1))
 
-        Matches on the first token only. Substring matching would drop
-        unrelated settings - setting ``MaxIter`` would delete an existing
-        ``SOSCFMaxIter`` line, because "maxiter" is a substring of it.
+    @staticmethod
+    def _strategy_view(items) -> Dict:
+        """What a strategy reads of the failed job: its keywords, and its blocks and settings by name."""
+        blocks: Dict[str, str] = {}
+        for it in items:
+            if it.kind in ("block", "setting"):
+                blocks[it.name] = "".join(it.lines).strip()
+        return {"keywords": orca_input.job_keywords(items), "blocks": blocks}
+
+    def _original_stem(self) -> str:
+        return re.sub(r"(\.retry\d+)+$", "", self.inp_file.stem)
+
+    @staticmethod
+    def _base(items) -> Optional[str]:
+        value = orca_input.setting_value(items, "base")
+        return value.strip().strip('"').strip("'") if value else None
+
+    # ------------------------------------------------------------------ changes
+
+    def _apply(self, jobs, target: int, mods: Dict) -> None:
+        job = jobs[target]
+
+        # A job with no %base writes under the input's name; the retry input
+        # has another name, so without this its gbw/xyz/hess land beside the
+        # failed run's files and every later step reads the failed ones.
+        for items in jobs:
+            if self._base(items) is None:
+                orca_input.set_setting(items, "base", f'"{self._original_stem()}"')
+
+        if mods.get("use_moread"):
+            for index in range(target + 1):
+                self._continue_from_own_state(jobs[index])
+
+        if "scf_block" in mods:
+            orca_input.set_block_values(job, "scf", mods["scf_block"])
+
+        if "geom_block" in mods:
+            orca_input.set_block_values(job, "geom", mods["geom_block"])
+
+        if "tddft_block" in mods:
+            # never into a job without one: %tddft in an optimisation makes
+            # ORCA optimise an excited state
+            holders = [job] if orca_input.has_block(job, "tddft") else \
+                [items for items in jobs if orca_input.has_block(items, "tddft")]
+            for items in holders:
+                orca_input.set_block_values(items, "tddft", mods["tddft_block"], create=False)
+            logger.info("Set %%tddft parameters: %s",
+                        ", ".join(f"{k}={v}" for k, v in mods["tddft_block"].items()))
+
+        for items in jobs:
+            if mods.get("force_pal"):
+                self._set_nprocs(items, lambda n: max(1, int(mods["force_pal"])), create=True)
+            elif mods.get("reduce_pal"):
+                self._set_nprocs(items, lambda n: max(1, int(n * mods["reduce_pal"])), create=False)
+            if mods.get("reduce_maxcore"):
+                self._set_maxcore(items, lambda mb: max(1000, int(mb * mods["reduce_maxcore"])))
+            if mods.get("set_maxcore"):
+                self._set_maxcore(items, lambda mb: max(mb, int(mods["set_maxcore"])))
+
+        if mods.get("skip_freq"):
+            if orca_input.remove_keywords(job, ["Freq", "NumFreq", "AnFreq"]):
+                logger.info("Removed frequency keywords from input")
+
+        if mods.get("freq_method"):
+            if orca_input.replace_in_family(job, mods["freq_method"], add_if_absent=False):
+                logger.info("Frequencies now computed with %s", mods["freq_method"])
+
+        if "keywords_add" in mods:
+            if orca_input.add_keywords(job, mods["keywords_add"]):
+                logger.info("Added keyword(s) %s to input", mods["keywords_add"])
+
+        if "keywords_remove" in mods:
+            if orca_input.remove_keywords(job, mods["keywords_remove"]):
+                logger.info("Removed keyword(s): %s", mods["keywords_remove"])
+
+        if "scf_block_remove" in mods:
+            if orca_input.remove_block_values(job, "scf", mods["scf_block_remove"]):
+                logger.info("Removed SCF parameter(s): %s", mods["scf_block_remove"])
+
+    @staticmethod
+    def _set_nprocs(items, new_value, *, create: bool) -> None:
+        current = orca_input.block_value(items, "pal", "nprocs")
+        if current is None:
+            if create:
+                orca_input.set_block_values(items, "pal", {"nprocs": new_value(1)})
+            return
+        try:
+            n = int(current.split()[0])
+        except (ValueError, IndexError):
+            return
+        value = new_value(n)
+        if value != n:
+            orca_input.set_block_values(items, "pal", {"nprocs": value})
+            logger.info(f"PAL nprocs: {n} → {value}")
+
+    @staticmethod
+    def _set_maxcore(items, new_value) -> None:
+        current = orca_input.setting_value(items, "maxcore")
+        if current is None:
+            return
+        match = re.search(r"\d+", current)
+        if not match:
+            return
+        mb = int(match.group(0))
+        value = new_value(mb)
+        if value != mb:
+            orca_input.set_setting(items, "maxcore", str(value))
+            logger.info("MaxCore: %d → %d MB", mb, value)
+
+    def _continue_from_own_state(self, items) -> None:
+        """Restart a job from what its failed run left: its own orbitals, and for an optimisation its geometry.
+
+        Only the job's own files count (named by its %base).  A run that left
+        none keeps the guess DELFIN gave it, or ORCA's own guess when that
+        file is gone -- never the newest gbw of some other job in the folder.
         """
-        tokens = line.strip().split()
-        if not tokens:
-            return False
-        return tokens[0].lower() in {str(p).lower() for p in params}
-
-    def _modify_scf_block(self, parsed: Dict, scf_params: Dict) -> Dict:
-        """Modify or create %scf block with new parameters.
-
-        Args:
-            parsed: Parsed input dict
-            scf_params: SCF parameters to set
-
-        Returns:
-            Modified parsed dict
-        """
-        # Parse existing %scf block or create new one
-        if "scf" in parsed["blocks"]:
-            scf_lines = parsed["blocks"]["scf"].split("\n")
-            # Remove %scf header and end
-            scf_lines = [l for l in scf_lines if l.strip() and l.strip().lower() not in ["%scf", "end"]]
-        else:
-            scf_lines = []
-
-        # Build new SCF block
-        new_scf = ["%scf"]
-
-        # Drop lines setting a parameter we are about to override; the new
-        # value is appended below. This used to also mark the parameter as
-        # "added", so the old line was removed and the new value never
-        # written - the parameter silently vanished from the input instead of
-        # being updated, and the recovery strategy had no effect.
-        for line in scf_lines:
-            if self._sets_param(line, scf_params):
-                continue
-            new_scf.append("  " + line.strip())
-
-        # Write the requested parameters
-        for param, value in scf_params.items():
-            if value is True:
-                new_scf.append(f"  {param}")
-            elif value is not False:
-                new_scf.append(f"  {param} {value}")
-
-        new_scf.append("end")
-
-        parsed["blocks"]["scf"] = "\n".join(new_scf)
-
-        return parsed
-
-    def _modify_geom_block(self, parsed: Dict, geom_params: Dict) -> Dict:
-        """Modify or create %geom block.
-
-        Args:
-            parsed: Parsed input dict
-            geom_params: Geometry parameters to set
-
-        Returns:
-            Modified parsed dict
-        """
-        if "geom" in parsed["blocks"]:
-            geom_lines = parsed["blocks"]["geom"].split("\n")
-            geom_lines = [l for l in geom_lines if l.strip() and l.strip().lower() not in ["%geom", "end"]]
-        else:
-            geom_lines = []
-
-        new_geom = ["%geom"]
-
-        # Same replace-don't-drop semantics as %scf above.
-        for line in geom_lines:
-            if self._sets_param(line, geom_params):
-                continue
-            new_geom.append("  " + line.strip())
-
-        for param, value in geom_params.items():
-            if value is True:
-                new_geom.append(f"  {param}")
+        base = self._base(items) or self._original_stem()
+        own_gbw = self.work_dir / f"{base}.gbw"
+        if own_gbw.exists() and own_gbw.stat().st_size > 100_000:
+            backup = self.work_dir / f"{base}_old.gbw"
+            try:
+                shutil.copy2(own_gbw, backup)
+            except OSError as exc:
+                logger.warning("Failed to back up %s: %s", own_gbw.name, exc)
             else:
-                new_geom.append(f"  {param} {value}")
-
-        new_geom.append("end")
-        parsed["blocks"]["geom"] = "\n".join(new_geom)
-
-        return parsed
-
-    def _modify_tddft_block(self, parsed: Dict, tddft_params: Dict) -> Dict:
-        """Modify or create the %tddft block.
-
-        Needed so a recovery strategy can flip ``tda false`` to ``tda true``.
-        Unlike the SCF/geom helpers this must genuinely *replace* an existing
-        setting: ``tda`` is always already present in ESD inputs, so merely
-        dropping the old line would leave ORCA on its own default.
-
-        Args:
-            parsed: Parsed input dict
-            tddft_params: TDDFT parameters to set
-
-        Returns:
-            Modified parsed dict
-        """
-        if "tddft" in parsed["blocks"]:
-            existing = parsed["blocks"]["tddft"].split("\n")
-            existing = [
-                l for l in existing
-                if l.strip() and l.strip().lower() not in ["%tddft", "end"]
-            ]
+                orca_input.add_keywords(items, ["MORead"])
+                orca_input.set_setting(items, "moinp", f'"{backup.name}"')
+                logger.info("Continuing %s from its own orbitals (%s)", base, backup.name)
         else:
-            existing = []
+            moinp = orca_input.setting_value(items, "moinp")
+            source = moinp.strip().strip('"').strip("'") if moinp else ""
+            if source and not (self.work_dir / source).exists():
+                orca_input.remove_keywords(items, ["MORead"])
+                orca_input.remove_setting(items, "moinp")
+                logger.info("%s is gone; %s starts from ORCA's own guess", source, base)
 
-        new_block = ["%tddft"]
+        if any(orca_input.keyword_family(k) == "optimisation level" for k in orca_input.job_keywords(items)):
+            self._continue_from_own_geometry(items, self.work_dir / f"{base}.xyz")
 
-        # Keep every line that we are not overriding.
-        for line in existing:
-            if self._sets_param(line, tddft_params):
-                continue
-            new_block.append("  " + line.strip())
-
-        # Then write the overrides.
-        for param, value in tddft_params.items():
-            if value is True:
-                new_block.append(f"  {param} true")
-            elif value is False:
-                new_block.append(f"  {param} false")
-            else:
-                new_block.append(f"  {param} {value}")
-
-        new_block.append("end")
-        parsed["blocks"]["tddft"] = "\n".join(new_block)
-        logger.info(
-            "Set %%tddft parameters: %s",
-            ", ".join(f"{k}={v}" for k, v in tddft_params.items()),
-        )
-
-        return parsed
-
-    def _set_parallelism(self, parsed: Dict, nprocs: int) -> Dict:
-        """Set %pal nprocs to an absolute value (e.g. 1 for a serial rerun).
-
-        Args:
-            parsed: Parsed input dict
-            nprocs: Absolute core count to set
-
-        Returns:
-            Modified parsed dict
-        """
-        nprocs = max(1, int(nprocs))
-        if "pal" in parsed["blocks"]:
-            parsed["blocks"]["pal"] = re.sub(
-                r'nprocs\s+\d+',
-                f'nprocs {nprocs}',
-                parsed["blocks"]["pal"],
-                flags=re.IGNORECASE,
-            )
-        else:
-            parsed["blocks"]["pal"] = f"%pal\n  nprocs {nprocs}\nend"
-        logger.info(f"Set PAL nprocs to {nprocs}")
-
-        return parsed
-
-    def _reduce_parallelism(self, parsed: Dict, factor: float) -> Dict:
-        """Reduce number of cores in %pal block.
-
-        Args:
-            parsed: Parsed input dict
-            factor: Multiplication factor (e.g., 0.5 = half cores)
-
-        Returns:
-            Modified parsed dict
-        """
-        if "pal" not in parsed["blocks"]:
-            return parsed
-
-        pal_block = parsed["blocks"]["pal"]
-        match = re.search(r'nprocs\s+(\d+)', pal_block, re.IGNORECASE)
-
-        if match:
-            current_nprocs = int(match.group(1))
-            new_nprocs = max(1, int(current_nprocs * factor))
-
-            new_pal = re.sub(
-                r'nprocs\s+\d+',
-                f'nprocs {new_nprocs}',
-                pal_block,
-                flags=re.IGNORECASE
-            )
-
-            parsed["blocks"]["pal"] = new_pal
-            logger.info(f"Reduced PAL nprocs: {current_nprocs} → {new_nprocs}")
-
-        return parsed
-
-    def _reduce_maxcore(self, parsed: Dict, factor: float) -> Dict:
-        """Reduce maxcore memory allocation.
-
-        Args:
-            parsed: Parsed input dict
-            factor: Multiplication factor (e.g., 0.7 = 70% of original)
-
-        Returns:
-            Modified parsed dict
-        """
-        if "maxcore" not in parsed["blocks"]:
-            return parsed
-
-        maxcore_block = parsed["blocks"]["maxcore"]
-        match = re.search(r'(\d+)', maxcore_block)
-
-        if match:
-            current_maxcore = int(match.group(1))
-            new_maxcore = max(1000, int(current_maxcore * factor))
-
-            parsed["blocks"]["maxcore"] = f"%maxcore {new_maxcore}"
-            logger.info(f"Reduced maxcore: {current_maxcore} → {new_maxcore}")
-
-        return parsed
-
-    def _set_maxcore(self, parsed: Dict, megabytes: int) -> Dict:
-        """Raise maxcore to a figure ORCA named, never lower it.
-
-        The value comes from ORCA's own "Please increase MaxCore to more than"
-        line. Lowering here would be a bug: the retry exists precisely because
-        the previous allocation was too small, and a run that already asks for
-        more per rank must not be given less.
-        """
-        current = 0
-        if "maxcore" in parsed["blocks"]:
-            match = re.search(r"(\d+)", parsed["blocks"]["maxcore"])
-            if match:
-                current = int(match.group(1))
-
-        if megabytes <= current:
-            logger.debug(
-                "Keeping maxcore at %d MB; ORCA asked for %d MB", current, megabytes
-            )
-            return parsed
-
-        parsed["blocks"]["maxcore"] = f"%maxcore {megabytes}"
-        logger.info("Raised maxcore: %d → %d MB", current, megabytes)
-        return parsed
-
-    def _remove_freq(self, parsed: Dict) -> Dict:
-        """Remove frequency calculation keywords.
-
-        Args:
-            parsed: Parsed input dict
-
-        Returns:
-            Modified parsed dict
-        """
-        freq_keywords = ["FREQ", "NUMFREQ", "ANFREQ"]
-
-        original_count = len(parsed["keywords"])
-        parsed["keywords"] = [
-            kw for kw in parsed["keywords"]
-            if kw.upper() not in freq_keywords
-        ]
-
-        if len(parsed["keywords"]) < original_count:
-            logger.info("Removed frequency keywords from input")
-
-        return parsed
-
-    def _add_keywords(self, parsed: Dict, keywords_to_add: List[str]) -> Dict:
-        """Add keywords to the input file.
-
-        Args:
-            parsed: Parsed input dict
-            keywords_to_add: List of keywords to add (e.g., ["LooseOpt", "Grid5"])
-
-        Returns:
-            Modified parsed dict
-        """
-        for keyword in keywords_to_add:
-            # Only add if not already present (case-insensitive check)
-            if keyword.upper() not in [kw.upper() for kw in parsed["keywords"]]:
-                parsed["keywords"].append(keyword)
-                logger.info(f"Added keyword '{keyword}' to input")
-
-        return parsed
-
-    def _remove_keywords(self, parsed: Dict, keywords_to_remove: List[str]) -> Dict:
-        """Remove keywords from the input file.
-
-        Args:
-            parsed: Parsed input dict
-            keywords_to_remove: List of keywords to remove (e.g., ["SOSCF", "AutoAux"])
-
-        Returns:
-            Modified parsed dict
-        """
-        original_count = len(parsed["keywords"])
-        keywords_upper = [kw.upper() for kw in keywords_to_remove]
-        parsed["keywords"] = [
-            kw for kw in parsed["keywords"]
-            if kw.upper() not in keywords_upper
-        ]
-        removed_count = original_count - len(parsed["keywords"])
-        if removed_count > 0:
-            logger.info(f"Removed {removed_count} keyword(s): {keywords_to_remove}")
-
-        return parsed
-
-    def _remove_scf_params(self, parsed: Dict, params_to_remove: List[str]) -> Dict:
-        """Remove parameters from %scf block.
-
-        Args:
-            parsed: Parsed input dict
-            params_to_remove: List of parameter names to remove (e.g., ["SOSCF", "MaxDIIS"])
-
-        Returns:
-            Modified parsed dict
-        """
-        if "scf" not in parsed["blocks"]:
-            return parsed
-
-        scf_lines = parsed["blocks"]["scf"].split("\n")
-        # Filter out block delimiters and empty lines
-        scf_lines = [l for l in scf_lines if l.strip() and l.strip().lower() not in ["%scf", "end"]]
-
-        params_upper = [p.upper() for p in params_to_remove]
-        new_scf = ["%scf"]
-        removed_params = []
-
-        for line in scf_lines:
-            keep_line = True
-            line_stripped = line.strip()
-            # Check if this line contains any of the parameters to remove
-            for param in params_upper:
-                # Check if parameter name appears at start of line (before space or =)
-                if line_stripped.upper().startswith(param) or \
-                   line_stripped.upper().startswith(param + " ") or \
-                   line_stripped.upper().startswith(param + "="):
-                    keep_line = False
-                    removed_params.append(param)
-                    break
-            if keep_line:
-                new_scf.append("  " + line_stripped)
-
-        new_scf.append("end")
-        parsed["blocks"]["scf"] = "\n".join(new_scf)
-
-        if removed_params:
-            logger.info(f"Removed {len(removed_params)} SCF parameter(s): {list(set(removed_params))}")
-
-        return parsed
-
-    def _write_input(self, path: Path, parsed: Dict):
-        """Write modified input file preserving original format.
-
-        Args:
-            path: Path to write modified input
-            parsed: Parsed input dict
-        """
-        with open(path, 'w', encoding='utf-8') as f:
-            # Write comment lines (if any)
-            if parsed.get("comments"):
-                for comment in parsed["comments"]:
-                    f.write(comment + "\n")
-
-            # Write keywords
-            if parsed["keywords"]:
-                f.write("! " + " ".join(parsed["keywords"]) + "\n\n")
-
-            # Write blocks BEFORE geometry (preserving original order)
-            blocks_before = parsed.get("blocks_before_geom", [])
-            all_blocks = set(parsed["blocks"].keys())
-
-            # Priority for new blocks to insert before geometry
-            new_blocks_before = ["moinp", "pal", "maxcore", "scf", "geom"]
-
-            # Write original blocks that were before geometry
-            for block_name in blocks_before:
-                if block_name in parsed["blocks"]:
-                    f.write(parsed["blocks"][block_name] + "\n")
-                    all_blocks.discard(block_name)
-
-            # Add new blocks (moinp, scf, etc.) if they don't exist yet
-            for block_name in new_blocks_before:
-                if block_name in all_blocks and block_name not in blocks_before:
-                    f.write(parsed["blocks"][block_name] + "\n")
-                    all_blocks.discard(block_name)
-
-            f.write("\n")
-
-            # Write geometry
-            if parsed["charge_mult"]:
-                f.write(parsed["charge_mult"] + "\n")
-                for line in parsed["geometry"]:
-                    f.write(line + "\n")
-                # Only write closing * for inline coordinates, not for xyzfile
-                if "xyzfile" not in parsed["charge_mult"]:
-                    f.write("*\n")
-
-            # Write blocks AFTER geometry (preserving original order)
-            blocks_after = parsed.get("blocks_after_geom", [])
-            if blocks_after:
-                f.write("\n")
-                for block_name in blocks_after:
-                    if block_name in parsed["blocks"]:
-                        f.write(parsed["blocks"][block_name] + "\n")
-                        all_blocks.discard(block_name)
-
-            # Write any remaining blocks at the end
-            if all_blocks:
-                f.write("\n")
-                for block_name in sorted(all_blocks):
-                    f.write(parsed["blocks"][block_name] + "\n")
-
-            # CRITICAL: Append subsequent jobs ($new_job and everything after)
-            if parsed.get("subsequent_jobs"):
-                f.write(parsed["subsequent_jobs"])
-                logger.debug(f"Appended subsequent jobs to output")
+    @staticmethod
+    def _continue_from_own_geometry(items, xyz_file: Path) -> None:
+        if not xyz_file.exists():
+            return
+        try:
+            rows = xyz_file.read_text(encoding="utf-8", errors="replace").splitlines()
+            n_atoms = int(rows[0].split()[0])
+            atoms = []
+            for row in rows[2:2 + n_atoms]:
+                parts = row.split()
+                atoms.append((parts[0], float(parts[1]), float(parts[2]), float(parts[3])))
+            if len(atoms) != n_atoms:
+                raise ValueError("fewer atoms than announced")
+            orca_input.with_coordinates(items, atoms)
+        except (ValueError, IndexError, orca_input.OrcaInputError) as exc:
+            logger.info("Keeping the input's coordinates; %s is not this job's geometry (%s)", xyz_file.name, exc)
+            return
+        logger.info("Continuing from the geometry in %s (%d atoms)", xyz_file.name, len(atoms))
 
 
 def prepare_input_for_continuation(

@@ -633,6 +633,7 @@ def _run_orca_subprocess(
     timeout: Optional[int] = None,
     scratch_subdir: Optional[Path] = None,
     working_dir: Optional[Path] = None,
+    extra_env: Optional[Dict[str, str]] = None,
 ) -> bool:
     """Run ORCA subprocess and capture output. Returns True when successful."""
     process = None
@@ -655,7 +656,9 @@ def _run_orca_subprocess(
                 [orca_path, input_file_path],
                 stdout=output_file,
                 stderr=output_file,
-                env=_prepare_orca_environment(scratch_subdir),
+                env={**_prepare_orca_environment(scratch_subdir),
+                     # variables for this run only: a recovery's MPI settings
+                     **{str(k): str(v) for k, v in (extra_env or {}).items()}},
                 start_new_session=True,  # Create new process group
                 cwd=str(working_dir) if working_dir is not None else None,
             )
@@ -1303,6 +1306,7 @@ def _run_orca_isolated(
     *,
     scratch_subdir: Optional[Path] = None,
     copy_files: Optional[Iterable[str]] = None,
+    extra_env: Optional[Dict[str, str]] = None,
 ) -> bool:
     """Run ORCA in an isolated subdirectory to prevent race conditions.
 
@@ -1479,6 +1483,7 @@ def _run_orca_isolated(
             timeout,
             scratch_subdir=effective_scratch,
             working_dir=iso_dir,
+            extra_env=extra_env,
         )
 
         # Copy auxiliary files (.gbw, .densities, .opt, .engrad, .hess, …)
@@ -1603,6 +1608,7 @@ def run_orca(
     working_dir: Optional[Path] = None,
     isolate: bool = False,
     copy_files: Optional[Iterable[str]] = None,
+    extra_env: Optional[Dict[str, str]] = None,
 ) -> bool:
     """Execute ORCA calculation with specified input file.
 
@@ -1712,6 +1718,7 @@ def run_orca(
             timeout,
             scratch_subdir=scratch_subdir,
             copy_files=copy_files,
+            extra_env=extra_env,
         )
         if result:
             smart_recalc.store_fingerprint(input_path, extra_deps=extra_deps)
@@ -1732,6 +1739,7 @@ def run_orca(
         timeout,
         scratch_subdir=scratch_subdir,
         working_dir=working_dir,
+        extra_env=extra_env,
     ):
         logger.info(f"ORCA run successful for '{input_file_path}'")
         smart_recalc.store_fingerprint(input_path, extra_deps=extra_deps)
@@ -1836,6 +1844,9 @@ def run_orca_with_intelligent_recovery(
 
     # Track all attempted error types to prevent loops
     attempted_errors = set()
+    # Environment a strategy asked for (MPI transport settings); kept for
+    # every later attempt of this job.
+    retry_env: Dict[str, str] = {}
 
     for overall_attempt in range(1, max_recovery_attempts + 2):  # +1 for initial attempt
         if _shutdown_requested():
@@ -1851,6 +1862,7 @@ def run_orca_with_intelligent_recovery(
             working_dir=working_dir,
             isolate=isolate,
             copy_files=copy_files,
+            extra_env=retry_env or None,
         )
 
         if success:
@@ -1915,6 +1927,9 @@ def run_orca_with_intelligent_recovery(
                 f"Transient system error detected. Waiting {delay}s before retry (exponential backoff)..."
             )
             time.sleep(delay)
+
+        if mods.get("env_vars"):
+            retry_env.update(mods["env_vars"])
 
         # Modify input file
         modifier = OrcaInputModifier(current_inp, config)
