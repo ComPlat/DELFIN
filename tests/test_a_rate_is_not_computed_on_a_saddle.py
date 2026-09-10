@@ -13,14 +13,15 @@ from pathlib import Path
 
 import pytest
 
-from delfin import esd_saddle
-from delfin.esd_saddle import (
-    MAX_ROUNDS,
+from delfin import imag
+from delfin.imag import (
+    eliminate_imaginary_modes,
     hessian_frequencies,
     imaginary_modes,
-    repair_saddle,
     saddle_reason,
 )
+
+MAX_ROUNDS = imag.DEFAULT_MAX_ROUNDS
 
 
 def _hess(path: Path, freqs) -> Path:
@@ -54,6 +55,10 @@ $new_job
 """
 
 
+def _sp(text, atoms, base):
+    return imag._candidate_job(text, atoms, base, optimise=False)
+
+
 def _xyz(path: Path, dz: float) -> Path:
     path.write_text(f"2\n* displaced\nFe 0.0 0.0 {dz:.3f} 1 2 3\nC 1.8 0.0 {-dz:.3f} 4 5 6\n2\n")
     return path
@@ -77,8 +82,8 @@ def test_the_guard_names_the_saddle(tmp_path):
 
 
 def test_the_single_point_is_the_same_state_at_the_displaced_geometry(tmp_path):
-    atoms = esd_saddle._read_xyz(_xyz(tmp_path / "pos.xyz", 0.05))
-    sp = esd_saddle._single_point_job(_INPUT, atoms, "S1_saddle1_pos")
+    atoms = imag._read_xyz(_xyz(tmp_path / "pos.xyz", 0.05))
+    sp = _sp(_INPUT, atoms, "S1_saddle1_pos")
     bang = sp.splitlines()[0].split()
     assert "OPT" not in bang and "numFREQ" not in bang
     assert "MOREAD" in bang and "TightSCF" in bang  # the rest of the method stays
@@ -92,8 +97,8 @@ def test_the_single_point_is_the_same_state_at_the_displaced_geometry(tmp_path):
 
 def test_an_xyzfile_reference_becomes_the_displaced_coordinates(tmp_path):
     job = '! PBE0 UKS OPT FREQ deltaSCF\n%base "S1_second_deltaSCF"\n* xyzfile 0 1 S1_first_TDDFT.xyz\n'
-    atoms = esd_saddle._read_xyz(_xyz(tmp_path / "neg.xyz", -0.05))
-    sp = esd_saddle._single_point_job(job, atoms, "x")
+    atoms = imag._read_xyz(_xyz(tmp_path / "neg.xyz", -0.05))
+    sp = _sp(job, atoms, "x")
     assert "xyzfile" not in sp
     assert "* xyz 0 1" in sp and "-0.05000000" in sp and "deltaSCF" in sp
 
@@ -102,7 +107,7 @@ def test_a_geometry_of_other_atoms_is_refused(tmp_path):
     other = tmp_path / "other.xyz"
     other.write_text("2\n*\nNi 0 0 0\nC 1 0 0\n")
     with pytest.raises(ValueError):
-        esd_saddle._single_point_job(_INPUT, esd_saddle._read_xyz(other), "x")
+        _sp(_INPUT, imag._read_xyz(other), "x")
 
 
 class _FakeOrca:
@@ -116,11 +121,11 @@ class _FakeOrca:
     def __call__(self, inp, out, *, working_dir, copy_files=None):
         inp, out = Path(inp), Path(out)
         self.calls.append((inp.name, list(copy_files or [])))
-        if "_saddle" in inp.stem:
-            energy = -114.10 if inp.stem.endswith("neg") else -114.05
+        if "_imag" in inp.stem:
+            energy = -114.10 if "_neg_" in inp.stem else -114.05
             out.write_text(f"FINAL SINGLE POINT ENERGY {energy}\n****ORCA TERMINATED NORMALLY****\n")
         else:
-            out.write_text("****ORCA TERMINATED NORMALLY****\n")
+            out.write_text("FINAL SINGLE POINT ENERGY -114.04\n****ORCA TERMINATED NORMALLY****\n")
             _hess(self.esd / "S1.hess", self.rerun_freqs)
         return True
 
@@ -131,34 +136,35 @@ def saddle_run(tmp_path, monkeypatch):
     esd.mkdir()
     inp = esd / "S1.inp"
     inp.write_text(_INPUT)
-    (esd / "S1.out").write_text("the saddle's output\n****ORCA TERMINATED NORMALLY****\n")
+    (esd / "S1.out").write_text("FINAL SINGLE POINT ENERGY -114.04\n****ORCA TERMINATED NORMALLY****\n")
     _hess(esd / "S1.hess", _SADDLE)
     (esd / "S0.gbw").write_bytes(b"orbitals")
 
-    def fake_pltvib(hess_file, mode_index, *, workdir, amplitude=None):
-        assert mode_index == 6
-        return {"pos": _xyz(Path(workdir) / "pos.xyz", 0.2), "neg": _xyz(Path(workdir) / "neg.xyz", -0.2)}
+    def fake_displace(hess_path, mode, max_shift):
+        assert mode == 6
+        return {side: imag._read_xyz(_xyz(tmp_path / f"{side}.xyz", dz))
+                for side, dz in (("pos", 0.2), ("neg", -0.2))}
 
-    monkeypatch.setattr("delfin.imag.run_plotvib_mode", fake_pltvib)
+    monkeypatch.setattr(imag, "displaced_geometries", fake_displace)
     return esd, inp
 
 
 def test_one_round_leaves_the_saddle_from_the_lower_side(saddle_run):
     esd, inp = saddle_run
     orca = _FakeOrca(esd, _MINIMUM)
-    reason = repair_saddle(state="S1", input_path=inp, output_path=esd / "S1.out", esd_dir=esd,
-                           config={}, run_orca=orca, copy_files=["S0.gbw", "S0.xyz"])
-    assert reason is None
+    result = eliminate_imaginary_modes(label="S1", input_path=inp, output_path=esd / "S1.out",
+                                       config={}, run_orca=orca)
+    assert result.resolved and result.rounds == 1
     # two single points, then one re-run of the state itself -- one frequency calculation
-    assert [name for name, _ in orca.calls] == ["S1_saddle1_pos.inp", "S1_saddle1_neg.inp", "S1.inp"]
+    assert [name for name, _ in orca.calls] == ["S1_imag1_m6_pos_a0.inp", "S1_imag1_m6_neg_a0.inp", "S1.inp"]
     assert orca.calls[0][1] == ["S0.gbw"]  # the MOREAD guess travels with the single points
-    assert (esd / "S1_saddle" / "round1" / "S0.gbw").is_file()
-    assert orca.calls[2][1] == ["S0.gbw", "S0.xyz"]
+    assert (esd / "S1_IMAG" / "round1" / "S0.gbw").is_file()
+    assert orca.calls[2][1] == ["S0.gbw"]  # what the input reads, and nothing else
     # the state restarts from the lower (neg) side, the rest of its input unchanged
     rerun = inp.read_text()
     assert "-0.20000000" in rerun and "OPT numFREQ" in rerun and "$new_job" in rerun
     # the saddle is kept, and nothing of it is left where a resume could pick it up
-    kept = esd / "S1_saddle" / "round1"
+    kept = esd / "S1_IMAG" / "round1"
     assert (kept / "saddle_S1.hess").is_file() and (kept / "saddle_S1.out").is_file()
     assert (kept / "saddle_S1.inp").read_text() == _INPUT
 
@@ -166,21 +172,24 @@ def test_one_round_leaves_the_saddle_from_the_lower_side(saddle_run):
 def test_a_state_that_stays_a_saddle_costs_two_rounds_and_is_named(saddle_run):
     esd, inp = saddle_run
     orca = _FakeOrca(esd, _SADDLE)
-    reason = repair_saddle(state="S1", input_path=inp, output_path=esd / "S1.out", esd_dir=esd,
-                           config={}, run_orca=orca)
-    assert "S1 is a saddle point" in reason
+    result = eliminate_imaginary_modes(label="S1", input_path=inp, output_path=esd / "S1.out",
+                                       config={}, run_orca=orca)
+    assert not result.resolved and "IMAG_max_rounds=2" in result.reason
     reruns = [name for name, _ in orca.calls if name == "S1.inp"]
     assert len(reruns) == MAX_ROUNDS == 2
     assert len(orca.calls) == MAX_ROUNDS * 3
 
 
-def test_imag_no_switches_the_repair_off_not_the_guard(saddle_run):
+def test_imag_no_switches_the_repair_off_not_the_guard(saddle_run, monkeypatch):
+    import delfin.esd_module as esd_module
+
     esd, inp = saddle_run
-    orca = _FakeOrca(esd, _MINIMUM)
-    reason = repair_saddle(state="S1", input_path=inp, output_path=esd / "S1.out", esd_dir=esd,
-                           config={"IMAG": "no"}, run_orca=orca)
-    assert orca.calls == []
-    assert "saddle point" in reason
+    started = []
+    monkeypatch.setattr(esd_module, "_run_orca_esd", lambda *a, **k: started.append(a) or True)
+    esd_module._leave_saddle("S1", inp, esd / "S1.out", {"IMAG": "no"})
+    assert started == []
+    with pytest.raises(RuntimeError, match="S1 is a saddle point"):
+        esd_module._refuse_rates_on_a_saddle("IC S1>S0", ["S1"], esd, {"ESD_modus": "TDDFT"})
 
 
 def test_a_minimum_costs_nothing(tmp_path):
@@ -192,8 +201,9 @@ def test_a_minimum_costs_nothing(tmp_path):
     def never(*args, **kwargs):
         raise AssertionError("ORCA must not be started for a minimum")
 
-    assert repair_saddle(state="S1", input_path=esd / "S1.inp", output_path=esd / "S1.out",
-                         esd_dir=esd, config={}, run_orca=never) is None
+    result = eliminate_imaginary_modes(label="S1", input_path=esd / "S1.inp", output_path=esd / "S1.out",
+                                       config={}, run_orca=never)
+    assert result.resolved and result.rounds == 0
 
 
 @pytest.mark.parametrize("mode, hess_name", [("TDDFT", "S1.hess"), ("hybrid1", "S1_second_deltaSCF.hess")])

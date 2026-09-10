@@ -26,7 +26,7 @@ from delfin.esd_input_generator import (
     _format_ms_suffix,
     _resolve_state_filename,
 )
-from delfin.esd_saddle import repair_saddle, saddle_reason
+from delfin.imag import eliminate_imaginary_modes, saddle_reason
 from delfin.orca import run_orca_with_intelligent_recovery
 from delfin.parallel_classic_manually import (
     WorkflowJob,
@@ -107,20 +107,27 @@ def _leave_saddle(
     state: str,
     input_path: Path,
     output_path: Path,
-    esd_dir: Path,
     config: Dict[str, Any],
-    copy_files: Optional[List[str]],
 ) -> None:
-    """After a state job: if the state came back as a saddle, push it off (see esd_saddle)."""
+    """After a state job: a state that came back as a saddle goes through IMAG.
+
+    Every excited state is optimised from the S0 geometry, and a symmetric S0
+    can hand back a symmetric saddle (formaldehyde's planar S1, -527 cm-1).
+    IMAG_scope does not apply: a rate needs both of its states at minima,
+    whatever is done for the redox steps.  IMAG=no leaves the state as it is;
+    the guard below still refuses its rates.
+    """
+    if str(config.get("IMAG", "yes")).strip().lower() in ("no", "false", "0", "off"):
+        return
+
     def run(inp, out, *, working_dir, copy_files=None):
         return _run_orca_esd(inp, out, working_dir=working_dir, copy_files=copy_files, config=config)
 
-    reason = repair_saddle(
-        state=state, input_path=input_path, output_path=output_path,
-        esd_dir=esd_dir, config=config, run_orca=run, copy_files=copy_files,
+    result = eliminate_imaginary_modes(
+        label=state, input_path=input_path, output_path=output_path, config=config, run_orca=run,
     )
-    if reason:
-        logger.warning("%s; rates that need its Hessian will not be computed", reason)
+    if not result.resolved:
+        logger.warning("%s: %s; rates that need its Hessian will not be computed", state, result.reason)
 
 
 def _refuse_rates_on_a_saddle(job: str, states: List[str], esd_dir: Path, config: Dict[str, Any]) -> None:
@@ -528,7 +535,7 @@ def _populate_state_jobs(
                         )
 
                     logger.info(f"Hybrid1 step 2 (deltaSCF) completed for {st_upper}")
-                    _leave_saddle(st_upper, abs_input, abs_output, esd_dir, config, step2_deps)
+                    _leave_saddle(st_upper, abs_input, abs_output, config)
                 else:
                     # Standard single-step calculation (TDDFT or deltaSCF)
                     # Convert to absolute path before any chdir operations
@@ -562,7 +569,7 @@ def _populate_state_jobs(
                         raise RuntimeError(
                             f"ORCA terminated abnormally for {st_upper} state"
                         )
-                    _leave_saddle(st_upper, abs_input, abs_output, esd_dir, config, state_deps_files)
+                    _leave_saddle(st_upper, abs_input, abs_output, config)
 
                 logger.info(f"State {st_upper} calculation completed")
 
