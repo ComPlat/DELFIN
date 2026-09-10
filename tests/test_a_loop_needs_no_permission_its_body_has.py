@@ -18,6 +18,20 @@ the natural spelling of its core action was a dead end.
 
 The hint fires off the BODY, not off the word `for`, so a loop wrapping
 something the list would refuse on its own keeps the plain refusal.
+
+Measured against one day of the audit log (2026-09-10): 129 denials, 67
+of them from the auto-allow list, and **21 of those 67 were shell
+loops** — the largest single identifiable group. Thirteen distinct
+commands, and they are not exotic:
+
+    for f in run_a.out run_b.out run_c.out run_d.out; do
+        echo "=== $f ==="; grep -E "HOMO|LUMO|GAP" "$f"; done
+
+Reading four output files, which is the most ordinary thing this agent
+does. The hint now covers 19 of the 21 events; the two it does not are
+`while true; do rm -rf /tmp/x; done` and `for i in 1 2; do curl ...`,
+both written by this file's own probe, both correctly left with the
+plain refusal.
 """
 
 from __future__ import annotations
