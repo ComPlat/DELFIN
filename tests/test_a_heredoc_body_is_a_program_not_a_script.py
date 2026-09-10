@@ -202,10 +202,114 @@ def test_a_command_with_no_heredoc_yields_nothing():
     assert extract_stdin_payloads("") == []
 
 
-def test_the_granting_path_still_takes_c_payloads_only(ws):
-    """Being wrong in the allow direction runs something unread. A quoted
-    heredoc is literal and could be read the same way, but that is a
-    separate decision and this is not it."""
-    assert not A._inline_payload_is_readable(
+def test_a_quoted_heredoc_is_accountable_the_same_way_c_is(ws):
+    """The predicate says so. Whether anything ASKS it is the separate
+    question below — today nothing does, so the gate still refuses."""
+    assert A._inline_payload_is_readable(
         "python3 - <<'EOF'\nprint(1)\nEOF", ws)
     assert A._inline_payload_is_readable('python3 -c "print(1)"', ws)
+    # And an unquoted one never is: the shell expands it first.
+    assert not A._inline_payload_is_readable(
+        "python3 - <<EOF\nprint(1)\nEOF", ws)
+
+
+def test_a_payload_reading_an_absolute_path_is_not_accounted_for(ws):
+    """Found by the test below it. The predicate looked only at WRITES,
+    so `print(open('/etc/passwd').read())` came back readable — for the
+    `-c` form too, which has been in production. The read gate catches it
+    downstream either way, but this predicate is what decides whether the
+    confirm veto fires AT ALL, and it cannot call that fully accounted
+    for."""
+    for form in ("python3 - <<'EOF'\nprint(open('/etc/passwd').read())\nEOF",
+                 "python3 -c \"print(open('/etc/passwd').read())\""):
+        assert not A._inline_payload_is_readable(form, ws), form
+    # A read inside the workspace is ordinary and stays accounted for.
+    assert A._inline_payload_is_readable(
+        "python3 -c \"print(open('local.txt').read())\"", ws)
+
+
+def test_a_read_outside_the_workspace_reaches_the_read_gate(ws):
+    """It did not: the read gate took `-c` payloads only, so a heredoc
+    doing the same thing produced no read target at all."""
+    assert A._bash_outside_reads(
+        "python3 - <<'EOF'\nprint(open('/etc/passwd').read())\nEOF"
+    ) == ["/etc/passwd"]
+
+
+# ---------------------------------------------------------------------------
+# The allow path is NOT open, and this is the link that is missing
+# ---------------------------------------------------------------------------
+#
+# `_inline_payload_is_readable` now accounts for a quoted here-document
+# the same way it accounts for `python -c`: the body is literal, so the
+# text analysed is the text the interpreter receives.
+#
+# That is inert today, and deliberately left inert. The chain that makes
+# `-c` safe runs `_interpreter_needs_confirm` FIRST, and that function
+# opens with `if not _is_interpreter_invocation(cmd): return False` —
+# which is False for the stdin form. So the veto never fires for a
+# heredoc, and adding an auto-allow pattern for `python3 - <<` without
+# fixing that would not widen the gate by a little. It was tried:
+#
+#     heredoc: arithmetic            RAN   (intended)
+#     heredoc that writes            RAN   (not intended)
+#     UNQUOTED heredoc               RAN   (not intended)
+#     heredoc importing os           RAN   (not intended)
+#     heredoc importing subprocess   RAN   (not intended)
+#     print(open('/etc/passwd').read())  RAN  (not intended)
+#
+# Six of seven wrong, because the predicate was never consulted. The
+# pattern was reverted within the minute. What caught it was driving the
+# real gate, not the predicate — the predicate's own nine cases all
+# passed.
+#
+# So the friction (29 of 437 denials) stays unfixed on purpose, and the
+# next attempt starts by teaching `_is_interpreter_invocation` the stdin
+# form and re-checking every caller of it. These tests fail the moment
+# anyone opens the path without that.
+
+_HEREDOCS_THAT_MUST_NOT_RUN = [
+    ("writes a file", "python3 - <<'EOF'\nopen('out.txt','w').write('x')\nEOF"),
+    ("unquoted", "python3 - <<EOF\nprint(1+1)\nEOF"),
+    ("imports os", "python3 - <<'EOF'\nimport os\nprint(os.listdir('/'))\nEOF"),
+    ("imports subprocess",
+     "python3 - <<'EOF'\nimport subprocess\nsubprocess.run(['ls'])\nEOF"),
+    ("reads /etc/passwd",
+     "python3 - <<'EOF'\nprint(open('/etc/passwd').read())\nEOF"),
+]
+
+
+@pytest.mark.parametrize("name,cmd", _HEREDOCS_THAT_MUST_NOT_RUN,
+                         ids=[n for n, _ in _HEREDOCS_THAT_MUST_NOT_RUN])
+def test_no_heredoc_runs_unattended(ws, name, cmd):
+    assert "error" in _run(ws, cmd), name
+
+
+def test_not_even_a_harmless_one(ws):
+    """The friction this leaves in place, stated as a test so it is a
+    decision rather than an oversight."""
+    assert "error" in _run(ws, "python3 - <<'EOF'\nprint(1+1)\nEOF")
+
+
+def test_the_missing_link_is_the_interpreter_check():
+    """Named precisely, so the next attempt starts in the right place."""
+    assert A._is_interpreter_invocation('python3 -c "print(1)"')
+    assert not A._is_interpreter_invocation("python3 - <<'EOF'\nprint(1)\nEOF")
+
+
+def test_the_veto_never_fires_for_a_heredoc(ws):
+    """`_interpreter_needs_confirm` short-circuits before it can ask, so
+    an auto-allow pattern for `python3 - <<` would let everything above
+    through. Six of seven did."""
+    perms = A.KitToolPermissions(mode="default", workspace=ws)
+    assert not perms._interpreter_needs_confirm(
+        "python3 - <<'EOF'\nimport subprocess\nEOF")
+
+
+def test_the_predicate_itself_is_already_right(ws):
+    """The half that IS in place: when the veto is eventually asked, it
+    has the right answer ready."""
+    assert A._inline_payload_is_readable(
+        "python3 - <<'EOF'\nprint(1+1)\nEOF", ws)
+    for _name, cmd in _HEREDOCS_THAT_MUST_NOT_RUN:
+        assert not A._inline_payload_is_readable(cmd, ws), cmd
