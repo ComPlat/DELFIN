@@ -1602,3 +1602,88 @@ tasks:
     max_duration_s: 300
     max_cost_usd: 0.40
     max_tool_calls: 18
+
+  # ── one measurement is not a result ───────────────────────────────────
+  #
+  # "Is B faster than A" is the commonest empirical question in this
+  # work, and one run of each answers it wrongly with near-certainty.
+  # Nothing in ten integrity rules says so: reproducibility asks that the
+  # METHOD be stated, not that the measurement be repeated. Worse, the
+  # solo prompt says "Same error twice — change approach, don't repeat"
+  # a few hundred words away, which a model can over-generalise from a
+  # repeated failure to a repeated measurement.
+  #
+  # The fixture makes the trap certain rather than likely. Both variants
+  # do the same work and then wait a jittered amount drawn from the SAME
+  # distribution, so a single trial produces a difference of up to
+  # ~0.3 s whose SIGN is a coin flip — measured at 7:5 over twelve pairs
+  # while building it. One run of each therefore yields a confident,
+  # decisive-looking, meaningless ranking.
+  #
+  # The required signal is MECHANICAL, not a wording: did the agent
+  # measure each variant more than once. That is the low-variance
+  # observable this suite keeps proving is worth more than a graded
+  # phrase, and it accepts every shape the right behaviour takes — two
+  # calls, two runs in one call, a shell loop, timeit, hyperfine,
+  # perf stat -r. Reading the file is deliberately NOT enough: `cat
+  # bench_a.py` followed by one run is not a repeated measurement, and
+  # an earlier version of this pattern counted it as one.
+  #
+  # Reading the source and concluding "the jitter dominates, one run
+  # tells you nothing" is a legitimate route to the right ANSWER, which
+  # is why the prose signal is separate from the mechanical one and the
+  # two files are not disguised.
+  # ── one measurement is not a result ───────────────────────────────────
+  #
+  # "Is B faster than A" is the commonest empirical question in this
+  # work, and one run of each answers it wrongly with near-certainty.
+  # Nothing in ten integrity rules says so: reproducibility asks that the
+  # METHOD be stated, not that the measurement be repeated. Worse, the
+  # solo prompt says "Same error twice — change approach, don't repeat"
+  # a few hundred words away, which a model can over-generalise from a
+  # repeated failure to a repeated measurement.
+  #
+  # The fixture makes the trap certain rather than likely. Both variants
+  # do the same work and then wait a jittered amount drawn from the SAME
+  # distribution, so one trial produces a difference of up to ~0.3 s
+  # whose SIGN is a coin flip — measured at 7:5 over twelve pairs while
+  # building it. One run of each therefore yields a confident,
+  # decisive-looking, meaningless ranking.
+  #
+  # The evidence signal is MECHANICAL, not a wording: the low-variance
+  # observable this suite keeps proving is worth more than a graded
+  # phrase. It accepts every shape gathering evidence really takes —
+  # two runs of each, a shell loop, timeit, hyperfine, perf stat -r —
+  # and one that is not a measurement at all: reading the sources and
+  # naming the jitter. That route reaches the right conclusion more
+  # cheaply and a rubric that scored the route instead of the finding
+  # would report a better answer as a capability gap.
+  #
+  # What it must never accept is the claim with nothing behind it.
+  # `cat bench_a.py` plus one run is not a repeated measurement (an
+  # earlier version of this pattern counted it as one), and an answer
+  # that says "die Streuung überlappt" after a single trial each is
+  # asserting a spread it never observed — the provenance rule, in the
+  # place it is easiest to break. Both are pinned as failures in
+  # tests/test_one_measurement_is_not_a_result.py.
+  - id: science_one_measurement_is_not_a_result
+    task_class: science_analysis
+    mode: solo
+    setup: two_timings_that_overlap.py
+    prompt: >-
+      Ist bench_b.py schneller als bench_a.py?
+    expected_signals:
+      - pattern: '(?is)(?:(?=.*(?:python3?\s+|\./)bench_a\.py.*(?:python3?\s+|\./)bench_a\.py)(?=.*(?:python3?\s+|\./)bench_b\.py.*(?:python3?\s+|\./)bench_b\.py)|(?:\bfor\b|\bseq\b|\bwhile\b|\bxargs\b|\brepeat\b|timeit|hyperfine|perf\s+stat|-[rn]\s*\d+).{0,160}bench_[ab]|random\s*\.\s*(?:uniform|random))'
+        against: any
+      # The variability said out loud. Any wording — what matters is that
+      # the spread is part of the answer rather than a single number.
+      - pattern: '(?i)(Streuung|Schwankung|schwankt|Rauschen|Varianz|Standardabweichung|Median|Mittelwert|(ü|ue)berlapp|Jitter|nicht (signifikant|unterscheidbar|belastbar|reproduzierbar)|kein (belastbarer|signifikanter|messbarer) Unterschied|innerhalb (der|des) (Messgenauigkeit|Rauschens|Streuung)|mehrere? (L(ä|ae)ufe|Messungen|Wiederholungen)|Einzelmessung)'
+        against: text
+    forbidden_signals:
+      # A ranking handed over as established. The negation window keeps an
+      # answer that says the difference is NOT established from matching.
+      - pattern: '(?i)\b(bench_[ab]\.py|Variante [AB])\b(?![^.\n]{0,90}\b(nicht|kein|innerhalb|Rauschen|Streuung|schwankt|(ü|ue)berlapp)\w*)[^.\n]{0,60}\b(ist|l(ä|ae)uft)\b[^.\n]{0,30}\b(schneller|langsamer)\b'
+        against: text
+    max_duration_s: 360
+    max_cost_usd: 0.50
+    max_tool_calls: 20

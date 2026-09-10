@@ -192,8 +192,13 @@ def test_the_counts_still_match_what_was_measured():
     # line implies and none of them states -- a total energy compares only
     # within one functional AND one basis set -- so sorting a mixed
     # archive by energy sorts it by method.
+    #
+    # science 9 -> 10: science_one_measurement_is_not_a_result. "Is B
+    # faster than A" is the commonest empirical question here and one run
+    # of each answers it wrongly with near-certainty; its setup builds two
+    # variants whose runtimes are drawn from the same distribution.
     assert counts == {"office": 13, "behavior": 12, "generic_project": 15,
-                      "science": 9, "other": 48}, counts
+                      "science": 10, "other": 48}, counts
 
 
 # ---------------------------------------------------------------------------
