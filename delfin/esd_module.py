@@ -24,7 +24,9 @@ from delfin.esd_input_generator import (
     create_phosp_input,
     create_state_input,
     _format_ms_suffix,
+    _resolve_state_filename,
 )
+from delfin.esd_saddle import repair_saddle, saddle_reason
 from delfin.orca import run_orca_with_intelligent_recovery
 from delfin.parallel_classic_manually import (
     WorkflowJob,
@@ -99,6 +101,46 @@ def _run_orca_esd(
         copy_files=copy_files,
         config=config,
     )
+
+
+def _leave_saddle(
+    state: str,
+    input_path: Path,
+    output_path: Path,
+    esd_dir: Path,
+    config: Dict[str, Any],
+    copy_files: Optional[List[str]],
+) -> None:
+    """After a state job: if the state came back as a saddle, push it off (see esd_saddle)."""
+    def run(inp, out, *, working_dir, copy_files=None):
+        return _run_orca_esd(inp, out, working_dir=working_dir, copy_files=copy_files, config=config)
+
+    reason = repair_saddle(
+        state=state, input_path=input_path, output_path=output_path,
+        esd_dir=esd_dir, config=config, run_orca=run, copy_files=copy_files,
+    )
+    if reason:
+        logger.warning("%s; rates that need its Hessian will not be computed", reason)
+
+
+def _refuse_rates_on_a_saddle(job: str, states: List[str], esd_dir: Path, config: Dict[str, Any]) -> None:
+    """Stop a rate job before ORCA if either state's Hessian is not a minimum's.
+
+    ORCA's ESD module turns imaginary frequencies into real ones by default
+    and reports a rate; a rate from a saddle is not one, so it is not asked for.
+    """
+    mode = str(config.get("ESD_modus", "tddft")).strip().lower().split("|")[0].strip()
+    reasons = []
+    for state in states:
+        state = state.strip().upper()
+        reason = saddle_reason(state, esd_dir / _resolve_state_filename(state, "hess", mode), config)
+        if reason:
+            reasons.append(reason)
+    if reasons:
+        raise RuntimeError(
+            f"{job} not computed: " + "; ".join(reasons)
+            + ". ORCA would turn the imaginary frequency into a real one and report a rate for the saddle."
+        )
 
 
 def _convert_start_to_xyz(start_txt: Path, output_xyz: Path) -> None:
@@ -373,6 +415,15 @@ def _populate_state_jobs(
                                             f"Failed to link/copy {initial_gbw} → {s0_gbw} for deltaSCF reuse: {exc}"
                                         ) from exc
                                 shutil.copy2(initial_hess, s0_hess)
+                                # IMAG replaces initial.out and initial.xyz but not
+                                # initial.hess; a saddle Hessian here would become
+                                # the ground state of every rate.
+                                reused_saddle = saddle_reason("S0", s0_hess, config)
+                                if reused_saddle:
+                                    for stale in (s0_out, s0_hess, s0_gbw):
+                                        if stale.is_symlink() or stale.exists():
+                                            stale.unlink()
+                                    raise RuntimeError(f"not reusing initial.hess: {reused_saddle}")
                                 logger.info(f"[deltaSCF optimization] Reused initial.{{out,gbw,hess}} → S0.* (skipping redundant Opt+Freq)")
 
                                 # Still need to run TDDFT check job for state identification
@@ -477,6 +528,7 @@ def _populate_state_jobs(
                         )
 
                     logger.info(f"Hybrid1 step 2 (deltaSCF) completed for {st_upper}")
+                    _leave_saddle(st_upper, abs_input, abs_output, esd_dir, config, step2_deps)
                 else:
                     # Standard single-step calculation (TDDFT or deltaSCF)
                     # Convert to absolute path before any chdir operations
@@ -510,6 +562,7 @@ def _populate_state_jobs(
                         raise RuntimeError(
                             f"ORCA terminated abnormally for {st_upper} state"
                         )
+                    _leave_saddle(st_upper, abs_input, abs_output, esd_dir, config, state_deps_files)
 
                 logger.info(f"State {st_upper} calculation completed")
 
@@ -664,6 +717,7 @@ def _populate_isc_jobs(
             def make_isc_work(isc_pair: str, trootssl_val: int) -> Callable[[int], None]:
                 """Create work function for ISC calculation."""
                 def work(cores: int) -> None:
+                    _refuse_rates_on_a_saddle(f"ISC {isc_pair}", isc_pair.split(">"), esd_dir, config)
                     # Generate input file
                     input_file = create_isc_input(
                         isc_pair,
@@ -786,6 +840,7 @@ def _populate_ic_jobs(
         def make_ic_work(ic_pair: str) -> Callable[[int], None]:
             """Create work function for IC calculation."""
             def work(cores: int) -> None:
+                _refuse_rates_on_a_saddle(f"IC {ic_pair}", ic_pair.split(">"), esd_dir, config)
                 # Generate input file
                 input_file = create_ic_input(
                     ic_pair,
@@ -878,6 +933,7 @@ def _populate_fluor_jobs(
         return
 
     def work(cores: int) -> None:
+        _refuse_rates_on_a_saddle("Fluorescence S1>S0", ["S1", "S0"], esd_dir, config)
         input_file = create_fluor_input(
             esd_dir=esd_dir,
             charge=charge,
@@ -952,6 +1008,7 @@ def _populate_phosp_jobs(
         return
 
     def work(cores: int) -> None:
+        _refuse_rates_on_a_saddle("Phosphorescence T1>S0", ["T1", "S0"], esd_dir, config)
         input_file = create_phosp_input(
             esd_dir=esd_dir,
             charge=charge,
