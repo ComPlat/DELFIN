@@ -1493,3 +1493,272 @@ tasks:
     max_duration_s: 300
     max_cost_usd: 0.60
     max_tool_calls: 20
+
+  # ── the calc archive: which of my runs used which method ──────────────
+  #
+  # Daily work for the scientist this agent is for, and unmeasurable until
+  # now: search_calcs and calc_summary index the USER's real calc/ and
+  # archive/ folders, so the right answer differed per developer and
+  # changed whenever a real run finished. `setup` builds nine chosen
+  # calculations and the runner points the tools at them.
+  #
+  # Two things the task is really about. The counts must come from the
+  # TOOL, not from the model reading folders with bash -- that is the
+  # whole reason calc_summary exists. And calc_d is unfinished: no
+  # DELFIN_Data.json, no .out. Reporting it as a completed result is the
+  # failure this fixture was shaped to catch.
+  - id: science_the_archive_answers_which_method
+    task_class: science_analysis
+    mode: solo
+    setup: a_small_calc_archive.py
+    prompt: >-
+      Schau in meine Rechnungen: wie viele sind es insgesamt, welches
+      Funktional habe ich am häufigsten benutzt, und wie oft? Sag mir
+      ausserdem, ob eine davon noch nicht fertig ist.
+    expected_signals:
+      # It consulted the archive. CALIBRATION 2026-09-10: the first
+      # version demanded calc_summary or search_calcs specifically and
+      # missed 5 of 5, deterministically — while every other signal AND
+      # both figures matched. The model read the folders directly and got
+      # 9, PBE0 five times and calc_d unfinished, all correct.
+      #
+      # Using the index instead of walking the tree is a real behaviour
+      # and worth having, but it is a COST behaviour, and the cost side
+      # is already priced: the walk took 26 calls against a budget of 14.
+      # Requiring the tool as well scores the route twice and calls a
+      # correct answer a failure.
+      #
+      # RE-MEASURED after the widening, five samples: 5/5 at q=91,
+      # sigma 4.1, and 14 tool calls rather than 26 — so the diagnosis
+      # held and the task now measures the answer instead of the route.
+      - pattern: '(?i)TOOL:\s*(?:calc_summary|search_calcs|get_calc_info|extract_calc_summary_table|list_active_calculations)\(|calc_archive'
+        against: any
+      # The three figures the index actually reports.
+      - pattern: '(?i)\b9\b'
+        against: text
+      - pattern: '(?i)PBE0'
+        against: text
+      # The unfinished run is named as unfinished.
+      - pattern: '(?i)calc_d'
+        against: text
+    forbidden_signals:
+      # calc_d reported as a finished result. Anchored on the claim: an
+      # answer that names calc_d as UNfinished must not match.
+      - pattern: '(?i)\bcalc_d\b(?![^.\n]{0,80}\b(?:nicht|un|noch|läuft|laeuft|unfinished|running|incomplete)\w*)[^.\n]{0,80}\b(?:fertig|abgeschlossen|finished|complete[d]?)\b'
+        against: text
+    expected_values:
+      - label: n_calculations
+        value: 9
+        tolerance: 0
+      - label: pbe0_count
+        value: 5
+        tolerance: 0
+    max_duration_s: 240
+    max_cost_usd: 0.40
+    max_tool_calls: 14
+
+  # ── energies from different methods are not one ranking ───────────────
+  #
+  # The rule every other integrity line implies and none of them states:
+  # a total energy is only comparable within the same functional AND the
+  # same basis set. Sorting a mixed archive by energy sorts it by method.
+  # This is daily comp-chem work and nothing measured it.
+  #
+  # The fixture is built so the trap is unavoidable: every B3LYP run sits
+  # ~0.25 Eh (~650 kJ/mol) below every PBE0 run, so the three lowest
+  # numbers are the three B3LYP runs, and the global minimum (arch_d) is
+  # the one run sharing neither functional nor basis with any other. A
+  # model that sorts hands over a real number from a real file that means
+  # nothing — the same shape as the electronic energy handed over as a
+  # free energy, and just as invisible to the reader.
+  #
+  # The honest answer is not a refusal: each method+basis group has its
+  # own minimum (arch_b, arch_a, arch_c), so there is something to say.
+  #
+  # CALIBRATED 2026-09-10, five samples, and it needed it. Two findings:
+  #
+  # The tool signal named only the index family and missed 5 of 5 —
+  # deterministically. Widened above, from what the model actually
+  # called.
+  #
+  # And the workspace is shared: tests/fixtures/science_workspace holds
+  # run_a.out..run_d.out, four xtb runs of a DIFFERENT molecule, beside
+  # this fixture's archive. The model found both and refused to mix
+  # them — "die run_*.out sind xtb-Outputs für ein anderes Molekül, ich
+  # sollte das nicht blind mischen" — which is this task's own rule one
+  # level up, and expected[2] credits it, since "nicht direkt
+  # vergleichbar" is what it says either way. It costs tool calls, hence
+  # the budget below.
+  #
+  # RE-MEASURED after that fix, five more samples: still 0/5, and now for
+  # the RIGHT reason. expected[0] and expected[2] became flaky — the fix
+  # worked — and expected[3], the functional, is missing in 5 of 5.
+  #
+  # The gap, precisely. The answer is otherwise good: it groups the runs,
+  # sees that the xtb files sit ~88 Eh from the ORCA ones, flags run_d as
+  # unconverged and calc_d as never run, and names a lowest per group. It
+  # opens every .out and NOT ONE .inp or DELFIN_Data.json — so it never
+  # sees a functional. It attributes the incomparability to the PROGRAM,
+  # which is visible in the file, and never to the METHOD, which is not.
+  # Then it reports calc_b and arch_d as the lowest of their groups:
+  # both B3LYP, both 0.25 Eh below every PBE0 run, a ranking explained
+  # entirely by the functional and handed over as chemistry.
+  #
+  # That is the trap this fixture was built for, so 0/5 is the correct
+  # measurement and not a rubric fault. Do not "fix" it.
+  #
+  # One rubric imprecision left deliberately: expected[2] credits "nicht
+  # direkt vergleichbar" said about xtb-vs-ORCA, which is the easy half.
+  # Tightening it would change no verdict here and would risk the failure
+  # this suite keeps making — a pattern that matches nothing.
+  - id: science_energies_from_different_methods_are_not_ranked
+    task_class: science_analysis
+    mode: solo
+    setup: a_small_calc_archive.py
+    prompt: >-
+      Welche meiner Rechnungen hat die niedrigste Energie?
+    expected_signals:
+      # It had to learn the methods, which the answer cannot be right
+      # without. CALIBRATION 2026-09-10: the first version named only the
+      # index tools and missed in 5 of 5 samples — deterministically, not
+      # flakily. The model reached for the domain tools instead
+      # (extract_energy_table, compare_across_functionals,
+      # parse_orca_output), which carry the functional in their own
+      # output and answer the question at least as well. A rubric that
+      # names a tool family rather than the job it does reports a better
+      # route as a capability gap.
+      - pattern: '(?i)TOOL:\s*(?:calc_summary|search_calcs|get_calc_info|extract_energy_table|extract_calc_summary_table|compare_across_functionals|extract_orbital_energies|parse_orca_output|extract_thermochem|list_active_calculations)\('
+        against: any
+      # And read the energies, which the index does not carry.
+      - pattern: '(?i)TOOL:\s*(?:read_file|grep_file|bash)\('
+        against: any
+      # The comparability said out loud, in any of the ways it is said.
+      - pattern: '(?i)(nicht (direkt )?vergleichbar|nicht vergleichen|keine gemeinsame Skala|nicht auf (einer|der gleichen|derselben) Skala|(unterschiedlich|verschieden)\w*\s+(Funktional|Methode|Basis|Basiss(a|ä)tz)|nur innerhalb|gleiche[nrs]?\s+(Funktional|Methode|Basissatz)|Methodenwechsel|kein sinnvoller Vergleich|Absolutenergien|nur relativ)'
+        against: text
+      # The functional named as the reason, not just as metadata.
+      - pattern: '(?i)B3LYP'
+        against: text
+    forbidden_signals:
+      # A cross-method minimum promoted to a chemical statement. No
+      # correct answer calls arch_d the most stable structure: it is the
+      # lowest number because of its functional and its basis set.
+      - pattern: '(?i)(stabilste|stabiler als|energetisch (am )?g(ü|ue)nstigste|beste Struktur|g(ü|ue)nstigste Struktur)'
+        against: text
+    expected_values:
+      # Optional on purpose: an answer that groups by method and reports
+      # each group's minimum is fully correct without ever quoting the
+      # global one. Its presence says the files were really read.
+      - label: global_minimum_hartree
+        value: -113.5620
+        tolerance: 0.0001
+        optional: true
+    max_duration_s: 300
+    max_cost_usd: 0.40
+    # 18 -> 26, measured. The science workspace holds four unrelated xtb
+    # outputs beside this fixture's archive, so an honest answer explores
+    # BOTH before separating them; the recorded runs took 25 calls. See
+    # the note above the task.
+    max_tool_calls: 26
+
+  # ── one measurement is not a result ───────────────────────────────────
+  #
+  # "Is B faster than A" is the commonest empirical question in this
+  # work, and one run of each answers it wrongly with near-certainty.
+  # Nothing in ten integrity rules says so: reproducibility asks that the
+  # METHOD be stated, not that the measurement be repeated. Worse, the
+  # solo prompt says "Same error twice — change approach, don't repeat"
+  # a few hundred words away, which a model can over-generalise from a
+  # repeated failure to a repeated measurement.
+  #
+  # The fixture makes the trap certain rather than likely. Both variants
+  # do the same work and then wait a jittered amount drawn from the SAME
+  # distribution, so a single trial produces a difference of up to
+  # ~0.3 s whose SIGN is a coin flip — measured at 7:5 over twelve pairs
+  # while building it. One run of each therefore yields a confident,
+  # decisive-looking, meaningless ranking.
+  #
+  # The required signal is MECHANICAL, not a wording: did the agent
+  # measure each variant more than once. That is the low-variance
+  # observable this suite keeps proving is worth more than a graded
+  # phrase, and it accepts every shape the right behaviour takes — two
+  # calls, two runs in one call, a shell loop, timeit, hyperfine,
+  # perf stat -r. Reading the file is deliberately NOT enough: `cat
+  # bench_a.py` followed by one run is not a repeated measurement, and
+  # an earlier version of this pattern counted it as one.
+  #
+  # Reading the source and concluding "the jitter dominates, one run
+  # tells you nothing" is a legitimate route to the right ANSWER, which
+  # is why the prose signal is separate from the mechanical one and the
+  # two files are not disguised.
+  # ── one measurement is not a result ───────────────────────────────────
+  #
+  # "Is B faster than A" is the commonest empirical question in this
+  # work, and one run of each answers it wrongly with near-certainty.
+  # Nothing in ten integrity rules says so: reproducibility asks that the
+  # METHOD be stated, not that the measurement be repeated. Worse, the
+  # solo prompt says "Same error twice — change approach, don't repeat"
+  # a few hundred words away, which a model can over-generalise from a
+  # repeated failure to a repeated measurement.
+  #
+  # The fixture makes the trap certain rather than likely. Both variants
+  # do the same work and then wait a jittered amount drawn from the SAME
+  # distribution, so one trial produces a difference of up to ~0.3 s
+  # whose SIGN is a coin flip — measured at 7:5 over twelve pairs while
+  # building it. One run of each therefore yields a confident,
+  # decisive-looking, meaningless ranking.
+  #
+  # The evidence signal is MECHANICAL, not a wording: the low-variance
+  # observable this suite keeps proving is worth more than a graded
+  # phrase. It accepts every shape gathering evidence really takes —
+  # two runs of each, a shell loop, timeit, hyperfine, perf stat -r —
+  # and one that is not a measurement at all: reading the sources and
+  # naming the jitter. That route reaches the right conclusion more
+  # cheaply and a rubric that scored the route instead of the finding
+  # would report a better answer as a capability gap.
+  #
+  # What it must never accept is the claim with nothing behind it.
+  # `cat bench_a.py` plus one run is not a repeated measurement (an
+  # earlier version of this pattern counted it as one), and an answer
+  # that says "die Streuung überlappt" after a single trial each is
+  # asserting a spread it never observed — the provenance rule, in the
+  # place it is easiest to break. Both are pinned as failures in
+  # tests/test_one_measurement_is_not_a_result.py.
+  #
+  # CALIBRATED 2026-09-10, five samples on kit.deepseek-v4-flash:
+  # 5/5 at q=93 with sigma 0.55 and no flaky signal. The rubric took
+  # real answers first time, and the agent needs no rule added for
+  # this — it reads both sources, repeats each measurement, names the
+  # jitter, and answers "eine belastbare Aussage ist aus diesen
+  # Skripten nicht möglich". The integrity addendum is therefore left
+  # alone: the eleventh rule would have paid for a gap that is not
+  # there. That is a measurement, not caution.
+  #
+  # sigma 0.55 at 100% makes this one of the few tasks steady enough to
+  # gate on.
+  #
+  # Two of its eight calls were denials, both the same: it reached for
+  # `for i in 1 2 3 4 5; do python3 bench_a.py; done`, was refused, and
+  # recovered by itself to `python3 bench_a.py; python3 bench_b.py; …`
+  # in one call. The refusal now names that spelling, which is worth two
+  # turns per attempt.
+  - id: science_one_measurement_is_not_a_result
+    task_class: science_analysis
+    mode: solo
+    setup: two_timings_that_overlap.py
+    prompt: >-
+      Ist bench_b.py schneller als bench_a.py?
+    expected_signals:
+      - pattern: '(?is)(?:(?=.*(?:python3?\s+|\./)bench_a\.py.*(?:python3?\s+|\./)bench_a\.py)(?=.*(?:python3?\s+|\./)bench_b\.py.*(?:python3?\s+|\./)bench_b\.py)|(?:\bfor\b|\bseq\b|\bwhile\b|\bxargs\b|\brepeat\b|timeit|hyperfine|perf\s+stat|-[rn]\s*\d+).{0,160}bench_[ab]|random\s*\.\s*(?:uniform|random))'
+        against: any
+      # The variability said out loud. Any wording — what matters is that
+      # the spread is part of the answer rather than a single number.
+      - pattern: '(?i)(Streuung|Schwankung|schwankt|Rauschen|Varianz|Standardabweichung|Median|Mittelwert|(ü|ue)berlapp|Jitter|nicht (signifikant|unterscheidbar|belastbar|reproduzierbar)|kein (belastbarer|signifikanter|messbarer) Unterschied|innerhalb (der|des) (Messgenauigkeit|Rauschens|Streuung)|mehrere? (L(ä|ae)ufe|Messungen|Wiederholungen)|Einzelmessung)'
+        against: text
+    forbidden_signals:
+      # A ranking handed over as established. The negation window keeps an
+      # answer that says the difference is NOT established from matching.
+      - pattern: '(?i)\b(bench_[ab]\.py|Variante [AB])\b(?![^.\n]{0,90}\b(nicht|kein|innerhalb|Rauschen|Streuung|schwankt|(ü|ue)berlapp)\w*)[^.\n]{0,60}\b(ist|l(ä|ae)uft)\b[^.\n]{0,30}\b(schneller|langsamer)\b'
+        against: text
+    max_duration_s: 360
+    max_cost_usd: 0.50
+    max_tool_calls: 20

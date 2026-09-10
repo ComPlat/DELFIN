@@ -232,7 +232,22 @@ tasks:
         against: text
       # The step from gap to reactivity is named as a step. Any wording —
       # what matters is that the inference is marked as one.
-      - pattern: '(?i)(Interpretation|Faustregel|Heurist|N(ä|ae)herung|Indiz|deutet (darauf )?hin|l(ä|ae)sst sich nicht direkt|kein direktes Ma(ß|ss)|nicht gemessen|Korrelation)'
+      #
+      # The word list is not decoration: it was built from what models
+      # actually write here. The first version accepted none of the
+      # fifteen distinct gap-to-reactivity sentences in the recorded runs,
+      # so it scored a vocabulary rather than a behaviour. Two faults —
+      # `Interpretation` cannot match `interpretiert`, and the everyday
+      # markers (`beurteilt`, `spricht für`, `Regel`, `gilt als`) were
+      # absent entirely. `spr(i|e)ch(t|en)` is loose on purpose: German
+      # puts the verb last, so `für X spricht` needs no adjacency, and in
+      # this domain the word carries an argument or nothing.
+      #
+      # The half that must NOT widen is the bare claim — reactivity handed
+      # over as if it were a measured column. Eight real answers of that
+      # shape are pinned in test_the_measurement_and_the_inference.py and
+      # still score zero.
+      - pattern: '(?i)(interpretier|Interpretation|Faustregel|\bRegel\b|Heurist|N(ä|ae)herung|Indiz|Proxy|Deskriptor|Kriterium|korrelier|Korrelation|gilt als|\bspr(i|e)ch(t|en)\b|deutet (darauf )?hin|dient als|steht f(ü|ue)r|beurteilt|abgesch(ä|ae)tzt|chemische(n)? H(ä|ae)rte|l(ä|ae)sst sich nicht direkt|kein direktes Ma(ß|ss)|nicht (direkt )?gemessen)'
         against: text
       # The unconverged run has no business in the comparison.
       - pattern: '(?i)(run_d|abnormal|nicht konvergiert)'

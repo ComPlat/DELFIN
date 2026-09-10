@@ -1006,7 +1006,15 @@ def _bash_outside_reads(cmd: str) -> list[str]:
     """
     out: list[str] = []
     try:
-        for src in (_inline_payload.extract_c_payloads(cmd) or []):
+        # Here-documents too, and with include_expanded=True, for the
+        # same reason the write gate takes them: this path REFUSES on
+        # what it finds, so reading a body the shell may still add to can
+        # only block more. `python3 - <<'EOF' print(open('/etc/passwd')
+        # .read()) EOF` produced no read target at all before.
+        srcs = list(_inline_payload.extract_c_payloads(cmd) or [])
+        srcs += _inline_payload.extract_stdin_payloads(
+            cmd, include_expanded=True)
+        for src in srcs:
             for tok in _inline_payload.analyze_payload(src).reads:
                 if tok.startswith("/") or tok.startswith("~"):
                     out.append(tok)
@@ -1405,6 +1413,22 @@ def _inline_payload_is_readable(segment: str, workspace: Path | str) -> bool:
         if not _PLAIN_C_HEAD_RE.match(seg):
             return False
         payloads = _inline_payload.extract_c_payloads(seg)
+        if payloads is None:
+            return False
+        # A here-document carries the same property `-c` does: with a
+        # QUOTED delimiter the body is literal, so the text analysed is
+        # the text the interpreter receives. `python3 - <<'EOF' … EOF`
+        # is the third-largest group in the denial log (29 of 437) and
+        # was refused for punctuation.
+        #
+        # Quoted only, and that is the whole argument. A bare `<<EOF` is
+        # expanded by the shell first, so `$(…)` inside it means the
+        # analysed text is NOT what runs — and being wrong here runs
+        # something unread. `extract_stdin_payloads` defaults to quoted
+        # for exactly this reason; the write gate is the only caller that
+        # passes include_expanded, because it refuses rather than grants.
+        heredocs = _inline_payload.extract_stdin_payloads(seg)
+        payloads = list(payloads) + heredocs
         if not payloads:
             return False
         try:
@@ -1415,6 +1439,15 @@ def _inline_payload_is_readable(segment: str, workspace: Path | str) -> bool:
             eff = _inline_payload.analyze_payload(src, cwd)
             if not eff.readable or eff.writes:
                 return False
+            # A read of an absolute path is somebody else's file. The
+            # read gate catches it separately, but this predicate is what
+            # decides whether the confirm veto fires AT ALL, so it cannot
+            # call such a payload fully accounted for. Found by a test:
+            # `print(open('/etc/passwd').read())` was reported readable
+            # because only writes were being looked at.
+            if any(t.startswith("/") or t.startswith("~")
+                   for t in eff.reads):
+                return False
         # The payloads are readable; the segment must be nothing BUT
         # them. Blank each one out and require what is left to be an
         # ordinary command again -- that is what rules out a second,
@@ -1422,6 +1455,10 @@ def _inline_payload_is_readable(segment: str, workspace: Path | str) -> bool:
         rest = seg
         for src in payloads:
             rest = rest.replace(src, " ", 1)
+        # The redirect itself is punctuation, not a second command: what
+        # is left of `python3 - <<'EOF'  EOF` has to read as an ordinary
+        # invocation for the check below to mean anything.
+        rest = re.sub(r"<<-?\s*(['\"]?)\w+\1", " ", rest)
         return not _is_interpreter_invocation(rest.replace("-c", " ", 1))
     except Exception:
         return False
@@ -1516,7 +1553,22 @@ def _bash_write_targets(cmd: str) -> list[str]:
                 _add(tok)
 
         # What an inline python payload would write.
-        for src in (_inline_payload.extract_c_payloads(cmd) or []):
+        #
+        # Here-documents are included, and with include_expanded=True.
+        # `python3 - <<'EOF' … EOF` is `python -c` with different
+        # punctuation, and it was invisible here: a body of
+        # `open('/etc/evil','w').write('x')` produced no write target at
+        # all. An unquoted `<<EOF` is shell-expanded before the
+        # interpreter sees it, so the text read here is not necessarily
+        # the text that runs — but this path REFUSES on what it finds, so
+        # scanning an expandable body can only block more, never allow
+        # more. That argument does not hold on a path that grants, and
+        # `_inline_payload_is_readable` accordingly takes quoted bodies
+        # only.
+        _srcs = list(_inline_payload.extract_c_payloads(cmd) or [])
+        _srcs += _inline_payload.extract_stdin_payloads(
+            cmd, include_expanded=True)
+        for src in _srcs:
             for tok in _inline_payload.analyze_payload(src).writes:
                 _add(tok)
 
@@ -2996,6 +3048,46 @@ _DEFAULT_PATH_PROTECTED_GLOBS: tuple[str, ...] = (
 )
 
 
+_SHELL_LOOP_RE = re.compile(
+    r"(?is)\b(?:for|while|until)\b.*?\bdo\b(?P<body>.*?)\bdone\b")
+
+
+def _loop_body_already_allowed(cmd: str, perms) -> str:
+    """The body of a shell loop, when the body alone would be allowed.
+
+    Repeating a measurement is ordinary scientific work and `for i in
+    1 2 3; do python3 x.py; done` is how it is written — but the
+    auto-allow list matches whole commands, so the loop is refused even
+    though `python3 x.py` is allowed and `python3 x.py; python3 x.py`
+    is allowed too (every segment of a compound is checked, so an
+    all-safe compound runs).
+
+    The generic refusal then tells the model to stop and ask the user,
+    which is right for a command it genuinely may not run and wrong
+    here: it needs no permission, only a different spelling. Returns
+    the body so the hint can quote it, or "" when the loop body is
+    something the list would refuse on its own.
+    """
+    if perms is None:
+        return ""
+    match = _SHELL_LOOP_RE.search(cmd or "")
+    if match is None:
+        return ""
+    body = (match.group("body") or "").strip().strip(";").strip()
+    if not body:
+        return ""
+    try:
+        if perms.matches_bash_auto_allow(body):
+            return body
+    except Exception:
+        return ""
+    return ""
+
+
+_REDIRECT_TARGET_RE = re.compile(
+    r"(?<![0-9<>&])(?:[0-9]?|&)>{1,2}\s*([^\s;&|<>()]+)")
+
+
 def _split_shell_segments(cmd: str) -> list[str]:
     """Split a shell command into the segments chained by ``||``, ``&&``,
     ``;``, ``|`` or newline, ignoring operators inside single/double quotes.
@@ -3023,6 +3115,35 @@ def _split_shell_segments(cmd: str) -> list[str]:
             buf.append(c)
             i += 1
             continue
+        if cmd[i:i + 3] == "<<<":
+            # A here-STRING, not a here-document: no terminator line, and
+            # the operator has to be stepped over whole or the `<<` that
+            # follows is read as the start of a heredoc named "hi".
+            buf.append(cmd[i:i + 3])
+            i += 3
+            continue
+        if cmd[i:i + 2] == "<<":
+            # A here-document body is DATA, not a chain of commands.
+            #
+            # Splitting on newlines turned `python3 - <<'EOF' … EOF` into
+            # one pseudo-segment per line of the program: `import os`,
+            # `x = 1`, `os.system("rm -rf /tmp/x")`. The auto-allow check
+            # then refused it because those are not commands — right by
+            # accident, and wrong the other way round as soon as the
+            # lines happen to READ as commands. With a user grant of
+            # `^\s*python3\b`, which is exactly what the refusal tells
+            # the model to ask for, a body of `ls` / `cat` was allowed
+            # through without one line of it being read as Python.
+            #
+            # Consumed here so the body stays with its command: the
+            # segment is then a single opaque unit that the payload
+            # analyser can be asked about, and nothing inside it is ever
+            # mistaken for a shell command.
+            consumed = _consume_heredoc(cmd, i)
+            if consumed is not None:
+                body, i = consumed
+                buf.append(body)
+                continue
         if cmd[i:i + 2] in ("||", "&&"):
             segs.append("".join(buf))
             buf = []
@@ -3037,6 +3158,61 @@ def _split_shell_segments(cmd: str) -> list[str]:
         i += 1
     segs.append("".join(buf))
     return [s.strip() for s in segs if s.strip()]
+
+
+_HEREDOC_START_RE = re.compile(r"<<(-?)\s*(?:(['\"])(\w+)\2|(\w+))")
+
+
+def _consume_heredoc(cmd: str, i: int) -> tuple[str, int] | None:
+    """From ``<<`` at *i*, return (the whole redirect + body, next index).
+
+    None when it does not look like a here-document at all (``<<<`` is a
+    here-STRING and needs no terminator, and a bare ``<<`` with nothing
+    after it is a syntax error the shell would reject).
+
+    An unterminated body runs to the end of the string: that is what the
+    shell would read, and stopping early would hand the caller a segment
+    the shell never sees.
+    """
+    if cmd[i:i + 3] == "<<<":
+        return None
+    m = _HEREDOC_START_RE.match(cmd, i)
+    if m is None:
+        return None
+    tag = m.group(3) or m.group(4)
+    if not tag:
+        return None
+    strip_tabs = bool(m.group(1))
+    rest = cmd[m.end():]
+    # The body starts after the rest of the redirect's own line.
+    nl = rest.find("\n")
+    if nl == -1:
+        return cmd[i:], len(cmd)
+    body_start = m.end() + nl + 1
+    for line_start, line in _lines_from(cmd, body_start):
+        candidate = line.lstrip("\t") if strip_tabs else line
+        if candidate.strip() == tag:
+            # The newline AFTER the terminator is left behind on purpose:
+            # it is the separator between this command and the next, and
+            # swallowing it hid `echo done` in `cat <<'X' … X\necho done`
+            # inside the heredoc's own segment.
+            end = line_start + len(line)
+            return cmd[i:end], end
+    return cmd[i:], len(cmd)
+
+
+def _lines_from(text: str, start: int):
+    """(offset, line) for each line of *text* from *start*, no newlines."""
+    pos = start
+    n = len(text)
+    while pos <= n:
+        nl = text.find("\n", pos)
+        if nl == -1:
+            if pos < n:
+                yield pos, text[pos:]
+            return
+        yield pos, text[pos:nl]
+        pos = nl + 1
 
 
 
@@ -3638,6 +3814,29 @@ class KitToolPermissions:
         segments = _split_shell_segments(cmd)
         if not segments:
             return False
+        # A here-document feeding a REDIRECT is "create this file with
+        # this content" -- what write_file is for, and the one form of
+        # shell write that carries its content in the command line.
+        #
+        # It used to be refused by accident: the body was split into
+        # pseudo-segments and `print(1)` is not an allowed command. Now
+        # that the body stays with its command, `cat > run.py << 'EOF'`
+        # would be auto-allowed off `cat` and the file written with no
+        # pre-image in the change journal, so undo_changes could not take
+        # it back and list_changes_made would not report it.
+        #
+        # A REDIRECT specifically, not any write the segment performs: an
+        # inline python payload that writes has its own policy one layer
+        # up (`_inline_payload_is_readable` refuses it) and its target
+        # goes through the write gate like any other. Overriding an
+        # explicit user grant over a journalling concern would be too
+        # strong, and it is not this rule's business.
+        #
+        # A plain `cat > f` or `echo x > f` is a separate and older
+        # question: those already run, and they carry no content.
+        for seg in segments:
+            if "<<" in seg and _REDIRECT_TARGET_RE.search(seg):
+                return False
         return all(self._segment_auto_allowed(s) for s in segments)
 
     def _segment_auto_allowed(self, cmd: str) -> bool:
@@ -10374,6 +10573,14 @@ class _DocToolExecutor:
 
         self._capture_binary_change("draft_email", target, None, perms)
         result["path"] = self._display_path(target, perms)
+        # Every other tool that answers "a file now exists" opens with
+        # status:ok -- create_docx, create_pdf, merge_pdfs, split_pdf,
+        # fill_docx_template, fill_pdf_form. This one answered with the
+        # recipients and a note, so a caller asking the family's question
+        # read a written draft as a failure. It is not a surface-wide
+        # convention (most read tools carry no status and should not),
+        # but within this family it is unanimous.
+        result.setdefault("status", "ok")
         return json.dumps(result, ensure_ascii=False)
 
     def _execute_create_docx(
@@ -12038,6 +12245,35 @@ class _DocToolExecutor:
                     "`git checkout <ref> -- .` it cannot destroy work in "
                     "the user's tree."
                 )
+            elif re.search(r"^\s*git\s+(?:checkout\s+--\s|restore\b)", cmd):
+                # Taking a change back. Four times tonight in one suite:
+                # `git checkout -- bookmarks.json`, `git checkout --
+                # bookmark_store.py bookmarks.json bookmarks_cli.py`. The
+                # agent had edited a fixture and wanted the original.
+                #
+                # This is the most dangerous spelling of that wish in a
+                # shared checkout, which is why it is off the list: it
+                # reverts by PATH, not by authorship, so it discards
+                # whatever anybody else had uncommitted there. `git stash`
+                # `git stash` is deliberately NOT matched here: it is
+                # answered one branch up by the control-run hint, which
+                # names enter_worktree(base_ref=…) and says why it is
+                # safer. The stash is shared, and parallel agents have
+                # swapped each other's work through it.
+                #
+                # undo_changes reverts only what THIS session recorded
+                # writing, and refuses a file whose content changed since.
+                hint = (
+                    " HINT: to take back a change YOU made in this session, "
+                    "use `undo_changes(scope=\"session\")` — or "
+                    "`undo_changes(path=…)` for one file. It reverts only "
+                    "what this session recorded writing and refuses a file "
+                    "edited since, whereas `git checkout --` reverts by path "
+                    "and discards whatever anyone else had uncommitted "
+                    "there. For the ORIGINAL of a file you did not write, "
+                    "read it with `read_file` at the commit instead of "
+                    "restoring over the working tree."
+                )
             elif re.match(r"^\s*rm\s+(?!-[a-zA-Z]*[rR])", cmd):
                 # Cleaning up after itself. Twice in one recorded run:
                 # `rm -f _tagreport_check.py`, `rm _verify_export.py` --
@@ -12054,6 +12290,25 @@ class _DocToolExecutor:
                     "only on what this session recorded writing, and leaves "
                     "anything edited since untouched. `rm` cannot tell whose "
                     "file it is, which is why it is not on the list."
+                )
+            elif _loop_body_already_allowed(cmd, perms):
+                # Repeating a measurement is ordinary scientific work,
+                # and a shell loop is how it is written. The auto-allow
+                # list matches whole commands, so the loop is refused
+                # while its body is allowed -- and the generic refusal
+                # then says to stop and ask the user, which costs the
+                # turn and the measurement. Nothing needs approving
+                # here; only the spelling changes.
+                _body = _loop_body_already_allowed(cmd, perms)
+                hint = (
+                    " HINT: you do not need permission for this — the "
+                    f"command inside the loop (`{_body[:80]}`) is already "
+                    "allowed. The auto-allow list matches whole commands, "
+                    "not loop bodies. Repeat it instead: send it once per "
+                    "iteration, or join the iterations with ';' in one "
+                    "call (every segment of a compound is checked, so an "
+                    "all-allowed compound runs unattended). Do NOT ask the "
+                    "user for this one."
                 )
             elif cmd.lstrip().startswith(("cd ", "cd\t")):
                 hint = (
@@ -13606,8 +13861,17 @@ class _DocToolExecutor:
             ok, msg = _bj.get_registry().kill(job_id)
         except Exception as exc:
             return json.dumps({"error": f"kill failed: {exc}"})
+        if not ok:
+            # Every sibling reports a failure as {"error": ...}:
+            # bash_status, bash_output, watch_job, and this tool's own
+            # "job_id is required" two lines up. This branch alone said
+            # {"status": "error", "message": ...}, so a caller that tests
+            # for an "error" key -- which is what the rest of the surface
+            # teaches it to do -- read a failed kill as a success.
+            return json.dumps({"error": msg, "job_id": job_id},
+                              ensure_ascii=False)
         return json.dumps({
-            "status": "ok" if ok else "error",
+            "status": "ok",
             "job_id": job_id,
             "message": msg,
         }, ensure_ascii=False)
