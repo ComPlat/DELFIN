@@ -1565,13 +1565,13 @@ def extract_vibrational_modes(folder: str) -> VibrationalModesResult:
 
 
 # ---------------------------------------------------------------------------
-# DELFIN_data.json reader
+# DELFIN_Data.json reader
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class DelfinDataResult:
-    """Structured snapshot of a folder's DELFIN_data.json."""
+    """Structured snapshot of a folder's DELFIN_Data.json."""
     folder: str
     json_path: str | None
     workflow_stages: list[str]
@@ -1582,8 +1582,23 @@ class DelfinDataResult:
     error: str | None = None
 
 
+def _delfin_data_path(folder):
+    """The pipeline state file, whichever way its name is spelled.
+
+    DELFIN writes DELFIN_Data.json; this tool looked for DELFIN_Data.json
+    and never found it -- reported by a model asked where the tools
+    hurt, after it had watched "not found" beside the file in ls.
+    """
+    from pathlib import Path as _P
+    p = _P(folder)
+    for name in ("DELFIN_Data.json", "DELFIN_data.json"):
+        if (p / name).is_file():
+            return p / name
+    return None
+
+
 def extract_delfin_json(folder: str) -> DelfinDataResult:
-    """Read DELFIN_data.json (the pipeline state file).
+    """Read DELFIN_Data.json (the pipeline state file).
 
     DELFIN writes this file at the root of a calc folder while a
     workflow runs, capturing per-stage energies, timings, and the
@@ -1593,13 +1608,13 @@ def extract_delfin_json(folder: str) -> DelfinDataResult:
     from pathlib import Path as _P
     import json as _json
     p = _P(folder)
-    json_path = p / "DELFIN_data.json"
-    if not json_path.exists():
+    json_path = _delfin_data_path(p)
+    if json_path is None:
         return DelfinDataResult(
             folder=str(p), json_path=None,
             workflow_stages=[], energies={}, timings_s={},
             cost_usd=None, raw_keys=[],
-            error="DELFIN_data.json not found",
+            error="DELFIN_Data.json not found",
         )
     try:
         data = _json.loads(json_path.read_text(encoding="utf-8"))
@@ -1793,10 +1808,15 @@ def compare_across_functionals(
             continue
         out_files = sorted(p.glob("*.out"))
         if not out_files:
+            # No output yet is not no method: a running run has its
+            # CONTROL.txt and .inp, and a comparison that drops it says
+            # nothing about the run somebody is waiting for.
+            f0, b0 = _method_of(None, p)
             rows.append(FunctionalComparisonRow(
-                folder=str(folder), functional=None, basis=None,
+                folder=str(folder), functional=f0, basis=b0,
                 gibbs=None, single_point=None, zpe=None,
                 n_imag=None, is_minimum=None, status="no_output",
+                method=_method_label(f0, b0),
             ))
             continue
         target = max(out_files, key=lambda f: f.stat().st_size)
@@ -1999,7 +2019,7 @@ _TOOL_CATALOG: list[dict] = [
     {"name": "extract_vibrational_modes", "category": "parsing",
      "summary": "All vibrational modes + IR intensities (real + imag)."},
     {"name": "extract_delfin_json", "category": "parsing",
-     "summary": "Read DELFIN_data.json: stages, energies, timings, cost."},
+     "summary": "Read DELFIN_Data.json: stages, energies, timings, cost."},
     {"name": "extract_calc_summary_table", "category": "parsing",
      "summary": "Multi-property table: G/SPE/HOMO/LUMO/gap/dipole/walltime."},
     {"name": "compare_calculations", "category": "parsing",
@@ -3498,7 +3518,7 @@ _DELFIN_FEATURES: dict[str, dict] = {
             "Hyperpolarizability (β, γ) workflow: ORCA-driven "
             "calculation of nonlinear-optical properties for "
             "chromophores. Reads orca.out for β-tensor components "
-            "(beta_zzz etc.) and aggregates into DELFIN_data.json."
+            "(beta_zzz etc.) and aggregates into DELFIN_Data.json."
         ),
         "see_also": ["delfin/cli.py (hyperpol subcommand)"],
     },

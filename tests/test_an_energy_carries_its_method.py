@@ -179,3 +179,66 @@ def test_the_local_backend_import_resolves():
         pytest.skip("slurm host: the local branch is not taken")
     backend = api._resolve_backend()
     assert type(backend).__name__ == "LocalJobBackend"
+
+
+# ---------------------------------------------------------------------------
+# The second interview, on the fixed tools
+# ---------------------------------------------------------------------------
+#
+# Re-asked over the same fixture with the three fixes in place, the
+# operator confirmed them and named the next layer: outcome said
+# "unknown" for all nine runs because the fixture signals completion
+# through DELFIN_Data.json alone; the fixture contradicted itself (an
+# output that terminated normally beside a status of "running");
+# extract_delfin_json looked for DELFIN_data.json and never found the
+# real file; and a folder without an output was compared without its
+# method. All four below.
+
+def test_extract_delfin_json_finds_the_file_as_delfin_writes_it(tmp_path):
+    d = tmp_path / "run"; d.mkdir()
+    (d / "DELFIN_Data.json").write_text(json.dumps({"status": "finished", "functional": "PBE0"}))
+    got = api.extract_delfin_json(str(d))
+    assert got.error is None and got.json_path and got.json_path.endswith("DELFIN_Data.json")
+
+
+def test_extract_delfin_json_still_reads_the_old_spelling(tmp_path):
+    d = tmp_path / "run"; d.mkdir()
+    (d / "DELFIN_data.json").write_text(json.dumps({"status": "finished"}))
+    assert api.extract_delfin_json(str(d)).error is None
+
+
+def test_outcome_reads_the_state_file_when_nothing_else_says(tmp_path):
+    from delfin.doc_server import calc_indexer as ci
+    a = tmp_path / "a"; a.mkdir(); (a / "DELFIN_Data.json").write_text(json.dumps({"status": "running"}))
+    b = tmp_path / "b"; b.mkdir(); (b / "DELFIN_Data.json").write_text(json.dumps({"status": "finished"}))
+    c = tmp_path / "c"; c.mkdir(); (c / "DELFIN_Data.json").write_text(json.dumps({"status": "finished"})); (c / ".exit_code_3").write_text("")
+    assert ci.outcome_of_folder(a).startswith("running per DELFIN_Data.json")
+    assert ci.outcome_of_folder(b).startswith("finished per DELFIN_Data.json")
+    assert ci.outcome_of_folder(c) == "failed (exit code 3)", "an exit code outranks the state file"
+
+
+def test_a_run_without_an_output_is_compared_with_its_method(tmp_path):
+    d = tmp_path / "running"; d.mkdir()
+    (d / "run.inp").write_text("! TPSSh def2-TZVP Opt\n")
+    (d / "CONTROL.txt").write_text("basis_set = def2-TZVP\n")
+    rows = api.compare_across_functionals([str(d)], include_imag=False)
+    assert rows[0].status == "no_output" and rows[0].method == "TPSSh/def2-TZVP"
+
+
+def test_the_small_archive_no_longer_contradicts_itself(tmp_path):
+    import subprocess, sys
+    setup = Path(api.__file__).resolve().parent / "agent" / "pack" / "benchmark" / "setup" / "a_small_calc_archive.py"
+    r = subprocess.run([sys.executable, str(setup), str(tmp_path)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    running = []
+    for f in (tmp_path / "calc_archive").rglob("DELFIN_Data.json"):
+        status = json.loads(f.read_text()).get("status")
+        has_out = any(f.parent.glob("*.out"))
+        assert (status == "running") == (not has_out), f"{f.parent.name}: status {status} with output {has_out}"
+        if status == "running":
+            running.append(f.parent.name)
+    assert running == [] or running == ["calc_d"], running
+    rows = {Path(r["folder"]).name: r for r in api.extract_energy_table(
+        [str(p) for p in sorted((tmp_path / "calc_archive" / "calc").iterdir())], properties=["single_point"])}
+    assert rows["calc_d"]["outcome"].startswith(("running", "unknown"))
+    assert all(r["outcome"].startswith("finished per DELFIN_Data.json") for n, r in rows.items() if n != "calc_d"), rows

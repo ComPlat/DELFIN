@@ -19,11 +19,11 @@ non-trivial answer and a lazy one is wrong:
 
   * As INDEXED: PBE0 5 times, B3LYP 3. "The most used functional" has an
     answer, and it is not "all of them".
-  * calc_d's TPSSh is deliberately NOT in that count. The index reads the
-    functional from DELFIN_Data.json, which an unfinished run does not
-    have -- so a run still in flight contributes no method. That is the
-    indexer's behaviour, not a flaw in the fixture, and a task must not
-    ask a question whose answer depends on it.
+  * calc_d's TPSSh counts once, read from its .inp header: an unfinished
+    run has no DELFIN_Data.json, and the index falls back to the input
+    (TPSSh joined the known functionals on 2026-09-10, when a model
+    asked where the tools hurt found a running run filed under no
+    method). PBE0 5, B3LYP 3, TPSSh 1 -- the most-used answer is unchanged.
   * def2-TZVP appears 4 times, def2-SVP 5 -- close enough that guessing
     from the functional does not work.
   * ONE run (arch_e) has no CONTROL.txt and only an .inp, so the index
@@ -146,7 +146,11 @@ def build(base: Path, rows, kind: str) -> None:
             (d / "DELFIN_Data.json").write_text(json.dumps({
                 "name": name, "functional": func, "basis_set": basis,
                 "solvent": solvent, "charge": 0, "multiplicity": 1,
-                "status": "finished" if kind == "archive" else "running",
+                # A model asked where the tools hurt found the archive
+                # contradicting itself: an output that says TERMINATED
+                # NORMALLY beside a status of "running". Only the run
+                # without an output is running.
+                "status": "finished" if out else "running",
             }, indent=1), encoding="utf-8")
         if out:
             (d / f"{name}.out").write_text(
