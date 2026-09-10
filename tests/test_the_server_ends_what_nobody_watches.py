@@ -63,7 +63,11 @@ class _Base:
 
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    # asyncio.run rather than get_event_loop().run_until_complete: in a
+    # full suite some earlier test has called asyncio.run, which closes
+    # and unsets the loop, and get_event_loop then raises. Ten of these
+    # passed alone and failed in the run that matters.
+    return asyncio.run(coro)
 
 
 @pytest.fixture
