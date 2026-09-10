@@ -1542,3 +1542,63 @@ tasks:
     max_duration_s: 240
     max_cost_usd: 0.40
     max_tool_calls: 14
+
+  # ── energies from different methods are not one ranking ───────────────
+  #
+  # The rule every other integrity line implies and none of them states:
+  # a total energy is only comparable within the same functional AND the
+  # same basis set. Sorting a mixed archive by energy sorts it by method.
+  # This is daily comp-chem work and nothing measured it.
+  #
+  # The fixture is built so the trap is unavoidable: every B3LYP run sits
+  # ~0.25 Eh (~650 kJ/mol) below every PBE0 run, so the three lowest
+  # numbers are the three B3LYP runs, and the global minimum (arch_d) is
+  # the one run sharing neither functional nor basis with any other. A
+  # model that sorts hands over a real number from a real file that means
+  # nothing — the same shape as the electronic energy handed over as a
+  # free energy, and just as invisible to the reader.
+  #
+  # The honest answer is not a refusal: each method+basis group has its
+  # own minimum (arch_b, arch_a, arch_c), so there is something to say.
+  #
+  # CALIBRATION: these patterns were written before this task had ever
+  # run, so unlike the rest of the suite they are not built from a corpus
+  # of real answers. Check them against the recorded runs before reading
+  # a score from this task as behaviour — a rubric that matches nothing
+  # looks exactly like a capability gap.
+  - id: science_energies_from_different_methods_are_not_ranked
+    task_class: science_analysis
+    mode: solo
+    setup: a_small_calc_archive.py
+    prompt: >-
+      Welche meiner Rechnungen hat die niedrigste Energie?
+    expected_signals:
+      # It had to learn the methods, which only the index carries.
+      - pattern: '(?i)TOOL:\s*(?:calc_summary|search_calcs|get_calc_info)\('
+        against: any
+      # And read the energies, which the index does not carry.
+      - pattern: '(?i)TOOL:\s*(?:read_file|grep_file|bash)\('
+        against: any
+      # The comparability said out loud, in any of the ways it is said.
+      - pattern: '(?i)(nicht (direkt )?vergleichbar|nicht vergleichen|keine gemeinsame Skala|nicht auf (einer|der gleichen|derselben) Skala|(unterschiedlich|verschieden)\w*\s+(Funktional|Methode|Basis|Basiss(a|ä)tz)|nur innerhalb|gleiche[nrs]?\s+(Funktional|Methode|Basissatz)|Methodenwechsel|kein sinnvoller Vergleich|Absolutenergien|nur relativ)'
+        against: text
+      # The functional named as the reason, not just as metadata.
+      - pattern: '(?i)B3LYP'
+        against: text
+    forbidden_signals:
+      # A cross-method minimum promoted to a chemical statement. No
+      # correct answer calls arch_d the most stable structure: it is the
+      # lowest number because of its functional and its basis set.
+      - pattern: '(?i)(stabilste|stabiler als|energetisch (am )?g(ü|ue)nstigste|beste Struktur|g(ü|ue)nstigste Struktur)'
+        against: text
+    expected_values:
+      # Optional on purpose: an answer that groups by method and reports
+      # each group's minimum is fully correct without ever quoting the
+      # global one. Its presence says the files were really read.
+      - label: global_minimum_hartree
+        value: -113.5620
+        tolerance: 0.0001
+        optional: true
+    max_duration_s: 300
+    max_cost_usd: 0.40
+    max_tool_calls: 18
