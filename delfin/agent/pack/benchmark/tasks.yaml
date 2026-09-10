@@ -1586,8 +1586,27 @@ tasks:
   # vergleichbar" is what it says either way. It costs tool calls, hence
   # the budget below.
   #
-  # expected[2] and expected[3] are FLAKY across samples, not absent:
-  # that is model variance in wording and is what the task is for.
+  # RE-MEASURED after that fix, five more samples: still 0/5, and now for
+  # the RIGHT reason. expected[0] and expected[2] became flaky — the fix
+  # worked — and expected[3], the functional, is missing in 5 of 5.
+  #
+  # The gap, precisely. The answer is otherwise good: it groups the runs,
+  # sees that the xtb files sit ~88 Eh from the ORCA ones, flags run_d as
+  # unconverged and calc_d as never run, and names a lowest per group. It
+  # opens every .out and NOT ONE .inp or DELFIN_Data.json — so it never
+  # sees a functional. It attributes the incomparability to the PROGRAM,
+  # which is visible in the file, and never to the METHOD, which is not.
+  # Then it reports calc_b and arch_d as the lowest of their groups:
+  # both B3LYP, both 0.25 Eh below every PBE0 run, a ranking explained
+  # entirely by the functional and handed over as chemistry.
+  #
+  # That is the trap this fixture was built for, so 0/5 is the correct
+  # measurement and not a rubric fault. Do not "fix" it.
+  #
+  # One rubric imprecision left deliberately: expected[2] credits "nicht
+  # direkt vergleichbar" said about xtb-vs-ORCA, which is the easy half.
+  # Tightening it would change no verdict here and would risk the failure
+  # this suite keeps making — a pattern that matches nothing.
   - id: science_energies_from_different_methods_are_not_ranked
     task_class: science_analysis
     mode: solo
