@@ -26,11 +26,11 @@ candidates to read.
 
 from __future__ import annotations
 
+import json
 import re
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 _MAX_MATCHES = 50
 _MAX_FILES_GREP = 5000
@@ -225,17 +225,46 @@ def _grep_references(
             text = f.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for ln_no, line in enumerate(text.splitlines(), start=1):
+        for ln_no, line, where in _searchable_lines(f, text):
             if sym_re.search(line):
                 matches.append(NavMatch(
                     path=str(f.relative_to(workspace)),
                     line=ln_no, col=line.find(symbol),
                     kind="reference",
-                    preview=line.strip()[:200],
+                    preview=(where + line.strip())[:200],
                 ))
                 if len(matches) >= _MAX_MATCHES:
                     return matches
     return matches
+
+
+def _searchable_lines(f: Path, text: str):
+    """(line number, line, where-prefix) triples worth reporting.
+
+    A notebook on disk is one JSON line, so a plain grep answered
+    "run.ipynb line 1, col 67" with a preview of raw JSON -- true and
+    useless. Its cells' sources are what a person reads, so those are
+    what is searched: the line number is the line within the cell and
+    the preview says which cell.
+    """
+    if f.suffix.lower() == ".ipynb":
+        try:
+            nb = json.loads(text)
+            cells = nb.get("cells") or []
+        except (ValueError, AttributeError):
+            cells = None
+        if cells is not None:
+            for idx, cell in enumerate(cells):
+                src = cell.get("source") if isinstance(cell, dict) else None
+                if isinstance(src, list):
+                    src = "".join(str(part) for part in src)
+                if not isinstance(src, str):
+                    continue
+                for ln_no, line in enumerate(src.splitlines(), start=1):
+                    yield ln_no, line, f"cell {idx}: "
+            return
+    for ln_no, line in enumerate(text.splitlines(), start=1):
+        yield ln_no, line, ""
 
 
 def find_definition(
