@@ -286,6 +286,30 @@ _AGENT_CSS = """\
     display: flex;
     flex-direction: column;
 }
+/* Return to the newest output. Sticky rather than absolute: the chat is its
+   own scrollport, so an absolutely placed control would ride away with the
+   content instead of staying within reach. Hidden while the reader is
+   already at the end, so it costs no height in the common case. */
+.delfin-chat-jump {
+    position: sticky;
+    bottom: 6px;
+    z-index: 5;
+    flex: 0 0 auto;
+    align-self: flex-end;
+    margin: -4px 2px 0 0;
+    padding: 3px 10px;
+    border: 1px solid #475569;
+    border-radius: 999px;
+    background: rgba(30, 41, 59, 0.92);
+    color: #e2e8f0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 11.5px;
+    line-height: 1.6;
+    cursor: pointer;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+}
+.delfin-chat-jump:hover { background: rgba(51, 65, 85, 0.96); }
+.delfin-chat-jump[hidden] { display: none !important; }
 /* Auto-growing message box: starts at 80px, grows with the text up to a
    cap, then scrolls — no more scrolling inside a tiny fixed field. */
 .delfin-agent-input {
@@ -5418,16 +5442,125 @@ def create_tab(ctx):
         }
     }, true);
 
-    // --- Auto-scroll: poll every 150ms while agent is working ---
+    // --- Chat scroll: follow the newest output only from the end ---
+    // The chat used to be pulled to the bottom on every refresh, which took
+    // the viewport away from a reader who had scrolled up to re-read
+    // something. Following is now conditional on the reader being at the end,
+    // and the state lives on `window` because Python replaces the whole chat
+    // element on each refresh -- an offset kept on the element would die
+    // with it.
     (function() {
         if (window.__delfinChatScroll) return;
         window.__delfinChatScroll = true;
+        // Reflow and late-loading images move the end by a few pixels. Without
+        // a tolerance a reader sitting at the bottom would be dropped out of
+        // follow mode by output they never scrolled away from.
+        var CHAT_BOTTOM_TOLERANCE_PX = 60;
+        var S = window.__delfinChatFollow = {
+            follow: true,   // is the reader at the end, so new output may pull the view
+            top: 0,         // the reader's offset, carried across a rebuild
+            mark: 0,        // content height when follow was last given up
+            unseen: false,  // output arrived below the reader's viewport
+            auto: false,    // the next scroll event is one we caused
+            timer: null
+        };
+        function chatEl() { return document.querySelector('.delfin-agent-chat'); }
+        function atEnd(c) {
+            return (c.scrollHeight - c.scrollTop - c.clientHeight)
+                   <= CHAT_BOTTOM_TOLERANCE_PX;
+        }
+        function paint(c) {
+            var b = c.querySelector('.delfin-chat-jump');
+            if (!b) return;
+            b.hidden = S.follow;
+            b.textContent = S.unseen ? '\u2193 New messages' : '\u2193 Newest';
+        }
+        // Setting scrollTop queues a scroll event of our own making; the
+        // listener must not read it as the reader moving away. Arm the flag
+        // only when the value really changes, so a no-op poll never swallows
+        // a scroll the reader made in the same frame.
+        function setTop(c, top) {
+            if (c.scrollTop === top) return;
+            S.auto = true;
+            c.scrollTop = top;
+            if (S.timer) clearTimeout(S.timer);
+            S.timer = setTimeout(function() { S.auto = false; }, 200);
+        }
+        window.__delfinChatToBottom = function(el) {
+            var c = (el && el.closest) ? el.closest('.delfin-agent-chat') : null;
+            if (!c) c = chatEl();
+            if (!c) return;
+            S.follow = true;
+            S.unseen = false;
+            setTop(c, c.scrollHeight);
+            S.top = c.scrollTop;
+            paint(c);
+        };
+        // Called from the freshly rendered chat: either follow the new end or
+        // put the reader back where they were before the rebuild.
+        window.__delfinChatSync = function(c) {
+            if (!c) return;
+            var max = c.scrollHeight - c.clientHeight;
+            // An offset past the end belongs to a longer transcript than the
+            // one now shown -- the conversation was swapped, so start at the
+            // end rather than somewhere arbitrary in the middle of it.
+            if (!S.follow && S.top > max) {
+                S.follow = true;
+                S.unseen = false;
+            }
+            if (S.follow) {
+                setTop(c, c.scrollHeight);
+                S.top = c.scrollTop;
+                S.mark = c.scrollHeight;
+            } else {
+                if (c.scrollHeight > S.mark + 4) S.unseen = true;
+                setTop(c, S.top);
+            }
+            paint(c);
+        };
+        // A cleared or brand-new conversation carries no offset worth keeping.
+        window.__delfinChatReset = function() {
+            S.follow = true;
+            S.unseen = false;
+            S.top = 0;
+            S.mark = 0;
+        };
+        // Scroll events do not bubble, so capture them at the document. That
+        // also survives the chat element being replaced on every refresh.
+        document.addEventListener('scroll', function(e) {
+            var c = e.target;
+            if (!c || !c.classList ||
+                !c.classList.contains('delfin-agent-chat')) return;
+            S.top = c.scrollTop;
+            if (S.auto) { S.auto = false; return; }
+            var end = atEnd(c);
+            if (end === S.follow) return;
+            S.follow = end;
+            if (end) { S.unseen = false; } else { S.mark = c.scrollHeight; }
+            paint(c);
+        }, true);
+        // Sending is an explicit move to the newest output; Enter-to-send
+        // clicks the same button, so one listener covers both. Matched by
+        // identity against the row's first button, the way the keyboard
+        // handlers above find it -- the row also holds the mode toggle, and
+        // pressing that is not a request to leave the reader's place.
+        document.addEventListener('click', function(e) {
+            if (!e.target || !e.target.closest) return;
+            var sendBtn = document.querySelector('.delfin-agent-send-row button');
+            if (sendBtn && e.target.closest('button') === sendBtn) {
+                window.__delfinChatToBottom(chatEl());
+            }
+        }, true);
         setInterval(function() {
-            // Only auto-scroll when the working indicator is visible
+            // Only follow while the working indicator is visible
             var working = document.querySelector('.delfin-agent-working');
             if (!working) return;
-            var chat = document.querySelector('.delfin-agent-chat');
-            if (chat) chat.scrollTop = chat.scrollHeight;
+            if (!S.follow) return;
+            var chat = chatEl();
+            if (!chat) return;
+            setTop(chat, chat.scrollHeight);
+            S.top = chat.scrollTop;
+            S.mark = chat.scrollHeight;
         }, 150);
     })();
 
@@ -7871,11 +8004,26 @@ def create_tab(ctx):
             return f'<div class="{css_class}">{content}</div>'
         return ""
 
-    # Always scroll to bottom — simple and reliable.
+    # Every refresh rebuilds the chat element, so the reader's offset has to
+    # be restored from the browser-side state rather than kept on the element.
+    # __delfinChatSync decides between following the new end and putting the
+    # reader back; the fallback covers a refresh that lands before the
+    # startup script has run.
     _SCROLL_TAG = (
+        '<button type="button" class="delfin-chat-jump" hidden onclick="'
+        "if(window.__delfinChatToBottom)window.__delfinChatToBottom(this);"
+        '">\u2193 Newest</button>'
         '<img src="" onerror="'
         "var c=this.closest('.delfin-agent-chat');"
-        "if(c)c.scrollTop=c.scrollHeight;"
+        "if(c){if(window.__delfinChatSync){window.__delfinChatSync(c);}"
+        "else{c.scrollTop=c.scrollHeight;}}"
+        "this.remove();"
+        '" style="display:none">'
+    )
+    # A conversation with no messages leaves no offset worth carrying forward.
+    _SCROLL_RESET_TAG = (
+        '<img src="" onerror="'
+        "if(window.__delfinChatReset)window.__delfinChatReset();"
         "this.remove();"
         '" style="display:none">'
     )
@@ -7957,7 +8105,8 @@ def create_tab(ctx):
         if not msgs:
             chat_html.value = (
                 '<div class="delfin-agent-chat">'
-                "<i>Start a conversation...</i></div>"
+                "<i>Start a conversation...</i>"
+                + _SCROLL_RESET_TAG + "</div>"
             )
             _html_cache["prefix"] = ""
             _html_cache["prefix_count"] = 0
@@ -13889,13 +14038,7 @@ def create_tab(ctx):
                     raw.startswith("---") or raw.startswith("Session restored")
                 ) else "delfin-chat-msg delfin-chat-system"
                 parts.append(f'<div class="{css_class}">{content}</div>')
-        parts.append(
-            '<img src="" onerror="'
-            "var c=this.closest('.delfin-agent-chat');"
-            "if(c)c.scrollTop=c.scrollHeight;"
-            "this.remove();"
-            '" style="display:none">'
-        )
+        parts.append(_SCROLL_TAG)
         parts.append("</div>")
         chat_html.value = "\n".join(parts)
 
