@@ -12052,7 +12052,9 @@ def create_tab(ctx):
                 _append_system_message("Submit tab not available.")
                 return True
             try:
-                from delfin.dashboard.tab_submit import validate_control_text, get_esd_hints
+                from delfin.dashboard.tab_submit import (
+                    validate_control_text, get_esd_hints, get_orca_override_hints,
+                )
                 errors = validate_control_text(cw.value)
                 lines = []
                 if errors:
@@ -12065,6 +12067,11 @@ def create_tab(ctx):
                 if hints:
                     lines.append("ESD hints:")
                     for h in hints:
+                        lines.append(f"  i {h}")
+                override_hints = get_orca_override_hints(cw.value)
+                if override_hints:
+                    lines.append("ORCA override hints:")
+                    for h in override_hints:
                         lines.append(f"  i {h}")
                 _append_system_message("\n".join(lines))
             except Exception as exc:

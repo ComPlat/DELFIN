@@ -481,8 +481,44 @@ you want and the report gains an "Experimental properties" section.
 
 | Key | Description |
 |-----|-------------|
-| `keyword:basename=[]` | Override ORCA keywords for a specific job basename |
-| `additions:basename=[]` | Add ORCA input blocks for a specific job basename |
+| `keyword:<job>=[...]` | ORCA `!` keywords for the jobs `<job>` names |
+| `additions:<job>=[...]` | ORCA `%` blocks, one-line `%` settings or `!` lines for the jobs `<job>` names |
+
+`<job>` is a job's name (its `%base`, else its input file name: `initial`,
+`ox_step_1`, `S0`, `S1`, `T1_TDDFT`, `S1_T1_ISC_msp1`, ...), an OCCUPIER
+folder (`initial_OCCUPIER`: every run in it), a pattern (`S*`, `*_ISC*`), or
+`all`. Several entries reach a job in the order `all`, patterns, own name, so
+the most specific wins.
+
+Values are merged the way ORCA reads an input (ORCA 6.1.1 manual, section 2.1):
+
+- A keyword replaces the member of its family the job has — `VeryTightSCF`
+  for `TightSCF`, `DEFGRID3` for the grid, `B3LYP` for the functional,
+  `TightOpt` for `Opt`. ORCA does not take the last of two such keywords.
+- A block variable replaces the job's own value or is added to the block;
+  `%scf maxiter 500 end` changes MaxIter, it does not add a second `%scf`.
+- What DELFIN decides per job is left alone, with a hint: `%pal`/`PALn`,
+  `%maxcore`, `%base`, `%moinp`/`MORead`, coordinates, the run type
+  (`SP`, `OptTS`, ...), and the ESD module's `%tddft` roots
+  (`iroot`, `irootmult`, `triplets`, ...).
+- For `all` and patterns, a method keyword (functional, basis, dispersion,
+  ...) only replaces what a job has — it is never added to an xTB job — and a
+  block that starts a calculation of its own (`%tddft`, `%eprnmr`, a bare
+  `%cpcm`, ...) only joins jobs that already run it. TD-DFT settings that
+  have a `TDDFT_*` key are set there.
+
+```ini
+keyword:all=[VeryTightSCF DEFGRID3]
+additions:initial=[
+%scf
+  maxiter 500
+end
+]
+additions:S1_TDDFT=["%tddft maxiter 300 end"]
+```
+
+The Submit tab reports a value ORCA could not read as an error and a name no
+job has, or a setting DELFIN keeps, as a hint.
 
 ### CO2 Coordination
 

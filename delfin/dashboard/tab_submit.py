@@ -22,6 +22,7 @@ from delfin.config import (
     set_control_value,
     validate_control_text,
     get_esd_hints,
+    get_orca_override_hints,
 )
 from delfin.smiles_converter import contains_metal
 
@@ -2008,6 +2009,11 @@ def create_tab(ctx):
             if hints:
                 print('ESD hints (non-blocking):')
                 for h in hints:
+                    print(f'  ℹ {h}')
+            override_hints = get_orca_override_hints(control_widget.value)
+            if override_hints:
+                print('ORCA override hints (non-blocking):')
+                for h in override_hints:
                     print(f'  ℹ {h}')
 
     def handle_only_goat_submit(button):

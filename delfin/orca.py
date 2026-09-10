@@ -1,4 +1,3 @@
-import ast
 import os
 import re
 import signal
@@ -12,13 +11,14 @@ import uuid
 from pathlib import Path
 from shutil import which
 import tempfile
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 try:
     import psutil
 except ImportError:
     psutil = None  # type: ignore
 
+from delfin.common import orca_input, orca_overrides
 from delfin.common.logging import get_logger
 from delfin.common.progress_display import ProgressDisplay
 from delfin.global_manager import get_global_manager
@@ -34,10 +34,10 @@ from . import smart_recalc
 
 logger = get_logger(__name__)
 
-_OVERRIDE_KEY_RE = re.compile(r"^(keyword|addition|additions)\s*:\s*(.+)$", re.IGNORECASE)
+_RETRY_STEM_RE = re.compile(r"\.retry\d+$", re.IGNORECASE)
 _BASE_LINE_RE = re.compile(r'^\s*%base\s+"([^"]+)"', re.IGNORECASE)
 _BASE_LINE_FALLBACK_RE = re.compile(r"^\s*%base\s+(\S+)", re.IGNORECASE)
-_CONTROL_OVERRIDE_CACHE: Dict[Path, Tuple[float, Dict[str, List[str]], Dict[str, List[str]]]] = {}
+_CONTROL_OVERRIDE_CACHE: Dict[Path, Tuple[Tuple[int, int], Dict[str, List[str]], Dict[str, List[str]]]] = {}
 _CONTROL_OVERRIDE_LOCK = threading.Lock()
 _CONTROL_FILE_LOCATION_CACHE: Dict[str, Optional[Path]] = {}
 
@@ -106,26 +106,9 @@ def _auto_generate_nmr_report(input_path: Path, output_path: Path) -> bool:
         return False
 
 
-def _normalize_override_target(raw: str) -> str:
-    """Normalize override target names (base labels or input stems)."""
-    text = str(raw or "").strip().strip('"').strip("'")
-    text = Path(text).name
-    if text.lower().endswith(".inp"):
-        text = text[:-4]
-    return text.strip().lower()
-
-
 def _target_aliases(raw: str) -> List[str]:
     """Return aliases to make OCCUPIER name matching robust."""
-    norm = _normalize_override_target(raw)
-    if not norm:
-        return []
-    aliases = {norm}
-    if norm.endswith("_occupier"):
-        aliases.add(norm[:-9])
-    else:
-        aliases.add(norm + "_occupier")
-    return [a for a in aliases if a]
+    return orca_overrides.target_aliases(raw)
 
 
 def _find_control_file(start_dir: Path) -> Optional[Path]:
@@ -154,56 +137,11 @@ def _find_control_file(start_dir: Path) -> Optional[Path]:
     return result
 
 
-def _parse_override_value(lines: List[str], start_idx: int, initial_value: str) -> Tuple[Any, int]:
-    """Parse one override value; supports multiline list literals."""
-    value = initial_value.strip()
-    if value.startswith("["):
-        buffer = value + "\n"
-        depth = value.count("[") - value.count("]")
-        idx = start_idx + 1
-        while idx < len(lines) and depth > 0:
-            line = lines[idx]
-            buffer += line
-            depth += line.count("[") - line.count("]")
-            idx += 1
-        try:
-            return ast.literal_eval(buffer), idx
-        except Exception:
-            # Fallback for relaxed syntax like:
-            # addition:initial=[%moinp
-            #   file.gbw
-            # end]
-            raw = buffer.strip()
-            if raw.startswith("[") and raw.endswith("]"):
-                inner = raw[1:-1].strip()
-                if not inner:
-                    return [], idx
-                return [inner], idx
-            return value, idx
-
-    try:
-        return ast.literal_eval(value), start_idx + 1
-    except Exception:
-        return value, start_idx + 1
-
-
-def _flatten_text_values(value: Any) -> List[str]:
-    """Flatten scalar/list override values into a list of non-empty strings."""
-    if value is None:
-        return []
-    if isinstance(value, (list, tuple)):
-        out: List[str] = []
-        for item in value:
-            out.extend(_flatten_text_values(item))
-        return out
-    text = str(value).strip()
-    return [text] if text else []
-
-
 def _parse_control_overrides(control_path: Path) -> Tuple[Dict[str, List[str]], Dict[str, List[str]]]:
     """Parse keyword:/addition: overrides from CONTROL.txt."""
     try:
-        mtime = control_path.stat().st_mtime
+        stat = control_path.stat()
+        mtime = (stat.st_mtime_ns, stat.st_size)
     except Exception:
         return {}, {}
 
@@ -213,41 +151,11 @@ def _parse_control_overrides(control_path: Path) -> Tuple[Dict[str, List[str]], 
             return cached[1], cached[2]
 
     try:
-        lines = control_path.read_text(encoding="utf-8", errors="ignore").splitlines(keepends=True)
+        text = control_path.read_text(encoding="utf-8", errors="ignore")
     except Exception:
         return {}, {}
 
-    keyword_map: Dict[str, List[str]] = {}
-    addition_map: Dict[str, List[str]] = {}
-
-    idx = 0
-    total = len(lines)
-    while idx < total:
-        raw_line = lines[idx]
-        stripped = raw_line.strip()
-        if not stripped or stripped.startswith("#") or "=" not in raw_line:
-            idx += 1
-            continue
-
-        key_raw, value_raw = raw_line.split("=", 1)
-        key = key_raw.strip()
-        match = _OVERRIDE_KEY_RE.match(key)
-        if not match:
-            idx += 1
-            continue
-
-        kind = match.group(1).lower()
-        target = _normalize_override_target(match.group(2))
-        if not target:
-            idx += 1
-            continue
-
-        parsed_value, next_idx = _parse_override_value(lines, idx, value_raw)
-        values = _flatten_text_values(parsed_value)
-        if values:
-            target_map = keyword_map if kind == "keyword" else addition_map
-            target_map.setdefault(target, []).extend(values)
-        idx = next_idx
+    keyword_map, addition_map, _ = orca_overrides.parse_override_text(text)
 
     with _CONTROL_OVERRIDE_LOCK:
         _CONTROL_OVERRIDE_CACHE[control_path] = (mtime, keyword_map, addition_map)
@@ -265,32 +173,6 @@ def _extract_base_label(section_lines: List[str]) -> Optional[str]:
         if m:
             return m.group(1).strip().strip('"').strip("'")
     return None
-
-
-def _append_keyword_to_bang_line(bang_line: str, additions: List[str]) -> str:
-    """Append keyword snippets to ORCA ! line without duplicates."""
-    updated = bang_line.rstrip("\n")
-    for add in additions:
-        token = " ".join(add.split())
-        if not token:
-            continue
-        if token in updated:
-            continue
-        if not updated.endswith(" "):
-            updated += " "
-        updated += token
-    return updated + "\n"
-
-
-def _normalize_addition_lines(additions: List[str]) -> List[str]:
-    """Normalize additional block lines for insertion after !."""
-    lines: List[str] = []
-    for add in additions:
-        for part in str(add).splitlines():
-            stripped = part.rstrip()
-            if stripped:
-                lines.append(stripped + "\n")
-    return lines
 
 
 def _split_job_sections(lines: List[str]) -> List[Tuple[List[str], Optional[str]]]:
@@ -314,63 +196,40 @@ def _apply_overrides_to_section(
     file_stem: str,
     keyword_map: Dict[str, List[str]],
     addition_map: Dict[str, List[str]],
+    folder: str = "",
 ) -> Tuple[List[str], bool]:
-    """Apply matching keyword/addition overrides to one ORCA job section."""
+    """Merge the matching keyword:/additions: values into one ORCA job section.
+
+    The merge follows the ORCA manual (see delfin.common.orca_input): a
+    keyword takes the place of the member of its family the job has
+    (VeryTightSCF for TightSCF), a block variable replaces the job's own or is
+    added to the block, and what DELFIN must decide per job (%pal, %maxcore,
+    %base, %moinp, coordinates, the ESD module's %tddft roots) is left alone.
+    Merging twice changes nothing, so a rerun of the same input is stable.
+    """
     if not section_lines:
         return section_lines, False
 
     base_label = _extract_base_label(section_lines)
     # Prefer %base-scoped overrides whenever a base label is present.
     # Fall back to file-stem matching only for sections without %base.
-    if base_label:
-        candidates: List[str] = _target_aliases(base_label)
-    else:
-        candidates = _target_aliases(file_stem)
-
-    seen = set()
-    ordered_candidates: List[str] = []
-    for cand in candidates:
-        if cand and cand not in seen:
-            seen.add(cand)
-            ordered_candidates.append(cand)
-
-    keyword_values: List[str] = []
-    addition_values: List[str] = []
-    for cand in ordered_candidates:
-        keyword_values.extend(keyword_map.get(cand, []))
-        addition_values.extend(addition_map.get(cand, []))
-
-    if not keyword_values and not addition_values:
+    names = _target_aliases(base_label) if base_label else _target_aliases(file_stem)
+    groups = orca_overrides.override_groups(names, folder, keyword_map, addition_map)
+    if not groups:
         return section_lines, False
 
-    bang_idx: Optional[int] = None
-    for idx, line in enumerate(section_lines):
-        if line.lstrip().startswith("!"):
-            bang_idx = idx
-            break
-    if bang_idx is None:
+    text = "".join(section_lines)
+    updated = text
+    notes: List[str] = []
+    for many, keywords, additions in groups:
+        updated, more = orca_input.apply_to_job(updated, keywords=keywords, additions=additions, many_jobs=many)
+        notes.extend(more)
+    label = base_label or file_stem
+    for note in dict.fromkeys(notes):
+        logger.warning("CONTROL override for %s: %s", label, note)
+    if updated == text:
         return section_lines, False
-
-    updated = list(section_lines)
-    changed = False
-
-    if keyword_values:
-        new_bang = _append_keyword_to_bang_line(updated[bang_idx], keyword_values)
-        if new_bang != updated[bang_idx]:
-            updated[bang_idx] = new_bang
-            changed = True
-
-    if addition_values:
-        block_lines = _normalize_addition_lines(addition_values)
-        if block_lines:
-            block_text = "".join(block_lines)
-            section_text = "".join(updated)
-            if block_text not in section_text:
-                insert_idx = bang_idx + 1
-                updated = updated[:insert_idx] + block_lines + updated[insert_idx:]
-                changed = True
-
-    return updated, changed
+    return updated.splitlines(keepends=True), True
 
 
 def _apply_control_overrides_to_input(input_path: Path, working_dir: Optional[Path]) -> None:
@@ -380,8 +239,14 @@ def _apply_control_overrides_to_input(input_path: Path, working_dir: Optional[Pa
     Supported keys in CONTROL.txt:
     - keyword:<BASE_OR_NAME> = [...]
     - addition:<BASE_OR_NAME> = [...]
+
+    A recovery retry (``<job>.retryN.inp``) is written from the input these
+    were already merged into, and carries the recovery's own changes, which
+    merging again would undo (a MaxIter the retry raised, set back).
     """
     if not input_path.exists():
+        return
+    if _RETRY_STEM_RE.search(input_path.stem):
         return
 
     search_start = (working_dir or input_path.parent) if isinstance(working_dir, Path) else input_path.parent
@@ -413,6 +278,7 @@ def _apply_control_overrides_to_input(input_path: Path, working_dir: Optional[Pa
             file_stem=file_stem,
             keyword_map=keyword_map,
             addition_map=addition_map,
+            folder=input_path.parent.name,
         )
         updated_lines.extend(updated_part)
         changed_any = changed_any or changed
