@@ -18,7 +18,7 @@ from delfin.esd_input_generator import (
 )
 from delfin.occupier_sequences import resolve_sequences_for_delta
 from delfin.imag import run_IMAG
-from delfin.orca import run_orca
+from delfin.orca import run_orca_with_intelligent_recovery
 from delfin.common.paths import pushd
 from delfin.occupier_flat_extraction import _cwd_lock
 from delfin.xyz_io import read_xyz_and_create_input3
@@ -827,11 +827,12 @@ def build_occupier_jobs(
                 if gbw_initial.exists() and not xtb_solvator_enabled:
                     initial_deps = [gbw_initial.name]
 
-                if not run_orca(
+                if not run_orca_with_intelligent_recovery(
                     str(inp_initial),
                     str(out_initial),
                     isolate=True,
                     copy_files=initial_deps,
+                    config=config,
                 ):
                     raise RuntimeError("ORCA terminated abnormally for initial.out")
                 run_IMAG(
@@ -1014,7 +1015,8 @@ def build_occupier_jobs(
                     if gbw_ox.exists() and not xtb_solvator_enabled:
                         ox_deps = [gbw_ox.name]
 
-                    if not run_orca(str(inp_abs), str(out_abs), isolate=True, copy_files=ox_deps):
+                    if not run_orca_with_intelligent_recovery(str(inp_abs), str(out_abs), isolate=True,
+                                                              copy_files=ox_deps, config=config):
                         raise RuntimeError(f"ORCA terminated abnormally for {out_abs}")
                     run_IMAG(
                         str(out_abs),
@@ -1197,11 +1199,12 @@ def build_occupier_jobs(
                     if gbw_red.exists() and not xtb_solvator_enabled:
                         red_deps = [gbw_red.name]
 
-                    if not run_orca(
+                    if not run_orca_with_intelligent_recovery(
                         str(inp_abs),
                         str(out_abs),
                         isolate=True,
                         copy_files=red_deps,
+                        config=config,
                     ):
                         raise RuntimeError(f"ORCA terminated abnormally for {out_abs}")
                     run_IMAG(

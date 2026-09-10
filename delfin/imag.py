@@ -48,6 +48,7 @@ copied back.
 
 from __future__ import annotations
 
+import functools
 import math
 import re
 import shutil
@@ -570,10 +571,13 @@ def eliminate_imaginary_modes(
 
 # --------------------------------------------------------- the pipeline's door
 
-def _pipeline_run_orca(inp: Path, out: Path, *, working_dir: Path, copy_files=None) -> bool:
-    from delfin.orca import run_orca
+def _pipeline_run_orca(inp: Path, out: Path, *, working_dir: Path, copy_files=None, config=None) -> bool:
+    # through the recovery, as every other ORCA job of a step: a displaced
+    # geometry is where an SCF is most likely to need a second attempt
+    from delfin.orca import run_orca_with_intelligent_recovery
 
-    return run_orca(str(inp), str(out), working_dir=Path(working_dir), isolate=True, copy_files=copy_files)
+    return run_orca_with_intelligent_recovery(str(inp), str(out), working_dir=Path(working_dir), isolate=True,
+                                              copy_files=copy_files, config=config)
 
 
 def run_IMAG(
@@ -626,7 +630,7 @@ def run_IMAG(
 
     result = eliminate_imaginary_modes(
         label=str(step_name), input_path=input_path, output_path=output_path, config=config,
-        run_orca=_pipeline_run_orca, pal=pal_override, maxcore=maxcore_override,
+        run_orca=functools.partial(_pipeline_run_orca, config=config), pal=pal_override, maxcore=maxcore_override,
         fingerprint_deps=list(copy_files) if copy_files else None,
     )
     if result.rounds and result.resolved:

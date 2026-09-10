@@ -30,7 +30,7 @@ from delfin.esd_input_generator import (
 )
 from delfin.cluster_utils import get_walltime_limit
 from delfin.workflows.scheduling.manager import get_global_manager
-from delfin.orca import run_orca
+from delfin.orca import run_orca_with_intelligent_recovery
 from delfin.imag import run_IMAG
 from delfin.scheduler_profiles import (
     get_molecule_features,
@@ -2156,7 +2156,7 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                     main_basisset=main_basis,
                     metal_basisset=metal_basis,
                 )
-            if not run_orca(output_initial, 'initial.out', isolate=True):
+            if not run_orca_with_intelligent_recovery(output_initial, 'initial.out', isolate=True, config=config):
                 raise RuntimeError('ORCA terminated abnormally for initial.out')
             run_IMAG(
                 'initial.out',
@@ -2268,7 +2268,8 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                             mode='lambda_p',
                         )
 
-                if not run_orca(ox_inputs[idx], ox_outputs[idx], isolate=True):
+                if not run_orca_with_intelligent_recovery(ox_inputs[idx], ox_outputs[idx], isolate=True,
+                                                          config=config):
                     raise RuntimeError(f"ORCA terminated abnormally for {ox_outputs[idx]}")
                 run_IMAG(
                     ox_outputs[idx],
@@ -2365,7 +2366,8 @@ def _populate_classic_jobs(manager: _WorkflowManager, config: Dict[str, Any], kw
                             mode='lambda_m',
                         )
 
-                if not run_orca(red_inputs[idx], red_outputs[idx], isolate=True):
+                if not run_orca_with_intelligent_recovery(red_inputs[idx], red_outputs[idx], isolate=True,
+                                                          config=config):
                     raise RuntimeError(f"ORCA terminated abnormally for {red_outputs[idx]}")
                 run_IMAG(
                     red_outputs[idx],
@@ -2481,7 +2483,7 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                     main_basisset=main_basis,
                     metal_basisset=metal_basis,
                 )
-            if not run_orca(output_initial, 'initial.out', isolate=True):
+            if not run_orca_with_intelligent_recovery(output_initial, 'initial.out', isolate=True, config=config):
                 raise RuntimeError('ORCA terminated abnormally for initial.out')
             run_IMAG(
                 'initial.out',
@@ -2593,7 +2595,8 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                             mode='lambda_p',
                         )
 
-                if not run_orca(ox_inputs[idx], ox_outputs[idx], isolate=True):
+                if not run_orca_with_intelligent_recovery(ox_inputs[idx], ox_outputs[idx], isolate=True,
+                                                          config=config):
                     raise RuntimeError(f"ORCA terminated abnormally for {ox_outputs[idx]}")
                 run_IMAG(
                     ox_outputs[idx],
@@ -2690,7 +2693,8 @@ def _populate_manual_jobs(manager: _WorkflowManager, config: Dict[str, Any], kwa
                             mode='lambda_m',
                         )
 
-                if not run_orca(red_inputs[idx], red_outputs[idx], isolate=True):
+                if not run_orca_with_intelligent_recovery(red_inputs[idx], red_outputs[idx], isolate=True,
+                                                          config=config):
                     raise RuntimeError(f"ORCA terminated abnormally for {red_outputs[idx]}")
                 run_IMAG(
                     red_outputs[idx],

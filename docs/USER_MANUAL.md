@@ -898,18 +898,25 @@ ORCA fails → detect error type → modify input → continue from .gbw + lates
 
 | Error | Automatic Fix |
 |-------|--------------|
-| **SCF not converged** | SlowConv → VerySlowConv + KDIIS + damping |
-| **TRAH segfault** | NoAutoTRAH |
+| **SCF not converged** | SlowConv → VerySlowConv + KDIIS + damping → SOSCF (`CNVSOSCF true`) |
+| **TRAH segfault** | NoTRAH + SlowConv |
 | **Geometry not converged** | Smaller trust radius → loose criteria |
-| **MPI crash** | Reduce cores |
-| **Memory error** | Reduce maxcore and PAL |
-| **LEANSCF failure** | Fallback SCF strategy |
-| **Frequency failure** | Skip frequency step |
+| **MPI crash** | Reduce cores, OpenMPI without single-copy transport |
+| **Memory error** | Raise MaxCore to what ORCA asked for, fewer cores |
+| **LEANSCF failure** | Tighter SCF, then skip the frequency step |
+| **Frequency failure** | NumFreq, then skip the frequency step |
+| **CIS/TD-DFT failure** | TDA, then tighter SCF and a larger Davidson space |
 | **Transient system error** | Exponential backoff retry |
 
 Recovery state is tracked in `.delfin_recovery_state.json`.
 
-Retry inputs are written as `input.retryN.inp` — preserving comments, geometry, inline basis sets, `%basis`, `%ecp`, and `$new_job` sections.
+Retry inputs are written as `<job>.retryN.inp`. Only the job that failed is
+changed (in a file with `$new_job`, the one ORCA was running); every other
+line stays as it was — comments, inline basis sets (`NewGTO` on a metal's
+line), `%basis`, a second `%scf` with `BrokenSym`. A retry writes its files
+under the job's own name, restarts from the job's own `.gbw` (never another
+job's), and an optimisation from its own last geometry. A retry ORCA could not
+read is not written.
 
 For complete details, see [RETRY_LOGIC.md](RETRY_LOGIC.md).
 

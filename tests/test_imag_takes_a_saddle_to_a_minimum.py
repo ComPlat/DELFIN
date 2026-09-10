@@ -61,7 +61,7 @@ class _Orca:
         self.reference = reference
         self.calls = []
 
-    def __call__(self, inp, out, *, working_dir, copy_files=None):
+    def __call__(self, inp, out, *, working_dir, copy_files=None, config=None):
         inp, out = Path(inp), Path(out)
         self.calls.append((inp.name, list(copy_files or []), inp.read_text()))
         if inp.stem.endswith("_ref"):

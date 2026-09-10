@@ -167,13 +167,17 @@ def test_an_unreadable_output_does_not_break_recovery(tmp_path):
 def test_maxcore_is_raised_but_never_lowered(tmp_path):
     """The retry exists because the previous allocation was too small. Giving
     the rerun less would guarantee the same failure."""
-    inp = tmp_path / "job.inp"
-    inp.write_text("! HF-3c\n%maxcore 4000\n* xyz 0 1\nH 0 0 0\n*\n", encoding="utf-8")
-    modifier = OrcaInputModifier(inp, {})
+    def retry_maxcore(asked_mb: float) -> str:
+        inp = tmp_path / "job.inp"
+        inp.write_text("! HF-3c\n%maxcore 4000\n* xyz 0 1\nH 0 0 0\n*\n", encoding="utf-8")
+        out = _out(tmp_path, f"       ====>        Please increase MaxCore to more than: {asked_mb} MB\n")
+        strategy = RecoveryStrategy(OrcaErrorType.MEMORY_ERROR, 1, {})
+        strategy.output_file = out
+        new = OrcaInputModifier(inp, {}).apply_recovery(strategy)
+        return next(line for line in new.read_text().splitlines() if line.startswith("%maxcore"))
 
-    parsed = {"blocks": {"maxcore": "%maxcore 4000"}, "keywords": []}
-    assert modifier._set_maxcore(parsed, 100)["blocks"]["maxcore"] == "%maxcore 4000"
-    assert modifier._set_maxcore(parsed, 9000)["blocks"]["maxcore"] == "%maxcore 9000"
+    assert retry_maxcore(60) == "%maxcore 4000"
+    assert retry_maxcore(6000) == "%maxcore 9001"
 
 
 # --------------------------------------------------------------------------
