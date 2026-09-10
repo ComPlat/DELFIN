@@ -186,8 +186,14 @@ def test_the_counts_still_match_what_was_measured():
     # and archive/ -- 777 runs whose contents nobody chose, so the right
     # answer differed per developer. It belongs to this class for the
     # ordinary reason: the setup writes.
+    #
+    # science 8 -> 9: science_energies_from_different_methods_are_not_ranked,
+    # over the same fixture. It measures the rule every other integrity
+    # line implies and none of them states -- a total energy compares only
+    # within one functional AND one basis set -- so sorting a mixed
+    # archive by energy sorts it by method.
     assert counts == {"office": 13, "behavior": 12, "generic_project": 15,
-                      "science": 8, "other": 48}, counts
+                      "science": 9, "other": 48}, counts
 
 
 # ---------------------------------------------------------------------------

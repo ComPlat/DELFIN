@@ -31,6 +31,14 @@ non-trivial answer and a lazy one is wrong:
     miss it if the fallback is broken.
   * ONE run (calc_d) is unfinished: no DELFIN_Data.json, no .out. It is
     in `calc/` and must not be reported as a completed result.
+  * The total energies are set by the METHOD. Every B3LYP run sits about
+    0.25 Eh below every PBE0 run, which is roughly 650 kJ/mol -- far more
+    than any conformational difference in one molecule. So sorting the
+    corpus by energy sorts it by functional, and the global minimum
+    (arch_d) is the one run that shares neither functional nor basis with
+    any other. Each method+basis group still has a real minimum of its
+    own, so the honest answer has something to say and not only something
+    to refuse.
 
 The guard around a benchmark attempt removes this with the rest of the
 workspace, and the runner points the calc tools at it -- so nothing here
@@ -46,19 +54,45 @@ import sys
 from pathlib import Path
 
 
-# (folder, functional, basis, solvent, workflow, with_data, with_out)
+# (folder, functional, basis, solvent, workflow, with_data, with_out, energy)
+#
+# The energies are set by the METHOD, not by the structure, because that
+# is what makes "which run has the lowest energy" a question with a
+# scientific answer instead of a sort. Every B3LYP run sits ~0.25 Eh
+# below every PBE0 run -- about 650 kJ/mol, which no conformational
+# difference in one molecule produces. So the three lowest numbers in the
+# corpus are the three B3LYP runs, and the ranking is explained entirely
+# by the functional.
+#
+# Within a method AND basis the comparison is real, and each such group
+# has its own minimum, so a correct answer has something to say rather
+# than only something to refuse:
+#
+#   PBE0/def2-SVP    calc_c  arch_b  arch_e   -> arch_e  -113.3010
+#   PBE0/def2-TZVP   calc_a  arch_a           -> arch_a  -113.3050
+#   B3LYP/def2-SVP   calc_b  arch_c           -> calc_b  -113.5510
+#   B3LYP/def2-TZVP  arch_d           (alone) -> not comparable to anything
+#
+# Those three winners are re-derived from the written files in
+# tests/test_energies_from_different_methods_are_not_one_ranking.py, not
+# copied from here — this table was wrong on its first writing (-113.2940
+# is the least negative of its group, not the lowest) and the test is
+# what caught it.
+#
+# The global minimum is arch_d at -113.5620, and it is the one run with
+# no peer at all: lowest because of its functional AND its basis set.
 ACTIVE = [
-    ("calc_a", "PBE0", "def2-TZVP", "DMF", "classic", True, True),
-    ("calc_b", "B3LYP", "def2-SVP", "water", "classic", True, True),
-    ("calc_c", "PBE0", "def2-SVP", "none", "OCCUPIER", True, True),
-    ("calc_d", "TPSSh", "def2-TZVP", "acetonitrile", "classic", False, False),
+    ("calc_a", "PBE0", "def2-TZVP", "DMF", "classic", True, True, -113.3020),
+    ("calc_b", "B3LYP", "def2-SVP", "water", "classic", True, True, -113.5510),
+    ("calc_c", "PBE0", "def2-SVP", "none", "OCCUPIER", True, True, -113.2980),
+    ("calc_d", "TPSSh", "def2-TZVP", "acetonitrile", "classic", False, False, None),
 ]
 ARCHIVED = [
-    ("arch_a", "PBE0", "def2-TZVP", "DMF", "classic", True, True),
-    ("arch_b", "PBE0", "def2-SVP", "DMF", "classic", True, True),
-    ("arch_c", "B3LYP", "def2-SVP", "toluene", "classic", True, True),
-    ("arch_d", "B3LYP", "def2-TZVP", "water", "OCCUPIER", True, True),
-    ("arch_e", "PBE0", "def2-SVP", "DMF", "classic", False, True),
+    ("arch_a", "PBE0", "def2-TZVP", "DMF", "classic", True, True, -113.3050),
+    ("arch_b", "PBE0", "def2-SVP", "DMF", "classic", True, True, -113.2940),
+    ("arch_c", "B3LYP", "def2-SVP", "toluene", "classic", True, True, -113.5480),
+    ("arch_d", "B3LYP", "def2-TZVP", "water", "OCCUPIER", True, True, -113.5620),
+    ("arch_e", "PBE0", "def2-SVP", "DMF", "classic", False, True, -113.3010),
 ]
 
 CONTROL = """# DELFIN CONTROL
@@ -96,7 +130,7 @@ FINAL SINGLE POINT ENERGY      {energy:.8f}
 
 def build(base: Path, rows, kind: str) -> None:
     base.mkdir(parents=True, exist_ok=True)
-    for i, (name, func, basis, solvent, workflow, data, out) in enumerate(rows):
+    for (name, func, basis, solvent, workflow, data, out, energy) in rows:
         d = base / name
         d.mkdir()
         (d / f"{name}.inp").write_text(
@@ -116,7 +150,7 @@ def build(base: Path, rows, kind: str) -> None:
             }, indent=1), encoding="utf-8")
         if out:
             (d / f"{name}.out").write_text(
-                OUT.format(energy=-113.30 - i * 0.01), encoding="utf-8")
+                OUT.format(energy=energy), encoding="utf-8")
 
 
 def main(argv: list[str]) -> int:
