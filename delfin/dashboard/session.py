@@ -60,6 +60,9 @@ _POLL_SECONDS = 5.0
 
 _lock = threading.RLock()
 _roots: list[Any] = []
+_bootstrap: Optional[Callable[[], str]] = None   # page scripts
+_bootstrap_before: Any = None                     # the root they run ahead of
+_hooks: list[Callable[[], None]] = []             # after the roots
 _keep_alive = False
 _last_beat: Optional[float] = None      # None until the page beats once
 _watchdog: Optional[threading.Thread] = None
@@ -90,20 +93,83 @@ def roots() -> list[Any]:
         return list(_roots)
 
 
+def register_bootstrap(getter: Optional[Callable[[], str]], *,
+                       before: Any = None) -> None:
+    """The scripts a page needs before any widget on it is worth looking at.
+
+    The widget objects come back by themselves; the JavaScript around
+    them does not. The bundled 3Dmol, every tab's startup script and the
+    editor's lazily sent bootstraps were sent once, into an Output widget
+    that the next script cleared -- so a resumed page had the widgets and
+    none of the code that makes a viewer a viewer. The getter returns
+    what has to run FIRST, and resume() emits it as the cell's own output
+    ahead of the roots, so it has run by the time any Output widget
+    replays a viewer into the page.
+    """
+    global _bootstrap, _bootstrap_before
+    with _lock:
+        _bootstrap = getter
+        _bootstrap_before = before
+
+
+def on_resume(hook: Callable[[], None]) -> None:
+    """Something to do once the page is back, after the roots are shown.
+
+    For state that lives only in the browser -- a drawing inside an
+    editor's frame, a text view built by script -- and has to be pushed
+    again from what the kernel remembers of it.
+    """
+    with _lock:
+        if hook not in _hooks:
+            _hooks.append(hook)
+
+
+def resume_hooks() -> list[Callable[[], None]]:
+    with _lock:
+        return list(_hooks)
+
+
 def resume() -> bool:
     """Show the existing dashboard in the frontend that is connected now.
 
     Returns False when there is nothing to show — a kernel that never
     built a dashboard, which is a caller error rather than a state to
     paper over.
+
+    Order matters and is the whole reason this is more than a loop of
+    display(): page scripts first, as plain cell output, then the widget
+    roots, then the hooks that push browser-only state back. A hook that
+    fails is reported and skipped; one tab's script must not keep the
+    other eighteen off the page.
     """
-    from IPython.display import display
+    from IPython.display import Javascript, display
 
     current = roots()
     if not current:
         return False
-    for widget in current:
+    with _lock:
+        getter, before = _bootstrap, _bootstrap_before
+    script = ""
+    if getter is not None:
+        try:
+            script = getter() or ""
+        except Exception as exc:                     # noqa: BLE001
+            print(f"[delfin] page scripts could not be collected: {exc}")
+    # Where the scripts go: ahead of the root they were registered
+    # against, or ahead of everything. At startup the bundle sits at the
+    # top of the body, below a header that is already on the page, and
+    # a script that reaches for the header finds it there. The same
+    # order here, so what worked at startup works again.
+    at = current.index(before) if before in current else 0
+    for index, widget in enumerate(current):
+        if index == at and script.strip():
+            display(Javascript(script))
         display(widget)
+    for hook in resume_hooks():
+        try:
+            hook()
+        except Exception as exc:                     # noqa: BLE001
+            print(f"[delfin] a resume hook failed and was skipped: {exc}")
     return True
 
 
@@ -278,9 +344,13 @@ def stop_watchdog() -> None:
 
 def _reset_for_tests() -> None:
     global _keep_alive, _last_beat, _watchdog, _session_name
+    global _bootstrap, _bootstrap_before
     stop_watchdog()
     with _lock:
         _roots.clear()
+        _hooks.clear()
+        _bootstrap = None
+        _bootstrap_before = None
         _keep_alive = False
         _last_beat = None
         _watchdog = None

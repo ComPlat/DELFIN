@@ -3676,7 +3676,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             state['manip_bootstrap_done'] = True
             return
         try:
-            ctx.run_js(submit_manip_bootstrap_js())
+            ctx.keep_js(submit_manip_bootstrap_js())
             state['manip_bootstrap_done'] = True
             try:
                 ctx._delfin_manip_sent = True
@@ -3911,7 +3911,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             return
         try:
             from .molecule_forcefield_js import molecule_ff_bootstrap_js
-            ctx.run_js(molecule_ff_bootstrap_js())
+            ctx.keep_js(molecule_ff_bootstrap_js())
             state['ff_bootstrap_done'] = True
             try:
                 ctx._delfin_ff_sent = True

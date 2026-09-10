@@ -114,8 +114,12 @@ def test_the_dashboard_sends_what_the_tabs_registered():
 
 
 def test_startup_sends_the_scripts_exactly_once():
-    """A second run_js during startup would clear the first one's script
-    before the browser ran it."""
+    """A second send during startup would clear the first one's script
+    before the browser ran it.
+
+    ``keep_js`` counts as a send: it goes through run_js, and it is what
+    the startup bundle uses so a resumed page gets the scripts again.
+    """
     from delfin import dashboard
 
     calls = [
@@ -123,8 +127,10 @@ def test_startup_sends_the_scripts_exactly_once():
         for node in _startup_body(dashboard.create_dashboard)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
-        and node.func.attr == 'run_js'
+        and node.func.attr in ('run_js', 'keep_js')
     ]
     assert len(calls) == 1, (
-        f'{len(calls)} run_js calls run during startup; each one clears the '
+        f'{len(calls)} script sends run during startup; each one clears the '
         'output the previous script was waiting in')
+    assert calls[0].func.attr == 'keep_js', (
+        'the startup bundle must be kept, or a resumed page has no 3Dmol')

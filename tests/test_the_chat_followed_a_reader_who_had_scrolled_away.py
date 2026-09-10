@@ -279,3 +279,27 @@ def test_the_script_follows_only_from_the_end():
     wrong = sorted(name for name, ok in seen.items() if not ok)
     assert not wrong, f"the chat scroll misbehaved: {', '.join(wrong)}"
     assert len(seen) == 17, f"the driver checked {len(seen)} things, not 17"
+
+
+def test_the_chat_script_is_not_inside_the_keyboard_guard():
+    """The keyboard block begins with a guard that returns when the flag
+    is already set, and the page bundle sets that flag first on every
+    resumed page. Nested inside that block, the chat script never ran
+    there: the page came back with its library and without its chat.
+    Each block guards itself and stands on its own."""
+    import inspect
+
+    from delfin.dashboard import tab_agent
+
+    src = inspect.getsource(tab_agent)
+    start = src.index('_enter_js_output = widgets.Output()')
+    block = src[start:src.index('"""))', start)]
+    guard = block.index("if (window.__delfinAgentKeys) return;")
+    first_close = block.index("})();", guard)
+    keyboard_block = block[guard:first_close]
+    assert "__delfinChatScroll" not in keyboard_block, (
+        "the chat-scroll script is nested inside the keyboard guard again"
+    )
+    assert "__delfinInputGrow" not in keyboard_block
+    # And the chat script still has a guard of its own.
+    assert "if (window.__delfinChatScroll) return;" in block

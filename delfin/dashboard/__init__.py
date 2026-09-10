@@ -540,7 +540,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         *ctx.init_js_parts,
     ])
     if _calc_init.strip():
-        ctx.run_js(_calc_init)
+        ctx.keep_js(_calc_init)
 
     def _resolve_tab_preferences():
         specs = ctx.tab_specs or []
@@ -991,6 +991,13 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     # how the dashboard was assembled -- and it is why the work does not
     # grow when somebody adds a twentieth tab.
     _session.register_root(_header_root, _body_root)
+
+    # The widgets come back by themselves; the scripts around them do
+    # not. What the page needs before any viewer in it is worth looking
+    # at -- the bundled 3Dmol, every tab's startup script, the editor's
+    # bootstraps once sent -- is collected on ctx and handed to a resume
+    # to run ahead of the roots.
+    _session.register_bootstrap(ctx.resume_bootstrap_js, before=_body_root)
 
     # Watch the page and end this kernel when it goes, which is what
     # happens today and stays the default. It arms on the first
