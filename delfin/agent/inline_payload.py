@@ -204,8 +204,23 @@ def _dotted(node: ast.AST) -> str | None:
 
 
 class _Walker(ast.NodeVisitor):
-    def __init__(self, cwd: Path | None) -> None:
-        self.cwd = cwd
+    def __init__(self, cwd: Path | str | None) -> None:
+        # Coerced, not merely annotated. The signature said Path and
+        # every real caller passes a string -- the workspace, a base
+        # directory -- so `self.cwd / f"{top}.py"` raised TypeError on
+        # any payload containing an import, analyze_payload caught it,
+        # and the whole payload came back opaque.
+        #
+        # It failed SAFE, which is why it was invisible: an opaque
+        # payload is refused, exactly as before this module existed. But
+        # `import math; print(math.exp(-1.5))` is the shape of nearly
+        # every scientific one-liner, so the capability was dead for its
+        # main case while the tests -- which pass tmp_path, a Path --
+        # stayed green.
+        try:
+            self.cwd = Path(cwd) if cwd else None
+        except TypeError:
+            self.cwd = None
         self.eff = Effects()
 
     # -- imports ---------------------------------------------------------
