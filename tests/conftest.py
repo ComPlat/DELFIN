@@ -315,53 +315,22 @@ def _isolate_user_wide_memory(tmp_path, monkeypatch):
 # never redirected them -- which is why an ordinary run left 203 job records,
 # 141 of them naming pytest tmp directories, in the user's real locator index.
 #
-# Read-mostly stores are deliberately absent: the documentation index, the
-# model-capability cache, credentials (isolated separately) and the settings
-# files. Redirecting those would not stop a write, it would only hide the
-# real content from tests that legitimately read it.
-_USER_STATE_SINKS: tuple[tuple[str, str, str], ...] = (
-    ("delfin.agent.bash_jobs", "_INDEX_PATH", "bash_jobs_index.json"),
-    # A kept dashboard session announces itself so a later request can
-    # find its kernel. A test that armed one wrote into the user's real
-    # ~/.delfin and their next landing page then offered a session that
-    # was a test fixture -- caught by a test whose own records leaked
-    # into the next one's assertions.
-    ("delfin.dashboard.session", "RECORD_DIR", "kept_sessions"),
-    # The benchmark's per-checkout run lock. It lived under tests/fixtures
-    # first, where the checkout-leak guard would have caught it, and the
-    # move to ~/.delfin brought it into THIS guard's scope instead --
-    # which is the right place for it, redirected like every other sink.
-    ("delfin.agent.benchmark_runner", "_RUN_LOCK_DIR", "benchmark_locks"),
-    ("delfin.agent.provider_profile", "_LOCAL_STATE_PATH",
-     "provider_profile_state.json"),
-    ("delfin.agent.job_fix", "_ATTEMPTS_PATH", "fix_attempts.json"),
-    ("delfin.agent.session_store", "_SESSIONS_DIR", "agent_sessions"),
-    ("delfin.agent.outcome_tracker", "_DEFAULT_PATH", "outcome_history.jsonl"),
-    ("delfin.agent.agent_metrics", "_LOG_PATH", "agent_metrics.jsonl"),
-    ("delfin.agent.context_tracker", "_DEFAULT_PATH", "context_usage.jsonl"),
-    ("delfin.agent.eval_loop", "_REPORTS_DIR", "eval_reports"),
-    ("delfin.agent.eval_loop", "_TASK_DRAFTS_DIR", "bug_tasks"),
-    ("delfin.agent.bug_report", "_FALLBACK_DIR", "agent_bugs"),
-    ("delfin.agent.bug_report", "_TASK_DRAFTS_DIR", "bug_tasks"),
-    ("delfin.agent.benchmark", "_DEFAULT_RUNS_DIR", "benchmark_runs"),
-    ("delfin.agent.scheduler", "_DEFAULT_PATH", "cron.json"),
-    ("delfin.dashboard.schedules", "_DEFAULT_PATH", "schedules.json"),
-    ("delfin.agent.memory_store", "_DEFAULT_PATH", "agent_memory.json"),
-    ("delfin.agent.skill_registry", "_LOCAL_SKILLS_DIR", "skills"),
-    ("delfin.agent.job_monitor", "_WATCHED_PATH", "watched_jobs.json"),
-    ("delfin.agent.job_monitor", "_AGENT_WATCH_INDEX_PATH",
-     "agent_watch_index.json"),
-    ("delfin.agent.job_monitor", "_FINDINGS_PATH", "monitor_findings.jsonl"),
-    ("delfin.agent.job_monitor", "_PID_PATH", "job_monitor.pid"),
-    ("delfin.agent.bug_watcher", "_PID_PATH", "bug_watcher.pid"),
-    ("delfin.agent.scheduler_daemon", "_PID_PATH", "scheduler_daemon.pid"),
-    # The user's own settings file. A permission rule the agent persists on
-    # approval is written here, so a test exercising that path edited the
-    # real file -- and permission rules are exactly what must not be granted
-    # by accident.
-    ("delfin.agent.hooks_editor", "_USER_SETTINGS", "settings.json"),
-    ("delfin.agent.kit_settings", "USER_SETTINGS_PATH", "settings.json"),
+# The table is the product's, not the suite's: a benchmark attempt redirects
+# the same sinks for the same reason (delfin/agent/state_paths.py), and two
+# copies of it drifted -- the suite covered the failure log, the bench did
+# not, or the other way round. One table, read here.
+from delfin.agent.state_paths import (  # noqa: E402
+    PROJECT_LEAVES as _PROJECT_LEAF,
+    USER_STATE_RESOLVERS as _PRODUCT_RESOLVERS,
+    USER_STATE_SINKS as _USER_STATE_SINKS,
 )
+
+# The user-wide memory store has its own fixture above (it steps aside for
+# a test that moved Path.home itself, and resets the office registry cache
+# with it), so the generic redirect leaves that resolver alone.
+_USER_STATE_RESOLVERS: tuple[tuple[str, str, str], ...] = tuple(
+    entry for entry in _PRODUCT_RESOLVERS
+    if entry[1] != "_delfin_global_memory_dir")
 
 
 @pytest.fixture(scope="session")
@@ -451,8 +420,6 @@ def _isolate_user_state(tmp_path, monkeypatch, _user_state_targets,
     for mod, attr, rel in _user_state_targets:
         monkeypatch.setattr(mod, attr, fallback / ".delfin" / rel)
 
-    _PROJECT_LEAF = {"_delfin_memory_dir": "memory",
-                     "_delfin_plans_dir": "plans"}
     for mod, attr, rel in _user_state_resolvers:
         original = getattr(mod, attr)
         leaf = _PROJECT_LEAF.get(attr)

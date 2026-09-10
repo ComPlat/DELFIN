@@ -18,9 +18,13 @@ sessions as things the user wanted.
 
 The fixture directories were already guarded this way — snapshot before
 the attempt, restore after. The memory store was not.
+
+Since 2026-09-10 the store is not restored after the attempt but hidden
+from it: the guard points the resolvers at a scratch home, so the run
+neither reads the user's memories nor writes among them. See
+test_a_benchmark_reads_nobodys_history.py for why the reads mattered.
 """
 
-from pathlib import Path
 
 import pytest
 
@@ -41,14 +45,18 @@ def _memory_api():
     return _delfin_memory_dir, _delfin_global_memory_dir, save_typed_memory
 
 
-def test_the_stores_are_among_the_guarded_directories(tmp_path):
-    """Computed the same way inside and outside, so a redirected HOME in
-    the test environment cannot make this pass or fail by accident."""
+def test_an_attempt_writes_into_a_store_that_is_not_the_users(tmp_path):
+    """The store is not snapshotted and restored any more; it is not
+    seen. Inside the guard the resolver points at a scratch home, so the
+    user's store neither gains a file nor loses one."""
     mem_dir, global_dir, _ = _memory_api()
-    guard = _PristineWorkspace(tmp_path)
-    guarded = {str(p) for p in guard._bases}
-    assert str(mem_dir(tmp_path)) in guarded
-    assert str(global_dir()) in guarded
+    real, real_global = mem_dir(tmp_path), global_dir()
+    with _PristineWorkspace(tmp_path):
+        from delfin.agent import memory_store as ms
+        assert ms._delfin_memory_dir(tmp_path) != real
+        assert ms._delfin_global_memory_dir() != real_global
+    assert mem_dir(tmp_path) == real
+    assert global_dir() == real_global
 
 
 def test_a_memory_written_during_a_run_does_not_survive_it(tmp_path):
@@ -61,30 +69,30 @@ def test_a_memory_written_during_a_run_does_not_survive_it(tmp_path):
             "Written by a test, not by a user.", repo_root=tmp_path,
             memory_type="user", title="guard probe", source="agent")
         during = sorted(p.name for p in store.glob("*.md"))
-        assert any("guard-probe" in n for n in during), during
+        assert during == before, "the run wrote into the user's store"
     after = sorted(p.name for p in store.glob("*.md"))
     assert after == before, (before, after)
     assert not any("guard-probe" in n for n in after)
 
 
 def test_a_memory_the_user_already_had_is_not_lost(tmp_path):
-    """Restoring must put back what was there, not empty the store."""
+    """The old guard emptied the real store and copied it back; a run that
+    died in that window lost it. Now the store is never touched."""
     mem_dir, _, _ = _memory_api()
     store = mem_dir(tmp_path)
     store.mkdir(parents=True, exist_ok=True)
     keeper = store / "zz_guard_keeper_probe.md"
     keeper.write_text("---\nname: keeper\n---\n\nkeep me\n")
     with _PristineWorkspace(tmp_path):
-        keeper.unlink()          # a run deletes it
-    assert keeper.is_file(), "a pre-existing memory was not restored"
+        assert keeper.is_file()
+    assert keeper.is_file(), "a pre-existing memory was not kept"
     assert "keep me" in keeper.read_text()
 
 
 def test_a_store_that_did_not_exist_yet_is_still_guarded(tmp_path):
     """A memory store is created by the first `remember`, so "the
     directory is not there" is the common case and not a corner one. The
-    guard used to skip a path that did not exist — nothing to snapshot,
-    nothing to restore, and the first thing the run wrote survived it."""
+    first thing a run writes must not create it."""
     mem_dir, _, save_typed_memory = _memory_api()
     store = mem_dir(tmp_path)
     assert not store.exists(), "precondition: the store is not there yet"
@@ -92,7 +100,7 @@ def test_a_store_that_did_not_exist_yet_is_still_guarded(tmp_path):
         save_typed_memory("Written into a store that did not exist.",
                           repo_root=tmp_path, memory_type="user",
                           title="absent store probe", source="agent")
-        assert store.is_dir(), "the run did not create the store"
+        assert not store.exists(), "the run created the user's store"
     assert not store.exists(), "a store the run created outlived it"
 
 
