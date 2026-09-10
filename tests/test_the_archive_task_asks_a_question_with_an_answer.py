@@ -125,16 +125,38 @@ def test_the_run_without_a_control_file_is_still_indexed(built):
 # The rubric, in both directions
 # ---------------------------------------------------------------------------
 
-def test_the_tool_is_required_not_a_shell_walk(task):
+def test_the_archive_must_have_been_consulted(task):
+    """CALIBRATION 2026-09-10. The first version demanded calc_summary or
+    search_calcs specifically and missed 5 of 5, deterministically —
+    while every other signal AND both figures matched. The model read the
+    folders directly and got 9, PBE0 five times and calc_d unfinished,
+    all correct.
+
+    Using the index instead of walking the tree is a real behaviour and
+    worth having. It is a COST behaviour, and the cost is already priced:
+    that walk took 26 calls against a budget of 14. Requiring the tool as
+    well scores the route twice and calls a correct answer a failure.
+    """
     pat = task.expected_signals[0].pattern
+    # The index, whichever of its tools.
     assert re.search(pat, 'TOOL: calc_summary({})')
     assert re.search(pat, 'TOOL: search_calcs({"functional": "PBE0"})')
-    # The whole point: the counts come from the tool, not from the model
-    # walking the folders itself. A namespaced name reaches this pattern
-    # already stripped -- the scorer normalises it -- so only the bare
-    # spelling is asserted here.
+    assert re.search(pat, 'TOOL: get_calc_info({"calc_id": "arch_e"})')
+    # Or the archive read directly — that is consulting it too.
+    assert re.search(
+        pat, 'TOOL: read_file({"path": "calc_archive/calc/calc_a/calc_a.inp"})')
+    assert re.search(pat, 'TOOL: list_files({"path": "calc_archive"})')
+    assert re.search(pat, 'TOOL: bash({"command": "ls -la calc_archive/calc"})')
+    # Answering without going near it does not count.
+    assert not re.search(pat, 'TOOL: bash({"command": "ls -la"})')
+    assert not re.search(pat, 'TOOL: read_file({"path": "README.md"})')
     assert not re.search(pat, 'TOOL: bash({"command": "ls ~/calc | wc -l"})')
-    assert not re.search(pat, 'TOOL: list_files({"path": "calc_archive"})')
+
+
+def test_the_walk_is_priced_by_the_budget_not_by_a_second_signal(task):
+    """26 calls measured against a budget of 14. The route is scored
+    once, where the cost actually is."""
+    assert task.max_tool_calls <= 20
 
 
 @pytest.mark.parametrize("answer", [
