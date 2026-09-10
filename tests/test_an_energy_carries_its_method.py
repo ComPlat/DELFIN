@@ -288,3 +288,101 @@ def test_the_summary_table_names_the_method_of_a_run_without_output(tmp_path):
     (d / "run.inp").write_text("! PBE0 def2-SVP Opt\n")
     rows = api.extract_calc_summary_table([str(d)])
     assert rows[0].status == "no_output" and rows[0].functional == "PBE0" and rows[0].basis == "def2-SVP"
+
+
+# ---------------------------------------------------------------------------
+# An empty ranking says why it is empty
+# ---------------------------------------------------------------------------
+#
+# Driven over nine single-point runs (2026-09-10), find_calculation_extreme
+# returned {"groups": []} and nothing else: the default property is gibbs,
+# a single-point output has none, and every row was dropped in silence.
+# The operator concluded the parsers could not read the files, read them
+# by hand, and misassigned one energy. Now the ranking falls back to what
+# is there when the requested property is nowhere, says so, and lists
+# every folder it left out with the reason.
+
+_OUT_SPE_ONLY = """
+                                 * O   R   C   A *
+| 1> ! {functional} {basis} SP
+FINAL SINGLE POINT ENERGY      {spe}
+                             ****ORCA TERMINATED NORMALLY****
+"""
+
+
+def _spe_run(root: Path, name: str, functional: str, basis: str, spe: float) -> str:
+    d = root / name
+    d.mkdir(parents=True)
+    (d / "run.out").write_text(_OUT_SPE_ONLY.format(functional=functional,
+                                                    basis=basis, spe=spe))
+    return str(d)
+
+
+def test_an_absent_property_is_ranked_by_what_is_there_and_says_so(tmp_path):
+    a = _spe_run(tmp_path, "a", "PBE0", "def2-SVP", -113.30)
+    b = _spe_run(tmp_path, "b", "PBE0", "def2-SVP", -113.31)
+    res = api.find_calculation_extreme_explained([a, b], property="gibbs", n=1)
+    assert res["property_requested"] == "gibbs"
+    assert res["property_used"] == "single_point"
+    assert [Path(r["folder"]).name for r in res["rows"]] == ["b"]
+    assert res["rows"][0]["property_used"] == "single_point"
+    out = json.loads(ops.tool_find_calculation_extreme(f"{a},{b}", property="gibbs", n=1))
+    assert out["property_used"] == "single_point"
+    assert "single_point" in out["note"] and "gibbs" in out["note"]
+    assert [r["folder"] for g in out["groups"] for r in g["rows"]] == [b]
+
+
+def test_mixed_availability_keeps_the_requested_property(tmp_path):
+    """One folder has a Gibbs energy, one only a single point that sits
+    lower: the ranking stays on gibbs and names the other as skipped."""
+    g = _run(tmp_path, "g", "PBE0", "def2-SVP", -113.20)
+    s = _spe_run(tmp_path, "s", "PBE0", "def2-SVP", -113.90)
+    res = api.find_calculation_extreme_explained([g, s], property="gibbs")
+    assert res["property_used"] == "gibbs"
+    assert [Path(r["folder"]).name for r in res["rows"]] == ["g"]
+    left = {Path(x["folder"]).name: x["reason"] for x in res["skipped"]}
+    assert "gibbs" in left["s"]
+
+
+def test_a_folder_left_out_says_why(tmp_path):
+    good = _run(tmp_path, "good", "PBE0", "def2-SVP", -113.20)
+    pending = tmp_path / "pending"
+    pending.mkdir()
+    (pending / "run.inp").write_text("! PBE0 def2-SVP Opt\n")
+    missing = str(tmp_path / "nowhere")
+    out = json.loads(ops.tool_find_calculation_extreme(
+        f"{good},{pending},{missing}", property="gibbs"))
+    assert [r["folder"] for g in out["groups"] for r in g["rows"]] == [good]
+    left = {Path(x["folder"]).name: x for x in out["skipped"]}
+    assert set(left) == {"pending", "nowhere"}
+    assert "no output" in left["pending"]["reason"]
+    assert "no output" in (left["pending"]["outcome"] or "")
+    assert "missing" in left["nowhere"]["reason"]
+
+
+def test_nothing_to_rank_is_said_not_shown_as_an_empty_list(tmp_path):
+    pending = tmp_path / "pending"
+    pending.mkdir()
+    (pending / "run.inp").write_text("! PBE0 def2-SVP Opt\n")
+    out = json.loads(ops.tool_find_calculation_extreme(str(pending), property="gibbs"))
+    assert out["groups"] == []
+    assert "skipped" in out["note"]
+    assert out["skipped"] and Path(out["skipped"][0]["folder"]).name == "pending"
+
+
+def test_the_rows_alone_are_still_the_rows(mixed):
+    """The list-returning name keeps its contract for callers that only
+    want the ranking."""
+    rows = api.find_calculation_extreme(list(mixed.values()), property="gibbs", n=1)
+    explained = api.find_calculation_extreme_explained(list(mixed.values()), property="gibbs", n=1)
+    assert [r["folder"] for r in rows] == [r["folder"] for r in explained["rows"]]
+
+
+def test_the_job_list_says_it_is_not_the_disk():
+    """Driven over an archive with one unfinished run, list_active_calculations
+    returned [] -- true of the scheduler, read as 'nothing is running'.
+    The description now says which question it answers and where the
+    other one is answered."""
+    doc = ops.tool_list_active_calculations.__doc__ or ""
+    assert "scheduler" in doc
+    assert "extract_energy_table" in doc and "outcome" in doc

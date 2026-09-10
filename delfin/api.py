@@ -4882,6 +4882,90 @@ def _new_workspace_png_path(prefix: str = "plot") -> "Path":
     return base / f"{prefix}_{stamp}.png"
 
 
+def find_calculation_extreme_explained(
+    folders: list[str] | str,
+    *,
+    property: str = "gibbs",
+    extreme: str = "min",
+    n: int = 5,
+) -> dict:
+    """The N folders with the lowest/highest value of a property, per
+    method -- and, for every folder that is not among them, why.
+
+    Returns ``{"property_requested", "property_used", "rows", "skipped"}``.
+
+    ``rows`` are the ranked rows, ``rank_within_method`` set, grouped by
+    method in name order; one extreme per METHOD, because a total energy
+    compares only within one functional and basis.
+
+    ``property_used`` differs from ``property_requested`` in one case:
+    no folder carries the requested property but folders carry a single
+    point energy. An archive of single points has no Gibbs energy in it,
+    and the default property is gibbs; answering that with an empty list
+    reads as "nothing here", not as "no thermochemistry here". Observed
+    2026-09-10 driving the tool over nine single-point runs: it returned
+    empty groups, said nothing, and the operator went back to reading
+    the files by hand -- and misread one. The fallback is taken only
+    when the requested property is absent EVERYWHERE; a mixed set keeps
+    the requested property and lists the rest under ``skipped``.
+
+    ``skipped`` names every folder that is not in ``rows`` with a
+    reason: the folder is missing, it has no output (and the outcome
+    that says why -- still running, crashed, never started), or the
+    output does not carry the property.
+
+    Args:
+        folders: list of paths (or single path) to scan.
+        property: one of ``gibbs``, ``zpe``, ``single_point``,
+            ``imag_freqs``, ``walltime_s``.
+        extreme: ``"min"`` (lowest) or ``"max"`` (highest).
+        n: how many top rows per method to return.
+    """
+    wanted = [property] if property == "single_point" else [property, "single_point"]
+    rows = extract_energy_table(folders, properties=wanted)
+    ok = [r for r in rows if r.get("status") == "ok"]
+    used = property
+    valid = [r for r in ok if r.get(property) is not None]
+    if not valid and property != "single_point":
+        with_spe = [r for r in ok if r.get("single_point") is not None]
+        if with_spe:
+            used = "single_point"
+            valid = with_spe
+    ranked_ids = set()
+    reverse = (str(extreme).lower() == "max")
+    groups: dict = {}
+    for r in valid:
+        groups.setdefault(r.get("method"), []).append(r)
+    out: list[dict] = []
+    for method in sorted(groups, key=lambda m: (m is None, m or "")):
+        block = sorted(groups[method], key=lambda r: float(r[used]),
+                       reverse=reverse)[: max(1, int(n))]
+        for rank, r in enumerate(block, start=1):
+            r["rank_within_method"] = rank
+            r["property_used"] = used
+            ranked_ids.add(id(r))
+        out.extend(block)
+    skipped: list[dict] = []
+    for r in rows:
+        if id(r) in ranked_ids:
+            continue
+        status = r.get("status")
+        if id(r) in {id(v) for v in valid}:
+            reason = f"ranked below the top {max(1, int(n))} of its method"
+        elif status == "missing":
+            reason = "folder missing"
+        elif status == "no_output":
+            reason = str(r.get("outcome") or "no output")
+        elif status != "ok":
+            reason = str(status)
+        else:
+            reason = f"{used} not in the output"
+        skipped.append({"folder": r.get("folder"), "reason": reason,
+                        "outcome": r.get("outcome")})
+    return {"property_requested": property, "property_used": used,
+            "rows": out, "skipped": skipped}
+
+
 def find_calculation_extreme(
     folders: list[str] | str,
     *,
@@ -4889,43 +4973,14 @@ def find_calculation_extreme(
     extreme: str = "min",
     n: int = 5,
 ) -> list[dict]:
-    """Return the N folders with the lowest/highest value of a property.
+    """The ranked rows of :func:`find_calculation_extreme_explained`.
 
-    Direct answer to "open the .out with the lowest Gibbs energy"
-    type questions: pass the candidate folders, get back the top
-    ``n`` rows sorted ascending (``extreme="min"``) or descending
-    (``extreme="max"``).
-
-    Folders that fail to parse the property are excluded from the
-    ranking.
-
-    Args:
-        folders: list of paths (or single path) to scan.
-        property: one of ``gibbs``, ``zpe``, ``single_point``,
-            ``imag_freqs``, ``walltime_s``.
-        extreme: ``"min"`` (lowest) or ``"max"`` (highest).
-        n: how many top rows to return (clipped to len(rows)).
+    Kept for callers that want the rows alone; the reasons for what is
+    not among them, and which property the ranking used, are in the
+    explained variant.
     """
-    rows = extract_energy_table(folders, properties=[property])
-    valid = [r for r in rows if r.get(property) is not None]
-    if not valid:
-        return []
-    reverse = (str(extreme).lower() == "max")
-    # One extreme per METHOD. A single list across methods answered "which
-    # run has the lowest energy" with the functional that sits lowest,
-    # which is not a property of any molecule. Groups are ordered by
-    # name; within a group the top n by the property.
-    groups: dict = {}
-    for r in valid:
-        groups.setdefault(r.get("method"), []).append(r)
-    out: list[dict] = []
-    for method in sorted(groups, key=lambda m: (m is None, m or "")):
-        block = sorted(groups[method], key=lambda r: float(r[property]),
-                       reverse=reverse)[: max(1, int(n))]
-        for rank, r in enumerate(block, start=1):
-            r["rank_within_method"] = rank
-        out.extend(block)
-    return out
+    return find_calculation_extreme_explained(
+        folders, property=property, extreme=extreme, n=n)["rows"]
 
 
 # ---------------------------------------------------------------------------
