@@ -565,7 +565,9 @@ def _prepare_office_fixtures() -> str:
 
 class _PristineWorkspace:
     """Snapshot/restore guard for the fixture workspaces (a dir that does not
-    exist under the current working directory is skipped).
+    exist under the current working directory is skipped), and a blank
+    scratch home for everything the agent would otherwise read about
+    itself.
 
     ``failed`` records a snapshot that did not happen. It used to swallow
     the error and set ``_pairs`` empty, so the restore then did nothing at
@@ -576,40 +578,47 @@ class _PristineWorkspace:
         import os as _os
         base = root or Path(_os.getcwd())
         self._bases = [base / rel for rel in _BEHAVIOR_WS_RELS]
-        self._stores: list[Path] = []
-        # The memory store belongs here too, and did not use to.
+        # The user's own state -- memory stores, outcome history, provider
+        # profile, sessions, logs -- is not snapshotted; it is not seen.
+        # For the duration of the attempt every sink is pointed at an
+        # empty scratch home (state_paths.RedirectedUserState), so the run
+        # reads nobody's past and its own writes vanish with the scratch.
         #
-        # A `remember` call writes to ~/.delfin/projects/<slug>/memory,
-        # keyed on the WORKSPACE — and a dashboard task's workspace is the
-        # checkout itself, so benchmark prompts landed in the user's own
-        # project memory and were recalled into their real sessions.
-        # Found 2026-09-08 with entries reading "User hat am 2026-09-08
-        # B3LYP als Functional im ORCA Builder gesetzt" at use_count 55 and
-        # "nach jedem /orca set ein /orca show — User will explizit sehen"
-        # at 41. No user said either; a benchmark task did.
-        #
-        # Guarded the same way the fixture directories are: snapshot before
-        # the attempt, restore after. A run may write what it likes; it
-        # does not get to leave it behind.
-        try:
-            from .memory_store import (_delfin_global_memory_dir,
-                                       _delfin_memory_dir)
-            # One store per workspace, because the store is keyed on the
-            # workspace: the checkout has one, and so does every fixture
-            # directory a task can be given. Guarding only the checkout's
-            # left a generic-project task's memories behind in the
-            # fixture's own store, where the next run then recalled them.
-            stores = [_delfin_memory_dir(ws) for ws in [base] + list(self._bases)]
-            stores.append(_delfin_global_memory_dir())
-            self._stores = stores
-            self._bases.extend(stores)
-        except Exception:
-            pass
+        # The memory stores used to be snapshotted and restored like the
+        # fixtures, after benchmark prompts turned up as durable user
+        # preferences (2026-09-08). That kept the writes out but let the
+        # READS in: an attempt still recalled the user's memories, and the
+        # session briefing still quoted the user's outcome history -- which
+        # by then was mostly earlier attempts. A task answered with the
+        # wording of a different task's prompt that way (2026-09-10).
+        # Redirecting also removes the one window the restore had, where
+        # the real store was emptied and copied back.
+        self._scratch_home: Path | None = None
+        self._redirect = None
         self._pairs: list[tuple[Path, Path]] = []
-        self._absent: list[Path] = []
         self._snap_root: Path | None = None
         self.failed = False
 
+    def _enter_scratch_home(self) -> None:
+        import tempfile
+
+        from . import state_paths as _sp
+        self._scratch_home = Path(tempfile.mkdtemp(prefix="bench-home-"))
+        self._redirect = _sp.RedirectedUserState(
+            self._scratch_home, keep=_sp.KEPT_BY_A_LIVE_RUN)
+        self._redirect.__enter__()
+
+    def _leave_scratch_home(self) -> None:
+        import shutil
+        redirect, self._redirect = self._redirect, None
+        if redirect is not None:
+            try:
+                redirect.__exit__(None, None, None)
+            except Exception:
+                pass
+        home, self._scratch_home = self._scratch_home, None
+        if home is not None:
+            shutil.rmtree(home, ignore_errors=True)
 
     def _install_signal_trap(self) -> None:
         """Turn a termination signal into the exception this guard survives.
@@ -664,7 +673,6 @@ class _PristineWorkspace:
         self._prev_signals = {}
 
     def __enter__(self) -> "_PristineWorkspace":
-        import shutil
         import tempfile
         # One guard at a time over these paths.
         #
@@ -704,21 +712,24 @@ class _PristineWorkspace:
             # No lock is the old behaviour, not a reason to refuse a run.
             self._lock_handle = None
         self._install_signal_trap()
+        try:
+            self._enter_scratch_home()
+            return self._snapshot()
+        except BaseException:
+            # __exit__ is NOT called when __enter__ raises, so everything
+            # taken above has to go here or every later attempt waits on
+            # a holder that is gone. That is a deadlock, not a slow run:
+            # observed as a pytest master with one second of CPU in
+            # forty-five minutes.
+            self._leave_scratch_home()
+            self._release_lock()
+            raise
+
+    def _snapshot(self) -> "_PristineWorkspace":
+        import shutil
+        import tempfile
         live = [ws for ws in self._bases if ws.is_dir()]
-        # A store that does not exist YET is not skipped, it is remembered:
-        # otherwise there is nothing to snapshot, nothing to restore, and
-        # the first thing the attempt writes into it survives the run. A
-        # memory store is created on its first `remember`, which makes that
-        # the common case rather than a corner one.
-        #
-        # Only the stores, never a fixture directory inside the checkout.
-        # A fixture that is momentarily absent is another attempt restoring
-        # it — rmtree then copy back — and deleting it then is how two
-        # parallel runs erase a tracked fixture between them. Observed
-        # exactly that way before this was narrowed.
-        self._absent = [ws for ws in self._bases
-                        if not ws.exists() and ws in set(self._stores)]
-        if not live and not self._absent:
+        if not live:
             return self
         # One retry, then refusal. A file appearing or vanishing mid-copy
         # makes copytree raise, and that really happens: writing new
@@ -730,6 +741,12 @@ class _PristineWorkspace:
         # touching them. Carrying on unprotected and silent is what
         # happened before, and an attempt then deleted a fixture that
         # nothing put back.
+        #
+        # Only the fixture directories, and only ones that exist. A fixture
+        # that is momentarily absent is another attempt restoring it --
+        # rmtree then copy back -- and deleting it afterwards is how two
+        # parallel runs erase a tracked fixture between them. Observed
+        # exactly that way before this was narrowed.
         last: Exception | None = None
         for _attempt in (1, 2):
             self._pairs = []
@@ -748,11 +765,6 @@ class _PristineWorkspace:
                     self._snap_root = None
         self._pairs = []
         self.failed = True
-        # __exit__ is NOT called when __enter__ raises, so the lock has to
-        # go here or every later attempt waits on a holder that is gone.
-        # That is a deadlock, not a slow run: observed as a pytest master
-        # with one second of CPU in forty-five minutes.
-        self._release_lock()
         names = ", ".join(ws.name for ws in live)
         raise RuntimeError(
             f"could not snapshot the fixture workspace(s) {names}: {last}. "
@@ -763,9 +775,6 @@ class _PristineWorkspace:
     def __exit__(self, *exc) -> None:
         import shutil
         try:
-            # What was not there before must not be there after.
-            for ws in self._absent:
-                shutil.rmtree(ws, ignore_errors=True)
             try:
                 for ws, snap in self._pairs:
                     shutil.rmtree(ws, ignore_errors=True)
@@ -774,10 +783,13 @@ class _PristineWorkspace:
                 if self._snap_root is not None:
                     shutil.rmtree(self._snap_root, ignore_errors=True)
         finally:
-            # Released only once the directories are whole again: the
-            # window this closes is exactly the one where another attempt
-            # would snapshot a half-restored directory.
-            self._release_lock()
+            try:
+                self._leave_scratch_home()
+            finally:
+                # Released only once the directories are whole again: the
+                # window this closes is exactly the one where another
+                # attempt would snapshot a half-restored directory.
+                self._release_lock()
 
     def _release_lock(self) -> None:
         # The signal trap belongs to the same window as the lock: both go
@@ -997,6 +1009,27 @@ def setup_path(name: str, root: Path | str | None = None) -> Path:
     return candidate
 
 
+def _child_env(root: Path | str | None) -> dict:
+    """The environment a setup or acceptance script runs in: the tree
+    under test first on the import path.
+
+    The scripts import delfin -- a setup checks its fixture through the
+    indexer, an acceptance script reads what the agent wrote through the
+    same code the agent used. A bare ``sys.executable`` resolves that
+    import through whatever delfin is INSTALLED for the interpreter,
+    which on a machine with several checkouts is not the one being
+    benchmarked. Observed 2026-09-10: a self-check that passed on the
+    tree failed under the suite, because the child imported an older
+    checkout's indexer and the record it built had no outcome.
+    """
+    env = dict(os.environ)
+    base = str(Path(root).resolve() if root else Path(os.getcwd()).resolve())
+    prior = env.get("PYTHONPATH", "")
+    parts = [base] + [p for p in prior.split(os.pathsep) if p and p != base]
+    env["PYTHONPATH"] = os.pathsep.join(parts)
+    return env
+
+
 def run_setup(
     name: str, workspace: Path | str, *, root: Path | str | None = None,
 ) -> tuple[bool, str]:
@@ -1022,6 +1055,7 @@ def run_setup(
             capture_output=True, text=True,
             timeout=_ACCEPTANCE_TIMEOUT_S,
             cwd=str(workspace),
+            env=_child_env(root),
         )
     except subprocess.TimeoutExpired:
         return False, f"setup script did not finish in {_ACCEPTANCE_TIMEOUT_S}s"
@@ -1053,6 +1087,7 @@ def run_acceptance(
             capture_output=True, text=True,
             timeout=_ACCEPTANCE_TIMEOUT_S,
             cwd=str(workspace),
+            env=_child_env(root),
         )
     except subprocess.TimeoutExpired:
         return None, (

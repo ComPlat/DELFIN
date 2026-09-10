@@ -31,6 +31,19 @@ from delfin.agent.benchmark import load_tasks
 from delfin.agent.benchmark_runner import setup_path
 
 _ROOT = Path(__file__).resolve().parents[1]
+
+
+def _env() -> dict:
+    """This checkout first on the child's import path. The scripts import
+    delfin, and a bare interpreter resolves that through whatever is
+    installed -- on a machine with several checkouts, a different tree,
+    whose indexer once returned records without an outcome and failed a
+    self-check that passes here."""
+    import os
+    env = dict(os.environ)
+    prior = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = os.pathsep.join([str(_ROOT)] + [x for x in prior.split(os.pathsep) if x])
+    return env
 _WS_FOR_CLASS = {
     "science_analysis": "science_workspace",
     "generic_project": "user_project_workspace",
@@ -65,7 +78,7 @@ def test_a_setup_adds_files_and_changes_none(name, task_class, tmp_path):
               for p in ws.rglob("*") if p.is_file()}
 
     proc = subprocess.run([sys.executable, str(setup_path(name)), str(ws)],
-                          capture_output=True, text=True, timeout=300)
+                          capture_output=True, text=True, timeout=300, env=_env())
     assert proc.returncode == 0, proc.stderr[:400]
 
     after = {p.relative_to(ws): p.read_bytes()
@@ -85,10 +98,10 @@ def test_a_setup_refuses_to_run_twice(name, task_class, tmp_path):
     ws = tmp_path / rel
     ws.mkdir(parents=True)
     first = subprocess.run([sys.executable, str(setup_path(name)), str(ws)],
-                           capture_output=True, text=True, timeout=300)
+                           capture_output=True, text=True, timeout=300, env=_env())
     assert first.returncode == 0, first.stderr[:400]
     second = subprocess.run([sys.executable, str(setup_path(name)), str(ws)],
-                            capture_output=True, text=True, timeout=300)
+                            capture_output=True, text=True, timeout=300, env=_env())
     assert second.returncode != 0, (
         f"{name} rebuilt over its own output instead of refusing")
     assert "refusing to overwrite" in second.stderr
@@ -97,6 +110,6 @@ def test_a_setup_refuses_to_run_twice(name, task_class, tmp_path):
 @pytest.mark.parametrize("name,task_class", _setups())
 def test_a_setup_says_what_it_wants_when_given_nothing(name, task_class):
     proc = subprocess.run([sys.executable, str(setup_path(name))],
-                          capture_output=True, text=True, timeout=60)
+                          capture_output=True, text=True, timeout=60, env=_env())
     assert proc.returncode != 0
     assert "usage" in (proc.stdout + proc.stderr).lower()
