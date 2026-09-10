@@ -866,7 +866,8 @@ def _run_task_once(
                     raise _SetupFailed(
                         f"engine init failed: task setup "
                         f"{task.setup!r} did not run: {setup_output[:300]}")
-            raw = run_once(engine, task.prompt, max_tokens=max_tokens)
+            with _fixture_calc_dirs(_ws):
+                raw = run_once(engine, task.prompt, max_tokens=max_tokens)
             # Inside the guard on purpose: it puts the workspace back on
             # the way out, so anything the task produced exists only
             # here. A check that ran afterwards would find the fixture.
@@ -929,6 +930,44 @@ def acceptance_path(name: str, root: Path | str | None = None) -> Path:
 
 class _SetupFailed(RuntimeError):
     """A task's precondition could not be built. Not a model failure."""
+
+
+@contextlib.contextmanager
+def _fixture_calc_dirs(workspace: Path):
+    """Point the calc tools at a fixture archive, if the task built one.
+
+    `search_calcs` and `calc_summary` index the USER's real calc/ and
+    archive/ folders -- 777 calculations on this machine, whose contents
+    nobody chose. A task over them cannot be scored: the right answer
+    differs per developer and changes whenever a real run finishes. That
+    is why "which of my runs used which method", which is daily work for
+    the scientist this agent is for, was completely unmeasured.
+
+    A setup script that creates ``<workspace>/calc_archive/{calc,archive}``
+    gets the tools pointed at it for the length of the attempt, and the
+    previous setting -- usually the dashboard's, sometimes nothing -- is
+    put back afterwards. The engine is rebuilt per attempt but the
+    executor is a module-level singleton, so restoring is not optional:
+    without it the first calc task would silently redirect every later
+    one, including a live session sharing the process.
+    """
+    from .api_client import _doc_executor
+    root = Path(workspace) / "calc_archive"
+    if not (root / "calc").is_dir():
+        yield
+        return
+    previous = getattr(_doc_executor, "_calc_dirs", {})
+    previous_engine = getattr(_doc_executor, "_calc_engine", None)
+    _doc_executor._calc_dirs = {"calc": str(root / "calc"),
+                                "archive": str(root / "archive")}
+    # The engine is built once and cached; a stale one would answer from
+    # the user's archive however the dirs are set.
+    _doc_executor._calc_engine = None
+    try:
+        yield
+    finally:
+        _doc_executor._calc_dirs = previous
+        _doc_executor._calc_engine = previous_engine
 
 
 _SETUP_DIR = Path("delfin") / "agent" / "pack" / "benchmark" / "setup"

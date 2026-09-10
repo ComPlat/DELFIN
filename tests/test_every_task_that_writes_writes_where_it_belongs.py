@@ -178,8 +178,16 @@ def test_the_counts_still_match_what_was_measured():
     # git does not track a nested repository -- so the state is built
     # inside the guard and removed with the rest of the attempt. It
     # belongs to this class for the ordinary reason: it writes.
+    #
+    # science 7 -> 8: science_the_archive_answers_which_method, the second
+    # task with a `setup` script. It builds nine chosen calculations under
+    # the workspace and the runner points the calc tools at them, because
+    # search_calcs and calc_summary otherwise index the USER's real calc/
+    # and archive/ -- 777 runs whose contents nobody chose, so the right
+    # answer differed per developer. It belongs to this class for the
+    # ordinary reason: the setup writes.
     assert counts == {"office": 13, "behavior": 12, "generic_project": 15,
-                      "science": 7, "other": 48}, counts
+                      "science": 8, "other": 48}, counts
 
 
 # ---------------------------------------------------------------------------
