@@ -7,6 +7,18 @@ import logging
 import re
 from typing import Any, Callable, Iterable, Mapping, MutableMapping
 
+from delfin.common.tddft_settings import (
+    coerce_additions as coerce_tddft_additions,
+    coerce_bool as coerce_tddft_bool,
+    coerce_maxdim as coerce_tddft_maxdim,
+    coerce_maxiter as coerce_tddft_maxiter,
+)
+
+
+def _as_tddft_flag(key: str) -> Callable[[Any], str]:
+    """true/false for a TDDFT_* switch, refusing typos instead of reading them as false."""
+    return lambda value: "true" if coerce_tddft_bool(value, key) else "false"
+
 logger = logging.getLogger(__name__)
 
 ORCA_SOLVENTS = (
@@ -2046,9 +2058,23 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("co2_species_delta", _as_int, default=0),
     FieldSpec("ESD_modus", _as_esd_modus, default="tddft"),
     FieldSpec("ESD_T1_opt", _as_esd_t1_opt, default="uks"),
-    FieldSpec("ESD_nroots", _as_int, default=15),
-    FieldSpec("ESD_maxdim", _as_int, default=None, allow_none=True),
-    FieldSpec("ESD_SOC", _as_yes_no, default="false"),
+    # TD-DFT: every %tddft block DELFIN writes reads these through
+    # delfin.common.tddft_settings.  ESD_nroots, ESD_maxdim, ESD_SOC and
+    # TDDFT_TDDFT_maxiter are aliases of the names below (delfin.config).
+    FieldSpec("TDDFT_nroots", _as_positive_int, default=15,
+             help="How many excited states ORCA computes in every TD-DFT job (NRoots). It must reach the highest root a job asks for: S3 needs at least 3."),
+    FieldSpec("TDDFT_maxdim", coerce_tddft_maxdim, default="auto",
+             help="Davidson expansion space in units of nroots: ORCA holds MaxDim x NRoots vectors. auto writes ORCA's own default of 10, the upper end of the 5-10 the ORCA manual recommends. Below 5 ORCA has to rebuild the space more often; above 10 costs memory without saving iterations in the cases measured."),
+    FieldSpec("TDDFT_maxiter", coerce_tddft_maxiter, default=500,
+             help="Most Davidson iterations per TD-DFT job (MaxIter). auto leaves ORCA's own limit (100 in ORCA 6). A normal run converges in 5-10."),
+    FieldSpec("TDDFT_TDA", _as_tddft_flag("TDDFT_TDA"), default="true",
+             help="true: Tamm-Dancoff approximation (ORCA's default, stable on triplet-unstable references). false: full TD-DFT (RPA). Applies to every TD-DFT job, the rate jobs included, so states and rates are computed at one level."),
+    FieldSpec("TDDFT_followiroot", _as_tddft_flag("TDDFT_followiroot"), default="true",
+             help="In excited-state optimisations, follow the state by overlap when roots change order, instead of taking whatever root has the number IRoot."),
+    FieldSpec("TDDFT_SOC", _as_tddft_flag("TDDFT_SOC"), default="false",
+             help="Spin-orbit coupling (DoSOC) in the state and check jobs. The ISC and phosphorescence jobs switch it on themselves; they cannot work without it."),
+    FieldSpec("TDDFT_additions", coerce_tddft_additions, default="",
+             help="Any other ORCA %tddft keywords, written verbatim into every TD-DFT job, separated by ';'. Example: DoNTO true; NTOThresh 1e-4; ETol 1e-7. Keywords with a key of their own (nroots, maxdim, maxiter, tda, followiroot, dosoc) or set per job (iroot, irootmult, triplets, sroot, troot, trootssl, nacme, etf) are refused."),
     FieldSpec("properties_of_interest", _as_properties_of_interest, default=""),
     FieldSpec("reorganisation_energy", _as_reorganisation_energy, default=""),
     FieldSpec("ICs", _as_ics, default=""),

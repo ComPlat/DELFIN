@@ -120,6 +120,7 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
 
     # ESD method block (shown if ESD module is enabled)
     from delfin.esd_module import parse_esd_config
+    from delfin.common.tddft_settings import read_settings as read_tddft_settings
     esd_enabled, _, _, _ = parse_esd_config(config)
     if esd_enabled:
         esd_modus = str(config.get('ESD_modus', 'TDDFT')).strip().lower()
@@ -133,14 +134,16 @@ def generate_summary_report_DELFIN(charge, multiplicity, solvent, E_ox, E_ox_2, 
                 f"OPT FREQ deltaSCF PAL{config['PAL']} MAXCORE({config['maxcore']})"
             ).replace("  ", " ").strip()
         else:
-            # TDDFT mode: show TDDFT-specific keywords
+            # TDDFT mode: show TDDFT-specific keywords, read where the
+            # %tddft blocks read them, so the report names what ran.
+            tddft = read_tddft_settings(config)
             method_esd_block = (
                 f"Method ESD (TDDFT): {config['functional']} {rel_token} {main_basisset} "
                 f"{config.get('disp_corr','')} {config.get('ri_jkx','')} {aux_jk_token} {implicit_token()} "
                 f"{config.get('ri_soc','')} PAL{config['PAL']} "
-                f"NROOTS {config.get('ESD_nroots', config.get('NROOTS', 15))} "
-                f"DOSOC {config.get('DOSOC', 'FALSE')} "
-                f"TDA {config.get('ESD_TDA', config.get('TDA', 'TRUE'))} "
+                f"NROOTS {tddft.nroots} MAXDIM {tddft.maxdim} "
+                f"DOSOC {'TRUE' if tddft.soc else 'FALSE'} "
+                f"TDA {'TRUE' if tddft.tda else 'FALSE'} "
                 f"MAXCORE({config['maxcore']})"
             ).replace("  ", " ").strip()
 

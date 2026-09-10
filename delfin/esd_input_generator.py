@@ -13,7 +13,8 @@ from typing import Any, Dict, List, Optional, Set
 
 from delfin.common.logging import get_logger
 from delfin.common.solvation import build_solvation_keyword
-from delfin.common.orca_blocks import resolve_maxiter, collect_output_blocks
+from delfin.common import tddft_settings
+from delfin.common.orca_blocks import collect_output_blocks
 from delfin.utils import resolve_level_of_theory
 
 logger = get_logger(__name__)
@@ -343,40 +344,6 @@ def _parse_state_root(label: str) -> tuple[str, int]:
     except Exception:
         root = 1
     return state_type, root
-
-
-def _resolve_tddft_maxiter(config: Dict[str, Any]) -> Optional[int]:
-    """Prefer TDDFT_maxiter, fall back to ESD_TDDFT_maxiter (legacy), then global TDDFT_maxiter."""
-    # Try new naming first
-    tddft_maxiter = resolve_maxiter(config, key="TDDFT_maxiter")
-    if tddft_maxiter is not None:
-        return tddft_maxiter
-    # Fall back to legacy ESD_TDDFT_maxiter for backwards compatibility
-    esd_override = resolve_maxiter(config, key="ESD_TDDFT_maxiter")
-    if esd_override is not None:
-        return esd_override
-    return None
-
-
-def _get_tddft_param(config: Dict[str, Any], param_name: str, default: Any) -> Any:
-    """Get TDDFT parameter with fallback to legacy ESD_ naming.
-
-    Args:
-        config: Configuration dictionary
-        param_name: Parameter name without prefix (e.g., 'nroots', 'maxdim', 'TDA')
-        default: Default value if not found
-
-    Returns:
-        Parameter value from TDDFT_{param_name} or ESD_{param_name} (legacy)
-    """
-    # Try new TDDFT_ prefix first
-    new_key = f"TDDFT_{param_name}"
-    if new_key in config:
-        return config[new_key]
-
-    # Fall back to legacy ESD_ prefix for backwards compatibility
-    legacy_key = f"ESD_{param_name}"
-    return config.get(legacy_key, default)
 
 
 def _resolve_esd_t1_opt(config: Dict[str, Any]) -> str:
@@ -872,9 +839,6 @@ def _create_state_input_delta_scf(
     maxcore = config.get('maxcore', 6000)
     blocks.append(f"%maxcore {maxcore}")
 
-    # Optional TDDFT iteration limit for follow-up TDDFT checks
-    tddft_maxiter = _resolve_tddft_maxiter(config)
-
     # Optional output blocks (e.g., print_MOs)
     blocks.extend(collect_output_blocks(config, allow=True))
 
@@ -1016,23 +980,7 @@ def _create_state_input_delta_scf(
             f.write(f"%maxcore {maxcore}\n")
 
             # TDDFT block for both singlets and triplets
-            nroots = config.get('ESD_nroots', 15)
-            tda_flag = str(config.get('TDA', 'TRUE')).upper()
-            # Use ESD_maxdim if set, otherwise default to nroots/2 (min 5)
-            esd_maxdim = config.get('ESD_maxdim', None)
-            maxdim = esd_maxdim if esd_maxdim is not None else max(5, int(nroots / 2))
-            # Read ESD_SOC setting
-            dosoc_flag = str(config.get('ESD_SOC', 'false')).strip().lower()
-            dosoc_value = "true" if dosoc_flag in ('yes', 'true', '1', 'on') else "false"
-            f.write("\n%tddft\n")
-            f.write(f"  nroots {nroots}\n")
-            f.write(f"  maxdim {maxdim}\n")
-            f.write(f"  tda {tda_flag}\n")
-            if tddft_maxiter is not None:
-                f.write(f"  maxiter {tddft_maxiter}\n")
-            f.write("  triplets true\n")
-            f.write(f"  dosoc {dosoc_value}\n")
-            f.write("end\n")
+            f.write("\n" + tddft_settings.tddft_block(config, triplets=True) + "\n")
 
             # Add %basis block for metals when using xyzfile
             basis_block = _format_basis_block_for_metals(metals, metal_basis)
@@ -1080,21 +1028,7 @@ def _create_state_input_delta_scf(
             f.write(f"%maxcore {maxcore}\n")
 
             # TDDFT block - NO followiroot for excited state checks
-            nroots = config.get('ESD_nroots', 15)
-            tda_flag = str(config.get('TDA', 'TRUE')).upper()
-            esd_maxdim = config.get('ESD_maxdim', None)
-            maxdim = esd_maxdim if esd_maxdim is not None else max(5, int(nroots / 2))
-            dosoc_flag = str(config.get('ESD_SOC', 'false')).strip().lower()
-            dosoc_value = "true" if dosoc_flag in ('yes', 'true', '1', 'on') else "false"
-            f.write("\n%tddft\n")
-            f.write(f"  nroots {nroots}\n")
-            f.write(f"  maxdim {maxdim}\n")
-            f.write(f"  tda {tda_flag}\n")
-            if tddft_maxiter is not None:
-                f.write(f"  maxiter {tddft_maxiter}\n")
-            f.write("  triplets true\n")
-            f.write(f"  dosoc {dosoc_value}\n")
-            f.write("end\n")
+            f.write("\n" + tddft_settings.tddft_block(config, triplets=True) + "\n")
 
             # Add %basis block for metals when using xyzfile
             basis_block = _format_basis_block_for_metals(metals, metal_basis)
@@ -1143,21 +1077,7 @@ def _create_state_input_delta_scf(
             f.write(f"%maxcore {maxcore}\n")
 
             # TDDFT block - NO followiroot for excited state checks
-            nroots = config.get('ESD_nroots', 15)
-            tda_flag = str(config.get('TDA', 'TRUE')).upper()
-            esd_maxdim = config.get('ESD_maxdim', None)
-            maxdim = esd_maxdim if esd_maxdim is not None else max(5, int(nroots / 2))
-            dosoc_flag = str(config.get('ESD_SOC', 'false')).strip().lower()
-            dosoc_value = "true" if dosoc_flag in ('yes', 'true', '1', 'on') else "false"
-            f.write("\n%tddft\n")
-            f.write(f"  nroots {nroots}\n")
-            f.write(f"  maxdim {maxdim}\n")
-            f.write(f"  tda {tda_flag}\n")
-            if tddft_maxiter is not None:
-                f.write(f"  maxiter {tddft_maxiter}\n")
-            f.write("  triplets true\n")
-            f.write(f"  dosoc {dosoc_value}\n")
-            f.write("end\n")
+            f.write("\n" + tddft_settings.tddft_block(config, triplets=True) + "\n")
 
             # Add %basis block for metals when using xyzfile
             basis_block = _format_basis_block_for_metals(metals, metal_basis)
@@ -1251,12 +1171,6 @@ def _create_state_input_hybrid1(
     geom_token = str(config.get('geom_opt', 'OPT')).strip() or "OPT"
     pal = config.get('PAL', 12)
     maxcore = config.get('maxcore', 6000)
-    nroots = _get_tddft_param(config, 'nroots', 15)
-    tda_flag = str(_get_tddft_param(config, 'TDA', 'TRUE')).upper()
-    esd_maxdim = _get_tddft_param(config, 'maxdim', None)
-    maxdim = esd_maxdim if esd_maxdim is not None else max(5, int(nroots / 2))
-    tddft_maxiter = _resolve_tddft_maxiter(config)
-    followiroot = str(_get_tddft_param(config, 'followiroot', 'true')).lower() in ('true', 'yes', '1', 'on')
 
     # Determine multiplicity and iroot
     # For TDDFT (first step): always use multiplicity 1 (like pure TDDFT mode)
@@ -1310,30 +1224,14 @@ def _create_state_input_hybrid1(
             f.write(block + "\n")
 
         # TDDFT block (identical to TDDFT mode)
-        # Read TDDFT_SOC setting (same as in TDDFT mode)
-        dosoc_flag = str(_get_tddft_param(config, 'SOC', 'false')).strip().lower()
-        dosoc_value = "true" if dosoc_flag in ('yes', 'true', '1', 'on') else "false"
-
-        # Determine irootmult based on state type
-        if state_upper.startswith('T'):
-            irootmult = "triplet"
-        else:
-            irootmult = "singlet"
-
-        f.write("\n%tddft\n")
-        f.write(f"  nroots {nroots}\n")
-        f.write(f"  maxdim {maxdim}\n")
-        f.write(f"  tda {tda_flag}\n")
-        if tddft_maxiter is not None:
-            f.write(f"  maxiter {tddft_maxiter}\n")
-        if state_upper.startswith('T'):
-            f.write("  triplets true\n")
-        f.write(f"  iroot {root_num}\n")
-        f.write(f"  irootmult {irootmult}\n")
-        if followiroot:
-            f.write("  followiroot true\n")
-        f.write(f"  dosoc {dosoc_value}\n")
-        f.write("end\n")
+        is_triplet = state_upper.startswith('T')
+        f.write("\n" + tddft_settings.tddft_block(
+            config,
+            iroot=root_num,
+            irootmult="triplet" if is_triplet else "singlet",
+            triplets=is_triplet,
+            follow=True,
+        ) + "\n")
 
         # Coordinates
         f.write(f"\n* xyz {charge} {multiplicity}\n")
@@ -1480,13 +1378,6 @@ def _create_state_input_tddft(
     geom_token = str(geom_token_raw).strip() or "OPT"
     pal = config.get("PAL", 12)
     maxcore = config.get("maxcore", 6000)
-    nroots = _get_tddft_param(config, "nroots", 15)
-    tda_flag = str(_get_tddft_param(config, "TDA", config.get("TDA", "TRUE"))).upper()
-    # Use TDDFT_maxdim if set, otherwise default to nroots/2 (min 5)
-    esd_maxdim = _get_tddft_param(config, "maxdim", None)
-    maxdim = esd_maxdim if esd_maxdim is not None else max(5, int(nroots / 2))
-    tddft_maxiter = _resolve_tddft_maxiter(config)
-    followiroot = str(_get_tddft_param(config, "followiroot", "true")).lower() in ("true", "yes", "1", "on")
     esd_frequency_enabled = str(config.get('ESD_frequency', 'yes')).strip().lower() in ('yes', 'true', '1', 'on')
     output_blocks = collect_output_blocks(config, allow=True)
     t1_opt_mode = _resolve_esd_t1_opt(config)
@@ -1586,27 +1477,9 @@ def _create_state_input_tddft(
         *,
         triplets: bool = False,
     ) -> None:
-        # Read TDDFT_SOC setting (legacy: ESD_SOC)
-        dosoc_flag = str(_get_tddft_param(config, 'SOC', 'false')).strip().lower()
-        dosoc_value = "true" if dosoc_flag in ('yes', 'true', '1', 'on') else "false"
-
-        fh.write("%tddft\n")
-        fh.write(f"  nroots {nroots}\n")
-        fh.write(f"  maxdim {maxdim}\n")
-        fh.write(f"  tda {tda_flag}\n")
-        if tddft_maxiter is not None:
-            fh.write(f"  maxiter {tddft_maxiter}\n")
-
-        if triplets:
-            fh.write("  triplets true\n")
-        if iroot is not None:
-            fh.write(f"  iroot {iroot}\n")
-        if irootmult:
-            fh.write(f"  irootmult {irootmult}\n")
-        if iroot is not None and followiroot:
-            fh.write("  followiroot true\n")
-        fh.write(f"  dosoc {dosoc_value}\n")
-        fh.write("end\n")
+        fh.write(tddft_settings.tddft_block(
+            config, iroot=iroot, irootmult=irootmult, triplets=triplets, follow=True,
+        ) + "\n")
 
     def _write_output_blocks(fh) -> None:
         for block in output_blocks:
@@ -1743,15 +1616,7 @@ def _create_state_input_tddft(
                 f.write(f"%maxcore {maxcore}\n")
 
                 # TDDFT block for check job
-                f.write("\n%tddft\n")
-                f.write(f"  nroots {nroots}\n")
-                f.write(f"  maxdim {maxdim}\n")
-                f.write(f"  tda {tda_flag}\n")
-                if tddft_maxiter is not None:
-                    f.write(f"  maxiter {tddft_maxiter}\n")
-                f.write("  triplets true\n")
-                f.write("  dosoc false\n")
-                f.write("end\n")
+                f.write("\n" + tddft_settings.tddft_block(config, triplets=True) + "\n")
 
                 basis_block = _format_basis_block_for_metals(metals, metal_basis)
                 if basis_block:
@@ -1987,28 +1852,17 @@ def create_isc_input(
     # Base
     blocks.append(f'%base "{job_name}"')
 
-    # TDDFT block (aligned with reference layout)
-    nroots = config.get('ESD_ISC_NROOTS', config.get('ESD_nroots', 10))  # Use ESD_nroots as fallback
-
     # Map roots to correct spin manifolds based on states, per ORCA ESD docs
     s_root = init_root if init_type == "S" else (final_root if final_type == "S" else 1)
     t_root = init_root if init_type == "T" else (final_root if final_type == "T" else 1)
 
-    dosoc_flag = "TRUE"
-    tddft_maxiter = _resolve_tddft_maxiter(config)
-    tddft_block = [
-        f"%TDDFT  NROOTS  {int(nroots):>2}",
-        f"        SROOT   {int(s_root)}",
-        f"        TROOT   {int(t_root)}",
-        f"        TROOTSSL {trootssl_str}",
-        f"        DOSOC   {dosoc_flag}",
-    ]
-    if tddft_maxiter is not None:
-        tddft_block.append(f"        maxiter {tddft_maxiter}")
-    tddft_block.append(
-        "END",
-    )
-    blocks.append("\n".join(tddft_block))
+    # SOC is what an ISC rate is made of, so DoSOC is on whatever TDDFT_SOC says.
+    blocks.append(tddft_settings.tddft_block(
+        config,
+        nroots=tddft_settings.job_nroots(config, 'ESD_ISC_NROOTS'),
+        dosoc=True,
+        job_lines=[('sroot', int(s_root)), ('troot', int(t_root)), ('trootssl', trootssl_str)],
+    ))
 
     # ESD block
     temperature = _resolve_temperature_K(config, default=298.15)
@@ -2161,7 +2015,7 @@ def create_ic_input(
     blocks.append(f'%base "{job_name}"')
 
     # TDDFT block tailored for IC calculations
-    nroots = config.get('ESD_IC_NROOTS', config.get('ESD_nroots', 10))  # Use ESD_nroots as fallback
+    nroots = tddft_settings.job_nroots(config, 'ESD_IC_NROOTS')
 
     # Calculate IROOT: For Tn->T1 IC, T1 is the SCF ground state (multiplicity 3)
     # and Tn is the (n-1)-th excited state above T1
@@ -2173,22 +2027,12 @@ def create_ic_input(
         # Singlet IC: S1->S0 uses IROOT=1, S2->S0 uses IROOT=2, etc.
         iroot = config.get('IROOT', init_root)
 
-    tda_flag = str(config.get('TDA', 'TRUE')).upper()
     nacme_flag = str(config.get('NACME', 'TRUE')).upper()
     etf_flag = str(config.get('ETF', 'TRUE')).upper()
-    tddft_block = [
-        "%TDDFT",
-        f"  TDA      {tda_flag}",
-        f"  NROOTS   {nroots}",
-        f"  IROOT    {iroot}",
-        f"  NACME    {nacme_flag}",
-        f"  ETF      {etf_flag}",
-        "END",
-    ]
-    tddft_maxiter = _resolve_tddft_maxiter(config)
-    if tddft_maxiter is not None:
-        tddft_block.insert(-1, f"  maxiter  {tddft_maxiter}")
-    blocks.append("\n".join(tddft_block))
+    blocks.append(tddft_settings.tddft_block(
+        config, nroots=nroots, iroot=iroot, dosoc=None,
+        job_lines=[('nacme', nacme_flag), ('etf', etf_flag)],
+    ))
 
     # ESD block
     # For IC: GSHESSIAN = ground state (final), ESHESSIAN = excited state (initial)
@@ -2329,19 +2173,13 @@ def create_fluor_input(
     blocks: list[str] = []
     blocks.append(f'%base "{job_name}"')
 
-    # TDDFT block (minimal, with configurable nroots)
-    nroots = int(config.get("ESD_FLUOR_NROOTS", config.get("ESD_nroots", 15)))
-    iroot = int(config.get("ESD_FLUOR_IROOT", init_root))
-    tddft_block = [
-        "%TDDFT",
-        f"  NROOTS     {nroots}",
-        f"  IROOT      {iroot}",
-        "END",
-    ]
-    tddft_maxiter = _resolve_tddft_maxiter(config)
-    if tddft_maxiter is not None:
-        tddft_block.insert(-1, f"  maxiter    {tddft_maxiter}")
-    blocks.append("\n".join(tddft_block))
+    # TDDFT block at the level of the state jobs: same TDA, same extras.
+    blocks.append(tddft_settings.tddft_block(
+        config,
+        nroots=tddft_settings.job_nroots(config, "ESD_FLUOR_NROOTS"),
+        iroot=int(config.get("ESD_FLUOR_IROOT", init_root)),
+        dosoc=None,
+    ))
 
     # Get ESD mode to resolve correct file names for hybrid1
     esd_mode = str(config.get('ESD_modus', 'tddft')).strip().lower()
@@ -2483,13 +2321,11 @@ def create_phosp_input(
     # Shared settings
     doht_flag = str(config.get("DOHT", "TRUE")).upper()
     temperature = _resolve_temperature_K(config, default=298.15)
-    tda_flag = str(config.get("ESD_TDA", config.get("TDA", "TRUE"))).upper()
-    # Use the general ESD_nroots by default (CONTROL), allow PHOSP override if desired.
-    nroots = int(config.get("ESD_PHOSP_NROOTS", config.get("ESD_nroots", 15)))
-    tddft_maxiter = _resolve_tddft_maxiter(config)
+    # TDDFT_nroots, unless ESD_PHOSP_NROOTS gives phosphorescence its own.
+    nroots = tddft_settings.job_nroots(config, "ESD_PHOSP_NROOTS")
 
     # ORCA recommends DOSOC TRUE for phosphorescence
-    dosoc_flag = str(config.get("ESD_PHOSP_DOSOC", "TRUE")).upper()
+    phosp_dosoc = tddft_settings.coerce_bool(config.get("ESD_PHOSP_DOSOC", "TRUE"), "ESD_PHOSP_DOSOC")
     lines = str(config.get("ESD_LINES", "LORENTZ")).strip().upper() or "LORENTZ"
     linew = str(config.get("ESD_LINEW", 50)).strip()
     inlinew = str(config.get("ESD_INLINEW", 250)).strip()
@@ -2527,17 +2363,7 @@ def create_phosp_input(
         blocks: list[str] = []
         blocks.append(simple_line)
         blocks.append(f'%base "{job_name}_iroot{iroot}"')
-        tddft = [
-            "%TDDFT",
-            f"  NROOTS  {nroots}",
-            f"  DOSOC   {dosoc_flag}",
-            f"  TDA     {tda_flag}",
-            f"  IROOT   {iroot}",
-        ]
-        if tddft_maxiter is not None:
-            tddft.append(f"  maxiter {tddft_maxiter}")
-        tddft.append("END")
-        blocks.append("\n".join(tddft))
+        blocks.append(tddft_settings.tddft_block(config, nroots=nroots, iroot=iroot, dosoc=phosp_dosoc))
 
         esd = [
             "%ESD",

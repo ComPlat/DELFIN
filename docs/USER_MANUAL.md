@@ -332,14 +332,26 @@ working unchanged: `XTB_OPT` is read as `XTB_preOPT`, and `XTB_GOAT=yes` /
 
 ### TD-DFT Settings
 
+These keys reach every `%tddft` block DELFIN writes: the S0 absorption check,
+every excited-state optimisation, the deltaSCF and hybrid1 check jobs, and the
+ESD(ISC/IC/FLUOR/PHOSP) rate jobs. `KEY=?` in CONTROL.txt prints what a key
+does and runs on the default.
+
 | Key | Default | Description |
 |-----|---------|-------------|
-| `TDDFT_TDDFT_maxiter` | `500` | Max TD-DFT iterations |
-| `TDDFT_nroots` | `15` | Number of roots |
-| `TDDFT_maxdim` | `30` | Max Davidson dimension |
-| `TDDFT_TDA` | `FALSE` | Tamm-Dancoff approximation |
-| `TDDFT_followiroot` | `true` | Follow IROOT during optimisation |
-| `TDDFT_SOC` | `false` | Spin-orbit coupling |
+| `TDDFT_nroots` | `15` | Number of excited states (NRoots). Must reach the highest root a job asks for. |
+| `TDDFT_maxdim` | `auto` | Davidson expansion space **in units of NRoots**: ORCA holds MaxDim × NRoots vectors. `auto` writes ORCA's own default, 10 (upper end of the 5–10 the ORCA manual recommends). |
+| `TDDFT_maxiter` | `500` | Most Davidson iterations (MaxIter). `auto` leaves ORCA's own limit (100 in ORCA 6). |
+| `TDDFT_TDA` | `TRUE` | Tamm-Dancoff approximation; `FALSE` is full TD-DFT (RPA). Applies to the rate jobs too, so states and rates share one level. |
+| `TDDFT_followiroot` | `true` | Follow the optimised state by overlap when roots reorder. |
+| `TDDFT_SOC` | `false` | DoSOC in state and check jobs. ISC and phosphorescence switch it on themselves. |
+| `TDDFT_additions` | *(empty)* | Any other ORCA `%tddft` keyword, verbatim, `;`-separated, into every block — e.g. `DoNTO true; NTOThresh 1e-4; ETol 1e-7; EWin -5,10`. Keywords with their own key above, or set per job (iroot, irootmult, triplets, sroot, troot, trootssl, nacme, etf), are refused. |
+
+Older spellings still work and mean the same key: `TDDFT_TDDFT_maxiter` and
+`ESD_TDDFT_maxiter` → `TDDFT_maxiter`; `ESD_nroots`, `ESD_maxdim`, `ESD_TDA`,
+`ESD_followiroot`, `ESD_SOC` → their `TDDFT_` names. A rate job can still get
+its own root count with `ESD_ISC_NROOTS`, `ESD_IC_NROOTS`, `ESD_FLUOR_NROOTS`
+or `ESD_PHOSP_NROOTS`.
 
 ### Manual Multiplicity Settings (for `method=manually`)
 
