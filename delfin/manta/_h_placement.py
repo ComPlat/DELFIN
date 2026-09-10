@@ -90,6 +90,11 @@ from delfin.manta import _elements as _el
 # THE ONE READ SITE.  A second os.environ.get on the same name is exactly
 # the construction on which the fire census failed on 14.08.
 FLAG = "DELFIN_FFFREE_H_PLACEMENT"
+# THE THIRD GUARD (2026-09-10, register #416): a whole-frame contact census
+# before/after all three stages.  Default OFF -> byte-identical.  Same
+# construction as the topology gate and the stereo gate: measured, not
+# assumed, and the WHOLE frame rolls back.  One read site, like FLAG.
+FLAG_CONTACT_GATE = "DELFIN_FFFREE_H_CONTACT_GATE"
 
 # --- Thresholds -----------------------------------------------------------
 # Firing INSIDE the detector bands (eye: collision < 0.75 · stretch > 1.25).
@@ -489,6 +494,57 @@ def _hp_skip(syms: Sequence[str], adj: Sequence[Sequence[int]], h: int,
     return out
 
 
+def _hp_contact_census(syms: Sequence[str], P: np.ndarray,
+                       adj: Sequence[Sequence[int]], parents: Dict[int, int]
+                       ) -> Tuple[int, int, int]:
+    """(H...H, H...heavy, H...metal): pairs below the module's OWN floors, whole frame.
+
+    The same three floors and the same skip as ``_hp_clearance`` /
+    ``_hp_metal_clear`` -- but COUNTED per pair instead of taken as a minimum,
+    and over ALL hydrogens instead of the one being moved.  Both differences
+    are the point (register #416):
+
+    * Stage A has no rollback at all; stages B and C roll back on a MINIMUM,
+      so a second contact may get worse as long as it stays above the new
+      minimum (the arithmetic ``_hp_metal_clear`` names for the metal axis,
+      here on every axis); and no stage can see what the stages do TOGETHER.
+      Measured on hplace6k2: the repair created H...H contacts BELOW its own
+      1.50 A floor on 11 of 24 regressed systems (+45 pairs), all of them
+      genuine inter-ligand pairs, and RIMKON lost its last two valid frames
+      that way (four blocker terms from one cause).
+    * Three separate numbers, no sum: a sum hides a dead axis exactly as a
+      minimum hides a sub-axis.
+
+    ``adj`` / ``parents`` are passed in so that before and after are measured
+    on the SAME graph (the one of the input geometry); each H...H pair counts
+    once.  This is a census by the module's floors, not the eye -- families
+    the module does not model (donor lone-pair clash, H-anomaly triangle)
+    are invisible here and stay with the verdict.
+    """
+    n_hh = n_hv = n_hm = 0
+    r_h = _hp_vdw("H")
+    for h in _hp_hydrogens(syms):
+        p = parents.get(h, -1)
+        skip = _hp_skip(syms, adj, h, p)
+        for j in range(len(syms)):
+            if j == h or j in skip:
+                continue
+            sj = _el.normalise(syms[j])
+            d = float(np.linalg.norm(P[h] - P[j]))
+            if _hp_metal(sj):
+                d_mx = (float(np.linalg.norm(P[p] - P[j]))
+                        if p >= 0 else 1e9)
+                thr = min(_PROX_H_M_MAX, d_mx - _PROX_DELTA)
+                if thr > 1e-6 and d < thr:
+                    n_hm += 1
+            elif sj == "H":
+                if j > h and d < _HH_FLOOR:
+                    n_hh += 1
+            elif d < _H_HEAVY_FRAC * (r_h + _hp_vdw(sj)):
+                n_hv += 1
+    return n_hh, n_hv, n_hm
+
+
 # ---------------------------------------------------------------------------
 # STAGE A -- the umbrella (methyl_broken).  Existing mechanism, made H-only.
 # ---------------------------------------------------------------------------
@@ -812,6 +868,11 @@ def h_placement_enabled() -> bool:
     return os.environ.get(FLAG, "0") == "1"
 
 
+def h_contact_gate_enabled() -> bool:
+    """THE ONE read site of DELFIN_FFFREE_H_CONTACT_GATE (default 0)."""
+    return os.environ.get(FLAG_CONTACT_GATE, "0") == "1"
+
+
 def repair_xyz(xyz: str, *, stats: Optional[dict] = None) -> str:
     """Repair ungated -- for self-test and measurement, NOT in the build path.
 
@@ -829,6 +890,15 @@ def repair_xyz(xyz: str, *, stats: Optional[dict] = None) -> str:
         frozen = P.copy()
         sig_before = stereo_signature(syms, frozen)
         contacts_before = _hp_h_contacts(syms, frozen)
+        # Third guard: the census graph is built ONCE on the input geometry and
+        # reused after the repair, so before and after are the same instrument.
+        # Only computed when the gate is on -- OFF costs nothing and changes nothing.
+        gate_on = h_contact_gate_enabled()
+        if gate_on:
+            adj0 = _hp_graph(syms, frozen)
+            par0 = parents_of_h(syms, frozen)
+            _hp_link_parents(adj0, par0)
+            census_before = _hp_contact_census(syms, frozen, adj0, par0)
         n_a = _hp_stage_umbrella(syms, P)
         adj = _hp_graph(syms, P)
         parents = parents_of_h(syms, P)
@@ -881,10 +951,29 @@ def repair_xyz(xyz: str, *, stats: Optional[dict] = None) -> str:
                               "moved": 0, "aborted_heavy_moved": 0,
                               "aborted_stereo": 1})
             return xyz
+        # THE CONTACT GATE (2026-09-10, register #416).  hplace6k2 improved every
+        # verdict term over hplace6k and still did not land: 20 systems with a
+        # frame that got WORSE, and RIMKON lost its last two valid frames (four
+        # blocker terms, one cause: core H-H clash 0 -> 2).  The module had
+        # created contacts BELOW ITS OWN 1.50 A floor -- because stage A has no
+        # rollback, B and C roll back on a minimum, and nothing looked at the
+        # frame as a whole.  Rule: the three contact counts of the module's own
+        # floors may not rise on ANY axis; if one does, the whole frame falls
+        # back.  Sized on 510 judged systems / 7171 frame pairs: 8.7 % of the
+        # frames roll back, 38 % stay improved, 20 of 24 regressed systems are
+        # covered, RIMKON completely (13 of 16 frames).
+        if gate_on:
+            census_after = _hp_contact_census(syms, P, adj0, par0)
+            if any(a > b for a, b in zip(census_after, census_before)):
+                if stats is not None:
+                    stats.update({"umbrella": 0, "length": 0, "rotor": 0,
+                                  "moved": 0, "aborted_heavy_moved": 0,
+                                  "aborted_stereo": 0, "aborted_contact": 1})
+                return xyz
         if stats is not None:
             stats.update({"umbrella": n_a, "length": n_b, "rotor": n_c,
                           "moved": moved, "aborted_heavy_moved": 0,
-                          "aborted_stereo": 0})
+                          "aborted_stereo": 0, "aborted_contact": 0})
         return _hp_write(lines, syms, P)
     except Exception:
         return xyz
@@ -1144,6 +1233,96 @@ def _hp_selftest() -> int:
     _expect("Methylzentrum ist kein Stereokandidat", len(_mc) >= 1,
             f"Zentren mit >=2 H: {len(_mc)}")
 
+    print("== Dritter Waechter: Kontakttor (register #416) ==")
+    os.environ.pop(FLAG_CONTACT_GATE, None)
+    _expect("Kontakttor: Vorgabe AUS", h_contact_gate_enabled() is False)
+    # (1) The census counts PAIRS per axis by the module's own floors.  Two
+    # ethane-like stubs far apart, then one H of each brought to 1.40 A (below
+    # the 1.50 A floor) and to 1.60 A (above it).
+    def _two_stubs(d_hh: float) -> str:
+        return ("6\ntest\n"
+                "C       0.000000     0.000000     0.000000\n"
+                "C       1.520000     0.000000     0.000000\n"
+                "H      -0.357000     1.009000     0.000000\n"
+                f"H      -0.357000    {1.009 + d_hh:12.6f}     0.000000\n"
+                f"C      -0.357000    {1.009 + d_hh + 1.070:12.6f}     0.000000\n"
+                f"C      -0.357000    {1.009 + d_hh + 2.590:12.6f}     0.000000\n")
+
+    def _census_of(frame: str) -> Tuple[int, int, int]:
+        s_, P_, _ = _hp_read(frame)
+        a_ = _hp_graph(s_, P_)
+        p_ = parents_of_h(s_, P_)
+        _hp_link_parents(a_, p_)
+        return _hp_contact_census(s_, P_, a_, p_)
+    _expect("Zensus zaehlt ein H...H-Paar unter 1,50 A genau einmal",
+            _census_of(_two_stubs(1.40))[0] == 1, str(_census_of(_two_stubs(1.40))))
+    _expect("Zensus ist still bei 1,60 A",
+            _census_of(_two_stubs(1.60)) == (0, 0, 0), str(_census_of(_two_stubs(1.60))))
+    # (2) THE MECHANISM, isolated from any stage's geometry: a stand-in stage of
+    # stage A's shape (moves H, no rollback of its own) swings the methyl H of
+    # the FIRST stub onto the H of the second, keeping its C-H length and its
+    # bond -- so the topology gate stays silent -- while the rotor is a no-op
+    # (the real rotor would swing it away again on a fixture this empty; on
+    # RIMKON it could not, 13 of 16 frames).  Without the gate the frame goes
+    # out with a new contact; with the gate the WHOLE frame falls back.
+    # Fixture: an ethane stub (C0-C1, H2 on C0 pointing +y) and, below it, a
+    # free-standing O-H (H3 at y=-2.459, O at -3.429, C at -4.859).  Nothing is
+    # in contact.  The stand-in swings H2 to (-0.357, -1.009, 0): still 1.07 A
+    # from C0, 2.13 A from C1 (no bond under any perception), and 1.45 A from
+    # H3 -- below the 1.50 A floor.  O instead of C as H3's parent keeps the
+    # H...heavy axis clean (0.85 x vdW: 2.31 A for O against 2.42 measured).
+    stub = ("6\ntest\n"
+            "C       0.000000     0.000000     0.000000\n"
+            "C       1.520000     0.000000     0.000000\n"
+            "H      -0.357000     1.009000     0.000000\n"
+            "H      -0.357000    -2.459000     0.000000\n"
+            "O      -0.357000    -3.429000     0.000000\n"
+            "C      -0.357000    -4.859000     0.000000\n")
+    _target = np.array([-0.357, -1.009, 0.0])
+    _real_umbrella, _real_rotor = _hp_stage_umbrella, _hp_stage_rotor
+
+    def _bad_umbrella(syms, P, tol_deg=_DET_METHYL_DEG):
+        P[2] = _target.copy()
+        return 1
+
+    def _no_rotor(syms, P, parents, adj):
+        return 0
+    globals()["_hp_stage_umbrella"] = _bad_umbrella
+    globals()["_hp_stage_rotor"] = _no_rotor
+    try:
+        _st_off: Dict[str, int] = {}
+        _out_off = repair_xyz(stub, stats=_st_off)
+        _expect("ohne Tor: die Stellvertreterstufe erzeugt einen neuen H...H-Kontakt",
+                _out_off != stub and _census_of(stub)[0] == 0
+                and _census_of(_out_off)[0] == 1
+                and _st_off.get("aborted_topology", 0) == 0,
+                f"{_census_of(stub)} -> {_census_of(_out_off)}  {_st_off}")
+        os.environ[FLAG_CONTACT_GATE] = "1"
+        _expect("Kontakttor: AN wird gelesen", h_contact_gate_enabled() is True)
+        _st_on: Dict[str, int] = {}
+        _out_on = repair_xyz(stub, stats=_st_on)
+        _expect("mit Tor: der GANZE Frame faellt zurueck (Eingabeobjekt)",
+                _out_on is stub and _st_on.get("aborted_contact", 0) == 1,
+                str(_st_on))
+    finally:
+        globals()["_hp_stage_umbrella"] = _real_umbrella
+        globals()["_hp_stage_rotor"] = _real_rotor
+    # (3) A legitimate repair must survive the gate: the real stages on the
+    # rotor fixture remove an H...H clash and create nothing on any axis.
+    _c0 = _census_of(clashing)
+    _st_r: Dict[str, int] = {}
+    _out_r = repair_xyz(clashing, stats=_st_r)
+    _c1 = _census_of(_out_r)
+    _expect("mit Tor: eine echte Reparatur bleibt (Rotor entdreht H...H)",
+            _out_r != clashing and _c1[0] < _c0[0]
+            and all(x <= y for x, y in zip(_c1, _c0))
+            and _st_r.get("aborted_contact", -1) == 0,
+            f"{_c0} -> {_c1}  {_st_r}")
+    _expect("Zaehler meldet 'gelaufen' getrennt von 'getroffen'",
+            "aborted_contact" in _st_on and "aborted_contact" in _st_r)
+    os.environ.pop(FLAG_CONTACT_GATE, None)
+    _expect("Kontakttor wieder AUS", h_contact_gate_enabled() is False)
+
     print("== Idempotenz ==")
     once = repair_xyz(stretched)
     _expect("zweiter Lauf aendert nichts mehr", once == repair_xyz(once))
@@ -1195,7 +1374,8 @@ def _hp_run_census(paths: List[str], limit: int = 0) -> None:
     fr_a = {k: 0 for k in keys}
     n_frames = n_changed = n_ident = 0
     st_sum = {"umbrella": 0, "length": 0, "rotor": 0,
-              "aborted_heavy_moved": 0, "aborted_stereo": 0}
+              "aborted_heavy_moved": 0, "aborted_stereo": 0,
+              "aborted_topology": 0, "aborted_contact": 0}
     s_common = s_flips = s_flat = s_cand = s_cand_flips = s_nbch = 0
     for fp in files:
         try:
@@ -1242,7 +1422,9 @@ def _hp_run_census(paths: List[str], limit: int = 0) -> None:
     print(f"bewegte H: Dach {st_sum['umbrella']}  Laenge {st_sum['length']}  "
           f"Rotor {st_sum['rotor']}  "
           f"Abbruch-Schweratom {st_sum['aborted_heavy_moved']}  "
-          f"Abbruch-Stereotor {st_sum['aborted_stereo']}")
+          f"Abbruch-Stereotor {st_sum['aborted_stereo']}  "
+          f"Abbruch-Topologie {st_sum['aborted_topology']}  "
+          f"Abbruch-Kontakttor {st_sum['aborted_contact']}")
     print(f"{'Befund':<16}{'Treffer vor':>13}{'nach':>9}"
           f"{'Frames vor':>13}{'nach':>9}")
     for k in keys:
