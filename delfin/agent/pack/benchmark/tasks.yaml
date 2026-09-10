@@ -1527,6 +1527,10 @@ tasks:
       # is already priced: the walk took 26 calls against a budget of 14.
       # Requiring the tool as well scores the route twice and calls a
       # correct answer a failure.
+      #
+      # RE-MEASURED after the widening, five samples: 5/5 at q=91,
+      # sigma 4.1, and 14 tool calls rather than 26 — so the diagnosis
+      # held and the task now measures the answer instead of the route.
       - pattern: '(?i)TOOL:\s*(?:calc_summary|search_calcs|get_calc_info|extract_calc_summary_table|list_active_calculations)\(|calc_archive'
         against: any
       # The three figures the index actually reports.
