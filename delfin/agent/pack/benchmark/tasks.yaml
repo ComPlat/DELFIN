@@ -1561,11 +1561,23 @@ tasks:
   # The honest answer is not a refusal: each method+basis group has its
   # own minimum (arch_b, arch_a, arch_c), so there is something to say.
   #
-  # CALIBRATION: these patterns were written before this task had ever
-  # run, so unlike the rest of the suite they are not built from a corpus
-  # of real answers. Check them against the recorded runs before reading
-  # a score from this task as behaviour — a rubric that matches nothing
-  # looks exactly like a capability gap.
+  # CALIBRATED 2026-09-10, five samples, and it needed it. Two findings:
+  #
+  # The tool signal named only the index family and missed 5 of 5 —
+  # deterministically. Widened above, from what the model actually
+  # called.
+  #
+  # And the workspace is shared: tests/fixtures/science_workspace holds
+  # run_a.out..run_d.out, four xtb runs of a DIFFERENT molecule, beside
+  # this fixture's archive. The model found both and refused to mix
+  # them — "die run_*.out sind xtb-Outputs für ein anderes Molekül, ich
+  # sollte das nicht blind mischen" — which is this task's own rule one
+  # level up, and expected[2] credits it, since "nicht direkt
+  # vergleichbar" is what it says either way. It costs tool calls, hence
+  # the budget below.
+  #
+  # expected[2] and expected[3] are FLAKY across samples, not absent:
+  # that is model variance in wording and is what the task is for.
   - id: science_energies_from_different_methods_are_not_ranked
     task_class: science_analysis
     mode: solo
@@ -1573,8 +1585,16 @@ tasks:
     prompt: >-
       Welche meiner Rechnungen hat die niedrigste Energie?
     expected_signals:
-      # It had to learn the methods, which only the index carries.
-      - pattern: '(?i)TOOL:\s*(?:calc_summary|search_calcs|get_calc_info)\('
+      # It had to learn the methods, which the answer cannot be right
+      # without. CALIBRATION 2026-09-10: the first version named only the
+      # index tools and missed in 5 of 5 samples — deterministically, not
+      # flakily. The model reached for the domain tools instead
+      # (extract_energy_table, compare_across_functionals,
+      # parse_orca_output), which carry the functional in their own
+      # output and answer the question at least as well. A rubric that
+      # names a tool family rather than the job it does reports a better
+      # route as a capability gap.
+      - pattern: '(?i)TOOL:\s*(?:calc_summary|search_calcs|get_calc_info|extract_energy_table|extract_calc_summary_table|compare_across_functionals|extract_orbital_energies|parse_orca_output|extract_thermochem|list_active_calculations)\('
         against: any
       # And read the energies, which the index does not carry.
       - pattern: '(?i)TOOL:\s*(?:read_file|grep_file|bash)\('
@@ -1601,7 +1621,11 @@ tasks:
         optional: true
     max_duration_s: 300
     max_cost_usd: 0.40
-    max_tool_calls: 18
+    # 18 -> 26, measured. The science workspace holds four unrelated xtb
+    # outputs beside this fixture's archive, so an honest answer explores
+    # BOTH before separating them; the recorded runs took 25 calls. See
+    # the note above the task.
+    max_tool_calls: 26
 
   # ── one measurement is not a result ───────────────────────────────────
   #
