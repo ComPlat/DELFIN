@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import difflib
+import math
 import logging
 import re
 from typing import Any, Callable, Iterable, Mapping, MutableMapping
@@ -1218,10 +1219,39 @@ def _as_parallel_strategy(value: Any) -> str:
 
 def _as_imag_scope(value: Any) -> str:
     """Coerce user value into a known IMAG scope."""
-    text = str(value or "initial").strip().lower()
+    text = str(value or "all").strip().lower()
     if text in {"initial", "all"}:
         return text
     raise ValueError("must be one of: initial, all")
+
+_IMAG_OLD_WINDOW = 1e-3
+_IMAG_WINDOW = 1e-5
+_imag_window_migration_logged = False
+
+
+def _as_imag_sp_energy_window(value: Any) -> float:
+    """How far (Eh) a displaced single point must lie below the saddle's.
+
+    1e-3 was the template's value while IMAG compared against the
+    optimisation's last energy.  IMAG now measures the saddle with a single
+    point of its own, and at 1e-3 it refuses real saddles: formaldehyde's S1
+    has a well 1.5 mEh deep.  So the old default -- which nearly every CONTROL
+    file carries, copied from the template -- is read as the new one.
+    """
+    global _imag_window_migration_logged
+    try:
+        window = float(value)
+    except (TypeError, ValueError):
+        raise ValueError("must be a positive number in Hartree, e.g. 1e-5") from None
+    if window <= 0:
+        raise ValueError("must be a positive number in Hartree, e.g. 1e-5")
+    if math.isclose(window, _IMAG_OLD_WINDOW, rel_tol=1e-9):
+        if not _imag_window_migration_logged:
+            logger.info("IMAG_sp_energy_window=1e-3 is the old template value; read as %g", _IMAG_WINDOW)
+            _imag_window_migration_logged = True
+        return _IMAG_WINDOW
+    return window
+
 
 def _as_imag_option(value: Any) -> int:
     """Coerce IMAG scheduler behaviour selector."""
@@ -2076,7 +2106,10 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("geom_opt_OCCUPIER", _as_geom_opt, default="OPT"),
     FieldSpec("freq_type", _as_freq_type, default="FREQ"),
     FieldSpec("orca_parallel_strategy", _as_parallel_strategy, default="auto"),
-    FieldSpec("IMAG_scope", _as_imag_scope, default="initial"),
+    FieldSpec("IMAG_scope", _as_imag_scope, default="all",
+             help="Which structures IMAG takes off a saddle: all (initial structure and every redox step) or initial (the initial structure only). Excited states of the ESD module are always treated when IMAG=yes."),
+    FieldSpec("IMAG_sp_energy_window", _as_imag_sp_energy_window, default=1e-5,
+             help="How far (Hartree) a displaced single point must lie below a single point at the saddle to be taken: a noise floor. Which imaginary modes are worth removing at all is allow_imaginary_freq's question. The old template value 1e-3 is read as 1e-5."),
     FieldSpec("IMAG_option", _as_imag_option, default=2),
     FieldSpec("IMAG_max_rounds", _as_positive_int, default=2,
              help="Most IMAG rounds per structure. One round: single points on both sides of the imaginary mode, then one re-optimisation with frequencies from the lower side -- a frequency calculation each. A structure still at a saddle afterwards is reported, and an ESD rate that would need it is not computed."),

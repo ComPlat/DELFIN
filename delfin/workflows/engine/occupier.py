@@ -2469,7 +2469,7 @@ def build_combined_occupier_and_postprocessing_jobs(config: Dict[str, Any]) -> L
                 imag_option,
             )
         else:
-            imag_scope = str(config.get('IMAG_scope', 'initial')).strip().lower()
+            imag_scope = str(config.get('IMAG_scope', 'all')).strip().lower()
             job_lookup = {job.job_id: job for job in combined_jobs}
 
             def _attach_imag_dependency(target_id: str, dependency_id: str) -> None:

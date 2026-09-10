@@ -220,10 +220,10 @@ working unchanged: `XTB_OPT` is read as `XTB_preOPT`, and `XTB_GOAT=yes` /
 | Key | Default | Description |
 |-----|---------|-------------|
 | `IMAG` | `yes` | Move a structure whose frequencies show an imaginary mode to a minimum |
-| `IMAG_scope` | `initial` | `initial`: the initial structure only; `all`: the redox steps too. Excited states of the ESD module are always treated when `IMAG=yes`, since a rate needs both states at minima |
+| `IMAG_scope` | `all` | `all`: the initial structure and every redox step; `initial`: the initial structure only. Excited states of the ESD module are always treated when `IMAG=yes`, since a rate needs both states at minima |
 | `IMAG_option` | `2` | How OCCUPIER schedules IMAG |
 | `allow_imaginary_freq` | `0` | Imaginary frequencies smaller in magnitude than this (cm⁻¹, either sign) are tolerated; `0` tolerates none |
-| `IMAG_sp_energy_window` | `1e-5` | A displaced single point must lie this far (Eh) below a single point at the saddle to be taken — a noise floor; which modes are worth removing is `allow_imaginary_freq`'s question |
+| `IMAG_sp_energy_window` | `1e-5` | A displaced single point must lie this far (Eh) below a single point at the saddle to be taken — a noise floor; which modes are worth removing is `allow_imaginary_freq`'s question. The old template value `1e-3` is read as `1e-5` |
 | `IMAG_optimize_candidates` | `no` | Optimise the displaced structures instead of single points |
 | `IMAG_max_rounds` | `2` | Most rounds per structure; each round costs one frequency calculation |
 
@@ -722,7 +722,7 @@ Automatically detects and eliminates imaginary frequencies from converged struct
 
 ```ini
 IMAG=yes
-IMAG_scope=initial   # or "all"
+IMAG_scope=all   # or "initial"
 allow_imaginary_freq=0
 ```
 

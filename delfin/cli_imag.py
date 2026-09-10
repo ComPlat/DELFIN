@@ -59,7 +59,7 @@ def run_imag_mode(config: Dict[str, Any], control_file_path: Path) -> int:
         logger.error("IMAG=yes must be set in CONTROL.txt to use --imag mode")
         return 2
 
-    imag_scope = str(config.get("IMAG_scope", "initial")).lower()
+    imag_scope = str(config.get("IMAG_scope", "all")).lower()
     allow_imaginary_freq = config.get("allow_imaginary_freq", 0)
 
     logger.info("IMAG_scope: %s", imag_scope)
