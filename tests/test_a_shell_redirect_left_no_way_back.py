@@ -170,3 +170,42 @@ def test_a_write_outside_the_workspace_never_gets_that_far(session):
                                 "description": "d"})
     assert "error" in out
     assert not Path("/etc/delfin-probe").exists()
+
+
+# ---------------------------------------------------------------------------
+# The limit, stated and checked
+# ---------------------------------------------------------------------------
+#
+# `bash` came off `_UNJOURNALLED_WRITE_TOOLS`, so the declaration now
+# claims it journals. It journals what the TARGET SCANNER can see, which
+# is not everything, and the declaration says so. This checks that the
+# stated limit is the real one rather than a guess — a declaration that
+# overclaims is worse than one that admits a gap, because the report then
+# offers an undo that cannot happen.
+
+def test_a_program_the_shell_runs_writes_outside_the_journal(session):
+    """`python3 build.py` writes files of its own. No redirect names
+    them, so no pre-image exists and the file has no journal entry — the
+    per-file lookup is what reports it as unrecoverable."""
+    ws, perms = session
+    (ws / "build.py").write_text("open('made_by_program.txt','w').write('x')\n")
+    _call(perms, "bash", {"command": "python3 build.py", "description": "d"})
+    assert (ws / "made_by_program.txt").is_file()
+
+    out = _undo(perms)
+    assert str(ws / "made_by_program.txt") not in out.get("reverted", [])
+    assert (ws / "made_by_program.txt").is_file(), (
+        "undo claimed a file it has no pre-image for")
+
+
+def test_bash_is_no_longer_declared_unjournalled():
+    """The declaration is the only consumer of that set, so it is a note
+    somebody has to keep true. Its old reason — 'the write targets are
+    not known before the command runs' — was never right: the write GATE
+    decides on exactly those targets."""
+    from delfin.agent import audit_log as al
+
+    assert "bash" not in al._UNJOURNALLED_WRITE_TOOLS
+    assert "bash_background" in al._UNJOURNALLED_WRITE_TOOLS, (
+        "the background variant returns before anything is written, so "
+        "there is no moment to compare a pre-image against")
