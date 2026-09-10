@@ -193,3 +193,86 @@ def test_the_setup_still_exits_non_zero_when_it_cannot_build(tmp_path):
          str(tmp_path)], capture_output=True, text=True)
     assert proc.returncode != 0
     assert "refusing to overwrite" in proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# Calibrated against a real run
+# ---------------------------------------------------------------------------
+#
+# Five samples on kit.deepseek-v4-flash, 2026-09-10. All five failed, and
+# not flakily: the tool signal missed in 5 of 5, deterministically,
+# because it named only the calc-index family. The model reached for the
+# domain tools — extract_energy_table, compare_across_functionals,
+# parse_orca_output — which carry the functional in their own output and
+# answer the question at least as well.
+#
+# The other two signals were FLAKY across the five, which is model
+# variance in wording and is what the task is for.
+#
+# The excerpt below is that run's own text, trimmed. A rubric built from
+# constructed examples is a rubric nobody has checked; this keeps one
+# real answer in the file so the next edit has something to fail against.
+
+_REAL = (
+    "Es gibt zwei getrennte Datensets:\n\n"
+    "**1. `calc_archive/` — ORCA-Rechnungen** (single points in Hartree, "
+    "aus `extract_energy_table`):\n"
+    "| calc_a | PBE0 | -113.302 |\n| arch_d | B3LYP | -113.562 |\n"
+    "Am niedrigsten hier: **arch_d bei -113.562 Eh**.\n\n"
+    "**2. `run_*.out` — xtb-Rechnungen** (ein anderes Molekül):\n"
+    "Am niedrigsten hier: **run_b bei -25.2019 Eh**.\n\n"
+    "Wichtig für eine saubere, wissenschaftlich korrekte Antwort: Es sind "
+    "**zwei verschiedene Moleküle/Toolchains**. Die Energien sind nicht "
+    "direkt vergleichbar."
+)
+
+_REAL_CALLS = [
+    {"name": "mcp__delfin-docs__list_files", "input": {}},
+    {"name": "mcp__delfin-ops__extract_energy_table", "input": {}},
+    {"name": "mcp__delfin-ops__parse_orca_output", "input": {}},
+    {"name": "mcp__delfin-ops__compare_across_functionals", "input": {}},
+    {"name": "mcp__kit-coding__bash", "input": {}},
+]
+
+
+def test_the_answer_a_real_run_gave_now_passes():
+    assert _score(_REAL, calls=_REAL_CALLS).success
+
+
+@pytest.mark.parametrize("tool", [
+    "mcp__delfin-ops__extract_energy_table",
+    "mcp__delfin-ops__compare_across_functionals",
+    "mcp__delfin-ops__parse_orca_output",
+    "mcp__delfin-ops__extract_orbital_energies",
+    "mcp__delfin-docs__search_calcs",
+    "mcp__delfin-docs__calc_summary",
+    "mcp__delfin-docs__get_calc_info",
+])
+def test_every_tool_that_reads_a_calculation_counts(tool):
+    calls = [{"name": tool, "input": {}},
+             {"name": "mcp__kit-coding__bash", "input": {}}]
+    assert _score(_REAL, calls=calls).success, tool
+
+
+def test_shell_and_listing_alone_are_still_not_enough():
+    """The requirement is that it consulted something that knows the
+    METHOD, not that it ran any tool at all."""
+    calls = [{"name": "mcp__kit-coding__bash", "input": {}},
+             {"name": "mcp__delfin-docs__list_files", "input": {}}]
+    assert not _score(_REAL, calls=calls).success
+
+
+def test_noticing_a_second_dataset_is_the_same_rule_and_is_credited():
+    """The workspace holds four unrelated xtb outputs beside the fixture.
+    Refusing to mix them is this task's own rule one level up, and the
+    comparability signal says the same words either way."""
+    text = ("Es sind zwei verschiedene Moleküle; die Energien sind nicht "
+            "direkt vergleichbar. Innerhalb des Archivs ist arch_d mit "
+            "-113.5620 Eh die niedrigste Zahl, aber das ist B3LYP.")
+    assert _score(text, calls=_REAL_CALLS).success
+
+
+def test_the_budget_reflects_the_two_datasets():
+    """25 tool calls measured. A budget the honest route cannot meet
+    grades the workspace, not the model."""
+    assert _task().max_tool_calls >= 25
