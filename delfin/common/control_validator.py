@@ -1224,6 +1224,35 @@ def _as_imag_scope(value: Any) -> str:
         return text
     raise ValueError("must be one of: initial, all")
 
+#: Imaginary frequencies smaller in magnitude than this (cm-1) are numerical
+#: noise.  Measured on the 71 archived structures the previous IMAG worked on:
+#: 60 had a mode between -1 and -50 cm-1 -- phthalocyanines of 117 atoms,
+#: salen complexes, SubPc -- where displaced single points sat within +-1 mEh
+#: of the saddle, and the remaining ones were saddles from -66 to -971 cm-1.
+#: The ESD guard reads the same number; a TADF emitter's S0 at -3.74 cm-1 must
+#: not cost its rates.
+_IMAG_NOISE_FLOOR = -50.0
+_imag_floor_migration_logged = False
+
+
+def _as_imag_noise_floor(value: Any) -> float:
+    """allow_imaginary_freq: <= 0, and the old template value 0 read as the new default.
+
+    0 meant "every imaginary mode is a saddle" while IMAG almost never managed
+    to remove one; now that it does, and the ESD rates refuse a saddle, 0
+    would spend frequency calculations on noise and withhold rates for it.
+    Nearly every CONTROL file carries the 0 the template used to write.
+    """
+    global _imag_floor_migration_logged
+    parsed = _as_non_positive_float(value)
+    if parsed == 0.0:
+        if not _imag_floor_migration_logged:
+            logger.info("allow_imaginary_freq=0 is the old template value; read as %g", _IMAG_NOISE_FLOOR)
+            _imag_floor_migration_logged = True
+        return _IMAG_NOISE_FLOOR
+    return parsed
+
+
 _IMAG_OLD_WINDOW = 1e-3
 _IMAG_WINDOW = 1e-5
 _imag_window_migration_logged = False
@@ -2113,7 +2142,8 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("IMAG_option", _as_imag_option, default=2),
     FieldSpec("IMAG_max_rounds", _as_positive_int, default=2,
              help="Most IMAG rounds per structure. One round: single points on both sides of the imaginary mode, then one re-optimisation with frequencies from the lower side -- a frequency calculation each. A structure still at a saddle afterwards is reported, and an ESD rate that would need it is not computed."),
-    FieldSpec("allow_imaginary_freq", _as_non_positive_float, default=0.0),
+    FieldSpec("allow_imaginary_freq", _as_imag_noise_floor, default=_IMAG_NOISE_FLOOR,
+             help="Imaginary frequencies smaller in magnitude than this (cm-1, written negative, e.g. -50) are numerical noise: IMAG leaves them and ESD rates are computed. Larger ones make a saddle: IMAG takes the structure off it, and an ESD rate that needs it is not computed. The old template value 0 is read as -50; to treat every imaginary mode, write e.g. -0.1."),
     FieldSpec("calc_potential_method", _as_calc_potential_method, default=2),
     FieldSpec("deltaSCF_SOSCFHESSUP", _as_soscfhessup, default="LSR1"),
     FieldSpec("OCCUPIER_method", _as_occupier_method, default="auto"),

@@ -60,7 +60,7 @@ def run_imag_mode(config: Dict[str, Any], control_file_path: Path) -> int:
         return 2
 
     imag_scope = str(config.get("IMAG_scope", "all")).lower()
-    allow_imaginary_freq = config.get("allow_imaginary_freq", 0)
+    allow_imaginary_freq = config.get("allow_imaginary_freq", -50)
 
     logger.info("IMAG_scope: %s", imag_scope)
     logger.info("allow_imaginary_freq: %s", allow_imaginary_freq)

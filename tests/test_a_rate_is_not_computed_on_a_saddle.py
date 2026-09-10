@@ -156,13 +156,15 @@ def test_one_round_leaves_the_saddle_from_the_lower_side(saddle_run):
                                        config={}, run_orca=orca)
     assert result.resolved and result.rounds == 1
     # two single points, then one re-run of the state itself -- one frequency calculation
-    assert [name for name, _ in orca.calls] == ["S1_imag1_m6_pos_a0.inp", "S1_imag1_m6_neg_a0.inp", "S1.inp"]
+    assert [name for name, _ in orca.calls] == ["S1_imag1_m6_pos_a0.inp", "S1_imag1_m6_neg_a0.inp", "S1.imag1.inp"]
     assert orca.calls[0][1] == ["S0.gbw"]  # the MOREAD guess travels with the single points
     assert (esd / "S1_IMAG" / "round1" / "S0.gbw").is_file()
     assert orca.calls[2][1] == ["S0.gbw"]  # what the input reads, and nothing else
-    # the state restarts from the lower (neg) side, the rest of its input unchanged
-    rerun = inp.read_text()
+    # the state restarts from the lower (neg) side, the rest of its input unchanged;
+    # the state's own input stays as the ESD module wrote it
+    rerun = (esd / "S1_IMAG" / "round1" / "S1.imag1.inp").read_text()
     assert "-0.20000000" in rerun and "OPT numFREQ" in rerun and "$new_job" in rerun
+    assert inp.read_text() == _INPUT
     # the saddle is kept, and nothing of it is left where a resume could pick it up
     kept = esd / "S1_IMAG" / "round1"
     assert (kept / "saddle_S1.hess").is_file() and (kept / "saddle_S1.out").is_file()
@@ -175,7 +177,7 @@ def test_a_state_that_stays_a_saddle_costs_two_rounds_and_is_named(saddle_run):
     result = eliminate_imaginary_modes(label="S1", input_path=inp, output_path=esd / "S1.out",
                                        config={}, run_orca=orca)
     assert not result.resolved and "IMAG_max_rounds=2" in result.reason
-    reruns = [name for name, _ in orca.calls if name == "S1.inp"]
+    reruns = [name for name, _ in orca.calls if ".imag" in name]
     assert len(reruns) == MAX_ROUNDS == 2
     assert len(orca.calls) == MAX_ROUNDS * 3
 
@@ -219,3 +221,26 @@ def test_a_rate_job_does_not_start_on_a_saddle(tmp_path, mode, hess_name):
 
     _hess(tmp_path / hess_name, _MINIMUM)
     _refuse_rates_on_a_saddle("IC S1>S0", ["S1", "S0"], tmp_path, {"ESD_modus": mode})
+
+
+def test_a_mode_in_the_noise_costs_neither_a_round_nor_the_rates(tmp_path):
+    """The archived 74-atom TADF emitter (wB97X/def2-TZVP) has S0 at -3.74 cm-1.
+    That is numerical noise: ORCA's ESD turns it positive, as it always did,
+    and neither IMAG nor the guard may act on it."""
+    from delfin.esd_module import _refuse_rates_on_a_saddle
+
+    noisy = [0.0] * 6 + [-3.74, 22.0, 31.0, 40.0]
+    _hess(tmp_path / "S0.hess", noisy)
+    _hess(tmp_path / "S1.hess", _MINIMUM)
+    assert imaginary_modes(tmp_path / "S0.hess", {}) == []
+    _refuse_rates_on_a_saddle("ISC S1>T1", ["S1", "S0"], tmp_path, {"ESD_modus": "TDDFT"})
+    (tmp_path / "S0.inp").write_text(_INPUT)
+
+    def never(*args, **kwargs):
+        raise AssertionError("no ORCA run for a noise mode")
+
+    result = eliminate_imaginary_modes(label="S0", input_path=tmp_path / "S0.inp", output_path=tmp_path / "S0.out",
+                                       config={"allow_imaginary_freq": -50.0}, run_orca=never)
+    assert result.resolved and result.rounds == 0
+    # asked for explicitly, every imaginary mode counts
+    assert imaginary_modes(tmp_path / "S0.hess", {"allow_imaginary_freq": -0.1}) == [(6, -3.74)]

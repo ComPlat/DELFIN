@@ -79,6 +79,10 @@ FIRST_SHIFT_ANGSTROM = 0.3
 
 _BOHR_IN_ANGSTROM = 0.529177210903
 
+#: allow_imaginary_freq when a config names none: smaller imaginary modes are
+#: numerical noise (see control_validator._IMAG_NOISE_FLOOR for the measurement).
+NOISE_FLOOR = -50.0
+
 #: IMAG_sp_energy_window when CONTROL names none: how far below the saddle a
 #: displaced single point must lie to count as downhill.  A noise floor, ten
 #: times ORCA's TD-DFT energy tolerance; which imaginary modes are worth
@@ -113,7 +117,7 @@ def _truthy(value: Any) -> bool:
 def _threshold(config: Mapping[str, Any]) -> float:
     """The most negative frequency still accepted; allow_imaginary_freq in either sign."""
     try:
-        raw = float(config.get("allow_imaginary_freq", 0) or 0)
+        raw = float(config.get("allow_imaginary_freq", NOISE_FLOOR))
     except (TypeError, ValueError):
         raw = 0.0
     return raw if raw <= 0 else -raw
@@ -280,6 +284,26 @@ def _candidate_job(text: str, atoms: Sequence[Atom], base: str, *, optimise: boo
     return _with_geometry(job, atoms)
 
 
+def _with_base(job: str, base: str) -> str:
+    """``job`` writing under ``base``: its %base, or one added after the method line."""
+    if _BASE_RE.search(job):
+        return job
+    lines = job.splitlines()
+    last_bang = max((i for i, line in enumerate(lines) if line.lstrip().startswith("!")), default=-1)
+    lines.insert(last_bang + 1, f'%base "{base}"')
+    return "\n".join(lines) + ("\n" if job.endswith("\n") else "")
+
+
+def _refresh_fingerprint(input_path: Path, home: Path, deps: Optional[Sequence[str]]) -> None:
+    """Record that the step's outputs are current for its (unchanged) input, as a recalc checks it."""
+    try:
+        from delfin import smart_recalc
+
+        smart_recalc.store_fingerprint(input_path, extra_deps=[home / d for d in (deps or [])] or None)
+    except Exception as exc:  # noqa: BLE001 - a missing fingerprint only costs a recompute
+        logger.debug("IMAG: could not refresh the fingerprint of %s: %s", input_path.name, exc)
+
+
 def _with_resources(text: str, pal: Optional[int], maxcore: Optional[int]) -> str:
     if pal:
         text = _PAL_RE.sub(f"%pal nprocs {int(pal)} end", text)
@@ -414,14 +438,23 @@ def eliminate_imaginary_modes(
     workdir: Optional[Path] = None,
     pal: Optional[int] = None,
     maxcore: Optional[int] = None,
+    fingerprint_deps: Optional[Sequence[str]] = None,
 ) -> ImagResult:
-    """Move the structure computed by ``input_path`` off its saddle, in place.
+    """Move the structure computed by ``input_path`` off its saddle.
 
     ``input_path`` is the structure's ORCA input and ``output_path`` the
     output of running it; the Hessian is ``<%base>.hess`` beside the input.
     ``run_orca(inp, out, working_dir=..., copy_files=...)`` runs one job and
     says whether it terminated normally.  No switch is read here: callers that
     honour ``IMAG`` / ``IMAG_scope`` do so before calling.
+
+    The input file itself is never rewritten.  The pipeline writes it afresh
+    from CONTROL on every ``--recalc`` and skips the step only when its
+    fingerprint still matches, so an input changed here would make a recalc
+    compute the step and its IMAG all over again.  The re-optimisation runs
+    from ``<stem>.imag<n>.inp`` under the step's %base instead, and afterwards
+    the step input's fingerprint is stored again -- with ``fingerprint_deps``,
+    the ``copy_files`` the pipeline itself passes for that step.
     """
     input_path = Path(input_path).resolve()
     output_path = Path(output_path).resolve()
@@ -429,7 +462,6 @@ def eliminate_imaginary_modes(
     text = input_path.read_text(encoding="utf-8")
     if pal or maxcore:
         text = _with_resources(text, pal, maxcore)
-        input_path.write_text(text, encoding="utf-8")
     base = _first_job_base(text) or input_path.stem
     hess_path = home / f"{base}.hess"
     workdir = Path(workdir) if workdir else home / f"{label}_IMAG"
@@ -516,17 +548,23 @@ def eliminate_imaginary_modes(
                 shutil.move(str(path), str(kept[path]))
 
         job, rest = _split_first_job(text)
-        new_text = _with_geometry(job, chosen.optimised or chosen.atoms) + rest
-        input_path.write_text(new_text, encoding="utf-8")
+        new_text = _with_base(_with_geometry(job, chosen.optimised or chosen.atoms), base) + rest
+        rerun = home / f"{input_path.stem}.imag{result.rounds}.inp"
+        rerun.write_text(new_text, encoding="utf-8")
         deps = [name for name in _referenced_files(new_text) if (home / name).is_file()]
-        if not run_orca(input_path, output_path, working_dir=home, copy_files=deps or None):
+        ok = run_orca(rerun, output_path, working_dir=home, copy_files=deps or None)
+        # What ran is kept with the round; nothing of it stays beside the step.
+        for leftover in (rerun, rerun.with_suffix(rerun.suffix + ".fprint")):
+            if leftover.is_file():
+                shutil.move(str(leftover), str(rdir / leftover.name))
+        if not ok:
             # Put the saddle's results back: they are what the pipeline had before.
-            input_path.write_text(text, encoding="utf-8")
             for original, archived in kept.items():
                 shutil.move(str(archived), str(original))
             result.reason = "ORCA did not finish the re-optimisation; the saddle's results were restored"
             logger.warning("%s: %s", label, result.reason)
             return result
+        _refresh_fingerprint(input_path, home, fingerprint_deps)
         text = new_text
 
 
@@ -555,6 +593,7 @@ def run_IMAG(
     maxcore_override=None,
     *,
     manager=None,
+    copy_files=None,
 ) -> Optional[ImagResult]:
     """IMAG for one pipeline step, honouring ``IMAG`` and ``IMAG_scope``.
 
@@ -563,7 +602,9 @@ def run_IMAG(
     ``.inp`` beside it.  ``hess_file`` is the step's base name and only
     matters when the input has no %base.  Charge, multiplicity, solvent,
     metals, basis sets and broken symmetry are all in the input already and
-    are kept in the signature for the callers that pass them.
+    are kept in the signature for the callers that pass them.  ``copy_files``
+    is what the step's own ORCA run was given; the recalc fingerprint includes
+    it, so IMAG stores the fingerprint the same way.
     """
     if not _truthy(config.get("IMAG", "no")):
         return None
@@ -586,6 +627,7 @@ def run_IMAG(
     result = eliminate_imaginary_modes(
         label=str(step_name), input_path=input_path, output_path=output_path, config=config,
         run_orca=_pipeline_run_orca, pal=pal_override, maxcore=maxcore_override,
+        fingerprint_deps=list(copy_files) if copy_files else None,
     )
     if result.rounds and result.resolved:
         propagated = input_path.parent / f"input_{step_name}_OCCUPIER.xyz"

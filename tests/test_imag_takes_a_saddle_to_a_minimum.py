@@ -76,6 +76,7 @@ class _Orca:
             return False
         _out(out, _SADDLE_ENERGY - 0.009)
         _hess(self.home / "initial.hess", self.rerun_freqs)
+        (self.home / "initial.gbw").write_bytes(b"new orbitals")
         (self.home / "initial.xyz").write_text("4\nnew\nN 0 0 0.1\nH 0 0.94 -0.3\nH 0.81 -0.47 -0.3\nH -0.81 -0.47 -0.3\n")
         return True
 
@@ -113,9 +114,9 @@ def test_an_overshooting_displacement_is_halved_until_it_goes_downhill(nh3):
     result = _run(home, orca, IMAG_sp_energy_window=1e-3)
     assert result.resolved and result.rounds == 1
     assert amplitudes == [0.3, 0.15]  # A: the atom that moves most, then half of it
-    rerun = (home / "initial.inp").read_text()
+    rerun = (home / "initial_IMAG" / "round1" / "initial.imag1.inp").read_text()
     assert " -0.15000000" in rerun  # the neg side at half the displacement
-    assert "OPT FREQ" in rerun
+    assert "OPT FREQ" in rerun and '%base "initial"' in rerun
 
 
 def test_nothing_downhill_after_the_halvings_leaves_the_structure_and_says_so(nh3):
@@ -127,7 +128,7 @@ def test_nothing_downhill_after_the_halvings_leaves_the_structure_and_says_so(nh
     assert amplitudes == [0.3, 0.15, 0.075]
     assert (home / "initial.inp").read_text() == _INPUT  # untouched
     assert (home / "initial.out").is_file() and (home / "initial.hess").is_file()
-    assert [name for name, _, _ in orca.calls if name == "initial.inp"] == []
+    assert [name for name, _, _ in orca.calls if ".imag" in name] == []
 
 
 def test_the_rounds_are_capped(nh3):
@@ -137,7 +138,7 @@ def test_the_rounds_are_capped(nh3):
     result = _run(home, orca, IMAG_max_rounds=3)
     assert result.rounds == 3 and not result.resolved
     assert "IMAG_max_rounds=3" in result.reason
-    assert len([c for c in orca.calls if c[0] == "initial.inp"]) == 3
+    assert [c[0] for c in orca.calls if ".imag" in c[0]] == ["initial.imag1.inp", "initial.imag2.inp", "initial.imag3.inp"]
 
 
 def test_appended_jobs_are_left_out_of_the_single_points_and_rerun_at_the_new_geometry(nh3):
@@ -149,8 +150,9 @@ def test_appended_jobs_are_left_out_of_the_single_points_and_rerun_at_the_new_ge
     result = _run(home, orca)
     assert result.resolved
     candidates = [c for c in orca.calls if "_imag" in c[0]]
+    assert (home / "initial.inp").read_text() == _INPUT + _APPENDED + _APPENDED.replace("initial.xyz", "neutral.xyz")
     assert candidates and all("$new_job" not in text and "xyzfile" not in text for _, _, text in candidates)
-    rerun = [c for c in orca.calls if c[0] == "initial.inp"][0]
+    rerun = [c for c in orca.calls if c[0] == "initial.imag1.inp"][0]
     assert "$new_job" in rerun[2] and "* xyzfile 1 2 initial.xyz" in rerun[2]
     # initial.xyz is written by job 1 of the same run; only the foreign file travels with it
     assert rerun[1] == ["neutral.xyz"]
@@ -187,7 +189,7 @@ def test_optimised_candidates_hand_their_geometry_to_the_reoptimisation(nh3):
     candidate = [text for name, _, text in orca.calls if "_imag" in name and not name.endswith("_ref.inp")][0]
     cand = next(line for line in candidate.splitlines() if line.startswith("!"))
     assert "OPT" in cand.split() and "FREQ" not in cand.split()
-    assert "0.11100000" in (home / "initial.inp").read_text()
+    assert "0.11100000" in (home / "initial_IMAG" / "round1" / "initial.imag1.inp").read_text()
 
 
 def test_the_core_sets_the_cores_it_was_given(nh3):
@@ -321,3 +323,49 @@ def test_every_structure_is_in_scope_unless_the_file_says_initial(tmp_path, monk
     run_IMAG(str(home / "ox_step_1.out"), "ox_step_1", 0, 1, "water", [], {"IMAG": "yes"}, "def2-SVP", "", "",
              step_name="ox_step_1", source_input=str(home / "ox_step_1.inp"))
     assert [c["label"] for c in calls] == ["ox_step_1"]
+
+
+def test_the_step_input_is_left_as_the_pipeline_wrote_it_and_a_recalc_skips_the_step(nh3, monkeypatch):
+    """The pipeline writes initial.inp afresh on every --recalc and skips the step
+    when the input's fingerprint still matches.  An input rewritten by IMAG would
+    make every recalc compute the step and its IMAG round again."""
+    from delfin import smart_recalc
+
+    home, _ = nh3
+    monkeypatch.setenv("DELFIN_RECALC", "1")
+    monkeypatch.delenv("DELFIN_SMART_RECALC", raising=False)
+    smart_recalc.store_fingerprint(home / "initial.inp")  # what the step's own run left
+    orca = _Orca(home, lambda side, attempt: _SADDLE_ENERGY - 0.004)
+    assert _run(home, orca).resolved
+    assert (home / "initial.inp").read_text() == _INPUT
+    assert not list(home.glob("initial.imag*"))  # the re-run's input lives with its round
+    # a recalc writes the same input again ... and the step is skipped
+    (home / "initial.inp").write_text(_INPUT)
+    assert smart_recalc.should_skip(home / "initial.inp", home / "initial.out")
+
+
+def test_the_fingerprint_covers_what_the_step_was_given(nh3, monkeypatch):
+    """OCCUPIER and ESD pass copy_files to their ORCA runs, and the fingerprint the
+    recalc compares includes them: IMAG stores it the same way."""
+    from delfin import smart_recalc
+
+    home, _ = nh3
+    (home / "previous.gbw").write_bytes(b"guess")
+    monkeypatch.setenv("DELFIN_RECALC", "1")
+    orca = _Orca(home, lambda side, attempt: _SADDLE_ENERGY - 0.004)
+    eliminate_imaginary_modes(label="initial", input_path=home / "initial.inp", output_path=home / "initial.out",
+                              config={}, run_orca=orca, fingerprint_deps=["previous.gbw"])
+    assert smart_recalc.should_skip(home / "initial.inp", home / "initial.out", extra_deps=[home / "previous.gbw"])
+
+
+def test_the_old_zero_is_read_as_the_noise_floor(tmp_path):
+    """The template wrote allow_imaginary_freq=0, which every old CONTROL carries.
+    Of the 71 archived structures the previous IMAG worked on, 60 had a mode
+    between -1 and -50 cm-1; with 0 the new IMAG would re-optimise all of them."""
+    from delfin.config import read_control_file, validate_control_text
+
+    assert read_control_file(str(_control_file(tmp_path, allow_imaginary_freq="0")))["allow_imaginary_freq"] == -50.0
+    assert read_control_file(str(_control_file(tmp_path, allow_imaginary_freq="-0.1")))["allow_imaginary_freq"] == -0.1
+    assert read_control_file(str(_control_file(tmp_path, allow_imaginary_freq="-120")))["allow_imaginary_freq"] == -120.0
+    errors = validate_control_text(_control_file(tmp_path, allow_imaginary_freq="50").read_text())
+    assert any("allow_imaginary_freq" in e and "<= 0" in e for e in errors)
