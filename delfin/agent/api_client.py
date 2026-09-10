@@ -5576,9 +5576,9 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
         "function": {
             "name": "exit_worktree",
             "description": (
-                "Tear down a worktree from enter_worktree. With "
+"Tear down a worktree from enter_worktree; with "
                 "keep_if_changed=true (default) one with commits or "
-                "changes survives for review; otherwise it is removed."
+                "changes survives for review."
             ),
             "parameters": {
                 "type": "object",
@@ -5600,11 +5600,12 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
             "name": "worktree_merge",
             "description": (
                 "Merge a worktree's full state (new files included) into the "
-                "target repo's working tree, ONLY if it applies cleanly — on "
-                "conflict the target is untouched and the worktree kept for a"
-                " manual merge. Changes land UNCOMMITTED for review. Pass the"
-                " path from enter_worktree or a subagent's "
-                "worktree_summary.final_path."
+                "target repo's working tree, UNCOMMITTED for review. A clean "
+                "apply removes the worktree and its branch "
+                "(worktree_removed; no exit needed); on conflict the "
+                "target is untouched and the worktree kept. Pass "
+                "the path from enter_worktree or a subagent's "
+                "worktree_summary.final_path"
             ),
             "parameters": {
                 "type": "object",
@@ -9203,7 +9204,20 @@ class _DocToolExecutor:
             mode = getattr(permissions, "mode", "") or ""
             session_id = getattr(permissions, "task_session_id", "") or ""
         cwd = str(arguments.get("cwd", "") or "")
+        if not cwd and name in ("bash", "bash_background"):
+            cwd = str(getattr(self, "_last_run_cwd", "") or "")
         extra: dict[str, Any] = {"cwd": cwd} if cwd else {}
+        # The workspace the call was made in, absolute. list_changes_made
+        # filters on it exactly; without it a record of ours and one from
+        # another workspace with the same relative path were the same
+        # record, and a benchmark's commands appeared in a probe's report
+        # as the probe's own work.
+        ws = str(getattr(permissions, "workspace", "") or "") if permissions is not None else ""
+        if ws:
+            try:
+                extra["workspace"] = str(Path(ws).expanduser().resolve())
+            except Exception:
+                extra["workspace"] = ws
 
         # A command that RAN and failed was logged "ok": the decision
         # described the gate's verdict on the attempt, never the outcome.
@@ -13673,6 +13687,10 @@ class _DocToolExecutor:
             run_cwd = cwd_resolved
         else:
             run_cwd = perms.workspace
+        # Where it ran, for the audit record: the model's own `cwd`
+        # argument is usually absent, and a record without an absolute
+        # cwd cannot be told apart from another workspace's.
+        self._last_run_cwd = str(run_cwd)
 
         env = _scrubbed_bash_env()
         env.setdefault("LC_ALL", "C.UTF-8")
@@ -13820,6 +13838,10 @@ class _DocToolExecutor:
             run_cwd = cwd_resolved
         else:
             run_cwd = perms.workspace
+        # Where it ran, for the audit record: the model's own `cwd`
+        # argument is usually absent, and a record without an absolute
+        # cwd cannot be told apart from another workspace's.
+        self._last_run_cwd = str(run_cwd)
 
         try:
             from . import bash_jobs as _bj
@@ -14637,7 +14659,19 @@ class _DocToolExecutor:
             return json.dumps({"error": "path is required"})
         wt_path = Path(path_arg).expanduser()
         if not wt_path.is_dir():
-            return json.dumps({"error": f"worktree path missing: {wt_path}"})
+            # Not an error: the job of this tool is that the worktree no
+            # longer exists, and it does not. A clean worktree_merge
+            # removes the worktree itself, so enter -> merge -> exit --
+            # the order the descriptions suggest -- ended in an "error"
+            # for a state that was exactly right.
+            return json.dumps({
+                "status": "ok",
+                "removed": False,
+                "kept": False,
+                "final_path": "",
+                "note": (f"nothing to tear down: {wt_path} does not exist "
+                         "(a clean worktree_merge removes the worktree itself)"),
+            })
         refusal = self._worktree_path_refusal("path", wt_path, perms)
         if refusal is not None:
             return json.dumps({"error": refusal})
@@ -14679,6 +14713,7 @@ class _DocToolExecutor:
             return json.dumps({"error": str(exc)})
         payload = {
             "status": "ok",
+            "removed": info.final_path is None,
             "had_changes": info.had_changes,
             "kept": info.final_path is not None,
             "final_path": str(info.final_path) if info.final_path else "",
@@ -14759,12 +14794,17 @@ class _DocToolExecutor:
             result = _wt.merge_worktree(info)
         except _wt.WorktreeError as exc:
             return json.dumps({"error": str(exc)})
+        removed = bool(getattr(info, "cleaned_up", False))
+        message = result.message
+        if removed:
+            message += " The worktree and its branch were removed; exit_worktree is not needed."
         return json.dumps({
             "status": "ok" if result.ok else "conflict",
             "applied": result.applied,
             "files": result.files,
             "target": str(target),
-            "message": result.message,
+            "worktree_removed": removed,
+            "message": message,
         })
 
     # ------- Sub-agent delegation -----------------------------------------
