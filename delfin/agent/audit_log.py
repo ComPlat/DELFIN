@@ -248,16 +248,30 @@ _WRITE_TOOLS = frozenset({
 # being wrong: a file written through one of these can be shown, but it
 # cannot be offered as undoable.
 #
-# * ``bash`` / ``bash_background`` — arbitrary shell; the write targets
-#   are not known before the command runs.
+# * ``bash_background`` — arbitrary shell, and unlike the foreground
+#   one it returns before the command has written anything, so there is
+#   no moment at which a pre-image and a post-image can be compared.
 # * ``fill_series`` — writes one document per table row, none captured.
 # * ``publish_report`` — writes its own output tree.
 # * MCP file mutators arrive under the BARE native tool name
 #   (``write_file`` …) and dispatch to a remote server, so they are
 #   indistinguishable in the record from a native write; the journal
 #   lookup below is what separates them.
+#
+# ``bash`` came OFF this list on 2026-09-10. The stated reason for it
+# being here — "the write targets are not known before the command runs"
+# — was not true: ``_bash_write_targets`` is what the write GATE decides
+# on, so the targets are known, and the foreground executor now reads
+# each one before running and journals the ones whose bytes moved.
+#
+# It is honest about its limits rather than declared complete: what the
+# target scanner cannot see, the journal does not get. A program the
+# shell RUNS that writes files of its own (``python3 build.py``) leaves
+# no pre-image, and that file then simply has no journal entry — the
+# per-file lookup below is what reports it as unrecoverable, which is
+# the right granularity for a tool that is only partly capturable.
 _UNJOURNALLED_WRITE_TOOLS = frozenset({
-    "bash", "bash_background", "fill_series", "publish_report",
+    "bash_background", "fill_series", "publish_report",
 })
 _COMMAND_TOOLS = frozenset({"bash", "bash_background"})
 _PERSIST_TOOLS = frozenset({"remember_permission", "remember_permission_bundle"})
