@@ -12082,6 +12082,35 @@ class _DocToolExecutor:
                     "`git checkout <ref> -- .` it cannot destroy work in "
                     "the user's tree."
                 )
+            elif re.search(r"^\s*git\s+(?:checkout\s+--\s|restore\b)", cmd):
+                # Taking a change back. Four times tonight in one suite:
+                # `git checkout -- bookmarks.json`, `git checkout --
+                # bookmark_store.py bookmarks.json bookmarks_cli.py`. The
+                # agent had edited a fixture and wanted the original.
+                #
+                # This is the most dangerous spelling of that wish in a
+                # shared checkout, which is why it is off the list: it
+                # reverts by PATH, not by authorship, so it discards
+                # whatever anybody else had uncommitted there. `git stash`
+                # `git stash` is deliberately NOT matched here: it is
+                # answered one branch up by the control-run hint, which
+                # names enter_worktree(base_ref=…) and says why it is
+                # safer. The stash is shared, and parallel agents have
+                # swapped each other's work through it.
+                #
+                # undo_changes reverts only what THIS session recorded
+                # writing, and refuses a file whose content changed since.
+                hint = (
+                    " HINT: to take back a change YOU made in this session, "
+                    "use `undo_changes(scope=\"session\")` — or "
+                    "`undo_changes(path=…)` for one file. It reverts only "
+                    "what this session recorded writing and refuses a file "
+                    "edited since, whereas `git checkout --` reverts by path "
+                    "and discards whatever anyone else had uncommitted "
+                    "there. For the ORIGINAL of a file you did not write, "
+                    "read it with `read_file` at the commit instead of "
+                    "restoring over the working tree."
+                )
             elif re.match(r"^\s*rm\s+(?!-[a-zA-Z]*[rR])", cmd):
                 # Cleaning up after itself. Twice in one recorded run:
                 # `rm -f _tagreport_check.py`, `rm _verify_export.py` --
