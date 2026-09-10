@@ -649,6 +649,32 @@ def _method_label(functional, basis) -> str | None:
     return f"{functional or '?'}/{basis or '?'}"
 
 
+def _method_of(parsed, folder) -> tuple:
+    """(functional, basis): the output's own if it states them, else the
+    folder's DELFIN_Data.json / CONTROL.txt / .inp -- a DELFIN run's ORCA
+    output does not name its method, and a row filed under None is a
+    number waiting to be ranked against the wrong ones."""
+    functional = getattr(parsed, "functional", None) or None
+    basis = getattr(parsed, "basis", None) or None
+    if not functional or not basis:
+        try:
+            from delfin.doc_server.calc_indexer import method_of_folder
+            f2, b2 = method_of_folder(folder)
+            functional = functional or f2
+            basis = basis or b2
+        except Exception:
+            pass
+    return functional, basis
+
+
+def _outcome_of_folder(folder) -> str:
+    try:
+        from delfin.doc_server.calc_indexer import outcome_of_folder
+        return outcome_of_folder(folder)
+    except Exception:
+        return ""
+
+
 #: What every grouped result says, so the rule travels with the data.
 METHOD_NOTE = (
     "A total energy compares only within one method (functional AND basis). "
@@ -684,28 +710,34 @@ def extract_energy_table(
         p = _P(folder)
         if not p.exists() or not p.is_dir():
             row: dict = {"folder": str(folder), "status": "missing",
-                   "functional": None, "basis": None, "method": None}
+                   "functional": None, "basis": None, "method": None,
+                   "outcome": "unknown (folder missing)"}
             for prop in properties:
                 row[prop] = None
             rows.append(row)
             continue
         out_files = sorted(p.glob("*.out"))
         if not out_files:
+            functional, basis = _method_of(None, p)
             row = {"folder": str(folder), "status": "no_output",
-                   "functional": None, "basis": None, "method": None}
+                   "functional": functional, "basis": basis,
+                   "method": _method_label(functional, basis),
+                   "outcome": _outcome_of_folder(p)}
             for prop in properties:
                 row[prop] = None
             rows.append(row)
             continue
         target = max(out_files, key=lambda f: f.stat().st_size)
         parsed = parse_orca_output(str(target))
+        functional, basis = _method_of(parsed, p)
         row = {
             "folder": str(folder),
             "status": "ok",
             "output_file": target.name,
-            "functional": parsed.functional,
-            "basis": parsed.basis,
-            "method": _method_label(parsed.functional, parsed.basis),
+            "functional": functional,
+            "basis": basis,
+            "method": _method_label(functional, basis),
+            "outcome": _outcome_of_folder(p),
         }
         for prop in properties:
             if prop == "gibbs":
@@ -1776,17 +1808,18 @@ def compare_across_functionals(
             if imag.error is None:
                 n_imag = imag.n_imag
                 is_min = imag.is_minimum
+        functional, basis = _method_of(parsed, p)
         rows.append(FunctionalComparisonRow(
             folder=str(folder),
-            functional=parsed.functional,
-            basis=parsed.basis,
+            functional=functional,
+            basis=basis,
             gibbs=parsed.gibbs_free_energy,
             single_point=parsed.final_single_point,
             zpe=parsed.zpe,
             n_imag=n_imag,
             is_minimum=is_min,
             status="ok",
-            method=_method_label(parsed.functional, parsed.basis),
+            method=_method_label(functional, basis),
         ))
 
     sort_field = sort_by.strip().lower()
@@ -2444,8 +2477,11 @@ def _resolve_backend():
     if _sh.which("sbatch") and _sh.which("squeue"):
         from delfin.dashboard.backend_slurm import SLURMBackend
         return SLURMBackend(orca_base="")
-    from delfin.dashboard.backend_local import LocalBackend
-    return LocalBackend(orca_base="")
+    # The class was renamed under this import and nobody told this
+    # function: list_active_calculations answered every call with an
+    # ImportError until a model, asked where the tools hurt, said so.
+    from delfin.dashboard.backend_local import LocalJobBackend
+    return LocalJobBackend(orca_base="")
 
 
 def submit_calculation(

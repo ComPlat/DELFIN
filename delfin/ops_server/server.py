@@ -320,8 +320,10 @@ def tool_extract_energy_table(
 
     Returns a JSON list of rows. Each row has ``folder``, ``status``
     ("ok" / "missing" / "no_output"), ``method`` ("PBE0/def2-SVP": a
-    total energy compares only within one method), and one entry per
-    requested property. Rows with status != "ok" carry None.
+    total energy compares only within one method), ``outcome``
+    (succeeded / failed (exit code N) / running or crashed / unknown --
+    "no_output" alone does not say which), and one entry per requested
+    property. Rows with status != "ok" carry None for properties.
 
     Recognised properties: gibbs, zpe, single_point, scf_converged,
     opt_converged, imag_freqs, walltime_s.
