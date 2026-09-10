@@ -1516,8 +1516,18 @@ tasks:
       Funktional habe ich am häufigsten benutzt, und wie oft? Sag mir
       ausserdem, ob eine davon noch nicht fertig ist.
     expected_signals:
-      # The tool, not a shell walk over the folders.
-      - pattern: '(?i)TOOL:\s*(?:calc_summary|search_calcs)\('
+      # It consulted the archive. CALIBRATION 2026-09-10: the first
+      # version demanded calc_summary or search_calcs specifically and
+      # missed 5 of 5, deterministically — while every other signal AND
+      # both figures matched. The model read the folders directly and got
+      # 9, PBE0 five times and calc_d unfinished, all correct.
+      #
+      # Using the index instead of walking the tree is a real behaviour
+      # and worth having, but it is a COST behaviour, and the cost side
+      # is already priced: the walk took 26 calls against a budget of 14.
+      # Requiring the tool as well scores the route twice and calls a
+      # correct answer a failure.
+      - pattern: '(?i)TOOL:\s*(?:calc_summary|search_calcs|get_calc_info|extract_calc_summary_table|list_active_calculations)\(|calc_archive'
         against: any
       # The three figures the index actually reports.
       - pattern: '(?i)\b9\b'

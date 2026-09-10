@@ -1516,7 +1516,22 @@ def _bash_write_targets(cmd: str) -> list[str]:
                 _add(tok)
 
         # What an inline python payload would write.
-        for src in (_inline_payload.extract_c_payloads(cmd) or []):
+        #
+        # Here-documents are included, and with include_expanded=True.
+        # `python3 - <<'EOF' … EOF` is `python -c` with different
+        # punctuation, and it was invisible here: a body of
+        # `open('/etc/evil','w').write('x')` produced no write target at
+        # all. An unquoted `<<EOF` is shell-expanded before the
+        # interpreter sees it, so the text read here is not necessarily
+        # the text that runs — but this path REFUSES on what it finds, so
+        # scanning an expandable body can only block more, never allow
+        # more. That argument does not hold on a path that grants, and
+        # `_inline_payload_is_readable` accordingly takes quoted bodies
+        # only.
+        _srcs = list(_inline_payload.extract_c_payloads(cmd) or [])
+        _srcs += _inline_payload.extract_stdin_payloads(
+            cmd, include_expanded=True)
+        for src in _srcs:
             for tok in _inline_payload.analyze_payload(src).writes:
                 _add(tok)
 
@@ -3059,6 +3074,35 @@ def _split_shell_segments(cmd: str) -> list[str]:
             buf.append(c)
             i += 1
             continue
+        if cmd[i:i + 3] == "<<<":
+            # A here-STRING, not a here-document: no terminator line, and
+            # the operator has to be stepped over whole or the `<<` that
+            # follows is read as the start of a heredoc named "hi".
+            buf.append(cmd[i:i + 3])
+            i += 3
+            continue
+        if cmd[i:i + 2] == "<<":
+            # A here-document body is DATA, not a chain of commands.
+            #
+            # Splitting on newlines turned `python3 - <<'EOF' … EOF` into
+            # one pseudo-segment per line of the program: `import os`,
+            # `x = 1`, `os.system("rm -rf /tmp/x")`. The auto-allow check
+            # then refused it because those are not commands — right by
+            # accident, and wrong the other way round as soon as the
+            # lines happen to READ as commands. With a user grant of
+            # `^\s*python3\b`, which is exactly what the refusal tells
+            # the model to ask for, a body of `ls` / `cat` was allowed
+            # through without one line of it being read as Python.
+            #
+            # Consumed here so the body stays with its command: the
+            # segment is then a single opaque unit that the payload
+            # analyser can be asked about, and nothing inside it is ever
+            # mistaken for a shell command.
+            consumed = _consume_heredoc(cmd, i)
+            if consumed is not None:
+                body, i = consumed
+                buf.append(body)
+                continue
         if cmd[i:i + 2] in ("||", "&&"):
             segs.append("".join(buf))
             buf = []
@@ -3073,6 +3117,61 @@ def _split_shell_segments(cmd: str) -> list[str]:
         i += 1
     segs.append("".join(buf))
     return [s.strip() for s in segs if s.strip()]
+
+
+_HEREDOC_START_RE = re.compile(r"<<(-?)\s*(?:(['\"])(\w+)\2|(\w+))")
+
+
+def _consume_heredoc(cmd: str, i: int) -> tuple[str, int] | None:
+    """From ``<<`` at *i*, return (the whole redirect + body, next index).
+
+    None when it does not look like a here-document at all (``<<<`` is a
+    here-STRING and needs no terminator, and a bare ``<<`` with nothing
+    after it is a syntax error the shell would reject).
+
+    An unterminated body runs to the end of the string: that is what the
+    shell would read, and stopping early would hand the caller a segment
+    the shell never sees.
+    """
+    if cmd[i:i + 3] == "<<<":
+        return None
+    m = _HEREDOC_START_RE.match(cmd, i)
+    if m is None:
+        return None
+    tag = m.group(3) or m.group(4)
+    if not tag:
+        return None
+    strip_tabs = bool(m.group(1))
+    rest = cmd[m.end():]
+    # The body starts after the rest of the redirect's own line.
+    nl = rest.find("\n")
+    if nl == -1:
+        return cmd[i:], len(cmd)
+    body_start = m.end() + nl + 1
+    for line_start, line in _lines_from(cmd, body_start):
+        candidate = line.lstrip("\t") if strip_tabs else line
+        if candidate.strip() == tag:
+            # The newline AFTER the terminator is left behind on purpose:
+            # it is the separator between this command and the next, and
+            # swallowing it hid `echo done` in `cat <<'X' … X\necho done`
+            # inside the heredoc's own segment.
+            end = line_start + len(line)
+            return cmd[i:end], end
+    return cmd[i:], len(cmd)
+
+
+def _lines_from(text: str, start: int):
+    """(offset, line) for each line of *text* from *start*, no newlines."""
+    pos = start
+    n = len(text)
+    while pos <= n:
+        nl = text.find("\n", pos)
+        if nl == -1:
+            if pos < n:
+                yield pos, text[pos:]
+            return
+        yield pos, text[pos:nl]
+        pos = nl + 1
 
 
 
