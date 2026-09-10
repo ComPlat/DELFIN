@@ -1006,7 +1006,15 @@ def _bash_outside_reads(cmd: str) -> list[str]:
     """
     out: list[str] = []
     try:
-        for src in (_inline_payload.extract_c_payloads(cmd) or []):
+        # Here-documents too, and with include_expanded=True, for the
+        # same reason the write gate takes them: this path REFUSES on
+        # what it finds, so reading a body the shell may still add to can
+        # only block more. `python3 - <<'EOF' print(open('/etc/passwd')
+        # .read()) EOF` produced no read target at all before.
+        srcs = list(_inline_payload.extract_c_payloads(cmd) or [])
+        srcs += _inline_payload.extract_stdin_payloads(
+            cmd, include_expanded=True)
+        for src in srcs:
             for tok in _inline_payload.analyze_payload(src).reads:
                 if tok.startswith("/") or tok.startswith("~"):
                     out.append(tok)
@@ -1405,6 +1413,22 @@ def _inline_payload_is_readable(segment: str, workspace: Path | str) -> bool:
         if not _PLAIN_C_HEAD_RE.match(seg):
             return False
         payloads = _inline_payload.extract_c_payloads(seg)
+        if payloads is None:
+            return False
+        # A here-document carries the same property `-c` does: with a
+        # QUOTED delimiter the body is literal, so the text analysed is
+        # the text the interpreter receives. `python3 - <<'EOF' … EOF`
+        # is the third-largest group in the denial log (29 of 437) and
+        # was refused for punctuation.
+        #
+        # Quoted only, and that is the whole argument. A bare `<<EOF` is
+        # expanded by the shell first, so `$(…)` inside it means the
+        # analysed text is NOT what runs — and being wrong here runs
+        # something unread. `extract_stdin_payloads` defaults to quoted
+        # for exactly this reason; the write gate is the only caller that
+        # passes include_expanded, because it refuses rather than grants.
+        heredocs = _inline_payload.extract_stdin_payloads(seg)
+        payloads = list(payloads) + heredocs
         if not payloads:
             return False
         try:
@@ -1415,6 +1439,15 @@ def _inline_payload_is_readable(segment: str, workspace: Path | str) -> bool:
             eff = _inline_payload.analyze_payload(src, cwd)
             if not eff.readable or eff.writes:
                 return False
+            # A read of an absolute path is somebody else's file. The
+            # read gate catches it separately, but this predicate is what
+            # decides whether the confirm veto fires AT ALL, so it cannot
+            # call such a payload fully accounted for. Found by a test:
+            # `print(open('/etc/passwd').read())` was reported readable
+            # because only writes were being looked at.
+            if any(t.startswith("/") or t.startswith("~")
+                   for t in eff.reads):
+                return False
         # The payloads are readable; the segment must be nothing BUT
         # them. Blank each one out and require what is left to be an
         # ordinary command again -- that is what rules out a second,
@@ -1422,6 +1455,10 @@ def _inline_payload_is_readable(segment: str, workspace: Path | str) -> bool:
         rest = seg
         for src in payloads:
             rest = rest.replace(src, " ", 1)
+        # The redirect itself is punctuation, not a second command: what
+        # is left of `python3 - <<'EOF'  EOF` has to read as an ordinary
+        # invocation for the check below to mean anything.
+        rest = re.sub(r"<<-?\s*(['\"]?)\w+\1", " ", rest)
         return not _is_interpreter_invocation(rest.replace("-c", " ", 1))
     except Exception:
         return False
