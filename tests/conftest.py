@@ -321,6 +321,12 @@ def _isolate_user_wide_memory(tmp_path, monkeypatch):
 # real content from tests that legitimately read it.
 _USER_STATE_SINKS: tuple[tuple[str, str, str], ...] = (
     ("delfin.agent.bash_jobs", "_INDEX_PATH", "bash_jobs_index.json"),
+    # A kept dashboard session announces itself so a later request can
+    # find its kernel. A test that armed one wrote into the user's real
+    # ~/.delfin and their next landing page then offered a session that
+    # was a test fixture -- caught by a test whose own records leaked
+    # into the next one's assertions.
+    ("delfin.dashboard.session", "RECORD_DIR", "kept_sessions"),
     # The benchmark's per-checkout run lock. It lived under tests/fixtures
     # first, where the checkout-leak guard would have caught it, and the
     # move to ~/.delfin brought it into THIS guard's scope instead --

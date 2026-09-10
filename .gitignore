@@ -157,3 +157,8 @@ coverage.xml
 # PRIVATE Infrastruktur -- die Datei sagt es selbst: never ship in a public release
 # (Ship-Audit 18.08.2026)
 RESTORE/
+
+# Staged by the launcher inside the served root so a kept session has an
+# address to come back to. Generated, never edited, and it must not make
+# every dashboard start look like an uncommitted change.
+delfin_voila_runtime/
