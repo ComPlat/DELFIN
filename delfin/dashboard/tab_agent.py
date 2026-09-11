@@ -17381,6 +17381,11 @@ def create_tab(ctx):
                             _ttft = -1.0
                         state["_last_turn_timing"] = _turn_timing_text(
                             dur, _ttft, tool_count[0])
+                        # The status row was refreshed above, before this
+                        # turn's timing existed, so it showed the previous
+                        # turn's -- driven live on 2026-09-11: the first
+                        # turn showed none. Refresh it now that it is known.
+                        _update_status()
                         # Record agent metrics for iterative behaviour
                         # tuning. Append-only JSONL keyed by model +
                         # profile so /agents metrics can compare windows
