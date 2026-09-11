@@ -411,6 +411,12 @@ class OrcaParseResult:
     functional: str = ""
     basis: str = ""
     error_summary: str = ""
+    # Whether there was an output to parse at all, and how the run ended.
+    # "file not found" in error_summary read as a calculation failure to
+    # an operator asked whether a run had failed; a missing output is a
+    # fact about the folder, not about the chemistry.
+    status: str = "ok"      # ok | no_output | missing | read_error
+    outcome: str = ""       # the folder's outcome phrase (see calculation_status)
 
 
 def parse_orca_output(path: str) -> OrcaParseResult:
@@ -426,17 +432,39 @@ def parse_orca_output(path: str) -> OrcaParseResult:
     """
     from pathlib import Path as _P
     from delfin import energies as _e
+    from delfin.doc_server.calc_indexer import _largest_output, outcome_of_folder
     p = _P(path)
+    if p.is_dir():
+        # A folder stands for its output. One without any is not an
+        # error in the parser; it is a run that has not written yet.
+        out_file = _largest_output(p)
+        if out_file is None:
+            return OrcaParseResult(path=str(p), status="no_output",
+                                   outcome=outcome_of_folder(p),
+                                   error_summary="no .out in folder")
+        p = out_file
     if not p.exists():
-        return OrcaParseResult(path=str(p), error_summary="file not found")
+        parent = p.parent
+        if parent.is_dir():
+            return OrcaParseResult(path=str(p), status="no_output",
+                                   outcome=outcome_of_folder(parent),
+                                   error_summary="file not found")
+        return OrcaParseResult(path=str(p), status="missing",
+                               outcome="unknown (folder missing)",
+                               error_summary="file not found")
     if not p.is_file():
-        return OrcaParseResult(path=str(p), error_summary="not a file")
+        return OrcaParseResult(path=str(p), status="missing", error_summary="not a file")
     try:
         text = p.read_text(encoding="utf-8", errors="replace")
     except Exception as exc:
-        return OrcaParseResult(path=str(p), error_summary=f"read error: {exc}")
+        return OrcaParseResult(path=str(p), status="read_error",
+                               error_summary=f"read error: {exc}")
 
     out = OrcaParseResult(path=str(p))
+    try:
+        out.outcome = outcome_of_folder(p.parent)
+    except Exception:
+        out.outcome = ""
     try:
         out.final_single_point = _e.find_electronic_energy(str(p))
     except Exception:
@@ -571,6 +599,153 @@ _ORCA_ERROR_PATTERNS: list[tuple[str, str, str]] = [
      "other",
      "ORCA aborted — read the output around this line for the cause."),
 ]
+
+
+#: A run whose files have not changed for this long, with no exit code, is
+#: reported as stalled rather than running. Generous on purpose: a long
+#: SCF on a large system writes nothing for a while, and calling a live
+#: run dead is the worse mistake. The age itself is in the result, so a
+#: reader with better knowledge of the job can judge for themselves.
+STALLED_AFTER_S = 6 * 3600.0
+
+
+def _last_activity(folder) -> tuple[str | None, float | None]:
+    """(ISO time, seconds ago) of the newest regular file in the folder.
+
+    "running or crashed (run log present, no exit code)" answers the
+    question it can from the files' contents; whether anything is still
+    being written is a question about their timestamps, and an operator
+    asked for exactly that -- the log it was reading was 22 hours old.
+    """
+    import time as _time
+    from datetime import datetime as _dt, timezone as _tz
+    from pathlib import Path as _P
+    newest = None
+    try:
+        for f in _P(folder).iterdir():
+            try:
+                if not f.is_file():
+                    continue
+                m = f.stat().st_mtime
+            except OSError:
+                continue
+            if newest is None or m > newest:
+                newest = m
+    except OSError:
+        return None, None
+    if newest is None:
+        return None, None
+    age = max(0.0, _time.time() - newest)
+    return _dt.fromtimestamp(newest, _tz.utc).isoformat(timespec="seconds"), round(age, 1)
+
+
+@dataclass
+class CalculationStatus:
+    """How one calculation folder stands, and what says so."""
+
+    folder: str
+    state: str                 # succeeded | failed | finished | running | stalled | pending | unknown | missing
+    outcome: str               # the phrase, with its source ("failed (exit code 1025)")
+    method: str | None = None  # "PBE0/def2-SVP" when the folder names it
+    evidence: list[dict] = field(default_factory=list)   # [{"source", "says"}]
+    last_activity: str | None = None      # ISO time the newest file was written
+    last_activity_age_s: float | None = None
+
+
+_STATE_PREFIXES = (
+    ("succeeded", "succeeded"),
+    ("failed", "failed"),
+    ("ended with an unreadable", "failed"),
+    ("finished per", "finished"),
+    ("running", "running"),
+    ("no output yet", "pending"),
+    ("unknown (folder missing)", "missing"),
+)
+
+
+def _state_of(outcome: str) -> str:
+    for prefix, state in _STATE_PREFIXES:
+        if outcome.startswith(prefix):
+            return state
+    return "unknown"
+
+
+def calculation_status(folder: str) -> CalculationStatus:
+    """Succeeded, failed, running or not started -- with the evidence.
+
+    Asked whether three runs had succeeded, failed or were still going,
+    an operator assembled the answer by hand from three kinds of file
+    (the exit-code marker, the run log's last line, the output's
+    termination line) and named the lack of one call that does this as
+    what would have helped most. This is that call. The verdict is the
+    same phrase extract_energy_table puts in its ``outcome`` column; the
+    evidence lists every file that had a say and what it said, so the
+    answer can be cited rather than trusted.
+    """
+    from pathlib import Path as _P
+    from delfin.doc_server.calc_indexer import (
+        _largest_output, _tail_text, method_of_folder, outcome_of_folder)
+    import json as _json
+    d = _P(folder)
+    if not d.is_dir():
+        return CalculationStatus(folder=str(d), state="missing",
+                                 outcome="unknown (folder missing)")
+    evidence: list[dict] = []
+    for f in sorted(d.glob(".exit_code_*")):
+        code = f.name.rsplit("_", 1)[-1]
+        evidence.append({"source": f.name, "says": f"exit code {code}"})
+    log = d / "delfin_run.log"
+    if log.is_file():
+        lines = [ln.strip() for ln in _tail_text(log).splitlines() if ln.strip()]
+        evidence.append({"source": log.name,
+                         "says": (lines[-1][:200] if lines else "empty")})
+    for name in ("DELFIN_Data.json", "DELFIN_data.json"):
+        f = d / name
+        if not f.is_file():
+            continue
+        try:
+            rec = _json.loads(f.read_text(encoding="utf-8")) or {}
+            bits = []
+            if rec.get("status") is not None:
+                bits.append(f"status={rec.get('status')}")
+            if rec.get("completed") is not None:
+                bits.append(f"completed={rec.get('completed')}")
+            evidence.append({"source": name, "says": ", ".join(bits) or "no status field"})
+        except Exception:
+            evidence.append({"source": name, "says": "unreadable"})
+        break
+    out = _largest_output(d)
+    if out is not None:
+        tail = _tail_text(out)
+        if "ORCA TERMINATED NORMALLY" in tail:
+            says = "ORCA TERMINATED NORMALLY"
+        elif "ORCA finished by error termination" in tail or "ABORTING THE RUN" in tail:
+            says = "ORCA finished by error termination"
+        else:
+            says = "no termination line yet"
+        evidence.append({"source": out.name, "says": says})
+    else:
+        inps = sorted(d.glob("*.inp"))
+        if inps:
+            evidence.append({"source": inps[0].name, "says": "input present, no output"})
+    outcome = outcome_of_folder(d)
+    functional, basis = method_of_folder(d)
+    state = _state_of(outcome)
+    when, age = _last_activity(d)
+    if when is not None:
+        hours = (age or 0.0) / 3600.0
+        evidence.append({"source": "newest file",
+                         "says": f"last written {when} ({hours:.1f} h ago)"})
+    if state == "running" and age is not None and age > STALLED_AFTER_S:
+        # The files say "no exit code yet"; the clock says nothing has
+        # been written for hours. Both are reported: the outcome phrase
+        # keeps what the files say, the state says what the clock adds.
+        state = "stalled"
+    return CalculationStatus(folder=str(d), state=state,
+                             outcome=outcome,
+                             method=_method_label(functional, basis),
+                             evidence=evidence,
+                             last_activity=when, last_activity_age_s=age)
 
 
 def find_orca_errors(folder: str) -> list[OrcaError]:
@@ -781,6 +956,15 @@ def extract_energy_table(
             else:
                 row[prop] = None
         rows.append(row)
+    # When the newest file in the folder was written. "running or crashed"
+    # is what the files' contents can say; whether anything is still being
+    # written is what their timestamps say, and a reader deciding between
+    # the two needs the second.
+    for row in rows:
+        if row.get("status") == "missing":
+            row["last_activity"], row["last_activity_age_s"] = None, None
+            continue
+        row["last_activity"], row["last_activity_age_s"] = _last_activity(row["folder"])
     return rows
 
 
