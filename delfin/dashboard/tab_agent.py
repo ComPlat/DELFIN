@@ -5241,6 +5241,23 @@ def create_tab(ctx):
             _append_system_message("Mode switch to acceptEdits failed.")
             return
         _append_system_message("Mode → acceptEdits · sending plan-execute command …")
+        # The control follows the engine. The engine now writes under
+        # acceptEdits, and the Perms selector and the status row went on
+        # saying "plan" for the rest of the session (driven 2026-09-11):
+        # a user reading the header would have believed the agent could
+        # not write while it was writing. Same sync as the mode chip --
+        # the flag keeps _on_perm_change from switching the engine again.
+        target_profile = _CHIP_TO_PROFILE.get("acceptEdits")
+        if target_profile and perm_dropdown.value != target_profile:
+            state["_chip_syncing_perm"] = True
+            try:
+                perm_dropdown.value = target_profile
+            finally:
+                state["_chip_syncing_perm"] = False
+        try:
+            _update_status()
+        except Exception:
+            pass
         state["_kit_plan_has_response"] = False
         state["_agent_wait_chip"] = ""
         _refresh_kit_mode_chip()
