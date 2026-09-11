@@ -349,38 +349,82 @@ def _normalize_extra_dependencies(inp_path: Path, extra_deps: Optional[Iterable]
     return deps
 
 
+#: Lines a job's result does not depend on: the cores the scheduler gave it
+#: and the memory per core.  A recalc gives a job whatever cores are free, and
+#: with these in the fingerprint a finished job ran again for having got 6
+#: cores instead of 4.
+_RESOURCE_LINE = re.compile(r"(?im)^\s*%(?:pal\b[^\n]*\bend|maxcore\s+\S+)\s*$\n?")
+_RESOURCE_BLOCK = re.compile(r"(?ims)^\s*%pal\s*$.*?^\s*end\s*$\n?")
+
+
+def _fingerprint_text(inp: Path) -> Optional[bytes]:
+    try:
+        text = inp.read_text(encoding="utf-8", errors="surrogateescape")
+    except Exception:
+        return None
+    text = _RESOURCE_BLOCK.sub("", _RESOURCE_LINE.sub("", text))
+    return text.encode("utf-8", errors="surrogateescape")
+
+
+def _dependency_id(dep: Path, inp: Path) -> str:
+    """A dependency named relative to the job's input, so a job folder that moved keeps its fingerprint."""
+    try:
+        return os.path.relpath(str(dep), str(inp.parent.resolve()))
+    except ValueError:  # another drive
+        return str(dep)
+
+
+def _dependencies(inp: Path, extra_deps: Optional[Iterable]) -> List[Path]:
+    deps: list[Path] = []
+    deps.extend(_collect_input_dependencies(inp))
+    deps.extend(_normalize_extra_dependencies(inp, extra_deps))
+    # Stable ordering independent of discovery order.
+    return sorted({str(dep): dep for dep in deps}.values(), key=lambda p: str(p))
+
+
 def compute_fingerprint(inp_path, extra_deps: Optional[Iterable] = None) -> str:
     """Return a hex-digest fingerprint for *inp_path* and its dependencies.
 
     The fingerprint covers:
-    - The full byte content of the input file.
-    - For each dependency: ``<resolved_path>:<size>:<mtime_ns>``.
+    - The input file, without its %pal and %maxcore lines (the cores and
+      memory a job gets do not change its result).
+    - For each dependency: ``<path relative to the input>:<size>:<mtime_ns>``
       (input-referenced dependencies + optional ``extra_deps``).
 
     Returns an empty string when the input file cannot be read.
     """
     inp = Path(inp_path)
-    h = hashlib.sha256()
-    try:
-        h.update(inp.read_bytes())
-    except Exception:
+    content = _fingerprint_text(inp)
+    if content is None:
         return ""
-
-    deps: list[Path] = []
-    deps.extend(_collect_input_dependencies(inp))
-    deps.extend(_normalize_extra_dependencies(inp, extra_deps))
-
-    # Stable ordering independent of discovery order.
-    unique_sorted = sorted({str(dep): dep for dep in deps}.values(), key=lambda p: str(p))
-
-    for dep in unique_sorted:
-        dep_id = str(dep)
+    h = hashlib.sha256(b"delfin-fprint-2\n")
+    h.update(content)
+    for dep in sorted(_dependencies(inp, extra_deps), key=lambda d: _dependency_id(d, inp)):
+        dep_id = _dependency_id(dep, inp)
         try:
             st = dep.stat()
             h.update(f"{dep_id}:{st.st_size}:{st.st_mtime_ns}".encode())
         except Exception:
             # Dependency missing — include a marker so the fingerprint differs
             # from a previous run where it existed.
+            h.update(f"{dep_id}:missing".encode())
+    return h.hexdigest()
+
+
+def _legacy_fingerprint(inp_path, extra_deps: Optional[Iterable] = None) -> str:
+    """The fingerprint written before 2026-09-11: every input byte, absolute dependency paths."""
+    inp = Path(inp_path)
+    h = hashlib.sha256()
+    try:
+        h.update(inp.read_bytes())
+    except Exception:
+        return ""
+    for dep in _dependencies(inp, extra_deps):
+        dep_id = str(dep)
+        try:
+            st = dep.stat()
+            h.update(f"{dep_id}:{st.st_size}:{st.st_mtime_ns}".encode())
+        except Exception:
             h.update(f"{dep_id}:missing".encode())
     return h.hexdigest()
 
@@ -400,7 +444,12 @@ def fingerprint_unchanged(inp_path, extra_deps: Optional[Iterable] = None) -> bo
     except Exception:
         return False
     current = compute_fingerprint(inp, extra_deps=extra_deps)
-    return bool(current) and stored == current
+    if current and stored == current:
+        return True
+    # a fingerprint an earlier DELFIN wrote still counts, or the first recalc
+    # after an update would compute every finished job again
+    legacy = _legacy_fingerprint(inp, extra_deps=extra_deps)
+    return bool(legacy) and stored == legacy
 
 
 def store_fingerprint(inp_path, extra_deps: Optional[Iterable] = None) -> None:
@@ -442,7 +491,24 @@ def should_skip(
         return True
     if not fingerprint_unchanged(inp_path, extra_deps=extra_deps):
         return False
+    _upgrade_legacy_fingerprint(Path(inp_path), extra_deps)
     return True
+
+
+def _upgrade_legacy_fingerprint(inp: Path, extra_deps: Optional[Iterable]) -> None:
+    """Rewrite a matching fingerprint an earlier DELFIN wrote in the current form.
+
+    A skipped job keeps its sidecar, and the old form holds absolute paths: a
+    job folder that moved after its first recalc would have computed every
+    job again.  Done here, in a running recalc, and not in
+    fingerprint_unchanged(), which the dashboard calls on folders it only shows.
+    """
+    current = compute_fingerprint(inp, extra_deps=extra_deps)
+    try:
+        if current and _fprint_path(inp).read_text(encoding="utf-8").strip() != current:
+            _fprint_path(inp).write_text(current + "\n", encoding="utf-8")
+    except OSError as exc:
+        logger.debug("[smart_recalc] Could not rewrite fingerprint for %s: %s", inp, exc)
 
 
 def can_precomplete(

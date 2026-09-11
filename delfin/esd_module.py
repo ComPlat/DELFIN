@@ -30,6 +30,7 @@ from delfin.esd_input_generator import (
     create_state_input,
     _format_ms_suffix,
     _resolve_state_filename,
+    written_by_s0,
 )
 from delfin.imag import eliminate_imaginary_modes, saddle_reason
 from delfin.orca import run_orca_with_intelligent_recovery
@@ -391,7 +392,7 @@ def _populate_state_jobs(
                     s0_xyz = esd_dir / "S0.xyz"
 
                     if not s0_xyz.exists():
-                        if initial_xyz.exists():
+                        if initial_xyz.exists() and not written_by_s0(initial_xyz):
                             # Prefer optimized initial.xyz if available
                             import shutil
                             shutil.copy2(initial_xyz, s0_xyz)
