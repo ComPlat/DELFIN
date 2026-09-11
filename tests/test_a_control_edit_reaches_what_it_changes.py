@@ -312,20 +312,24 @@ def test_a_smart_recalc_is_told_what_the_edit_reaches(tmp_path, monkeypatch):
     from delfin import cli
 
     monkeypatch.setenv("DELFIN_SMART_RECALC", "1")
+    monkeypatch.setenv("DELFIN_RECALC_CONTROL_EDITED", "0")   # restored after the test
     recalc_control.record_completed_run(tmp_path, CONTROL, "N 0 0 0\n")
     config = {}
     cli._note_control_change(config, tmp_path, set_control_value(CONTROL, "freq_type", "numFREQ"), "N 0 0 0\n")
 
     assert config["_recalc_regenerate_main_inputs"] and not config["_recalc_regenerate_fob_inputs"]
     assert not config["_recalc_rebuild_structure"]
+    assert smart_recalc.control_edited()
 
 
 def test_a_classic_recalc_is_not(tmp_path, monkeypatch):
     from delfin import cli
 
     monkeypatch.setenv("DELFIN_SMART_RECALC", "0")
+    monkeypatch.setenv("DELFIN_RECALC_CONTROL_EDITED", "0")
     recalc_control.record_completed_run(tmp_path, CONTROL, "N 0 0 0\n")
     config = {}
     cli._note_control_change(config, tmp_path, set_control_value(CONTROL, "functional", "B3LYP"), "N 0 0 0\n")
 
     assert "_recalc_regenerate_fob_inputs" not in config
+    assert not smart_recalc.control_edited()

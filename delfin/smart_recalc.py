@@ -273,6 +273,39 @@ def first_configuration_finished(stage_dir) -> bool:
     return has_ok_marker(stage / "output.out") and geometry_written_by(stage / "input.xyz", "input")
 
 
+_EDITED_ENV = "DELFIN_RECALC_CONTROL_EDITED"
+
+
+def mark_control_edited(edited: bool) -> None:
+    """Tell this run's recalc checks that CONTROL was edited since the last completed run."""
+    if edited:
+        os.environ[_EDITED_ENV] = "1"
+    else:
+        os.environ.pop(_EDITED_ENV, None)
+
+
+def control_edited() -> bool:
+    """Whether CONTROL was edited, in a way that reaches the calculations, since the last completed run."""
+    return os.environ.get(_EDITED_ENV) == "1"
+
+
+def output_belongs_to_job(inp_path, out_path) -> bool:
+    """Whether *out_path* can have come from the job whose input is *inp_path*.
+
+    Its echo matches the input, or one of the job's recovery retries (a
+    retry writes to the job's own output), or there is no echo to go by
+    (xTB driven through a wrapper).  A complete output alone is no evidence:
+    stamped with the input beside it, a finished job computed with another
+    functional is kept and reported under the new one.
+    """
+    inp = Path(inp_path)
+    verdict = output_matches_input(inp, out_path)
+    if verdict is not False:
+        return True
+    return any(output_matches_input(retry, out_path)
+               for retry in inp.parent.glob(f"{inp.stem}.retry*.inp"))
+
+
 def outputs_complete(inp_path, out_path, required_outputs: Optional[Iterable] = None) -> bool:
     """Return True when the main output and required generated files all exist."""
     if not has_ok_marker(out_path):

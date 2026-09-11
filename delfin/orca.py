@@ -1578,7 +1578,7 @@ def run_orca(
         smart_recalc.recalc_enabled()
         and smart_recalc.smart_mode_enabled()
         and not fp_path.exists()
-        and smart_recalc.output_matches_input(input_path, output_path) is not False
+        and smart_recalc.output_belongs_to_job(input_path, output_path)
         and smart_recalc.outputs_complete(
             input_path,
             output_path,
