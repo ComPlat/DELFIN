@@ -1846,68 +1846,6 @@ def _parse_bool_config(value) -> bool:
     return bool(value)
 
 
-def run_orca_IMAG(
-    input_file_path: str,
-    iteration: int,
-    *,
-    working_dir: Optional[Path] = None,
-    isolate: bool = True,
-    copy_files: Optional[Iterable[str]] = None,
-) -> bool:
-    """Execute ORCA calculation for imaginary frequency workflow.
-
-    Specialized ORCA runner for IMAG workflow with iteration-specific
-    output naming and enhanced error handling.
-
-    Args:
-        input_file_path: Path to ORCA input file
-        iteration: Iteration number for output file naming
-        working_dir: Directory in which ORCA should be executed
-        isolate: If True, run in an isolated subdirectory
-        copy_files: Optional dependency files to copy when isolating
-    """
-    orca_path = find_orca_executable()
-    if not orca_path:
-        logger.error("Cannot run ORCA IMAG calculation because the ORCA executable was not found in PATH.")
-        sys.exit(1)
-
-    input_path = Path(input_file_path)
-    if working_dir is not None:
-        working_dir = Path(working_dir)
-        output_log_path = working_dir / f"output_{iteration}.out"
-        if not input_path.is_absolute():
-            # Provide ORCA with an absolute path when running inside working_dir
-            input_path = (Path.cwd() / input_path).resolve()
-    else:
-        output_log_path = Path(f"output_{iteration}.out")
-        if not input_path.is_absolute():
-            input_path = input_path.resolve()
-
-    if not output_log_path.is_absolute():
-        output_log_path = output_log_path.resolve()
-
-    if isolate:
-        success = _run_orca_isolated(
-            orca_path,
-            input_path,
-            output_log_path,
-            copy_files=copy_files,
-        )
-    else:
-        success = _run_orca_subprocess(
-            orca_path,
-            str(input_path),
-            str(output_log_path),
-            working_dir=working_dir,
-        )
-
-    if success:
-        logger.info(f"ORCA run successful for '{input_file_path}', output saved to '{output_log_path}'")
-        return True
-
-    logger.error(f"ORCA IMAG calculation failed for '{input_file_path}'. See '{output_log_path}' for details.")
-    return False
-
 def run_orca_plot(homo_index: int) -> None:
     """Generate molecular orbital plots around HOMO using orca_plot.
 
