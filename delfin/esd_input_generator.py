@@ -1750,6 +1750,57 @@ def _create_state_input_tddft(
     return str(input_file)
 
 
+def _rate_scf(simple_line: str) -> str:
+    """The rate job's '!' line with the SCF converged as tightly as the states it starts from.
+
+    The state jobs (optimisations and frequencies) run at TolE 1e-8; the
+    rate jobs ran at ORCA's default 1e-6, and ORCA's own ESD examples use
+    TightSCF.  Measured on formaldehyde: ISC S1>T1 2.46e7 s-1 at the default,
+    2.32e7 s-1 with TightSCF.  A convergence keyword already on the line (a
+    CONTROL override, fluor_keywords) is left as it is.
+    """
+    from delfin.common.orca_input import keyword_family
+
+    if any(keyword_family(token) == "scf convergence" for token in simple_line[1:].split()):
+        return simple_line
+    return simple_line.rstrip() + " TightSCF"
+
+
+#: What the template shipped until 2026-09: an explicit time grid for ISC and
+#: IC.  Every archived CONTROL file carries exactly this pair.
+_OLD_TEMPLATE_GRID = ("131072", "12000")
+_GRID_NOTE_GIVEN = False
+
+
+def _esd_grid_lines(config: Dict[str, Any]) -> List[str]:
+    """NPOINTS/MAXTIME for an ISC or IC %esd block; none when ORCA should choose.
+
+    ORCA picks the time window from the linewidth so that the correlation
+    function has decayed to its cutoff: 2934 fs for LINEW 50 on 6.1.1.  The
+    old template's MAXTIME 12000 (290 fs) cut it off at 7 % of its amplitude.
+    Measured on formaldehyde: ISC S1>T1 5.70e7 s-1 with that window and
+    2.46e7 s-1 with ORCA's (and with 4x or 8x the old window), IC S1>S0
+    -8.1e-3 s-1 ("negative rates are unphysical") against +3.79e-3 s-1.  So
+    ``auto`` -- and the old template pair, which no archived file changed --
+    leaves the grid to ORCA; any other value is written as given.
+    """
+    global _GRID_NOTE_GIVEN
+    npoints = str(config.get("ESD_NPOINTS", "auto")).strip()
+    maxtime = str(config.get("ESD_MAXTIME", "auto")).strip()
+    if (npoints, maxtime) == _OLD_TEMPLATE_GRID:
+        if not _GRID_NOTE_GIVEN:
+            logger.info("ESD_NPOINTS=131072/ESD_MAXTIME=12000 (older template) cut the correlation function "
+                        "at 290 fs; ORCA's own time grid is used instead")
+            _GRID_NOTE_GIVEN = True
+        return []
+    lines = []
+    if npoints and npoints.lower() != "auto":
+        lines.append(f"  NPOINTS         {npoints}")
+    if maxtime and maxtime.lower() != "auto":
+        lines.append(f"  MAXTIME         {maxtime}")
+    return lines
+
+
 def create_isc_input(
     isc_pair: str,
     esd_dir: Path,
@@ -1845,6 +1896,7 @@ def create_isc_input(
     keywords.append("ESD(ISC)")
 
     simple_line = "! " + " ".join(k for k in keywords if str(k).strip())
+    simple_line = _rate_scf(simple_line)
 
     # Blocks
     blocks = []
@@ -1870,8 +1922,6 @@ def create_isc_input(
     lines = str(config.get("ESD_LINES", "LORENTZ")).strip().upper() or "LORENTZ"
     linew = str(config.get("ESD_LINEW", 50)).strip()
     inlinew = str(config.get("ESD_INLINEW", 250)).strip()
-    npoints = str(config.get("ESD_NPOINTS", 131072)).strip()
-    maxtime = str(config.get("ESD_MAXTIME", 12000)).strip()
 
     # Resolve Hessian file names for hybrid1 mode
     initial_hess = _resolve_state_filename(initial_state, 'hess', esd_mode)
@@ -1886,8 +1936,7 @@ def create_isc_input(
         f"  LINES           {lines}",
         f"  LINEW           {linew}",
         f"  INLINEW         {inlinew}",
-        f"  NPOINTS         {npoints}",
-        f"  MAXTIME         {maxtime}",
+        *_esd_grid_lines(config),
         f"  TEMP            {temperature}",
     ]
     if dele is not None:
@@ -2007,6 +2056,7 @@ def create_ic_input(
     keywords.append("ESD(IC)")
 
     simple_line = "! " + " ".join(k for k in keywords if str(k).strip())
+    simple_line = _rate_scf(simple_line)
 
     # Blocks
     blocks = []
@@ -2043,8 +2093,6 @@ def create_ic_input(
     lines = str(config.get("ESD_LINES", "LORENTZ")).strip().upper() or "LORENTZ"
     linew = str(config.get("ESD_LINEW", 50)).strip()
     inlinew = str(config.get("ESD_INLINEW", 250)).strip()
-    npoints = str(config.get("ESD_NPOINTS", 131072)).strip()
-    maxtime = str(config.get("ESD_MAXTIME", 12000)).strip()
 
     # Resolve Hessian file names for hybrid1 mode
     final_hess = _resolve_state_filename(final_state, 'hess', esd_mode)
@@ -2058,8 +2106,7 @@ def create_ic_input(
         f"  LINES           {lines}",
         f"  LINEW           {linew}",
         f"  INLINEW         {inlinew}",
-        f"  NPOINTS         {npoints}",
-        f"  MAXTIME         {maxtime}",
+        *_esd_grid_lines(config),
         f"  TEMP            {temperature}",
     ]
     esd_block.append("END")
@@ -2171,6 +2218,7 @@ def create_fluor_input(
 
     keywords.append("ESD(FLUOR)")
     simple_line = "! " + " ".join(k for k in keywords if str(k).strip())
+    simple_line = _rate_scf(simple_line)
 
     blocks: list[str] = []
     blocks.append(f'%base "{job_name}"')
@@ -2312,6 +2360,7 @@ def create_phosp_input(
         keywords.insert(esd_idx, solvation_kw)
 
     simple_line = "! " + " ".join(k for k in keywords if str(k).strip())
+    simple_line = _rate_scf(simple_line)
 
     # Compute DELE (cm^-1) from electronic energies at optimized geometries (no ZPE)
     # Use T1.out and S0.out produced by state jobs.

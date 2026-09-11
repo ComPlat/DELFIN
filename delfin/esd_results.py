@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Tuple
 
+from delfin.common.esd_numerics import rate_problem
 from delfin.common.logging import get_logger
 from delfin.energies import find_electronic_energy, find_ZPE, find_gibbs_energy
 
@@ -100,6 +101,9 @@ class ISCResult:
     fc_percent: Optional[float]
     ht_percent: Optional[float]
     source: Path
+    #: why the rate is not a result (esd_numerics.rate_problem / ORCA's own
+    #: complaints), or None
+    problem: Optional[str] = None
 
 
 @dataclass
@@ -110,6 +114,7 @@ class ICResult:
     temperature: Optional[float]
     delta_cm1: Optional[float]
     source: Path
+    problem: Optional[str] = None
 
 
 @dataclass
@@ -120,6 +125,7 @@ class FluorResult:
     temperature: Optional[float]
     delta_cm1: Optional[float]
     source: Path
+    problem: Optional[str] = None
 
 
 @dataclass
@@ -131,6 +137,7 @@ class PhospResult:
     temperature: Optional[float]
     delta_cm1: Optional[float]
     source: Path
+    problem: Optional[str] = None
 
 @dataclass
 class ESDSummary:
@@ -167,6 +174,67 @@ class ESDSummary:
         )
 
 
+#: Errors ORCA's ESD module prints and then finishes anyway.  "The K*K value
+#: is too large (>30)" -- the two states' geometries are displaced further
+#: than the harmonic model assumes -- stands in every archived ISC of a TADF
+#: emitter (Emitter8, S1/T1 RMSD 0.62 A).
+_ESD_COMPLAINTS = (
+    (re.compile(r"Error \(ORCA_ESD\): The K\*K value is too large", re.I),
+     "ORCA error: the displacement between the two states is too large for the harmonic model (K*K > 30)"),
+)
+
+
+def esd_rate_problem(text: Optional[str]) -> Optional[str]:
+    """Everything that makes the rate(s) in an ESD output not a result, joined; None when nothing does."""
+    if not text:
+        return None
+    problems = []
+    numeric = rate_problem(text)
+    if numeric:
+        problems.append(numeric)
+    problems.extend(reason for pattern, reason in _ESD_COMPLAINTS if pattern.search(text))
+    return "; ".join(problems) or None
+
+
+def observed_isc_rate(initial_state: str, sublevel_rates: Dict[int, Optional[float]]) -> Optional[float]:
+    """The ISC rate an experiment sees, from the rates of the triplet sublevels (Ms -> rate).
+
+    ORCA manual 6.1.1, 5.5.4: singlet-to-triplet the three sublevel rates add
+    up; triplet-to-singlet (T1>S1, T1>S0) "the observed rate constant is the
+    average, not the sum", since each sublevel holds a third of the triplet.
+    A sublevel not computed is taken equal to its mirror (Ms=-1 as Ms=+1),
+    or all three equal to the one that was.
+    """
+    known = {ms: rate for ms, rate in sublevel_rates.items() if rate is not None}
+    if not known:
+        return None
+    if len(known) == 1:
+        total = 3 * next(iter(known.values()))
+    else:
+        plus = known.get(1, known.get(-1))
+        minus = known.get(-1, known.get(1))
+        zero = known.get(0, 0.0)
+        total = zero + (plus or 0.0) + (minus or 0.0)
+    return total / 3 if str(initial_state).strip().upper().startswith("T") else total
+
+
+def sublevel_rates(records) -> Dict[int, Optional[float]]:
+    """Ms -> rate from (label, record) pairs labelled like 'S1>T1(Ms=+1)'."""
+    rates: Dict[int, Optional[float]] = {}
+    for label, record in records:
+        match = re.search(r"\(Ms=([+-]?\d)\)", str(label))
+        if match:
+            rates[int(match.group(1))] = record.rate
+    return rates
+
+
+def isc_total_note(initial_state: str) -> str:
+    """How the observed rate follows from the sublevels, for the report line."""
+    if str(initial_state).strip().upper().startswith("T"):
+        return " (mean of the triplet sublevels: each holds a third of the triplet)"
+    return " (sum of the triplet sublevels)"
+
+
 def _read_text(path: Path) -> Optional[str]:
     try:
         return path.read_text(encoding="utf-8", errors="ignore")
@@ -195,7 +263,7 @@ def _parse_isc_output(path: Path) -> ISCResult:
     else:
         soc = None
         fc = ht = None
-    return ISCResult(rate, temp, delta, soc, fc, ht, path)
+    return ISCResult(rate, temp, delta, soc, fc, ht, path, esd_rate_problem(text))
 
 
 def _parse_ic_output(path: Path) -> ICResult:
@@ -203,7 +271,7 @@ def _parse_ic_output(path: Path) -> ICResult:
     rate = _safe_float(_IC_RATE_RE.search(text).group(1)) if text and _IC_RATE_RE.search(text) else None
     temp = _safe_float(_TEMP_RE.search(text).group(1)) if text and _TEMP_RE.search(text) else None
     delta = _safe_float(_DELE_RE.search(text).group(1)) if text and _DELE_RE.search(text) else None
-    return ICResult(rate, temp, delta, path)
+    return ICResult(rate, temp, delta, path, esd_rate_problem(text))
 
 
 def _parse_fluor_output(path: Path) -> FluorResult:
@@ -211,7 +279,7 @@ def _parse_fluor_output(path: Path) -> FluorResult:
     rate = _safe_float(_FLUOR_RATE_RE.search(text).group(1)) if text and _FLUOR_RATE_RE.search(text) else None
     temp = _safe_float(_TEMP_RE.search(text).group(1)) if text and _TEMP_RE.search(text) else None
     delta = _safe_float(_DELE_RE.search(text).group(1)) if text and _DELE_RE.search(text) else None
-    return FluorResult(rate, temp, delta, path)
+    return FluorResult(rate, temp, delta, path, esd_rate_problem(text))
 
 
 def _parse_phosp_output(path: Path) -> PhospResult:
@@ -229,7 +297,7 @@ def _parse_phosp_output(path: Path) -> PhospResult:
         rate_mean = None
         temp = None
         delta = None
-    return PhospResult(rates, rate_mean, temp, delta, path)
+    return PhospResult(rates, rate_mean, temp, delta, path, esd_rate_problem(text))
 
 
 def collect_esd_results(
