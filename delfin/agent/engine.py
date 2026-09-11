@@ -2286,6 +2286,7 @@ class AgentEngine:
             # session, every later answer carrying a two-digit count got
             # the caveat, however unrelated.
             self._truncated_tools_turn = []
+            _turn_rows_kept: list = []
             # The office figure ledger is per-turn for the same reason: a
             # total the tools produced two turns ago must not ground a
             # figure stated now. The turn gets its OWN token — the ledger
@@ -3124,6 +3125,7 @@ class AgentEngine:
                     getattr(self, "_last_observed_files", None) or ())
                 self._observed_ledger_available = _restored_flag
             self._last_turn_tools = list(_turn_tool_names)
+            _turn_rows_kept = self._take_turn_rows()
             # Session-wide tool names: an open delegation request is
             # satisfied by a sub-agent run in ANY turn of the session.
             if not hasattr(self, "_session_tool_names"):
@@ -3193,6 +3195,10 @@ class AgentEngine:
             except Exception:
                 pass
         if full_response:
+            # What the turn did, before what it said: the rounds go in
+            # front of the answer, the way the model produced them.
+            if _turn_rows_kept:
+                self.messages.extend(_turn_rows_kept)
             self.messages.append({"role": "assistant", "content": full_response})
 
             # Context usage tracking (Feature 4)
@@ -4193,6 +4199,30 @@ class AgentEngine:
         except Exception:
             return {"role": "user", "content": text}
 
+    def _take_turn_rows(self) -> list:
+        """The rows the client's tool loop added this turn, as history.
+
+        Only from a client that declares ``KEEPS_TOOL_HISTORY`` -- its
+        rows are OpenAI-shaped, and another backend's conversion would
+        not know what to do with a ``tool`` row. Never raises: a turn
+        whose rounds cannot be read is a turn like every turn before
+        this existed."""
+        client = getattr(self, "client", None)
+        if not getattr(client, "KEEPS_TOOL_HISTORY", False):
+            return []
+        rows = getattr(client, "_turn_rows", None)
+        try:
+            base = int(getattr(client, "_turn_rows_base", 0) or 0)
+        except (TypeError, ValueError):
+            return []
+        if not isinstance(rows, list) or base >= len(rows):
+            return []
+        try:
+            from .turn_history import compact_turn_rows
+            return compact_turn_rows(rows[base:])
+        except Exception:
+            return []
+
     def _sanitize_messages(self) -> None:
         """Ensure message history has proper user/assistant alternation.
 
@@ -4207,6 +4237,16 @@ class AgentEngine:
         """
         if len(self.messages) < 2:
             return
+        # Tool rounds first: a compaction cut can leave an answer without
+        # its call or a call without its answer, and either is refused
+        # by the endpoint before any alternation is looked at.
+        try:
+            from .turn_history import repair_tool_pairing
+            repaired = repair_tool_pairing(self.messages)
+            if len(repaired) != len(self.messages):
+                self.messages[:] = repaired
+        except Exception:
+            pass
         cleaned: list[dict] = [self.messages[0]]
         for msg in self.messages[1:]:
             role = msg.get("role")
