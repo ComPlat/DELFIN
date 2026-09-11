@@ -225,6 +225,17 @@ def test_an_scf_that_failed_inside_the_hessian_keeps_the_frequency_path(tmp_path
     assert strategy.get_modifications().get("skip_freq") is True
 
 
+
+def test_each_failed_run_keeps_its_own_backup(tmp_path, monkeypatch):
+    # measured: an optimisation that ran out of cycles, then an SCF that did
+    # not converge -- both "attempt 1" of their error type, one output.old1.out
+    ok, _ = _recover(tmp_path, monkeypatch, "input5.inp", OPT_INPUT,
+                     [_GAVE_UP, _MAIN_SCF_FAILED, _CONVERGED])
+
+    assert ok
+    assert "did not converge" in (tmp_path / "input5.old1.out").read_text()
+    assert "LEANSCF" in (tmp_path / "input5.old2.out").read_text()
+
 # ----------------------------------------------------------- refused input
 
 _PARITY = """[file orca_main/main_util_tools.cpp, line 715]: Error : multiplicity (4) is even and number of electrons (242) is even -> impossible

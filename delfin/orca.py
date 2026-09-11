@@ -1834,9 +1834,12 @@ def run_orca_with_intelligent_recovery(
         tracker.increment_attempt(job_name, error_type)
         attempted_errors.add(error_key)
 
-        # Backup the failed output file before retry (for debugging)
+        # Backup the failed output file before retry (for debugging).  Numbered
+        # by the run, not by the attempt at this error type: an optimisation
+        # that ran out of cycles and then an SCF failure were both attempt 1,
+        # and the second backup replaced the first.
         if out_path.exists():
-            backup_num = attempt
+            backup_num = overall_attempt
             backup_path = out_path.with_suffix(f'.old{backup_num}.out')
             try:
                 shutil.copy2(out_path, backup_path)
