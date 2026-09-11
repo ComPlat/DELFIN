@@ -1614,93 +1614,88 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
         _rebuild_tab_rows()
         _mark_dirty()
 
-    def _rebuild_tab_rows():
-        specs = _available_tab_specs()
-        if not specs:
-            tabs_rows_box.children = (
-                widgets.HTML('<span style="color:#616161;">No dashboard tabs registered.</span>'),
-            )
-            tabs_status_html.value = ''
-            return
+    # The rows are built once per tab count and then refilled in place. Setting
+    # tabs_rows_box.children on every click took all rows off the page before
+    # the new ones had rendered; with this section the only one open, the page
+    # was briefly shorter than the window and the browser scrolled to the top.
+    tab_row_slots = []
+    tab_row_state = {'filling': False, 'shape': None}
 
-        prefs = _normalized_tab_prefs()
-        state['tab_prefs'] = prefs
-        spec_map = {spec['id']: spec for spec in specs}
+    def _tab_row_layout():
+        return widgets.Layout(
+            width='100%',
+            gap='8px',
+            align_items='center',
+            border='1px solid #e0e0e0',
+            padding='8px 10px',
+        )
+
+    def _tab_row_label_html(tab_id, spec, is_hidden):
+        badge_parts = []
+        if spec.get('fixed'):
+            badge_parts.append('<span style="color:#1565c0;">fixed</span>')
+        elif is_hidden:
+            badge_parts.append('<span style="color:#ef6c00;">hidden</span>')
+        else:
+            badge_parts.append('<span style="color:#2e7d32;">visible</span>')
+        if not spec.get('available'):
+            badge_parts.append('<span style="color:#9e9e9e;">unavailable</span>')
+        detail = spec.get('reason', '')
+        label_html = (
+            f'<b>{html.escape(str(spec.get("title", tab_id)))}</b> '
+            + ' | '.join(badge_parts)
+        )
+        if detail:
+            label_html += (
+                f'<br><span style="color:#616161; font-size:0.92em;">'
+                f'{html.escape(str(detail))}</span>'
+            )
+        return label_html
+
+    def _on_tab_row_visible(slot, change):
+        # Refilling a row after Up/Down sets its checkbox too; only a click
+        # by the user may change what is hidden.
+        if tab_row_state['filling'] or slot['tab_id'] is None:
+            return
+        _toggle_tab_hidden(slot['tab_id'], bool(change.get('new')))
+
+    def _build_tab_row_slots(count, fixed_specs):
+        tab_row_slots.clear()
         rows = []
-        for idx, tab_id in enumerate(prefs['order']):
-            spec = spec_map.get(tab_id)
-            if not spec:
-                continue
-            is_hidden = tab_id in set(prefs['hidden'])
-            available = bool(spec.get('available'))
-            fixed = bool(spec.get('fixed'))
-            visible_checkbox = widgets.Checkbox(
-                value=(not is_hidden) if not fixed else True,
-                description='Visible',
-                indent=False,
-                disabled=fixed or False,
-                layout=widgets.Layout(width='85px'),
-            )
-            up_btn = widgets.Button(
-                description='Up',
-                layout=widgets.Layout(width='56px', height='26px'),
-                disabled=fixed or idx == 0,
-            )
-            down_btn = widgets.Button(
-                description='Down',
-                layout=widgets.Layout(width='64px', height='26px'),
-                disabled=fixed or idx == len(prefs['order']) - 1,
-            )
-            badge_parts = []
-            if fixed:
-                badge_parts.append('<span style="color:#1565c0;">fixed</span>')
-            elif is_hidden:
-                badge_parts.append('<span style="color:#ef6c00;">hidden</span>')
-            else:
-                badge_parts.append('<span style="color:#2e7d32;">visible</span>')
-            if not available:
-                badge_parts.append('<span style="color:#9e9e9e;">unavailable</span>')
-            detail = spec.get('reason', '')
-            label_html = (
-                f'<b>{html.escape(str(spec.get("title", tab_id)))}</b> '
-                + ' | '.join(badge_parts)
-            )
-            if detail:
-                label_html += (
-                    f'<br><span style="color:#616161; font-size:0.92em;">'
-                    f'{html.escape(str(detail))}</span>'
-                )
-            label = widgets.HTML(label_html, layout=widgets.Layout(flex='1 1 auto'))
-            visible_checkbox.observe(
-                lambda change, _tab_id=tab_id: (
-                    _toggle_tab_hidden(_tab_id, bool(change.get('new')))
-                    if change.get('name') == 'value'
-                    else None
+        for _ in range(count):
+            slot = {
+                'tab_id': None,
+                'label': widgets.HTML('', layout=widgets.Layout(flex='1 1 auto')),
+                'visible': widgets.Checkbox(
+                    value=True,
+                    description='Visible',
+                    indent=False,
+                    layout=widgets.Layout(width='85px'),
                 ),
+                'up': widgets.Button(
+                    description='Up',
+                    layout=widgets.Layout(width='56px', height='26px'),
+                ),
+                'down': widgets.Button(
+                    description='Down',
+                    layout=widgets.Layout(width='64px', height='26px'),
+                ),
+            }
+            slot['visible'].observe(
+                lambda change, _slot=slot: _on_tab_row_visible(_slot, change),
                 names='value',
             )
-            up_btn.on_click(lambda _button, _tab_id=tab_id: _move_tab(_tab_id, -1))
-            down_btn.on_click(lambda _button, _tab_id=tab_id: _move_tab(_tab_id, 1))
+            slot['up'].on_click(lambda _button, _slot=slot: _move_tab(_slot['tab_id'], -1))
+            slot['down'].on_click(lambda _button, _slot=slot: _move_tab(_slot['tab_id'], 1))
+            tab_row_slots.append(slot)
             rows.append(
                 widgets.HBox(
-                    [label, visible_checkbox, up_btn, down_btn],
-                    layout=widgets.Layout(
-                        width='100%',
-                        gap='8px',
-                        align_items='center',
-                        border='1px solid #e0e0e0',
-                        padding='8px 10px',
-                    ),
+                    [slot['label'], slot['visible'], slot['up'], slot['down']],
+                    layout=_tab_row_layout(),
                 )
             )
 
-        fixed_specs = [
-            spec for spec in sorted(specs, key=lambda item: item.get('default_order', 10_000))
-            if spec.get('fixed')
-        ]
         for spec in fixed_specs:
-            if spec['id'] in prefs['order']:
-                continue
             label = widgets.HTML(
                 f'<b>{html.escape(str(spec.get("title", spec["id"])))}</b> '
                 '<span style="color:#1565c0;">fixed</span><br>'
@@ -1729,15 +1724,50 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                             layout=widgets.Layout(width='64px', height='26px'),
                         ),
                     ],
-                    layout=widgets.Layout(
-                        width='100%',
-                        gap='8px',
-                        align_items='center',
-                        border='1px solid #e0e0e0',
-                        padding='8px 10px',
-                    ),
+                    layout=_tab_row_layout(),
                 )
             )
+        tabs_rows_box.children = tuple(rows)
+
+    def _rebuild_tab_rows():
+        specs = _available_tab_specs()
+        if not specs:
+            tab_row_slots.clear()
+            tab_row_state['shape'] = None
+            tabs_rows_box.children = (
+                widgets.HTML('<span style="color:#616161;">No dashboard tabs registered.</span>'),
+            )
+            tabs_status_html.value = ''
+            return
+
+        prefs = _normalized_tab_prefs()
+        state['tab_prefs'] = prefs
+        spec_map = {spec['id']: spec for spec in specs}
+        order = [tab_id for tab_id in prefs['order'] if tab_id in spec_map]
+        fixed_specs = [
+            spec for spec in sorted(specs, key=lambda item: item.get('default_order', 10_000))
+            if spec.get('fixed') and spec['id'] not in prefs['order']
+        ]
+        shape = (len(order), tuple(spec['id'] for spec in fixed_specs))
+        if tab_row_state['shape'] != shape:
+            _build_tab_row_slots(len(order), fixed_specs)
+            tab_row_state['shape'] = shape
+
+        hidden = set(prefs['hidden'])
+        for idx, (slot, tab_id) in enumerate(zip(tab_row_slots, order)):
+            spec = spec_map[tab_id]
+            is_hidden = tab_id in hidden
+            fixed = bool(spec.get('fixed'))
+            slot['tab_id'] = tab_id
+            tab_row_state['filling'] = True
+            try:
+                slot['visible'].value = (not is_hidden) if not fixed else True
+            finally:
+                tab_row_state['filling'] = False
+            slot['visible'].disabled = fixed
+            slot['up'].disabled = fixed or idx == 0
+            slot['down'].disabled = fixed or idx == len(order) - 1
+            slot['label'].value = _tab_row_label_html(tab_id, spec, is_hidden)
 
         hidden_count = len(prefs['hidden'])
         tabs_status_html.value = (
@@ -1747,7 +1777,6 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             'Settings stays visible and pinned at the end.'
             '</span>'
         )
-        tabs_rows_box.children = tuple(rows)
 
     def _load_settings_to_widgets(set_status=True):
         try:
