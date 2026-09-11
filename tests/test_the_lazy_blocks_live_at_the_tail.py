@@ -50,10 +50,10 @@ def test_every_lazy_block_sits_after_all_eager_text(path):
             f"module marker — move it above them")
 
 
-def _prefix(task: str, key: str) -> str:
+def _prefix(task: str, key: str, model: str = "kit.glm-5.3") -> str:
     return PromptLoader().stable_prefix(
         role_id="solo_agent", mode_id="solo", task_text=task,
-        session_key=key, model="kit.glm-5.3")
+        session_key=key, model=model)
 
 
 def _shared(a: str, b: str) -> int:
@@ -83,11 +83,22 @@ def test_two_sessions_share_their_prompt_up_to_the_blocks():
 
 def test_activating_a_module_only_changes_the_tail():
     """Within one session the set only grows. That growth must cost the
-    tail of the cache, not the whole prompt."""
-    plain = _prefix("Hallo", "S1")
+    tail of the cache, not the whole prompt. Measured on a model that
+    still pays per module; GLM's profile keeps every module on."""
+    plain = _prefix("Hallo", "S1", model="kit.deepseek-v4-flash")
     grown = _prefix("jetzt bitte mit ORCA rechnen und die berechtigung "
-                    "dauerhaft erlauben", "S2")
+                    "dauerhaft erlauben", "S2", model="kit.deepseek-v4-flash")
     shared = _shared(plain, grown)
     assert shared > 40_000, shared
     # ... and the growth is real, or the test proves nothing.
     assert len(grown) > len(plain) + 3_000, (len(plain), len(grown))
+
+
+def test_the_head_does_not_move_at_all_for_a_model_that_keeps_every_module():
+    """GLM pays minutes for a cold head and seconds for a warm one, so its
+    profile keeps every module on: the growth above costs it nothing,
+    because there is none."""
+    plain = _prefix("Hallo", "G1")
+    grown = _prefix("jetzt bitte mit ORCA rechnen und die berechtigung "
+                    "dauerhaft erlauben", "G2")
+    assert plain == grown
