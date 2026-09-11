@@ -642,11 +642,21 @@ PROJECT_LEAVES: dict[str, str] = {
 #: settings, their provider -- it just does not run with their past. The
 #: bench's own results directory and run lock are the bench's, not the
 #: attempt's: both are written outside the guard.
+#:
+#: The audit log stays real too, for the opposite reason: it is where
+#: the bench READS after the attempt. The gate denials an attempt cost
+#: and the paths it wrote are both counted from the audit log once the
+#: guard has closed -- and for one night they were counted from a
+#: scratch log that no longer existed, so every block reported "denials
+#: not observed" and the cost axis went dark (2026-09-11). The log does
+#: not reach a prompt on its own, and its records carry the workspace
+#: they were made in, so an attempt's lines never read as the user's.
 KEPT_BY_A_LIVE_RUN: frozenset[tuple[str, str]] = frozenset({
     ("delfin.agent.hooks_editor", "_USER_SETTINGS"),
     ("delfin.agent.kit_settings", "USER_SETTINGS_PATH"),
     ("delfin.agent.benchmark", "_DEFAULT_RUNS_DIR"),
     ("delfin.agent.benchmark_runner", "_RUN_LOCK_DIR"),
+    ("delfin.agent.audit_log", "_default_log_path"),
 })
 
 #: Set this to a directory and a ``delfin agent`` process keeps its
