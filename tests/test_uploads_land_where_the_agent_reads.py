@@ -137,3 +137,27 @@ def test_no_stale_state_key_remains():
     """The old key held Paths, the new one holds bytes. A leftover reader
     would silently see the wrong shape."""
     assert "_pending_images" not in _SOURCE
+
+
+
+# ---------------------------------------------------------------------------
+# the folder is one a listing shows
+# ---------------------------------------------------------------------------
+
+def test_the_visible_folder_comes_first_and_the_hidden_one_stays_as_fallback(tmp_path):
+    """A GLM session was handed the absolute path of an attachment under
+    .delfin/uploads, explored the workspace with a listing instead, and
+    found nothing: hidden folders are not listed (2026-09-11)."""
+    from delfin.dashboard.tab_agent import _upload_dir_candidates
+    cands = _upload_dir_candidates(tmp_path / "agent_workspace", tmp_path / "ws")
+    assert [str(c.relative_to(tmp_path)) for c in cands] == [
+        "agent_workspace/uploads", "ws/.delfin/uploads"]
+    assert _upload_dir_candidates("", tmp_path / "ws") == [tmp_path / "ws" / ".delfin" / "uploads"]
+
+
+def test_the_writer_takes_the_first_candidate_the_session_may_read():
+    writer = _block("def _materialise_uploads", "image_upload.observe")
+    assert "_upload_dir_candidates(" in writer
+    assert "upload_dir = candidates[-1]" in writer, "the hidden folder is the fallback"
+    assert "kp.find_readable_root_for(probe) is not None" in writer
+    assert 'Path(ws) / ".delfin" / "uploads"' not in writer
