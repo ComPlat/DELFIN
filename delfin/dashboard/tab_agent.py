@@ -7252,10 +7252,65 @@ def create_tab(ctx):
                     _wire_p5(engine)
             except Exception:
                 pass
+            _probe_endpoint_in_background(engine, provider, model)
             return engine
         except Exception as exc:
             _append_system_message(f"Engine error: {exc}")
             return None
+
+    def _probe_endpoint_in_background(engine, provider: str, model: str) -> None:
+        """One word to the endpoint as soon as the engine exists, and a
+        line in the chat with how long it took -- so the model the user
+        just picked is a measured thing before the first turn, not a name
+        in a dropdown. Only for the OpenAI-compatible backends; off with
+        ``agent.probe_endpoint: false``.
+        """
+        sdk = getattr(getattr(engine, "client", None), "client", None)
+        if sdk is None or not hasattr(sdk, "chat"):
+            return
+        try:
+            from delfin.user_settings import load_settings as _ls
+            if not bool(((_ls() or {}).get("agent", {}) or {})
+                        .get("probe_endpoint", True)):
+                return
+        except Exception:
+            pass
+        import threading as _threading
+
+        def _run():
+            try:
+                from delfin.agent.endpoint_probe import (
+                    probe_first_token, describe)
+                from delfin.agent.model_profiles import get_profile
+                effort = ""
+                try:
+                    from delfin.agent.api_client import _reasoning_effort_param
+                    from delfin.agent.model_capabilities import resolve
+                    caps = resolve(provider, model,
+                                   str(getattr(sdk, "base_url", "") or ""),
+                                   allow_live=False)
+                    effort = _reasoning_effort_param("low", caps, provider)
+                except Exception:
+                    effort = ""
+                res = probe_first_token(sdk, model, provider=provider,
+                                        timeout_s=60.0,
+                                        reasoning_effort=effort)
+                if state.get("engine") is not engine:
+                    return   # the user moved on; the number is stale
+                slow = 0.0
+                try:
+                    slow = float(get_profile(model).slow_cold_start_s or 0)
+                except Exception:
+                    pass
+                _append_system_message(
+                    "\u23f1 " + describe(res, slow_cold_start_s=slow))
+            except Exception:
+                pass
+
+        t = _threading.Thread(target=_run, daemon=True,
+                              name="delfin-endpoint-probe")
+        t.start()
+        state["_endpoint_probe_thread"] = t
 
     def _append_chat_message(role, content, role_label="", **meta):
         payload = {"role": role, "content": content, "role_label": role_label}
