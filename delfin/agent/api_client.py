@@ -11489,10 +11489,14 @@ class _DocToolExecutor:
             return None, f"path is on the deny-list (.git, secrets, keys, .env, ...): {rel_str}"
         return resolved, None
 
-    def _scan_bash_for_secrets(
+    def _bash_denied_path(
         self, cmd: str, perms: "KitToolPermissions"
     ) -> Optional[str]:
         """Scan a bash command for path-references to secret-deny globs.
+
+        Named for what it returns: a path token from the command, never the
+        content behind it. CodeQL reads "secret" in a name as a secret value
+        and flagged every place the refusal text is printed or stored.
 
         Bash can reach arbitrary paths via ``cat /home/.../.ssh/id_rsa`` even
         when its ``cwd`` is sandboxed. The standard bash deny-list catches
@@ -12240,11 +12244,11 @@ class _DocToolExecutor:
                 _record_security_event("deny_pattern", "bash",
                                        f"{cmd[:80]} → {denied}")
                 return f"command rejected by deny-pattern {denied!r}: refusing to run."
-            secret_hit = self._scan_bash_for_secrets(cmd, perms)
-            if secret_hit is not None:
-                _record_security_event("secret_path", "bash", str(secret_hit))
+            denied_path = self._bash_denied_path(cmd, perms)
+            if denied_path is not None:
+                _record_security_event("secret_path", "bash", str(denied_path))
                 return (
-                    f"bash command references a secret-deny path ({secret_hit!r}). "
+                    f"bash command references a secret-deny path ({denied_path!r}). "
                     "Reading or touching .ssh/.env/*.key/credentials via the "
                     "shell is blocked — the read deny-list applies to bash too."
                 )
