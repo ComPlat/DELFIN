@@ -3380,7 +3380,10 @@ class AgentEngine:
             # detect_language. The question here is which language the
             # user opened in, and the hit-count and margin rules already
             # refuse a fragment.
-            found = _vg.detect_language(text, min_words=8)
+            # Five words: "kannst du die tabelle prüfen?" is five, and the
+            # three-hit, two-to-one rule below is what keeps a fragment
+            # from pinning anything.
+            found = _vg.detect_language(text, min_words=5)
         except Exception:
             found = ""
         if found:
