@@ -45,6 +45,34 @@ _cwd_lock = GLOBAL_CWD_LOCK
 # Global lock preventing concurrent geometry file writes (prevents race conditions)
 _geometry_lock = threading.Lock()
 
+
+def _finished_stage_geometry(dest_xyz: Path, stage: str) -> bool:
+    """Whether *dest_xyz* is the optimised geometry of the stage's own finished ORCA job.
+
+    OCCUPIER hands its chosen configuration to ``<stage>.xyz`` as the start of
+    the stage's frequency job, which then writes its own result over it.  A
+    recalc repeats the hand-over and keeps the finished job, so it put the
+    start geometry back over the result: in the archive, 293 OCCUPIER stage
+    geometries hold a FoB's geometry although the stage's job had finished,
+    291 of them in folders that were run more than once.
+
+    Only in a recalc: a full run computes the stage job again, from what
+    OCCUPIER chose this time.
+    """
+    if not smart_recalc.recalc_enabled():
+        return False
+    out = dest_xyz.with_suffix(".out")
+    if not smart_recalc.has_ok_marker(out) or smart_recalc.optimization_gave_up(out):
+        return False
+    try:
+        with dest_xyz.open(encoding="utf-8", errors="replace") as fh:
+            fh.readline()
+            comment = fh.readline()
+    except OSError:
+        return False
+    return re.match(rf"\s*Coordinates from ORCA-job\s+(?:\S*/)?{re.escape(stage)}\s+E\b", comment) is not None
+
+
 def _fallback_propagate_geometry(folder_name: str, folder_path: Path) -> None:
     """Best-effort propagation when OCCUPIER.txt is missing.
 
@@ -57,7 +85,9 @@ def _fallback_propagate_geometry(folder_name: str, folder_path: Path) -> None:
     with _geometry_lock:
         dest_xyz = folder_path.parent / f"{dest_label}.xyz"
         src_xyz = folder_path / "input.xyz"
-        if src_xyz.exists():
+        if _finished_stage_geometry(dest_xyz, dest_label):
+            logger.info("[%s] %s is the finished %s job's own geometry; kept", folder_name, dest_xyz.name, dest_label)
+        elif src_xyz.exists():
             try:
                 shutil.copyfile(src_xyz, dest_xyz)
                 # The run continues, but what it continues from has to be
@@ -303,7 +333,9 @@ def _update_runtime_cache(
                 src_candidate = fallback_src if fallback_src.exists() else src_candidate
 
             dest_name = folder_name.replace("_OCCUPIER", "")
-            if dest_name:
+            if dest_name and _finished_stage_geometry(folder_path.parent / f"{dest_name}.xyz", dest_name):
+                logger.info("[%s] %s.xyz is the finished %s job's own geometry; kept", folder_name, dest_name, dest_name)
+            elif dest_name:
                 dest_path = folder_path.parent / f"{dest_name}.xyz"
                 try:
                     shutil.copyfile(src_candidate, dest_path)
