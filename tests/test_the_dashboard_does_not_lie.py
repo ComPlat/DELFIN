@@ -136,7 +136,9 @@ def test_the_dropped_engines_conversation_is_carried_to_the_next():
     assert "engine.client.kill()" in body
     ensure = _body("_ensure_engine", text, 12000)
     assert 'carry = state.pop("_engine_carry_over", None)' in ensure
-    assert "engine.restore_state({**carry" in ensure
+    assert "_hand_state_to(" in ensure, "the carry-over goes through the one restore site"
+    hand = _body("_hand_state_to", text, 900)
+    assert "engine.restore_state({" in hand and "**data" in hand
 
 
 @pytest.mark.parametrize("handler", ["_on_model_change", "_on_provider_change",
