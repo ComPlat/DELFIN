@@ -14,7 +14,7 @@ recalculated.  Follow this protocol:
      output file expected by the workflow.
    - **Possibly needs recalc**: started but no progress for an unusually
      long time, partial output truncated.
-   - **Probably fine**: completed normally, just no DELFIN_data.json yet.
+   - **Probably fine**: completed normally, just no DELFIN_Data.json yet.
 4. Stop.  Do NOT submit any recalc.  Present the categorised list and ask
    the user which group(s) to submit.
 

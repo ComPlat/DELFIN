@@ -737,7 +737,7 @@ third-tier fallback for free-form data no typed parser covers.
 | SCF iteration history | `extract_scf_convergence` |
 | Mulliken/Loewdin charges | `extract_mulliken_charges` / `extract_loewdin_charges` |
 | all vib modes + IR | `extract_vibrational_modes` |
-| DELFIN_data.json | `extract_delfin_json` |
+| DELFIN_Data.json | `extract_delfin_json` |
 | multi-property summary | `extract_calc_summary_table` |
 | Gibbs/SPE/ZPE one folder (ORCA) | `parse_orca_output` |
 | Gibbs/SPE many folders (ORCA) | `extract_energy_table` |

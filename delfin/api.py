@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import contextlib
 import io
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
@@ -513,6 +512,30 @@ def parse_orca_output(path: str) -> OrcaParseResult:
             and "ABORTING THE RUN" in text):
         out.error_summary = "ORCA aborted the run"
 
+    # The output need not state its method -- a DELFIN run's does not --
+
+    # and a snapshot that says functional "" beside a folder whose
+
+    # CONTROL.txt names it is an answer nobody asked for. Read the
+
+    # folder the file lives in, the way the folder tools do.
+
+    if not out.functional or not out.basis:
+
+        try:
+
+            from delfin.doc_server.calc_indexer import method_of_folder
+
+            f2, b2 = method_of_folder(p.parent)
+
+            out.functional = out.functional or (f2 or '')
+
+            out.basis = out.basis or (b2 or '')
+
+        except Exception:
+
+            pass
+
     return out
 
 
@@ -636,6 +659,53 @@ def extract_thermochem(folder: str) -> ThermochemResult:
     return ThermochemResult(path=str(p))
 
 
+def _method_label(functional, basis) -> str | None:
+    """"PBE0/def2-SVP": the pair a total energy is only comparable within.
+
+    Sorting a mixed archive by energy sorts it by functional -- every
+    B3LYP run sits hundreds of kJ/mol below every PBE0 run, whatever the
+    structure -- so a row without its method is a number waiting to be
+    ranked against numbers it cannot be ranked against. Every row carries
+    it, and the tools below never order rows across it.
+    """
+    if not functional and not basis:
+        return None
+    return f"{functional or '?'}/{basis or '?'}"
+
+
+def _method_of(parsed, folder) -> tuple:
+    """(functional, basis): the output's own if it states them, else the
+    folder's DELFIN_Data.json / CONTROL.txt / .inp -- a DELFIN run's ORCA
+    output does not name its method, and a row filed under None is a
+    number waiting to be ranked against the wrong ones."""
+    functional = getattr(parsed, "functional", None) or None
+    basis = getattr(parsed, "basis", None) or None
+    if not functional or not basis:
+        try:
+            from delfin.doc_server.calc_indexer import method_of_folder
+            f2, b2 = method_of_folder(folder)
+            functional = functional or f2
+            basis = basis or b2
+        except Exception:
+            pass
+    return functional, basis
+
+
+def _outcome_of_folder(folder) -> str:
+    try:
+        from delfin.doc_server.calc_indexer import outcome_of_folder
+        return outcome_of_folder(folder)
+    except Exception:
+        return ""
+
+
+#: What every grouped result says, so the rule travels with the data.
+METHOD_NOTE = (
+    "A total energy compares only within one method (functional AND basis). "
+    "Rows are grouped by method; groups are not ranked against each other."
+)
+
+
 def extract_energy_table(
     folders: list[str] | str,
     properties: list[str] | None = None,
@@ -663,24 +733,35 @@ def extract_energy_table(
     for folder in folders:
         p = _P(folder)
         if not p.exists() or not p.is_dir():
-            row: dict = {"folder": str(folder), "status": "missing"}
+            row: dict = {"folder": str(folder), "status": "missing",
+                   "functional": None, "basis": None, "method": None,
+                   "outcome": "unknown (folder missing)"}
             for prop in properties:
                 row[prop] = None
             rows.append(row)
             continue
         out_files = sorted(p.glob("*.out"))
         if not out_files:
-            row = {"folder": str(folder), "status": "no_output"}
+            functional, basis = _method_of(None, p)
+            row = {"folder": str(folder), "status": "no_output",
+                   "functional": functional, "basis": basis,
+                   "method": _method_label(functional, basis),
+                   "outcome": _outcome_of_folder(p)}
             for prop in properties:
                 row[prop] = None
             rows.append(row)
             continue
         target = max(out_files, key=lambda f: f.stat().st_size)
         parsed = parse_orca_output(str(target))
+        functional, basis = _method_of(parsed, p)
         row = {
             "folder": str(folder),
             "status": "ok",
             "output_file": target.name,
+            "functional": functional,
+            "basis": basis,
+            "method": _method_label(functional, basis),
+            "outcome": _outcome_of_folder(p),
         }
         for prop in properties:
             if prop == "gibbs":
@@ -1508,13 +1589,13 @@ def extract_vibrational_modes(folder: str) -> VibrationalModesResult:
 
 
 # ---------------------------------------------------------------------------
-# DELFIN_data.json reader
+# DELFIN_Data.json reader
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class DelfinDataResult:
-    """Structured snapshot of a folder's DELFIN_data.json."""
+    """Structured snapshot of a folder's DELFIN_Data.json."""
     folder: str
     json_path: str | None
     workflow_stages: list[str]
@@ -1525,8 +1606,23 @@ class DelfinDataResult:
     error: str | None = None
 
 
+def _delfin_data_path(folder):
+    """The pipeline state file, whichever way its name is spelled.
+
+    DELFIN writes DELFIN_Data.json; this tool looked for DELFIN_Data.json
+    and never found it -- reported by a model asked where the tools
+    hurt, after it had watched "not found" beside the file in ls.
+    """
+    from pathlib import Path as _P
+    p = _P(folder)
+    for name in ("DELFIN_Data.json", "DELFIN_data.json"):
+        if (p / name).is_file():
+            return p / name
+    return None
+
+
 def extract_delfin_json(folder: str) -> DelfinDataResult:
-    """Read DELFIN_data.json (the pipeline state file).
+    """Read DELFIN_Data.json (the pipeline state file).
 
     DELFIN writes this file at the root of a calc folder while a
     workflow runs, capturing per-stage energies, timings, and the
@@ -1536,13 +1632,13 @@ def extract_delfin_json(folder: str) -> DelfinDataResult:
     from pathlib import Path as _P
     import json as _json
     p = _P(folder)
-    json_path = p / "DELFIN_data.json"
-    if not json_path.exists():
+    json_path = _delfin_data_path(p)
+    if json_path is None:
         return DelfinDataResult(
             folder=str(p), json_path=None,
             workflow_stages=[], energies={}, timings_s={},
             cost_usd=None, raw_keys=[],
-            error="DELFIN_data.json not found",
+            error="DELFIN_Data.json not found",
         )
     try:
         data = _json.loads(json_path.read_text(encoding="utf-8"))
@@ -1665,8 +1761,9 @@ def extract_calc_summary_table(
             continue
         out_files = sorted(p.glob("*.out"))
         if not out_files:
+            f0, b0 = _method_of(None, p)
             rows.append(ExtendedComparisonRow(
-                folder=str(folder), functional=None, basis=None,
+                folder=str(folder), functional=f0, basis=b0,
                 gibbs=None, single_point=None, zpe=None,
                 homo_ev=None, lumo_ev=None, gap_ev=None,
                 n_imag=None, dipole_debye=None, walltime_s=None,
@@ -1707,6 +1804,8 @@ class FunctionalComparisonRow:
     n_imag: int | None
     is_minimum: bool | None
     status: str  # "ok" / "no_output" / "missing" / parse-error
+    method: str | None = None   # "PBE0/def2-SVP": comparable only within
+    sorted_by: str | None = None  # the key the order actually used
 
 
 def compare_across_functionals(
@@ -1735,10 +1834,15 @@ def compare_across_functionals(
             continue
         out_files = sorted(p.glob("*.out"))
         if not out_files:
+            # No output yet is not no method: a running run has its
+            # CONTROL.txt and .inp, and a comparison that drops it says
+            # nothing about the run somebody is waiting for.
+            f0, b0 = _method_of(None, p)
             rows.append(FunctionalComparisonRow(
-                folder=str(folder), functional=None, basis=None,
+                folder=str(folder), functional=f0, basis=b0,
                 gibbs=None, single_point=None, zpe=None,
                 n_imag=None, is_minimum=None, status="no_output",
+                method=_method_label(f0, b0),
             ))
             continue
         target = max(out_files, key=lambda f: f.stat().st_size)
@@ -1750,23 +1854,41 @@ def compare_across_functionals(
             if imag.error is None:
                 n_imag = imag.n_imag
                 is_min = imag.is_minimum
+        functional, basis = _method_of(parsed, p)
         rows.append(FunctionalComparisonRow(
             folder=str(folder),
-            functional=parsed.functional,
-            basis=parsed.basis,
+            functional=functional,
+            basis=basis,
             gibbs=parsed.gibbs_free_energy,
             single_point=parsed.final_single_point,
             zpe=parsed.zpe,
             n_imag=n_imag,
             is_minimum=is_min,
             status="ok",
+            method=_method_label(functional, basis),
         ))
 
     sort_field = sort_by.strip().lower()
     if sort_field in ("gibbs", "single_point", "zpe"):
+        # A sort key nobody has is not a sort. sort_by=gibbs is the
+        # default, and a single-point archive has no Gibbs energy at all
+        # -- the rows came back in a silent order that read as one. Fall
+        # back to the energy that IS there, and say so on every row.
+        if all(getattr(r, sort_field) is None for r in rows):
+            for alt in ("single_point", "gibbs", "zpe"):
+                if any(getattr(r, alt) is not None for r in rows):
+                    sort_field = alt
+                    break
+        for r in rows:
+            r.sorted_by = sort_field
+        # Within a method, by the energy; between methods, by name and
+        # never by energy. A flat sort by gibbs put the functional with
+        # the lowest absolute energies first and handed that order to
+        # the caller as if it were a ranking.
         def _key(r: FunctionalComparisonRow):
             v = getattr(r, sort_field)
-            return (v is None, v if v is not None else 0.0)
+            return (r.method is None, r.method or "",
+                    v is None, v if v is not None else 0.0)
         rows.sort(key=_key)
     elif sort_field == "functional":
         rows.sort(key=lambda r: (r.functional is None, r.functional or ""))
@@ -1934,7 +2056,7 @@ _TOOL_CATALOG: list[dict] = [
     {"name": "extract_vibrational_modes", "category": "parsing",
      "summary": "All vibrational modes + IR intensities (real + imag)."},
     {"name": "extract_delfin_json", "category": "parsing",
-     "summary": "Read DELFIN_data.json: stages, energies, timings, cost."},
+     "summary": "Read DELFIN_Data.json: stages, energies, timings, cost."},
     {"name": "extract_calc_summary_table", "category": "parsing",
      "summary": "Multi-property table: G/SPE/HOMO/LUMO/gap/dipole/walltime."},
     {"name": "compare_calculations", "category": "parsing",
@@ -2412,8 +2534,11 @@ def _resolve_backend():
     if _sh.which("sbatch") and _sh.which("squeue"):
         from delfin.dashboard.backend_slurm import SLURMBackend
         return SLURMBackend(orca_base="")
-    from delfin.dashboard.backend_local import LocalBackend
-    return LocalBackend(orca_base="")
+    # The class was renamed under this import and nobody told this
+    # function: list_active_calculations answered every call with an
+    # ImportError until a model, asked where the tools hurt, said so.
+    from delfin.dashboard.backend_local import LocalJobBackend
+    return LocalJobBackend(orca_base="")
 
 
 def submit_calculation(
@@ -2606,7 +2731,6 @@ def rename_calc_folder(
 
     Returns a dict with ``ok``, ``src``, ``dst``, ``message``.
     """
-    from pathlib import Path as _P
     roots = allowed_roots or _default_calc_roots()
     if not roots:
         return {
@@ -2656,7 +2780,6 @@ def create_calc_folder(
     allow_mutate: bool = False,
 ) -> dict:
     """Create a new sub-folder inside ``parent`` (destructive)."""
-    from pathlib import Path as _P
     roots = allowed_roots or _default_calc_roots()
     if not roots:
         return {"ok": False, "error": "no allowed_roots inferred"}
@@ -2704,7 +2827,6 @@ def move_calc_folder(
     sending things to ``archive/`` use :func:`move_to_archive`, which
     enforces the calc → archive direction.
     """
-    from pathlib import Path as _P
     import shutil as _sh
     roots = allowed_roots or _default_calc_roots()
     if not roots:
@@ -2830,7 +2952,6 @@ def delete_calc_folder(
     roots (NOT archive/), and ``confirm_token`` must equal the folder's
     basename verbatim. Any one missing → refusal.
     """
-    from pathlib import Path as _P
     import shutil as _sh
     roots = allowed_roots or _default_calc_roots()
     if not roots:
@@ -3434,7 +3555,7 @@ _DELFIN_FEATURES: dict[str, dict] = {
             "Hyperpolarizability (β, γ) workflow: ORCA-driven "
             "calculation of nonlinear-optical properties for "
             "chromophores. Reads orca.out for β-tensor components "
-            "(beta_zzz etc.) and aggregates into DELFIN_data.json."
+            "(beta_zzz etc.) and aggregates into DELFIN_Data.json."
         ),
         "see_also": ["delfin/cli.py (hyperpol subcommand)"],
     },
@@ -4761,6 +4882,90 @@ def _new_workspace_png_path(prefix: str = "plot") -> "Path":
     return base / f"{prefix}_{stamp}.png"
 
 
+def find_calculation_extreme_explained(
+    folders: list[str] | str,
+    *,
+    property: str = "gibbs",
+    extreme: str = "min",
+    n: int = 5,
+) -> dict:
+    """The N folders with the lowest/highest value of a property, per
+    method -- and, for every folder that is not among them, why.
+
+    Returns ``{"property_requested", "property_used", "rows", "skipped"}``.
+
+    ``rows`` are the ranked rows, ``rank_within_method`` set, grouped by
+    method in name order; one extreme per METHOD, because a total energy
+    compares only within one functional and basis.
+
+    ``property_used`` differs from ``property_requested`` in one case:
+    no folder carries the requested property but folders carry a single
+    point energy. An archive of single points has no Gibbs energy in it,
+    and the default property is gibbs; answering that with an empty list
+    reads as "nothing here", not as "no thermochemistry here". Observed
+    2026-09-10 driving the tool over nine single-point runs: it returned
+    empty groups, said nothing, and the operator went back to reading
+    the files by hand -- and misread one. The fallback is taken only
+    when the requested property is absent EVERYWHERE; a mixed set keeps
+    the requested property and lists the rest under ``skipped``.
+
+    ``skipped`` names every folder that is not in ``rows`` with a
+    reason: the folder is missing, it has no output (and the outcome
+    that says why -- still running, crashed, never started), or the
+    output does not carry the property.
+
+    Args:
+        folders: list of paths (or single path) to scan.
+        property: one of ``gibbs``, ``zpe``, ``single_point``,
+            ``imag_freqs``, ``walltime_s``.
+        extreme: ``"min"`` (lowest) or ``"max"`` (highest).
+        n: how many top rows per method to return.
+    """
+    wanted = [property] if property == "single_point" else [property, "single_point"]
+    rows = extract_energy_table(folders, properties=wanted)
+    ok = [r for r in rows if r.get("status") == "ok"]
+    used = property
+    valid = [r for r in ok if r.get(property) is not None]
+    if not valid and property != "single_point":
+        with_spe = [r for r in ok if r.get("single_point") is not None]
+        if with_spe:
+            used = "single_point"
+            valid = with_spe
+    ranked_ids = set()
+    reverse = (str(extreme).lower() == "max")
+    groups: dict = {}
+    for r in valid:
+        groups.setdefault(r.get("method"), []).append(r)
+    out: list[dict] = []
+    for method in sorted(groups, key=lambda m: (m is None, m or "")):
+        block = sorted(groups[method], key=lambda r: float(r[used]),
+                       reverse=reverse)[: max(1, int(n))]
+        for rank, r in enumerate(block, start=1):
+            r["rank_within_method"] = rank
+            r["property_used"] = used
+            ranked_ids.add(id(r))
+        out.extend(block)
+    skipped: list[dict] = []
+    for r in rows:
+        if id(r) in ranked_ids:
+            continue
+        status = r.get("status")
+        if id(r) in {id(v) for v in valid}:
+            reason = f"ranked below the top {max(1, int(n))} of its method"
+        elif status == "missing":
+            reason = "folder missing"
+        elif status == "no_output":
+            reason = str(r.get("outcome") or "no output")
+        elif status != "ok":
+            reason = str(status)
+        else:
+            reason = f"{used} not in the output"
+        skipped.append({"folder": r.get("folder"), "reason": reason,
+                        "outcome": r.get("outcome")})
+    return {"property_requested": property, "property_used": used,
+            "rows": out, "skipped": skipped}
+
+
 def find_calculation_extreme(
     folders: list[str] | str,
     *,
@@ -4768,30 +4973,14 @@ def find_calculation_extreme(
     extreme: str = "min",
     n: int = 5,
 ) -> list[dict]:
-    """Return the N folders with the lowest/highest value of a property.
+    """The ranked rows of :func:`find_calculation_extreme_explained`.
 
-    Direct answer to "open the .out with the lowest Gibbs energy"
-    type questions: pass the candidate folders, get back the top
-    ``n`` rows sorted ascending (``extreme="min"``) or descending
-    (``extreme="max"``).
-
-    Folders that fail to parse the property are excluded from the
-    ranking.
-
-    Args:
-        folders: list of paths (or single path) to scan.
-        property: one of ``gibbs``, ``zpe``, ``single_point``,
-            ``imag_freqs``, ``walltime_s``.
-        extreme: ``"min"`` (lowest) or ``"max"`` (highest).
-        n: how many top rows to return (clipped to len(rows)).
+    Kept for callers that want the rows alone; the reasons for what is
+    not among them, and which property the ranking used, are in the
+    explained variant.
     """
-    rows = extract_energy_table(folders, properties=[property])
-    valid = [r for r in rows if r.get(property) is not None]
-    if not valid:
-        return []
-    reverse = (str(extreme).lower() == "max")
-    valid.sort(key=lambda r: float(r[property]), reverse=reverse)
-    return valid[: max(1, int(n))]
+    return find_calculation_extreme_explained(
+        folders, property=property, extreme=extreme, n=n)["rows"]
 
 
 # ---------------------------------------------------------------------------

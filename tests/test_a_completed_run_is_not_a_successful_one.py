@@ -63,3 +63,58 @@ def test_the_indexer_writes_the_outcome_from_the_exit_code_file(tmp_path):
     assert recs["good"]["completed"] is True and recs["good"]["outcome"] == "succeeded (exit code 0)"
     assert recs["bad"]["completed"] is True and recs["bad"]["outcome"] == "failed (exit code 1025)"
     assert recs["running"]["completed"] is False and "running or crashed" in recs["running"]["outcome"]
+
+
+# ---------------------------------------------------------------------------
+# An output with no bookkeeping still says how the run ended
+# ---------------------------------------------------------------------------
+#
+# An archived folder holding only run.inp and run.out -- copied without
+# its state file, or computed by hand -- read as "unknown (no run log and
+# no exit code)" although the output's last lines say TERMINATED NORMALLY.
+# ORCA's own termination line is evidence; it is read from the tail.
+
+_NORMAL = "\n".join(["* O R C A *", "FINAL SINGLE POINT ENERGY -113.30", "",
+                     "                             ****ORCA TERMINATED NORMALLY****",
+                     "TOTAL RUN TIME: 0 days 0 hours 1 minutes 2 seconds 345 msec", ""])
+_ERROR = "\n".join(["* O R C A *", "Error: SCF NOT CONVERGED", "",
+                    "ORCA finished by error termination in SCF", ""])
+_CUT = "\n".join(["* O R C A *", "SCF ITERATIONS", "ITER  Energy", "  0  -113.1", ""])
+
+
+def _bare(tmp_path, name, out_text):
+    d = tmp_path / name
+    d.mkdir()
+    (d / "run.inp").write_text("! PBE0 def2-SVP SP\n")
+    (d / "run.out").write_text(out_text)
+    return d
+
+
+def test_a_normal_termination_is_finished_per_the_output(tmp_path):
+    from delfin.doc_server.calc_indexer import outcome_of_folder
+    assert outcome_of_folder(_bare(tmp_path, "n", _NORMAL)).startswith("finished per ORCA output")
+
+
+def test_an_error_termination_is_failed_per_the_output(tmp_path):
+    from delfin.doc_server.calc_indexer import outcome_of_folder
+    assert outcome_of_folder(_bare(tmp_path, "e", _ERROR)).startswith("failed per ORCA output")
+
+
+def test_an_output_without_a_termination_line_is_running_or_crashed(tmp_path):
+    from delfin.doc_server.calc_indexer import outcome_of_folder
+    assert outcome_of_folder(_bare(tmp_path, "c", _CUT)).startswith("running or crashed")
+
+
+def test_the_termination_line_is_read_from_the_tail_of_a_long_output(tmp_path):
+    from delfin.doc_server.calc_indexer import outcome_of_folder
+    long = "SCF ITERATIONS\n" * 200000 + _NORMAL      # ~3 MB before the line
+    assert outcome_of_folder(_bare(tmp_path, "l", long)).startswith("finished per ORCA output")
+
+
+def test_an_exit_code_file_still_outranks_the_output(tmp_path):
+    """The exit code is the run's own verdict; the output's line is the
+    fallback for folders that have nothing else."""
+    from delfin.doc_server.calc_indexer import outcome_of_folder
+    d = _bare(tmp_path, "x", _NORMAL)
+    (d / ".exit_code_1025").write_text("")
+    assert outcome_of_folder(d).startswith("failed (exit code 1025)")
