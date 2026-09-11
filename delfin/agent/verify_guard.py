@@ -1089,19 +1089,66 @@ def scan_for_language_mismatch(answer: str, user_message: str) -> str:
 
 _LANGUAGE_NAMES = {"de": "German", "en": "English"}
 
+# An explicit request for the answer's language. The session pin decides
+# the language a session runs in; a user who writes, in German, "antworte
+# auf Englisch" has decided something narrower and more recent, and the
+# guard that then rewrote the English answer into German -- "Sie haben
+# recht, die Antwort muss in Deutsch sein" -- undid an instruction nobody
+# had withdrawn (steering drive, 2026-09-11). German spellings are what a
+# German user types; the code stays English.
+_EXPLICIT_LANGUAGE_RE = re.compile(
+    r"(?i)(?:"
+    r"\b(?:antworte|antwortest|antworten|schreib|schreibe|schreiben|"
+    r"erkl[äa]r|erkl[äa]re|formulier|formuliere|fass|fasse|zusammen)"
+    r"\b[^.!?\n]{0,40}?\bauf\s+(?P<de1>englisch|deutsch)\b"
+    r"|\bauf\s+(?P<de3>englisch|deutsch)\b[^.!?\n]{0,30}?"
+    r"\b(?:erkl[äa]ren|erkl[äa]rst|antworten|antwortest|schreiben|"
+    r"schreibst|zusammenfassen|formulieren|beantworten)\b"
+    r"|\b(?:answer|reply|respond|write|explain|summari[sz]e)\b"
+    r"[^.!?\n]{0,40}?\bin\s+(?P<en1>english|german)\b"
+    r"|(?:^|[.!?\n]\s*)(?:bitte\s+)?auf\s+(?P<de2>englisch|deutsch)"
+    r"(?:\s+bitte)?\s*(?:[.!]|$)"
+    r"|(?:^|[.!?\n]\s*)(?:please\s+)?in\s+(?P<en2>english|german)"
+    r"(?:\s+please)?\s*(?:[.!]|$)"
+    r")")
+_LANGUAGE_WORDS = {"englisch": "en", "english": "en",
+                   "deutsch": "de", "german": "de"}
+
+
+def explicit_language_request(text: str) -> str:
+    """The language the user asked the ANSWER to be in, or "".
+
+    Only an instruction counts -- a verb of answering or writing with
+    "auf Englisch" / "in German", or the bare command on its own. "Die
+    Doku ist auf Deutsch" is a statement and matches nothing. The last
+    request in the text wins. Never raises.
+    """
+    try:
+        found = ""
+        for m in _EXPLICIT_LANGUAGE_RE.finditer(text or ""):
+            word = next((v for v in m.groupdict().values() if v), "")
+            found = _LANGUAGE_WORDS.get(word.lower(), "") or found
+        return found
+    except Exception:
+        return ""
+
 
 def language_mismatch_feedback(want: str) -> str:
-    """Sent into the one correction turn."""
+    """Sent into the one correction turn.
+
+    Opens by saying who is asking: the model read the old wording as the
+    user objecting and answered "Sie haben recht" to a reader who had said
+    nothing."""
     if want not in _LANGUAGE_NAMES:
         return ""
     return (
-        f"[Verify] The user wrote their message in "
-        f"{_LANGUAGE_NAMES[want]} and this answer is not in "
-        f"{_LANGUAGE_NAMES[want]}. Say the same thing in "
+        f"[Verify] Automatic check, not a message from the user: the user "
+        f"wrote their message in {_LANGUAGE_NAMES[want]} and this answer "
+        f"is not in {_LANGUAGE_NAMES[want]}. Say the same thing in "
         f"{_LANGUAGE_NAMES[want]} — the content is not in question, only "
         "the language. A remembered preference does not override the "
         "message in front of you. What goes into code stays English "
-        "either way."
+        "either way. Do not apologise; the reader has not said anything."
     )
 
 

@@ -2286,6 +2286,7 @@ class AgentEngine:
             # session, every later answer carrying a two-digit count got
             # the caveat, however unrelated.
             self._truncated_tools_turn = []
+            self._turn_steers = []
             # The office figure ledger is per-turn for the same reason: a
             # total the tools produced two turns ago must not ground a
             # figure stated now. The turn gets its OWN token — the ledger
@@ -3965,7 +3966,18 @@ class AgentEngine:
         # finding. A session that never got one (an older restore) falls
         # back to the per-message question rather than to silence.
         _session_lang = str(getattr(self, "_session_language", "") or "")
-        if _session_lang:
+        # An explicit request in THIS turn's text -- the message or a
+        # mid-run steer -- narrows the pin for this turn only: "antworte
+        # auf Englisch" written in German is an instruction, and the
+        # session stays German after it.
+        _asked_now = str(getattr(self, "_last_user_message", "") or "")
+        _explicit = _vg.explicit_language_request(" \n".join(
+            [_asked_now] + list(getattr(self, "_turn_steers", None) or [])))
+        if _explicit:
+            _said = _vg.detect_language(response_text)
+            wrong_language = (_explicit
+                              if _said and _said != _explicit else "")
+        elif _session_lang:
             _said = _vg.detect_language(response_text)
             wrong_language = (_session_lang
                               if _said and _said != _session_lang else "")
@@ -5406,6 +5418,13 @@ class AgentEngine:
         if client is not None and hasattr(client, "push_steer"):
             try:
                 client.push_steer(text)
+                # Kept for the turn's guards: a steer is the user's latest
+                # word, and "antworte auf Englisch" in it is a language
+                # request the language guard must honour.
+                steers = getattr(self, "_turn_steers", None)
+                if steers is None:
+                    steers = self._turn_steers = []
+                steers.append(str(text or ""))
                 return True
             except Exception:
                 return False
