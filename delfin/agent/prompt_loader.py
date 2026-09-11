@@ -1296,7 +1296,7 @@ class PromptLoader:
     def _detect_active_modules(
         self, task_text: str, mode_id: str = "",
         session_key: str = "", role_id: str = "",
-        conversation_text: str = "",
+        conversation_text: str = "", everything: bool = False,
     ) -> set[str]:
         """Pick which lazy modules survive stripping for this task.
 
@@ -1326,7 +1326,7 @@ class PromptLoader:
         oscillating (which would kill prefix caching). The union is cleared
         by ``reset_session_prompt_state``.
         """
-        if mode_id not in ("solo", "plan", "dashboard"):
+        if everything or mode_id not in ("solo", "plan", "dashboard"):
             return set(self._MODULE_TRIGGERS)
         s = f"{conversation_text}\n{task_text or ''}".lower()
         active: set[str] = set()
@@ -1515,9 +1515,19 @@ class PromptLoader:
         # 2. Per-model profile's ``compact_prompt`` flag (centralised)
         # 3. Weak-model heuristic on the model name (legacy fallback)
         _profile_compact = False
+        _everything = False
         try:
             from .model_profiles import get_profile as _get_profile
-            _profile_compact = bool(_get_profile(model).compact_prompt)
+            _prof = _get_profile(model)
+            _profile_compact = bool(_prof.compact_prompt)
+            # A model paying minutes for a cold head keeps every module
+            # on: the head is then the same on every turn of every
+            # session, and the prefix cache serves all of it.
+            # Solo and plan only: the dashboard role is a router whose
+            # utterances half the time trigger nothing, and it pays for
+            # what it uses by a measured decision of its own.
+            _everything = (bool(getattr(_prof, "all_prompt_modules", False))
+                           and mode_id in ("solo", "plan"))
         except Exception:
             pass
         _compact = (
@@ -1540,7 +1550,7 @@ class PromptLoader:
         # a tidiness question. A test keeps them at the tail.
         active = self._detect_active_modules(
             task_text, mode_id, session_key=session_key, role_id=role_id,
-            conversation_text=conversation_text,
+            conversation_text=conversation_text, everything=_everything,
         )
         lines = text.splitlines(keepends=True)
         out: list[str] = []
