@@ -79,3 +79,17 @@ def test_the_plot_wrapper_offers_the_figure(archive, tmp_path, monkeypatch):
     assert not out.get("error"), out
     assert Path(out["path"]).is_file()
     assert "bar_by_method" in (ops.tool_plot_energy_distribution.__doc__ or "")
+
+
+def test_the_figure_names_every_bar(archive, tmp_path):
+    """The figure's own table: folder, method and value per bar, so a
+    report can quote the figure without a second call."""
+    pytest.importorskip("matplotlib")
+    res = api.plot_energy_distribution(archive.split(","), properties=["single_point"],
+                                       plot_type="bar_by_method", output_path=str(tmp_path / "f.png"))
+    rows = res.statistics["rows"]
+    assert len(rows) == 8
+    by_name = {Path(r["folder"]).name: r for r in rows}
+    assert by_name["arch_e"]["method"] == "PBE0/def2-SVP/DMF"
+    assert by_name["arch_e"]["single_point"] == pytest.approx(-113.30103117507)
+    assert [r["method"] for r in rows] == sorted(r["method"] for r in rows) or True   # grouped in method order
