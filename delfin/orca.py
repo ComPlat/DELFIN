@@ -1720,6 +1720,7 @@ def run_orca_with_intelligent_recovery(
             raise KeyboardInterrupt
 
         # Run ORCA
+        before = _output_stamp(out_path)
         success = run_orca(
             str(current_inp),
             output_log,
@@ -1731,23 +1732,40 @@ def run_orca_with_intelligent_recovery(
             extra_env=retry_env or None,
         )
 
-        if success:
-            if overall_attempt > 1:
-                logger.info(
-                    f"✓ ORCA succeeded after {overall_attempt - 1} recovery attempt(s) for {job_name}"
-                )
+        unusable = None
+        if success and _output_stamp(out_path) == before:
+            # recalc kept a finished output: it is judged by the report, not
+            # rerun here -- a kept ISC of a large emitter took days
             return True
+        if success:
+            # "ORCA TERMINATED NORMALLY" also ends an optimisation that ran out
+            # of cycles, a collapsed TD-DFT root and a negative or cut-off ESD
+            # rate; those are retried like a failure.
+            unusable = detector.unusable_result(out_path, current_inp)
+            if unusable is None:
+                if overall_attempt > 1:
+                    logger.info(
+                        f"✓ ORCA succeeded after {overall_attempt - 1} recovery attempt(s) for {job_name}"
+                    )
+                return True
+            error_type, problem_job, reason = unusable
+            logger.warning("ORCA ended normally for %s, but %s", job_name, reason)
+        else:
+            # Job failed - analyze error
+            if _shutdown_requested():
+                logger.warning("Shutdown requested after failure; aborting recovery for %s", job_name)
+                raise KeyboardInterrupt
 
-        # Job failed - analyze error
-        if _shutdown_requested():
-            logger.warning("Shutdown requested after failure; aborting recovery for %s", job_name)
-            raise KeyboardInterrupt
+            error_type = detector.analyze_output(out_path)
+            problem_job = None
 
-        error_type = detector.analyze_output(out_path)
-
-        if not error_type or error_type == OrcaErrorType.UNKNOWN:
-            logger.error(f"ORCA failed with unrecoverable error for {job_name}")
-            return False
+            if error_type == OrcaErrorType.INPUT_ERROR:
+                logger.error("ORCA refused the input of %s, which no retry changes: %s",
+                             job_name, _first_error_line(out_path))
+                return False
+            if not error_type or error_type == OrcaErrorType.UNKNOWN:
+                logger.error(f"ORCA failed with unrecoverable error for {job_name}")
+                return False
 
         # The same error type recurring is the normal case, not a reason to
         # give up: recovery strategies deliberately escalate across attempts
@@ -1769,7 +1787,9 @@ def run_orca_with_intelligent_recovery(
                 f"Max recovery attempts ({max_recovery_attempts}) reached "
                 f"for {error_type.value} in {job_name}"
             )
-            return False
+            # a run that ended normally keeps its result, as before; the
+            # report says what is wrong with it
+            return unusable is not None
 
         # Get recovery strategy
         attempt = tracker.get_attempt(job_name, error_type) + 1
@@ -1777,6 +1797,7 @@ def run_orca_with_intelligent_recovery(
         # Let the strategy read what ORCA actually reported. The memory fix
         # uses it to retry with the MaxCore ORCA named rather than a guess.
         strategy.output_file = Path(output_log)
+        strategy.job_index = problem_job
 
         # Get modifications to check for backoff delay
         mods = strategy.get_modifications()
@@ -1803,7 +1824,7 @@ def run_orca_with_intelligent_recovery(
 
         if new_inp == current_inp:
             logger.error(f"Failed to create recovery input for {job_name}")
-            return False
+            return unusable is not None
 
         # Prepare the new input for continuation (update geometry from xyz, ensure GBW backup)
         # This is already done by OrcaInputModifier, but we ensure it's applied
@@ -1832,9 +1853,27 @@ def run_orca_with_intelligent_recovery(
     logger.error(
         f"ORCA failed after {max_recovery_attempts} recovery attempts for {job_name}"
     )
-    return False
+    return unusable is not None
 
 
+
+
+def _first_error_line(path: Path) -> str:
+    try:
+        for line in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
+            if re.search(r"error|impossible|unknown identifier|unrecognized", line, re.IGNORECASE) and "|" not in line[:6]:
+                return line.strip()[:200]
+    except OSError:
+        pass
+    return "(see the output)"
+
+
+def _output_stamp(path: Path) -> Optional[Tuple[int, int]]:
+    try:
+        stat = Path(path).stat()
+    except OSError:
+        return None
+    return stat.st_mtime_ns, stat.st_size
 
 
 def _parse_bool_config(value) -> bool:

@@ -252,7 +252,8 @@ def test_the_mpi_settings_of_a_crash_fix_reach_orca(tmp_path, monkeypatch):
         return len(seen) > 1
 
     monkeypatch.setattr(orca, "run_orca", fake_run)
-    monkeypatch.setattr(orca.OrcaErrorDetector, "analyze_output", lambda self, out: E.MPI_CRASH)
+    monkeypatch.setattr(orca.OrcaErrorDetector, "analyze_output", classmethod(
+        lambda cls, out: E.MPI_CRASH if "error termination" in Path(out).read_text() else None))
     ok = orca.run_orca_with_intelligent_recovery(str(inp), str(tmp_path / "job.out"), working_dir=tmp_path,
                                                  config={"enable_auto_recovery": "yes"})
 

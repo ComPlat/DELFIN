@@ -28,7 +28,10 @@ Common recovery actions:
 Main error classes:
 
 - `SCF_NO_CONVERGENCE`
-- `LEANSCF_NOT_CONVERGED`
+- `LEANSCF_NOT_CONVERGED` -- in ORCA 6 every SCF runs in orca_leanscf, so this
+  is the ordinary SCF failure (all 472 archived ones were the main SCF); it
+  gets the SCF escalation and keeps FREQ. Only an SCF that failed inside the
+  analytic Hessian gets the frequency path
 - `TRAH_SEGFAULT`
 - `DIIS_ERROR`
 - `GEOMETRY_NOT_CONVERGED`
@@ -36,6 +39,16 @@ Main error classes:
 - `FREQUENCY_FAILURE`
 - `MEMORY_ERROR`
 - `TRANSIENT_SYSTEM_ERROR`
+- `INPUT_ERROR` -- ORCA refused the input (e.g. a multiplicity that cannot
+  match the electron count); named, not retried
+- `ESD_RATE_UNPHYSICAL`, `ESD_WINDOW_TRUNCATED` -- see below
+
+A run that ends with "ORCA TERMINATED NORMALLY" is also retried when its
+result is not one: an optimisation that ran out of cycles, a collapsed
+TD-DFT root, an ESD rate that is negative or whose correlation function was
+cut off before it decayed. When the retries are used up the last result is
+kept, as before, and the ESD reports mark such a rate `[NOT A RESULT: ...]`.
+An output that recalc kept is not judged again.
 
 Representative standard SCF path:
 
@@ -79,3 +92,13 @@ State is tracked in:
 
 Retry generation preserves comments, geometry structure, inline basis-set
 directives, `%basis`, `%ecp`, and additional `$new_job` sections.
+
+ESD rates (`delfin/common/esd_numerics.py`): ORCA chooses the time window of
+the correlation function from the linewidth (2934 fs for LINEW 50 cm-1 on
+6.1.1). The older template's `ESD_MAXTIME=12000` (290 fs) cut it off at 6.5 %
+of its amplitude -- formaldehyde ISC 5.70e7 instead of 2.46e7 s-1, IC
+negative -- and is now read as `auto`. A window that is still cut short is
+handed back to ORCA on the retry; a negative rate is rerun with more points,
+as ORCA's own warning asks. Rate jobs run with TightSCF, like the state jobs
+they start from.
+
