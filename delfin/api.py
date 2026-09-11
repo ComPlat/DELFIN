@@ -4024,12 +4024,34 @@ _DELFIN_FEATURES: dict[str, dict] = {
     "co2": {
         "category": "workflow",
         "summary": (
-            "CO2 Coordinator workflow: enumerates and optimizes CO2 "
-            "binding modes on a metal complex, then ranks by binding "
-            "energy. Run via `delfin co2` or the `co2` MCP tool with "
-            "explicit charge/multiplicity/solvent."
+            "CO2 Coordinator: aligns the complex, places CO2 on the metal "
+            "(place_co2_general: axis, side-on/end-on, optional direction "
+            "search), scans the orientation at a fixed distance (single "
+            "points) and then relaxes the distance (OPT), keeping the "
+            "lowest-energy binding mode. Two CONTROL keys switch it: "
+            "`co2_coordination` (default off; on/yes/true/1) and "
+            "`co2_species_delta` (integer, which oxidation/reduction "
+            "species the CO2 is placed on). Two entry paths: a submit "
+            "with the key on runs the DELFIN pipeline, then chain_setup "
+            "builds CO2_coordination/ from its outputs, then `delfin co2` "
+            "runs there (mode delfin-co2-chain); a recalc with the key "
+            "on re-runs it via _run_co2_recalc_if_enabled. With the key "
+            "off every gate returns early: no CO2_coordination/ folder, "
+            "no scan, and an override cascade leaves an old folder alone. "
+            "The `co2` MCP tool only dispatches `delfin co2`; the "
+            "mechanics live in CO2_Coordinator6.main()."
         ),
-        "see_also": ["delfin/cli.py (co2 subcommand)"],
+        "see_also": [
+            "delfin/co2/CO2_Coordinator6.py (main: align_complex, "
+            "place_co2_general, orientation_scan_at_fixed_distance, "
+            "distance scan; write_default_files for its own CONTROL)",
+            "delfin/co2/chain_setup.py (setup_co2_from_delfin, "
+            "species_delta_to_name)",
+            "delfin/cli.py (_run_co2_recalc_if_enabled; the override "
+            "cascade guarded by co2_coordination)",
+            "delfin/dashboard/tab_submit.py (delfin-co2-chain submit mode)",
+            "delfin/define.py (co2_coordination=off, co2_species_delta=0)",
+        ],
     },
     "tadf_xtb": {
         "category": "workflow",
