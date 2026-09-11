@@ -939,9 +939,12 @@ ORCA fails → detect error type → modify input → continue from .gbw + lates
 | **Geometry not converged** | Smaller trust radius → loose criteria |
 | **MPI crash** | Reduce cores, OpenMPI without single-copy transport |
 | **Memory error** | Raise MaxCore to what ORCA asked for, fewer cores |
-| **LEANSCF failure** | Tighter SCF, then skip the frequency step |
+| **LEANSCF failure** (every SCF in ORCA 6) | Same escalation as SCF not converged; FREQ is kept |
 | **Frequency failure** | NumFreq, then skip the frequency step |
 | **CIS/TD-DFT failure** | TDA, then tighter SCF and a larger Davidson space |
+| **Optimisation ran out of cycles** (ORCA ends "normally") | Continue from the last geometry with more cycles |
+| **ESD rate negative or not converged** (ORCA ends "normally") | ORCA's own time window, then more points |
+| **Input ORCA refuses** (e.g. impossible multiplicity) | Named in the log, not retried |
 | **Transient system error** | Exponential backoff retry |
 
 Recovery state is tracked in `.delfin_recovery_state.json`.

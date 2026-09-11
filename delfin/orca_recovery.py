@@ -18,13 +18,16 @@ import re
 import shutil
 from enum import Enum
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from delfin.common import orca_input
 from delfin.common.logging import get_logger
 from delfin.common.tddft_settings import ORCA_DEFAULT_MAXDIM
 
 logger = get_logger(__name__)
+
+_OPT_GAVE_UP = "The optimization did not converge"
+_JOB_BANNER = re.compile(r"\${4,}\s+JOB NUMBER\s+(\d+)\s+\$")
 
 # How much of the end of an ORCA output is searched for error signatures.
 # ORCA reports what went wrong immediately before it aborts, so the tail is
@@ -70,6 +73,29 @@ class OrcaErrorType(Enum):
     DIIS_ERROR = "diis_error"
     """DIIS convergence acceleration failed."""
 
+    INPUT_ERROR = "input_error"
+    """ORCA refused the input: no retry can change what was asked.
+
+    146 archived OCCUPIER runs stopped on "multiplicity (3) is odd and
+    number of electrons (243) is odd -> impossible" -- broken-symmetry pairs
+    of an older sequence profile whose unpaired electrons cannot match the
+    electron count.
+    """
+
+    ESD_RATE_UNPHYSICAL = "esd_rate_unphysical"
+    """ORCA's ESD module ended normally with a negative rate constant.
+
+    ORCA says so itself ("negative rates are unphysical ... something went
+    wrong with the CorrFunc integration") and suggests more points.
+    """
+
+    ESD_WINDOW_TRUNCATED = "esd_window_truncated"
+    """The ESD correlation function was cut off before it decayed.
+
+    ORCA does not warn.  A MAXTIME shorter than ORCA's own window leaves the
+    rate unconverged: 2.3x too fast for formaldehyde's ISC at 290 fs.
+    """
+
     TRANSIENT_SYSTEM_ERROR = "transient_system"
     """Temporary system errors (disk full, network issues, etc.) - retry without modification."""
 
@@ -82,6 +108,21 @@ class OrcaErrorDetector:
 
     # Error pattern definitions with priority (lower = higher priority)
     ERROR_PATTERNS = [
+        # ORCA refused the input: nothing a retry changes (highest priority)
+        {
+            "type": OrcaErrorType.INPUT_ERROR,
+            "patterns": [
+                "and number of electrons",
+                "INPUT ERROR",
+                "Unknown identifier",
+                "Invalid assignment",
+                "Unrecognized symbol",
+                "UNRECOGNIZED OR DUPLICATED KEYWORD",
+                "basis set was either not assigned",
+            ],
+            "all_required": False,
+            "priority": 0,
+        },
         # TRAH crashes (highest priority - most specific)
         {
             "type": OrcaErrorType.TRAH_SEGFAULT,
@@ -342,6 +383,65 @@ class OrcaErrorDetector:
         return None
 
     @classmethod
+    def unusable_result(cls, output_file: Path, input_file: Optional[Path] = None):
+        """A run that ended normally but whose result is not one: (error type, job index, reason) or None.
+
+        ORCA ends with "ORCA TERMINATED NORMALLY" after an optimisation that
+        ran out of cycles, a TD-DFT root that collapsed, and an ESD rate that
+        is negative or cut off early; judged on that marker, each counted as
+        done and the retry for it never ran.
+        """
+        output_file = Path(output_file)
+        if not output_file.exists():
+            return None
+        collapsed = cls.analyze_output(output_file)
+        if collapsed == OrcaErrorType.TDDFT_ROOT_COLLAPSE:
+            return OrcaErrorType.TDDFT_ROOT_COLLAPSE, None, "a TD-DFT root collapsed"
+        wants_scan = True
+        if input_file is not None:
+            try:
+                head = Path(input_file).read_text(encoding="utf-8", errors="replace").lower()
+                wants_scan = "opt" in head or "esd(" in head
+            except OSError:
+                wants_scan = True
+        if not wants_scan:
+            return None
+        from delfin.common.esd_numerics import rate_problem
+
+        job = 0
+        section: List[str] = []
+        found = None
+
+        def check(text: str, index: int):
+            if _OPT_GAVE_UP in text:
+                return OrcaErrorType.GEOMETRY_NOT_CONVERGED, index, "the optimisation ran out of cycles"
+            problem = rate_problem(text) if "EXCITED STATE DYNAMICS" in text else None
+            if problem:
+                kind = (OrcaErrorType.ESD_RATE_UNPHYSICAL if problem.startswith("unphysical")
+                        else OrcaErrorType.ESD_WINDOW_TRUNCATED)
+                return kind, index, f"the rate is {problem}"
+            return None
+
+        try:
+            with output_file.open(encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    if _JOB_BANNER.search(line):
+                        found = check("".join(section), job) if section else None
+                        if found:
+                            return found
+                        job = int(_JOB_BANNER.search(line).group(1)) - 1
+                        section = []
+                        continue
+                    # only the lines the checks read are kept
+                    if ("optimization did not converge" in line or "rate constant is" in line
+                            or "negative rates" in line or "linewidth is" in line or "Maximum time" in line
+                            or "EXCITED STATE DYNAMICS" in line):
+                        section.append(line)
+        except OSError:
+            return None
+        return check("".join(section), job) if section else None
+
+    @classmethod
     def analyze_output(cls, output_file: Path) -> Optional[OrcaErrorType]:
         """Analyze ORCA output file and classify the error.
 
@@ -481,6 +581,10 @@ class RecoveryStrategy:
         # parsed_input; when present, strategies can read what ORCA itself
         # reported instead of guessing. Absent, every strategy behaves as before.
         self.output_file: Optional[Path] = None
+        # Optional: which job of a $new_job file the problem is in, when the
+        # caller knows (a run that ended normally ran every job; the last
+        # banner is then not the one that failed).
+        self.job_index: Optional[int] = None
 
     def get_modifications(self) -> Dict:
         """Get input file modifications for this error/attempt combination.
@@ -521,6 +625,48 @@ class RecoveryStrategy:
         elif self.error_type == OrcaErrorType.TRANSIENT_SYSTEM_ERROR:
             return self._transient_error_fixes()
 
+        elif self.error_type in (OrcaErrorType.ESD_RATE_UNPHYSICAL, OrcaErrorType.ESD_WINDOW_TRUNCATED):
+            return self._esd_rate_fixes()
+
+        return {}
+
+    def _printed_esd_grid(self) -> tuple:
+        """(number of points, maximum time in a.u.) the failed ESD run printed, or (None, None)."""
+        if self.output_file is None:
+            return None, None
+        try:
+            text = Path(self.output_file).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return None, None
+        points = re.findall(r"Number of points:\s*(\d+)", text)
+        window = re.findall(r"Maximum time:\s*([0-9.]+)\s*fs", text)
+        return (int(points[-1]) if points else None,
+                float(window[-1]) / 0.02418884326585747 if window else None)
+
+    def _esd_rate_fixes(self) -> Dict:
+        """ESD rates that ended normally but are not a number.
+
+        A window cut short (only a MAXTIME set below ORCA's own gives one) is
+        handed back to ORCA, which chooses it from the linewidth.  A negative
+        rate on ORCA's window gets what ORCA's warning asks for: more points,
+        then also a longer window.  The job's own orbitals make the TD-DFT
+        part of the rerun cheap; derivatives for Herzberg-Teller terms are
+        computed again (ORCA offers no way to read them back).
+        """
+        points, window_au = self._printed_esd_grid()
+        if self.error_type == OrcaErrorType.ESD_WINDOW_TRUNCATED:
+            if self.attempt == 1:
+                return {"use_moread": True, "esd_block_remove": ["NPOINTS", "MAXTIME"]}
+            return {}
+        base_points = points or 131072
+        if self.attempt == 1:
+            return {"use_moread": True, "esd_block_remove": ["MAXTIME"],
+                    "esd_block": {"NPOINTS": 4 * base_points}}
+        if self.attempt == 2:
+            fixes = {"use_moread": True, "esd_block": {"NPOINTS": 16 * base_points}}
+            if window_au:
+                fixes["esd_block"]["MAXTIME"] = int(2 * window_au)
+            return fixes
         return {}
 
     def _transient_error_fixes(self) -> Dict:
@@ -612,7 +758,40 @@ class RecoveryStrategy:
                     },
                 }
 
+    def _failed_in_hessian(self) -> bool:
+        """True when the SCF that failed ran inside the analytic Hessian (the CP-SCF of a frequency step)."""
+        if self.output_file is None:
+            return False
+        try:
+            path = Path(self.output_file)
+            size = path.stat().st_size
+            with path.open(encoding="utf-8", errors="replace") as handle:
+                if size > _ERROR_SCAN_TAIL_BYTES:
+                    handle.seek(size - _ERROR_SCAN_TAIL_BYTES)
+                tail = handle.read()
+        except OSError:
+            return False
+        # the analytic Hessian's own section (ORCA 6.1.1); "CP-SCF" alone also
+        # stands in every TD-DFT gradient and does not tell the phase
+        response = max(tail.rfind("ORCA SCF RESPONSE CALCULATION"), tail.rfind("SCF HESSIAN"))
+        return response >= 0 and response > tail.rfind("SCF ITERATIONS")
+
     def _leanscf_convergence_fixes(self) -> Dict:
+        """Fixes for an SCF that ORCA's LEANSCF program could not converge.
+
+        In ORCA 6 every SCF runs in orca_leanscf, so "error termination in
+        LEANSCF" is the ordinary SCF failure: all 472 archived ones were the
+        main SCF (426 in the first optimisation cycle), none a CP-SCF of a
+        frequency step.  They get the SCF escalation; FREQ is kept -- taking
+        it away does not help an SCF converge and leaves IMAG and the
+        thermochemistry without a Hessian.  Only an SCF that failed inside the
+        analytic Hessian gets the frequency path below.
+        """
+        if not self._failed_in_hessian():
+            return self._scf_convergence_fixes()
+        return self._hessian_scf_fixes()
+
+    def _hessian_scf_fixes(self) -> Dict:
         """Progressive fixes for LEANSCF (coupled-perturbed SCF) convergence failures.
 
         LEANSCF is used for analytical frequencies and can fail to converge for:
@@ -1038,6 +1217,9 @@ class OrcaInputModifier:
     @staticmethod
     def _failed_job(strategy: RecoveryStrategy, n_jobs: int) -> int:
         """Index of the job ORCA was running when it stopped (its last "JOB NUMBER" banner)."""
+        known = getattr(strategy, "job_index", None)
+        if known is not None:
+            return max(0, min(int(known), n_jobs - 1))
         if n_jobs <= 1 or strategy.output_file is None:
             return 0
         try:
@@ -1087,6 +1269,16 @@ class OrcaInputModifier:
 
         if "geom_block" in mods:
             orca_input.set_block_values(job, "geom", mods["geom_block"])
+
+        esd_holders = [items for items in jobs if orca_input.has_block(items, "esd")]
+        if "esd_block_remove" in mods:
+            for items in esd_holders:
+                if orca_input.remove_block_values(items, "esd", mods["esd_block_remove"]):
+                    logger.info("ESD time grid left to ORCA: %s removed", ", ".join(mods["esd_block_remove"]))
+        if "esd_block" in mods:
+            for items in esd_holders:
+                orca_input.set_block_values(items, "esd", mods["esd_block"], create=False)
+            logger.info("Set %%esd parameters: %s", ", ".join(f"{k}={v}" for k, v in mods["esd_block"].items()))
 
         if "tddft_block" in mods:
             # never into a job without one: %tddft in an optimisation makes
