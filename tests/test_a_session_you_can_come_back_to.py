@@ -21,6 +21,8 @@ on the FIRST beat and never before.
 
 from __future__ import annotations
 
+import re
+
 import json
 import os
 from pathlib import Path
@@ -220,17 +222,20 @@ def test_two_sessions_started_together_do_not_collide():
 # The strip
 # ---------------------------------------------------------------------------
 
-def test_an_unarmed_strip_says_the_session_ends():
+def test_an_unarmed_strip_is_a_dot_that_says_the_session_ends():
     html = S._strip_html(False, "", "")
-    assert "endet" in html
     assert "delfin-session-dot" in html and "dot on" not in html
+    assert 'title="Session ends when the window closes"' in html
+    assert re.sub(r"<[^>]+>", "", html).strip() == "", "the strip shows text beside the dot"
 
 
-def test_an_armed_strip_shows_the_name_and_where_to_come_back():
+def test_an_armed_strip_is_a_dot_that_links_to_the_return_address():
     html = S._strip_html(True, "uc3n990-ab12", "http://h:8866/delfin/resume/x")
     assert "dot on" in html
-    assert "uc3n990-ab12" in html
-    assert "delfin/resume" in html
+    assert 'href="http://h:8866/delfin/resume/x"' in html
+    assert "Kept as uc3n990-ab12" in html
+    assert re.sub(r"<[^>]+>", "", html).strip() == "", "the strip shows text beside the dot"
+    assert not re.search(r"[äöüÄÖÜß]", html)
 
 
 def test_the_toggle_arms_and_disarms_the_session():
@@ -262,7 +267,7 @@ def test_arming_prints_where_to_come_back(capsys):
     S.announce()
     out = capsys.readouterr().out
     assert "probe-9" in out
-    assert "Beenden" in out
+    assert "End:" in out
 
 
 # ---------------------------------------------------------------------------
@@ -317,23 +322,23 @@ def test_the_banner_carries_a_link_and_an_age():
     html = S._banner_html(S.other_sessions(exclude_kernel="kernel-bbb"))
     assert "uc3n990-ab12" in html
     assert "delfin_resume.ipynb" in html
-    assert "seit 5" in html
+    assert "for 5" in html
 
 
 def test_a_young_session_is_counted_in_minutes():
-    """A dashboard opened three minutes ago should not read "seit 0 h"."""
+    """A dashboard opened three minutes ago should not read "for 0 h"."""
     import re
 
     _kept("fresh-1", "kernel-aaa", hours_ago=0.05)
     html = S._banner_html(S.other_sessions(exclude_kernel="kernel-bbb"))
-    age = re.search(r"seit[^&]*&nbsp;(min|h)", html)
+    age = re.search(r"for[^&]*&nbsp;(min|h)", html)
     assert age and age.group(1) == "min", html
 
 
 def test_a_record_without_an_address_says_so_rather_than_linking_nowhere():
     _kept("no-url", "kernel-aaa", url="")
     html = S._banner_html(S.other_sessions(exclude_kernel="kernel-bbb"))
-    assert "Adresse unbekannt" in html
+    assert "address unknown" in html
     assert "<a href" not in html
 
 
@@ -476,7 +481,7 @@ def test_the_strip_cannot_be_shrunk_by_the_header():
 
     strip = s.build_status_strip()
     toggle = next(w for w in strip.children
-                  if getattr(w, "description", "") == "Offen halten")
+                  if getattr(w, "description", "") == "Keep session")
     assert toggle.layout.flex == "0 0 auto"
     assert strip.layout.flex == "0 0 auto"
     assert "white-space:nowrap" in s._STRIP_CSS
@@ -498,5 +503,40 @@ def test_inside_a_kernel_the_announcement_reaches_the_server(monkeypatch, capsys
     monkeypatch.setattr(S, "_server_stdout", lambda: out)
     S.keep_alive(True, session_name="probe-10")
     S.announce()
-    assert "probe-10" in out.getvalue() and "Beenden" in out.getvalue()
+    assert "probe-10" in out.getvalue() and "End:" in out.getvalue()
     assert capsys.readouterr().out == ""
+
+
+# ---------------------------------------------------------------------------
+# A return that found nothing says why
+# ---------------------------------------------------------------------------
+
+def test_a_return_without_an_address_names_voila(monkeypatch):
+    monkeypatch.delenv("VOILA_REQUEST_URL", raising=False)
+    why = S.why_not_resumed()
+    assert "VOILA_REQUEST_URL" in why
+
+
+def test_a_return_without_a_record_names_the_record_dir(monkeypatch, tmp_path):
+    monkeypatch.setattr(S, "RECORD_DIR", str(tmp_path))
+    why = S.why_not_resumed(request_url="http://h:8866/voila/render/x.ipynb?session=uc3n990-ab12")
+    assert "No record" in why and "uc3n990-ab12" in why and str(tmp_path) in why
+
+
+def test_a_return_whose_kernel_is_gone_says_so(monkeypatch, tmp_path):
+    monkeypatch.setattr(S, "RECORD_DIR", str(tmp_path))
+    S.write_record("uc3n990-ab12", kid="aaaa1111-0000-4000-8000-000000000001")
+    monkeypatch.setattr(S, "kernel_id", lambda: "bbbb2222-0000-4000-8000-000000000002")
+    why = S.why_not_resumed(request_url="http://h:8866/voila/render/x.ipynb?session=uc3n990-ab12")
+    assert "exists" in why and "fresh kernel" in why
+    assert "aaaa1111" in why and "bbbb2222" in why
+
+
+def test_every_word_the_session_shows_is_english():
+    """Asked for on 2026-09-11: the dashboard speaks English. The strip,
+    the toggle, the banner and the terminal line."""
+    import inspect
+    src = inspect.getsource(S)
+    for word in ("Sitzung", "Offen halten", "Läuft weiter", "zurück über",
+                 "Adresse unbekannt", "wieder hineingehen", "bleibt bestehen"):
+        assert word not in src, word

@@ -251,3 +251,17 @@ def test_the_import_path_in_the_flag_really_resolves():
         AsyncMappingKernelManager,
     )
     assert issubclass(cls, AsyncMappingKernelManager)
+
+
+def test_the_cell_has_an_id_and_says_why_when_gone():
+    """nbformat 4.5 wants a cell id (the server warned at every start),
+    and a resume that finds nothing explains itself instead of only
+    saying the session is gone."""
+    nb = R.resume_notebook_source()
+    assert nb["cells"][0].get("id")
+    src = "".join(nb["cells"][0]["source"])
+    assert "why_not_resumed()" in src
+    import nbformat, warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        nbformat.validate(nbformat.from_dict(nb))
