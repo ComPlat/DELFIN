@@ -597,3 +597,14 @@ def test_a_missing_record_report_lists_what_is_on_disk(monkeypatch, tmp_path):
     monkeypatch.setattr(S, "RECORD_DIR", str(tmp_path / "nowhere"))
     why = S.why_not_resumed(request_url="http://h:8866/voila/render/x.ipynb?session=uc3n990-ab12")
     assert "does not exist" in why
+
+
+def test_removing_a_record_says_who_asked(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(S, "RECORD_DIR", str(tmp_path))
+    monkeypatch.setattr(S, "kernel_id", lambda: "")
+    S.write_record("uc3n990-ab12", kid="aaaa1111-0000-4000-8000-000000000001")
+    assert S.drop_record("uc3n990-ab12")
+    out = capsys.readouterr().out
+    assert 'record of session "uc3n990-ab12" removed' in out
+    assert "test_removing_a_record_says_who_asked" in out
+    assert not S.drop_record("uc3n990-ab12")            # gone already: nothing said twice

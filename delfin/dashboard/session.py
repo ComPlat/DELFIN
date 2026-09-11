@@ -601,17 +601,43 @@ def last_write_error() -> str:
     return _last_write_error
 
 
-def drop_record(name: str = "", *, root: str = "") -> bool:
+def drop_record(name: str = "", *, root: str = "", reason: str = "") -> bool:
     """Take the announcement back. Disarming must leave nothing behind,
-    or the landing page offers a session that is gone."""
+    or the landing page offers a session that is gone.
+
+    Every removal is said aloud with who asked for it: a record vanished
+    on a cluster between the page's goodbye and the return, and nothing
+    named the hand that took it (2026-09-11).
+    """
     who = name or session_name()
     if not who:
         return False
     try:
         os.remove(record_path(who, root=root))
-        return True
     except OSError:
         return False
+    if not reason:
+        try:
+            import inspect
+            reason = inspect.stack()[1].function
+        except Exception:
+            reason = "unknown caller"
+    _say(f"[delfin] record of session \"{who}\" removed ({reason}).")
+    return True
+
+
+def _say(line: str) -> None:
+    """A line for the server's terminal, from a kernel or from the server."""
+    out = _server_stdout() if kernel_id() else None
+    if out is not None:
+        try:
+            with out:
+                out.write(line + "\n")
+                out.flush()
+            return
+        except OSError:
+            pass
+    print(line)
 
 
 def list_records(*, root: str = "") -> list[dict]:
