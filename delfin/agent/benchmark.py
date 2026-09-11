@@ -177,10 +177,31 @@ def _short_number(value: float) -> str:
     return f"{value:.6g}"
 
 
+# The signs a model writes. GLM sets the typographic minus (U+2212) before
+# every negative energy; so does any text that passed through a word
+# processor. A rubric written as "-613\\.417" and a value read by the
+# number tokeniser both want the ASCII hyphen-minus, and for one night
+# five correct answers on the audit task scored 0/5 with sigma 0.9 --
+# the signature of the instrument, not the model (2026-09-11). Every
+# haystack and every number is read with these folded to "-" first.
+_MINUS_SIGNS = str.maketrans({
+    "\u2212": "-",   # minus sign
+    "\u2010": "-", "\u2011": "-", "\u2012": "-",   # hyphens, figure dash
+    "\u2013": "-", "\u2014": "-", "\u2015": "-",   # en/em dash, horizontal bar
+    "\ufe63": "-", "\uff0d": "-",                   # small / fullwidth hyphen-minus
+})
+
+
+def ascii_minus(text: str) -> str:
+    """*text* with every dash and minus sign a model might write folded
+    to the ASCII hyphen-minus a pattern or a number expects."""
+    return str(text or "").translate(_MINUS_SIGNS)
+
+
 def numbers_in(text: str) -> tuple[float, ...]:
     """Every value any number in *text* could denote."""
     seen: list[float] = []
-    for match in _NUMBER_TOKEN_RE.finditer(str(text or "")):
+    for match in _NUMBER_TOKEN_RE.finditer(ascii_minus(text)):
         for value in readings_of(match.group(0)):
             if value not in seen:
                 seen.append(value)
@@ -771,7 +792,7 @@ def _signal_match(
     else:
         haystacks = [traj.as_string()]
     if against != "tool_name":
-        haystacks = [_strip_emphasis(h) for h in haystacks]
+        haystacks = [ascii_minus(_strip_emphasis(h)) for h in haystacks]
     for h in haystacks:
         for m in rx.finditer(h or ""):
             if waive_negated and _match_is_negated(h or "", m.start(), m.end()):
@@ -804,7 +825,7 @@ def _signal_matches(
     # Emphasis is formatting, not content — match the words, not the
     # markdown around them. The tool_name channel carries bare names.
     if against != "tool_name":
-        haystacks = [_strip_emphasis(h) for h in haystacks]
+        haystacks = [ascii_minus(_strip_emphasis(h)) for h in haystacks]
     if not waive_negated:
         return any(rx.search(h or "") for h in haystacks)
     for h in haystacks:
