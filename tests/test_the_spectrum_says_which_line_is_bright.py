@@ -163,3 +163,60 @@ def test_the_overview_says_whether_the_first_bright_line_is_visible(tmp_path):
     assert rows["uv_dye"]["first_bright_in_visible"] is False        # the 295 nm line, fosc 0.9
     assert rows["uv_dye"]["brightest_visible_nm"] is None
     assert any("no bright transition in the visible" in n for n in rows["uv_dye"]["notes"])
+
+
+# --- the null says why, and every row says what it is ---------------------------
+# Three operator interviews on the same task (2026-09-11) read first_bright
+# at 317.9 nm beside brightest_visible null and had to work out for
+# themselves that 317.9 nm is the UV; one took a dark visible line for no
+# visible line at all. The rows carry their flags, the null its reason.
+
+def test_every_transition_says_whether_it_is_bright_and_visible(tmp_path):
+    res = api.extract_excited_states(_run(tmp_path))
+    flags = [(t.bright, t.in_visible) for t in res.transitions]
+    assert flags == [(False, True), (True, True), (True, False), (True, False)]
+    (tmp_path / "b").mkdir()
+    out = json.loads(ops.tool_extract_excited_states(_run(tmp_path / "b")))
+    assert out["transitions"][1]["bright"] is True and out["transitions"][0]["bright"] is False
+    assert "in_visible" in out["transitions"][0]
+
+
+def test_the_first_bright_visible_line_is_the_lowest_bright_one_inside_the_window(tmp_path):
+    res = api.extract_excited_states(_run(tmp_path))
+    assert res.first_bright_visible["index"] == 1 and res.first_bright_visible["wavelength_nm"] == 467.9
+    assert res.visible_note == ""
+
+
+def test_a_dye_bright_only_in_the_uv_says_so_and_names_its_dark_visible_line(tmp_path):
+    uv = _TDDFT.replace("0.412300", "0.003200").replace("0.021000", "0.000000")   # 467.9 nm now dark
+    res = api.extract_excited_states(_run(tmp_path, uv))
+    assert res.first_bright["wavelength_nm"] == 295.2 and res.first_bright["in_visible"] is False
+    assert res.brightest_visible is None and res.first_bright_visible is None
+    assert res.strongest_visible["wavelength_nm"] == 467.9 and res.strongest_visible["fosc"] == 0.0032
+    assert res.visible_note == (
+        "the bright lines (fosc >= 0.01) all lie in the UV, the nearest at 295.2 nm; "
+        "the strongest line in the visible (380-780 nm) is dark: 467.9 nm, fosc 0.0032")
+
+
+def test_no_bright_line_anywhere_is_said_as_such(tmp_path):
+    dark = _TDDFT.replace("0.412300", "0.000000").replace("0.021000", "0.000000").replace("0.900000", "0.004000")
+    res = api.extract_excited_states(_run(tmp_path, dark))
+    assert res.visible_note.startswith("no line reaches fosc 0.01; the strongest line in the visible")
+    assert res.strongest_visible["fosc"] == 0.0
+
+
+def test_the_overview_note_says_why_the_visible_answer_is_null(tmp_path):
+    root = _spectra_ws(tmp_path)
+    uv = root / "uv_dye"
+    uv.mkdir()
+    (uv / "run.inp").write_text("! B3LYP def2-SVP TDDFT\n")
+    (uv / "run.out").write_text(_ORB + _TDDFT.replace("0.412300", "0.003200").replace("0.021000", "0.000000") + "****ORCA TERMINATED NORMALLY****\n")
+    row = api.extract_spectra_table([str(uv)])[0]
+    assert row["brightest_visible_nm"] is None
+    assert row["strongest_visible_nm"] == 467.9 and row["strongest_visible_fosc"] == 0.0032
+    assert row["strongest_visible_line"]
+    note = [n for n in row["notes"] if n.startswith("no bright transition in the visible")][0]
+    assert "all lie in the UV, the nearest at 295.2 nm" in note and "is dark: 467.9 nm" in note
+    assert "strongest_visible" in (ops.tool_extract_spectra_table.__doc__ or "")
+    entry = next(e for e in api._TOOL_CATALOG if e["name"] == "extract_spectra_table")
+    assert "strongest visible" in entry["summary"]

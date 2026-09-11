@@ -819,6 +819,8 @@ def extract_spectra_table(folders: list[str] | str) -> list[dict]:
             "first_bright_in_visible": None, "first_bright_line": None,
             "brightest_visible_nm": None, "brightest_visible_fosc": None,
             "brightest_visible_line": None,
+            "strongest_visible_nm": None, "strongest_visible_fosc": None,
+            "strongest_visible_line": None,
             "n_imag": None, "is_minimum": None, "most_negative_cm": None,
             "most_negative_line": None,
             "notes": [],
@@ -850,7 +852,13 @@ def extract_spectra_table(folders: list[str] | str) -> list[dict]:
                 row["brightest_visible_line"] = exc.brightest_visible["line"]
             else:
                 lo, hi = exc.visible_range_nm
-                row["notes"].append(f"no bright transition in the visible ({lo:.0f}-{hi:.0f} nm)")
+                row["notes"].append(
+                    f"no bright transition in the visible ({lo:.0f}-{hi:.0f} nm)"
+                    + (f": {exc.visible_note}" if exc.visible_note else ""))
+            if exc.strongest_visible:
+                row["strongest_visible_nm"] = exc.strongest_visible["wavelength_nm"]
+                row["strongest_visible_fosc"] = exc.strongest_visible["fosc"]
+                row["strongest_visible_line"] = exc.strongest_visible["line"]
         imag = extract_imaginary_frequencies(str(p))
         if imag.error:
             row["notes"].append(f"frequencies: {imag.error}")
@@ -1359,6 +1367,10 @@ class ExcitedStateEntry:
     wavelength_nm: float
     fosc: float
     line: int | None = None       # the line in the output, to cite file:line
+    #: fosc at or above the result's bright_threshold_fosc.
+    bright: bool = False
+    #: wavelength inside the result's visible_range_nm.
+    in_visible: bool = False
 
 
 @dataclass
@@ -1386,6 +1398,16 @@ class ExcitedStatesResult:
     brightest: dict | None = None
     #: The strongest transition inside the visible range.
     brightest_visible: dict | None = None
+    #: The lowest-energy bright transition inside the visible range.
+    first_bright_visible: dict | None = None
+    #: The strongest transition inside the visible range at ANY strength --
+    #: the line a reader mistakes for "nothing in the visible" when the
+    #: bright ones all lie in the UV. Dark when fosc is below the threshold.
+    strongest_visible: dict | None = None
+    #: Why brightest_visible is null, when it is: the bright lines lie in
+    #: the UV (and where), or the strongest visible line is dark (and how
+    #: dark), or there is no bright line at all.
+    visible_note: str = ""
 
 
 def _pick_lines(rows: list, threshold: float, visible: tuple) -> dict:
@@ -1396,7 +1418,15 @@ def _pick_lines(rows: list, threshold: float, visible: tuple) -> dict:
                 "fosc": r.fosc, "line": r.line,
                 "in_visible": visible[0] <= r.wavelength_nm <= visible[1]}
     bright = [(i, r) for i, r in enumerate(rows) if r.fosc >= threshold]
-    out = {"first_bright": None, "brightest": None, "brightest_visible": None}
+    in_vis = [(i, r) for i, r in enumerate(rows)
+              if visible[0] <= r.wavelength_nm <= visible[1]]
+    out = {"first_bright": None, "brightest": None, "brightest_visible": None,
+           "first_bright_visible": None, "strongest_visible": None,
+           "visible_note": ""}
+    lo, hi = visible
+    if in_vis:
+        i, r = max(in_vis, key=lambda t: t[1].fosc)
+        out["strongest_visible"] = entry(i, r)
     if bright:
         i, r = min(bright, key=lambda t: t[1].energy_ev)
         out["first_bright"] = entry(i, r)
@@ -1406,6 +1436,29 @@ def _pick_lines(rows: list, threshold: float, visible: tuple) -> dict:
         if vis:
             i, r = max(vis, key=lambda t: t[1].fosc)
             out["brightest_visible"] = entry(i, r)
+            i, r = min(vis, key=lambda t: t[1].energy_ev)
+            out["first_bright_visible"] = entry(i, r)
+    # The reason for a null, stated where the null is. Asked for after an
+    # operator read first_bright at 317.9 nm beside brightest_visible null
+    # and had to work out for itself that 317.9 nm is the UV (2026-09-11).
+    if not rows:
+        out["visible_note"] = "no transitions"
+    elif out["brightest_visible"] is None:
+        parts = []
+        if bright:
+            longest = max(bright, key=lambda t: t[1].wavelength_nm)[1].wavelength_nm
+            side = "UV" if longest < lo else "IR" if longest > hi else "outside the visible"
+            parts.append(f"the bright lines (fosc >= {threshold:g}) all lie in the "
+                         f"{side}, the nearest at {longest:.1f} nm")
+        else:
+            parts.append(f"no line reaches fosc {threshold:g}")
+        sv = out["strongest_visible"]
+        if sv is not None:
+            parts.append(f"the strongest line in the visible ({lo:.0f}-{hi:.0f} nm) "
+                         f"is dark: {sv['wavelength_nm']:.1f} nm, fosc {sv['fosc']:g}")
+        else:
+            parts.append(f"no line at all in the visible ({lo:.0f}-{hi:.0f} nm)")
+        out["visible_note"] = "; ".join(parts)
     return out
 
 
@@ -1456,12 +1509,19 @@ def extract_excited_states(folder: str) -> ExcitedStatesResult:
             fosc=float(m.group(6)),
             line=base_line + offset,
         ))
-    picked = _pick_lines(rows, 0.01, (380.0, 780.0))
+    threshold, visible = 0.01, (380.0, 780.0)
+    for r in rows:
+        r.bright = r.fosc >= threshold
+        r.in_visible = visible[0] <= r.wavelength_nm <= visible[1]
+    picked = _pick_lines(rows, threshold, visible)
     return ExcitedStatesResult(
         folder=str(folder), output_file=target.name,
         n_states=len(rows), transitions=rows,
         first_bright=picked["first_bright"], brightest=picked["brightest"],
         brightest_visible=picked["brightest_visible"],
+        first_bright_visible=picked["first_bright_visible"],
+        strongest_visible=picked["strongest_visible"],
+        visible_note=picked["visible_note"],
     )
 
 
@@ -2460,7 +2520,7 @@ _TOOL_CATALOG: list[dict] = [
     {"name": "calc_status", "category": "parsing",
      "summary": "One folder: succeeded / failed / running / stalled, with the evidence."},
     {"name": "extract_spectra_table", "category": "parsing",
-     "summary": "Per folder: HOMO-LUMO gap, first bright and brightest visible transition, imaginary modes, minimum verdict."},
+     "summary": "Per folder: HOMO-LUMO gap, first bright and brightest visible transition (and the strongest visible line even when dark), imaginary modes, minimum verdict."},
     {"name": "find_orca_errors", "category": "parsing",
      "summary": "Scan a folder's .out files for known error patterns."},
     {"name": "extract_thermochem", "category": "parsing",
