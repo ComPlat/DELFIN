@@ -461,9 +461,12 @@ def test_tool_find_calculation_extreme_excludes_unparseable(tmp_path):
     txt = ops_server.tool_find_calculation_extreme(
         folders_csv, property="gibbs",
     )
-    rows = [r for g in json.loads(txt)["groups"] for r in g["rows"]]   # grouped by method since 2026-09-10
+    out = json.loads(txt)
+    rows = [r for g in out["groups"] for r in g["rows"]]   # grouped by method since 2026-09-10
     assert len(rows) == 1
-    assert rows[0]["folder"] == str(good)
+    # Folders are relative to the shared root since 2026-09-11.
+    import os as _os
+    assert _os.path.join(out["root"], rows[0]["folder"]) == str(good)
 
 
 # ---------------------------------------------------------------------------

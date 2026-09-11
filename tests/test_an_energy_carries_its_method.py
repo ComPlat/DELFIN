@@ -329,7 +329,8 @@ def test_an_absent_property_is_ranked_by_what_is_there_and_says_so(tmp_path):
     out = json.loads(ops.tool_find_calculation_extreme(f"{a},{b}", property="gibbs", n=1))
     assert out["property_used"] == "single_point"
     assert "single_point" in out["note"] and "gibbs" in out["note"]
-    assert [r["folder"] for g in out["groups"] for r in g["rows"]] == [b]
+    # Folders come relative to the shared root since 2026-09-11.
+    assert [str(Path(out["root"]) / r["folder"]) for g in out["groups"] for r in g["rows"]] == [b]
 
 
 def test_mixed_availability_keeps_the_requested_property(tmp_path):
@@ -352,7 +353,7 @@ def test_a_folder_left_out_says_why(tmp_path):
     missing = str(tmp_path / "nowhere")
     out = json.loads(ops.tool_find_calculation_extreme(
         f"{good},{pending},{missing}", property="gibbs"))
-    assert [r["folder"] for g in out["groups"] for r in g["rows"]] == [good]
+    assert [str(Path(out["root"]) / r["folder"]) for g in out["groups"] for r in g["rows"]] == [good]
     left = {Path(x["folder"]).name: x for x in out["skipped"]}
     assert set(left) == {"pending", "nowhere"}
     assert "no output" in left["pending"]["reason"]
