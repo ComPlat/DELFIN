@@ -337,9 +337,14 @@ def tool_extract_spectra_table(folders: str) -> str:
     Returns {"root", "rows": [{folder, method, outcome, gap_ev, homo_ev,
     lumo_ev, homo_line, lumo_line, first_bright_nm, first_bright_fosc,
     first_bright_in_visible, first_bright_line, brightest_visible_nm,
-    brightest_visible_fosc, brightest_visible_line, n_imag, is_minimum,
+    brightest_visible_fosc, brightest_visible_line, strongest_visible_nm,
+    strongest_visible_fosc, strongest_visible_line, n_imag, is_minimum,
     most_negative_cm, most_negative_line, notes}]}, folders relative to
-    root. The *_line fields are line numbers in the folder's output, so a
+    root. first_bright is the lowest-energy bright line wherever it lies
+    (the UV included; first_bright_in_visible says); brightest_visible is
+    null when every bright line is outside the visible, and notes then
+    says where they lie and how dark the strongest visible line is.
+    strongest_visible is that line at any strength. The *_line fields are line numbers in the folder's output, so a
     value can be cited as file:line without reading the file again. Answers "which run has the
     smallest gap, which dye is bright in the visible, which structure is
     no minimum" over many folders in one call, the way
@@ -1490,11 +1495,18 @@ def tool_extract_excited_states(folder: str) -> str:
     Each row has state_from, state_to, energy_ev, energy_cm,
     wavelength_nm, fosc. Use for UV/Vis spectrum analysis. Also answers
     the questions the table alone did not: first_bright (the lowest
-    bright transition), brightest, brightest_visible (the strongest
-    inside visible_range_nm), each as {index, state, wavelength_nm,
-    energy_ev, fosc, in_visible} -- with the definitions stated
-    (bright_threshold_fosc, visible_range_nm) so the answer can be
-    quoted with its rule. null when no transition qualifies.
+    bright transition, wherever it lies -- the UV included), brightest,
+    brightest_visible (the strongest bright line inside
+    visible_range_nm), first_bright_visible (the lowest bright line
+    inside it) and strongest_visible (the strongest line inside it at
+    ANY strength, so a dark visible line is not read as no line), each
+    as {index, state, wavelength_nm, energy_ev, fosc, line, in_visible}
+    -- with the definitions stated (bright_threshold_fosc,
+    visible_range_nm) so the answer can be quoted with its rule. Every
+    transition row also carries bright and in_visible. null when no
+    transition qualifies, and visible_note then says why (the bright
+    lines lie in the UV at ..., the strongest visible line is dark at
+    ...).
     """
     import json as _json
     from dataclasses import asdict as _asdict
