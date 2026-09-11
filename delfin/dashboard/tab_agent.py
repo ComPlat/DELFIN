@@ -15513,7 +15513,17 @@ def create_tab(ctx):
                     _mark_output()
                     if state.get("_stale_seen"):
                         state["_stale_seen"] = False
-                    # Flush thinking if no text came before tool use
+                    # Text first, then thinking, then the tool: the order
+                    # they happened in. Thinking used to be appended
+                    # first, which put a thinking bubble after the
+                    # streaming answer bubble; the text flush below then
+                    # found no assistant bubble at the end and opened a
+                    # NEW one holding the whole buffer -- the answer, a
+                    # second time, above the tool calls that verified it.
+                    if chunks:
+                        _update_last_assistant("".join(chunks), role_label,
+                                               finalize=True)
+                        chunks.clear()
                     if thinking_chunks:
                         full_thinking = "".join(thinking_chunks)
                         if full_thinking.strip():
@@ -15574,10 +15584,7 @@ def create_tab(ctx):
                     _detail = _tool_activity_label(tool_name, parsed)
                     _set_working(True, f"[{_tc}] {_detail}")
 
-                    # Flush pending text as a finalized assistant message
-                    if chunks:
-                        _update_last_assistant("".join(chunks), role_label, finalize=True)
-                        chunks.clear()
+                    # (pending text was flushed above, before the thinking)
 
                     # --- Build terminal-style tool display ---
                     _e = _html.escape
@@ -16688,11 +16695,14 @@ def create_tab(ctx):
                             _refs = ", ".join(
                                 f.path for f in _c_hard[:3])
                             _append_system_message(
-                                f"🔎 Verifying {len(_c_hard)} unsupported "
-                                f"claim(s) ({_refs}) — the answer is being "
-                                f"corrected …")
+                                f"🔎 Automatic check: {len(_c_hard)} cited "
+                                f"path(s) not found as written ({_refs}) — "
+                                f"asking the agent to verify them …")
                             _cfeedback = (
-                                "[Verify] " + _vg.code_claim_feedback(_c_hard)
+                                "[Verify] " + _vg.code_claim_feedback(
+                                    _c_hard,
+                                    observed=getattr(
+                                        engine, "_last_observed_files", None))
                             )
                             engine.messages.append(
                                 {"role": "user", "content": _cfeedback}
