@@ -305,7 +305,9 @@ def test_name_sets_only_reference_tools_that_exist():
     names = _catalogue_names()
     assert _DELFIN_ONLY_TOOL_NAMES <= names
     assert _WEAK_MODEL_CORE_TOOLS <= names
-    assert _DASHBOARD_AGENT_ALLOWED_TOOLS <= names
+    # The role allow-list is compared by BASE name, so it may name a
+    # read-only MCP tool (explain_delfin_feature) beside the built-ins.
+    assert _DASHBOARD_AGENT_ALLOWED_TOOLS <= names | set(A._MCP_READONLY_TOOL_BASES)
     assert A._DOC_INDEX_TOOL_NAMES <= names
     assert A._CALC_INDEX_TOOL_NAMES <= names
     assert A._SUBAGENT_SPAWN_TOOL_NAMES <= names

@@ -2343,6 +2343,10 @@ _DASHBOARD_AGENT_ALLOWED_TOOLS: frozenset[str] = frozenset({
     # Doc / calc search — the dashboard agent's research surface.
     "search_docs", "read_section", "list_docs", "list_sections",
     "search_calcs", "get_calc_info", "calc_summary",
+    # "How does X work in DELFIN?" is a dashboard question. Without the
+    # catalog the role guessed ("CO2-Bilanz bzw. Ressourcenkoordination")
+    # and told the user to switch modes by hand (driven 2026-09-11).
+    "list_delfin_features", "explain_delfin_feature",
     # Web research as last-resort fallback.
     "web_search", "web_fetch",
     # Structured UX & planning.
