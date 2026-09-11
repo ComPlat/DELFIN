@@ -97,6 +97,38 @@ def on_resume(hook: Callable[[], None]) -> None:
             _hooks.append(hook)
 
 
+def why_not_resumed(*, root: str = "", request_url: str = "") -> str:
+    """One sentence on why a resume request landed in a fresh kernel.
+
+    Printed by the resume notebook when resume() had nothing to show.
+    "This session is gone" was all it said for one night, and the
+    person reading it on a cluster could not tell a server restart from
+    a missing record from a Voila that never passed the address on.
+    """
+    url = request_url or _request_url()
+    if not url:
+        return ("The server did not see this as a return: Voila passed no "
+                "request address to the kernel (VOILA_REQUEST_URL is unset), "
+                "so the session name never reached the kernel manager.")
+    from delfin.dashboard.resume_server import requested_session
+    name = requested_session(url)
+    if not name:
+        return ("The address carries no session= parameter, so this is an "
+                "ordinary page, not a return.")
+    record = next((r for r in list_records(root=root)
+                   if r.get("session_name") == name), None)
+    mine = kernel_id()
+    if record is None:
+        return (f"No record for session \"{name}\" under {RECORD_DIR}: it was "
+                "ended, or it was kept by another account or on another "
+                "machine.")
+    wanted = str(record.get("kernel_id") or "")
+    return (f"A record for \"{name}\" exists (kernel {wanted[:8]}), but the "
+            f"server started a fresh kernel ({mine[:8]}) for this page: it no "
+            "longer runs that kernel -- a server restart, or the kernel ended. "
+            "The record is dropped on the server side.")
+
+
 def resume_hooks() -> list[Callable[[], None]]:
     with _lock:
         return list(_hooks)
@@ -282,28 +314,39 @@ _STRIP_CSS = """
   background:#c8ccd4;
 }
 .delfin-session-dot.on { background:#4b9e5f; }
-.delfin-session-note { font-size:12px; color:#5a6270; }
-.delfin-session-note code {
-  font-size:11px; background:#f2f4f7; padding:1px 4px; border-radius:3px;
-}
+.delfin-session-link { line-height:0; text-decoration:none; }
 </style>
 """
 
 
 def _strip_html(armed: bool, name: str, url: str) -> str:
-    """What the strip says. Split out so it can be read without a kernel."""
-    dot = '<span class="delfin-session-dot%s"></span>' % (" on" if armed else "")
+    """What the strip shows: a dot. Nothing else.
+
+    The state is in the dot's colour and its tooltip; the return address
+    is where the dot links to when the session is kept, and on the
+    server's terminal. A sentence beside the dot, and the address spelled
+    out in the header, were asked to go (2026-09-11): the header is for
+    the work, not for the session's paperwork.
+    """
     if not armed:
         return (
-            f'<div class="delfin-session-strip">{dot}'
-            '<span class="delfin-session-note">Sitzung endet beim Schlie&szlig;en'
-            '</span></div>'
+            '<div class="delfin-session-strip">'
+            '<span class="delfin-session-dot" '
+            'title="Session ends when the window closes"></span></div>'
         )
-    where = (f' &middot; zur&uuml;ck &uuml;ber <code>{url}</code>' if url else "")
+    if url:
+        # The title sits on the dot, which is what a pointer hovers; the
+        # anchor around it is where a click goes.
+        title = f"Kept as {name} &middot; click for the return address"
+        return (
+            '<div class="delfin-session-strip">'
+            f'<a class="delfin-session-link" href="{url}">'
+            f'<span class="delfin-session-dot on" title="{title}"></span></a></div>'
+        )
     return (
-        f'<div class="delfin-session-strip">{dot}'
-        f'<span class="delfin-session-note">L&auml;uft weiter als '
-        f'<code>{name}</code>{where}</span></div>'
+        '<div class="delfin-session-strip">'
+        f'<span class="delfin-session-dot on" title="Kept as {name} &middot; '
+        'return address unknown"></span></div>'
     )
 
 
@@ -325,11 +368,11 @@ def build_status_strip():
     note = widgets.HTML(_strip_html(False, "", ""))
     toggle = widgets.ToggleButton(
         value=False,
-        description="Offen halten",
+        description="Keep session",
         tooltip=(
-            "Sitzung nach dem Schließen des Browsers weiterlaufen "
-            "lassen. Der Agent arbeitet weiter, Formulare und geöffnete "
-            "Rechnungen bleiben. Scroll-Positionen kommen nicht zurück."
+            "Keep the session running after the browser closes. The agent "
+            "keeps working, forms and open calculations stay. Scroll "
+            "positions do not come back."
         ),
         icon="thumb-tack",
         # flex 0 0 auto: the header is a flex row, and a control that may
@@ -391,9 +434,9 @@ def announce(name: str = "") -> str:
     who = name or session_name()
     url = resume_url(who)
     line = (
-        f"[delfin] Sitzung \"{who}\" bleibt bestehen.\n"
-        f"         Zurück:  {url or '(Adresse unbekannt)'}\n"
-        f"         Beenden: im Dashboard, oder Ctrl+C hier"
+        f"[delfin] Session \"{who}\" is kept.\n"
+        f"         Return:  {url or '(address unknown)'}\n"
+        f"         End:     in the dashboard, or Ctrl+C here"
     )
     # Only a kernel has to reach past its own captured stdout; anywhere
     # else -- a test, a CLI -- the parent is not the server, and print
@@ -606,12 +649,12 @@ def _banner_html(records: list[dict]) -> str:
         try:
             age = max(0.0, time.time() - float(started))
             hours = age / 3600.0
-            when = (f"seit {hours:.0f}&nbsp;h" if hours >= 1
-                    else f"seit {age / 60.0:.0f}&nbsp;min")
+            when = (f"for {hours:.0f}&nbsp;h" if hours >= 1
+                    else f"for {age / 60.0:.0f}&nbsp;min")
         except (TypeError, ValueError):
             when = ""
-        link = (f'<a href="{url}">wieder hineingehen</a>' if url
-                else '<span style="color:#8a919e">Adresse unbekannt</span>')
+        link = (f'<a href="{url}">re-enter</a>' if url
+                else '<span style="color:#8a919e">address unknown</span>')
         rows.append(
             f'<li style="margin:2px 0"><code>{name}</code>'
             f'{" &middot; " + when if when else ""} &middot; {link}</li>')
@@ -619,9 +662,9 @@ def _banner_html(records: list[dict]) -> str:
         '<div style="border:1px solid #d7dbe2; border-left:3px solid #4b9e5f;'
         ' background:#f7f9fb; padding:8px 12px; margin:0 0 8px 0;'
         ' border-radius:4px; font-size:13px">'
-        '<b>Eine Sitzung l&auml;uft noch.</b> '
-        '<span style="color:#5a6270">Dieses Fenster ist neu &mdash; '
-        'du kannst dort weitermachen, wo du aufgeh&ouml;rt hast.</span>'
+        '<b>A session is still running.</b> '
+        '<span style="color:#5a6270">This window is new &mdash; '
+        'you can continue where you left off.</span>'
         f'<ul style="margin:6px 0 0 18px; padding:0">{"".join(rows)}</ul>'
         '</div>'
     )

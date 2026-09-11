@@ -110,6 +110,7 @@ def resume_notebook_source() -> dict:
     return {
         "cells": [{
             "cell_type": "code",
+            "id": "delfin-resume",
             "execution_count": None,
             "metadata": {},
             "outputs": [],
@@ -119,7 +120,8 @@ def resume_notebook_source() -> dict:
                 "# their callbacks never went away.\n",
                 "from delfin.dashboard import session as _s\n",
                 "if not _s.resume():\n",
-                "    print('Diese Sitzung ist nicht mehr da.')\n",
+                "    print('This session is gone.')\n",
+                "    print(_s.why_not_resumed())\n",
             ],
         }],
         "metadata": {
@@ -146,6 +148,18 @@ def stage_resume_notebook(root_dir: str | os.PathLike) -> str:
     path = directory / RESUME_NOTEBOOK_NAME
     path.write_text(json.dumps(resume_notebook_source(), indent=1),
                     encoding="utf-8")
+    # Signed here as well as by the launcher's `jupyter trust`: on a
+    # cluster the latter left the server saying "is not trusted" at every
+    # return. Trust concerns stored outputs, of which this cell has none,
+    # so the warning was noise -- but noise beside a failed return reads
+    # as its cause.
+    try:
+        import nbformat
+        from nbformat.sign import NotebookNotary
+        nb = nbformat.read(str(path), as_version=4)
+        NotebookNotary().sign(nb)
+    except Exception:
+        pass
     return str(path)
 
 
@@ -199,11 +213,21 @@ def resume_kernel_manager_class(base: type) -> type:
     class ResumeAwareKernelManager(base):                # type: ignore[misc]
 
         async def _delfin_existing(self, env: Optional[dict]) -> str:
+            # Every branch is logged: the server's terminal is where the
+            # person who could not get back is looking, and "this session
+            # is gone" on the page told them nothing about which of these
+            # it was.
             name = requested_session((env or {}).get("VOILA_REQUEST_URL", ""))
             if not name:
                 return ""
             kid = kernel_for_session(name)
+            log = getattr(self, "log", None)
             if not kid:
+                if log:
+                    log.warning(
+                        "[delfin] return to session %r: no record under %s "
+                        "(ended, or kept by another account/machine); "
+                        "starting a fresh kernel.", name, _session.RECORD_DIR)
                 return ""
             try:
                 known = kid in self
@@ -213,8 +237,17 @@ def resume_kernel_manager_class(base: type) -> type:
                 # The session announced a kernel that is gone. Drop the
                 # record here rather than leaving it to mislead the next
                 # visitor.
+                if log:
+                    log.warning(
+                        "[delfin] return to session %r: its kernel %s is not "
+                        "one this server runs (server restarted, or kernel "
+                        "ended); dropping the record and starting a fresh "
+                        "kernel.", name, kid[:8])
                 _session.drop_record(name)
                 return ""
+            if log:
+                log.info("[delfin] return to session %r: reusing kernel %s.",
+                         name, kid[:8])
             return kid
 
         async def start_kernel(self, *args: Any, **kwargs: Any):
