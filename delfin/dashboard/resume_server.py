@@ -60,6 +60,15 @@ POLL_SECONDS = 10
 
 GRACE_ENV = "DELFIN_SESSION_GRACE_SECONDS"
 
+#: Set to 1 to keep the server up after its last window has gone and no
+#: session is kept. By default it stops then and frees its port: the
+#: person who closed the last window has no Ctrl+C left to press.
+STAY_UP_ENV = "DELFIN_DASHBOARD_STAY_UP"
+
+
+def stays_up() -> bool:
+    return os.environ.get(STAY_UP_ENV, "").strip().lower() in ("1", "true", "yes", "on")
+
 
 def grace_seconds(default: float = GRACE_SECONDS) -> float:
     """The grace, with an environment override for a suite that has to
@@ -328,6 +337,49 @@ def resume_kernel_manager_class(base: type) -> type:
                 kernel_id[:8], int(seconds),
                 ", ".join(k[:8] for k in sorted(kept)) or "none")
             await self.shutdown_kernel(kernel_id)
+            self._delfin_stop_if_nothing_is_left()
+
+        # -- the last window -------------------------------------------------
+
+        def _delfin_kernels_alive(self) -> list:
+            try:
+                return list(self.list_kernel_ids())
+            except Exception:
+                return list(getattr(self, "_kernels", {}) or {})
+
+        def _delfin_stop_if_nothing_is_left(self) -> None:
+            """Stop the server once no kernel runs and no session is kept.
+
+            Closing the last window used to leave the server serving
+            nothing, its port taken, until somebody found the terminal
+            and pressed Ctrl+C. A kept session is the one reason to stay:
+            its kernel is alive and its record says so. STAY_UP_ENV keeps
+            the old behaviour for a server meant to outlive its windows.
+            """
+            if stays_up() or getattr(self, "_delfin_stopping", False):
+                return
+            if self._delfin_kernels_alive() or kept_kernel_ids():
+                return
+            log = getattr(self, "log", None)
+            if log:
+                log.warning(
+                    "[delfin] the last window closed and no session is kept: "
+                    "stopping the server and freeing its port (keep a session, "
+                    "or set %s=1, to have it stay).", STAY_UP_ENV)
+            app = getattr(self, "parent", None)
+            stop = getattr(app, "stop", None)
+            if not callable(stop):
+                # A manager without a server above it -- a test double,
+                # an embedding that built it by hand -- has nothing to
+                # stop; a signal to the process would hit whatever
+                # process that is (it hit pytest once).
+                return
+            self._delfin_stopping = True
+            try:
+                stop()
+            except Exception as exc:
+                if log:
+                    log.warning("[delfin] could not stop the server: %s", exc)
 
         async def shutdown_all(self, *args: Any, **kwargs: Any):
             # The server stopping is the one shutdown a kept kernel obeys.
@@ -368,7 +420,14 @@ def resume_kernel_manager_class(base: type) -> type:
                                     str(kernel_id)[:8], name)
                     _session.drop_record(name)
             self._delfin_unwatched().pop(kernel_id, None)
-            return await super().shutdown_kernel(kernel_id, *args, **kwargs)
+            result = await super().shutdown_kernel(kernel_id, *args, **kwargs)
+            # The page's goodbye ends an un-kept kernel through here, not
+            # through the cull rule -- and for one run the server then sat
+            # serving nothing, because the stop lived in the cull path
+            # alone. Whatever ended the last kernel, nothing is left.
+            if not getattr(self, "_delfin_stopping", False):
+                self._delfin_stop_if_nothing_is_left()
+            return result
 
     ResumeAwareKernelManager.__name__ = f"ResumeAware{base.__name__}"
     return ResumeAwareKernelManager
