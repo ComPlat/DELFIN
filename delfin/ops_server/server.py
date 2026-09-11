@@ -335,9 +335,12 @@ def tool_extract_spectra_table(folders: str) -> str:
     """One row per folder with what the spectroscopy tools each give.
 
     Returns {"root", "rows": [{folder, method, outcome, gap_ev, homo_ev,
-    lumo_ev, first_bright_nm, first_bright_fosc, brightest_visible_nm,
-    brightest_visible_fosc, n_imag, is_minimum, most_negative_cm,
-    notes}]}, folders relative to root. Answers "which run has the
+    lumo_ev, homo_line, lumo_line, first_bright_nm, first_bright_fosc,
+    first_bright_in_visible, first_bright_line, brightest_visible_nm,
+    brightest_visible_fosc, brightest_visible_line, n_imag, is_minimum,
+    most_negative_cm, most_negative_line, notes}]}, folders relative to
+    root. The *_line fields are line numbers in the folder's output, so a
+    value can be cited as file:line without reading the file again. Answers "which run has the
     smallest gap, which dye is bright in the visible, which structure is
     no minimum" over many folders in one call, the way
     extract_energy_table answers for energies. A value the output cannot
