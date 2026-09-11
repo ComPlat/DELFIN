@@ -1,12 +1,14 @@
-# Review ownership for the paths where a mistake is hardest to undo.
+# Review ownership for main.
 #
-# CODEOWNERS only takes effect once "Require review from Code Owners" is
-# enabled in the branch protection rules for main; without that it is
-# documentation. It is listed here so the intent is recorded either way.
+# The "protect-main" ruleset requires a Code Owner's approval on every pull
+# request, so nothing reaches main without the maintainer having read it.
 #
-# Everything else is deliberately left unowned: DELFIN takes contributions
-# across the whole tree, and requiring a named reviewer everywhere would slow
-# that down for no gain.
+# In CODEOWNERS the last matching line wins. The catch-all comes first; the
+# paths below it name the same owner and stay listed for the reason they are
+# the riskiest, so they keep their owner if the catch-all is ever shared with
+# further maintainers.
+
+*                                  @hmaximilian
 
 # The workflows are the merge gate, and they run with repository permissions.
 /.github/                @hmaximilian
