@@ -1065,7 +1065,25 @@ class AgentEngine:
         profile says 420 s, a turn thinking between two rounds was ended
         as a stall after 121 s (field report 2026-09-11).
         """
+        override = self.__dict__.get("_model_name", "")
+        if override:
+            return str(override)
         return str(getattr(getattr(self, "client", None), "model", "") or "")
+
+    @model.setter
+    def model(self, value: str) -> None:
+        """Point the engine at another model: the client's, since that is
+        what talks; kept on the engine when there is no client to hold it."""
+        name = str(value or "")
+        client = getattr(self, "client", None)
+        if client is not None:
+            try:
+                client.model = name
+                self.__dict__.pop("_model_name", None)
+                return
+            except Exception:
+                pass
+        self.__dict__["_model_name"] = name
 
     @property
     def current_role(self) -> str:
