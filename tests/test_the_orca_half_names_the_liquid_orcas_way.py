@@ -62,6 +62,31 @@ def test_no_press_writes_the_keyword_by_hand_any_more():
     assert _SADDLE.count('_solvents.orca_keyword(solvent)') == 2
 
 
+def test_the_liquid_has_its_own_name_and_does_not_overwrite_the_method():
+    """The liquid goes in ``wet``, beside the method -- never over it.
+
+    The ORCA line is ``! {keyword} OPTTS{wet}`` / ``! {keyword} NEB-TS{wet}``,
+    where ``keyword`` is the METHOD (XTB2/GFN1/...) from ``SADDLE_METHODS`` and
+    ``wet`` is the liquid.  For one commit the liquid keyword was assigned to
+    ``keyword`` itself, which dropped the method from the input: the press then
+    ran ORCA's default -- HF -- instead of xtb, a gas-phase band that came out
+    on a -600 cm-1 saddle where it should reach -393, and a climb that would
+    not converge.  So the liquid must have a name of its own, the method
+    keyword must still fill the ``!`` slot, and the clobbering assignment must
+    not come back.
+    """
+    # The method keyword is defined once per press (OptTS, NEB) and is what the
+    # ! line carries, with the liquid after it.
+    assert _SADDLE.count('keyword = SADDLE_METHODS.get(key)') == 2
+    assert '! {keyword} OPTTS{wet}' in _SADDLE
+    assert '! {keyword} NEB-TS{wet}' in _SADDLE
+    # The liquid has a name of its own, and wet is built from it.
+    assert _SADDLE.count('liquid = (') == 2
+    assert "wet = f' {liquid}' if liquid else ''" in _SADDLE
+    # The bug -- the liquid written over the method keyword -- stays gone.
+    assert "keyword = ('' if own_program is not None" not in _SADDLE
+
+
 def test_and_the_model_box_cannot_be_honoured_here_whatever_it_says():
     """ORCA's xtb driver takes ALPB and refuses the rest.
 
