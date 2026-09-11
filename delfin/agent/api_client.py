@@ -177,6 +177,9 @@ class CLIClient(_BaseClient):
         CLI permission mode (``"default"``, ``"acceptEdits"``, etc.).
     """
 
+    # The level is a subprocess flag, fixed when the process starts.
+    EFFORT_PER_REQUEST = False
+
     DEFAULT_MODEL = "sonnet"
     supplies_session_id = True          # emits a session_init event
 
@@ -640,6 +643,9 @@ class APIClient(_BaseClient):
     Supports text streaming, extended thinking, tool_use events,
     cost tracking, and model switching.
     """
+
+    # The thinking budget is derived per turn from the session's level.
+    EFFORT_PER_REQUEST = True
 
     DEFAULT_MODEL = "claude-sonnet-4-20250514"
 
@@ -16423,6 +16429,9 @@ class OpenAIClient(_BaseClient):
     Supports text streaming, cost tracking, and local doc-search tools
     via OpenAI function calling.
     """
+
+    # reasoning_effort is read from self.effort on every request.
+    EFFORT_PER_REQUEST = True
 
     DEFAULT_MODEL = "gpt-4.1"
 
