@@ -33,6 +33,49 @@ _PLAN_HINT_NUMBERED = re.compile(r"(?:^|\s)\(?(?:[1-9]|10)\)?[\.\)]")
 _EFFORT_LEVELS = ("low", "medium", "high", "xhigh")
 
 
+def _engine_model_name(engine, fallback: str = "") -> str:
+    """The model an engine talks to, or *fallback* -- never the empty
+    string by accident: the profile of "" is the generic default."""
+    if engine is None:
+        return fallback or ""
+    name = getattr(engine, "model", "") or ""
+    if not name:
+        name = getattr(getattr(engine, "client", None), "model", "") or ""
+    return str(name or fallback or "")
+
+
+def _effort_above_profile_note(model: str, effort: str) -> str:
+    """One line when a reasoning model runs above its profile's effort.
+
+    The choice is the user's and stays theirs; what they were not told is
+    what it costs on this model. A field report (2026-09-11) ran GLM at
+    "high": 989 output tokens for a 224-character answer, and every turn
+    minutes long. The profile says "low", measured at a fraction of the
+    hidden reasoning, and nothing in the dashboard said so.
+    """
+    level = str(effort or "").strip().lower()
+    if level not in _EFFORT_LEVELS:
+        return ""
+    try:
+        from delfin.agent.model_profiles import get_profile
+        from delfin.agent.model_capabilities import resolve
+        default = str(get_profile(model).effort_default or "").strip().lower()
+        caps = resolve("kit" if model.startswith("kit.") else "", model, "",
+                       allow_live=False)
+        reasoning = bool(getattr(caps, "is_reasoning", False))
+    except Exception:
+        return ""
+    if not reasoning or default not in _EFFORT_LEVELS:
+        return ""
+    if _EFFORT_LEVELS.index(level) <= _EFFORT_LEVELS.index(default):
+        return ""
+    return (f"Effort **{level}** on {model}: its profile recommends "
+            f"**{default}** -- on this model the level sets how long it "
+            f"thinks before every answer, and {level} makes each turn "
+            f"minutes longer. `/effort {default}` switches; your choice "
+            "stays otherwise.")
+
+
 def _effort_for_model(model: str, saved_effort: str = "") -> str:
     """The effort a session should start with for *model*.
 
@@ -7267,6 +7310,13 @@ def create_tab(ctx):
             except Exception:
                 pass
             _probe_endpoint_in_background(engine, provider, model)
+            try:
+                _note = _effort_above_profile_note(
+                    model, str(effort_dropdown.value or ""))
+                if _note:
+                    _append_system_message("\u2699 " + _note)
+            except Exception:
+                pass
             return engine
         except Exception as exc:
             _append_system_message(f"Engine error: {exc}")
@@ -8539,7 +8589,7 @@ def create_tab(ctx):
         try:
             from delfin.agent.model_profiles import get_profile as _get_profile
             _engine = state.get("engine")
-            _model = getattr(_engine, "model", "") if _engine else ""
+            _model = _engine_model_name(_engine, model_dropdown.value or "")
             _profile_kill = float(_get_profile(_model).stale_kill_after_s or 0)
         except Exception:
             pass
@@ -10772,10 +10822,8 @@ def create_tab(ctx):
 
             if arg == "run" or arg.startswith("run "):
                 task_arg = arg[len("run"):].strip()
-                current_model = (
-                    getattr(engine, "model", "")
-                    or model_dropdown.value or ""
-                )
+                current_model = _engine_model_name(
+                    engine, model_dropdown.value or "")
                 if not current_model:
                     _append_system_message(
                         "No model selected. Set a model in the dropdown first."
@@ -17397,11 +17445,8 @@ def create_tab(ctx):
                             from delfin.agent.model_profiles import (
                                 get_profile,
                             )
-                            _model_name = (
-                                getattr(engine, "model", "")
-                                or model_dropdown.value
-                                or ""
-                            )
+                            _model_name = _engine_model_name(
+                                engine, model_dropdown.value or "")
                             _profile = get_profile(_model_name)
 
                             def _delegation_fields(eng) -> dict:

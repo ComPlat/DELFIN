@@ -1055,6 +1055,19 @@ class AgentEngine:
         self.mode = mode
 
     @property
+    def model(self) -> str:
+        """The model this engine talks to, read from its client.
+
+        The dashboard reads ``engine.model`` for the profile that sets
+        the stall budget, the cold-start figure and the metrics row, and
+        the engine never had the attribute: every read fell back to the
+        empty string, whose profile is the 120 s default. On GLM, whose
+        profile says 420 s, a turn thinking between two rounds was ended
+        as a stall after 121 s (field report 2026-09-11).
+        """
+        return str(getattr(getattr(self, "client", None), "model", "") or "")
+
+    @property
     def current_role(self) -> str:
         """Return the current role ID."""
         if not self.route or self.current_role_index >= len(self.route):
