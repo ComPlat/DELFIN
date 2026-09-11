@@ -257,3 +257,99 @@ def test_the_server_stopping_ends_kept_kernels_and_drops_their_records(manager, 
     _run(manager.shutdown_all())
     assert kid in manager.ended
     assert not any(r["session_name"] == "kept-3" for r in S.list_records(root=str(tmp_path / "kept")))
+
+
+# ---------------------------------------------------------------------------
+# The server ends with its last window, unless a session is kept
+# ---------------------------------------------------------------------------
+
+from types import SimpleNamespace as _NS
+
+
+def _with_parent(manager):
+    calls = []
+    manager.parent = _NS(stop=lambda: calls.append("stop"))
+    return calls
+
+
+def test_the_server_stops_when_the_last_window_is_gone_and_nothing_is_kept(manager, monkeypatch):
+    monkeypatch.delenv(R.STAY_UP_ENV, raising=False)
+    calls = _with_parent(manager)
+    kid = _run(manager.start_kernel())
+    manager.notify_connect(kid)
+    manager.notify_disconnect(kid)
+    _age(manager, kid, R.GRACE_SECONDS + 1)
+    _run(manager.cull_kernel_if_idle(kid))
+    assert manager.ended == [kid]
+    assert calls == ["stop"]
+
+
+def test_a_kept_session_keeps_the_server_up(manager, tmp_path, monkeypatch):
+    monkeypatch.delenv(R.STAY_UP_ENV, raising=False)
+    calls = _with_parent(manager)
+    kept = _run(manager.start_kernel())
+    _keep(kept, "stays")
+    other = _run(manager.start_kernel())
+    manager.notify_connect(other)
+    manager.notify_disconnect(other)
+    _age(manager, other, R.GRACE_SECONDS + 1)
+    _run(manager.cull_kernel_if_idle(other))
+    assert manager.ended == [other]
+    assert calls == [], "the server stopped although a session was kept"
+
+
+def test_another_window_keeps_the_server_up(manager, monkeypatch):
+    monkeypatch.delenv(R.STAY_UP_ENV, raising=False)
+    calls = _with_parent(manager)
+    a = _run(manager.start_kernel())
+    b = _run(manager.start_kernel())
+    manager.notify_connect(b)
+    manager.notify_connect(a)
+    manager.notify_disconnect(a)
+    _age(manager, a, R.GRACE_SECONDS + 1)
+    _run(manager.cull_kernel_if_idle(a))
+    assert manager.ended == [a]
+    assert calls == []
+
+
+def test_stay_up_keeps_the_old_behaviour(manager, monkeypatch):
+    monkeypatch.setenv(R.STAY_UP_ENV, "1")
+    calls = _with_parent(manager)
+    kid = _run(manager.start_kernel())
+    manager.notify_connect(kid)
+    manager.notify_disconnect(kid)
+    _age(manager, kid, R.GRACE_SECONDS + 1)
+    _run(manager.cull_kernel_if_idle(kid))
+    assert manager.ended == [kid]
+    assert calls == []
+
+
+def test_the_pages_goodbye_to_the_last_unkept_kernel_stops_the_server(manager, monkeypatch):
+    """Voila's beacon ends an un-kept kernel through shutdown_kernel, not
+    through the cull rule; the stop must follow that path too."""
+    monkeypatch.delenv(R.STAY_UP_ENV, raising=False)
+    calls = _with_parent(manager)
+    kid = _run(manager.start_kernel())
+    _run(manager.shutdown_kernel(kid))
+    assert manager.ended == [kid]
+    assert calls == ["stop"]
+
+
+def test_the_pages_goodbye_to_a_kept_kernel_stops_nothing(manager, tmp_path, monkeypatch):
+    monkeypatch.delenv(R.STAY_UP_ENV, raising=False)
+    calls = _with_parent(manager)
+    kid = _run(manager.start_kernel())
+    _keep(kid, "still-here")
+    _run(manager.shutdown_kernel(kid))
+    assert manager.ended == []
+    assert calls == []
+
+
+def test_stopping_does_not_stop_twice(manager, monkeypatch):
+    monkeypatch.delenv(R.STAY_UP_ENV, raising=False)
+    calls = _with_parent(manager)
+    a = _run(manager.start_kernel())
+    b = _run(manager.start_kernel())
+    _run(manager.shutdown_all())
+    assert sorted(manager.ended) == sorted([a, b])
+    assert calls == []          # the server is already stopping; it asked us
