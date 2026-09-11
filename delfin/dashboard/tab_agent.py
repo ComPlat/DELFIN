@@ -6722,11 +6722,8 @@ def create_tab(ctx):
         # drop what it cannot read; that refusal is the user's to see, not
         # a traceback in the notebook output.
         try:
-            engine.restore_state({
-                **data,
-                "mode": saved_mode,
-                "session_id": session_id,
-            })
+            _hand_state_to(engine, data, mode=saved_mode,
+                           session_id=session_id)
         except Exception as exc:
             _append_system_message(f"Session not restored: {exc}")
             return
@@ -6951,6 +6948,20 @@ def create_tab(ctx):
         if _provider_key("ANTHROPIC_API_KEY"):
             return "api"
         return "cli"  # will error at runtime
+
+    def _hand_state_to(engine, data: dict, *, mode: str, session_id: str) -> None:
+        """The one place a saved or carried state reaches an engine.
+
+        Handed over WHOLESALE: ``restore_state`` reads it by declared key
+        and ignores the rest. Re-listing the keys here was the defect on
+        the save side once, and a second call site would be the same
+        defect waiting; the two values the UI owns are the only overrides.
+        """
+        engine.restore_state({
+            **data,
+            "mode": mode,
+            "session_id": session_id,
+        })
 
     def _drop_engine() -> None:
         """Retire the engine so the next send builds a fresh one -- and
@@ -7215,7 +7226,10 @@ def create_tab(ctx):
             carry = state.pop("_engine_carry_over", None)
             if carry:
                 try:
-                    engine.restore_state({**carry, "mode": mode_dropdown.value})
+                    _hand_state_to(
+                        engine, carry, mode=mode_dropdown.value,
+                        session_id=(carry.get("session_id")
+                                    or state.get("active_session_id") or ""))
                     try:
                         _kp = getattr(engine, "kit_permissions", None)
                         if _kp is not None and carry.get("session_id"):

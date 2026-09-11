@@ -1548,13 +1548,18 @@ def test_first_token_budget_is_separate_and_larger():
     assert "first_token_kill_after_s" in src
     assert "waiting_for_first = not state.get(\"_stream_saw_output\")" in src
     assert "budget = first_token_kill if waiting_for_first else kill_after" in src
-    assert "max(\n            600.0, kill_after * 4.0)" in src
+    # Measured against the model's own cold start, never below ten
+    # minutes, and no longer a multiple of the stall budget (which made
+    # GLM's 420 s into a 28-minute wait).
+    assert "max(\n            600.0, 3.0 * _slow_cold)" in src
 
 
 def test_stream_output_marks_first_token_for_every_channel():
     src = _watchdog_source()
-    # text, thinking and tool use all count as "the provider started".
-    assert src.count('state["_stream_saw_output"] = True') >= 3
+    # text, thinking and tool use all count as "the provider started";
+    # the three sites share one helper that also stamps the first token.
+    assert src.count("_mark_output()") >= 3
+    assert 'state["_stream_saw_output"] = True' in src
     # ... and the flag is reset when a turn starts.
     assert 'state["_stream_saw_output"] = False' in src
 

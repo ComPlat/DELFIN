@@ -97,7 +97,7 @@ def test_the_dashboard_probes_when_the_engine_is_built():
     text = (pathlib.Path(__file__).resolve().parents[1]
             / "delfin" / "dashboard" / "tab_agent.py").read_text(encoding="utf-8")
     i = text.index("def _ensure_engine(")
-    ensure = text[i:i + 14000]
+    ensure = text[i:i + 20000]
     assert "_probe_endpoint_in_background(engine, provider, model)" in ensure
     j = text.index("def _probe_endpoint_in_background(")
     body = text[j:j + 3000]
