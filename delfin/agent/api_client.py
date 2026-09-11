@@ -2738,6 +2738,19 @@ def _artifact_target_path(base: str, args: dict) -> str:
         return ""
 
 
+def _artifact_path_inside(base: str, perms) -> str:
+    """A fresh PNG path for *base* under the session's own workspace."""
+    try:
+        ws = getattr(perms, "workspace", None)
+        if not ws:
+            return ""
+        from datetime import datetime as _dt
+        stamp = _dt.now().strftime("%Y%m%d_%H%M%S")
+        return str(Path(str(ws)) / "agent_workspace" / f"{base}_{stamp}.png")
+    except Exception:
+        return ""
+
+
 def _bare_tool_name(name: str) -> str:
     """A namespaced ``mcp__server__tool`` reduced to its tool name.
 
@@ -12594,6 +12607,22 @@ class _DocToolExecutor:
                     "write_file", {"path": target, "content": ""}, perms)
                 if verdict is None:
                     return None
+            # The default plot directory is the dashboard's ~/agent_workspace,
+            # which a CLI or benchmark session cannot write and has nobody
+            # to ask about. Such a session gets its figure where it may
+            # write: an agent_workspace/ inside its own workspace. The tool
+            # is told where through its output_path, on the same args dict
+            # the call is dispatched with. A session that CAN ask keeps
+            # asking, as it always did.
+            if (getattr(perms, "confirm_callback", None) is None
+                    and not str((args or {}).get("output_path") or "").strip()):
+                inside = _artifact_path_inside(base, perms)
+                if inside:
+                    verdict = self._run_permission_gate(
+                        "write_file", {"path": inside, "content": ""}, perms)
+                    if verdict is None and isinstance(args, dict):
+                        args["output_path"] = inside
+                        return None
 
         # (3) Everything else. A tool this gate does not recognise is a tool
         # whose effects it cannot judge, and "cannot judge" was silently

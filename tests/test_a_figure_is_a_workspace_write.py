@@ -57,15 +57,49 @@ def test_an_explicit_output_inside_the_workspace_passes_too(tmp_path):
     assert verdict is None
 
 
-def test_a_plot_outside_the_workspace_still_needs_a_decision(tmp_path, monkeypatch):
+def test_a_session_nobody_can_ask_gets_its_figure_inside_its_workspace(tmp_path, monkeypatch):
+    """The default plot directory is the dashboard's ~/agent_workspace. A
+    CLI or benchmark session cannot write there and has no dialog: it
+    used to be refused, and drew the same PNG through bash. Now the tool
+    is told to write under the session's own workspace, on the args the
+    call is dispatched with."""
     ws = tmp_path / "ws"
     ws.mkdir()
     elsewhere = tmp_path / "elsewhere"
     elsewhere.mkdir()
     monkeypatch.setattr(api, "_default_plot_dir", lambda: str(elsewhere))
     perms = KitToolPermissions(workspace=ws, mode="default")
-    verdict = _gate("mcp__delfin-ops__plot_energy_distribution", {"folders": str(ws)}, perms)
-    assert verdict is not None, "a write outside the workspace passed without a decision"
+    assert getattr(perms, "confirm_callback", None) is None
+    args = {"folders": str(ws)}
+    verdict = _gate("mcp__delfin-ops__plot_energy_distribution", args, perms)
+    assert verdict is None
+    assert Path(args["output_path"]).is_relative_to(ws / "agent_workspace")
+    assert args["output_path"].endswith(".png")
+
+
+def test_a_session_that_can_ask_is_still_asked(tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.setattr(api, "_default_plot_dir", lambda: str(elsewhere))
+    asked = []
+    perms = KitToolPermissions(workspace=ws, mode="default",
+                               confirm_callback=lambda name, a, preview: asked.append(name) or False)
+    args = {"folders": str(ws)}
+    verdict = _gate("mcp__delfin-ops__plot_energy_distribution", args, perms)
+    assert verdict is not None                      # the user said no
+    assert asked, "a session with a dialog was not asked"
+    assert "output_path" not in args                # nothing was redirected behind their back
+
+
+def test_every_plot_wrapper_accepts_an_output_path():
+    from delfin.ops_server import server as ops
+    import inspect
+    for base in _PLOTS:
+        fn = getattr(ops, f"tool_{base}")
+        assert "output_path" in inspect.signature(fn).parameters, base
+        assert "output_path" in inspect.signature(getattr(api, base)).parameters, base
 
 
 def test_a_mutating_tool_is_not_an_artifact(tmp_path):
