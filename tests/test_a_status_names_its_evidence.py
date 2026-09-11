@@ -279,3 +279,12 @@ def test_the_energy_table_says_why_gibbs_is_null(tmp_path):
     # asked only for the energy it has, there is nothing to note
     row2 = api.extract_energy_table([str(sp)], properties=["single_point"])[0]
     assert "notes" not in row2
+
+
+def test_the_descriptions_name_the_not_started_state_and_the_note():
+    from delfin.ops_server import server as ops
+    assert "not started" in (ops.tool_calc_status.__doc__ or "")
+    doc = ops.tool_extract_energy_table.__doc__ or ""
+    assert "not started" in doc and "notes" in doc and "single point" in doc
+    entry = next(e for e in api._TOOL_CATALOG if e["name"] == "calc_status")
+    assert "not started" in entry["summary"]
