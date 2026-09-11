@@ -312,6 +312,36 @@ def _is_observed(path: str, observed: frozenset[str]) -> bool:
     return False
 
 
+_BASENAME_WALK_SKIP = frozenset({
+    ".git", "__pycache__", "node_modules", ".venv", "venv", ".tox",
+    ".mypy_cache", ".pytest_cache", "build", "dist",
+})
+_BASENAME_WALK_LIMIT = 40_000     # directory entries looked at, at most
+
+
+def _basename_exists_under(root: Path, name: str) -> bool:
+    """True when a file called ``name`` exists somewhere below ``root``.
+
+    Bounded: a workspace can hold a million calculation files, and this
+    runs on every answer. Past the limit the answer is "cannot say",
+    which is reported as True -- an unjudged name must not become a
+    fabrication verdict. Never raises.
+    """
+    import os
+    seen = 0
+    try:
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in _BASENAME_WALK_SKIP]
+            if name in filenames:
+                return True
+            seen += len(dirnames) + len(filenames)
+            if seen > _BASENAME_WALK_LIMIT:
+                return True
+    except Exception:
+        return True
+    return False
+
+
 def scan_for_ungrounded_code_claims(
     text: str,
     *,
@@ -341,6 +371,20 @@ def scan_for_ungrounded_code_claims(
             seen.add(key)
             if _is_observed(path, obs):
                 continue
+            # A bare file name is a name, not a place. "chain_setup.py"
+            # lives in delfin/co2/, "CONTROL.txt" in every run folder --
+            # neither is at the workspace root, and both were flagged as
+            # fabricated, which forced a correction turn (10 tool calls,
+            # 145 s) in which the model, told its paths did not exist,
+            # apologised to the user for inventing them. A bare name that
+            # exists ANYWHERE under the root is "unread" at most; one
+            # that exists nowhere ("S1.out" in a workspace with no such
+            # output) stays the fabrication it is.
+            if "/" not in path.strip("./") and root is not None:
+                if _basename_exists_under(root, path.strip("./")):
+                    flags.append(CodeClaimFlag(path=path, line=line,
+                                               kind="unread"))
+                    continue
             # Prose alternations ("ORCA/xTB", "APIs/Bibliotheken",
             # "Input/Output") match the path shape but are not file
             # citations. An extensionless slash token only counts when
@@ -392,15 +436,40 @@ def scan_for_ungrounded_code_claims(
     return flags
 
 
-def code_claim_feedback(flags: list[CodeClaimFlag]) -> str:
+def _read_this_turn_clause(observed) -> str:
+    """The files the turn DID read or grep, for a correction prompt.
+
+    A prompt that only said "these paths do not exist" reached a model
+    whose history holds its answer but not its tool calls; it concluded
+    it had never read anything, told the user it had invented the
+    citations, and re-read the files it had read minutes before. Naming
+    what was read keeps the correction about the two paths in question.
+    """
+    names = sorted({str(p).replace("\\", "/").rstrip("/")
+                    for p in (observed or ()) if str(p).strip()})
+    if not names:
+        return " Nothing was read or grepped this turn."
+    shown = ", ".join(names[:6])
+    more = f" (+{len(names) - 6} more)" if len(names) > 6 else ""
+    return f" Files read or grepped this turn: {shown}{more}."
+
+
+def code_claim_feedback(flags: list[CodeClaimFlag], observed=None) -> str:
     """Feedback message for the forced self-correction turn (nonexistent
-    citations only — 'unread' stays a soft warning)."""
+    citations only — 'unread' stays a soft warning).
+
+    Says who is asking: this is an automatic check, not the user
+    complaining, so the model verifies instead of apologising."""
     bad = [f"'{f.path}:{f.line}'" if f.line else f"'{f.path}'"
            for f in flags if f.kind == "nonexistent"]
     return (
-        f"The following cited paths do not exist in the workspace: "
-        f"{', '.join(bad)}. Read or grep the actual files and correct the "
-        "answer — cite only paths you have verified."
+        "Automatic check, not a message from the user: the cited paths "
+        f"{', '.join(bad)} do not exist in the workspace as written."
+        + _read_this_turn_clause(observed)
+        + " Read or grep the actual files and reply with the corrected "
+        "citations only -- do not repeat the rest of the answer -- or mark "
+        "them as unverified. Do not apologise; the reader has not said "
+        "anything."
     )
 
 
@@ -1850,14 +1919,20 @@ def scan_for_ungrounded_location_claims(
     return flags
 
 
-def location_claim_feedback(flags: list[LocationClaimFlag]) -> str:
-    """Feedback message for the forced self-correction turn."""
+def location_claim_feedback(flags: list[LocationClaimFlag],
+                            observed=None) -> str:
+    """Feedback message for the forced self-correction turn.
+
+    Says who is asking and what was read — see _read_this_turn_clause."""
     refs = ", ".join(f"'{f.claim}'" for f in flags)
     return (
-        f"The following code-location claims are not backed by any file "
-        f"read or grep in this session: {refs}. Verify now — read or grep "
-        "the referenced source and cite the confirmed file and line — or "
-        "restate the answer marking the location as unverified."
+        "Automatic check, not a message from the user: the code-location "
+        f"claims {refs} are not backed by a file read or grep this turn."
+        + _read_this_turn_clause(observed)
+        + " Verify now — read or grep the referenced source and reply with "
+        "the confirmed file and line only, not the whole answer again — or "
+        "say which location stays unverified. Do not apologise; the reader "
+        "has not said anything."
     )
 
 

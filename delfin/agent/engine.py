@@ -3988,7 +3988,8 @@ class AgentEngine:
                 functional=func, ambiguous=ambiguous, on_token=on_token)
         parts: list[str] = []
         if loc:
-            parts.append(_vg.location_claim_feedback(loc))
+            parts.append(_vg.location_claim_feedback(
+                loc, observed=getattr(self, "_last_observed_files", None)))
         if qty:
             parts.append(_vg.quantity_claim_feedback(qty))
         if conflicts:
