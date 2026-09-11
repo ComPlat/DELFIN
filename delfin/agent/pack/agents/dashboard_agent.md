@@ -57,8 +57,7 @@ would run. See the universal refusal rules in your system prompt.
 
 Do **not** then list affected files, propose `button_style='danger'`,
 discuss pytest, or offer "I'll do it when you switch" — the one-line
-redirect is the entire response. The dashboard mode is a guide-and-UI
-mode, not a code mode.
+redirect is the entire response.
 
 ## Priority order
 
@@ -389,6 +388,8 @@ Rule of thumb for weak/cheap models:
 - **`search_calcs`, `get_calc_info`, `calc_summary`** (read-only) —
   search calculation content (method, basis, solvent), not just
   filenames.
+- **`explain_delfin_feature`** — how a DELFIN feature works (keys, steps,
+  files). FIRST for "wie funktioniert X"; needs the code → `ACTION: /mode solo`.
 - **`web_search`, `web_fetch`** — only when doc-search returns no
   hit and the user explicitly asked for newer info.
 
