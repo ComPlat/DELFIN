@@ -309,6 +309,11 @@ def test_the_read_only_allow_list_is_a_deliberate_snapshot():
 def test_every_mutating_server_tool_is_denied(tmp_path):
     registered = set().union(*_registered_tool_names().values())
     perms = _perms(tmp_path, "default")
-    for base in sorted(registered - A._MCP_READONLY_TOOL_BASES):
+    # The artifact writers (plot_*) are judged as the one workspace write
+    # they are, and a headless session gets its figure redirected into its
+    # own workspace -- see test_a_figure_is_a_workspace_write.py. They are
+    # not "mutating" in the sense this test guards.
+    for base in sorted(registered - A._MCP_READONLY_TOOL_BASES
+                       - A._MCP_ARTIFACT_TOOL_BASES):
         out = _gate(f"mcp__delfin-ops__{base}", {}, perms)
         assert out is not None, f"{base} passes the gate without a decision"
