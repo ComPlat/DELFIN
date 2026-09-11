@@ -8,6 +8,7 @@ This module generates ORCA input files for:
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
@@ -897,8 +898,11 @@ def _create_state_input_delta_scf(
 
     # Geometry - read from start.txt or xyz file
     if xyz_file == "initial.xyz":
-        # Prefer optimized initial.xyz; fallback to start.txt
-        if Path("initial.xyz").exists():
+        # Prefer an optimized initial.xyz from an earlier step; fall back to
+        # start.txt.  An initial.xyz that S0 itself wrote (the copy for ox/red
+        # jobs) is not a start: read, it made S0's input its own last result,
+        # and every recalc then recomputed S0 and all that follows.
+        if Path("initial.xyz").exists() and not written_by_s0(Path("initial.xyz")):
             xyz_path = Path("initial.xyz")
             skip_lines = 2  # initial.xyz has header
         else:
@@ -1407,9 +1411,9 @@ def _create_state_input_tddft(
             kw.append("numFREQ")
         return kw
 
-    # Coordinate source
+    # Coordinate source (an initial.xyz S0 wrote itself is not a start; see written_by_s0)
     if state_upper == "S0":
-        if Path("initial.xyz").exists():
+        if Path("initial.xyz").exists() and not written_by_s0(Path("initial.xyz")):
             xyz_path = Path("initial.xyz")
             skip_lines = 2
         else:
@@ -1748,6 +1752,24 @@ def _create_state_input_tddft(
 
     logger.info(f"Created ESD TDDFT state input: {input_file}")
     return str(input_file)
+
+
+_S0_PRODUCT = re.compile(r"^\s*Coordinates from ORCA-job\s+(?:\S*/)?S0\s+E\b")
+
+
+def written_by_s0(xyz_path: Path) -> bool:
+    """True when ``xyz_path`` holds the geometry ORCA wrote for the ESD S0 job.
+
+    ORCA names the job on the comment line ("Coordinates from ORCA-job S0 E
+    -114.29...").  After an ESD run DELFIN copies S0.xyz to initial.xyz for
+    the redox steps; 298 of 300 archived initial.xyz carry that line.
+    """
+    try:
+        with open(xyz_path, encoding="utf-8", errors="replace") as handle:
+            handle.readline()
+            return bool(_S0_PRODUCT.match(handle.readline()))
+    except OSError:
+        return False
 
 
 def _rate_scf(simple_line: str) -> str:
