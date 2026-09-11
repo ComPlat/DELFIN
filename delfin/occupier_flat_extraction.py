@@ -732,6 +732,25 @@ def _create_occupier_fob_jobs(
 
             return _work
 
+        def make_precomplete(
+            _idx: int = idx,
+            _inp: Path = inp_path,
+            _out: Path = out_path,
+        ) -> Callable[[], bool]:
+            def _precomplete() -> bool:
+                if not _should_skip_recalc(_inp, _out, recalc_enabled):
+                    return False
+                # A FoB marked complete here never runs its work, and its energy
+                # is what a FoB started from it waits for and what the comparison
+                # reads.  Without it a recalc that had to rerun one FoB waited on
+                # its finished source until the walltime (Jerome's CoHPP, six
+                # submissions), and compared the rerun FoB against nothing.
+                energy = _parse_energy(_out, use_gibbs)
+                with results_lock:
+                    fspe_results[_idx] = energy
+                return True
+            return _precomplete
+
         # Calculate asymmetric core allocation based on multiplicity weight
         my_weight = multiplicity_weights.get(idx, 1.0)
         weight_fraction = my_weight / total_weight if total_weight > 0 else (1.0 / len(sequence))
@@ -758,7 +777,7 @@ def _create_occupier_fob_jobs(
             cores_max=cores_max,
             preserve_cores_optimal=True,  # Preserve weighted allocation
             working_dir=job_workdir,
-            precomplete_check=lambda _inp=inp_path, _out=out_path, _recalc=recalc_enabled: _should_skip_recalc(_inp, _out, _recalc),
+            precomplete_check=make_precomplete(),
         )
         jobs.append(job)
 
@@ -916,6 +935,22 @@ def _create_occupier_fob_jobs(
 
         return _select_best
 
+    stage_indices = {int(entry["index"]) for entry in sequence}
+
+    def make_best_precomplete() -> Callable[[], bool]:
+        def _precomplete() -> bool:
+            if not recalc_enabled or not (folder_path / "OCCUPIER.txt").exists():
+                return False
+            # The FoBs were registered first.  One that has to run again changes
+            # what is compared, so the comparison is made again after it.
+            with results_lock:
+                every_fob_kept = stage_indices <= set(fspe_results)
+            if not every_fob_kept:
+                return False
+            _update_runtime_cache(folder_name, folder_path, global_config, occ_results)
+            return True
+        return _precomplete
+
     best_job = WorkflowJob(
         job_id=f"{stage_prefix}_fob_best",
         work=make_best_selector(),
@@ -925,9 +960,7 @@ def _create_occupier_fob_jobs(
         cores_optimal=0,
         cores_max=0,
         inline=True,
-        precomplete_check=lambda _folder=folder_name, _dir=folder_path: (
-            _update_runtime_cache(_folder, _dir, global_config, occ_results) or True
-        ) if recalc_enabled and (_dir / "OCCUPIER.txt").exists() else False,
+        precomplete_check=make_best_precomplete(),
     )
     jobs.append(best_job)
 
