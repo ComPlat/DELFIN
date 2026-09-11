@@ -2287,7 +2287,8 @@ _MCP_READONLY_TOOL_BASES: frozenset[str] = frozenset({
     # configured" -- calc_status shipped that way for one night, and an
     # operator called it a red herring in the catalogue. A test now
     # holds this list and the server's read-only block together.
-    "parse_orca_output", "calc_status", "find_orca_errors", "extract_thermochem",
+    "parse_orca_output", "calc_status", "extract_spectra_table",
+    "find_orca_errors", "extract_thermochem",
     "extract_energy_table", "find_calculation_extreme",
     "extract_imaginary_frequencies", "extract_orbital_energies",
     "extract_excited_states", "extract_dipole",

@@ -790,6 +790,69 @@ def calculation_status(folder: str) -> CalculationStatus:
                              last_activity=when, last_activity_age_s=age)
 
 
+def extract_spectra_table(folders: list[str] | str) -> list[dict]:
+    """One row per folder with what the spectroscopy tools each give.
+
+    Asked over three runs which has the smallest gap, which dye is bright
+    in the visible and which structure is no minimum, the operator made
+    three parallel extractions per folder and related them by hand, and
+    named a single overview call as the one change (2026-09-11). Each row
+    carries the folder's method and outcome, the HOMO-LUMO gap, the first
+    bright and the brightest visible transition, and the imaginary-mode
+    count with the minimum verdict -- null where the output has no such
+    block, with the reason in ``notes``.
+    """
+    from pathlib import Path as _P
+    if isinstance(folders, str):
+        folders = [folders]
+    rows: list[dict] = []
+    for folder in folders:
+        p = _P(folder)
+        parts = _method_parts(None, p)
+        row: dict = {
+            "folder": str(folder),
+            "method": _method_label(**parts),
+            "outcome": _outcome_of_folder(p) if p.is_dir() else "unknown (folder missing)",
+            "gap_ev": None, "homo_ev": None, "lumo_ev": None,
+            "first_bright_nm": None, "first_bright_fosc": None,
+            "brightest_visible_nm": None, "brightest_visible_fosc": None,
+            "n_imag": None, "is_minimum": None, "most_negative_cm": None,
+            "notes": [],
+        }
+        if not p.is_dir():
+            row["notes"].append("folder missing")
+            rows.append(row)
+            continue
+        orb = extract_orbital_energies(str(p))
+        if orb.error:
+            row["notes"].append(f"orbitals: {orb.error}")
+        else:
+            row["gap_ev"], row["homo_ev"], row["lumo_ev"] = orb.gap_ev, orb.homo_ev, orb.lumo_ev
+        exc = extract_excited_states(str(p))
+        if exc.error:
+            row["notes"].append(f"excited states: {exc.error}")
+        else:
+            if exc.first_bright:
+                row["first_bright_nm"] = exc.first_bright["wavelength_nm"]
+                row["first_bright_fosc"] = exc.first_bright["fosc"]
+            else:
+                row["notes"].append(f"no bright transition (fosc >= {exc.bright_threshold_fosc})")
+            if exc.brightest_visible:
+                row["brightest_visible_nm"] = exc.brightest_visible["wavelength_nm"]
+                row["brightest_visible_fosc"] = exc.brightest_visible["fosc"]
+            else:
+                lo, hi = exc.visible_range_nm
+                row["notes"].append(f"no bright transition in the visible ({lo:.0f}-{hi:.0f} nm)")
+        imag = extract_imaginary_frequencies(str(p))
+        if imag.error:
+            row["notes"].append(f"frequencies: {imag.error}")
+        else:
+            row["n_imag"], row["is_minimum"] = imag.n_imag, imag.is_minimum
+            row["most_negative_cm"] = imag.most_negative
+        rows.append(row)
+    return rows
+
+
 def find_orca_errors(folder: str) -> list[OrcaError]:
     """Scan ``*.out`` files in ``folder`` for known ORCA error patterns.
 
@@ -2365,6 +2428,8 @@ _TOOL_CATALOG: list[dict] = [
      "summary": "Snapshot ONE ORCA .out: energies, conv, freq, walltime."},
     {"name": "calc_status", "category": "parsing",
      "summary": "One folder: succeeded / failed / running / stalled, with the evidence."},
+    {"name": "extract_spectra_table", "category": "parsing",
+     "summary": "Per folder: HOMO-LUMO gap, first bright and brightest visible transition, imaginary modes, minimum verdict."},
     {"name": "find_orca_errors", "category": "parsing",
      "summary": "Scan a folder's .out files for known error patterns."},
     {"name": "extract_thermochem", "category": "parsing",

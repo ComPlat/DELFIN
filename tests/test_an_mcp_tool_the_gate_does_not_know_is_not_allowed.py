@@ -275,7 +275,10 @@ _EXPECTED_READ_ONLY = {
     "qm_check", "csp_check", "mlp_check", "analysis_check", "stop_dry_run",
     # calc_status (2026-09-11): one folder's state with the evidence; reads
     # markers, logs, the state file and the output's tail, writes nothing.
-    "parse_orca_output", "calc_status", "find_orca_errors", "extract_thermochem",
+    # extract_spectra_table (2026-09-11): the spectroscopy overview over
+    # many folders; reads outputs, writes nothing.
+    "parse_orca_output", "calc_status", "extract_spectra_table",
+    "find_orca_errors", "extract_thermochem",
     "extract_energy_table", "find_calculation_extreme",
     "extract_imaginary_frequencies", "extract_orbital_energies",
     "extract_excited_states", "extract_dipole",
