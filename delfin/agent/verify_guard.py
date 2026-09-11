@@ -975,13 +975,22 @@ def _is_number(text: str) -> bool:
 # else, and a word list of nouns would be defeated by every technical
 # term. They are also what survives a code block.
 _FUNCTION_WORDS: dict[str, frozenset[str]] = {
+    # The question words and pronouns of a user's opener belong here
+    # too: "wie funktioniert aktuell der co2 coordinator" had one hit
+    # ("der") and no verdict, so a session opened in German ran with no
+    # language and the role answered in English (field reports
+    # 2026-09-04 and 2026-09-11).
     "de": frozenset("""der die das den dem des ein eine einen einem und
         oder nicht ist sind war waren werden wird wurde für mit von zu
         auf im in dass sich auch noch nur schon aber wenn dann als bei
-        nach über unter kann muss soll hat haben wieder sowie damit""".split()),
+        nach über unter kann muss soll hat haben wieder sowie damit
+        wie was warum wo welche welcher welches kannst du mir mich ich
+        wir uns bitte hier jetzt mal aktuell gerade noch keine kein""".split()),
     "en": frozenset("""the a an and or not is are was were be been being
         for with from to on in that it this these those but if then as
-        at by can must should has have had do does did will would""".split()),
+        at by can must should has have had do does did will would
+        how what why where which you me my your we our please here now
+        just currently there any no""".split()),
 }
 
 _WORD_RE = re.compile(r"[A-Za-zÄÖÜäöüß]+")
