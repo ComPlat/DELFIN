@@ -12332,6 +12332,17 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
     #: affordable at all, and a dense scan is the point.
     _SCAN_CYCLES = 60
 
+    #: Electronic temperatures a scan point may be warmed through, in order,
+    #: until the method reports it converged.  The first is xtb's gap-closing
+    #: rescue (:data:`gfn_optimize.SMEARED_TEMPERATURE`); it converges a drag's
+    #: closed gap but not a torsion twisted to ninety degrees, measured to need
+    #: about 3000 K -- the same temperature the drive hand runs at, and for the
+    #: same near-degeneracy.  6000 is the last resort before a point is
+    #: reported unconverged.  A well-behaved point converges at the first rung
+    #: (or cold) and the ladder is never climbed, so this costs nothing where
+    #: the surface is not degenerate.  Keyed on convergence, not on the system.
+    _SCAN_WARMTH_LADDER = (1000.0, 3000.0, 6000.0)
+
     #: When a scan has arrived somewhere and should stop.
     #:
     #: A scan that runs past the next minimum stops describing a reaction and
@@ -13425,6 +13436,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
         state['scan_gap_first'] = None
         state['scan_gap_least'] = None
         state['scan_smeared_at'] = None
+        state['scan_smeared_temp'] = None
         state['scan_depth'] = ''
         state['scan_crowded'] = None
         state['scan_free_shaky'] = None
@@ -13540,6 +13552,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
             # :func:`gfn_optimize.electronic_temperature_for`.
             scan_last_gap = None
             scan_smeared = False
+            scan_warmth = None
             bottom = None
             summit = None
             began_at = None
@@ -13909,10 +13922,10 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                         held += [dict(one) for one
                                  in (state.get('constraints') or [])
                                  if tuple(one.get('atoms') or ()) not in walking]
-                        # The temperature this point runs at: what the last
-                        # point's gap asks for, or the smearing this leg is
-                        # already committed to.
-                        warmth = (_gfn.SMEARED_TEMPERATURE if scan_smeared
+                        # The temperature this point starts at: what the leg
+                        # is already committed to, or what the last point's gap
+                        # asked for -- a head start, not the last word.
+                        warmth = (scan_warmth if scan_warmth is not None
                                   else _gfn.electronic_temperature_for(
                                       scan_last_gap, method))
                         outcome = _gfn.optimize_with_gfn(
@@ -13921,27 +13934,55 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                             constraints=held, solvent=wet,
                             solvation_model=model,
                             topology=_gfn_topology_dir(walked), etemp=warmth)
-                        # The backstop the drag has too: a point whose SCC
-                        # gave out with no warning from the gap is tried once
-                        # more smeared before the whole scan is abandoned at
-                        # it.
-                        if (not outcome.get('ok') and warmth is None
-                                and _gfn.scc_did_not_converge(
-                                    outcome.get('status'))):
-                            warmth = _gfn.SMEARED_TEMPERATURE
-                            outcome = _gfn.optimize_with_gfn(
-                                walked, method, charge=charge, uhf=uhf,
-                                max_steps=_SCAN_CYCLES, timeout=None,
-                                constraints=held, solvent=wet,
-                                solvation_model=model,
-                                topology=_gfn_topology_dir(walked),
-                                etemp=warmth)
-                        # Committed to for the rest of the leg once it
-                        # engages, and where it engaged remembered for the
-                        # verdict to say.
-                        if warmth and not scan_smeared:
+                        # Warm the point until it is actually described, not
+                        # once and only on an SCC fault.  A point that stopped
+                        # before converging -- a geometry that stalled where
+                        # the frontier gap collapsed: a torsion twisted through
+                        # ninety degrees, a bond half broken -- is not answered
+                        # by the temperature it was tried at, and a fixed guess
+                        # is a guess.  Measured: 1000 K (the gap-closing
+                        # rescue) converges a drag's closed gap but leaves a
+                        # twisting butene's 160-degree point stopped short,
+                        # while 3000 K converges it and opens the gap back to
+                        # 5 eV -- the same finding the drive hand rests on.  So
+                        # the electronic temperature is raised step by step and
+                        # the point recomputed until the method reports it
+                        # converged, or the ladder runs out.  Keyed on the
+                        # convergence every SCC method reports, not on the
+                        # molecule -- the same rule for every system -- it is
+                        # what removes the spike a cold point leaves in the
+                        # profile where the surface is nearly degenerate.  The
+                        # physical step a relaxed scan makes when the rest of
+                        # the structure snaps into the next basin is a
+                        # different thing and is left alone: that is the
+                        # reaction, not an artefact.
+                        if str(method).strip().lower() in _gfn.SCC_METHODS:
+                            for hotter in _SCAN_WARMTH_LADDER:
+                                if outcome.get('ok') and outcome.get('converged'):
+                                    break
+                                if warmth is not None and hotter <= warmth:
+                                    continue
+                                warmth = float(hotter)
+                                outcome = _gfn.optimize_with_gfn(
+                                    walked, method, charge=charge, uhf=uhf,
+                                    max_steps=_SCAN_CYCLES, timeout=None,
+                                    constraints=held, solvent=wet,
+                                    solvation_model=model,
+                                    topology=_gfn_topology_dir(walked),
+                                    etemp=warmth)
+                        # Committed to for the rest of the leg once it engages,
+                        # at the temperature that was actually needed, and
+                        # where it engaged remembered for the verdict to say.
+                        if warmth:
+                            if scan_warmth is None:
+                                state['scan_smeared_at'] = _value_in(
+                                    walked, legs[0])
+                            scan_warmth = max(scan_warmth or 0.0, float(warmth))
                             scan_smeared = True
-                            state['scan_smeared_at'] = _value_in(walked, legs[0])
+                            # The highest temperature the leg actually needed,
+                            # so the verdict names what was used rather than a
+                            # fixed 1000 K -- a torsion that wanted 3000 says 3000.
+                            state['scan_smeared_temp'] = scan_warmth
                     if not outcome.get('ok') or outcome.get('energy') is None:
                         # Written down, not only said.  The sentence scheduled
                         # here is replaced a moment later by the verdict the
@@ -14357,7 +14398,7 @@ def build(ctx, *, state, coords_widget, viewer_height, schedule_ui_update,
                 smeared = ('' if state.get('scan_smeared_at') is None else
                            f'The points past {state["scan_smeared_at"]:.2f} '
                            'were computed with Fermi smearing at '
-                           f'{_gfn.SMEARED_TEMPERATURE:g} K, so they are free '
+                           f'{state.get("scan_smeared_temp") or _gfn.SMEARED_TEMPERATURE:g} K, so they are free '
                            'energies at that temperature rather than '
                            'ground-state energies -- a single determinant no '
                            'longer describes the electrons where the gap has '
