@@ -331,6 +331,32 @@ def tool_calc_status(folder: str) -> str:
     return _dumps(_asdict(delfin_api.calculation_status(folder)))
 
 
+def tool_extract_spectra_table(folders: str) -> str:
+    """One row per folder with what the spectroscopy tools each give.
+
+    Returns {"root", "rows": [{folder, method, outcome, gap_ev, homo_ev,
+    lumo_ev, homo_line, lumo_line, first_bright_nm, first_bright_fosc,
+    first_bright_in_visible, first_bright_line, brightest_visible_nm,
+    brightest_visible_fosc, brightest_visible_line, n_imag, is_minimum,
+    most_negative_cm, most_negative_line, notes}]}, folders relative to
+    root. The *_line fields are line numbers in the folder's output, so a
+    value can be cited as file:line without reading the file again. Answers "which run has the
+    smallest gap, which dye is bright in the visible, which structure is
+    no minimum" over many folders in one call, the way
+    extract_energy_table answers for energies. A value the output cannot
+    give is null, and notes says why (no TDDFT block, no frequencies, no
+    bright line in the visible). Bright means fosc >= 0.01, visible means
+    380-780 nm, as extract_excited_states states.
+
+    Args:
+        folders: comma-separated absolute paths.
+    """
+    folder_list = [f.strip() for f in folders.split(",") if f.strip()]
+    rows = delfin_api.extract_spectra_table(folder_list)
+    root = _common_root([r.get("folder") for r in rows])
+    return _dumps({"root": root, "rows": _relative_to_root(rows, root)})
+
+
 def tool_find_orca_errors(folder: str) -> str:
     """Scan all *.out files in ``folder`` for known ORCA error patterns.
 
@@ -1775,6 +1801,7 @@ def run_server(argv: list[str] | None = None) -> None:
     # P1 — output parsing (read-only, structured returns)
     mcp.tool(name="parse_orca_output")(_safe("parse_orca_output", tool_parse_orca_output))
     mcp.tool(name="calc_status")(_safe("calc_status", tool_calc_status))
+    mcp.tool(name="extract_spectra_table")(_safe("extract_spectra_table", tool_extract_spectra_table))
     mcp.tool(name="find_orca_errors")(_safe("find_orca_errors", tool_find_orca_errors))
     mcp.tool(name="extract_thermochem")(_safe("extract_thermochem", tool_extract_thermochem))
     mcp.tool(name="extract_energy_table")(_safe("extract_energy_table", tool_extract_energy_table))

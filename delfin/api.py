@@ -790,6 +790,78 @@ def calculation_status(folder: str) -> CalculationStatus:
                              last_activity=when, last_activity_age_s=age)
 
 
+def extract_spectra_table(folders: list[str] | str) -> list[dict]:
+    """One row per folder with what the spectroscopy tools each give.
+
+    Asked over three runs which has the smallest gap, which dye is bright
+    in the visible and which structure is no minimum, the operator made
+    three parallel extractions per folder and related them by hand, and
+    named a single overview call as the one change (2026-09-11). Each row
+    carries the folder's method and outcome, the HOMO-LUMO gap, the first
+    bright and the brightest visible transition, and the imaginary-mode
+    count with the minimum verdict -- null where the output has no such
+    block, with the reason in ``notes``.
+    """
+    from pathlib import Path as _P
+    if isinstance(folders, str):
+        folders = [folders]
+    rows: list[dict] = []
+    for folder in folders:
+        p = _P(folder)
+        parts = _method_parts(None, p)
+        row: dict = {
+            "folder": str(folder),
+            "method": _method_label(**parts),
+            "outcome": _outcome_of_folder(p) if p.is_dir() else "unknown (folder missing)",
+            "gap_ev": None, "homo_ev": None, "lumo_ev": None,
+            "homo_line": None, "lumo_line": None,
+            "first_bright_nm": None, "first_bright_fosc": None,
+            "first_bright_in_visible": None, "first_bright_line": None,
+            "brightest_visible_nm": None, "brightest_visible_fosc": None,
+            "brightest_visible_line": None,
+            "n_imag": None, "is_minimum": None, "most_negative_cm": None,
+            "most_negative_line": None,
+            "notes": [],
+        }
+        if not p.is_dir():
+            row["notes"].append("folder missing")
+            rows.append(row)
+            continue
+        orb = extract_orbital_energies(str(p))
+        if orb.error:
+            row["notes"].append(f"orbitals: {orb.error}")
+        else:
+            row["gap_ev"], row["homo_ev"], row["lumo_ev"] = orb.gap_ev, orb.homo_ev, orb.lumo_ev
+            row["homo_line"], row["lumo_line"] = orb.homo_line, orb.lumo_line
+        exc = extract_excited_states(str(p))
+        if exc.error:
+            row["notes"].append(f"excited states: {exc.error}")
+        else:
+            if exc.first_bright:
+                row["first_bright_nm"] = exc.first_bright["wavelength_nm"]
+                row["first_bright_fosc"] = exc.first_bright["fosc"]
+                row["first_bright_in_visible"] = exc.first_bright["in_visible"]
+                row["first_bright_line"] = exc.first_bright["line"]
+            else:
+                row["notes"].append(f"no bright transition (fosc >= {exc.bright_threshold_fosc})")
+            if exc.brightest_visible:
+                row["brightest_visible_nm"] = exc.brightest_visible["wavelength_nm"]
+                row["brightest_visible_fosc"] = exc.brightest_visible["fosc"]
+                row["brightest_visible_line"] = exc.brightest_visible["line"]
+            else:
+                lo, hi = exc.visible_range_nm
+                row["notes"].append(f"no bright transition in the visible ({lo:.0f}-{hi:.0f} nm)")
+        imag = extract_imaginary_frequencies(str(p))
+        if imag.error:
+            row["notes"].append(f"frequencies: {imag.error}")
+        else:
+            row["n_imag"], row["is_minimum"] = imag.n_imag, imag.is_minimum
+            row["most_negative_cm"] = imag.most_negative
+            row["most_negative_line"] = imag.most_negative_line
+        rows.append(row)
+    return rows
+
+
 def find_orca_errors(folder: str) -> list[OrcaError]:
     """Scan ``*.out`` files in ``folder`` for known ORCA error patterns.
 
@@ -1070,6 +1142,7 @@ class ImagFreqMode:
     """One imaginary vibrational mode in an ORCA frequency output."""
     mode_index: int
     frequency_cm: float
+    line: int | None = None       # the line in the output, to cite file:line
 
 
 @dataclass
@@ -1083,6 +1156,7 @@ class ImagFreqResult:
     is_minimum: bool | None
     is_ts: bool | None
     error: str | None = None
+    most_negative_line: int | None = None   # the line of the most negative mode, to cite file:line
 
 
 def extract_imaginary_frequencies(folder: str) -> ImagFreqResult:
@@ -1130,21 +1204,24 @@ def extract_imaginary_frequencies(folder: str) -> ImagFreqResult:
         r"^\s*(\d+):\s+(-\d+\.\d+)\s+cm\*\*-1.*?\*\*\*imaginary mode\*\*\*",
         text, _re.MULTILINE,
     ):
-        modes.append(ImagFreqMode(int(m.group(1)), float(m.group(2))))
+        modes.append(ImagFreqMode(int(m.group(1)), float(m.group(2)),
+                                      line=text[:m.start()].count("\n") + 1))
     if not modes:
         for m in _re.finditer(
             r"^\s*(\d+):\s+(-\d+\.\d+)\s+cm\*\*-1", text, _re.MULTILINE,
         ):
-            modes.append(ImagFreqMode(int(m.group(1)), float(m.group(2))))
+            modes.append(ImagFreqMode(int(m.group(1)), float(m.group(2)),
+                                      line=text[:m.start()].count("\n") + 1))
 
     n_imag = len(modes)
     most_negative = min((m.frequency_cm for m in modes), default=None)
+    most_negative_line = next((m.line for m in modes if m.frequency_cm == most_negative), None)
     is_minimum = (n_imag == 0)
     is_ts = (n_imag == 1)
     return ImagFreqResult(
         folder=str(p), output_file=target.name,
         n_imag=n_imag, modes=modes,
-        most_negative=most_negative,
+        most_negative=most_negative, most_negative_line=most_negative_line,
         is_minimum=is_minimum, is_ts=is_ts,
     )
 
@@ -1156,6 +1233,7 @@ class OrbitalEnergyEntry:
     occupation: float
     energy_eh: float
     energy_ev: float
+    line: int | None = None       # the line in the output, to cite file:line
 
 
 @dataclass
@@ -1171,6 +1249,12 @@ class OrbitalEnergyResult:
     gap_ev: float | None
     orbitals: list[OrbitalEnergyEntry]
     error: str | None = None
+    # Where the block and the two frontier orbitals stand in the output.
+    # Every live run ended with the model re-reading the file to cite a
+    # line number the prompt asks for; the parser knows it.
+    block_line: int | None = None
+    homo_line: int | None = None
+    lumo_line: int | None = None
 
 
 def _read_largest_out(folder: str) -> tuple["Path | None", str, str | None]:
@@ -1215,11 +1299,13 @@ def extract_orbital_energies(folder: str) -> OrbitalEnergyResult:
             orbitals=[], error="no ORBITAL ENERGIES section",
         )
     block = text[sections[-1].end():][:500_000]
+    base_line = text[:sections[-1].end()].count("\n") + 1
+    block_line = text[:sections[-1].start()].count("\n") + 1
     rows: list[OrbitalEnergyEntry] = []
     line_re = _re.compile(
         r"^\s*(\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)\s+(-?\d+\.\d+)",
     )
-    for line in block.split("\n"):
+    for offset, line in enumerate(block.split("\n")):
         if line.strip().startswith(("NO", "*")) or not line.strip():
             if rows:
                 break
@@ -1234,6 +1320,7 @@ def extract_orbital_energies(folder: str) -> OrbitalEnergyResult:
             occupation=float(m.group(2)),
             energy_eh=float(m.group(3)),
             energy_ev=float(m.group(4)),
+            line=base_line + offset,
         ))
     homo_idx = lumo_idx = None
     for r in rows:
@@ -1256,6 +1343,9 @@ def extract_orbital_energies(folder: str) -> OrbitalEnergyResult:
         homo_index=homo_idx, lumo_index=lumo_idx,
         homo_ev=homo_ev, lumo_ev=lumo_ev, gap_ev=gap_ev,
         orbitals=rows,
+        block_line=block_line,
+        homo_line=next((r.line for r in rows if r.index == homo_idx), None),
+        lumo_line=next((r.line for r in rows if r.index == lumo_idx), None),
     )
 
 
@@ -1268,6 +1358,7 @@ class ExcitedStateEntry:
     energy_cm: float
     wavelength_nm: float
     fosc: float
+    line: int | None = None       # the line in the output, to cite file:line
 
 
 @dataclass
@@ -1302,7 +1393,7 @@ def _pick_lines(rows: list, threshold: float, visible: tuple) -> dict:
     def entry(i, r):
         return {"index": i, "state": f"{r.state_from} -> {r.state_to}",
                 "wavelength_nm": r.wavelength_nm, "energy_ev": r.energy_ev,
-                "fosc": r.fosc,
+                "fosc": r.fosc, "line": r.line,
                 "in_visible": visible[0] <= r.wavelength_nm <= visible[1]}
     bright = [(i, r) for i, r in enumerate(rows) if r.fosc >= threshold]
     out = {"first_bright": None, "brightest": None, "brightest_visible": None}
@@ -1338,7 +1429,7 @@ def extract_excited_states(folder: str) -> ExcitedStatesResult:
         r"ABSORPTION SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS"
         r".*?\n-+\n.*?\n-+\n(.*?)(?:\n\n|\Z)"
     )
-    matches = _re.findall(pattern, text, _re.DOTALL)
+    matches = list(_re.finditer(pattern, text, _re.DOTALL))
     if not matches:
         return ExcitedStatesResult(
             folder=str(folder), output_file=target.name,
@@ -1349,8 +1440,10 @@ def extract_excited_states(folder: str) -> ExcitedStatesResult:
         r"(\S+)\s+->\s+(\S+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+"
         r"([\d.]+)",
     )
+    last = matches[-1]
+    base_line = text[:last.start(1)].count("\n") + 1
     rows: list[ExcitedStateEntry] = []
-    for line in matches[-1].strip().split("\n"):
+    for offset, line in enumerate(last.group(1).split("\n")):
         m = line_re.search(line)
         if not m:
             continue
@@ -1361,6 +1454,7 @@ def extract_excited_states(folder: str) -> ExcitedStatesResult:
             energy_cm=float(m.group(4)),
             wavelength_nm=float(m.group(5)),
             fosc=float(m.group(6)),
+            line=base_line + offset,
         ))
     picked = _pick_lines(rows, 0.01, (380.0, 780.0))
     return ExcitedStatesResult(
@@ -2365,6 +2459,8 @@ _TOOL_CATALOG: list[dict] = [
      "summary": "Snapshot ONE ORCA .out: energies, conv, freq, walltime."},
     {"name": "calc_status", "category": "parsing",
      "summary": "One folder: succeeded / failed / running / stalled, with the evidence."},
+    {"name": "extract_spectra_table", "category": "parsing",
+     "summary": "Per folder: HOMO-LUMO gap, first bright and brightest visible transition, imaginary modes, minimum verdict."},
     {"name": "find_orca_errors", "category": "parsing",
      "summary": "Scan a folder's .out files for known error patterns."},
     {"name": "extract_thermochem", "category": "parsing",
