@@ -619,6 +619,7 @@ def read_control_file(file_path: str) -> Dict[str, Any]:
     if "_occupier_sequence_blocks" in config:
         validated["_occupier_sequence_blocks"] = config["_occupier_sequence_blocks"]
         user_keys.add("_occupier_sequence_blocks")
+    _log_occupier_sequence_problems(config)
 
     merged = dict(validated)
     for key, value in defaults.items():
@@ -703,6 +704,88 @@ def _esd_parse_transitions(val: Any) -> List[str]:
     from delfin.common.control_validator import esd_list_items
 
     return esd_list_items(val)
+
+
+def occupier_sequence_problems(config: Dict[str, Any]) -> List[str]:
+    """What in the OCCUPIER sequences ORCA cannot run or runs as another spin state.
+
+    ``BrokenSym NA,NB`` converges the high-spin state with NA+NB unpaired
+    electrons and flips it to the broken-symmetry state of multiplicity
+    |NA-NB|+1 (ORCA 6.1.1 manual, 5.27), so NA+NB must have the parity of the
+    electron count, and site A carries the larger number.  An older sequence
+    profile had BrokenSym 3,2 and 5,2 in the even sequence and 4,2 and 6,2 in
+    the odd one: 146 archived OCCUPIER runs stopped on "multiplicity (4) is
+    even and number of electrons (242) is even -> impossible".
+    """
+    sources = []
+    for block in config.get("_occupier_sequence_blocks") or []:
+        if isinstance(block, dict):
+            label = f"sequence for charges {','.join(str(d) for d in block.get('deltas') or [])}"
+            sources.append((label, "even", block.get("even_seq")))
+            sources.append((label, "odd", block.get("odd_seq")))
+    sources.append(("sequence", "even", config.get("even_seq")))
+    sources.append(("sequence", "odd", config.get("odd_seq")))
+
+    problems: List[str] = []
+    for label, parity, entries in sources:
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            where = f"{label}, {parity}_seq index {entry.get('index', '?')}"
+            try:
+                m = int(entry.get("m"))
+            except (TypeError, ValueError):
+                continue
+            if (m % 2 == 1) != (parity == "even"):
+                problems.append(f"{where}: multiplicity {m} is impossible with an {parity} number of electrons")
+                continue
+            bs = str(entry.get("BS") or "").strip()
+            if not bs:
+                continue
+            try:
+                na, nb = (int(x) for x in bs.split(","))
+            except ValueError:
+                problems.append(f"{where}: BS {bs!r} is not two numbers NA,NB")
+                continue
+            if ((na + nb) % 2 == 0) != (parity == "even"):
+                problems.append(
+                    f"{where}: BrokenSym {na},{nb} has {na + nb} unpaired electrons, impossible with an "
+                    f"{parity} number of electrons; ORCA stops this run ('multiplicity ... -> impossible')"
+                )
+            elif abs(na - nb) + 1 != m:
+                problems.append(
+                    f"{where}: BrokenSym {na},{nb} is a multiplicity-{abs(na - nb) + 1} state, "
+                    f"listed as m={m}"
+                )
+            if na < nb:
+                problems.append(f"{where}: BrokenSym {na},{nb} -- ORCA wants site A to carry the larger number")
+    return list(dict.fromkeys(problems))
+
+
+_SEQUENCE_NOTES_GIVEN: Set[str] = set()
+
+
+def _log_occupier_sequence_problems(config: Dict[str, Any]) -> None:
+    """Say once per run what get_occupier_hints says on the Submit tab (a CLI run has no Submit tab)."""
+    if str(config.get("method", "")).strip().lower() != "occupier":
+        return
+    for problem in occupier_sequence_problems(config):
+        if problem not in _SEQUENCE_NOTES_GIVEN:
+            _SEQUENCE_NOTES_GIVEN.add(problem)
+            logger.warning("OCCUPIER %s", problem)
+
+
+def get_occupier_hints(control_text: str) -> List[str]:
+    """Non-blocking notes on the OCCUPIER sequences of a CONTROL text (method=OCCUPIER only)."""
+    try:
+        config = parse_control_text(control_text)
+    except Exception:
+        return []
+    if str(config.get("method", "")).strip().lower() != "occupier":
+        return []
+    return occupier_sequence_problems(config)
 
 
 def get_esd_hints(control_text: str) -> List[str]:
@@ -841,6 +924,7 @@ def OCCUPIER_parser(path: str) -> Dict[str, Any]:
     if "_occupier_sequence_blocks" in config:
         validated["_occupier_sequence_blocks"] = config["_occupier_sequence_blocks"]
         user_keys.add("_occupier_sequence_blocks")
+    _log_occupier_sequence_problems(config)
 
     merged = dict(validated)
     for key, value in defaults.items():
