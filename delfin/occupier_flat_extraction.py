@@ -673,9 +673,9 @@ def _create_occupier_fob_jobs(
                     if not inp_path.exists():
                         raise RuntimeError(f"Failed to create OCCUPIER input '{_inp_name}' in {folder_name}")
 
-                # NOTE: prepare_input_for_continuation() is called internally by
-                # run_orca_with_intelligent_recovery() during retry attempts only.
-                # We do NOT call it here before the first ORCA run.
+                # The first run uses the input as written; only a recovery retry
+                # (run_orca_with_intelligent_recovery) restarts from the job's own
+                # orbitals and geometry.
 
                 # Always ensure PAL matches current core allocation
                 _update_pal_block(str(inp_path), cores)
