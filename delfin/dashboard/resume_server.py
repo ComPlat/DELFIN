@@ -224,10 +224,18 @@ def resume_kernel_manager_class(base: type) -> type:
             log = getattr(self, "log", None)
             if not kid:
                 if log:
+                    try:
+                        seen = sorted(n for n in os.listdir(_session.RECORD_DIR)
+                                      if n.endswith(".json"))
+                        listing = ", ".join(seen) or "no record files"
+                    except OSError as exc:
+                        listing = f"cannot list: {type(exc).__name__}: {exc}"
                     log.warning(
                         "[delfin] return to session %r: no record under %s "
-                        "(ended, or kept by another account/machine); "
-                        "starting a fresh kernel.", name, _session.RECORD_DIR)
+                        "(ended, or kept by another account/machine); the "
+                        "server sees there: %s; server HOME=%s. Starting a "
+                        "fresh kernel.", name, _session.RECORD_DIR, listing,
+                        os.environ.get("HOME", ""))
                 return ""
             try:
                 known = kid in self
@@ -308,11 +316,17 @@ def resume_kernel_manager_class(base: type) -> type:
             allowed = grace_seconds() if had_window else NEVER_CONNECTED_SECONDS
             if seconds <= allowed:
                 return
-            if kernel_id in kept_kernel_ids():
+            kept = kept_kernel_ids()
+            if kernel_id in kept:
                 return
-            self.log.info(
-                "Ending kernel %s: no window for %ds and not kept.",
-                kernel_id, int(seconds))
+            # A warning, not info: the default server log hides info, and
+            # a kernel ending is the one event the person who kept a
+            # session must be able to see on the terminal.
+            self.log.warning(
+                "[delfin] ending kernel %s: no window for %ds and not kept "
+                "(kept kernels on record: %s).",
+                kernel_id[:8], int(seconds),
+                ", ".join(k[:8] for k in sorted(kept)) or "none")
             await self.shutdown_kernel(kernel_id)
 
         async def shutdown_kernel(self, kernel_id, *args: Any, **kwargs: Any):
@@ -321,7 +335,13 @@ def resume_kernel_manager_class(base: type) -> type:
             # a session that is gone.
             for record in _session.list_records():
                 if str(record.get("kernel_id") or "") == str(kernel_id):
-                    _session.drop_record(str(record.get("session_name") or ""))
+                    name = str(record.get("session_name") or "")
+                    log = getattr(self, "log", None)
+                    if log:
+                        log.warning("[delfin] kernel %s is shutting down; "
+                                    "dropping the record of session %r.",
+                                    str(kernel_id)[:8], name)
+                    _session.drop_record(name)
             self._delfin_unwatched().pop(kernel_id, None)
             return await super().shutdown_kernel(kernel_id, *args, **kwargs)
 
