@@ -269,3 +269,13 @@ def test_the_watchdog_does_not_advise_a_longer_budget_where_it_cannot_help():
     assert "started after 600 s, so a longer budget cannot " in body
     assert 'provider_dropdown.value or "") == "kit"' in body
     assert "raise " in body, "the other providers keep the setting advice"
+
+
+def test_the_status_row_is_refreshed_after_this_turns_timing_is_known():
+    """Driven live on 2026-09-11 with kit.deepseek-v4-flash: the first turn
+    answered in 34 s and the status row showed no timing, because it was
+    refreshed before the timing was computed. The refresh follows it."""
+    text = _source()
+    i = text.index('state["_last_turn_timing"] = _turn_timing_text(')
+    after = text[i:i + 600]
+    assert "_update_status()" in after, "the row is refreshed before this turn's timing exists"
