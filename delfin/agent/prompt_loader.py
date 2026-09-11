@@ -35,7 +35,7 @@ _LANGUAGE_RULE_NAMES = {"de": "German", "en": "English"}
 _CRITICAL_RULES: dict[str, list[str]] = {
     "write": [
         "NEVER execute destructive actions (rm -rf, git reset --hard, DROP TABLE) without explicit user confirmation.",
-        "Grep before Read — search first, then read only the relevant lines.",
+        "Grep before Read; ORCA output: typed extract_* tools first, then only the relevant lines.",
         "Run tests after every code edit: python -m pytest tests/ -x -q",
         "If a Bash command is BLOCKED/DENIED, STOP. Do not retry it or any variation.",
         "Communicate with the user in German. Code, commits, and artifacts in English.",
