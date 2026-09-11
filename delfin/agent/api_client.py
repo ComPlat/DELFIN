@@ -2210,6 +2210,22 @@ _MCP_WRITE_GATE_MAP: dict[str, str] = {
     "apply_patch": "apply_patch",
 }
 
+# MCP tools whose only side effect is ONE artifact -- a PNG -- written into
+# the agent workspace (or the cwd), and which read everything else. Judged
+# as the workspace write they are: write_file inside the workspace passes
+# in default mode, and so did a bash call to python + matplotlib in every
+# live run after the typed tool was refused -- the gate had only moved the
+# same write onto the untyped path. Both models, asked for a figure of
+# the energies per method, named this as the one change (2026-09-11).
+# A target outside the writable roots falls through to the side-effect
+# gate, which asks; nothing that used to ask now passes in silence.
+_MCP_ARTIFACT_TOOL_BASES: frozenset[str] = frozenset({
+    "plot_energy_distribution", "plot_energy_correlation",
+    "plot_orbital_diagram", "plot_optimization_convergence",
+    "plot_uvvis_spectrum", "plot_scf_convergence",
+    "plot_population_charges", "plot_vibrational_spectrum",
+})
+
 # MCP tools that write source and execute it. Not a file write with a path
 # the write gate could judge — the payload IS code and the server runs it
 # where it likes. ``register_module`` writes ``<adapters_dir>/<name>.py``
@@ -2707,6 +2723,19 @@ def _plan_mode_refusal(bare: str) -> str:
             f"If you cannot say what you would do until the user decides "
             f"something, call ask_user_question instead of submitting a "
             f"plan with the question in it.")
+
+
+def _artifact_target_path(base: str, args: dict) -> str:
+    """Where an artifact tool will write: its explicit output_path, else
+    a file of its own name in the default plot directory."""
+    try:
+        explicit = str((args or {}).get("output_path") or "").strip()
+        if explicit:
+            return explicit
+        from delfin.api import _default_plot_dir
+        return str(Path(_default_plot_dir()) / f"{base}.png")
+    except Exception:
+        return ""
 
 
 def _bare_tool_name(name: str) -> str:
@@ -12554,6 +12583,17 @@ class _DocToolExecutor:
                     "configured, so it is refused."
                 )
             return self._run_permission_gate(gate_name, args, perms)
+
+        # (2b) Artifact writers -> the write gate, for the one path they
+        # write. Allowed exactly when write_file to that path would be;
+        # otherwise the side-effect gate below asks, as it always did.
+        if base in _MCP_ARTIFACT_TOOL_BASES and perms is not None:
+            target = _artifact_target_path(base, args)
+            if target:
+                verdict = self._run_permission_gate(
+                    "write_file", {"path": target, "content": ""}, perms)
+                if verdict is None:
+                    return None
 
         # (3) Everything else. A tool this gate does not recognise is a tool
         # whose effects it cannot judge, and "cannot judge" was silently
