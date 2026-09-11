@@ -699,6 +699,13 @@ def _state_for(outcome: str, age_s, job=None) -> str:
     state = _state_of(outcome)
     if state == "running" and age_s is not None and age_s > STALLED_AFTER_S:
         return "stalled"
+    # An input with no output, no job in the scheduler, and nothing
+    # written for as long as a stall takes: not started, as far as the
+    # files and the scheduler can tell. An operator asked for exactly
+    # this word (2026-09-11): "pending" made it look at the folder by
+    # hand to learn whether the run had ever been submitted.
+    if state == "pending" and age_s is not None and age_s > STALLED_AFTER_S:
+        return "not started"
     return state
 
 
@@ -783,6 +790,10 @@ def calculation_status(folder: str) -> CalculationStatus:
     # alive. The outcome phrase keeps what the files say, the state
     # says what the rest adds.
     state = _state_for(outcome, age, job)
+    if state == "not started":
+        evidence.append({"source": "scheduler + clock",
+                         "says": (f"no job lists this folder and nothing was "
+                                  f"written for {(age or 0.0) / 3600.0:.1f} h")})
     return CalculationStatus(folder=str(d), state=state,
                              outcome=outcome,
                              method=_method_label(**parts),
@@ -1098,6 +1109,15 @@ def extract_energy_table(
             "method": _method_label(**parts),
             "outcome": _outcome_of_folder(p),
         }
+        # A null with its reason. The default properties include gibbs
+        # and zpe, and a single-point output has neither; an operator
+        # read the nulls as "the run is not done" and called the table
+        # again with single_point to learn otherwise (2026-09-11). Kept
+        # short and only where it applies: nine archive rows must still
+        # fit the tool-result window.
+        if (parsed.gibbs_free_energy is None and parsed.zpe is None
+                and any(pr in ("gibbs", "zpe") for pr in properties)):
+            row["notes"] = ["no thermochemistry in output: use single_point"]
         for prop in properties:
             if prop == "gibbs":
                 row[prop] = parsed.gibbs_free_energy
