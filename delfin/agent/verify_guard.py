@@ -631,6 +631,9 @@ _JSON_FIELD_RE = re.compile(
 # A record id: the longest path segment that looks like a calculation
 # folder, or a CSV's first column.
 _PATH_SEGMENT_RE = re.compile(r"[A-Za-z0-9][\w.+-]{3,}")
+#: A path inside free text or a rendered argument dict: segments that
+#: stop at whitespace, quotes, brackets and commas.
+_PATHS_IN_TEXT_RE = re.compile(r"(?:/[^\s'\"{}\[\],]+)+")
 
 # Every caveat, in both languages the sessions run in. One table, so a
 # new note cannot be added in one language and forgotten in the other.
@@ -759,7 +762,17 @@ def _record_id(source: str) -> str:
     lets a value read from `<folder>/DELFIN_Data.json` be compared with
     one read back from a table row keyed on `<folder>`.
     """
-    parts = [p for p in str(source or "").replace("\\", "/").split("/") if p]
+    text = str(source or "").replace("\\", "/")
+    # The source is usually the rendering of the call's arguments --
+    # "{'folder': '/tmp/x/spectra/dye_a'}" -- not a bare path. Split on
+    # "/" alone, the deepest segment arrives as "dye_a'}" and fails the
+    # segment pattern, so the PARENT was taken as the record: three runs
+    # under spectra/ were keyed as one, and the verifier reported their
+    # honest differences as one record contradicting itself (2026-09-11).
+    # The paths are lifted out of the text first, and the last one -- the
+    # call's primary argument in practice -- is the record's.
+    paths = _PATHS_IN_TEXT_RE.findall(text)
+    parts = [p for p in (paths[-1] if paths else text).split("/") if p]
     for part in reversed(parts):
         if "." in part and part.rsplit(".", 1)[-1].isalpha():
             continue                       # a file name, not the record
