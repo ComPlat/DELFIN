@@ -33,6 +33,27 @@ _PLAN_HINT_NUMBERED = re.compile(r"(?:^|\s)\(?(?:[1-9]|10)\)?[\.\)]")
 _EFFORT_LEVELS = ("low", "medium", "high", "xhigh")
 
 
+def _upload_dir_candidates(agent_dir, workspace) -> list:
+    """Where an attached file may be written, most visible first.
+
+    Uploads used to land in ``<workspace>/.delfin/uploads``: readable,
+    but hidden -- a listing of the workspace does not show it, and a
+    model that explores the folder instead of following the absolute
+    path in the attachment note finds nothing and reports the file as
+    missing (a GLM session did, 2026-09-11). The agent's own workspace
+    folder is visible and is where its artifacts already go, so
+    ``<agent_workspace>/uploads`` comes first; the hidden folder stays
+    as the fallback for a session whose permissions do not reach it.
+    """
+    from pathlib import Path as _P
+    out = []
+    if agent_dir:
+        out.append(_P(agent_dir) / "uploads")
+    if workspace:
+        out.append(_P(workspace) / ".delfin" / "uploads")
+    return out
+
+
 def _engine_model_name(engine, fallback: str = "") -> str:
     """The model an engine talks to, or *fallback* -- never the empty
     string by accident: the profile of "" is the generic default."""
@@ -6429,7 +6450,19 @@ def create_tab(ctx):
             return []
         kp = getattr(engine, "kit_permissions", None)
         ws = getattr(kp, "workspace", None) or ctx.repo_dir or Path.cwd()
-        upload_dir = Path(ws) / ".delfin" / "uploads"
+        # The first candidate the session may read; the visible one first.
+        candidates = _upload_dir_candidates(
+            getattr(ctx, "agent_dir", None), ws)
+        upload_dir = candidates[-1]
+        for cand in candidates:
+            try:
+                probe = cand.resolve()
+            except OSError:
+                probe = cand
+            if kp is None or not hasattr(kp, "find_readable_root_for") \
+                    or kp.find_readable_root_for(probe) is not None:
+                upload_dir = cand
+                break
         saved: list[Path] = []
         try:
             upload_dir.mkdir(parents=True, exist_ok=True)
