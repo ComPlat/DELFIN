@@ -19,11 +19,11 @@ non-trivial answer and a lazy one is wrong:
 
   * As INDEXED: PBE0 5 times, B3LYP 3. "The most used functional" has an
     answer, and it is not "all of them".
-  * calc_d's TPSSh is deliberately NOT in that count. The index reads the
-    functional from DELFIN_Data.json, which an unfinished run does not
-    have -- so a run still in flight contributes no method. That is the
-    indexer's behaviour, not a flaw in the fixture, and a task must not
-    ask a question whose answer depends on it.
+  * calc_d's TPSSh counts once, read from its .inp header: an unfinished
+    run has no DELFIN_Data.json, and the index falls back to the input
+    (TPSSh joined the known functionals on 2026-09-10, when a model
+    asked where the tools hurt found a running run filed under no
+    method). PBE0 5, B3LYP 3, TPSSh 1 -- the most-used answer is unchanged.
   * def2-TZVP appears 4 times, def2-SVP 5 -- close enough that guessing
     from the functional does not work.
   * ONE run (arch_e) has no CONTROL.txt and only an .inp, so the index
@@ -79,20 +79,22 @@ from pathlib import Path
 # is the least negative of its group, not the lowest) and the test is
 # what caught it.
 #
+# Energies below are shown to four decimals; the runs carry ORCA-like
+# precision, so a value never reads as a rounded one.
 # The global minimum is arch_d at -113.5620, and it is the one run with
 # no peer at all: lowest because of its functional AND its basis set.
 ACTIVE = [
-    ("calc_a", "PBE0", "def2-TZVP", "DMF", "classic", True, True, -113.3020),
-    ("calc_b", "B3LYP", "def2-SVP", "water", "classic", True, True, -113.5510),
-    ("calc_c", "PBE0", "def2-SVP", "none", "OCCUPIER", True, True, -113.2980),
+    ("calc_a", "PBE0", "def2-TZVP", "DMF", "classic", True, True, -113.30202939359),
+    ("calc_b", "B3LYP", "def2-SVP", "water", "classic", True, True, -113.55102276267),
+    ("calc_c", "PBE0", "def2-SVP", "none", "OCCUPIER", True, True, -113.29806993833),
     ("calc_d", "TPSSh", "def2-TZVP", "acetonitrile", "classic", False, False, None),
 ]
 ARCHIVED = [
-    ("arch_a", "PBE0", "def2-TZVP", "DMF", "classic", True, True, -113.3050),
-    ("arch_b", "PBE0", "def2-SVP", "DMF", "classic", True, True, -113.2940),
-    ("arch_c", "B3LYP", "def2-SVP", "toluene", "classic", True, True, -113.5480),
-    ("arch_d", "B3LYP", "def2-TZVP", "water", "OCCUPIER", True, True, -113.5620),
-    ("arch_e", "PBE0", "def2-SVP", "DMF", "classic", False, True, -113.3010),
+    ("arch_a", "PBE0", "def2-TZVP", "DMF", "classic", True, True, -113.30506647680),
+    ("arch_b", "PBE0", "def2-SVP", "DMF", "classic", True, True, -113.29405164946),
+    ("arch_c", "B3LYP", "def2-SVP", "toluene", "classic", True, True, -113.54801244193),
+    ("arch_d", "B3LYP", "def2-TZVP", "water", "OCCUPIER", True, True, -113.56203860291),
+    ("arch_e", "PBE0", "def2-SVP", "DMF", "classic", False, True, -113.30103117507),
 ]
 
 CONTROL = """# DELFIN CONTROL
@@ -122,7 +124,7 @@ OUT = """
 
 Program Version 6.0.1
 
-FINAL SINGLE POINT ENERGY      {energy:.8f}
+FINAL SINGLE POINT ENERGY      {energy:.12f}
 
                              ****ORCA TERMINATED NORMALLY****
 """
@@ -146,7 +148,11 @@ def build(base: Path, rows, kind: str) -> None:
             (d / "DELFIN_Data.json").write_text(json.dumps({
                 "name": name, "functional": func, "basis_set": basis,
                 "solvent": solvent, "charge": 0, "multiplicity": 1,
-                "status": "finished" if kind == "archive" else "running",
+                # A model asked where the tools hurt found the archive
+                # contradicting itself: an output that says TERMINATED
+                # NORMALLY beside a status of "running". Only the run
+                # without an output is running.
+                "status": "finished" if out else "running",
             }, indent=1), encoding="utf-8")
         if out:
             (d / f"{name}.out").write_text(

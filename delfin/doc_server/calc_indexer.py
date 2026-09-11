@@ -30,7 +30,13 @@ def _extract_from_delfin_data(data: dict) -> dict[str, Any]:
     rec: dict[str, Any] = {}
 
     # -- metadata block (archive calcs) ------------------------------------
-    meta = data.get("metadata", {})
+    # DELFIN writes the method under "metadata"; the benchmark fixture and
+    # older files write it flat. Both are read, or a flat file files its
+    # run under no method at all.
+    meta = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+    for key in ("functional", "basis_set", "solvent", "charge"):
+        if key not in meta and key in data:
+            meta = {**meta, key: data.get(key)}
     if isinstance(meta, dict):
         rec["functional"] = meta.get("functional", "")
         rec["basis_set"] = meta.get("basis_set", "")
@@ -155,6 +161,148 @@ def _extract_from_delfin_data(data: dict) -> dict[str, Any]:
     return rec
 
 
+def completion_of(d) -> tuple:
+    """(completed, exit_code) for a calculation folder, from what it left.
+
+    An exit-code file means the run ENDED (the code says how); a run log
+    without one means running or crashed; neither means unknown. One
+    reading, shared by the index and the energy tools, so the two never
+    call the same folder two different things.
+    """
+    from pathlib import Path as _P
+    d = _P(d)
+    exit_codes = list(d.glob(".exit_code_*"))
+    if exit_codes:
+        try:
+            code = exit_codes[0].name.split("_")[-1]
+            return True, (int(code) if code.isdigit() else code)
+        except Exception:
+            return True, "unknown"
+    if (d / "delfin_run.log").is_file():
+        return False, None
+    return None, None
+
+
+def outcome_of_folder(d) -> str:
+    """The outcome phrase for a folder, in one call.
+
+    When neither an exit-code file nor a run log exists, the pipeline
+    state file still may: a status of running / finished there is
+    evidence, and "unknown" beside a file that says "finished" was the
+    answer a model called misleading.
+    """
+    import json as _json
+    from pathlib import Path as _P
+    completed, exit_code = completion_of(d)
+    if completed is not None:
+        return _outcome_of(completed, exit_code)
+    d = _P(d)
+    for name in ("DELFIN_Data.json", "DELFIN_data.json"):
+        f = d / name
+        if not f.is_file():
+            continue
+        try:
+            status = str((_json.loads(f.read_text(encoding="utf-8")) or {}).get("status") or "").strip().lower()
+        except Exception:
+            break
+        if status in ("running", "active", "started", "in_progress"):
+            return f"running per {name} (no exit code yet)"
+        if status in ("finished", "completed", "done", "ok", "success"):
+            return f"finished per {name} (no exit code file)"
+        if status in ("failed", "error", "crashed"):
+            return f"failed per {name} (no exit code file)"
+        break
+    # An input with no output and no log: not started, or running on a
+    # machine that writes no log here. Either way it is not "unknown"
+    # in the sense of "nothing to go on" -- there is an input waiting.
+    if any(d.glob("*.inp")) and not any(d.glob("*.out")):
+        return "no output yet (input present; not started or still running)"
+    # An output with no bookkeeping around it -- an archived run copied
+    # without its state file, a calculation run by hand -- still says how
+    # it ended: ORCA writes its own termination line. Read from the tail,
+    # where it is; an output of a million lines is not read to find it.
+    # Driven 2026-09-10 over such a folder: "unknown" beside an output
+    # that says TERMINATED NORMALLY.
+    out = _largest_output(d)
+    if out is not None:
+        tail = _tail_text(out)
+        if "ORCA TERMINATED NORMALLY" in tail:
+            return "finished per ORCA output (no exit code file)"
+        if "ORCA finished by error termination" in tail or "ABORTING THE RUN" in tail:
+            return "failed per ORCA output (error termination)"
+        return "running or crashed (output has no termination line)"
+    return _outcome_of(completed, exit_code)
+
+
+def _largest_output(d):
+    """The .out most likely to be the run's own: the largest."""
+    from pathlib import Path as _P
+    best = None
+    try:
+        for f in _P(d).glob("*.out"):
+            try:
+                size = f.stat().st_size
+            except OSError:
+                continue
+            if best is None or size > best[0]:
+                best = (size, f)
+    except OSError:
+        return None
+    return best[1] if best else None
+
+
+def _tail_text(path, size: int = 16384) -> str:
+    """The last ``size`` bytes of a file as text, never raising."""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, 2)
+            n = fh.tell()
+            fh.seek(max(0, n - size))
+            return fh.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def method_of_folder(d) -> tuple:
+    """(functional, basis) from what the folder holds besides the output.
+
+    An ORCA output need not state its method -- a DELFIN run's does not
+    -- so a parser that reads only the .out returns "", and every tool
+    downstream then files the run under method None. The folder knows:
+    DELFIN_Data.json first, then CONTROL.txt, then the .inp header, the
+    order the index itself uses.
+    """
+    import json as _json
+    from pathlib import Path as _P
+    d = _P(d)
+    functional = basis = None
+    try:
+        if (d / "DELFIN_Data.json").is_file():
+            rec = _extract_from_delfin_data(_json.loads((d / "DELFIN_Data.json").read_text(encoding="utf-8")))
+            functional = rec.get("functional") or None
+            basis = rec.get("basis_set") or None
+    except Exception:
+        pass
+    try:
+        if (not functional or not basis) and (d / "CONTROL.txt").is_file():
+            rec = _extract_from_control_txt((d / "CONTROL.txt").read_text(encoding="utf-8"))
+            basis = basis or rec.get("basis_set") or None
+            functional = functional or rec.get("functional") or None
+    except Exception:
+        pass
+    try:
+        if not functional or not basis:
+            for inp in sorted(d.glob("*.inp")):
+                rec = _extract_from_inp_header(inp.read_text(encoding="utf-8", errors="replace"))
+                functional = functional or rec.get("inp_functional") or None
+                basis = basis or rec.get("inp_basis") or None
+                if functional and basis:
+                    break
+    except Exception:
+        pass
+    return functional, basis
+
+
 def _outcome_of(completed, exit_code) -> str:
     """One phrase a reader cannot mistake: did the run succeed?"""
     if completed is None:
@@ -227,7 +375,7 @@ def _extract_from_control_txt(text: str) -> dict[str, Any]:
 
 _KNOWN_FUNCTIONALS = {
     "hf", "rhf", "uhf",
-    "b3lyp", "pbe", "pbe0", "bp86", "tpss", "m06", "m06-2x", "m06-l",
+    "b3lyp", "pbe", "pbe0", "bp86", "tpss", "tpssh", "m06", "m06-2x", "m06-l",
     "cam-b3lyp", "wb97x", "wb97x-d3", "wb97x-d3bj", "wb97x-v",
     "wb97m-v", "wb97m-d3bj", "wb97x-3c",
     "b2plyp", "ri-b2plyp", "dlpno-ccsd(t)", "ccsd(t)",
@@ -378,19 +526,11 @@ def _scan_calc_dir(
         # "completed: true" here. Driven through get_calc_info, that
         # record read as a success. `outcome` says which it was, in
         # words, so the two are never read as one.
-        exit_codes = list(d.glob(".exit_code_*"))
-        if exit_codes:
-            rec["completed"] = True
-            try:
-                code = exit_codes[0].name.split("_")[-1]
-                rec["exit_code"] = int(code) if code.isdigit() else code
-            except Exception:
-                rec["exit_code"] = "unknown"
-        elif (d / "delfin_run.log").is_file():
-            rec["completed"] = False  # has log but no exit code → running/crashed
-        else:
-            rec["completed"] = None  # unknown
-        rec["outcome"] = _outcome_of(rec.get("completed"), rec.get("exit_code"))
+        completed, exit_code = completion_of(d)
+        rec["completed"] = completed
+        if completed:
+            rec["exit_code"] = exit_code
+        rec["outcome"] = _outcome_of(completed, exit_code)
 
         records.append(rec)
 

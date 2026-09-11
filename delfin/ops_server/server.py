@@ -248,8 +248,11 @@ def tool_parse_orca_output(path: str) -> str:
     gibbs_free_energy (Hartree), zpe (Hartree), scf_converged (bool),
     opt_converged (bool), imag_freq_count (int), walltime_s (float),
     n_atoms (int), functional (str), basis (str), error_summary (str).
-    Missing values are null. Use this BEFORE writing a Python script
-    to grep the file — one tool call replaces dozens of regexes.
+    functional/basis come from the output when it states them, else
+    from the folder (DELFIN_Data.json, CONTROL.txt, .inp) -- a DELFIN
+    run's output does not name its method. Missing values are null.
+    Use this BEFORE writing a Python script to grep the file — one
+    tool call replaces dozens of regexes.
 
     Args:
         path: absolute path to the ORCA .out file.
@@ -295,6 +298,23 @@ def tool_extract_thermochem(folder: str) -> str:
     return _json.dumps(_asdict(result), indent=2)
 
 
+def _grouped_by_method(rows: list) -> dict:
+    """Rows -> {"note", "groups": [{"method", "rows"}]}, in row order.
+
+    The rule travels with the data: a caller that reads the JSON reads
+    that energies compare only within a method before it reads a number.
+    """
+    groups: list = []
+    index: dict = {}
+    for row in rows:
+        method = row.get("method") if isinstance(row, dict) else None
+        if method not in index:
+            index[method] = len(groups)
+            groups.append({"method": method, "rows": []})
+        groups[index[method]]["rows"].append(row)
+    return {"note": delfin_api.METHOD_NOTE, "groups": groups}
+
+
 def tool_extract_energy_table(
     folders: str,
     properties: str = "",
@@ -302,7 +322,10 @@ def tool_extract_energy_table(
     """Walk a list of folders and collect energies into rows.
 
     Returns a JSON list of rows. Each row has ``folder``, ``status``
-    ("ok" / "missing" / "no_output"), and one entry per requested
+    ("ok" / "missing" / "no_output"), ``method`` ("PBE0/def2-SVP": a
+    total energy compares only within one method), ``outcome``
+    (succeeded / failed (exit code N) / running or crashed / unknown --
+    "no_output" alone does not say which), and one entry per requested
     property. Rows with status != "ok" carry None for properties.
 
     Recognised properties: gibbs, zpe, single_point, scf_converged,
@@ -312,6 +335,7 @@ def tool_extract_energy_table(
         folders: comma-separated absolute paths (or a single path).
         properties: comma-separated property names. Empty → defaults
             to "gibbs,zpe,single_point".
+    
     """
     import json as _json
     folder_list = [f.strip() for f in folders.split(",") if f.strip()]
@@ -968,10 +992,14 @@ def tool_explain_delfin_feature(name: str) -> str:
 
 
 def tool_list_active_calculations() -> str:
-    """Live list of running/pending jobs (read-only).
+    """Live list of the scheduler's running/pending jobs (read-only).
 
     Returns JSON list of {job_id, name, status, runtime_s, directory}
-    entries. Empty when no jobs are active.
+    entries. Empty when no jobs are active -- which says nothing about
+    folders on disk: a calculation submitted elsewhere, or one that
+    crashed, is not in this list. For "which of these folders is still
+    running" read the ``outcome`` column of extract_energy_table
+    (running or crashed / no output yet / failed (exit code N)).
     """
     import json as _json
     return _json.dumps(delfin_api.list_active_calculations(), indent=2)
@@ -1176,25 +1204,47 @@ def tool_find_calculation_extreme(
     extreme: str = "min",
     n: int = 5,
 ) -> str:
-    """Return the N folders with the lowest/highest value of a property.
+    """The N lowest/highest folders by a property, PER METHOD.
 
-    Direct answer to "find the .out with the lowest Gibbs energy"
-    type questions. Folders that fail to parse the property are
-    excluded from the ranking, so a clean list is returned.
+    Returns {"note", "property_requested", "property_used", "groups":
+    [{"method", "rows"}], "skipped": [{"folder", "reason", "outcome"}]}:
+    within each method (functional/basis) the top n rows, ranked; groups
+    are not ranked against each other, because a total energy compares
+    only within one method. "Find the .out with the lowest Gibbs energy"
+    is answered per method.
+
+    Every folder that is not in a group is in "skipped" with the reason
+    -- missing, no output (the outcome says whether it is still running,
+    crashed or never started), or the property is not in its output.
+    When NO folder carries the requested property but single point
+    energies are there, the ranking uses single_point and says so in
+    property_used and in the note; an archive of single points has no
+    Gibbs energy to rank by.
 
     Args:
         folders: comma-separated absolute paths.
         property: gibbs (default) | zpe | single_point | imag_freqs |
             walltime_s.
         extreme: "min" (lowest, default) or "max" (highest).
-        n: how many top entries to return (default 5).
+        n: how many top entries per method to return (default 5).
+    
     """
     import json as _json
     folder_list = [f.strip() for f in folders.split(",") if f.strip()]
-    rows = delfin_api.find_calculation_extreme(
+    res = delfin_api.find_calculation_extreme_explained(
         folder_list, property=property, extreme=extreme, n=int(n),
     )
-    return _json.dumps(rows, indent=2)
+    out = _grouped_by_method(res["rows"])
+    out["property_requested"] = res["property_requested"]
+    out["property_used"] = res["property_used"]
+    out["skipped"] = res["skipped"]
+    if res["property_used"] != res["property_requested"]:
+        out["note"] += (f" No folder carries {res['property_requested']}; "
+                        f"ranked by {res['property_used']} instead.")
+    if not res["rows"]:
+        out["note"] += (" Nothing to rank: 'skipped' says why each "
+                        "folder is left out.")
+    return _json.dumps(out, indent=2)
 
 
 def tool_extract_imaginary_frequencies(folder: str) -> str:
@@ -1246,20 +1296,23 @@ def tool_compare_across_functionals(
     include_imag: bool = True,
     sort_by: str = "gibbs",
 ) -> str:
-    """Multi-folder comparison table grouped by functional/basis.
+    """Multi-folder comparison table grouped by method (functional/basis).
 
-    Returns one row per folder with: functional, basis, gibbs,
-    single_point, zpe, n_imag, is_minimum, status. Sortable by gibbs
-    (default), single_point, zpe, functional, or folder.
-
-    Direct answer to "compare imaginary frequencies across functionals"
-    or "Which functional gives the lowest minimum?".
+    Returns {"note", "groups": [{"method", "rows"}]}: one row per folder
+    with functional, basis, gibbs, single_point, zpe, n_imag,
+    is_minimum, status. Sorting by gibbs (default), single_point or zpe
+    orders rows WITHIN a method; groups are never ranked against each
+    other, because a total energy compares only within one method.
+    Answers "which run is lowest within each method" and "compare
+    imaginary frequencies across functionals" -- not "which functional
+    gives the lowest minimum", which has no answer.
 
     Args:
         folders: comma-separated absolute paths.
         include_imag: if True (default), also extract imaginary-freq
             counts (slightly slower but usually wanted).
         sort_by: gibbs | single_point | zpe | functional | folder.
+    
     """
     import json as _json
     from dataclasses import asdict as _asdict
@@ -1267,7 +1320,7 @@ def tool_compare_across_functionals(
     rows = delfin_api.compare_across_functionals(
         folder_list, include_imag=include_imag, sort_by=sort_by,
     )
-    return _json.dumps([_asdict(r) for r in rows], indent=2)
+    return _json.dumps(_grouped_by_method([_asdict(r) for r in rows]), indent=2)
 
 
 def tool_extract_orbital_energies(folder: str) -> str:
@@ -1392,7 +1445,7 @@ def tool_extract_vibrational_modes(folder: str) -> str:
 
 
 def tool_extract_delfin_json(folder: str) -> str:
-    """Read the structured DELFIN_data.json pipeline state.
+    """Read the structured DELFIN_Data.json pipeline state.
 
     Returns workflow_stages, per-stage energies + timings, total
     cost (USD), and raw_keys (for schema-version discovery).
