@@ -38,6 +38,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -229,7 +230,7 @@ def test_the_control_is_on_the_page(server):
         page = browser.new_page()
         try:
             _open_dashboard(page, root)
-            assert page.locator("button", has_text="Offen halten").count() >= 1
+            assert page.locator("button", has_text="Keep session").count() >= 1
             # The baseline for the resume case: a fresh page has the
             # scripts an Output widget carries, not only the bundle.
             _expect(page, "the agent tab's Output-carried script",
@@ -296,15 +297,34 @@ def test_a_kept_session_survives_the_window_and_comes_back(server):
             box.fill(_WATER)
             page.wait_for_selector(".submit-mol-output canvas", timeout=90_000)
 
-            page.locator("button", has_text="Offen halten").first.click()
-            page.wait_for_selector("text=Läuft weiter als", timeout=60_000)
-            note = page.locator(".delfin-session-note").last.inner_text()
+            page.locator("button", has_text="Keep session").first.click()
+            page.wait_for_selector(".delfin-session-dot.on", timeout=60_000)
+            note = page.locator(".delfin-session-dot.on").last.get_attribute("title") or ""
+            resume = page.locator(".delfin-session-link").last.get_attribute("href") or ""
         finally:
             browser.close()
 
-        assert "://" in note, f"the strip named no address: {note!r}"
-        resume = note.split("zurück über", 1)[-1].strip()
-        assert resume.startswith("http"), note
+        assert "Kept as" in note, f"the dot does not say it is kept: {note!r}"
+        assert resume.startswith("http"), f"the dot links nowhere: {resume!r}"
+
+        # The return address is behind the same token as the dashboard:
+        # without it nobody gets in, with it only the person who started
+        # the server. A name alone opens nothing.
+        import re as _re
+        naked = _re.sub(r"([?&])token=[^&]*&?", r"\1", resume).rstrip("?&")
+        assert "token=" not in naked
+
+        class _NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *a, **k):
+                return None
+        opener = urllib.request.build_opener(_NoRedirect)
+        try:
+            with opener.open(naked, timeout=30) as resp:
+                status, body = resp.status, resp.read(4000).decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            status, body = exc.code, ""
+        assert status != 200 or "delfin-session-strip" not in body, (
+            f"the return address answered without a token: HTTP {status}")
 
         # A record is what a later request follows back to this kernel.
         assert list(Path(records).glob("*.json")), "the session announced nothing"
@@ -313,10 +333,10 @@ def test_a_kept_session_survives_the_window_and_comes_back(server):
         # the kernel does not get there -- ipykernel forwards it to the
         # frontend -- so this reads the server's own output.
         deadline = time.time() + 15
-        while time.time() < deadline and "Zurück:" not in log.read_text(errors="replace"):
+        while time.time() < deadline and "Return:" not in log.read_text(errors="replace"):
             time.sleep(0.5)
         told = log.read_text(errors="replace")
-        assert "Zurück:" in told and resume.split("?")[0] in told, (
+        assert "Return:" in told and resume.split("?")[0] in told, (
             f"the server terminal was not told the address; log tail: {told[-300:]!r}"
         )
 
@@ -338,8 +358,8 @@ def test_a_kept_session_survives_the_window_and_comes_back(server):
             page.goto(resume, wait_until="domcontentloaded", timeout=180_000)
             page.wait_for_selector(".delfin-session-strip", timeout=240_000)
             # The control comes back armed: it is the same widget object.
-            assert "Läuft weiter als" in page.locator(
-                ".delfin-session-note").last.inner_text()
+            assert "Kept as" in (page.locator(
+                ".delfin-session-dot.on").last.get_attribute("title") or "")
             # The scripts came back with the page: the library, the
             # startup scripts, and a viewer drawn from them. Before this
             # was built, a resumed page showed the box and no molecule.
