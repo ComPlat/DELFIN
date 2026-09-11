@@ -1225,6 +1225,22 @@ def observations_are_complete() -> bool:
     return bool(_observed_complete.get())
 
 
+def numbers_the_tools_returned() -> frozenset:
+    """Every number a tool result carried this turn, cut short or not.
+
+    ``observed_numbers`` goes blank the moment one result is truncated,
+    because it answers "did the tools return this number" and a pool with
+    a hole cannot say no. This answers the other question -- "did the
+    model SEE this number" -- and a hole does not change a yes: the
+    numbers before the cut were read. The count guard over truncated
+    output needs exactly that. Never raises.
+    """
+    try:
+        return frozenset(_observed_numbers.get() or ())
+    except Exception:
+        return frozenset()
+
+
 def observed_numbers() -> Optional[list[float]]:
     """Every number this turn's tools returned, or None if it cannot say.
 
@@ -2733,11 +2749,26 @@ def scan_for_counts_over_truncated_output(
     the answer states no count. Deliberately does not try to decide
     whether the number is right -- only that its source could not have
     supported it.
+
+    A number a tool DID return is left alone. A file that says
+    "n_samples = 800" was read, cut short further down, and the answer
+    said "800 Samples": the figure was quoted, not counted, and the note
+    told the reader it was an estimate. Only a count no result carried
+    is one the model must have made itself over the cut -- that is the
+    estimate this note exists for. The self-consistency guard still
+    catches "31 verified" above a list of 29 when the 31 came back in a
+    result, so that case is not lost by the narrowing.
     """
     if not text or not truncated_tools:
         return []
     try:
-        return [claim for _n, claim in _count_claims(text)][:4]
+        seen = numbers_the_tools_returned()
+        out: list[str] = []
+        for n, claim in _count_claims(text):
+            if float(n) in seen:
+                continue                # read off a result, not counted
+            out.append(claim)
+        return out[:4]
     except Exception:
         return []
 
