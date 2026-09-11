@@ -126,3 +126,40 @@ def test_the_overview_tool_is_relative_to_a_root_and_callable(tmp_path):
     assert [r["folder"] for r in out["rows"]] == ["dye", "ts_guess"]
     assert "extract_spectra_table" in _MCP_READONLY_TOOL_BASES
     assert any(e["name"] == "extract_spectra_table" for e in api._TOOL_CATALOG)
+
+
+# --- every value knows its line ---------------------------------------------------------
+
+
+def _line_of(path, needle):
+    for i, line in enumerate(path.read_text().splitlines(), start=1):
+        if needle in line:
+            return i
+    raise AssertionError(needle)
+
+
+def test_transitions_and_orbitals_know_their_lines(tmp_path):
+    root = _spectra_ws(tmp_path)
+    out = root / "dye" / "run.out"
+    exc = api.extract_excited_states(str(root / "dye"))
+    assert exc.first_bright["line"] == _line_of(out, "2-3A    2.650000")
+    assert exc.transitions[0].line == _line_of(out, "1-3A    2.200000")
+    orb = api.extract_orbital_energies(str(root / "dye"))
+    assert orb.homo_line == _line_of(out, "   1   2.0000      -0.215000")
+    assert orb.lumo_line == _line_of(out, "   2   0.0000      -0.085000")
+    assert orb.block_line == _line_of(out, "ORBITAL ENERGIES")
+    imag = api.extract_imaginary_frequencies(str(root / "ts_guess"))
+    assert imag.most_negative_line == _line_of(root / "ts_guess" / "run.out", "-312.40 cm**-1")
+
+
+def test_the_overview_says_whether_the_first_bright_line_is_visible(tmp_path):
+    root = _spectra_ws(tmp_path)
+    uv = root / "uv_dye"
+    uv.mkdir()
+    (uv / "run.inp").write_text("! B3LYP def2-SVP TDDFT\n")
+    (uv / "run.out").write_text(_ORB + _TDDFT.replace("0.412300", "0.000000").replace("0.021000", "0.000000") + "****ORCA TERMINATED NORMALLY****\n")
+    rows = {r["folder"].rsplit("/", 1)[-1]: r for r in api.extract_spectra_table([str(root / "dye"), str(uv)])}
+    assert rows["dye"]["first_bright_in_visible"] is True and rows["dye"]["first_bright_line"]
+    assert rows["uv_dye"]["first_bright_in_visible"] is False        # the 295 nm line, fosc 0.9
+    assert rows["uv_dye"]["brightest_visible_nm"] is None
+    assert any("no bright transition in the visible" in n for n in rows["uv_dye"]["notes"])
