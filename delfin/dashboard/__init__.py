@@ -72,6 +72,8 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
         create_page_css,
         debounce_input,
         disable_spellcheck_global,
+        hand_over_tabs,
+        keep_scroll_position,
     )
     from .molecule_viewer import RIGHT_MOUSE_TRANSLATE_PATCH_JS, vendored_3dmol_js
 
@@ -650,16 +652,17 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
                 _build_tab_now(spec)
         children = [spec['widget'] for spec in specs if spec.get('widget') is not None]
         titles = [spec['title'] for spec in specs if spec.get('widget') is not None]
+        selected_index = titles.index(selected_title) if selected_title in titles else None
         if ctx.tabs_widget is None:
             ctx.tabs_widget = widgets.Tab(children=children)
+            for i, title in enumerate(titles):
+                ctx.tabs_widget.set_title(i, title)
+            if selected_index is not None:
+                ctx.tabs_widget.selected_index = selected_index
         else:
-            ctx.tabs_widget.children = tuple(children)
-        for i, title in enumerate(titles):
-            ctx.tabs_widget.set_title(i, title)
+            hand_over_tabs(ctx.tabs_widget, children, titles, selected_index)
         ctx.tab_indices = {title: i for i, title in enumerate(titles)}
         _install_tab_observer()
-        if selected_title and selected_title in ctx.tab_indices:
-            ctx.tabs_widget.selected_index = ctx.tab_indices[selected_title]
 
     ctx.rebuild_dashboard_tabs = _rebuild_dashboard_tabs
 
@@ -668,6 +671,8 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
     # Text boxes marked 'delfin-debounced' report their value once typing
     # stops, so a handler that renders on every keystroke runs once instead.
     debounce_input(ctx)
+    # A rebuilt widget does not move the page the reader is on.
+    keep_scroll_position(ctx)
     logo_data_uri = _load_logo_data_uri()
     apply_branding(ctx, title='DELFIN Dashboard', favicon_data_uri=logo_data_uri)
 
