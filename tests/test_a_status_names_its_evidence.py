@@ -187,3 +187,42 @@ def test_the_energy_table_rows_carry_the_last_activity(runs):
     assert row["last_activity_age_s"] > 20 * 3600
     doc = ops.tool_extract_energy_table.__doc__ or ""
     assert "last_activity" in doc
+
+
+# --- one word beside the phrase, and the scheduler as the witness for "running"
+
+
+def test_the_energy_table_rows_carry_a_state(runs):
+    rows = {Path(r["folder"]).name: r for r in api.extract_energy_table(
+        [str(runs / n) for n in ("succeeded", "failed", "running")] + [str(runs / "nowhere")],
+        properties=["single_point"])}
+    assert rows["succeeded"]["state"] == "succeeded"
+    assert rows["failed"]["state"] == "failed"
+    assert rows["running"]["state"] == "running"
+    assert rows["nowhere"]["state"] == "missing"
+    _age_all_files(runs / "running", hours=22)
+    row = api.extract_energy_table([str(runs / "running")], properties=["single_point"])[0]
+    assert row["state"] == "stalled"
+
+
+def test_a_scheduler_job_on_the_folder_settles_running(runs, monkeypatch):
+    """GLM: no field says definitively "running"; the age is only a
+    proxy. The scheduler can say it outright, and is asked."""
+    stale = runs / "running"
+    _age_all_files(stale, hours=22)
+    monkeypatch.setattr(api, "list_active_calculations", lambda: [
+        {"job_id": "4711", "name": "running", "status": "RUNNING",
+         "runtime_s": 12.0, "directory": str(stale)}])
+    st = api.calculation_status(str(stale))
+    assert st.state == "running"
+    assert any(e["source"] == "scheduler" and "4711" in e["says"] for e in st.evidence)
+    row = api.extract_energy_table([str(stale)], properties=["single_point"])[0]
+    assert row["state"] == "running"
+
+
+def test_a_silent_scheduler_is_not_evidence(runs, monkeypatch):
+    monkeypatch.setattr(api, "list_active_calculations", lambda: [{"error": "squeue: not found"}])
+    st = api.calculation_status(str(runs / "running"))
+    assert st.state == "running"            # written recently: the clock decides
+    assert not any(e["source"] == "scheduler" for e in st.evidence)
+    assert "state" in (ops.tool_extract_energy_table.__doc__ or "")
