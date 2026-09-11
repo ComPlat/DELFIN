@@ -361,10 +361,13 @@ def tool_extract_energy_table(
     functional, dispersion, basis and solvent -- a total energy compares
     only within one method, and the gas phase is not a solvent), ``outcome``
     (succeeded / failed (exit code N) / running or crashed / unknown --
-    "no_output" alone does not say which), ``last_activity`` and
-    ``last_activity_age_s`` (when the newest file in the folder was
-    written -- what separates "running" from "crashed" when there is no
-    exit code), and one entry per requested property. Rows with status != "ok" carry None for properties.
+    "no_output" alone does not say which), ``state`` (one word by the
+    same rule calc_status uses: succeeded / failed / finished / running /
+    stalled / pending / unknown -- "running" when the scheduler has a
+    job on the folder or it was written recently, "stalled" after six
+    hours without a write), ``last_activity`` and ``last_activity_age_s``
+    (when the newest file in the folder was written), and one entry per
+    requested property. Rows with status != "ok" carry None for properties.
 
     Recognised properties: gibbs, zpe, single_point, scf_converged,
     opt_converged, imag_freqs, walltime_s.

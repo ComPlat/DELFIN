@@ -670,6 +670,38 @@ def _state_of(outcome: str) -> str:
     return "unknown"
 
 
+def _scheduler_jobs_by_dir() -> dict:
+    """Live scheduler jobs keyed by their resolved directory. Empty when
+    no scheduler answers -- which says nothing about the folders."""
+    from pathlib import Path as _P
+    out: dict = {}
+    try:
+        for job in list_active_calculations():
+            d = str(job.get("directory") or "")
+            if d and not job.get("error"):
+                try:
+                    out[str(_P(d).resolve())] = job
+                except OSError:
+                    out[d] = job
+    except Exception:
+        pass
+    return out
+
+
+def _state_for(outcome: str, age_s, job=None) -> str:
+    """The one-word state the outcome phrase, the clock and the scheduler
+    agree on. A scheduler job on the folder settles "running"; without
+    one, a run with no exit code that has written nothing for
+    STALLED_AFTER_S is "stalled", not "running". The phrase keeps what
+    the files say; this is what the rest adds."""
+    if job is not None:
+        return "running"
+    state = _state_of(outcome)
+    if state == "running" and age_s is not None and age_s > STALLED_AFTER_S:
+        return "stalled"
+    return state
+
+
 def calculation_status(folder: str) -> CalculationStatus:
     """Succeeded, failed, running or not started -- with the evidence.
 
@@ -730,17 +762,27 @@ def calculation_status(folder: str) -> CalculationStatus:
             evidence.append({"source": inps[0].name, "says": "input present, no output"})
     outcome = outcome_of_folder(d)
     parts = _method_parts(None, d)
-    state = _state_of(outcome)
     when, age = _last_activity(d)
     if when is not None:
         hours = (age or 0.0) / 3600.0
         evidence.append({"source": "newest file",
                          "says": f"last written {when} ({hours:.1f} h ago)"})
-    if state == "running" and age is not None and age > STALLED_AFTER_S:
-        # The files say "no exit code yet"; the clock says nothing has
-        # been written for hours. Both are reported: the outcome phrase
-        # keeps what the files say, the state says what the clock adds.
-        state = "stalled"
+    # The scheduler is the one witness that can say "running" outright.
+    # Its silence is not evidence -- a job started elsewhere is not in
+    # its list -- so an absent job changes nothing.
+    job = None
+    try:
+        job = _scheduler_jobs_by_dir().get(str(d.resolve()))
+    except OSError:
+        job = None
+    if job is not None:
+        evidence.append({"source": "scheduler",
+                         "says": f"job {job.get('job_id')} {job.get('status')}".strip()})
+    # The files say "no exit code yet"; the clock says whether anything
+    # is still being written; the scheduler says whether the job is
+    # alive. The outcome phrase keeps what the files say, the state
+    # says what the rest adds.
+    state = _state_for(outcome, age, job)
     return CalculationStatus(folder=str(d), state=state,
                              outcome=outcome,
                              method=_method_label(**parts),
@@ -998,11 +1040,23 @@ def extract_energy_table(
     # is what the files' contents can say; whether anything is still being
     # written is what their timestamps say, and a reader deciding between
     # the two needs the second.
+    jobs = _scheduler_jobs_by_dir()
+    from pathlib import Path as _P
     for row in rows:
         if row.get("status") == "missing":
             row["last_activity"], row["last_activity_age_s"] = None, None
+            row["state"] = "missing"
             continue
         row["last_activity"], row["last_activity_age_s"] = _last_activity(row["folder"])
+        try:
+            job = jobs.get(str(_P(row["folder"]).resolve()))
+        except OSError:
+            job = None
+        # One word beside the phrase, for the reader who asked "which of
+        # these is still running": succeeded / failed / finished /
+        # running / stalled / pending / unknown, by the same rule
+        # calc_status uses.
+        row["state"] = _state_for(str(row.get("outcome") or ""), row["last_activity_age_s"], job)
     return rows
 
 
