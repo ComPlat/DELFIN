@@ -138,27 +138,37 @@ def _alive(pid) -> bool:
     return True
 
 
-@pytest.fixture(scope="module")
-def server(tmp_path_factory):
-    """A real dashboard server, with its own state directory."""
+def _launch(records, log, *, stay_up: bool):
+    """Start a real dashboard server with its own state directory."""
     port = _free_port()
-    records = tmp_path_factory.mktemp("kept_sessions")
     env = dict(os.environ)
     env.update({
         "PYTHONPATH": str(_REPO),
         "JUPYTER_TOKEN": _TOKEN,
         "DELFIN_SESSION_GRACE_SECONDS": str(_GRACE),
         "DELFIN_SESSION_RECORD_DIR": str(records),
+        # The shared server serves several tests; it must not end with
+        # the first test's last window. The stop is tested on a server
+        # of its own below.
+        "DELFIN_DASHBOARD_STAY_UP": "1" if stay_up else "",
     })
     # The launcher generates its own token unless it is given one, so a
     # test that only sets JUPYTER_TOKEN polls a 403 until it gives up.
-    log = tmp_path_factory.mktemp("server") / "voila.log"
     with open(log, "wb") as handle:
         proc = subprocess.Popen(
             [sys.executable, "-m", "delfin.cli_voila",
              "--port", str(port), "--ip", "127.0.0.1", "--token", _TOKEN],
             cwd=str(_REPO), env=env, stdout=handle, stderr=subprocess.STDOUT,
         )
+    return proc, port
+
+
+@pytest.fixture(scope="module")
+def server(tmp_path_factory):
+    """A real dashboard server, with its own state directory."""
+    records = tmp_path_factory.mktemp("kept_sessions")
+    log = tmp_path_factory.mktemp("server") / "voila.log"
+    proc, port = _launch(records, log, stay_up=True)
     root = f"http://127.0.0.1:{port}"
     last = ""
     deadline = time.time() + 300
@@ -185,6 +195,20 @@ def server(tmp_path_factory):
         except Exception:
             proc.kill()
 
+
+def _send_goodbye(root: str, kid: str) -> int:
+    """POST what Voila's frontend posts on beforeunload: the kernel's
+    shutdown route. The frontend rides on the page's cookies; a test
+    process authenticates with the token header instead, which the
+    server accepts for its API routes without the xsrf dance."""
+    req = urllib.request.Request(
+        f"{root}/voila/api/shutdown/{kid}", data=b"", method="POST",
+        headers={"Authorization": f"token {_TOKEN}"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return resp.status
+    except urllib.error.HTTPError as exc:
+        return exc.code
 
 def _open_dashboard(page, root: str):
     page.goto(f"{root}/?token={_TOKEN}", wait_until="domcontentloaded",
@@ -310,19 +334,7 @@ def test_a_kept_session_survives_the_window_and_comes_back(server):
             # navigation does not deliver the beacon either. So the goodbye
             # is sent from here, exactly as the frontend sends it -- the
             # page's cookies, the _xsrf field, the same route.
-            cookies = {c["name"]: c["value"] for c in page.context.cookies()}
-            xsrf = cookies.get("_xsrf", "")
-            body = urllib.parse.urlencode({"_xsrf": xsrf}).encode()
-            req = urllib.request.Request(
-                f"{root}/voila/api/shutdown/{kid}?token={_TOKEN}", data=body, method="POST",
-                headers={"Cookie": "; ".join(f"{k}={v}" for k, v in cookies.items()),
-                         "X-XSRFToken": xsrf,
-                         "Content-Type": "application/x-www-form-urlencoded"})
-            try:
-                with urllib.request.urlopen(req, timeout=30) as resp:
-                    goodbye_status = resp.status
-            except urllib.error.HTTPError as exc:
-                goodbye_status = exc.code
+            goodbye_status = _send_goodbye(root, kid)
             assert goodbye_status in (200, 204), f"the goodbye was not accepted: HTTP {goodbye_status}"
             page.goto("about:blank", wait_until="domcontentloaded")
             time.sleep(3)
@@ -413,3 +425,71 @@ def test_a_kept_session_survives_the_window_and_comes_back(server):
             "to the kept one"
         )
         assert _pid_for(kid) == pid
+
+
+def test_the_server_ends_with_its_last_window(tmp_path):
+    """Close the only window without keeping the session: the kernel is
+    ended, and with nothing left to serve the server stops and frees its
+    port -- nobody has to find the terminal and press Ctrl+C. Asked for
+    on 2026-09-11."""
+    from playwright.sync_api import sync_playwright
+
+    records = tmp_path / "kept_sessions"
+    records.mkdir()
+    log = tmp_path / "voila.log"
+    proc, port = _launch(records, log, stay_up=False)
+    root = f"http://127.0.0.1:{port}"
+    try:
+        deadline = time.time() + 300
+        while time.time() < deadline and proc.poll() is None:
+            try:
+                _kernels(root)
+                break
+            except Exception:
+                time.sleep(2)
+        assert proc.poll() is None, log.read_text(errors="replace")[-600:]
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            try:
+                _open_dashboard(page, root)
+                new = [k["id"] for k in _kernels(root)]
+                assert len(new) == 1
+                kid = new[0]
+                # The window closes without keeping the session: the
+                # goodbye the frontend sends, then the page is gone.
+                goodbye = _send_goodbye(root, kid)
+                page.goto("about:blank", wait_until="domcontentloaded")
+                time.sleep(3)
+                page.close()
+            finally:
+                browser.close()
+        # Whether or not the goodbye was accepted (the route wants the
+        # page's own xsrf cookie), the window is gone: the cull rule ends
+        # the un-kept kernel after the grace, and the server stops.
+        print("goodbye status", goodbye)
+        # The goodbye ends an un-kept kernel through the page's own route;
+        # the cull rule is the fallback. Either way nothing is left, and
+        # the server stops.
+        # The server notices a vanished client at its websocket ping
+        # timeout (90 s), then the grace, then the next cull poll.
+        try:
+            rc = proc.wait(timeout=_GRACE + 240)
+        except subprocess.TimeoutExpired:
+            pytest.fail("the server kept running after its last window closed; "
+                        "server log:\n" + log.read_text(errors="replace")[-4000:])
+        text = log.read_text(errors="replace")
+        assert "stopping the server and freeing its port" in text, text[-800:]
+        s = socket.socket()
+        try:
+            assert s.connect_ex(("127.0.0.1", port)) != 0, "the port is still open"
+        finally:
+            s.close()
+        assert rc is not None
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=30)
+            except Exception:
+                proc.kill()
