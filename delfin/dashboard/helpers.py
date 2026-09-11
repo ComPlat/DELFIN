@@ -504,6 +504,176 @@ def debounce_input(ctx, class_name='delfin-debounced', delay_ms=350):
     _append_js(ctx, script)
 
 
+def keep_scroll_position(ctx):
+    """Keep the page where it is when widgets are rebuilt under the reader.
+
+    When a container's ``children`` change, the browser removes the old
+    widget views at once and renders the new ones a moment later. In that
+    moment the page is shorter, the scroll position is clamped, and when
+    the content is back the reader is somewhere else -- in Settings a single
+    tick moved the page up by 760 px, and Save sent it to the top.
+
+    Measured in the real page: the shrink never reaches a painted frame, so
+    a ResizeObserver does not see it; the removal of widget views does, and
+    so does a widget view being hidden, which is how a tab switch the reader
+    did not ask for shrinks the page. So a scroll upwards that follows either
+    within half a second, with no wheel, touch, scroll key or held mouse
+    button behind it, is undone as soon as the content is tall enough again.
+
+    Everything the reader does wins: any of those inputs cancels a pending
+    correction, and a click on a tab or a section header is left to the
+    browser, which is where the page is meant to change. The structure
+    editor's scroll hold learnt that a clamp is worse than the jump, so this
+    corrects once and never holds.
+    """
+    script = """
+    (function() {
+        if (window.__delfinScrollKeeper) return;
+        window.__delfinScrollKeeper = true;
+        var INTENT_MS = 400, NAV_MS = 1500, REBUILD_MS = 500, WAIT_MS = 3000;
+        var NAV = '.lm-TabBar-tab, .lm-Collapse-header, .jupyter-widget-Collapse-header, summary';
+        var SCROLL_KEYS = ['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown', ' ', 'Tab'];
+        var s = {pane: null, lastTop: 0, held: false, intentAt: -1e9, navAt: -1e9,
+                 rebuildAt: -1e9, pending: null};
+        function now() { return performance.now(); }
+        function busy() {
+            return s.held || now() - s.intentAt < INTENT_MS || now() - s.navAt < NAV_MS;
+        }
+        function intent() { s.intentAt = now(); s.pending = null; }
+        function holdsView(node) {
+            return node.nodeType === 1 && (node.classList.contains('lm-Widget')
+                || !!(node.querySelector && node.querySelector('.lm-Widget')));
+        }
+        function wasHidden(m) {
+            var el = m.target;
+            if (!el.classList || !el.classList.contains('lm-Widget')) return false;
+            var before = m.oldValue || '';
+            if (m.attributeName === 'class') {
+                return el.classList.contains('lm-mod-hidden') && before.indexOf('lm-mod-hidden') === -1;
+            }
+            return el.style.display === 'none' && !/display:\\s*none/.test(before);
+        }
+        function restore(target) {
+            var pane = s.pane, until = now() + WAIT_MS;
+            s.pending = target;
+            (function step() {
+                if (s.pending !== target) return;
+                if (busy() || now() > until) {
+                    s.pending = null;
+                    s.lastTop = pane.scrollTop;
+                    return;
+                }
+                if (pane.scrollHeight - pane.clientHeight >= target - 1) {
+                    s.pending = null;
+                    pane.scrollTop = target;
+                    s.lastTop = target;
+                    return;
+                }
+                requestAnimationFrame(step);
+            })();
+        }
+        function onScroll() {
+            var top = s.pane.scrollTop;
+            if (top < s.lastTop - 2 && !busy() && now() - s.rebuildAt < REBUILD_MS) {
+                if (s.pending === null) restore(s.lastTop);
+                return;
+            }
+            if (s.pending === null) s.lastTop = top;
+        }
+        function attach(tries) {
+            var cells = document.getElementById('rendered_cells');
+            if (!cells && tries > 0) { setTimeout(function() { attach(tries - 1); }, 500); return; }
+            var pane = cells || document.scrollingElement;
+            if (!pane) return;
+            s.pane = pane;
+            s.lastTop = pane.scrollTop;
+            (cells ? pane : window).addEventListener('scroll', onScroll, {passive: true});
+            new MutationObserver(function(records) {
+                for (var i = 0; i < records.length; i++) {
+                    var m = records[i];
+                    if (m.type === 'attributes') {
+                        if (wasHidden(m)) { s.rebuildAt = now(); return; }
+                        continue;
+                    }
+                    for (var j = 0; j < m.removedNodes.length; j++) {
+                        if (holdsView(m.removedNodes[j])) { s.rebuildAt = now(); return; }
+                    }
+                }
+            }).observe(cells ? pane : document.body, {
+                childList: true, subtree: true, attributes: true,
+                attributeFilter: ['class', 'style'], attributeOldValue: true});
+        }
+        var opts = {capture: true, passive: true};
+        window.addEventListener('wheel', intent, opts);
+        window.addEventListener('touchstart', intent, opts);
+        window.addEventListener('touchmove', intent, opts);
+        window.addEventListener('keydown', function(ev) {
+            /* On a control these keys type, choose or press; they scroll
+               only the page itself. Tab moves the focus and may scroll. */
+            var el = ev.target, tag = (el && el.tagName || '').toUpperCase();
+            var control = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT'
+                || tag === 'BUTTON' || (el && el.isContentEditable);
+            if (SCROLL_KEYS.indexOf(ev.key) !== -1 && (!control || ev.key === 'Tab')) intent();
+        }, opts);
+        window.addEventListener('pointerdown', function(ev) {
+            s.held = true;
+            s.pending = null;
+            if (ev.target && ev.target.closest && ev.target.closest(NAV)) s.navAt = now();
+        }, opts);
+        ['pointerup', 'pointercancel', 'dragend'].forEach(function(type) {
+            window.addEventListener(type, function() { s.held = false; }, opts);
+        });
+        window.addEventListener('blur', function() { s.held = false; });
+        attach(20);
+    })();
+    """
+    _append_js(ctx, script)
+
+
+def hand_over_tabs(tabs_widget, children, titles, selected_index=None):
+    """Give *tabs_widget* new children without the selection drifting away.
+
+    The browser rebuilds every tab from the first position that changed,
+    and until the rebuilt ones have rendered the selected index can point
+    at a view that is about to be removed; the first rebuilt tab to render
+    then takes the selection and reports it back. Settings is pinned last,
+    so saving a hidden or moved tab sent the reader to another tab.
+
+    So the selection is first parked on the first tab, which the browser
+    keeps whenever the two lists share it, and only moved to
+    *selected_index* once the new list is in place. When the first tab
+    changed too, the first answer from the browser within a few seconds
+    that is not *selected_index* is corrected once.
+    """
+    old = tuple(tabs_widget.children)
+    new = tuple(children)
+    shared = 0
+    while shared < min(len(old), len(new)) and old[shared] is new[shared]:
+        shared += 1
+    if new != old:
+        current = tabs_widget.selected_index
+        if shared and current is not None and current >= shared:
+            tabs_widget.selected_index = 0
+        tabs_widget.children = new
+    for i, title in enumerate(titles):
+        tabs_widget.set_title(i, title)
+    if selected_index is None:
+        return
+    tabs_widget.selected_index = selected_index
+    if new == old or shared:
+        return
+    import time
+
+    deadline = time.monotonic() + 3.0
+
+    def _correct_once(change):
+        tabs_widget.unobserve(_correct_once, names='selected_index')
+        if time.monotonic() < deadline and change.get('new') != selected_index:
+            tabs_widget.selected_index = selected_index
+
+    tabs_widget.observe(_correct_once, names='selected_index')
+
+
 def disable_spellcheck_global(ctx):
     """Disable spellcheck for all textareas in the dashboard."""
     script = """
