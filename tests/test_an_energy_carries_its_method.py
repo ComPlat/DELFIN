@@ -386,3 +386,99 @@ def test_the_job_list_says_it_is_not_the_disk():
     doc = ops.tool_list_active_calculations.__doc__ or ""
     assert "scheduler" in doc
     assert "extract_energy_table" in doc and "outcome" in doc
+
+
+# ---------------------------------------------------------------------------
+# The same method means the same solvent and the same dispersion correction
+# ---------------------------------------------------------------------------
+#
+# The archive fixture had PBE0/def2-SVP in DMF and PBE0/def2-SVP in the gas
+# phase filed under one method, and the tools ranked them together. An
+# implicit solvent shifts a total energy by the solvation free energy;
+# that is not chemistry between two structures either.
+
+_CONTROL = """# DELFIN CONTROL
+NAME = {name}
+charge = 0
+multiplicity = 1
+method = classic
+functional = {functional}
+basis_set = {basis}
+solvent = {solvent}
+implicit_solvation_model = CPCM
+"""
+
+
+def _run_in(root: Path, name: str, functional: str, basis: str, solvent: str,
+            gibbs: float, dispersion: str = "") -> str:
+    d = root / name
+    d.mkdir(parents=True)
+    (d / "run.out").write_text(_OUT.format(functional=functional, basis=basis,
+                                           spe=gibbs + 0.05, gibbs=gibbs))
+    text = _CONTROL.format(name=name, functional=functional, basis=basis, solvent=solvent)
+    if dispersion:
+        text += f"dispersion_correction = {dispersion}\n"
+    (d / "CONTROL.txt").write_text(text)
+    return str(d)
+
+
+def test_a_solvent_is_part_of_the_method(tmp_path):
+    dmf = _run_in(tmp_path, "dmf", "PBE0", "def2-SVP", "DMF", -113.30)
+    gas = _run_in(tmp_path, "gas", "PBE0", "def2-SVP", "none", -113.20)
+    rows = {Path(r["folder"]).name: r for r in api.extract_energy_table([dmf, gas])}
+    assert rows["dmf"]["method"] == "PBE0/def2-SVP/DMF"
+    assert rows["gas"]["method"] == "PBE0/def2-SVP"          # gas phase adds nothing
+    assert rows["dmf"]["solvent"] == "DMF" and rows["gas"]["solvent"] is None
+    ranked = api.find_calculation_extreme([dmf, gas], property="gibbs", n=5)
+    methods = {r["method"] for r in ranked}
+    assert len(methods) == 2, "a DMF run and a gas-phase run were ranked together"
+
+
+def test_a_dispersion_correction_is_part_of_the_method(tmp_path):
+    d3 = _run_in(tmp_path, "d3", "PBE0", "def2-SVP", "none", -113.30, dispersion="D3BJ")
+    bare = _run_in(tmp_path, "bare", "PBE0", "def2-SVP", "none", -113.20)
+    rows = {Path(r["folder"]).name: r for r in api.extract_energy_table([d3, bare])}
+    assert rows["d3"]["method"] == "PBE0-D3BJ/def2-SVP"
+    assert rows["bare"]["method"] == "PBE0/def2-SVP"
+    assert rows["d3"]["dispersion"] == "D3BJ"
+
+
+def test_the_input_header_names_the_solvent_when_nothing_else_does(tmp_path):
+    """A folder with only an .inp -- the fixture's arch_e -- carries its
+    solvent in ORCA's own keyword: CPCM(DMF)."""
+    d = tmp_path / "only_inp"
+    d.mkdir()
+    (d / "run.inp").write_text("! PBE0 def2-SVP D3BJ CPCM(DMF) TightSCF\n* xyz 0 1\n*\n")
+    from delfin.doc_server.calc_indexer import method_parts_of_folder
+    parts = method_parts_of_folder(d)
+    assert (parts["functional"], parts["basis"]) == ("PBE0", "def2-SVP")
+    assert parts["solvent"] == "DMF" and parts["dispersion"] == "D3BJ"
+    assert api._method_label(**{k: parts[k] for k in ("functional", "basis", "solvent", "dispersion")}) \
+        == "PBE0-D3BJ/def2-SVP/DMF"
+
+
+def test_the_note_names_all_four(tmp_path):
+    for word in ("functional", "basis", "dispersion", "solvent"):
+        assert word in api.METHOD_NOTE
+    assert "gas phase" in api.METHOD_NOTE
+
+
+def test_the_archive_fixture_no_longer_files_gas_and_dmf_together(tmp_path):
+    import importlib.util
+    setup = Path(api.__file__).resolve().parent / "agent" / "pack" / "benchmark" / "setup" / "a_small_calc_archive.py"
+    spec = importlib.util.spec_from_file_location("archive_setup", setup)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.main(["x", str(tmp_path)]) == 0
+    ws = tmp_path / "calc_archive"
+    folders = [str(p) for p in sorted(list((ws / "calc").iterdir()) + list((ws / "archive").iterdir()))]
+    rows = {Path(r["folder"]).name: r for r in api.extract_energy_table(folders, properties=["single_point"])}
+    assert rows["calc_c"]["method"] == "PBE0/def2-SVP"
+    assert rows["arch_b"]["method"] == "PBE0/def2-SVP/DMF" == rows["arch_e"]["method"]
+    assert rows["calc_b"]["method"] == "B3LYP/def2-SVP/water" == rows["arch_c"]["method"]
+    groups = {}
+    for r in api.find_calculation_extreme(folders, property="single_point", n=1):
+        groups[r["method"]] = Path(r["folder"]).name
+    assert groups["PBE0/def2-SVP/DMF"] == "arch_e"
+    assert groups["PBE0/def2-TZVP/DMF"] == "arch_a"
+    assert groups["B3LYP/def2-SVP/water"] == "calc_b"

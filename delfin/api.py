@@ -684,7 +684,7 @@ def calculation_status(folder: str) -> CalculationStatus:
     """
     from pathlib import Path as _P
     from delfin.doc_server.calc_indexer import (
-        _largest_output, _tail_text, method_of_folder, outcome_of_folder)
+        _largest_output, _tail_text, outcome_of_folder)
     import json as _json
     d = _P(folder)
     if not d.is_dir():
@@ -729,7 +729,7 @@ def calculation_status(folder: str) -> CalculationStatus:
         if inps:
             evidence.append({"source": inps[0].name, "says": "input present, no output"})
     outcome = outcome_of_folder(d)
-    functional, basis = method_of_folder(d)
+    parts = _method_parts(None, d)
     state = _state_of(outcome)
     when, age = _last_activity(d)
     if when is not None:
@@ -743,7 +743,7 @@ def calculation_status(folder: str) -> CalculationStatus:
         state = "stalled"
     return CalculationStatus(folder=str(d), state=state,
                              outcome=outcome,
-                             method=_method_label(functional, basis),
+                             method=_method_label(**parts),
                              evidence=evidence,
                              last_activity=when, last_activity_age_s=age)
 
@@ -834,18 +834,51 @@ def extract_thermochem(folder: str) -> ThermochemResult:
     return ThermochemResult(path=str(p))
 
 
-def _method_label(functional, basis) -> str | None:
-    """"PBE0/def2-SVP": the pair a total energy is only comparable within.
+def _method_label(functional, basis, solvent=None, dispersion=None) -> str | None:
+    """"PBE0-D3BJ/def2-SVP/DMF": what a total energy is only comparable within.
 
     Sorting a mixed archive by energy sorts it by functional -- every
     B3LYP run sits hundreds of kJ/mol below every PBE0 run, whatever the
     structure -- so a row without its method is a number waiting to be
     ranked against numbers it cannot be ranked against. Every row carries
     it, and the tools below never order rows across it.
+
+    The solvent and the dispersion correction are part of it. An implicit
+    solvent shifts a total energy by the solvation free energy, tens of
+    kJ/mol, and a different solvent by a few more; a dispersion correction
+    adds its own term. Two PBE0/def2-SVP runs, one in DMF and one in the
+    gas phase, are no more comparable than PBE0 and B3LYP -- and the
+    archive fixture the tools were driven over had exactly that pair
+    filed under one method (2026-09-11). Gas phase is the absence of a
+    solvent, not a solvent name, so it adds nothing to the label.
     """
     if not functional and not basis:
         return None
-    return f"{functional or '?'}/{basis or '?'}"
+    head = f"{functional or '?'}"
+    if dispersion:
+        head += f"-{dispersion}"
+    label = f"{head}/{basis or '?'}"
+    if solvent:
+        label += f"/{solvent}"
+    return label
+
+
+def _method_parts(parsed, folder) -> dict:
+    """functional, basis, solvent, dispersion: the output's own functional
+    and basis if it states them, everything else from the folder."""
+    parts = {"functional": getattr(parsed, "functional", None) or None,
+             "basis": getattr(parsed, "basis", None) or None,
+             "solvent": None, "dispersion": None}
+    try:
+        from delfin.doc_server.calc_indexer import method_parts_of_folder
+        found = method_parts_of_folder(folder)
+        parts["functional"] = parts["functional"] or found.get("functional")
+        parts["basis"] = parts["basis"] or found.get("basis")
+        parts["solvent"] = found.get("solvent")
+        parts["dispersion"] = found.get("dispersion")
+    except Exception:
+        pass
+    return parts
 
 
 def _method_of(parsed, folder) -> tuple:
@@ -876,7 +909,8 @@ def _outcome_of_folder(folder) -> str:
 
 #: What every grouped result says, so the rule travels with the data.
 METHOD_NOTE = (
-    "A total energy compares only within one method (functional AND basis). "
+    "A total energy compares only within one method: the same functional, "
+    "basis, dispersion correction and solvent (gas phase is not a solvent). "
     "Rows are grouped by method; groups are not ranked against each other."
 )
 
@@ -917,10 +951,11 @@ def extract_energy_table(
             continue
         out_files = sorted(p.glob("*.out"))
         if not out_files:
-            functional, basis = _method_of(None, p)
+            parts = _method_parts(None, p)
             row = {"folder": str(folder), "status": "no_output",
-                   "functional": functional, "basis": basis,
-                   "method": _method_label(functional, basis),
+                   "functional": parts["functional"], "basis": parts["basis"],
+                   "solvent": parts["solvent"], "dispersion": parts["dispersion"],
+                   "method": _method_label(**parts),
                    "outcome": _outcome_of_folder(p)}
             for prop in properties:
                 row[prop] = None
@@ -928,14 +963,17 @@ def extract_energy_table(
             continue
         target = max(out_files, key=lambda f: f.stat().st_size)
         parsed = parse_orca_output(str(target))
-        functional, basis = _method_of(parsed, p)
+        parts = _method_parts(parsed, p)
+        functional, basis = parts["functional"], parts["basis"]
         row = {
             "folder": str(folder),
             "status": "ok",
             "output_file": target.name,
             "functional": functional,
             "basis": basis,
-            "method": _method_label(functional, basis),
+            "solvent": parts["solvent"],
+            "dispersion": parts["dispersion"],
+            "method": _method_label(**parts),
             "outcome": _outcome_of_folder(p),
         }
         for prop in properties:
@@ -1988,8 +2026,10 @@ class FunctionalComparisonRow:
     n_imag: int | None
     is_minimum: bool | None
     status: str  # "ok" / "no_output" / "missing" / parse-error
-    method: str | None = None   # "PBE0/def2-SVP": comparable only within
+    method: str | None = None   # "PBE0/def2-SVP/DMF": comparable only within
     sorted_by: str | None = None  # the key the order actually used
+    solvent: str | None = None
+    dispersion: str | None = None
 
 
 def compare_across_functionals(
@@ -2021,12 +2061,14 @@ def compare_across_functionals(
             # No output yet is not no method: a running run has its
             # CONTROL.txt and .inp, and a comparison that drops it says
             # nothing about the run somebody is waiting for.
-            f0, b0 = _method_of(None, p)
+            parts0 = _method_parts(None, p)
+            f0, b0 = parts0["functional"], parts0["basis"]
             rows.append(FunctionalComparisonRow(
                 folder=str(folder), functional=f0, basis=b0,
                 gibbs=None, single_point=None, zpe=None,
                 n_imag=None, is_minimum=None, status="no_output",
-                method=_method_label(f0, b0),
+                method=_method_label(**parts0),
+                solvent=parts0["solvent"], dispersion=parts0["dispersion"],
             ))
             continue
         target = max(out_files, key=lambda f: f.stat().st_size)
@@ -2038,7 +2080,8 @@ def compare_across_functionals(
             if imag.error is None:
                 n_imag = imag.n_imag
                 is_min = imag.is_minimum
-        functional, basis = _method_of(parsed, p)
+        parts = _method_parts(parsed, p)
+        functional, basis = parts["functional"], parts["basis"]
         rows.append(FunctionalComparisonRow(
             folder=str(folder),
             functional=functional,
@@ -2049,7 +2092,8 @@ def compare_across_functionals(
             n_imag=n_imag,
             is_minimum=is_min,
             status="ok",
-            method=_method_label(functional, basis),
+            method=_method_label(**parts),
+            solvent=parts["solvent"], dispersion=parts["dispersion"],
         ))
 
     sort_field = sort_by.strip().lower()
