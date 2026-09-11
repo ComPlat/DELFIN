@@ -411,6 +411,76 @@ def _dependencies(inp: Path, extra_deps: Optional[Iterable]) -> List[Path]:
     return sorted({str(dep): dep for dep in deps}.values(), key=lambda p: str(p))
 
 
+def _job_text(text: str) -> List[str]:
+    """What an input says, without the cores and memory the scheduler gave it."""
+    text = _RESOURCE_BLOCK.sub("", _RESOURCE_LINE.sub("", text))
+    return _normalise_input_lines(text.splitlines())
+
+
+def snapshot_input(inp_path) -> Optional[tuple]:
+    """The bytes and times of an input about to be written anew (None when there is none)."""
+    inp = Path(inp_path)
+    try:
+        st = inp.stat()
+        return inp.read_bytes(), (st.st_atime_ns, st.st_mtime_ns)
+    except OSError:
+        return None
+
+
+def settle_rewritten_input(inp_path, previous: Optional[tuple], working_dir=None) -> Optional[bool]:
+    """After an input was written anew: True, with the old file put back, when it says the same.
+
+    False when it says something else; None when there was no old input to
+    compare with (some archived jobs kept only their outputs).
+
+    The CONTROL overrides are merged first, as ORCA's run merges them into the
+    input before it starts, so the comparison is between what the finished
+    job ran and what would run now.  Cores and memory do not count.  Putting
+    the old bytes back keeps every fingerprint written for them valid.
+    """
+    inp = Path(inp_path)
+    if previous is None:
+        return None
+    if not inp.exists():
+        return False
+    try:
+        from delfin.orca import _apply_control_overrides_to_input
+        _apply_control_overrides_to_input(inp, Path(working_dir) if working_dir else inp.parent)
+    except Exception as exc:  # noqa: BLE001 - the comparison then counts it as changed
+        logger.debug("[smart_recalc] Could not merge overrides into %s: %s", inp, exc)
+    old_bytes, times = previous
+    try:
+        new_text = inp.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    if _job_text(old_bytes.decode("utf-8", errors="replace")) != _job_text(new_text):
+        return False
+    try:
+        inp.write_bytes(old_bytes)
+        os.utime(inp, ns=times)
+    except OSError as exc:
+        logger.debug("[smart_recalc] Could not put %s back: %s", inp, exc)
+    return True
+
+
+def forget_earlier_attempts(inp_path) -> None:
+    """An input that changed is a new calculation: its old retries and retry counts go."""
+    inp = Path(inp_path)
+    for old in list(inp.parent.glob(f"{inp.stem}.retry*.inp")):
+        for path in (old, old.with_suffix(old.suffix + ".fprint")):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+    try:
+        from delfin.orca_recovery import RetryStateTracker
+        state = inp.parent / ".delfin_recovery_state.json"
+        if state.exists():
+            RetryStateTracker(state).reset_job(inp.stem)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[smart_recalc] Could not reset retry counts of %s: %s", inp, exc)
+
+
 def compute_fingerprint(inp_path, extra_deps: Optional[Iterable] = None) -> str:
     """Return a hex-digest fingerprint for *inp_path* and its dependencies.
 

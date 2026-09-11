@@ -132,16 +132,16 @@ def run_occuper_phase(ctx: PipelineContext) -> bool:
     multiplicity = ctx.multiplicity
     charge = ctx.charge
 
-    _override_skip = _skip_preprocessing_for_override(config, ctx.control_file_path.parent)
+    _override_skip = _keep_built_structure(config, ctx.control_file_path.parent)
     if config['XTB_OPT'] == "yes":
         if _override_skip:
-            logger.info("[recalc] Skipping XTB_OPT: --occupier-override active, upstream geometry reused.")
+            logger.info("[recalc] Skipping XTB_OPT: %s", _override_skip)
         else:
             XTB(multiplicity, charge, config)
 
     if config['XTB_GOAT'] == "yes":
         if _override_skip:
-            logger.info("[recalc] Skipping XTB_GOAT: --occupier-override active, upstream geometry reused.")
+            logger.info("[recalc] Skipping XTB_GOAT: %s", _override_skip)
         elif _skip_xtb_goat_after_guppy(config):
             logger.info("Skipping XTB_GOAT: GUPPY already provided GOAT-refined winner geometry.")
         else:
@@ -465,16 +465,16 @@ def run_classic_phase(ctx: PipelineContext) -> Dict[str, Any]:
     multiplicity = ctx.multiplicity
     charge = ctx.charge
 
-    _override_skip = _skip_preprocessing_for_override(config, ctx.control_file_path.parent)
+    _override_skip = _keep_built_structure(config, ctx.control_file_path.parent)
     if config['XTB_OPT'] == "yes":
         if _override_skip:
-            logger.info("[recalc] Skipping XTB_OPT: --occupier-override active, upstream geometry reused.")
+            logger.info("[recalc] Skipping XTB_OPT: %s", _override_skip)
         else:
             XTB(multiplicity, charge, config)
 
     if config['XTB_GOAT'] == "yes":
         if _override_skip:
-            logger.info("[recalc] Skipping XTB_GOAT: --occupier-override active, upstream geometry reused.")
+            logger.info("[recalc] Skipping XTB_GOAT: %s", _override_skip)
         elif _skip_xtb_goat_after_guppy(config):
             logger.info("Skipping XTB_GOAT: GUPPY already provided GOAT-refined winner geometry.")
         else:
@@ -618,16 +618,16 @@ def run_manual_phase(ctx: PipelineContext) -> Dict[str, Any]:
     config = ctx.config
     multiplicity = config.get('multiplicity_0') or ctx.multiplicity
 
-    _override_skip = _skip_preprocessing_for_override(config, ctx.control_file_path.parent)
+    _override_skip = _keep_built_structure(config, ctx.control_file_path.parent)
     if config['XTB_OPT'] == "yes":
         if _override_skip:
-            logger.info("[recalc] Skipping XTB_OPT: --occupier-override active, upstream geometry reused.")
+            logger.info("[recalc] Skipping XTB_OPT: %s", _override_skip)
         else:
             XTB(multiplicity, ctx.charge, config)
 
     if config['XTB_GOAT'] == "yes":
         if _override_skip:
-            logger.info("[recalc] Skipping XTB_GOAT: --occupier-override active, upstream geometry reused.")
+            logger.info("[recalc] Skipping XTB_GOAT: %s", _override_skip)
         elif _skip_xtb_goat_after_guppy(config):
             logger.info("Skipping XTB_GOAT: GUPPY already provided GOAT-refined winner geometry.")
         else:
@@ -1318,6 +1318,60 @@ def _skip_preprocessing_for_override(config: Dict[str, Any], workdir: Path) -> b
     return True
 
 
+#: Where a built structure has been handed on: its presence means the jobs
+#: that follow were computed from the structure in start.txt.
+_HANDED_ON = ("initial.out", "initial_OCCUPIER", "ESD", "ox_step_1.out", "red_step_1.out",
+              "ox_step_1_OCCUPIER", "red_step_1_OCCUPIER")
+
+
+def _structure_kept_by_recalc(config: Dict[str, Any], workdir: Path, smiles: Optional[str]) -> str:
+    """Why a recalc keeps the structure in start.txt instead of building it again ('' when it does not).
+
+    The finished jobs were computed from that structure.  Built again, it
+    need not come out the same: MANTA's builder has changed since many
+    archived runs (its xTB inputs now carry ALPB and start from other
+    frames), and a smart recalc then rebuilt the structure, reran the
+    sampling and GOAT, and started everything after it from a different
+    geometry.  It is built again when the edit since the last completed run
+    reaches it (recalc_control), and, without such a record, when a MANTA
+    run's SMILES is not the one it was built from.
+    """
+    from delfin import smart_recalc
+
+    if _skip_preprocessing_for_override(config, workdir):
+        return "--occupier-override active, upstream geometry reused."
+    if not smart_recalc.recalc_enabled():
+        return ""
+    if not (workdir / "start.txt").exists() or not any((workdir / n).exists() for n in _HANDED_ON):
+        return ""
+    change = config.get("_recalc_change")
+    if change is not None:
+        # set by a smart recalc only: a classic one keeps what is finished,
+        # the structure the finished jobs were computed from included
+        if config.get("_recalc_rebuild_structure"):
+            return ""
+        return "the structure the finished jobs were computed from is kept (start.txt)."
+    if smiles and _resolve_smiles_converter(config) in ("MANTA", "GUPPY"):
+        built_from = workdir / "guppy_input.txt"
+        try:
+            same = built_from.read_text(encoding="utf-8", errors="replace").strip() == smiles.strip()
+        except OSError:
+            same = False
+        if same:
+            return "the structure MANTA built for this SMILES is kept (start.txt)."
+    return ""
+
+
+def _keep_built_structure(config: Dict[str, Any], workdir: Path) -> str:
+    """The reason normalize_input_file kept the structure, for the pre-optimisation steps after it."""
+    reason = config.get("_keep_built_structure")
+    if reason:
+        return str(reason)
+    if _skip_preprocessing_for_override(config, workdir):
+        return "--occupier-override active, upstream geometry reused."
+    return ""
+
+
 def _run_guppy_for_smiles(smiles: str, start_path: Path, config: Dict[str, Any]) -> None:
     """Run GUPPY sampling for a SMILES string and write best geometry to start_path.
 
@@ -1587,33 +1641,33 @@ def normalize_input_file(config: Dict[str, Any], control_path: Path) -> str:
 
     start_path = result_path.parent / 'start.txt'
 
-    # Handle SMILES conversion: write XYZ directly to start.txt, keep input.txt unchanged
+    smiles_line = None
     if is_smiles:
-        smiles_line = None
         for line in content.split('\n'):
             line = line.strip()
             if line and not line.startswith('#') and not line.startswith('*'):
                 smiles_line = line
                 break
 
+    kept = _structure_kept_by_recalc(config, start_path.parent, smiles_line)
+    config['_keep_built_structure'] = kept
+    if kept:
+        logger.info("[recalc] Structure not built again: %s", kept)
+        if smiles_line:
+            config['_guppy_goat_completed'] = 'yes'
+    # Handle SMILES conversion: write XYZ directly to start.txt, keep input.txt unchanged
+    elif is_smiles:
         if smiles_line:
             logger.info("Detected SMILES in %s: %s", input_path.name, smiles_line)
             converter = _resolve_smiles_converter(config)
             logger.info("Using smiles_converter=%s for %s", converter, input_path.name)
 
             if converter == 'MANTA':
-                if _skip_preprocessing_for_override(config, start_path.parent):
-                    logger.info(
-                        "[recalc] Skipping GUPPY sampling: --occupier-override active and "
-                        "start.txt + initial.out already exist (override is downstream-only)."
-                    )
-                    config['_guppy_goat_completed'] = 'yes'
-                else:
-                    try:
-                        _run_guppy_for_smiles(smiles_line, start_path, config)
-                    except Exception as exc:  # noqa: BLE001
-                        logger.error("GUPPY sampling failed: %s", exc)
-                        raise ValueError(f"GUPPY sampling failed: {exc}") from exc
+                try:
+                    _run_guppy_for_smiles(smiles_line, start_path, config)
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("GUPPY sampling failed: %s", exc)
+                    raise ValueError(f"GUPPY sampling failed: {exc}") from exc
             elif converter == 'QUICK':
                 xyz_content, error = smiles_to_xyz_quick(smiles_line)
 

@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, List, Optional, Set
 
+from delfin import smart_recalc
 from delfin.common.logging import get_logger
 from delfin.copy_helpers import read_occupier_file, copy_preferred_files_with_names
 from delfin.esd_input_generator import (
@@ -785,6 +786,7 @@ def build_occupier_jobs(
                 out_initial = workspace_root / "initial.out"
                 gbw_initial = workspace_root / "input_initial_OCCUPIER.gbw"
 
+                previous_input = smart_recalc.snapshot_input(inp_initial) if _regenerating(config) else None
                 # In recalc mode, only regenerate .inp if this job is being forced
                 if _should_regenerate_inp(inp_initial, out_initial, config):
                     read_xyz_and_create_input3(
@@ -822,6 +824,9 @@ def build_occupier_jobs(
                         logger.info("[occupier_initial] Using GBW from OCCUPIER: %s", gbw_initial)
                     elif xtb_solvator_enabled:
                         logger.debug("[occupier_initial] Skipping OCCUPIER GBW reuse because XTB_SOLVATOR is enabled")
+
+                if _keep_after_rewrite(config, inp_initial, out_initial, previous_input, "occupier_initial"):
+                    return
 
                 initial_deps = None
                 if gbw_initial.exists() and not xtb_solvator_enabled:
@@ -934,7 +939,11 @@ def build_occupier_jobs(
                     else:
                         occ_geom = root_dir / f"input_ox_step_{idx}_OCCUPIER.xyz"
                         run_geom = root_dir / f"ox_step_{idx}.xyz"
-                        primary_geom = run_geom if run_geom.exists() else occ_geom
+                        # Written anew after a CONTROL edit, the input starts where the
+                        # finished job started -- OCCUPIER's hand-over -- not from the
+                        # geometry that job ended with.
+                        own_result = _regenerating(config) and _written_by_stage_job(run_geom, f"ox_step_{idx}")
+                        primary_geom = run_geom if run_geom.exists() and not own_result else occ_geom
                         fallback_geom = occ_geom
 
                     geom_path = primary_geom if primary_geom.exists() else fallback_geom
@@ -969,6 +978,7 @@ def build_occupier_jobs(
                     out_abs = root_dir / out
                     gbw_ox = root_dir / f"input_ox_step_{idx}_OCCUPIER.gbw"
 
+                    previous_input = smart_recalc.snapshot_input(inp_abs) if _regenerating(config) else None
                     # In recalc mode, only regenerate .inp if this job is being forced
                     if _should_regenerate_inp(inp_abs, out_abs, config):
                         read_xyz_and_create_input3(
@@ -1009,6 +1019,9 @@ def build_occupier_jobs(
                                 metal_basisset=metal_basis,
                                 mode='lambda_p',
                             )
+
+                    if _keep_after_rewrite(config, inp_abs, out_abs, previous_input, f"occupier_ox_{idx}"):
+                        return
 
                     # Collect dependency files for isolation
                     ox_deps = None
@@ -1119,7 +1132,11 @@ def build_occupier_jobs(
                     else:
                         occ_geom = root_dir / f"input_red_step_{idx}_OCCUPIER.xyz"
                         run_geom = root_dir / f"red_step_{idx}.xyz"
-                        primary_geom = run_geom if run_geom.exists() else occ_geom
+                        # Written anew after a CONTROL edit, the input starts where the
+                        # finished job started -- OCCUPIER's hand-over -- not from the
+                        # geometry that job ended with.
+                        own_result = _regenerating(config) and _written_by_stage_job(run_geom, f"red_step_{idx}")
+                        primary_geom = run_geom if run_geom.exists() and not own_result else occ_geom
                         fallback_geom = occ_geom
     
                     geom_path = primary_geom if primary_geom.exists() else fallback_geom
@@ -1154,6 +1171,7 @@ def build_occupier_jobs(
                     out_abs = root_dir / out
                     gbw_red = root_dir / f"input_red_step_{idx}_OCCUPIER.gbw"
 
+                    previous_input = smart_recalc.snapshot_input(inp_abs) if _regenerating(config) else None
                     # In recalc mode, only regenerate .inp if this job is being forced
                     if _should_regenerate_inp(inp_abs, out_abs, config):
                         read_xyz_and_create_input3(
@@ -1194,6 +1212,9 @@ def build_occupier_jobs(
                                 metal_basisset=metal_basis,
                                 mode='lambda_m',
                             )
+
+                    if _keep_after_rewrite(config, inp_abs, out_abs, previous_input, f"occupier_red_{idx}"):
+                        return
 
                     red_deps = None
                     if gbw_red.exists() and not xtb_solvator_enabled:
@@ -1333,6 +1354,8 @@ def build_occupier_jobs(
             from delfin import smart_recalc
             if not smart_recalc.recalc_enabled():
                 return None
+            if _regenerating(context.config):
+                return None  # the job writes its input anew and decides (_keep_after_rewrite)
             produces = {str(p) for p in desc.produces}
             if not produces:
                 return None
@@ -2522,6 +2545,46 @@ def _recalc_enabled() -> bool:
     return str(os.environ.get("DELFIN_RECALC", "0")).lower() in ("1", "true", "yes", "on")
 
 
+def _regenerating(config: Dict[str, Any]) -> bool:
+    """A smart recalc after a CONTROL edit that reaches the ORCA inputs (recalc_control)."""
+    return _recalc_enabled() and bool(config.get("_recalc_regenerate_main_inputs"))
+
+
+def _written_by_stage_job(xyz_path: Path, stage: str) -> bool:
+    """Whether the stage's own frequency job (or IMAG after it) wrote *xyz_path*."""
+    try:
+        with Path(xyz_path).open(encoding="utf-8", errors="replace") as fh:
+            fh.readline()
+            comment = fh.readline()
+    except OSError:
+        return False
+    m = re.match(r"\s*Coordinates from ORCA-job\s+(?:\S*/)?(\S+?)\s+E\b", comment)
+    return m is not None and (m.group(1) == stage or m.group(1).startswith((stage + ".", stage + "_imag")))
+
+
+def _keep_after_rewrite(config: Dict[str, Any], inp_path: Path, out_path: Path,
+                        previous_input, label: str) -> bool:
+    """After a main job's input was written anew: True when the finished job stays as it is.
+
+    Only in a smart recalc after a CONTROL edit.  An input that says what the
+    finished job ran keeps that job when it ended with a result; one that
+    says something else starts a new calculation, without the old one's retries.
+    """
+    if not _regenerating(config):
+        return False
+    same = smart_recalc.settle_rewritten_input(inp_path, previous_input, inp_path.parent)
+    if same is None:
+        return False  # no earlier input to compare with; the output's own record decides
+    if same:
+        if smart_recalc.outputs_complete(inp_path, out_path):
+            logger.info("[%s] input unchanged by the CONTROL edit; finished job kept", label)
+            return True
+        return False
+    logger.info("[%s] input changed by the CONTROL edit; computed again", label)
+    smart_recalc.forget_earlier_attempts(inp_path)
+    return False
+
+
 def _should_regenerate_inp(inp_path: Path, out_path: Path, config: Dict[str, Any]) -> bool:
     """Check if .inp file should be regenerated in recalc mode.
 
@@ -2534,6 +2597,9 @@ def _should_regenerate_inp(inp_path: Path, out_path: Path, config: Dict[str, Any
     # In recalc mode, only regenerate if this specific job is being forced
     if not inp_path.exists():
         return True  # Must create it
+
+    if _regenerating(config):
+        return True  # CONTROL edited since the last completed run (recalc_control)
 
     # Check if this output is in the force list
     force_outputs = config.get("_recalc_force_outputs", set())

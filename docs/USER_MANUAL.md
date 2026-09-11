@@ -543,7 +543,7 @@ delfin [WORKSPACE] [OPTIONS]
 | `-D`, `--define[=FILE]` | Generate CONTROL.txt + input file and exit. `.xyz` files are auto-converted |
 | `--overwrite` | Overwrite existing CONTROL.txt and input file |
 | `--control FILE` | Use a specific CONTROL.txt |
-| `--recalc` | Only rerun missing/incomplete jobs |
+| `--recalc` | Keep finished jobs; compute missing, incomplete and (smart mode) changed ones |
 | `--occupier-override STAGE=INDEX` | Force OCCUPIER index for a stage during recalc |
 | `--report [text\|docx]` | Regenerate report from existing outputs |
 | `--imag` | Run IMAG elimination on existing outputs, then generate report |
@@ -836,7 +836,7 @@ delfin-voila --port 9000 --dark
 | Tab | Purpose |
 |-----|---------|
 | **Submit Job** | SMILES/XYZ input, 3D preview, SMILES conversion buttons, job submission |
-| **Recalc** | Edit and resubmit existing CONTROL.txt |
+| **Recalc** | Edit and resubmit existing CONTROL.txt (smart recalc: what the edit changes is computed) |
 | **ORCA Builder** | Interactive ORCA input generation with geometry preview |
 | **TURBOMOLE Builder** | Turbomole define workflow (SLURM backends) |
 | **Job Status** | Real-time queue monitoring (local/SLURM), resource usage, job cancellation |
@@ -1076,7 +1076,29 @@ Recovery state: `.delfin_recovery_state.json`
 delfin --recalc
 ```
 
-Preserves existing results, only reruns jobs whose `.out` files are missing or incomplete.
+A recalc keeps finished jobs and computes what is missing or incomplete. What
+else it computes depends on the mode:
+
+- **Smart recalc** (default; `DELFIN_SMART_RECALC=1`; the Recalc tab and
+  *Smart Recalc* in the Calculations browser): a finished job is also run
+  again when its input changed. Every completed run records the CONTROL.txt
+  and geometry input it was computed with in `.delfin_last_run.json`; the
+  next recalc compares against it.
+  - Only cores, memory, timeouts or the recovery budget changed: nothing is
+    recomputed.
+  - A key that reaches the calculations changed (functional, basis, OCCUPIER
+    settings, `keyword:`/`additions:` overrides, …): the ORCA inputs,
+    OCCUPIER's included, are written anew; a job whose input came out
+    different runs again, and so does everything computed from it.
+  - A key that builds the starting structure changed (SMILES, converter,
+    `MANTA_*`, xTB pre-optimisation, GOAT/CREST, charge, solvent) or the
+    geometry input itself: the structure is built again and everything
+    follows. Otherwise the structure in `start.txt` is kept — MANTA does not
+    build the same structure twice.
+  - A job from before the record existed has none; editing its CONTROL.txt in
+    the Recalc tab records the file being replaced, so the edit is known.
+- **Classic recalc** (`DELFIN_SMART_RECALC=0`; *Recalc* in the Calculations
+  browser): every finished job is kept, whatever changed.
 
 ### Override OCCUPIER state selection during recalc
 

@@ -14,6 +14,7 @@ from dataclasses import asdict
 from typing import Optional
 from delfin.common.logging import configure_logging, get_logger
 from delfin.common.paths import resolve_path
+from delfin import recalc_control, smart_recalc
 from .qm_runtime import check_tools as check_qm_tools, get_qm_tools_root, get_csp_tools_root, get_mlp_tools_root, run_tool as run_qm_tool
 
 logger = get_logger(__name__)
@@ -1404,6 +1405,54 @@ def _is_enabled_flag(value: object) -> bool:
     return str(value or "").strip().lower() in {"on", "yes", "true", "1"}
 
 
+def _run_inputs_as_read(control_file_path: Path, config: dict) -> tuple:
+    """The CONTROL text and the geometry input text this run starts from (None where unreadable)."""
+    try:
+        control_text = control_file_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        control_text = None
+    entry = str(config.get("input_file") or "input.txt").strip() or "input.txt"
+    geometry_path = Path(entry) if Path(entry).is_absolute() else control_file_path.parent / entry
+    try:
+        geometry_text = geometry_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        geometry_text = None
+    return control_text, geometry_text
+
+
+def _note_control_change(config: dict, workspace_root: Path, control_text, geometry_text) -> None:
+    """Tell the workflows what an edit since the last completed run reaches (recalc_control)."""
+    if control_text is None:
+        return
+    change = recalc_control.change_since_last_run(workspace_root, control_text, geometry_text)
+    config["_recalc_change"] = change
+    smart = smart_recalc.smart_mode_enabled()
+    if change is None:
+        logger.info("[recalc] No record of the CONTROL the finished jobs were computed with; "
+                    "finished jobs are kept as they are.")
+        return
+    if not change.keys and not change.input_changed:
+        logger.info("[recalc] CONTROL unchanged since the last completed run.")
+        return
+    logger.info("[recalc] Changed since the last completed run: %s.", change.describe())
+    if not smart:
+        logger.warning("[recalc] Classic recalc keeps every finished job; the change reaches only "
+                       "jobs that were not finished. Smart recalc computes what it changes.")
+        return
+    config["_recalc_rebuild_structure"] = change.structure
+    config["_recalc_regenerate_fob_inputs"] = change.reaches_occupier_fobs
+    config["_recalc_regenerate_main_inputs"] = change.reaches_occupier_frequency_jobs
+    if change.structure:
+        logger.info("[recalc] The starting structure is built again, and what follows from it.")
+    elif change.reaches_occupier_frequency_jobs:
+        logger.info("[recalc] ORCA inputs are written anew (OCCUPIER %s); a job whose input "
+                    "changed runs again.",
+                    "configurations and frequency jobs" if change.reaches_occupier_fobs
+                    else "frequency jobs")
+    elif change.computation:
+        logger.info("[recalc] The edit reaches no OCCUPIER input; OCCUPIER keeps its finished jobs.")
+
+
 def _run_co2_recalc_if_enabled(config: dict, workspace_root: Path) -> bool:
     """Run CO2 coordinator in recalc mode when enabled via CONTROL."""
     if not _is_enabled_flag(config.get("co2_coordination", "off")):
@@ -1740,6 +1789,13 @@ def main(argv: list[str] | None = None) -> int:
     # Store force_rerun_outputs in config so parallel_occupier.py can access it
     if RECALC_MODE and force_rerun_outputs:
         config["_recalc_force_outputs"] = force_rerun_outputs
+
+    # What this run is computed from, compared with what the finished jobs were
+    # computed from (recalc_control).  Read now: an edit made while the run is
+    # going belongs to the next one.
+    run_control_text, run_geometry_text = _run_inputs_as_read(control_file_path, config)
+    if RECALC_MODE:
+        _note_control_change(config, workspace_root, run_control_text, run_geometry_text)
 
     # Populate optional flags with safe defaults so reduced CONTROL files remain usable
     try:
@@ -2151,6 +2207,10 @@ def main(argv: list[str] | None = None) -> int:
         if RECALC_MODE and not _run_co2_recalc_if_enabled(config, workspace_root):
             return _finalize(1)
 
+        # A classic recalc keeps finished jobs whatever CONTROL says, so they
+        # still belong to the CONTROL recorded before it.
+        if run_control_text is not None and (not RECALC_MODE or smart_recalc.smart_mode_enabled()):
+            recalc_control.record_completed_run(workspace_root, run_control_text, run_geometry_text)
         return _finalize(0)
     except KeyboardInterrupt:
         logger.warning("Execution interrupted by user; shutting down...")
