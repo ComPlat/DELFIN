@@ -6280,6 +6280,15 @@ class AgentEngine:
 
         if "engine_messages" in data:
             self.messages = list(data.get("engine_messages") or [])
+            # Rounds kept by an OpenAI-shaped client do not travel to a
+            # client that cannot send them -- see turn_history.strip_tool_rows.
+            if not getattr(getattr(self, "client", None),
+                           "KEEPS_TOOL_HISTORY", False):
+                try:
+                    from .turn_history import strip_tool_rows
+                    self.messages = strip_tool_rows(self.messages)
+                except Exception:
+                    pass
             restored.append("engine_messages")
             # Stated, not inferred. The cross-session task notice needs to
             # know a conversation came off disk; a message count cannot

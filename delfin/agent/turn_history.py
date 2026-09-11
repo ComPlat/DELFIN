@@ -178,3 +178,27 @@ def repair_tool_pairing(messages: list[dict]) -> list[dict]:
         if _round_is_complete(unit):
             out.extend(unit)
     return out
+
+
+def strip_tool_rows(messages: list[dict]) -> list[dict]:
+    """The history without its tool rounds, for a backend that cannot send them.
+
+    A session is saved with the rounds an OpenAI-shaped client kept and may
+    be restored into another client. That client's conversion knows only
+    user and assistant text; a ``tool`` row or a ``tool_calls`` key would
+    reach the endpoint as-is and be refused. Assistant rows that carried
+    only calls are dropped with them; the answer they led to stays.
+    """
+    out: list[dict] = []
+    for m in messages or []:
+        if not isinstance(m, dict):
+            continue
+        if m.get("role") == "tool":
+            continue
+        if m.get("tool_calls"):
+            text = m.get("content")
+            if not (isinstance(text, str) and text.strip()):
+                continue
+            m = {k: v for k, v in m.items() if k != "tool_calls"}
+        out.append(m)
+    return out
