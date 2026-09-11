@@ -365,21 +365,61 @@ def tool_extract_thermochem(folder: str) -> str:
     return _dumps(_asdict(result))
 
 
+def _common_root(paths: list) -> str:
+    """The directory every path shares, or "" when there is none."""
+    import os as _os
+    clean = [str(p) for p in paths if p]
+    if not clean:
+        return ""
+    try:
+        root = _os.path.commonpath(clean)
+    except ValueError:
+        return ""
+    if root and any(_os.path.normpath(p) == root for p in clean):
+        root = _os.path.dirname(root)
+    return root
+
+
+def _relative_to_root(rows: list, root: str) -> list:
+    """Rows with their folder spelled relative to *root*.
+
+    An absolute path repeated once per row and once per skipped folder
+    was what pushed a nine-run table past the tool-result cap -- and
+    by how much depended on where the archive happened to live. The
+    root is said once; a row names its folder the way a person does.
+    """
+    import os as _os
+    if not root:
+        return rows
+    out = []
+    for row in rows:
+        if isinstance(row, dict) and row.get("folder"):
+            row = dict(row)
+            try:
+                row["folder"] = _os.path.relpath(str(row["folder"]), root)
+            except ValueError:
+                pass
+        out.append(row)
+    return out
+
+
 def _grouped_by_method(rows: list) -> dict:
-    """Rows -> {"note", "groups": [{"method", "rows"}]}, in row order.
+    """Rows -> {"note", "root", "groups": [{"method", "rows"}]}, in row
+    order, folders relative to the shared root.
 
     The rule travels with the data: a caller that reads the JSON reads
     that energies compare only within a method before it reads a number.
     """
+    root = _common_root([r.get("folder") for r in rows if isinstance(r, dict)])
     groups: list = []
     index: dict = {}
-    for row in rows:
+    for row in _relative_to_root(rows, root):
         method = row.get("method") if isinstance(row, dict) else None
         if method not in index:
             index[method] = len(groups)
             groups.append({"method": method, "rows": []})
         groups[index[method]]["rows"].append(row)
-    return {"note": delfin_api.METHOD_NOTE, "groups": groups}
+    return {"note": delfin_api.METHOD_NOTE, "root": root, "groups": groups}
 
 
 def tool_extract_energy_table(
@@ -1281,8 +1321,10 @@ def tool_find_calculation_extreme(
 ) -> str:
     """The N lowest/highest folders by a property, PER METHOD.
 
-    Returns {"note", "property_requested", "property_used", "groups":
-    [{"method", "rows"}], "skipped": [{"folder", "reason", "outcome"}]}:
+    Returns {"note", "root", "property_requested", "property_used",
+    "groups": [{"method", "rows"}], "skipped": [{"folder", "reason",
+    "outcome"}]}. Folders are given relative to "root", the directory
+    they all share, so a long path is said once:
     within each method (functional/basis) the top n rows, ranked; groups
     are not ranked against each other, because a total energy compares
     only within one method. "Find the .out with the lowest Gibbs energy"
@@ -1308,10 +1350,14 @@ def tool_find_calculation_extreme(
     res = delfin_api.find_calculation_extreme_explained(
         folder_list, property=property, extreme=extreme, n=int(n),
     )
+    root = _common_root([r.get("folder") for r in res["rows"] + res["skipped"]])
     out = _grouped_by_method(res["rows"])
+    out["root"] = root
+    for g in out["groups"]:
+        g["rows"] = _relative_to_root([dict(r, folder=os.path.join(root, r["folder"]) if root and r.get("folder") and not os.path.isabs(str(r["folder"])) else r.get("folder")) for r in g["rows"]], root)
     out["property_requested"] = res["property_requested"]
     out["property_used"] = res["property_used"]
-    out["skipped"] = res["skipped"]
+    out["skipped"] = _relative_to_root(res["skipped"], root)
     if res["property_used"] != res["property_requested"]:
         out["note"] += (f" No folder carries {res['property_requested']}; "
                         f"ranked by {res['property_used']} instead.")
