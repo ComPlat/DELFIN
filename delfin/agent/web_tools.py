@@ -29,6 +29,7 @@ import ipaddress
 import json
 import re
 import socket
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -280,6 +281,18 @@ def _ddg_instant_answer(query: str, timeout_s: int) -> list[dict]:
     return out
 
 
+_RESET_ATTEMPTS = 3
+
+
+def _is_connection_reset(exc: BaseException) -> bool:
+    """A connection the peer reset, however the platform spells it."""
+    reason = getattr(exc, "reason", exc)
+    if isinstance(reason, ConnectionResetError):
+        return True
+    text = str(reason).lower()
+    return "connection reset" in text or "errno 104" in text or "econnreset" in text
+
+
 def web_search(query: str, *, max_results: int = 8,
                timeout_s: int = _DEFAULT_TIMEOUT_S) -> dict:
     """DuckDuckGo search: HTML result list, with an Instant-Answer fallback
@@ -291,23 +304,35 @@ def web_search(query: str, *, max_results: int = 8,
     err = _check_url(url)
     if err:
         return {"error": err}
-    try:
-        # Tolerate a two-value _fetch_bytes: the parameter is new, and a
-        # replacement that predates it (a test double, a patched build) must
-        # not turn into "search failed". Status 0 then means "not known",
-        # which is deliberately NOT evidence of anything below.
+    # The search endpoint resets the connection now and then -- two of
+    # three calls in a field session and one of two from the office
+    # network, in the same minute (2026-09-11). A reset is not an
+    # answer, so it is tried again, twice, before it is reported as one.
+    _attempts = 0
+    while True:
+        _attempts += 1
         try:
-            _fetched = _fetch_bytes(url, timeout_s, want_status=True)
-        except TypeError:
-            _fetched = _fetch_bytes(url, timeout_s)
-        body, ctype = _fetched[0], _fetched[1]
-        status = int(_fetched[2]) if len(_fetched) > 2 else 0
-    except urllib.error.HTTPError as exc:
-        return {"error": f"HTTP {exc.code}: {exc.reason}"}
-    except urllib.error.URLError as exc:
-        return {"error": f"network error: {exc.reason}"}
-    except Exception as exc:
-        return {"error": f"search failed: {exc}"}
+            # Tolerate a two-value _fetch_bytes: the parameter is new, and a
+            # replacement that predates it (a test double, a patched build)
+            # must not turn into "search failed". Status 0 then means "not
+            # known", which is deliberately NOT evidence of anything below.
+            try:
+                _fetched = _fetch_bytes(url, timeout_s, want_status=True)
+            except TypeError:
+                _fetched = _fetch_bytes(url, timeout_s)
+            body, ctype = _fetched[0], _fetched[1]
+            status = int(_fetched[2]) if len(_fetched) > 2 else 0
+            break
+        except urllib.error.HTTPError as exc:
+            return {"error": f"HTTP {exc.code}: {exc.reason}"}
+        except urllib.error.URLError as exc:
+            if _is_connection_reset(exc) and _attempts < _RESET_ATTEMPTS:
+                time.sleep(0.5 * _attempts)
+                continue
+            suffix = (f" (after {_attempts} attempts)" if _attempts > 1 else "")
+            return {"error": f"network error: {exc.reason}{suffix}"}
+        except Exception as exc:
+            return {"error": f"search failed: {exc}"}
 
     text = body.decode("utf-8", errors="replace")
     # DDG HTML markup: each result is in a <div class="result__body">
