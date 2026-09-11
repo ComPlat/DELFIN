@@ -15463,6 +15463,18 @@ def create_tab(ctx):
                         _set_working(True, f"Thinking: {snippet}")
                         last_update = now
 
+                def _on_notice(text):
+                    """The harness talking about itself -- a cold-start
+                    notice, a retry, a stop. Not the model's output: it
+                    used to arrive through _on_token, which stamped the
+                    first token, so the first-token watchdog took a
+                    cold-start notice for the provider answering and
+                    never fired (a turn waited 1806 s, 2026-09-11); and it
+                    was rendered inside the answer, three times over."""
+                    state["_last_stream_activity"] = time.monotonic()
+                    if text and text.strip():
+                        _append_system_message(text.strip())
+
                 def _on_token(text):
                     nonlocal last_update
                     _mark_output()
@@ -16346,6 +16358,7 @@ def create_tab(ctx):
                         on_tool_result=_on_tool_result,
                         on_permission_denied=_on_permission_denied,
                         on_thinking=_on_thinking,
+                        on_notice=_on_notice,
                         thinking_budget=_budget,
                         memory_context=_memory,
                         images=_vision_images,
