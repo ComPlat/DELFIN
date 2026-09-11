@@ -644,26 +644,22 @@ def _create_occupier_fob_jobs(
 
                     broken_sym_str = "\n".join(broken_sym)
 
-                    # Change to target directory only for read_and_modify_file_OCCUPIER
-                    # which expects to work in the target directory
-                    with _cwd_lock:
-                        prev_cwd = os.getcwd()
-                        os.chdir(target_folder)
-                        try:
-                            read_and_modify_file_OCCUPIER(
-                                _src_idx,
-                                _inp_name,
-                                stage_charge,
-                                _multiplicity,
-                                solvent,
-                                metals,
-                                metal_basisset,
-                                main_basisset,
-                                global_config,
-                                broken_sym_str,
-                            )
-                        finally:
-                            os.chdir(prev_cwd)
+                    # In the stage's folder by path, not by changing the process's
+                    # working directory, which the frequency jobs of the stages
+                    # running alongside change too.
+                    read_and_modify_file_OCCUPIER(
+                        _src_idx,
+                        _inp_name,
+                        stage_charge,
+                        _multiplicity,
+                        solvent,
+                        metals,
+                        metal_basisset,
+                        main_basisset,
+                        global_config,
+                        broken_sym_str,
+                        work_dir=target_folder,
+                    )
 
                     if not inp_path.exists():
                         raise RuntimeError(f"Failed to create OCCUPIER input '{_inp_name}' in {folder_name}")

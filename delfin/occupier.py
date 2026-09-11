@@ -323,17 +323,30 @@ def _first_coordination_sphere_indices(atoms, metal_indices, scale, radii_map):
 
 def read_and_modify_file_OCCUPIER(from_index, output_file_path, charge, multiplicity,
                                   solvent, found_metals, metal_basisset, main_basisset,
-                                  config, broken_sym):
-    """Build the ORCA input with per-atom NewGTO for metals and first coordination sphere."""
+                                  config, broken_sym, work_dir=None):
+    """Build the ORCA input with per-atom NewGTO for metals and first coordination sphere.
+
+    With *work_dir* the stage's files are read and written there, whatever the
+    process's working directory: it is one directory for all threads, and a
+    stage's frequency job changes it while FoBs of another stage are being
+    written (a FoB input landed in the job's own folder, the stage keeping
+    the old one).
+    """
     xyz_file = "input.xyz" if from_index == 1 else f"input{from_index}.xyz"
+    base = Path(work_dir) if work_dir is not None else None
+
+    def _here(name):
+        return resolve_path(base / name if base is not None and not Path(name).is_absolute() else name)
+
+    output_file_path = str(_here(output_file_path)) if base is not None else output_file_path
 
     # Thread-safe file reading to prevent race conditions when multiple FoBs
     # access input0.xyz simultaneously
     with _geometry_file_lock:
-        xyz_path = resolve_path(xyz_file)
+        xyz_path = _here(xyz_file)
         if not xyz_path.exists():
             if from_index == 1:
-                alt_path = resolve_path("input0.xyz")
+                alt_path = _here("input0.xyz")
                 if alt_path.exists():
                     logger.warning("Primary geometry '%s' missing; falling back to '%s'.", xyz_path, alt_path)
                     xyz_path = alt_path
