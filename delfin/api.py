@@ -4507,7 +4507,7 @@ def plot_energy_distribution(
         prop_label = " + ".join(properties)
         title = f"{prop_label} across {n_points} calculations ({plot_type})"
 
-    out_path = output_path or str(
+    out_path = str(_explicit_png(output_path)) if output_path else str(
         _new_workspace_png_path(prefix=f"energy_{plot_type}")
     )
 
@@ -4710,7 +4710,7 @@ def plot_energy_correlation(
         ax.legend(loc="best", fontsize=9)
     plt.tight_layout()
 
-    out_path = output_path or str(
+    out_path = str(_explicit_png(output_path)) if output_path else str(
         _new_workspace_png_path(prefix=f"energy_corr_{x}_vs_{y}")
     )
     plt.savefig(out_path, dpi=120, bbox_inches="tight")
@@ -4804,7 +4804,7 @@ def plot_orbital_diagram(
         ax.set_title(f"Orbital diagram ({_short_folder_label(folder)}){gap_str}")
     fig.tight_layout()
 
-    out = Path(output_path) if output_path else _new_workspace_png_path("orbitals")
+    out = _explicit_png(output_path) if output_path else _new_workspace_png_path("orbitals")
     fig.savefig(out, dpi=150)
     plt.close(fig)
     return PlotResult(
@@ -4877,7 +4877,7 @@ def plot_optimization_convergence(
         fontsize=11,
     )
     fig.tight_layout()
-    out = Path(output_path) if output_path else _new_workspace_png_path("opt_conv")
+    out = _explicit_png(output_path) if output_path else _new_workspace_png_path("opt_conv")
     fig.savefig(out, dpi=150)
     plt.close(fig)
     return PlotResult(
@@ -4951,7 +4951,7 @@ def plot_uvvis_spectrum(
            f"— FWHM = {fwhm_nm:.0f} nm",
     )
     fig.tight_layout()
-    out = Path(output_path) if output_path else _new_workspace_png_path("uvvis")
+    out = _explicit_png(output_path) if output_path else _new_workspace_png_path("uvvis")
     fig.savefig(out, dpi=150)
     plt.close(fig)
     return PlotResult(
@@ -5030,7 +5030,7 @@ def plot_scf_convergence(
         fontsize=11,
     )
     fig.tight_layout()
-    out = Path(output_path) if output_path else _new_workspace_png_path("scf_conv")
+    out = _explicit_png(output_path) if output_path else _new_workspace_png_path("scf_conv")
     fig.savefig(out, dpi=150)
     plt.close(fig)
     return PlotResult(
@@ -5097,7 +5097,7 @@ def plot_population_charges(
         fontsize=11,
     )
     fig.tight_layout()
-    out = Path(output_path) if output_path else _new_workspace_png_path(f"charges_{method_clean}")
+    out = _explicit_png(output_path) if output_path else _new_workspace_png_path(f"charges_{method_clean}")
     fig.savefig(out, dpi=150)
     plt.close(fig)
     return PlotResult(
@@ -5182,7 +5182,7 @@ def plot_vibrational_spectrum(
         fontsize=11,
     )
     fig.tight_layout()
-    out = Path(output_path) if output_path else _new_workspace_png_path("ir_spectrum")
+    out = _explicit_png(output_path) if output_path else _new_workspace_png_path("ir_spectrum")
     fig.savefig(out, dpi=150)
     plt.close(fig)
     return PlotResult(
@@ -5227,6 +5227,23 @@ def _short_folder_label(folder: str) -> str:
     if len(cand) > 24:
         cand = cand[:11] + "…" + cand[-12:]
     return cand
+
+
+
+def _explicit_png(output_path: str) -> "Path":
+    """An output path the caller chose, with its directory in place.
+
+    The gate redirects a headless session's figure into an
+    agent_workspace/ under its own workspace, a directory that need not
+    exist yet; the first such call failed inside savefig with a bare
+    "Error executing tool" and the model drew the figure by hand again.
+    """
+    out = Path(output_path)
+    try:
+        out.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return out
 
 
 def _new_workspace_png_path(prefix: str = "plot") -> "Path":
