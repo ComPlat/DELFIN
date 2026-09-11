@@ -133,3 +133,41 @@ def test_a_non_reasoning_model_is_unaffected_by_its_profile_default():
     assert get_profile("kit.deepseek-v4-flash").effort_default == "medium"
     caps = _caps("kit.deepseek-v4-flash")
     assert _reasoning_effort_param("medium", caps, "kit") == ""
+
+
+# ---------------------------------------------------------------------------
+# The dashboard's effort follows the model unless the user chose one
+# ---------------------------------------------------------------------------
+#
+# The dropdown starts at "medium" and its value went to the engine for
+# every model, so GLM's profile default of "low" -- the one knob that
+# shortens its hidden reasoning -- never applied from the dashboard, and
+# a "hallo" took minutes (2026-09-11).
+
+def test_the_dashboard_starts_from_the_models_profile_default():
+    from delfin.dashboard.tab_agent import _effort_for_model
+    from delfin.agent.model_profiles import get_profile
+    assert get_profile("kit.glm-5.3").effort_default == "low"
+    assert _effort_for_model("kit.glm-5.3", "") == "low"
+
+
+def test_a_saved_choice_wins_over_the_profile():
+    from delfin.dashboard.tab_agent import _effort_for_model
+    assert _effort_for_model("kit.glm-5.3", "high") == "high"
+    assert _effort_for_model("kit.glm-5.3", "nonsense") == "low"
+
+
+def test_a_model_without_a_profile_default_falls_back_to_medium():
+    from delfin.dashboard.tab_agent import _effort_for_model
+    assert _effort_for_model("", "") in ("low", "medium", "high", "xhigh")
+    assert _effort_for_model("no-such-model-xyz", "") in ("low", "medium", "high", "xhigh")
+
+
+def test_the_model_change_follows_the_profile_and_a_sync_is_not_a_choice():
+    from pathlib import Path
+    text = (Path(__file__).resolve().parents[1] / "delfin" / "dashboard" / "tab_agent.py").read_text(encoding="utf-8")
+    i = text.index("def _on_model_change(change):")
+    body = text[i:i + 3000]
+    assert "_effort_for_model(change[\"new\"], \"\")" in body
+    j = text.index("def _on_effort_change(change):")
+    assert "_controls_sync_internal" in text[j:j + 400]
