@@ -7032,6 +7032,90 @@ def _post_hook_note(outcomes) -> str:
         return ""
 
 
+_TABLE_HINT = ("rows were dropped to fit the tool-result window; call again "
+               "with fewer folders, or ask for one group or one property")
+
+
+def _truncate_table_result(text: str, cap: int) -> str:
+    """Cut a JSON table at a row boundary, and say how many rows went.
+
+    A typed tool's table cut in the middle of a row by the head-and-tail
+    rule left the model with half a number and no idea what was missing:
+    both models re-fetched the folders they thought absent, and one
+    asked for "a hint like request fewer folders" (2026-09-11). When a
+    result parses as JSON and holds lists of rows -- a top-level list,
+    a list under any key, or the rows inside "groups" -- whole rows are
+    dropped from the end of the longest list until the text fits, and
+    the result carries "truncated": true with how many rows of how many
+    went and what to do. Anything that is not such a table, or cannot be
+    made to fit that way, keeps the head-and-tail rule.
+
+    Returns the cut text, or "" when this rule does not apply.
+    """
+    import json as _json
+    if not text or len(text) <= cap:
+        return ""
+    head = text.lstrip()[:1]
+    if head not in ("{", "["):
+        return ""
+    try:
+        obj = _json.loads(text)
+    except ValueError:
+        return ""
+
+    def _lists(o):
+        """(container, key) pairs naming lists of rows, longest first."""
+        found = []
+        if isinstance(o, list):
+            found.append((None, None, o))
+        elif isinstance(o, dict):
+            for k, v in o.items():
+                if isinstance(v, list) and v and all(isinstance(x, dict) for x in v):
+                    if k == "groups" and all("rows" in g for g in v):
+                        for g in v:
+                            if isinstance(g.get("rows"), list) and g["rows"]:
+                                found.append((g, "rows", g["rows"]))
+                    else:
+                        found.append((o, k, v))
+        return sorted(found, key=lambda t: -len(t[2]))
+
+    lists = _lists(obj)
+    if not lists:
+        return ""
+    total = sum(len(rows) for _, _, rows in lists)
+    dropped = 0
+    dumps = lambda o: _json.dumps(o, ensure_ascii=False, separators=(",", ":"))  # noqa: E731
+
+    def _with_note(o, omitted):
+        note = {"truncated": True, "rows_omitted": omitted, "rows_total": total,
+                "hint": _TABLE_HINT}
+        if isinstance(o, dict):
+            merged = dict(o)
+            merged.update(note)
+            return merged
+        return list(o) + [note]
+
+    # Drop from the longest list first, one row at a time from its end;
+    # re-sort as lists shrink so the cut spreads across groups.
+    while True:
+        lists = _lists(obj)
+        candidate = dumps(_with_note(obj, dropped))
+        if len(candidate) <= cap:
+            return candidate if dropped else ""
+        if not lists:
+            return ""
+        container, key, rows = lists[0]
+        if not rows:
+            return ""
+        if container is None:
+            obj = obj[:-1]
+        else:
+            container[key] = rows[:-1]
+        dropped += 1
+        if dropped > total:
+            return ""
+
+
 def _smart_truncate(text: str, cap: int, label: str) -> str:
     """Cap a long output by keeping HEAD and TAIL.
 
@@ -18202,9 +18286,11 @@ class OpenAIClient(_BaseClient):
                     # the 2000-char preview, which is why it travels as a
                     # field instead of a substring to be re-detected.
                     _redacted = _redact_tool_result(result)
-                    context_result = _smart_truncate(
-                        _redacted, cap=_tool_result_cap, label="tool_result"
-                    )
+                    # A JSON table is cut at a row boundary and says how
+                    # many rows went; everything else keeps head and tail.
+                    context_result = (_truncate_table_result(_redacted, _tool_result_cap)
+                                      or _smart_truncate(
+                                          _redacted, cap=_tool_result_cap, label="tool_result"))
                     _tool_cut = ("truncated," in _redacted
                                  or "[truncated:" in _redacted
                                  or '"truncated": true' in _redacted)
