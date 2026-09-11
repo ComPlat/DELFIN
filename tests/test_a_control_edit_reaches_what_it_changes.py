@@ -245,8 +245,8 @@ def _occupier_stage(tmp_path, monkeypatch, functional_now: str):
     (stage / "input3.retry1.inp").write_text("stale retry\n")
     (stage / "OCCUPIER.txt").write_text("from the first run\n")
 
-    def generator(src_idx, inp_name, charge, mult, *args, **kwargs):
-        Path(inp_name).write_text(write(functional_now, inp_name, mult))
+    def generator(src_idx, inp_name, charge, mult, *args, work_dir=None, **kwargs):
+        (Path(work_dir) / inp_name).write_text(write(functional_now, inp_name, mult))
 
     ran = []
 
