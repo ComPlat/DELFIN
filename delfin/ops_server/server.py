@@ -299,6 +299,12 @@ def tool_parse_orca_output(path: str) -> str:
     Args:
         path: absolute path to the ORCA .out file, or to the calculation
             folder (its largest .out is parsed).
+    
+    output_lines and blocks_present say how complete the output is
+    (which named blocks it holds: scf_iterations, final_energy,
+    geometry_optimization, frequencies, thermochemistry, ...), so a
+    stub with one energy line is told apart from a full run before
+    a number in it is trusted.
     """
     parsed = delfin_api.parse_orca_output(path)
     return _dumps(_orca_parse_to_dict(parsed))
@@ -1545,6 +1551,9 @@ def tool_extract_optimization_trajectory(folder: str) -> str:
     ``converged`` follows ORCA's OPTIMIZATION RUN DONE / HAS
     CONVERGED markers. Useful for "why did the optimization take 50
     steps?" and trajectory plotting.
+    
+    A single point (one energy, no optimization block) is an error,
+    not a one-cycle trajectory.
     """
     import json as _json
     from dataclasses import asdict as _asdict
