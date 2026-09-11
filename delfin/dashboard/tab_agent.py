@@ -15176,7 +15176,9 @@ def create_tab(ctx):
                         f"{user_text}\n\n[The user attached these files — read "
                         "them with read_file (for text/code/configs) or "
                         "notebook_read (for .ipynb):\n"
-                        + "\n".join(f"  - {p}" for p in _written) + "]")
+                        + "\n".join(f"  - {p}" for p in _written)
+                        + "\nIf one of these paths does not exist, say which "
+                        "and stop; do not search for it.]")
             if _seng is not None and hasattr(_seng, "steer") and _seng.steer(_steer_text):
                 input_textarea.value = ""
                 _append_chat_message("user", user_text)
@@ -16274,7 +16276,9 @@ def create_tab(ctx):
                                 f"{current_msg}\n\n"
                                 f"[The user attached these files — read them with "
                                 f"read_file (for text/code/configs) or notebook_read "
-                                f"(for .ipynb):\n{_img_lines}]"
+                                f"(for .ipynb):\n{_img_lines}\n"
+                                f"If one of these paths does not exist, say which "
+                                f"and stop; do not search for it.]"
                             )
                         state["_pending_uploads"] = []
                         try:
