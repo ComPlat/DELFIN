@@ -234,3 +234,28 @@ def test_the_turn_end_writes_the_timing_the_status_row_reads():
     text = _source()
     assert 'state["_last_turn_timing"] = _turn_timing_text(' in text
     assert 'last_turn_timing=str(state.get("_last_turn_timing") or "")' in text
+
+
+# ---------------------------------------------------------------------------
+# A retry after ten silent minutes says what it is
+# ---------------------------------------------------------------------------
+
+def test_a_zero_byte_cut_is_named_and_a_dropped_connection_is_not_confused_with_it():
+    from delfin.agent.api_client import _retry_notice, _ZERO_BYTE_CUT_S
+    cut = _retry_notice("InternalServerError", 600.3, False, 1, 3, 2.0)
+    assert "No byte from the endpoint in 600 s" in cut
+    assert "cut the request before the model started" in cut
+    assert "joins its queue again" in cut and "1/3" in cut
+    dropped = _retry_notice("APIConnectionError", 600.3, True, 2, 3, 3.0)
+    assert "connection lost mid-answer" in dropped and "2/3" in dropped
+    quick = _retry_notice("RateLimitError", 4.0, False, 1, 3, 2.0)
+    assert quick == "\n⏳ Transient API error (RateLimitError); retrying 1/3 in 2s…\n"
+    assert _ZERO_BYTE_CUT_S == 300.0
+
+
+def test_the_stream_loop_stamps_the_round_and_uses_the_notice():
+    import inspect
+    from delfin.agent import api_client
+    src = inspect.getsource(api_client.OpenAIClient.stream_message)
+    assert "_round_t0 = time.monotonic()" in src
+    assert "_retry_notice(" in src
