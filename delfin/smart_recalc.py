@@ -244,6 +244,35 @@ def output_matches_input(inp_path, out_path) -> Optional[bool]:
     return _normalise_input_lines(echoed) == _normalise_input_lines(current)
 
 
+_ORCA_GEOMETRY_COMMENT = re.compile(r"^\s*Coordinates from ORCA-job\s+(?:\S*/)?(\S+?)\s+E\b")
+
+
+def geometry_written_by(xyz_path, job: str) -> bool:
+    """True when ORCA wrote *xyz_path* for the job named *job* (its comment line says so).
+
+    ORCA names the job on the second line, "Coordinates from ORCA-job input E
+    -56.43", the directory included when it ran isolated.
+    """
+    try:
+        with Path(xyz_path).open(encoding="utf-8", errors="replace") as fh:
+            fh.readline()
+            m = _ORCA_GEOMETRY_COMMENT.match(fh.readline())
+    except OSError:
+        return False
+    return m is not None and m.group(1) == job
+
+
+def first_configuration_finished(stage_dir) -> bool:
+    """Whether an OCCUPIER stage's first configuration ran to its end and left its own geometry.
+
+    Its products are ``input.xyz`` and ``input.gbw`` -- the names the stage's
+    setup also uses to hand the stage its starting point.  A later run that
+    sets the stage up again must not hand over on top of them.
+    """
+    stage = Path(stage_dir)
+    return has_ok_marker(stage / "output.out") and geometry_written_by(stage / "input.xyz", "input")
+
+
 def outputs_complete(inp_path, out_path, required_outputs: Optional[Iterable] = None) -> bool:
     """Return True when the main output and required generated files all exist."""
     if not has_ok_marker(out_path):

@@ -1373,6 +1373,7 @@ def _run_orca_isolated(
                 continue
             dest = parent_dir / src.name
             try:
+                _replace_shared_file(dest)
                 shutil.copy2(src, dest)
                 logger.debug(f"Copied result {src.name} back from isolated directory")
             except Exception as exc:  # noqa: BLE001
@@ -1392,6 +1393,23 @@ def _run_orca_isolated(
         # so no separate rescue copy is needed before cleanup. The aux-file
         # copy-back above is best-effort and tolerates iso_dir vanishing.
         _cleanup_isolated_dir(iso_dir)
+
+
+def _replace_shared_file(dest: Path) -> None:
+    """Make *dest* a file of its own before a result is copied onto it.
+
+    An OCCUPIER stage starts its first configuration from the orbitals of the
+    stage before it, handed over as ``input.gbw`` -> ``../<parent>/inputN.gbw``
+    (a symlink, or a hard link where symlinks fail).  Copying the result onto
+    that name wrote through the link: the stage's own orbitals went into the
+    parent's file.  In the archive every one of the 898 parent orbital files a
+    later stage linked to was rewritten after its own job had ended.
+    """
+    try:
+        if dest.is_symlink() or (dest.exists() and dest.stat().st_nlink > 1):
+            dest.unlink()
+    except OSError as exc:
+        logger.debug("Could not unlink shared result file %s: %s", dest, exc)
 
 
 def _cleanup_isolated_dir(iso_dir: Path, initial_delay: float = 0.5) -> None:
