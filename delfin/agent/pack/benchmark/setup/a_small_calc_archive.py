@@ -68,10 +68,12 @@ from pathlib import Path
 # has its own minimum, so a correct answer has something to say rather
 # than only something to refuse:
 #
-#   PBE0/def2-SVP    calc_c  arch_b  arch_e   -> arch_e  -113.3010
-#   PBE0/def2-TZVP   calc_a  arch_a           -> arch_a  -113.3050
-#   B3LYP/def2-SVP   calc_b  arch_c           -> calc_b  -113.5510
-#   B3LYP/def2-TZVP  arch_d           (alone) -> not comparable to anything
+#   PBE0/def2-SVP/DMF     arch_b  arch_e       -> arch_e  -113.3010
+#   PBE0/def2-TZVP/DMF    calc_a  arch_a       -> arch_a  -113.3050
+#   B3LYP/def2-SVP/water  calc_b  arch_c       -> calc_b  -113.5510
+#   PBE0/def2-SVP  (gas)  calc_c       (alone) -> a gas-phase run compares
+#                                                 with no CPCM run
+#   B3LYP/def2-TZVP/water arch_d       (alone) -> not comparable to anything
 #
 # Those three winners are re-derived from the written files in
 # tests/test_energies_from_different_methods_are_not_one_ranking.py, not
@@ -92,7 +94,7 @@ ACTIVE = [
 ARCHIVED = [
     ("arch_a", "PBE0", "def2-TZVP", "DMF", "classic", True, True, -113.30506647680),
     ("arch_b", "PBE0", "def2-SVP", "DMF", "classic", True, True, -113.29405164946),
-    ("arch_c", "B3LYP", "def2-SVP", "toluene", "classic", True, True, -113.54801244193),
+    ("arch_c", "B3LYP", "def2-SVP", "water", "classic", True, True, -113.54801244193),
     ("arch_d", "B3LYP", "def2-TZVP", "water", "OCCUPIER", True, True, -113.56203860291),
     ("arch_e", "PBE0", "def2-SVP", "DMF", "classic", False, True, -113.30103117507),
 ]
@@ -111,7 +113,7 @@ IMAG = no
 ESD_modul = no
 """
 
-INP = """! {functional} {basis} TightSCF
+INP = """! {functional} {basis}{solvation} TightSCF
 %pal nprocs 8 end
 * xyz 0 1
 C   0.000  0.000  0.000
@@ -136,7 +138,7 @@ def build(base: Path, rows, kind: str) -> None:
         d = base / name
         d.mkdir()
         (d / f"{name}.inp").write_text(
-            INP.format(functional=func, basis=basis), encoding="utf-8")
+            INP.format(functional=func, basis=basis, solvation=('' if str(solvent).lower() in ('none', '') else f' CPCM({solvent})')), encoding="utf-8")
         # arch_e deliberately has no CONTROL.txt: the index must fall back
         # to the .inp, and a task that counts runs misses it if it cannot.
         if name != "arch_e":

@@ -357,8 +357,9 @@ def tool_extract_energy_table(
     """Walk a list of folders and collect energies into rows.
 
     Returns a JSON list of rows. Each row has ``folder``, ``status``
-    ("ok" / "missing" / "no_output"), ``method`` ("PBE0/def2-SVP": a
-    total energy compares only within one method), ``outcome``
+    ("ok" / "missing" / "no_output"), ``method`` ("PBE0/def2-SVP/DMF":
+    functional, dispersion, basis and solvent -- a total energy compares
+    only within one method, and the gas phase is not a solvent), ``outcome``
     (succeeded / failed (exit code N) / running or crashed / unknown --
     "no_output" alone does not say which), ``last_activity`` and
     ``last_activity_age_s`` (when the newest file in the folder was
