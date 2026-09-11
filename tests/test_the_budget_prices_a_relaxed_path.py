@@ -3238,26 +3238,29 @@ H           -0.75352744687051       -2.57766461891954       -1.39744649395505
 
 
 @_needs_xtb
-def test_a_scan_cannot_turn_a_double_bond_and_nothing_can_tell_it_so():
-    """One dihedral does not pin four substituents, and the method cannot
-    describe what is at the top.
+def test_a_scan_of_a_double_bond_smears_the_twist_and_reaches_the_real_trans():
+    """A dihedral scan made as realistic as a relaxed scan can be.
 
-    Driving C-C=C-C from cis to trans meets every value it is asked for and
-    turns nothing: measured under GFN2 on a 2-butene, the constraint is met by
-    pyramidalising the carbons -- the C=C goes from 1.327 to 1.477 A and the
-    H-C=C-H dihedral to 113 degrees -- and the walk ends at 180 degrees and
-    +64 kcal/mol above cis, where real trans lies 1.5 *below*.
+    Driving C-C=C-C from cis to trans takes the structure through the
+    ninety-degree twist, where the pi bond is broken and the alkene is a
+    biradical -- two electrons no longer in one orbital.  A closed-shell single
+    determinant cannot describe that: left cold, GFN2 stops short or settles on
+    a spurious high minimum, and the walk used to end at +64 kcal/mol where
+    real trans lies 1.5 *below* cis.
 
-    And it ends on a genuine minimum: released, that structure does not move
-    at all, 0.00 A and 0.0 kcal/mol.  A twisted alkene is a biradical and a
-    closed-shell single determinant cannot describe one, so GFN2 has a
-    spurious minimum there -- which is a method failure and not something a
-    scan can be taught to notice.  A scan has no target: it drives a
-    coordinate and reports what it reaches, and nothing in it knows what the
-    answer was supposed to be.
+    Now the scan warms the crossing until it converges.  The frontier gap
+    collapses there, so the electronic temperature is climbed until the method
+    actually resolves the point -- to the 3000 K a twisted alkene needs, the
+    same the drive hand runs at -- and the walk reaches the real trans, below
+    cis.  And it says what it did: the gap closed, the points past the twist
+    are Fermi free energies at 3000 K, the fractional occupation rose toward a
+    half-filled orbital, and it jumped where the rest of the structure snapped
+    into the product basin.
 
-    Which is exactly what the path finder does have, and is why the answer to
-    this reaction is to give it the two structures.  This test holds the
+    What a relaxed scan still cannot give is the true *barrier*: it carries its
+    geometry forward, strain builds, and the height it reports is the
+    hysteretic one rather than the reaction's.  So it still sends the barrier
+    question to the path finder, which has the two ends.  This test holds the
     measurement so the next person does not have to make it again.
     """
     part, state, box = _scanned(
@@ -3267,10 +3270,15 @@ def test_a_scan_cannot_turn_a_double_bond_and_nothing_can_tell_it_so():
     said = part.mol_status.value
     ends = float(said.split("\u00b7 end ")[1].split("\u00b7")[0].strip()
                  .lstrip("+"))
-    assert ends > 40.0, said            # nowhere near trans, which is -1.5
+    # It reaches the real trans -- far below the spurious +64 a cold walk used
+    # to settle on; real trans is about 1.5 kcal/mol below cis.
+    assert ends < 5.0, said
+    # Because it warmed the twisted biradical until it converged, and says so.
+    assert "3000 K" in said, said
+    # And it still sends the barrier question to the path finder's two ends.
+    assert "saddle" in said, said
 
-    # And it really is a minimum of the method, which is why nothing catches
-    # it: released, it stays.
+    # The trans it reached is a real minimum: released, it stays.
     settled = gfn.optimize_with_gfn(box.value, "gfn2", max_steps=400,
                                     timeout=300)
     assert settled.get("ok"), settled.get("status")

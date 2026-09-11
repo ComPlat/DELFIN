@@ -133,3 +133,83 @@ def test_an_open_gap_scan_is_untouched_by_the_smearing():
         time.sleep(0.2)
     assert part.state.get('scan_smeared_at') is None, 'smeared an open-gap scan'
     assert 'Fermi smearing' not in (part.state.get('scan_depth') or '')
+
+
+# cis-2-butene, for a torsion whose gap collapses at the twist where 1000 K is
+# not enough and 3000 K is -- the same near-degeneracy the drive hand meets.
+_CIS_BUTENE = """12
+cis-2-butene, relaxed under GFN2
+C   1.56133168  -0.30153550   0.34941920
+C   0.58962547   0.81664449   0.15552991
+C  -0.69758682   0.72956008  -0.14104061
+C  -1.50476993  -0.50896586  -0.35699709
+H   2.38089185  -0.20604371  -0.36277491
+H   1.10146901  -1.27583353   0.21959173
+H   1.98910506  -0.24943338   1.35057641
+H   1.02420044   1.80112840   0.27987105
+H  -1.26489964   1.64626528  -0.24753152
+H  -1.93691854  -0.49814727  -1.35756982
+H  -0.91382776  -1.41217448  -0.24475249
+H  -2.32872082  -0.54156452   0.35577813
+"""
+
+
+def test_the_scan_warms_a_point_until_it_converges_not_once_at_a_fixed_temperature():
+    """The universal rule, read off the source.
+
+    A scan point that stopped before converging -- a torsion twisted through
+    its barrier, a bond half broken, where the frontier gap collapses -- is
+    recomputed at a higher electronic temperature until the method reports it
+    converged, escalating through a ladder rather than being tried once at a
+    fixed 1000 K and only when the SCC faulted.  Keyed on the convergence every
+    SCC method reports, not on the molecule.
+    """
+    src = (pathlib.Path(__file__).resolve().parents[1]
+           / 'delfin' / 'dashboard' / 'structure_editor.py').read_text()
+    assert '_SCAN_WARMTH_LADDER = (1000.0, 3000.0, 6000.0)' in src
+    scan = src.split('def on_submit_scan_run')[1]
+    assert 'for hotter in _SCAN_WARMTH_LADDER:' in scan
+    # It escalates keyed on the point's own convergence, not one point late.
+    assert "outcome.get('ok') and outcome.get('converged')" in scan
+    # And the verdict names the temperature that was actually needed.
+    assert 'state[\'scan_smeared_temp\'] = scan_warmth' in scan
+    assert 'state.get("scan_smeared_temp")' in src
+
+
+@_needs_xtb
+def test_a_torsion_scan_escalates_past_1000_K_where_the_gap_collapses():
+    """Live: a relaxed dihedral scan of a C=C through its twist. 1000 K (the
+    gap-closing rescue) leaves the barrier point stopped short; the scan climbs
+    the ladder to 3000 K, every point converges, and the far side reaches the
+    real product rather than a spurious unconverged spike."""
+    pytest.importorskip('ipywidgets')
+    relaxed = gfn.optimize_with_gfn(_CIS_BUTENE, 'gfn2', optimise=True,
+                                    max_steps=200, timeout=180)
+    assert relaxed.get('ok'), relaxed.get('status')
+    part = _a_part(relaxed['xyz'])
+    part.submit_ff_dd.value = 'gfn2'
+    part.submit_gfn_charge.value = 0
+    leg = {'kind': 'dihedral', 'atoms': [0, 1, 2, 3], 'from': 0.0, 'to': 180.0,
+           'steps': 12,
+           'structure': part._structure_fingerprint(relaxed['xyz'])}
+    part.state['scan_legs'] = [leg]
+    part.submit_scan_how.value = 'hold'
+    part.submit_scan_steps.value = 12
+    part.submit_scan_whole.value = True
+    part.submit_scan_back.value = False
+    part.on_submit_scan_run()
+    began = time.time()
+    while part.state.get('scan_run') and time.time() - began < 600:
+        time.sleep(0.2)
+    state = part.state
+    assert not state.get('scan_run'), 'the scan never finished'
+    # It walked the whole way -- no point left the scan unconverged.
+    assert state.get('scan_gave_up') is None, state.get('scan_gave_up')
+    there = state.get('scan_there') or []
+    assert len(there) == 12, len(there)
+    # The escalation engaged past the 1000 K rescue, which is the whole point:
+    # the torsion's collapse needs about 3000 K, and the verdict says so.
+    assert state.get('scan_smeared_at') is not None, 'smearing never engaged'
+    assert float(state.get('scan_smeared_temp') or 0) >= 3000.0, (
+        'the ladder did not climb past 1000 K for the torsion: '
+        f'{state.get("scan_smeared_temp")}')
