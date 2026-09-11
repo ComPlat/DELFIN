@@ -37,3 +37,19 @@ def test_the_primer_reaches_the_engine_as_memory_context():
     assert "_memory = (_boot_brief" in after
     # and the memory block is what every stream_response call hands over
     assert text.count("memory_context=_memory,") >= 4
+
+
+def test_the_fast_path_judges_the_bare_greeting_and_does_not_touch_the_text():
+    """The loose greeting test accepted a greeting PREFIX, so "hallo,
+    prüfe die Tabelle" was told not to call any tools; and the glued hint
+    hid the bare greeting from the engine's rule, so every first hallo
+    still paid the tool schemas (37,193 tokens, measured 2026-09-11)."""
+    text = _TAB.read_text(encoding="utf-8")
+    i = text.index("# Greeting fast-path")
+    body = text[i:i + 1600]
+    assert "_AE.is_bare_greeting(user_text)" in body
+    assert "_AE.is_greeting(user_text)" not in body
+    assert 'state["_pending_turn_hint"]' in body
+    assert "(Greeting — reply with ONE" not in body
+    j = text.index('_turn_hint = str(state.pop("_pending_turn_hint", "") or "")')
+    assert "_memory = (_memory" in text[j:j + 300]
