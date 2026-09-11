@@ -418,6 +418,7 @@ def _create_occupier_fob_jobs(
         else None
     )
     recalc_enabled = str(os.environ.get("DELFIN_RECALC", "0")).lower() in ("1", "true", "yes", "on")
+    regenerate_inputs = recalc_enabled and bool(global_config.get("_recalc_regenerate_fob_inputs"))
     geometry_wait_timeout = _parse_geometry_wait(
         global_config.get("occupier_geometry_wait_s"), default=None
     )
@@ -524,7 +525,8 @@ def _create_occupier_fob_jobs(
                 inp_path = target_folder / _inp_name
                 out_path = target_folder / _out_name
 
-                if _should_skip_recalc(inp_path, out_path, recalc_enabled):
+                # after a CONTROL edit the input is written anew first (below)
+                if not regenerate_inputs and _should_skip_recalc(inp_path, out_path, recalc_enabled):
                     energy = _parse_energy(out_path, use_gibbs)
                     logger.info("[%s] FoB %d: RECALC skip (energy=%s)", folder_name, _idx, energy)
                     with results_lock:
@@ -615,48 +617,9 @@ def _create_occupier_fob_jobs(
                 # No chdir needed - all file operations use absolute paths
                 logger.info("[%s] FoB %d starting with %d cores", folder_name, _idx, cores)
 
-                # In RECALC with auto-recovery enabled, prefer latest retry/modified input
-                reuse_existing_inp = False
-                source_inp = target_folder / _inp_name
-                if recalc_enabled and auto_recovery_enabled:
-                    retry_candidates = sorted(
-                        target_folder.glob(f"{source_inp.stem}.retry*.inp")
-                    )
-                    best_retry = None
-                    best_attempt = -1
-                    for cand in retry_candidates:
-                        m = re.search(r"\.retry(\d+)\.inp$", cand.name)
-                        if not m:
-                            continue
-                        try:
-                            att = int(m.group(1))
-                        except ValueError:
-                            continue
-                        if att > best_attempt:
-                            best_attempt = att
-                            best_retry = cand
-                    if best_retry and best_retry.exists():
-                        shutil.copy2(best_retry, source_inp)
-                        reuse_existing_inp = True
-                        logger.info(
-                            "[%s] FoB %d: RECALC reuse retry input '%s' -> '%s'",
-                            folder_name,
-                            _idx,
-                            best_retry.name,
-                            source_inp.name,
-                        )
-                    elif source_inp.exists():
-                        reuse_existing_inp = True
-                        logger.info(
-                            "[%s] FoB %d: RECALC reuse existing input '%s' (auto-recovery enabled)",
-                            folder_name,
-                            _idx,
-                            _inp_name,
-                        )
-
-                gbw_for_moread: Optional[Path] = None
-
-                if not reuse_existing_inp:
+                def _write_input() -> Optional[Path]:
+                    """Write the FoB's input from CONTROL; the orbitals it starts from, when passed on."""
+                    moread_gbw: Optional[Path] = None
                     broken_sym: List[str] = []
                     if pass_wf_enabled:
                         gbw_candidate = "input.gbw" if _src_idx == 1 else f"input{_src_idx}.gbw"
@@ -664,7 +627,7 @@ def _create_occupier_fob_jobs(
                         if gbw_path.exists():
                             # Use relative GBW path so isolation can copy the dependency.
                             broken_sym.append(f'%moinp "{gbw_candidate}"')
-                            gbw_for_moread = gbw_path
+                            moread_gbw = gbw_path
                         else:
                             logger.info(
                                 "[%s] FoB %d: GBW %s not found, continuing with default guess",
@@ -704,6 +667,76 @@ def _create_occupier_fob_jobs(
 
                     if not inp_path.exists():
                         raise RuntimeError(f"Failed to create OCCUPIER input '{_inp_name}' in {folder_name}")
+                    return moread_gbw
+
+                gbw_for_moread: Optional[Path] = None
+                reuse_existing_inp = False
+                source_inp = target_folder / _inp_name
+
+                if regenerate_inputs:
+                    # CONTROL was edited since the last completed run
+                    # (recalc_control): the input is written as a fresh run
+                    # writes it.  Saying what the finished job's input said,
+                    # the old file stays and the job is decided as before;
+                    # otherwise it is a new calculation.
+                    previous_input = smart_recalc.snapshot_input(inp_path)
+                    gbw_for_moread = _write_input()
+                    same = smart_recalc.settle_rewritten_input(inp_path, previous_input, target_folder)
+                    if same:
+                        gbw_for_moread = None
+                        if _should_skip_recalc(inp_path, out_path, recalc_enabled):
+                            energy = _parse_energy(out_path, use_gibbs)
+                            logger.info("[%s] FoB %d: input unchanged by the CONTROL edit; kept (energy=%s)",
+                                        folder_name, _idx, energy)
+                            with results_lock:
+                                fspe_results[_idx] = energy
+                            return
+                    elif same is False:
+                        logger.info("[%s] FoB %d: input changed by the CONTROL edit; computed again",
+                                    folder_name, _idx)
+                        smart_recalc.forget_earlier_attempts(inp_path)
+                        reuse_existing_inp = True
+                    # None: no earlier input to compare with; the output's own record decides
+
+                # In RECALC with auto-recovery enabled, prefer latest retry/modified input
+                if recalc_enabled and auto_recovery_enabled and not reuse_existing_inp:
+                    retry_candidates = sorted(
+                        target_folder.glob(f"{source_inp.stem}.retry*.inp")
+                    )
+                    best_retry = None
+                    best_attempt = -1
+                    for cand in retry_candidates:
+                        m = re.search(r"\.retry(\d+)\.inp$", cand.name)
+                        if not m:
+                            continue
+                        try:
+                            att = int(m.group(1))
+                        except ValueError:
+                            continue
+                        if att > best_attempt:
+                            best_attempt = att
+                            best_retry = cand
+                    if best_retry and best_retry.exists():
+                        shutil.copy2(best_retry, source_inp)
+                        reuse_existing_inp = True
+                        logger.info(
+                            "[%s] FoB %d: RECALC reuse retry input '%s' -> '%s'",
+                            folder_name,
+                            _idx,
+                            best_retry.name,
+                            source_inp.name,
+                        )
+                    elif source_inp.exists():
+                        reuse_existing_inp = True
+                        logger.info(
+                            "[%s] FoB %d: RECALC reuse existing input '%s' (auto-recovery enabled)",
+                            folder_name,
+                            _idx,
+                            _inp_name,
+                        )
+
+                if not reuse_existing_inp:
+                    gbw_for_moread = _write_input()
 
                 # The first run uses the input as written; only a recovery retry
                 # (run_orca_with_intelligent_recovery) restarts from the job's own
@@ -770,6 +803,8 @@ def _create_occupier_fob_jobs(
             _out: Path = out_path,
         ) -> Callable[[], bool]:
             def _precomplete() -> bool:
+                if regenerate_inputs:
+                    return False  # the work writes the input anew and decides (see _work)
                 if not _should_skip_recalc(_inp, _out, recalc_enabled):
                     return False
                 # A FoB marked complete here never runs its work, and its energy
