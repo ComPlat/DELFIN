@@ -699,17 +699,10 @@ def validate_control_text(control_text: str, *, converts_smiles: Optional[bool] 
 
 
 def _esd_parse_transitions(val: Any) -> List[str]:
-    """Extract individual transition strings from an ESD field value (ISCs/ICs)."""
-    if not val or val == [] or _is_placeholder_value(val):
-        return []
-    if isinstance(val, list):
-        return [str(v).strip() for v in val if str(v).strip()]
-    if isinstance(val, str):
-        s = val.strip()
-        if s.startswith('[') and s.endswith(']'):
-            s = s[1:-1]
-        return [t.strip() for t in s.split(',') if t.strip()]
-    return []
+    """The entries of an ESD list, read as the ESD module reads them (brackets or not)."""
+    from delfin.common.control_validator import esd_list_items
+
+    return esd_list_items(val)
 
 
 def get_esd_hints(control_text: str) -> List[str]:
@@ -738,11 +731,23 @@ def get_esd_hints(control_text: str) -> List[str]:
     }
     for field, example in esd_fields.items():
         val = config.get(field)
-        if val is None or _is_placeholder_value(val):
+        if val is None:
             hints.append(
                 f"ESD_modul=yes: {field} not set — "
                 f"define if needed (e.g. {field}={example[1:-1]}), or clear with {field}= or {field}=[]"
             )
+
+    # Say what will be computed.  The template's example lists are read like
+    # any others -- brackets included -- so a file that only switched ESD on
+    # computes them.
+    planned = []
+    for field, label in (('states', 'states'), ('ISCs', 'ISC'), ('ICs', 'IC'), ('emission_rates', 'emission')):
+        items = _esd_parse_transitions(config.get(field))
+        if field == 'states':
+            items = ['S0'] + [i.upper() for i in items if i.upper() != 'S0']
+        if items:
+            planned.append(f"{label} {','.join(items)}")
+    hints.append("ESD_modul=yes computes: " + "; ".join(planned))
 
     states_upper = {s.upper() for s in _esd_parse_transitions(config.get('states'))}
     if "T1" in states_upper:

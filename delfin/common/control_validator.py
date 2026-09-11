@@ -1649,40 +1649,100 @@ def unsupported_ic_reason(transition: str) -> str | None:
     return None
 
 
+def esd_list_items(value: Any) -> list[str]:
+    """The entries of an ESD list the way a CONTROL file may write it.
+
+    ``S1>T1,T1>S1``, ``[S1>T1,T1>S1]``, ``['S1>T1', 'T1>S1']`` and an
+    already parsed list all mean the same.  The template shows the lists in
+    brackets; read without stripping them, ``[S1>T1`` and ``T1>S1]`` were not
+    transitions and the ISC and emission jobs were left out without a word,
+    while the same brackets around ``states`` and ``ICs`` were read.
+    """
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        raw = [str(item) for item in value]
+    else:
+        text = str(value).strip()
+        if text.startswith("[") and text.endswith("]"):
+            text = text[1:-1]
+        raw = re.split(r"[,;]", text)
+    items = []
+    for item in raw:
+        cleaned = item.strip().strip("[]").strip().strip("'\"").strip()
+        if cleaned:
+            items.append(cleaned)
+    return items
+
+
+def isc_problem(transition: str) -> str | None:
+    """Why ``transition`` is not an ISC ORCA's ESD(ISC) computes, or None.
+
+    ESD(ISC) couples states of different multiplicity through spin-orbit
+    coupling; S1>S2 has no spin-orbit coupling to compute.
+    """
+    match = re.match(r"^([ST])(\d+)\s*>\s*([ST])(\d+)$", str(transition).strip().upper())
+    if not match:
+        return f"{transition!r} is not a transition like S1>T1 or T1>S1"
+    if match.group(1) == match.group(3):
+        return f"{transition} keeps its spin; that is an IC (ICs=), not an ISC"
+    return None
+
+
+def normalized_transition(transition: str) -> str:
+    return re.sub(r"\s+", "", str(transition).strip().upper())
+
+
+def _as_iscs(value: Any) -> list[str] | str:
+    items = esd_list_items(value)
+    if not items:
+        return ""
+    for item in items:
+        # Only the spelling is refused, as for ICs: a transition that keeps
+        # its spin is skipped by the ESD module with its reason and named on
+        # the Submit tab, so a file that ran before still runs.
+        if not re.match(r"^[ST]\d+>[ST]\d+$", normalized_transition(item)):
+            raise ValueError(f"ISCs: {item!r} is not a transition like S1>T1 or T1>S1")
+    return [normalized_transition(item) for item in items]
+
+
+def _as_emission_rates(value: Any) -> list[str] | str:
+    tokens = [t for item in esd_list_items(value) for t in item.split()]
+    if not tokens:
+        return ""
+    rates = []
+    for token in tokens:
+        if token.lower() not in ("f", "p"):
+            raise ValueError(f"emission_rates: {token!r} is neither f (fluorescence) nor p (phosphorescence)")
+        if token.lower() not in rates:
+            rates.append(token.lower())
+    return rates
+
+
 def _as_ics(value: Any) -> list[str] | str:
     if value is None or value == "":
         return ""
-    if isinstance(value, (list, tuple)):
-        items = [str(item).strip() for item in value if str(item).strip()]
-    else:
-        text = str(value).strip()
-        if not text:
-            return ""
-        text = text.strip("[]").replace("'", "").replace('"', '')
-        items = [item.strip() for item in text.split(",") if item.strip()]
+    items = esd_list_items(value)
+    if not items:
+        return ""
     normalized = []
     for item in items:
         # Only the spelling is refused here.  A transition ORCA cannot compute
         # (S2>S1, which the old template suggested) must not stop an old
         # CONTROL file from running: the ESD module skips it with its reason,
         # and the dashboard names it before submission (config.get_esd_hints).
-        if not re.match(r"^[ST]\d+>[ST]\d+$", item.strip().upper()):
+        if not re.match(r"^[ST]\d+>[ST]\d+$", normalized_transition(item)):
             raise ValueError(f"ICs: {item!r} is not a transition like S1>S0 or T2>T1")
-        normalized.append(item.strip().upper())
+        normalized.append(normalized_transition(item))
     return normalized
 
 
 def _as_states(value: Any) -> list[str] | str:
     if value is None or value == "":
         return ""
-    if isinstance(value, (list, tuple)):
-        items = [str(item).strip() for item in value if str(item).strip()]
-    else:
-        text = str(value).strip()
-        if not text:
-            return ""
-        text = text.strip("[]").replace("'", "").replace('"', '')
-        items = [item.strip() for item in text.split(",") if item.strip()]
+    items = [item.upper() for item in esd_list_items(value)]
+    if not items:
+        return ""
     normalized = []
     for item in items:
         match = re.match(r"^([ST])(\d+)$", item)
@@ -2177,6 +2237,8 @@ CONTROL_FIELD_SPECS: Iterable[FieldSpec] = (
     FieldSpec("properties_of_interest", _as_properties_of_interest, default=""),
     FieldSpec("reorganisation_energy", _as_reorganisation_energy, default=""),
     FieldSpec("ICs", _as_ics, default=""),
+    FieldSpec("ISCs", _as_iscs, default=""),
+    FieldSpec("emission_rates", _as_emission_rates, default=""),
     FieldSpec("states", _as_states, default=""),
     # xTB Hyperpolarizability
     FieldSpec("hyperpol_xTB", _as_yes_no, default="no"),
@@ -2303,8 +2365,9 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
             validated[spec.name] = spec.default
             continue
 
-        # ICs only exist inside the ESD module; with ESD off the line is inert.
-        if spec.name == "ICs" and not esd_modul_enabled:
+        # The transition lists only exist inside the ESD module; with ESD off
+        # the lines are inert.
+        if spec.name in ("ICs", "ISCs", "emission_rates") and not esd_modul_enabled:
             validated[spec.name] = spec.default
             continue
 
