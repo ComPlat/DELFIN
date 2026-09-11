@@ -4444,6 +4444,12 @@ def plot_energy_distribution(
     - ``plot_type="bar"`` — bar chart per folder (sorted by the first
       property), useful for small N.
     - ``plot_type="boxplot"`` — distribution summary across folders.
+    - ``plot_type="bar_by_method"`` — one bar per folder, grouped and
+      coloured by method (functional/dispersion/basis/solvent), the
+      groups separated on the axis: the figure that answers "which run
+      is lowest" the only way a total energy can be compared, within a
+      method. Folders without a parsed value are named in the result's
+      ``statistics["excluded"]`` rather than dropped in silence.
 
     The PNG lands in ``agent_workspace/`` by default so the dashboard's
     inline-artifact hook picks it up automatically. ``PlotResult.path``
@@ -4456,7 +4462,7 @@ def plot_energy_distribution(
             Default ``["gibbs", "single_point"]``.
         output_path: explicit PNG location. Empty → auto-generated
             inside ``agent_workspace/``.
-        plot_type: ``histogram`` | ``bar`` | ``boxplot``.
+        plot_type: ``histogram`` | ``bar`` | ``boxplot`` | ``bar_by_method``.
         title: figure title (auto-generated if empty).
         bins: histogram bin count.
     """
@@ -4507,7 +4513,57 @@ def plot_energy_distribution(
 
     plot_type_norm = plot_type.lower().strip()
     statistics: dict = {}
-    if plot_type_norm == "bar":
+    if plot_type_norm == "bar_by_method":
+        # One property, the first requested; bars grouped by method with
+        # a gap between groups and one colour per method. A legend names
+        # the methods; the title says the groups do not compare.
+        prop = properties[0]
+        grouped: dict = {}
+        for r in valid_rows:
+            if r.get(prop) is None:
+                continue
+            grouped.setdefault(r.get("method") or "method unknown", []).append(r)
+        excluded = [_short_folder_label(r["folder"]) for r in rows
+                    if r.get(prop) is None]
+        methods = sorted(grouped, key=lambda m: (m == "method unknown", m))
+        xs: list[float] = []
+        vals: list[float] = []
+        ticks: list[str] = []
+        colours: list[str] = []
+        palette = plt.rcParams["axes.prop_cycle"].by_key().get("color", ["#6366f1"])
+        pos = 0.0
+        legend_handles = []
+        for i, m in enumerate(methods):
+            block = sorted(grouped[m], key=lambda r: float(r[prop]))
+            colour = palette[i % len(palette)]
+            for r in block:
+                xs.append(pos)
+                vals.append(float(r[prop]))
+                ticks.append(_short_folder_label(r["folder"]))
+                colours.append(colour)
+                pos += 1.0
+            pos += 0.8                                  # the gap between groups
+            legend_handles.append(plt.Rectangle((0, 0), 1, 1, color=colour, label=m))
+            statistics.setdefault("groups", {})[m] = {
+                "n": len(block),
+                "lowest": _short_folder_label(block[0]["folder"]),
+                "lowest_value": float(block[0][prop]),
+            }
+        fig, ax = plt.subplots(figsize=(max(6, len(xs) * 0.5 + 2), 5))
+        ax.bar(xs, vals, color=colours, width=0.8)
+        ax.set_xticks(xs)
+        ax.set_xticklabels(ticks, rotation=70, ha="right", fontsize=8)
+        ax.set_ylabel(f"{prop} / Hartree")
+        if title == f"{' + '.join(properties)} across {n_points} calculations ({plot_type})":
+            title = f"{prop} per method -- groups are not comparable with each other"
+        ax.set_title(title)
+        ax.legend(handles=legend_handles, loc="best", fontsize=8)
+        plt.tight_layout()
+        plt.savefig(out_path, dpi=120, bbox_inches="tight")
+        plt.close(fig)
+        statistics["excluded"] = excluded
+        statistics["note"] = METHOD_NOTE
+    elif plot_type_norm == "bar":
         # One row per folder; bars side-by-side per property.
         n_props = len(properties)
         x = np.arange(len(labels))

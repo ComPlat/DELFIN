@@ -76,7 +76,7 @@ def _format_result(rc: delfin_api.CommandResult, *, action: str, dry_run: bool =
         "stderr": stderr,
         "argv": rc.argv,
     }
-    return json.dumps(payload, indent=2, ensure_ascii=False)
+    return json.dumps(payload, separators=(",", ":"), ensure_ascii=False)
 
 
 def _refuse_mutation(action: str) -> str:
@@ -99,7 +99,7 @@ def _refuse_mutation(action: str) -> str:
             "started with mutation granted. Ask the USER to approve the "
             f"action; there is no argument that turns it on."
         ),
-    }, indent=2, ensure_ascii=False)
+    }, separators=(",", ":"), ensure_ascii=False)
 
 
 # Environment variable the host sets when the user has granted this server
@@ -223,6 +223,21 @@ def tool_get_dashboard_pattern(name: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _dumps(obj) -> str:
+    """Every tool result, as compact JSON.
+
+    The engine caps a tool result at 5000 chars for a model whose profile
+    sets no larger cap, and cuts the middle out of anything longer. Over
+    the nine-run archive fixture the pretty-printed ranking was 6244
+    chars and the comparison 5863: the model read a table with its
+    middle missing, marked as truncated (2026-09-11). Compact, the same
+    tables are 4338 and 3871. Indentation is for people; the reader here
+    is a model, and every char of it is a token it pays for.
+    """
+    import json as _json
+    return _json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+
+
 def _orca_parse_to_dict(parsed) -> dict:
     """Render an OrcaParseResult as a stable JSON-friendly dict."""
     return {
@@ -264,9 +279,8 @@ def tool_parse_orca_output(path: str) -> str:
         path: absolute path to the ORCA .out file, or to the calculation
             folder (its largest .out is parsed).
     """
-    import json as _json
     parsed = delfin_api.parse_orca_output(path)
-    return _json.dumps(_orca_parse_to_dict(parsed), indent=2)
+    return _dumps(_orca_parse_to_dict(parsed))
 
 
 def tool_calc_status(folder: str) -> str:
@@ -292,9 +306,8 @@ def tool_calc_status(folder: str) -> str:
     Args:
         folder: absolute path to the calculation folder.
     """
-    import json as _json
     from dataclasses import asdict as _asdict
-    return _json.dumps(_asdict(delfin_api.calculation_status(folder)), indent=2)
+    return _dumps(_asdict(delfin_api.calculation_status(folder)))
 
 
 def tool_find_orca_errors(folder: str) -> str:
@@ -310,10 +323,9 @@ def tool_find_orca_errors(folder: str) -> str:
     Args:
         folder: absolute path to the calc folder containing .out files.
     """
-    import json as _json
     from dataclasses import asdict as _asdict
     errors = delfin_api.find_orca_errors(folder)
-    return _json.dumps([_asdict(e) for e in errors], indent=2)
+    return _dumps([_asdict(e) for e in errors])
 
 
 def tool_extract_thermochem(folder: str) -> str:
@@ -327,10 +339,9 @@ def tool_extract_thermochem(folder: str) -> str:
     Args:
         folder: absolute path to a calc folder.
     """
-    import json as _json
     from dataclasses import asdict as _asdict
     result = delfin_api.extract_thermochem(folder)
-    return _json.dumps(_asdict(result), indent=2)
+    return _dumps(_asdict(result))
 
 
 def _grouped_by_method(rows: list) -> dict:
@@ -378,13 +389,12 @@ def tool_extract_energy_table(
             to "gibbs,zpe,single_point".
     
     """
-    import json as _json
     folder_list = [f.strip() for f in folders.split(",") if f.strip()]
     prop_list = [p.strip() for p in properties.split(",") if p.strip()]
     rows = delfin_api.extract_energy_table(
         folder_list, properties=prop_list or None,
     )
-    return _json.dumps(rows, indent=2)
+    return _dumps(rows)
 
 
 def tool_plot_energy_distribution(
@@ -400,6 +410,10 @@ def tool_plot_energy_distribution(
     - histogram (default) — one panel per property with mean + median lines.
     - bar — one bar per folder per property (good for small N).
     - boxplot — distribution summary side-by-side.
+    - bar_by_method — one bar per folder, grouped and coloured by method
+      (functional/dispersion/basis/solvent): the figure for "which run is
+      lowest", since a total energy compares only within a method.
+      statistics carries the lowest per group and the excluded folders.
 
     Output PNG lands in agent_workspace/ where the dashboard's inline-
     artifact hook displays it in the chat automatically. Returns JSON
@@ -409,11 +423,10 @@ def tool_plot_energy_distribution(
     Args:
         folders: comma-separated absolute paths.
         properties: comma-separated subset of gibbs/zpe/single_point.
-        plot_type: histogram | bar | boxplot.
+        plot_type: histogram | bar | boxplot | bar_by_method.
         title: figure title (auto-generated if empty).
         bins: histogram bin count (only used for plot_type=histogram).
     """
-    import json as _json
     from dataclasses import asdict as _asdict
     folder_list = [f.strip() for f in folders.split(",") if f.strip()]
     prop_list = [p.strip() for p in properties.split(",") if p.strip()]
@@ -424,7 +437,7 @@ def tool_plot_energy_distribution(
         title=title,
         bins=int(bins),
     )
-    return _json.dumps(_asdict(result), indent=2)
+    return _dumps(_asdict(result))
 
 
 def tool_list_tools(category: str = "", query: str = "") -> str:
@@ -442,7 +455,7 @@ def tool_list_tools(category: str = "", query: str = "") -> str:
     import json as _json
     return _json.dumps(
         delfin_api.list_tools(category=category, query=query),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -455,8 +468,7 @@ def tool_describe_tool(name: str) -> str:
     Args:
         name: exact tool name (case-insensitive).
     """
-    import json as _json
-    return _json.dumps(delfin_api.describe_tool(name), indent=2)
+    return _dumps(delfin_api.describe_tool(name))
 
 
 def tool_list_dashboard_widgets(tab: str = "") -> str:
@@ -472,7 +484,7 @@ def tool_list_dashboard_widgets(tab: str = "") -> str:
     import json as _json
     return _json.dumps(
         delfin_api.list_dashboard_widgets(tab=tab),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -485,8 +497,7 @@ def tool_get_widget_options(name: str) -> str:
     Args:
         name: widget name (e.g. "orca-method").
     """
-    import json as _json
-    return _json.dumps(delfin_api.get_widget_options(name), indent=2)
+    return _dumps(delfin_api.get_widget_options(name))
 
 
 def tool_validate_orca_input(inp_text: str) -> str:
@@ -504,10 +515,9 @@ def tool_validate_orca_input(inp_text: str) -> str:
     Args:
         inp_text: raw ORCA .inp file content.
     """
-    import json as _json
     from dataclasses import asdict as _asdict
     issues = delfin_api.validate_orca_input(inp_text)
-    return _json.dumps([_asdict(i) for i in issues], indent=2)
+    return _dumps([_asdict(i) for i in issues])
 
 
 def tool_submit_calculation(
@@ -536,14 +546,13 @@ def tool_submit_calculation(
         pal: cores. maxcore: per-core memory in MB.
         allow_mutate: must be True for the submit to actually run.
     """
-    import json as _json
     from dataclasses import asdict as _asdict
     result = delfin_api.submit_calculation(
         folder, job_name=job_name, mode=mode, time_limit=time_limit,
         pal=int(pal), maxcore=int(maxcore),
         allow_mutate=bool(allow_mutate),
     )
-    return _json.dumps(_asdict(result), indent=2)
+    return _dumps(_asdict(result))
 
 
 def tool_cancel_calculation(
@@ -564,7 +573,7 @@ def tool_cancel_calculation(
         delfin_api.cancel_calculation(
             job_id, allow_mutate=bool(allow_mutate),
         ),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -603,7 +612,7 @@ def tool_rename_calc_folder(
             allowed_roots=_split_csv(allowed_roots) or None,
             allow_mutate=bool(allow_mutate),
         ),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -628,7 +637,7 @@ def tool_create_calc_folder(
             allowed_roots=_split_csv(allowed_roots) or None,
             allow_mutate=bool(allow_mutate),
         ),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -656,7 +665,7 @@ def tool_move_calc_folder(
             allowed_roots=_split_csv(allowed_roots) or None,
             allow_mutate=bool(allow_mutate),
         ),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -682,7 +691,7 @@ def tool_move_to_archive(
             allowed_roots=_split_csv(allowed_roots) or None,
             allow_mutate=bool(allow_mutate),
         ),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -711,7 +720,7 @@ def tool_delete_calc_folder(
             allowed_roots=_split_csv(allowed_roots) or None,
             allow_mutate=bool(allow_mutate),
         ),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -733,7 +742,7 @@ def tool_list_ssh_transfer_jobs(limit: int = 8) -> str:
     import json as _json
     return _json.dumps(
         delfin_api.list_ssh_transfer_jobs(limit=int(limit)),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -757,7 +766,7 @@ def tool_kill_all_user_jobs(
             only_running=bool(only_running),
             allow_mutate=bool(allow_mutate),
         ),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -782,13 +791,12 @@ def tool_prepare_recalc(
         override: only used when mode='override' (STAGE=INDEX[,...]).
         allow_mutate: required for actual submission.
     """
-    import json as _json
     from dataclasses import asdict as _asdict
     plan = delfin_api.prepare_recalc(
         folder, mode=mode, time_limit=time_limit,
         override=override, allow_mutate=bool(allow_mutate),
     )
-    return _json.dumps(_asdict(plan), indent=2)
+    return _dumps(_asdict(plan))
 
 
 def tool_list_calc_options(filename: str) -> str:
@@ -801,7 +809,7 @@ def tool_list_calc_options(filename: str) -> str:
     import json as _json
     return _json.dumps(
         delfin_api.list_calc_options(filename),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -838,7 +846,7 @@ def tool_run_calc_option(
             override=override,
             allow_mutate=bool(allow_mutate),
         ),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -865,7 +873,7 @@ def tool_read_pdf(
     import json as _json
     return _json.dumps(
         delfin_api.read_pdf(path, pages=pages, max_chars=int(max_chars)),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -898,7 +906,7 @@ def tool_search_pdf_local(
             max_hits=int(max_hits),
             case_sensitive=bool(case_sensitive),
         ),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -926,7 +934,7 @@ def tool_extract_pdf_section(
         delfin_api.extract_pdf_section(
             path, heading, max_chars=int(max_chars),
         ),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -944,7 +952,7 @@ def tool_list_literature_files(folder: str = "") -> str:
     import json as _json
     return _json.dumps(
         delfin_api.list_literature_files(folder=folder),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -959,8 +967,7 @@ def tool_check_orca_manual_indexed() -> str:
 
     Returns JSON: {indexed, doc_ids, hint}.
     """
-    import json as _json
-    return _json.dumps(delfin_api.check_orca_manual_indexed(), indent=2)
+    return _dumps(delfin_api.check_orca_manual_indexed())
 
 
 def tool_index_new_pdf(
@@ -987,7 +994,7 @@ def tool_index_new_pdf(
         delfin_api.index_new_pdf(
             path, doc_id=doc_id, title=title,
         ),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -1005,7 +1012,7 @@ def tool_list_delfin_features(category: str = "") -> str:
     import json as _json
     return _json.dumps(
         delfin_api.list_delfin_features(category=category),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -1028,7 +1035,7 @@ def tool_explain_delfin_feature(name: str) -> str:
     import json as _json
     return _json.dumps(
         delfin_api.explain_delfin_feature(name),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -1042,8 +1049,7 @@ def tool_list_active_calculations() -> str:
     running" read the ``outcome`` column of extract_energy_table
     (running or crashed / no output yet / failed (exit code N)).
     """
-    import json as _json
-    return _json.dumps(delfin_api.list_active_calculations(), indent=2)
+    return _dumps(delfin_api.list_active_calculations())
 
 
 def tool_plot_energy_correlation(
@@ -1065,13 +1071,12 @@ def tool_plot_energy_correlation(
         y: gibbs | zpe | single_point.
         title: figure title (auto-generated if empty).
     """
-    import json as _json
     from dataclasses import asdict as _asdict
     folder_list = [f.strip() for f in folders.split(",") if f.strip()]
     result = delfin_api.plot_energy_correlation(
         folder_list, x=x, y=y, title=title,
     )
-    return _json.dumps(_asdict(result), indent=2)
+    return _dumps(_asdict(result))
 
 
 def tool_plot_orbital_diagram(
@@ -1099,7 +1104,7 @@ def tool_plot_orbital_diagram(
         _asdict(delfin_api.plot_orbital_diagram(
             folder, n_below=n_below, n_above=n_above, title=title,
         )),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -1119,7 +1124,7 @@ def tool_plot_optimization_convergence(
         _asdict(delfin_api.plot_optimization_convergence(
             folder, title=title,
         )),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -1154,7 +1159,7 @@ def tool_plot_uvvis_spectrum(
             n_points=n_points,
             title=title,
         )),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -1178,7 +1183,7 @@ def tool_plot_scf_convergence(
         _asdict(delfin_api.plot_scf_convergence(
             folder, cycle_index=ci, title=title,
         )),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -1200,7 +1205,7 @@ def tool_plot_population_charges(
         _asdict(delfin_api.plot_population_charges(
             folder, method=method, title=title,
         )),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -1235,7 +1240,7 @@ def tool_plot_vibrational_spectrum(
             n_points=n_points,
             title=title,
         )),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -1270,7 +1275,6 @@ def tool_find_calculation_extreme(
         n: how many top entries per method to return (default 5).
     
     """
-    import json as _json
     folder_list = [f.strip() for f in folders.split(",") if f.strip()]
     res = delfin_api.find_calculation_extreme_explained(
         folder_list, property=property, extreme=extreme, n=int(n),
@@ -1285,7 +1289,7 @@ def tool_find_calculation_extreme(
     if not res["rows"]:
         out["note"] += (" Nothing to rank: 'skipped' says why each "
                         "folder is left out.")
-    return _json.dumps(out, indent=2)
+    return _dumps(out)
 
 
 def tool_extract_imaginary_frequencies(folder: str) -> str:
@@ -1308,7 +1312,7 @@ def tool_extract_imaginary_frequencies(folder: str) -> str:
     from dataclasses import asdict as _asdict
     return _json.dumps(
         _asdict(delfin_api.extract_imaginary_frequencies(folder)),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -1328,7 +1332,7 @@ def tool_compare_calculations(folder_a: str, folder_b: str) -> str:
     from dataclasses import asdict as _asdict
     return _json.dumps(
         _asdict(delfin_api.compare_calculations(folder_a, folder_b)),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -1355,13 +1359,12 @@ def tool_compare_across_functionals(
         sort_by: gibbs | single_point | zpe | functional | folder.
     
     """
-    import json as _json
     from dataclasses import asdict as _asdict
     folder_list = [f.strip() for f in folders.split(",") if f.strip()]
     rows = delfin_api.compare_across_functionals(
         folder_list, include_imag=include_imag, sort_by=sort_by,
     )
-    return _json.dumps(_grouped_by_method([_asdict(r) for r in rows]), indent=2)
+    return _dumps(_grouped_by_method([_asdict(r) for r in rows]))
 
 
 def tool_extract_orbital_energies(folder: str) -> str:
@@ -1375,7 +1378,7 @@ def tool_extract_orbital_energies(folder: str) -> str:
     from dataclasses import asdict as _asdict
     return _json.dumps(
         _asdict(delfin_api.extract_orbital_energies(folder)),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -1390,7 +1393,7 @@ def tool_extract_excited_states(folder: str) -> str:
     from dataclasses import asdict as _asdict
     return _json.dumps(
         _asdict(delfin_api.extract_excited_states(folder)),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -1404,7 +1407,7 @@ def tool_extract_dipole(folder: str) -> str:
     from dataclasses import asdict as _asdict
     return _json.dumps(
         _asdict(delfin_api.extract_dipole(folder)),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -1420,7 +1423,7 @@ def tool_extract_optimization_trajectory(folder: str) -> str:
     from dataclasses import asdict as _asdict
     return _json.dumps(
         _asdict(delfin_api.extract_optimization_trajectory(folder)),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -1436,7 +1439,7 @@ def tool_extract_scf_convergence(folder: str) -> str:
     from dataclasses import asdict as _asdict
     return _json.dumps(
         _asdict(delfin_api.extract_scf_convergence(folder)),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -1451,7 +1454,7 @@ def tool_extract_mulliken_charges(folder: str) -> str:
     from dataclasses import asdict as _asdict
     return _json.dumps(
         _asdict(delfin_api.extract_mulliken_charges(folder)),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -1466,7 +1469,7 @@ def tool_extract_loewdin_charges(folder: str) -> str:
     from dataclasses import asdict as _asdict
     return _json.dumps(
         _asdict(delfin_api.extract_loewdin_charges(folder)),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -1481,7 +1484,7 @@ def tool_extract_vibrational_modes(folder: str) -> str:
     from dataclasses import asdict as _asdict
     return _json.dumps(
         _asdict(delfin_api.extract_vibrational_modes(folder)),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -1496,7 +1499,7 @@ def tool_extract_delfin_json(folder: str) -> str:
     from dataclasses import asdict as _asdict
     return _json.dumps(
         _asdict(delfin_api.extract_delfin_json(folder)),
-        indent=2,
+        separators=(",", ":"),
     )
 
 
@@ -1510,11 +1513,10 @@ def tool_extract_calc_summary_table(folders: str) -> str:
     Args:
         folders: comma-separated absolute paths.
     """
-    import json as _json
     from dataclasses import asdict as _asdict
     folder_list = [f.strip() for f in folders.split(",") if f.strip()]
     rows = delfin_api.extract_calc_summary_table(folder_list)
-    return _json.dumps([_asdict(r) for r in rows], indent=2)
+    return _dumps([_asdict(r) for r in rows])
 
 
 def tool_stop_dry_run(workspace: str) -> str:
