@@ -217,7 +217,50 @@ def outcome_of_folder(d) -> str:
     # in the sense of "nothing to go on" -- there is an input waiting.
     if any(d.glob("*.inp")) and not any(d.glob("*.out")):
         return "no output yet (input present; not started or still running)"
+    # An output with no bookkeeping around it -- an archived run copied
+    # without its state file, a calculation run by hand -- still says how
+    # it ended: ORCA writes its own termination line. Read from the tail,
+    # where it is; an output of a million lines is not read to find it.
+    # Driven 2026-09-10 over such a folder: "unknown" beside an output
+    # that says TERMINATED NORMALLY.
+    out = _largest_output(d)
+    if out is not None:
+        tail = _tail_text(out)
+        if "ORCA TERMINATED NORMALLY" in tail:
+            return "finished per ORCA output (no exit code file)"
+        if "ORCA finished by error termination" in tail or "ABORTING THE RUN" in tail:
+            return "failed per ORCA output (error termination)"
+        return "running or crashed (output has no termination line)"
     return _outcome_of(completed, exit_code)
+
+
+def _largest_output(d):
+    """The .out most likely to be the run's own: the largest."""
+    from pathlib import Path as _P
+    best = None
+    try:
+        for f in _P(d).glob("*.out"):
+            try:
+                size = f.stat().st_size
+            except OSError:
+                continue
+            if best is None or size > best[0]:
+                best = (size, f)
+    except OSError:
+        return None
+    return best[1] if best else None
+
+
+def _tail_text(path, size: int = 16384) -> str:
+    """The last ``size`` bytes of a file as text, never raising."""
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, 2)
+            n = fh.tell()
+            fh.seek(max(0, n - size))
+            return fh.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
 
 
 def method_of_folder(d) -> tuple:
