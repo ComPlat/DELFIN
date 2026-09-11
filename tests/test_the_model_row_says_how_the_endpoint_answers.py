@@ -105,3 +105,13 @@ def test_the_dashboard_probes_when_the_engine_is_built():
     assert 'get("probe_endpoint", True)' in body, "off with agent.probe_endpoint: false"
     assert 'if state.get("engine") is not engine:' in body, "a stale number must not be posted"
     assert "daemon=True" in body
+
+
+def test_a_probe_cut_by_a_stop_posts_nothing():
+    """Stop replaces the client's transport; a probe running on the old one
+    fails with our own error and must not report the endpoint as queueing."""
+    text = (pathlib.Path(__file__).resolve().parents[1]
+            / "delfin" / "dashboard" / "tab_agent.py").read_text(encoding="utf-8")
+    j = text.index("def _probe_endpoint_in_background(")
+    body = text[j:j + 3500]
+    assert 'getattr(getattr(engine, "client", None), "client", None) is not sdk' in body
