@@ -314,6 +314,7 @@ _STRIP_CSS = """
   background:#c8ccd4;
 }
 .delfin-session-dot.on { background:#4b9e5f; }
+.delfin-session-dot.failed { background:#d64545; }
 .delfin-session-link { line-height:0; text-decoration:none; }
 </style>
 """
@@ -348,6 +349,36 @@ def _strip_html(armed: bool, name: str, url: str) -> str:
         f'<span class="delfin-session-dot on" title="Kept as {name} &middot; '
         'return address unknown"></span></div>'
     )
+
+
+def _failed_strip_html(reason: str) -> str:
+    """The dot when the session could not be kept: red, and the reason
+    in its tooltip."""
+    safe = (reason or "unknown reason").replace('"', "&quot;")
+    return (
+        '<div class="delfin-session-strip">'
+        f'<span class="delfin-session-dot failed" title="Could not keep the '
+        f'session: {safe}"></span></div>'
+    )
+
+
+def announce_failure(name: str, reason: str) -> None:
+    """Say on the server's terminal that the session could NOT be kept."""
+    line = (
+        f"[delfin] Session \"{name}\" could NOT be kept: {reason or 'unknown reason'}\n"
+        f"         The return address would lead nowhere; fix the record "
+        f"directory and switch the toggle on again."
+    )
+    out = _server_stdout() if kernel_id() else None
+    if out is not None:
+        try:
+            with out:
+                out.write(line + "\n")
+                out.flush()
+            return
+        except OSError:
+            pass
+    print(line)
 
 
 def build_status_strip():
@@ -391,7 +422,17 @@ def build_status_strip():
         # and disarming has to remove it: a landing page that offers a
         # session which is gone is worse than one that offers nothing.
         if on:
-            write_record(name)
+            if not write_record(name) and last_write_error():
+                # Nothing to come back to: say so where the address
+                # would have been, and do not leave the control armed.
+                reason = last_write_error()
+                keep_alive(False, session_name=name)
+                # Disarm first: the observer re-enters with on=False and
+                # draws the grey dot, and the red one has to come after.
+                toggle.value = False
+                note.value = _failed_strip_html(reason)
+                announce_failure(name, reason)
+                return
         else:
             drop_record(name)
         note.value = _strip_html(on, name, resume_url(name) if on else "")
@@ -494,9 +535,14 @@ def write_record(name: str = "", *, root: str = "", kid: str = "") -> str:
     """
     import json
 
+    global _last_write_error
     who = name or session_name()
     ident = kid or kernel_id()
     if not who or not ident:
+        # Outside a kernel there is nothing to announce; that is not a
+        # failure of the record directory, and the control may still
+        # arm the in-memory state a test or a CLI looks at.
+        _last_write_error = ""
         return ""
     directory = root or RECORD_DIR
     try:
@@ -514,10 +560,30 @@ def write_record(name: str = "", *, root: str = "", kid: str = "") -> str:
         with open(tmp, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=1)
         os.replace(tmp, path)
-        os.chmod(path, 0o600)
-        return path
-    except OSError:
+    except OSError as exc:
+        # A record that could not be written used to fail in silence,
+        # and the control then announced a return address that led
+        # nowhere -- seen on a cluster on 2026-09-11, where the server
+        # found no record for a session the terminal had just called
+        # kept. The reason is kept for the announcement.
+        _last_write_error = f"{type(exc).__name__}: {exc} (record dir {directory})"
         return ""
+    try:
+        # Owner-only, but a file system that refuses the mode still has
+        # the record: the write is what counts.
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    _last_write_error = ""
+    return path
+
+
+_last_write_error = ""
+
+
+def last_write_error() -> str:
+    """Why the last write_record returned "", or "" when it succeeded."""
+    return _last_write_error
 
 
 def drop_record(name: str = "", *, root: str = "") -> bool:

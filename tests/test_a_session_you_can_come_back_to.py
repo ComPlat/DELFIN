@@ -540,3 +540,48 @@ def test_every_word_the_session_shows_is_english():
     for word in ("Sitzung", "Offen halten", "Läuft weiter", "zurück über",
                  "Adresse unbekannt", "wieder hineingehen", "bleibt bestehen"):
         assert word not in src, word
+
+
+# ---------------------------------------------------------------------------
+# A record that could not be written says so
+# ---------------------------------------------------------------------------
+
+def test_a_record_that_cannot_be_written_names_the_reason(monkeypatch, tmp_path):
+    """Seen on a cluster: the terminal said the session was kept and gave
+    a return address, the server found no record. write_record had
+    swallowed the OSError."""
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("x")                      # a file where the directory should be
+    monkeypatch.setattr(S, "RECORD_DIR", str(blocker / "kept_sessions"))
+    monkeypatch.setattr(S, "kernel_id", lambda: "aaaa1111-0000-4000-8000-000000000001")
+    assert S.write_record("uc3n990-ab12") == ""
+    why = S.last_write_error()
+    assert "Error" in why and str(blocker) in why
+
+
+def test_a_failed_chmod_does_not_lose_the_record(monkeypatch, tmp_path):
+    monkeypatch.setattr(S, "RECORD_DIR", str(tmp_path))
+    monkeypatch.setattr(S, "kernel_id", lambda: "aaaa1111-0000-4000-8000-000000000001")
+    monkeypatch.setattr(S.os, "chmod", lambda *a, **k: (_ for _ in ()).throw(OSError("no chmod here")))
+    path = S.write_record("uc3n990-ab12")
+    assert path and S.last_write_error() == ""
+    assert any(r["session_name"] == "uc3n990-ab12" for r in S.list_records(root=str(tmp_path)))
+
+
+def test_the_toggle_reports_a_failed_write_and_does_not_stay_armed(monkeypatch, tmp_path, capsys):
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("x")
+    monkeypatch.setattr(S, "RECORD_DIR", str(blocker / "kept_sessions"))
+    monkeypatch.setattr(S, "kernel_id", lambda: "")        # outside a kernel: print, not the server fd
+    monkeypatch.setattr(S, "write_record", lambda name: "")
+    monkeypatch.setattr(S, "last_write_error", lambda: "PermissionError: [Errno 13] (record dir /x)")
+    strip = S.build_status_strip()
+    toggle = next(w for w in strip.children if getattr(w, "description", "") == "Keep session")
+    note = next(w for w in strip.children if w.__class__.__name__ == "HTML" and 'class="delfin-session-strip"' in (w.value or ""))
+    toggle.value = True
+    assert toggle.value is False, "the control stayed armed with nothing on disk"
+    assert "delfin-session-dot failed" in note.value
+    assert "Could not keep the session" in note.value and "PermissionError" in note.value
+    assert not S.is_kept_alive()
+    out = capsys.readouterr().out
+    assert "could NOT be kept" in out and "PermissionError" in out
