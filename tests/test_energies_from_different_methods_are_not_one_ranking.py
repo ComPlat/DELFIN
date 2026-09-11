@@ -66,10 +66,14 @@ def _energies(ws):
 
 
 def _method_of(ws, name):
+    """(functional, basis, solvent) from the input's own keyword line. The
+    solvent is part of it: a CPCM run and a gas-phase run of the same
+    functional and basis are no more comparable than two functionals."""
     for path in (ws / "calc_archive").rglob(f"{name}/*.inp"):
         head = path.read_text(encoding="utf-8").splitlines()[0]
         parts = head.lstrip("! ").split()
-        return parts[0], parts[1]
+        solvent = next((p[5:-1] for p in parts if p.upper().startswith("CPCM(")), "")
+        return parts[0], parts[1], solvent
     raise AssertionError(name)
 
 

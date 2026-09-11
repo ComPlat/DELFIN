@@ -14,6 +14,8 @@ that can be searched by keyword or structured query.
 
 from __future__ import annotations
 
+import re
+
 import json
 import sys
 from datetime import datetime, timezone
@@ -270,37 +272,11 @@ def method_of_folder(d) -> tuple:
     -- so a parser that reads only the .out returns "", and every tool
     downstream then files the run under method None. The folder knows:
     DELFIN_Data.json first, then CONTROL.txt, then the .inp header, the
-    order the index itself uses.
+    order the index itself uses. See :func:`method_parts_of_folder` for
+    the solvent and dispersion that complete the method.
     """
-    import json as _json
-    from pathlib import Path as _P
-    d = _P(d)
-    functional = basis = None
-    try:
-        if (d / "DELFIN_Data.json").is_file():
-            rec = _extract_from_delfin_data(_json.loads((d / "DELFIN_Data.json").read_text(encoding="utf-8")))
-            functional = rec.get("functional") or None
-            basis = rec.get("basis_set") or None
-    except Exception:
-        pass
-    try:
-        if (not functional or not basis) and (d / "CONTROL.txt").is_file():
-            rec = _extract_from_control_txt((d / "CONTROL.txt").read_text(encoding="utf-8"))
-            basis = basis or rec.get("basis_set") or None
-            functional = functional or rec.get("functional") or None
-    except Exception:
-        pass
-    try:
-        if not functional or not basis:
-            for inp in sorted(d.glob("*.inp")):
-                rec = _extract_from_inp_header(inp.read_text(encoding="utf-8", errors="replace"))
-                functional = functional or rec.get("inp_functional") or None
-                basis = basis or rec.get("inp_basis") or None
-                if functional and basis:
-                    break
-    except Exception:
-        pass
-    return functional, basis
+    parts = method_parts_of_folder(d)
+    return parts["functional"], parts["basis"]
 
 
 def _outcome_of(completed, exit_code) -> str:
@@ -409,8 +385,98 @@ def _extract_from_inp_header(text: str) -> dict[str, Any]:
                     rec["inp_functional"] = kw
                 if kw_lower in _KNOWN_BASIS and "inp_basis" not in rec:
                     rec["inp_basis"] = kw
+                # Solvation and dispersion ride on the same line -- CPCM(DMF),
+                # SMD(water), D3BJ -- and they decide comparability as much
+                # as the functional does.
+                m = re.match(r"(cpcm|smd|cpcmc|alpb|ddcosmo)(?:\((.+)\))?$", kw_lower)
+                if m and "inp_solvation" not in rec:
+                    rec["inp_solvation"] = kw.split("(", 1)[0].upper()
+                    if m.group(2):
+                        rec["inp_solvent"] = kw[kw.index("(") + 1:-1]
+                if kw_lower in _KNOWN_DISPERSION and "inp_dispersion" not in rec:
+                    rec["inp_dispersion"] = kw.upper()
             break
     return rec
+
+
+_KNOWN_DISPERSION = frozenset({"d2", "d3", "d3bj", "d3zero", "d4", "d3(bj)", "d3(zero)"})
+_NO_SOLVENT = frozenset({"", "none", "no", "gas", "gasphase", "gas phase", "vacuum", "vac", "false", "off"})
+
+
+def _clean_solvent(value) -> str | None:
+    v = str(value or "").strip()
+    return None if v.lower() in _NO_SOLVENT else v
+
+
+def _clean_dispersion(value) -> str | None:
+    v = str(value or "").strip()
+    if v.lower() in ("", "none", "no", "false", "off"):
+        return None
+    return v.upper()
+
+
+def method_parts_of_folder(d) -> dict:
+    """functional, basis, dispersion and solvent from what the folder holds.
+
+    The four a total energy is only comparable within. Read in the order
+    the index uses -- DELFIN_Data.json, CONTROL.txt, the .inp header --
+    and each field from the first source that has it. A solvent of
+    "none" is the gas phase and comes back as None, so two gas-phase
+    runs compare and a CPCM run compares with neither.
+    """
+    import json as _json
+    from pathlib import Path as _P
+    d = _P(d)
+    parts: dict = {"functional": None, "basis": None, "solvent": None,
+                   "dispersion": None, "solvation": None}
+    seen_solvent = False
+    try:
+        if (d / "DELFIN_Data.json").is_file():
+            rec = _extract_from_delfin_data(_json.loads((d / "DELFIN_Data.json").read_text(encoding="utf-8")))
+            parts["functional"] = rec.get("functional") or None
+            parts["basis"] = rec.get("basis_set") or None
+            parts["dispersion"] = _clean_dispersion(rec.get("dispersion"))
+            if "solvent" in rec:
+                parts["solvent"] = _clean_solvent(rec.get("solvent"))
+                seen_solvent = True
+            parts["solvation"] = str(rec.get("solvation") or "").strip() or None
+    except Exception:
+        pass
+    try:
+        if (d / "CONTROL.txt").is_file():
+            text = (d / "CONTROL.txt").read_text(encoding="utf-8")
+            rec = _extract_from_control_txt(text)
+            kv: dict = {}
+            for line in text.splitlines():
+                line = line.strip()
+                if "=" in line and not line.startswith("#") and not line.startswith("-"):
+                    k, _, v = line.partition("=")
+                    kv[k.strip()] = v.strip()
+            parts["basis"] = parts["basis"] or rec.get("basis_set") or None
+            parts["functional"] = parts["functional"] or rec.get("functional") or None
+            if not seen_solvent and "solvent" in kv:
+                parts["solvent"] = _clean_solvent(kv.get("solvent"))
+                seen_solvent = True
+            parts["dispersion"] = parts["dispersion"] or _clean_dispersion(kv.get("dispersion_correction"))
+            parts["solvation"] = parts["solvation"] or (rec.get("solvation") or None)
+    except Exception:
+        pass
+    try:
+        if not parts["functional"] or not parts["basis"] or not seen_solvent or not parts["dispersion"]:
+            for inp in sorted(d.glob("*.inp")):
+                rec = _extract_from_inp_header(inp.read_text(encoding="utf-8", errors="replace"))
+                parts["functional"] = parts["functional"] or rec.get("inp_functional") or None
+                parts["basis"] = parts["basis"] or rec.get("inp_basis") or None
+                if not seen_solvent and ("inp_solvent" in rec or "inp_solvation" in rec):
+                    parts["solvent"] = _clean_solvent(rec.get("inp_solvent"))
+                    parts["solvation"] = parts["solvation"] or rec.get("inp_solvation")
+                    seen_solvent = True
+                parts["dispersion"] = parts["dispersion"] or _clean_dispersion(rec.get("inp_dispersion"))
+                if parts["functional"] and parts["basis"] and seen_solvent:
+                    break
+    except Exception:
+        pass
+    return parts
 
 
 def _is_yes(val: Any) -> bool:

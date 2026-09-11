@@ -670,6 +670,38 @@ def _state_of(outcome: str) -> str:
     return "unknown"
 
 
+def _scheduler_jobs_by_dir() -> dict:
+    """Live scheduler jobs keyed by their resolved directory. Empty when
+    no scheduler answers -- which says nothing about the folders."""
+    from pathlib import Path as _P
+    out: dict = {}
+    try:
+        for job in list_active_calculations():
+            d = str(job.get("directory") or "")
+            if d and not job.get("error"):
+                try:
+                    out[str(_P(d).resolve())] = job
+                except OSError:
+                    out[d] = job
+    except Exception:
+        pass
+    return out
+
+
+def _state_for(outcome: str, age_s, job=None) -> str:
+    """The one-word state the outcome phrase, the clock and the scheduler
+    agree on. A scheduler job on the folder settles "running"; without
+    one, a run with no exit code that has written nothing for
+    STALLED_AFTER_S is "stalled", not "running". The phrase keeps what
+    the files say; this is what the rest adds."""
+    if job is not None:
+        return "running"
+    state = _state_of(outcome)
+    if state == "running" and age_s is not None and age_s > STALLED_AFTER_S:
+        return "stalled"
+    return state
+
+
 def calculation_status(folder: str) -> CalculationStatus:
     """Succeeded, failed, running or not started -- with the evidence.
 
@@ -684,7 +716,7 @@ def calculation_status(folder: str) -> CalculationStatus:
     """
     from pathlib import Path as _P
     from delfin.doc_server.calc_indexer import (
-        _largest_output, _tail_text, method_of_folder, outcome_of_folder)
+        _largest_output, _tail_text, outcome_of_folder)
     import json as _json
     d = _P(folder)
     if not d.is_dir():
@@ -729,21 +761,31 @@ def calculation_status(folder: str) -> CalculationStatus:
         if inps:
             evidence.append({"source": inps[0].name, "says": "input present, no output"})
     outcome = outcome_of_folder(d)
-    functional, basis = method_of_folder(d)
-    state = _state_of(outcome)
+    parts = _method_parts(None, d)
     when, age = _last_activity(d)
     if when is not None:
         hours = (age or 0.0) / 3600.0
         evidence.append({"source": "newest file",
                          "says": f"last written {when} ({hours:.1f} h ago)"})
-    if state == "running" and age is not None and age > STALLED_AFTER_S:
-        # The files say "no exit code yet"; the clock says nothing has
-        # been written for hours. Both are reported: the outcome phrase
-        # keeps what the files say, the state says what the clock adds.
-        state = "stalled"
+    # The scheduler is the one witness that can say "running" outright.
+    # Its silence is not evidence -- a job started elsewhere is not in
+    # its list -- so an absent job changes nothing.
+    job = None
+    try:
+        job = _scheduler_jobs_by_dir().get(str(d.resolve()))
+    except OSError:
+        job = None
+    if job is not None:
+        evidence.append({"source": "scheduler",
+                         "says": f"job {job.get('job_id')} {job.get('status')}".strip()})
+    # The files say "no exit code yet"; the clock says whether anything
+    # is still being written; the scheduler says whether the job is
+    # alive. The outcome phrase keeps what the files say, the state
+    # says what the rest adds.
+    state = _state_for(outcome, age, job)
     return CalculationStatus(folder=str(d), state=state,
                              outcome=outcome,
-                             method=_method_label(functional, basis),
+                             method=_method_label(**parts),
                              evidence=evidence,
                              last_activity=when, last_activity_age_s=age)
 
@@ -834,18 +876,51 @@ def extract_thermochem(folder: str) -> ThermochemResult:
     return ThermochemResult(path=str(p))
 
 
-def _method_label(functional, basis) -> str | None:
-    """"PBE0/def2-SVP": the pair a total energy is only comparable within.
+def _method_label(functional, basis, solvent=None, dispersion=None) -> str | None:
+    """"PBE0-D3BJ/def2-SVP/DMF": what a total energy is only comparable within.
 
     Sorting a mixed archive by energy sorts it by functional -- every
     B3LYP run sits hundreds of kJ/mol below every PBE0 run, whatever the
     structure -- so a row without its method is a number waiting to be
     ranked against numbers it cannot be ranked against. Every row carries
     it, and the tools below never order rows across it.
+
+    The solvent and the dispersion correction are part of it. An implicit
+    solvent shifts a total energy by the solvation free energy, tens of
+    kJ/mol, and a different solvent by a few more; a dispersion correction
+    adds its own term. Two PBE0/def2-SVP runs, one in DMF and one in the
+    gas phase, are no more comparable than PBE0 and B3LYP -- and the
+    archive fixture the tools were driven over had exactly that pair
+    filed under one method (2026-09-11). Gas phase is the absence of a
+    solvent, not a solvent name, so it adds nothing to the label.
     """
     if not functional and not basis:
         return None
-    return f"{functional or '?'}/{basis or '?'}"
+    head = f"{functional or '?'}"
+    if dispersion:
+        head += f"-{dispersion}"
+    label = f"{head}/{basis or '?'}"
+    if solvent:
+        label += f"/{solvent}"
+    return label
+
+
+def _method_parts(parsed, folder) -> dict:
+    """functional, basis, solvent, dispersion: the output's own functional
+    and basis if it states them, everything else from the folder."""
+    parts = {"functional": getattr(parsed, "functional", None) or None,
+             "basis": getattr(parsed, "basis", None) or None,
+             "solvent": None, "dispersion": None}
+    try:
+        from delfin.doc_server.calc_indexer import method_parts_of_folder
+        found = method_parts_of_folder(folder)
+        parts["functional"] = parts["functional"] or found.get("functional")
+        parts["basis"] = parts["basis"] or found.get("basis")
+        parts["solvent"] = found.get("solvent")
+        parts["dispersion"] = found.get("dispersion")
+    except Exception:
+        pass
+    return parts
 
 
 def _method_of(parsed, folder) -> tuple:
@@ -876,7 +951,8 @@ def _outcome_of_folder(folder) -> str:
 
 #: What every grouped result says, so the rule travels with the data.
 METHOD_NOTE = (
-    "A total energy compares only within one method (functional AND basis). "
+    "A total energy compares only within one method: the same functional, "
+    "basis, dispersion correction and solvent (gas phase is not a solvent). "
     "Rows are grouped by method; groups are not ranked against each other."
 )
 
@@ -917,10 +993,11 @@ def extract_energy_table(
             continue
         out_files = sorted(p.glob("*.out"))
         if not out_files:
-            functional, basis = _method_of(None, p)
+            parts = _method_parts(None, p)
             row = {"folder": str(folder), "status": "no_output",
-                   "functional": functional, "basis": basis,
-                   "method": _method_label(functional, basis),
+                   "functional": parts["functional"], "basis": parts["basis"],
+                   "solvent": parts["solvent"], "dispersion": parts["dispersion"],
+                   "method": _method_label(**parts),
                    "outcome": _outcome_of_folder(p)}
             for prop in properties:
                 row[prop] = None
@@ -928,14 +1005,17 @@ def extract_energy_table(
             continue
         target = max(out_files, key=lambda f: f.stat().st_size)
         parsed = parse_orca_output(str(target))
-        functional, basis = _method_of(parsed, p)
+        parts = _method_parts(parsed, p)
+        functional, basis = parts["functional"], parts["basis"]
         row = {
             "folder": str(folder),
             "status": "ok",
             "output_file": target.name,
             "functional": functional,
             "basis": basis,
-            "method": _method_label(functional, basis),
+            "solvent": parts["solvent"],
+            "dispersion": parts["dispersion"],
+            "method": _method_label(**parts),
             "outcome": _outcome_of_folder(p),
         }
         for prop in properties:
@@ -960,11 +1040,23 @@ def extract_energy_table(
     # is what the files' contents can say; whether anything is still being
     # written is what their timestamps say, and a reader deciding between
     # the two needs the second.
+    jobs = _scheduler_jobs_by_dir()
+    from pathlib import Path as _P
     for row in rows:
         if row.get("status") == "missing":
             row["last_activity"], row["last_activity_age_s"] = None, None
+            row["state"] = "missing"
             continue
         row["last_activity"], row["last_activity_age_s"] = _last_activity(row["folder"])
+        try:
+            job = jobs.get(str(_P(row["folder"]).resolve()))
+        except OSError:
+            job = None
+        # One word beside the phrase, for the reader who asked "which of
+        # these is still running": succeeded / failed / finished /
+        # running / stalled / pending / unknown, by the same rule
+        # calc_status uses.
+        row["state"] = _state_for(str(row.get("outcome") or ""), row["last_activity_age_s"], job)
     return rows
 
 
@@ -1988,8 +2080,16 @@ class FunctionalComparisonRow:
     n_imag: int | None
     is_minimum: bool | None
     status: str  # "ok" / "no_output" / "missing" / parse-error
-    method: str | None = None   # "PBE0/def2-SVP": comparable only within
+    method: str | None = None   # "PBE0/def2-SVP/DMF": comparable only within
     sorted_by: str | None = None  # the key the order actually used
+    solvent: str | None = None
+    dispersion: str | None = None
+    # How the run ended and when its folder was last written: the same
+    # phrase extract_energy_table and calc_status give. "status" alone
+    # ("ok" / "no_output") left an operator unable to say whether a run
+    # was queued, running or crashed from this table.
+    outcome: str | None = None
+    last_activity_age_s: float | None = None
 
 
 def compare_across_functionals(
@@ -2014,6 +2114,7 @@ def compare_across_functionals(
                 folder=str(folder), functional=None, basis=None,
                 gibbs=None, single_point=None, zpe=None,
                 n_imag=None, is_minimum=None, status="missing",
+                outcome="unknown (folder missing)",
             ))
             continue
         out_files = sorted(p.glob("*.out"))
@@ -2021,12 +2122,16 @@ def compare_across_functionals(
             # No output yet is not no method: a running run has its
             # CONTROL.txt and .inp, and a comparison that drops it says
             # nothing about the run somebody is waiting for.
-            f0, b0 = _method_of(None, p)
+            parts0 = _method_parts(None, p)
+            f0, b0 = parts0["functional"], parts0["basis"]
             rows.append(FunctionalComparisonRow(
                 folder=str(folder), functional=f0, basis=b0,
                 gibbs=None, single_point=None, zpe=None,
                 n_imag=None, is_minimum=None, status="no_output",
-                method=_method_label(f0, b0),
+                method=_method_label(**parts0),
+                solvent=parts0["solvent"], dispersion=parts0["dispersion"],
+                outcome=_outcome_of_folder(p),
+                last_activity_age_s=_last_activity(p)[1],
             ))
             continue
         target = max(out_files, key=lambda f: f.stat().st_size)
@@ -2038,7 +2143,8 @@ def compare_across_functionals(
             if imag.error is None:
                 n_imag = imag.n_imag
                 is_min = imag.is_minimum
-        functional, basis = _method_of(parsed, p)
+        parts = _method_parts(parsed, p)
+        functional, basis = parts["functional"], parts["basis"]
         rows.append(FunctionalComparisonRow(
             folder=str(folder),
             functional=functional,
@@ -2049,7 +2155,10 @@ def compare_across_functionals(
             n_imag=n_imag,
             is_minimum=is_min,
             status="ok",
-            method=_method_label(functional, basis),
+            method=_method_label(**parts),
+            outcome=_outcome_of_folder(p),
+            last_activity_age_s=_last_activity(p)[1],
+            solvent=parts["solvent"], dispersion=parts["dispersion"],
         ))
 
     sort_field = sort_by.strip().lower()
@@ -2213,6 +2322,8 @@ _TOOL_CATALOG: list[dict] = [
     # delfin-ops — output parsing
     {"name": "parse_orca_output", "category": "parsing",
      "summary": "Snapshot ONE ORCA .out: energies, conv, freq, walltime."},
+    {"name": "calc_status", "category": "parsing",
+     "summary": "One folder: succeeded / failed / running / stalled, with the evidence."},
     {"name": "find_orca_errors", "category": "parsing",
      "summary": "Scan a folder's .out files for known error patterns."},
     {"name": "extract_thermochem", "category": "parsing",
