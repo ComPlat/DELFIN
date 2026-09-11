@@ -16550,6 +16550,10 @@ class OpenAIClient(_BaseClient):
     via OpenAI function calling.
     """
 
+    # This loop keeps its tool rounds in a request-local list; the engine
+    # copies them into the history after the turn (turn_history.py).
+    KEEPS_TOOL_HISTORY = True
+
     # reasoning_effort is read from self.effort on every request.
     EFFORT_PER_REQUEST = True
 
@@ -17051,10 +17055,18 @@ class OpenAIClient(_BaseClient):
             api_messages.append({"role": sys_role, "content": system})
 
         for msg in messages:
-            api_messages.append({
-                "role": msg["role"],
-                "content": msg["content"],
-            })
+            row = {"role": msg["role"], "content": msg["content"]}
+            # Tool rounds kept from earlier turns travel with their
+            # pairing keys, or the history is not sendable.
+            for key in ("tool_calls", "tool_call_id", "name"):
+                if msg.get(key) is not None:
+                    row[key] = msg[key]
+            api_messages.append(row)
+        # The rows this turn adds are read back by the engine once the
+        # stream has ended and kept in its history -- see
+        # AgentEngine._take_turn_rows and delfin.agent.turn_history.
+        self._turn_rows = api_messages
+        self._turn_rows_base = len(api_messages)
 
         # Check if doc/calc tools are available
         has_doc_tools = _doc_executor._ensure_loaded()
