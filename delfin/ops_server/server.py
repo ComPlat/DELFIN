@@ -403,6 +403,7 @@ def tool_plot_energy_distribution(
     plot_type: str = "histogram",
     title: str = "",
     bins: int = 30,
+    output_path: str = "",
 ) -> str:
     """Plot energy distributions across calculations and write a PNG.
 
@@ -426,6 +427,7 @@ def tool_plot_energy_distribution(
         plot_type: histogram | bar | boxplot | bar_by_method.
         title: figure title (auto-generated if empty).
         bins: histogram bin count (only used for plot_type=histogram).
+        output_path: where to write the PNG (default: the agent workspace).
     """
     from dataclasses import asdict as _asdict
     folder_list = [f.strip() for f in folders.split(",") if f.strip()]
@@ -435,8 +437,7 @@ def tool_plot_energy_distribution(
         properties=prop_list or None,
         plot_type=plot_type,
         title=title,
-        bins=int(bins),
-    )
+        bins=int(bins), output_path=output_path)
     return _dumps(_asdict(result))
 
 
@@ -1057,6 +1058,7 @@ def tool_plot_energy_correlation(
     x: str = "single_point",
     y: str = "gibbs",
     title: str = "",
+    output_path: str = "",
 ) -> str:
     """Scatter plot one energy property against another across folders.
 
@@ -1070,12 +1072,12 @@ def tool_plot_energy_correlation(
         x: gibbs | zpe | single_point.
         y: gibbs | zpe | single_point.
         title: figure title (auto-generated if empty).
+        output_path: where to write the PNG (default: the agent workspace).
     """
     from dataclasses import asdict as _asdict
     folder_list = [f.strip() for f in folders.split(",") if f.strip()]
     result = delfin_api.plot_energy_correlation(
-        folder_list, x=x, y=y, title=title,
-    )
+        folder_list, x=x, y=y, title=title, output_path=output_path)
     return _dumps(_asdict(result))
 
 
@@ -1084,6 +1086,7 @@ def tool_plot_orbital_diagram(
     n_below: int = 5,
     n_above: int = 5,
     title: str = "",
+    output_path: str = "",
 ) -> str:
     """Render an MO level diagram around HOMO/LUMO; PNG → workspace.
 
@@ -1097,13 +1100,13 @@ def tool_plot_orbital_diagram(
         n_below: occupied orbitals to show below HOMO (default 5).
         n_above: virtuals above LUMO (default 5).
         title: optional figure title.
+        output_path: where to write the PNG (default: the agent workspace).
     """
     import json as _json
     from dataclasses import asdict as _asdict
     return _json.dumps(
         _asdict(delfin_api.plot_orbital_diagram(
-            folder, n_below=n_below, n_above=n_above, title=title,
-        )),
+            folder, n_below=n_below, n_above=n_above, title=title, output_path=output_path)),
         separators=(",", ":"),
     )
 
@@ -1111,19 +1114,20 @@ def tool_plot_orbital_diagram(
 def tool_plot_optimization_convergence(
     folder: str,
     title: str = "",
+    output_path: str = "",
 ) -> str:
     """Render energy + ΔE per cycle for an Opt run; PNG → workspace.
 
     Two panels: absolute energy (Eh) and ΔE (kcal/mol on symlog).
     Title carries the converged/not-converged status. Direct answer
     to 'why did the optimization take 50 steps?'.
+        output_path: where to write the PNG (default: the agent workspace).
     """
     import json as _json
     from dataclasses import asdict as _asdict
     return _json.dumps(
         _asdict(delfin_api.plot_optimization_convergence(
-            folder, title=title,
-        )),
+            folder, title=title, output_path=output_path)),
         separators=(",", ":"),
     )
 
@@ -1135,6 +1139,7 @@ def tool_plot_uvvis_spectrum(
     wavelength_max: float = 800.0,
     n_points: int = 1000,
     title: str = "",
+    output_path: str = "",
 ) -> str:
     """Gaussian-broadened UV/Vis from TDDFT; PNG → workspace.
 
@@ -1147,6 +1152,7 @@ def tool_plot_uvvis_spectrum(
         wavelength_min, wavelength_max: plot window in nm.
         n_points: convolution grid resolution.
         title: optional figure title.
+        output_path: where to write the PNG (default: the agent workspace).
     """
     import json as _json
     from dataclasses import asdict as _asdict
@@ -1157,8 +1163,7 @@ def tool_plot_uvvis_spectrum(
             wavelength_min=wavelength_min,
             wavelength_max=wavelength_max,
             n_points=n_points,
-            title=title,
-        )),
+            title=title, output_path=output_path)),
         separators=(",", ":"),
     )
 
@@ -1167,6 +1172,7 @@ def tool_plot_scf_convergence(
     folder: str,
     cycle_index: int = -1,
     title: str = "",
+    output_path: str = "",
 ) -> str:
     """Plot SCF iteration curves (energy vs iteration); PNG → workspace.
 
@@ -1175,14 +1181,14 @@ def tool_plot_scf_convergence(
     Default = -1 (treat as None → all cycles overlaid).
 
     Direct answer to 'why does the SCF not converge?'.
+        output_path: where to write the PNG (default: the agent workspace).
     """
     import json as _json
     from dataclasses import asdict as _asdict
     ci = None if int(cycle_index) < 0 else int(cycle_index)
     return _json.dumps(
         _asdict(delfin_api.plot_scf_convergence(
-            folder, cycle_index=ci, title=title,
-        )),
+            folder, cycle_index=ci, title=title, output_path=output_path)),
         separators=(",", ":"),
     )
 
@@ -1191,6 +1197,7 @@ def tool_plot_population_charges(
     folder: str,
     method: str = "mulliken",
     title: str = "",
+    output_path: str = "",
 ) -> str:
     """Bar chart of atomic charges (Mulliken or Loewdin); PNG → workspace.
 
@@ -1198,13 +1205,13 @@ def tool_plot_population_charges(
         folder: absolute path to a calc folder.
         method: 'mulliken' (default) or 'loewdin'.
         title: optional figure title.
+        output_path: where to write the PNG (default: the agent workspace).
     """
     import json as _json
     from dataclasses import asdict as _asdict
     return _json.dumps(
         _asdict(delfin_api.plot_population_charges(
-            folder, method=method, title=title,
-        )),
+            folder, method=method, title=title, output_path=output_path)),
         separators=(",", ":"),
     )
 
@@ -1216,6 +1223,7 @@ def tool_plot_vibrational_spectrum(
     freq_max: float = 4000.0,
     n_points: int = 1500,
     title: str = "",
+    output_path: str = "",
 ) -> str:
     """Lorentzian-broadened IR spectrum from full mode list; PNG.
 
@@ -1228,6 +1236,7 @@ def tool_plot_vibrational_spectrum(
         freq_min, freq_max: window in cm-1 (default 0-4000).
         n_points: convolution grid resolution.
         title: optional figure title.
+        output_path: where to write the PNG (default: the agent workspace).
     """
     import json as _json
     from dataclasses import asdict as _asdict
@@ -1238,8 +1247,7 @@ def tool_plot_vibrational_spectrum(
             freq_min=freq_min,
             freq_max=freq_max,
             n_points=n_points,
-            title=title,
-        )),
+            title=title, output_path=output_path)),
         separators=(",", ":"),
     )
 

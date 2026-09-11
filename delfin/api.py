@@ -4736,6 +4736,7 @@ def plot_orbital_diagram(
     n_below: int = 5,
     n_above: int = 5,
     title: str = "",
+    output_path: str = "",
 ) -> PlotResult:
     """Render an orbital-energy level diagram around HOMO/LUMO.
 
@@ -4803,7 +4804,7 @@ def plot_orbital_diagram(
         ax.set_title(f"Orbital diagram ({_short_folder_label(folder)}){gap_str}")
     fig.tight_layout()
 
-    out = _new_workspace_png_path("orbitals")
+    out = Path(output_path) if output_path else _new_workspace_png_path("orbitals")
     fig.savefig(out, dpi=150)
     plt.close(fig)
     return PlotResult(
@@ -4824,6 +4825,7 @@ def plot_optimization_convergence(
     folder: str,
     *,
     title: str = "",
+    output_path: str = "",
 ) -> PlotResult:
     """Render an optimization-convergence plot (energy vs. cycle).
 
@@ -4875,7 +4877,7 @@ def plot_optimization_convergence(
         fontsize=11,
     )
     fig.tight_layout()
-    out = _new_workspace_png_path("opt_conv")
+    out = Path(output_path) if output_path else _new_workspace_png_path("opt_conv")
     fig.savefig(out, dpi=150)
     plt.close(fig)
     return PlotResult(
@@ -4899,6 +4901,7 @@ def plot_uvvis_spectrum(
     wavelength_max: float = 800.0,
     n_points: int = 1000,
     title: str = "",
+    output_path: str = "",
 ) -> PlotResult:
     """Render a Gaussian-broadened UV/Vis spectrum from TDDFT output.
 
@@ -4948,7 +4951,7 @@ def plot_uvvis_spectrum(
            f"— FWHM = {fwhm_nm:.0f} nm",
     )
     fig.tight_layout()
-    out = _new_workspace_png_path("uvvis")
+    out = Path(output_path) if output_path else _new_workspace_png_path("uvvis")
     fig.savefig(out, dpi=150)
     plt.close(fig)
     return PlotResult(
@@ -4970,6 +4973,7 @@ def plot_scf_convergence(
     *,
     cycle_index: int | None = None,
     title: str = "",
+    output_path: str = "",
 ) -> PlotResult:
     """Plot SCF iteration energy curves for the convergence diagnostic.
 
@@ -5026,7 +5030,7 @@ def plot_scf_convergence(
         fontsize=11,
     )
     fig.tight_layout()
-    out = _new_workspace_png_path("scf_conv")
+    out = Path(output_path) if output_path else _new_workspace_png_path("scf_conv")
     fig.savefig(out, dpi=150)
     plt.close(fig)
     return PlotResult(
@@ -5051,6 +5055,7 @@ def plot_population_charges(
     *,
     method: str = "mulliken",
     title: str = "",
+    output_path: str = "",
 ) -> PlotResult:
     """Bar chart of atomic charges (Mulliken or Loewdin).
 
@@ -5092,7 +5097,7 @@ def plot_population_charges(
         fontsize=11,
     )
     fig.tight_layout()
-    out = _new_workspace_png_path(f"charges_{method_clean}")
+    out = Path(output_path) if output_path else _new_workspace_png_path(f"charges_{method_clean}")
     fig.savefig(out, dpi=150)
     plt.close(fig)
     return PlotResult(
@@ -5118,6 +5123,7 @@ def plot_vibrational_spectrum(
     freq_max: float = 4000.0,
     n_points: int = 1500,
     title: str = "",
+    output_path: str = "",
 ) -> PlotResult:
     """Render an IR vibrational spectrum from full mode list + IR intensity.
 
@@ -5176,7 +5182,7 @@ def plot_vibrational_spectrum(
         fontsize=11,
     )
     fig.tight_layout()
-    out = _new_workspace_png_path("ir_spectrum")
+    out = Path(output_path) if output_path else _new_workspace_png_path("ir_spectrum")
     fig.savefig(out, dpi=150)
     plt.close(fig)
     return PlotResult(
