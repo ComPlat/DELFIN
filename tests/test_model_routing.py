@@ -120,8 +120,8 @@ def test_unavailable_candidate_falls_back_to_user():
 def test_candidate_in_live_list_is_used():
     d = route_model(provider="kit", user_model="M", complexity="simple",
                     settings=_ON,
-                    available_models=["M", "azure.gpt-5-nano"])
-    assert d.model == "azure.gpt-5-nano" and d.routed
+                    available_models=["M", "kit.deepseek-v4-flash"])
+    assert d.model == "kit.deepseek-v4-flash" and d.routed
 
 
 def test_dashboard_feeds_available_models_into_routing():
@@ -136,9 +136,9 @@ def test_dashboard_feeds_available_models_into_routing():
 
 
 def test_same_as_user_model_is_not_reported_as_routed():
-    d = route_model(provider="kit", user_model="azure.gpt-5-nano",
+    d = route_model(provider="kit", user_model="kit.deepseek-v4-flash",
                     complexity="simple", settings=_ON)
-    assert d.model == "azure.gpt-5-nano" and d.routed is False
+    assert d.model == "kit.deepseek-v4-flash" and d.routed is False
 
 
 # ---------------------------------------------------------------------------
@@ -151,3 +151,9 @@ def test_routing_settings_default_present_and_disabled():
     assert routing["enabled"] is False
     assert routing["strong_model"] == ""
     assert routing["cheap_model"] == ""
+
+
+def test_the_cheap_tier_at_kit_is_deepseek():
+    """The toolbox bills nothing, so cheap means fast: a read-only
+    subagent of a DeepSeek session must not end up on azure.gpt-5-nano."""
+    assert tier_model("kit", "cheap") == "kit.deepseek-v4-flash"

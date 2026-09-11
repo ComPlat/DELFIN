@@ -28,10 +28,18 @@ from dataclasses import dataclass
 
 # Built-in per-provider tier defaults.  Adding a provider = adding a row.
 # These are FALLBACKS — settings["agent"]["routing"] overrides them.
+#
+# KIT's cheap tier is DeepSeek V4 Flash, not azure.gpt-5-nano: the
+# toolbox bills nothing either way, so "cheap" there means fast and
+# free of the GLM queue -- and a read-only subagent spawned from a
+# DeepSeek session stayed on a model the user never picked (the run
+# itself said "ran on azure.gpt-5-nano"). With DeepSeek as the tier, a
+# DeepSeek parent keeps its model and a GLM parent's subagents skip the
+# queue.
 _PROVIDER_TIERS: dict[str, dict[str, str]] = {
     "claude": {"strong": "sonnet",         "cheap": "haiku"},
     "openai": {"strong": "gpt-5.4",        "cheap": "gpt-5.4-mini"},
-    "kit":    {"strong": "azure.gpt-5.4",  "cheap": "azure.gpt-5-nano"},
+    "kit":    {"strong": "azure.gpt-5.4",  "cheap": "kit.deepseek-v4-flash"},
     "ollama": {"strong": "qwen3-coder:32b", "cheap": "qwen2.5-coder:7b"},
 }
 
