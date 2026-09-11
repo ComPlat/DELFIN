@@ -207,7 +207,8 @@ _NOT_CARRIED = {
     "_claim_guard_active", "_claim_guard_corrected", "_exec_pending",
     "_trace_pending", "_turn_in_flight", "_turn_start_cost",
     "_cost_cap_hit", "_cost_cap_value", "_ambiguous_columns_turn",
-    "_truncated_tools_turn", "_stop_requested", "_steering_delivered",
+    "_truncated_tools_turn", "_turn_steers", "_stop_requested",
+    "_steering_delivered",
     "_steering_refreshes",
     #    Whether this SESSION has already been told that the first turn on
     #    a slow-starting model takes minutes. Not carried: a resumed
