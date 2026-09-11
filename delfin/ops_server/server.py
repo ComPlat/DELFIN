@@ -506,7 +506,8 @@ def tool_plot_energy_distribution(
     - bar_by_method — one bar per folder, grouped and coloured by method
       (functional/dispersion/basis/solvent): the figure for "which run is
       lowest", since a total energy compares only within a method.
-      statistics carries the lowest per group and the excluded folders.
+      statistics carries every bar as a row {folder, method, value}, the
+      lowest per group, and the excluded folders.
 
     Output PNG lands in agent_workspace/ where the dashboard's inline-
     artifact hook displays it in the chat automatically. Returns JSON

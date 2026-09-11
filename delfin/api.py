@@ -4746,6 +4746,16 @@ def plot_energy_distribution(
                 "lowest": _short_folder_label(block[0]["folder"]),
                 "lowest_value": float(block[0][prop]),
             }
+            # Every bar, named: the figure's own table, so the reader can
+            # quote a value with its folder and method without going back
+            # to the energy table. Asked for after the first typed figure
+            # was drawn live (2026-09-11).
+            for r in block:
+                statistics.setdefault("rows", []).append({
+                    "folder": _short_folder_label(r["folder"]),
+                    "method": m,
+                    prop: float(r[prop]),
+                })
         fig, ax = plt.subplots(figsize=(max(6, len(xs) * 0.5 + 2), 5))
         ax.bar(xs, vals, color=colours, width=0.8)
         ax.set_xticks(xs)
