@@ -64,7 +64,7 @@ def _perms():
 ])
 def test_a_secret_path_inside_quotes_is_seen(cmd):
     executor = A._DocToolExecutor.__new__(A._DocToolExecutor)
-    assert executor._scan_bash_for_secrets(cmd, _perms()), cmd
+    assert executor._bash_denied_path(cmd, _perms()), cmd
 
 
 @pytest.mark.parametrize("cmd", [
@@ -74,7 +74,7 @@ def test_a_secret_path_inside_quotes_is_seen(cmd):
 ])
 def test_ordinary_commands_are_not_flagged(cmd):
     executor = A._DocToolExecutor.__new__(A._DocToolExecutor)
-    assert not executor._scan_bash_for_secrets(cmd, _perms()), cmd
+    assert not executor._bash_denied_path(cmd, _perms()), cmd
 
 
 # ---------------------------------------------------------------------------
