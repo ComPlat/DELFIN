@@ -353,6 +353,7 @@ _COERCE: dict[str, type] = {
     "max_tool_rounds": int,
     "tool_result_cap_kb": int,
     "stale_kill_after_s": float,
+    "all_prompt_modules": bool,
 }
 
 _OVERRIDES_CACHE: tuple[float, dict] | None = None
