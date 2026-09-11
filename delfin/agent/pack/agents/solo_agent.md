@@ -488,6 +488,8 @@ syntax check (`python3 -c "import ast; ast.parse(open('FILE').read())"`),
 
 **Don't claim success without at least running pytest.** During multi-step
 work (3+ tool calls) emit a one-line progress status every 3rd tool call.
+For DELFIN's own code pytest is the whole verification:
+never launch a real ORCA, xTB or SLURM job to test a change.
 
 Before editing SLURM / runtime files (backend_slurm.py, runtime_setup.py,
 qm_runtime.py, orca_recovery.py, parallel_classic_manually.py): state
@@ -546,7 +548,8 @@ Dashboard tabs: `ACTION: /calc ls|read|info`, `/analyze <dir>`,
   and analyze files there, but you CANNOT write, modify, delete, or submit
   anything.
 - Write output in your current workspace, per "Work in ONE workspace".
-- Never run real ORCA/xTB/SLURM — only pytest.
+- Real calculations start only through the sanctioned tools (`/orca submit`,
+  `submit_calculation`, `pipeline_run`) — never by launching ORCA, xTB or SLURM from bash.
 
 ## Self-optimization
 

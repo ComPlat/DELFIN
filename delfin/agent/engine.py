@@ -6269,6 +6269,15 @@ class AgentEngine:
         from delfin.agent.outcome_tracker import CycleOutcome, append_outcome
         from delfin.agent.provider_profile import update_from_outcome
 
+        # A correction turn the verifier sent is not a task the user gave.
+        # Recorded as one, it went into the history as a FAILED task whose
+        # text was the verifier's own sentence -- "[Verify] The following
+        # physical quantities were stated without any evidence ..." -- and
+        # the briefing then quoted that sentence back into later prompts
+        # as a lesson from the user's past. Found in the user's real
+        # history on 2026-09-11.
+        if str(user_task or "").lstrip().startswith("[Verify]"):
+            return {}
         duration = 0.0
         if start_time:
             import time
