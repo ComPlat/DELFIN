@@ -2266,7 +2266,12 @@ _MCP_READONLY_TOOL_BASES: frozenset[str] = frozenset({
     # --- DELFIN ops server: checks ---
     "qm_check", "csp_check", "mlp_check", "analysis_check", "stop_dry_run",
     # --- DELFIN ops server: output parsing (reads .out files) ---
-    "parse_orca_output", "find_orca_errors", "extract_thermochem",
+    # A tool the ops server registers as read-only but that is missing
+    # here is refused in default mode with "no approval dialog
+    # configured" -- calc_status shipped that way for one night, and an
+    # operator called it a red herring in the catalogue. A test now
+    # holds this list and the server's read-only block together.
+    "parse_orca_output", "calc_status", "find_orca_errors", "extract_thermochem",
     "extract_energy_table", "find_calculation_extreme",
     "extract_imaginary_frequencies", "extract_orbital_energies",
     "extract_excited_states", "extract_dipole",

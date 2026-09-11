@@ -2030,6 +2030,12 @@ class FunctionalComparisonRow:
     sorted_by: str | None = None  # the key the order actually used
     solvent: str | None = None
     dispersion: str | None = None
+    # How the run ended and when its folder was last written: the same
+    # phrase extract_energy_table and calc_status give. "status" alone
+    # ("ok" / "no_output") left an operator unable to say whether a run
+    # was queued, running or crashed from this table.
+    outcome: str | None = None
+    last_activity_age_s: float | None = None
 
 
 def compare_across_functionals(
@@ -2054,6 +2060,7 @@ def compare_across_functionals(
                 folder=str(folder), functional=None, basis=None,
                 gibbs=None, single_point=None, zpe=None,
                 n_imag=None, is_minimum=None, status="missing",
+                outcome="unknown (folder missing)",
             ))
             continue
         out_files = sorted(p.glob("*.out"))
@@ -2069,6 +2076,8 @@ def compare_across_functionals(
                 n_imag=None, is_minimum=None, status="no_output",
                 method=_method_label(**parts0),
                 solvent=parts0["solvent"], dispersion=parts0["dispersion"],
+                outcome=_outcome_of_folder(p),
+                last_activity_age_s=_last_activity(p)[1],
             ))
             continue
         target = max(out_files, key=lambda f: f.stat().st_size)
@@ -2093,6 +2102,8 @@ def compare_across_functionals(
             is_minimum=is_min,
             status="ok",
             method=_method_label(**parts),
+            outcome=_outcome_of_folder(p),
+            last_activity_age_s=_last_activity(p)[1],
             solvent=parts["solvent"], dispersion=parts["dispersion"],
         ))
 
@@ -2257,6 +2268,8 @@ _TOOL_CATALOG: list[dict] = [
     # delfin-ops — output parsing
     {"name": "parse_orca_output", "category": "parsing",
      "summary": "Snapshot ONE ORCA .out: energies, conv, freq, walltime."},
+    {"name": "calc_status", "category": "parsing",
+     "summary": "One folder: succeeded / failed / running / stalled, with the evidence."},
     {"name": "find_orca_errors", "category": "parsing",
      "summary": "Scan a folder's .out files for known error patterns."},
     {"name": "extract_thermochem", "category": "parsing",
