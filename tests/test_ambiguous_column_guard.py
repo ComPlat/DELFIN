@@ -110,7 +110,7 @@ def test_the_caveat_names_the_column_and_the_reason():
     caveat = vg.ambiguous_column_caveat(["Anschaffungswert"])
     assert "Anschaffungswert" in caveat
     assert "8.986" in caveat
-    assert "nicht gemessen" in caveat
+    assert "not a measurement" in caveat
 
 
 def test_no_columns_no_caveat():
@@ -164,10 +164,10 @@ def test_the_caveat_lands_in_the_answer_and_the_transcript():
     eng.messages[-1]["content"] = answer
     flagged = eng._scan_ambiguous_column_totals(answer)
     out = eng._append_ambiguous_column_caveat(answer, flagged)
-    assert "nicht gemessen" in out
+    assert "not a measurement" in out
     # Also in the message the next turn will read, so the claim does not
     # stand bare in the history.
-    assert "nicht gemessen" in eng.messages[-1]["content"]
+    assert "not a measurement" in eng.messages[-1]["content"]
 
 
 def test_a_good_answer_is_returned_untouched():
@@ -278,7 +278,7 @@ def test_a_flagged_column_caveats_the_answer_of_that_turn(agent_tree):
     engine = _two_turn_engine(agent_tree, (_ambiguity_event(),))
     answer = engine.stream_response("Was ist der Gesamtwert?")
     assert engine._ambiguous_columns_turn == ["Anschaffungswert"]
-    assert "nicht gemessen" in answer
+    assert "not a measurement" in answer
 
 
 def test_the_next_turn_does_not_inherit_the_flag(agent_tree):
@@ -286,12 +286,12 @@ def test_the_next_turn_does_not_inherit_the_flag(agent_tree):
     caveat on a figure that is fine teaches the reader to skip caveats."""
     engine = _two_turn_engine(agent_tree, (_ambiguity_event(),))
     first = engine.stream_response("Was ist der Gesamtwert?")
-    assert "nicht gemessen" in first, "turn one never armed the ledger"
+    assert "not a measurement" in first, "turn one never armed the ledger"
 
     second = engine.stream_response("Und wie viele Positionen sind es?")
     assert engine._ambiguous_columns_turn == [], (
         "the ledger survived into a turn that was told nothing")
-    assert "nicht gemessen" not in second, (
+    assert "not a measurement" not in second, (
         "an answer of a turn with no undecidable column was caveated anyway")
 
 
@@ -299,7 +299,7 @@ def test_a_turn_that_flags_nothing_caveats_nothing(agent_tree):
     """The control: without the reader's note there is no caveat at all,
     so the assertion above is about the reset and not about the text."""
     engine = _two_turn_engine(agent_tree, ())
-    assert "nicht gemessen" not in engine.stream_response("Gesamtwert?")
+    assert "not a measurement" not in engine.stream_response("Gesamtwert?")
 
 
 def test_a_total_that_never_names_the_column_is_a_known_gap():
