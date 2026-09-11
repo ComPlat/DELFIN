@@ -177,6 +177,9 @@ class CLIClient(_BaseClient):
         CLI permission mode (``"default"``, ``"acceptEdits"``, etc.).
     """
 
+    # The level is a subprocess flag, fixed when the process starts.
+    EFFORT_PER_REQUEST = False
+
     DEFAULT_MODEL = "sonnet"
     supplies_session_id = True          # emits a session_init event
 
@@ -640,6 +643,9 @@ class APIClient(_BaseClient):
     Supports text streaming, extended thinking, tool_use events,
     cost tracking, and model switching.
     """
+
+    # The thinking budget is derived per turn from the session's level.
+    EFFORT_PER_REQUEST = True
 
     DEFAULT_MODEL = "claude-sonnet-4-20250514"
 
@@ -16265,6 +16271,33 @@ def _is_stream_unsupported_error(exc: Exception) -> bool:
 # bad request. On Jerome's long KIT runs (vLLM behind an Open-WebUI proxy) a
 # single 503/timeout shouldn't kill the whole turn; it's worth a brief retry.
 _STREAM_RETRY_MAX = 3
+
+# A request that produced no byte for this long was not a hiccup: the KIT
+# gateway answers 504 at 600 s when the model has not started, and the
+# SDK's own read timeout is 600 s. Measured 2026-09-11 with a 12.6k-token
+# prompt at low effort. Retrying such a request joins the queue again.
+_ZERO_BYTE_CUT_S = 300.0
+
+
+def _retry_notice(exc_name: str, elapsed_s: float, had_partial: bool,
+                  attempt: int, max_attempts: int, delay_s: float) -> str:
+    """What the user reads when a round is retried.
+
+    The one line used to be "Transient API error; retrying", whether the
+    connection dropped mid-answer or the endpoint never started. The
+    second case is the ten-minute wait, and it is named as such: the
+    retry does not shorten it, it queues again.
+    """
+    tail = f"{attempt}/{max_attempts} in {delay_s:.0f}s"
+    if had_partial:
+        return (f"\n⏳ Transient API error ({exc_name}); retrying {tail}"
+                " — connection lost mid-answer, the reply restarts below…\n")
+    if elapsed_s >= _ZERO_BYTE_CUT_S:
+        return (f"\n⏳ No byte from the endpoint in {elapsed_s:.0f} s "
+                f"({exc_name}): it cut the request before the model started. "
+                f"Retrying {tail} joins its queue again; a different model "
+                "answers sooner…\n")
+    return f"\n⏳ Transient API error ({exc_name}); retrying {tail}…\n"
 _TRANSIENT_API_STATUS = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
 _TRANSIENT_NAME_HINTS = (
     "timeout", "connection", "ratelimit", "internalserver",
@@ -16512,6 +16545,9 @@ class OpenAIClient(_BaseClient):
     Supports text streaming, cost tracking, and local doc-search tools
     via OpenAI function calling.
     """
+
+    # reasoning_effort is read from self.effort on every request.
+    EFFORT_PER_REQUEST = True
 
     DEFAULT_MODEL = "gpt-4.1"
 
@@ -17622,6 +17658,7 @@ class OpenAIClient(_BaseClient):
             _round_in = 0
 
             finish_reason = None
+            _round_t0 = time.monotonic()
             try:
                 stream = self.client.chat.completions.create(**kwargs)
                 try:
@@ -17703,13 +17740,10 @@ class OpenAIClient(_BaseClient):
                         finish_reason = None
                         _stream_attempt += 1
                         _delay = min(1.5 * (2 ** (_stream_attempt - 1)), 12.0)
-                        _note = (" — connection lost mid-answer, the reply "
-                                 "restarts below" if _had_partial else "")
-                        yield StreamEvent(type="notice", text=(
-                            f"\n⏳ Transient API error "
-                            f"({type(_stream_exc).__name__}); retrying "
-                            f"{_stream_attempt}/{_STREAM_RETRY_MAX} in "
-                            f"{_delay:.0f}s{_note}…\n"))
+                        yield StreamEvent(type="notice", text=_retry_notice(
+                            type(_stream_exc).__name__,
+                            time.monotonic() - _round_t0, _had_partial,
+                            _stream_attempt, _STREAM_RETRY_MAX, _delay))
                         time.sleep(_delay)
                         continue
                     # Context-window overflow is deterministic — retrying the

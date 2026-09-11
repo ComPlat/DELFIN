@@ -146,7 +146,9 @@ def test_a_session_from_a_newer_schema_is_reported_not_raised(store):
     eng = _engine()
     with pytest.raises(_ss.SessionSchemaError):
         eng.restore_state({"schema_version": _ss.SESSION_SCHEMA_VERSION + 1})
-    body = _SRC.split("engine.restore_state(", 1)[1][:600]
+    # The loader hands the file over through the one restore site; the
+    # refusal is reported where the loader calls it.
+    body = _SRC.split("_hand_state_to(engine, data, mode=saved_mode", 1)[1][:600]
     assert "except Exception" in body and "Session not restored" in body
 
 

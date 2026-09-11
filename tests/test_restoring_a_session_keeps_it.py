@@ -81,15 +81,17 @@ def test_the_restore_still_applies_the_saved_selection():
 
 def test_the_old_client_is_killed_before_the_selector_moves():
     body = _body("_on_provider_change", _source())
-    kill_at = body.index("engine.client.kill()")
+    kill_at = body.index("_drop_engine()")
     set_at = body.index("model_dropdown.value =")
     assert kill_at < set_at, (
         "setting the model selector drops the engine reference first, so "
         "the kill sees None and the subprocess leaks")
+    drop = _body("_drop_engine", _source())
+    assert "engine.client.kill()" in drop
 
 
 def test_a_failing_kill_does_not_break_the_switch():
-    body = _body("_on_provider_change", _source())
+    body = _body("_drop_engine", _source())
     window = body[body.index("engine.client.kill()") - 200:
                   body.index("engine.client.kill()") + 200]
     assert "except Exception" in window
