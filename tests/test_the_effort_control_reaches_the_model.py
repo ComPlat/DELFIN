@@ -101,7 +101,7 @@ def test_the_parameter_rides_beside_max_tokens_not_instead_of_it():
 
     src = inspect.getsource(api_client.OpenAIClient.stream_message)
     i = src.index('kwargs["max_tokens"] = max_tokens')
-    tail = src[i:i + 1900]
+    tail = src[i:i + 2400]
     assert "_reasoning_effort_param(" in tail
     # The assignment, not the word: the comment beside it names the Azure
     # spelling in order to say why this branch does not use it.
@@ -151,9 +151,12 @@ def test_the_dashboard_starts_from_the_models_profile_default():
     assert _effort_for_model("kit.glm-5.3", "") == "low"
 
 
-def test_a_saved_choice_wins_over_the_profile():
+def test_a_saved_choice_wins_over_the_profile_up_to_the_models_ceiling():
     from delfin.dashboard.tab_agent import _effort_for_model
-    assert _effort_for_model("kit.glm-5.3", "high") == "high"
+    assert _effort_for_model("kit.deepseek-v4-flash", "high") == "high"
+    # GLM stops at medium: above it the level buys minutes, not answers.
+    assert _effort_for_model("kit.glm-5.3", "high") == "medium"
+    assert _effort_for_model("kit.glm-5.3", "low") == "low"
     assert _effort_for_model("kit.glm-5.3", "nonsense") == "low"
 
 
@@ -168,6 +171,6 @@ def test_the_model_change_follows_the_profile_and_a_sync_is_not_a_choice():
     text = (Path(__file__).resolve().parents[1] / "delfin" / "dashboard" / "tab_agent.py").read_text(encoding="utf-8")
     i = text.index("def _on_model_change(change):")
     body = text[i:i + 3000]
-    assert "_effort_for_model(change[\"new\"], \"\")" in body
+    assert "_effort_for_model(change[\"new\"], chosen_effort)" in body
     j = text.index("def _on_effort_change(change):")
     assert "_controls_sync_internal" in text[j:j + 400]

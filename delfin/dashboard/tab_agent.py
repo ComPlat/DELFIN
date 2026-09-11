@@ -76,6 +76,28 @@ def _effort_above_profile_note(model: str, effort: str) -> str:
             "stays otherwise.")
 
 
+_EFFORT_LABELS = {"low": "Low", "medium": "Medium", "high": "High", "xhigh": "Extra High"}
+
+
+def _effort_options_for_model(model: str) -> list[tuple[str, str]]:
+    """The dropdown's options for *model*: only the levels its profile
+    says it can use, the profile default marked. GLM offers low and
+    medium; a level that buys minutes and no answers is not on offer."""
+    try:
+        from delfin.agent.model_profiles import effort_choices, get_profile
+        choices = effort_choices(model)
+        default = str(get_profile(model).effort_default or "").strip().lower()
+    except Exception:
+        choices, default = _EFFORT_LEVELS, ""
+    out = []
+    for level in choices:
+        label = _EFFORT_LABELS.get(level, level)
+        if level == default:
+            label += " (profile default)"
+        out.append((label, level))
+    return out
+
+
 def _effort_for_model(model: str, saved_effort: str = "") -> str:
     """The effort a session should start with for *model*.
 
@@ -88,7 +110,11 @@ def _effort_for_model(model: str, saved_effort: str = "") -> str:
     """
     saved = str(saved_effort or "").strip().lower()
     if saved in _EFFORT_LEVELS:
-        return saved
+        try:
+            from delfin.agent.model_profiles import clamp_effort
+            return clamp_effort(model, saved)
+        except Exception:
+            return saved
     try:
         from delfin.agent.model_profiles import get_profile
         level = str(get_profile(str(model or "")).effort_default or "").strip().lower()
@@ -4576,9 +4602,12 @@ def create_tab(ctx):
             model_dropdown.value = _saved_model
         _saved_effort = _saved.get("effort", "")
         # The user's saved choice, else the model's profile default; a
-        # programmatic set must not be persisted as a choice.
+        # programmatic set must not be persisted as a choice. The options
+        # follow the model first, so a level the model cannot use is not
+        # even on the control.
         state["_controls_sync_internal"] = True
         try:
+            effort_dropdown.options = _effort_options_for_model(model_dropdown.value)
             effort_dropdown.value = _effort_for_model(model_dropdown.value, _saved_effort)
         finally:
             state["_controls_sync_internal"] = False
@@ -11384,15 +11413,21 @@ def create_tab(ctx):
 
         # /effort <level>  — accepts low/medium/high/xhigh
         if cmd.startswith("/effort "):
-            level = cmd[8:].strip()
-            valid = {"low", "medium", "high", "xhigh"}
+            level = cmd[8:].strip().lower()
+            valid = {v for _, v in (effort_dropdown.options or [])} or set(_EFFORT_LEVELS)
             if level in valid:
                 if effort_dropdown.value == level:
                     _append_system_message(f"Effort is already {level}.")
                 effort_dropdown.value = level
+            elif level in _EFFORT_LEVELS:
+                _append_system_message(
+                    f"Effort '{level}' is not on offer for {model_dropdown.value}: "
+                    f"above {max(valid, key=_EFFORT_LEVELS.index)} the model only "
+                    f"thinks longer. Options: {', '.join(sorted(valid, key=_EFFORT_LEVELS.index))}"
+                )
             else:
                 _append_system_message(
-                    f"Unknown effort '{level}'. Options: {', '.join(sorted(valid))}"
+                    f"Unknown effort '{level}'. Options: {', '.join(sorted(valid, key=_EFFORT_LEVELS.index))}"
                 )
             return True
 
@@ -15998,14 +16033,23 @@ def create_tab(ctx):
 
                 # Greeting fast-path: a bare greeting must never trigger
                 # tool calls (and with ask_all: confirm prompts) or long
-                # reasoning — reply directly, one short message.
+                # reasoning — reply directly, one short message. Judged on
+                # the BARE greeting, like the engine's own rule: the loose
+                # test took "hallo, prüfe die Tabelle" for a greeting and
+                # told the model not to call any tools for the work it
+                # was just asked to do. And the hint travels as memory
+                # context rather than glued to the text: the engine
+                # withholds the tool schemas from a message that is
+                # nothing but a greeting, and the glued hint made every
+                # first hallo pay the whole surface (37,193 tokens against
+                # 11,101, measured 2026-09-11).
                 try:
                     from delfin.agent.engine import AgentEngine as _AE
-                    if _AE.is_greeting(user_text):
-                        current_msg = (
-                            f"{current_msg}\n\n(Greeting — reply with ONE "
-                            f"short sentence; do NOT call any tools.)"
-                        )
+                    if _AE.is_bare_greeting(user_text):
+                        state["_pending_turn_hint"] = (
+                            "The user's message is a greeting and nothing "
+                            "else: reply with ONE short sentence; do NOT "
+                            "call any tools.")
                 except Exception:
                     pass
 
@@ -16129,6 +16173,9 @@ def create_tab(ctx):
                     _boot_brief = str(state.pop("_pending_boot_brief", "") or "")
                     if _boot_brief:
                         _memory = (_boot_brief + "\n\n" + _memory).strip() if _memory else _boot_brief
+                    _turn_hint = str(state.pop("_pending_turn_hint", "") or "")
+                    if _turn_hint:
+                        _memory = (_memory + "\n\n" + _turn_hint).strip() if _memory else _turn_hint
 
                     # Provider profile is injected by PromptLoader.
                     # Keep memory_context reserved for session memory + transient state
@@ -17865,18 +17912,27 @@ def create_tab(ctx):
             pass
         # Effort follows the model unless the user chose one: each
         # profile knows what its model needs, and the dropdown's initial
-        # value is no choice of theirs.
-        if chosen_effort not in _EFFORT_LEVELS:
-            follow = _effort_for_model(change["new"], "")
+        # value is no choice of theirs. The options follow the model too,
+        # and a choice above what the new model can use is brought down
+        # to its ceiling and said so.
+        before = str(effort_dropdown.value or "")
+        follow = _effort_for_model(change["new"], chosen_effort)
+        state["_controls_sync_internal"] = True
+        try:
+            effort_dropdown.options = _effort_options_for_model(change["new"])
             if effort_dropdown.value != follow:
-                state["_controls_sync_internal"] = True
-                try:
-                    effort_dropdown.value = follow
-                finally:
-                    state["_controls_sync_internal"] = False
-                _append_system_message(
-                    f"Effort set to {follow} (the profile default for {change['new']}); "
-                    "pick one to keep your own.")
+                effort_dropdown.value = follow
+        finally:
+            state["_controls_sync_internal"] = False
+        if chosen_effort in _EFFORT_LEVELS and follow != chosen_effort:
+            _append_system_message(
+                f"Effort **{chosen_effort}** is not on offer for {change['new']}: "
+                f"its profile stops at **{follow}**, above which the model only "
+                f"thinks longer. Set to {follow}.")
+        elif chosen_effort not in _EFFORT_LEVELS and follow != before:
+            _append_system_message(
+                f"Effort set to {follow} (the profile default for {change['new']}); "
+                "pick one to keep your own.")
 
     def _on_effort_change(change):
         """Persist the effort choice and hand it to the engine that exists.

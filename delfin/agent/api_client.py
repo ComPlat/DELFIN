@@ -17633,6 +17633,14 @@ class OpenAIClient(_BaseClient):
                         _eff_setting = _gp_eff(self.model, _caps).effort_default
                     except Exception:
                         _eff_setting = ""
+                # ...and never above what the model can use: the profile's
+                # ceiling holds for a saved choice, a /effort, and any
+                # caller that hands the client a level directly.
+                try:
+                    from .model_profiles import clamp_effort as _clamp_eff
+                    _eff_setting = _clamp_eff(self.model, _eff_setting)
+                except Exception:
+                    pass
                 _eff = _reasoning_effort_param(
                     _eff_setting, _caps, self._provider)
                 if _eff:

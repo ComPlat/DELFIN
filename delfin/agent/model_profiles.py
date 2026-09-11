@@ -91,6 +91,16 @@ class ModelProfile:
     # cheaper side of that trade.
     all_prompt_modules: bool = False
 
+    # The highest effort level this model can put to use; "" means any.
+    # On kit.glm-5.3 every level above the default buys hidden reasoning
+    # and minutes, not answers: four field reports (2026-09-07 .. -11) ran
+    # it at "high", one of them 989 output tokens for a 224-character
+    # reply, and the benchmark arms at medium and low did not differ. The
+    # dashboard offers only the levels up to this one, a saved choice
+    # above it is brought down and said so, and the request never
+    # carries a level above it.
+    max_effort: str = ""
+
     # Free-form notes — useful in /agents stats / /model output and
     # for the human reading this file.
     notes: str = ""
@@ -175,6 +185,7 @@ _GLM_5_3 = ModelProfile(
     # 2026-09-07, and a module triggered on turn two left 19% of the prompt
     # cold on turn two, measured 2026-09-11.
     all_prompt_modules=True,
+    max_effort="medium",
     notes=(
         "KIT GLM-5.3 — strongest of the KIT-hosted open models, slowest to "
         "start. Reasoning-first: needs the thinking token floor. Cold "
@@ -354,6 +365,7 @@ _COERCE: dict[str, type] = {
     "tool_result_cap_kb": int,
     "stale_kill_after_s": float,
     "all_prompt_modules": bool,
+    "max_effort": str,
 }
 
 _OVERRIDES_CACHE: tuple[float, dict] | None = None
@@ -430,6 +442,41 @@ def _apply_overrides(model: str, profile: ModelProfile) -> ModelProfile:
     changes["notes"] = (
         f"[user override: {named}] {changes['notes']}".strip())
     return replace(profile, **changes)
+
+
+_EFFORT_ORDER: tuple[str, ...] = ("low", "medium", "high", "xhigh")
+
+
+def clamp_effort(model: str, effort: str) -> str:
+    """``effort`` brought down to what *model*'s profile says it can use.
+
+    Returns the level unchanged when the profile sets no ceiling or the
+    level is at or below it; a level the table does not know comes back
+    as it was, so a caller's own validation still sees it.
+    """
+    level = str(effort or "").strip().lower()
+    if level not in _EFFORT_ORDER:
+        return level
+    try:
+        ceiling = str(get_profile(model).max_effort or "").strip().lower()
+    except Exception:
+        ceiling = ""
+    if ceiling not in _EFFORT_ORDER:
+        return level
+    if _EFFORT_ORDER.index(level) > _EFFORT_ORDER.index(ceiling):
+        return ceiling
+    return level
+
+
+def effort_choices(model: str) -> tuple[str, ...]:
+    """The levels *model* may be set to, lowest first."""
+    try:
+        ceiling = str(get_profile(model).max_effort or "").strip().lower()
+    except Exception:
+        ceiling = ""
+    if ceiling not in _EFFORT_ORDER:
+        return _EFFORT_ORDER
+    return _EFFORT_ORDER[:_EFFORT_ORDER.index(ceiling) + 1]
 
 
 def get_profile(model: str, caps: "ModelCapabilities | None" = None) -> ModelProfile:
