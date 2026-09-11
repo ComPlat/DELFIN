@@ -199,3 +199,12 @@ def test_a_file_attached_mid_run_is_written_and_named_to_the_running_agent():
     assert "_materialise_uploads(_seng)" in body
     assert "The user attached these files" in body
     assert "_seng.steer(_steer_text)" in body
+
+
+
+def test_a_missing_attachment_is_to_be_said_not_searched():
+    """A turn asked about an attachment that was not there spent 239k
+    tokens and six and a half minutes on five tool rounds of ls and find
+    (measured 2026-09-11). The note now says what to do instead."""
+    assert _SOURCE.count("If one of these paths does not exist, say which") == 2, (
+        "both the send-time note and the mid-run note carry the rule")
