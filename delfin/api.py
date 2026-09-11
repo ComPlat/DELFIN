@@ -2538,7 +2538,7 @@ _TOOL_CATALOG: list[dict] = [
     {"name": "parse_orca_output", "category": "parsing",
      "summary": "Snapshot ONE ORCA .out: energies, conv, freq, walltime."},
     {"name": "calc_status", "category": "parsing",
-     "summary": "One folder: succeeded / failed / running / stalled, with the evidence."},
+     "summary": "One folder: succeeded / failed / running / stalled / not started, with the evidence."},
     {"name": "extract_spectra_table", "category": "parsing",
      "summary": "Per folder: HOMO-LUMO gap, first bright and brightest visible transition (and the strongest visible line even when dark), imaginary modes, minimum verdict."},
     {"name": "find_orca_errors", "category": "parsing",
