@@ -222,3 +222,40 @@ def test_the_suite_and_the_bench_redirect_from_one_table():
     assert ("delfin.agent.memory_store", "_delfin_memory_dir") in resolvers
     assert ("delfin.agent.memory_store", "_delfin_global_memory_dir") in resolvers
     assert ("delfin.agent.audit_log", "_default_log_path") in resolvers
+
+
+def test_the_audit_log_stays_where_the_bench_reads_it(tmp_path):
+    """The bench counts an attempt's gate denials and the paths it wrote
+    from the audit log AFTER the guard has closed. For one night that
+    log was redirected with everything else, so the count looked at a
+    scratch file that was already gone and every block said "denials
+    not observed". The attempt's own records are what the cost axis is
+    made of; they stay where the reader looks."""
+    from delfin.agent import audit_log
+    before = audit_log._default_log_path()
+    with _PristineWorkspace(tmp_path):
+        assert audit_log._default_log_path() == before
+    assert audit_log._default_log_path() == before
+
+
+def test_a_denial_during_an_attempt_is_counted_after_it(tmp_path):
+    """End to end through the counter the bench uses: a refusal recorded
+    while the guard is up is still there when the guard is down."""
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from delfin.agent import audit_log
+    from delfin.agent.benchmark_runner import _denials_during
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    since = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    engine = SimpleNamespace(kit_permissions=SimpleNamespace(workspace=str(ws)))
+    def _record(decision, command):
+        return audit_log.make_record(
+            tool="bash", decision=decision, mode="default", command=command,
+            reason="test", extra={"workspace": str(ws), "cwd": str(ws)})
+
+    with _PristineWorkspace(tmp_path):
+        audit_log.append(_record("denied", "rm -rf /"))
+        audit_log.append(_record("ok", "ls"))
+    counted = _denials_during(engine, since_ts=since)
+    assert counted == 1, counted
