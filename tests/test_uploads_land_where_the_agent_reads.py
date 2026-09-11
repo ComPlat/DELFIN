@@ -75,7 +75,8 @@ def test_the_drop_handler_no_longer_picks_a_folder():
 
 def test_the_bytes_are_buffered_at_drop_time():
     handler = _block("def _on_image_upload", "def _materialise_uploads")
-    assert 'state["_pending_uploads"] = buffered' in handler
+    assert 'state["_pending_uploads"] = merged' in handler, (
+        "buffered at drop time -- merged with what is already waiting")
 
 
 def test_writing_happens_at_send_time():
@@ -161,3 +162,40 @@ def test_the_writer_takes_the_first_candidate_the_session_may_read():
     assert "upload_dir = candidates[-1]" in writer, "the hidden folder is the fallback"
     assert "kp.find_readable_root_for(probe) is not None" in writer
     assert 'Path(ws) / ".delfin" / "uploads"' not in writer
+
+
+
+# ---------------------------------------------------------------------------
+# every attachment survives until it is sent
+# ---------------------------------------------------------------------------
+
+def test_a_second_drop_joins_the_first_instead_of_replacing_it():
+    """Field report 2026-09-11: 07a attached, then 07 attached, one file
+    written -- the second. The widget's value is the latest selection,
+    and the buffer was replaced by it."""
+    from delfin.dashboard.tab_agent import _merge_uploads
+    first = [("07a_Auftrag.md", b"a")]
+    second = [("07_Hintergrund.md", b"b")]
+    assert _merge_uploads(first, second) == [("07a_Auftrag.md", b"a"), ("07_Hintergrund.md", b"b")]
+    # the same name dropped again is the newer bytes, once
+    assert _merge_uploads(first, [("07a_Auftrag.md", b"a2")]) == [("07a_Auftrag.md", b"a2")]
+    assert _merge_uploads([], second) == second and _merge_uploads(first, []) == first
+
+
+def test_the_drop_handler_merges_and_caps_the_whole_buffer():
+    handler = _block("def _on_image_upload", "def _materialise_uploads")
+    assert "_merge_uploads(state.get(\"_pending_uploads\") or [], buffered)" in handler
+    assert 'state["_pending_uploads"] = merged' in handler
+    assert 'state["_pending_uploads"] = buffered' not in handler
+    assert "total = sum(len(c) for _n, c in merged)" in handler
+
+
+def test_a_file_attached_mid_run_is_written_and_named_to_the_running_agent():
+    """The note said the file would be written when the message is sent,
+    and a mid-run message is one; the buffer was left for the next full
+    send and the running agent looked for a file that was not there."""
+    i = _SOURCE.index("Mid-loop steering: for the API/KIT/Ollama engine")
+    body = _SOURCE[i:i + 2200]
+    assert "_materialise_uploads(_seng)" in body
+    assert "The user attached these files" in body
+    assert "_seng.steer(_steer_text)" in body
