@@ -16553,6 +16553,33 @@ class OpenAIClient(_BaseClient):
     # reasoning_effort is read from self.effort on every request.
     EFFORT_PER_REQUEST = True
 
+    def signal_stop(self) -> None:
+        """Cut the request in flight, so a stop takes effect now.
+
+        The stop flag is read between stream events and between rounds.
+        A request still waiting for its first byte -- on a queued
+        endpoint that is the whole turn -- reads nothing until the
+        provider answers or the read times out, and a user who pressed
+        Stop watched nothing happen and typed into a turn that was still
+        running (field report 2026-09-11, kit.glm-5.3). Closing the SDK
+        client's transport makes the blocked read raise at once; the
+        stream loop sees the stop flag before it would retry, and the
+        next turn gets a fresh client built from the same arguments.
+        """
+        old = getattr(self, "client", None)
+        kwargs = getattr(self, "_sdk_kwargs", None)
+        if old is None or not kwargs:
+            return
+        try:
+            import openai as _openai
+            self.client = _openai.OpenAI(**kwargs)
+        except Exception:
+            return
+        try:
+            old.close()
+        except Exception:
+            pass
+
     DEFAULT_MODEL = "gpt-4.1"
 
     # Pricing lives in delfin.agent.pricing. The table that used to sit
@@ -16615,7 +16642,15 @@ class OpenAIClient(_BaseClient):
         except (TypeError, ValueError):
             _req_timeout = 0.0
         kwargs["timeout"] = _req_timeout if _req_timeout > 0 else 600.0
+        # The SDK retries a failed request twice on its own, silently. On
+        # a queued endpoint that is three 600 s waits before the stream
+        # loop sees an error and can say so: a first turn measured 1806 s
+        # without a byte (field report 2026-09-11). The stream loop has
+        # its own retry with a notice the user reads; the SDK gets none.
+        kwargs["max_retries"] = 0
         self.client = openai.OpenAI(**kwargs)
+        # Kept so a stop can replace the transport: see signal_stop.
+        self._sdk_kwargs = dict(kwargs)
         # KIT-Toolbox coding-agent permissions (None disables write/edit/bash).
         self._permissions: Optional[KitToolPermissions] = permissions
         # Mid-loop steering inbox: the dashboard pushes a user message here WHILE
@@ -17732,6 +17767,20 @@ class OpenAIClient(_BaseClient):
                 finally:
                     stream.close()
             except Exception as _stream_exc:
+                if self._stop_was_requested():
+                    # The transport was cut on purpose (signal_stop): the
+                    # error is the stop arriving, not the provider failing,
+                    # and a retry would queue the request the user just
+                    # ended all over again.
+                    yield StreamEvent(type="notice", text=(
+                        "\n⏹️ Stopped while waiting for the endpoint. "
+                        "Nothing was produced; send a message to continue.\n"))
+                    yield StreamEvent(
+                        type="message_delta",
+                        input_tokens=_total_in, output_tokens=_total_out,
+                        cost_usd=self._estimate_cost(_total_in, _total_out),
+                        cached_tokens=_total_cached, stop_reason="stopped")
+                    return
                 if not _is_stream_unsupported_error(_stream_exc):
                     # Not a stream-format issue. A transient shared-proxy
                     # hiccup (timeout / 5xx / rate-limit) retries the round —
