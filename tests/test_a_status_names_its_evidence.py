@@ -226,3 +226,56 @@ def test_a_silent_scheduler_is_not_evidence(runs, monkeypatch):
     assert st.state == "running"            # written recently: the clock decides
     assert not any(e["source"] == "scheduler" for e in st.evidence)
     assert "state" in (ops.tool_extract_energy_table.__doc__ or "")
+
+
+
+def test_an_old_input_with_no_output_and_no_job_is_not_started(tmp_path, monkeypatch):
+    """Asked "running, never started, or crashed?" for a folder that holds
+    only an input, an operator got "pending" and looked by hand
+    (2026-09-11). When no job lists the folder and nothing was written
+    for as long as a stall takes, the files and the scheduler agree on
+    a word: not started."""
+    import os, time
+    d = tmp_path / "never"
+    d.mkdir()
+    inp = d / "run.inp"
+    inp.write_text("! PBE0 def2-SVP Opt\n")
+    old = time.time() - api.STALLED_AFTER_S - 3600
+    os.utime(inp, (old, old))
+    os.utime(d, (old, old))
+    monkeypatch.setattr(api, "_scheduler_jobs_by_dir", lambda: {})
+    st = api.calculation_status(str(d))
+    assert st.state == "not started"
+    assert st.outcome.startswith("no output yet")
+    assert any(e["source"] == "scheduler + clock" and "nothing was written" in e["says"]
+               for e in st.evidence)
+
+
+def test_a_fresh_input_stays_pending_and_a_listed_job_is_running(tmp_path, monkeypatch):
+    d = tmp_path / "fresh"
+    d.mkdir()
+    (d / "run.inp").write_text("! PBE0 def2-SVP Opt\n")
+    monkeypatch.setattr(api, "_scheduler_jobs_by_dir", lambda: {})
+    assert api.calculation_status(str(d)).state == "pending"
+    monkeypatch.setattr(api, "_scheduler_jobs_by_dir",
+                        lambda: {str(d.resolve()): {"job_id": "7", "status": "RUNNING"}})
+    assert api.calculation_status(str(d)).state == "running"
+
+
+def test_the_energy_table_says_why_gibbs_is_null(tmp_path):
+    """The default properties include gibbs and zpe; a single-point output
+    has neither. An operator read the nulls as an unfinished run."""
+    sp = tmp_path / "sp"
+    sp.mkdir()
+    (sp / "run.inp").write_text("! PBE0 def2-SVP\n")
+    (sp / "run.out").write_text(
+        "FINAL SINGLE POINT ENERGY       -76.400000000000\n"
+        "****ORCA TERMINATED NORMALLY****\n")
+    row = api.extract_energy_table([str(sp)])[0]
+    assert row["gibbs"] is None and row["zpe"] is None
+    assert row["single_point"] == -76.4
+    assert any("no thermochemistry" in n and "use single_point" in n
+               for n in row["notes"]), row["notes"]
+    # asked only for the energy it has, there is nothing to note
+    row2 = api.extract_energy_table([str(sp)], properties=["single_point"])[0]
+    assert "notes" not in row2
