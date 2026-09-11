@@ -238,6 +238,8 @@ def _orca_parse_to_dict(parsed) -> dict:
         "functional": parsed.functional,
         "basis": parsed.basis,
         "error_summary": parsed.error_summary,
+        "status": getattr(parsed, "status", "ok"),
+        "outcome": getattr(parsed, "outcome", ""),
     }
 
 
@@ -247,19 +249,52 @@ def tool_parse_orca_output(path: str) -> str:
     Returns a JSON object with: final_single_point (Hartree),
     gibbs_free_energy (Hartree), zpe (Hartree), scf_converged (bool),
     opt_converged (bool), imag_freq_count (int), walltime_s (float),
-    n_atoms (int), functional (str), basis (str), error_summary (str).
-    functional/basis come from the output when it states them, else
-    from the folder (DELFIN_Data.json, CONTROL.txt, .inp) -- a DELFIN
-    run's output does not name its method. Missing values are null.
-    Use this BEFORE writing a Python script to grep the file — one
-    tool call replaces dozens of regexes.
+    n_atoms (int), functional (str), basis (str), error_summary (str),
+    status ("ok" | "no_output" | "missing" | "read_error") and outcome
+    (how the run ended, e.g. "failed (exit code 1025)" -- the same
+    phrase calc_status gives). status says whether there was an output
+    to parse at all; "no_output" is a run that has not written yet, not
+    a parse failure. functional/basis come from the output when it
+    states them, else from the folder (DELFIN_Data.json, CONTROL.txt,
+    .inp) -- a DELFIN run's output does not name its method. Missing
+    values are null. Use this BEFORE writing a Python script to grep
+    the file — one tool call replaces dozens of regexes.
 
     Args:
-        path: absolute path to the ORCA .out file.
+        path: absolute path to the ORCA .out file, or to the calculation
+            folder (its largest .out is parsed).
     """
     import json as _json
     parsed = delfin_api.parse_orca_output(path)
     return _json.dumps(_orca_parse_to_dict(parsed), indent=2)
+
+
+def tool_calc_status(folder: str) -> str:
+    """Did this calculation succeed, fail, or is it still running -- with the evidence.
+
+    Returns {"folder", "state", "outcome", "method", "evidence",
+    "last_activity", "last_activity_age_s"}.
+    state: succeeded | failed | finished | running | stalled | pending |
+    unknown | missing. "stalled" is a run with no exit code whose files
+    have not been written for over six hours (last_activity_age_s says
+    how long); "running" is one written recently. outcome: the phrase
+    with its source ("failed (exit code
+    1025)", "running or crashed (run log present, no exit code)", "no
+    output yet (input present; not started or still running)",
+    "finished per ORCA output (no exit code file)"). evidence: every
+    file that had a say -- the exit-code marker, the run log's last
+    line, the state file's status, the output's termination line -- and
+    what it said, so the answer can be cited. One call per folder; for
+    a table over many folders use extract_energy_table, whose outcome
+    column is the same phrase. list_active_calculations is NOT this: it
+    lists the scheduler's jobs, not the state of a folder on disk.
+
+    Args:
+        folder: absolute path to the calculation folder.
+    """
+    import json as _json
+    from dataclasses import asdict as _asdict
+    return _json.dumps(_asdict(delfin_api.calculation_status(folder)), indent=2)
 
 
 def tool_find_orca_errors(folder: str) -> str:
@@ -325,8 +360,10 @@ def tool_extract_energy_table(
     ("ok" / "missing" / "no_output"), ``method`` ("PBE0/def2-SVP": a
     total energy compares only within one method), ``outcome``
     (succeeded / failed (exit code N) / running or crashed / unknown --
-    "no_output" alone does not say which), and one entry per requested
-    property. Rows with status != "ok" carry None for properties.
+    "no_output" alone does not say which), ``last_activity`` and
+    ``last_activity_age_s`` (when the newest file in the folder was
+    written -- what separates "running" from "crashed" when there is no
+    exit code), and one entry per requested property. Rows with status != "ok" carry None for properties.
 
     Recognised properties: gibbs, zpe, single_point, scf_converged,
     opt_converged, imag_freqs, walltime_s.
@@ -1650,6 +1687,7 @@ def run_server(argv: list[str] | None = None) -> None:
     mcp.tool(name="get_dashboard_pattern")(tool_get_dashboard_pattern)
     # P1 — output parsing (read-only, structured returns)
     mcp.tool(name="parse_orca_output")(tool_parse_orca_output)
+    mcp.tool(name="calc_status")(tool_calc_status)
     mcp.tool(name="find_orca_errors")(tool_find_orca_errors)
     mcp.tool(name="extract_thermochem")(tool_extract_thermochem)
     mcp.tool(name="extract_energy_table")(tool_extract_energy_table)
