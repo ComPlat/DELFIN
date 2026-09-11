@@ -329,10 +329,35 @@ def resume_kernel_manager_class(base: type) -> type:
                 ", ".join(k[:8] for k in sorted(kept)) or "none")
             await self.shutdown_kernel(kernel_id)
 
+        async def shutdown_all(self, *args: Any, **kwargs: Any):
+            # The server stopping is the one shutdown a kept kernel obeys.
+            self._delfin_stopping = True
+            return await super().shutdown_all(*args, **kwargs)
+
         async def shutdown_kernel(self, kernel_id, *args: Any, **kwargs: Any):
-            # Whatever ends the kernel -- this rule, Ctrl+C, a DELETE --
-            # the record must not outlive it, or the landing page offers
-            # a session that is gone.
+            # Voila's page says goodbye when it unloads: a beacon to its
+            # shutdown route, which lands here as a plain shutdown of the
+            # kernel. Closing the window IS the event a kept session must
+            # survive, and for one evening this override honoured the
+            # goodbye, dropped the record and ended the kernel -- seven
+            # seconds before the return request arrived (cluster,
+            # 2026-09-11). A kept kernel ignores the page's goodbye. The
+            # server stopping and a restart still go through: the first
+            # is the owner's Ctrl+C, the second keeps the id.
+            restart = bool(kwargs.get("restart")) or (len(args) >= 2 and bool(args[1]))
+            kept_as = next((str(r.get("session_name") or "")
+                            for r in _session.list_records()
+                            if str(r.get("kernel_id") or "") == str(kernel_id)), "")
+            if kept_as and not restart and not getattr(self, "_delfin_stopping", False):
+                log = getattr(self, "log", None)
+                if log:
+                    log.warning("[delfin] kernel %s is kept as session %r; "
+                                "ignoring the shutdown request the page sent "
+                                "on closing.", str(kernel_id)[:8], kept_as)
+                return None
+            # Whatever else ends the kernel -- the cull rule, Ctrl+C, a
+            # restart -- the record must not outlive it, or the landing
+            # page offers a session that is gone.
             for record in _session.list_records():
                 if str(record.get("kernel_id") or "") == str(kernel_id):
                     name = str(record.get("session_name") or "")

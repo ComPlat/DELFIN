@@ -39,6 +39,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -301,8 +302,42 @@ def test_a_kept_session_survives_the_window_and_comes_back(server):
             page.wait_for_selector(".delfin-session-dot.on", timeout=60_000)
             note = page.locator(".delfin-session-dot.on").last.get_attribute("title") or ""
             resume = page.locator(".delfin-session-link").last.get_attribute("href") or ""
+            # Leave the page the way a person does, not the way a test
+            # harness does. Voila's widget manager listens for
+            # beforeunload and POSTs to voila/api/shutdown/<id> with the
+            # _xsrf cookie; a browser.close() never fired it, which is how
+            # the kernel survived here and died on a cluster, and headless
+            # navigation does not deliver the beacon either. So the goodbye
+            # is sent from here, exactly as the frontend sends it -- the
+            # page's cookies, the _xsrf field, the same route.
+            cookies = {c["name"]: c["value"] for c in page.context.cookies()}
+            xsrf = cookies.get("_xsrf", "")
+            body = urllib.parse.urlencode({"_xsrf": xsrf}).encode()
+            req = urllib.request.Request(
+                f"{root}/voila/api/shutdown/{kid}?token={_TOKEN}", data=body, method="POST",
+                headers={"Cookie": "; ".join(f"{k}={v}" for k, v in cookies.items()),
+                         "X-XSRFToken": xsrf,
+                         "Content-Type": "application/x-www-form-urlencoded"})
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    goodbye_status = resp.status
+            except urllib.error.HTTPError as exc:
+                goodbye_status = exc.code
+            assert goodbye_status in (200, 204), f"the goodbye was not accepted: HTTP {goodbye_status}"
+            page.goto("about:blank", wait_until="domcontentloaded")
+            time.sleep(3)
         finally:
             browser.close()
+
+        # The goodbye reached the server and was ignored for a kept
+        # kernel -- the line a person sees on the terminal. If this
+        # assertion ever fails because the line is absent, the harness
+        # no longer reproduces what a browser does on closing.
+        deadline = time.time() + 30
+        while time.time() < deadline and "ignoring the shutdown request" not in log.read_text(errors="replace"):
+            time.sleep(1)
+        assert "ignoring the shutdown request" in log.read_text(errors="replace"), (
+            "the page's goodbye never reached the kernel manager")
 
         assert "Kept as" in note, f"the dot does not say it is kept: {note!r}"
         assert resume.startswith("http"), f"the dot links nowhere: {resume!r}"
