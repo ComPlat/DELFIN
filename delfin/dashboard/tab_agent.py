@@ -15928,14 +15928,22 @@ def create_tab(ctx):
                     except Exception:
                         _boot = ""
                     if _boot:
-                        current_msg = f"{_boot}\n\n{current_msg}"
+                        state["_pending_boot_brief"] = _boot
                 elif mode_dropdown.value == "solo" and not engine.messages:
                     try:
                         _boot = _build_solo_session_boot()
                     except Exception:
                         _boot = ""
                     if _boot:
-                        current_msg = f"{_boot}\n\n{current_msg}"
+                        state["_pending_boot_brief"] = _boot
+                # The brief used to be glued in front of the user's text.
+                # The engine judges "is this a bare greeting" on the text
+                # it is handed, so a first "hallo" arrived as a primer plus
+                # a greeting and was answered with every tool schema on the
+                # wire: 37,304 tokens measured against 11,101 for the same
+                # word through the engine alone (2026-09-11). The brief now
+                # travels as memory context, which the engine puts into the
+                # system prompt, and the user's text stays the user's text.
 
                 # Plan-before-Act runtime hint (Pattern 1 from the
                 # playbook): if the user's request looks multi-step
@@ -16118,6 +16126,9 @@ def create_tab(ctx):
                     )
                     if _proj_mem:
                         _memory = (_memory + "\n\n" + _proj_mem).strip() if _memory else _proj_mem
+                    _boot_brief = str(state.pop("_pending_boot_brief", "") or "")
+                    if _boot_brief:
+                        _memory = (_boot_brief + "\n\n" + _memory).strip() if _memory else _boot_brief
 
                     # Provider profile is injected by PromptLoader.
                     # Keep memory_context reserved for session memory + transient state
