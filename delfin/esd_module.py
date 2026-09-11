@@ -14,7 +14,12 @@ import threading
 
 from delfin.common.logging import get_logger
 from delfin.common.paths import ensure_relative_link
-from delfin.common.control_validator import unsupported_ic_reason
+from delfin.common.control_validator import (
+    esd_list_items,
+    isc_problem,
+    normalized_transition,
+    unsupported_ic_reason,
+)
 from delfin.common.tddft_settings import tddft_block
 from delfin import smart_recalc
 from delfin.esd_input_generator import (
@@ -218,24 +223,20 @@ def parse_esd_config(config: Dict[str, Any]) -> tuple[bool, List[str], List[str]
     """
     esd_enabled = str(config.get('ESD_modul', 'no')).strip().lower() == 'yes'
 
-    # Handle both list and string formats
-    states_raw = config.get('states', [])
-    if isinstance(states_raw, list):
-        states = [s.strip().upper() for s in states_raw if s.strip()]
-    else:
-        states = [s.strip().upper() for s in str(states_raw).split(',') if s.strip()]
+    # One reader for the four lists: brackets, quotes or a parsed list alike
+    # (control_validator.esd_list_items).
+    states = [s.upper() for s in esd_list_items(config.get('states'))]
 
-    iscs_raw = config.get('ISCs', [])
-    if isinstance(iscs_raw, list):
-        iscs = [isc.strip() for isc in iscs_raw if isc.strip()]
-    else:
-        iscs = [isc.strip() for isc in str(iscs_raw).split(',') if isc.strip()]
+    iscs = []
+    for item in esd_list_items(config.get('ISCs')):
+        reason = isc_problem(item)
+        if reason:
+            if esd_enabled:
+                _warn_once(f"ISCs: {reason}; it is skipped")
+            continue
+        iscs.append(normalized_transition(item))
 
-    ics_raw = config.get('ICs', [])
-    if isinstance(ics_raw, list):
-        ics = [ic.strip() for ic in ics_raw if ic.strip()]
-    else:
-        ics = [ic.strip() for ic in str(ics_raw).split(',') if ic.strip()]
+    ics = [normalized_transition(item) for item in esd_list_items(config.get('ICs'))]
 
     # Ensure ground-state S0 is present when ESD module is enabled
     # S0 is always calculated as minimum when ESD_modul=yes
@@ -254,15 +255,21 @@ def parse_emission_rates(config: Dict[str, Any]) -> Set[str]:
 
     Accepted separators: comma, semicolon, whitespace. Case-insensitive.
     """
-    raw = config.get("emission_rates", "")
-    if raw is None:
-        return set()
-    if isinstance(raw, list):
-        tokens = [str(x) for x in raw]
-    else:
-        tokens = str(raw).replace(";", ",").replace(" ", ",").split(",")
-    rates = {t.strip().lower() for t in tokens if str(t).strip()}
-    return {r for r in rates if r in {"f", "p"}}
+    tokens = [t.lower() for item in esd_list_items(config.get("emission_rates")) for t in item.split()]
+    for token in tokens:
+        if token not in ("f", "p"):
+            _warn_once(f"emission_rates: {token!r} is neither f (fluorescence) nor p (phosphorescence); it is skipped")
+    return {t for t in tokens if t in {"f", "p"}}
+
+
+_WARNED: Set[str] = set()
+
+
+def _warn_once(message: str) -> None:
+    """The lists are read by several phases; say what is skipped once per run."""
+    if message not in _WARNED:
+        _WARNED.add(message)
+        logger.warning(message)
 
 
 def setup_esd_directory(esd_dir: Path, states: List[str]) -> None:
