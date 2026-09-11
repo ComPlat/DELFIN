@@ -100,15 +100,15 @@ def _extract_from_delfin_data(data: dict) -> dict[str, Any]:
         if str(parsed.get("smiles_converter", "")).strip().upper() in ("MANTA", "GUPPY") \
                 or _is_yes(parsed.get("GUPPY")):
             modules.append("MANTA")
-        if _is_yes(parsed.get("hyperpol_xtb_module")):
+        if _is_yes(_flag(parsed, "hyperpol_xTB", "hyperpol_xtb_module")):
             modules.append("hyperpol_xtb")
-        if _is_yes(parsed.get("TADF_xTB_module")):
+        if _is_yes(_flag(parsed, "tadf_xTB", "TADF_xTB_module")):
             modules.append("TADF_xTB")
-        if _is_yes(parsed.get("NMR_module")):
+        if _is_yes(_flag(parsed, "NMR_module")):
             modules.append("NMR")
-        if _is_yes(parsed.get("OCCUPIER")):
+        if _is_yes(_flag(parsed, "OCCUPIER")) or _flag(parsed, "method").strip().upper() == "OCCUPIER":
             modules.append("OCCUPIER")
-        if _is_yes(parsed.get("CO2_coordinator")):
+        if _is_yes(_flag(parsed, "co2_coordination", "CO2_coordinator")):
             modules.append("CO2")
         rec["modules"] = modules
 
@@ -334,15 +334,15 @@ def _extract_from_control_txt(text: str) -> dict[str, Any]:
         modules.append("oxidation")
     if kv.get("reduction_steps"):
         modules.append("reduction")
-    if _is_yes(kv.get("hyperpol_xtb_module")):
+    if _is_yes(_flag(kv, "hyperpol_xTB", "hyperpol_xtb_module")):
         modules.append("hyperpol_xtb")
-    if _is_yes(kv.get("TADF_xTB_module")):
+    if _is_yes(_flag(kv, "tadf_xTB", "TADF_xTB_module")):
         modules.append("TADF_xTB")
-    if _is_yes(kv.get("NMR_module")):
+    if _is_yes(_flag(kv, "NMR_module")):
         modules.append("NMR")
-    if _is_yes(kv.get("OCCUPIER")):
+    if _is_yes(_flag(kv, "OCCUPIER")) or _flag(kv, "method").strip().upper() == "OCCUPIER":
         modules.append("OCCUPIER")
-    if _is_yes(kv.get("CO2_coordinator")):
+    if _is_yes(_flag(kv, "co2_coordination", "CO2_coordinator")):
         modules.append("CO2")
     rec["modules"] = modules
 
@@ -483,8 +483,36 @@ def _is_yes(val: Any) -> bool:
     if isinstance(val, bool):
         return val
     if isinstance(val, str):
-        return val.strip().lower() in ("yes", "true", "1")
+        # "on" is what define.py documents for co2_coordination.
+        return val.strip().lower() in ("yes", "true", "1", "on")
     return False
+
+
+def _norm_key(raw: str) -> str:
+    """A CONTROL key the way config.py compares it: lowercase, letters and
+    digits only. ``co2_coordination``, ``Co2-Coordination`` and
+    ``CO2 coordination`` are one key there, and must be one here."""
+    return re.sub(r"[^a-z0-9]+", "", str(raw or "").strip().lower())
+
+
+def _flag(kv: dict, *names: str) -> str:
+    """The value of the first of *names* present in ``kv``, compared by
+    normalised key, or "".
+
+    The module flags used to be read by exact, case-sensitive names that
+    CONTROL never writes: ``CO2_coordinator`` for the key that is
+    ``co2_coordination``, ``TADF_xTB_module`` for ``tadf_xTB``,
+    ``hyperpol_xtb_module`` for ``hyperpol_xTB``. No indexed run ever
+    carried those modules (found by an operator interview, 2026-09-11).
+    The legacy spellings stay accepted; the canonical ones come first.
+    """
+    normed = {_norm_key(k): v for k, v in (kv or {}).items()}
+    for name in names:
+        v = normed.get(_norm_key(name))
+        if v is not None and str(v).strip():
+            return str(v)
+    return ""
+
 
 
 # ---------------------------------------------------------------------------
