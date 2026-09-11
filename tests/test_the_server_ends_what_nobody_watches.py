@@ -61,6 +61,10 @@ class _Base:
         self._kernels.pop(kid, None)
         self._kernel_connections.pop(kid, None)
 
+    async def shutdown_all(self, *a, **k):
+        for kid in list(self._kernels):
+            await self.shutdown_kernel(kid)
+
 
 def _run(coro):
     # asyncio.run rather than get_event_loop().run_until_complete: in a
@@ -168,10 +172,14 @@ def test_a_window_arriving_resets_the_clock(manager):
 
 
 def test_ending_a_kernel_drops_its_record(manager, tmp_path):
+    """When the kernel really ends -- here: the server stopping -- its
+    record goes with it. A plain shutdown request on a kept kernel is the
+    page's goodbye and is ignored (see the tests at the end)."""
     kid = _run(manager.start_kernel())
     _keep(kid, "gone-soon")
     assert S.list_records()
-    _run(manager.shutdown_kernel(kid))
+    _run(manager.shutdown_all())
+    assert kid in manager.ended
     assert S.list_records() == []
 
 
@@ -211,3 +219,41 @@ def test_the_launcher_passes_the_flags_with_the_manager():
 
     src = inspect.getsource(cli_voila.main)
     assert "_resume.cull_config_args()" in src
+
+
+# ---------------------------------------------------------------------------
+# The page's goodbye is not the owner's
+# ---------------------------------------------------------------------------
+#
+# Voila's frontend sends a shutdown for its kernel when the page unloads.
+# That is the very event a kept session is kept through. Seen on a
+# cluster on 2026-09-11: "kernel ... is shutting down; dropping the
+# record" seven seconds before the return request.
+
+def test_a_kept_kernel_ignores_the_pages_goodbye(manager, tmp_path):
+    kid = _run(manager.start_kernel())
+    S.write_record("kept-1", root=str(tmp_path / "kept"), kid=kid)
+    _run(manager.shutdown_kernel(kid))               # the beacon on unload
+    assert kid not in manager.ended, "the page's goodbye ended a kept kernel"
+    assert any(r["session_name"] == "kept-1" for r in S.list_records(root=str(tmp_path / "kept")))
+
+
+def test_an_unkept_kernel_still_obeys_the_page(manager):
+    kid = _run(manager.start_kernel())
+    _run(manager.shutdown_kernel(kid))
+    assert kid in manager.ended
+
+
+def test_a_restart_goes_through_for_a_kept_kernel(manager, tmp_path):
+    kid = _run(manager.start_kernel())
+    S.write_record("kept-2", root=str(tmp_path / "kept"), kid=kid)
+    _run(manager.shutdown_kernel(kid, False, True))    # (now=False, restart=True)
+    assert kid in manager.ended
+
+
+def test_the_server_stopping_ends_kept_kernels_and_drops_their_records(manager, tmp_path):
+    kid = _run(manager.start_kernel())
+    S.write_record("kept-3", root=str(tmp_path / "kept"), kid=kid)
+    _run(manager.shutdown_all())
+    assert kid in manager.ended
+    assert not any(r["session_name"] == "kept-3" for r in S.list_records(root=str(tmp_path / "kept")))
