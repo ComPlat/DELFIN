@@ -273,7 +273,9 @@ _EXPECTED_READ_ONLY = {
     "search_calcs", "get_calc_info", "calc_summary",
     # delfin-ops
     "qm_check", "csp_check", "mlp_check", "analysis_check", "stop_dry_run",
-    "parse_orca_output", "find_orca_errors", "extract_thermochem",
+    # calc_status (2026-09-11): one folder's state with the evidence; reads
+    # markers, logs, the state file and the output's tail, writes nothing.
+    "parse_orca_output", "calc_status", "find_orca_errors", "extract_thermochem",
     "extract_energy_table", "find_calculation_extreme",
     "extract_imaginary_frequencies", "extract_orbital_energies",
     "extract_excited_states", "extract_dipole",
