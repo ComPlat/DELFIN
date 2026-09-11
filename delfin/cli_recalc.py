@@ -54,6 +54,13 @@ def setup_recalc_mode(force_outputs: Optional[Set[Path]] = None):
             bootstrap_outputs = smart_recalc.required_orca_outputs(inp_path=inp_path, out_path=out_path)
         if not smart_recalc.outputs_complete(inp_path, out_path, required_outputs=bootstrap_outputs):
             return False
+        # After an edit an input written anew need not be the one a
+        # fingerprint-less finished output came from; ORCA's echo says which
+        # one it was.  Without an edit the output stays, as it always did:
+        # DELFIN writing an input a little differently since is no reason to
+        # compute a finished job again.
+        if smart_recalc.control_edited() and not smart_recalc.output_belongs_to_job(inp_path, out_path):
+            return False
 
         smart_recalc.store_fingerprint(inp_path, extra_deps=extra_deps)
         logger.info(

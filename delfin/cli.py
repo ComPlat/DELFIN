@@ -1427,6 +1427,7 @@ def _note_control_change(config: dict, workspace_root: Path, control_text, geome
     change = recalc_control.change_since_last_run(workspace_root, control_text, geometry_text)
     config["_recalc_change"] = change
     smart = smart_recalc.smart_mode_enabled()
+    smart_recalc.mark_control_edited(smart and change is not None and change.computation)
     if change is None:
         logger.info("[recalc] No record of the CONTROL the finished jobs were computed with; "
                     "finished jobs are kept as they are.")
