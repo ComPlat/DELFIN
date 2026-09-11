@@ -33,6 +33,21 @@ _PLAN_HINT_NUMBERED = re.compile(r"(?:^|\s)\(?(?:[1-9]|10)\)?[\.\)]")
 _EFFORT_LEVELS = ("low", "medium", "high", "xhigh")
 
 
+def _merge_uploads(existing: list, incoming: list) -> list:
+    """The attachments waiting for the next send, after another drop.
+
+    The widget's value is the LATEST selection, not everything selected
+    so far, and the buffer used to be replaced by it: a user who attached
+    07a, then 07, sent one file -- the second -- and the agent reported
+    the first as missing (field report 2026-09-11). Drops accumulate
+    until they are sent; a file dropped twice under one name is the
+    newer one.
+    """
+    out = [(n, c) for n, c in (existing or []) if n not in {n2 for n2, _ in incoming}]
+    out.extend(incoming or [])
+    return out
+
+
 def _upload_dir_candidates(agent_dir, workspace) -> list:
     """Where an attached file may be written, most visible first.
 
@@ -6420,15 +6435,17 @@ def create_tab(ctx):
                 continue
             buffered.append((Path(fname).name, bytes(content)))
         # Cap the buffer as a whole, not just each file: the per-file cap
-        # bounded one drop, not fifty.
-        total = sum(len(c) for _n, c in buffered)
+        # bounded one drop, not fifty. The whole means everything still
+        # waiting, since drops accumulate until the next send.
+        merged = _merge_uploads(state.get("_pending_uploads") or [], buffered)
+        total = sum(len(c) for _n, c in merged)
         if total > _UPLOAD_BUFFER_CAP:
             _append_system_message(
                 f"Attachments exceed "
                 f"{_UPLOAD_BUFFER_CAP // (1024 * 1024)} MB in total and were "
                 "not queued. Send them in smaller batches.")
             return
-        state["_pending_uploads"] = buffered
+        state["_pending_uploads"] = merged
         if buffered:
             names = "\n".join(f"  - {n}" for n, _c in buffered)
             _append_system_message(
@@ -15143,7 +15160,24 @@ def create_tab(ctx):
             # so the model reacts on its next step — no waiting for the turn to
             # end. (CLI backends have no such loop → fall through to the queue.)
             _seng = state.get("engine")
-            if _seng is not None and hasattr(_seng, "steer") and _seng.steer(user_text):
+            # A file attached with a mid-run message was left in the
+            # buffer until the next full send, while the note promised
+            # it "when you send": the running agent looked for it and
+            # found only the earlier one (field report 2026-09-11). It is
+            # written now and its path goes along with the steering text.
+            _steer_text = user_text
+            if state.get("_pending_uploads"):
+                try:
+                    _written = [str(p) for p in _materialise_uploads(_seng)]
+                except Exception:
+                    _written = []
+                if _written:
+                    _steer_text = (
+                        f"{user_text}\n\n[The user attached these files — read "
+                        "them with read_file (for text/code/configs) or "
+                        "notebook_read (for .ipynb):\n"
+                        + "\n".join(f"  - {p}" for p in _written) + "]")
+            if _seng is not None and hasattr(_seng, "steer") and _seng.steer(_steer_text):
                 input_textarea.value = ""
                 _append_chat_message("user", user_text)
                 _append_system_message(
