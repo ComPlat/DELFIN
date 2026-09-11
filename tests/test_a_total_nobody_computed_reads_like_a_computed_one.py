@@ -111,7 +111,7 @@ def test_the_caveat_annotates_and_does_not_block():
     # It says which figure and why — the reader is the one who can tell an
     # invented total from one they typed themselves.
     assert "sum_column" in caveat
-    assert "Werkzeug-Ergebnis" in caveat
+    assert "tool result" in caveat
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +215,7 @@ def test_a_figure_is_named_after_the_more_specific_cue():
     flags = office.scan_answer_for_unledgered_figures(
         "Die Differenz zum Vorjahr beträgt 8.412,00 EUR.", ledger=ledger)
     assert [(f.figure, f.kind) for f in flags] == [("8.412,00", "derived")]
-    assert "abgeleiteter Wert" in office.figure_caveat(flags)
+    assert "derived value" in office.figure_caveat(flags)
 
 
 # ---------------------------------------------------------------------------
