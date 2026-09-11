@@ -590,9 +590,14 @@ def optimise_to_saddle(xyz_text: str, method: str = 'gfn2', *,
         # ORCA's own name for the liquid, which is not always xtb's -- see
         # :func:`solvents.orca_keyword`, and the diethyl ether that killed
         # every press that comes through here.
-        keyword = ('' if own_program is not None
-                   else _solvents.orca_keyword(solvent))
-        wet = f' {keyword}' if keyword else ''
+        # A name of its own: `keyword` above is the METHOD (XTB2/GFN1/...) that
+        # the `! ...` line needs, and reusing it for the liquid dropped the
+        # method from the ORCA input -- the press then ran ORCA's default (HF)
+        # instead of xtb, which is a band that comes out on the wrong saddle
+        # and a climb that will not converge.  The liquid goes in `wet`, after.
+        liquid = ('' if own_program is not None
+                  else _solvents.orca_keyword(solvent))
+        wet = f' {liquid}' if liquid else ''
         # A numerical Hessian, when the gradient is not ORCA's own to
         # differentiate.  ORCA's default for a method it drives itself is an
         # analytic one, and asked for that with ExtOpt it stops in PROPINT --
@@ -1327,9 +1332,14 @@ def neb_to_saddle(reactant: str, product: str, method: str = 'gfn2', *,
         # ORCA's own name for the liquid, which is not always xtb's -- see
         # :func:`solvents.orca_keyword`, and the diethyl ether that killed
         # every press that comes through here.
-        keyword = ('' if own_program is not None
-                   else _solvents.orca_keyword(solvent))
-        wet = f' {keyword}' if keyword else ''
+        # A name of its own: `keyword` above is the METHOD (XTB2/GFN1/...) that
+        # the `! ...` line needs, and reusing it for the liquid dropped the
+        # method from the ORCA input -- the press then ran ORCA's default (HF)
+        # instead of xtb, which is a band that comes out on the wrong saddle
+        # and a climb that will not converge.  The liquid goes in `wet`, after.
+        liquid = ('' if own_program is not None
+                  else _solvents.orca_keyword(solvent))
+        wet = f' {liquid}' if liquid else ''
         # One process when ORCA is not doing the arithmetic, for the reason
         # :func:`optimise_to_saddle` writes down: through ExtOpt every
         # gradient is a program of ours, and ORCA's own parallel driver
