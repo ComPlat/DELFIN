@@ -1462,7 +1462,13 @@ def tool_extract_excited_states(folder: str) -> str:
 
     Selects the LAST ABSORPTION SPECTRUM block (post-optimization).
     Each row has state_from, state_to, energy_ev, energy_cm,
-    wavelength_nm, fosc. Use for UV/Vis spectrum analysis.
+    wavelength_nm, fosc. Use for UV/Vis spectrum analysis. Also answers
+    the questions the table alone did not: first_bright (the lowest
+    bright transition), brightest, brightest_visible (the strongest
+    inside visible_range_nm), each as {index, state, wavelength_nm,
+    energy_ev, fosc, in_visible} -- with the definitions stated
+    (bright_threshold_fosc, visible_range_nm) so the answer can be
+    quoted with its rule. null when no transition qualifies.
     """
     import json as _json
     from dataclasses import asdict as _asdict
