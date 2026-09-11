@@ -30,6 +30,32 @@ _PLAN_HINT_CONNECTIVES = re.compile(
 _PLAN_HINT_NUMBERED = re.compile(r"(?:^|\s)\(?(?:[1-9]|10)\)?[\.\)]")
 
 
+_EFFORT_LEVELS = ("low", "medium", "high", "xhigh")
+
+
+def _effort_for_model(model: str, saved_effort: str = "") -> str:
+    """The effort a session should start with for *model*.
+
+    The user's own choice when they made one; otherwise the model's
+    profile default -- and only then the control's fallback. The dashboard
+    used to hand the engine its dropdown's initial "medium" for every
+    model, so GLM's profile default of "low" -- the one knob that
+    shortens its hidden reasoning, measured at half the time of an unset
+    turn -- never applied from the dashboard (2026-09-11).
+    """
+    saved = str(saved_effort or "").strip().lower()
+    if saved in _EFFORT_LEVELS:
+        return saved
+    try:
+        from delfin.agent.model_profiles import get_profile
+        level = str(get_profile(str(model or "")).effort_default or "").strip().lower()
+        if level in _EFFORT_LEVELS:
+            return level
+    except Exception:
+        pass
+    return "medium"
+
+
 def _build_plan_hint(user_text: str) -> str:
     """Return a one-line plan-reminder if the user's request looks
     multi-step, else empty string.
@@ -4463,8 +4489,13 @@ def create_tab(ctx):
         if _saved_model in _valid_models:
             model_dropdown.value = _saved_model
         _saved_effort = _saved.get("effort", "")
-        if _saved_effort in ("low", "medium", "high", "xhigh"):
-            effort_dropdown.value = _saved_effort
+        # The user's saved choice, else the model's profile default; a
+        # programmatic set must not be persisted as a choice.
+        state["_controls_sync_internal"] = True
+        try:
+            effort_dropdown.value = _effort_for_model(model_dropdown.value, _saved_effort)
+        finally:
+            state["_controls_sync_internal"] = False
         _saved_perm = _saved.get("permission_profile", _saved.get("permission_mode", ""))
         # Migrate old permission names to new profiles
         _perm_migration = {
@@ -17520,18 +17551,34 @@ def create_tab(ctx):
                 f"Model switched to {change['new']}. Next message uses new model."
             )
         # Persist the choice
+        chosen_effort = ""
         try:
             from delfin.user_settings import load_settings, save_settings
             s = load_settings()
             s.setdefault("agent", {})
             s["agent"]["model"] = change["new"]
+            chosen_effort = str(s["agent"].get("effort") or "")
             save_settings(s)
         except Exception:
             pass
+        # Effort follows the model unless the user chose one: each
+        # profile knows what its model needs, and the dropdown's initial
+        # value is no choice of theirs.
+        if chosen_effort not in _EFFORT_LEVELS:
+            follow = _effort_for_model(change["new"], "")
+            if effort_dropdown.value != follow:
+                state["_controls_sync_internal"] = True
+                try:
+                    effort_dropdown.value = follow
+                finally:
+                    state["_controls_sync_internal"] = False
+                _append_system_message(
+                    f"Effort set to {follow} (the profile default for {change['new']}); "
+                    "pick one to keep your own.")
 
     def _on_effort_change(change):
-        """Persist effort preference."""
-        if state["streaming"]:
+        """Persist effort preference -- the user's, never a programmatic sync."""
+        if state["streaming"] or state.get("_controls_sync_internal"):
             return
         try:
             from delfin.user_settings import load_settings, save_settings
