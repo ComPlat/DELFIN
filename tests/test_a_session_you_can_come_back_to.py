@@ -585,3 +585,15 @@ def test_the_toggle_reports_a_failed_write_and_does_not_stay_armed(monkeypatch, 
     assert not S.is_kept_alive()
     out = capsys.readouterr().out
     assert "could NOT be kept" in out and "PermissionError" in out
+
+
+def test_a_missing_record_report_lists_what_is_on_disk(monkeypatch, tmp_path):
+    monkeypatch.setattr(S, "RECORD_DIR", str(tmp_path))
+    monkeypatch.setattr(S, "kernel_id", lambda: "bbbb2222-0000-4000-8000-000000000002")
+    (tmp_path / "other-1.json").write_text('{"session_name": "other-1", "kernel_id": "x"}')
+    why = S.why_not_resumed(request_url="http://h:8866/voila/render/x.ipynb?session=uc3n990-ab12")
+    assert "No record" in why and "holds 1 record" in why and "other-1.json" in why
+    assert "HOME=" in why and "bbbb2222" in why
+    monkeypatch.setattr(S, "RECORD_DIR", str(tmp_path / "nowhere"))
+    why = S.why_not_resumed(request_url="http://h:8866/voila/render/x.ipynb?session=uc3n990-ab12")
+    assert "does not exist" in why

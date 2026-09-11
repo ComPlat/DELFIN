@@ -115,13 +115,28 @@ def why_not_resumed(*, root: str = "", request_url: str = "") -> str:
     if not name:
         return ("The address carries no session= parameter, so this is an "
                 "ordinary page, not a return.")
+    directory = root or RECORD_DIR
     record = next((r for r in list_records(root=root)
                    if r.get("session_name") == name), None)
     mine = kernel_id()
     if record is None:
-        return (f"No record for session \"{name}\" under {RECORD_DIR}: it was "
+        # What THIS process sees on disk, spelled out: the server said
+        # "no record" for a session the terminal had just called kept,
+        # and nothing told the reader whether the file was ever there.
+        try:
+            names = sorted(n for n in os.listdir(directory) if n.endswith(".json"))
+            listing = (f"the directory holds {len(names)} record(s): "
+                       + ", ".join(names[:8]) if names
+                       else "the directory exists and holds no record")
+        except FileNotFoundError:
+            listing = "the directory does not exist"
+        except OSError as exc:
+            listing = f"the directory cannot be listed ({type(exc).__name__}: {exc})"
+        home = os.environ.get("HOME", "")
+        return (f"No record for session \"{name}\" under {directory}: it was "
                 "ended, or it was kept by another account or on another "
-                "machine.")
+                f"machine. As seen from this kernel: {listing}; HOME={home}; "
+                f"kernel {mine[:8] or '?'}.")
     wanted = str(record.get("kernel_id") or "")
     return (f"A record for \"{name}\" exists (kernel {wanted[:8]}), but the "
             f"server started a fresh kernel ({mine[:8]}) for this page: it no "
