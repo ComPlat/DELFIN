@@ -113,3 +113,44 @@ def test_the_target_is_the_tools_own_file_in_the_plot_dir(tmp_path, monkeypatch)
     monkeypatch.setattr(api, "_default_plot_dir", lambda: str(tmp_path))
     assert A._artifact_target_path("plot_uvvis_spectrum", {}) == str(tmp_path / "plot_uvvis_spectrum.png")
     assert A._artifact_target_path("plot_uvvis_spectrum", {"output_path": "/x/y.png"}) == "/x/y.png"
+
+
+# --- the redirected figure lands in a directory that did not exist yet, and a
+# --- tool that raises says why
+
+
+def test_a_redirected_figure_creates_its_directory(tmp_path):
+    pytest.importorskip("matplotlib")
+    import importlib.util
+    setup = Path(api.__file__).resolve().parent / "agent" / "pack" / "benchmark" / "setup" / "a_small_calc_archive.py"
+    spec = importlib.util.spec_from_file_location("archive_setup", setup)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    assert mod.main(["x", str(tmp_path)]) == 0
+    ws = tmp_path / "calc_archive"
+    folders = ",".join(str(p) for p in sorted(list((ws / "calc").iterdir()) + list((ws / "archive").iterdir())))
+    from delfin.ops_server import server as ops
+    import json
+    target = tmp_path / "agent_workspace" / "fig.png"      # the directory does not exist
+    out = json.loads(ops.tool_plot_energy_distribution(
+        folders, properties="single_point", plot_type="bar_by_method", output_path=str(target)))
+    assert not out.get("error"), out
+    assert target.is_file()
+
+
+def test_a_tool_that_raises_answers_with_the_reason():
+    from delfin.ops_server import server as ops
+    import inspect
+    import json
+
+    def tool_boom(folder: str, n: int = 3) -> str:
+        """Docstring kept."""
+        raise FileNotFoundError("no such directory: /x")
+
+    wrapped = ops._safe("boom", tool_boom)
+    out = json.loads(wrapped("f"))
+    assert out["tool"] == "boom" and "FileNotFoundError" in out["error"] and "/x" in out["error"]
+    assert inspect.signature(wrapped) == inspect.signature(tool_boom)
+    assert wrapped.__doc__ == "Docstring kept."
+    text = Path(ops.__file__).read_text(encoding="utf-8")
+    assert re.search(r'mcp\.tool\(name="[a-z_]+"\)\(tool_', text) is None, "a tool registered without _safe"

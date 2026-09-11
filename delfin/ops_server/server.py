@@ -238,6 +238,27 @@ def _dumps(obj) -> str:
     return _json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
 
 
+def _safe(name: str, fn):
+    """A tool that raises answers with the reason, as JSON.
+
+    The MCP layer turns an uncaught exception into 'Error executing tool
+    <name>' and nothing else; a model that got that for a figure it was
+    told to draw could not tell a missing directory from a missing
+    library, and drew the figure by hand (2026-09-11). The signature and
+    docstring are the wrapped function's, so the schema the model sees
+    is unchanged.
+    """
+    import functools
+
+    @functools.wraps(fn)
+    def _call(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:               # noqa: BLE001 - reported, not hidden
+            return _dumps({"error": f"{type(exc).__name__}: {exc}", "tool": name})
+    return _call
+
+
 def _orca_parse_to_dict(parsed) -> dict:
     """Render an OrcaParseResult as a stable JSON-friendly dict."""
     return {
@@ -1693,55 +1714,55 @@ def run_server(argv: list[str] | None = None) -> None:
     )
 
     # Read-only — register module functions directly
-    mcp.tool(name="qm_check")(tool_qm_check)
-    mcp.tool(name="csp_check")(tool_csp_check)
-    mcp.tool(name="mlp_check")(tool_mlp_check)
-    mcp.tool(name="analysis_check")(tool_analysis_check)
-    mcp.tool(name="list_dashboard_patterns")(tool_list_dashboard_patterns)
-    mcp.tool(name="get_dashboard_pattern")(tool_get_dashboard_pattern)
+    mcp.tool(name="qm_check")(_safe("qm_check", tool_qm_check))
+    mcp.tool(name="csp_check")(_safe("csp_check", tool_csp_check))
+    mcp.tool(name="mlp_check")(_safe("mlp_check", tool_mlp_check))
+    mcp.tool(name="analysis_check")(_safe("analysis_check", tool_analysis_check))
+    mcp.tool(name="list_dashboard_patterns")(_safe("list_dashboard_patterns", tool_list_dashboard_patterns))
+    mcp.tool(name="get_dashboard_pattern")(_safe("get_dashboard_pattern", tool_get_dashboard_pattern))
     # P1 — output parsing (read-only, structured returns)
-    mcp.tool(name="parse_orca_output")(tool_parse_orca_output)
-    mcp.tool(name="calc_status")(tool_calc_status)
-    mcp.tool(name="find_orca_errors")(tool_find_orca_errors)
-    mcp.tool(name="extract_thermochem")(tool_extract_thermochem)
-    mcp.tool(name="extract_energy_table")(tool_extract_energy_table)
-    mcp.tool(name="find_calculation_extreme")(tool_find_calculation_extreme)
+    mcp.tool(name="parse_orca_output")(_safe("parse_orca_output", tool_parse_orca_output))
+    mcp.tool(name="calc_status")(_safe("calc_status", tool_calc_status))
+    mcp.tool(name="find_orca_errors")(_safe("find_orca_errors", tool_find_orca_errors))
+    mcp.tool(name="extract_thermochem")(_safe("extract_thermochem", tool_extract_thermochem))
+    mcp.tool(name="extract_energy_table")(_safe("extract_energy_table", tool_extract_energy_table))
+    mcp.tool(name="find_calculation_extreme")(_safe("find_calculation_extreme", tool_find_calculation_extreme))
     # Imaginary-frequency + functional-comparison helpers
-    mcp.tool(name="extract_imaginary_frequencies")(tool_extract_imaginary_frequencies)
-    mcp.tool(name="compare_calculations")(tool_compare_calculations)
-    mcp.tool(name="compare_across_functionals")(tool_compare_across_functionals)
+    mcp.tool(name="extract_imaginary_frequencies")(_safe("extract_imaginary_frequencies", tool_extract_imaginary_frequencies))
+    mcp.tool(name="compare_calculations")(_safe("compare_calculations", tool_compare_calculations))
+    mcp.tool(name="compare_across_functionals")(_safe("compare_across_functionals", tool_compare_across_functionals))
     # Output-analysis depth (orbitals / TDDFT / dipole / opt trajectory)
-    mcp.tool(name="extract_orbital_energies")(tool_extract_orbital_energies)
-    mcp.tool(name="extract_excited_states")(tool_extract_excited_states)
-    mcp.tool(name="extract_dipole")(tool_extract_dipole)
-    mcp.tool(name="extract_optimization_trajectory")(tool_extract_optimization_trajectory)
+    mcp.tool(name="extract_orbital_energies")(_safe("extract_orbital_energies", tool_extract_orbital_energies))
+    mcp.tool(name="extract_excited_states")(_safe("extract_excited_states", tool_extract_excited_states))
+    mcp.tool(name="extract_dipole")(_safe("extract_dipole", tool_extract_dipole))
+    mcp.tool(name="extract_optimization_trajectory")(_safe("extract_optimization_trajectory", tool_extract_optimization_trajectory))
     # Phase E parsers (SCF / population / vib modes / DELFIN json / summary table)
-    mcp.tool(name="extract_scf_convergence")(tool_extract_scf_convergence)
-    mcp.tool(name="extract_mulliken_charges")(tool_extract_mulliken_charges)
-    mcp.tool(name="extract_loewdin_charges")(tool_extract_loewdin_charges)
-    mcp.tool(name="extract_vibrational_modes")(tool_extract_vibrational_modes)
-    mcp.tool(name="extract_delfin_json")(tool_extract_delfin_json)
-    mcp.tool(name="extract_calc_summary_table")(tool_extract_calc_summary_table)
+    mcp.tool(name="extract_scf_convergence")(_safe("extract_scf_convergence", tool_extract_scf_convergence))
+    mcp.tool(name="extract_mulliken_charges")(_safe("extract_mulliken_charges", tool_extract_mulliken_charges))
+    mcp.tool(name="extract_loewdin_charges")(_safe("extract_loewdin_charges", tool_extract_loewdin_charges))
+    mcp.tool(name="extract_vibrational_modes")(_safe("extract_vibrational_modes", tool_extract_vibrational_modes))
+    mcp.tool(name="extract_delfin_json")(_safe("extract_delfin_json", tool_extract_delfin_json))
+    mcp.tool(name="extract_calc_summary_table")(_safe("extract_calc_summary_table", tool_extract_calc_summary_table))
     # P1 — statistical plots (PNG → agent_workspace, auto-displayed)
-    mcp.tool(name="plot_energy_distribution")(tool_plot_energy_distribution)
-    mcp.tool(name="plot_energy_correlation")(tool_plot_energy_correlation)
+    mcp.tool(name="plot_energy_distribution")(_safe("plot_energy_distribution", tool_plot_energy_distribution))
+    mcp.tool(name="plot_energy_correlation")(_safe("plot_energy_correlation", tool_plot_energy_correlation))
     # Phase D plots (orbitals / opt convergence / UV/Vis spectrum)
-    mcp.tool(name="plot_orbital_diagram")(tool_plot_orbital_diagram)
-    mcp.tool(name="plot_optimization_convergence")(tool_plot_optimization_convergence)
-    mcp.tool(name="plot_uvvis_spectrum")(tool_plot_uvvis_spectrum)
+    mcp.tool(name="plot_orbital_diagram")(_safe("plot_orbital_diagram", tool_plot_orbital_diagram))
+    mcp.tool(name="plot_optimization_convergence")(_safe("plot_optimization_convergence", tool_plot_optimization_convergence))
+    mcp.tool(name="plot_uvvis_spectrum")(_safe("plot_uvvis_spectrum", tool_plot_uvvis_spectrum))
     # Phase E plots (SCF / charges / vibrational IR spectrum)
-    mcp.tool(name="plot_scf_convergence")(tool_plot_scf_convergence)
-    mcp.tool(name="plot_population_charges")(tool_plot_population_charges)
-    mcp.tool(name="plot_vibrational_spectrum")(tool_plot_vibrational_spectrum)
+    mcp.tool(name="plot_scf_convergence")(_safe("plot_scf_convergence", tool_plot_scf_convergence))
+    mcp.tool(name="plot_population_charges")(_safe("plot_population_charges", tool_plot_population_charges))
+    mcp.tool(name="plot_vibrational_spectrum")(_safe("plot_vibrational_spectrum", tool_plot_vibrational_spectrum))
     # Tool / widget catalogs (cheap on-demand discovery)
-    mcp.tool(name="list_tools")(tool_list_tools)
-    mcp.tool(name="describe_tool")(tool_describe_tool)
-    mcp.tool(name="list_dashboard_widgets")(tool_list_dashboard_widgets)
-    mcp.tool(name="get_widget_options")(tool_get_widget_options)
+    mcp.tool(name="list_tools")(_safe("list_tools", tool_list_tools))
+    mcp.tool(name="describe_tool")(_safe("describe_tool", tool_describe_tool))
+    mcp.tool(name="list_dashboard_widgets")(_safe("list_dashboard_widgets", tool_list_dashboard_widgets))
+    mcp.tool(name="get_widget_options")(_safe("get_widget_options", tool_get_widget_options))
     # ORCA Builder validation
-    mcp.tool(name="validate_orca_input")(tool_validate_orca_input)
+    mcp.tool(name="validate_orca_input")(_safe("validate_orca_input", tool_validate_orca_input))
     # Job lifecycle (read-only list + mutating submit/cancel)
-    mcp.tool(name="list_active_calculations")(tool_list_active_calculations)
+    mcp.tool(name="list_active_calculations")(_safe("list_active_calculations", tool_list_active_calculations))
     mcp.tool(name="submit_calculation")(_host_gated(tool_submit_calculation))
     mcp.tool(name="cancel_calculation")(_host_gated(tool_cancel_calculation))
     # Calc folder management (mutating, allow_mutate-gated)
@@ -1753,20 +1774,20 @@ def run_server(argv: list[str] | None = None) -> None:
     # Bulk job control + recalc preparation + Options dispatcher
     mcp.tool(name="kill_all_user_jobs")(_host_gated(tool_kill_all_user_jobs))
     mcp.tool(name="prepare_recalc")(_host_gated(tool_prepare_recalc))
-    mcp.tool(name="list_calc_options")(tool_list_calc_options)
+    mcp.tool(name="list_calc_options")(_safe("list_calc_options", tool_list_calc_options))
     mcp.tool(name="run_calc_option")(_host_gated(tool_run_calc_option))
-    mcp.tool(name="list_ssh_transfer_jobs")(tool_list_ssh_transfer_jobs)
+    mcp.tool(name="list_ssh_transfer_jobs")(_safe("list_ssh_transfer_jobs", tool_list_ssh_transfer_jobs))
     # ORCA-manual lookup + literature indexing
-    mcp.tool(name="check_orca_manual_indexed")(tool_check_orca_manual_indexed)
-    mcp.tool(name="index_new_pdf")(tool_index_new_pdf)
+    mcp.tool(name="check_orca_manual_indexed")(_safe("check_orca_manual_indexed", tool_check_orca_manual_indexed))
+    mcp.tool(name="index_new_pdf")(_safe("index_new_pdf", tool_index_new_pdf))
     # PDF on-demand reading (no pre-indexing)
-    mcp.tool(name="read_pdf")(tool_read_pdf)
-    mcp.tool(name="search_pdf_local")(tool_search_pdf_local)
-    mcp.tool(name="extract_pdf_section")(tool_extract_pdf_section)
-    mcp.tool(name="list_literature_files")(tool_list_literature_files)
+    mcp.tool(name="read_pdf")(_safe("read_pdf", tool_read_pdf))
+    mcp.tool(name="search_pdf_local")(_safe("search_pdf_local", tool_search_pdf_local))
+    mcp.tool(name="extract_pdf_section")(_safe("extract_pdf_section", tool_extract_pdf_section))
+    mcp.tool(name="list_literature_files")(_safe("list_literature_files", tool_list_literature_files))
     # DELFIN-feature explainer
-    mcp.tool(name="list_delfin_features")(tool_list_delfin_features)
-    mcp.tool(name="explain_delfin_feature")(tool_explain_delfin_feature)
+    mcp.tool(name="list_delfin_features")(_safe("list_delfin_features", tool_list_delfin_features))
+    mcp.tool(name="explain_delfin_feature")(_safe("explain_delfin_feature", tool_explain_delfin_feature))
 
     # stop_dry_run needs the default workspace closed over
     @mcp.tool(name="stop_dry_run", description=tool_stop_dry_run.__doc__)
