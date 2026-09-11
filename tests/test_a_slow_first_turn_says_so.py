@@ -24,28 +24,21 @@ def _german():
     vg.set_caveat_language("de")
 
 
-def test_the_notice_names_the_model_and_the_wait():
-    vg.set_caveat_language("en")
+def test_the_notice_names_the_model_and_the_measured_wait():
     text = vg.cold_start_notice("kit.glm-5.3", 200.0)
-    assert "kit.glm-5.3" in text
-    assert "3 minutes" in text
-    assert "faster" in text
+    assert "First turn on kit.glm-5.3" in text
+    assert "about 200 s" in text, "the measured figure, not a rounded-up promise"
+    assert "queue adds more" in text and "faster" in text
 
 
-def test_the_notice_speaks_the_session_language():
+def test_the_notice_is_english_whatever_the_session():
     vg.set_caveat_language("de")
     text = vg.cold_start_notice("kit.glm-5.3", 200.0)
-    assert "Erster Zug" in text
-    assert "3 Minuten" in text
-    vg.set_caveat_language("en")
-    assert "First turn" in vg.cold_start_notice("kit.glm-5.3", 200.0)
+    assert "First turn" in text and "Erster Zug" not in text
 
 
-def test_one_minute_is_singular():
-    vg.set_caveat_language("en")
-    assert "1 minute" in vg.cold_start_notice("kit.glm-5.3", 90.0)
-    vg.set_caveat_language("de")
-    assert "1 Minute" in vg.cold_start_notice("kit.glm-5.3", 90.0)
+def test_a_short_wait_is_still_said_in_seconds():
+    assert "about 90 s" in vg.cold_start_notice("kit.glm-5.3", 90.0)
 
 
 def test_a_fast_model_says_nothing():

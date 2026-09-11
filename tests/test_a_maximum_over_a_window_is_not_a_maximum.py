@@ -160,7 +160,7 @@ def test_a_maximum_over_a_window_is_flagged_and_the_window_is_named(book):
     caveat = office.figure_coverage_caveat(
         "Die höchste Buchung beträgt 1.234,50 EUR.", token=token)
     assert caveat, "the maximum of a page passed as the maximum of the file"
-    assert "Höchst-" in caveat
+    assert "highest or lowest" in caveat
     assert "Zeilen 1–5 von 26" in caveat
     # A different mistake needs a different repair: the number was really
     # there, so "where does this come from" would send the reader looking
@@ -181,7 +181,7 @@ def test_an_invented_maximum_is_still_called_invented(book):
     token = _turn("invented", office.read_sheet(book, max_rows=500))
     caveat = office.figure_coverage_caveat(
         "Die höchste Buchung beträgt 99.999,99 EUR.", token=token)
-    assert "stammt nicht aus einem Werkzeug-Ergebnis" in caveat
+    assert "did not come from a tool result" in caveat
 
 
 def test_quoting_a_value_that_was_shown_is_not_an_extreme(book):
