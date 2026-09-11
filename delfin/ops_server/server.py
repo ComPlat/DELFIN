@@ -310,9 +310,12 @@ def tool_calc_status(folder: str) -> str:
     Returns {"folder", "state", "outcome", "method", "evidence",
     "last_activity", "last_activity_age_s"}.
     state: succeeded | failed | finished | running | stalled | pending |
-    unknown | missing. "stalled" is a run with no exit code whose files
-    have not been written for over six hours (last_activity_age_s says
-    how long); "running" is one written recently. outcome: the phrase
+    not started | unknown | missing. "stalled" is a run with no exit code
+    whose files have not been written for over six hours
+    (last_activity_age_s says how long); "running" is one written
+    recently; "not started" is an input with no output that no scheduler
+    job lists and that nothing has written to for over six hours (a
+    fresh one is "pending"). outcome: the phrase
     with its source ("failed (exit code
     1025)", "running or crashed (run log present, no exit code)", "no
     output yet (input present; not started or still running)",
@@ -466,11 +469,15 @@ def tool_extract_energy_table(
     (succeeded / failed (exit code N) / running or crashed / unknown --
     "no_output" alone does not say which), ``state`` (one word by the
     same rule calc_status uses: succeeded / failed / finished / running /
-    stalled / pending / unknown -- "running" when the scheduler has a
-    job on the folder or it was written recently, "stalled" after six
-    hours without a write), ``last_activity`` and ``last_activity_age_s``
-    (when the newest file in the folder was written), and one entry per
-    requested property. Rows with status != "ok" carry None for properties.
+    stalled / pending / not started / unknown -- "running" when the
+    scheduler has a job on the folder or it was written recently,
+    "stalled" after six hours without a write), ``last_activity`` and
+    ``last_activity_age_s`` (when the newest file in the folder was
+    written), and one entry per requested property. Rows with status !=
+    "ok" carry None for properties. A row whose output has no
+    thermochemistry carries ``notes`` saying so: gibbs and zpe are null
+    because the run was a single point (or an OPT without FREQ), and
+    single_point is the energy it has.
 
     Recognised properties: gibbs, zpe, single_point, scf_converged,
     opt_converged, imag_freqs, walltime_s.
