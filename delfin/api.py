@@ -417,6 +417,36 @@ class OrcaParseResult:
     # fact about the folder, not about the chemistry.
     status: str = "ok"      # ok | no_output | missing | read_error
     outcome: str = ""       # the folder's outcome phrase (see calculation_status)
+    # What the output actually contains, so a reader can tell a full
+    # run from a stub before trusting a number in it. An operator
+    # checking whether nine energies were reliable had to open every
+    # file to learn they were eight lines each (2026-09-11).
+    output_lines: int | None = None
+    blocks_present: list = field(default_factory=list)
+
+
+_ORCA_BLOCK_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("input", ("INPUT FILE",)),
+    ("scf_iterations", ("SCF ITERATIONS",)),
+    ("scf_converged", ("SCF CONVERGED",)),
+    ("final_energy", ("FINAL SINGLE POINT ENERGY",)),
+    ("geometry_optimization", ("GEOMETRY OPTIMIZATION CYCLE", "OPTIMIZATION RUN DONE",
+                               "THE OPTIMIZATION HAS CONVERGED", "Geometry Optimization Run",
+                               "OPTIMIZATION DID NOT CONVERGE",
+                               "FAILED TO CONVERGE THE GEOMETRY OPTIMIZATION")),
+    ("frequencies", ("VIBRATIONAL FREQUENCIES",)),
+    ("thermochemistry", ("THERMOCHEMISTRY AT", "Final Gibbs free energy")),
+    ("excited_states", ("ABSORPTION SPECTRUM VIA TRANSITION ELECTRIC DIPOLE MOMENTS",)),
+    ("orbital_energies", ("ORBITAL ENERGIES",)),
+    ("termination", ("ORCA TERMINATED NORMALLY", "ORCA finished by error termination",
+                     "ABORTING THE RUN")),
+)
+
+
+def _orca_blocks_present(text: str) -> list:
+    """The named blocks an ORCA output contains, in the order above."""
+    return [name for name, markers in _ORCA_BLOCK_MARKERS
+            if any(m in text for m in markers)]
 
 
 def parse_orca_output(path: str) -> OrcaParseResult:
@@ -465,6 +495,8 @@ def parse_orca_output(path: str) -> OrcaParseResult:
         out.outcome = outcome_of_folder(p.parent)
     except Exception:
         out.outcome = ""
+    out.output_lines = text.count("\n") + (1 if text and not text.endswith("\n") else 0)
+    out.blocks_present = _orca_blocks_present(text)
     try:
         out.final_single_point = _e.find_electronic_energy(str(p))
     except Exception:
@@ -1659,6 +1691,18 @@ def extract_optimization_trajectory(folder: str) -> OptTrajectoryResult:
             cycles=[], n_cycles=0, converged=None,
             final_energy_eh=None,
             error="no FINAL SINGLE POINT ENERGY (single-point only?)",
+        )
+    # One energy and no optimization marker is a single point, not a
+    # one-cycle optimization. The tool used to report it as cycles=[1],
+    # error=null, and an operator checking whether a run was reliable
+    # read an optimization into an output that held none (2026-09-11).
+    if len(energies) == 1 and "geometry_optimization" not in _orca_blocks_present(text):
+        return OptTrajectoryResult(
+            folder=str(folder), output_file=target.name,
+            cycles=[], n_cycles=0, converged=None,
+            final_energy_eh=None,
+            error=("no geometry optimization in this output (a single "
+                   "point): parse_orca_output has its energy"),
         )
     cycles: list[OptCycleEntry] = []
     prev = None

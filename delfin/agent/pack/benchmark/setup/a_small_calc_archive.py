@@ -101,7 +101,7 @@ ARCHIVED = [
 
 CONTROL = """# DELFIN CONTROL
 NAME = {name}
-SMILES = c1ccccc1
+SMILES = [C-]#[O+]
 charge = 0
 multiplicity = 1
 method = {workflow}
