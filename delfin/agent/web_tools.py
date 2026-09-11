@@ -239,6 +239,60 @@ def web_fetch(url: str, *, timeout_s: int = _DEFAULT_TIMEOUT_S) -> dict:
     }
 
 
+def _openalex_search(query: str, max_results: int, timeout_s: int) -> list[dict]:
+    """Scholarly works from OpenAlex (no key; a mailto joins the polite pool).
+
+    Returns [{title, url, snippet, source}] or [] on any failure -- a
+    fallback that raises is no fallback.
+    """
+    try:
+        url = "https://api.openalex.org/works?" + urllib.parse.urlencode({
+            "search": query, "per-page": max(1, min(int(max_results), 10)),
+            "select": "title,doi,publication_year,primary_location,authorships",
+            "mailto": "delfin-agent@complat.org"})
+        body = _fetch_bytes(url, timeout_s)[0]
+        data = json.loads(body.decode("utf-8", errors="replace"))
+    except Exception:
+        return []
+    hits: list[dict] = []
+    for w in (data.get("results") or []):
+        title = str(w.get("title") or "").strip()
+        doi = str(w.get("doi") or "").strip()
+        loc = w.get("primary_location") or {}
+        landing = str(loc.get("landing_page_url") or "").strip()
+        link = doi or landing
+        if not title or not link.startswith(("http://", "https://")):
+            continue
+        venue = ((loc.get("source") or {}).get("display_name") or "").strip()
+        year = w.get("publication_year") or ""
+        authors = [((a.get("author") or {}).get("display_name") or "").strip()
+                   for a in (w.get("authorships") or [])[:3]]
+        authors = [a for a in authors if a]
+        snippet = ", ".join(x for x in (", ".join(authors), venue, str(year)) if x)
+        hits.append({"title": title, "url": link, "snippet": snippet[:300],
+                     "source": "openalex"})
+    return hits
+
+
+def _wikipedia_search(query: str, max_results: int, timeout_s: int) -> list[dict]:
+    """Article titles and links from Wikipedia's opensearch (no key)."""
+    try:
+        url = "https://en.wikipedia.org/w/api.php?" + urllib.parse.urlencode({
+            "action": "opensearch", "search": query,
+            "limit": max(1, min(int(max_results), 10)), "format": "json"})
+        body = _fetch_bytes(url, timeout_s)[0]
+        data = json.loads(body.decode("utf-8", errors="replace"))
+        titles, descs, links = data[1], data[2], data[3]
+    except Exception:
+        return []
+    hits: list[dict] = []
+    for title, desc, link in zip(titles, descs, links):
+        if title and str(link).startswith(("http://", "https://")):
+            hits.append({"title": str(title), "url": str(link),
+                         "snippet": str(desc or "")[:300], "source": "wikipedia"})
+    return hits
+
+
 def _ddg_instant_answer(query: str, timeout_s: int) -> list[dict]:
     """Fallback search via the DuckDuckGo Instant Answer JSON API.
 
@@ -374,6 +428,20 @@ def web_search(query: str, *, max_results: int = 8,
         if ia:
             hits = ia[:max_results]
             source = "duckduckgo-instant-answer"
+    if not hits:
+        # A second and a third backend, keyless and answering from here
+        # and from the cluster while DuckDuckGo challenged every query
+        # (2026-09-11, HTTP 202 on all three of its endpoints). OpenAlex
+        # is the scholarly index a scientific question wants first;
+        # Wikipedia's opensearch covers names and concepts. Each result
+        # says which index it came from.
+        fallback = _openalex_search(query, max_results, timeout_s)
+        if fallback:
+            hits, source = fallback, "openalex"
+        else:
+            fallback = _wikipedia_search(query, max_results, timeout_s)
+            if fallback:
+                hits, source = fallback, "wikipedia"
 
     if not hits:
         # "No results" and "the search engine refused to answer" look the
