@@ -75,7 +75,7 @@ def test_the_feedback_asks_only_for_the_language():
 
 
 def test_the_caveat_reaches_the_reader_in_their_own_language():
-    assert "Frage war auf Deutsch" in vg.language_mismatch_caveat("de")
+    assert "the question was in German" in vg.language_mismatch_caveat("de")
     assert "question was in English" in vg.language_mismatch_caveat("en")
     assert vg.language_mismatch_caveat("") == ""
 

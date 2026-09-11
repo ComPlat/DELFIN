@@ -6673,10 +6673,11 @@ def scan_answer_for_unledgered_figures(
 
 # The caveat is German for the same reason the matchers are: it is read by
 # the person who asked the question, and they asked it in German.
-_FIGURE_KIND_DE = {"total": "Summe", "count": "Anzahl",
-                   "derived": "abgeleiteter Wert",
-                   "extremum": "Höchst-/Tiefstwert",
-                   "extremum_window": "Höchst-/Tiefstwert"}
+_FIGURE_KIND = {"total": "total", "count": "count",
+                "derived": "derived value",
+                "extremum": "extreme value",
+                "extremum_window": "extreme value"}
+_FIGURE_KIND_DE = _FIGURE_KIND   # kept for callers; the labels are English
 
 
 def figure_caveat(flags: list[FigureFlag], windows: list[str] | None = None
@@ -6700,26 +6701,25 @@ def figure_caveat(flags: list[FigureFlag], windows: list[str] | None = None
     parts: list[str] = []
     if invented:
         named = ", ".join(
-            f"'{f.figure}' ({_FIGURE_KIND_DE.get(f.kind, f.kind)})"
+            f"'{f.figure}' ({_FIGURE_KIND.get(f.kind, f.kind)})"
             for f in invented[:3])
         parts.append(
-            "\n\n> ⚠️ Diese Zahl stammt nicht aus einem Werkzeug-Ergebnis "
-            "dieses Zuges: " + named + ". Kein Aufruf hat sie geliefert, sie "
-            "lässt sich nicht aus den ermittelten Werten ableiten, und sie "
-            "steht weder in Ihrer Nachricht noch weiter oben im Verlauf. "
-            "Bitte mit sum_column bzw. compare_tables nachrechnen oder die "
-            "Quelle nennen, bevor die Zahl weitergegeben wird.")
+            "\n\n> ⚠️ This figure did not come from a tool result of this "
+            "turn: " + named + ". No call produced it, it does not follow "
+            "from the values that were read, and it is neither in your "
+            "message nor earlier in the conversation. Please recompute it "
+            "with sum_column or compare_tables, or name its source, before "
+            "passing it on.")
     if over_reach:
         named = ", ".join(f"'{f.figure}'" for f in over_reach[:3])
-        scope = (" — gelesen wurden " + "; ".join(windows[:2])
+        scope = (" — what was read: " + "; ".join(windows[:2])
                  if windows else "")
         parts.append(
-            "\n\n> ⚠️ " + named + " wird als Höchst- bzw. Tiefstwert "
-            "genannt, belegt ist aber nur ein Ausschnitt der Tabelle" + scope +
-            ". Der größte Wert eines Ausschnitts ist nicht der größte Wert "
-            "der Datei. Bitte die Tabelle vollständig lesen (start_row/"
-            "max_rows) oder mit sum_column über alle Zeilen auswerten, bevor "
-            "die Zahl weitergegeben wird.")
+            "\n\n> ⚠️ " + named + " is given as the highest or lowest "
+            "value, but only part of the table was read" + scope +
+            ". The largest value of a slice is not the largest value of the "
+            "file. Please read the table in full (start_row/max_rows) or "
+            "evaluate all rows with sum_column before passing the figure on.")
     return "".join(parts)
 
 

@@ -635,95 +635,62 @@ _PATH_SEGMENT_RE = re.compile(r"[A-Za-z0-9][\w.+-]{3,}")
 #: stop at whitespace, quotes, brackets and commas.
 _PATHS_IN_TEXT_RE = re.compile(r"(?:/[^\s'\"{}\[\],]+)+")
 
-# Every caveat, in both languages the sessions run in. One table, so a
-# new note cannot be added in one language and forgotten in the other.
-_CAVEAT_TEXTS: dict[str, dict[str, str]] = {
-    "de": {
-        "unsourced": ("\n\n[verify] Caveat: die folgenden Angaben sind "
-                      "unbelegt — kein Datei-Zugriff und keine Recherche in "
-                      "dieser Sitzung deckt sie ab: "),
-        "unsourced_end": ". Bitte als unbestätigt behandeln.",
-        "truncated_a": "\n\n> ⚠️ Diese Antwort nennt ",
-        "truncated_b": ", aber die Ausgabe von ",
-        "truncated_c": (" wurde in diesem Zug abgeschnitten. Eine Zahl, "
-                        "deren einzige Quelle abgeschnitten war, ist "
-                        "geschätzt und nicht gezählt — bitte gegen die "
-                        "vollständige Liste prüfen, bevor sie weitergegeben "
-                        "wird."),
-        "truncated_where": "ein Werkzeug-Ergebnis",
-        "cold_start_a": "\n> ⏳ Erster Zug mit ",
-        "cold_start_b": (": der Endpoint baut gerade seinen Cache für "
-                         "diesen Prompt auf. Das dauert erfahrungsgemäß "
-                         "bis zu "),
-        "cold_start_c": (" — die folgenden Züge dieser Sitzung sind dann "
-                         "deutlich schneller.\n"),
-    },
-    "en": {
-        "unsourced": ("\n\n[verify] Caveat: the following figures are "
-                      "unsupported — no file access and no lookup in this "
-                      "session covers them: "),
-        "unsourced_end": ". Please treat them as unconfirmed.",
-        "truncated_a": "\n\n> ⚠️ This answer states ",
-        "truncated_b": ", but the output of ",
-        "truncated_c": (" was truncated in this turn. A number whose only "
-                        "source was cut short is an estimate, not a count — "
-                        "please check it against the full list before "
-                        "passing it on."),
-        "truncated_where": "a tool result",
-        "cold_start_a": "\n> ⏳ First turn on ",
-        "cold_start_b": (": the endpoint is building its cache for this "
-                         "prompt. Expect up to "),
-        "cold_start_c": (" — the later turns of this session are much "
-                         "faster.\n"),
-    },
+# Every note the framework itself writes for the user, in English. The
+# table used to carry a German variant chosen by the session's language;
+# the user's rule is that the framework speaks English everywhere (the
+# strip, the toggles, the notices) and the MODEL answers in the user's
+# language. A cold-start notice in German under an English dashboard
+# was the last of those to go (2026-09-11).
+_CAVEAT_TEXTS: dict[str, str] = {
+    "unsourced": ("\n\n[verify] Caveat: the following figures are "
+                  "unsupported — no file access and no lookup in this "
+                  "session covers them: "),
+    "unsourced_end": ". Please treat them as unconfirmed.",
+    "truncated_a": "\n\n> ⚠️ This answer states ",
+    "truncated_b": ", but the output of ",
+    "truncated_c": (" was truncated in this turn. A number whose only "
+                    "source was cut short is an estimate, not a count — "
+                    "please check it against the full list before "
+                    "passing it on."),
+    "truncated_where": "a tool result",
+    "cold_start_a": "\n> ⏳ First turn on ",
+    "cold_start_b": (": the endpoint is building its cache for this "
+                     "prompt — usually about "),
+    "cold_start_c": (" here, and on a busy day its queue adds more (the "
+                     "spinner counts the wait). Later turns of this "
+                     "session are faster.\n"),
 }
-
-
-# Which language the CAVEATS speak. They are the only guard output the
-# user reads — the feedback that goes to the model is English by
-# construction — and they were hardcoded German. An English session
-# therefore got an English answer from the model with German warnings
-# stapled underneath it, which is the rule and its own mechanism
-# disagreeing, in the one place the disagreement is visible.
-#
-# A ContextVar rather than a global: subagents and background turns run
-# in their own contexts and must not repaint each other's language.
-_caveat_language: "_contextvars.ContextVar[str]" = (
-    _contextvars.ContextVar("delfin_caveat_language", default="de"))
 
 
 def cold_start_notice(model: str, seconds: float) -> str:
     """The line a user reads instead of watching nothing happen.
 
     A first turn that takes minutes and says nothing is indistinguishable
-    from a hang, and the user reported it as one. Speaks the session's
-    language, like every other note the user reads.
+    from a hang, and the user reported it as one. The figure is the
+    profile's measured cold start, in seconds as measured, not rounded up
+    to minutes: 200 s said as "3 minutes" read as a promise the queue
+    then broke.
     """
     if not model or seconds <= 0:
         return ""
-    minutes = max(1, int(seconds // 60))
-    unit = "Minuten" if (_caveat_language.get() or "de") == "de" else "minutes"
-    if minutes == 1:
-        unit = "Minute" if (_caveat_language.get() or "de") == "de" else "minute"
     return (f"{_t('cold_start_a')}{model}{_t('cold_start_b')}"
-            f"{minutes} {unit}{_t('cold_start_c')}")
+            f"{int(seconds)} s{_t('cold_start_c')}")
 
 
 def set_caveat_language(lang: str) -> None:
-    """Speak the session's language in the notes the user reads.
+    """Kept for callers; the notes the user reads are English.
 
-    Anything but a language this module has words for leaves it alone —
-    a half-translated caveat is worse than one consistent language.
+    The framework speaks one language everywhere the user sees it; the
+    model answers in the user's. A per-session switch here produced
+    German framework notes under an English dashboard, which the user
+    read as the UI being half translated.
     """
-    if str(lang or "") in _CAVEAT_TEXTS:
-        _caveat_language.set(str(lang))
+    return None
 
 
 def _t(key: str) -> str:
-    """The caveat text for the active language, German if unsure."""
-    lang = _caveat_language.get() or "de"
-    table = _CAVEAT_TEXTS.get(lang) or _CAVEAT_TEXTS["de"]
-    return table.get(key, _CAVEAT_TEXTS["de"].get(key, ""))
+    """The caveat text for *key*."""
+    return _CAVEAT_TEXTS.get(key, "")
 
 
 _keyed_values: "_contextvars.ContextVar[Optional[dict]]" = (
@@ -1072,16 +1039,13 @@ def language_mismatch_feedback(want: str) -> str:
 def language_mismatch_caveat(want: str) -> str:
     """Appended when the correction turn did not switch either.
 
-    German, like every other caveat here: it is the last thing in the
-    answer and nothing after it translates it.
+    English, like every other note the framework writes: the framework
+    speaks one language everywhere the user sees it.
     """
     if want not in _LANGUAGE_NAMES:
         return ""
-    if want == "de":
-        return ("\n\n[verify] Hinweis: Die Frage war auf Deutsch, die "
-                "Antwort ist es nicht.")
-    return ("\n\n[verify] Note: the question was in English, the answer "
-            "is not.")
+    return (f"\n\n[verify] Note: the question was in "
+            f"{_LANGUAGE_NAMES[want]}, the answer is not.")
 
 
 @dataclass(frozen=True)
@@ -1190,10 +1154,10 @@ def conflicting_figure_caveat(flags: list[FigureConflict]) -> str:
         return ""
     f = flags[0]
     return (
-        f"\n\n[verify] Caveat: für '{f.field}' ({f.record}) liegen zwei "
-        f"Werte vor, {f.values[0]:.6g} und {f.values[1]:.6g} — "
-        f"{f.spread_pct:.1f}% auseinander. Es wurde nicht geklärt, welcher "
-        "gilt; bitte vor der Weitergabe entscheiden."
+        f"\n\n[verify] Caveat: for '{f.field}' ({f.record}) there are two "
+        f"values, {f.values[0]:.6g} and {f.values[1]:.6g} — "
+        f"{f.spread_pct:.1f}% apart. Which one holds was not settled; "
+        "please decide before passing it on."
     )
 
 
@@ -2493,29 +2457,26 @@ def functional_claim_caveat(flags: list[FunctionalClaimFlag]) -> str:
     for f in flags:
         if f.kind == "completeness":
             items.append(
-                f"'{f.claim}' — eine Vollständigkeitsaussage lässt sich "
-                "durch einen Testlauf nicht belegen: er sagt, was geprüft "
-                "wurde, nie was ausgelassen wurde. Bitte benennen, was NICHT "
-                "ausgeführt wurde")
+                f"'{f.claim}' — a completeness claim cannot be backed by a "
+                "test run: it says what was checked, never what was left "
+                "out. Please name what was NOT run")
         elif f.kind == "interactive":
-            items.append(f"'{f.claim}' — interaktives Verhalten bzw. das "
-                         f"Verhalten im Browser wurde in dieser Sitzung nie "
-                         f"ausgeführt")
+            items.append(f"'{f.claim}' — interactive or browser behaviour "
+                         f"was never run in this session")
         elif f.kind == "unexercised":
-            items.append(f"'{f.claim}' — '{f.subject}' wurde in dieser "
-                         f"Sitzung nie ausgeführt (einen Server zu starten "
-                         f"belegt nicht, dass er funktioniert)")
+            items.append(f"'{f.claim}' — '{f.subject}' was never run in "
+                         f"this session (starting a server does not show "
+                         f"that it works)")
         else:
-            items.append(f"'{f.claim}' — in dieser Sitzung wurde nichts "
-                         f"ausgeführt")
+            items.append(f"'{f.claim}' — nothing was run in this session")
     note = ""
     if any(f.kind == "interactive" for f in flags):
-        note = (" Interaktives Verhalten und Browser-Verhalten lassen sich "
-                "hier ohne Anzeige nicht prüfen.")
+        note = (" Interactive and browser behaviour cannot be checked "
+                "here without a display.")
     return (
-        "\n\n[verify] Caveat: das Folgende wurde in dieser Sitzung NICHT "
-        "geprüft: " + "; ".join(items) + "." + note
-        + " Bitte als unbestätigt behandeln."
+        "\n\n[verify] Caveat: the following was NOT checked in this "
+        "session: " + "; ".join(items) + "." + note
+        + " Please treat it as unconfirmed."
     )
 
 
@@ -2862,9 +2823,9 @@ def count_vs_enumeration_caveat(pairs: list[tuple[int, int]]) -> str:
         return ""
     claimed, listed = pairs[0]
     return (
-        f"\n\n> ⚠️ Diese Antwort nennt {claimed}, führt aber {listed} "
-        "Einträge auf. Eines von beiden ist falsch — bitte nachzählen, "
-        "bevor die Zahl weitergegeben wird."
+        f"\n\n> ⚠️ This answer states {claimed} but lists {listed} "
+        "entries. One of the two is wrong — please recount before "
+        "passing the figure on."
     )
 
 
@@ -2888,9 +2849,8 @@ def ambiguous_column_caveat(columns: list[str]) -> str:
         return ""
     named = ", ".join(f"'{c}'" for c in columns[:4])
     return (
-        "\n\n> ⚠️ Die Spalte " + named + " ist nicht eindeutig lesbar: "
-        "ein Wert wie `8.986` bedeutet 8986 oder 8,986, und nichts in der "
-        "Spalte entscheidet das. Die Zahl oben beruht daher auf einer "
-        "Annahme und ist nicht gemessen — bitte die Lesart bestätigen, "
-        "bevor sie weitergegeben wird."
+        "\n\n> ⚠️ The column " + named + " cannot be read unambiguously: "
+        "a value like `8.986` means 8986 or 8.986, and nothing in the "
+        "column decides it. The figure above rests on an assumption, not "
+        "a measurement — please confirm the reading before passing it on."
     )

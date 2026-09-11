@@ -77,9 +77,15 @@ def test_two_different_claims_are_both_named():
 # --------------------------------------------------------- the language
 
 
-def test_the_warning_is_german_in_a_german_session():
+def test_the_warning_is_english_whatever_the_session():
+    """The framework speaks English everywhere the user sees it; the
+    model answers in the user's language (the user's rule, 2026-09-11 --
+    a German cold-start notice under an English dashboard was the last
+    framework note to switch)."""
     vg.set_caveat_language("de")
-    assert "abgeschnitten" in vg.truncated_output_caveat(["5 Zeilen"], ["bash"])
+    caveat = vg.truncated_output_caveat(["5 Zeilen"], ["bash"])
+    assert "was truncated in this turn" in caveat
+    assert "abgeschnitten" not in caveat
 
 
 def test_the_warning_is_english_in_an_english_session():

@@ -744,13 +744,13 @@ def test_functional_caveat_names_the_unverified_thing():
     assert cav.startswith("\n\n[verify] Caveat")
     assert "Beide Spiele funktionieren im Browser" in cav
     assert "Pfeiltasten" in cav
-    assert "nie ausgeführt" in cav
-    assert "ohne Anzeige nicht prüfen" in cav
+    assert "never run" in cav
+    assert "without a display" in cav
     # The artifact kind names the artifact.
     art = vg.scan_for_unexercised_functional_claims(
         "games.ipynb läuft fehlerfrei.", exec_commands=_cmds(
             ("bash_background", '{"command": "voila games.ipynb"}')))
-    assert "'games.ipynb' wurde in dieser Sitzung nie ausgeführt" in (
+    assert "'games.ipynb' was never run in this session" in (
         vg.functional_claim_caveat(art))
 
 
@@ -834,8 +834,8 @@ def test_engine_functional_caveat_rides_along_with_a_correction(agent_tree):
     engine = _engine(agent_tree, client=fake)
     out = engine.stream_response("wo ist die klasse?")
     assert fake.stream_message.call_count == 2
-    assert out.count("[verify] Caveat: das Folgende wurde in dieser "
-                     "Sitzung NICHT geprüft") == 1
+    assert out.count("[verify] Caveat: the following was NOT checked in "
+                     "this session: ") == 1
     assert "das Spiel funktioniert im Browser" in out
 
 
@@ -876,8 +876,8 @@ def test_completeness_claim_is_flagged_even_after_a_real_test_run():
         exec_ledger_available=True)
     assert [f.kind for f in flags] == ["completeness"]
     caveat = functional_claim_caveat(flags)
-    assert "Vollständigkeitsaussage" in caveat
-    assert "was NICHT ausgeführt wurde" in caveat
+    assert "completeness claim" in caveat
+    assert "what was NOT run" in caveat
 
 
 def test_completeness_wordings_in_both_languages():
@@ -957,9 +957,9 @@ def test_a_location_flag_does_not_suppress_the_count_caveats(agent_tree):
     # the location claim: corrected, still unverified -> named
     assert "[verify] Caveat" in out
     # the count over a cut-short source
-    assert "geschätzt und nicht gezählt" in out
+    assert "an estimate, not a count" in out
     # the count that contradicts its own list
-    assert "nennt 31, führt aber 29 Einträge auf" in out
+    assert "states 31 but lists 29 entries" in out
 
 
 def test_the_same_chain_runs_when_the_correction_budget_is_spent(agent_tree):
@@ -971,8 +971,8 @@ def test_the_same_chain_runs_when_the_correction_budget_is_spent(agent_tree):
     assert fake.stream_message.call_count == 1
     # ... and every caveat still applied.
     assert "[verify] Caveat" in out
-    assert "geschätzt und nicht gezählt" in out
-    assert "nennt 31, führt aber 29 Einträge auf" in out
+    assert "an estimate, not a count" in out
+    assert "states 31 but lists 29 entries" in out
 
 
 def test_a_guard_note_is_never_read_back_as_the_models_own_text(agent_tree):
@@ -981,7 +981,7 @@ def test_a_guard_note_is_never_read_back_as_the_models_own_text(agent_tree):
     fake = _client_with_cut_short_tool(["Ich habe 31 Rechnungen geprüft."])
     engine = _engine(agent_tree, client=fake)
     out = engine.stream_response("wie viele?")
-    assert out.count("geschätzt und nicht gezählt") == 1
+    assert out.count("an estimate, not a count") == 1
 
 
 # ---------------------------------------------------------------------------

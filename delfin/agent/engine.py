@@ -2281,17 +2281,6 @@ class AgentEngine:
             # Per turn: the stray-write note is said once and the next
             # turn may say it again if the work drifts again.
             self._stray_write_noted = False
-            # The notes the USER reads follow the session too. They were
-            # hardcoded German, so an English session got an English
-            # answer with German warnings stapled underneath — the rule
-            # and its own mechanism disagreeing in the one place the
-            # disagreement is visible.
-            try:
-                from . import verify_guard as _vg_lang
-                _vg_lang.set_caveat_language(
-                    getattr(self, "_session_language", "") or "de")
-            except Exception:
-                pass
             # Same rule, same reason, and it was documented as per-turn
             # while never being cleared: once ANY tool truncated in a
             # session, every later answer carrying a two-digit count got
