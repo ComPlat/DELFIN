@@ -259,3 +259,10 @@ def test_the_stream_loop_stamps_the_round_and_uses_the_notice():
     src = inspect.getsource(api_client.OpenAIClient.stream_message)
     assert "_round_t0 = time.monotonic()" in src
     assert "_retry_notice(" in src
+
+
+def test_the_watchdog_does_not_advise_a_longer_budget_where_it_cannot_help():
+    body = _body("_arm_stale_watcher", _source(), 16000)
+    assert "The KIT gateway cuts a request the model has not started after 600 s" in body
+    assert 'provider_dropdown.value or "") == "kit"' in body
+    assert "raise " in body, "the other providers keep the setting advice"

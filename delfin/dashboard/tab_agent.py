@@ -8669,14 +8669,24 @@ def create_tab(ctx):
                         f"something that will never arrive."
                     )
                 elif waiting_for_first:
+                    # On KIT a longer budget cannot help: its gateway
+                    # answers 504 at 600 s to a request the model has not
+                    # started (measured 2026-09-11), so the wait beyond
+                    # that is a retry joining the queue again.
+                    _kit = (provider_dropdown.value or "") == "kit"
+                    _advice = (
+                        "The KIT gateway cuts a request the model has not "
+                        "started after 600 s, so a longer budget cannot "
+                        "help: pick a different model, or /retry later."
+                        if _kit else
+                        "The endpoint was likely queued or overloaded — "
+                        "/retry, pick a different model, or raise "
+                        "`agent.first_token_kill_after_s`.")
                     _append_system_message(
                         f"⏱ Turn ended by DELFIN's watchdog: the provider "
                         f"sent nothing for {int(elapsed)} s (first-token "
                         f"budget {int(budget)} s). No tokens were produced, "
-                        f"so this turn cost nothing. The endpoint was "
-                        f"likely queued or overloaded — /retry, pick a "
-                        f"different model, or raise "
-                        f"`agent.first_token_kill_after_s`."
+                        f"so this turn cost nothing. {_advice}"
                     )
                 else:
                     _append_system_message(
