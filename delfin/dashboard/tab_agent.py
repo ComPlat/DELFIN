@@ -217,6 +217,49 @@ def _longest_pending_tool(inflight: dict, now: float):
     return best
 
 
+def _mmss(seconds: float) -> str:
+    """``3:07`` for 187 s -- the spinner counts the wait the way a person does."""
+    total = max(0, int(seconds))
+    return f"{total // 60}:{total % 60:02d}"
+
+
+def _waiting_label(model: str, waited_s: float, first: bool,
+                   slow_cold_start_s: float = 0.0) -> str:
+    """What the spinner says while the provider is silent.
+
+    The label used to read "Thinking..." from the send until the first
+    token, whether that took four seconds or fourteen minutes. The wait
+    is the user's, so it is counted for them, and set against what the
+    model's profile calls a normal cold start -- a wait far past that is
+    named as the endpoint queueing, which is a fact they can act on
+    (Stop, pick another model) rather than a spinner to stare at.
+    """
+    name = model or "the model"
+    if first:
+        text = f"Waiting for {name} \u00b7 {_mmss(waited_s)} without a token"
+    else:
+        text = f"Waiting for {name} \u00b7 {_mmss(waited_s)} since the last token"
+    slow = float(slow_cold_start_s or 0.0)
+    queueing_after = max(300.0, 2.0 * slow) if slow > 0 else 300.0
+    if waited_s >= queueing_after:
+        text += (" \u00b7 the endpoint is queueing: Stop and pick another "
+                 "model, or wait")
+    elif first and slow > 0 and waited_s >= 30.0:
+        text += f" \u00b7 a cold start here usually takes ~{int(slow)} s"
+    return text
+
+
+def _turn_timing_text(total_s: float, ttft_s: float, tool_calls: int) -> str:
+    """``4:12 to first token · 5:03 turn · 3 tools`` for the status row."""
+    parts = []
+    if ttft_s >= 0:
+        parts.append(f"{_mmss(ttft_s)} to first token")
+    parts.append(f"{_mmss(total_s)} turn")
+    if tool_calls:
+        parts.append(f"{tool_calls} tool call{'s' if tool_calls != 1 else ''}")
+    return " · ".join(parts)
+
+
 def _stall_remaining_s(elapsed: float, budget: float, pending) -> float:
     """Seconds left before silence may be called a fault.
 
@@ -6679,11 +6722,8 @@ def create_tab(ctx):
         # drop what it cannot read; that refusal is the user's to see, not
         # a traceback in the notebook output.
         try:
-            engine.restore_state({
-                **data,
-                "mode": saved_mode,
-                "session_id": session_id,
-            })
+            _hand_state_to(engine, data, mode=saved_mode,
+                           session_id=session_id)
         except Exception as exc:
             _append_system_message(f"Session not restored: {exc}")
             return
@@ -6908,6 +6948,50 @@ def create_tab(ctx):
         if _provider_key("ANTHROPIC_API_KEY"):
             return "api"
         return "cli"  # will error at runtime
+
+    def _hand_state_to(engine, data: dict, *, mode: str, session_id: str) -> None:
+        """The one place a saved or carried state reaches an engine.
+
+        Handed over WHOLESALE: ``restore_state`` reads it by declared key
+        and ignores the rest. Re-listing the keys here was the defect on
+        the save side once, and a second call site would be the same
+        defect waiting; the two values the UI owns are the only overrides.
+        """
+        engine.restore_state({
+            **data,
+            "mode": mode,
+            "session_id": session_id,
+        })
+
+    def _drop_engine() -> None:
+        """Retire the engine so the next send builds a fresh one -- and
+        keep its conversation for that one.
+
+        A model, provider or permission switch used to set the reference
+        to None and nothing else. The chat panel still showed every
+        message, because that lives in the widget state; the new engine
+        had none of them, and answered the next question without the
+        context the user could see on screen. The old CLI subprocess was
+        left running on all but the provider switch.
+        """
+        engine = state.get("engine")
+        if engine is None:
+            return
+        carry = None
+        try:
+            carry = dict(engine.export_state())
+        except Exception:
+            carry = None
+        if hasattr(engine.client, "kill"):
+            try:
+                engine.client.kill()
+            except Exception:
+                pass
+        state["engine"] = None
+        if carry and carry.get("engine_messages"):
+            state["_engine_carry_over"] = carry
+        else:
+            state.pop("_engine_carry_over", None)
 
     def _ensure_engine():
         """Create or re-use the engine."""
@@ -7136,6 +7220,28 @@ def create_tab(ctx):
             state["engine"] = engine
             ctx.agent_engine = engine
 
+            # The conversation the previous engine held, when this one
+            # replaces it for a new model, provider, effort or permission
+            # profile. Restored by the same path a saved session takes.
+            carry = state.pop("_engine_carry_over", None)
+            if carry:
+                try:
+                    _hand_state_to(
+                        engine, carry, mode=mode_dropdown.value,
+                        session_id=(carry.get("session_id")
+                                    or state.get("active_session_id") or ""))
+                    try:
+                        _kp = getattr(engine, "kit_permissions", None)
+                        if _kp is not None and carry.get("session_id"):
+                            _kp.task_session_id = carry["session_id"]
+                    except Exception:
+                        pass
+                except Exception as exc:
+                    _append_system_message(
+                        "The conversation so far did not carry over to the "
+                        f"new engine: {exc}. The chat above is still shown, "
+                        "but the model starts without it.")
+
             # Model preflight: surface a clear, actionable message before the
             # user sends — endpoint down / model not pulled (Ollama), no native
             # tool support (any provider), or a KIT model not worth the agent
@@ -7160,10 +7266,65 @@ def create_tab(ctx):
                     _wire_p5(engine)
             except Exception:
                 pass
+            _probe_endpoint_in_background(engine, provider, model)
             return engine
         except Exception as exc:
             _append_system_message(f"Engine error: {exc}")
             return None
+
+    def _probe_endpoint_in_background(engine, provider: str, model: str) -> None:
+        """One word to the endpoint as soon as the engine exists, and a
+        line in the chat with how long it took -- so the model the user
+        just picked is a measured thing before the first turn, not a name
+        in a dropdown. Only for the OpenAI-compatible backends; off with
+        ``agent.probe_endpoint: false``.
+        """
+        sdk = getattr(getattr(engine, "client", None), "client", None)
+        if sdk is None or not hasattr(sdk, "chat"):
+            return
+        try:
+            from delfin.user_settings import load_settings as _ls
+            if not bool(((_ls() or {}).get("agent", {}) or {})
+                        .get("probe_endpoint", True)):
+                return
+        except Exception:
+            pass
+        import threading as _threading
+
+        def _run():
+            try:
+                from delfin.agent.endpoint_probe import (
+                    probe_first_token, describe)
+                from delfin.agent.model_profiles import get_profile
+                effort = ""
+                try:
+                    from delfin.agent.api_client import _reasoning_effort_param
+                    from delfin.agent.model_capabilities import resolve
+                    caps = resolve(provider, model,
+                                   str(getattr(sdk, "base_url", "") or ""),
+                                   allow_live=False)
+                    effort = _reasoning_effort_param("low", caps, provider)
+                except Exception:
+                    effort = ""
+                res = probe_first_token(sdk, model, provider=provider,
+                                        timeout_s=60.0,
+                                        reasoning_effort=effort)
+                if state.get("engine") is not engine:
+                    return   # the user moved on; the number is stale
+                slow = 0.0
+                try:
+                    slow = float(get_profile(model).slow_cold_start_s or 0)
+                except Exception:
+                    pass
+                _append_system_message(
+                    "\u23f1 " + describe(res, slow_cold_start_s=slow))
+            except Exception:
+                pass
+
+        t = _threading.Thread(target=_run, daemon=True,
+                              name="delfin-endpoint-probe")
+        t.start()
+        state["_endpoint_probe_thread"] = t
 
     def _append_chat_message(role, content, role_label="", **meta):
         payload = {"role": role, "content": content, "role_label": role_label}
@@ -8224,6 +8385,7 @@ def create_tab(ctx):
                 active_gate_type=active_gate.get("type", ""),
                 active_gate_text=active_gate.get("title", ""),
                 last_turn_cost_usd=float(state.get("_last_turn_cost") or 0.0),
+                last_turn_timing=str(state.get("_last_turn_timing") or ""),
             )
         else:
             backend = _resolve_backend() if _cli_available else "api"
@@ -8446,8 +8608,17 @@ def create_tab(ctx):
                                .get("first_token_kill_after_s") or 0)
         except Exception:
             _first_cfg = 0.0
+        # Measured against the model's own cold start, not the stall
+        # budget: four times GLM's 420 s stall budget was a 28-minute wait
+        # for a first token, and solo mode never armed the timer at all,
+        # so a queued endpoint held the spinner for as long as it liked.
+        _slow_cold = 0.0
+        try:
+            _slow_cold = float(_get_profile(_model).slow_cold_start_s or 0)
+        except Exception:
+            pass
         first_token_kill = _first_cfg if _first_cfg > 0 else max(
-            600.0, kill_after * 4.0)
+            600.0, 3.0 * _slow_cold)
 
         def _check_kill():
             """Cooperative kill: send stop signal if still silent."""
@@ -8461,6 +8632,8 @@ def create_tab(ctx):
                 elapsed = now - last
                 waiting_for_first = not state.get("_stream_saw_output")
                 budget = first_token_kill if waiting_for_first else kill_after
+                if budget <= 0:
+                    return   # no mid-stream kill in this mode
                 # A dispatched tool call is silence the agent CAUSED, not
                 # silence the provider fell into: bash_status blocks for its
                 # server-side wait, a sub-agent runs for its wall budget, and
@@ -8510,14 +8683,24 @@ def create_tab(ctx):
                         f"something that will never arrive."
                     )
                 elif waiting_for_first:
+                    # On KIT a longer budget cannot help: its gateway
+                    # answers 504 at 600 s to a request the model has not
+                    # started (measured 2026-09-11), so the wait beyond
+                    # that is a retry joining the queue again.
+                    _kit = (provider_dropdown.value or "") == "kit"
+                    _advice = (
+                        "The KIT gateway cuts a request the model has not "
+                        "started after 600 s, so a longer budget cannot "
+                        "help: pick a different model, or /retry later."
+                        if _kit else
+                        "The endpoint was likely queued or overloaded — "
+                        "/retry, pick a different model, or raise "
+                        "`agent.first_token_kill_after_s`.")
                     _append_system_message(
                         f"⏱ Turn ended by DELFIN's watchdog: the provider "
                         f"sent nothing for {int(elapsed)} s (first-token "
                         f"budget {int(budget)} s). No tokens were produced, "
-                        f"so this turn cost nothing. The endpoint was "
-                        f"likely queued or overloaded — /retry, pick a "
-                        f"different model, or raise "
-                        f"`agent.first_token_kill_after_s`."
+                        f"so this turn cost nothing. {_advice}"
                     )
                 else:
                     _append_system_message(
@@ -8534,13 +8717,53 @@ def create_tab(ctx):
         timer.start()
         state["_stale_timer"] = timer
 
-        if kill_after > 0:
-            kill_timer = _threading.Timer(kill_after + 1.0, _check_kill)
+        _due = [b for b in (kill_after, first_token_kill) if b > 0]
+        if _due:
+            kill_timer = _threading.Timer(min(_due) + 1.0, _check_kill)
             kill_timer.daemon = True
             kill_timer.start()
             state["_stale_kill_timer"] = kill_timer
         else:
             state["_stale_kill_timer"] = None
+
+        # The wait itself, counted. Every ten seconds while the provider
+        # is silent and no tool of ours explains the silence, the spinner
+        # says how long it has been and, past the profile's cold start,
+        # what that means.
+        _wait_model = _model or model_dropdown.value or ""
+
+        def _tick_wait():
+            try:
+                if not state.get("streaming"):
+                    return
+                now = time.monotonic()
+                last = float(state.get("_last_stream_activity") or 0.0)
+                waited = now - last if last > 0 else 0.0
+                pending = _longest_pending_tool(
+                    state.get("_tool_inflight"), now)
+                if (waited >= 20.0 and not pending
+                        and not state.get("_stale_seen")):
+                    _set_working(True, _waiting_label(
+                        _wait_model, waited,
+                        first=not state.get("_stream_saw_output"),
+                        slow_cold_start_s=_slow_cold))
+                again = _threading.Timer(10.0, _tick_wait)
+                again.daemon = True
+                again.start()
+                state["_wait_tick_timer"] = again
+            except Exception:
+                pass
+
+        prev_tick = state.get("_wait_tick_timer")
+        if prev_tick is not None:
+            try:
+                prev_tick.cancel()
+            except Exception:
+                pass
+        tick = _threading.Timer(10.0, _tick_wait)
+        tick.daemon = True
+        tick.start()
+        state["_wait_tick_timer"] = tick
 
     def _update_queue_display():
         """Update the queue indicator."""
@@ -11102,8 +11325,9 @@ def create_tab(ctx):
             name = cmd[7:].strip()
             valid = {v for _, v in model_dropdown.options}
             if name in valid:
+                if model_dropdown.value == name:
+                    _append_system_message(f"Model is already {name}.")
                 model_dropdown.value = name
-                _append_system_message(f"Model switched to {name}.")
             else:
                 _append_system_message(
                     f"Unknown model '{name}'. Options: {', '.join(sorted(valid))}"
@@ -11115,8 +11339,9 @@ def create_tab(ctx):
             level = cmd[8:].strip()
             valid = {"low", "medium", "high", "xhigh"}
             if level in valid:
+                if effort_dropdown.value == level:
+                    _append_system_message(f"Effort is already {level}.")
                 effort_dropdown.value = level
-                _append_system_message(f"Effort set to {level}.")
             else:
                 _append_system_message(
                     f"Unknown effort '{level}'. Options: {', '.join(sorted(valid))}"
@@ -15040,6 +15265,16 @@ def create_tab(ctx):
             state["_turn_started_monotonic"] = time.monotonic()
         _set_working(True, "Thinking...")
 
+        def _mark_output():
+            """The provider produced something: note the time, and the
+            first time also stamp it, so the turn can say how long the
+            first token took."""
+            now = time.monotonic()
+            state["_last_stream_activity"] = now
+            if not state.get("_stream_saw_output"):
+                state["_stream_saw_output"] = True
+                state["_turn_first_output_monotonic"] = now
+
         role_label = _format_role_label(engine.current_role)
 
         def _worker():
@@ -15055,8 +15290,7 @@ def create_tab(ctx):
 
                 def _on_thinking(text):
                     nonlocal last_update
-                    state["_last_stream_activity"] = time.monotonic()
-                    state["_stream_saw_output"] = True
+                    _mark_output()
                     # The provider is streaming again, so whatever tools
                     # were dispatched are answered — a result event with an
                     # empty body reaches no callback, and a marker left
@@ -15079,8 +15313,7 @@ def create_tab(ctx):
 
                 def _on_token(text):
                     nonlocal last_update
-                    state["_last_stream_activity"] = time.monotonic()
-                    state["_stream_saw_output"] = True
+                    _mark_output()
                     state["_tool_inflight"] = {}   # see _on_thinking
                     if state.get("_stale_seen"):
                         state["_stale_seen"] = False
@@ -15108,8 +15341,7 @@ def create_tab(ctx):
                         last_update = now
 
                 def _on_tool_use(tool_name, tool_input):
-                    state["_last_stream_activity"] = time.monotonic()
-                    state["_stream_saw_output"] = True
+                    _mark_output()
                     if state.get("_stale_seen"):
                         state["_stale_seen"] = False
                     # Flush thinking if no text came before tool use
@@ -17083,8 +17315,10 @@ def create_tab(ctx):
                     # A permission change that needed a new engine waited for
                     # this moment; dropping the engine makes the next send
                     # build one with the profile the user already chose.
-                    if state.pop("_perm_rebuild_pending", ""):
-                        state["engine"] = None
+                    _pending_perm = state.pop("_perm_rebuild_pending", "")
+                    _pending_other = state.pop("_engine_rebuild_pending", "")
+                    if _pending_perm or _pending_other:
+                        _drop_engine()
                     _update_status()
                     _update_button_states()
                     _auto_save_session()
@@ -17140,6 +17374,13 @@ def create_tab(ctx):
                         dur = time.monotonic() - float(state.get("_turn_started_monotonic") or time.monotonic())
                         if d_in or d_out or d_cost > 0.0001 or tool_count[0]:
                             state["_last_turn_cost"] = d_cost
+                        try:
+                            _ttft = (float(state["_turn_first_output_monotonic"])
+                                     - float(state["_turn_started_monotonic"]))
+                        except (KeyError, TypeError, ValueError):
+                            _ttft = -1.0
+                        state["_last_turn_timing"] = _turn_timing_text(
+                            dur, _ttft, tool_count[0])
                         # Record agent metrics for iterative behaviour
                         # tuning. Append-only JSONL keyed by model +
                         # profile so /agents metrics can compare windows
@@ -17501,14 +17742,7 @@ def create_tab(ctx):
         # the engine reference -- so by the time this block ran, `engine`
         # was already None and the CLI subprocess was never killed. Every
         # provider switch leaked one.
-        engine = state["engine"]
-        if engine:
-            if hasattr(engine.client, "kill"):
-                try:
-                    engine.client.kill()
-                except Exception:
-                    pass
-            state["engine"] = None
+        _drop_engine()   # kills the old client before the selector moves
         model_dropdown.options = models
         default = _PROVIDER_DEFAULTS.get(provider, models[0][1])
         valid_values = {v for _, v in models}
@@ -17535,20 +17769,27 @@ def create_tab(ctx):
             pass
 
     def _on_model_change(change):
-        """Recreate engine with new model on next send."""
-        if state["streaming"]:
-            return
+        """Recreate the engine with the new model on the next send."""
         # A programmatic sync (restoring a saved session) sets the
         # selector to what the session already IS. Acting on it would drop
         # the engine that was just restored with its history.
         if state.get("_controls_sync_internal"):
             return
-        engine = state["engine"]
-        if engine:
-            # Force engine recreation with new model
-            state["engine"] = None
+        if state["engine"] is not None and state["streaming"]:
+            # The turn in flight keeps its engine. The choice is honoured
+            # when the turn ends, and said so: the selector used to move
+            # here while the engine, and with it the model, stayed put.
+            state["_engine_rebuild_pending"] = "model"
             _append_system_message(
-                f"Model switched to {change['new']}. Next message uses new model."
+                f"Model switches to {change['new']} when the running turn "
+                "finishes."
+            )
+        elif state["engine"] is not None:
+            _drop_engine()
+            _append_system_message(
+                f"Model switched to {change['new']}. The next message uses it"
+                + (", with the conversation so far."
+                   if state.get("_engine_carry_over") else ".")
             )
         # Persist the choice
         chosen_effort = ""
@@ -17577,17 +17818,49 @@ def create_tab(ctx):
                     "pick one to keep your own.")
 
     def _on_effort_change(change):
-        """Persist effort preference -- the user's, never a programmatic sync."""
-        if state["streaming"] or state.get("_controls_sync_internal"):
+        """Persist the effort choice and hand it to the engine that exists.
+
+        The user's choice, never a programmatic sync. This used to persist
+        the level and stop, and the engine kept the level it was built
+        with -- the control moved, the model did not.
+        """
+        if state.get("_controls_sync_internal"):
             return
+        level = str(change["new"] or "")
         try:
             from delfin.user_settings import load_settings, save_settings
             s = load_settings()
             s.setdefault("agent", {})
-            s["agent"]["effort"] = change["new"]
+            s["agent"]["effort"] = level
             save_settings(s)
         except Exception:
             pass
+        engine = state.get("engine")
+        if engine is None:
+            return   # the next engine is built from the control
+        live = False
+        try:
+            live = bool(engine.set_effort(level))
+        except Exception:
+            live = False
+        if live:
+            _append_system_message(
+                f"Effort \u2192 **{level}**. Every model call from now on "
+                "carries it, the next round of a running turn included."
+            )
+        elif state["streaming"]:
+            state["_engine_rebuild_pending"] = "effort"
+            _append_system_message(
+                f"Effort \u2192 **{level}**. This backend fixes the level "
+                "when it starts, so it applies when the running turn "
+                "finishes."
+            )
+        else:
+            _drop_engine()
+            _append_system_message(
+                f"Effort \u2192 **{level}**. This backend fixes the level "
+                "when it starts; the next message runs with it."
+            )
 
     def _on_perm_change(change):
         """Sync permission profile from dropdown to state, recreate engine.
@@ -17634,7 +17907,7 @@ def create_tab(ctx):
                     "when the running turn finishes."
                 )
                 return
-            state["engine"] = None
+            _drop_engine()
             cli_perm = _PROFILE_TO_CLI_PERM.get(new_profile, "default")
             _append_system_message(
                 f"Permissions → **{new_profile}** (CLI: {cli_perm}). "
@@ -18276,6 +18549,7 @@ def _render_status(
     active_gate_type: str = "",
     active_gate_text: str = "",
     last_turn_cost_usd: float = 0.0,
+    last_turn_timing: str = "",
 ) -> str:
     """Render the status bar HTML.
 
@@ -18317,6 +18591,11 @@ def _render_status(
     tokens_str = f"{input_tokens:,} in{_cached_str} / {output_tokens:,} out"
     _turn_str = (f" · +{_fmt_cost(last_turn_cost_usd)} last turn"
                  if last_turn_cost_usd > 0.00005 else "")
+    # How long the last turn took, and how much of that was the wait for
+    # the first token: the number a person needs when a model feels slow,
+    # and the one that says whether it was the endpoint or the work.
+    if last_turn_timing:
+        _turn_str += f" · {last_turn_timing}"
 
     # Permission profile badge (color-coded)
     _perm_colors = {

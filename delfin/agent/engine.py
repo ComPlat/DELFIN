@@ -877,6 +877,27 @@ class AgentEngine:
         except Exception:
             pass
 
+    def set_effort(self, effort: str) -> bool:
+        """Point the session at a new effort level.
+
+        Returns True when the running client reads the level on every
+        request, so the next model call already carries it -- also the
+        next round of a turn in flight. False when the backend fixes the
+        level at process start: the caller then needs a fresh engine, and
+        should say so rather than let the control move while nothing
+        changes.
+        """
+        level = (effort or "").strip().lower()
+        self.effort = level
+        client = getattr(self, "client", None)
+        if client is None:
+            return False
+        try:
+            client.effort = level
+        except Exception:
+            return False
+        return bool(getattr(client, "EFFORT_PER_REQUEST", False))
+
     def set_kit_permission_mode(self, mode: str) -> bool:
         """Switch the KIT permission mode at runtime.
 
