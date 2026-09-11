@@ -12053,7 +12053,7 @@ def create_tab(ctx):
                 return True
             try:
                 from delfin.dashboard.tab_submit import (
-                    validate_control_text, get_esd_hints, get_orca_override_hints,
+                    validate_control_text, get_esd_hints, get_occupier_hints, get_orca_override_hints,
                 )
                 errors = validate_control_text(cw.value)
                 lines = []
@@ -12072,6 +12072,11 @@ def create_tab(ctx):
                 if override_hints:
                     lines.append("ORCA override hints:")
                     for h in override_hints:
+                        lines.append(f"  i {h}")
+                occupier_hints = get_occupier_hints(cw.value)
+                if occupier_hints:
+                    lines.append("OCCUPIER sequence hints:")
+                    for h in occupier_hints:
                         lines.append(f"  i {h}")
                 _append_system_message("\n".join(lines))
             except Exception as exc:
