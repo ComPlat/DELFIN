@@ -165,7 +165,7 @@ def test_a_maximum_over_a_window_is_flagged_and_the_window_is_named(book):
     # A different mistake needs a different repair: the number was really
     # there, so "where does this come from" would send the reader looking
     # for something that exists.
-    assert "vollständig" in caveat
+    assert "in full" in caveat
 
 
 def test_the_same_maximum_is_accepted_from_a_complete_read(book):
