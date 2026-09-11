@@ -2694,6 +2694,30 @@ def _is_countable_noun(word: str) -> bool:
             and not tail.endswith(_ENGLISH_NON_PLURAL_ENDINGS))
 
 
+_QUOTE_PAIRS = (('"', '"'), ("`", "`"), ("\u201e", "\u201c"), ("\u201a", "\u2018"),
+                ("\u00ab", "\u00bb"), ("'", "'"))
+
+
+def _is_quoted(body: str, pos: int) -> bool:
+    """True when ``pos`` lies inside a quoted span on its line.
+
+    An answer that cites the rule "never >200 lines at once" states no
+    count of anything it read; the caveat that fired on it told the
+    reader a number from a truncated read_file was estimated, and the
+    number was the prompt's own (operator interview, 2026-09-11). A
+    quoted or code-formatted figure is repeated, not counted.
+    """
+    line_start = body.rfind("\n", 0, pos) + 1
+    prefix = body[line_start:pos]
+    for opener, closer in _QUOTE_PAIRS:
+        if opener == closer:
+            if prefix.count(opener) % 2 == 1:
+                return True
+        elif prefix.count(opener) > prefix.count(closer):
+            return True
+    return False
+
+
 def _count_claims(text: str) -> list[tuple[int, str]]:
     """(number, claim text) for every counted-things claim in ``text``.
 
@@ -2707,6 +2731,8 @@ def _count_claims(text: str) -> list[tuple[int, str]]:
         first = m.group(2)
         if first.rsplit("-", 1)[-1].lower() in _COUNT_STOPWORDS:
             continue                    # "45 Minuten Videos" counts minutes
+        if _is_quoted(body, m.start()):
+            continue                    # a rule being cited, not a count
         nxt = _COUNT_NEXT_WORD_RE.match(body, m.end())
         if _is_countable_noun(first):
             claim = m.group(0)
