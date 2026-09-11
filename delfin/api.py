@@ -1272,12 +1272,50 @@ class ExcitedStateEntry:
 
 @dataclass
 class ExcitedStatesResult:
-    """TDDFT excitation table (uses the LAST absorption block)."""
+    """TDDFT excitation table (uses the LAST absorption block).
+
+    The bare table answered "which transition is bright, and is it in
+    the visible" only after the reader chose a threshold and a range and
+    filtered by hand -- and said so in the report as an assumption. The
+    definitions are stated here and the answers derived from them, so a
+    number can be quoted with the rule that produced it.
+    """
     folder: str
     output_file: str | None
     n_states: int
     transitions: list[ExcitedStateEntry]
     error: str | None = None
+    #: A transition counts as bright at or above this oscillator strength.
+    bright_threshold_fosc: float = 0.01
+    #: The visible range used for ``in_visible``, in nm.
+    visible_range_nm: tuple = (380.0, 780.0)
+    #: The lowest-energy bright transition, {"index", "wavelength_nm", "energy_ev", "fosc"}.
+    first_bright: dict | None = None
+    #: The transition with the largest oscillator strength.
+    brightest: dict | None = None
+    #: The strongest transition inside the visible range.
+    brightest_visible: dict | None = None
+
+
+def _pick_lines(rows: list, threshold: float, visible: tuple) -> dict:
+    """first_bright / brightest / brightest_visible from the transition rows."""
+    def entry(i, r):
+        return {"index": i, "state": f"{r.state_from} -> {r.state_to}",
+                "wavelength_nm": r.wavelength_nm, "energy_ev": r.energy_ev,
+                "fosc": r.fosc,
+                "in_visible": visible[0] <= r.wavelength_nm <= visible[1]}
+    bright = [(i, r) for i, r in enumerate(rows) if r.fosc >= threshold]
+    out = {"first_bright": None, "brightest": None, "brightest_visible": None}
+    if bright:
+        i, r = min(bright, key=lambda t: t[1].energy_ev)
+        out["first_bright"] = entry(i, r)
+        i, r = max(bright, key=lambda t: t[1].fosc)
+        out["brightest"] = entry(i, r)
+        vis = [(i, r) for i, r in bright if visible[0] <= r.wavelength_nm <= visible[1]]
+        if vis:
+            i, r = max(vis, key=lambda t: t[1].fosc)
+            out["brightest_visible"] = entry(i, r)
+    return out
 
 
 def extract_excited_states(folder: str) -> ExcitedStatesResult:
@@ -1324,9 +1362,12 @@ def extract_excited_states(folder: str) -> ExcitedStatesResult:
             wavelength_nm=float(m.group(5)),
             fosc=float(m.group(6)),
         ))
+    picked = _pick_lines(rows, 0.01, (380.0, 780.0))
     return ExcitedStatesResult(
         folder=str(folder), output_file=target.name,
         n_states=len(rows), transitions=rows,
+        first_bright=picked["first_bright"], brightest=picked["brightest"],
+        brightest_visible=picked["brightest_visible"],
     )
 
 
