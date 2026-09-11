@@ -7440,6 +7440,11 @@ def create_tab(ctx):
                                         reasoning_effort=effort)
                 if state.get("engine") is not engine:
                     return   # the user moved on; the number is stale
+                if getattr(getattr(engine, "client", None), "client", None) is not sdk:
+                    # A stop replaced the transport under the probe; the
+                    # error it got was ours, not the endpoint's. Driven
+                    # 2026-09-11: "no answer after 17 s" right after Stop.
+                    return
                 slow = 0.0
                 try:
                     slow = float(get_profile(model).slow_cold_start_s or 0)
