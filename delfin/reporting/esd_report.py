@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable
 
-from delfin.esd_results import ESDSummary
+from delfin.esd_results import ESDSummary, isc_total_note, observed_isc_rate, sublevel_rates
 
 
 def _fmt_float(value, fmt: str = "{:.9f}", default: str = "n/a") -> str:
@@ -23,6 +23,12 @@ def _fmt_rate(value) -> str:
 
 def _fmt_percent(value) -> str:
     return _fmt_float(value, "{:.2f}")
+
+
+def _problem(record) -> str:
+    """What makes a rate not a result, as the line's end; empty when nothing does."""
+    problem = getattr(record, "problem", None)
+    return f"  [NOT A RESULT: {problem}]" if problem else ""
 
 
 def _emit_section(lines: list[str], title: str, content: Iterable[str]) -> None:
@@ -68,9 +74,11 @@ def generate_esd_report(summary: ESDSummary, output_path: Path) -> None:
         for base_trans in sorted(isc_grouped.keys()):
             records = isc_grouped[base_trans]
 
-            # If multiple TROOTSSL values, show individual rates and sum
+            # If multiple TROOTSSL values, show individual rates and the
+            # observed rate: their sum from a singlet, their mean from a triplet
             if len(records) > 1:
-                total_rate = sum(rec.rate for _, rec in records if rec.rate is not None)
+                initial_state = base_trans.split(">", 1)[0]
+                total_rate = observed_isc_rate(initial_state, sublevel_rates(records))
 
                 # Show individual sublevel rates
                 for trans, record in sorted(records):
@@ -95,12 +103,14 @@ def generate_esd_report(summary: ESDSummary, output_path: Path) -> None:
                         details.append(f"HT={_fmt_percent(record.ht_percent)}%")
                     detail_str = f" ({', '.join(details)})" if details else ""
                     isc_lines.append(
-                        f"  {trans}: {_fmt_rate(record.rate)} s^-1{detail_str}"
+                        f"  {trans}: {_fmt_rate(record.rate)} s^-1{detail_str}{_problem(record)}"
                     )
 
                 # Show total rate
+                flawed = next((rec for _, rec in records if getattr(rec, "problem", None)), None)
                 isc_lines.append(
                     f"  {base_trans} (total): {_fmt_rate(total_rate)} s^-1"
+                    f"{isc_total_note(initial_state)}{_problem(flawed)}"
                 )
             else:
                 # Single TROOTSSL value, show as before
@@ -126,7 +136,7 @@ def generate_esd_report(summary: ESDSummary, output_path: Path) -> None:
                     details.append(f"HT={_fmt_percent(record.ht_percent)}%")
                 detail_str = f" ({', '.join(details)})" if details else ""
                 isc_lines.append(
-                    f"  {trans}: {_fmt_rate(record.rate)} s^-1{detail_str}"
+                    f"  {trans}: {_fmt_rate(record.rate)} s^-1{detail_str}{_problem(record)}"
                 )
 
         _emit_section(lines, "ISC rate constants (s^-1):", isc_lines)
@@ -141,7 +151,7 @@ def generate_esd_report(summary: ESDSummary, output_path: Path) -> None:
                 details.append(f"Δ0-0={_fmt_float(record.delta_cm1, '{:.2f}')} cm^-1")
             detail_str = f" ({', '.join(details)})" if details else ""
             ic_lines.append(
-                f"  {trans}: {_fmt_rate(record.rate)} s^-1{detail_str}"
+                f"  {trans}: {_fmt_rate(record.rate)} s^-1{detail_str}{_problem(record)}"
             )
         _emit_section(lines, "IC rate constants:", ic_lines)
 

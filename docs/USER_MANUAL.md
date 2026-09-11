@@ -276,8 +276,8 @@ to the final geometry. Each round's saddle is kept in `<step>_IMAG/round<n>/`.
 | `ESD_LINES` | `LORENTZ` | Broadening function |
 | `ESD_LINEW` | `50` | Line width |
 | `ESD_INLINEW` | `250` | Input line width |
-| `ESD_NPOINTS` | `131072` | Number of FFT points |
-| `ESD_MAXTIME` | `12000` | Maximum time for ESD calculation |
+| `ESD_NPOINTS` | `auto` | Points of the ISC/IC correlation-function grid; `auto` lets ORCA choose |
+| `ESD_MAXTIME` | `auto` | Time window of the ISC/IC correlation function (a.u.); `auto` lets ORCA choose it from the linewidth. The older template's `12000` (290 fs) is read as `auto`: it cut the correlation function off early (formaldehyde ISC 2.3x too fast, IC rate negative) |
 | `hybrid1_geom_MaxIter` | `60` | Max geometry iterations for hybrid1 |
 
 ### xTB Hyperpolarizability (sTD-DFT-xTB)

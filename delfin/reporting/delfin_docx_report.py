@@ -1251,11 +1251,17 @@ def _add_rate_table(doc: Document, title: str, entries: Dict[str, Any], project_
             return _fmt_sci(re_part)
         return f"i{_fmt_sci(im_part)}"
 
+    not_results: list[tuple[str, str]] = []
+
     def _add_row(label: str, rec: Dict[str, Any]) -> None:
         row = table.add_row().cells
         row[0].text = label
         rate_val = rec.get("rate_s1") or rec.get("total_rate_s1") or rec.get("rate")
         row[1].text = _fmt_sci(rate_val) if rate_val is not None else ""
+        if rec.get("problem"):
+            # the number stays visible, but not as a result
+            row[1].text = (row[1].text + " (not a result*)").strip()
+            not_results.append((label, str(rec["problem"])))
         row[2].text = str(rec.get("temperature_K", ""))
 
         # Δ0-0 column
@@ -1317,6 +1323,9 @@ def _add_rate_table(doc: Document, title: str, entries: Dict[str, Any], project_
             total_rate = record.get("total_rate_s1") or record.get("rate_s1")
             if total_rate is not None:
                 total_rec = {"total_rate_s1": total_rate}
+                if record.get("problem") or any(r.get("problem") for r in ms_rec_list):
+                    total_rec["problem"] = record.get("problem") or next(
+                        r["problem"] for r in ms_rec_list if r.get("problem"))
                 if ms_rec_list:
                     sample = ms_rec_list[0]
                     for key in ["temperature_K", "delta_E_cm1"]:
@@ -1327,6 +1336,10 @@ def _add_rate_table(doc: Document, title: str, entries: Dict[str, Any], project_
             _add_row(name, record)
 
     _prevent_row_splits(table)
+    for label, problem in dict(not_results).items():
+        note = doc.add_paragraph()
+        note.add_run(f"* {label}: ").bold = True
+        note.add_run(problem)
 
 
 def _extract_frontier_orbitals(orbital_data: Optional[Dict[str, Any]]) -> list[tuple[str, str, str, str]]:

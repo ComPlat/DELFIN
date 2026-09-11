@@ -26,6 +26,7 @@ from delfin.uv_vis_spectrum import parse_absorption_spectrum
 from delfin.utils import get_git_commit_info
 from delfin.config import read_control_file, _parse_control_file, get_E_ref
 from delfin.energies import find_gibbs_energy
+from delfin.esd_results import esd_rate_problem, observed_isc_rate
 from delfin.cli_calculations import calculate_redox_potentials, select_final_potentials
 from delfin.ir_spectrum import parse_ir_spectrum
 
@@ -401,6 +402,7 @@ def serialize_esd_summary(summary: Any) -> Dict[str, Any]:
             "fc_percent": result.fc_percent,
             "ht_percent": result.ht_percent,
             "source_file": str(result.source),
+            "problem": getattr(result, "problem", None),
         }
 
     ic = {}
@@ -410,6 +412,7 @@ def serialize_esd_summary(summary: Any) -> Dict[str, Any]:
             "temperature_K": result.temperature,
             "delta_E_cm1": result.delta_cm1,
             "source_file": str(result.source),
+            "problem": getattr(result, "problem", None),
         }
 
     fluor = {}
@@ -419,6 +422,7 @@ def serialize_esd_summary(summary: Any) -> Dict[str, Any]:
             "temperature_K": result.temperature,
             "delta_E_cm1": result.delta_cm1,
             "source_file": str(result.source),
+            "problem": getattr(result, "problem", None),
         }
 
     phosp = {}
@@ -429,6 +433,7 @@ def serialize_esd_summary(summary: Any) -> Dict[str, Any]:
             "temperature_K": result.temperature,
             "delta_E_cm1": result.delta_cm1,
             "source_file": str(result.source),
+            "problem": getattr(result, "problem", None),
         }
 
     return {
@@ -1192,52 +1197,17 @@ def parse_occupier_folder(folder: Path) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _calculate_total_isc_rate(ms_components: Dict[str, Dict[str, Any]]) -> float:
-    """Calculate total ISC rate from Ms components with symmetry approximation.
+def _calculate_total_isc_rate(ms_components: Dict[str, Dict[str, Any]], initial_state: str = "S") -> float:
+    """The observed ISC rate from the Ms components (esd_results.observed_isc_rate).
 
-    - 3 components (Ms=-1,0,+1): sum all three
-    - 2 components (Ms=0,±1): rate(Ms=0) + 2×rate(Ms=±1)
-    - 1 component (Ms=0 only): 3×rate(Ms=0)
-
-    Args:
-        ms_components: Dictionary of Ms component data (ms_0, ms_p1, ms_m1)
-
-    Returns:
-        Total ISC rate (s^-1)
+    Singlet-to-triplet the sublevels add up; triplet-to-singlet it is their
+    mean (ORCA manual 5.5.4).  Summing them for T1>S1 reported every RISC
+    rate three times too fast.
     """
-    # Get rates for each Ms component
-    rate_ms0 = ms_components.get("ms_0", {}).get("rate_s1") or 0
-    rate_msp1 = ms_components.get("ms_p1", {}).get("rate_s1") or 0
-    rate_msm1 = ms_components.get("ms_m1", {}).get("rate_s1") or 0
-
-    # Check which components are present
-    has_ms0 = "ms_0" in ms_components
-    has_msp1 = "ms_p1" in ms_components
-    has_msm1 = "ms_m1" in ms_components
-    num_components = sum([has_ms0, has_msp1, has_msm1])
-
-    if num_components == 1:
-        # Only 1 component: use 3× that value (approximates all 3 Ms components)
-        if has_ms0:
-            return 3 * rate_ms0
-        elif has_msp1:
-            return 3 * rate_msp1
-        else:  # has_msm1
-            return 3 * rate_msm1
-    elif num_components == 2:
-        # 2 components: use symmetry approximation
-        if has_msp1 and not has_msm1:
-            # Missing Ms=-1, use 2× Ms=+1
-            return rate_ms0 + 2 * rate_msp1
-        elif has_msm1 and not has_msp1:
-            # Missing Ms=+1, use 2× Ms=-1
-            return rate_ms0 + 2 * rate_msm1
-        else:
-            # Has both Ms=±1 but no Ms=0 (unusual), just sum
-            return rate_ms0 + rate_msp1 + rate_msm1
-    else:
-        # All 3 present: simple sum
-        return rate_ms0 + rate_msp1 + rate_msm1
+    rates = {ms: (ms_components.get(key) or {}).get("rate_s1")
+             for ms, key in ((0, "ms_0"), (1, "ms_p1"), (-1, "ms_m1")) if key in ms_components}
+    value = observed_isc_rate(initial_state, rates)
+    return value if value is not None else 0
 
 
 def parse_isc_data(esd_dir: Path, state1: str, state2: str) -> Optional[Dict[str, Any]]:
@@ -1281,6 +1251,7 @@ def parse_isc_data(esd_dir: Path, state1: str, state2: str) -> Optional[Dict[str
             if soc_re is not None and soc_im is not None:
                 soc_abs = (soc_re ** 2 + soc_im ** 2) ** 0.5
             isc_data["ms_components"][ms_key] = {
+                "problem": esd_rate_problem(content),
                 "soc_re_cm1": soc_re,
                 "soc_im_cm1": soc_im,
                 "soc_abs_cm1": soc_abs,
@@ -1297,7 +1268,9 @@ def parse_isc_data(esd_dir: Path, state1: str, state2: str) -> Optional[Dict[str
 
     # Calculate total rate
     if isc_data["ms_components"]:
-        isc_data["total_rate_s1"] = _calculate_total_isc_rate(isc_data["ms_components"])
+        isc_data["total_rate_s1"] = _calculate_total_isc_rate(isc_data["ms_components"], state1)
+        problems = [c["problem"] for c in isc_data["ms_components"].values() if c.get("problem")]
+        isc_data["problem"] = problems[0] if problems else None
         return isc_data
 
     return None
@@ -1326,7 +1299,8 @@ def parse_ic_data(esd_dir: Path, state1: str, state2: str) -> Optional[Dict[str,
             "rate_s1": float(rate_match.group(1)) if rate_match else None,
             "delta_E_cm1": float(delta_e_match.group(1)) if delta_e_match else None,
             "temperature_K": float(temp_match.group(1)) if temp_match else None,
-            "source_file": ic_file.name
+            "source_file": ic_file.name,
+            "problem": esd_rate_problem(content),
         }
 
     except Exception as e:
@@ -1357,6 +1331,7 @@ def parse_fluor_data(esd_dir: Path, state1: str = "S1", state2: str = "S0") -> O
             "temperature_K": float(temp_match.group(1)) if temp_match else None,
             "delta_E_cm1": float(delta_e_match.group(1)) if delta_e_match else None,
             "source_file": fluor_file.name,
+            "problem": esd_rate_problem(content),
         }
     except Exception as e:
         logger.error(f"Error parsing FLUOR file {fluor_file}: {e}")
@@ -1415,10 +1390,17 @@ def parse_phosp_data(esd_dir: Path, state1: str = "T1", state2: str = "S0") -> O
             "temperature_K": float(temp_match.group(1)) if temp_match else None,
             "delta_E_cm1": float(delta_e_match.group(1)) if delta_e_match else None,
             "source_file": phosp_file.name,
+            "problem": esd_rate_problem(content),
         }
     except Exception as e:
         logger.error(f"Error parsing PHOSP file {phosp_file}: {e}")
         return None
+
+
+def _not_a_result(line: str) -> Optional[str]:
+    """The reason esd_report wrote after a rate that is not a result, or None."""
+    match = re.search(r"\[NOT A RESULT: (.*)\]\s*$", line)
+    return match.group(1) if match else None
 
 
 def parse_esd_summary(project_dir: Path) -> Dict[str, Any]:
@@ -1458,7 +1440,8 @@ def parse_esd_summary(project_dir: Path) -> Dict[str, Any]:
                     "temperature_K": float(temp.group(1)) if temp else None,
                     "fc_percent": float(fc_ht.group(1)) if fc_ht else None,
                     "ht_percent": float(fc_ht.group(2)) if fc_ht else None,
-                    "source_file": "ESD.txt"
+                    "source_file": "ESD.txt",
+                    "problem": _not_a_result(line),
                 }
                 continue
 
@@ -1469,6 +1452,7 @@ def parse_esd_summary(project_dir: Path) -> Dict[str, Any]:
                 entry = summary_data["isc"].setdefault(key, {"ms_components": {}})
                 entry["total_rate_s1"] = float(rate)
                 entry["source_file"] = "ESD.txt"
+                entry["problem"] = _not_a_result(line)
                 continue
 
             ic_match = re.match(
@@ -1482,7 +1466,8 @@ def parse_esd_summary(project_dir: Path) -> Dict[str, Any]:
                     "rate_s1": float(rate),
                     "temperature_K": float(temp),
                     "delta_E_cm1": float(delta),
-                    "source_file": "ESD.txt"
+                    "source_file": "ESD.txt",
+                    "problem": _not_a_result(line),
                 }
 
     except Exception as e:
@@ -1898,9 +1883,17 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
         key = f"{state1}_{state2}"
         summary_isc = summary_data.get("isc", {}).get(key)
         if summary_isc:
-            # Ensure total rate present
-            if "total_rate_s1" not in summary_isc and summary_isc.get("ms_components"):
-                summary_isc["total_rate_s1"] = _calculate_total_isc_rate(summary_isc["ms_components"])
+            # The observed rate is recomputed from the sublevels: an ESD.txt
+            # written before 2026-09 summed them for triplet-to-singlet too
+            if summary_isc.get("ms_components"):
+                summary_isc["total_rate_s1"] = _calculate_total_isc_rate(summary_isc["ms_components"], state1)
+            # what the ORCA outputs say about their rates, which an ESD.txt of
+            # an older run does not carry
+            for ms_key, component in ((isc_data or {}).get("ms_components") or {}).items():
+                if component.get("problem") and ms_key in summary_isc.get("ms_components", {}):
+                    summary_isc["ms_components"][ms_key]["problem"] = component["problem"]
+            if (isc_data or {}).get("problem"):
+                summary_isc["problem"] = isc_data["problem"]
             data["intersystem_crossing"][key] = summary_isc
         elif isc_data:
             data["intersystem_crossing"][key] = isc_data
@@ -1908,8 +1901,8 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
     # Add any additional ISC entries from ESD.txt not covered above
     for key, entry in summary_data.get("isc", {}).items():
         if key not in data["intersystem_crossing"]:
-            if "total_rate_s1" not in entry and entry.get("ms_components"):
-                entry["total_rate_s1"] = _calculate_total_isc_rate(entry["ms_components"])
+            if entry.get("ms_components"):
+                entry["total_rate_s1"] = _calculate_total_isc_rate(entry["ms_components"], key.split("_")[0])
             data["intersystem_crossing"][key] = entry
 
     # Parse IC data: auto-discover all *_IC.out files to find state pairs
@@ -1923,6 +1916,8 @@ def collect_esd_data(project_dir: Path) -> Dict[str, Any]:
         key = f"{state1}_{state2}"
         summary_ic = summary_data.get("ic", {}).get(key)
         if summary_ic:
+            if (ic_data or {}).get("problem"):
+                summary_ic["problem"] = ic_data["problem"]
             data["internal_conversion"][key] = summary_ic
         elif ic_data:
             data["internal_conversion"][key] = ic_data

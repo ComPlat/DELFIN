@@ -142,8 +142,8 @@ DOHT=TRUE
 ESD_LINES=LORENTZ
 ESD_LINEW=50
 ESD_INLINEW=250
-ESD_NPOINTS=131072
-ESD_MAXTIME=12000
+ESD_NPOINTS=auto
+ESD_MAXTIME=auto
 hybrid1_geom_MaxIter=60
 ---------------------------------
 Electrical Properties:
