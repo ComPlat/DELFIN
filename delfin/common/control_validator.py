@@ -1740,7 +1740,9 @@ def _as_ics(value: Any) -> list[str] | str:
 def _as_states(value: Any) -> list[str] | str:
     if value is None or value == "":
         return ""
-    items = [item.upper() for item in esd_list_items(value)]
+    # S0 is computed whenever ESD is on; the template's own help line listed
+    # it ("states: ... (S0, S1, T1, T2)"), and 254 archived files say S0,S1,...
+    items = [item.upper() for item in esd_list_items(value) if item.strip().upper() != "S0"]
     if not items:
         return ""
     normalized = []
@@ -1826,6 +1828,13 @@ def resolve_occupier_compare(config) -> str:
 
 def _as_occupier_method(value: Any) -> str:
     text = str(value or "auto").strip().lower()
+    if "|" in text:
+        # An older template shipped the choice itself, "auto|manually"; the
+        # template reader takes the first option, and 75 archived CONTROL
+        # files carry it unchanged.
+        options = [t.strip() for t in text.split("|") if t.strip()]
+        if options and all(o in {"auto", "manual", "manually"} for o in options):
+            text = options[0]
     if text in {"manual", "manually"}:
         return "manually"
     if text == "auto":
@@ -2367,7 +2376,7 @@ def validate_control_config(config: MutableMapping[str, Any]) -> dict[str, Any]:
 
         # The transition lists only exist inside the ESD module; with ESD off
         # the lines are inert.
-        if spec.name in ("ICs", "ISCs", "emission_rates") and not esd_modul_enabled:
+        if spec.name in ("ICs", "ISCs", "emission_rates", "states") and not esd_modul_enabled:
             validated[spec.name] = spec.default
             continue
 
