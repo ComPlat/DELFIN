@@ -37,6 +37,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence
 
+from delfin import installer as _installer
+
 __all__ = [
     'ToolHealth', 'PROBES', 'known_tools', 'probe_environment',
     'check_tool', 'check_tools', 'repair_actions', 'repair_command',
@@ -164,8 +166,7 @@ PROBES: Dict[str, Dict[str, Any]] = {
 #: What the DELFIN installer can fetch, and therefore what a missing one can
 #: be offered a repair for. ORCA, Turbomole and Multiwfn are not here on
 #: purpose: they are licensed and are installed by hand.
-INSTALLABLE = ('xtb', 'gxtb', 'crest', 'dftb+', 'xtb4stda', 'stda', 'std2',
-                'mopac')
+INSTALLABLE = _installer.qm_installable()
 
 #: Tools that are found rather than probed: present or not, and nothing is
 #: claimed about them beyond that.
@@ -803,19 +804,7 @@ def ensure_tool(name: str,
 #: is said out loud before the wait, because "a few minutes" and "two
 #: gigabytes over this network" are not the same sentence to a user on a
 #: metered or slow connection.
-PACKAGES: Dict[str, Dict[str, str]] = {
-    'cclib':      {'family': 'analysis', 'flag': 'INSTALL_CCLIB',   'label': 'cclib'},
-    'nglview':    {'family': 'analysis', 'flag': 'INSTALL_NGLVIEW', 'label': 'nglview'},
-    'morfeus':    {'family': 'analysis', 'flag': 'INSTALL_MORFEUS', 'label': 'morfeus'},
-    'torchani':   {'family': 'mlp', 'flag': 'INSTALL_TORCHANI', 'label': 'TorchANI',
-                   'size': 'it brings PyTorch with it, which is a large download'},
-    'aimnet2calc': {'family': 'mlp', 'flag': 'INSTALL_AIMNET2', 'label': 'AIMNet2',
-                    'size': 'it brings PyTorch with it, which is a large download'},
-    'mace':       {'family': 'mlp', 'flag': 'INSTALL_MACE', 'label': 'MACE',
-                   'size': 'it brings PyTorch with it, which is a large download'},
-    'chgnet':     {'family': 'mlp', 'flag': 'INSTALL_CHGNET', 'label': 'CHGNet',
-                   'size': 'it brings PyTorch with it, which is a large download'},
-}
+PACKAGES: Dict[str, Dict[str, str]] = _installer.packages()
 
 _PACKAGES_TRIED: set = set()
 
@@ -871,19 +860,11 @@ def ensure_package(module: str,
         on_line(f'{label} is needed and not installed. Fetching it'
                 + (f' -- {size}.' if size else ' -- a few minutes.'))
 
-    from delfin.runtime_setup import (run_analysis_tools_installer,
-                                      run_mlp_tools_installer)
-
-    # Only the one that is wanted: these installers do everything they know
-    # unless each switch is turned off by name.
-    others = {other['flag']: '0' for other in PACKAGES.values()
-              if other['family'] == spec['family']}
-    others[spec['flag']] = '1'
-    runner = (run_analysis_tools_installer if spec['family'] == 'analysis'
-              else run_mlp_tools_installer)
+    # Through the one installer, which turns every other switch of the family
+    # off -- these installers do everything whose switch is not.
     try:
-        _target, result = runner(extra_env=others)
-        output = getattr(result, 'stdout', '') or ''
+        outcome = _installer.install([spec['tool']], on_line=on_line, timeout=timeout)
+        output = '\n'.join(line for result in outcome['results'] for line in result['lines'])
     except Exception as problem:
         return {'ok': False, 'installed': True,
                 'status': f'{label} could not be installed: {problem}'}

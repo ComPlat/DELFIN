@@ -14,6 +14,7 @@ import sys
 from dataclasses import asdict
 from pathlib import Path
 
+from delfin import installer as _installer
 from delfin.common.paths import resolve_path
 from delfin.dashboard.input_processing import smiles_to_xyz_quick
 from delfin.ensemble_nmr import (
@@ -374,7 +375,12 @@ def _resolved_path_or_empty(tool_name: str) -> str:
     return resolved.path if resolved is not None else ""
 
 
-_AUTO_INSTALLABLE_ANALYSIS_TOOLS = frozenset({"censo", "anmr", "c2anmr", "nmrplot"})
+# CENSO brings c2anmr and nmrplot with it; the names come from delfin.installer.
+_AUTO_INSTALLABLE_ANALYSIS_TOOLS = frozenset(
+    name
+    for tool in (_installer.find("censo"), _installer.find("anmr"))
+    for name in (tool.name, *tool.aliases)
+)
 
 
 def _minimum_supported_censo_version() -> tuple[int, int, int]:
@@ -407,19 +413,11 @@ def _maybe_auto_install_analysis_tools(missing_tools: list[str], *, workdir: Pat
     if not supported_missing or not _auto_install_analysis_tools_enabled():
         return []
 
-    installer_env = {
-        "INSTALL_MORFEUS": "0",
-        "INSTALL_CCLIB": "0",
-        "INSTALL_NGLVIEW": "0",
-        "INSTALL_PACKMOL": "0",
-        "INSTALL_MULTIWFN": "0",
-        "CENSO_PREFER_LATEST": "1",
-        "INSTALL_CENSO": "1" if any(
-            tool in supported_missing for tool in ("censo", "c2anmr", "nmrplot")
-        ) else "0",
-        "INSTALL_ANMR": "1" if "anmr" in supported_missing else "0",
-        "FORCE_REINSTALL": "1" if "censo" in supported_missing else "0",
-    }
+    # Every switch of the analysis installer, the wanted ones on: it installs
+    # everything whose switch is not turned off.
+    installer_env = _installer.switch_env("analysis", supported_missing)
+    installer_env["CENSO_PREFER_LATEST"] = "1"
+    installer_env["FORCE_REINSTALL"] = "1" if "censo" in supported_missing else "0"
     target, result = run_analysis_tools_installer(extra_env=installer_env)
     log_lines = [
         "Auto-install missing analysis tools",

@@ -33,7 +33,7 @@ set -euo pipefail
 #   DELFIN_AUTO_RESOURCES=1  Parse CONTROL.txt to derive sbatch args
 #   DELFIN_MODULES="mod1 mod2"  Modules to load (module purge + load)
 #   DELFIN_STAGE_ORCA=1      Stage ORCA + OpenMPI to node-local SSD
-#   DELFIN_STAGE_VENV=1      Unpack venv tarball to SSD
+#   DELFIN_STAGE_VENV=1      Run the venv from node-local disk (cached tar)
 #   DELFIN_RUNTIME_CACHE=1   Build/use runtime wheel cache
 #
 # RESOURCE PARAMETERS (via sbatch command-line overrides):
@@ -55,6 +55,14 @@ set -euo pipefail
 #   DELFIN_MODE, DELFIN_JOB_NAME, DELFIN_INP_FILE, DELFIN_XYZ_FILE,
 #   DELFIN_WORKFLOW_LABEL, DELFIN_PAL, DELFIN_MAXCORE, DELFIN_ORCA_BASE,
 #   BUILD_MULTIPLICITY, GUPPY_*, DELFIN_CO2_SPECIES_DELTA, etc.
+#
+# WHERE DELFIN RUNS FROM (set by the submitting dashboard):
+#   DELFIN_VENV              The venv/conda prefix the dashboard runs in
+#   DELFIN_REPO              Its git checkout, for editable installs
+#   DELFIN_OMPI_HOME         The OpenMPI that ORCA is linked against
+#   DELFIN_VENV_CACHE_DIR    Where venv tars are cached
+#                            (default: $HOME/.cache/delfin/venv)
+#   DELFIN_VENV_TAR          Use this tar instead of the cache
 #
 # ========================================================================
 
@@ -196,6 +204,12 @@ if [ -n "$SOFTWARE_BASE" ]; then
     DELFIN_DIR="$SOFTWARE_BASE/delfin"
 fi
 
+# The submitting dashboard says where its checkout is. The upward search above
+# only ever finds one laid out as <somewhere>/software/delfin.
+if [ -n "${DELFIN_REPO:-}" ] && [ -f "${DELFIN_REPO}/pyproject.toml" ] && [ -d "${DELFIN_REPO}/delfin" ]; then
+    DELFIN_DIR="$DELFIN_REPO"
+fi
+
 # Normalise SLURM scratch hints early
 if [ -z "${TMPDIR:-}" ] && [ -n "${SLURM_TMPDIR:-}" ]; then
     export TMPDIR="$SLURM_TMPDIR"
@@ -272,28 +286,123 @@ export OMPI_MCA_rmaps_base_mapping_policy=core
 export OMPI_MCA_rmaps_base_oversubscribe=true
 
 # ======================================================================
-# Section 7: Venv tarball staging (optional)
+# Section 7: Venv staging (optional)
 # ======================================================================
-VENV_LOCAL=""
-if [ "${DELFIN_STAGE_VENV:-0}" = "1" ] && [ -n "$DELFIN_DIR" ] && [ -n "${STAGE_BASE:-}" ] && [ -d "${STAGE_BASE}" ]; then
-    VENV_TAR="${DELFIN_VENV_TAR:-$DELFIN_DIR/delfin_venv.tar}"
-    if [ -f "$VENV_TAR" ] || [ -d "$DELFIN_DIR/.venv" ]; then
-        VENV_LOCAL="$STAGE_BASE/delfin_venv_${SLURM_JOB_ID}"
-        if [ ! -f "$VENV_TAR" ]; then
-            echo "WARNING: $VENV_TAR not found, creating it now (one-time)..."
-            tar -cf "$VENV_TAR" -C "$DELFIN_DIR" .venv/
-            echo "Created $VENV_TAR"
-        fi
-        echo "Unpacking venv tarball to local SSD ($VENV_LOCAL) to minimise HOME I/O..."
-        mkdir -p "$VENV_LOCAL"
-        tar -xf "$VENV_TAR" --strip-components=1 -C "$VENV_LOCAL"
-        sed -i "s|$DELFIN_DIR/.venv|$VENV_LOCAL|g" "$VENV_LOCAL/bin/activate" 2>/dev/null || true
-        source "$VENV_LOCAL/bin/activate"
-        echo "venv loaded from local SSD."
+# Python started from a venv on a network HOME makes tens of thousands of
+# metadata calls per job (measured: ~150,000 getxattr). A tar is read as one
+# file instead, and the venv then runs from the node-local disk.
+#
+# The tar is a cache, not an artifact: its name is a hash of what the venv
+# holds, so it is rebuilt exactly when the venv changes. A hand-made
+# delfin_venv.tar went on being unpacked for months after pip had put
+# fifty-five new packages into the venv it was taken from, and nothing said so.
+
+# What a venv holds, as a short hash. Only directory listings are read -- no
+# stat, no file contents -- so asking costs next to nothing on HOME.
+venv_cache_key() {
+    local venv="$1" site
+    {
+        readlink -f "$venv" 2>/dev/null || printf '%s\n' "$venv"
+        cat "$venv/pyvenv.cfg" 2>/dev/null || true
+        for site in "$venv"/lib/python3*/site-packages; do
+            [ -d "$site" ] || continue
+            printf '== %s\n' "${site#"$venv"/}"
+            { ls -1 -f "$site" 2>/dev/null | grep -v -x -e '.' -e '..' -e '__pycache__' | LC_ALL=C sort; } || true
+        done
+    } | sha256sum | cut -c1-16
+}
+
+# The tar for the venv as it is now, packed once under a lock when there is
+# none yet. Prints its path; every word of progress goes to stderr.
+ensure_venv_tar() {
+    local venv="$1" cache_dir key tar_path partial lock_opened=0
+    cache_dir="${DELFIN_VENV_CACHE_DIR:-$HOME/.cache/delfin/venv}"
+    key="$(venv_cache_key "$venv")"
+    tar_path="$cache_dir/venv-$key.tar"
+    mkdir -p "$cache_dir" || return 1
+    if [ -f "$tar_path" ]; then
+        printf '%s\n' "$tar_path"
+        return 0
     fi
-elif [ -n "$DELFIN_DIR" ] && [ -d "$DELFIN_DIR/.venv" ]; then
-    echo "Using repository venv directly."
-    source "$DELFIN_DIR/.venv/bin/activate"
+    if command -v flock >/dev/null 2>&1; then
+        exec 8>"$cache_dir/.lock"
+        flock 8
+        lock_opened=1
+    fi
+    if [ ! -f "$tar_path" ]; then
+        echo "Packing $venv into $tar_path (once per change of the venv)..." >&2
+        partial="$tar_path.partial.${SLURM_JOB_ID:-$$}"
+        if tar -cf "$partial" -C "$(dirname "$venv")" "$(basename "$venv")"; then
+            mv -f "$partial" "$tar_path"
+            # This one and the one before it stay: a job that started a moment
+            # ago may still be unpacking that. Only the cache's own tars go.
+            { ls -1t "$cache_dir"/venv-*.tar 2>/dev/null | tail -n +3 | while IFS= read -r old_tar; do
+                rm -f "$old_tar"
+            done; } || true
+        else
+            rm -f "$partial"
+        fi
+    fi
+    if [ "$lock_opened" -eq 1 ]; then
+        flock -u 8
+        exec 8>&-
+    fi
+    [ -f "$tar_path" ] || return 1
+    printf '%s\n' "$tar_path"
+}
+
+use_venv() {
+    local venv="$1"
+    if [ -f "$venv/bin/activate" ]; then
+        source "$venv/bin/activate"
+    fi
+    # Set outright as well: an activate script names the path the venv was
+    # created at, which is not where an unpacked copy lives.
+    export VIRTUAL_ENV="$venv"
+    export PATH="$venv/bin:$PATH"
+    unset PYTHONHOME 2>/dev/null || true
+}
+
+VENV_LOCAL=""
+VENV_SRC=""
+if [ -n "${DELFIN_VENV:-}" ] && [ -x "${DELFIN_VENV}/bin/python" ]; then
+    VENV_SRC="$DELFIN_VENV"
+elif [ -n "$DELFIN_DIR" ] && [ -x "$DELFIN_DIR/.venv/bin/python" ]; then
+    VENV_SRC="$DELFIN_DIR/.venv"
+fi
+
+if [ "${DELFIN_STAGE_VENV:-0}" = "1" ] && [ -n "$VENV_SRC" ] && [ -n "${STAGE_BASE:-}" ] && [ -d "${STAGE_BASE}" ]; then
+    VENV_TAR="${DELFIN_VENV_TAR:-}"
+    if [ -z "$VENV_TAR" ]; then
+        VENV_TAR="$(ensure_venv_tar "$VENV_SRC")" || VENV_TAR=""
+    fi
+    if [ -n "$VENV_TAR" ] && [ -f "$VENV_TAR" ]; then
+        _venv_tar_kb=$(( $(stat -c %s "$VENV_TAR" 2>/dev/null || echo 0) / 1024 ))
+        _stage_free_kb="$(df -Pk "$STAGE_BASE" 2>/dev/null | awk 'NR==2 {print $4}')"
+        if [ -n "$_stage_free_kb" ] && [ "$_stage_free_kb" -lt $(( _venv_tar_kb * 2 )) ]; then
+            echo "WARNING: $STAGE_BASE has ${_stage_free_kb} KB free and the venv needs about $(( _venv_tar_kb * 2 )) KB; running it from $VENV_SRC."
+        else
+            VENV_LOCAL="$STAGE_BASE/delfin_venv_${SLURM_JOB_ID:-$$}"
+            echo "Unpacking venv tarball to local SSD ($VENV_LOCAL) to minimise HOME I/O..."
+            mkdir -p "$VENV_LOCAL"
+            if tar -xf "$VENV_TAR" --strip-components=1 -C "$VENV_LOCAL"; then
+                sed -i "s|$VENV_SRC|$VENV_LOCAL|g" "$VENV_LOCAL/bin/activate" 2>/dev/null || true
+                use_venv "$VENV_LOCAL"
+                echo "venv loaded from local SSD."
+            else
+                echo "WARNING: unpacking $VENV_TAR failed; running the venv from $VENV_SRC."
+                rm -rf "$VENV_LOCAL"
+                VENV_LOCAL=""
+            fi
+        fi
+        unset _venv_tar_kb _stage_free_kb
+    else
+        echo "WARNING: no venv tar could be packed; running the venv from $VENV_SRC."
+    fi
+fi
+if [ -z "$VENV_LOCAL" ] && [ -n "$VENV_SRC" ]; then
+    echo "Using venv directly: $VENV_SRC"
+    use_venv "$VENV_SRC"
 fi
 
 # ======================================================================
@@ -482,6 +591,11 @@ fi
 # Section 10: Python binary detection
 # ======================================================================
 PYTHON_BIN="${DELFIN_PYTHON_BIN:-}"
+# The staged copy first. An entry-point shebang still names the venv on HOME
+# unless the runtime wheel overlay happened to rewrite it.
+if [ -z "$PYTHON_BIN" ] && [ -n "${VENV_LOCAL:-}" ] && [ -x "$VENV_LOCAL/bin/python" ]; then
+    PYTHON_BIN="$VENV_LOCAL/bin/python"
+fi
 if [ -z "$PYTHON_BIN" ]; then
     # Try the delfin entry-point shebang first
     _delfin_bin="$(command -v delfin 2>/dev/null || true)"

@@ -153,6 +153,40 @@ def test_only_what_the_main_page_needs_is_kept():
     assert not any("__MACOSX" in name for name in keep)
 
 
+def test_a_build_at_the_top_of_the_archive_is_installed_too(tmp_path, monkeypatch):
+    """3.18 put the build at the top of the archive instead of in standalone/.
+
+    The page was looked for only as standalone/index.html, so every release
+    from 3.18 on was refused with "The archive has no standalone/index.html".
+    """
+    import io
+    import zipfile
+
+    from delfin.dashboard import ketcher as kt
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("index.html", '<script defer src="./static/js/main.abc.js"></script>')
+        bundle.writestr("popup.html", "<html></html>")
+        bundle.writestr("static/", "")
+        bundle.writestr("static/js/main.abc.js", "// the editor")
+        bundle.writestr("static/js/popup.xyz.js", "// a demo page's bundle")
+    payload = archive.getvalue()
+    monkeypatch.setattr(kt, "latest_release", lambda timeout=20.0: {
+        "ok": True, "version": "3.18.0", "url": "https://example.invalid/ketcher.zip",
+        "size": len(payload), "status": ""})
+    monkeypatch.setattr(kt.urllib.request, "urlopen",
+                        lambda request, timeout=None: io.BytesIO(payload))
+
+    outcome = kt.install(folder=kt.stored_directory())
+
+    assert outcome["ok"], outcome["status"]
+    assert kt.stored_version() == "3.18.0"
+    assert (kt.stored_directory() / "static" / "js" / "main.abc.js").is_file()
+    assert not (kt.stored_directory() / "static" / "js" / "popup.xyz.js").exists()
+
+
 def test_the_newest_build_is_asked_for_rather_than_pinned():
     """Keeping up to date is a button, not an edit to this file."""
     source = open(ketcher.__file__, encoding="utf-8").read()
