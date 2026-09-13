@@ -411,6 +411,12 @@ required_openmpi() {
   printf '%s.%s.%s\n' "${digits:0:1}" "${digits:1:1}" "${digits:2}"
 }
 
+# A prefix whose ompi_info starts: its libraries load. mpirun --version alone
+# answers even when a library it needs at run time is gone.
+openmpi_works() {
+  [ -x "$1/bin/ompi_info" ] && "$1/bin/ompi_info" --parsable >/dev/null 2>&1
+}
+
 mpirun_version() {
   { "$1" --version 2>/dev/null || true; } | grep -i 'open mpi' | grep -o -E '[0-9]+\.[0-9]+\.[0-9]+' | head -n 1 || true
 }
@@ -457,7 +463,7 @@ ensure_openmpi() {
     log "OpenMPI: not set up (--no-openmpi)"
     return 0
   fi
-  local want="" candidate version
+  local want="" candidate version prefix
   if [ -n "$ORCA_FOUND" ]; then want="$(required_openmpi "$ORCA_FOUND")"; fi
   if [ -z "$want" ]; then
     # Also without an ORCA to name it: an ORCA unpacked later then runs, and
@@ -469,9 +475,13 @@ ensure_openmpi() {
     if [ -z "$candidate" ] || [ ! -x "$candidate" ]; then continue; fi
     version="$(mpirun_version "$candidate")"
     if [ -n "$version" ] && [ "${version%.*}" = "${want%.*}" ]; then
-      OMPI_FOUND="$(dirname "$(dirname "$(readlink -f "$candidate")")")"
-      log "OpenMPI $version at $OMPI_FOUND (wanted: $want)"
-      return 0
+      prefix="$(dirname "$(dirname "$(readlink -f "$candidate")")")"
+      if openmpi_works "$prefix"; then
+        OMPI_FOUND="$prefix"
+        log "OpenMPI $version at $OMPI_FOUND (wanted: $want)"
+        return 0
+      fi
+      warn "OpenMPI $version at $prefix does not start (ompi_info fails); a working one is built"
     fi
   done
   build_openmpi "$want"

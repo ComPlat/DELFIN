@@ -48,11 +48,20 @@ def run_genarris_cli(
         from delfin.csp_tools import get_csp_tools_root
 
         candidate = get_csp_tools_root() / "bin" / "gnrs"
-        if candidate.is_file():
-            gnrs_bin = str(candidate)
-        else:
+        if not candidate.is_file():
+            # Needed now and not there: installed through DELFIN's installer,
+            # once per session, before the run is given up on.
+            try:
+                from delfin.qm_health import provide
+
+                provide("gnrs")
+            except Exception:
+                pass
+        gnrs_bin = which("gnrs") or (str(candidate) if candidate.is_file() else None)
+        if gnrs_bin is None:
             raise FileNotFoundError(
-                "gnrs not found. Install Genarris: bash delfin/csp_tools/install_csp_tools.sh"
+                "gnrs not found, and Genarris could not be installed. "
+                "Install it: python -m delfin.installer --install genarris"
             )
 
     cmd = [mpirun, "-np", str(np), gnrs_bin, "--config", str(config_path)]

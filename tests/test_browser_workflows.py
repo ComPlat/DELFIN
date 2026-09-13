@@ -58,8 +58,13 @@ def test_require_tools_reports_unsupported_missing_tools_after_auto_install(monk
             stdout="installed",
         )
 
+    from delfin import qm_health
+
+    asked = []
     monkeypatch.setattr(browser_workflows, "_resolved_path_or_empty", fake_resolved)
     monkeypatch.setattr(browser_workflows, "run_analysis_tools_installer", fake_installer)
+    # crest is DELFIN's to install now: it is asked for, and here it cannot be had.
+    monkeypatch.setattr(qm_health, "provide", lambda name, **kw: asked.append(name) or {"ok": False})
 
     try:
         browser_workflows._require_tools(
@@ -69,10 +74,11 @@ def test_require_tools_reports_unsupported_missing_tools_after_auto_install(monk
     except RuntimeError as exc:
         message = str(exc)
     else:
-        raise AssertionError("Expected RuntimeError for unsupported missing tool")
+        raise AssertionError("Expected RuntimeError for a tool that could not be installed")
 
+    assert asked == ["crest"]
     assert "crest" in message
-    assert "unsupported tools such as crest, xtb, and orca" in message
+    assert "licensed programs such as ORCA must already exist" in message
 
 
 def test_require_tools_can_disable_auto_install(monkeypatch, tmp_path):

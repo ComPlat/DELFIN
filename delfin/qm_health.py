@@ -704,6 +704,18 @@ def _blocker_has_gone(name: str) -> bool:
     return False
 
 
+def _other_installable_program(name: str):
+    """A program DELFIN installs that is not one of the QM programs, or None.
+
+    Packmol, Genarris, CENSO and anmr have installers of their own; they are
+    reached through delfin.installer rather than the QM installer.
+    """
+    tool = _installer.find(name)
+    if tool is None or tool.licensed or tool.modules or tool.group in ('qm', 'ketcher'):
+        return None
+    return tool
+
+
 def ensure_tool(name: str,
                 on_line: Optional[Callable[[str], None]] = None,
                 timeout: float = 1800.0) -> Dict[str, Any]:
@@ -723,8 +735,9 @@ def ensure_tool(name: str,
         return {'ok': True, 'installed': False, 'health': health, 'status': ''}
 
     from delfin.dashboard.gfn_optimize import auto_install_allowed, install_xtb
+    other = _other_installable_program(name)
 
-    if name not in INSTALLABLE:
+    if name not in INSTALLABLE and other is None:
         return {'ok': False, 'installed': False, 'health': health,
                 'status': (f'{health.label or name} is not there, and it is '
                            'not one DELFIN installs -- it is licensed and is '
@@ -745,7 +758,14 @@ def ensure_tool(name: str,
     if on_line is not None:
         on_line(f'{health.label or name}: {health.why or "not installed"}. '
                 'Installing it -- a few minutes.')
-    outcome = install_xtb(on_line=on_line, timeout=timeout, tool=name) or {}
+    if other is not None:
+        installed = _installer.install([other.name], on_line=on_line, timeout=timeout)
+        outcome = {
+            'lines': [line for result in installed['results'] for line in result['lines']],
+            'status': '' if installed['ok'] else 'its installer reported a failure',
+        }
+    else:
+        outcome = install_xtb(on_line=on_line, timeout=timeout, tool=name) or {}
     after = check_tool(name, depth='runs')
     if after.present and after.level == 'ok':
         return {'ok': True, 'installed': True, 'health': after,

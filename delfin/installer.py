@@ -203,7 +203,7 @@ def packages() -> Dict[str, Dict[str, str]]:
     """Python modules that can be installed on demand, and what installs each."""
     out: Dict[str, Dict[str, str]] = {}
     for tool in TOOLS:
-        if tool.group not in ("analysis", "mlp") or tool.licensed:
+        if tool.group not in ("analysis", "mlp", "ai") or tool.licensed:
             continue
         for module in tool.modules:
             if module in out:
