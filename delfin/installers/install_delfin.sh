@@ -133,6 +133,14 @@ PLAN=""
 DONE=(); FAILED=()
 VENV_DIR=""; VENV_PY=""; BASE_PYTHON=""; ORCA_FOUND=""; OMPI_FOUND=""
 
+# Python that imports delfin runs from this script's own directory. Started
+# from anywhere else, `python -m` puts the working directory first on the
+# import path, and inside another DELFIN checkout that checkout's delfin is
+# the one imported -- its tool directory staged, its links copied.
+in_script_dir() {
+  (cd "$SCRIPT_DIR" && "$@")
+}
+
 # The list, read with whatever Python is at hand -- the module needs nothing
 # but the standard library, so this works before DELFIN's venv exists.
 catalog() {
@@ -145,7 +153,7 @@ catalog() {
     py="$(command -v python3 2>/dev/null || true)"
   fi
   [ -n "$py" ] || die "python3 is needed to read DELFIN's list of tools"
-  PYTHONPATH="$PACKAGE_PARENT${PYTHONPATH:+:$PYTHONPATH}" "$py" -m delfin.installer "$@"
+  PYTHONPATH="$PACKAGE_PARENT${PYTHONPATH:+:$PYTHONPATH}" in_script_dir "$py" -m delfin.installer "$@"
 }
 
 select_tools() {
@@ -538,7 +546,7 @@ run_tools() {
   fi
   log "---- $MODE: ${tools:-every installed tool}"
   # shellcheck disable=SC2086
-  if DELFIN_PYTHON="$VENV_PY" "$VENV_PY" -m delfin.installer "--$MODE" $tools; then
+  if DELFIN_PYTHON="$VENV_PY" in_script_dir "$VENV_PY" -m delfin.installer "--$MODE" $tools; then
     DONE+=("$MODE: ${tools:-installed tools}")
   else
     FAILED+=("$MODE of tools (see the lines above)")
@@ -555,7 +563,7 @@ write_settings_and_env() {
   if printf '%s\n' "$PLAN" | grep -q '^qm:'; then qm=1; fi
   DELFIN_INSTALL_ORCA="$ORCA_FOUND" DELFIN_INSTALL_ORCA_EXPLICIT="$ORCA_EXPLICIT" \
   DELFIN_INSTALL_OMPI="$OMPI_FOUND" DELFIN_INSTALL_REPO="$DELFIN_REPO" DELFIN_INSTALL_QM="$qm" \
-  "$VENV_PY" - <<'PY'
+  in_script_dir "$VENV_PY" - <<'PY'
 import os
 from pathlib import Path
 
@@ -595,7 +603,7 @@ summary() {
   local item
   log "==================== summary ===================="
   if [ -n "$VENV_PY" ] && [ -x "$VENV_PY" ]; then
-    log "DELFIN   $("$VENV_PY" -c 'import delfin; print(getattr(delfin, "__version__", "?"))' 2>/dev/null || echo '?') in $VENV_DIR"
+    log "DELFIN   $(in_script_dir "$VENV_PY" -c 'import delfin; print(getattr(delfin, "__version__", "?"))' 2>/dev/null || echo '?') in $VENV_DIR"
   fi
   log "ORCA     ${ORCA_FOUND:-not found; pass --orca DIR|TARBALL (https://orcaforum.kofo.mpg.de)}"
   log "OpenMPI  ${OMPI_FOUND:-not set up}"

@@ -584,14 +584,19 @@ version_of() {
   esac
   binary="${BIN_DIR}/${prog}"
   [[ -x "${binary}" ]] || { printf "absent\n"; return; }
+  # Never a failure. crest 3.0.2 says "crest 3.0.2", not "version 3.0.2", so
+  # the grep found nothing, the pipeline failed under pipefail, and `set -e`
+  # ended the whole run straight after crest was installed -- dftb+, xtb4stda
+  # and std2 never tried, and no summary.
+  local found=""
   case "${prog}" in
-    xtb|xtb-gxtb) "${binary}" --version 2>&1 | grep -oE "xtb version [0-9.]+" \
-                    | head -1 | awk '{print $3}' ;;
-    crest)        "${binary}" --version 2>&1 | grep -oiE "version [0-9.]+" \
-                    | head -1 | awk '{print $2}' ;;
-    dftb+)        "${binary}" --version 2>&1 | grep -oE "[0-9]+\.[0-9.]+" | head -1 ;;
-    *)            printf "present\n" ;;
+    xtb|xtb-gxtb) found="$({ "${binary}" --version 2>&1 | grep -oE "xtb version [0-9.]+" \
+                    | head -1 | awk '{print $3}'; } || true)" ;;
+    crest)        found="$({ "${binary}" --version 2>&1 | grep -oiE "(version|crest) [0-9][0-9.]*" \
+                    | head -1 | awk '{print $2}'; } || true)" ;;
+    dftb+)        found="$({ "${binary}" --version 2>&1 | grep -oE "[0-9]+\.[0-9.]+" | head -1; } || true)" ;;
   esac
+  printf "%s\n" "${found:-present}"
 }
 
 # One tool at a time, and one that fails takes only itself down.
@@ -609,11 +614,11 @@ FAILED=()
 
 attempt() {
   local tool="$1" was
-  was="$(version_of "${tool}")"
+  was="$(version_of "${tool}")" || was="unknown"
   log "--- ${tool}"
   if ( set +e; install_one "${tool}" ) ; then
     local now
-    now="$(version_of "${tool}")"
+    now="$(version_of "${tool}")" || now="unknown"
     if [[ "${was}" != "${now}" && "${was}" != "absent" ]]; then
       INSTALLED+=("${tool} ${was} -> ${now}")
     elif [[ "${was}" == "absent" ]]; then

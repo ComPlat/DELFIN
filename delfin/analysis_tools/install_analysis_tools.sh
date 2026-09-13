@@ -166,12 +166,16 @@ python_has_module() {
   "${python_bin}" -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('${module}') else 1)" >/dev/null 2>&1
 }
 
+# Where this environment's commands go: the venv's bin/, not the directory of
+# the interpreter a venv's python links to. Resolved, that was /usr/bin for a
+# venv made from the system python, and writing c2anmr, nmrplot and anmr there
+# failed with "Permission denied" -- and stopped the run before cclib, nglview
+# and Packmol.
 python_bin_dir() {
   local python_bin="$1"
   "${python_bin}" - <<'PY'
-from pathlib import Path
-import sys
-print(Path(sys.executable).resolve().parent)
+import sysconfig
+print(sysconfig.get_path("scripts"))
 PY
 }
 

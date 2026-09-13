@@ -225,6 +225,66 @@ def test_genarris_is_installed_before_a_run_gives_up(monkeypatch, tmp_path):
     assert asked == ["gnrs"]
 
 
+def test_a_delfin_in_the_working_directory_is_not_the_one_installed(tmp_path):
+    """python -m puts the working directory first on the import path.
+
+    Started from inside another DELFIN checkout, that checkout's delfin was
+    imported: its tool directory was staged and its links into somebody's home
+    were copied into the new install.
+    """
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "delfin").mkdir(parents=True)
+    (elsewhere / "delfin" / "__init__.py").write_text("")
+    (elsewhere / "delfin" / "installer.py").write_text('raise SystemExit("the wrong delfin")\n')
+
+    done = subprocess.run(["bash", str(INSTALLER), "--list"], cwd=elsewhere,
+                          capture_output=True, text=True, timeout=60)
+
+    assert done.returncode == 0, done.stderr
+    assert "qm: xtb" in done.stdout
+    assert "the wrong delfin" not in done.stderr
+
+
+def _shell_function(script: pathlib.Path, name: str) -> str:
+    text = script.read_text(encoding="utf-8")
+    return name + "() {" + text.split(name + "() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+
+
+def test_a_version_that_cannot_be_read_does_not_end_the_qm_install(tmp_path):
+    """crest 3.0.2 prints "crest 3.0.2"; under pipefail the grep ended the run."""
+    script = REPO / "delfin" / "qm_tools" / "install_qm_tools.sh"
+    (tmp_path / "crest").write_text("#!/bin/sh\necho ' crest 3.0.2'\n")
+    (tmp_path / "dftb+").write_text("#!/bin/sh\necho 'no number here'\nexit 3\n")
+    for name in ("crest", "dftb+"):
+        (tmp_path / name).chmod(0o755)
+
+    body = ("set -euo pipefail\n" + _shell_function(script, "version_of")
+            + 'now="$(version_of crest)"; echo "crest=$now"\n'
+            + 'now="$(version_of dftb+)"; echo "dftb=$now"\n'
+            + 'now="$(version_of xtb)"; echo "xtb=$now"\n'
+            + 'echo "still running"\n')
+    done = subprocess.run(["bash", "-c", body], capture_output=True, text=True, timeout=30,
+                          env={"PATH": os.environ["PATH"], "BIN_DIR": str(tmp_path)})
+
+    assert done.returncode == 0, done.stderr
+    assert "crest=3.0.2" in done.stdout
+    assert "dftb=present" in done.stdout
+    assert "xtb=absent" in done.stdout
+    assert "still running" in done.stdout
+
+
+def test_analysis_commands_go_into_the_environment_not_beside_its_interpreter():
+    """A venv made from /usr/bin/python3.11 resolved to /usr/bin: Permission denied."""
+    import sysconfig
+
+    script = REPO / "delfin" / "analysis_tools" / "install_analysis_tools.sh"
+    body = _shell_function(script, "python_bin_dir") + f'python_bin_dir "{sys.executable}"\n'
+    done = subprocess.run(["bash", "-c", body], capture_output=True, text=True, timeout=30)
+
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.strip() == sysconfig.get_path("scripts")
+
+
 def test_every_tool_offered_is_one_its_own_installer_knows():
     catalog = _catalog()
 
