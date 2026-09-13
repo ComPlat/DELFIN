@@ -678,7 +678,39 @@ install_nglview() {
 }
 
 # ---------------------------------------------------------------------------
+# micromamba wherever DELFIN or the user put it; fetched when there is none.
+MICROMAMBA_URL="${MICROMAMBA_URL:-https://micro.mamba.pm/api/micromamba/linux-64/latest}"
+
+find_micromamba() {
+  local candidate
+  for candidate in "${MAMBA_EXE:-}" "$(command -v micromamba 2>/dev/null || true)" \
+      "${DELFIN_QM_TOOLS_ROOT:-${HOME}/.delfin/qm_tools}/bin/micromamba" \
+      "${ROOT}/bin/micromamba" "${HOME}/micromamba/bin/micromamba" "${HOME}/.local/bin/micromamba"; do
+    if [ -n "${candidate}" ] && [ -x "${candidate}" ]; then
+      printf "%s\n" "${candidate}"
+      return 0
+    fi
+  done
+  have curl || return 1
+  local work="${ROOT}/downloads/micromamba-$$"
+  mkdir -p "${work}" "${ROOT}/bin"
+  if ! curl -fsSL "${MICROMAMBA_URL}" | tar -xj -C "${work}" bin/micromamba 2>/dev/null; then
+    rm -rf "${work}"
+    return 1
+  fi
+  install -m 755 "${work}/bin/micromamba" "${ROOT}/bin/micromamba"
+  rm -rf "${work}"
+  printf "%s\n" "${ROOT}/bin/micromamba"
+}
+
+# Packmol in an environment of its own, linked beside DELFIN's other commands.
+#
+# `micromamba install packmol` without a prefix put it into whatever base
+# environment micromamba had, which is on nobody's PATH -- and a machine with
+# DELFIN's own micromamba, but none on the PATH, was told Packmol "requires
+# conda" and got nothing.
 install_packmol() {
+  local python_bin="$1"
   if [ "${INSTALL_PACKMOL}" != "1" ]; then
     log "Packmol: skipped (INSTALL_PACKMOL=0)"
     return 0
@@ -689,27 +721,25 @@ install_packmol() {
     return 0
   fi
 
-  if have micromamba || have mamba || have conda; then
-    local conda_cmd
-    if have micromamba; then
-      conda_cmd="micromamba"
-    elif have mamba; then
-      conda_cmd="mamba"
-    else
-      conda_cmd="conda"
-    fi
-
-    log "installing Packmol via ${conda_cmd}..."
-    "${conda_cmd}" install -y -c conda-forge packmol 2>&1 | tee -a "${LOG_DIR}/packmol_install.log" || true
-
-    if have packmol; then
-      log "Packmol installed successfully via ${conda_cmd}"
-      return 0
-    fi
+  local mamba env_dir bin_dir
+  if ! mamba="$(find_micromamba)"; then
+    warn "Packmol needs micromamba, and none was found or could be fetched."
+    warn "  Install manually: conda install -c conda-forge packmol"
+    return 0
   fi
-
-  warn "Packmol installation requires conda/micromamba/mamba."
-  warn "  Install manually: conda install -c conda-forge packmol"
+  env_dir="${ROOT}/.mamba_env/packmol"
+  bin_dir="$(python_bin_dir "${python_bin}")"
+  if [ ! -x "${env_dir}/bin/packmol" ] || [ "${FORCE_REINSTALL}" = "1" ]; then
+    log "installing Packmol into ${env_dir} with ${mamba}..."
+    "${mamba}" create -y -p "${env_dir}" -c conda-forge packmol 2>&1 | tee -a "${LOG_DIR}/packmol_install.log" || true
+  fi
+  if [ -x "${env_dir}/bin/packmol" ]; then
+    mkdir -p "${bin_dir}"
+    ln -sfn "${env_dir}/bin/packmol" "${bin_dir}/packmol"
+    log "Packmol installed: ${bin_dir}/packmol -> ${env_dir}/bin/packmol"
+  else
+    warn "Packmol could not be installed; see ${LOG_DIR}/packmol_install.log"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -785,7 +815,7 @@ main() {
   install_multiwfn "${python_bin}"
   install_cclib "${python_bin}"
   install_nglview "${python_bin}"
-  install_packmol
+  install_packmol "${python_bin}"
   summary
 }
 
