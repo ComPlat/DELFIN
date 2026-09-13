@@ -253,15 +253,59 @@ Remove conda Intel MPI and reinstall mpi4py:
 # ---------------------------------------------------------------------------
 # Clone (or update) and install Genarris.
 # ---------------------------------------------------------------------------
+# The Python wrappers SWIG writes while the extensions are built.
+#
+# setuptools collects a package's .py files before build_ext runs SWIG, so
+# the wheel carried _pygenarris_mpi.so without the pygenarris_mpi.py that
+# imports it: "cannot import name 'pygenarris_mpi'", reported as an MPI
+# mismatch although both libraries linked the same libmpi. Each .py written
+# beside a *_wrap.c is copied to the same place in the installed package.
+copy_swig_wrappers() {
+  local build_root="$1" installed_pkg="$2" wrap dir module rel copied=0
+  while IFS= read -r wrap; do
+    dir="$(dirname "${wrap}")"
+    module="$(basename "${wrap}" _wrap.c)"
+    [ -f "${dir}/${module}.py" ] || continue
+    rel="${dir#"${build_root}/gnrs"}"
+    rel="${rel#/}"
+    [ -d "${installed_pkg}/${rel}" ] || continue
+    if [ ! -f "${installed_pkg}/${rel}/${module}.py" ]; then
+      cp -f "${dir}/${module}.py" "${installed_pkg}/${rel}/${module}.py"
+      log "added the SWIG wrapper the wheel left out: ${rel:+${rel}/}${module}.py"
+      copied=$((copied + 1))
+    fi
+  done < <(find "${build_root}/gnrs" -name '*_wrap.c' 2>/dev/null)
+  return 0
+}
+
+genarris_extension_loads() {
+  "$1" -c "from gnrs.cgenarris import pygenarris_mpi" 2>&1
+}
+
 install_genarris() {
   local python_bin mpicc_bin
   python_bin="$(detect_python)" || die "python/python3 not found"
   mpicc_bin="$(detect_mpicc)" || die "mpicc not found"
 
   if python_has_module "${python_bin}" "gnrs" && [ "${FORCE_REINSTALL}" != "1" ]; then
-    log "Genarris (gnrs) already installed, skipping (set FORCE_REINSTALL=1 to force)"
-    link_gnrs_cli "${python_bin}"
-    return 0
+    if genarris_extension_loads "${python_bin}" >/dev/null; then
+      log "Genarris (gnrs) already installed, skipping (set FORCE_REINSTALL=1 to force)"
+      link_gnrs_cli "${python_bin}"
+      return 0
+    fi
+    # Installed and its C extension does not load: taken on trust, a broken
+    # Genarris would have been reported installed on every run after the first.
+    local installed_pkg
+    installed_pkg="$("${python_bin}" -c "import gnrs, os; print(os.path.dirname(gnrs.__file__))")"
+    if [ -d "${BUILD_DIR}/Genarris/gnrs" ]; then
+      copy_swig_wrappers "${BUILD_DIR}/Genarris" "${installed_pkg}"
+    fi
+    if genarris_extension_loads "${python_bin}" >/dev/null; then
+      log "Genarris (gnrs) repaired"
+      link_gnrs_cli "${python_bin}"
+      return 0
+    fi
+    log "Genarris is installed but its C extension does not load; rebuilding"
   fi
 
   verify_mpi_consistency "${python_bin}" "${mpicc_bin}"
@@ -319,12 +363,18 @@ install_genarris() {
     die "Genarris installation failed — 'import gnrs' not possible. Check ${LOG_DIR}/genarris_install.log"
   fi
 
+  local installed_pkg
+  installed_pkg="$("${python_bin}" -c "import gnrs, os; print(os.path.dirname(gnrs.__file__))")"
+  copy_swig_wrappers "${genarris_dir}" "${installed_pkg}"
+
   # -- verify C extension actually loads ----------------------------------
   log "verifying C extension..."
-  if "${python_bin}" -c "from gnrs.cgenarris import pygenarris_mpi" 2>/dev/null; then
+  local load_error
+  if load_error="$(genarris_extension_loads "${python_bin}")"; then
     log "cgenarris C extension OK"
   else
-    warn "cgenarris C extension failed to load!"
+    warn "cgenarris C extension failed to load:"
+    printf '%s\n' "${load_error}" | tail -n 3 | while IFS= read -r line; do warn "  ${line}"; done
     warn "This usually means MPI mismatch. Check:"
     warn "  ldd \$(python -c 'import gnrs.cgenarris.src._pygenarris_mpi as m; print(m.__file__)')"
     warn "  ldd \$(python -c 'import mpi4py.MPI; print(mpi4py.MPI.__file__)')"
