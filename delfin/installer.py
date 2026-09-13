@@ -267,14 +267,25 @@ def _run(command: List[str], *, cwd: Path, env: Dict[str, str],
 
 
 def _install_family(group: str, tools: List[Tool], *, on_line, env, timeout) -> Tuple[bool, List[str]]:
+    import sysconfig
+
     root = _stage(group)
     script = root / _SCRIPTS[group][1]
     run_env = os.environ.copy()
     # Into the interpreter that will import what is installed.
     run_env.setdefault("DELFIN_PYTHON", sys.executable)
+    # And its commands on the PATH, as they are for anybody using DELFIN. Run
+    # from a shell whose venv is not activated, an installer that had just put
+    # c2anmr into the venv looked for it on the PATH and said it was missing.
+    scripts = sysconfig.get_path("scripts")
+    if scripts:
+        run_env["PATH"] = scripts + os.pathsep + run_env.get("PATH", "")
     for variable in _SCRIPTS[group][2]:
         run_env[variable] = str(root)
     run_env.update(switch_env(group, tools))
+    if group == "qm" and any(tool.name == "std2" for tool in tools):
+        # std2 has no binary release; the Settings button builds it too.
+        run_env.setdefault("INSTALL_STD2_FROM_SOURCE", "1")
     if env:
         run_env.update({str(key): str(value) for key, value in env.items()})
     command = ["bash", str(script)]
@@ -334,7 +345,15 @@ def install(requested: Iterable[str], *, on_line: Optional[Callable[[str], None]
             group_env = dict(_UPDATE_ENV.get(group, {})) if update else {}
             group_env.update(env or {})
             ok, lines = _install_family(group, tools, on_line=on_line, env=group_env, timeout=timeout)
-        results.append({"group": group, "tools": [tool.name for tool in tools], "ok": ok, "lines": lines})
+        # Asked afterwards, not taken from the exit code: these installers say
+        # "Packmol installation requires conda" and still return 0.
+        missing = [tool.name for tool in tools if not present(tool)]
+        if missing:
+            ok = False
+            lines = list(lines) + [f"not installed after its installer ran: {' '.join(missing)}"]
+            _say(on_line, lines[-1])
+        results.append({"group": group, "tools": [tool.name for tool in tools], "ok": ok,
+                        "missing": missing, "lines": lines})
     return {"ok": all(result["ok"] for result in results), "results": results}
 
 
@@ -370,6 +389,11 @@ def present(tool: Tool) -> bool:
         return bool(ketcher.stored_version())
     if tool.modules:
         return any(_module_present(module) for module in tool.modules)
+    import sysconfig
+
+    scripts = sysconfig.get_path("scripts")
+    if scripts and os.access(os.path.join(scripts, _probe_name(tool)), os.X_OK):
+        return True
     from delfin import qm_health
 
     return bool(qm_health.check_tool(_probe_name(tool), depth="present").present)
@@ -532,6 +556,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     for result in outcome["results"]:
         mark = "ok    " if result["ok"] else "FAILED"
         said = f" ({result['action']}: {result['status']})" if result.get("action") else ""
+        if result.get("missing"):
+            said += f" (missing: {' '.join(result['missing'])})"
         print(f"[delfin-install] {mark} {result['group']}: {' '.join(result['tools'])}{said}", flush=True)
     return 0 if outcome["ok"] else 1
 

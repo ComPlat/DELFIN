@@ -285,6 +285,34 @@ def test_analysis_commands_go_into_the_environment_not_beside_its_interpreter():
     assert done.stdout.strip() == sysconfig.get_path("scripts")
 
 
+def test_packmol_gets_an_environment_of_its_own_and_a_link_beside_delfin(tmp_path):
+    """Installed without a prefix it went into a base environment on nobody's PATH."""
+    venv = tmp_path / "venv"
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)], check=True)
+    fake = tmp_path / "fakebin"
+    fake.mkdir()
+    (fake / "micromamba").write_text(
+        '#!/bin/sh\n'
+        'prefix=""; while [ $# -gt 0 ]; do [ "$1" = "-p" ] && prefix="$2"; shift; done\n'
+        'mkdir -p "$prefix/bin" && printf "#!/bin/sh\\necho packmol\\n" > "$prefix/bin/packmol" '
+        '&& chmod 755 "$prefix/bin/packmol"\n')
+    (fake / "micromamba").chmod(0o755)
+    root = tmp_path / "analysis_tools"
+    root.mkdir()
+    script = REPO / "delfin" / "analysis_tools" / "install_analysis_tools.sh"
+    switches = {f"INSTALL_{name}": "0" for name in ("ANMR", "CCLIB", "CENSO", "MORFEUS", "MULTIWFN", "NGLVIEW")}
+
+    done = subprocess.run(
+        ["bash", str(script)], capture_output=True, text=True, timeout=120,
+        env={"PATH": os.pathsep.join([str(fake), "/usr/bin", "/bin"]), "HOME": str(tmp_path),
+             "DELFIN_PYTHON": str(venv / "bin" / "python"), "DELFIN_ANALYSIS_TOOLS_ROOT": str(root),
+             "INSTALL_PACKMOL": "1", **switches})
+
+    link = venv / "bin" / "packmol"
+    assert link.is_symlink(), done.stdout + done.stderr
+    assert os.readlink(link) == str(root / ".mamba_env" / "packmol" / "bin" / "packmol")
+
+
 def test_every_tool_offered_is_one_its_own_installer_knows():
     catalog = _catalog()
 
@@ -334,6 +362,7 @@ def _fake_family_runs(monkeypatch, tmp_path):
 
     calls = []
     monkeypatch.setattr(installer, "_stage", lambda group: tmp_path / group)
+    monkeypatch.setattr(installer, "present", lambda tool: True)
 
     def run(command, *, cwd, env, on_line, timeout):
         calls.append((command, env))
@@ -360,6 +389,25 @@ def test_one_request_runs_each_family_installer_once_with_only_its_tools(monkeyp
     assert {s for s in installer.switches("analysis") if analysis_env[s] == "1"} == {"INSTALL_CCLIB"}
     assert {s for s in installer.switches("mlp") if mlp_env[s] == "1"} == {"INSTALL_ANI2X", "INSTALL_MACE"}
     assert "FORCE_REINSTALL" not in mlp_env or mlp_env["FORCE_REINSTALL"] != "1"
+
+
+def test_a_tool_still_missing_after_its_installer_is_reported_missing(monkeypatch, tmp_path):
+    """These installers say "Packmol installation requires conda" and exit 0."""
+    import sysconfig
+
+    from delfin import installer
+
+    calls = _fake_family_runs(monkeypatch, tmp_path)
+    monkeypatch.setattr(installer, "present", lambda tool: tool.name != "std2")
+
+    outcome = installer.install(["xtb", "std2"])
+
+    assert outcome["ok"] is False
+    assert outcome["results"][0]["missing"] == ["std2"]
+    env = calls[0][1]
+    assert env["INSTALL_STD2_FROM_SOURCE"] == "1", "std2 has no binary release"
+    assert env["PATH"].split(os.pathsep)[0] == sysconfig.get_path("scripts"), (
+        "an installer looked on the PATH for what it had just put into the venv")
 
 
 def test_an_update_fetches_again_what_is_installed_and_nothing_else(monkeypatch, tmp_path):
