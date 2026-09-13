@@ -384,6 +384,29 @@ def test_genarris_is_cloned_from_the_branch_its_repository_has():
     assert 'git clone "${GENARRIS_REPO}" "${genarris_dir}"' in text, "no branch named when none is set"
 
 
+def test_the_swig_wrappers_the_genarris_wheel_leaves_out_are_added(tmp_path):
+    """The wheel carried _pygenarris_mpi.so without pygenarris_mpi.py."""
+    script = REPO / "delfin" / "csp_tools" / "install_csp_tools.sh"
+    build = tmp_path / "Genarris"
+    src = build / "gnrs" / "cgenarris" / "src"
+    (src / "rpack" / "rigid_press").mkdir(parents=True)
+    for folder, module in ((src, "pygenarris_mpi"), (src / "rpack" / "rigid_press", "rigid_press")):
+        (folder / f"{module}_wrap.c").write_text("/* swig */\n")
+        (folder / f"{module}.py").write_text(f"# {module} wrapper\n")
+    (src / "helper.py").write_text("# not a swig wrapper\n")
+    installed = tmp_path / "site-packages" / "gnrs"
+    (installed / "cgenarris" / "src" / "rpack" / "rigid_press").mkdir(parents=True)
+
+    body = ('log() { printf "%s\\n" "$*"; }\n' + _shell_function(script, "copy_swig_wrappers")
+            + f'copy_swig_wrappers "{build}" "{installed}"\n')
+    done = subprocess.run(["bash", "-c", body], capture_output=True, text=True, timeout=30)
+
+    assert done.returncode == 0, done.stderr
+    assert (installed / "cgenarris" / "src" / "pygenarris_mpi.py").is_file()
+    assert (installed / "cgenarris" / "src" / "rpack" / "rigid_press" / "rigid_press.py").is_file()
+    assert not (installed / "cgenarris" / "src" / "helper.py").exists(), "only what SWIG wrote"
+
+
 def test_every_tool_offered_is_one_its_own_installer_knows():
     catalog = _catalog()
 
