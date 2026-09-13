@@ -160,6 +160,18 @@ check_system_deps() {
   python_bin="$(detect_python)" || { missing+=("python"); true; }
   if [ -n "${python_bin:-}" ]; then
     if ! python_has_module "${python_bin}" "mpi4py"; then
+      # Built here against the MPI compiler that was found -- the one Genarris
+      # is built against too. A missing mpi4py was a stop, with everything it
+      # needs already on the machine.
+      local mpicc_for_mpi4py=""
+      if mpicc_for_mpi4py="$(detect_mpicc 2>/dev/null)"; then
+        mkdir -p "${LOG_DIR}"
+        log "mpi4py not found; building it against ${mpicc_for_mpi4py}..."
+        MPICC="${mpicc_for_mpi4py}" "${python_bin}" -m pip install --no-binary mpi4py mpi4py \
+          2>&1 | tee -a "${LOG_DIR}/mpi4py_install.log" || true
+      fi
+    fi
+    if ! python_has_module "${python_bin}" "mpi4py"; then
       warn "mpi4py not found in ${python_bin}."
       warn "Install via:  MPICC=/usr/bin/mpicc pip install mpi4py"
       warn "         or:  conda install -c conda-forge mpi4py"
