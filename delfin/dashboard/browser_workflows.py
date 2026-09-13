@@ -469,12 +469,29 @@ def _require_tools(tool_names: list[str], *, workdir: Path | None = None) -> dic
                 resolved[tool_name] = path
             else:
                 missing.append(tool_name)
+    if missing and workdir is not None:
+        # xtb and crest are DELFIN's to install as well: fetched here, once per
+        # session, rather than the workflow refusing to start. Only licensed
+        # programs have to be there already.
+        from delfin.qm_health import INSTALLABLE, provide
+
+        for tool_name in [name for name in missing if name in INSTALLABLE]:
+            try:
+                provide(tool_name)
+            except Exception:
+                pass
+        for tool_name in list(missing):
+            path = _resolved_path_or_empty(tool_name)
+            if path:
+                resolved[tool_name] = path
+                missing.remove(tool_name)
     if missing:
         raise RuntimeError(
             "Missing required tools for CENSO/ANMR workflow: "
             + ", ".join(missing)
             + ". Configure them in Settings or ensure they are on PATH. "
-            + "DELFIN auto-installs supported analysis tools by default; unsupported tools such as crest, xtb, and orca must already exist."
+            + "DELFIN installs the tools it may install when they are missing (CENSO, ANMR, xtb, crest); "
+            + "licensed programs such as ORCA must already exist."
         )
     return resolved
 

@@ -16,8 +16,22 @@ from typing import Optional
 
 
 def _find_packmol() -> Optional[str]:
-    """Return the Packmol executable path or None."""
+    """Return the Packmol executable path or None.
+
+    Asked when Packmol is about to run, so a missing one is installed here --
+    once per session, through DELFIN's installer -- rather than the run
+    stopping on a message that says to install it.
+    """
     import shutil
+    found = shutil.which("packmol")
+    if found:
+        return found
+    try:
+        from delfin.qm_health import provide
+
+        provide("packmol")
+    except Exception:
+        pass
     return shutil.which("packmol")
 
 

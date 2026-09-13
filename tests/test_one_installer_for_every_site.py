@@ -17,7 +17,7 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 INSTALLER = REPO / "delfin" / "installers" / "install_delfin.sh"
 
 
-def _dry_run(tmp_path, *args, extra_path=None):
+def _dry_run(tmp_path, *args, extra_path=None, extra_env=None):
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
     path = [str(pathlib.Path(sys.executable).parent), "/usr/bin", "/bin"]
@@ -31,6 +31,7 @@ def _dry_run(tmp_path, *args, extra_path=None):
             "PATH": os.pathsep.join(path),
             "DELFIN_REPO": str(REPO),
             "DELFIN_PYTHON": sys.executable,
+            **(extra_env or {}),
         },
     )
     return done, home
@@ -134,6 +135,94 @@ def test_openmpi_is_built_the_way_orca_needs_it():
     text = INSTALLER.read_text(encoding="utf-8")
     assert '--enable-mpi-cxx --enable-mca-no-build=fs-gpfs --disable-oshmem' in text
     assert 'DEFAULT_OPENMPI="${DELFIN_OPENMPI_VERSION:-4.1.8}"' in text
+
+
+def _fake_openmpi(root, ompi_info_exit):
+    (root / "bin").mkdir(parents=True)
+    (root / "bin" / "mpirun").write_text('#!/bin/sh\necho "mpirun (Open MPI) 4.1.8"\n')
+    (root / "bin" / "ompi_info").write_text(f"#!/bin/sh\nexit {ompi_info_exit}\n")
+    for name in ("mpirun", "ompi_info"):
+        (root / "bin" / name).chmod(0o755)
+    return root
+
+
+def test_an_openmpi_that_does_not_start_is_built_again(tmp_path):
+    """mpirun --version answers even when a library it needs is gone."""
+    broken = _fake_openmpi(tmp_path / "broken-openmpi", ompi_info_exit=1)
+    done, _ = _dry_run(tmp_path, "--profile", "core", "--no-orca",
+                       extra_env={"OPENMPI_PREFIX": str(broken)})
+    assert "does not start" in done.stderr
+    assert "would build OpenMPI 4.1.8" in done.stdout
+
+    working = _fake_openmpi(tmp_path / "working-openmpi", ompi_info_exit=0)
+    kept, _ = _dry_run(tmp_path, "--profile", "core", "--no-orca",
+                       extra_env={"OPENMPI_PREFIX": str(working)})
+    assert f"OpenMPI 4.1.8 at {working}" in kept.stdout
+
+
+def test_a_program_of_another_family_is_installed_when_it_is_needed(monkeypatch):
+    """Packmol, Genarris and CENSO come through the one installer, not the QM one."""
+    from delfin import installer, qm_health
+    from delfin.dashboard import gfn_optimize
+
+    asked = []
+
+    def check(name, depth="answer", **kw):
+        there = bool(asked)
+        return qm_health.ToolHealth(name=name, label=name, present=there, healthy=there,
+                                    level="ok" if there else "absent")
+
+    def not_the_qm_installer(**kw):
+        raise AssertionError("Packmol went to the QM installer")
+
+    monkeypatch.setattr(qm_health, "check_tool", check)
+    monkeypatch.setattr(qm_health, "_TRIED", set())
+    monkeypatch.setattr(gfn_optimize, "auto_install_allowed", lambda: True)
+    monkeypatch.setattr(gfn_optimize, "install_xtb", not_the_qm_installer)
+    monkeypatch.setattr(installer, "install", lambda requested, **kw: (
+        asked.append(list(requested)) or {"ok": True, "results": []}))
+
+    licensed = qm_health.ensure_tool("orca")
+    assert licensed["ok"] is False and asked == [], "a licensed program is never fetched"
+
+    answer = qm_health.ensure_tool("packmol")
+    assert asked == [["packmol"]]
+    assert answer["ok"] and answer["installed"]
+
+
+def test_packmol_is_installed_before_a_run_gives_up(monkeypatch):
+    import shutil
+
+    from delfin import qm_health
+    from delfin.analysis_tools import packmol_wrapper
+
+    asked = []
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(qm_health, "provide", lambda name, **kw: asked.append(name) or {"ok": False})
+
+    assert packmol_wrapper._find_packmol() is None
+    assert asked == ["packmol"]
+
+
+def test_genarris_is_installed_before_a_run_gives_up(monkeypatch, tmp_path):
+    import shutil
+
+    import pytest
+
+    import delfin.csp_tools as csp_tools
+    from delfin import qm_health
+    from delfin.csp_tools import genarris_wrapper
+
+    run = next(obj for obj in vars(genarris_wrapper).values()
+               if callable(obj) and (obj.__doc__ or "").startswith("Run Genarris via its CLI"))
+    asked = []
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    monkeypatch.setattr(csp_tools, "get_csp_tools_root", lambda: tmp_path)
+    monkeypatch.setattr(qm_health, "provide", lambda name, **kw: asked.append(name) or {"ok": False})
+
+    with pytest.raises(FileNotFoundError, match="could not be installed"):
+        run(tmp_path / "genarris.ini")
+    assert asked == ["gnrs"]
 
 
 def test_every_tool_offered_is_one_its_own_installer_knows():

@@ -22,6 +22,8 @@ A SLURM job no longer unpacks a hand-made `delfin_venv.tar`. It packs the venv t
 - Asking for one package on demand installed others of its family as well (cclib brought CENSO, anmr and Packmol; MACE brought ANI-2x, whose switch was spelt `INSTALL_TORCHANI` on one side and `INSTALL_ANI2X` on the other).
 - The Tools tab installed QM programs into the packaged directory and installed `morfeus` from PyPI, which is not morfeus-ml.
 - `install_qm_tools.sh all` left out g-xTB and MOPAC; Settings had no g-xTB button.
+- A missing tool is installed when it is needed, beyond the QM programs: Packmol and Genarris before a run gives up, xtb and crest in the NMR workflow instead of "must already exist", and AI packages through `qm_health.provide`. Licensed programs are still never fetched.
+- Repair builds OpenMPI again when it is present but does not start (`ompi_info` fails).
 
 ## [1.3.2] - 2026-09-07
 

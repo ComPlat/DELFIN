@@ -1849,7 +1849,7 @@ def create_tab(ctx):
         widgets.HTML(
             '<span style="color:#555;">Run an ensemble 1H NMR workflow via '
             'CREST + CENSO + ANMR in a new subfolder. Missing CENSO/ANMR helper '
-            'tools are auto-installed on demand; crest, xtb, and ORCA must already exist.</span>'
+            'tools, xtb and crest are auto-installed on demand; ORCA must already exist.</span>'
         ),
         widgets.HBox(
             [
