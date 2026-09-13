@@ -28,8 +28,13 @@ GXTB_URL="${GXTB_URL:-https://github.com/grimme-lab/g-xtb/releases/download/${GX
 XTB4STDA_URL="${XTB4STDA_URL:-https://github.com/grimme-lab/xtb4stda/releases/download/v1.0/xtb4stda}"
 STDA_URL="${STDA_URL:-https://github.com/grimme-lab/xtb4stda/releases/download/v1.0/stda_v1.6.1}"
 XTB4STDA_RUNTIME_BASE_URL="${XTB4STDA_RUNTIME_BASE_URL:-https://raw.githubusercontent.com/grimme-lab/xtb4stda/master}"
-STD2_TAG="${STD2_TAG:-v2.0.1}"
-STD2_SRC_URL="${STD2_SRC_URL:-https://github.com/grimme-lab/std2/archive/refs/tags/${STD2_TAG}.tar.gz}"
+# The v2.0.1 tag this used to fetch is gone from GitHub (404, with no tags left
+# at all), so a fresh install could not build std2. A commit of master is
+# pinned instead: the same source every time, until STD2_REF is moved on
+# purpose.
+STD2_REF="${STD2_REF:-8d50f9f2a4b66b534e19bb8a99524be6b7153a47}"
+STD2_TAG="${STD2_TAG:-${STD2_REF:0:12}}"
+STD2_SRC_URL="${STD2_SRC_URL:-https://codeload.github.com/grimme-lab/std2/tar.gz/${STD2_REF}}"
 
 # Whether a tool already on this system may stand in for one of ours at all.
 USE_SYSTEM_TOOLS="${USE_SYSTEM_TOOLS:-1}"
@@ -493,7 +498,11 @@ build_std2_from_source() {
   local build_dir="${src_dir}/_build"
   local meson_bin ninja_bin fc_bin cc_bin std2_built
 
-  download_file "${STD2_SRC_URL}" "${std2_tar}"
+  # A failed download used to go on into tar and meson, which then reported
+  # errors about directories that were never there instead of the cause.
+  download_file "${STD2_SRC_URL}" "${std2_tar}" \
+    || die "std2 source could not be downloaded from ${STD2_SRC_URL}"
+  [[ -s "${std2_tar}" ]] || die "std2 source could not be downloaded from ${STD2_SRC_URL}"
   rm -rf "${src_dir}"
   mkdir -p "${src_dir}"
   tar -xzf "${std2_tar}" -C "${src_dir}" --strip-components=1

@@ -90,6 +90,34 @@ def test_a_changed_venv_gets_a_new_tar_and_old_ones_do_not_pile_up(tmp_path):
     assert (node / "lib" / "python3.11" / "site-packages" / "c-1.dist-info").is_dir()
 
 
+def test_a_file_changed_while_packing_still_gives_a_tar(tmp_path):
+    """GNU tar exits 1 when a file changes as it is read; the archive is whole.
+
+    A job packing a venv that another python was writing byte code into took
+    that as a failure and ran without a staged venv.
+    """
+    venv, site = _venv(tmp_path)
+    (site / "a-1.dist-info").mkdir()
+    shim = tmp_path / "shim"
+    shim.mkdir()
+    real_tar = subprocess.run(["bash", "-c", "command -v tar"], capture_output=True, text=True).stdout.strip()
+    (shim / "tar").write_text(f'#!/bin/sh\n"{real_tar}" "$@" || exit $?\n'
+                              'echo "tar: site-packages: file changed as we read it" >&2\nexit 1\n')
+    (shim / "tar").chmod(0o755)
+
+    script = tmp_path / "run.sh"
+    script.write_text("set -euo pipefail\n" + _functions() + f'\nensure_venv_tar "{venv}"\n')
+    done = subprocess.run(
+        ["bash", str(script)], capture_output=True, text=True, timeout=60,
+        env={"HOME": str(tmp_path / "home"), "PATH": f"{shim}:{os.environ['PATH']}",
+             "DELFIN_VENV_CACHE_DIR": str(tmp_path / "cache"), "SLURM_JOB_ID": "8"},
+    )
+
+    assert done.returncode == 0, done.stderr
+    packed = pathlib.Path(done.stdout.strip())
+    assert packed.is_file() and packed.stat().st_size > 0
+
+
 def test_the_job_is_not_pointed_at_a_hand_made_tar_in_the_checkout():
     text = TEMPLATE.read_text(encoding="utf-8")
     assert "$DELFIN_DIR/delfin_venv.tar" not in text

@@ -2245,11 +2245,16 @@ def test_an_install_that_produced_no_xtb_is_a_failure_not_a_shrug(monkeypatch):
 @_needs_xtb
 
 
-def test_the_installer_runs_and_ends_with_an_xtb_the_dashboard_can_find():
+def test_the_installer_runs_and_ends_with_an_xtb_the_dashboard_can_find(monkeypatch, tmp_path):
     """Run for real.  With an xtb already on the machine the script links that
     one instead of downloading -- which is the path a user whose cluster
     provides xtb takes, and the one that has to work without the network.
+
+    Into a tool directory of its own. Run against the real one it re-linked the
+    xtb of whoever ran the suite, in their ~/.delfin, every time.
     """
+    monkeypatch.setenv("DELFIN_QM_TOOLS_ROOT", str(tmp_path / "qm_tools"))
+    monkeypatch.setenv("DELFIN_QM_ROOT", str(tmp_path / "qm_tools"))
     outcome = gfn.install_xtb(timeout=900)
 
     assert outcome["ok"] is True, outcome["status"]
