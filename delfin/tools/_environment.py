@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from delfin import installer as _installer
 from delfin.tools._registry import list_steps
 
 
@@ -76,7 +77,8 @@ for _tm in ("turbomole", "define", "x2t", "ridft", "dscf", "jobex", "aoforce"):
     )
 
 # Open-source QM binaries — installable via DELFIN's bundled installer.
-for _b in ("xtb", "crest", "xtb4stda", "std2", "stda", "dftb+"):
+# The names come from delfin.installer, the one list of what DELFIN installs.
+for _b in _installer.qm_installable():
     _t(
         _b, "binary", "auto",
         source="https://github.com/grimme-lab",
@@ -318,21 +320,36 @@ def install_tools(
     actions: List[Dict[str, object]] = out["actions"]  # type: ignore[assignment]
 
     if want_qm:
-        script = installer_path()
-        if script is None:
-            actions.append({"qm_tools": {"ok": False, "error": "install_qm_tools.sh not found"}})
-        else:
-            try:
-                proc = subprocess.run(["bash", str(script)], capture_output=True,
-                                      text=True, timeout=timeout)
-                actions.append({"qm_tools": {
-                    "ok": proc.returncode == 0, "returncode": proc.returncode,
-                    "stdout": (proc.stdout or "")[-2000:],
-                    "stderr": (proc.stderr or "")[-2000:],
-                }})
-                out["executed"] = True
-            except Exception as exc:  # noqa: BLE001
-                actions.append({"qm_tools": {"ok": False, "error": str(exc)}})
+        # Only the missing ones, and through the one installer. Run bare, the
+        # script installed its default five into the packaged directory, which
+        # the resolver does not read once the user's own copy holds anything.
+        chosen = sorted(auto_bins if select is None else set(select) & auto_bins)
+        try:
+            outcome = _installer.install(chosen, timeout=timeout)
+            lines = [line for result in outcome["results"] for line in result["lines"]]
+            actions.append({"qm_tools": {
+                "ok": bool(outcome["ok"]), "tools": chosen,
+                "stdout": "\n".join(lines)[-2000:],
+            }})
+            out["executed"] = True
+        except Exception as exc:  # noqa: BLE001
+            actions.append({"qm_tools": {"ok": False, "error": str(exc)}})
+
+    # A module DELFIN's installers know goes through them: "pip install
+    # morfeus" is somebody else's package, the one DELFIN uses is morfeus-ml.
+    known_py = [name for name in want_py if _installer.find(name) is not None]
+    if known_py:
+        try:
+            outcome = _installer.install(known_py, timeout=timeout)
+            lines = [line for result in outcome["results"] for line in result["lines"]]
+            actions.append({"delfin_installer": {
+                "packages": known_py, "ok": bool(outcome["ok"]),
+                "stdout": "\n".join(lines)[-2000:],
+            }})
+            out["executed"] = True
+        except Exception as exc:  # noqa: BLE001
+            actions.append({"delfin_installer": {"packages": known_py, "ok": False, "error": str(exc)}})
+    want_py = [name for name in want_py if name not in known_py]
 
     if want_py:
         try:

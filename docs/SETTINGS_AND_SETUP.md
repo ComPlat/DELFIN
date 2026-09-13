@@ -1,6 +1,6 @@
 # Settings, Runtime, and Setup
 
-This document explains the DELFIN Settings tab, the runtime model, and the setup helpers for local use and bwUniCluster.
+This document explains the DELFIN Settings tab, the runtime model, and the setup helpers for local use and SLURM clusters.
 
 ## Overview
 
@@ -214,27 +214,28 @@ Important:
 
 This is a writing action.
 
-### Setup bwUniCluster
+### Setup cluster
 
-Prepares an existing DELFIN installation for bwUniCluster usage.
+Prepares an existing DELFIN installation for the SLURM cluster it runs on.
 
 It configures DELFIN-side behavior, for example:
 
 - runtime backend `slurm`
-- profile `bwunicluster3`
+- the site profile, when DELFIN knows the site (`bwunicluster3` on bwUniCluster 3.0; none elsewhere)
 - submit template wiring
 - `calc` / `archive`
-- `~/.delfin_env.sh`
+- `~/.delfin_env.sh`, including the OpenMPI that ORCA uses
 - shell sourcing
-- `delfin_venv.tar` and `.runtime_cache` when a repo checkout with `.venv` exists
+
+There is no venv tarball to prepare any more: a SLURM job packs one from the venv as it is when the job starts, keyed by the venv's contents, and caches it in `~/.cache/delfin/venv` (`DELFIN_VENV_CACHE_DIR`). A changed venv gets a new tar; an unchanged one is reused.
 
 This is a writing action.
 
 It does **not** perform the full system installation.
 
-### Verify bwUniCluster
+### Verify install
 
-Performs a read-only cluster readiness check.
+Performs a read-only readiness check.
 
 It checks items such as:
 
@@ -248,11 +249,11 @@ It checks items such as:
 
 This does **not** modify files or repair anything.
 
-### Full bwUni install
+### Full install
 
-Runs the bwUniCluster installer path.
+Runs `delfin/installers/install_delfin.sh --profile core`, the same installer as `install.sh`.
 
-This is the heavy setup action and is intended to be close to the existing installer script behavior.
+This is the heavy setup action.
 
 It can handle things such as:
 
@@ -271,6 +272,12 @@ Important:
 - ORCA is still treated as external software
 - DELFIN does not fetch ORCA from the internet
 - it only reuses an existing ORCA installation or a user-provided ORCA tarball
+
+### Update all tools / Repair all tools
+
+**Update all tools** fetches every installed tool again: QM programs, analysis, ML and AI packages, Ketcher. **Repair all tools** checks each installed tool and puts right what does not work -- a link into a deleted environment repointed, a program that does not start or a package that does not import reinstalled -- and proves each repair afterwards. A tool that is not installed is left alone.
+
+Both go through `delfin.installer`, like `install.sh --update` and `install.sh --repair`. Updating DELFIN itself (git pull and pip) is `install.sh --update`.
 
 ## Local Usage
 
@@ -310,15 +317,15 @@ The same Settings workflow applies:
 
 The packaged installer and submit templates are included so DELFIN can still perform setup actions without requiring a git checkout.
 
-## bwUniCluster Usage
+## Cluster Usage
 
-There are two intended modes:
+From a shell on the login node, `install.sh` does everything (see the README). In the dashboard there are two intended modes:
 
 ### Existing installation already present
 
 Use:
 
-- `Setup bwUniCluster`
+- `Setup cluster`
 
 This is the lighter DELFIN-side preparation path.
 
@@ -326,21 +333,20 @@ This is the lighter DELFIN-side preparation path.
 
 Use:
 
-- `Full bwUni install`
+- `Full install`
 
-This is the heavier path that mirrors the installer behavior much more closely.
+This is the heavier path that runs the installer itself.
 
 Recommended prerequisites:
 
-- run on the proper bwUniCluster environment
-- ensure the module system is available
-- provide ORCA either as an existing installation or as the expected tarball
+- run it on the cluster's login node
+- provide ORCA either as an existing installation or as its tarball in `$HOME` or `~/software`
 
 ### Safe check before changing anything
 
 Use:
 
-- `Verify bwUniCluster`
+- `Verify install`
 
 This is the recommended first step when you want to understand what is present or missing without changing the system.
 

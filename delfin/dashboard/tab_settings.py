@@ -20,6 +20,8 @@ from delfin.runtime_setup import (
     discover_orca_installations,
     prepare_bwunicluster_user_setup,
     run_bwunicluster_installer,
+    get_packaged_bwunicluster_install_script,
+    get_repo_bwunicluster_install_script,
     get_packaged_submit_templates_dir,
     get_user_qm_tools_dir,
     get_user_csp_tools_dir,
@@ -101,6 +103,9 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
     # PM6, PM7 and PM6-D3H4 in the viewer are MOPAC. Two megabytes, and it was
     # installable from everywhere except the page that lists the installs.
     install_mopac_btn = widgets.Button(description='mopac', button_style='warning', layout=_qm_tool_btn_layout)
+    # g-xTB is its own xtb build. The structure editor offered to install it and
+    # this page, which lists the installs, did not.
+    install_gxtb_btn = widgets.Button(description='g-xtb', button_style='warning', layout=_qm_tool_btn_layout)
     install_micromamba_btn = widgets.Button(
         description='Install micromamba',
         button_style='',
@@ -237,20 +242,42 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
         layout=widgets.Layout(width='165px', height='28px'),
     )
     setup_bwunicluster_btn = widgets.Button(
-        description='Setup bwUniCluster',
+        description='Setup cluster',
         button_style='success',
         layout=widgets.Layout(width='150px', height='28px'),
     )
     verify_bwunicluster_btn = widgets.Button(
-        description='Verify bwUniCluster',
+        description='Verify install',
         button_style='info',
         layout=widgets.Layout(width='155px', height='28px'),
     )
     full_install_bwunicluster_btn = widgets.Button(
-        description='Full bwUni install',
+        description='Full install',
         button_style='warning',
         layout=widgets.Layout(width='145px', height='28px'),
     )
+    # Every installed tool at once, through delfin.installer -- the same update
+    # and repair that `install.sh --update` / `--repair` run from a shell.
+    update_all_tools_btn = widgets.Button(
+        description='Update all tools',
+        icon='refresh',
+        button_style='info',
+        tooltip='Fetch every installed tool again: QM programs, analysis, ML and AI packages, Ketcher',
+        layout=widgets.Layout(width='150px', height='28px'),
+    )
+    repair_all_tools_btn = widgets.Button(
+        description='Repair all tools',
+        icon='wrench',
+        button_style='warning',
+        tooltip='Check every installed tool and put right what does not work',
+        layout=widgets.Layout(width='150px', height='28px'),
+    )
+    global_tools_log = widgets.Textarea(
+        value='',
+        disabled=True,
+        layout=widgets.Layout(width='100%', height='180px'),
+    )
+    _global_tools_state = {'running': False}
     save_btn = widgets.Button(
         description='Save Settings',
         button_style='primary',
@@ -3156,16 +3183,12 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             )
 
             log_lines = [
-                f"Prepared bwUniCluster runtime profile.",
+                f"Prepared cluster runtime settings (profile: {prepared['runtime']['slurm']['profile'] or 'generic'}).",
                 f"Submit templates: {prepared['submit_templates_dir']}",
                 f"qm_tools root: {prepared['qm_tools_root']}",
                 f"ORCA: {prepared['orca_base'] or 'not detected'}",
                 f"Environment file: {prepared['env_file']}",
             ]
-            if prepared.get("venv_tarball"):
-                log_lines.append(f"Venv tarball: {prepared['venv_tarball']}")
-            if prepared.get("runtime_cache_dir"):
-                log_lines.append(f"Runtime cache: {prepared['runtime_cache_dir']}")
             if prepared.get("shell_files"):
                 log_lines.append("Shell rc updated: " + ", ".join(prepared["shell_files"]))
             installer_output = str(prepared.get("qm_tools_installer_output") or "").strip()
@@ -3182,8 +3205,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             )
             _set_status(
                 (
-                    'bwUniCluster setup completed. '
-                    f'Runtime now uses <code>slurm</code> with profile <code>bwunicluster3</code>, '
+                    'Cluster setup completed. '
+                    f'Runtime now uses <code>slurm</code> with profile <code>{html.escape(prepared["runtime"]["slurm"]["profile"] or "generic")}</code>, '
                     f'ORCA <code>{html.escape(effective_orca_base or "not detected")}</code>, '
                     f'qm_tools <code>{html.escape(str(prepared["qm_tools_root"]))}</code>, and '
                     f'submit templates <code>{html.escape(str(prepared["submit_templates_dir"]))}</code>. '
@@ -3194,7 +3217,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             )
         except Exception as exc:
             _set_status(
-                f'bwUniCluster setup failed: {html.escape(str(exc))}',
+                f'Cluster setup failed: {html.escape(str(exc))}',
                 color='#d32f2f',
             )
 
@@ -3229,7 +3252,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                     "</tr>"
                 )
             qm_tools_log.value = (
-                "=== bwUniCluster verification ===\n"
+                "=== Installation verification ===\n"
                 + "\n".join(
                     f"{item['name']}: {item['status']} - {item['detail']}"
                     for item in checks
@@ -3237,24 +3260,24 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             )
             if missing:
                 _set_status(
-                    f'Verify bwUniCluster found {missing} missing item(s). Review the log below. This check does not modify your system.',
+                    f'Verify install found {missing} missing item(s). Review the log below. This check does not modify your system.',
                     color='#ef6c00',
                 )
             else:
                 _set_status(
-                    'Verify bwUniCluster passed. No missing items were detected. This check did not modify your system.',
+                    'Verify install passed. No missing items were detected. This check did not modify your system.',
                     color='#2e7d32',
                 )
         except Exception as exc:
             _set_status(
-                f'Verify bwUniCluster failed: {html.escape(str(exc))}',
+                f'Verify install failed: {html.escape(str(exc))}',
                 color='#d32f2f',
             )
 
     def _on_full_install_bwunicluster(button):
         try:
             _set_status(
-                'Running the full bwUniCluster installer script. This can take a while because OpenMPI may be built and the repo venv may be recreated.',
+                'Running the DELFIN installer (core profile). This can take a while: OpenMPI may be built and the venv may be recreated.',
                 color='#ef6c00',
             )
             _on_detect_local_resources(button)
@@ -3272,9 +3295,9 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             if result.returncode != 0:
                 _set_status(
                     (
-                        f'Full bwUniCluster install failed with exit code {result.returncode}. '
+                        f'Full install failed with exit code {result.returncode}. '
                         'Inspect the log below. The installer script is '
-                        f'<code>{html.escape(str(Path(ctx.repo_dir or ".") / "scripts" / "install_delfin_bwu.sh"))}</code>.'
+                        f'<code>{html.escape(str(get_repo_bwunicluster_install_script(ctx.repo_dir) or get_packaged_bwunicluster_install_script()))}</code>.'
                     ),
                     color='#d32f2f',
                 )
@@ -3300,8 +3323,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             )
             _set_status(
                 (
-                    'Full bwUniCluster install completed via '
-                    f'<code>{html.escape(str(Path(ctx.repo_dir or ".") / "scripts" / "install_delfin_bwu.sh"))}</code>. '
+                    'Full install completed via '
+                    f'<code>{html.escape(str(get_repo_bwunicluster_install_script(ctx.repo_dir) or get_packaged_bwunicluster_install_script()))}</code>. '
                     f'Runtime resolves to <code>{html.escape(effective_backend)}</code> with ORCA '
                     f'<code>{html.escape(effective_orca_base or "PATH / auto-detect")}</code>.'
                     f'{backend_hint}'
@@ -3310,7 +3333,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             )
         except Exception as exc:
             _set_status(
-                f'Full bwUniCluster install failed: {html.escape(str(exc))}',
+                f'Full install failed: {html.escape(str(exc))}',
                 color='#d32f2f',
             )
 
@@ -3510,6 +3533,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
     install_stda_btn.on_click(_with_buttons_disabled(_make_single_qm_tool_handler('xtb4stda')))
     install_std2_btn.on_click(_with_buttons_disabled(_make_single_qm_tool_handler('std2')))
     install_mopac_btn.on_click(_with_buttons_disabled(_make_single_qm_tool_handler('mopac')))
+    install_gxtb_btn.on_click(_with_buttons_disabled(_make_single_qm_tool_handler('gxtb')))
     install_micromamba_btn.on_click(_with_buttons_disabled(_on_install_micromamba))
     install_csp_tools_btn.on_click(_with_buttons_disabled(_on_install_csp_tools))
     update_csp_tools_btn.on_click(_with_buttons_disabled(_on_update_csp_tools))
@@ -3529,6 +3553,65 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
     setup_bwunicluster_btn.on_click(_with_buttons_disabled(_on_setup_bwunicluster))
     verify_bwunicluster_btn.on_click(_with_buttons_disabled(_on_verify_bwunicluster))
     full_install_bwunicluster_btn.on_click(_with_buttons_disabled(_on_full_install_bwunicluster))
+
+    def _run_global_tools_action(action):
+        """Update or repair every installed tool, the log following it.
+
+        On a thread: an update runs for minutes, and a handler on the kernel
+        thread would freeze every tab of the dashboard while it did.
+        """
+        if _global_tools_state['running']:
+            return
+        _global_tools_state['running'] = True
+        update_all_tools_btn.disabled = True
+        repair_all_tools_btn.disabled = True
+        global_tools_log.value = ''
+        _set_status(
+            ('Updating every installed tool.' if action == 'update'
+             else 'Checking every installed tool and repairing what does not work.')
+            + ' The log below follows it.',
+            color='#ef6c00',
+        )
+
+        def work():
+            from delfin import installer
+
+            lines = []
+
+            def on_line(text):
+                lines.append(str(text))
+                global_tools_log.value = '\n'.join(lines[-400:])
+
+            try:
+                outcome = (installer.update(on_line=on_line) if action == 'update'
+                           else installer.repair(on_line=on_line))
+                failed = [' '.join(result['tools']) for result in outcome['results'] if not result['ok']]
+                if not outcome['results']:
+                    _set_status('Nothing is installed that could be updated or repaired.', color='#546e7a')
+                elif failed:
+                    _set_status(
+                        f'{action.capitalize()} finished, and not everything worked: '
+                        f'<code>{html.escape(", ".join(failed))}</code>. The log below says why.',
+                        color='#d32f2f',
+                    )
+                else:
+                    _set_status(
+                        'Update finished.' if action == 'update'
+                        else 'Repair finished: every installed tool that was checked works.',
+                        color='#2e7d32',
+                    )
+            except Exception as problem:
+                logging.exception('%s of all tools failed', action)
+                _set_status(f'{action.capitalize()} failed: {html.escape(str(problem))}', color='#d32f2f')
+            finally:
+                _global_tools_state['running'] = False
+                update_all_tools_btn.disabled = False
+                repair_all_tools_btn.disabled = False
+
+        threading.Thread(target=work, daemon=True).start()
+
+    update_all_tools_btn.on_click(lambda _button: _run_global_tools_action('update'))
+    repair_all_tools_btn.on_click(lambda _button: _run_global_tools_action('repair'))
     save_btn.on_click(_on_save)
     detected_orca_dropdown.observe(_on_select_detected_orca, names='value')
     global_orca_input.observe(_on_change_global_orca, names='value')
@@ -3879,7 +3962,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                     full_install_bwunicluster_btn,
                     widgets.HTML(
                         '<span style="color:#616161;">'
-                        '<b>Setup</b> prepares an existing DELFIN install for bwUniCluster. '
+                        '<b>Setup</b> prepares an existing DELFIN install for this cluster. '
                         '<b>Verify</b> is read-only. '
                         '<b>Full install</b> runs the packaged installer.'
                         '</span>'
@@ -3887,6 +3970,21 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                 ],
                 layout=_row_layout,
             ),
+            widgets.HBox(
+                [
+                    update_all_tools_btn,
+                    repair_all_tools_btn,
+                    widgets.HTML(
+                        '<span style="color:#616161;">'
+                        '<b>Update</b> fetches every installed tool again. '
+                        '<b>Repair</b> checks each one and fixes what does not work. '
+                        'DELFIN itself: <code>install.sh --update</code>.'
+                        '</span>'
+                    ),
+                ],
+                layout=_row_layout,
+            ),
+            global_tools_log,
             widgets.HBox(
                 [widgets.HTML('<b>SLURM ORCA</b>'), slurm_orca_input],
                 layout=_row_layout,
@@ -3955,6 +4053,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                     install_dftbplus_btn,
                     install_stda_btn,
                     install_std2_btn,
+                    install_gxtb_btn,
                     install_mopac_btn,
                     install_micromamba_btn,
                 ],
@@ -4077,7 +4176,7 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
             ai_tools_section,
         ],
     )
-    tools_accordion.set_title(0, 'QM Tools (xtb, crest, dftb+, stda, std2)')
+    tools_accordion.set_title(0, 'QM Tools (xtb, g-xTB, crest, MOPAC, dftb+, stda, std2)')
     tools_accordion.set_title(1, 'CSP Tools (Crystal Structure Prediction)')
     tools_accordion.set_title(2, 'MLP Tools (Machine Learning Potentials)')
     tools_accordion.set_title(3, 'Analysis Tools (Multiwfn, CENSO, ANMR, morfeus, cclib, nglview, Packmol)')
@@ -4100,8 +4199,8 @@ def create_tab(ctx, calc_refs=None, archive_refs=None, office_refs=None):
                     widgets.HTML(
                         '<span style="color:#616161;">'
                         'Deletes <code>.venv</code>, recreates it, runs '
-                        '<code>pip install -e .</code>, and packages '
-                        '<code>delfin_venv.tar</code> for job staging. '
+                        '<code>pip install -e .</code>. Jobs pack their own '
+                        'venv cache from it when they start. '
                         'Use after upgrading Python or when the venv is broken.'
                         '</span>'
                     ),

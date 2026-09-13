@@ -246,6 +246,11 @@ def place_from_store() -> Optional[str]:
     return _version_in(served)
 
 
+def stored_version() -> Optional[str]:
+    """The build kept for this user, without placing it anywhere."""
+    return _version_in(stored_directory())
+
+
 def installed_version() -> Optional[str]:
     """Which build is there, placing the kept copy first if it has to.
 
@@ -358,12 +363,17 @@ def _wanted(names: list, page: str) -> set:
 def install(
     on_line: Optional[Callable[[str], None]] = None,
     timeout: float = 900.0,
+    folder: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Fetch the newest build and put it where the browser can load it.
 
     Never called by itself: it is thirty-odd megabytes over the network, and
     on a machine that has no network it is a wait ending in nothing.  The
     caller asks first.
+
+    ``folder`` is where it is served from.  The installer passes
+    :func:`stored_directory`: no dashboard is running then, so there is no
+    served directory yet, and the next start places the kept copy.
     """
     def say(text: str) -> None:
         if on_line is not None:
@@ -372,7 +382,7 @@ def install(
             except Exception:
                 pass
 
-    folder = app_directory()
+    folder = folder if folder is not None else app_directory()
     if folder is None:
         return {'ok': False, 'version': None,
                 'status': ('Voila is not serving a directory, so a drawing '
@@ -401,7 +411,12 @@ def install(
             names = bundle.namelist()
             page = ''
             for name in names:
-                if name.endswith('standalone/index.html'):
+                # The same rule the files are unpacked by: whatever follows
+                # standalone/, or the whole name.  Up to 3.17 the build sat in
+                # a standalone/ folder; 3.18 put it at the top of the archive,
+                # and looking only for standalone/index.html refused every
+                # release from then on.
+                if name.split('standalone/', 1)[-1] == 'index.html':
                     page = bundle.read(name).decode('utf-8', 'replace')
                     break
             if not page:

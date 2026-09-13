@@ -15,12 +15,60 @@ def test_slurm_backend_appends_known_profile_env():
     assert "DELFIN_RUNTIME_CACHE=1" in env_vars
 
 
-def test_slurm_backend_leaves_env_unchanged_for_unknown_profile():
+def test_an_unknown_site_still_runs_the_venv_from_node_local_disk(monkeypatch):
+    """Staging the venv is not a bwUniCluster feature.
+
+    Python started from a venv on a network HOME is an I/O problem on any
+    cluster. A site without a profile gets the staging, and nothing that only
+    one site has -- no module names, no node sizes.
+    """
+    for key in ("DELFIN_STAGE_VENV", "DELFIN_RUNTIME_CACHE"):
+        monkeypatch.delenv(key, raising=False)
     backend = SlurmJobBackend("/tmp", slurm_profile="custom-cluster")
 
     env_vars = backend._append_profile_env("DELFIN_MODE=delfin")
 
-    assert env_vars == "DELFIN_MODE=delfin"
+    assert env_vars.startswith("DELFIN_MODE=delfin,")
+    assert "DELFIN_STAGE_VENV=1" in env_vars
+    assert "DELFIN_RUNTIME_CACHE=1" in env_vars
+    assert "DELFIN_MODULES" not in env_vars
+    assert "DELFIN_NODE_CORES" not in env_vars
+
+
+def test_a_staging_choice_the_user_exported_is_theirs(monkeypatch):
+    monkeypatch.setenv("DELFIN_STAGE_VENV", "0")
+    backend = SlurmJobBackend("/tmp", slurm_profile="custom-cluster")
+
+    env_vars = backend._append_profile_env("DELFIN_MODE=delfin")
+
+    assert "DELFIN_STAGE_VENV=1" not in env_vars
+
+
+def test_the_job_is_told_which_python_environment_submitted_it(monkeypatch, tmp_path):
+    """The job used to look for ``software/delfin`` above its submit directory."""
+    import delfin.dashboard.backend_slurm as backend_slurm
+
+    for key in ("DELFIN_VENV", "DELFIN_REPO", "DELFIN_OMPI_HOME"):
+        monkeypatch.delenv(key, raising=False)
+    venv = tmp_path / "anywhere" / "env"
+    monkeypatch.setattr(backend_slurm.sys, "prefix", str(venv))
+    monkeypatch.setattr(backend_slurm.sys, "base_prefix", "/usr")
+    monkeypatch.setattr(backend_slurm.shutil, "which", lambda name: None)
+
+    location = SlurmJobBackend._runtime_location_env()
+
+    assert location["DELFIN_VENV"] == str(venv)
+    assert "DELFIN_OMPI_HOME" not in location
+
+
+def test_a_system_mpirun_is_not_staged(monkeypatch):
+    """The job copies DELFIN_OMPI_HOME to local disk; /usr is not that."""
+    import delfin.dashboard.backend_slurm as backend_slurm
+
+    monkeypatch.delenv("DELFIN_OMPI_HOME", raising=False)
+    monkeypatch.setattr(backend_slurm.shutil, "which", lambda name: "/usr/bin/mpirun")
+
+    assert "DELFIN_OMPI_HOME" not in SlurmJobBackend._runtime_location_env()
 
 
 def test_detect_profile_bwunicluster3_fqdn():

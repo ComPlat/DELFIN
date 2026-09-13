@@ -95,7 +95,22 @@ Domain legend: 🧪 organic · 🧲 metal complex · 🔬 both / general · 🧱
 
 ### Install Methods
 
-**Standard install (recommended for most users):**
+**Installer (any Linux workstation or cluster login node):**
+```bash
+git clone https://github.com/ComPlat/DELFIN.git ~/software/delfin
+bash ~/software/delfin/install.sh              # DELFIN, ORCA wiring, QM/analysis tools, Ketcher
+bash ~/software/delfin/install.sh --all        # everything, ML and AI stacks included (several GB)
+bash ~/software/delfin/install.sh --only crest,gxtb
+bash ~/software/delfin/install.sh --dry-run    # print the plan, change nothing
+bash ~/software/delfin/install.sh --update     # pull DELFIN, update it and every installed tool
+bash ~/software/delfin/install.sh --repair     # check everything, fix what is broken
+```
+
+It needs no root and no module system: a Python 3.10/3.11 is taken from the machine or fetched with micromamba, ORCA is found where it was unpacked (or pass `--orca DIR|TARBALL`; ORCA is licensed and never downloaded), and OpenMPI -- the version ORCA's directory name gives, 4.1.8 when there is no ORCA yet, configured as ORCA needs it -- is found or built. Nothing in it is specific to one site.
+
+Whatever is left out can be added later, three ways that share one list of tools (`delfin/installer.py`): `install.sh --only …`, the install buttons in the dashboard's Settings tab, or automatically the moment a calculation needs a tool (`DELFIN_AUTO_INSTALL_QM_TOOLS=0` switches that off). `python -m delfin.installer --list` shows what can be installed, `--status` what is.
+
+**PyPI install:**
 ```bash
 pip install delfin-complat
 ```
@@ -117,7 +132,7 @@ External QM binaries are not installed automatically by `pip`. For the local bin
 
 ### External QM Tool Setup
 
-After installing the Python package, initialise the bundled QM tool wrapper and validate the external binaries:
+The installer above does this. By hand, after installing the Python package, initialise the bundled QM tool wrapper and validate the external binaries:
 
 ```bash
 source delfin/qm_tools/env.sh

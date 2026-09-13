@@ -9,7 +9,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-import tarfile
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -482,16 +481,32 @@ def get_repo_qm_tools_dir(repo_dir: str | Path | None) -> Path | None:
 
 
 def get_repo_bwunicluster_install_script(repo_dir: str | Path | None) -> Path | None:
+    """The installer in a checkout. The name is kept; the script is universal."""
     if not repo_dir:
         return None
     repo_path = Path(repo_dir).expanduser()
-    candidate = repo_path / "scripts" / "install_delfin_bwu.sh"
-    return candidate if candidate.is_file() else None
+    for candidate in (
+        repo_path / "delfin" / "installers" / "install_delfin.sh",
+        repo_path / "scripts" / "install_delfin_bwu.sh",
+    ):
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def get_packaged_bwunicluster_install_script() -> Path | None:
-    candidate = get_packaged_installers_dir() / "install_delfin_bwu.sh"
-    return candidate if candidate.is_file() else None
+    for name in ("install_delfin.sh", "install_delfin_bwu.sh"):
+        candidate = get_packaged_installers_dir() / name
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def detect_slurm_profile() -> str:
+    """The site profile for this machine, or "" where DELFIN knows no site."""
+    from delfin.dashboard.backend_slurm import SlurmJobBackend
+
+    return SlurmJobBackend._detect_profile()
 
 
 def write_delfin_env_file(
@@ -501,8 +516,10 @@ def write_delfin_env_file(
     qm_tools_root: str = "",
     tool_binaries: dict[str, str] | None = None,
     env_path: str | Path | None = None,
+    openmpi_prefix: str = "",
 ) -> Path:
     target = Path(env_path).expanduser() if env_path else (Path.home() / ".delfin_env.sh")
+    ompi_root = normalize_runtime_path(openmpi_prefix)
     repo_path = Path(repo_dir).expanduser() if repo_dir else None
     orca_root = normalize_orca_base(orca_base)
     qm_root = normalize_runtime_path(qm_tools_root)
@@ -543,7 +560,12 @@ def write_delfin_env_file(
     for env_key, env_value in tool_env_updates.items():
         lines.append(f'export {env_key}={_sq(env_value)}')
 
+    if ompi_root:
+        lines.append(f'export OPENMPI_PREFIX={_sq(ompi_root)}')
+
     path_entries = []
+    if ompi_root and (Path(ompi_root) / "bin").is_dir():
+        path_entries.append(str(Path(ompi_root) / "bin"))
     for path_entry in selected_tool_path_entries:
         if path_entry and path_entry not in path_entries:
             path_entries.append(path_entry)
@@ -554,6 +576,17 @@ def write_delfin_env_file(
     if path_entries:
         joined = ":".join(path_entries)
         lines.append(f'export PATH={_sq(joined)}":$PATH"')
+    # ORCA's shared build loads its own libraries and OpenMPI's from here.
+    library_entries = []
+    if ompi_root and (Path(ompi_root) / "lib").is_dir():
+        library_entries.append(str(Path(ompi_root) / "lib"))
+    if orca_root:
+        library_entries.append(orca_root)
+    if library_entries:
+        joined_libs = ":".join(library_entries)
+        lines.append(
+            f'export LD_LIBRARY_PATH={_sq(joined_libs)}"${{LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}}"'
+        )
 
     if repo_path and (repo_path / ".venv").is_dir():
         venv_dir = _sq(repo_path / ".venv")
@@ -590,7 +623,14 @@ def ensure_shell_sources_delfin_env(
     for candidate in shell_rc_paths or [Path.home() / ".bashrc", Path.home() / ".profile"]:
         path = Path(candidate).expanduser()
         existing = path.read_text(encoding="utf-8") if path.exists() else ""
-        if source_line not in existing:
+        # Written by hand as `source $HOME/.delfin_env.sh` it is the same line,
+        # and a second one would source the file twice on every login.
+        already = re.search(
+            r'^\s*(?:source|\.)\s+["\']?\S*' + re.escape(target_env.name) + r'["\']?\s*$',
+            existing,
+            re.MULTILINE,
+        )
+        if source_line not in existing and not already:
             if existing and not existing.endswith("\n"):
                 existing += "\n"
             existing += f"\n# DELFIN environment\n{source_line}\n"
@@ -599,25 +639,6 @@ def ensure_shell_sources_delfin_env(
         elif path.exists():
             updated.append(path)
     return updated
-
-
-def package_repo_venv(repo_dir: str | Path | None) -> tuple[Path | None, Path | None]:
-    if not repo_dir:
-        return None, None
-    repo_path = Path(repo_dir).expanduser()
-    venv_dir = repo_path / ".venv"
-    if not venv_dir.is_dir():
-        return None, None
-
-    tar_path = repo_path / "delfin_venv.tar"
-    if tar_path.exists():
-        tar_path.unlink()
-    with tarfile.open(tar_path, "w") as tar_handle:
-        tar_handle.add(venv_dir, arcname=".venv")
-
-    cache_dir = repo_path / ".runtime_cache"
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    return tar_path, cache_dir
 
 
 def _python_version_ok(python_bin: str, min_ver: tuple[int, ...] = (3, 10),
@@ -791,9 +812,6 @@ echo "Upgrading pip + wheel ..."
 echo "Installing DELFIN (pip install -e .[agent,docs]) ..."
 "{repo_root / '.venv' / 'bin' / 'python'}" -m pip install -e "{repo_root}[agent,docs]"
 
-echo "Packaging delfin_venv.tar ..."
-rm -f "{repo_root / 'delfin_venv.tar'}"
-tar -cf "{repo_root / 'delfin_venv.tar'}" -C "{repo_root}" .venv
 mkdir -p "{repo_root / '.runtime_cache'}"
 
 # It worked, so the copy that was put aside is not needed. Only ours: the
@@ -868,7 +886,7 @@ def run_bwunicluster_installer(
         '[ -f "$init" ] && source "$init" && break; '
         'done; '
         'fi; '
-        f'bash {shlex.quote(str(installer))}'
+        f'bash {shlex.quote(str(installer))} --profile core --yes'
     )
     return subprocess.run(
         ["bash", "-lc", shell_command],
@@ -1011,11 +1029,15 @@ def prepare_bwunicluster_user_setup(
         else:
             qm_root = str(stage_packaged_qm_tools())
 
-    tar_path, cache_dir = package_repo_venv(repo_path)
+    # No venv tar here any more. A job packs one from the venv as it is when it
+    # starts, keyed by its contents; one packed here went stale with the next
+    # pip install and went on being unpacked regardless.
+    mpirun = _find_openmpi_mpirun()
     env_file = write_delfin_env_file(
         repo_dir=repo_path,
         orca_base=effective_orca,
         qm_tools_root=qm_root,
+        openmpi_prefix=str(mpirun.parent.parent) if mpirun.is_file() else "",
     )
     shell_files = ensure_shell_sources_delfin_env(env_path=env_file)
 
@@ -1031,7 +1053,7 @@ def prepare_bwunicluster_user_setup(
         "slurm": {
             "orca_base": effective_orca,
             "submit_templates_dir": str(submit_templates_dir),
-            "profile": "bwunicluster3",
+            "profile": detect_slurm_profile(),
         },
     }
 
@@ -1046,8 +1068,6 @@ def prepare_bwunicluster_user_setup(
         "submit_templates_dir": str(submit_templates_dir),
         "orca_base": effective_orca,
         "qm_tools_root": qm_root,
-        "venv_tarball": str(tar_path) if tar_path else "",
-        "runtime_cache_dir": str(cache_dir) if cache_dir else "",
         "qm_tools_installer_output": (installer_result.stdout if installer_result else ""),
         "qm_tools_installer_returncode": (installer_result.returncode if installer_result else 0),
     }

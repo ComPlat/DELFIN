@@ -2,6 +2,7 @@
 
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -53,6 +54,16 @@ class SlurmJobBackend(JobBackend):
                     detected[tool_name] = resolved.path
             cls._auto_detected_cache = detected
         return cls._auto_detected_cache
+
+    # What every SLURM site gets. Python started from a venv on a network HOME
+    # is an I/O problem on any cluster, not on one: the job runs the venv from
+    # node-local disk when that disk exists and has room, and from where it is
+    # otherwise (Section 7 of submit_delfin.sh). A variable the user exported
+    # themselves is left as they set it.
+    _GENERIC_ENV: dict[str, str] = {
+        'DELFIN_STAGE_VENV': '1',
+        'DELFIN_RUNTIME_CACHE': '1',
+    }
 
     # Site-specific environment variables injected into every sbatch call
     # based on the SLURM profile name from settings.
@@ -216,11 +227,47 @@ class SlurmJobBackend(JobBackend):
         return int(parts[0]) * 60  # SLURM treats bare number as minutes
 
     def _append_profile_env(self, env_vars: str) -> str:
-        """Inject site-specific env vars based on the SLURM profile."""
-        profile_env = self._PROFILE_ENV.get(self.slurm_profile, {})
-        if not profile_env:
+        """Inject the generic job env, and the site profile's on top of it."""
+        merged = {
+            key: value for key, value in self._GENERIC_ENV.items()
+            if key not in os.environ
+        }
+        merged.update(self._PROFILE_ENV.get(self.slurm_profile, {}))
+        if not merged:
             return env_vars
-        exports = [f'{key}={value}' for key, value in profile_env.items()]
+        exports = [f'{key}={value}' for key, value in merged.items()]
+        return f'{env_vars},{",".join(exports)}'
+
+    @staticmethod
+    def _runtime_location_env() -> dict[str, str]:
+        """Where this DELFIN runs from, so the job runs the same one.
+
+        The job used to find it by walking up from the submit directory to a
+        ``software/delfin`` -- one layout. A pip install, a conda environment
+        or a checkout anywhere else was never found, and the job took whatever
+        ``python`` its PATH offered.
+        """
+        env: dict[str, str] = {}
+        prefix = Path(sys.prefix)
+        if sys.prefix != getattr(sys, 'base_prefix', sys.prefix) or (prefix / 'conda-meta').is_dir():
+            env['DELFIN_VENV'] = str(prefix)
+        repo = Path(__file__).resolve().parents[2]
+        if (repo / 'pyproject.toml').is_file() and (repo / '.git').exists():
+            env['DELFIN_REPO'] = str(repo)
+        mpirun = shutil.which('mpirun')
+        if mpirun:
+            ompi_home = Path(mpirun).resolve().parent.parent
+            # Only an OpenMPI that stands on its own: the job copies this
+            # directory to node-local disk, and /usr is not something to copy.
+            if (ompi_home / 'bin' / 'ompi_info').is_file() and str(ompi_home) not in ('/', '/usr', '/usr/local'):
+                env['DELFIN_OMPI_HOME'] = str(ompi_home)
+        return {key: value for key, value in env.items() if key not in os.environ}
+
+    def _append_runtime_location_env(self, env_vars: str) -> str:
+        location = self._runtime_location_env()
+        if not location:
+            return env_vars
+        exports = [f'{key}={value}' for key, value in location.items()]
         return f'{env_vars},{",".join(exports)}'
 
     def _sbatch(self, job_dir, env_vars, time_limit, pal, mem_mb,
@@ -241,6 +288,7 @@ class SlurmJobBackend(JobBackend):
             concurrent). Passed as ``--array=<array>`` when set.
         """
         env_vars = self._append_profile_env(env_vars)
+        env_vars = self._append_runtime_location_env(env_vars)
         # USR1 for preemptive sync: half the walltime, capped 30s–300s
         total_secs = self._time_limit_seconds(time_limit)
         usr1_offset = max(30, min(300, total_secs // 2))

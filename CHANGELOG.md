@@ -5,6 +5,24 @@ All notable changes to DELFIN will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added — One installer for every site
+
+`install.sh` (`delfin/installers/install_delfin.sh`) installs DELFIN on any Linux workstation or cluster login node: profiles `core`, `standard` and `all`, `--only`, `--dry-run`, `--update` and `--repair`. It needs no root and no module system -- Python 3.10/3.11 comes from the machine or from micromamba, ORCA is found where it was unpacked, and OpenMPI is built with the same configure flags as before, in the version the ORCA directory name gives (4.1.8 when there is no ORCA yet). The bwUniCluster scripts are now thin wrappers around it.
+
+`delfin/installer.py` is the one list of what DELFIN installs and the one way it is installed, updated and repaired (`python -m delfin.installer --list | --status | --install | --update | --repair`). The shell installer, the on-demand installs, the Tools tab, the CENSO auto-install and the new **Update all tools** / **Repair all tools** buttons in Settings all read it.
+
+### Changed — Job venv staging
+
+A SLURM job no longer unpacks a hand-made `delfin_venv.tar`. It packs the venv the dashboard runs in -- passed as `DELFIN_VENV` -- into a cache keyed by the venv's contents (`~/.cache/delfin/venv`), so the tar changes exactly when the venv does, and it runs the venv directly when node-local disk is missing or too small. Staging is on for every SLURM site, not only bwUniCluster; module names and node sizes stay in the site profile.
+
+### Fixed
+
+- Asking for one package on demand installed others of its family as well (cclib brought CENSO, anmr and Packmol; MACE brought ANI-2x, whose switch was spelt `INSTALL_TORCHANI` on one side and `INSTALL_ANI2X` on the other).
+- The Tools tab installed QM programs into the packaged directory and installed `morfeus` from PyPI, which is not morfeus-ml.
+- `install_qm_tools.sh all` left out g-xTB and MOPAC; Settings had no g-xTB button.
+
 ## [1.3.2] - 2026-09-07
 
 ### Added — Construction (MANTA landing #31)

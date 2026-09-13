@@ -636,7 +636,7 @@ install_one() {
     dftb+|dftbplus) install_dftbplus ;;
     xtb4stda|stda)  install_xtb4stda_bundle ;;
     std2)           install_std2 ;;
-    *) die "Unknown tool: $1. Available: xtb, gxtb, crest, dftb+, xtb4stda, stda, std2, all" ;;
+    *) die "Unknown tool: $1. Available: xtb, gxtb, mopac, crest, dftb+, xtb4stda, stda, std2, all" ;;
   esac
 }
 
@@ -649,7 +649,9 @@ main() {
   else
     for tool in "$@"; do
       if [[ "${tool}" == "all" ]]; then
-        wanted+=(xtb crest dftb+ xtb4stda std2)
+        # All of them. g-xTB and MOPAC were missing here, so "all" left out
+        # two tools the dashboard offers.
+        wanted+=(xtb gxtb mopac crest dftb+ xtb4stda std2)
       else
         wanted+=("${tool}")
       fi
