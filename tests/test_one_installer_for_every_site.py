@@ -332,6 +332,50 @@ def test_a_std2_source_that_cannot_be_fetched_stops_its_build(tmp_path):
     assert "meson build directory" not in said
 
 
+def test_a_family_installer_cannot_move_what_delfin_itself_is_pinned_to(monkeypatch, tmp_path):
+    """MACE pulled numpy 2.4 and Uni-Mol numpy 2.2 into DELFIN's environment."""
+    from delfin import installer
+
+    calls = _fake_family_runs(monkeypatch, tmp_path)
+    for group in ("mlp", "ai"):
+        (tmp_path / group).mkdir(parents=True, exist_ok=True)
+
+    installer.install(["mace", "unimol"])
+
+    for _command, env in calls:
+        constraints = pathlib.Path(env["PIP_CONSTRAINT"]).read_text(encoding="utf-8")
+        assert any(line.startswith("numpy") and "<2" in line for line in constraints.splitlines()), constraints
+        assert "extra ==" not in constraints
+
+
+def test_one_ai_tool_pip_cannot_install_does_not_stop_the_rest(tmp_path):
+    """REINVENT is not on PyPI; under pipefail every tool after it was skipped."""
+    fake = tmp_path / "python"
+    fake.write_text(
+        '#!/bin/sh\n'
+        'if [ "$1" = "-c" ]; then exit 1; fi\n'
+        'if [ "$1" = "-m" ] && [ "$2" = "pip" ]; then\n'
+        '  echo "pip install $*" >> "$(dirname "$0")/pip.log"\n'
+        '  case "$*" in *reinvent*) echo "ERROR: No matching distribution found for reinvent"; exit 1 ;; esac\n'
+        '  exit 0\n'
+        'fi\n'
+        'exit 0\n')
+    fake.chmod(0o755)
+    root = tmp_path / "ai_tools"
+    root.mkdir()
+    script = REPO / "delfin" / "ai_tools" / "install_ai_tools.sh"
+
+    done = subprocess.run(
+        ["bash", str(script)], capture_output=True, text=True, timeout=60,
+        env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "DELFIN_PYTHON": str(fake),
+             "DELFIN_AI_TOOLS_ROOT": str(root), "INSTALL_REINVENT": "1", "INSTALL_PLOTLY": "1"},
+    )
+
+    tried = (tmp_path / "pip.log").read_text()
+    assert "reinvent" in tried
+    assert "plotly" in tried, done.stdout + done.stderr
+
+
 def test_every_tool_offered_is_one_its_own_installer_knows():
     catalog = _catalog()
 

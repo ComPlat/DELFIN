@@ -266,6 +266,31 @@ def _run(command: List[str], *, cwd: Path, env: Dict[str, str],
     return process.returncode == 0, lines
 
 
+def _core_constraints(root: Path) -> Optional[Path]:
+    """DELFIN's own requirements as a pip constraints file, or None.
+
+    Every pip the family installers start is held to them. Installed without,
+    MACE pulled numpy 2.4 and Uni-Mol numpy 2.2 into the environment DELFIN
+    runs in, which requires numpy<2 -- rdkit, pymol and mendeleev with it. A
+    tool that cannot live with DELFIN's pins now fails to install and is
+    reported missing, instead of breaking what everything else runs on.
+    """
+    try:
+        from importlib.metadata import requires
+
+        wanted = [line for line in (requires("delfin-complat") or []) if "extra ==" not in line]
+    except Exception:
+        return None
+    if not wanted:
+        return None
+    target = root / "delfin_core_constraints.txt"
+    try:
+        target.write_text("\n".join(wanted) + "\n", encoding="utf-8")
+    except OSError:
+        return None
+    return target
+
+
 def _install_family(group: str, tools: List[Tool], *, on_line, env, timeout) -> Tuple[bool, List[str]]:
     import sysconfig
 
@@ -282,6 +307,9 @@ def _install_family(group: str, tools: List[Tool], *, on_line, env, timeout) -> 
         run_env["PATH"] = scripts + os.pathsep + run_env.get("PATH", "")
     for variable in _SCRIPTS[group][2]:
         run_env[variable] = str(root)
+    constraints = _core_constraints(root)
+    if constraints is not None:
+        run_env["PIP_CONSTRAINT"] = str(constraints)
     run_env.update(switch_env(group, tools))
     if group == "qm" and any(tool.name == "std2" for tool in tools):
         # std2 has no binary release; the Settings button builds it too.

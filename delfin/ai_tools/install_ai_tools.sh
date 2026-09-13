@@ -99,7 +99,10 @@ pip_install() {
   local log_name
   log_name="$(echo "${label}" | tr '[:upper:]' '[:lower:]')_install.log"
   log "installing ${label}..."
-  "${python_bin}" -m pip install "${packages[@]}" 2>&1 | tee -a "${LOG_DIR}/${log_name}"
+  # One tool that pip cannot install is that tool's failure, not the run's.
+  # Under pipefail it ended the whole script: REINVENT is not on PyPI, and
+  # every tool after it was never tried.
+  "${python_bin}" -m pip install "${packages[@]}" 2>&1 | tee -a "${LOG_DIR}/${log_name}" || true
 
   if python_has_module "${python_bin}" "${module}"; then
     log "${label} installed successfully"
