@@ -32,7 +32,7 @@ set -euo pipefail
 #
 # Environment variables:
 #   GENARRIS_REPO          Git clone URL   (default: GitHub Yi5817/Genarris)
-#   GENARRIS_BRANCH        Branch to clone (default: main)
+#   GENARRIS_BRANCH        Branch to clone (default: the repository's own)
 #   FORCE_REINSTALL        Set to 1 to reinstall even if already present
 #   MPICC                  MPI C compiler  (default: auto-detect)
 #   DELFIN_CSP_TOOLS_ROOT  Override install root
@@ -43,7 +43,9 @@ BIN_DIR="${ROOT}/bin"
 BUILD_DIR="${ROOT}/.build"
 LOG_DIR="${ROOT}/logs"
 GENARRIS_REPO="${GENARRIS_REPO:-https://github.com/Yi5817/Genarris.git}"
-GENARRIS_BRANCH="${GENARRIS_BRANCH:-main}"
+# Empty means the repository's default branch. It was "main", and Genarris's
+# default is master: "Remote branch main not found", and no Genarris.
+GENARRIS_BRANCH="${GENARRIS_BRANCH:-}"
 FORCE_REINSTALL="${FORCE_REINSTALL:-0}"
 MPICC="${MPICC:-}"
 
@@ -265,7 +267,7 @@ install_genarris() {
   verify_mpi_consistency "${python_bin}" "${mpicc_bin}"
 
   # -- clone / update repo ------------------------------------------------
-  log "cloning Genarris from ${GENARRIS_REPO} (branch: ${GENARRIS_BRANCH})..."
+  log "cloning Genarris from ${GENARRIS_REPO} (branch: ${GENARRIS_BRANCH:-default})..."
   mkdir -p "${BUILD_DIR}" "${LOG_DIR}"
   local genarris_dir="${BUILD_DIR}/Genarris"
 
@@ -273,10 +275,18 @@ install_genarris() {
     log "updating existing clone..."
     cd "${genarris_dir}"
     git fetch origin
-    git checkout "${GENARRIS_BRANCH}"
-    git pull origin "${GENARRIS_BRANCH}"
+    if [ -n "${GENARRIS_BRANCH}" ]; then
+      git checkout "${GENARRIS_BRANCH}"
+      git pull --ff-only origin "${GENARRIS_BRANCH}"
+    else
+      git pull --ff-only
+    fi
   else
-    git clone --branch "${GENARRIS_BRANCH}" "${GENARRIS_REPO}" "${genarris_dir}"
+    if [ -n "${GENARRIS_BRANCH}" ]; then
+      git clone --branch "${GENARRIS_BRANCH}" "${GENARRIS_REPO}" "${genarris_dir}"
+    else
+      git clone "${GENARRIS_REPO}" "${genarris_dir}"
+    fi
     cd "${genarris_dir}"
   fi
 

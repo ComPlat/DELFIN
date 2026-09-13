@@ -376,6 +376,14 @@ def test_one_ai_tool_pip_cannot_install_does_not_stop_the_rest(tmp_path):
     assert "plotly" in tried, done.stdout + done.stderr
 
 
+def test_genarris_is_cloned_from_the_branch_its_repository_has():
+    """The installer asked for "main"; Genarris's default is master."""
+    text = (REPO / "delfin" / "csp_tools" / "install_csp_tools.sh").read_text(encoding="utf-8")
+
+    assert 'GENARRIS_BRANCH="${GENARRIS_BRANCH:-}"' in text
+    assert 'git clone "${GENARRIS_REPO}" "${genarris_dir}"' in text, "no branch named when none is set"
+
+
 def test_every_tool_offered_is_one_its_own_installer_knows():
     catalog = _catalog()
 
