@@ -332,7 +332,13 @@ ensure_venv_tar() {
     if [ ! -f "$tar_path" ]; then
         echo "Packing $venv into $tar_path (once per change of the venv)..." >&2
         partial="$tar_path.partial.${SLURM_JOB_ID:-$$}"
-        if tar -cf "$partial" -C "$(dirname "$venv")" "$(basename "$venv")"; then
+        # Exit 1 is GNU tar saying a file changed while it was read -- a byte
+        # code cache written by some other python using this venv -- and the
+        # archive is complete. Taking it as a failure left the job without a
+        # staged venv. Only 2 and above are failures.
+        local tar_rc=0
+        tar -cf "$partial" --warning=no-file-changed -C "$(dirname "$venv")" "$(basename "$venv")" || tar_rc=$?
+        if [ "$tar_rc" -le 1 ] && [ -s "$partial" ]; then
             mv -f "$partial" "$tar_path"
             # This one and the one before it stay: a job that started a moment
             # ago may still be unpacking that. Only the cache's own tars go.

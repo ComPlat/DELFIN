@@ -313,6 +313,25 @@ def test_packmol_gets_an_environment_of_its_own_and_a_link_beside_delfin(tmp_pat
     assert os.readlink(link) == str(root / ".mamba_env" / "packmol" / "bin" / "packmol")
 
 
+def test_a_std2_source_that_cannot_be_fetched_stops_its_build(tmp_path):
+    """A failed download went on into tar and meson, which then named missing
+    build directories instead of the cause."""
+    script = REPO / "delfin" / "qm_tools" / "install_qm_tools.sh"
+    root = tmp_path / "qm_tools"
+    done = subprocess.run(
+        ["bash", str(script), "std2"], capture_output=True, text=True, timeout=120,
+        env={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path),
+             "DELFIN_QM_TOOLS_ROOT": str(root), "DELFIN_QM_ROOT": str(root),
+             "DELFIN_PYTHON": sys.executable, "INSTALL_STD2_FROM_SOURCE": "1",
+             "USE_SYSTEM_TOOLS": "0", "STD2_SRC_URL": "file:///nonexistent/std2.tar.gz"},
+    )
+    said = done.stdout + done.stderr
+
+    assert done.returncode != 0
+    assert "std2 source could not be downloaded" in said, said[-2000:]
+    assert "meson build directory" not in said
+
+
 def test_every_tool_offered_is_one_its_own_installer_knows():
     catalog = _catalog()
 
