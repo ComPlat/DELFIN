@@ -1091,23 +1091,33 @@ def _hp_eye_profile(syms: Sequence[str], P: np.ndarray, comp: Sequence[int],
 
 
 def _hp_lp_pairs(syms: Sequence[str], P: np.ndarray) -> Set[Tuple[int, int]]:
-    """{(h, donor)}: every H sitting in the free lone-pair cone of a donor.
+    """{(occupant, donor)}: every NON-METAL atom sitting in the free lone-pair
+    cone of a donor -- exactly the eye's test (find_sp3_carbon_donor_geometry
+    ._lone_pair_occupied scans every atom, not only H).
 
     A SET, not a count (hplace6k4p, register #451): an O-H rotor that leaves
     cone A and enters cone B keeps the count, and the eye then reports the
-    clash on the new pair (MEBQUI, TAFROI, MEBRET).  An O-H rotor carries one
-    H, so pair identity is not permutation-sensitive here.
+    clash on the new pair.  And the occupant is NOT only H (hplace6k4p2):
+    the free-lone-pair AXIS of a coordinated O-H donor is computed from its
+    substituents, one of which is the H -- turning that H swings the axis,
+    and a cis donor oxygen 2.3-2.4 A away that was outside the cone is now
+    inside (TAFROI O16/O44, MEBQUI, MEBRET).  Only H moved, a heavy occupant
+    appeared.  So every non-metal atom counts as an occupant, before and
+    after; no (occupant, donor) pair may be new.
     """
     lps = _hp_free_lone_pairs(syms, P)
     out: Set[Tuple[int, int]] = set()
     if not lps:
         return out
-    for h in _hp_hydrogens(syms):
+    n = len(syms)
+    for x in range(n):
+        if _hp_metal(_el.normalise(syms[x])):
+            continue
         for d, lp, exempt in lps:
-            if h in exempt:
+            if x in exempt:
                 continue
-            if _hp_in_lone_pair_cone(P, h, [(d, lp, exempt)]):
-                out.add((h, d))
+            if _hp_in_lone_pair_cone(P, x, [(d, lp, exempt)]):
+                out.add((x, d))
     return out
 
 
