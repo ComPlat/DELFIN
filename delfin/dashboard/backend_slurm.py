@@ -72,6 +72,40 @@ def describe_pending_reason(reason: str) -> str:
     return code
 
 
+def normalize_time_limit(value) -> str:
+    """A time limit sbatch accepts, from what was typed into a time field.
+
+    SLURM's own forms pass through (``48:00:00``, ``2-00:00:00``, ``90``).
+    Durations as people write them are converted: ``48h`` and ``2d`` become
+    ``2-00:00:00``, ``90min`` becomes ``01:30:00``. Anything else raises
+    ValueError with the reason -- it used to reach ``int()`` and take the
+    submit down with a traceback, or reach sbatch and come back as
+    "Invalid time limit specification".
+    """
+    text = str(value if value is not None else '').strip()
+    if not text:
+        raise ValueError('the time limit is empty')
+    if text.upper() in ('UNLIMITED', 'INFINITE'):
+        return text.upper()
+    compact = text.replace(' ', '').lower()
+    found = re.fullmatch(r'(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)(?:min|m))?(?:(\d+)s)?', compact)
+    if found and any(found.groups()):
+        days, hours, minutes, seconds = (int(part or 0) for part in found.groups())
+        total = days * 86400 + hours * 3600 + minutes * 60 + seconds
+        if total <= 0:
+            raise ValueError('the time limit is zero')
+        whole_days, rest = divmod(total, 86400)
+        hours, rest = divmod(rest, 3600)
+        minutes, seconds = divmod(rest, 60)
+        clock = f'{hours:02d}:{minutes:02d}:{seconds:02d}'
+        return f'{whole_days}-{clock}' if whole_days else clock
+    if not re.fullmatch(r'\d+-\d+(?::\d+){0,2}|\d+(?::\d+){0,2}', text):
+        raise ValueError('it is not a time SLURM understands')
+    if SlurmJobBackend._time_limit_seconds(text) <= 0:
+        raise ValueError('the time limit is zero')
+    return text
+
+
 class SlurmJobBackend(JobBackend):
     """SLURM cluster backend (sbatch/squeue/scancel)."""
 
@@ -195,35 +229,56 @@ class SlurmJobBackend(JobBackend):
     # Internal helpers
     # ------------------------------------------------------------------
     def _resolve_resources(self, job_dir, inp_file=None, pal=40, maxcore=6000):
-        """Determine PAL and memory from CONTROL / .inp / defaults."""
+        """PAL and memory for a job, from the file that job actually reads.
+
+        An ORCA job reads the .inp it is submitted with, so its %pal and
+        %maxcore come first. A CONTROL.txt beside it belongs to the DELFIN
+        run the folder came from: taken first, a recalc whose input was edited
+        down to 12 processes still reserved CONTROL's 40 cores and 240 GB and
+        waited for them -- and one edited up ran more processes than it had
+        cores. A DELFIN job (no inp_file) reads CONTROL.txt, so there it comes
+        first. Whatever is still missing falls back to the other source, then
+        to the caller's values.
+        """
         pal_used = None
         maxcore_used = None
+        job_path = Path(job_dir)
 
-        # 1) Try CONTROL.txt
-        try:
-            control_path = Path(job_dir) / 'CONTROL.txt'
-            if control_path.exists():
-                pal_used, maxcore_used = parse_resource_settings(control_path.read_text())
-        except Exception:
-            pal_used, maxcore_used = None, None
+        def fill(pal_found, maxcore_found):
+            nonlocal pal_used, maxcore_used
+            if pal_used is None:
+                pal_used = pal_found
+            if maxcore_used is None:
+                maxcore_used = maxcore_found
 
-        # 2) Fallback to .inp file
+        def from_submitted_inp():
+            try:
+                candidate = job_path / inp_file if inp_file else None
+                if candidate is not None and candidate.exists():
+                    fill(*parse_inp_resources(candidate.read_text()))
+            except Exception:
+                pass
+
+        def from_control():
+            try:
+                control_path = job_path / 'CONTROL.txt'
+                if control_path.exists():
+                    fill(*parse_resource_settings(control_path.read_text()))
+            except Exception:
+                pass
+
+        if inp_file:
+            from_submitted_inp()
+            from_control()
+        else:
+            from_control()
+
+        # Still missing: the first .inp of the folder.
         if pal_used is None or maxcore_used is None:
             try:
-                inp_candidate = None
-                if inp_file:
-                    cand = Path(job_dir) / inp_file
-                    if cand.exists():
-                        inp_candidate = cand
-                if inp_candidate is None:
-                    inp_files = sorted(Path(job_dir).glob('*.inp'))
-                    inp_candidate = inp_files[0] if inp_files else None
-                if inp_candidate is not None and inp_candidate.exists():
-                    pal_inp, maxcore_inp = parse_inp_resources(inp_candidate.read_text())
-                    if pal_used is None:
-                        pal_used = pal_inp
-                    if maxcore_used is None:
-                        maxcore_used = maxcore_inp
+                inp_files = sorted(job_path.glob('*.inp'))
+                if inp_files:
+                    fill(*parse_inp_resources(inp_files[0].read_text()))
             except Exception:
                 pass
 
@@ -432,10 +487,21 @@ class SlurmJobBackend(JobBackend):
             SLURM job-array spec, e.g. ``"0-9"`` or ``"0-9%4"`` (max 4
             concurrent). Passed as ``--array=<array>`` when set.
         """
+        try:
+            time_limit = normalize_time_limit(time_limit)
+        except ValueError as problem:
+            # Said to the user the way sbatch's own refusals are: callers show
+            # stderr when the return code is not 0.
+            return subprocess.CompletedProcess(
+                args=['sbatch'], returncode=1, stdout='',
+                stderr=(f'Invalid time limit {str(time_limit)!r}: {problem}. Use HH:MM:SS, '
+                        'D-HH:MM:SS, or a duration such as 48h, 2d or 90min.'),
+            )
         env_vars = self._append_profile_env(env_vars)
         env_vars = self._append_runtime_location_env(env_vars)
         # USR1 for preemptive sync: half the walltime, capped 30s–300s
-        total_secs = self._time_limit_seconds(time_limit)
+        total_secs = (self._time_limit_seconds(time_limit)
+                      if time_limit[:1].isdigit() else 3 * 86400)
         usr1_offset = max(30, min(300, total_secs // 2))
         # Pass DELFIN_* variables via the sbatch process environment, NOT via
         # `--export=ALL,VAR=…`. Passing explicit variables with --export makes

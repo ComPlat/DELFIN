@@ -13,6 +13,15 @@ A CPU job is submitted to every partition of the site that can hold it; SLURM st
 
 The Job Status tab shows for each waiting job why it waits, in words (`Priority`, `Resources`, QOS and account limits, held jobs, maintenance), and SLURM's estimated start with the time until then. Both come from the one throttled `squeue`; the separate `squeue --start` on every refresh is gone.
 
+### Changed — A Job Status tab that reads at a glance
+
+Summary cards (running, waiting, CPUs in use, next expected start) above a table of one line per job, however long its name or reason: status as a coloured label, name with job id, partitions as tags, CPUs and memory in GB, runtime with a progress bar that turns orange near the limit, and for a waiting job a short reason ("Priority", "Queue limit", "Held by you" in red when waiting will not help) with its explanation and the expected start. Text that does not fit ends in an ellipsis and is whole in the tooltip; on narrow panes partition, runtime and resources give way in that order. An empty queue says what will appear there.
+
+### Fixed — Submitting from the dashboard
+
+- An ORCA job is sized by the `.inp` it runs. A `CONTROL.txt` beside it used to decide PAL and maxcore, so a recalc edited down to 12 processes still reserved and waited for 40 cores and 240 GB, and one edited up ran more processes than it had cores.
+- Time fields accept what people type: `48h`, `2d`, `90min` become SLURM limits, and an empty or unreadable value is refused with a message instead of a traceback.
+
 ### Fixed — A time limit in days no longer breaks the submit
 
 `2-00:00:00` and SLURM's other day formats raised `ValueError` while the submit worked out the early-warning signal.
