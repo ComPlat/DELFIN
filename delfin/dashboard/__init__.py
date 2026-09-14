@@ -185,6 +185,7 @@ def create_dashboard(backend='auto', calc_dir=None, orca_base=None):
             tool_binaries=runtime_settings.get('tool_binaries', {}) or {},
             slurm_profile=slurm_profile,
             partitions=(runtime_settings.get('slurm', {}) or {}).get('partitions', ''),
+            gpu_partitions=(runtime_settings.get('slurm', {}) or {}).get('gpu_partitions', ''),
         )
         only_goat_template_path = _find_only_goat_template(notebook_dir)
     else:

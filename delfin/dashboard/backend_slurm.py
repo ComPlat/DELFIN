@@ -18,8 +18,10 @@ from delfin.qm_runtime import (
 )
 from delfin.runtime_setup import _tool_environment_overrides
 from delfin.slurm_submit import (  # noqa: F401 -- normalize_time_limit is re-exported
+    PROFILE_GPU_PARTITIONS,
     PROFILE_PARTITIONS,
     detect_site_profile,
+    discover_gpu_partitions,
     normalize_time_limit,
     partition_accepts,
     partition_list,
@@ -157,7 +159,7 @@ class SlurmJobBackend(JobBackend):
         return detect_site_profile()
 
     def __init__(self, submit_templates_dir, orca_base=None, tool_binaries=None,
-                 slurm_profile=None, partitions=None):
+                 slurm_profile=None, partitions=None, gpu_partitions=None):
         self.submit_templates_dir = Path(submit_templates_dir)
         explicit_profile = str(slurm_profile or '').strip()
         self.slurm_profile = explicit_profile or self._detect_profile()
@@ -169,6 +171,10 @@ class SlurmJobBackend(JobBackend):
             or self._PROFILE_PARTITIONS.get(self.slurm_profile, ())
         )
         self._partition_verdicts: dict[tuple, bool] = {}
+        # GPU candidates are worked out when a GPU job is first submitted:
+        # finding them may ask scontrol, which a CPU-only session never needs.
+        self._gpu_partitions_setting = gpu_partitions
+        self._gpu_candidates: Optional[tuple] = None
         self.orca_base = orca_base
         explicit = {
             canonical_tool_name(name): str(value).strip()
@@ -757,33 +763,50 @@ class SlurmJobBackend(JobBackend):
         )
         return SubmitResult(result.returncode, result.stdout, result.stderr)
 
-    @staticmethod
-    def _detect_gpu_partition() -> str:
-        """Auto-detect the first available GPU partition on this cluster."""
-        try:
-            result = subprocess.run(
-                ['sinfo', '-h', '-o', '%P', '--partition=gpu,gpu_4,gpu_8,gpu_a100'],
-                capture_output=True, text=True, timeout=5,
+    def _gpu_partition_candidates(self) -> tuple:
+        """Settings, then DELFIN_SLURM_GPU_PARTITIONS, then the site profile,
+        then every GPU partition scontrol reports.
+
+        This used to ask sinfo for partitions named gpu, gpu_4, gpu_8 and
+        gpu_a100. bwUniCluster 3.0 refuses sinfo and has none of those names,
+        so no GPU was ever found and every GPU job ran on CPUs.
+        """
+        if self._gpu_candidates is None:
+            self._gpu_candidates = (
+                self._partition_list(self._gpu_partitions_setting)
+                or self._partition_list(os.environ.get('DELFIN_SLURM_GPU_PARTITIONS', ''))
+                or PROFILE_GPU_PARTITIONS.get(self.slurm_profile, ())
+                or discover_gpu_partitions()
             )
-            if result.returncode == 0 and result.stdout.strip():
-                # sinfo returns partition names, possibly with '*' for default
-                return result.stdout.strip().split('\n')[0].rstrip('*')
-        except Exception:
-            pass
-        # Fallback: try generic 'gpu'
-        try:
-            result = subprocess.run(
-                ['sinfo', '-h', '-o', '%P'],
-                capture_output=True, text=True, timeout=5,
-            )
-            if result.returncode == 0:
-                for line in result.stdout.strip().split('\n'):
-                    name = line.strip().rstrip('*')
-                    if 'gpu' in name.lower():
-                        return name
-        except Exception:
-            pass
-        return ''
+        return self._gpu_candidates
+
+    def _gpu_partitions_for(self, job_dir, submit_script, time_limit, pal, mem_mb,
+                            gres='gpu:1') -> str:
+        """The GPU partitions that can run this request, as one --partition value.
+
+        Each candidate is asked with sbatch --test-only and the job's own GPU,
+        time, cores and memory, so a 30-minute partition is left out of a
+        24-hour job without knowing its name. '' when none can: the job then
+        runs on CPUs.
+        """
+        candidates = self._gpu_partition_candidates()
+        if len(candidates) <= 1:
+            return candidates[0] if candidates else ''
+        fitting = []
+        for name in candidates:
+            key = ('gpu', gres, name, str(time_limit), int(pal), int(mem_mb), str(submit_script))
+            verdict = self._partition_verdicts.get(key)
+            if verdict is None:
+                verdict = partition_accepts(
+                    name, job_dir, submit_script,
+                    resource_args=(f'--gres={gres}', f'--time={time_limit}', '--ntasks=1',
+                                   f'--cpus-per-task={pal}', f'--mem={mem_mb}M'),
+                )
+                if verdict is not None:
+                    self._partition_verdicts[key] = verdict
+            if verdict:
+                fitting.append(name)
+        return ','.join(fitting)
 
     def submit_mlp(self, job_dir, job_name, xyz_file, backend='ani2x',
                    time_limit='24:00:00', pal=4, maxcore=4000,
@@ -799,14 +822,22 @@ class SlurmJobBackend(JobBackend):
             f'DELFIN_CHARGE={charge},DELFIN_MULT={mult},'
             f'DELFIN_PAL={pal_used},DELFIN_MAXCORE={maxcore_used}'
         )
-        # Auto-detect GPU partition — if found, request 1 GPU
-        gpu_partition = self._detect_gpu_partition()
+        # One GPU in whichever GPU partition can run the job first; none that
+        # can, and it runs on CPUs in the CPU partitions.
+        submit_script = self.submit_templates_dir / 'submit_delfin.sh'
+        try:
+            asked_time = normalize_time_limit(time_limit)
+        except ValueError:
+            asked_time = ''  # _sbatch refuses it with the reason
+        gpu_partitions = (self._gpu_partitions_for(job_dir, submit_script, asked_time,
+                                                   pal_used, mem_used)
+                          if asked_time else '')
         env_vars = self._append_tool_exports(env_vars)
         result = self._sbatch(
             job_dir, env_vars, time_limit, pal_used, mem_used,
-            job_name, self.submit_templates_dir / 'submit_delfin.sh',
-            gpu='gpu:1' if gpu_partition else None,
-            partition=gpu_partition or None,
+            job_name, submit_script,
+            gpu='gpu:1' if gpu_partitions else None,
+            partition=gpu_partitions or None,
         )
         return SubmitResult(result.returncode, result.stdout, result.stderr)
 

@@ -235,7 +235,7 @@ It does **not** perform the full system installation.
 
 ### Partitions a job may start in
 
-`runtime.slurm.partitions` in `~/.delfin_settings.json` is a comma-separated list of partitions a CPU job may start in, for example `"cpu,cpu_il"`. SLURM starts the job in whichever can run it first. Before submitting, DELFIN asks SLURM with `sbatch --test-only` which of them can hold the request and lists only those. Empty uses the site profile's list (`cpu,cpu_il` on bwUniCluster 3.0), or the submit template's own partition elsewhere. `DELFIN_SLURM_PARTITIONS` sets the same from the environment. GPU jobs keep the partition they ask for.
+`runtime.slurm.partitions` in `~/.delfin_settings.json` is a comma-separated list of partitions a CPU job may start in, for example `"cpu,cpu_il"`. SLURM starts the job in whichever can run it first. Before submitting, DELFIN asks SLURM with `sbatch --test-only` which of them can hold the request and lists only those. Empty uses the site profile's list (`cpu,cpu_il` on bwUniCluster 3.0), or the submit template's own partition elsewhere. `DELFIN_SLURM_PARTITIONS` sets the same from the environment. `runtime.slurm.gpu_partitions` (or `DELFIN_SLURM_GPU_PARTITIONS`) does the same for jobs that ask for a GPU. Empty uses the site profile's list, or every GPU partition that `scontrol show partition` reports, apart from `dev_*` test partitions. Each is checked with `sbatch --test-only --gres=gpu:1` against the job's time, cores and memory; when none fits, the job runs on CPUs.
 
 ### Verify install
 

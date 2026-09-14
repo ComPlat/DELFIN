@@ -58,6 +58,9 @@ DEFAULT_SETTINGS = {
             # whichever can run it first. Empty: the site profile's list, or
             # the submit template's own partition.
             "partitions": "",
+            # The same for jobs that ask for a GPU. Empty: the site profile's
+            # list, or every GPU partition scontrol reports.
+            "gpu_partitions": "",
         },
     },
     "features": {
@@ -553,6 +556,11 @@ def _normalized_settings_dict(payload):
             "partitions": ",".join(
                 part.strip()
                 for part in str(slurm_runtime.get("partitions", "") or "").split(",")
+                if part.strip()
+            ),
+            "gpu_partitions": ",".join(
+                part.strip()
+                for part in str(slurm_runtime.get("gpu_partitions", "") or "").split(",")
                 if part.strip()
             ),
         },
