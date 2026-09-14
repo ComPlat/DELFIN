@@ -466,6 +466,7 @@ def submit_application(
     geometry: Optional[str | Path] = None,
     work_dir: Optional[Path] = None,
     backend: str = "local",
+    slurm_time: str = "24:00:00",
     **inputs: Any,
 ) -> str:
     """Submit an application run in the background and return its run id.
@@ -473,13 +474,13 @@ def submit_application(
     ``cores`` is the parallelism (ORCA PAL); ``maxcore`` the memory per core (MB).
     ``backend="local"`` runs on this machine; ``backend="slurm"`` submits an
     sbatch job that runs it on a compute node (results land in the shared run
-    store). Non-blocking: poll :func:`run_status` / :func:`run_record`, or
+    store) with ``slurm_time`` as its time limit. Non-blocking: poll :func:`run_status` / :func:`run_record`, or
     :func:`wait_run`, and cancel with :func:`cancel_run`.
     """
     from delfin.tools._runtime import get_runtime
     handle = get_runtime().submit_application(
         name, cores=cores, maxcore=maxcore, geometry=geometry, work_dir=work_dir,
-        inputs=inputs, backend=backend,
+        inputs=inputs, backend=backend, slurm_time=slurm_time,
     )
     return handle.id
 
