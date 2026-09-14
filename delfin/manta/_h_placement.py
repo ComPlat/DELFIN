@@ -327,6 +327,23 @@ def _hp_metals(syms: Sequence[str]) -> List[int]:
     return [i for i, s in enumerate(syms) if _hp_metal(s)]
 
 
+def _hp_metal_bound(syms: Sequence[str], P: np.ndarray, c: int) -> int:
+    """Index of the metal within a coordinate bond of centre ``c``, else -1.
+
+    The graph (:func:`_hp_graph`) keeps metals outside, so the coordinate
+    bond is read here by distance with the same rule as the free-lone-pair
+    finder (``_LP_MD_RATIO`` x radii sum).  The nearest metal wins.
+    """
+    sc = _el.normalise(syms[c])
+    best, best_d = -1, 1e9
+    for m in _hp_metals(syms):
+        sm = _el.normalise(syms[m])
+        d_mc = float(np.linalg.norm(P[m] - P[c]))
+        if d_mc <= (_hp_cov(sm) + _hp_cov(sc)) * _LP_MD_RATIO and d_mc < best_d:
+            best, best_d = m, d_mc
+    return best
+
+
 def _hp_graph(syms: Sequence[str], P: np.ndarray) -> List[List[int]]:
     """Bond graph via covalent radii; metals stay outside.
 
@@ -733,10 +750,10 @@ def _hp_centre_turnable(syms: Sequence[str], P: np.ndarray, c: int,
     # flattened in 6 of 9 frames; MEBRET Cu-O19).  Counted with the metal the
     # centre has two heavy substituents -- its H is no free rotor.  Universal:
     # any centre (also a metal-bound CH2) within a coordinate bond of a metal.
-    for m in _hp_metals(syms):
-        d_mc = float(np.linalg.norm(P[m] - P[c]))
-        if d_mc <= (_hp_cov(_el.normalise(syms[m])) + _hp_cov(sym_c)) * _LP_MD_RATIO:
-            return False
+    # The one move that remains there is the H <-> lone-pair swap, see
+    # :func:`_hp_stage_metal_swap`.
+    if _hp_metal_bound(syms, P, c) >= 0:
+        return False
     if sym_c != "C" and adj is not None and n_sub <= 3:
         heavy_nb = [j for j in adj[nb] if _el.normalise(syms[j]) != "H"]
         if len(heavy_nb) == 3 and _hp_angle_sum(P, nb, heavy_nb) >= _SP3_ANGLE_SUM_MAX - 5.0:
@@ -912,6 +929,68 @@ def _hp_stage_rotor(syms: List[str], P: np.ndarray, parents: Dict[int, int],
             continue
         P[hs] = _hp_rotate(orig, P[centre], axis, best_ang)
         moved += len(hs)
+    if h_sp3_only_enabled():
+        moved += _hp_stage_metal_swap(syms, P, parents, adj)
+    return moved
+
+
+def _hp_stage_metal_swap(syms: List[str], P: np.ndarray, parents: Dict[int, int],
+                         adj: Sequence[Sequence[int]]) -> int:
+    """The ONE move left at a metal-bound centre: H <-> lone pair (register #451).
+
+    A coordinated O-H / S-H / N(R)-H centre carries the metal as a fourth
+    tetrahedral substituent.  Its H may not be turned about the bond to the
+    heavy neighbour -- that flattens the donor (see :func:`_hp_centre_turnable`)
+    -- but it may change place with the free lone pair: the mirror image of
+    the H through the plane (centre, heavy neighbour, metal).  Every angle at
+    the centre and the X-H length are preserved exactly, so the donor pyramid
+    (the eye's lone-pair axis) cannot change by construction.  Taken only when
+    the H's clearance improves, under the rotor's guards (metal axis, no more
+    H in free lone-pair cones) and the eye's pair rule (no new occupant in
+    any free lone-pair cone -- the old H place may now be a cone).
+    """
+    h_of: Dict[int, List[int]] = {}
+    for h, p in parents.items():
+        h_of.setdefault(p, []).append(h)
+    moved = 0
+    for c in sorted(h_of):
+        hs = h_of[c]
+        if len(hs) != 1:
+            continue                       # two H: both tetrahedral places are taken
+        heavy_nb = [j for j in adj[c] if _el.normalise(syms[j]) != "H"]
+        if len(heavy_nb) != 1:
+            continue
+        m = _hp_metal_bound(syms, P, c)
+        if m < 0:
+            continue
+        nb = heavy_nb[0]
+        h = hs[0]
+        nrm = np.cross(P[nb] - P[c], P[m] - P[c])
+        nn = float(np.linalg.norm(nrm))
+        if nn < 1e-6:
+            continue                       # neighbour, centre, metal collinear: no plane
+        nrm = nrm / nn
+        v = P[h] - P[c]
+        off = float(np.dot(v, nrm))
+        if abs(off) < 1e-3:
+            continue                       # H already in the plane: the mirror is itself
+        skip = _hp_skip(syms, adj, h, c, extra=[c, nb])
+        base = _hp_clearance(syms, P, h, c, skip)
+        if base >= 1.0:
+            continue                       # nothing violated -> touch nothing
+        base_m = _hp_metal_clear(syms, P, h, c)
+        base_lp = _hp_lp_count(syms, P)
+        pairs_before = _hp_lp_pairs(syms, P)
+        orig = P[h].copy()
+        P[h] = P[c] + v - 2.0 * off * nrm
+        ok = (_hp_clearance(syms, P, h, c, skip) > base + _EPS_GAIN
+              and _hp_metal_clear(syms, P, h, c) >= min(1.0, base_m) - _EPS_GAIN
+              and (base_lp is None or _hp_lp_count(syms, P) <= base_lp)
+              and _hp_lp_pairs(syms, P) <= pairs_before)
+        if not ok:
+            P[h] = orig
+            continue
+        moved += 1
     return moved
 
 
@@ -1723,6 +1802,42 @@ def _hp_selftest() -> int:
             len(_groups(hydroxyl_on_metal, True)) == 0)
     _expect("mit Regel: O-H mit fernem Metall (4 A) bleibt Rotor",
             len(_groups(hydroxyl_far_metal, True)) == 1)
+    # THE SWAP (#451): the same coordinated hydroxyl with a clashing H 1.2 A
+    # away (outside the future lone-pair cone) changes place with its lone
+    # pair -- the mirror image through the plane (O, C, Zn), here exactly
+    # (1.75, -0.72, -0.54).  O-H length and the angles C-O-H / Zn-O-H are
+    # preserved to 1e-6; without a clash nothing moves.
+    hydroxyl_clash = ("6\ntest\n"
+                      "C       0.000000     0.000000     0.000000\n"
+                      "O       1.430000     0.000000     0.000000\n"
+                      "H       1.750000     0.900000     0.000000\n"
+                      "Zn      1.900000    -0.600000     1.800000\n"
+                      "C       3.300000     1.700000     1.300000\n"
+                      "H       2.600000     1.200000     0.800000\n")
+
+    def _swap(block: str):
+        s_, P_, _ = _hp_read(block)
+        a_ = _hp_graph(s_, P_)
+        p_ = parents_of_h(s_, P_)
+        _hp_link_parents(a_, p_)
+        P0 = P_.copy()
+        n_ = _hp_stage_metal_swap(s_, P_, p_, a_)
+        return n_, P0, P_
+
+    def _ang(P_, a, c, b):
+        u_, w_ = P_[a] - P_[c], P_[b] - P_[c]
+        return float(np.degrees(np.arccos(np.dot(u_, w_) / (np.linalg.norm(u_) * np.linalg.norm(w_)))))
+
+    n_sw, P0, P1 = _swap(hydroxyl_clash)
+    _expect("Tausch: das O-H am Zn mit H...H-Kollision wechselt auf den Lone-Pair-Platz",
+            n_sw == 1 and float(np.linalg.norm(P1[2] - np.array([1.75, -0.72, -0.54]))) < 1e-3)
+    _expect("Tausch: O-H-Laenge und Winkel C-O-H / Zn-O-H bleiben exakt (Spiegelung)",
+            n_sw == 1
+            and abs(np.linalg.norm(P1[2] - P1[1]) - np.linalg.norm(P0[2] - P0[1])) < 1e-6
+            and abs(_ang(P1, 0, 1, 2) - _ang(P0, 0, 1, 2)) < 1e-6
+            and abs(_ang(P1, 3, 1, 2) - _ang(P0, 3, 1, 2)) < 1e-6)
+    _expect("Tausch: ohne Kollision bewegt sich nichts",
+            _swap(hydroxyl_on_metal)[0] == 0)
     # THE GRAPH RULE (#451): an amide NH2 handed over slightly pyramidal (angle
     # sum ~335) next to a planar carbonyl carbon is conjugated -- not a rotor.
     # The same slightly pyramidal NH2 on an sp3 carbon (an amine) stays one,
