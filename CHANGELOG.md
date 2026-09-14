@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — Jobs start in whichever partition frees first, and say why they wait
+
+A CPU job is submitted to every partition of the site that can hold it; SLURM starts it in whichever can run it first. On bwUniCluster 3.0 that is `cpu` and `cpu_il` (264 Ice Lake nodes, 64 cores and 256 GB each): for 40 cores, 240 GB and 2 days `sbatch --test-only` expected a start twelve days earlier in `cpu_il` than in `cpu`. PAL, maxcore and the time limit are not touched. Whether a request fits a partition is asked of SLURM with `sbatch --test-only`, once per request shape, because listing a partition the request does not fit makes SLURM reject the whole job. Configurable with `runtime.slurm.partitions` or `DELFIN_SLURM_PARTITIONS`; a site without a profile keeps its template's partition.
+
+The Job Status tab shows for each waiting job why it waits, in words (`Priority`, `Resources`, QOS and account limits, held jobs, maintenance), and SLURM's estimated start with the time until then. Both come from the one throttled `squeue`; the separate `squeue --start` on every refresh is gone.
+
+### Fixed — A time limit in days no longer breaks the submit
+
+`2-00:00:00` and SLURM's other day formats raised `ValueError` while the submit worked out the early-warning signal.
+
 ### Added — One installer for every site
 
 `install.sh` (`delfin/installers/install_delfin.sh`) installs DELFIN on any Linux workstation or cluster login node: profiles `core`, `standard` and `all`, `--only`, `--dry-run`, `--update` and `--repair`. It needs no root and no module system -- Python 3.10/3.11 comes from the machine or from micromamba, ORCA is found where it was unpacked, and OpenMPI is built with the same configure flags as before, in the version the ORCA directory name gives (4.1.8 when there is no ORCA yet). The bwUniCluster scripts are now thin wrappers around it.

@@ -22,6 +22,56 @@ from .backend_base import JobBackend, JobInfo, SubmitResult
 from .input_processing import parse_resource_settings, parse_inp_resources
 
 
+#: What a pending job's reason code means, in words a user can act on.
+_PENDING_REASONS: dict[str, str] = {
+    'Priority': 'Waiting for jobs with higher priority to start first.',
+    'Resources': 'Next in line: waiting for enough free cores and memory on one node.',
+    'None': 'Being scheduled; it should start shortly.',
+    'Dependency': 'Waiting for a job it depends on to finish.',
+    'DependencyNeverSatisfied': 'Will never start: the job it depends on failed. Cancel it.',
+    'BeginTime': 'Not to start before its requested begin time.',
+    'JobHeldUser': 'Held by you. Release it with: scontrol release <jobid>',
+    'JobHeldAdmin': 'Held by the cluster administrators.',
+    'ReqNodeNotAvail': 'The nodes it needs are unavailable, often reserved for maintenance.',
+    'Reservation': 'Waiting for a reservation to become active.',
+    'PartitionTimeLimit': 'Will never start: its time limit is above the partition maximum.',
+    'PartitionNodeLimit': 'Will never start: it asks for more nodes than the partition allows.',
+    'BadConstraints': 'Will never start: no node matches what it asks for.',
+    'InvalidAccount': 'Will never start: the account is not valid.',
+    'InvalidQOS': 'Will never start: the QOS is not valid.',
+    'NodeDown': 'A node it needs is down.',
+    'Prolog': 'Starting: its node is being prepared.',
+    'Cleaning': 'Waiting for a node to finish cleaning up after a previous job.',
+}
+
+
+def describe_pending_reason(reason: str) -> str:
+    """The reason SLURM gives for a job's state, explained.
+
+    Takes the bare code (``Priority``), squeue's %R form (``(Priority)``) or a
+    code with detail (``ReqNodeNotAvail, Reserved for maintenance``). A code
+    nobody explained comes back as it is -- still better than no reason.
+    """
+    code = str(reason or '').strip()
+    if code.startswith('(') and code.endswith(')'):
+        code = code[1:-1].strip()
+    if not code:
+        return ''
+    if SlurmJobBackend._is_env_hold(code):
+        return ('Its launch failed and SLURM held it. DELFIN releases such a '
+                'job on the next refresh of the job list.')
+    head = code.split(',', 1)[0].strip()
+    if head in _PENDING_REASONS:
+        return _PENDING_REASONS[head]
+    if head.startswith('QOS') and 'Limit' in head:
+        return ('A limit of the queue (QOS) is reached, for example cores per '
+                'user; it starts when your other jobs finish.')
+    if head.startswith('Assoc') and 'Limit' in head:
+        return ("Your account's limit is reached, for example total cores of "
+                'the group; it starts when running jobs of the account finish.')
+    return code
+
+
 class SlurmJobBackend(JobBackend):
     """SLURM cluster backend (sbatch/squeue/scancel)."""
 
@@ -90,6 +140,16 @@ class SlurmJobBackend(JobBackend):
         'launch_failed_requeued_held',
     )
 
+    # Partitions a site's CPU jobs may start in. SLURM starts a job in
+    # whichever listed partition can run it first, "with no regard given to
+    # the partition name ordering" (sbatch(1)), so a second partition of
+    # suitable nodes is a second queue at no cost to the request. Measured on
+    # bwUniCluster 3.0 with sbatch --test-only for 40 cores, 240 GB, 2 days:
+    # cpu (80 nodes) expected a start twelve days after cpu_il (264 nodes).
+    _PROFILE_PARTITIONS: dict[str, tuple[str, ...]] = {
+        'bwunicluster3': ('cpu', 'cpu_il'),
+    }
+
     @staticmethod
     def _detect_profile() -> str:
         """Auto-detect the site profile from hostname / FQDN."""
@@ -103,10 +163,18 @@ class SlurmJobBackend(JobBackend):
         return ""
 
     def __init__(self, submit_templates_dir, orca_base=None, tool_binaries=None,
-                 slurm_profile=None):
+                 slurm_profile=None, partitions=None):
         self.submit_templates_dir = Path(submit_templates_dir)
         explicit_profile = str(slurm_profile or '').strip()
         self.slurm_profile = explicit_profile or self._detect_profile()
+        # Settings first, then the environment, then the site profile. Empty
+        # everywhere means the template's own #SBATCH --partition decides.
+        self.partitions = (
+            self._partition_list(partitions)
+            or self._partition_list(os.environ.get('DELFIN_SLURM_PARTITIONS', ''))
+            or self._PROFILE_PARTITIONS.get(self.slurm_profile, ())
+        )
+        self._partition_verdicts: dict[tuple, bool] = {}
         self.orca_base = orca_base
         explicit = {
             canonical_tool_name(name): str(value).strip()
@@ -218,8 +286,24 @@ class SlurmJobBackend(JobBackend):
 
     @staticmethod
     def _time_limit_seconds(time_limit: str) -> int:
-        """Convert HH:MM:SS or MM:SS or bare minutes to total seconds."""
-        parts = str(time_limit).split(':')
+        """SLURM's time formats in seconds: D-HH:MM:SS, D-HH:MM, D-HH,
+        HH:MM:SS, MM:SS, or bare minutes.
+
+        The day forms raised ValueError ("invalid literal for int(): '2-00'")
+        and took the submit down with them.
+        """
+        text = str(time_limit).strip()
+        days = 0
+        if '-' in text:
+            day_part, text = text.split('-', 1)
+            days = int(day_part)
+            parts = text.split(':')
+            # After a day count the first field is hours, not minutes.
+            while len(parts) < 3:
+                parts.append('0')
+            hours, minutes, seconds = (int(x) for x in parts[:3])
+            return days * 86400 + hours * 3600 + minutes * 60 + seconds
+        parts = text.split(':')
         if len(parts) == 3:
             return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
         elif len(parts) == 2:
@@ -270,6 +354,67 @@ class SlurmJobBackend(JobBackend):
         exports = [f'{key}={value}' for key, value in location.items()]
         return f'{env_vars},{",".join(exports)}'
 
+    @staticmethod
+    def _partition_list(value) -> tuple:
+        if not value:
+            return ()
+        items = value.split(',') if isinstance(value, str) else list(value)
+        out: list[str] = []
+        for item in items:
+            name = str(item).strip()
+            if name and name not in out:
+                out.append(name)
+        return tuple(out)
+
+    def _partitions_for(self, job_dir, submit_script, time_limit, pal, mem_mb,
+                        submit_env) -> str:
+        """The candidate partitions this request fits, as one --partition value.
+
+        A partition whose nodes cannot hold the request -- cpu_il has 64 cores
+        and 256 GB per node -- makes SLURM reject the whole job when it is
+        listed, so each candidate is asked first with ``sbatch --test-only``,
+        which submits nothing. One question per partition per request shape
+        for the life of the dashboard. '' keeps the template's own partition.
+        """
+        candidates = self.partitions
+        if not candidates:
+            return ''
+        if len(candidates) == 1:
+            return candidates[0]
+        fitting = []
+        for name in candidates:
+            key = (name, str(time_limit), int(pal), int(mem_mb), str(submit_script))
+            verdict = self._partition_verdicts.get(key)
+            if verdict is None:
+                verdict = self._partition_accepts(
+                    name, job_dir, submit_script, time_limit, pal, mem_mb, submit_env)
+                if verdict is not None:
+                    self._partition_verdicts[key] = verdict
+            if verdict:
+                fitting.append(name)
+        return ','.join(fitting)
+
+    @staticmethod
+    def _partition_accepts(name, job_dir, submit_script, time_limit, pal, mem_mb,
+                           submit_env) -> Optional[bool]:
+        """True or False as SLURM answered, None when it could not be asked."""
+        try:
+            done = subprocess.run(
+                ['sbatch', '--test-only', f'--partition={name}',
+                 f'--time={time_limit}', '--ntasks=1', f'--cpus-per-task={pal}',
+                 f'--mem={mem_mb}M', str(submit_script)],
+                cwd=str(job_dir), capture_output=True, text=True,
+                env=submit_env, timeout=30,
+            )
+        except Exception:
+            return None
+        said = f'{done.stdout or ""}\n{done.stderr or ""}'
+        if done.returncode == 0 and 'to start at' in said:
+            return True
+        if 'allocation failure' in said or 'error' in said.lower():
+            return False
+        return None
+
     def _sbatch(self, job_dir, env_vars, time_limit, pal, mem_mb,
                 job_name, submit_script, *, gpu=None, partition=None,
                 array=None):
@@ -311,13 +456,6 @@ class SlurmJobBackend(JobBackend):
             f'--mem={mem_mb}M',
             f'--job-name={job_name}',
         ]
-        if gpu:
-            cmd.append(f'--gres={gpu}')
-        if partition:
-            cmd.append(f'--partition={partition}')
-        if array:
-            cmd.append(f'--array={array}')
-        cmd.append(str(submit_script))
         submit_env = {**os.environ, **self._env_vars_to_dict(env_vars)}
         # Inherited SBATCH_* input variables act like sbatch CLI options.
         # SBATCH_GET_USER_ENV has NO command-line negation, so if a user's
@@ -325,6 +463,16 @@ class SlurmJobBackend(JobBackend):
         # --export=ALL. SBATCH_EXPORT could likewise fight our flag.
         submit_env.pop('SBATCH_GET_USER_ENV', None)
         submit_env.pop('SBATCH_EXPORT', None)
+        if gpu:
+            cmd.append(f'--gres={gpu}')
+        if not partition and not gpu:
+            partition = self._partitions_for(
+                job_dir, submit_script, time_limit, pal, mem_mb, submit_env)
+        if partition:
+            cmd.append(f'--partition={partition}')
+        if array:
+            cmd.append(f'--array={array}')
+        cmd.append(str(submit_script))
         result = subprocess.run(
             cmd,
             cwd=str(job_dir),
@@ -713,12 +861,18 @@ class SlurmJobBackend(JobBackend):
         self._jobs_cache = jobs
         return list(jobs)
 
+    #: Everything the job table shows, from one squeue. Why a job waits and
+    #: SLURM's estimate of its start (%r, %S) needed a second, unthrottled
+    #: ``squeue --start`` on every refresh before. '|' separates the fields:
+    #: a node list or a reason can contain spaces.
+    _SQUEUE_FORMAT = '%i|%P|%j|%u|%t|%M|%D|%l|%C|%m|%S|%r|%R'
+
     def _query_jobs(self) -> Optional[List[JobInfo]]:
         """Ask SLURM. Returns None when the query failed, [] when idle."""
         try:
             result = subprocess.run(
                 ['squeue', '-u', os.environ.get('USER', ''),
-                 '-o', '%.12i %.12P %.35j %.10u %.3t %.12M %.6D %R'],
+                 '-o', self._SQUEUE_FORMAT],
                 capture_output=True, text=True, timeout=10,
             )
         except Exception:
@@ -735,38 +889,62 @@ class SlurmJobBackend(JobBackend):
         for line in lines[1:]:
             if not line.strip():
                 continue
-            parts = line.split()
-            if not parts:
+            fields = self._parse_squeue_line(line)
+            if fields is None:
                 continue
-            job_id = parts[0].strip()
-            partition = parts[1].strip() if len(parts) > 1 else ''
-            name = parts[2].strip() if len(parts) > 2 else 'unknown'
-            user = parts[3].strip() if len(parts) > 3 else ''
-            status = parts[4].strip() if len(parts) > 4 else ''
-            time_used = parts[5].strip() if len(parts) > 5 else ''
-            nodes = parts[6].strip() if len(parts) > 6 else ''
-            # squeue's %R reason may contain spaces ("user env retrieval
-            # failed requeued held"), so detect on the raw line, not parts[7].
-            reason = parts[7].strip() if len(parts) > 7 else ''
             if self._is_env_hold(line):
                 # Dispatch-time env-retrieval holds recur after submit; clear
                 # them on every refresh so DELFIN jobs don't stay stuck.
-                self._release_job_quietly(job_id)
+                self._release_job_quietly(fields['job_id'])
 
             jobs.append(JobInfo(
-                job_id=job_id,
-                name=name,
-                status=status,
+                job_id=fields['job_id'],
+                name=fields['name'],
+                status=fields['status'],
+                start_time=fields['start'],
+                time_limit=fields['time_limit'],
                 extra={
-                    'partition': partition,
-                    'user': user,
-                    'time_used': time_used,
-                    'nodes': nodes,
-                    'reason': reason,
+                    'partition': fields['partition'],
+                    'user': fields['user'],
+                    'time_used': fields['time_used'],
+                    'nodes': fields['nodes'],
+                    'reason': fields['reason'],
+                    'reason_code': fields['reason_code'],
+                    'time_limit': fields['time_limit'],
+                    'cpus': fields['cpus'],
+                    'memory': fields['memory'],
+                    'start_estimate': fields['start'],
                     'raw_line': line,
                 },
             ))
         return jobs
+
+    @staticmethod
+    def _parse_squeue_line(line: str) -> Optional[dict]:
+        """One squeue line, in the '|' format or the plain one of older output."""
+        if line.count('|') >= 12:
+            parts = line.split('|')
+            job_id, partition = (s.strip() for s in parts[:2])
+            name = '|'.join(parts[2:-10]).strip()
+            (user, status, time_used, nodes, time_limit, cpus, memory, start,
+             reason_code, reason) = (s.strip() for s in parts[-10:])
+        else:
+            parts = line.split(None, 7)
+            if not parts:
+                return None
+            parts += [''] * (8 - len(parts))
+            job_id, partition, name, user, status, time_used, nodes, reason = (
+                s.strip() for s in parts)
+            time_limit = cpus = memory = start = ''
+            reason_code = reason[1:-1] if reason.startswith('(') and reason.endswith(')') else ''
+        if start in ('N/A', 'Unknown', 'None'):
+            start = ''
+        return {
+            'job_id': job_id, 'partition': partition, 'name': name or 'unknown',
+            'user': user, 'status': status, 'time_used': time_used, 'nodes': nodes,
+            'time_limit': time_limit, 'cpus': cpus, 'memory': memory, 'start': start,
+            'reason_code': reason_code, 'reason': reason,
+        }
 
     def cancel_job(self, job_id) -> Tuple[bool, str]:
         try:
@@ -783,33 +961,25 @@ class SlurmJobBackend(JobBackend):
             return False, f'Error cancelling job {job_id}: {e}'
 
     def get_pending_start_times(self):
-        try:
-            result = subprocess.run(
-                ['squeue', '-u', os.environ.get('USER', ''), '--start',
-                 '-o', '%.12i %.35j %.20S'],
-                capture_output=True, text=True, timeout=10,
-            )
-        except Exception:
-            return []
+        """Pending jobs with SLURM's start estimate and why they wait.
 
-        if result.returncode != 0:
-            return []
-
-        lines = result.stdout.strip().split('\n')
-        if len(lines) <= 1:
-            return []
-
+        Read from the job listing, which carries both, so asking costs no
+        squeue of its own.
+        """
         pending = []
-        for line in lines[1:]:
-            if not line.strip() or 'N/A' in line:
+        for job in self.list_jobs():
+            if (job.status or '').upper() not in ('PD', 'PENDING'):
                 continue
-            parts = line.split(None, 2)
-            if len(parts) >= 3:
-                pending.append({
-                    'id': parts[0].strip(),
-                    'name': parts[1].strip(),
-                    'start': parts[2].strip(),
-                })
+            extra = job.extra or {}
+            reason = extra.get('reason_code') or extra.get('reason', '')
+            pending.append({
+                'id': str(job.job_id),
+                'name': job.name,
+                'start': extra.get('start_estimate', ''),
+                'reason': reason,
+                'explanation': describe_pending_reason(reason),
+                'partition': extra.get('partition', ''),
+            })
         return pending
 
     @property

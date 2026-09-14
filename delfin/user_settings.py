@@ -54,6 +54,10 @@ DEFAULT_SETTINGS = {
             "orca_base": "",
             "submit_templates_dir": "",
             "profile": "",
+            # Comma-separated partitions a CPU job may start in; SLURM takes
+            # whichever can run it first. Empty: the site profile's list, or
+            # the submit template's own partition.
+            "partitions": "",
         },
     },
     "features": {
@@ -546,6 +550,11 @@ def _normalized_settings_dict(payload):
                 "SLURM submit templates path",
             ),
             "profile": str(slurm_runtime.get("profile", "") or "").strip(),
+            "partitions": ",".join(
+                part.strip()
+                for part in str(slurm_runtime.get("partitions", "") or "").split(",")
+                if part.strip()
+            ),
         },
     }
     features = normalized.get("features", {})

@@ -15,6 +15,97 @@ from .backend_base import JobInfo
 from .input_processing import parse_inp_resources
 
 
+#: Said once under the table whenever a job is waiting: what SLURM's estimate
+#: of a start is worth.
+PENDING_ESTIMATE_NOTE = (
+    '<div style="margin-top:10px;padding:10px;background-color:#fff3cd;'
+    'border:1px solid #ffc107;border-radius:4px;">'
+    '<b>About the estimated start:</b> SLURM computes it assuming every running '
+    'job uses its full time limit, so jobs usually start earlier than shown. It '
+    'can also move later when jobs with higher priority are submitted. A job '
+    'listed for several partitions starts in whichever frees first.'
+    '</div>'
+)
+
+
+def _relative_start(start: str, now=None) -> str:
+    """'in 2 d 7 h' for an ISO time, '' when there is none to read."""
+    try:
+        when = datetime.fromisoformat(str(start))
+    except (TypeError, ValueError):
+        return ''
+    seconds = (when - (now or datetime.now())).total_seconds()
+    if seconds <= 60:
+        return 'any moment now'
+    minutes = int(seconds // 60)
+    days, rest = divmod(minutes, 24 * 60)
+    hours, mins = divmod(rest, 60)
+    if days:
+        return f'in {days} d {hours} h'
+    if hours:
+        return f'in {hours} h {mins} min'
+    return f'in {mins} min'
+
+
+def build_slurm_job_table(jobs, dropdown_options, now=None) -> str:
+    """The SLURM job table: why a waiting job waits and when it should start."""
+    from .backend_slurm import describe_pending_reason
+
+    esc = _html.escape
+    muted = 'style="color:#555;font-size:11px;"'
+    rows = [
+        '<table class="job-table"><tr>'
+        '<th>JOBID</th><th>PARTITION</th><th>NAME</th><th>ST</th><th>TIME</th>'
+        '<th>LIMIT</th><th>CPUS</th><th>MEM</th><th>NODES</th>'
+        '<th>NODELIST / WHY WAITING</th><th>START</th>'
+        '</tr>'
+    ]
+    for job in jobs:
+        extra = job.extra or {}
+        status = str(job.status or '')
+        pending = status.upper() in ('PD', 'PENDING')
+        partition = str(extra.get('partition', ''))
+        if ',' in partition:
+            partition_cell = (f'{esc(partition.replace(",", ", "))}<br>'
+                              f'<span {muted}>first to free wins</span>')
+        else:
+            partition_cell = esc(partition)
+        reason = str(extra.get('reason', ''))
+        start = str(extra.get('start_estimate', '') or job.start_time or '')
+        if pending:
+            code = str(extra.get('reason_code') or reason).strip('()')
+            explanation = describe_pending_reason(code)
+            why_cell = f'<b>{esc(code)}</b>'
+            if explanation and explanation != code:
+                why_cell += f'<br><span {muted}>{esc(explanation)}</span>'
+            if start:
+                start_cell = (f'{esc(start.replace("T", " ")[:16])}<br>'
+                              f'<span {muted}>{esc(_relative_start(start, now))}</span>')
+            else:
+                start_cell = f'<span {muted}>not estimated yet</span>'
+        else:
+            why_cell = esc(reason)
+            start_cell = esc(start.replace('T', ' ')[:16])
+        rows.append(
+            '<tr>'
+            f'<td><b>{esc(str(job.job_id))}</b></td>'
+            f'<td>{partition_cell}</td>'
+            f'<td>{esc(str(job.name))}</td>'
+            f'<td>{esc(status)}</td>'
+            f'<td>{esc(str(extra.get("time_used", "")))}</td>'
+            f'<td>{esc(str(extra.get("time_limit", "") or job.time_limit or ""))}</td>'
+            f'<td>{esc(str(extra.get("cpus", "")))}</td>'
+            f'<td>{esc(str(extra.get("memory", "")))}</td>'
+            f'<td>{esc(str(extra.get("nodes", "")))}</td>'
+            f'<td>{why_cell}</td>'
+            f'<td>{start_cell}</td>'
+            '</tr>'
+        )
+        dropdown_options.append((f'{job.job_id} - {job.name}', job.job_id))
+    rows.append('</table>')
+    return ''.join(rows)
+
+
 def create_tab(ctx):
     """Create the Job Status tab.
 
@@ -393,6 +484,7 @@ def create_tab(ctx):
             # The user asked for the queue, so bypass the rate limit.
             all_jobs = ctx.backend.list_jobs(force=True)
             state['job_data'] = all_jobs
+            state['showing_detected'] = False
 
             # Apply state filter (all / running / pending).
             f = state.get('state_filter', 'all')
@@ -413,6 +505,7 @@ def create_tab(ctx):
                 # Fallback: detect running processes if local queue is empty
                 is_local = not ctx.backend.supports_turbomole  # heuristic
                 detected = _detect_running_processes() if is_local else []
+                state['showing_detected'] = bool(detected)
                 if detected:
                     jobs = detected
                     state['job_data'] = jobs
@@ -441,24 +534,14 @@ def create_tab(ctx):
 
             job_table_html.value = table_html
 
-            # Pending start times
-            pending_times = ctx.backend.get_pending_start_times()
-            if pending_times and isinstance(pending_times[0], dict) and 'start' in pending_times[0]:
-                start_html = (
-                    '<div style="margin-top:10px;padding:10px;'
-                    'background-color:#fff3cd;border:1px solid #ffc107;border-radius:4px;">'
-                    '<b>Estimated Start Times (pending jobs):</b><br>'
-                    '<table style="font-family:monospace;font-size:12px;margin-top:5px;">'
-                )
-                for pj in pending_times:
-                    start_html += (
-                        f"<tr><td><b>{pj['id']}</b></td>"
-                        f"<td style='padding-left:15px;'>{pj['name']}</td>"
-                        f"<td style='padding-left:15px;'>{pj['start']}</td></tr>"
-                    )
-                start_html += '</table></div>'
-                job_start_html.value = start_html
-            else:
+            # Why a waiting job waits and when SLURM expects it to start are
+            # in the table itself; what such an estimate is worth is said once.
+            has_pending = any(
+                (j.status or '').upper() in ('PENDING', 'PD') for j in jobs
+            )
+            if has_pending and not is_local:
+                job_start_html.value = PENDING_ESTIMATE_NOTE
+            elif not state.get('showing_detected'):
                 job_start_html.value = ''
 
             if dropdown_options:
@@ -541,35 +624,7 @@ def create_tab(ctx):
 
     def _build_slurm_table(jobs, dropdown_options):
         """Build an HTML table for the SLURM backend."""
-        tbl = (
-            '<table class="job-table"><tr>'
-            '<th>JOBID</th><th>PARTITION</th><th>NAME</th><th>USER</th>'
-            '<th>ST</th><th>TIME</th><th>NODES</th><th>NODELIST/REASON</th>'
-            '</tr>'
-        )
-
-        for job in jobs:
-            extra = job.extra or {}
-            parts = extra.get('raw_line', '').split(None, 7)
-            while len(parts) < 8:
-                parts.append('')
-
-            tbl += (
-                f'<tr>'
-                f'<td><b>{parts[0]}</b></td>'
-                f'<td>{parts[1]}</td>'
-                f'<td>{parts[2]}</td>'
-                f'<td>{parts[3]}</td>'
-                f'<td>{parts[4]}</td>'
-                f'<td>{parts[5]}</td>'
-                f'<td>{parts[6]}</td>'
-                f'<td>{parts[7]}</td>'
-                f'</tr>'
-            )
-            dropdown_options.append((f'{job.job_id} - {job.name}', job.job_id))
-
-        tbl += '</table>'
-        return tbl
+        return build_slurm_job_table(jobs, dropdown_options)
 
     def cancel_selected_job(button):
         with job_status_output:

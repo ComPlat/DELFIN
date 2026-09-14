@@ -233,6 +233,10 @@ This is a writing action.
 
 It does **not** perform the full system installation.
 
+### Partitions a job may start in
+
+`runtime.slurm.partitions` in `~/.delfin_settings.json` is a comma-separated list of partitions a CPU job may start in, for example `"cpu,cpu_il"`. SLURM starts the job in whichever can run it first. Before submitting, DELFIN asks SLURM with `sbatch --test-only` which of them can hold the request and lists only those. Empty uses the site profile's list (`cpu,cpu_il` on bwUniCluster 3.0), or the submit template's own partition elsewhere. `DELFIN_SLURM_PARTITIONS` sets the same from the environment. GPU jobs keep the partition they ask for.
+
 ### Verify install
 
 Performs a read-only readiness check.
