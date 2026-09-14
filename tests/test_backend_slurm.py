@@ -692,3 +692,22 @@ def test_the_gpu_setting_wins_and_a_site_without_one_asks_scontrol(monkeypatch, 
     elsewhere, more = _submitting_backend(monkeypatch, lambda p: True, slurm_profile="custom-cluster")
     elsewhere.submit_mlp(str(tmp_path), "mlp_job", "mol.xyz", time_limit="02:00:00")
     assert "--partition=gpu_x" in _final_sbatch(more) and "--gres=gpu:1" in _final_sbatch(more)
+
+
+def test_an_mlp_job_is_told_its_task(monkeypatch, tmp_path):
+    backend, calls = _submitting_backend(monkeypatch, lambda p: p in {"cpu", "cpu_il"},
+                                         slurm_profile="bwunicluster3")
+    monkeypatch.delenv("DELFIN_SLURM_GPU_PARTITIONS", raising=False)
+    captured = {}
+    real_sbatch = backend._sbatch
+
+    def spy(job_dir, env_vars, *args, **kwargs):
+        captured["env"] = env_vars
+        return real_sbatch(job_dir, env_vars, *args, **kwargs)
+
+    monkeypatch.setattr(backend, "_sbatch", spy)
+    backend.submit_mlp(str(tmp_path), "mlp_job", "mol.xyz", time_limit="01:00:00", task="single-point")
+    assert "DELFIN_MODE=mlp" in captured["env"] and "DELFIN_MLP_TASK=single_point" in captured["env"]
+
+    refused = backend.submit_mlp(str(tmp_path), "mlp_job", "mol.xyz", task="dance")
+    assert refused.returncode == 1 and "Unknown MLP task" in refused.stderr

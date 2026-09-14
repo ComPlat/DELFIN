@@ -22,6 +22,12 @@ Summary cards (running, waiting, CPUs in use, next expected start) above a table
 - An ORCA job is sized by the `.inp` it runs. A `CONTROL.txt` beside it used to decide PAL and maxcore, so a recalc edited down to 12 processes still reserved and waited for 40 cores and 240 GB, and one edited up ran more processes than it had cores.
 - Time fields accept what people type: `48h`, `2d`, `90min` become SLURM limits, and an empty or unreadable value is refused with a message instead of a traceback.
 
+### Fixed — An ML-potential job computes something, on the GPU it was given
+
+`submit_mlp` sent jobs with `DELFIN_MODE=mlp`, and the job runner had no such mode: every one ended in "Unknown mode: mlp". The runner now runs DELFIN's `mlp_optimize` or `mlp_single_point` step (`task=` on `submit_mlp`, `DELFIN_MLP_TASK` in the job) on the job's GPU when PyTorch can use one and on its CPUs otherwise, writes `mlp_result.json` (energy, convergence, device, GPU) and the optimised structure, and says how to install a backend that is missing instead of failing with a bare import error.
+
+The MLP installer checked PyTorch by finding a `torch` directory, so a remnant without its libraries counted as installed and every backend on top of it failed; it now imports it and installs it again when that fails. It installed the CPU-only build, so a job given a GPU computed on the CPU anyway; it now installs the build from PyPI, which uses a GPU where there is one. `DELFIN_TORCH_VARIANT=cpu` keeps the smaller CPU-only build.
+
 ### Fixed — GPU partitions are found on bwUniCluster 3.0
 
 A GPU job looked for partitions named `gpu`, `gpu_4`, `gpu_8` or `gpu_a100` with `sinfo`. bwUniCluster 3.0 refuses `sinfo` and has none of those names, so no GPU was ever found and every GPU job ran on CPUs. The candidates now come from `runtime.slurm.gpu_partitions`, `DELFIN_SLURM_GPU_PARTITIONS`, the site profile (`gpu_h100`, `gpu_a100_il`, `gpu_h100_il` and the 30-minute `*_short` ones on bwUniCluster 3.0), or, on any other cluster, every GPU partition `scontrol` reports apart from `dev_*`. Each is asked with `sbatch --test-only --gres=gpu:1` and the job's own time, cores and memory, and the job is listed for all that fit; when none does, it runs on CPUs.

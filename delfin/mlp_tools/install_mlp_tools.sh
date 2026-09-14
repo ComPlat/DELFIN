@@ -92,7 +92,10 @@ python_has_module() {
 check_pytorch() {
   local python_bin="$1"
 
-  if python_has_module "${python_bin}" "torch"; then
+  # Asked by importing it, not by finding it: a torch directory left behind
+  # without its libraries (no lib/, no dist-info) is found and cannot be
+  # imported, and every backend built on it then fails.
+  if "${python_bin}" -c "import torch" >/dev/null 2>&1; then
     local version
     version="$("${python_bin}" -c "import torch; print(torch.__version__)" 2>/dev/null || echo "unknown")"
     log "PyTorch ${version} found"
@@ -102,13 +105,42 @@ check_pytorch() {
     if [ "${cuda_avail}" = "True" ]; then
       log "CUDA available — GPU acceleration enabled"
     else
-      log "CUDA not available — using CPU (still fast for small molecules)"
+      log "CUDA not available here — jobs on a GPU node use it, otherwise the CPU"
     fi
     return 0
   fi
 
-  warn "PyTorch not found. Installing CPU version..."
-  "${python_bin}" -m pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu
+  local repair=()
+  if python_has_module "${python_bin}" "torch"; then
+    warn "PyTorch is present but does not import (a partial installation); installing it again"
+    repair=(--force-reinstall --no-deps)
+  fi
+
+  # The build from PyPI runs on a GPU where the job has one and on the CPU
+  # otherwise. The CPU-only build used to be installed, so a job given a GPU
+  # computed on the CPU anyway. DELFIN_TORCH_VARIANT=cpu keeps the smaller
+  # CPU-only build for machines that will never see a GPU.
+  if [ "${DELFIN_TORCH_VARIANT:-default}" = "cpu" ]; then
+    log "installing PyTorch (CPU-only build, DELFIN_TORCH_VARIANT=cpu)..."
+    "${python_bin}" -m pip install "${repair[@]}" torch --index-url https://download.pytorch.org/whl/cpu \
+      2>&1 | tee -a "${LOG_DIR}/torch_install.log" || true
+    if [ ${#repair[@]} -gt 0 ]; then
+      "${python_bin}" -m pip install torch --index-url https://download.pytorch.org/whl/cpu \
+        2>&1 | tee -a "${LOG_DIR}/torch_install.log" || true
+    fi
+  else
+    log "installing PyTorch (uses a GPU where there is one; DELFIN_TORCH_VARIANT=cpu for the CPU-only build)..."
+    "${python_bin}" -m pip install "${repair[@]}" torch 2>&1 | tee -a "${LOG_DIR}/torch_install.log" || true
+    if [ ${#repair[@]} -gt 0 ]; then
+      "${python_bin}" -m pip install torch 2>&1 | tee -a "${LOG_DIR}/torch_install.log" || true
+    fi
+  fi
+
+  if "${python_bin}" -c "import torch" >/dev/null 2>&1; then
+    log "PyTorch $("${python_bin}" -c "import torch; print(torch.__version__)" 2>/dev/null) installed"
+  else
+    warn "PyTorch could not be installed; see ${LOG_DIR}/torch_install.log"
+  fi
 }
 
 # ---------------------------------------------------------------------------
