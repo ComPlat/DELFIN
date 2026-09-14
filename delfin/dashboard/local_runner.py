@@ -442,7 +442,10 @@ def _run_mlp_job(xyz_file: str, delfin_pal: str) -> int:
                           work_dir=Path.cwd() / f'mlp_{task}', **kwargs)
         status = str(getattr(result.status, 'value', result.status)).lower()
         error = str(result.error or '')
-        summary.update(result.data or {})
+        # numpy scalars as the Python values they are: json.dumps(default=str)
+        # wrote an optimiser's numpy.bool_ as the string "True".
+        summary.update({key: (value.item() if hasattr(value, 'item') else value)
+                        for key, value in (result.data or {}).items()})
     except Exception as exc:
         status = 'failed'
         error = f'{type(exc).__name__}: {exc}'
@@ -452,7 +455,9 @@ def _run_mlp_job(xyz_file: str, delfin_pal: str) -> int:
     if status == 'success' and result is not None and result.geometry and Path(result.geometry).is_file():
         optimized = Path.cwd() / f'{geometry.stem}_mlp_opt.xyz'
         _shutil.copyfile(result.geometry, optimized)
-        summary['optimized_structure'] = str(optimized)
+        # Its name, not its path: the job runs in node-local scratch that is
+        # gone once the results are synced back beside the other job files.
+        summary['optimized_structure'] = optimized.name
 
     if error:
         summary['error'] = error
