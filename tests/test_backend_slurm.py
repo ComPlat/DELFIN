@@ -572,3 +572,62 @@ def test_every_slurm_time_format_is_understood():
     assert seconds("48:00:00") == 48 * 3600
     assert seconds("30:00") == 30 * 60
     assert seconds("90") == 90 * 60
+
+
+# ---------------------------------------------------------------------------
+# what the dashboard's submit paths hand over
+# ---------------------------------------------------------------------------
+from delfin.dashboard.backend_slurm import normalize_time_limit  # noqa: E402
+
+
+def test_an_orca_job_is_sized_by_the_input_it_runs_not_the_control_beside_it(monkeypatch, tmp_path):
+    """A recalc edited down to 12 processes still reserved CONTROL's 40 cores."""
+    (tmp_path / "CONTROL.txt").write_text("PAL=40\nmaxcore=6000\n")
+    (tmp_path / "opt_recalc_1.inp").write_text("! PBE0 def2-SVP\n%pal nprocs 12 end\n%maxcore 3000\n")
+    backend, calls = _submitting_backend(monkeypatch, lambda p: True, slurm_profile="custom-cluster")
+
+    backend.submit_orca(str(tmp_path), "opt_recalc_1", "opt_recalc_1.inp",
+                        time_limit="24:00:00", pal=40, maxcore=6000)
+
+    final = _final_sbatch(calls)
+    assert "--cpus-per-task=12" in final and "--mem=36000M" in final
+
+
+def test_a_delfin_job_is_still_sized_by_its_control(monkeypatch, tmp_path):
+    (tmp_path / "CONTROL.txt").write_text("PAL=24\nmaxcore=4000\n")
+    (tmp_path / "leftover.inp").write_text("%pal nprocs 8 end\n%maxcore 1000\n")
+    backend, calls = _submitting_backend(monkeypatch, lambda p: True, slurm_profile="custom-cluster")
+
+    backend.submit_delfin(str(tmp_path), "run", mode="delfin", time_limit="24:00:00")
+
+    final = _final_sbatch(calls)
+    assert "--cpus-per-task=24" in final and "--mem=96000M" in final
+
+
+def test_a_time_typed_the_way_people_write_it_is_understood():
+    assert normalize_time_limit("48:00:00") == "48:00:00"
+    assert normalize_time_limit(" 2-00:00:00 ") == "2-00:00:00"
+    assert normalize_time_limit("90") == "90"
+    assert normalize_time_limit("48h") == "2-00:00:00"
+    assert normalize_time_limit("1d12h") == "1-12:00:00"
+    assert normalize_time_limit("90min") == "01:30:00"
+    assert normalize_time_limit("2 h 30 min") == "02:30:00"
+    for bad in ("", "48 hours", "abc", "0", "1-2-3"):
+        try:
+            normalize_time_limit(bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"{bad!r} was accepted")
+
+
+def test_an_unusable_time_limit_is_refused_with_a_reason_not_a_traceback(monkeypatch, tmp_path):
+    backend, calls = _submitting_backend(monkeypatch, lambda p: True, slurm_profile="bwunicluster3")
+
+    result = backend.submit_orca(str(tmp_path), "job", "missing.inp", time_limit="48 hours")
+
+    assert result.returncode == 1
+    assert "Invalid time limit '48 hours'" in result.stderr and "48h" in result.stderr
+    assert not [c for c in calls if c and c[0] == "sbatch"], "nothing reached SLURM"
+
+    backend.submit_orca(str(tmp_path), "job", "missing.inp", time_limit="48h")
+    assert "--time=2-00:00:00" in _final_sbatch(calls)
