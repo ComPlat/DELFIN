@@ -407,3 +407,168 @@ def test_submit_delfin_recalc_extracts_pal_keyword_shortcut(tmp_path):
     args = sbatch_calls[-1]
     assert "--cpus-per-task=8" in args
     assert "--mem=24000M" in args
+
+
+# ---------------------------------------------------------------------------
+# why a job waits, and when it should start
+# ---------------------------------------------------------------------------
+from delfin.dashboard.backend_slurm import describe_pending_reason  # noqa: E402
+
+
+def _answer(stdout="", stderr="", returncode=0):
+    class R:
+        pass
+    r = R()
+    r.stdout, r.stderr, r.returncode = stdout, stderr, returncode
+    return r
+
+
+def test_one_squeue_carries_why_a_job_waits_and_when_it_should_start():
+    """The start estimate used to need a second, unthrottled squeue --start."""
+    backend = SlurmJobBackend("/tmp", slurm_profile="custom-cluster",
+                              tool_binaries={"orca": "/opt/orca"})
+    out = (
+        "JOBID|PARTITION|NAME|USER|ST|TIME|NODES|TIME_LIMIT|CPUS|MIN_MEMORY|START_TIME|REASON|NODELIST(REASON)\n"
+        "900|cpu,cpu_il|TADF 1|u|PD|0:00|1|2-00:00:00|40|240000M|2026-09-16T21:20:09|Priority|(Priority)\n"
+        "901|cpu|running|u|R|1:02:03|1|1-00:00:00|40|240000M|2026-09-14T08:00:00|None|uc3n024\n"
+        "902|cpu|fresh|u|PD|0:00|1|1-00:00:00|40|240000M|N/A|None|(None)\n"
+    )
+    calls = []
+
+    def fake_run(cmd, *args, **kwargs):
+        calls.append(list(cmd))
+        return _answer(out)
+
+    with patch("delfin.dashboard.backend_slurm.subprocess.run", side_effect=fake_run):
+        jobs = backend.list_jobs()
+        pending = backend.get_pending_start_times()
+
+    assert len([c for c in calls if c[0] == "squeue"]) == 1
+    by_id = {j.job_id: j for j in jobs}
+    assert by_id["900"].name == "TADF 1"
+    assert by_id["900"].extra["cpus"] == "40"
+    assert by_id["900"].extra["time_limit"] == "2-00:00:00"
+    assert by_id["901"].extra["reason"] == "uc3n024"
+    assert by_id["902"].extra["start_estimate"] == "", "N/A is no estimate"
+    assert pending[0] == {
+        "id": "900", "name": "TADF 1", "start": "2026-09-16T21:20:09",
+        "reason": "Priority", "explanation": describe_pending_reason("Priority"),
+        "partition": "cpu,cpu_il",
+    }
+    assert [p["id"] for p in pending] == ["900", "902"]
+
+
+def test_a_waiting_reason_is_explained_in_words():
+    assert "higher priority" in describe_pending_reason("(Priority)")
+    assert "free cores" in describe_pending_reason("Resources")
+    assert "maintenance" in describe_pending_reason("ReqNodeNotAvail, Reserved for maintenance")
+    assert "QOS" in describe_pending_reason("QOSMaxCpuPerUserLimit")
+    assert "account" in describe_pending_reason("AssocGrpCpuLimit")
+    assert "releases" in describe_pending_reason("user env retrieval failed requeued held")
+    assert describe_pending_reason("SomethingNew") == "SomethingNew"
+    assert describe_pending_reason("") == ""
+
+
+def _submitting_backend(monkeypatch, fits, **kwargs):
+    """A backend whose sbatch --test-only answers from `fits(partition)`."""
+    monkeypatch.delenv("DELFIN_SLURM_PARTITIONS", raising=False)
+    backend = SlurmJobBackend("/tmp", tool_binaries={"orca": "/opt/orca"}, **kwargs)
+    calls = []
+
+    def fake_run(cmd, *args, **kw):
+        calls.append(list(cmd))
+        if "--test-only" in cmd:
+            part = next(c.split("=", 1)[1] for c in cmd if c.startswith("--partition="))
+            verdict = fits(part)
+            if verdict is None:
+                raise OSError("slurm controller unreachable")
+            if verdict:
+                return _answer(stderr=f"sbatch: Job 1 to start at 2026-09-16T21:20:09 using "
+                                      f"80 processors on nodes n1 in partition {part}")
+            return _answer(stderr="sbatch: error: allocation failure: Requested node "
+                                  "configuration is not available", returncode=1)
+        return _answer("Submitted batch job 5\n")
+
+    monkeypatch.setattr("delfin.dashboard.backend_slurm.subprocess.run", fake_run)
+    monkeypatch.setattr(SlurmJobBackend, "_release_env_hold", lambda self, out: None)
+    return backend, calls
+
+
+def _final_sbatch(calls):
+    return [c for c in calls if c[0] == "sbatch" and "--test-only" not in c][-1]
+
+
+def _submit(backend, tmp_path, maxcore=6000):
+    return backend.submit_orca(str(tmp_path), "job", "missing.inp",
+                               time_limit="2-00:00:00", pal=40, maxcore=maxcore)
+
+
+def test_a_job_is_listed_for_every_partition_it_fits(monkeypatch, tmp_path):
+    backend, calls = _submitting_backend(monkeypatch, lambda p: True,
+                                         slurm_profile="bwunicluster3")
+    _submit(backend, tmp_path)
+    assert "--partition=cpu,cpu_il" in _final_sbatch(calls)
+
+
+def test_a_partition_the_request_does_not_fit_is_left_out(monkeypatch, tmp_path):
+    """Listed anyway, SLURM rejects the whole job."""
+    backend, calls = _submitting_backend(monkeypatch, lambda p: p == "cpu",
+                                         slurm_profile="bwunicluster3")
+    _submit(backend, tmp_path)
+    assert "--partition=cpu" in _final_sbatch(calls)
+
+
+def test_when_slurm_cannot_be_asked_the_template_decides(monkeypatch, tmp_path):
+    backend, calls = _submitting_backend(monkeypatch, lambda p: None,
+                                         slurm_profile="bwunicluster3")
+    result = _submit(backend, tmp_path)
+    assert result.returncode == 0
+    assert not any(c.startswith("--partition") for c in _final_sbatch(calls))
+
+
+def test_the_answer_is_asked_once_per_request_shape(monkeypatch, tmp_path):
+    backend, calls = _submitting_backend(monkeypatch, lambda p: True,
+                                         slurm_profile="bwunicluster3")
+    for _ in range(3):
+        _submit(backend, tmp_path)
+    assert len([c for c in calls if "--test-only" in c]) == 2
+    _submit(backend, tmp_path, maxcore=7000)
+    assert len([c for c in calls if "--test-only" in c]) == 4, "a new shape is a new question"
+
+
+def test_the_setting_wins_over_the_site_profile(monkeypatch, tmp_path):
+    backend, calls = _submitting_backend(monkeypatch, lambda p: True,
+                                         slurm_profile="bwunicluster3", partitions="cpu_il")
+    assert backend.partitions == ("cpu_il",)
+    _submit(backend, tmp_path)
+    assert "--partition=cpu_il" in _final_sbatch(calls)
+    assert not [c for c in calls if "--test-only" in c], "one partition needs no question"
+
+
+def test_a_site_without_a_profile_keeps_the_template_partition(monkeypatch, tmp_path):
+    backend, calls = _submitting_backend(monkeypatch, lambda p: True,
+                                         slurm_profile="custom-cluster")
+    assert backend.partitions == ()
+    _submit(backend, tmp_path)
+    assert not [c for c in calls if "--test-only" in c]
+    assert not any(c.startswith("--partition") for c in _final_sbatch(calls))
+
+
+def test_a_partition_given_by_the_caller_is_not_second_guessed(monkeypatch, tmp_path):
+    backend, calls = _submitting_backend(monkeypatch, lambda p: True,
+                                         slurm_profile="bwunicluster3")
+    backend._sbatch(str(tmp_path), "DELFIN_MODE=mlp", "01:00:00", 4, 16000, "gpu",
+                    tmp_path / "submit.sh", gpu="gpu:1", partition="gpu_h100")
+    assert not [c for c in calls if "--test-only" in c]
+    assert "--partition=gpu_h100" in _final_sbatch(calls)
+
+
+def test_every_slurm_time_format_is_understood():
+    """A limit in days took the submit down with ValueError('2-00')."""
+    seconds = SlurmJobBackend._time_limit_seconds
+    assert seconds("2-00:00:00") == 2 * 86400
+    assert seconds("1-12") == 86400 + 12 * 3600
+    assert seconds("3-01:30") == 3 * 86400 + 3600 + 30 * 60
+    assert seconds("48:00:00") == 48 * 3600
+    assert seconds("30:00") == 30 * 60
+    assert seconds("90") == 90 * 60
