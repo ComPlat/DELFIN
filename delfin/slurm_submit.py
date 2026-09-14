@@ -28,6 +28,44 @@ PROFILE_PARTITIONS: dict[str, tuple[str, ...]] = {
 }
 
 
+#: GPU partitions a site's GPU jobs may start in. Named where the site is
+#: known: bwUniCluster 3.0 also has gpu_mi300, whose GPUs a CUDA build of
+#: PyTorch cannot use, and dev_ partitions meant for testing. Measured with
+#: sbatch --test-only --gres=gpu:1: the *_short partitions take up to 30 min,
+#: so --test-only drops them for longer jobs by itself.
+PROFILE_GPU_PARTITIONS: dict[str, tuple[str, ...]] = {
+    'bwunicluster3': ('gpu_h100', 'gpu_a100_il', 'gpu_h100_il', 'gpu_h100_short', 'gpu_a100_short'),
+}
+
+
+def discover_gpu_partitions(scontrol_output: Optional[str] = None) -> tuple:
+    """Partitions that are up and have GPUs, from ``scontrol show partition``.
+
+    Not from sinfo: bwUniCluster refuses it ("slurm_load_node: Access/permission
+    denied") while scontrol answers, and a partition with GPUs says so in its
+    TRES (``gres/gpu=48``). Partitions named dev_* are for testing and left out.
+    """
+    if scontrol_output is None:
+        try:
+            done = subprocess.run(['scontrol', 'show', 'partition', '--oneliner'],
+                                  capture_output=True, text=True, timeout=20)
+        except Exception:
+            return ()
+        if done.returncode != 0:
+            return ()
+        scontrol_output = done.stdout or ''
+    found: list[str] = []
+    for line in scontrol_output.splitlines():
+        fields = dict(part.split('=', 1) for part in line.split() if '=' in part)
+        name = fields.get('PartitionName', '')
+        if not name or name.startswith('dev_') or name in found:
+            continue
+        if fields.get('State', 'UP') != 'UP' or 'gres/gpu' not in fields.get('TRES', ''):
+            continue
+        found.append(name)
+    return tuple(found)
+
+
 def detect_site_profile() -> str:
     """The site profile of this machine from its host name, or ''."""
     try:

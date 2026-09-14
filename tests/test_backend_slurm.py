@@ -631,3 +631,64 @@ def test_an_unusable_time_limit_is_refused_with_a_reason_not_a_traceback(monkeyp
 
     backend.submit_orca(str(tmp_path), "job", "missing.inp", time_limit="48h")
     assert "--time=2-00:00:00" in _final_sbatch(calls)
+
+
+# ---------------------------------------------------------------------------
+# GPU jobs
+# ---------------------------------------------------------------------------
+from delfin.slurm_submit import discover_gpu_partitions  # noqa: E402
+
+_SCONTROL_ONELINER = (
+    "PartitionName=cpu State=UP TRES=cpu=15360,mem=30920000M,node=80,billing=15360\n"
+    "PartitionName=dev_gpu_h100 State=UP TRES=cpu=192,mem=773500M,node=1,billing=192,gres/gpu=4\n"
+    "PartitionName=gpu_h100 State=UP TRES=cpu=2304,mem=9282000M,node=12,billing=2304,gres/gpu=48\n"
+    "PartitionName=gpu_old State=DOWN TRES=cpu=96,mem=380000M,node=1,billing=96,gres/gpu=4\n"
+    "PartitionName=gpu_a100_il State=UP TRES=cpu=1152,mem=4590000M,node=9,billing=1152,gres/gpu=36\n"
+)
+
+
+def test_gpu_partitions_are_found_without_sinfo():
+    """bwUniCluster refuses sinfo; scontrol names the partitions with GPUs."""
+    assert discover_gpu_partitions(_SCONTROL_ONELINER) == ("gpu_h100", "gpu_a100_il")
+
+
+def test_a_gpu_job_is_listed_for_every_gpu_partition_it_fits(monkeypatch, tmp_path):
+    backend, calls = _submitting_backend(
+        monkeypatch, lambda p: p in {"gpu_h100", "gpu_a100_il"}, slurm_profile="bwunicluster3")
+    monkeypatch.delenv("DELFIN_SLURM_GPU_PARTITIONS", raising=False)
+
+    backend.submit_mlp(str(tmp_path), "mlp_job", "mol.xyz", time_limit="24:00:00", pal=4, maxcore=4000)
+
+    final = _final_sbatch(calls)
+    assert "--gres=gpu:1" in final
+    assert "--partition=gpu_h100,gpu_a100_il" in final
+    asked = [c for c in calls if "--test-only" in c]
+    assert asked and all("--gres=gpu:1" in c for c in asked), "a GPU partition is asked about a GPU job"
+    assert not [c for c in calls if c and c[0] == "sinfo"]
+
+
+def test_a_gpu_job_that_no_gpu_partition_can_run_runs_on_cpus(monkeypatch, tmp_path):
+    backend, calls = _submitting_backend(
+        monkeypatch, lambda p: p in {"cpu", "cpu_il"}, slurm_profile="bwunicluster3")
+    monkeypatch.delenv("DELFIN_SLURM_GPU_PARTITIONS", raising=False)
+
+    backend.submit_mlp(str(tmp_path), "mlp_job", "mol.xyz", time_limit="24:00:00", pal=4, maxcore=4000)
+
+    final = _final_sbatch(calls)
+    assert not any(c.startswith("--gres") for c in final)
+    assert "--partition=cpu,cpu_il" in final
+
+
+def test_the_gpu_setting_wins_and_a_site_without_one_asks_scontrol(monkeypatch, tmp_path):
+    import delfin.dashboard.backend_slurm as backend_slurm
+
+    backend, calls = _submitting_backend(monkeypatch, lambda p: True,
+                                         slurm_profile="bwunicluster3", gpu_partitions="gpu_h100_il")
+    backend.submit_mlp(str(tmp_path), "mlp_job", "mol.xyz", time_limit="02:00:00")
+    assert "--partition=gpu_h100_il" in _final_sbatch(calls)
+
+    monkeypatch.delenv("DELFIN_SLURM_GPU_PARTITIONS", raising=False)
+    monkeypatch.setattr(backend_slurm, "discover_gpu_partitions", lambda: ("gpu_x",))
+    elsewhere, more = _submitting_backend(monkeypatch, lambda p: True, slurm_profile="custom-cluster")
+    elsewhere.submit_mlp(str(tmp_path), "mlp_job", "mol.xyz", time_limit="02:00:00")
+    assert "--partition=gpu_x" in _final_sbatch(more) and "--gres=gpu:1" in _final_sbatch(more)
