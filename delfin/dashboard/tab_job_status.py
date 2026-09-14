@@ -353,7 +353,10 @@ def create_tab(ctx):
     Returns ``(tab_widget, refs_dict)``.
     """
     # -- widgets --------------------------------------------------------
-    job_table_html = widgets.HTML(value='<i>Loading...</i>', layout=widgets.Layout(width='100%'))
+    # 'auto', not '100%': the widget's own 2px side margins on top of 100%
+    # overflow the tab and give it a horizontal scrollbar.
+    job_table_html = widgets.HTML(value='<i>Loading...</i>',
+                                  layout=widgets.Layout(width='auto', min_width='0'))
     job_start_html = widgets.HTML(value='')
 
     job_dropdown = widgets.Dropdown(
