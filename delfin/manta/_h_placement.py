@@ -683,8 +683,26 @@ def _hp_stage_length(syms: List[str], P: np.ndarray, parents: Dict[int, int],
 _SP3_ANGLE_SUM_MAX = 350.0   # deg; three substituents summing to >= this are planar (sp2)
 
 
+def _hp_angle_sum(P: np.ndarray, centre: int, subs: Sequence[int]) -> float:
+    """Sum of the three angles at ``centre`` over three substituents (deg); 0 if degenerate."""
+    vecs = []
+    for j in subs:
+        v = P[j] - P[centre]
+        nv = float(np.linalg.norm(v))
+        if nv < 1e-6:
+            return 0.0
+        vecs.append(v / nv)
+    total = 0.0
+    for i in range(3):
+        for j in range(i + 1, 3):
+            cosang = max(-1.0, min(1.0, float(np.dot(vecs[i], vecs[j]))))
+            total += float(np.degrees(np.arccos(cosang)))
+    return total
+
+
 def _hp_centre_turnable(syms: Sequence[str], P: np.ndarray, c: int,
-                        nb: int, hs: Sequence[int]) -> bool:
+                        nb: int, hs: Sequence[int],
+                        adj: Optional[Sequence[Sequence[int]]] = None) -> bool:
     """May the H group at centre ``c`` be turned about the c-nb axis?
 
     Tetrahedral (four substituents): yes.  Two substituents at a group-16
@@ -693,26 +711,37 @@ def _hp_centre_turnable(syms: Sequence[str], P: np.ndarray, c: int,
     (sum of the three angles < 350 deg); a planar centre is sp2 and its H is
     fixed by the plane.  Two substituents elsewhere (=N-H, formyl, acetylenic
     H): no.
+
+    THE GRAPH RULE (hplace6k4p, 14.09., register #451): a HETEROATOM centre
+    (N, O, S, ...) with a lone pair next to an sp2 neighbour is conjugated
+    (amide, aniline, amidine, enol, phenol) and its H are fixed IN the plane
+    -- whatever the input geometry says.  The acceptance run showed why the
+    geometric test is not enough: the assembler hands over amide NH2 slightly
+    pyramidal (angle sum 335-345 deg), the rotor takes that as a licence and
+    turns them 50-80 deg out of the conjugation plane (FIDSOD, WUFMUF).  The
+    neighbour is sp2-like when it carries three heavy neighbours in a plane
+    (angle sum >= 345 deg) or exactly two heavy neighbours at an angle above
+    150 deg (sp centre).  A carbon centre (methyl on an arene) stays turnable.
     """
     n_sub = 1 + len(hs)
+    sym_c = _el.normalise(syms[c])
+    if sym_c != "C" and adj is not None and n_sub <= 3:
+        heavy_nb = [j for j in adj[nb] if _el.normalise(syms[j]) != "H"]
+        if len(heavy_nb) == 3 and _hp_angle_sum(P, nb, heavy_nb) >= _SP3_ANGLE_SUM_MAX - 5.0:
+            return False                   # conjugated lone pair: H stay in the plane
+        if len(heavy_nb) == 2:
+            v1 = P[heavy_nb[0]] - P[nb]
+            v2 = P[heavy_nb[1]] - P[nb]
+            n1, n2 = float(np.linalg.norm(v1)), float(np.linalg.norm(v2))
+            if n1 > 1e-6 and n2 > 1e-6:
+                cosang = max(-1.0, min(1.0, float(np.dot(v1, v2)) / (n1 * n2)))
+                if float(np.degrees(np.arccos(cosang))) > 150.0:
+                    return False           # sp neighbour (nitrile-like), H fixed
     if n_sub >= 4:
         return True
     if n_sub == 2:
-        return _el.normalise(syms[c]) in _LP_GROUP16
-    subs = [nb] + list(hs)
-    vecs = []
-    for j in subs:
-        v = P[j] - P[c]
-        nv = float(np.linalg.norm(v))
-        if nv < 1e-6:
-            return False
-        vecs.append(v / nv)
-    total = 0.0
-    for i in range(3):
-        for j in range(i + 1, 3):
-            cosang = max(-1.0, min(1.0, float(np.dot(vecs[i], vecs[j]))))
-            total += float(np.degrees(np.arccos(cosang)))
-    return total < _SP3_ANGLE_SUM_MAX
+        return sym_c in _LP_GROUP16
+    return _hp_angle_sum(P, c, [nb] + list(hs)) < _SP3_ANGLE_SUM_MAX
 
 
 def rotor_groups(syms: Sequence[str], parents: Dict[int, int],
@@ -739,7 +768,7 @@ def rotor_groups(syms: Sequence[str], parents: Dict[int, int],
             continue
         hs = sorted(h_of[c])
         if sp3_only and P is not None and not _hp_centre_turnable(
-                syms, P, c, heavy_nb[0], hs):
+                syms, P, c, heavy_nb[0], hs, adj=adj):
             continue
         out.append((c, heavy_nb[0], hs))
     return out
@@ -1061,12 +1090,34 @@ def _hp_eye_profile(syms: Sequence[str], P: np.ndarray, comp: Sequence[int],
     return out
 
 
+def _hp_lp_pairs(syms: Sequence[str], P: np.ndarray) -> Set[Tuple[int, int]]:
+    """{(h, donor)}: every H sitting in the free lone-pair cone of a donor.
+
+    A SET, not a count (hplace6k4p, register #451): an O-H rotor that leaves
+    cone A and enters cone B keeps the count, and the eye then reports the
+    clash on the new pair (MEBQUI, TAFROI, MEBRET).  An O-H rotor carries one
+    H, so pair identity is not permutation-sensitive here.
+    """
+    lps = _hp_free_lone_pairs(syms, P)
+    out: Set[Tuple[int, int]] = set()
+    if not lps:
+        return out
+    for h in _hp_hydrogens(syms):
+        for d, lp, exempt in lps:
+            if h in exempt:
+                continue
+            if _hp_in_lone_pair_cone(P, h, [(d, lp, exempt)]):
+                out.add((h, d))
+    return out
+
+
 def _hp_eye_worse(before: Sequence[float], after: Sequence[float],
-                  lp_before: int, lp_after: int) -> bool:
+                  lp_before: Set[Tuple[int, int]],
+                  lp_after: Set[Tuple[int, int]]) -> bool:
     """Is the after-profile worse under the eye's criteria?  More violating
-    pairs, or any pair of the sorted profile below its counterpart, or more H
-    in free lone-pair cones."""
-    if len(after) > len(before) or lp_after > lp_before:
+    pairs, or any pair of the sorted profile below its counterpart, or an H in
+    a free lone-pair cone it was not in before."""
+    if len(after) > len(before) or not lp_after <= lp_before:
         return True
     for a, b in zip(after, before):
         if a < b - _EPS_GAIN:
@@ -1105,7 +1156,7 @@ def repair_xyz(xyz: str, *, stats: Optional[dict] = None) -> str:
         if eye_on:
             comp0 = _hp_components(syms, adj0)
             eye_before = _hp_eye_profile(syms, frozen, comp0, par0)
-            lp_before_n = _hp_lp_count(syms, frozen)
+            lp_before_n = _hp_lp_pairs(syms, frozen)
         n_a = _hp_stage_umbrella(syms, P)
         adj = _hp_graph(syms, P)
         parents = parents_of_h(syms, P)
@@ -1191,7 +1242,7 @@ def repair_xyz(xyz: str, *, stats: Optional[dict] = None) -> str:
         if eye_on:
             eye_after = _hp_eye_profile(syms, P, comp0, par0)
             if _hp_eye_worse(eye_before, eye_after, lp_before_n,
-                             _hp_lp_count(syms, P)):
+                             _hp_lp_pairs(syms, P)):
                 if stats is not None:
                     stats.update({"umbrella": 0, "length": 0, "rotor": 0,
                                   "moved": 0, "aborted_heavy_moved": 0,
@@ -1630,6 +1681,38 @@ def _hp_selftest() -> int:
             len(_groups(amine_nh2, True)) == 1)
     _expect("mit Regel: planares NH2 (Winkelsumme 360) wird nicht gedreht",
             len(_groups(planar_nh2, True)) == 0)
+    # THE GRAPH RULE (#451): an amide NH2 handed over slightly pyramidal (angle
+    # sum ~335) next to a planar carbonyl carbon is conjugated -- not a rotor.
+    # The same slightly pyramidal NH2 on an sp3 carbon (an amine) stays one,
+    # and a methyl on an sp2 carbon (toluene) stays one too.
+    amide_nh2 = ("6\ntest\n"
+                 "C       0.000000     0.000000     0.000000\n"
+                 "O       0.620000     1.060000     0.000000\n"
+                 "C      -1.520000     0.000000     0.000000\n"
+                 "N       0.700000    -1.220000     0.000000\n"
+                 "H       0.250000    -2.100000     0.300000\n"
+                 "H       1.700000    -1.250000    -0.300000\n")
+    amine_nh2_sp3 = ("7\ntest\n"
+                     "C       0.000000     0.000000     0.000000\n"
+                     "H      -0.363000     1.028000     0.000000\n"
+                     "H      -0.363000    -0.514000     0.890000\n"
+                     "C      -0.507000    -0.717000    -1.242000\n"
+                     "N       1.470000     0.000000     0.000000\n"
+                     "H       1.820000     0.950000     0.000000\n"
+                     "H       1.820000    -0.480000     0.830000\n")
+    toluene_ch3 = ("6\ntest\n"
+                   "C       0.000000     0.000000     0.000000\n"
+                   "C       0.700000     1.212000     0.000000\n"
+                   "C       0.700000    -1.212000     0.000000\n"
+                   "C      -1.510000     0.000000     0.000000\n"
+                   "H      -1.873000     1.028000     0.000000\n"
+                   "H      -1.873000    -0.514000     0.890000\n")
+    _expect("Graphregel: leicht pyramidales Amid-NH2 an planarem C=O-Kohlenstoff wird nicht gedreht",
+            len(_groups(amide_nh2, True)) == 0 and len(_groups(amide_nh2, False)) == 1)
+    _expect("Graphregel: dasselbe NH2 an sp3-Kohlenstoff (Amin) bleibt Rotor",
+            len(_groups(amine_nh2_sp3, True)) == 1)
+    _expect("Graphregel: CH2/CH3 an sp2-Kohlenstoff (Toluol) bleibt Rotor",
+            len(_groups(toluene_ch3, True)) == 1)
     os.environ[FLAG_SP3_ONLY] = "1"
     _expect("sp3-Regel: AN wird gelesen", h_sp3_only_enabled() is True)
     os.environ.pop(FLAG_SP3_ONLY, None)
@@ -1761,7 +1844,8 @@ def _hp_run_census(paths: List[str], limit: int = 0) -> None:
     n_frames = n_changed = n_ident = 0
     st_sum = {"umbrella": 0, "length": 0, "rotor": 0,
               "aborted_heavy_moved": 0, "aborted_stereo": 0,
-              "aborted_topology": 0, "aborted_contact": 0}
+              "aborted_topology": 0, "aborted_contact": 0,
+              "aborted_eye": 0}
     s_common = s_flips = s_flat = s_cand = s_cand_flips = s_nbch = 0
     for fp in files:
         try:
@@ -1810,7 +1894,8 @@ def _hp_run_census(paths: List[str], limit: int = 0) -> None:
           f"Abbruch-Schweratom {st_sum['aborted_heavy_moved']}  "
           f"Abbruch-Stereotor {st_sum['aborted_stereo']}  "
           f"Abbruch-Topologie {st_sum['aborted_topology']}  "
-          f"Abbruch-Kontakttor {st_sum['aborted_contact']}")
+          f"Abbruch-Kontakttor {st_sum['aborted_contact']}  "
+          f"Abbruch-Augentor {st_sum['aborted_eye']}")
     print(f"{'Befund':<16}{'Treffer vor':>13}{'nach':>9}"
           f"{'Frames vor':>13}{'nach':>9}")
     for k in keys:
