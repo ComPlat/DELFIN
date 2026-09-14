@@ -428,6 +428,7 @@ class Runtime:
         work_dir: Optional[str | Path] = None,
         inputs: Optional[Dict[str, Any]] = None,
         backend: str = "local",
+        slurm_time: str = "24:00:00",
     ) -> RunHandle:
         """Submit an application run; returns immediately with a handle.
 
@@ -435,7 +436,7 @@ class Runtime:
         (MB) injected into the QM steps. ``backend="local"`` runs in a background
         thread on this machine; ``backend="slurm"`` submits an sbatch job that
         executes the run on a compute node and writes its result back into the
-        (shared) run store.
+        (shared) run store; ``slurm_time`` is that job's time limit.
         """
         run_id = uuid.uuid4().hex[:12]
         # Default each run into DELFIN's standard calculations directory
@@ -450,7 +451,8 @@ class Runtime:
             id=run_id, kind="application", name=name,
             inputs=dict(inputs or {}), created_at=_now(),
             work_dir=str(work_dir),
-            metrics={"cores": cores, "backend": backend, "resources": resources},
+            metrics={"cores": cores, "backend": backend, "resources": resources,
+                     **({"slurm_time": slurm_time} if backend == "slurm" else {})},
         )
         self.store.save(rec)
 
@@ -488,16 +490,42 @@ class Runtime:
                 self.store.save(rec)
             return
 
+        from delfin.slurm_submit import normalize_time_limit, sbatch_command
+
+        metrics = (rec.metrics or {}) if rec is not None else {}
+        try:
+            time_limit = normalize_time_limit(metrics.get("slurm_time") or "24:00:00")
+        except ValueError as problem:
+            if rec is not None:
+                rec.status = RunStatus.FAILED.value
+                rec.error = f"invalid SLURM time limit: {problem}"
+                rec.finished_at = _now()
+                self.store.save(rec)
+            return
+
         wd = Path(work_dir) if work_dir else (self.store.base / run_id)
         wd.mkdir(parents=True, exist_ok=True)
         store_base = str(self.store.base)
         code = (f"from delfin.tools._runtime import execute_run; "
                 f"execute_run({run_id!r}, {store_base!r})")
+        # The time and memory the run needs, stated. Left out, SLURM applied the
+        # partition defaults -- on bwUniCluster ten minutes and 2000 MB per
+        # CPU -- so a QM run was killed long before it finished, or ran out of
+        # memory at the maxcore it had been given.
+        maxcore = (metrics.get("resources") or {}).get("maxcore")
+        memory_line = (f"#SBATCH --mem={int(cores) * int(maxcore)}M\n"
+                       if isinstance(maxcore, (int, float)) and maxcore > 0 else "")
         script = (
             "#!/bin/bash\n"
             f"#SBATCH --job-name=delfin-app-{name}\n"
+            "#SBATCH --nodes=1\n"
             "#SBATCH --ntasks=1\n"
             f"#SBATCH --cpus-per-task={cores}\n"
+            # Cores, not hardware threads: without this 40 CPUs are 20 cores
+            # with their siblings, and a PAL of 40 runs two processes per core.
+            "#SBATCH --threads-per-core=1\n"
+            f"#SBATCH --time={time_limit}\n"
+            f"{memory_line}"
             f"#SBATCH --output={wd}/slurm_%j.out\n"
             f"#SBATCH --error={wd}/slurm_%j.err\n\n"
             f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}\n"
@@ -505,7 +533,10 @@ class Runtime:
         script_path = wd / "submit.sh"
         script_path.write_text(script)
 
-        proc = subprocess.run([sbatch, str(script_path)], capture_output=True, text=True)
+        # With the partitions the job fits: a cluster without a default
+        # partition refuses it otherwise.
+        proc = subprocess.run(sbatch_command(sbatch, script_path, wd),
+                              capture_output=True, text=True)
         rec = self.store.get(run_id)
         if rec is None:
             return

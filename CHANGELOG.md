@@ -22,6 +22,10 @@ Summary cards (running, waiting, CPUs in use, next expected start) above a table
 - An ORCA job is sized by the `.inp` it runs. A `CONTROL.txt` beside it used to decide PAL and maxcore, so a recalc edited down to 12 processes still reserved and waited for 40 cores and 240 GB, and one edited up ran more processes than it had cores.
 - Time fields accept what people type: `48h`, `2d`, `90min` become SLURM limits, and an empty or unreadable value is refused with a message instead of a traceback.
 
+### Fixed — Jobs from the command line
+
+`delfin-step --slurm`, `delfin-pipeline --slurm` and the tools runtime (`platform.submit_application(backend="slurm")`) wrote batch scripts without a partition, which a cluster without a default partition refuses; bwUniCluster has none. They now get the partitions they fit, chosen exactly as for dashboard jobs by the new `delfin.slurm_submit`, which imports nothing of the dashboard. A partition named in a pipeline's YAML stays. The runtime's script also had no time limit and no memory, so the partition defaults applied, ten minutes and 2000 MB per CPU on bwUniCluster: it now states `--time` (`slurm_time`, 24 h by default), `--mem` from cores × maxcore, and one node. `delfin-step` gains `--slurm-time` and requests memory when a step is given a maxcore.
+
 ### Fixed — A time limit in days no longer breaks the submit
 
 `2-00:00:00` and SLURM's other day formats raised `ValueError` while the submit worked out the early-warning signal.

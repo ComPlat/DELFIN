@@ -17,6 +17,14 @@ from delfin.qm_runtime import (
     settings_selectable_tools,
 )
 from delfin.runtime_setup import _tool_environment_overrides
+from delfin.slurm_submit import (  # noqa: F401 -- normalize_time_limit is re-exported
+    PROFILE_PARTITIONS,
+    detect_site_profile,
+    normalize_time_limit,
+    partition_accepts,
+    partition_list,
+    time_limit_seconds,
+)
 
 from .backend_base import JobBackend, JobInfo, SubmitResult
 from .input_processing import parse_resource_settings, parse_inp_resources
@@ -70,40 +78,6 @@ def describe_pending_reason(reason: str) -> str:
         return ("Your account's limit is reached, for example total cores of "
                 'the group; it starts when running jobs of the account finish.')
     return code
-
-
-def normalize_time_limit(value) -> str:
-    """A time limit sbatch accepts, from what was typed into a time field.
-
-    SLURM's own forms pass through (``48:00:00``, ``2-00:00:00``, ``90``).
-    Durations as people write them are converted: ``48h`` and ``2d`` become
-    ``2-00:00:00``, ``90min`` becomes ``01:30:00``. Anything else raises
-    ValueError with the reason -- it used to reach ``int()`` and take the
-    submit down with a traceback, or reach sbatch and come back as
-    "Invalid time limit specification".
-    """
-    text = str(value if value is not None else '').strip()
-    if not text:
-        raise ValueError('the time limit is empty')
-    if text.upper() in ('UNLIMITED', 'INFINITE'):
-        return text.upper()
-    compact = text.replace(' ', '').lower()
-    found = re.fullmatch(r'(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)(?:min|m))?(?:(\d+)s)?', compact)
-    if found and any(found.groups()):
-        days, hours, minutes, seconds = (int(part or 0) for part in found.groups())
-        total = days * 86400 + hours * 3600 + minutes * 60 + seconds
-        if total <= 0:
-            raise ValueError('the time limit is zero')
-        whole_days, rest = divmod(total, 86400)
-        hours, rest = divmod(rest, 3600)
-        minutes, seconds = divmod(rest, 60)
-        clock = f'{hours:02d}:{minutes:02d}:{seconds:02d}'
-        return f'{whole_days}-{clock}' if whole_days else clock
-    if not re.fullmatch(r'\d+-\d+(?::\d+){0,2}|\d+(?::\d+){0,2}', text):
-        raise ValueError('it is not a time SLURM understands')
-    if SlurmJobBackend._time_limit_seconds(text) <= 0:
-        raise ValueError('the time limit is zero')
-    return text
 
 
 class SlurmJobBackend(JobBackend):
@@ -174,27 +148,13 @@ class SlurmJobBackend(JobBackend):
         'launch_failed_requeued_held',
     )
 
-    # Partitions a site's CPU jobs may start in. SLURM starts a job in
-    # whichever listed partition can run it first, "with no regard given to
-    # the partition name ordering" (sbatch(1)), so a second partition of
-    # suitable nodes is a second queue at no cost to the request. Measured on
-    # bwUniCluster 3.0 with sbatch --test-only for 40 cores, 240 GB, 2 days:
-    # cpu (80 nodes) expected a start twelve days after cpu_il (264 nodes).
-    _PROFILE_PARTITIONS: dict[str, tuple[str, ...]] = {
-        'bwunicluster3': ('cpu', 'cpu_il'),
-    }
+    # Partitions a site's CPU jobs may start in; see delfin.slurm_submit.
+    _PROFILE_PARTITIONS: dict[str, tuple[str, ...]] = PROFILE_PARTITIONS
 
     @staticmethod
     def _detect_profile() -> str:
         """Auto-detect the site profile from hostname / FQDN."""
-        try:
-            fqdn = socket.getfqdn().lower()
-        except Exception:
-            fqdn = ""
-        hostname = os.environ.get("HOSTNAME", "").lower() or fqdn.split(".")[0]
-        if "scc.kit.edu" in fqdn or hostname.startswith("uc3"):
-            return "bwunicluster3"
-        return ""
+        return detect_site_profile()
 
     def __init__(self, submit_templates_dir, orca_base=None, tool_binaries=None,
                  slurm_profile=None, partitions=None):
@@ -341,29 +301,8 @@ class SlurmJobBackend(JobBackend):
 
     @staticmethod
     def _time_limit_seconds(time_limit: str) -> int:
-        """SLURM's time formats in seconds: D-HH:MM:SS, D-HH:MM, D-HH,
-        HH:MM:SS, MM:SS, or bare minutes.
-
-        The day forms raised ValueError ("invalid literal for int(): '2-00'")
-        and took the submit down with them.
-        """
-        text = str(time_limit).strip()
-        days = 0
-        if '-' in text:
-            day_part, text = text.split('-', 1)
-            days = int(day_part)
-            parts = text.split(':')
-            # After a day count the first field is hours, not minutes.
-            while len(parts) < 3:
-                parts.append('0')
-            hours, minutes, seconds = (int(x) for x in parts[:3])
-            return days * 86400 + hours * 3600 + minutes * 60 + seconds
-        parts = text.split(':')
-        if len(parts) == 3:
-            return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
-        elif len(parts) == 2:
-            return int(parts[0]) * 60 + int(parts[1])
-        return int(parts[0]) * 60  # SLURM treats bare number as minutes
+        """SLURM's time formats in seconds; see delfin.slurm_submit."""
+        return time_limit_seconds(time_limit)
 
     def _append_profile_env(self, env_vars: str) -> str:
         """Inject the generic job env, and the site profile's on top of it."""
@@ -411,15 +350,7 @@ class SlurmJobBackend(JobBackend):
 
     @staticmethod
     def _partition_list(value) -> tuple:
-        if not value:
-            return ()
-        items = value.split(',') if isinstance(value, str) else list(value)
-        out: list[str] = []
-        for item in items:
-            name = str(item).strip()
-            if name and name not in out:
-                out.append(name)
-        return tuple(out)
+        return partition_list(value)
 
     def _partitions_for(self, job_dir, submit_script, time_limit, pal, mem_mb,
                         submit_env) -> str:
@@ -453,22 +384,12 @@ class SlurmJobBackend(JobBackend):
     def _partition_accepts(name, job_dir, submit_script, time_limit, pal, mem_mb,
                            submit_env) -> Optional[bool]:
         """True or False as SLURM answered, None when it could not be asked."""
-        try:
-            done = subprocess.run(
-                ['sbatch', '--test-only', f'--partition={name}',
-                 f'--time={time_limit}', '--ntasks=1', f'--cpus-per-task={pal}',
-                 f'--mem={mem_mb}M', str(submit_script)],
-                cwd=str(job_dir), capture_output=True, text=True,
-                env=submit_env, timeout=30,
-            )
-        except Exception:
-            return None
-        said = f'{done.stdout or ""}\n{done.stderr or ""}'
-        if done.returncode == 0 and 'to start at' in said:
-            return True
-        if 'allocation failure' in said or 'error' in said.lower():
-            return False
-        return None
+        return partition_accepts(
+            name, job_dir, submit_script,
+            resource_args=(f'--time={time_limit}', '--ntasks=1',
+                           f'--cpus-per-task={pal}', f'--mem={mem_mb}M'),
+            submit_env=submit_env,
+        )
 
     def _sbatch(self, job_dir, env_vars, time_limit, pal, mem_mb,
                 job_name, submit_script, *, gpu=None, partition=None,

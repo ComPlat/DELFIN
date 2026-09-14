@@ -69,6 +69,12 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Submit as SLURM job instead of running locally",
     )
+    parser.add_argument(
+        "--slurm-time",
+        type=str,
+        default="24:00:00",
+        help="Time limit of the SLURM job: HH:MM:SS, D-HH:MM:SS, or e.g. 48h, 2d (default: 24:00:00)",
+    )
     return parser
 
 
@@ -173,12 +179,30 @@ def _submit_step_slurm(args, cores: int, extra: dict) -> int:
     step_cmd = " ".join(cmd_parts)
     job_name = f"delfin-{args.step_name}"
 
+    from delfin.slurm_submit import normalize_time_limit, sbatch_command
+
+    try:
+        time_limit = normalize_time_limit(getattr(args, "slurm_time", None) or "24:00:00")
+    except ValueError as problem:
+        print(f"Error: invalid --slurm-time: {problem}", file=sys.stderr)
+        return 1
+    # --cores are cores: without --threads-per-core=1 SLURM counts hardware
+    # threads, and 40 "CPUs" were 20 cores for 40 processes.
+    # A step given a maxcore gets the memory it will use. Without --mem the
+    # partition default applies -- 2000 MB per CPU on bwUniCluster -- and an
+    # ORCA step at 6000 MB per core runs out of memory.
+    memory_line = ""
+    if isinstance(extra.get("maxcore"), (int, float)) and extra["maxcore"] > 0:
+        memory_line = f"#SBATCH --mem={int(cores * extra['maxcore'])}M\n"
+
     script = f"""#!/bin/bash
 #SBATCH --job-name={job_name}
+#SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task={cores}
-#SBATCH --time=24:00:00
-#SBATCH --output={job_name}_%j.out
+#SBATCH --threads-per-core=1
+#SBATCH --time={time_limit}
+{memory_line}#SBATCH --output={job_name}_%j.out
 #SBATCH --error={job_name}_%j.err
 
 echo "DELFIN step: {args.step_name}"
@@ -193,10 +217,17 @@ echo "End: $(date)"
     script_path.parent.mkdir(parents=True, exist_ok=True)
     script_path.write_text(script)
 
-    result = subprocess.run([sbatch, str(script_path)], capture_output=True, text=True)
+    # Without a partition the job is refused on a cluster that has no default
+    # one, bwUniCluster among them; with several it starts where there is room
+    # first.
+    cmd = sbatch_command(sbatch, script_path)
+    result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode == 0:
         print(f"SLURM job submitted: {result.stdout.strip()}")
         print(f"Script: {script_path}")
+        partitions = [part for part in cmd if part.startswith("--partition=")]
+        if partitions:
+            print(f"Partitions: {partitions[0].split('=', 1)[1]}")
         return 0
     else:
         print(f"SLURM submission failed: {result.stderr}", file=sys.stderr)
