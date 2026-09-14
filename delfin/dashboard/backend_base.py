@@ -79,6 +79,10 @@ class JobBackend(ABC):
         """Return estimated start times for pending jobs (SLURM only)."""
         return []
 
+    def account_standing(self) -> Optional[dict]:
+        """Fairshare and account limits (SLURM only); None when there are none."""
+        return None
+
     @property
     def supports_turbomole(self) -> bool:
         return False
