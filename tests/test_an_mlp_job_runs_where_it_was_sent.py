@@ -46,8 +46,11 @@ def mlp_job(tmp_path, monkeypatch):
         work_dir.mkdir(parents=True, exist_ok=True)
         out = work_dir / "optimized.xyz"
         out.write_text(WATER)
+        import numpy as np
+
         return StepResult(step_name, StepStatus.SUCCESS, geometry=out if step_name == "mlp_optimize" else None,
-                          work_dir=work_dir, data={"energy_eV": -2079.1234, "converged": True, "n_steps": 12})
+                          work_dir=work_dir,
+                          data={"energy_eV": np.float32(-2079.125), "converged": np.bool_(True), "n_steps": 12})
 
     monkeypatch.setattr("delfin.tools.run_step", fake_run_step)
     return run_dir, calls
@@ -62,7 +65,9 @@ def test_an_mlp_job_runs_the_optimisation_on_its_gpu(mlp_job):
                       "mult": 1, "device": "cuda", "fmax": 0.05, "steps": 200}]
     result = json.loads((run_dir / "mlp_result.json").read_text())
     assert result["status"] == "success" and result["device"] == "cuda" and result["gpu"] == "NVIDIA H100"
-    assert result["energy_eV"] == -2079.1234
+    assert result["energy_eV"] == -2079.125
+    assert result["converged"] is True, "a numpy bool was written as the string 'True'"
+    assert result["optimized_structure"] == "water_mlp_opt.xyz", "not a path on the node's scratch"
     assert (run_dir / "water_mlp_opt.xyz").is_file()
 
 
