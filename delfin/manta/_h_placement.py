@@ -725,6 +725,18 @@ def _hp_centre_turnable(syms: Sequence[str], P: np.ndarray, c: int,
     """
     n_sub = 1 + len(hs)
     sym_c = _el.normalise(syms[c])
+    # THE METAL IS A SUBSTITUENT (hplace6k4p3, 14.09., register #451).  The
+    # graph keeps metals outside (see _hp_graph), so a coordinated alcohol
+    # O(H)(C)-M looks like a hydroxyl with ONE heavy neighbour and is turned
+    # about C-O; the H lands in the M-O-C plane and the eye reads the sp3
+    # donor as TRIGONAL-PLANAR (lone_pair_bv_sev: TAFROI, six Zn-O(H) donors
+    # flattened in 6 of 9 frames; MEBRET Cu-O19).  Counted with the metal the
+    # centre has two heavy substituents -- its H is no free rotor.  Universal:
+    # any centre (also a metal-bound CH2) within a coordinate bond of a metal.
+    for m in _hp_metals(syms):
+        d_mc = float(np.linalg.norm(P[m] - P[c]))
+        if d_mc <= (_hp_cov(_el.normalise(syms[m])) + _hp_cov(sym_c)) * _LP_MD_RATIO:
+            return False
     if sym_c != "C" and adj is not None and n_sub <= 3:
         heavy_nb = [j for j in adj[nb] if _el.normalise(syms[j]) != "H"]
         if len(heavy_nb) == 3 and _hp_angle_sum(P, nb, heavy_nb) >= _SP3_ANGLE_SUM_MAX - 5.0:
@@ -1691,6 +1703,26 @@ def _hp_selftest() -> int:
             len(_groups(amine_nh2, True)) == 1)
     _expect("mit Regel: planares NH2 (Winkelsumme 360) wird nicht gedreht",
             len(_groups(planar_nh2, True)) == 0)
+    # THE METAL IS A SUBSTITUENT (#451, hplace6k4p3): the same hydroxyl
+    # coordinated to Zn (O...Zn 1.95 A, pyramidal) is no rotor -- turning it
+    # about C-O flattened the sp3 donor (TAFROI, MEBRET).  A far metal (4 A)
+    # is no substituent, the hydroxyl stays a rotor.
+    hydroxyl_on_metal = ("4\ntest\n"
+                         "C       0.000000     0.000000     0.000000\n"
+                         "O       1.430000     0.000000     0.000000\n"
+                         "H       1.750000     0.900000     0.000000\n"
+                         "Zn      1.900000    -0.600000     1.800000\n")
+    hydroxyl_far_metal = ("4\ntest\n"
+                          "C       0.000000     0.000000     0.000000\n"
+                          "O       1.430000     0.000000     0.000000\n"
+                          "H       1.750000     0.900000     0.000000\n"
+                          "Zn      1.900000    -0.600000     4.000000\n")
+    _expect("ohne Regel ist O-H am Metall ein Rotor (die Stufe, die TAFROI/MEBRET planarisierte)",
+            len(_groups(hydroxyl_on_metal, False)) == 1)
+    _expect("mit Regel: O-H am Metall (Zn 1,95 A) ist kein Rotor -- das Metall ist Substituent",
+            len(_groups(hydroxyl_on_metal, True)) == 0)
+    _expect("mit Regel: O-H mit fernem Metall (4 A) bleibt Rotor",
+            len(_groups(hydroxyl_far_metal, True)) == 1)
     # THE GRAPH RULE (#451): an amide NH2 handed over slightly pyramidal (angle
     # sum ~335) next to a planar carbonyl carbon is conjugated -- not a rotor.
     # The same slightly pyramidal NH2 on an sp3 carbon (an amine) stays one,
