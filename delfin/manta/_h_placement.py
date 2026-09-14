@@ -102,6 +102,30 @@ FLAG_CONTACT_GATE = "DELFIN_FFFREE_H_CONTACT_GATE"
 # dead under it (hplace6k2: xh_orphan 121 -> 121).  With this rule an H may
 # gain exactly ONE thing: its own parent.  Default OFF -> byte-identical.
 FLAG_PARENT_REGAIN = "DELFIN_FFFREE_H_PARENT_REGAIN"
+# THE EYE GATE (2026-09-14, register #444).  hplace6k3b: 0 capabilities lost,
+# 5 gained, hard frames -3.2 points -- and still 5 systems with a WORSE ligand
+# (broken_regressed) and 3 with a new donor lone-pair clash.  Read in the
+# frames: only H moved; the core H...H clashes were gone, and in their place
+# stood inter-ligand contacts the eye's `intclash_pair` (0.70 x vdW sum,
+# ligand-wise) and `donor_lone_pair_clash` reject.  The contact gate compares
+# COUNTS on the module's OWN floors, so a frame may trade a mild contact for a
+# harder one and pass.  The eye gate compares the SEVERITY PROFILE under the
+# eye's own criteria: no more violating pairs than before, no pair of the
+# sorted profile worse than its counterpart, no more H in free lone-pair
+# cones.  Same lesson as the pair-gate factor 0.70 (register #3xx): the
+# builder's gate must be the eye's gate.  Default OFF -> byte-identical.
+FLAG_EYE_GATE = "DELFIN_FFFREE_H_EYE_GATE"
+# ROTOR ONLY AT sp3 CENTRES (2026-09-14, register #444).  The rotor turns a
+# terminal H group about the centre-neighbour axis.  At a centre with fewer
+# than four substituents that is not a group-16 hydroxyl/thiol, the H position
+# is fixed by the plane (=N-H, =CH2, aryl-NH2, formyl H): a turn takes the H
+# OUT of the conjugation plane (FIDSOD, WUFMUF conj_planar 0 -> 51/81) or
+# pyramidalises an sp2 N-H (ODOGOF, 11 deg).  Rule: a centre may be turned iff
+# it is tetrahedral (four substituents), a two-substituent group-16 atom, or a
+# three-substituent centre that is already pyramidal (angle sum < 350 deg).
+# Read from the geometry and the graph, no element list beyond group 16.
+# Default OFF -> byte-identical.
+FLAG_SP3_ONLY = "DELFIN_FFFREE_H_SP3_ONLY"
 
 # --- Thresholds -----------------------------------------------------------
 # Firing INSIDE the detector bands (eye: collision < 0.75 · stretch > 1.25).
@@ -656,8 +680,44 @@ def _hp_stage_length(syms: List[str], P: np.ndarray, parents: Dict[int, int],
 # ---------------------------------------------------------------------------
 # STAGE C -- the rotor (xh_hh_clash, h_axis_H_proximal_via_donor).
 # ---------------------------------------------------------------------------
+_SP3_ANGLE_SUM_MAX = 350.0   # deg; three substituents summing to >= this are planar (sp2)
+
+
+def _hp_centre_turnable(syms: Sequence[str], P: np.ndarray, c: int,
+                        nb: int, hs: Sequence[int]) -> bool:
+    """May the H group at centre ``c`` be turned about the c-nb axis?
+
+    Tetrahedral (four substituents): yes.  Two substituents at a group-16
+    centre (hydroxyl, thiol): yes -- the lone pairs are the missing
+    substituents.  Three substituents: only if the centre is pyramidal
+    (sum of the three angles < 350 deg); a planar centre is sp2 and its H is
+    fixed by the plane.  Two substituents elsewhere (=N-H, formyl, acetylenic
+    H): no.
+    """
+    n_sub = 1 + len(hs)
+    if n_sub >= 4:
+        return True
+    if n_sub == 2:
+        return _el.normalise(syms[c]) in _LP_GROUP16
+    subs = [nb] + list(hs)
+    vecs = []
+    for j in subs:
+        v = P[j] - P[c]
+        nv = float(np.linalg.norm(v))
+        if nv < 1e-6:
+            return False
+        vecs.append(v / nv)
+    total = 0.0
+    for i in range(3):
+        for j in range(i + 1, 3):
+            cosang = max(-1.0, min(1.0, float(np.dot(vecs[i], vecs[j]))))
+            total += float(np.degrees(np.arccos(cosang)))
+    return total < _SP3_ANGLE_SUM_MAX
+
+
 def rotor_groups(syms: Sequence[str], parents: Dict[int, int],
-                 adj: Sequence[Sequence[int]]
+                 adj: Sequence[Sequence[int]],
+                 P: Optional[np.ndarray] = None, sp3_only: bool = False
                  ) -> List[Tuple[int, int, List[int]]]:
     """(centre, heavy neighbour, H list) for centres with EXACTLY ONE heavy
     neighbour and at least one H.
@@ -665,6 +725,9 @@ def rotor_groups(syms: Sequence[str], parents: Dict[int, int],
     This condition is at the same time the stereo proof: all remaining
     substituents of the centre are hydrogens, hence constitutionally identical
     -- such a centre cannot be a stereocentre.
+
+    ``sp3_only`` (register #444): additionally require that the centre may be
+    turned at all -- see :func:`_hp_centre_turnable`; needs ``P``.
     """
     h_of: Dict[int, List[int]] = {}
     for h, p in parents.items():
@@ -674,7 +737,11 @@ def rotor_groups(syms: Sequence[str], parents: Dict[int, int],
         heavy_nb = [j for j in adj[c] if _el.normalise(syms[j]) != "H"]
         if len(heavy_nb) != 1:
             continue
-        out.append((c, heavy_nb[0], sorted(h_of[c])))
+        hs = sorted(h_of[c])
+        if sp3_only and P is not None and not _hp_centre_turnable(
+                syms, P, c, heavy_nb[0], hs):
+            continue
+        out.append((c, heavy_nb[0], hs))
     return out
 
 
@@ -765,7 +832,8 @@ def _hp_stage_rotor(syms: List[str], P: np.ndarray, parents: Dict[int, int],
                     adj: Sequence[Sequence[int]]) -> int:
     """Rotor H rigidly about the centre-neighbour axis onto the best grid angle."""
     moved = 0
-    for centre, nb, hs in rotor_groups(syms, parents, adj):
+    for centre, nb, hs in rotor_groups(syms, parents, adj, P=P,
+                                       sp3_only=h_sp3_only_enabled()):
         axis = P[centre] - P[nb]
         if float(np.linalg.norm(axis)) < 1e-6:
             continue
@@ -905,6 +973,107 @@ def h_parent_regain_enabled() -> bool:
     return os.environ.get(FLAG_PARENT_REGAIN, "0") == "1"
 
 
+def h_eye_gate_enabled() -> bool:
+    """THE ONE read site of DELFIN_FFFREE_H_EYE_GATE (default 0)."""
+    return os.environ.get(FLAG_EYE_GATE, "0") == "1"
+
+
+def h_sp3_only_enabled() -> bool:
+    """THE ONE read site of DELFIN_FFFREE_H_SP3_ONLY (default 0)."""
+    return os.environ.get(FLAG_SP3_ONLY, "0") == "1"
+
+
+# ---------------------------------------------------------------------------
+# THE EYE GATE (register #444) -- the eye's own inter-ligand criterion.
+# ---------------------------------------------------------------------------
+# The factor the eye runs `intclash_pair` with (adapt_inter_ligand_clash,
+# threshold 0.70: silent on 60/60 clean crystals, the real inter-ligand packing
+# tail bottoms at 0.725).  H...H pairs keep the core floor 1.50 A (the eye
+# filters intclash H-H above it, register #417/#422).  Same vdW table (Bondi,
+# delfin.manta._vdw_radii == weddell find_inter_ligand_clash._VDW_RADII).
+_EYE_PAIR_FACTOR = 0.70
+
+
+def _hp_components(syms: Sequence[str], adj: Sequence[Sequence[int]]
+                   ) -> List[int]:
+    """Ligand id per atom: connected component of the metal-free bond graph
+    (the eye's ligand split); metals get -1."""
+    n = len(syms)
+    comp = [-1] * n
+    cid = 0
+    for i in range(n):
+        if comp[i] != -1 or _hp_metal(_el.normalise(syms[i])):
+            continue
+        comp[i] = cid
+        stack = [i]
+        while stack:
+            a = stack.pop()
+            for b in adj[a]:
+                if comp[b] == -1 and not _hp_metal(_el.normalise(syms[b])):
+                    comp[b] = cid
+                    stack.append(b)
+        cid += 1
+    return comp
+
+
+def _hp_eye_profile(syms: Sequence[str], P: np.ndarray, comp: Sequence[int],
+                    parents: Dict[int, int]) -> List[float]:
+    """Sorted (worst first) ratios d / floor of every H-involving pair of two
+    DIFFERENT ligands that the eye would report: H...H below 1.50 A, H...heavy
+    below 0.70 x vdW sum.  Metals are their own axis (contact census).
+
+    An H reads the ligand of its parent (a stretched or orphaned H is
+    otherwise its own component and would count against its own ligand).
+    Index-free on purpose: a rigid turn of a CH3 permutes H labels without
+    changing the geometry, and the profile must not change with it.
+    """
+    n = len(syms)
+    r_h = _hp_vdw("H")
+    out: List[float] = []
+    hs = _hp_hydrogens(syms)
+    hset = set(hs)
+
+    def _lig(i: int) -> int:
+        if i in hset:
+            p = parents.get(i, -1)
+            if p >= 0:
+                return comp[p]
+        return comp[i]
+
+    for h in hs:
+        lh = _lig(h)
+        for j in range(n):
+            if j == h:
+                continue
+            sj = _el.normalise(syms[j])
+            if _hp_metal(sj):
+                continue
+            if sj == "H" and j < h:
+                continue                   # each H...H pair once
+            lj = _lig(j)
+            if lj < 0 or lj == lh:
+                continue
+            d = float(np.linalg.norm(P[h] - P[j]))
+            thr = _HH_FLOOR if sj == "H" else _EYE_PAIR_FACTOR * (r_h + _hp_vdw(sj))
+            if d < thr:
+                out.append(d / thr)
+    out.sort()
+    return out
+
+
+def _hp_eye_worse(before: Sequence[float], after: Sequence[float],
+                  lp_before: int, lp_after: int) -> bool:
+    """Is the after-profile worse under the eye's criteria?  More violating
+    pairs, or any pair of the sorted profile below its counterpart, or more H
+    in free lone-pair cones."""
+    if len(after) > len(before) or lp_after > lp_before:
+        return True
+    for a, b in zip(after, before):
+        if a < b - _EPS_GAIN:
+            return True
+    return False
+
+
 def repair_xyz(xyz: str, *, stats: Optional[dict] = None) -> str:
     """Repair ungated -- for self-test and measurement, NOT in the build path.
 
@@ -926,11 +1095,17 @@ def repair_xyz(xyz: str, *, stats: Optional[dict] = None) -> str:
         # reused after the repair, so before and after are the same instrument.
         # Only computed when the gate is on -- OFF costs nothing and changes nothing.
         gate_on = h_contact_gate_enabled()
-        if gate_on:
+        eye_on = h_eye_gate_enabled()
+        if gate_on or eye_on:
             adj0 = _hp_graph(syms, frozen)
             par0 = parents_of_h(syms, frozen)
             _hp_link_parents(adj0, par0)
+        if gate_on:
             census_before = _hp_contact_census(syms, frozen, adj0, par0)
+        if eye_on:
+            comp0 = _hp_components(syms, adj0)
+            eye_before = _hp_eye_profile(syms, frozen, comp0, par0)
+            lp_before_n = _hp_lp_count(syms, frozen)
         n_a = _hp_stage_umbrella(syms, P)
         adj = _hp_graph(syms, P)
         parents = parents_of_h(syms, P)
@@ -1010,10 +1185,24 @@ def repair_xyz(xyz: str, *, stats: Optional[dict] = None) -> str:
                                   "moved": 0, "aborted_heavy_moved": 0,
                                   "aborted_stereo": 0, "aborted_contact": 1})
                 return xyz
+        # THE EYE GATE (2026-09-14, register #444): the severity profile under
+        # the eye's own inter-ligand criterion and the lone-pair cone count may
+        # not get worse -- measured on the input graph, like the census.
+        if eye_on:
+            eye_after = _hp_eye_profile(syms, P, comp0, par0)
+            if _hp_eye_worse(eye_before, eye_after, lp_before_n,
+                             _hp_lp_count(syms, P)):
+                if stats is not None:
+                    stats.update({"umbrella": 0, "length": 0, "rotor": 0,
+                                  "moved": 0, "aborted_heavy_moved": 0,
+                                  "aborted_stereo": 0, "aborted_contact": 0,
+                                  "aborted_eye": 1})
+                return xyz
         if stats is not None:
             stats.update({"umbrella": n_a, "length": n_b, "rotor": n_c,
                           "moved": moved, "aborted_heavy_moved": 0,
-                          "aborted_stereo": 0, "aborted_contact": 0})
+                          "aborted_stereo": 0, "aborted_contact": 0,
+                          "aborted_eye": 0})
         return _hp_write(lines, syms, P)
     except Exception:
         return xyz
@@ -1393,6 +1582,132 @@ def _hp_selftest() -> int:
             "aborted_contact" in _st_on and "aborted_contact" in _st_r)
     os.environ.pop(FLAG_CONTACT_GATE, None)
     _expect("Kontakttor wieder AUS", h_contact_gate_enabled() is False)
+
+    print("== Rotor nur an sp3-Zentren (register #444) ==")
+    os.environ.pop(FLAG_SP3_ONLY, None)
+    _expect("sp3-Regel: Vorgabe AUS", h_sp3_only_enabled() is False)
+
+    def _groups(block: str, sp3: bool):
+        s_, P_, _ = _hp_read(block)
+        a_ = _hp_graph(s_, P_)
+        p_ = parents_of_h(s_, P_)
+        _hp_link_parents(a_, p_)
+        return rotor_groups(s_, p_, a_, P=P_, sp3_only=sp3)
+
+    imine_nh = ("3\ntest\n"
+                "C       0.000000     0.000000     0.000000\n"
+                "N       1.300000     0.000000     0.000000\n"
+                "H       0.795000     0.875000     0.000000\n")
+    hydroxyl = ("3\ntest\n"
+                "C       0.000000     0.000000     0.000000\n"
+                "O       1.430000     0.000000     0.000000\n"
+                "H       1.750000     0.900000     0.000000\n")
+    methyl = ("5\ntest\n"
+              "C       0.000000     0.000000     0.000000\n"
+              "C       1.520000     0.000000     0.000000\n"
+              "H       1.883000     1.028000     0.000000\n"
+              "H       1.883000    -0.514000     0.890000\n"
+              "H       1.883000    -0.514000    -0.890000\n")
+    amine_nh2 = ("4\ntest\n"
+                 "C       0.000000     0.000000     0.000000\n"
+                 "N       1.470000     0.000000     0.000000\n"
+                 "H       1.820000     0.950000     0.000000\n"
+                 "H       1.820000    -0.480000     0.830000\n")
+    planar_nh2 = ("4\ntest\n"
+                  "C       0.000000     0.000000     0.000000\n"
+                  "N       1.470000     0.000000     0.000000\n"
+                  "H       1.970000     0.866000     0.000000\n"
+                  "H       1.970000    -0.866000     0.000000\n")
+    _expect("ohne Regel ist =N-H ein Rotor (die Stufe, die ODOGOF pyramidalisierte)",
+            len(_groups(imine_nh, False)) == 1)
+    _expect("mit Regel: =N-H (zwei Substituenten, kein Gruppe-16) wird nicht gedreht",
+            len(_groups(imine_nh, True)) == 0)
+    _expect("mit Regel: O-H (Gruppe 16, zwei Substituenten) bleibt Rotor",
+            len(_groups(hydroxyl, True)) == 1)
+    _expect("mit Regel: CH3 (tetraedrisch) bleibt Rotor",
+            len(_groups(methyl, True)) == 1)
+    _expect("mit Regel: pyramidales NH2 (Winkelsumme ~329) bleibt Rotor",
+            len(_groups(amine_nh2, True)) == 1)
+    _expect("mit Regel: planares NH2 (Winkelsumme 360) wird nicht gedreht",
+            len(_groups(planar_nh2, True)) == 0)
+    os.environ[FLAG_SP3_ONLY] = "1"
+    _expect("sp3-Regel: AN wird gelesen", h_sp3_only_enabled() is True)
+    os.environ.pop(FLAG_SP3_ONLY, None)
+
+    print("== Augen-Tor: Schweregrad statt Zaehler (register #444) ==")
+    os.environ.pop(FLAG_EYE_GATE, None)
+    _expect("Augen-Tor: Vorgabe AUS", h_eye_gate_enabled() is False)
+    # Methane next to a foreign O (own ligand): H1...O 1.81 A is an intclash
+    # pair of the eye (floor 0.70 x 2.72 = 1.904) and a census pair of the
+    # module (0.85 x 2.72 = 2.31).  A stand-in stage pushes H1 to 1.70 A:
+    # the census COUNT stays 1 (the contact gate passes), the eye's severity
+    # profile gets worse (the eye gate must roll back).
+    trade = ("6\ntest\n"
+             "C       0.000000     0.000000     0.000000\n"
+             "H       1.090000     0.000000     0.000000\n"
+             "H      -0.363000     1.028000     0.000000\n"
+             "H      -0.363000    -0.514000     0.890000\n"
+             "H      -0.363000    -0.514000    -0.890000\n"
+             "O       2.900000     0.000000     0.000000\n")
+    _s_t, _P_t, _ = _hp_read(trade)
+    _a_t = _hp_graph(_s_t, _P_t)
+    _p_t = parents_of_h(_s_t, _P_t)
+    _hp_link_parents(_a_t, _p_t)
+    _c_t = _hp_components(_s_t, _a_t)
+    _prof0 = _hp_eye_profile(_s_t, _P_t, _c_t, _p_t)
+    _expect("Profil vorher: genau ein Paar H1...O unter dem Augenboden",
+            len(_prof0) == 1 and abs(_prof0[0] - 1.81 / 1.904) < 1e-3, str(_prof0))
+    _P_perm = _P_t.copy()
+    _P_perm[[1, 2, 3, 4]] = _P_t[[2, 3, 4, 1]]
+    _expect("Profil ist indexfrei (permutierte H, gleiche Geometrie)",
+            _hp_eye_profile(_s_t, _P_perm, _c_t, _p_t) == _prof0)
+
+    _real_umbrella_e = globals()["_hp_stage_umbrella"]
+    _real_rotor_e = globals()["_hp_stage_rotor"]
+    _real_length_e = globals()["_hp_stage_length"]
+
+    def _no_umbrella_e(syms_, P_, tol_deg=0.0):
+        return 0
+
+    def _no_length_e(syms_, P_, parents_, adj_):
+        return 0
+
+    def _worse_rotor_e(syms_, P_, parents_, adj_):
+        P_[1] = np.array([1.20, 0.0, 0.0])      # H1...O 1.81 -> 1.70 A
+        return 1
+
+    def _cure_rotor_e(syms_, P_, parents_, adj_):
+        P_[1] = np.array([0.545, 0.944, 0.0])   # H1...O 1.81 -> 2.54 A
+        return 1
+
+    globals()["_hp_stage_umbrella"] = _no_umbrella_e
+    globals()["_hp_stage_length"] = _no_length_e
+    globals()["_hp_stage_rotor"] = _worse_rotor_e
+    try:
+        os.environ[FLAG_CONTACT_GATE] = "1"
+        _st_c: Dict[str, int] = {}
+        _out_c = repair_xyz(trade, stats=_st_c)
+        _expect("Kontakttor allein laesst den Tausch durch (Zaehler 1 -> 1)",
+                _out_c != trade and _st_c.get("aborted_contact", -1) == 0, str(_st_c))
+        os.environ[FLAG_EYE_GATE] = "1"
+        _expect("Augen-Tor: AN wird gelesen", h_eye_gate_enabled() is True)
+        _st_e: Dict[str, int] = {}
+        _out_e = repair_xyz(trade, stats=_st_e)
+        _expect("Augen-Tor nimmt das schlechtere Profil zurueck (0,951 -> 0,893)",
+                _out_e is trade and _st_e.get("aborted_eye", 0) == 1, str(_st_e))
+        os.environ.pop(FLAG_CONTACT_GATE, None)
+        globals()["_hp_stage_rotor"] = _cure_rotor_e
+        _st_g: Dict[str, int] = {}
+        _out_g = repair_xyz(trade, stats=_st_g)
+        _expect("Augen-Tor laesst eine echte Heilung durch (Paar verschwindet)",
+                _out_g != trade and _st_g.get("aborted_eye", -1) == 0, str(_st_g))
+    finally:
+        globals()["_hp_stage_umbrella"] = _real_umbrella_e
+        globals()["_hp_stage_length"] = _real_length_e
+        globals()["_hp_stage_rotor"] = _real_rotor_e
+        os.environ.pop(FLAG_EYE_GATE, None)
+        os.environ.pop(FLAG_CONTACT_GATE, None)
+    _expect("Augen-Tor wieder AUS", h_eye_gate_enabled() is False)
 
     print("== Idempotenz ==")
     once = repair_xyz(stretched)
