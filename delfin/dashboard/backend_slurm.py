@@ -95,6 +95,12 @@ class SlurmJobBackend(JobBackend):
     # drop the cache so the UI still reacts to the user immediately. Sites can
     # widen or (at their own risk) narrow this via DELFIN_SQUEUE_MIN_INTERVAL.
     _JOBS_CACHE_SECONDS = 25.0
+    #: sshare's numbers change once per PriorityCalcPeriod (5 min by default),
+    #: so asking more often only loads the controller.
+    _FAIRSHARE_CACHE_SECONDS = 300.0
+    #: Account limits change when the site edits them; sacctmgr asks the
+    #: accounting database the whole cluster shares.
+    _LIMITS_CACHE_SECONDS = 3600.0
 
     # Tools with expensive system-wide scans (module spider, deep /opt
     # traversal) that are not needed for auto-export to SLURM jobs.
@@ -190,6 +196,8 @@ class SlurmJobBackend(JobBackend):
         self.tool_binaries = explicit
         self._jobs_cache: Optional[List[JobInfo]] = None
         self._jobs_cache_at: Optional[float] = None
+        #: key -> (monotonic time of the last attempt, last good answer)
+        self._throttle_cache: dict = {}
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -886,6 +894,90 @@ class SlurmJobBackend(JobBackend):
             return list(self._jobs_cache or [])
         self._jobs_cache = jobs
         return list(jobs)
+
+    def _throttled(self, key: str, seconds: float, query):
+        """query()'s answer, asked at most once per ``seconds``.
+
+        As in list_jobs(), the gate is the last attempt, and a failed query
+        (None) keeps the last good answer.
+        """
+        entry = self._throttle_cache.get(key)
+        if entry is not None and 0.0 <= time.monotonic() - entry[0] < seconds:
+            return entry[1]
+        value = query()
+        if value is None and entry is not None:
+            value = entry[1]
+        self._throttle_cache[key] = (time.monotonic(), value)
+        return value
+
+    def account_standing(self) -> Optional[dict]:
+        """This user's fairshare and account limits; None when SLURM tells neither.
+
+        ``fairshare`` (0 to 1, higher starts sooner), ``level_fs``,
+        ``norm_shares`` and ``effective_usage`` come from sshare; ``account``,
+        ``cpu_limit``, ``max_jobs`` and ``max_submit`` from the association of
+        the default account. Throttled, so every refresh may ask.
+        """
+        limits = self._throttled('limits', self._LIMITS_CACHE_SECONDS, self._query_account_limits)
+        account = (limits or {}).get('account')
+        share = self._throttled('fairshare', self._FAIRSHARE_CACHE_SECONDS,
+                                lambda: self._query_fairshare(account))
+        if not limits and not share:
+            return None
+        return {**(share or {}), **(limits or {})}
+
+    @staticmethod
+    def _query_rows(cmd) -> Optional[List[List[str]]]:
+        """Rows of a parsable (-P -n) SLURM query; None when it failed."""
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        except Exception:
+            return None
+        if result.returncode != 0:
+            return None
+        return [[field.strip() for field in line.split('|')]
+                for line in result.stdout.splitlines() if line.strip()]
+
+    def _query_fairshare(self, account=None) -> Optional[dict]:
+        """sshare's row for ``account`` (the first row when none matches)."""
+        rows = self._query_rows(['sshare', '-U', '-P', '-n', '-o',
+                                 'Account,User,NormShares,EffectvUsage,FairShare,LevelFS'])
+        parsed = []
+        for row in rows or []:
+            if len(row) < 6:
+                continue
+            try:
+                norm_shares, usage, fairshare = (float(value) for value in row[2:5])
+            except ValueError:
+                continue
+            try:
+                level_fs = float(row[5])
+            except ValueError:
+                level_fs = None
+            parsed.append({'account': row[0], 'norm_shares': norm_shares, 'effective_usage': usage,
+                           'fairshare': fairshare, 'level_fs': level_fs})
+        if not parsed:
+            return None
+        return next((entry for entry in parsed if entry['account'] == account), parsed[0])
+
+    def _query_account_limits(self) -> Optional[dict]:
+        """The default account and its association's CPU and job limits."""
+        rows = self._query_rows(['sacctmgr', '-P', '-n', 'show', 'user', os.environ.get('USER', ''),
+                                 'withassoc', 'format=DefaultAccount,Account,Partition,GrpTRES,MaxJobs,MaxSubmit'])
+        rows = [row for row in rows or [] if len(row) >= 6]
+        if not rows:
+            return None
+        default = rows[0][0]
+        mine = [row for row in rows if row[1] == default] or rows
+        # A partition-wide association over one limited to a partition.
+        row = next((candidate for candidate in mine if not candidate[2]), mine[0])
+        tres = dict(part.split('=', 1) for part in row[3].split(',') if '=' in part)
+
+        def number(text):
+            return int(text) if str(text).isdigit() else None
+
+        return {'account': row[1], 'cpu_limit': number(tres.get('cpu', '')),
+                'max_jobs': number(row[4]), 'max_submit': number(row[5])}
 
     #: Everything the job table shows, from one squeue. Why a job waits and
     #: SLURM's estimate of its start (%r, %S) needed a second, unthrottled

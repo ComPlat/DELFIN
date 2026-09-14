@@ -25,6 +25,7 @@ _DJS_CSS = """<style>
             border-radius: 8px; padding: 8px 14px; }
 .djs-stat-value { font-size: 20px; font-weight: 600; line-height: 1.25; white-space: nowrap;
                   overflow: hidden; text-overflow: ellipsis; }
+.djs-stat-suffix { font-size: 13px; font-weight: 500; color: #6b7280; }
 .djs-stat-label { font-size: 11px; color: #6b7280; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
 .djs-wrap { border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; background: #ffffff; }
 /* One line per job: fixed columns; text that does not fit ends in an
@@ -199,7 +200,8 @@ def _is_state(job, *codes) -> bool:
     return str(job.status or '').upper() in codes
 
 
-def _summary_html(jobs, now) -> str:
+def _summary_html(jobs, now, standing=None) -> str:
+    standing = standing or {}
     running = [j for j in jobs if _is_state(j, 'R', 'RUNNING')]
     waiting = [j for j in jobs if _is_state(j, 'PD', 'PENDING')]
     cpus = sum(int(str((j.extra or {}).get('cpus', '')).strip() or 0)
@@ -212,30 +214,63 @@ def _summary_html(jobs, now) -> str:
             pass
     next_start = _relative_start(min(estimates).isoformat(), now) if estimates else '—'
 
-    def stat(value, label, color='#111827'):
-        return (f'<div class="djs-stat"><div class="djs-stat-value" style="color:{color};">'
-                f'{_html.escape(str(value))}</div><div class="djs-stat-label">{label}</div></div>')
+    def stat(value, label, color='#111827', suffix='', tooltip=''):
+        title = f' title="{_html.escape(tooltip, quote=True)}"' if tooltip else ''
+        more = f'<span class="djs-stat-suffix"> {_html.escape(suffix)}</span>' if suffix else ''
+        return (f'<div class="djs-stat"{title}><div class="djs-stat-value" style="color:{color};">'
+                f'{_html.escape(str(value))}{more}</div><div class="djs-stat-label">{label}</div></div>')
+
+    account = standing.get('account')
+    of_account = f' (account {account})' if account else ''
+
+    cpu_limit = standing.get('cpu_limit')
+    cpu_notes = []
+    if cpu_limit:
+        cpu_notes.append(f'{cpus} of the {cpu_limit} CPUs you may use at once{of_account}. '
+                         'Jobs that would go beyond wait with the reason "Account limit".')
+    caps = [f'{standing["max_jobs"]} running' if standing.get('max_jobs') else '',
+            f'{standing["max_submit"]} submitted' if standing.get('max_submit') else '']
+    if any(caps):
+        cpu_notes.append('At most ' + ' and '.join(cap for cap in caps if cap) + ' jobs.')
+    cpu_tile = stat(cpus, 'CPUs in use', '#b26a00' if cpu_limit and cpus >= 0.85 * cpu_limit else '#111827',
+                    f'/ {cpu_limit}' if cpu_limit else '', ' '.join(cpu_notes))
+
+    fairshare_tile = ''
+    fairshare = standing.get('fairshare')
+    if fairshare is not None:
+        color = '#2e7d32' if fairshare >= 0.5 else '#b26a00' if fairshare >= 0.2 else '#d32f2f'
+        tooltip = (f'Fairshare {fairshare:.2f}{of_account}, on a scale from 0 to 1: the higher, the sooner '
+                   'your waiting jobs start. 0.5 means you used exactly your share of the cluster.')
+        shares, usage = standing.get('norm_shares'), standing.get('effective_usage')
+        if shares and usage is not None:
+            tooltip += f' Lately you used {usage / shares:.1f}× your share.'
+        tooltip += ' It recovers by itself, as past usage counts less and less.'
+        fairshare_tile = stat(f'{fairshare:.2f}', 'Fairshare · high is good', color, tooltip=tooltip)
 
     return ('<div class="djs-summary">'
             + stat(len(running), 'Running', '#2e7d32' if running else '#111827')
             + stat(len(waiting), 'Waiting', '#b26a00' if waiting else '#111827')
-            + stat(cpus, 'CPUs in use')
+            + cpu_tile
             + stat(next_start, 'Next expected start')
+            + fairshare_tile
             + '</div>')
 
 
-def empty_queue_html(state_filter: str = 'all') -> str:
-    """What the tab shows when there is nothing to list."""
+def empty_queue_html(state_filter: str = 'all', summary_jobs=None, standing=None, now=None) -> str:
+    """What the tab shows when there is nothing to list: the summary, fairshare
+    included, stays in view."""
     title = {'running': 'No running jobs', 'pending': 'No waiting jobs'}.get(
         state_filter, 'No jobs in the queue')
-    return (_DJS_CSS + '<div class="djs"><div class="djs-empty">'
+    return (_DJS_CSS + '<div class="djs">'
+            + _summary_html(list(summary_jobs or []), now or datetime.now(), standing)
+            + '<div class="djs-empty">'
             f'<div class="djs-empty-title">{title}</div>'
             '<div class="djs-sub">Submitted jobs appear here: running ones with their progress, '
             'waiting ones with why they wait and when they should start.</div>'
             '</div></div>')
 
 
-def build_slurm_job_table(jobs, dropdown_options, now=None, summary_jobs=None) -> str:
+def build_slurm_job_table(jobs, dropdown_options, now=None, summary_jobs=None, standing=None) -> str:
     """The SLURM job table, one line per job: progress of running jobs, and for
     waiting jobs why they wait and when SLURM expects them to start. Whatever
     does not fit its column ends in an ellipsis and is whole in the tooltip."""
@@ -338,7 +373,7 @@ def build_slurm_job_table(jobs, dropdown_options, now=None, summary_jobs=None) -
     )
     return (
         _DJS_CSS + '<div class="djs">'
-        + _summary_html(list(summary_jobs) if summary_jobs is not None else list(jobs), now)
+        + _summary_html(list(summary_jobs) if summary_jobs is not None else list(jobs), now, standing)
         + f'<div class="djs-wrap"><table class="djs-table"><thead><tr>{header}</tr></thead><tbody>'
         + ''.join(rows)
         + '</tbody></table></div>'
@@ -728,6 +763,11 @@ def create_tab(ctx):
             # The user asked for the queue, so bypass the rate limit.
             all_jobs = ctx.backend.list_jobs(force=True)
             state['job_data'] = all_jobs
+            # Fairshare and account limits; the backend throttles these itself.
+            try:
+                standing = getattr(ctx.backend, 'account_standing', lambda: None)()
+            except Exception:
+                standing = None
             state['showing_detected'] = False
 
             # Apply state filter (all / running / pending).
@@ -760,7 +800,8 @@ def create_tab(ctx):
                         'on this machine (not from the job queue).</div>'
                     )
                 else:
-                    job_table_html.value = empty_queue_html(state.get('state_filter', 'all'))
+                    job_table_html.value = empty_queue_html(
+                        state.get('state_filter', 'all'), summary_jobs=all_jobs, standing=standing)
                     job_start_html.value = ''
                     job_dropdown.options = []
                     return
@@ -774,7 +815,7 @@ def create_tab(ctx):
             if is_local:
                 table_html += _build_local_table(jobs, dropdown_options)
             else:
-                table_html += _build_slurm_table(jobs, dropdown_options)
+                table_html += _build_slurm_table(jobs, dropdown_options, standing)
 
             job_table_html.value = table_html
 
@@ -863,9 +904,10 @@ def create_tab(ctx):
         tbl += '</table>'
         return tbl
 
-    def _build_slurm_table(jobs, dropdown_options):
+    def _build_slurm_table(jobs, dropdown_options, standing=None):
         """Build an HTML table for the SLURM backend."""
-        return build_slurm_job_table(jobs, dropdown_options, summary_jobs=state.get('job_data'))
+        return build_slurm_job_table(jobs, dropdown_options, summary_jobs=state.get('job_data'),
+                                     standing=standing)
 
     def cancel_selected_job(button):
         with job_status_output:
