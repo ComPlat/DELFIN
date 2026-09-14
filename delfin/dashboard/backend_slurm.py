@@ -810,15 +810,23 @@ class SlurmJobBackend(JobBackend):
 
     def submit_mlp(self, job_dir, job_name, xyz_file, backend='ani2x',
                    time_limit='24:00:00', pal=4, maxcore=4000,
-                   charge=0, mult=1) -> SubmitResult:
-        """Submit an MLP job — automatically requests GPU if available."""
+                   charge=0, mult=1, task='optimize') -> SubmitResult:
+        """Submit an MLP job — automatically requests GPU if available.
+
+        ``task`` is ``optimize`` or ``single_point``; the job runs DELFIN's
+        mlp_optimize or mlp_single_point step on the GPU it was given, or on
+        its CPUs when it was given none.
+        """
+        task_name = str(task or 'optimize').strip().lower().replace('-', '_')
+        if task_name not in ('optimize', 'single_point'):
+            return SubmitResult(1, '', f"Unknown MLP task {task!r}: use 'optimize' or 'single_point'.")
         pal_used = max(1, int(pal))
         maxcore_used = max(1, int(maxcore))
         mem_used = pal_used * maxcore_used
         env_vars = (
             f'DELFIN_MODE=mlp,DELFIN_JOB_NAME={job_name},'
             f'DELFIN_XYZ_FILE={xyz_file},'
-            f'DELFIN_MLP_BACKEND={backend},'
+            f'DELFIN_MLP_BACKEND={backend},DELFIN_MLP_TASK={task_name},'
             f'DELFIN_CHARGE={charge},DELFIN_MULT={mult},'
             f'DELFIN_PAL={pal_used},DELFIN_MAXCORE={maxcore_used}'
         )

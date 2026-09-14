@@ -358,6 +358,126 @@ def _print_last_orca_phase(out_path: Path) -> None:
         print(f'Last Phase:    {last_phase}')
 
 
+def _mlp_device() -> tuple[str, str]:
+    """The device an ML potential runs on, and the GPU's name when it is one.
+
+    A GPU when the job has one and PyTorch can use it, the CPU otherwise.
+    DELFIN_MLP_DEVICE=cpu keeps it on the CPU; a specific device (cuda:1) is
+    used as given when CUDA is there.
+    """
+    asked = str(os.environ.get('DELFIN_MLP_DEVICE') or 'auto').strip().lower() or 'auto'
+    if asked == 'cpu':
+        return 'cpu', ''
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            device = asked if asked.startswith('cuda') else 'cuda'
+            return device, str(torch.cuda.get_device_name(0))
+    except Exception:
+        pass
+    return 'cpu', ''
+
+
+def _run_mlp_job(xyz_file: str, delfin_pal: str) -> int:
+    """An ML-potential job: DELFIN's mlp_optimize or mlp_single_point step.
+
+    submit_mlp sent such jobs here, and there was no such mode: every one
+    ended in "Unknown mode: mlp". The step is the one delfin-step and the
+    tools platform run; what the job adds is the device, a result file and a
+    message that says how to install a backend that is missing.
+    """
+    import json
+    import shutil as _shutil
+    import time as _time
+
+    backend = str(os.environ.get('DELFIN_MLP_BACKEND') or 'ani2x').strip() or 'ani2x'
+    task = str(os.environ.get('DELFIN_MLP_TASK') or 'optimize').strip().lower().replace('-', '_')
+    if task not in ('optimize', 'single_point'):
+        print(f"ERROR: unknown DELFIN_MLP_TASK {task!r}: use 'optimize' or 'single_point'")
+        return 1
+    if not xyz_file:
+        print('ERROR: DELFIN_XYZ_FILE not set for mlp mode')
+        return 1
+    geometry = Path(xyz_file)
+    if not geometry.is_file():
+        print(f'ERROR: XYZ file not found for mlp mode: {xyz_file}')
+        return 1
+    try:
+        charge = int(str(os.environ.get('DELFIN_CHARGE') or '0').strip())
+        mult = int(str(os.environ.get('DELFIN_MULT') or '1').strip())
+    except ValueError:
+        print('ERROR: DELFIN_CHARGE and DELFIN_MULT must be integers')
+        return 1
+
+    device, gpu_name = _mlp_device()
+    print(f'MLP backend: {backend}')
+    print(f'MLP task:    {task}')
+    print(f'Device:      {device}' + (f' ({gpu_name})' if gpu_name else ''))
+    print(f'Structure:   {geometry}  (charge {charge}, multiplicity {mult})')
+    print('')
+
+    kwargs = {'backend': backend, 'charge': charge, 'mult': mult, 'device': device}
+    if task == 'optimize':
+        try:
+            kwargs['fmax'] = float(os.environ.get('DELFIN_MLP_FMAX') or 0.05)
+            kwargs['steps'] = int(os.environ.get('DELFIN_MLP_STEPS') or 200)
+        except ValueError:
+            print('ERROR: DELFIN_MLP_FMAX must be a number and DELFIN_MLP_STEPS an integer')
+            return 1
+
+    summary = {
+        'task': task, 'backend': backend, 'device': device, 'gpu': gpu_name,
+        'charge': charge, 'multiplicity': mult, 'structure': str(geometry),
+    }
+    result_file = Path.cwd() / 'mlp_result.json'
+    started = _time.monotonic()
+    error = ''
+    result = None
+    try:
+        from delfin.tools import run_step
+
+        result = run_step(f'mlp_{task}', geometry=geometry,
+                          cores=max(1, int(delfin_pal or 1)),
+                          work_dir=Path.cwd() / f'mlp_{task}', **kwargs)
+        status = str(getattr(result.status, 'value', result.status)).lower()
+        error = str(result.error or '')
+        summary.update(result.data or {})
+    except Exception as exc:
+        status = 'failed'
+        error = f'{type(exc).__name__}: {exc}'
+    summary['status'] = status
+    summary['elapsed_seconds'] = round(_time.monotonic() - started, 2)
+
+    if status == 'success' and result is not None and result.geometry and Path(result.geometry).is_file():
+        optimized = Path.cwd() / f'{geometry.stem}_mlp_opt.xyz'
+        _shutil.copyfile(result.geometry, optimized)
+        summary['optimized_structure'] = str(optimized)
+
+    if error:
+        summary['error'] = error
+        print(f'ERROR: the {backend} {task} did not finish: {error}')
+        lowered = error.lower()
+        if 'no module named' in lowered or 'importerror' in lowered or 'not installed' in lowered:
+            try:
+                from delfin import installer
+
+                tool = installer.find(backend) or installer.find(backend.split('_')[0])
+            except Exception:
+                tool = None
+            name = tool.name if tool else backend
+            print(f'The {backend} backend is not installed in this environment. Install it on the '
+                  f'login node with: python -m delfin.installer --install {name}')
+
+    result_file.write_text(json.dumps(summary, indent=2, default=str), encoding='utf-8')
+    if status == 'success':
+        energy = summary.get('energy_eV')
+        print(f'MLP {task} finished' + (f': E = {energy:.6f} eV' if isinstance(energy, (int, float)) else '')
+              + (f', converged={summary.get("converged")}' if 'converged' in summary else ''))
+    print(f'Result: {result_file}')
+    return 0 if status == 'success' else 1
+
+
 def _run_mode(mode: str) -> int:
     inp_file = str(os.environ.get('DELFIN_INP_FILE') or '').strip()
     override = str(os.environ.get('DELFIN_OVERRIDE') or '').strip()
@@ -662,6 +782,9 @@ def _run_mode(mode: str) -> int:
             print(f'ERROR: CO2 setup failed (exit {setup_code})')
             return setup_code
         return _run_command(delfin_cmd + ['co2'], cwd=Path.cwd() / 'CO2_coordination')
+
+    if resolved_mode == 'mlp':
+        return _run_mlp_job(xyz_file, delfin_pal)
 
     print(f'ERROR: Unknown mode: {resolved_mode}')
     return 1
