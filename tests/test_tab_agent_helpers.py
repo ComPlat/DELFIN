@@ -307,17 +307,21 @@ def test_subagent_pane_escapes_user_text():
     assert "&lt;script&gt;" in html
 
 
-def test_subagent_pane_truncates_long_output_in_preview():
-    long_output = "x" * 5000
-    calls = [{
-        "subagent_type": "Explore", "description": "d", "prompt": "p",
-        "status": "done", "output": long_output,
-    }]
-    html = _render_subagent_pane_html(calls)
-    # Renderer caps preview at 600 chars
-    assert "x" * 700 not in html
-    # But the chars-total label reflects the real size
+def test_subagent_pane_shows_a_long_report_whole_up_to_its_cap():
+    """Cut at 600 characters, the panel showed the start of a delegate's
+    payload and never its answer (report 20260915-110358). A report is
+    shown whole now, in a scrolling box, up to 32k characters."""
+    def _pane(output):
+        return _render_subagent_pane_html([{
+            "subagent_type": "Explore", "description": "d", "prompt": "p",
+            "status": "done", "output": output,
+        }])
+    html = _pane("x" * 5000)
+    assert "x" * 5000 in html
+    # The chars-total label reflects the real size
     assert "5000 chars" in html
+    huge = _pane("y" * 40000)
+    assert "y" * 32000 in huge and "y" * 32001 not in huge
 
 
 def test_subagent_pane_handles_multiple_calls():

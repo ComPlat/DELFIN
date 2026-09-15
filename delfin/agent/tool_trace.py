@@ -19,6 +19,11 @@ from typing import Any
 
 _DIR = Path.home() / ".delfin" / "tool_traces"
 _OUT_CAP = 2000             # chars kept per input/output
+# A delegate's report is kept whole: cut at 2000 chars, a bug report showed
+# the start of the sub-agent's narration and none of its answer (report
+# 20260915-110358).
+_REPORT_OUT_CAP = 32_000
+_REPORT_TOOLS = frozenset({"subagent", "subagent_result", "orchestrate"})
 _MAX_BYTES = 4 * 1024 * 1024   # trim the file when it grows past this
 _KEEP_TAIL = 1500          # lines kept when trimming
 
@@ -70,7 +75,9 @@ def record(
             "ts": time.time(),
             "tool": str(tool),
             "input": _to_text(tool_input)[:_OUT_CAP],
-            "output": _to_text(output)[:_OUT_CAP],
+            "output": _to_text(output)[:(
+                _REPORT_OUT_CAP if str(tool).rsplit("__", 1)[-1] in _REPORT_TOOLS
+                else _OUT_CAP)],
             "duration_ms": int(duration_ms),
             "ok": bool(ok),
             "error": str(error or "")[:300],

@@ -7462,6 +7462,18 @@ def _repair_json_args(raw) -> dict | None:
     return None
 
 
+# A delegate's report is the answer the parent asked for, not bulk tool
+# output. Cut to the model's tool-result cap (5 KB on GLM) it lost its
+# middle, where the findings are, and the parent re-read the files itself
+# (report 20260915-110358). It travels whole up to this size.
+_SUBAGENT_REPORT_CAP = 32_000
+_REPORT_TOOLS = frozenset({"subagent", "subagent_result", "orchestrate"})
+
+
+def _is_report_tool(name: str) -> bool:
+    return str(name or "").rsplit("__", 1)[-1] in _REPORT_TOOLS
+
+
 def _resolve_tool_result_cap(model: str = "", caps=None) -> int:
     """Context-bound tool-result truncation cap in chars, per model.
 
@@ -8290,6 +8302,16 @@ def _observe_test_evidence(
     return ""
 
 
+# Where one elision pass stops, as a fraction of the budget. Every elision
+# rewrites an EARLIER message, and the endpoint's prefix cache is keyed on
+# everything before the first difference: shaving one old result per round
+# made every later round of a long turn a cold request -- on kit.glm-5.3
+# 200-270 s instead of 7-12 s, and 49 % of report 20260915-084010's four
+# million input tokens were served cold. One deep cut breaks the cache once;
+# the rounds after it stay warm until the budget is crossed again.
+_ELIDE_TO_FRACTION = 0.6
+
+
 def _tool_context_char_budget(caps) -> int:
     """Char budget for accumulated tool output before the OLDEST results are
     elided, scaled to the model's real context window.
@@ -8341,10 +8363,13 @@ def _elide_old_tool_results(
 
     if _tool_chars() <= char_budget:
         return 0
+    # Well under the budget in one pass, not just under it: see
+    # _ELIDE_TO_FRACTION.
+    target = int(char_budget * _ELIDE_TO_FRACTION)
     editable = tool_idxs[:-keep_recent] if keep_recent > 0 else tool_idxs
     elided = 0
     for i in editable:
-        if _tool_chars() <= char_budget:
+        if _tool_chars() <= target:
             break
         content = str(api_messages[i].get("content", ""))
         if content.startswith(_ELIDED_PREFIX):
@@ -18644,9 +18669,11 @@ class OpenAIClient(_BaseClient):
                     _redacted = _redact_tool_result(result)
                     # A JSON table is cut at a row boundary and says how
                     # many rows went; everything else keeps head and tail.
-                    context_result = (_truncate_table_result(_redacted, _tool_result_cap)
+                    _cap_here = (max(_tool_result_cap, _SUBAGENT_REPORT_CAP)
+                                 if _is_report_tool(fn_name) else _tool_result_cap)
+                    context_result = (_truncate_table_result(_redacted, _cap_here)
                                       or _smart_truncate(
-                                          _redacted, cap=_tool_result_cap, label="tool_result"))
+                                          _redacted, cap=_cap_here, label="tool_result"))
                     _tool_cut = ("truncated," in _redacted
                                  or "[truncated:" in _redacted
                                  or '"truncated": true' in _redacted)
@@ -18658,6 +18685,11 @@ class OpenAIClient(_BaseClient):
                         ln for ln in _redacted.split("\n")
                         if ln.lstrip().startswith("NOTE:")
                     )[:2000]
+                    # A delegate's report goes to the UI whole, like to the
+                    # model; everything else keeps the 2000-char preview.
+                    _ui_preview = (
+                        _redact_tool_result(result)[:_SUBAGENT_REPORT_CAP]
+                        if _is_report_tool(fn_name) else _redacted[:2000])
                     yield StreamEvent(
                         type="tool_result",
                         tool_name=fn_name if (is_mcp or is_mcp_meta)
@@ -18672,7 +18704,7 @@ class OpenAIClient(_BaseClient):
                         # traceback was stripped from the transcript, which
                         # is why nobody would notice, and written verbatim
                         # to a group-readable file that gets shipped.
-                        tool_output=_redacted[:2000],
+                        tool_output=_ui_preview,
                         output_truncated=(len(context_result) != len(_redacted)
                                           or _tool_cut),
                         output_chars=len(_redacted),
