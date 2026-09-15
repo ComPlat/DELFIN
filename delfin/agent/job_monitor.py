@@ -572,6 +572,7 @@ def check_agent_jobs(
     *,
     consume: bool = True,
     fetch_fn: Optional[Callable[[str], Optional[dict]]] = None,
+    marker: str = "daemon_notified",
 ) -> list[dict]:
     """Report agent-registered jobs that reached a terminal state — once.
 
@@ -585,7 +586,9 @@ def check_agent_jobs(
     ``consume=False`` reports without removing anything and marks the entry
     ``daemon_notified`` instead: that is how the headless daemon can watch
     the same list without eating the completion the next agent turn is
-    waiting for.
+    waiting for. ``marker`` names that flag, so each reader that only
+    peeks -- the daemon, and the dashboard that wakes an idle agent -- is
+    told about a completion once without hiding it from the other.
 
     Each result: ``job_id``, ``kind`` ("slurm"/"bash"), ``description``,
     ``state``, ``ok``, ``exit_code`` (bash only; None when the code was
@@ -613,6 +616,7 @@ def check_agent_jobs(
             # Only an entry that never got an answer is worth an alarm. One
             # the daemon already reported on is being pruned as bookkeeping.
             resolved = (entry.get("daemon_notified")
+                        or entry.get("wake_notified")
                         or entry.get("last_state") in _OK_TERMINAL_STATES
                         or entry.get("last_state") in _FAILURE_STATES)
             if not resolved:
@@ -657,7 +661,7 @@ def check_agent_jobs(
                 entry["last_state"] = state
                 changed = True
             if state in _OK_TERMINAL_STATES or state in _FAILURE_STATES:
-                if not consume and entry.get("daemon_notified"):
+                if not consume and entry.get(marker):
                     continue
                 done.append({
                     "job_id": jid,
@@ -672,7 +676,7 @@ def check_agent_jobs(
                 if consume:
                     jobs.pop(jid)
                 else:
-                    entry["daemon_notified"] = True
+                    entry[marker] = True
                 changed = True
         elif _kind(jid, entry) == "ci":
             if now - float(entry.get("last_checked") or 0) < _CI_MIN_INTERVAL_S:
@@ -710,7 +714,7 @@ def check_agent_jobs(
                 if ci["runs"] or waited < _CI_NO_RUN_AFTER_S:
                     continue
                 state = "NO CI RUN"
-            if not consume and entry.get("daemon_notified"):
+            if not consume and entry.get(marker):
                 continue
             done.append({
                 "job_id": jid, "kind": "ci",
@@ -722,7 +726,7 @@ def check_agent_jobs(
             if consume:
                 jobs.pop(jid)
             else:
-                entry["daemon_notified"] = True
+                entry[marker] = True
         else:
             # Background-bash job: the bash_jobs registry is the source of
             # truth — in-memory in the same process, re-attached from
@@ -734,7 +738,7 @@ def check_agent_jobs(
                 job = None
             if job is None or job.poll() is None:
                 continue        # unknown yet (age prune applies) or running
-            if not consume and entry.get("daemon_notified"):
+            if not consume and entry.get(marker):
                 continue
             status = job.status_dict()
             rc = status.get("exit_code")
@@ -751,7 +755,7 @@ def check_agent_jobs(
             if consume:
                 jobs.pop(jid)
             else:
-                entry["daemon_notified"] = True
+                entry[marker] = True
             changed = True
     if changed:
         save_watched(data, path)

@@ -298,6 +298,35 @@ def _tool_stall_budget_s(tool_name: str) -> float:
     return _TOOL_CONFIRM_WAIT_S + exec_cap + _TOOL_STALL_GRACE_S
 
 
+# How often the dashboard looks for finished watched jobs while the agent is
+# idle. A SLURM watch costs an squeue/sacct pair per look, so this stays in
+# minutes, not seconds; a CI watch is throttled to once a minute on its own.
+_JOB_WAKE_INTERVAL_S = 120.0
+
+
+def _job_wake_prompt(done: list) -> str:
+    """The message a finished watched job sends an idle agent; "" for none."""
+    lines = []
+    for ev in done or []:
+        line = f"- {ev.get('kind', 'job')} {ev.get('job_id')} [{ev.get('state', '?')}]"
+        if ev.get("description"):
+            line += f" {str(ev['description'])[:80]}"
+        if ev.get("signatures"):
+            line += " — " + ", ".join(str(s) for s in ev["signatures"])
+        if ev.get("degraded"):
+            line += f" — {ev['degraded']}"
+        if ev.get("url"):
+            line += f" — {ev['url']}"
+        lines.append(line)
+    if not lines:
+        return ""
+    return ("[watch] A job you were watching has finished:\n"
+            + "\n".join(lines)
+            + "\n\nSay what the result means for the work it was waiting on. "
+              "If it failed, name the cause from the evidence before "
+              "proposing a fix.")
+
+
 def _longest_pending_tool(inflight: dict, now: float):
     """``(name, waited_s, budget_s)`` for the running tool with the most
     budget LEFT, or None when nothing is in flight.
@@ -6596,6 +6625,54 @@ def create_tab(ctx):
             sch.set_fire_callback(_on_wake)
         except Exception:
             pass
+
+        # A watched job that finished wakes the agent, the way a scheduled
+        # wake-up does. Its result used to wait in the next turn's prompt,
+        # so "watch the CI and tell me" meant nothing until somebody typed.
+        # Only while no turn runs and the input box is empty: a draft is the
+        # user's, and a running turn is handed the result between rounds.
+        def _job_wake_tick():
+            import threading as _threading_wake
+            try:
+                from delfin.user_settings import load_settings as _ls_wake
+                _enabled = bool(((_ls_wake() or {}).get("agent") or {}).get(
+                    "wake_on_job_end", True))
+                if (_enabled and state.get("engine") is not None
+                        and not state.get("streaming")
+                        and not (input_textarea.value or "").strip()):
+                    from delfin.agent import job_monitor as _jm_wake
+                    _ws = _agent_workspace_path()
+                    if _ws and _jm_wake.load_watched(
+                            _jm_wake._agent_watch_path(_ws)).get("jobs"):
+                        _prompt = _job_wake_prompt(_jm_wake.check_agent_jobs(
+                            _ws, consume=False, marker="wake_notified"))
+                        if _prompt:
+                            input_textarea.value = _prompt
+                            _on_send(None)
+            except Exception:
+                pass
+            finally:
+                try:
+                    _again = _threading_wake.Timer(
+                        _JOB_WAKE_INTERVAL_S, _job_wake_tick)
+                    _again.daemon = True
+                    _again.start()
+                    state["_job_wake_timer"] = _again
+                except Exception:
+                    pass
+
+        # One chain for the dashboard, however many engines it builds: each
+        # tick reads the current engine from state.
+        if state.get("_job_wake_timer") is None:
+            try:
+                import threading as _threading_first
+                _first = _threading_first.Timer(
+                    _JOB_WAKE_INTERVAL_S, _job_wake_tick)
+                _first.daemon = True
+                _first.start()
+                state["_job_wake_timer"] = _first
+            except Exception:
+                pass
         _refresh_task_ticker()
         _refresh_status_line()
 
@@ -8781,10 +8858,22 @@ def create_tab(ctx):
                     return
                 now = time.monotonic()
                 elapsed = now - last
-                waiting_for_first = not state.get("_stream_saw_output")
+                # Per request, not per turn. With the turn's flag, every
+                # request after the first token -- the one after each tool
+                # result -- counted as mid-stream, which in solo mode has no
+                # budget, so the watch returned for good and a request the
+                # endpoint never started held the turn for 934 s (report
+                # 20260915-084010).
+                waiting_for_first = not state.get("_request_saw_output")
                 budget = first_token_kill if waiting_for_first else kill_after
                 if budget <= 0:
-                    return   # no mid-stream kill in this mode
+                    # No mid-stream kill in this mode -- but the watch goes
+                    # on, for the first-token wait after the next tool.
+                    again = _threading.Timer(30.0, _check_kill)
+                    again.daemon = True
+                    again.start()
+                    state["_stale_kill_timer"] = again
+                    return
                 # A dispatched tool call is silence the agent CAUSED, not
                 # silence the provider fell into: bash_status blocks for its
                 # server-side wait, a sub-agent runs for its wall budget, and
@@ -8850,8 +8939,12 @@ def create_tab(ctx):
                     _append_system_message(
                         f"⏱ Turn ended by DELFIN's watchdog: the provider "
                         f"sent nothing for {int(elapsed)} s (first-token "
-                        f"budget {int(budget)} s). No tokens were produced, "
-                        f"so this turn cost nothing. {_advice}"
+                        f"budget {int(budget)} s). "
+                        + ("The rounds completed so far are kept — send a "
+                           "message to continue from there. "
+                           if state.get("_stream_saw_output") else
+                           "No tokens were produced, so this turn cost nothing. ")
+                        + _advice
                     )
                 else:
                     _append_system_message(
@@ -15416,6 +15509,7 @@ def create_tab(ctx):
         state["_last_stream_activity"] = time.monotonic()
         state["_stale_seen"] = False
         state["_stream_saw_output"] = False
+        state["_request_saw_output"] = False
         state["_tool_inflight"] = {}
         state.pop("_watchdog_stopped", None)
         _arm_stale_watcher()
@@ -15445,6 +15539,7 @@ def create_tab(ctx):
             first token took."""
             now = time.monotonic()
             state["_last_stream_activity"] = now
+            state["_request_saw_output"] = True
             if not state.get("_stream_saw_output"):
                 state["_stream_saw_output"] = True
                 state["_turn_first_output_monotonic"] = now
@@ -15914,6 +16009,9 @@ def create_tab(ctx):
                     _still = dict(state.get("_tool_inflight") or {})
                     _still.pop(_bare, None)
                     state["_tool_inflight"] = _still
+                    # The next request starts here, and until it answers the
+                    # silence is a first-token wait with that budget.
+                    state["_request_saw_output"] = False
                     if not tool_output:
                         return
                     tool_name = _bare
