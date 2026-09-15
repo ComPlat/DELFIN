@@ -2381,6 +2381,46 @@ def _background_command_note(arguments: Any) -> str:
     return "[Background command] " + "; and ".join(notes) + "."
 
 
+# What a remote says when a push did not land.
+_PUSH_FAILED_RE = re.compile(
+    r"^\s*! \[(?:remote )?rejected\]|^error: failed to push|^fatal: ", re.M)
+# Output that says the work failed, whatever the exit code claims.
+_FAILURE_MARK_RE = re.compile(
+    r"\b\d+ (?:failed|errors?)\b|^FAILED\b|^\s*Traceback \(most recent call "
+    r"last\)|" + _PUSH_FAILED_RE.pattern, re.M)
+_OUTPUT_FILTER_PIPE_RE = re.compile(r"\|\s*(?:tail|head|grep|tee)\b")
+
+
+def _pipe_exit_note(arguments: Any, raw_result: Any) -> str:
+    """A note for a filtered pipe whose exit code hides a failure; "" if none.
+
+    A pipe exits with its last command's code. Reports 20260915-090037 and
+    -091158 ran ``pytest ... 2>&1 | tail -3``: exit code 0, and the three
+    lines it kept said the tests failed. Report 20260915-132613 pushed as
+    ``git push origin main 2>&1 | tail -3``, where a rejected push exits 0
+    as well. Only named when the output itself shows the failure, so a
+    green run through ``| tail`` stays quiet.
+    """
+    cmd = str(arguments.get("command") or "") if isinstance(arguments, dict) else ""
+    if (not _OUTPUT_FILTER_PIPE_RE.search(cmd)
+            or re.search(r"pipefail|PIPESTATUS", cmd)):
+        return ""
+    try:
+        res = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
+    except (TypeError, ValueError):
+        return ""
+    if not isinstance(res, dict) or res.get("exit_code") != 0:
+        return ""
+    output = _ANSI_ESCAPE_RE.sub(
+        "", f"{res.get('stdout') or ''}\n{res.get('stderr') or ''}")
+    if not _FAILURE_MARK_RE.search(output):
+        return ""
+    return ("[Shell] exit code 0 is the last command's in the pipe, not the "
+            "work's, and the output shows a failure: treat the command as "
+            "failed. To keep the real exit code, leave the pipe off or start "
+            "with `set -o pipefail;`.")
+
+
 def _after_push(arguments: Any, raw_result: Any, perms: Any) -> str:
     """What a push that went through leaves behind, as a note for the model.
 
@@ -2397,6 +2437,10 @@ def _after_push(arguments: Any, raw_result: Any, perms: Any) -> str:
         return ""
     if not isinstance(res, dict) or res.get("exit_code") != 0:
         return ""
+    output = f"{res.get('stdout') or ''}\n{res.get('stderr') or ''}"
+    if _PUSH_FAILED_RE.search(output):
+        # Exit 0 from `git push ... | tail -3` is tail's; the remote refused.
+        return ""
     grants = getattr(perms, "push_grants", None)
     if isinstance(grants, dict) and grants.get("push"):
         grants["push"] -= 1
@@ -2404,7 +2448,7 @@ def _after_push(arguments: Any, raw_result: Any, perms: Any) -> str:
              "them to ask again.")
     workspace = getattr(perms, "workspace", None)
     watched: list[str] = []
-    refs = _pushed_refs(f"{res.get('stdout') or ''}\n{res.get('stderr') or ''}")
+    refs = _pushed_refs(output)
     if refs and workspace:
         from .job_monitor import register_ci_watch
         for repo, sha, branch in refs:
@@ -5972,7 +6016,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     },
                     "background": {
                         "type": "boolean",
-                        "description": "Return at once; the report arrives when it ends.",
+                        "description": "Return at once; the report arrives later.",
                     },
                     "model": {
                         "type": "string",
@@ -19056,6 +19100,12 @@ class OpenAIClient(_BaseClient):
                         try:
                             _baseline_shell_reads(
                                 self._permissions, fn_args, _raw_result)
+                        except Exception:
+                            pass
+                        try:
+                            _pipe_note = _pipe_exit_note(fn_args, _raw_result)
+                            if _pipe_note:
+                                self.push_run_note(_pipe_note)
                         except Exception:
                             pass
                         try:
