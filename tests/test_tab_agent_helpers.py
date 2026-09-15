@@ -1546,7 +1546,9 @@ def test_first_token_budget_is_separate_and_larger():
     Waiting for the FIRST token must use its own, much larger budget."""
     src = _watchdog_source()
     assert "first_token_kill_after_s" in src
-    assert "waiting_for_first = not state.get(\"_stream_saw_output\")" in src
+    # Per request since report 20260915-084010: after a tool result the next
+    # request is a first-token wait again (test_the_watchdog_watches_every_request).
+    assert "waiting_for_first = not state.get(\"_request_saw_output\")" in src
     assert "budget = first_token_kill if waiting_for_first else kill_after" in src
     # Measured against the model's own cold start, never below ten
     # minutes, and no longer a multiple of the stall budget (which made

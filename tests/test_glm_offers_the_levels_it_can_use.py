@@ -5,6 +5,10 @@ the default the level buys hidden reasoning and minutes, not answers.
 The profile now states the highest level the model can use, the
 dashboard offers only those, a saved choice above the ceiling is
 brought down and said so, and the request never carries more.
+
+2026-09-15 the ceiling came down to low: report 20260915-084010 ran it at
+medium and spent 222k characters of hidden reasoning, often minutes before
+a single tool call, on a 45-line change.
 """
 
 from __future__ import annotations
@@ -19,17 +23,18 @@ _TAB = (pathlib.Path(__file__).resolve().parents[1]
         / "delfin" / "dashboard" / "tab_agent.py")
 
 
-def test_glm_stops_at_medium_and_deepseek_has_no_ceiling():
-    assert get_profile("kit.glm-5.3").max_effort == "medium"
+def test_glm_stops_at_low_and_deepseek_has_no_ceiling():
+    assert get_profile("kit.glm-5.3").max_effort == "low"
     assert get_profile("kit.deepseek-v4-flash").max_effort == ""
-    assert effort_choices("kit.glm-5.3") == ("low", "medium")
+    assert effort_choices("kit.glm-5.3") == ("low",)
     assert effort_choices("kit.deepseek-v4-flash") == ("low", "medium", "high", "xhigh")
     assert "max_effort" in _COERCE, "a user may set the ceiling from the settings file"
 
 
 def test_a_level_above_the_ceiling_is_brought_down():
-    assert clamp_effort("kit.glm-5.3", "high") == "medium"
-    assert clamp_effort("kit.glm-5.3", "xhigh") == "medium"
+    assert clamp_effort("kit.glm-5.3", "high") == "low"
+    assert clamp_effort("kit.glm-5.3", "medium") == "low"
+    assert clamp_effort("kit.glm-5.3", "xhigh") == "low"
     assert clamp_effort("kit.glm-5.3", "low") == "low"
     assert clamp_effort("kit.deepseek-v4-flash", "xhigh") == "xhigh"
     assert clamp_effort("kit.glm-5.3", "") == "" and clamp_effort("kit.glm-5.3", "odd") == "odd"
@@ -37,11 +42,12 @@ def test_a_level_above_the_ceiling_is_brought_down():
 
 def test_the_dashboard_resolver_clamps_a_saved_choice():
     from delfin.dashboard.tab_agent import _effort_for_model, _effort_options_for_model
-    assert _effort_for_model("kit.glm-5.3", "high") == "medium"
+    assert _effort_for_model("kit.glm-5.3", "high") == "low"
+    assert _effort_for_model("kit.glm-5.3", "medium") == "low"
     assert _effort_for_model("kit.glm-5.3", "") == "low"
     assert _effort_for_model("kit.deepseek-v4-flash", "high") == "high"
     opts = _effort_options_for_model("kit.glm-5.3")
-    assert [v for _, v in opts] == ["low", "medium"]
+    assert [v for _, v in opts] == ["low"]
     assert any("profile default" in label and v == "low" for label, v in opts)
     assert [v for _, v in _effort_options_for_model("kit.deepseek-v4-flash")] == ["low", "medium", "high", "xhigh"]
 

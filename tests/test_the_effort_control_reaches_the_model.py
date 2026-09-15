@@ -154,8 +154,10 @@ def test_the_dashboard_starts_from_the_models_profile_default():
 def test_a_saved_choice_wins_over_the_profile_up_to_the_models_ceiling():
     from delfin.dashboard.tab_agent import _effort_for_model
     assert _effort_for_model("kit.deepseek-v4-flash", "high") == "high"
-    # GLM stops at medium: above it the level buys minutes, not answers.
-    assert _effort_for_model("kit.glm-5.3", "high") == "medium"
+    # GLM stops at low since 2026-09-15: above it the level buys minutes,
+    # not answers.
+    assert _effort_for_model("kit.glm-5.3", "high") == "low"
+    assert _effort_for_model("kit.glm-5.3", "medium") == "low"
     assert _effort_for_model("kit.glm-5.3", "low") == "low"
     assert _effort_for_model("kit.glm-5.3", "nonsense") == "low"
 
