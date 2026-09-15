@@ -30,7 +30,8 @@ def collect(workspace: Any, *, now: Optional[float] = None,
     workspace."""
 
     def _theirs(owner: Any) -> bool:
-        return bool(session_id and owner and str(owner) != session_id)
+        # Strict: work nobody owns predates ownership and is no session's.
+        return bool(session_id) and str(owner or "") != session_id
 
     now = time.time() if now is None else float(now)
     ws = str(workspace or "")
@@ -45,6 +46,8 @@ def collect(workspace: Any, *, now: Optional[float] = None,
             if str(jid) not in live:
                 continue
             rec = rec or {}
+            if _theirs(rec.get("session_id")):
+                continue
             view["shells"].append({
                 "id": str(jid),
                 "label": str(rec.get("description") or rec.get("command") or "")[:90],
@@ -76,7 +79,8 @@ def collect(workspace: Any, *, now: Optional[float] = None,
         from . import subagents as _sa
         for sa_id, entry in (_sa.read_running() or {}).items():
             entry = entry or {}
-            if not _sa._entry_owned_by_us(entry):
+            if (not _sa._entry_owned_by_us(entry)
+                    or _theirs(entry.get("owner_session"))):
                 continue      # another session's delegate
             view["agents"].append({
                 "id": str(sa_id),
@@ -120,38 +124,103 @@ def _duration(seconds: float) -> str:
     return f"{s // 3600}h{(s % 3600) // 60:02d}m"
 
 
-def render_html(view: dict, *, now: Optional[float] = None) -> str:
-    """The Background panel; "" when nothing is out, so the panel hides."""
+# What the × on a row does, said where the user can read it first.
+_STOP_TIPS = {
+    "shells": "Stop this command",
+    "watches": "Stop watching — the job itself keeps running",
+    "agents": "Stop this background agent",
+    "wakeups": "Cancel this wake-up",
+}
+
+
+def rows(view: dict, *, now: Optional[float] = None) -> list[dict]:
+    """One row per item: ``kind``, ``label``, ``detail``; ``group`` and ``id``
+    name it for :func:`cancel`, and ``tip`` says what stopping it does."""
     now = time.time() if now is None else float(now)
-    rows: list[tuple[str, str, str]] = []
+    out: list[dict] = []
+
+    def _add(group: str, item_id: str, kind: str, label: str, detail: str):
+        out.append({"group": group, "id": str(item_id), "kind": kind,
+                    "label": label, "detail": detail,
+                    "tip": _STOP_TIPS[group]})
+
     for row in view.get("shells", []):
-        rows.append(("Shell", row["label"] or row["id"],
-                     f"running · {_duration(now - row['since'])}"))
+        _add("shells", row["id"], "Shell", row["label"] or row["id"],
+             f"running · {_duration(now - row['since'])}")
     for row in view.get("watches", []):
         kind = row["kind"].upper() if row["kind"] in ("ci", "slurm") else row["kind"]
-        rows.append((f"Watch · {kind}", row["label"] or row["id"],
-                     f"{row['state'].lower()} · {_duration(now - row['since'])}"))
+        _add("watches", row["id"], f"Watch · {kind}", row["label"] or row["id"],
+             f"{row['state'].lower()} · {_duration(now - row['since'])}")
     for row in view.get("agents", []):
         detail = f"running · {_duration(now - row['since'])}"
         if row.get("last"):
             detail += f" · {row['last']}"
-        rows.append(("Agent", row["label"], detail))
+        _add("agents", row["id"], "Agent", row["label"], detail)
     for row in view.get("wakeups", []):
         label = "Loop" if row["kind"] == "interval" else "Wake-up"
         when = (f"in {_duration(row['at'] - now)}" if row["at"] > now else "due")
-        rows.append((label, row["label"] or row["id"], when))
-    if not rows:
+        _add("wakeups", row["id"], label, row["label"] or row["id"], when)
+    return out
+
+
+def row_html(row: dict) -> str:
+    return ("<div style='display:flex; gap:8px; align-items:baseline; "
+            "font-size:11px; color:#546e7a;'>"
+            f"<span style='min-width:7.5em; color:#37474f; font-weight:600;'>"
+            f"{html.escape(row['kind'])}</span>"
+            f"<span style='flex:1; min-width:0; overflow-wrap:anywhere;'>"
+            f"{html.escape(row['label'])}</span>"
+            f"<span style='color:#78909c; white-space:nowrap;'>"
+            f"{html.escape(row['detail'])}</span></div>")
+
+
+def header_html(count: int) -> str:
+    return (f"<b style='font-size:11px; color:#546e7a;'>Background · "
+            f"{count} running</b>") if count else ""
+
+
+def render_html(view: dict, *, now: Optional[float] = None) -> str:
+    """The Background panel; "" when nothing is out, so the panel hides."""
+    items = rows(view, now=now)
+    if not items:
         return ""
-    body = "".join(
-        "<div style='display:flex; gap:8px; align-items:baseline;'>"
-        f"<span style='min-width:7.5em; color:#37474f; font-weight:600;'>{html.escape(kind)}</span>"
-        f"<span style='flex:1; min-width:0; overflow-wrap:anywhere;'>{html.escape(label)}</span>"
-        f"<span style='color:#78909c; white-space:nowrap;'>{html.escape(detail)}</span>"
-        "</div>"
-        for kind, label, detail in rows)
-    return ("<div style='font-size:11px; color:#546e7a; display:flex; "
-            "flex-direction:column; gap:2px;'>"
-            f"<b>Background · {len(rows)} running</b>{body}</div>")
+    return ("<div style='display:flex; flex-direction:column; gap:2px;'>"
+            + header_html(len(items))
+            + "".join(row_html(row) for row in items) + "</div>")
+
+
+def cancel(workspace: Any, group: str, item_id: str) -> str:
+    """Stop one listed item, and say what happened.
+
+    A shell is terminated, a sub-agent is asked to stop, a wake-up is
+    deleted. A watch only stops being watched: the cluster job or CI run it
+    follows is not the dashboard's to end.
+    """
+    item_id = str(item_id or "")
+    try:
+        if group == "shells":
+            from . import bash_jobs as _bj
+            _ok, message = _bj.get_registry().kill(item_id)
+            return f"Shell {item_id}: {message}"
+        if group == "watches":
+            from . import job_monitor as _jm
+            if _jm.unwatch_agent_job(str(workspace or ""), item_id):
+                return (f"Stopped watching {item_id}; the job itself keeps "
+                        "running.")
+            return f"{item_id} was not being watched."
+        if group == "agents":
+            from . import subagents as _sa
+            if _sa.cancel_background(item_id):
+                return f"Background agent {item_id} is stopping."
+            return f"Background agent {item_id} is not running."
+        if group == "wakeups":
+            from . import scheduler as _sch
+            if _sch.get_scheduler().delete(item_id):
+                return f"Wake-up {item_id} cancelled."
+            return f"Wake-up {item_id} was not scheduled."
+    except Exception as exc:
+        return f"Could not stop {item_id}: {exc}"
+    return f"Nothing to stop for {group} {item_id}."
 
 
 def finished_background_agents(already: set) -> list[dict]:

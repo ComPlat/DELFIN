@@ -6085,6 +6085,9 @@ def create_tab(ctx):
     subagent_panel_html = widgets.HTML(
         value="", layout=widgets.Layout(margin="2px 0 0 0"),
     )
+    # One row per background item, each with its × (the panel's header is
+    # subagent_panel_html above).
+    background_rows_box = widgets.VBox(layout=widgets.Layout(margin="0 0 2px 0"))
     # Session-start stamp (updated on each New Session) so the panel is
     # session-scoped from first load — never leaks a prior session's subagents.
     import time as _t_init
@@ -6102,11 +6105,46 @@ def create_tab(ctx):
         """
         try:
             from delfin.agent import background_view as _bgv
-            subagent_panel_html.value = _bgv.render_html(
-                _bgv.collect(_agent_workspace_path(),
-                             session_id=_ensure_task_session_id() or None))
+            _ws = _agent_workspace_path()
+            _items = _bgv.rows(_bgv.collect(_ws, session_id=_background_owner()))
+            subagent_panel_html.value = _bgv.header_html(len(_items))
+            # Rows are kept by item, so a refresh updates the text and a
+            # pointer resting on a × is not pulled out from under it.
+            _cache = state.setdefault("_background_row_widgets", {})
+            _children = []
+            for _row in _items:
+                _key = (_row["group"], _row["id"])
+                if _key not in _cache:
+                    _label = widgets.HTML(
+                        layout=widgets.Layout(flex="1 1 auto", min_width="0"))
+                    _stop = widgets.Button(
+                        description="×", tooltip=_row["tip"],
+                        layout=widgets.Layout(width="26px", height="22px",
+                                              padding="0"))
+                    _stop.on_click(
+                        lambda _b, _k=_key, _w=_ws: _stop_background(_w, *_k))
+                    _cache[_key] = (widgets.HBox(
+                        [_label, _stop],
+                        layout=widgets.Layout(align_items="center")), _label)
+                _box, _label = _cache[_key]
+                _html = _bgv.row_html(_row)
+                if _label.value != _html:
+                    _label.value = _html
+                _children.append(_box)
+            _listed = {(r["group"], r["id"]) for r in _items}
+            for _gone in [k for k in _cache if k not in _listed]:
+                _cache.pop(_gone, None)
+            if tuple(background_rows_box.children) != tuple(_children):
+                background_rows_box.children = tuple(_children)
         except Exception:
             subagent_panel_html.value = ""
+            background_rows_box.children = ()
+
+    def _stop_background(workspace, group, item_id):
+        """The × on a Background row: stop that item and say what happened."""
+        from delfin.agent import background_view as _bgv
+        _append_system_message(f"⏹ {_bgv.cancel(workspace, group, item_id)}")
+        _refresh_subagent_panel()
 
     def _start_subagent_live_watcher(interval: float = 1.5) -> None:
         """Refresh the subagent panel every ~1.5s WHILE subagents are running,
@@ -6668,7 +6706,7 @@ def create_tab(ctx):
                             _jm_wake._agent_watch_path(_ws)).get("jobs"):
                         _done.extend(_jm_wake.check_agent_jobs(
                             _ws, consume=False, marker="wake_notified",
-                            session_id=_ensure_task_session_id() or None))
+                            session_id=_background_owner()))
                     # A background sub-agent that finished wakes the agent
                     # the same way; the turn it starts drains its report.
                     _done.extend(_bgv_wake.finished_background_agents(
@@ -6773,7 +6811,7 @@ def create_tab(ctx):
          # (live Agent-calls + running/recent telemetry) so "where are the
          # subagents" is never a question again.
          task_ticker_html, todo_pane_html,
-         subagent_pane_html, subagent_panel_html,
+         subagent_pane_html, subagent_panel_html, background_rows_box,
          status_line_html, tool_trace_panel_html,
          security_panel_html],
     )
@@ -7194,6 +7232,15 @@ def create_tab(ctx):
         except Exception:
             pass
         return sid
+
+    def _background_owner() -> str:
+        """Whose background work this session lists and is woken by.
+
+        Its session id -- and before it has one, a token nothing carries:
+        a new session owns nothing yet, and must not show or be woken by
+        the work other conversations left behind.
+        """
+        return _ensure_task_session_id() or f"unsaved-{id(state)}"
 
     def _dropdown_values(options) -> list[str]:
         """Normalize ipywidgets dropdown options to a list of values.
@@ -11482,9 +11529,13 @@ def create_tab(ctx):
                 return True
             _lprompt = _lp[1].strip()
             try:
+                # The loop belongs to this conversation: it fires here, and
+                # only this session lists it.
                 _ent = sch.schedule_interval(
                     every_seconds=_secs, prompt=_lprompt,
-                    reason=f"loop: {_lprompt[:40]}")
+                    reason=f"loop: {_lprompt[:40]}",
+                    session_id=_ensure_task_session_id(
+                        state.get("engine"), create=True))
                 _append_system_message(
                     f"🔁 Loop [{_ent.id}] started — every "
                     f"{max(1, _secs // 60)}m: {_lprompt[:60]}\n"
@@ -18991,6 +19042,7 @@ def create_tab(ctx):
         "workspace": _agent_workspace_path,
         "load_session": _load_saved_session,
         "save": _auto_save_session,
+        "refresh_background": _refresh_subagent_panel,
     }
 
 

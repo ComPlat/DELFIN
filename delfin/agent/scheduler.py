@@ -300,9 +300,9 @@ class Scheduler:
 
         Several dashboard sessions run in one process; a single callback
         sent every wake-up to whichever session was built last. A wake-up
-        goes to the session that ``owns`` its owner; one without an owner
-        goes to the most recently added listener. Adding with a key that is
-        already there replaces that listener.
+        goes to the session that ``owns`` its owner; one without an owner is
+        no session's. Adding with a key that is already there replaces that
+        listener.
         """
         with self._lock:
             self._listeners = [row for row in self._listeners if row[0] != key]
@@ -317,9 +317,11 @@ class Scheduler:
         if not self._listeners:
             return self._fire_callback
         owner = self.owner_of(ent.id)
+        if not owner:
+            # Scheduled before wake-ups had an owner, or from the command
+            # line: no session's, so a new conversation is not woken by it.
+            return self._fire_callback
         for _key, callback, owns in reversed(self._listeners):
-            if not owner:
-                return callback
             try:
                 if owns(owner):
                     return callback

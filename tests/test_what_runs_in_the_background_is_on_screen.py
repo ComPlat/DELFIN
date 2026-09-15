@@ -109,7 +109,7 @@ def _fn(name: str) -> str:
 
 def test_the_panel_shows_what_is_out_not_what_has_finished():
     src = _fn("_refresh_subagent_panel")
-    assert "background_view" in src and "render_html" in src
+    assert "background_view" in src and ".rows(" in src
     assert "read_telemetry" not in src
 
 

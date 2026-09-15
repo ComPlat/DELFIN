@@ -14568,6 +14568,7 @@ class _DocToolExecutor:
 
         try:
             from . import bash_jobs as _bj
+            _job_sid = str(getattr(perms, "task_session_id", "") or "")
             job = _bj.get_registry().start(
                 command=cmd,
                 cwd=str(run_cwd),
@@ -14578,6 +14579,7 @@ class _DocToolExecutor:
                 # somewhere the drain -- which reads the workspace -- never
                 # looks. The job finished and nobody was told.
                 workspace=str(perms.workspace),
+                **({"session_id": _job_sid} if _job_sid else {}),
             )
         except ValueError as exc:
             return json.dumps({"error": str(exc)})
@@ -15662,8 +15664,11 @@ class _DocToolExecutor:
             # to "no such id", which reads as an invented id rather than as
             # a run that has to be started again.
             try:
-                _sa.reserve_running(_collect_id, subagent_type=sa_type,
-                                    description=description)
+                _owner_sid = str(getattr(perms, "task_session_id", "") or "")
+                _sa.reserve_running(
+                    _collect_id, subagent_type=sa_type,
+                    description=description,
+                    **({"owner_session": _owner_sid} if _owner_sid else {}))
             except Exception:
                 pass
 
