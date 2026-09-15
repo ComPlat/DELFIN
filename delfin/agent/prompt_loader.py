@@ -726,6 +726,28 @@ class PromptLoader:
         except Exception:
             return ""
 
+    def _commit_attribution_block(self, model: str = "") -> str:
+        """The co-author trailer the agent ends its commits with.
+
+        On by default; ``agent.commit_coauthor = false`` turns it off, and
+        the user's own instructions or remembered preferences win over it --
+        the same order Claude Code keeps for its attribution line.
+        """
+        try:
+            from delfin.user_settings import load_settings
+            agent = (load_settings() or {}).get("agent") or {}
+            if not bool(agent.get("commit_coauthor", True)):
+                return ""
+        except Exception:
+            pass
+        name = f"DELFIN-Agent ({model})" if model else "DELFIN-Agent"
+        return ("--- Commit attribution ---\n"
+                "End every git commit message you write with this trailer:\n"
+                f"Co-Authored-By: {name} <noreply@delfin-agent.invalid>\n"
+                "The user's instructions and remembered preferences win: if "
+                "they say to leave the line out or word it differently, do "
+                "that.")
+
     def _build_session_env_block(self) -> str:
         """Build a CLI-style environment summary for the system prompt.
 
@@ -1893,6 +1915,12 @@ class PromptLoader:
             env_block = self._build_session_env_block()
             add("session_env", self.LAYER_VOLATILE,
                 f"--- Session Environment ---\n{env_block}" if env_block else "")
+
+            # Who wrote a commit, named the way Claude Code names itself:
+            # the agent and the model behind it, so a history read later
+            # says which model made which change.
+            add("commit_attribution", self.LAYER_VOLATILE,
+                self._commit_attribution_block(model))
 
             # What this workspace ships that is not in force. Before the
             # live state, because it is stable for as long as the trust is

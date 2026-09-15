@@ -401,6 +401,16 @@ def test_a_red_suite_no_test_of_the_edit_is_part_of_forces_no_fix(tmp_path):
     assert "test_collector.py" in status.get("reason", "")
 
 
+def test_a_coloured_pytest_summary_still_names_the_failing_file():
+    """Where pytest colours its output, "FAILED" arrives inside escape codes
+    and no summary line matched -- this file's own test failed that way in
+    the agent's suite run (report 20260915-125310)."""
+    from delfin.agent.api_client import _failing_test_files
+    out = ("\x1b[31mFAILED\x1b[0m tests/test_collector.py::"
+           "\x1b[1mtest_keys\x1b[0m - AssertionError")
+    assert _failing_test_files(out) == {"tests/test_collector.py"}
+
+
 def test_the_tests_that_import_an_edited_module_are_found(tmp_path):
     from delfin.agent.api_client import _related_test_files
     src = tmp_path / "pkg" / "dashboard"
