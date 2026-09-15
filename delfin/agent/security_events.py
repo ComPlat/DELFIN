@@ -57,6 +57,7 @@ _KINDS = {
     "isolation":      ("🔒", "Filesystem isolation active"),
     "egress":         ("🌐", "Outbound data transfer"),
     "push_unrequested": ("📤", "Push nobody asked for"),
+    "push_default_branch": ("🔀", "Contributor push to the default branch"),
     "auto_verify":    ("🔁", "Auto-verify caught a problem"),
     "auto_verify_exhausted": ("🔁", "Auto-verify gave up"),
     "test_tamper":    ("🧪", "Failing test edited"),

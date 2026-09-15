@@ -524,7 +524,8 @@ target-selection cases on top of it:
 
 - Run `git diff` before committing to verify changes
 - **One push per request**, only once the covering tests pass; a later push
-  needs the user to ask again (the gate enforces it).
+  needs the user to ask again (the gate enforces it). As a contributor
+  (`agent.git_role`), never onto the default branch: branch, push, PR link.
 - **After a push CI is pending, not green**: DELFIN watches it
   (`ci:<owner>/<repo>@<sha>`) and reports in a later turn. No poll loops.
 - **No `git stash` in the user's checkout** — the stash is shared; commit on
