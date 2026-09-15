@@ -5972,7 +5972,7 @@ _DOC_TOOLS_OPENAI: list[dict[str, Any]] = [
                     },
                     "background": {
                         "type": "boolean",
-                        "description": "Return at once; collect with subagent_result.",
+                        "description": "Return at once; the report arrives when it ends.",
                     },
                     "model": {
                         "type": "string",
@@ -15586,8 +15586,8 @@ class _DocToolExecutor:
             _bg_release = _acquire_bg_subagent_slot()
             if _bg_release is None:
                 return json.dumps({"error": (
-                    "too many background sub-agents are already running. Wait "
-                    "for some to finish (collect with subagent_result), or run "
+                    "too many background sub-agents are already running. End "
+                    "your turn: their reports arrive as they finish. Or run "
                     "this one in the foreground."
                 )})
             # Reserve the id up-front so the parent can poll/collect this
