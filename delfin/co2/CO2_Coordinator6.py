@@ -72,6 +72,15 @@ scan_job=OPT
 scan_end=1.6
 scan_steps=25
 
+# Inverse RSS (dissociation scan; see scan_dissoc)
+# adduct_xyz: pre-optimised adduct geometry to start the scan from its M–substrate bond length
+# scan_dissoc=true: scan outward from r0 to dissoc_distance instead of inward to scan_end
+# dissoc_distance: target M–substrate distance for dissociation (default 6.0 A)
+------------------------------------
+adduct_xyz=
+scan_dissoc=false
+dissoc_distance=6.0
+
 # Alignment (0-based indices)
 ------------------------------------
 metal=auto
@@ -202,7 +211,8 @@ def _minimal_read_control_file(path="CONTROL.txt"):
             params[key] = val
 
     # Explicit type coercion
-    for key in ["distance", "scan_end", "orientation_distance", "place_clearance_scale"]:
+    for key in ["distance", "scan_end", "orientation_distance", "place_clearance_scale",
+                "dissoc_distance"]:
         if key in params and isinstance(params[key], str):
             params[key] = float(params[key])
     for key in ["scan_steps", "charge", "multiplicity", "PAL", "maxcore", "rot_step_deg",
@@ -363,6 +373,23 @@ def _is_enabled(value) -> bool:
     if value is None:
         return False
     return str(value).strip().lower() in {"yes", "true", "1", "on"}
+
+
+def _parse_binding_spec(args) -> "Optional[str]":
+    """Normalize the binding specification.
+
+    Accepted forms:
+      binding=atom-on:<sym> | bond-on:i-j | end-on:<sym> | side-on
+    Legacy `mode=side-on/end-on` maps to binding=side-on/end-on.
+    Returns None if neither key is set (caller falls back to the current default).
+    """
+    binding = args.get("binding")
+    if isinstance(binding, str) and binding.strip():
+        return binding.strip()
+    mode = args.get("mode")
+    if isinstance(mode, str) and mode.strip():
+        return mode.strip()
+    return None
 
 
 def _parse_float(value, default: float) -> float:
@@ -677,6 +704,45 @@ def _find_max_clearance_direction(atoms, metal_index, distance, samples=800, cle
 
     return best_dir / np.linalg.norm(best_dir), best_clearance
 
+# Approximate covalent radii (A) used as anchor clearance radii for general
+# substrates. Values follow ASE's covalent_radii defaults (Cordero-like).
+_ANCHOR_RADII = {
+    "H": 0.31, "B": 0.84, "C": 0.76, "N": 0.71, "O": 0.66, "F": 0.57,
+    "Si": 1.11, "P": 1.07, "S": 1.05, "Cl": 1.02, "Br": 1.20, "I": 1.39,
+}
+
+def _anchor_radius(symbol: str) -> float:
+    return _ANCHOR_RADII.get(symbol, 1.0)
+
+
+def _parse_binding_spec_args(spec: "Optional[str]") -> dict:
+    """Parse a binding spec string into placement parameters.
+
+    Accepted forms (as produced by _parse_binding_spec):
+      atom-on:<sym>   -> anchor atom symbol, rest of substrate points away from metal
+      bond-on:i-j     -> bond (0-based local substrate indices) midpoint at distance
+      end-on:<sym>    -> anchor atom symbol, rest points TOWARD the metal axis
+      side-on         -> legacy flat orientation (perp axis)
+    """
+    if not spec:
+        return {"mode": "side-on"}
+    s = spec.strip()
+    if s == "side-on":
+        return {"mode": "side-on"}
+    if s.startswith("atom-on:"):
+        return {"mode": "atom-on", "anchor_symbol": s.split(":", 1)[1].strip()}
+    if s.startswith("end-on:"):
+        return {"mode": "end-on", "anchor_symbol": s.split(":", 1)[1].strip()}
+    if s.startswith("bond-on:"):
+        try:
+            i, j = s.split(":", 1)[1].split("-")
+            return {"mode": "bond-on", "bond": (int(i), int(j))}
+        except ValueError:
+            raise ValueError(f"Invalid bond-on spec '{s}' (expected bond-on:i-j with 0-based indices).")
+    # Legacy end-on / mode strings pass through unchanged
+    return {"mode": s}
+
+
 def place_co2_general(complex_path, co2_path, out_path, distance=5.0, place_axis='z', mode='side-on',
                       perp_axis='y', optimize_direction=True, direction_samples=800, clearance_scale=1.0,
                       qm_count=None, qm_separator="$"):
@@ -704,6 +770,11 @@ def place_co2_general(complex_path, co2_path, out_path, distance=5.0, place_axis
     clearance = None
     place_dir = axis_target
 
+    # Resolve binding mode once: 'mode' stays a plain string (legacy values
+    # side-on/end-on pass through unchanged); structured specs like
+    # 'atom-on:O' or 'bond-on:0-2' are parsed into binding_params.
+    binding_params = _parse_binding_spec_args(mode if isinstance(mode, str) else "side-on")
+    resolved_mode = binding_params["mode"]
     is_negative_axis = isinstance(place_axis, str) and place_axis.startswith("-")
 
     if optimize_direction and metal_index is not None:
@@ -757,7 +828,7 @@ def place_co2_general(complex_path, co2_path, out_path, distance=5.0, place_axis
     axis, center, c_idx_local = _co2_axis_center_indices(co2)
     co2.positions -= center  # center CO2 on its C
 
-    if mode == "side-on":
+    if resolved_mode == "side-on":
         perp_target = _axis_vector(perp_axis)
         if optimize_direction and metal_index is not None:
             perp_projected = project_to_plane(perp_target, place_dir)
@@ -768,10 +839,55 @@ def place_co2_general(complex_path, co2_path, out_path, distance=5.0, place_axis
                 perp_projected = project_to_plane(fallback, place_dir)
             perp_target = perp_projected / np.linalg.norm(perp_projected)
         target = perp_target
+        R = rot_from_vecs(axis, target)
+        co2.positions = co2.positions @ R.T + distance * place_dir
+    elif resolved_mode in ("atom-on", "end-on"):
+        anchor_symbol = binding_params.get("anchor_symbol")
+        if not anchor_symbol:
+            raise ValueError(f"{resolved_mode} requires an anchor symbol, e.g. mode={resolved_mode}:O.")
+        sym_list = co2.get_chemical_symbols()
+        cand = [i for i, s in enumerate(sym_list) if s.lower() == anchor_symbol.lower()]
+        if not cand:
+            raise ValueError(f"Anchor atom '{anchor_symbol}' not found in substrate.")
+        # Prefer the unique match; with several, take the one closest to the substrate center
+        anchor_idx = cand[0] if len(cand) == 1 else min(cand, key=lambda i: np.linalg.norm(co2.positions[i] - center))
+        # Orientation: fragment vector (anchor -> rest COM) along place_dir
+        # atom-on: anchor at the metal, remainder pointing away -> align fragment vector with +place_dir
+        # end-on: remainder initially on the metal side -> align fragment vector with -place_dir
+        anchor_pos = co2.positions[anchor_idx]
+        if len(co2) > 1:
+            rest_com = (co2.positions.sum(axis=0) - anchor_pos) / (len(co2) - 1)
+            frag_vec = rest_com - anchor_pos
+            if np.linalg.norm(frag_vec) > 1e-9:
+                sign = +1.0 if resolved_mode == "atom-on" else -1.0
+                R = rot_from_vecs(sign * frag_vec, place_dir)
+                co2.positions = co2.positions @ R.T
+        # Anchor atom sits at 'distance' along place_dir
+        co2.positions = co2.positions - co2.positions[anchor_idx] + distance * place_dir
+    elif resolved_mode == "bond-on":
+        bond = binding_params.get("bond")
+        if bond is None:
+            raise ValueError("bond-on requires a bond spec, e.g. mode=bond-on:0-2.")
+        i, j = bond
+        if not (0 <= i < len(co2)) or not (0 <= j < len(co2)) or i == j:
+            raise ValueError(f"Invalid bond indices {bond} for substrate with {len(co2)} atoms.")
+        # Bond axis perpendicular to the placement direction
+        bond_vec = co2.positions[j] - co2.positions[i]
+        if np.linalg.norm(bond_vec) > 1e-9:
+            perp_ref = project_to_plane(np.array([1.0, 0.0, 0.0]), place_dir)
+            if np.linalg.norm(perp_ref) < 1e-6:
+                perp_ref = project_to_plane(np.array([0.0, 1.0, 0.0]), place_dir)
+            perp_ref /= np.linalg.norm(perp_ref)
+            R = rot_from_vecs(bond_vec, perp_ref)
+            co2.positions = co2.positions @ R.T
+        # Bond midpoint sits at 'distance' along place_dir
+        mid = (co2.positions[i] + co2.positions[j]) / 2.0
+        co2.positions = co2.positions - mid + distance * place_dir
     else:
+        # Legacy 'end-on' (without symbol) and any unknown string: C-first along place_dir
         target = place_dir if (optimize_direction and metal_index is not None) else axis_target
-    R = rot_from_vecs(axis, target)
-    co2.positions = co2.positions @ R.T + distance * place_dir
+        R = rot_from_vecs(axis, target)
+        co2.positions = co2.positions @ R.T + distance * place_dir
 
     if metal_index is not None:
         comp.positions += metal_shift
@@ -1392,6 +1508,23 @@ def main():
     # Distance scan settings
     scan_end = args.get("scan_end", 1.7)
     scan_steps = args.get("scan_steps", 15)
+
+    # Inverse RSS settings (Task #108)
+    adduct_xyz = (args.get("adduct_xyz") or "").strip() if isinstance(args.get("adduct_xyz"), str) else args.get("adduct_xyz")
+    scan_dissoc = _is_enabled(args.get("scan_dissoc", False))
+    dissoc_distance = args.get("dissoc_distance", 6.0)
+    if scan_dissoc:
+        if not adduct_xyz:
+            raise ValueError("scan_dissoc=true requires adduct_xyz (path to the pre-optimised adduct geometry).")
+        if not os.path.exists(adduct_xyz):
+            raise FileNotFoundError(f"adduct_xyz not found: {adduct_xyz}")
+        try:
+            dissoc_distance = float(dissoc_distance)
+        except (ValueError, TypeError):
+            raise ValueError(f"Invalid dissoc_distance value: {dissoc_distance!r}")
+        if dissoc_distance <= 0:
+            raise ValueError(f"dissoc_distance must be positive, got {dissoc_distance}")
+        print(f"[INFO] Inverse RSS mode: scan from adduct r0 ({adduct_xyz}) outward to {dissoc_distance} A.")
 
     # --- 1) Align complex ---
     neighbors = [int(i) for i in args["neighbors"].split(",")] if args.get("neighbors") else None
