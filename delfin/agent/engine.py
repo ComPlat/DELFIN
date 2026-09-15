@@ -1776,6 +1776,18 @@ class AgentEngine:
         # Directory of the first project write ("." == workspace root).
         self._project_dir = path.rsplit("/", 1)[0] if "/" in path else "."
 
+    @staticmethod
+    def _is_test_location(path: str) -> bool:
+        """Whether *path* is a test file or lies in a tests directory."""
+        parts = [p for p in str(path or "").replace("\\", "/").split("/") if p]
+        if not parts:
+            return False
+        name = parts[-1]
+        if ((name.startswith("test_") and name.endswith(".py"))
+                or name.endswith("_test.py") or name == "conftest.py"):
+            return True
+        return any(p in ("tests", "test") for p in parts)
+
     def _note_stray_write(self, tool_name: str, tool_input: Any) -> None:
         """Say it mid-turn when a write lands outside the pinned directory.
 
@@ -1817,6 +1829,12 @@ class AgentEngine:
             return
         here = path.rsplit("/", 1)[0]
         if here == pinned or here.startswith(pinned.rstrip("/") + "/"):
+            return
+        # A test and the code it tests are one piece of work, however far
+        # apart the project keeps them: report 20260915-084010 edited
+        # delfin/dashboard/, wrote its test into tests/ beside the rest of
+        # the suite, and was told to move one of the two.
+        if self._is_test_location(path) or self._is_test_location(pinned):
             return
         self._stray_write_noted = True
         try:
@@ -2171,6 +2189,9 @@ class AgentEngine:
             # language there outranks the session pin — and a live GLM
             # turn read both and said so in its own reasoning.
             session_language=str(getattr(self, "_session_language", "") or ""),
+            # The episode recall leaves this session out: it is saved
+            # before its first turn and would otherwise match itself.
+            session_id=str(getattr(self, "session_id", "") or ""),
         )
 
     def stream_response(

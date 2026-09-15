@@ -330,6 +330,7 @@ def recall_episodes(
     *,
     max_entries: int = 2,
     max_chars: int = 1200,
+    exclude_session_id: str = "",
 ) -> str:
     """Compact prompt block of past sessions similar to ``task_text``.
 
@@ -338,8 +339,18 @@ def recall_episodes(
     returned, newest first on ties. Empty store, empty task text or no
     match all yield ``""`` so the prompt only grows when there is a real
     hook. Output is capped at ``max_entries`` lines / ``max_chars``.
+
+    ``exclude_session_id`` is the session asking. The dashboard saves an
+    episode before a turn runs, so without it the request being answered
+    matched itself best and came back as a past session with "no outcome
+    recorded" -- and the model (report 20260915-084010) went looking for
+    the earlier attempt and wrote "asked for twice" into a commit.
     """
     episodes = list_episodes(repo_root)
+    if exclude_session_id:
+        own = _safe_sid(exclude_session_id)
+        episodes = [ep for ep in episodes
+                    if _safe_sid(ep.get("session_id", "")) != own]
     if not episodes or not (task_text or "").strip():
         return ""
 

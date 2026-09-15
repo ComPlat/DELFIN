@@ -15454,6 +15454,9 @@ def create_tab(ctx):
         def _worker():
             nonlocal _sm_approval
             chunks = []
+            # True while `chunks` holds an answer already closed in its
+            # bubble by a notice (see _on_notice): it is not drawn again.
+            answer_shown = [False]
             thinking_chunks = []
             tool_count = [0]  # mutable counter for tool calls in this turn
             turn_tools: set[str] = set()  # tool names used this turn (verify-guard)
@@ -15495,6 +15498,18 @@ def create_tab(ctx):
                     was rendered inside the answer, three times over."""
                     state["_last_stream_activity"] = time.monotonic()
                     if text and text.strip():
+                        # Close the answer so far before the notice goes
+                        # under it. Left open, the next token found the
+                        # notice at the end of the chat, opened a new bubble
+                        # and filled it with the whole buffer: an auto-verify
+                        # round showed the finished answer twice (report
+                        # 20260915-084010). The buffer itself is kept until
+                        # new text arrives -- a notice that ends the turn
+                        # must not take the answer from what reads it after.
+                        if chunks and not answer_shown[0]:
+                            _update_last_assistant("".join(chunks), role_label,
+                                                   finalize=True)
+                            answer_shown[0] = True
                         _append_system_message(text.strip())
 
                 def _on_token(text):
@@ -15503,6 +15518,11 @@ def create_tab(ctx):
                     state["_tool_inflight"] = {}   # see _on_thinking
                     if state.get("_stale_seen"):
                         state["_stale_seen"] = False
+                    if answer_shown[0]:
+                        # Text after a notice is a new answer, in its own
+                        # bubble; the one before is already on screen.
+                        chunks.clear()
+                        answer_shown[0] = False
                     # When first text arrives, flush thinking as collapsed block
                     if thinking_chunks and not chunks:
                         full_thinking = "".join(thinking_chunks)
@@ -15538,9 +15558,11 @@ def create_tab(ctx):
                     # NEW one holding the whole buffer -- the answer, a
                     # second time, above the tool calls that verified it.
                     if chunks:
-                        _update_last_assistant("".join(chunks), role_label,
-                                               finalize=True)
+                        if not answer_shown[0]:
+                            _update_last_assistant("".join(chunks), role_label,
+                                                   finalize=True)
                         chunks.clear()
+                        answer_shown[0] = False
                     if thinking_chunks:
                         full_thinking = "".join(thinking_chunks)
                         if full_thinking.strip():
@@ -15966,8 +15988,10 @@ def create_tab(ctx):
 
                 def _on_permission_denied(description):
                     if chunks:
-                        _update_last_assistant("".join(chunks), role_label)
+                        if not answer_shown[0]:
+                            _update_last_assistant("".join(chunks), role_label)
                         chunks.clear()
+                        answer_shown[0] = False
                     denied_raw = str(description)
                     readable = _format_tool_description(denied_raw)
                     state["_last_denied"] = denied_raw
@@ -16403,10 +16427,11 @@ def create_tab(ctx):
                             and isinstance(_final_text, str)
                             and _final_text.strip()):
                         chunks[:] = [_final_text]
+                        answer_shown[0] = False
                         _append_system_message(
                             _self_verification_note(True))
                     # Final update: finalize=True triggers full markdown rendering
-                    if chunks:
+                    if chunks and not answer_shown[0]:
                         _update_last_assistant("".join(chunks), role_label, finalize=True)
 
                     # Files the answer NAMED, which the artifact diff above

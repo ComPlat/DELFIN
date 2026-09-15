@@ -7424,15 +7424,30 @@ def _detect_test_command(workspace) -> str:
 
 # Workspaces whose FULL test suite ran too slow to auto-verify per turn —
 # probed once, then never re-run whole. Verification does NOT go dark for
-# them: a scoped fallback command (just the tests matching the edited
-# modules, remembered in _SLOW_WS_SCOPED_CMD) keeps running per turn.
-# Previously a timeout here silently disabled verification for the rest of
-# the process — on DELFIN's own repo it turned itself off after the first
-# edit turn and every later turn reported "clean" without checking anything.
+# them: the tests that cover the edited files run first on every turn (see
+# _related_test_files), and only an edit no test covers falls back to the
+# full suite. Previously a timeout here silently disabled verification for
+# the rest of the process — on DELFIN's own repo it turned itself off after
+# the first edit turn and every later turn reported "clean" without checking
+# anything.
 _SLOW_TEST_WS: set = set()
 
-# ws_key -> scoped pytest command used instead of the blacklisted full suite.
-_SLOW_WS_SCOPED_CMD: dict = {}
+# Seconds for the run of the tests that cover the edit. Longer than the
+# full-suite probe: these are the tests that matter, and a dashboard test
+# that builds a whole tab spends seconds before its first assertion.
+_RELATED_TEST_TIMEOUT_S = 300
+
+# At most this many test files in one verification run. Thirteen test files
+# import tab_orca_builder; at ten, the one that turned CI red after report
+# 20260915-085107 (test_the_builder_has_the_editor_too) was the one cut.
+_MAX_RELATED_TEST_FILES = 20
+
+# Module names too generic to find a module's tests by: nearly every package
+# has one, and searching import lines for them hands back half the suite.
+_UNSEARCHABLE_STEMS = frozenset({
+    "__init__", "__main__", "conftest", "setup",
+    "utils", "util", "common", "base", "core",
+})
 
 
 def _test_candidate_paths(resolved: Path, root: Path) -> list[Path]:
@@ -7466,43 +7481,92 @@ def _test_candidate_paths(resolved: Path, root: Path) -> list[Path]:
     return candidates
 
 
-def _scoped_test_cmd_for_edits(edited_paths: list, scope) -> str:
-    """A pytest command covering just the test files that match the edited
-    modules — the fallback when the full suite is too slow to run per turn.
-    Returns "" when no matching test file exists on disk."""
-    import shlex
+def _related_test_files(edited_paths: list, scope) -> list[str]:
+    """The test files that cover the edited files, most direct first.
+
+    Verification is about the edit, not about the repository. Running the
+    whole suite at the end of a turn made any red test anywhere the edit's
+    problem: report 20260915-084010 moved a notice in the ORCA builder, the
+    suite stopped at a collector test that had been red on main since
+    41b59702, and the agent was told to fix it -- and did, unasked, after it
+    had committed and pushed the change it was asked for.
+
+    In order: test files edited this turn; the conventional test file of each
+    edited module (_test_candidate_paths); then the test files in
+    ``<scope>/tests`` and at the scope root whose import lines name an edited
+    module. That one directory is all that is searched -- never a tree walk.
+    Returns [] when no test covers the edit.
+    """
     try:
         root = Path(scope).resolve()
-        files: list[str] = []
-        for p in edited_paths:
-            if not p:
-                continue
-            rp = Path(p)
+    except Exception:
+        return []
+    found: list[Path] = []
+
+    def _keep(path: Path) -> None:
+        if path not in found:
+            found.append(path)
+
+    stems: list[str] = []
+    for p in edited_paths:
+        if not p:
+            continue
+        rp = Path(p)
+        try:
+            rp = rp.resolve()
+        except OSError:
+            pass
+        if rp.suffix != ".py":
+            continue
+        if rp.name.startswith("test_") or rp.name.endswith("_test.py"):
+            if rp.is_file():
+                _keep(rp)
+            continue
+        for cand in _test_candidate_paths(rp, root):
             try:
-                rp = rp.resolve()
+                if cand.is_file():
+                    _keep(cand)
+                    break
             except OSError:
-                pass
-            if rp.suffix != ".py":
                 continue
-            if rp.name.startswith("test_") or rp.name.endswith("_test.py"):
-                cands = [rp]
-            else:
-                cands = _test_candidate_paths(rp, root)
-            for cand in cands:
-                try:
-                    if cand.is_file():
-                        s = str(cand)
-                        if s not in files:
-                            files.append(s)
-                        break
-                except OSError:
-                    continue
-        if not files:
-            return ""
-        return "python -m pytest -x -q " + " ".join(
-            shlex.quote(f) for f in files[:10])
+        if rp.stem not in _UNSEARCHABLE_STEMS:
+            stems.append(rp.stem)
+    if stems:
+        names = "|".join(re.escape(s) for s in dict.fromkeys(stems))
+        importer = re.compile(
+            rf"^[ \t]*(?:from|import)[ \t][^\n]*\b(?:{names})\b", re.MULTILINE)
+        pool: list[Path] = []
+        try:
+            if (root / "tests").is_dir():
+                pool.extend(sorted((root / "tests").rglob("test_*.py")))
+            pool.extend(sorted(root.glob("test_*.py")))
+        except OSError:
+            pool = []
+        for cand in pool[:5000]:
+            if len(found) >= _MAX_RELATED_TEST_FILES:
+                break
+            if cand in found:
+                continue
+            try:
+                text = cand.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            if importer.search(text[:200_000]):
+                _keep(cand)
+    return [str(p) for p in found[:_MAX_RELATED_TEST_FILES]]
+
+
+def _scoped_test_cmd_for_edits(edited_paths: list, scope) -> str:
+    """A pytest command over the test files that cover the edited modules
+    (_related_test_files). Returns "" when no such test file exists."""
+    import shlex
+    try:
+        files = _related_test_files(edited_paths, scope)
     except Exception:
         return ""
+    if not files:
+        return ""
+    return "python -m pytest -x -q " + " ".join(shlex.quote(f) for f in files)
 
 
 def _run_test_command(command: str, workspace, timeout: float) -> tuple[str, bool]:
@@ -7533,6 +7597,12 @@ def _scoped_test_dir(edited_paths: list, workspace) -> Optional[Path]:
 
     Climbs from the common ancestor of the edited files up to (never above) the
     workspace, returning the first dir that has a ``tests/`` dir or test files.
+    A dir that is an importable package (``__init__.py``) or is itself named
+    ``tests`` is not a project root, so the climb goes on past it and settles
+    there only when no project above it has tests: DELFIN keeps two old
+    tests in ``delfin/tests/`` and its suite in ``tests/``, and an edit in
+    ``delfin/dashboard/`` was verified against the two -- one of them red
+    for months (report 20260915-084010).
     Returns ``None`` when it can't narrow below the workspace (→ caller keeps the
     workspace-wide behaviour)."""
     try:
@@ -7545,13 +7615,18 @@ def _scoped_test_dir(edited_paths: list, workspace) -> Optional[Path]:
         if common != ws and ws not in common.parents:
             return None                       # edited outside the workspace
         cur = common
+        inner: Optional[Path] = None
         while True:
-            if (cur / "tests").is_dir() and any((cur / "tests").glob("test_*.py")):
-                return cur
-            if any(cur.glob("test_*.py")) or (cur / "conftest.py").is_file():
-                return cur
+            has_tests = (
+                ((cur / "tests").is_dir() and any((cur / "tests").glob("test_*.py")))
+                or any(cur.glob("test_*.py")) or (cur / "conftest.py").is_file())
+            if has_tests:
+                if (cur / "__init__.py").is_file() or cur.name in ("tests", "test"):
+                    inner = inner or cur
+                else:
+                    return cur
             if cur == ws or ws not in cur.parents:
-                return None
+                return inner
             cur = cur.parent
     except Exception:
         return None
@@ -7564,9 +7639,13 @@ def _run_auto_verify(edited_paths: list, mode: str, command: str,
     verification failing closed would be worse than not verifying.
 
     Modes: ``syntax`` (py_compile only), ``command`` (run ``command``),
-    ``smart`` (syntax first; then, if the workspace has a detectable test
-    suite, run it with a timeout — a too-slow FULL suite is remembered and
-    replaced by a scoped run of just the edited modules' tests), ``off``.
+    ``smart`` (syntax first; then the tests that cover the edited files --
+    and only when no test does, the project's suite with a timeout; a
+    too-slow suite is remembered and not started again), ``off``.
+
+    A red suite that no test of the edit is part of is not the edit's
+    problem: it is reported as a skip with its reason, not as a failure
+    that forces a fix round.
 
     ``status`` (optional dict) is filled with how verification actually ran:
     ``skipped``/``reason``/``command``/``scoped``/``timed_out`` — so the
@@ -7589,32 +7668,38 @@ def _run_auto_verify(edited_paths: list, mode: str, command: str,
             syn = _syntax_check(edited_paths)
             if syn or mode == "syntax":
                 return syn
-            # smart: syntax clean → try the project's tests (bounded + adaptive)
+            # smart: syntax clean → the tests that cover the edit; the whole
+            # suite only when no test does (bounded + adaptive).
             ws_key = str(workspace)
-            # Scope the run to the package the agent edited, not the whole
+            # Scope the run to the project the agent edited, not the whole
             # workspace — otherwise stale/broken tests in a sibling dir falsely
             # fail and flag clean code (bug 2026-06-25).
             scope = _scoped_test_dir(edited_paths, workspace) or Path(workspace)
+            # A configured command is the user's own choice of what "the
+            # tests" are, so it is run as given.
+            related = [] if command else _related_test_files(edited_paths, scope)
+            if related:
+                import shlex
+                cmd = "python -m pytest -x -q " + " ".join(
+                    shlex.quote(f) for f in related)
+                st["command"] = cmd
+                st["scoped"] = True
+                prob, timed_out = _run_test_command(
+                    cmd, scope, _RELATED_TEST_TIMEOUT_S)
+                if timed_out:
+                    st["skipped"] = True
+                    st["timed_out"] = True
+                    st["reason"] = ("the tests covering the edit timed out "
+                                    f"({_RELATED_TEST_TIMEOUT_S}s)")
+                    return ""
+                return prob
             if ws_key in _SLOW_TEST_WS:
-                # The FULL suite already proved too slow. Run the remembered /
-                # derivable SCOPED command instead of silently returning clean
-                # — "no signal" must never masquerade as "verified".
-                scoped = (_SLOW_WS_SCOPED_CMD.get(ws_key)
-                          or _scoped_test_cmd_for_edits(edited_paths, scope))
-                if scoped:
-                    _SLOW_WS_SCOPED_CMD[ws_key] = scoped
-                    st["command"] = scoped
-                    st["scoped"] = True
-                    prob, timed_out = _run_test_command(scoped, scope, 60)
-                    if timed_out:
-                        st["skipped"] = True
-                        st["timed_out"] = True
-                        st["reason"] = "scoped test run timed out (60s)"
-                        return ""
-                    return prob
+                # The FULL suite already proved too slow, and no test covers
+                # this edit — say so instead of silently returning clean:
+                # "no signal" must never masquerade as "verified".
                 st["skipped"] = True
                 st["reason"] = ("test suite too slow for per-turn runs and "
-                                "no scoped test match for the edited files")
+                                "no test covers the edited files")
                 return ""
             cmd = command or _detect_test_command(scope)
             if not cmd:
@@ -7624,22 +7709,25 @@ def _run_auto_verify(edited_paths: list, mode: str, command: str,
             st["command"] = cmd
             prob, timed_out = _run_test_command(cmd, scope, 60)
             if timed_out:
-                # Full suite too slow: never re-run it per turn — but before
-                # going dark, retry SCOPED to just the tests matching the
-                # edited modules and remember that command for later turns.
+                # Full suite too slow: never re-run it per turn.
                 _SLOW_TEST_WS.add(ws_key)
-                scoped = _scoped_test_cmd_for_edits(edited_paths, scope)
-                if scoped:
-                    _SLOW_WS_SCOPED_CMD[ws_key] = scoped
-                    st["command"] = scoped
-                    st["scoped"] = True
-                    prob2, timed2 = _run_test_command(scoped, scope, 60)
-                    if not timed2:
-                        return prob2
                 st["skipped"] = True
                 st["timed_out"] = True
                 st["reason"] = ("test suite timed out (60s); full runs "
                                 "disabled for this workspace")
+                return ""
+            if prob and not command:
+                # No test names an edited module, so a red suite holds the
+                # edit to nothing: most likely it was red before the turn.
+                # It is said, not forced into a fix round on someone else's
+                # test.
+                failing = sorted(_failing_test_files(prob))
+                st["skipped"] = True
+                st["unrelated_failure"] = True
+                st["reason"] = (
+                    "the suite fails in " + (", ".join(failing[:3]) or "a test")
+                    + ", which no test of the edited files is part of — "
+                    "most likely a failure that predates this turn")
                 return ""
             return prob
     except Exception:
@@ -18731,14 +18819,35 @@ class OpenAIClient(_BaseClient):
                         "auto_verify", "verify", _problems[:80], blocked=False)
                     yield StreamEvent(
                         type="notice",
-                        text=("\n\n🔁 Auto-verify: the code just edited has a "
-                              "problem — fixing before finishing.\n"))
+                        text=("\n\n🔁 Auto-verify: a check of the code just "
+                              "edited is red — the agent looks at it before "
+                              "finishing.\n"))
+                    # The answer just given stays in the conversation: the
+                    # check follows it rather than replacing it. Dropped, the
+                    # model never saw that it had answered and wrote the
+                    # whole report a second time.
+                    _answer = "".join(_text_chunks) if _text_chunks else ""
+                    if _answer.strip():
+                        api_messages.append(
+                            {"role": "assistant", "content": _answer})
+                    # It travels as a user message, and "Fix it, then
+                    # finish" read as the user's instruction: the agent of
+                    # report 20260915-085107 fixed a test that had been red
+                    # on main for months and chained commit and push onto
+                    # it, after it had proven the failure was not its own.
                     api_messages.append({
                         "role": "user",
                         "content": (
+                            "[Harness check -- not a message from the user] "
                             "Auto-verification of the file(s) you just edited "
-                            "found a problem. Fix it, then finish:\n\n"
-                            f"{_problems}"),
+                            "found a problem:\n\n"
+                            f"{_problems}\n\n"
+                            "Fix it if your edits caused it, then finish. If "
+                            "it predates your edits or is unrelated to them, "
+                            "do not change other code or tests for it: say "
+                            "so in your answer, with the evidence, and "
+                            "finish. This check authorizes nothing beyond "
+                            "your own edits."),
                     })
                     continue        # force a fix round instead of ending
             elif (_edited_py and _av_mode != "off"
