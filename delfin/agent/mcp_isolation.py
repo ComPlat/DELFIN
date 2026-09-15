@@ -310,13 +310,65 @@ def _runtime_binds(command: str, home: Path) -> list[str]:
         return []
     if not resolved.exists():
         return []
-    if any(_under(resolved, root) for root in _SYSTEM_ROOTS):
-        return []       # already covered by the system binds
-    parent = resolved.parent
-    prefix = parent.parent if parent.name in _BIN_DIRS else parent
-    if prefix == home or _under(home, str(prefix)):
-        return [str(resolved)]
-    return [str(prefix)]
+    # The path as launched AND the file it links to. A venv's python is a
+    # symlink to the interpreter it was made from -- on bwUniCluster a
+    # module under /pfs/data6/software_uc3 -- and binding only that left
+    # the venv itself under the emptied $HOME: "bwrap: execvp .venv/bin/
+    # python: No such file or directory", and no contained server started.
+    out: list[str] = []
+    for path in (Path(os.path.abspath(exe)), resolved):
+        if any(_under(path, root) for root in _SYSTEM_ROOTS):
+            continue    # already covered by the system binds
+        parent = path.parent
+        prefix = parent.parent if parent.name in _BIN_DIRS else parent
+        item = (str(path) if prefix == home or _under(home, str(prefix))
+                else str(prefix))
+        if item not in out:
+            out.append(item)
+    return out
+
+
+def _runtime_symlinks(command: str, bound: list[str]) -> list[tuple[str, str]]:
+    """``(target, link)`` for each symlink on the way to the interpreter that
+    lies outside everything the sandbox binds.
+
+    Binding the interpreter's resolved directory is not enough: the kernel
+    follows the path as written, hop by hop. On bwUniCluster a venv's python
+    links to /opt/bwhpc/..., /opt/bwhpc links to /software/bwhpc, and
+    /software to /pfs/data6/software_uc3. /opt is bound and so is the Python
+    directory, but /software is not -- so /opt/bwhpc pointed at nothing and
+    "bwrap: execvp .venv/bin/python: No such file or directory". Each such
+    link is recreated inside with ``--symlink``. A link under a bound
+    directory is already there and is left alone: bwrap refuses to create a
+    symlink where a file exists.
+    """
+    exe = command if os.path.isabs(command) else (shutil.which(command) or "")
+    if not exe:
+        return []
+    roots = list(_SYSTEM_ROOTS) + list(bound)
+    out: list[tuple[str, str]] = []
+    parts = list(Path(os.path.abspath(exe)).parts)
+    current, rest = Path(parts[0]), parts[1:]    # start at the filesystem root
+    hops = 0
+    while rest and hops < 40:                    # 40: the kernel's own limit
+        step = current / rest.pop(0)
+        if not step.is_symlink():
+            current = step
+            continue
+        hops += 1
+        try:
+            target = os.readlink(step)
+        except OSError:
+            return out
+        if not any(_under(step, root) for root in roots):
+            pair = (target, str(step))
+            if pair not in out:
+                out.append(pair)
+        # Walk on from where the link points, then the rest of the path.
+        base = target if os.path.isabs(target) else str(step.parent / target)
+        base_parts = list(Path(os.path.normpath(base)).parts)
+        current, rest = Path(base_parts[0]), base_parts[1:] + rest
+    return out
 
 
 def _start_dir(iso: Isolation, cwd: Path | str | None) -> str:
@@ -370,12 +422,16 @@ def bwrap_argv(
     # read-only one turns a containment question into a startup failure
     # that reads like a broken install.
     argv += ["--tmpfs", str(home_path)]
-    for path in _runtime_binds(command, home_path):
+    runtime = _runtime_binds(command, home_path)
+    for path in runtime:
         argv += ["--ro-bind", path, path]
     for root in iso.read_roots:
         argv += ["--ro-bind", root, root]
     for root in iso.write_roots:
         argv += ["--bind", root, root]
+    bound = runtime + list(iso.read_roots) + list(iso.write_roots)
+    for target, link in _runtime_symlinks(command, bound):
+        argv += ["--symlink", target, link]
     argv += ["--chdir", _start_dir(iso, cwd), "--die-with-parent", command]
     argv += [str(a) for a in (args or ())]
     return argv
