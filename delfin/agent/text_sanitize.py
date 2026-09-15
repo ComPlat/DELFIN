@@ -126,6 +126,18 @@ class SanitizeResult:
         return self.source_chars > 0 and not self.text
 
 
+def strip_glitch(text: str) -> str:
+    """``text`` with glitch-token runs removed and nothing else touched.
+
+    For tool arguments a person reads, where sanitize_agent_text's tool-call
+    and think-block repairs have no business. Report 20260915-132613 put
+    "Nein, erst отчетen" on a dialog button.
+    """
+    if not isinstance(text, str) or not _GLITCH.search(text):
+        return text
+    return re.sub(r"[ \t]{2,}", " ", _GLITCH.sub("", text)).strip()
+
+
 def sanitize_agent_text(text: str) -> SanitizeResult:
     """Return a cleaned copy of ``text`` plus what was repaired.
 

@@ -16064,9 +16064,13 @@ class _DocToolExecutor:
         callback raises or no UI is bound, returns an explicit error so
         the agent can fall back to a plain-prose question.
         """
-        question = (arguments.get("question") or "").strip()
+        # The dialog is read by a person: glitch-token runs come off every
+        # text in it ("Nein, erst отчетen" on a button, report
+        # 20260915-132613).
+        from delfin.agent.text_sanitize import strip_glitch
+        question = strip_glitch((arguments.get("question") or "").strip())
         options = arguments.get("options") or []
-        header = (arguments.get("header") or "").strip()
+        header = strip_glitch((arguments.get("header") or "").strip())
         multi_select = bool(arguments.get("multiSelect", False))
         if not question:
             return json.dumps({"error": "question must be non-empty"})
@@ -16080,12 +16084,13 @@ class _DocToolExecutor:
                 return json.dumps({"error": (
                     "each option must be {label, description?}"
                 )})
-            label = (opt.get("label") or "").strip()
+            label = strip_glitch((opt.get("label") or "").strip())
             if not label:
                 return json.dumps({"error": "each option needs a label"})
             norm_options.append({
                 "label": label,
-                "description": (opt.get("description") or "").strip(),
+                "description": strip_glitch(
+                    (opt.get("description") or "").strip()),
             })
         if perms is None or perms.ask_user_callback is None:
             return json.dumps({
